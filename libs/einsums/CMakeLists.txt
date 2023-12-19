@@ -14,9 +14,6 @@ set(_einsums_einsums_modules
     assertion
     config
     preprocessor
-    program_options
-    string_util
-    type_support
     version
 )
 # cmake-format: on

@@ -16,7 +16,4 @@ Einsums modules
    /libs/einsums/assertion/docs/index.rst
    /libs/einsums/config/docs/index.rst
    /libs/einsums/preprocessor/docs/index.rst
-   /libs/einsums/program_options/docs/index.rst
-   /libs/einsums/string_util/docs/index.rst
-   /libs/einsums/type_support/docs/index.rst
    /libs/einsums/version/docs/index.rst
