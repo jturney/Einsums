@@ -23,6 +23,13 @@
             "end": "",
             "prefix": "    ",
             "blankLinesAfter": 0
+        },
+        {
+            "language": "cmake",
+            "begin": "",
+            "end": "",
+            "prefix": "#",
+            "blankLinesAfter": 1
         }
     ],
     "psi-header.templates": [
@@ -34,9 +41,6 @@
                 " Licensed under the MIT License. See LICENSE.txt in the project root for license information.",
                 "----------------------------------------------------------------------------------------------"
             ],
-        }    
-    ],
-    "cmake.configureArgs": [
-        "-DEINSUMS_JOB_QUEUES=ON"
+        }
     ]
 }
