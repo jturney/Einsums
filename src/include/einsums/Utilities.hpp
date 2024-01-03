@@ -13,7 +13,7 @@
 namespace einsums {
 
 template <typename T = double, typename... MultiIndex>
-auto create_incremented_tensor(const std::string &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
+auto create_incremented_tensor(std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     Tensor<T, sizeof...(MultiIndex)> A(name, std::forward<MultiIndex>(index)...);
 
     T    counter{0.0};
@@ -33,7 +33,7 @@ auto create_incremented_tensor(const std::string &name, MultiIndex... index) -> 
 }
 
 template <typename T = double, bool Normalize = false, typename... MultiIndex>
-auto create_random_tensor(const std::string &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
+auto create_random_tensor(std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     Section const section{fmt::format("create_random_tensor {}", name)};
 
     Tensor<T, sizeof...(MultiIndex)> A(name, std::forward<MultiIndex>(index)...);
@@ -111,7 +111,7 @@ void set_to(TensorType<DataType, Rank> &tensor, DataType value, Tuple const &tup
 } // namespace detail
 
 template <typename T>
-auto diagonal(const Tensor<T, 1> &v) -> Tensor<T, 2> {
+auto diagonal(Tensor<T, 1> const &v) -> Tensor<T, 2> {
     auto result = create_tensor(v.name(), v.dim(0), v.dim(0));
     zero(result);
     for (size_t i = 0; i < v.dim(0); i++) {
@@ -121,7 +121,7 @@ auto diagonal(const Tensor<T, 1> &v) -> Tensor<T, 2> {
 }
 
 template <typename T>
-auto diagonal_like(const Tensor<T, 1> &v, const Tensor<T, 2> &like) -> Tensor<T, 2> {
+auto diagonal_like(Tensor<T, 1> const &v, Tensor<T, 2> const &like) -> Tensor<T, 2> {
     auto result = create_tensor_like(v.name(), like);
     zero(result);
     for (size_t i = 0; i < v.dim(0); i++) {
@@ -131,7 +131,7 @@ auto diagonal_like(const Tensor<T, 1> &v, const Tensor<T, 2> &like) -> Tensor<T,
 }
 
 template <typename T = double, typename... MultiIndex>
-auto create_identity_tensor(const std::string &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
+auto create_identity_tensor(std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     static_assert(sizeof...(MultiIndex) >= 1, "Rank parameter doesn't make sense.");
 
     Tensor<T, sizeof...(MultiIndex)> A{name, std::forward<MultiIndex>(index)...};
@@ -145,7 +145,7 @@ auto create_identity_tensor(const std::string &name, MultiIndex... index) -> Ten
 }
 
 template <typename T = double, typename... MultiIndex>
-auto create_ones_tensor(const std::string &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
+auto create_ones_tensor(std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     static_assert(sizeof...(MultiIndex) >= 1, "Rank parameter doesn't make sense.");
 
     Tensor<T, sizeof...(MultiIndex)> A{name, std::forward<MultiIndex>(index)...};
@@ -155,12 +155,12 @@ auto create_ones_tensor(const std::string &name, MultiIndex... index) -> Tensor<
 }
 
 template <template <typename, size_t> typename TensorType, typename DataType, size_t Rank>
-auto create_tensor_like(const TensorType<DataType, Rank> &tensor) -> Tensor<DataType, Rank> {
+auto create_tensor_like(TensorType<DataType, Rank> const &tensor) -> Tensor<DataType, Rank> {
     return Tensor<DataType, Rank>{tensor.dims()};
 }
 
 template <template <typename, size_t> typename TensorType, typename DataType, size_t Rank>
-auto create_tensor_like(const std::string name, const TensorType<DataType, Rank> &tensor) -> Tensor<DataType, Rank> {
+auto create_tensor_like(const std::string name, TensorType<DataType, Rank> const &tensor) -> Tensor<DataType, Rank> {
     auto result = Tensor<DataType, Rank>{tensor.dims()};
     result.set_name(name);
     return result;
@@ -193,29 +193,5 @@ template <typename T>
 auto divmod(T n, T d) -> std::tuple<T, T> {
     return {n / d, n % d};
 }
-
-struct DisableOMPNestedScope {
-    DisableOMPNestedScope() {
-        _old_nested = omp_get_nested();
-        omp_set_nested(0);
-    }
-
-    ~DisableOMPNestedScope() { omp_set_nested(_old_nested); }
-
-  private:
-    int _old_nested;
-};
-
-struct DisableOMPThreads {
-    DisableOMPThreads() {
-        _old_max_threads = omp_get_max_threads();
-        omp_set_num_threads(1);
-    }
-
-    ~DisableOMPThreads() { omp_set_num_threads(_old_max_threads); }
-
-  private:
-    int _old_max_threads;
-};
 
 } // namespace einsums

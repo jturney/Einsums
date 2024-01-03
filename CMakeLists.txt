@@ -18,7 +18,9 @@ endif()
 # ######################################################################################################################
 # project metadata
 # ######################################################################################################################
-project(einsums CXX)
+project(einsums CXX C)
+
+include(FeatureSummary)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -232,6 +234,10 @@ einsums_option(
     EINSUMS_WITH_TESTS_UNIT BOOL "Build unit tests (default: ON)." ON DEPENDS "EINSUMS_WITH_TESTS"
     CATEGORY "Build Targets"
 )
+if(EINSUMS_WITH_TESTS_UNIT)
+    find_package(Catch2 REQUIRED)
+endif()
+
 einsums_option(
     EINSUMS_WITH_TESTS_HEADERS
     BOOL
@@ -331,6 +337,14 @@ if(EINSUMS_WITH_NICE_THREADLEVEL)
     einsums_add_config_define(EINSUMS_HAVE_NICE_THREADLEVEL)
 else()
     einsums_info("Nice threadlevel is disabled.")
+endif()
+
+# ######################################################################################################################
+# Intel VTune interface
+# ######################################################################################################################
+include(cmake/FindITTNOTIFY.cmake)
+if(TARGET ittnotify)
+    target_link_libraries(einsums_base_libraries INTERFACE ittnotify)
 endif()
 
 # ######################################################################################################################
@@ -723,6 +737,11 @@ einsums_option(
     EINSUMS_WITH_THREAD_DEBUG_INFO BOOL "Enable thread debugging information (default: OFF)" OFF
     CATEGORY "Debugging"
     ADVANCED
+)
+
+einsums_option(
+    EINSUMS_H5CPP_USE_OMP_ALIGNED_ALLOC BOOL
+    "On Mac, use omp_aligned_alloc instead of aligned_alloc. Helpful for old SDK." OFF
 )
 
 if(EINSUMS_WITH_VERIFY_LOCKS)
@@ -1178,6 +1197,21 @@ set(EINSUMS_WITH_TARGET_ARCHITECTURE
 # TODO: Those that can be downloaded by cmake automatically should be handled in external
 include(einsums_setup_threads)
 include(einsums_setup_fmt)
+include(einsums_setup_rangev3)
+# include(einsums_setup_hptt) include(einsums_setup_h5cpp)
+
+# Other dependencies:
+find_package(TargetLAPACK REQUIRED)
+get_property(
+    EINSUMS_LINALG_VENDOR
+    TARGET tgt::lapack
+    PROPERTY VENDOR
+)
+get_property(
+    EINSUMS_LINALG_INT_INTERFACE
+    TARGET tgt::lapack
+    PROPERTY INT_INTERFACE
+)
 
 if(EINSUMS_WITH_SANITIZERS)
     einsums_add_config_define(EINSUMS_HAVE_SANITIZERS)
@@ -1329,11 +1363,15 @@ include(einsums_forward_cache_variables)
 # External build system support.
 include(einsums_generate_package)
 
+# ######################################################################################################################
+# Report feature summary
+feature_summary(INCLUDE_QUIET_PACKAGES WHAT PACKAGES_FOUND PACKAGES_NOT_FOUND ENABLED_FEATURES DISABLED_FEATURES)
+
 message("")
 message("einsums will be installed to ${CMAKE_INSTALL_PREFIX}")
 message("")
 
-# include(FeatureSummary) # include(EinsumsAPI)
+# include(EinsumsAPI)
 
 # # Force C++ standard globally, do not fall back, do not use compiler extensions set(CMAKE_CXX_STANDARD 20)
 # set(CMAKE_CXX_STANDARD_REQUIRED ON) set(CMAKE_CXX_EXTENSIONS OFF) set(RANGES_CXX_STD 20)
@@ -1381,7 +1419,7 @@ message("")
 # # include(cmake/DetectHostArch.cmake) detect_host_arch() message(STATUS "${CMAKE_CXX_COMPILER_ID} flags:
 # ${HOST_FLAGS}")
 
-# include(cmake/FindITTNOTIFY.cmake) # include(cmake/FindIntelSYCL.cmake)
+# include(cmake/FindIntelSYCL.cmake)
 
 # # We don't do anything in parallel yet. find_package(MPI) if(TARGET MPI::MPI_CXX) set(HDF5_PREFER_PARALLEL True)
 # endif()
@@ -1404,5 +1442,3 @@ message("")
 # if(EINSUMS_ENABLE_TESTING) enable_testing() add_subdirectory(tests) endif()
 
 # add_subdirectory(timing) # add_subdirectory(experiments)
-
-# feature_summary(INCLUDE_QUIET_PACKAGES WHAT PACKAGES_FOUND PACKAGES_NOT_FOUND ENABLED_FEATURES DISABLED_FEATURES)

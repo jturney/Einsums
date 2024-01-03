@@ -100,3 +100,5 @@ endif()
 if(EINSUMS_WITH_ITTNOTIFY)
     target_link_libraries(einsums PUBLIC einsums_internal::amplifier)
 endif()
+
+include(einsums_setup_h5cpp)

@@ -8,12 +8,14 @@ include(einsums_export_targets)
 function(einsums_add_module libname modulename)
     # Retrieve arguments
     set(options CONFIG_FILES)
-    set(one_value_args GLOBAL_HEADER_GEN)
+    set(one_value_args GLOBAL_HEADER_GEN SOURCES_PREFIX SOURCES_PREFIX_FROM_TARGET)
     set(multi_value_args
+        CONDITION
         SOURCES
         HEADERS
         OBJECTS
         DEPENDENCIES
+        PUBLIC_DEPENDENCIES
         MODULE_DEPENDENCIES
         CMAKE_SUBDIRS
         EXCLUDE_FROM_GLOBAL_HEADER
@@ -25,6 +27,21 @@ function(einsums_add_module libname modulename)
 
     include(einsums_message)
     include(einsums_option)
+
+    if(NOT ${modulename}_CONDITION)
+        set(${modulename}_CONDITION ON)
+    endif()
+
+    if(${${modulename}_CONDITION})
+        set(${modulename}_ENABLED ON)
+    else()
+        set(${modulename}_ENABLED OFF)
+    endif()
+
+    if(NOT ${modulename}_ENABLED)
+        einsums_info("Module ${modulename} is disabled.")
+        return()
+    endif()
 
     # Global headers should be always generated except if explicitly disabled
     if("${${modulename}_GLOBAL_HEADER_GEN}" STREQUAL "")
@@ -43,6 +60,18 @@ function(einsums_add_module libname modulename)
     # Main directories of the module
     set(SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/src")
     set(HEADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+    if(${modulename}_SOURCES_PREFIX_FROM_TARGET)
+        if(NOT TARAGET ${${modulename}_SOURCES_PREFIX_FROM_TARGET})
+            einsums_error("SOURCES_PREFIX_FROM_TARGET was given but referenced target does not exist.")
+        else()
+            get_target_property(${modulename}_SOURCES_PREFIX ${${modulename}_SOURCES_PREFIX_FROM_TARGET} SOURCES_DIR)
+        endif()
+    endif()
+
+    if(${${modulename}_SOURCES_PREFIX})
+        set(SOURCE_ROOT "${SOURCE_ROOT}/${${modulename}_SOURCES_PREFIX}")
+    endif()
 
     einsums_debug("Add module ${modulename}: SOURCE_ROOT: ${SOURCE_ROOT}")
     einsums_debug("Add module ${modulename}: HEADER_ROOT: ${HEADER_ROOT}")
@@ -153,7 +182,8 @@ function(einsums_add_module libname modulename)
     endif()
 
     target_link_libraries(einsums_${modulename} ${module_public_keyword} ${${modulename}_MODULE_DEPENDENCIES})
-    target_link_libraries(einsums_${modulename} ${module_public_keyword} ${${modulename}_DEPENDENCIES})
+    target_link_libraries(einsums_${modulename} ${module_public_keyword} ${${modulename}_PUBLIC_DEPENDENCIES})
+    target_link_libraries(einsums_${modulename} PRIVATE ${${modulename}_DEPENDENCIES})
 
     target_link_libraries(einsums_${modulename} ${module_public_keyword} einsums_public_flags einsums_base_libraries)
 

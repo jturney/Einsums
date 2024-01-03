@@ -14,6 +14,12 @@ Einsums modules
    :maxdepth: 2
 
    /libs/einsums/assertion/docs/index.rst
+   /libs/einsums/concepts/docs/index.rst
    /libs/einsums/config/docs/index.rst
+   /libs/einsums/core/docs/index.rst
+   /libs/einsums/hptt/docs/index.rst
+   /libs/einsums/linear_algebra/docs/index.rst
    /libs/einsums/preprocessor/docs/index.rst
+   /libs/einsums/tensor/docs/index.rst
+   /libs/einsums/tensor_algebra/docs/index.rst
    /libs/einsums/version/docs/index.rst

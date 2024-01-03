@@ -5,7 +5,7 @@
  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 ----------------------------------------------------------------------------------------------
 
-create_module_skeleton.py - A tool to generate a module skeleton to be 
+create_module_skeleton.py - A tool to generate a module skeleton to be
 used as a component of einsums.
 '''
 
@@ -37,7 +37,7 @@ cmake_header = f"""# -----------------------------------------------------------
 
 """
 
-readme_template = f""".. 
+readme_template = f"""..
     ----------------------------------------------------------------------------------------------
      Copyright (c) The Einsums Developers. All rights reserved.
      Licensed under the MIT License. See LICENSE.txt in the project root for license information.
@@ -50,7 +50,7 @@ readme_template = f"""..
 This module is part of einsums.
 """
 
-index_rst = f""".. 
+index_rst = f"""..
     ----------------------------------------------------------------------------------------------
      Copyright (c) The Einsums Developers. All rights reserved.
      Licensed under the MIT License. See LICENSE.txt in the project root for license information.
@@ -128,7 +128,7 @@ if(EINSUMS_WITH_TESTS)
         )
         add_subdirectory(regressions)
     endif()
-  
+
     if(EINSUMS_WITH_TESTS_BENCHMARKS)
         einsums_add_pseudo_target(tests.performance.modules.{module_name})
         einsums_add_pseudo_dependencies(
@@ -136,7 +136,7 @@ if(EINSUMS_WITH_TESTS)
         )
         add_subdirectory(performance)
     endif()
-  
+
     if(EINSUMS_WITH_TESTS_HEADERS)
         einsums_add_header_tests(
           modules.{module_name}
@@ -255,9 +255,6 @@ for module in modules:
 modules_cmakelists += ")\n# cmake-format: on\n"
 
 modules_cmakelists += f"""
-einsums_info("")
-einsums_info("  Configuring libeinsums{"_" + lib_name if lib_name != "full" else ""} modules:")
-
 foreach(module ${{_einsums_{lib_name}_modules}})
     add_subdirectory(${{module}})
 endforeach()

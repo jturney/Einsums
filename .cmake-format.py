@@ -359,6 +359,19 @@ with section("parse"):
                 "nargs": "1+",
             },
         },
+        "einsums_extend_target": {
+            "kwargs": {
+                "CMAKE_SUBDIRS": "+",
+                "DEPENDENCIES": "+",
+                "HEADERS": "+",
+                "OBJECTS": "+",
+                "MODULE_DEPENDENCIES": "+",
+                "SOURCES": "+",
+                "DEFINES": "+",
+                "CONDITION": "+",
+                "FEATURE_INFO": "1"
+            },
+        },
         "einsums_add_performance_test": {"pargs": {"nargs": 2}},
         "einsums_add_pseudo_dependencies": {"pargs": {"nargs": 0}},
         "einsums_add_pseudo_dependencies_no_shortening": {"pargs": {"nargs": 0}},

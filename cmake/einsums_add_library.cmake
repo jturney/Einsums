@@ -12,6 +12,7 @@ function(einsums_add_library name)
         NOEXPORT
         STATIC
         OBJECT
+        INTERFACE
         NONAMEPREFIX
         UNITY_BUILD
     )
@@ -114,6 +115,8 @@ function(einsums_add_library name)
         set(${name}_linktype STATIC)
     elseif(${name}_OBJECT)
         set(${name}_linktype OBJECT)
+    elseif(${name}_INTERFACE)
+        set(${name}_linktype INTERFACE)
     else()
         set(${name}_linktype SHARED)
     endif()
@@ -203,7 +206,6 @@ function(einsums_add_library name)
         FOLDER ${${name}_FOLDER}
         COMPILE_FLAGS ${${name}_COMPILE_FLAGS}
         LINK_FLAGS ${${name}_LINK_FLAGS}
-        DEPENDENCIES ${${name}_DEPENDENCIES}
+        DEPENDENCIES ${${name}_DEPENDENCIES} ${_target_flags}
     )
-
 endfunction()

@@ -29,7 +29,8 @@
                 "ms-vscode.cmake-tools",
                 "llvm-vs-code-extensions.vscode-clangd",
                 "mutantdino.resourcemonitor",
-                "matepek.vscode-catch2-test-adapter"
+                "matepek.vscode-catch2-test-adapter",
+                "psioniq.psi-header"
             ]
         }
     }

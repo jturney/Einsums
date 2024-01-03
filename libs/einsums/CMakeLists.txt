@@ -12,14 +12,17 @@ include(einsums_message)
 # cmake-format: off
 set(_einsums_einsums_modules
     assertion
+    concepts
     config
+    core
+    hptt
+    linear_algebra
     preprocessor
+    tensor
+    tensor_algebra
     version
 )
 # cmake-format: on
-
-einsums_info("")
-einsums_info("  Configuring libeinsums_einsums modules:")
 
 foreach(module ${_einsums_einsums_modules})
     add_subdirectory(${module})

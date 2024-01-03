@@ -1,0 +1,17 @@
+..
+    ----------------------------------------------------------------------------------------------
+     Copyright (c) The Einsums Developers. All rights reserved.
+     Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+    ----------------------------------------------------------------------------------------------
+
+.. _modules_tensor_algebra:
+
+==============
+tensor_algebra
+==============
+
+TODO: High-level description of the module.
+
+See the :ref:`API reference <modules_tensor_algebra_api>` of this module for more
+details.
+

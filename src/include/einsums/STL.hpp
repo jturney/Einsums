@@ -47,11 +47,11 @@ struct TuplePosition<S, P, C, false, H, std::tuple<>> : std::integral_constant<i
 } // namespace detail
 
 template <typename SearchPattern, typename... Args>
-struct TuplePosition : detail::TuplePosition<const SearchPattern &, -1, 0, false, void, std::tuple<Args...>> {};
+struct TuplePosition : detail::TuplePosition<SearchPattern const &, -1, 0, false, void, std::tuple<Args...>> {};
 
 template <typename SearchPattern, typename... Args,
-          typename Idx = TuplePosition<const SearchPattern &, const Args &..., const SearchPattern &>>
-auto get(const SearchPattern &definition, Args &&...args) -> typename Idx::type & {
+          typename Idx = TuplePosition<SearchPattern const &, Args const &..., SearchPattern const &>>
+auto get(SearchPattern const &definition, Args &&...args) -> typename Idx::type & {
     auto tuple = std::forward_as_tuple(args..., definition);
     return std::get<Idx::value>(tuple);
 }
@@ -89,7 +89,7 @@ constexpr auto enumerate(T &&iterable) {
         std::size_t i;
         Iter        iter;
 
-        auto operator!=(const Iterator &other) const -> bool { return iter != other.iter; }
+        auto operator!=(Iterator const &other) const -> bool { return iter != other.iter; }
         void operator++() {
             ++i;
             ++iter;
@@ -119,7 +119,7 @@ constexpr auto create_tuple(T value, std::index_sequence<Is...>) {
 }
 
 template <typename T, std::size_t... Is>
-constexpr auto create_tuple_from_array(const T &arr, std::index_sequence<Is...>) {
+constexpr auto create_tuple_from_array(T const &arr, std::index_sequence<Is...>) {
     return std::tuple((arr[Is])...);
 }
 
@@ -150,17 +150,17 @@ constexpr auto count_of_type(/*Args... args*/) {
 }
 
 template <size_t N, typename T>
-constexpr auto create_array(const T &value) -> std::array<T, N> {
+constexpr auto create_array(T const &value) -> std::array<T, N> {
     return detail::create_array(value, std::make_index_sequence<N>());
 }
 
 template <size_t N, typename T>
-constexpr auto create_tuple(const T &value) {
+constexpr auto create_tuple(T const &value) {
     return detail::create_tuple(value, std::make_index_sequence<N>());
 }
 
 template <size_t N, typename T>
-constexpr auto create_tuple_from_array(const T &arr) {
+constexpr auto create_tuple_from_array(T const &arr) {
     return detail::create_tuple_from_array(arr, std::make_index_sequence<N>());
 }
 
@@ -353,7 +353,7 @@ struct CircularBuffer {
         return size;
     }
 
-    auto operator[](int element) const -> const T & { return _buffer[element]; }
+    auto operator[](int element) const -> T const & { return _buffer[element]; }
 
   private:
     std::unique_ptr<T[]> _buffer; // NOLINT
@@ -365,139 +365,6 @@ struct CircularBuffer {
     size_t _tail{0};
     bool   _full{false};
 };
-
-namespace detail {
-auto EINSUMS_EXPORT allocate_aligned_memory(size_t align, size_t size) -> void *;
-void EINSUMS_EXPORT deallocate_aligned_memory(void *ptr) noexcept;
-} // namespace detail
-
-template <typename T, size_t Align = 32>
-class AlignedAllocator;
-
-template <size_t Align>
-class AlignedAllocator<void, Align> {
-  public:
-    using pointer       = void *;
-    using const_pointer = const void *;
-    using value_type    = void;
-
-    template <class U>
-    struct rebind {
-        using other = AlignedAllocator<U, Align>;
-    };
-};
-
-template <typename T, size_t Align>
-class AlignedAllocator {
-  public:
-    using value_type      = T;
-    using pointer         = T *;
-    using const_pointer   = const T *;
-    using reference       = T &;
-    using const_reference = const T &;
-    using size_type       = size_t;
-    using difference_type = ptrdiff_t;
-
-    using propagate_on_container_move_assignment = std::true_type;
-
-    template <class U>
-    struct rebind {
-        using other = AlignedAllocator<U, Align>;
-    };
-
-  public:
-    AlignedAllocator() noexcept = default;
-
-    template <class U>
-    AlignedAllocator(const AlignedAllocator<U, Align> &) noexcept {}
-
-    [[nodiscard]] auto max_size() const noexcept -> size_type { return (size_type(~0) - size_type(Align)) / sizeof(T); }
-
-    auto address(reference x) const noexcept -> pointer { return std::addressof(x); }
-
-    auto address(const_reference x) const noexcept -> const_pointer { return std::addressof(x); }
-
-    auto allocate(size_type n, typename AlignedAllocator<void, Align>::const_pointer = 0) -> pointer {
-        const auto alignment = static_cast<size_type>(Align);
-        void      *ptr       = detail::allocate_aligned_memory(alignment, n * sizeof(T));
-        if (ptr == nullptr) {
-            throw std::bad_alloc();
-        }
-
-        return reinterpret_cast<pointer>(ptr);
-    }
-
-    void deallocate(pointer p, size_type) noexcept { return detail::deallocate_aligned_memory(p); }
-
-    template <class U, class... Args>
-    void construct(U *p, Args &&...args) {
-        if constexpr (sizeof...(Args) > 0) {
-            ::new (reinterpret_cast<void *>(p)) U(std::forward<Args>(args)...);
-        }
-    }
-
-    void destroy(pointer p) { p->~T(); }
-};
-
-template <typename T, size_t Align>
-class AlignedAllocator<const T, Align> {
-  public:
-    using value_type      = T;
-    using pointer         = const T *;
-    using const_pointer   = const T *;
-    using reference       = const T &;
-    using const_reference = const T &;
-    using size_type       = size_t;
-    using difference_type = ptrdiff_t;
-
-    using propagate_on_container_move_assignment = std::true_type;
-
-    template <class U>
-    struct rebind {
-        using other = AlignedAllocator<U, Align>;
-    };
-
-  public:
-    AlignedAllocator() noexcept = default;
-
-    template <class U>
-    AlignedAllocator(const AlignedAllocator<U, Align> &) noexcept {}
-
-    [[nodiscard]] auto max_size() const noexcept -> size_type { return (size_type(~0) - size_type(Align)) / sizeof(T); }
-
-    auto address(const_reference x) const noexcept -> const_pointer { return std::addressof(x); }
-
-    auto allocate(size_type n, typename AlignedAllocator<void, Align>::const_pointer = 0) -> pointer {
-        const auto alignment = static_cast<size_type>(Align);
-        void      *ptr       = detail::allocate_aligned_memory(alignment, n * sizeof(T));
-        if (ptr == nullptr) {
-            throw std::bad_alloc();
-        }
-
-        return reinterpret_cast<pointer>(ptr);
-    }
-
-    void deallocate(pointer p, size_type) noexcept { return detail::deallocate_aligned_memory(p); }
-
-    template <class U, class... Args>
-    void construct(U *p, Args &&...args) {
-        if constexpr (sizeof...(Args) > 0) {
-            ::new (reinterpret_cast<void *>(p)) U(std::forward<Args>(args)...);
-        }
-    }
-
-    void destroy(pointer p) { p->~T(); }
-};
-
-template <typename T, size_t TAlign, typename U, size_t UAlign>
-inline auto operator==(const AlignedAllocator<T, TAlign> &, const AlignedAllocator<U, UAlign> &) noexcept -> bool {
-    return TAlign == UAlign;
-}
-
-template <typename T, size_t TAlign, typename U, size_t UAlign>
-inline auto operator!=(const AlignedAllocator<T, TAlign> &, const AlignedAllocator<U, UAlign> &) noexcept -> bool {
-    return TAlign != UAlign;
-}
 
 template <typename T>
 inline auto ndigits(T number) -> int {

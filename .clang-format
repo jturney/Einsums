@@ -14,6 +14,8 @@ AlignConsecutiveAssignments: true
 AlignConsecutiveDeclarations: true
 QualifierAlignment: Right
 IncludeCategories:
+  - Regex: '^("|<)einsums/(config|preprocessor)/.*("|>)'
+    Priority: 1
   - Regex: '^("|<)einsums/_.*\.hpp("|>)'
     Priority: 1
   - Regex: '^("|<)einsums/.*\.h.*("|>)'
