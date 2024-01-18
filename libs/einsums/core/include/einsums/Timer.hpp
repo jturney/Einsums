@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include "einsums/config/ExportDefinitions.hpp"
+#include <einsums/config/export_definitions.hpp>
 
 #include <string>
 
@@ -19,9 +19,9 @@ void EINSUMS_EXPORT report();
 void EINSUMS_EXPORT push(std::string name);
 void EINSUMS_EXPORT pop();
 
-struct Timer {
-    Timer(std::string const &name) { push(name); }
-    ~Timer() { pop(); }
+struct timer {
+    timer(std::string const &name) { push(name); }
+    ~timer() { pop(); }
 };
 
 } // namespace einsums::timer

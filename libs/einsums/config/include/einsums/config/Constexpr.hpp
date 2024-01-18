@@ -6,7 +6,7 @@
 #pragma once
 
 #include <einsums/config/CompilerSpecific.hpp>
-#include <einsums/config/Defines.hpp>
+#include <einsums/config/defines.hpp>
 
 /// This macro evaluates to ``inline constexpr`` for host code and
 /// ``__device__ static const`` for device code with NVCC

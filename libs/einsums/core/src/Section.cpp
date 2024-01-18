@@ -5,11 +5,8 @@
 
 #include "einsums/Section.hpp"
 
-#include "einsums/Print.hpp"
 #include "einsums/Timer.hpp"
 #include "einsums/core/Trim.hpp"
-
-#include <cstddef>
 
 #if defined(EINSUMS_HAVE_ITTNOTIFY)
 #    include <ittnotify.h>
@@ -17,7 +14,7 @@
 __itt_domain *global_domain = __itt_domain_create("Einsums");
 #endif
 
-struct Section::Impl {
+struct section::Impl {
     std::string name;
     bool        push_timer;
 #if defined(EINSUMS_HAVE_ITTNOTIFY)
@@ -26,7 +23,7 @@ struct Section::Impl {
 #endif
 };
 
-Section::Section(std::string const &name, bool pushTimer) : _impl{new Section::Impl} {
+section::section(std::string const &name, bool pushTimer) : _impl{new section::Impl} {
     _impl->name       = einsums::trim_copy(name);
     _impl->push_timer = pushTimer;
 
@@ -38,7 +35,7 @@ Section::Section(std::string const &name, bool pushTimer) : _impl{new Section::I
     begin();
 }
 
-Section::Section(std::string const &name, std::string const &domain, bool pushTimer) : _impl{new Section::Impl} {
+section::section(std::string const &name, std::string const &domain, bool pushTimer) : _impl{new section::Impl} {
     _impl->name       = einsums::trim_copy(name);
     _impl->push_timer = pushTimer;
 
@@ -50,11 +47,11 @@ Section::Section(std::string const &name, std::string const &domain, bool pushTi
     begin();
 }
 
-Section::~Section() {
+section::~section() {
     end();
 }
 
-void Section::begin() {
+void section::begin() {
     if (_impl->push_timer)
         einsums::timer::push(_impl->name);
 
@@ -63,7 +60,7 @@ void Section::begin() {
 #endif
 }
 
-void Section::end() {
+void section::end() {
     if (_impl) {
 #if defined(EINSUMS_HAVE_ITTNOTIFY)
         __itt_task_end(_impl->domain);

@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include "einsums/config/ExportDefinitions.hpp"
+#include <einsums/config/export_definitions.hpp>
 
 #include <memory>
 #include <string>
@@ -26,7 +26,7 @@
  * @endcode
  *
  */
-struct EINSUMS_EXPORT Section {
+struct EINSUMS_EXPORT section {
     struct Impl;
 
     /**
@@ -35,7 +35,7 @@ struct EINSUMS_EXPORT Section {
      * @param name Name of the section to be timed. If VTune is available then \p name becomes the label in VTune.
      * @param pushTimer Enable Einsums timing mechanism for this section. Default is true.
      */
-    Section(std::string const &name, bool pushTimer = true);
+    section(std::string const &name, bool pushTimer = true);
 
     /**
      * @brief Construct a new Section object
@@ -44,12 +44,12 @@ struct EINSUMS_EXPORT Section {
      * @param domain If VTune is available then this is the label used in VTune.
      * @param pushTimer Enable Einsums timing mechanism for this section. Default is true.
      */
-    Section(std::string const &name, std::string const &domain, bool pushTimer = true);
+    section(std::string const &name, std::string const &domain, bool pushTimer = true);
 
     /**
      * @brief Destroy the Section object
      */
-    ~Section();
+    ~section();
 
     /**
      * @brief Manually stop the section.
@@ -77,7 +77,7 @@ struct EINSUMS_EXPORT Section {
  * Constructs a label that includes the encompassing namespace and function names.
  * This macro also includes an extra label that will be appended to the section name.
  */
-#define LabeledSection1(x) const Section _section(fmt::format("{}::{} {}", detail::s_Namespace, __func__, x))
+#define LabeledSection1(x) const section _section(fmt::format("{}::{} {}", detail::s_Namespace, __func__, x))
 
 /**
  * @brief Convenience wrapper to Section.
@@ -86,4 +86,4 @@ struct EINSUMS_EXPORT Section {
  * in _Common.hpp is included and used.
  * Constructs a label that includes the encompassing namespace and function names.
  */
-#define LabeledSection0() const Section _section(fmt::format("{}::{}", detail::s_Namespace, __func__))
+#define LabeledSection0() const section _section(fmt::format("{}::{}", detail::s_Namespace, __func__))

@@ -5,11 +5,11 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(assertion_headers einsums/Assert.hpp einsums/assertion/CurrentFunction.hpp einsums/assertion/EvaluateAssert.hpp
-                      einsums/assertion/SourceLocation.hpp
+set(assertion_headers einsums/assert.hpp einsums/assertion/current_function.hpp einsums/assertion/evaluate_assert.hpp
+                      einsums/assertion/source_location.hpp
 )
 
-set(assertion_sources Assertion.cpp SourceLocation.cpp)
+set(assertion_sources assertion.cpp source_location.cpp)
 
 include(einsums_add_module)
 einsums_add_module(

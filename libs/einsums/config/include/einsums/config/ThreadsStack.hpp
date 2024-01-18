@@ -7,7 +7,7 @@
 
 #include <einsums/config/CompilerSpecific.hpp>
 #include <einsums/config/Debug.hpp>
-#include <einsums/config/Defines.hpp>
+#include <einsums/config/defines.hpp>
 
 ///////////////////////////////////////////////////////////////////////////////
 

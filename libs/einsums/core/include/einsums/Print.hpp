@@ -5,12 +5,11 @@
 
 #pragma once
 
-#include "einsums/config/ExportDefinitions.hpp"
+#include <einsums/config/export_definitions.hpp>
 
-#include "fmt/color.h"
-#include "fmt/core.h"
-#include "fmt/format.h"
-// #include "fmt/ranges.h"
+#include <fmt/color.h>
+#include <fmt/core.h>
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <cassert>
@@ -82,8 +81,9 @@ inline constexpr auto GetRawTypeNameFormat(RawTypeNameFormat *format) -> bool {
     for (std::size_t i = 0;; i++) {
         if (str[i] == 'i' && str[i + 1] == 'n' && str[i + 2] == 't') {
             if (format) {
-                format->leading_junk  = i;
-                format->trailing_junk = sizeof(str) - i - 3 - 1; // `3` is the length of "int", `1` is the space for the null terminator.
+                format->leading_junk = i;
+                format->trailing_junk =
+                    sizeof(str) - i - 3 - 1; // `3` is the length of "int", `1` is the space for the null terminator.
             }
             return true;
         }
@@ -102,7 +102,8 @@ inline static constexpr RawTypeNameFormat format = [] {
 // Returns the type name in a `std::array<char, N>` (null-terminated).
 template <typename T>
 [[nodiscard]] constexpr auto CexprTypeName() {
-    constexpr std::size_t len = sizeof(detail::RawTypeName<T>()) - detail::format.leading_junk - detail::format.trailing_junk;
+    constexpr std::size_t len =
+        sizeof(detail::RawTypeName<T>()) - detail::format.leading_junk - detail::format.trailing_junk;
     std::array<char, len> name{};
     for (std::size_t i = 0; i < len - 1; i++)
         name[i] = detail::RawTypeName<T>()[i + detail::format.leading_junk];
@@ -130,7 +131,9 @@ struct TuplePrinter {
 
 template <typename Tuple>
 struct TuplePrinter<Tuple, 1> {
-    static void print(std::ostream &os, Tuple const &t) { os << "(" << type_name<decltype(std::get<0>(t))>() << ")" << std::get<0>(t); }
+    static void print(std::ostream &os, Tuple const &t) {
+        os << "(" << type_name<decltype(std::get<0>(t))>() << ")" << std::get<0>(t);
+    }
 };
 
 template <typename Tuple, std::size_t N>
@@ -188,13 +191,13 @@ using fmt::emphasis; // NOLINT
 using fmt::fg;       // NOLINT
 
 template <typename... Ts>
-void println(std::string_view const &f, const Ts... ts) {
+void println(std::string_view const &f, Ts const... ts) {
     std::string s = fmt::format(fmt::runtime(f), ts...);
     detail::println(s);
 }
 
 template <typename... Ts>
-void println(fmt::text_style const &style, std::string_view const &format, const Ts... ts) {
+void println(fmt::text_style const &style, std::string_view const &format, Ts const... ts) {
     std::string s = fmt::format(style, format, ts...);
     detail::println(s);
 }
@@ -213,7 +216,7 @@ inline void println() {
 }
 
 template <typename... Ts>
-inline void println_abort(std::string_view const &format, const Ts... ts) {
+inline void println_abort(std::string_view const &format, Ts const... ts) {
     std::string message = std::string("ERROR: ") + format.data();
     println(bg(fmt::color::red) | fg(fmt::color::white), message, ts...);
 
@@ -221,7 +224,7 @@ inline void println_abort(std::string_view const &format, const Ts... ts) {
 }
 
 template <typename... Ts>
-inline void println_warn(std::string_view const &format, const Ts... ts) {
+inline void println_warn(std::string_view const &format, Ts const... ts) {
     std::string message = std::string("WARNING: ") + format.data();
     println(bg(fmt::color::yellow) | fg(fmt::color::black), message, ts...);
 }

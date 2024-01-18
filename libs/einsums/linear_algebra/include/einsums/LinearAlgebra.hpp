@@ -5,8 +5,8 @@
 
 #pragma once
 
-#include "einsums/config/ExportDefinitions.hpp"
-#include "einsums/preprocessor/Namespace.hpp"
+#include <einsums/config/export_definitions.hpp>
+#include <einsums/preprocessor/namespace.hpp>
 
 #include "einsums/Blas.hpp"
 // #include "einsums/STL.hpp"
@@ -64,20 +64,22 @@ void sum_square(AType<ADataType, ARank> const &a, RemoveComplexT<ADataType> *sca
  * @param C Output tensor
  * @tparam T the underlying data type
  */
-template <bool TransA, bool TransB, template <typename, size_t> typename AType, template <typename, size_t> typename BType,
-          template <typename, size_t> typename CType, size_t Rank, typename T>
+template <bool TransA, bool TransB, template <typename, size_t> typename AType,
+          template <typename, size_t> typename BType, template <typename, size_t> typename CType, size_t Rank,
+          typename T>
     requires requires {
-                 requires CoreRankTensor<AType<T, Rank>, 2, T>;
-                 requires CoreRankTensor<BType<T, Rank>, 2, T>;
-                 requires CoreRankTensor<CType<T, Rank>, 2, T>;
-             }
-void gemm(const T alpha, AType<T, Rank> const &A, BType<T, Rank> const &B, const T beta, CType<T, Rank> *C) {
+        requires CoreRankTensor<AType<T, Rank>, 2, T>;
+        requires CoreRankTensor<BType<T, Rank>, 2, T>;
+        requires CoreRankTensor<CType<T, Rank>, 2, T>;
+    }
+void gemm(T const alpha, AType<T, Rank> const &A, BType<T, Rank> const &B, T const beta, CType<T, Rank> *C) {
     LabeledSection0();
 
     auto m = C->dim(0), n = C->dim(1), k = TransA ? A.dim(0) : A.dim(1);
     auto lda = A.stride(0), ldb = B.stride(0), ldc = C->stride(0);
 
-    blas::gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', m, n, k, alpha, A.data(), lda, B.data(), ldb, beta, C->data(), ldc);
+    blas::gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', m, n, k, alpha, A.data(), lda, B.data(), ldb, beta, C->data(),
+               ldc);
 }
 
 /**
@@ -100,13 +102,13 @@ void gemm(const T alpha, AType<T, Rank> const &A, BType<T, Rank> const &B, const
  * @returns resulting tensor
  * @tparam T the underlying data type
  */
-template <bool TransA, bool TransB, template <typename, size_t> typename AType, template <typename, size_t> typename BType, size_t Rank,
-          typename T>
+template <bool TransA, bool                                  TransB, template <typename, size_t> typename AType,
+          template <typename, size_t> typename BType, size_t Rank, typename T>
     requires requires {
-                 requires CoreRankTensor<AType<T, Rank>, 2, T>;
-                 requires CoreRankTensor<BType<T, Rank>, 2, T>;
-             }
-auto gemm(const T alpha, AType<T, Rank> const &A, BType<T, Rank> const &B) -> Tensor<T, 2> {
+        requires CoreRankTensor<AType<T, Rank>, 2, T>;
+        requires CoreRankTensor<BType<T, Rank>, 2, T>;
+    }
+auto gemm(T const alpha, AType<T, Rank> const &A, BType<T, Rank> const &B) -> Tensor<T, 2> {
     LabeledSection0();
 
     Tensor<T, 2> C{"gemm result", TransA ? A.dim(1) : A.dim(0), TransB ? B.dim(0) : B.dim(1)};
@@ -119,11 +121,12 @@ auto gemm(const T alpha, AType<T, Rank> const &A, BType<T, Rank> const &B) -> Te
 template <bool TransA, template <typename, size_t> typename AType, template <typename, size_t> typename XType,
           template <typename, size_t> typename YType, size_t ARank, size_t XYRank, typename T>
     requires requires {
-                 requires CoreRankTensor<AType<T, ARank>, 2, T>;
-                 requires CoreRankTensor<XType<T, XYRank>, 1, T>;
-                 requires CoreRankTensor<YType<T, XYRank>, 1, T>;
-             }
-void gemv(double const alpha, AType<T, ARank> const &A, XType<T, XYRank> const &x, double const beta, YType<T, XYRank> *y) {
+        requires CoreRankTensor<AType<T, ARank>, 2, T>;
+        requires CoreRankTensor<XType<T, XYRank>, 1, T>;
+        requires CoreRankTensor<YType<T, XYRank>, 1, T>;
+    }
+void gemv(double const alpha, AType<T, ARank> const &A, XType<T, XYRank> const &x, double const beta,
+          YType<T, XYRank> *y) {
     LabeledSection1(fmt::format("<TransA={}>", TransA));
     auto m = A.dim(0), n = A.dim(1);
     auto lda  = A.stride(0);
@@ -133,13 +136,13 @@ void gemv(double const alpha, AType<T, ARank> const &A, XType<T, XYRank> const &
     blas::gemv(TransA ? 't' : 'n', m, n, alpha, A.data(), lda, x.data(), incx, beta, y->data(), incy);
 }
 
-template <template <typename, size_t> typename AType, size_t ARank, template <typename, size_t> typename WType, size_t WRank, typename T,
-          bool ComputeEigenvectors = true>
+template <template <typename, size_t> typename AType, size_t ARank, template <typename, size_t> typename WType,
+          size_t WRank, typename T, bool ComputeEigenvectors = true>
     requires requires {
-                 requires CoreRankTensor<AType<T, ARank>, 2, T>;
-                 requires CoreRankTensor<WType<T, WRank>, 1, T>;
-                 requires !Complex<T>;
-             }
+        requires CoreRankTensor<AType<T, ARank>, 2, T>;
+        requires CoreRankTensor<WType<T, WRank>, 1, T>;
+        requires !Complex<T>;
+    }
 void syev(AType<T, ARank> *A, WType<T, WRank> *W) {
     LabeledSection1(fmt::format("<ComputeEigenvectors={}>", ComputeEigenvectors));
 
@@ -153,13 +156,13 @@ void syev(AType<T, ARank> *A, WType<T, WRank> *W) {
     blas::syev(ComputeEigenvectors ? 'v' : 'n', 'u', n, A->data(), lda, W->data(), work.data(), lwork);
 }
 
-template <template <typename, size_t> typename AType, size_t ARank, template <typename, size_t> typename WType, size_t WRank, typename T,
-          bool ComputeEigenvectors = true>
+template <template <typename, size_t> typename AType, size_t ARank, template <typename, size_t> typename WType,
+          size_t WRank, typename T, bool ComputeEigenvectors = true>
     requires requires {
-                 requires CoreRankTensor<AType<T, ARank>, 2, T>;
-                 requires CoreRankTensor<WType<T, WRank>, 1, T>;
-                 requires Complex<T>;
-             }
+        requires CoreRankTensor<AType<T, ARank>, 2, T>;
+        requires CoreRankTensor<WType<T, WRank>, 1, T>;
+        requires Complex<T>;
+    }
 void heev(AType<T, ARank> *A, WType<RemoveComplexT<T>, WRank> *W) {
     LabeledSection1(fmt::format("<ComputeEigenvectors={}>", ComputeEigenvectors));
     assert(A->dim(0) == A->dim(1));
@@ -174,11 +177,12 @@ void heev(AType<T, ARank> *A, WType<RemoveComplexT<T>, WRank> *W) {
 }
 
 // This assumes column-major ordering!!
-template <template <typename, size_t> typename AType, size_t ARank, template <typename, size_t> typename BType, size_t BRank, typename T>
+template <template <typename, size_t> typename AType, size_t ARank, template <typename, size_t> typename BType,
+          size_t BRank, typename T>
     requires requires {
-                 requires CoreRankTensor<AType<T, ARank>, 2, T>;
-                 requires CoreRankTensor<BType<T, BRank>, 2, T>;
-             }
+        requires CoreRankTensor<AType<T, ARank>, 2, T>;
+        requires CoreRankTensor<BType<T, BRank>, 2, T>;
+    }
 auto gesv(AType<T, ARank> *A, BType<T, BRank> *B) -> int {
     LabeledSection0();
 
@@ -307,7 +311,8 @@ auto dot(Type<T, Rank> const &A, Type<T, Rank> const &B) -> T {
         dim[0] *= A.dim(i);
     }
 
-    return dot(TensorView<T, 1>(const_cast<Type<T, Rank> &>(A), dim), TensorView<T, 1>(const_cast<Type<T, Rank> &>(B), dim));
+    return dot(TensorView<T, 1>(const_cast<Type<T, Rank> &>(A), dim),
+               TensorView<T, 1>(const_cast<Type<T, Rank> &>(B), dim));
 }
 
 template <template <typename, size_t> typename Type, typename T, size_t Rank>
@@ -334,33 +339,36 @@ auto dot(Type<T, Rank> const &A, Type<T, Rank> const &B, Type<T, Rank> const &C)
     return result;
 }
 
-template <template <typename, size_t> typename XType, template <typename, size_t> typename YType, typename T, size_t Rank>
+template <template <typename, size_t> typename XType, template <typename, size_t> typename YType, typename T,
+          size_t Rank>
     requires requires {
-                 requires CoreRankTensor<XType<T, Rank>, Rank, T>;
-                 requires CoreRankTensor<YType<T, Rank>, Rank, T>;
-             }
+        requires CoreRankTensor<XType<T, Rank>, Rank, T>;
+        requires CoreRankTensor<YType<T, Rank>, Rank, T>;
+    }
 void axpy(T alpha, XType<T, Rank> const &X, YType<T, Rank> *Y) {
     LabeledSection0();
 
     blas::axpy(X.dim(0) * X.stride(0), alpha, X.data(), 1, Y->data(), 1);
 }
 
-template <template <typename, size_t> typename XType, template <typename, size_t> typename YType, typename T, size_t Rank>
+template <template <typename, size_t> typename XType, template <typename, size_t> typename YType, typename T,
+          size_t Rank>
     requires requires {
-                 requires CoreRankTensor<XType<T, Rank>, Rank, T>;
-                 requires CoreRankTensor<YType<T, Rank>, Rank, T>;
-             }
+        requires CoreRankTensor<XType<T, Rank>, Rank, T>;
+        requires CoreRankTensor<YType<T, Rank>, Rank, T>;
+    }
 void axpby(T alpha, XType<T, Rank> const &X, T beta, YType<T, Rank> *Y) {
     LabeledSection0();
 
     blas::axpby(X.dim(0) * X.stride(0), alpha, X.data(), 1, beta, Y->data(), 1);
 }
 
-template <template <typename, size_t> typename XYType, size_t XYRank, template <typename, size_t> typename AType, typename T, size_t ARank>
+template <template <typename, size_t> typename XYType, size_t XYRank, template <typename, size_t> typename AType,
+          typename T, size_t                                  ARank>
     requires requires {
-                 requires CoreRankTensor<XYType<T, XYRank>, 1, T>;
-                 requires CoreRankTensor<AType<T, ARank>, 2, T>;
-             }
+        requires CoreRankTensor<XYType<T, XYRank>, 1, T>;
+        requires CoreRankTensor<AType<T, ARank>, 2, T>;
+    }
 void ger(T alpha, XYType<T, XYRank> const &X, XYType<T, XYRank> const &Y, AType<T, ARank> *A) {
     LabeledSection0();
 
@@ -408,13 +416,17 @@ void invert(TensorType<T, TensorRank> *A) {
     std::vector<eint> pivot(A->dim(0));
     int               result = getrf(A, &pivot);
     if (result > 0) {
-        println("invert: getrf: the ({}, {}) element of the factor U or L is zero, and the inverse could not be computed", result, result);
+        println(
+            "invert: getrf: the ({}, {}) element of the factor U or L is zero, and the inverse could not be computed",
+            result, result);
         std::abort();
     }
 
     result = getri(A, pivot);
     if (result > 0) {
-        println("invert: getri: the ({}, {}) element of the factor U or L i zero, and the inverse could not be computed", result, result);
+        println(
+            "invert: getri: the ({}, {}) element of the factor U or L i zero, and the inverse could not be computed",
+            result, result);
         std::abort();
     }
 }
@@ -470,8 +482,9 @@ auto svd(AType<T, ARank> const &_A) -> std::tuple<Tensor<T, 2>, Tensor<RemoveCom
 
     if (info != 0) {
         if (info < 0) {
-            println_abort("svd: Argument {} has an invalid parameter\n#2 (m) = {}, #3 (n) = {}, #5 (n) = {}, #8 (m) = {}", -info, m, n, n,
-                          m);
+            println_abort(
+                "svd: Argument {} has an invalid parameter\n#2 (m) = {}, #3 (n) = {}, #5 (n) = {}, #8 (m) = {}", -info,
+                m, n, n, m);
         } else {
             println_abort("svd: error value {}", info);
         }
@@ -504,8 +517,9 @@ auto svd_nullspace(AType<T, Rank> const &_A) -> Tensor<T, 2> {
 
     if (info != 0) {
         if (info < 0) {
-            println_abort("svd: Argument {} has an invalid parameter\n#2 (m) = {}, #3 (n) = {}, #5 (n) = {}, #8 (m) = {}", -info, m, n, n,
-                          m);
+            println_abort(
+                "svd: Argument {} has an invalid parameter\n#2 (m) = {}, #3 (n) = {}, #5 (n) = {}, #8 (m) = {}", -info,
+                m, n, n, m);
         } else {
             println_abort("svd: error value {}", info);
         }
@@ -540,7 +554,8 @@ enum class Vectors : char { All = 'A', Some = 'S', Overwrite = 'O', None = 'N' }
 
 template <template <typename, size_t> typename AType, typename T, size_t ARank>
     requires CoreRankTensor<AType<T, ARank>, 2, T>
-auto svd_dd(AType<T, ARank> const &_A, Vectors job = Vectors::All) -> std::tuple<Tensor<T, 2>, Tensor<RemoveComplexT<T>, 1>, Tensor<T, 2>> {
+auto svd_dd(AType<T, ARank> const &_A, Vectors job = Vectors::All)
+    -> std::tuple<Tensor<T, 2>, Tensor<RemoveComplexT<T>, 1>, Tensor<T, 2>> {
     LabeledSection0();
 
     DisableOMPThreads const nothreads;
@@ -559,13 +574,15 @@ auto svd_dd(AType<T, ARank> const &_A, Vectors job = Vectors::All) -> std::tuple
     auto Vt = create_tensor<T>("Vt (stored rowwise)", n, n);
     zero(Vt);
 
-    int info = blas::gesdd(static_cast<char>(job), static_cast<int>(m), static_cast<int>(n), A.data(), static_cast<int>(n), S.data(),
-                           U.data(), static_cast<int>(m), Vt.data(), static_cast<int>(n));
+    int info =
+        blas::gesdd(static_cast<char>(job), static_cast<int>(m), static_cast<int>(n), A.data(), static_cast<int>(n),
+                    S.data(), U.data(), static_cast<int>(m), Vt.data(), static_cast<int>(n));
 
     if (info != 0) {
         if (info < 0) {
-            println_abort("svd_a: Argument {} has an invalid parameter\n#2 (m) = {}, #3 (n) = {}, #5 (n) = {}, #8 (m) = {}", -info, m, n, n,
-                          m);
+            println_abort(
+                "svd_a: Argument {} has an invalid parameter\n#2 (m) = {}, #3 (n) = {}, #5 (n) = {}, #8 (m) = {}",
+                -info, m, n, n, m);
         } else {
             println_abort("svd_a: error value {}", info);
         }
@@ -576,7 +593,8 @@ auto svd_dd(AType<T, ARank> const &_A, Vectors job = Vectors::All) -> std::tuple
 
 template <template <typename, size_t> typename AType, typename T, size_t ARank>
     requires CoreRankTensor<AType<T, ARank>, 2, T>
-auto truncated_svd(AType<T, ARank> const &_A, size_t k) -> std::tuple<Tensor<T, 2>, Tensor<RemoveComplexT<T>, 1>, Tensor<T, 2>> {
+auto truncated_svd(AType<T, ARank> const &_A, size_t k)
+    -> std::tuple<Tensor<T, 2>, Tensor<RemoveComplexT<T>, 1>, Tensor<T, 2>> {
     LabeledSection0();
 
     size_t m = _A.dim(0);
@@ -696,8 +714,8 @@ inline auto solve_continuous_lyapunov(Tensor<T, 2> const &A, Tensor<T, 2> const 
         println_abort("solve_continuous_lyapunov: Dimensions of Q ({} x {}), do not match", Q.dim(0), Q.dim(1));
     }
     if (A.dim(0) != Q.dim(0)) {
-        println_abort("solve_continuous_lyapunov: Dimensions of A ({} x {}) and Q ({} x {}), do not match", A.dim(0), A.dim(1), Q.dim(0),
-                      Q.dim(1));
+        println_abort("solve_continuous_lyapunov: Dimensions of A ({} x {}) and Q ({} x {}), do not match", A.dim(0),
+                      A.dim(1), Q.dim(0), Q.dim(1));
     }
 
     size_t n = A.dim(0);
@@ -717,7 +735,8 @@ inline auto solve_continuous_lyapunov(Tensor<T, 2> const &A, Tensor<T, 2> const 
 
     // Call the Sylvester Solve
     std::vector<T> scale(1);
-    blas::trsyl('N', 'N', 1, n, n, const_cast<T const *>(R.data()), n, const_cast<T const *>(R.data()), n, F.data(), n, scale.data());
+    blas::trsyl('N', 'N', 1, n, n, const_cast<T const *>(R.data()), n, const_cast<T const *>(R.data()), n, F.data(), n,
+                scale.data());
 
     Tensor<T, 2> Xbuff = gemm<false, false>(scale[0], U, F);
     Tensor<T, 2> X     = gemm<false, true>(1.0, Xbuff, U);
@@ -734,8 +753,8 @@ auto qr(AType<T, ARank> const &_A) -> std::tuple<Tensor<T, 2>, Tensor<T, 1>> {
 
     // Copy A because it will be overwritten by the QR call.
     Tensor<T, 2> A = _A;
-    const eint   m = A.dim(0);
-    const eint   n = A.dim(1);
+    eint const   m = A.dim(0);
+    eint const   n = A.dim(1);
 
     Tensor<double, 1> tau("tau", std::min(m, n));
     // Compute QR factorization of Y
@@ -752,8 +771,8 @@ auto qr(AType<T, ARank> const &_A) -> std::tuple<Tensor<T, 2>, Tensor<T, 1>> {
 
 template <typename T>
 auto q(Tensor<T, 2> const &qr, Tensor<T, 1> const &tau) -> Tensor<T, 2> {
-    const eint m = qr.dim(1);
-    const eint p = qr.dim(0);
+    eint const m = qr.dim(1);
+    eint const p = qr.dim(0);
 
     Tensor<T, 2> Q = qr;
 

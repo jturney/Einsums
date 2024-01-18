@@ -5,7 +5,8 @@
 
 #pragma once
 
-#include "einsums/config/ExportDefinitions.hpp"
+#include <einsums/config/export_definitions.hpp>
+#include <einsums/preprocessor/namespace.hpp>
 
 #include "einsums/LinearAlgebra.hpp"
 #include "einsums/OpenMP.hpp"
@@ -21,13 +22,15 @@ BEGIN_EINSUMS_NAMESPACE_HPP(einsums::tensor_algebra)
 
 namespace detail {
 
-void EINSUMS_EXPORT sort(int const *perm, int const dim, float const alpha, float const *A, int const *sizeA, float const beta, float *B);
-void EINSUMS_EXPORT sort(int const *perm, int const dim, double const alpha, double const *A, int const *sizeA, double const beta,
-                         double *B);
-void EINSUMS_EXPORT sort(int const *perm, int const dim, std::complex<float> const alpha, std::complex<float> const *A, int const *sizeA,
-                         std::complex<float> const beta, std::complex<float> *B);
-void EINSUMS_EXPORT sort(int const *perm, int const dim, std::complex<double> const alpha, std::complex<double> const *A, int const *sizeA,
-                         std::complex<double> const beta, std::complex<double> *B);
+void EINSUMS_EXPORT sort(int const *perm, int const dim, float const alpha, float const *A, int const *sizeA,
+                         float const beta, float *B);
+void EINSUMS_EXPORT sort(int const *perm, int const dim, double const alpha, double const *A, int const *sizeA,
+                         double const beta, double *B);
+void EINSUMS_EXPORT sort(int const *perm, int const dim, std::complex<float> const alpha, std::complex<float> const *A,
+                         int const *sizeA, std::complex<float> const beta, std::complex<float> *B);
+void EINSUMS_EXPORT sort(int const *perm, int const dim, std::complex<double> const alpha,
+                         std::complex<double> const *A, int const *sizeA, std::complex<double> const beta,
+                         std::complex<double> *B);
 
 } // namespace detail
 
@@ -36,20 +39,22 @@ void EINSUMS_EXPORT sort(int const *perm, int const dim, std::complex<double> co
 //
 // sort algorithm
 //
-template <template <typename, size_t> typename AType, size_t ARank, template <typename, size_t> typename CType, size_t CRank,
-          typename... CIndices, typename... AIndices, typename U, typename T = double>
+template <template <typename, size_t> typename AType, size_t ARank, template <typename, size_t> typename CType,
+          size_t CRank, typename... CIndices, typename... AIndices, typename U, typename T = double>
 auto sort(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CType<T, CRank> *C, U const UA_prefactor,
           std::tuple<AIndices...> const &A_indices, AType<T, ARank> const &A)
     -> std::enable_if_t<std::is_base_of_v<::einsums::detail::TensorBase<T, CRank>, CType<T, CRank>> &&
                         std::is_base_of_v<::einsums::detail::TensorBase<T, ARank>, AType<T, ARank>> &&
-                        sizeof...(CIndices) == sizeof...(AIndices) && sizeof...(CIndices) == CRank && sizeof...(AIndices) == ARank &&
-                        std::is_arithmetic_v<U>> {
+                        sizeof...(CIndices) == sizeof...(AIndices) && sizeof...(CIndices) == CRank &&
+                        sizeof...(AIndices) == ARank && std::is_arithmetic_v<U>> {
 
     LabeledSection1(FP_ZERO != std::fpclassify(UC_prefactor)
-                        ? fmt::format(R"(sort: "{}"{} = {} "{}"{} + {} "{}"{})", C->name(), print_tuple_no_type(C_indices), UA_prefactor,
-                                      A.name(), print_tuple_no_type(A_indices), UC_prefactor, C->name(), print_tuple_no_type(C_indices))
-                        : fmt::format(R"(sort: "{}"{} = {} "{}"{})", C->name(), print_tuple_no_type(C_indices), UA_prefactor, A.name(),
-                                      print_tuple_no_type(A_indices)));
+                        ? fmt::format(R"(sort: "{}"{} = {} "{}"{} + {} "{}"{})", C->name(),
+                                      print_tuple_no_type(C_indices), UA_prefactor, A.name(),
+                                      print_tuple_no_type(A_indices), UC_prefactor, C->name(),
+                                      print_tuple_no_type(C_indices))
+                        : fmt::format(R"(sort: "{}"{} = {} "{}"{})", C->name(), print_tuple_no_type(C_indices),
+                                      UA_prefactor, A.name(), print_tuple_no_type(A_indices)));
 
     T const C_prefactor = UC_prefactor;
     T const A_prefactor = UA_prefactor;
@@ -65,7 +70,8 @@ auto sort(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CType<
 
     // HPTT interface currently only works for full Tensors and not TensorViews
 #if defined(EINSUMS_USE_HPTT)
-    if constexpr (std::is_same_v<CType<T, CRank>, Tensor<T, CRank>> && std::is_same_v<AType<T, ARank>, Tensor<T, ARank>>) {
+    if constexpr (std::is_same_v<CType<T, CRank>, Tensor<T, CRank>> &&
+                  std::is_same_v<AType<T, ARank>, Tensor<T, ARank>>) {
         std::array<int, ARank> perms{};
         std::array<int, ARank> size{};
 
@@ -96,25 +102,29 @@ auto sort(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CType<
 
 // Sort with default values, no smart pointers
 template <NotASmartPointer ObjectA, NotASmartPointer ObjectC, typename... CIndices, typename... AIndices>
-void sort(std::tuple<CIndices...> const &C_indices, ObjectC *C, std::tuple<AIndices...> const &A_indices, ObjectA const &A) {
+void sort(std::tuple<CIndices...> const &C_indices, ObjectC *C, std::tuple<AIndices...> const &A_indices,
+          ObjectA const &A) {
     sort(0, C_indices, C, 1, A_indices, A);
 }
 
 // Sort with default values, two smart pointers
 template <SmartPointer SmartPointerA, SmartPointer SmartPointerC, typename... CIndices, typename... AIndices>
-void sort(std::tuple<CIndices...> const &C_indices, SmartPointerC *C, std::tuple<AIndices...> const &A_indices, SmartPointerA const &A) {
+void sort(std::tuple<CIndices...> const &C_indices, SmartPointerC *C, std::tuple<AIndices...> const &A_indices,
+          SmartPointerA const &A) {
     sort(0, C_indices, C->get(), 1, A_indices, *A);
 }
 
 // Sort with default values, one smart pointer (A)
 template <SmartPointer SmartPointerA, NotASmartPointer PointerC, typename... CIndices, typename... AIndices>
-void sort(std::tuple<CIndices...> const &C_indices, PointerC *C, std::tuple<AIndices...> const &A_indices, SmartPointerA const &A) {
+void sort(std::tuple<CIndices...> const &C_indices, PointerC *C, std::tuple<AIndices...> const &A_indices,
+          SmartPointerA const &A) {
     sort(0, C_indices, C, 1, A_indices, *A);
 }
 
 // Sort with default values, one smart pointer (C)
 template <NotASmartPointer ObjectA, SmartPointer SmartPointerC, typename... CIndices, typename... AIndices>
-void sort(std::tuple<CIndices...> const &C_indices, SmartPointerC *C, std::tuple<AIndices...> const &A_indices, ObjectA const &A) {
+void sort(std::tuple<CIndices...> const &C_indices, SmartPointerC *C, std::tuple<AIndices...> const &A_indices,
+          ObjectA const &A) {
     sort(0, C_indices, C->get(), 1, A_indices, A);
 }
 

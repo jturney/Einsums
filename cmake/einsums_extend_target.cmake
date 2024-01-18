@@ -4,10 +4,6 @@
 #----------------------------------------------------------------------------------------------
 
 function(einsums_extend_target libname modulename)
-    cmake_parse_arguments(
-        ${modulename} "" "SOURCES_PREFIX;SOURCES_PREFIX_FROM_TARGET;FEATURE_INFO"
-        "CONDITION;DEPENDENCIES;MODULE_DEPENDENCIES"
-    )
     set(options CONFIG_FILES)
     set(one_value_args SOURCES_PREFIX SOURCES_PREFIX_FROM_TARGET FEATURE_INFO)
     set(multi_value_args

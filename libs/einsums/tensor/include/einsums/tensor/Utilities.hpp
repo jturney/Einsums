@@ -34,7 +34,7 @@ auto create_incremented_tensor(std::string const &name, MultiIndex... index) -> 
 
 template <typename T = double, bool Normalize = false, typename... MultiIndex>
 auto create_random_tensor(std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
-    Section const section{fmt::format("create_random_tensor {}", name)};
+    section const section{fmt::format("create_random_tensor {}", name)};
 
     Tensor<T, sizeof...(MultiIndex)> A(name, std::forward<MultiIndex>(index)...);
 
@@ -45,7 +45,8 @@ auto create_random_tensor(std::string const &name, MultiIndex... index) -> Tenso
     std::default_random_engine             re;
 
     {
-        static std::chrono::high_resolution_clock::time_point const beginning = std::chrono::high_resolution_clock::now();
+        static std::chrono::high_resolution_clock::time_point const beginning =
+            std::chrono::high_resolution_clock::now();
 
         // std::chrono::high_resolution_clock::duration d = std::chrono::high_resolution_clock::now() - beginning;
 
@@ -103,7 +104,8 @@ auto create_random_tensor(std::string const &name, MultiIndex... index) -> Tenso
 
 namespace detail {
 
-template <template <typename, size_t> typename TensorType, typename DataType, size_t Rank, typename Tuple, std::size_t... I>
+template <template <typename, size_t> typename TensorType, typename DataType, size_t Rank, typename Tuple,
+          std::size_t... I>
 void set_to(TensorType<DataType, Rank> &tensor, DataType value, Tuple const &tuple, std::index_sequence<I...>) {
     tensor(std::get<I>(tuple)...) = value;
 }
@@ -138,7 +140,8 @@ auto create_identity_tensor(std::string const &name, MultiIndex... index) -> Ten
     A.zero();
 
     for (size_t dim = 0; dim < std::get<0>(std::forward_as_tuple(index...)); dim++) {
-        detail::set_to(A, T{1.0}, create_tuple<sizeof...(MultiIndex)>(dim), std::make_index_sequence<sizeof...(MultiIndex)>());
+        detail::set_to(A, T{1.0}, create_tuple<sizeof...(MultiIndex)>(dim),
+                       std::make_index_sequence<sizeof...(MultiIndex)>());
     }
 
     return A;
@@ -160,7 +163,7 @@ auto create_tensor_like(TensorType<DataType, Rank> const &tensor) -> Tensor<Data
 }
 
 template <template <typename, size_t> typename TensorType, typename DataType, size_t Rank>
-auto create_tensor_like(const std::string name, TensorType<DataType, Rank> const &tensor) -> Tensor<DataType, Rank> {
+auto create_tensor_like(std::string const name, TensorType<DataType, Rank> const &tensor) -> Tensor<DataType, Rank> {
     auto result = Tensor<DataType, Rank>{tensor.dims()};
     result.set_name(name);
     return result;

@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <einsums/config/Defines.hpp>
+#include <einsums/config/defines.hpp>
 
 #if defined(DOXYGEN)
 /// Returns the GCC version einsums is compiled with. Only set if compiled with GCC.
@@ -89,7 +89,8 @@
 // The CUDA version will also be defined so we end this block with with #endif,
 // not #elif
 #    if defined(__NVCOMPILER)
-#        define EINSUMS_NVHPC_VERSION (__NVCOMPILER_MAJOR__ * 10000 + __NVCOMPILER_MINOR__ * 100 + __NVCOMPILER_PATCHLEVEL__)
+#        define EINSUMS_NVHPC_VERSION                                                                                  \
+            (__NVCOMPILER_MAJOR__ * 10000 + __NVCOMPILER_MINOR__ * 100 + __NVCOMPILER_PATCHLEVEL__)
 #    endif
 
 // Detecting NVCC/CUDA

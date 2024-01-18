@@ -4,7 +4,7 @@ BasedOnStyle: LLVM
 IndentWidth: 4
 ---
 Language: Cpp
-ColumnLimit: 140
+ColumnLimit: 120
 IncludeBlocks: Regroup
 AlwaysBreakTemplateDeclarations: Yes
 AllowShortFunctionsOnASingleLine: InlineOnly
@@ -14,17 +14,21 @@ AlignConsecutiveAssignments: true
 AlignConsecutiveDeclarations: true
 QualifierAlignment: Right
 IncludeCategories:
+  - Regex: '^("|<)einsums/Config.hpp("|>)'
+    Priority: 1
   - Regex: '^("|<)einsums/(config|preprocessor)/.*("|>)'
-    Priority: 1
+    Priority: 2
   - Regex: '^("|<)einsums/_.*\.hpp("|>)'
-    Priority: 1
+    Priority: 2
   - Regex: '^("|<)einsums/.*\.h.*("|>)'
-    Priority: 2
+    Priority: 3
   - Regex: '^"range/.*"'
-    Priority: 2
+    Priority: 3
   - Regex: '^<fmt/.*>'
     Priority: 4
   - Regex: '^<.*'
     Priority: 5
   - Regex: '.*'
     Priority: 6
+IfMacros: ['SECTION', 'SNITCH_SECTION']
+SpaceBeforeParens: ControlStatementsExceptControlMacros

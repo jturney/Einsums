@@ -8,6 +8,7 @@ function(einsums_add_config_define definition)
     # if(ARGN) ignores an argument "0"
     set(Args ${ARGN})
     list(LENGTH Args ArgsLen)
+
     if(ArgsLen GREATER 0)
         set_property(GLOBAL APPEND PROPERTY EINSUMS_CONFIG_DEFINITIONS "${definition} ${ARGN}")
     else()

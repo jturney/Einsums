@@ -94,6 +94,7 @@ function(einsums_add_test category name)
 
     # Only real tests, i.e. executables ending in _test, link to einsums_testing
     if(TARGET ${${name}_EXECUTABLE}_test AND ${name}_TESTING)
+        einsums_info("einsums_testing target_link_libraries was triggered")
         target_link_libraries(${${name}_EXECUTABLE}_test PRIVATE einsums_testing)
     endif()
 

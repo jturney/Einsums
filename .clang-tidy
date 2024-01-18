@@ -3,16 +3,18 @@ CheckOptions:
   - key: readability-identifier-naming.NamespaceCase
     value: lower_case
   - key: readability-identifier-naming.ClassCase
-    value: CamelCase
+    value: lower_case
   - key: readability-identifier-naming.PrivateMemberPrefix
     value: _
   - key: readability-identifier-naming.StructCase
-    value: CamelCase
+    value: lower_case
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
   - key: readability-identifier-naming.VariableCase
     value: lower_case
   - key: readability-identifier-naming.GlobalConstantCase
-    value: CamelCase
+    value: lower_case
   - key: readability-identifier-naming.TypeAliasCase
-    value: CamelCase 
+    value: lower_case 
+  - key: readability-identifier-naming.EnumConstantCase
+    value: lower_case

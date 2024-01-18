@@ -15,11 +15,19 @@ set(_einsums_einsums_modules
     concepts
     config
     core
+    errors
+    functional
     hptt
+    init_runtime
+    itt
     linear_algebra
     preprocessor
+    runtime
     tensor
     tensor_algebra
+    thread_support
+    threading_base
+    type_support
     version
 )
 # cmake-format: on

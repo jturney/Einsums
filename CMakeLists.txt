@@ -136,7 +136,7 @@ if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
     endif()
 endif()
 
-set(DEFAULT_MALLOC "mimalloc")
+set(DEFAULT_MALLOC "system")
 einsums_option(
     EINSUMS_WITH_MALLOC
     STRING
@@ -234,9 +234,6 @@ einsums_option(
     EINSUMS_WITH_TESTS_UNIT BOOL "Build unit tests (default: ON)." ON DEPENDS "EINSUMS_WITH_TESTS"
     CATEGORY "Build Targets"
 )
-if(EINSUMS_WITH_TESTS_UNIT)
-    find_package(Catch2 REQUIRED)
-endif()
 
 einsums_option(
     EINSUMS_WITH_TESTS_HEADERS
@@ -337,14 +334,6 @@ if(EINSUMS_WITH_NICE_THREADLEVEL)
     einsums_add_config_define(EINSUMS_HAVE_NICE_THREADLEVEL)
 else()
     einsums_info("Nice threadlevel is disabled.")
-endif()
-
-# ######################################################################################################################
-# Intel VTune interface
-# ######################################################################################################################
-include(cmake/FindITTNOTIFY.cmake)
-if(TARGET ittnotify)
-    target_link_libraries(einsums_base_libraries INTERFACE ittnotify)
 endif()
 
 # ######################################################################################################################
@@ -600,7 +589,7 @@ if(EINSUMS_WITH_SPINLOCK_DEADLOCK_DETECTION)
 endif()
 
 einsums_option(
-    EINSUMS_WITH_ITTNOTIFY BOOL "Enable Amplifier (ITT) instrumentation support." OFF
+    EINSUMS_WITH_ITTNOTIFY BOOL "Enable Amplifier (ITT) instrumentation support." ON
     CATEGORY "Profiling"
     ADVANCED
 )
@@ -837,6 +826,9 @@ einsums_option(
 # ######################################################################################################################
 # C++ feature tests
 # ######################################################################################################################
+
+# Disable fast math
+einsums_add_compile_flag_if_available(-fno-fast-math)
 
 # ######################################################################################################################
 # Check for misc system headers
@@ -1197,7 +1189,9 @@ set(EINSUMS_WITH_TARGET_ARCHITECTURE
 # TODO: Those that can be downloaded by cmake automatically should be handled in external
 include(einsums_setup_threads)
 include(einsums_setup_fmt)
+include(einsums_setup_allocator)
 include(einsums_setup_rangev3)
+include(einsums_setup_snitch)
 # include(einsums_setup_hptt) include(einsums_setup_h5cpp)
 
 # Other dependencies:
@@ -1364,8 +1358,8 @@ include(einsums_forward_cache_variables)
 include(einsums_generate_package)
 
 # ######################################################################################################################
-# Report feature summary
-feature_summary(INCLUDE_QUIET_PACKAGES WHAT PACKAGES_FOUND PACKAGES_NOT_FOUND ENABLED_FEATURES DISABLED_FEATURES)
+# Report feature summary feature_summary(INCLUDE_QUIET_PACKAGES WHAT PACKAGES_FOUND PACKAGES_NOT_FOUND ENABLED_FEATURES
+# DISABLED_FEATURES)
 
 message("")
 message("einsums will be installed to ${CMAKE_INSTALL_PREFIX}")

@@ -5,13 +5,13 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(version_headers einsums/Version.hpp)
+set(version_headers einsums/version.hpp)
 
 # cmake-format: off
 set(version_compat_headers)
 # cmake-format: on
 
-set(version_sources Version.cpp)
+set(version_sources version.cpp)
 
 include(einsums_add_module)
 einsums_add_module(

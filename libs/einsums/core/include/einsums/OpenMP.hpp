@@ -20,7 +20,7 @@
 
 #else
 
-#    include "einsums/config/ExportDefinitions.hpp"
+#    include <einsums/config/export_definitions.hpp>
 
 #    if defined(__cplusplus)
 extern "C" {

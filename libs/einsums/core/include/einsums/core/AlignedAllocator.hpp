@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include "einsums/config/ExportDefinitions.hpp"
+#include <einsums/config/export_definitions.hpp>
 
 #include <cstddef>
 #include <memory>
@@ -86,7 +86,7 @@ class AlignedAllocator {
 };
 
 template <typename T, size_t Align>
-class AlignedAllocator<const T, Align> {
+class AlignedAllocator<T const, Align> {
   public:
     using value_type      = T;
     using pointer         = T const *;

@@ -3,9 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <einsums/config/ExportDefinitions.hpp>
-#include <einsums/config/Version.hpp>
-#include <einsums/preprocessor/Stringize.hpp>
+#include <einsums/config/export_definitions.hpp>
+#include <einsums/config/version.hpp>
+#include <einsums/preprocessor/stringize.hpp>
 
 ///////////////////////////////////////////////////////////////////////////////
 namespace einsums {

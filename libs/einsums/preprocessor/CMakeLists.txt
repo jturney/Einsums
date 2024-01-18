@@ -5,7 +5,16 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(preprocessor_headers einsums/preprocess/Cat.hpp einsums/preprocessor/Config.hpp einsums/preprocessor/Expand.hpp)
+set(preprocessor_headers
+    einsums/preprocess/cat.hpp
+    einsums/preprocessor/config.hpp
+    einsums/preprocessor/expand.hpp
+    einsums/preprocessor/identity.hpp
+    einsums/preprocessor/namespace.hpp
+    einsums/preprocessor/nargs.hpp
+    einsums/preprocessor/stringize.hpp
+    einsums/preprocessor/strip_parens.hpp
+)
 
 # cmake-format: off
 set(preprocessor_compat_headers)

@@ -116,13 +116,15 @@ function(einsums_add_module libname modulename)
 
     if(${modulename}_CONFIG_FILES)
         # Version file
-        set(global_config_file ${CMAKE_CURRENT_BINARY_DIR}/include/einsums/config/Version.hpp)
-        configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/templates/ConfigVersion.hpp.in" "${global_config_file}" @ONLY)
+        set(global_config_file ${CMAKE_CURRENT_BINARY_DIR}/include/einsums/config/version.hpp)
+        configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/templates/config_version.hpp.in" "${global_config_file}" @ONLY
+        )
         set(generated_headers ${generated_headers} ${global_config_file})
         # Global config defines file (different from the one for each module)
-        set(global_config_file ${CMAKE_CURRENT_BINARY_DIR}/include/einsums/config/Defines.hpp)
+        set(global_config_file ${CMAKE_CURRENT_BINARY_DIR}/include/einsums/config/defines.hpp)
         einsums_write_config_defines_file(
-            TEMPLATE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/templates/ConfigDefines.hpp.in"
+            TEMPLATE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/templates/config_defines.hpp.in"
             NAMESPACE default
             FILENAME "${global_config_file}"
         )

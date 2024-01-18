@@ -9,7 +9,7 @@ set(core_headers einsums/core/Alias.hpp einsums/core/AlignedAllocator.hpp einsum
                  einsums/Section.hpp einsums/Timer.hpp
 )
 
-set(core_sources Print.cpp Section.cpp Timer.cpp)
+set(core_sources InitializeFinalize.cpp Print.cpp Section.cpp Timer.cpp)
 
 include(einsums_add_module)
 einsums_add_module(

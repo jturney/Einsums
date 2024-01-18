@@ -15,7 +15,7 @@ set(config_headers
     einsums/config/Constexpr.hpp
     einsums/config/Debug.hpp
     einsums/config/EmulateDeleted.hpp
-    einsums/config/ExportDefinitions.hpp
+    einsums/config/export_definitions.hpp
     einsums/config/ForceInline.hpp
     einsums/config/Forward.hpp
     einsums/config/ManualProfiling.hpp
