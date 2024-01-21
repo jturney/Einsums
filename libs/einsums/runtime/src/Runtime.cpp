@@ -6,6 +6,7 @@
 #include <einsums/config.hpp>
 
 #include <einsums/assert.hpp>
+#include <einsums/debugging/attach_debugger.hpp>
 #include <einsums/runtime/Runtime.hpp>
 #include <einsums/runtime/StartupFunction.hpp>
 #include <einsums/runtime/State.hpp>

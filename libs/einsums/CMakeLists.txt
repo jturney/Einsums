@@ -15,12 +15,14 @@ set(_einsums_einsums_modules
     concepts
     config
     core
+    debugging
     errors
     functional
     hptt
     init_runtime
     itt
     linear_algebra
+    pfr
     preprocessor
     runtime
     tensor
