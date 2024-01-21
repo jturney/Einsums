@@ -14,20 +14,20 @@
 #    include <winsock2.h>
 #endif
 
-#include <einsums/config/Attributes.hpp>
-#include <einsums/config/BranchHints.hpp>
-#include <einsums/config/CompilerSpecific.hpp>
-#include <einsums/config/Constexpr.hpp>
-#include <einsums/config/Debug.hpp>
-#include <einsums/config/EmulateDeleted.hpp>
-#include <einsums/config/ForceInline.hpp>
-#include <einsums/config/Forward.hpp>
-#include <einsums/config/ManualProfiling.hpp>
-#include <einsums/config/ModulesEnabled.hpp>
-#include <einsums/config/Move.hpp>
-#include <einsums/config/ThreadsStack.hpp>
+#include <einsums/config/attributes.hpp>
+#include <einsums/config/branch_hints.hpp>
 #include <einsums/config/compiler_fence.hpp>
+#include <einsums/config/compiler_specific.hpp>
+#include <einsums/config/constexpr.hpp>
+#include <einsums/config/debug.hpp>
+#include <einsums/config/emulate_deleted.hpp>
 #include <einsums/config/export_definitions.hpp>
+#include <einsums/config/force_inline.hpp>
+#include <einsums/config/forward.hpp>
+#include <einsums/config/manual_profiling.hpp>
+#include <einsums/config/modules_enabled.hpp>
+#include <einsums/config/move.hpp>
+#include <einsums/config/threads_stack.hpp>
 #include <einsums/config/version.hpp>
 #include <einsums/preprocessor/cat.hpp>
 #include <einsums/preprocessor/stringize.hpp>

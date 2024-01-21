@@ -89,8 +89,8 @@ foreach(module ${EINSUMS_ENABLED_MODULES})
 endforeach()
 
 configure_file(
-    "${PROJECT_SOURCE_DIR}/cmake/templates/ModulesEnabled.hpp.in"
-    "${PROJECT_BINARY_DIR}/libs/einsums/config/include/einsums/config/ModulesEnabled.hpp" @ONLY
+    "${PROJECT_SOURCE_DIR}/cmake/templates/modules_enabled.hpp.in"
+    "${PROJECT_BINARY_DIR}/libs/einsums/config/include/einsums/config/modules_enabled.hpp" @ONLY
 )
 
 if(MSVC AND EINSUMS_WITH_SWAP_CONTEXT_EMULATION)

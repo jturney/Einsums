@@ -5,9 +5,9 @@
 
 #include "Vendor.hpp"
 
-#include "einsums/preprocessor/Namespace.hpp"
+#include <einsums/preprocessor/namespace.hpp>
 
-#include "einsums/Section.hpp"
+#include <einsums/Section.hpp>
 
 #include <fmt/format.h>
 
@@ -33,35 +33,42 @@
 
 extern "C" {
 
-extern void FC_GLOBAL(sgemm, SGEMM)(char *, char *, int *, int *, int *, float *, float const *, int *, float const *, int *, float *,
+extern void FC_GLOBAL(sgemm, SGEMM)(char *, char *, int *, int *, int *, float *, float const *, int *, float const *,
+                                    int *, float *, float *, int *);
+extern void FC_GLOBAL(dgemm, DGEMM)(char *, char *, int *, int *, int *, double *, double const *, int *,
+                                    double const *, int *, double *, double *, int *);
+extern void FC_GLOBAL(cgemm, CGEMM)(char *, char *, int *, int *, int *, std::complex<float> *,
+                                    std::complex<float> const *, int *, std::complex<float> const *, int *,
+                                    std::complex<float> *, std::complex<float> *, int *);
+extern void FC_GLOBAL(zgemm, ZGEMM)(char *, char *, int *, int *, int *, std::complex<double> *,
+                                    std::complex<double> const *, int *, std::complex<double> const *, int *,
+                                    std::complex<double> *, std::complex<double> *, int *);
+
+extern void FC_GLOBAL(sgemv, SGEMV)(char *, int *, int *, float *, float const *, int *, float const *, int *, float *,
                                     float *, int *);
-extern void FC_GLOBAL(dgemm, DGEMM)(char *, char *, int *, int *, int *, double *, double const *, int *, double const *, int *, double *,
-                                    double *, int *);
-extern void FC_GLOBAL(cgemm, CGEMM)(char *, char *, int *, int *, int *, std::complex<float> *, std::complex<float> const *, int *,
-                                    std::complex<float> const *, int *, std::complex<float> *, std::complex<float> *, int *);
-extern void FC_GLOBAL(zgemm, ZGEMM)(char *, char *, int *, int *, int *, std::complex<double> *, std::complex<double> const *, int *,
-                                    std::complex<double> const *, int *, std::complex<double> *, std::complex<double> *, int *);
-
-extern void FC_GLOBAL(sgemv, SGEMV)(char *, int *, int *, float *, float const *, int *, float const *, int *, float *, float *, int *);
-extern void FC_GLOBAL(dgemv, DGEMV)(char *, int *, int *, double *, double const *, int *, double const *, int *, double *, double *,
-                                    int *);
+extern void FC_GLOBAL(dgemv, DGEMV)(char *, int *, int *, double *, double const *, int *, double const *, int *,
+                                    double *, double *, int *);
 extern void FC_GLOBAL(cgemv, CGEMV)(char *, int *, int *, std::complex<float> *, std::complex<float> const *, int *,
-                                    std::complex<float> const *, int *, std::complex<float> *, std::complex<float> *, int *);
+                                    std::complex<float> const *, int *, std::complex<float> *, std::complex<float> *,
+                                    int *);
 extern void FC_GLOBAL(zgemv, ZGEMV)(char *, int *, int *, std::complex<double> *, std::complex<double> const *, int *,
-                                    std::complex<double> const *, int *, std::complex<double> *, std::complex<double> *, int *);
+                                    std::complex<double> const *, int *, std::complex<double> *, std::complex<double> *,
+                                    int *);
 
-extern void FC_GLOBAL(cheev, CHEEV)(char *job, char *uplo, int *n, std::complex<float> *a, int *lda, float *w, std::complex<float> *work,
-                                    int *lwork, float *rwork, int *info);
-extern void FC_GLOBAL(zheev, ZHEEV)(char *job, char *uplo, int *n, std::complex<double> *a, int *lda, double *w, std::complex<double> *work,
-                                    int *lwork, double *rwork, int *info);
+extern void FC_GLOBAL(cheev, CHEEV)(char *job, char *uplo, int *n, std::complex<float> *a, int *lda, float *w,
+                                    std::complex<float> *work, int *lwork, float *rwork, int *info);
+extern void FC_GLOBAL(zheev, ZHEEV)(char *job, char *uplo, int *n, std::complex<double> *a, int *lda, double *w,
+                                    std::complex<double> *work, int *lwork, double *rwork, int *info);
 
 extern void FC_GLOBAL(ssyev, SSYEV)(char *, char *, int *, float *, int *, float *, float *, int *, int *);
 extern void FC_GLOBAL(dsyev, DSYEV)(char *, char *, int *, double *, int *, double *, double *, int *, int *);
 
 extern void FC_GLOBAL(sgesv, SGESV)(int *, int *, float *, int *, int *, float *, int *, int *);
 extern void FC_GLOBAL(dgesv, DGESV)(int *, int *, double *, int *, int *, double *, int *, int *);
-extern void FC_GLOBAL(cgesv, CGESV)(int *, int *, std::complex<float> *, int *, int *, std::complex<float> *, int *, int *);
-extern void FC_GLOBAL(zgesv, ZGESV)(int *, int *, std::complex<double> *, int *, int *, std::complex<double> *, int *, int *);
+extern void FC_GLOBAL(cgesv, CGESV)(int *, int *, std::complex<float> *, int *, int *, std::complex<float> *, int *,
+                                    int *);
+extern void FC_GLOBAL(zgesv, ZGESV)(int *, int *, std::complex<double> *, int *, int *, std::complex<double> *, int *,
+                                    int *);
 
 extern void FC_GLOBAL(sscal, SSCAL)(int *, float *, float *, int *);
 extern void FC_GLOBAL(dscal, DSCAL)(int *, double *, double *, int *);
@@ -72,20 +79,25 @@ extern void FC_GLOBAL(zdscal, ZDSCAL)(int *, double *, std::complex<double> *, i
 
 extern float                FC_GLOBAL(sdot, SDOT)(int *, float const *, int *, float const *, int *);
 extern double               FC_GLOBAL(ddot, DDOT)(int *, double const *, int *, double const *, int *);
-extern std::complex<float>  FC_GLOBAL(cdotu, CDOTU)(int *, std::complex<float> const *, int *, std::complex<float> const *, int *);
-extern std::complex<double> FC_GLOBAL(zdotu, ZDOTU)(int *, std::complex<double> const *, int *, std::complex<double> const *, int *);
+extern std::complex<float>  FC_GLOBAL(cdotu, CDOTU)(int *, std::complex<float> const *, int *,
+                                                   std::complex<float> const *, int *);
+extern std::complex<double> FC_GLOBAL(zdotu, ZDOTU)(int *, std::complex<double> const *, int *,
+                                                    std::complex<double> const *, int *);
 
 extern void FC_GLOBAL(saxpy, SAXPY)(int *, float *, float const *, int *, float *, int *);
 extern void FC_GLOBAL(daxpy, DAXPY)(int *, double *, double const *, int *, double *, int *);
-extern void FC_GLOBAL(caxpy, CAXPY)(int *, std::complex<float> *, std::complex<float> const *, int *, std::complex<float> *, int *);
-extern void FC_GLOBAL(zaxpy, ZAXPY)(int *, std::complex<double> *, std::complex<double> const *, int *, std::complex<double> *, int *);
+extern void FC_GLOBAL(caxpy, CAXPY)(int *, std::complex<float> *, std::complex<float> const *, int *,
+                                    std::complex<float> *, int *);
+extern void FC_GLOBAL(zaxpy, ZAXPY)(int *, std::complex<double> *, std::complex<double> const *, int *,
+                                    std::complex<double> *, int *);
 
 extern void FC_GLOBAL(sger, DGER)(int *, int *, float *, float const *, int *, float const *, int *, float *, int *);
-extern void FC_GLOBAL(dger, DGER)(int *, int *, double *, double const *, int *, double const *, int *, double *, int *);
-extern void FC_GLOBAL(cgeru, CGERU)(int *, int *, std::complex<float> *, std::complex<float> const *, int *, std::complex<float> const *,
-                                    int *, std::complex<float> *, int *);
-extern void FC_GLOBAL(zgeru, ZGERU)(int *, int *, std::complex<double> *, std::complex<double> const *, int *, std::complex<double> const *,
-                                    int *, std::complex<double> *, int *);
+extern void FC_GLOBAL(dger, DGER)(int *, int *, double *, double const *, int *, double const *, int *, double *,
+                                  int *);
+extern void FC_GLOBAL(cgeru, CGERU)(int *, int *, std::complex<float> *, std::complex<float> const *, int *,
+                                    std::complex<float> const *, int *, std::complex<float> *, int *);
+extern void FC_GLOBAL(zgeru, ZGERU)(int *, int *, std::complex<double> *, std::complex<double> const *, int *,
+                                    std::complex<double> const *, int *, std::complex<double> *, int *);
 
 extern void FC_GLOBAL(sgetrf, SGETRF)(int *, int *, float *, int *, int *, int *);
 extern void FC_GLOBAL(dgetrf, DGETRF)(int *, int *, double *, int *, int *, int *);
@@ -95,7 +107,8 @@ extern void FC_GLOBAL(zgetrf, ZGETRF)(int *, int *, std::complex<double> *, int 
 extern void FC_GLOBAL(sgetri, SGETRI)(int *, float *, int *, int *, float *, int *, int *);
 extern void FC_GLOBAL(dgetri, DGETRI)(int *, double *, int *, int *, double *, int *, int *);
 extern void FC_GLOBAL(cgetri, CGETRI)(int *, std::complex<float> *, int *, int *, std::complex<float> *, int *, int *);
-extern void FC_GLOBAL(zgetri, ZGETRI)(int *, std::complex<double> *, int *, int *, std::complex<double> *, int *, int *);
+extern void FC_GLOBAL(zgetri, ZGETRI)(int *, std::complex<double> *, int *, int *, std::complex<double> *, int *,
+                                      int *);
 
 extern float  FC_GLOBAL(slange, SLANGE)(char, int, int, float const *, int, float *);                 // NOLINT
 extern double FC_GLOBAL(dlange, DLANGE)(char, int, int, double const *, int, double *);               // NOLINT
@@ -107,8 +120,8 @@ extern void FC_GLOBAL(dlassq, DLASSQ)(int *n, double const *x, int *incx, double
 extern void FC_GLOBAL(classq, CLASSQ)(int *n, std::complex<float> const *x, int *incx, float *scale, float *sumsq);
 extern void FC_GLOBAL(zlassq, ZLASSQ)(int *n, std::complex<double> const *x, int *incx, double *scale, double *sumsq);
 
-extern void FC_GLOBAL(dgesdd, DGESDD)(char *, int *, int *, double *, int *, double *, double *, int *, double *, int *, double *, int *,
-                                      int *, int *);
+extern void FC_GLOBAL(dgesdd, DGESDD)(char *, int *, int *, double *, int *, double *, double *, int *, double *, int *,
+                                      double *, int *, int *, int *);
 }
 
 BEGIN_EINSUMS_NAMESPACE_CPP(einsums::backend::linear_algebra::vendor)
@@ -118,8 +131,8 @@ void initialize() {
 void finalize() {
 }
 
-void sgemm(char transa, char transb, int m, int n, int k, float alpha, float const *a, int lda, float const *b, int ldb, float beta,
-           float *c, int ldc) {
+void sgemm(char transa, char transb, int m, int n, int k, float alpha, float const *a, int lda, float const *b, int ldb,
+           float beta, float *c, int ldc) {
     LabeledSection0();
 
     if (m == 0 || n == 0 || k == 0)
@@ -127,8 +140,8 @@ void sgemm(char transa, char transb, int m, int n, int k, float alpha, float con
     FC_GLOBAL(sgemm, SGEMM)(&transb, &transa, &n, &m, &k, &alpha, b, &ldb, a, &lda, &beta, c, &ldc);
 }
 
-void dgemm(char transa, char transb, int m, int n, int k, double alpha, double const *a, int lda, double const *b, int ldb, double beta,
-           double *c, int ldc) {
+void dgemm(char transa, char transb, int m, int n, int k, double alpha, double const *a, int lda, double const *b,
+           int ldb, double beta, double *c, int ldc) {
     LabeledSection0();
 
     if (m == 0 || n == 0 || k == 0)
@@ -136,8 +149,8 @@ void dgemm(char transa, char transb, int m, int n, int k, double alpha, double c
     FC_GLOBAL(dgemm, DGEMM)(&transb, &transa, &n, &m, &k, &alpha, b, &ldb, a, &lda, &beta, c, &ldc);
 }
 
-void cgemm(char transa, char transb, int m, int n, int k, std::complex<float> alpha, std::complex<float> const *a, int lda,
-           std::complex<float> const *b, int ldb, std::complex<float> beta, std::complex<float> *c, int ldc) {
+void cgemm(char transa, char transb, int m, int n, int k, std::complex<float> alpha, std::complex<float> const *a,
+           int lda, std::complex<float> const *b, int ldb, std::complex<float> beta, std::complex<float> *c, int ldc) {
     LabeledSection0();
 
     if (m == 0 || n == 0 || k == 0)
@@ -145,8 +158,9 @@ void cgemm(char transa, char transb, int m, int n, int k, std::complex<float> al
     FC_GLOBAL(cgemm, CGEMM)(&transb, &transa, &n, &m, &k, &alpha, b, &ldb, a, &lda, &beta, c, &ldc);
 }
 
-void zgemm(char transa, char transb, int m, int n, int k, std::complex<double> alpha, std::complex<double> const *a, int lda,
-           std::complex<double> const *b, int ldb, std::complex<double> beta, std::complex<double> *c, int ldc) {
+void zgemm(char transa, char transb, int m, int n, int k, std::complex<double> alpha, std::complex<double> const *a,
+           int lda, std::complex<double> const *b, int ldb, std::complex<double> beta, std::complex<double> *c,
+           int ldc) {
     LabeledSection0();
 
     if (m == 0 || n == 0 || k == 0)
@@ -154,7 +168,8 @@ void zgemm(char transa, char transb, int m, int n, int k, std::complex<double> a
     FC_GLOBAL(zgemm, ZGEMM)(&transb, &transa, &n, &m, &k, &alpha, b, &ldb, a, &lda, &beta, c, &ldc);
 }
 
-void sgemv(char transa, int m, int n, float alpha, float const *a, int lda, float const *x, int incx, float beta, float *y, int incy) {
+void sgemv(char transa, int m, int n, float alpha, float const *a, int lda, float const *x, int incx, float beta,
+           float *y, int incy) {
     LabeledSection0();
 
     if (m == 0 || n == 0)
@@ -169,7 +184,8 @@ void sgemv(char transa, int m, int n, float alpha, float const *a, int lda, floa
     FC_GLOBAL(sgemv, SGEMV)(&transa, &n, &m, &alpha, a, &lda, x, &incx, &beta, y, &incy);
 }
 
-void dgemv(char transa, int m, int n, double alpha, double const *a, int lda, double const *x, int incx, double beta, double *y, int incy) {
+void dgemv(char transa, int m, int n, double alpha, double const *a, int lda, double const *x, int incx, double beta,
+           double *y, int incy) {
     LabeledSection0();
 
     if (m == 0 || n == 0)
@@ -184,8 +200,8 @@ void dgemv(char transa, int m, int n, double alpha, double const *a, int lda, do
     FC_GLOBAL(dgemv, DGEMV)(&transa, &n, &m, &alpha, a, &lda, x, &incx, &beta, y, &incy);
 }
 
-void cgemv(char transa, int m, int n, std::complex<float> alpha, std::complex<float> const *a, int lda, std::complex<float> const *x,
-           int incx, std::complex<float> beta, std::complex<float> *y, int incy) {
+void cgemv(char transa, int m, int n, std::complex<float> alpha, std::complex<float> const *a, int lda,
+           std::complex<float> const *x, int incx, std::complex<float> beta, std::complex<float> *y, int incy) {
     LabeledSection0();
 
     if (m == 0 || n == 0)
@@ -200,8 +216,8 @@ void cgemv(char transa, int m, int n, std::complex<float> alpha, std::complex<fl
     FC_GLOBAL(cgemv, CGEMV)(&transa, &n, &m, &alpha, a, &lda, x, &incx, &beta, y, &incy);
 }
 
-void zgemv(char transa, int m, int n, std::complex<double> alpha, std::complex<double> const *a, int lda, std::complex<double> const *x,
-           int incx, std::complex<double> beta, std::complex<double> *y, int incy) {
+void zgemv(char transa, int m, int n, std::complex<double> alpha, std::complex<double> const *a, int lda,
+           std::complex<double> const *x, int incx, std::complex<double> beta, std::complex<double> *y, int incy) {
     LabeledSection0();
 
     if (m == 0 || n == 0)
@@ -232,16 +248,16 @@ auto dsyev(char job, char uplo, int n, double *a, int lda, double *w, double *wo
     return info;
 }
 
-auto cheev(char job, char uplo, int n, std::complex<float> *a, int lda, float *w, std::complex<float> *work, int lwork, float *rwork)
-    -> int {
+auto cheev(char job, char uplo, int n, std::complex<float> *a, int lda, float *w, std::complex<float> *work, int lwork,
+           float *rwork) -> int {
     LabeledSection0();
 
     int info{0};
     FC_GLOBAL(cheev, CHEEV)(&job, &uplo, &n, a, &lda, w, work, &lwork, rwork, &info);
     return info;
 }
-auto zheev(char job, char uplo, int n, std::complex<double> *a, int lda, double *w, std::complex<double> *work, int lwork, double *rwork)
-    -> int {
+auto zheev(char job, char uplo, int n, std::complex<double> *a, int lda, double *w, std::complex<double> *work,
+           int lwork, double *rwork) -> int {
     LabeledSection0();
 
     int info{0};
@@ -329,13 +345,15 @@ auto ddot(int n, double const *x, int incx, double const *y, int incy) -> double
     return FC_GLOBAL(ddot, DDOT)(&n, x, &incx, y, &incy);
 }
 
-auto cdot(int n, std::complex<float> const *x, int incx, std::complex<float> const *y, int incy) -> std::complex<float> {
+auto cdot(int n, std::complex<float> const *x, int incx, std::complex<float> const *y, int incy)
+    -> std::complex<float> {
     LabeledSection0();
 
     return FC_GLOBAL(cdotu, CDOTU)(&n, x, &incx, y, &incy);
 }
 
-auto zdot(int n, std::complex<double> const *x, int incx, std::complex<double> const *y, int incy) -> std::complex<double> {
+auto zdot(int n, std::complex<double> const *x, int incx, std::complex<double> const *y, int incy)
+    -> std::complex<double> {
     LabeledSection0();
 
     return FC_GLOBAL(zdotu, ZDOTU)(&n, x, &incx, y, &incy);
@@ -353,13 +371,15 @@ void daxpy(int n, double alpha_x, double const *x, int inc_x, double *y, int inc
     FC_GLOBAL(daxpy, DAXPY)(&n, &alpha_x, x, &inc_x, y, &inc_y);
 }
 
-void caxpy(int n, std::complex<float> alpha_x, std::complex<float> const *x, int inc_x, std::complex<float> *y, int inc_y) {
+void caxpy(int n, std::complex<float> alpha_x, std::complex<float> const *x, int inc_x, std::complex<float> *y,
+           int inc_y) {
     LabeledSection0();
 
     FC_GLOBAL(caxpy, CAXPY)(&n, &alpha_x, x, &inc_x, y, &inc_y);
 }
 
-void zaxpy(int n, std::complex<double> alpha_x, std::complex<double> const *x, int inc_x, std::complex<double> *y, int inc_y) {
+void zaxpy(int n, std::complex<double> alpha_x, std::complex<double> const *x, int inc_x, std::complex<double> *y,
+           int inc_y) {
     LabeledSection0();
 
     FC_GLOBAL(zaxpy, ZAXPY)(&n, &alpha_x, x, &inc_x, y, &inc_y);
@@ -377,15 +397,15 @@ void daxpby(int const n, double const a, double const *x, int const incx, double
     daxpy(n, a, x, incx, y, incy);
 }
 
-void caxpby(int const n, const std::complex<float> a, std::complex<float> const *x, int const incx, const std::complex<float> b,
-            std::complex<float> *y, int const incy) {
+void caxpby(int const n, const std::complex<float> a, std::complex<float> const *x, int const incx,
+            const std::complex<float> b, std::complex<float> *y, int const incy) {
     LabeledSection0();
     cscal(n, b, y, incy);
     caxpy(n, a, x, incx, y, incy);
 }
 
-void zaxpby(int const n, const std::complex<double> a, std::complex<double> const *x, int const incx, const std::complex<double> b,
-            std::complex<double> *y, int const incy) {
+void zaxpby(int const n, const std::complex<double> a, std::complex<double> const *x, int const incx,
+            const std::complex<double> b, std::complex<double> *y, int const incy) {
     LabeledSection0();
     zscal(n, b, y, incy);
     zaxpy(n, a, x, incx, y, incy);
@@ -402,7 +422,8 @@ void ger_parameter_check(int m, int n, int inc_x, int inc_y, int lda) {
     } else if (inc_y == 0) {
         throw std::runtime_error(fmt::format("einsums::backend::vendor::ger: inc_y ({}) is zero.", inc_y));
     } else if (lda < std::max(1, n)) {
-        throw std::runtime_error(fmt::format("einsums::backend::vendor::ger: lda ({}) is less than max(1, n ({})).", lda, n));
+        throw std::runtime_error(
+            fmt::format("einsums::backend::vendor::ger: lda ({}) is less than max(1, n ({})).", lda, n));
     }
 }
 } // namespace
@@ -421,16 +442,16 @@ void dger(int m, int n, double alpha, double const *x, int inc_x, double const *
     FC_GLOBAL(dger, DGER)(&n, &m, &alpha, y, &inc_y, x, &inc_x, a, &lda);
 }
 
-void cger(int m, int n, std::complex<float> alpha, std::complex<float> const *x, int inc_x, std::complex<float> const *y, int inc_y,
-          std::complex<float> *a, int lda) {
+void cger(int m, int n, std::complex<float> alpha, std::complex<float> const *x, int inc_x,
+          std::complex<float> const *y, int inc_y, std::complex<float> *a, int lda) {
     LabeledSection0();
 
     ger_parameter_check(m, n, inc_x, inc_y, lda);
     FC_GLOBAL(cgeru, CGERU)(&n, &m, &alpha, y, &inc_y, x, &inc_x, a, &lda);
 }
 
-void zger(int m, int n, std::complex<double> alpha, std::complex<double> const *x, int inc_x, std::complex<double> const *y, int inc_y,
-          std::complex<double> *a, int lda) {
+void zger(int m, int n, std::complex<double> alpha, std::complex<double> const *x, int inc_x,
+          std::complex<double> const *y, int inc_y, std::complex<double> *a, int lda) {
     LabeledSection0();
 
     ger_parameter_check(m, n, inc_x, inc_y, lda);
@@ -557,8 +578,8 @@ void zlassq(int n, std::complex<double> const *x, int incx, double *scale, doubl
     FC_GLOBAL(zlassq, ZLASSQ)(&n, x, &incx, scale, sumsq);
 }
 
-auto dgesdd(char jobz, int m, int n, double *a, int lda, double *s, double *u, int ldu, double *vt, int ldvt, double *work, int lwork,
-            int *iwork) -> int {
+auto dgesdd(char jobz, int m, int n, double *a, int lda, double *s, double *u, int ldu, double *vt, int ldvt,
+            double *work, int lwork, int *iwork) -> int {
     LabeledSection0();
 
     int info{0};

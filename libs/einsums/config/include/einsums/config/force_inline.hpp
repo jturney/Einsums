@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <einsums/config/CompilerSpecific.hpp>
+#include <einsums/config/compiler_specific.hpp>
 
 #if defined(DOXYGEN)
 /// Marks a function to be forced inline.

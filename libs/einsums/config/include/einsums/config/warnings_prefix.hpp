@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <einsums/config/CompilerSpecific.hpp>
+#include <einsums/config/compiler_specific.hpp>
 
 // suppress warnings about dependent classes not being exported from the dll
 #if defined(EINSUMS_MSVC_WARNING_PRAGMA)

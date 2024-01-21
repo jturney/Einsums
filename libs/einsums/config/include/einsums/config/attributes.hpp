@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <einsums/config/CompilerSpecific.hpp>
+#include <einsums/config/compiler_specific.hpp>
 #include <einsums/config/defines.hpp>
 
 #if defined(DOXYGEN)

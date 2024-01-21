@@ -5,8 +5,8 @@
 
 #pragma once
 
-#include <einsums/config/CompilerSpecific.hpp>
-#include <einsums/config/Debug.hpp>
+#include <einsums/config/compiler_specific.hpp>
+#include <einsums/config/debug.hpp>
 #include <einsums/config/defines.hpp>
 
 ///////////////////////////////////////////////////////////////////////////////
