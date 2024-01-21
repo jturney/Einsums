@@ -7,7 +7,7 @@
 
 #include <einsums/config/export_definitions.hpp>
 
-#include <einsums/concepts/ComplexTraits.hpp>
+#include <einsums/concepts/complex_traits.hpp>
 #include <einsums/linear_algebra/Types.hpp>
 
 // Namespace for BLAS and LAPACK routines.

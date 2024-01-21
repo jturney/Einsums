@@ -10,9 +10,9 @@
 #include "einsums/OpenMP.hpp"
 #include "einsums/Print.hpp"
 #include "einsums/Section.hpp"
-#include "einsums/concepts/ComplexTraits.hpp"
-#include "einsums/concepts/ConvertibleTraits.hpp"
 #include "einsums/concepts/TensorTraits.hpp"
+#include "einsums/concepts/complex_traits.hpp"
+#include "einsums/concepts/convertible_traits.hpp"
 #include "einsums/core/Alias.hpp"
 #include "einsums/core/AlignedAllocator.hpp"
 #include "einsums/core/Arguments.hpp"
@@ -408,9 +408,9 @@ struct Tensor final : public detail::TensorBase<T, Rank> {
      */
     template <typename... MultiIndex>
         requires requires {
-            requires NoneOfType<AllT, MultiIndex...>;
-            requires NoneOfType<Range, MultiIndex...>;
-        }
+                     requires NoneOfType<AllT, MultiIndex...>;
+                     requires NoneOfType<Range, MultiIndex...>;
+                 }
     auto data(MultiIndex... index) -> T * {
 #if !defined(DOXYGEN_SHOULD_SKIP_THIS)
         assert(sizeof...(MultiIndex) <= _dims.size());
@@ -438,9 +438,9 @@ struct Tensor final : public detail::TensorBase<T, Rank> {
      */
     template <typename... MultiIndex>
         requires requires {
-            requires NoneOfType<AllT, MultiIndex...>;
-            requires NoneOfType<Range, MultiIndex...>;
-        }
+                     requires NoneOfType<AllT, MultiIndex...>;
+                     requires NoneOfType<Range, MultiIndex...>;
+                 }
     auto operator()(MultiIndex... index) const -> T const & {
 
         assert(sizeof...(MultiIndex) == _dims.size());
@@ -467,9 +467,9 @@ struct Tensor final : public detail::TensorBase<T, Rank> {
      */
     template <typename... MultiIndex>
         requires requires {
-            requires NoneOfType<AllT, MultiIndex...>;
-            requires NoneOfType<Range, MultiIndex...>;
-        }
+                     requires NoneOfType<AllT, MultiIndex...>;
+                     requires NoneOfType<Range, MultiIndex...>;
+                 }
     auto operator()(MultiIndex... index) -> T & {
 
         assert(sizeof...(MultiIndex) == _dims.size());
@@ -651,20 +651,18 @@ struct Tensor final : public detail::TensorBase<T, Rank> {
     }
 
 #define OPERATOR(OP)                                                                                                   \
-    auto operator OP(const T &b) -> Tensor<T, Rank> & {                                                                \
+    auto operator OP(const T &b)->Tensor<T, Rank> & {                                                                  \
         EINSUMS_OMP_PARALLEL {                                                                                         \
             auto tid       = omp_get_thread_num();                                                                     \
             auto chunksize = _data.size() / omp_get_num_threads();                                                     \
             auto begin     = _data.begin() + chunksize * tid;                                                          \
             auto end       = (tid == omp_get_num_threads() - 1) ? _data.end() : begin + chunksize;                     \
-            EINSUMS_OMP_SIMD for (auto i = begin; i < end; i++) {                                                      \
-                (*i) OP b;                                                                                             \
-            }                                                                                                          \
+            EINSUMS_OMP_SIMD for (auto i = begin; i < end; i++) { (*i) OP b; }                                         \
         }                                                                                                              \
         return *this;                                                                                                  \
     }                                                                                                                  \
                                                                                                                        \
-    auto operator OP(const Tensor<T, Rank> &b) -> Tensor<T, Rank> & {                                                  \
+    auto operator OP(const Tensor<T, Rank> &b)->Tensor<T, Rank> & {                                                    \
         if (size() != b.size()) {                                                                                      \
             throw std::runtime_error(fmt::format(                                                                      \
                 "operator" EINSUMS_PP_STRINGIZE(OP) " : tensors differ in size : {} {}", size(), b.size()));           \
@@ -676,9 +674,7 @@ struct Tensor final : public detail::TensorBase<T, Rank> {
             auto bbegin    = b._data.begin() + chunksize * tid;                                                        \
             auto aend      = (tid == omp_get_num_threads() - 1) ? _data.end() : abegin + chunksize;                    \
             auto j         = bbegin;                                                                                   \
-            EINSUMS_OMP_SIMD for (auto i = abegin; i < aend; i++) {                                                    \
-                (*i) OP(*j++);                                                                                         \
-            }                                                                                                          \
+            EINSUMS_OMP_SIMD for (auto i = abegin; i < aend; i++) { (*i) OP(*j++); }                                   \
         }                                                                                                              \
         return *this;                                                                                                  \
     }
@@ -770,7 +766,7 @@ struct Tensor<T, 0> : public detail::TensorBase<T, 0> {
 #    undef OPERATOR
 #endif
 #define OPERATOR(OP)                                                                                                   \
-    auto operator OP(const T &other) -> Tensor<T, 0> & {                                                               \
+    auto operator OP(const T &other)->Tensor<T, 0> & {                                                                 \
         _data OP other;                                                                                                \
         return *this;                                                                                                  \
     }
@@ -922,7 +918,7 @@ struct TensorView final : public detail::TensorBase<T, Rank> {
 #    undef OPERATOR)
 #endif
 #define OPERATOR(OP)                                                                                                   \
-    auto operator OP(const T &value) -> TensorView & {                                                                 \
+    auto operator OP(const T &value)->TensorView & {                                                                   \
         auto target_dims = get_dim_ranges<Rank>(*this);                                                                \
         auto view        = std::apply(ranges::views::cartesian_product, target_dims);                                  \
         _Pragma("omp parallel for") for (auto target_combination = view.begin(); target_combination != view.end();     \

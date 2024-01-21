@@ -8,7 +8,7 @@
 #include "einsums/OpenMP.hpp"
 #include "einsums/Section.hpp"
 #include "einsums/Tensor.hpp"
-#include "einsums/concepts/ComplexTraits.hpp"
+#include <einsums/concepts/complex_traits.hpp>
 
 namespace einsums {
 

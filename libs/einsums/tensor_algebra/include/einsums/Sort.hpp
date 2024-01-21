@@ -13,8 +13,8 @@
 // #include "einsums/STL.hpp"
 #include "einsums/Section.hpp"
 #include "einsums/Tensor.hpp"
-#include "einsums/concepts/SmartPointerTraits.hpp"
 #include "einsums/tensor_algebra/Utilities.hpp"
+#include <einsums/concepts/smart_pointer_traits.hpp>
 
 BEGIN_EINSUMS_NAMESPACE_HPP(einsums::tensor_algebra)
 
