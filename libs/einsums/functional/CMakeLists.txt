@@ -15,7 +15,7 @@ set(functional_headers
     einsums/function/traits/is_bind_expression.hpp
 )
 
-set(functional_sources empty_function.cpp)
+set(functional_sources basic_function.cpp empty_function.cpp)
 
 include(einsums_add_module)
 einsums_add_module(

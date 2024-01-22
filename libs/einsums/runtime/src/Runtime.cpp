@@ -7,9 +7,9 @@
 
 #include <einsums/assert.hpp>
 #include <einsums/debugging/attach_debugger.hpp>
-#include <einsums/runtime/Runtime.hpp>
-#include <einsums/runtime/StartupFunction.hpp>
-#include <einsums/runtime/State.hpp>
+#include <einsums/runtime/runtime.hpp>
+#include <einsums/runtime/startup_function.hpp>
+#include <einsums/runtime/state.hpp>
 
 #if !defined(EINSUMS_WINDOWS)
 #    include <csignal>
@@ -34,28 +34,28 @@ namespace einsums {
 namespace strings {
 
 char const *const runtime_state_names[] = {
-    "RuntimeState::Invalid",     // -1
-    "RuntimeState::Initialized", // 0
-    "RuntimeState::PreStartup",  // 1
-    "RuntimeState::Startup",     // 2
-    "RuntimeState::PreMain",     // 3
-    "RuntimeState::tarting",     // 4
-    "RuntimeState::Running",     // 5
-    "RuntimeState::Suspended",   // 6
-    "RuntimeState::PreSleep",    // 7
-    "RuntimeState::Sleeping",    // 8
-    "RuntimeState::PreShutdown", // 9
-    "RuntimeState::Shutdown",    // 10
-    "RuntimeState::Stopping",    // 11
-    "RuntimeState::Terminating", // 12
-    "RuntimeState::Stopped"      // 13
+    "runtime_state::invalid",      // -1
+    "runtime_state::initialized",  // 0
+    "runtime_state::pre_startup",  // 1
+    "runtime_state::startup",      // 2
+    "runtime_state::pre_main",     // 3
+    "runtime_state::starting",     // 4
+    "runtime_state::running",      // 5
+    "runtime_state::suspended",    // 6
+    "runtime_state::pre_sleep",    // 7
+    "runtime_state::sleeping",     // 8
+    "runtime_state::pre_shutdown", // 9
+    "runtime_state::shutdown",     // 10
+    "runtime_state::stopping",     // 11
+    "runtime_state::terminating",  // 12
+    "runtime_state::stopped"       // 13
 };
 
 } // namespace strings
 
 namespace detail {
-auto get_runtime_state_name(RuntimeState st) -> char const * {
-    if (st < RuntimeState::Invalid || st >= RuntimeState::LastValidRuntime)
+auto get_runtime_state_name(runtime_state st) -> char const * {
+    if (st < runtime_state::invalid || st >= runtime_state::last_valid_runtime)
         return "invalid (value out of bounds)";
     return strings::runtime_state_names[static_cast<std::int8_t>(st) + 1];
 }
@@ -66,14 +66,14 @@ runtime::runtime() {
 }
 
 void runtime::init() {
-    set_state(RuntimeState::Initialized);
+    set_state(runtime_state::initialized);
 }
 
-auto runtime::get_state() const -> RuntimeState {
+auto runtime::get_state() const -> runtime_state {
     return _state.load();
 }
 
-void runtime::set_state(RuntimeState s) {
+void runtime::set_state(runtime_state s) {
     _state.store(s);
 }
 

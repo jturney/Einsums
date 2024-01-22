@@ -219,100 +219,100 @@ namespace einsums {
 namespace util {
 namespace itt {
 
-StackContext::StackContext() {
+stack_context::stack_context() {
     EINSUMS_ITT_STACK_CREATE(itt_context_);
 }
 
-StackContext::~StackContext() {
+stack_context::~stack_context() {
     if (itt_context_) {
         EINSUMS_ITT_STACK_DESTROY(itt_context_);
     }
 }
 
-CallerContext::CallerContext(StackContext &ctx) : ctx_(ctx) {
+caller_context::caller_context(stack_context &ctx) : ctx_(ctx) {
     if (ctx.itt_context_) {
         EINSUMS_ITT_STACK_CALLEE_ENTER(ctx_.itt_context_);
     }
 }
 
-CallerContext::~CallerContext() {
+caller_context::~caller_context() {
     if (ctx_.itt_context_) {
         EINSUMS_ITT_STACK_CALLEE_LEAVE(ctx_.itt_context_);
     }
 }
 
-Domain::Domain(char const *name) noexcept : domain_(EINSUMS_ITT_DOMAIN_CREATE(name)) {
+domain::domain(char const *name) noexcept : domain_(EINSUMS_ITT_DOMAIN_CREATE(name)) {
     if (domain_ != nullptr) {
         domain_->flags = 1;
     }
 }
 
 namespace {
-thread_local std::unique_ptr<___itt_domain> thread_domain;
+thread_local std::unique_ptr<___itt_domain> g_thread_domain;
 }
 
-ThreadDomain::ThreadDomain() noexcept : Domain() {
-    if (thread_domain.get() == nullptr) {
-        thread_domain.reset(EINSUMS_ITT_DOMAIN_CREATE(detail::thread_name().c_str()));
+thread_domain::thread_domain() noexcept : domain() {
+    if (g_thread_domain.get() == nullptr) {
+        g_thread_domain.reset(EINSUMS_ITT_DOMAIN_CREATE(detail::thread_name().c_str()));
     }
 
-    domain_ = thread_domain.get();
+    domain_ = g_thread_domain.get();
 
     if (domain_ != nullptr) {
         domain_->flags = 1;
     }
 }
 
-Id::Id(Domain const &domain, void *addr, unsigned long extra) noexcept {
+id::id(domain const &domain, void *addr, unsigned long extra) noexcept {
     if (use_ittnotify_api) {
         id_ = EINSUMS_ITT_MAKE_ID(addr, extra);
         EINSUMS_ITT_ID_CREATE(domain.domain_, id_);
     }
 }
 
-Id::~Id() {
+id::~id() {
     if (use_ittnotify_api) {
         EINSUMS_ITT_ID_DESTROY(id_);
     }
 }
 
-FrameContext::FrameContext(Domain const &domain, Id *ident) noexcept : domain_(domain), ident_(ident) {
+frame_context::frame_context(domain const &domain, id *ident) noexcept : domain_(domain), ident_(ident) {
     EINSUMS_ITT_FRAME_BEGIN(domain_.domain_, ident_ ? ident_->id_ : nullptr);
 }
 
-FrameContext::~FrameContext() {
+frame_context::~frame_context() {
     EINSUMS_ITT_FRAME_END(domain_.domain_, ident_ ? ident_->id_ : nullptr);
 }
 
-UndoFrameContext::UndoFrameContext(FrameContext &frame) noexcept : frame_(frame) {
+undo_frame_context::undo_frame_context(frame_context &frame) noexcept : frame_(frame) {
     EINSUMS_ITT_FRAME_END(frame_.domain_.domain_, nullptr);
 }
 
-UndoFrameContext::~UndoFrameContext() {
+undo_frame_context::~undo_frame_context() {
     EINSUMS_ITT_FRAME_BEGIN(frame_.domain_.domain_, nullptr);
 }
 
-MarkContext::MarkContext(char const *name) noexcept : itt_mark_(0), name_(name) {
+mark_context::mark_context(char const *name) noexcept : itt_mark_(0), name_(name) {
     EINSUMS_ITT_MARK_CREATE(itt_mark_, name);
 }
 
-MarkContext::~MarkContext() {
+mark_context::~mark_context() {
     EINSUMS_ITT_MARK_OFF(itt_mark_);
 }
 
-UndoMarkContext::UndoMarkContext(MarkContext &mark) noexcept : mark_(mark) {
+undo_mark_context::undo_mark_context(mark_context &mark) noexcept : mark_(mark) {
     EINSUMS_ITT_MARK_OFF(mark_.itt_mark_);
 }
 
-UndoMarkContext::~UndoMarkContext() {
+undo_mark_context::~undo_mark_context() {
     EINSUMS_ITT_MARK_CREATE(mark_.itt_mark_, mark_.name_);
 }
 
-StringHandle::StringHandle(char const *s) noexcept
+string_handle::string_handle(char const *s) noexcept
     : handle_(s == nullptr ? nullptr : EINSUMS_ITT_STRING_HANDLE_CREATE(s)) {
 }
 
-Task::Task(Domain const &domain, StringHandle const &name) noexcept : domain_(domain), sh_(name) {
+task::task(domain const &domain, string_handle const &name) noexcept : domain_(domain), sh_(name) {
     if (use_ittnotify_api) {
         id_ = EINSUMS_ITT_MAKE_ID(domain_.domain_, reinterpret_cast<std::size_t>(sh_.handle_));
 
@@ -320,7 +320,7 @@ Task::Task(Domain const &domain, StringHandle const &name) noexcept : domain_(do
     }
 }
 
-Task::Task(Domain const &domain, StringHandle const &name, std::uint64_t metadata) noexcept
+task::task(domain const &domain, string_handle const &name, std::uint64_t metadata) noexcept
     : domain_(domain), sh_(name) {
     if (use_ittnotify_api) {
         id_ = EINSUMS_ITT_MAKE_ID(domain_.domain_, reinterpret_cast<std::size_t>(sh_.handle_));
@@ -330,57 +330,57 @@ Task::Task(Domain const &domain, StringHandle const &name, std::uint64_t metadat
     }
 }
 
-Task::~Task() {
+task::~task() {
     if (use_ittnotify_api) {
         EINSUMS_ITT_TASK_END(domain_.domain_);
         delete id_;
     }
 }
 
-void Task::add_metadata(StringHandle const &name, std::uint64_t val) noexcept {
+void task::add_metadata(string_handle const &name, std::uint64_t val) noexcept {
     EINSUMS_ITT_METADATA_ADD(domain_.domain_, id_, name.handle_, val);
 }
 
-void Task::add_metadata(StringHandle const &name, double val) noexcept {
+void task::add_metadata(string_handle const &name, double val) noexcept {
     EINSUMS_ITT_METADATA_ADD(domain_.domain_, id_, name.handle_, val);
 }
 
-void Task::add_metadata(StringHandle const &name, char const *val) noexcept {
+void task::add_metadata(string_handle const &name, char const *val) noexcept {
     EINSUMS_ITT_METADATA_ADD(domain_.domain_, id_, name.handle_, val);
 }
 
-void Task::add_metadata(StringHandle const &name, void const *val) noexcept {
+void task::add_metadata(string_handle const &name, void const *val) noexcept {
     EINSUMS_ITT_METADATA_ADD(domain_.domain_, id_, name.handle_, val);
 }
 
-HeapFunction::HeapFunction(char const *name, char const *domain) noexcept
+heap_function::heap_function(char const *name, char const *domain) noexcept
     : heap_function_(EINSUMS_ITT_HEAP_FUNCTION_CREATE(name, domain)) {
 }
 
-HeapInternalAccess::HeapInternalAccess() noexcept {
+heap_internal_access::heap_internal_access() noexcept {
     EINSUMS_ITT_HEAP_INTERNAL_ACCESS_BEGIN();
 }
 
-HeapInternalAccess::~HeapInternalAccess() {
+heap_internal_access::~heap_internal_access() {
     EINSUMS_ITT_HEAP_INTERNAL_ACCESS_END();
 }
 
-HeapFree::HeapFree(HeapFunction &heap_function, void *addr) noexcept : _heap_function(heap_function), _addr(addr) {
+heap_free::heap_free(heap_function &heap_function, void *addr) noexcept : _heap_function(heap_function), _addr(addr) {
     EINSUMS_ITT_HEAP_FREE_BEGIN(heap_function.heap_function_, _addr);
 }
 
-HeapFree::~HeapFree() {
+heap_free::~heap_free() {
     EINSUMS_ITT_HEAP_FREE_END(_heap_function.heap_function_, _addr);
 }
 
-Counter::Counter(char const *name, char const *domain) noexcept : _id(EINSUMS_ITT_COUNTER_CREATE(name, domain)) {
+counter::counter(char const *name, char const *domain) noexcept : _id(EINSUMS_ITT_COUNTER_CREATE(name, domain)) {
 }
 
-Counter::Counter(char const *name, char const *domain, int type) noexcept
+counter::counter(char const *name, char const *domain, int type) noexcept
     : _id(EINSUMS_ITT_COUNTER_CREATE_TYPED(name, domain, type)) {
 }
 
-Counter::~Counter() {
+counter::~counter() {
     if (_id) {
         EINSUMS_ITT_COUNTER_DESTROY(_id);
     }

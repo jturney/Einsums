@@ -8,8 +8,8 @@
 #include <einsums/config.hpp>
 
 #include <einsums/assert.hpp>
-#include <einsums/runtime/StartupFunction.hpp>
-#include <einsums/runtime/State.hpp>
+#include <einsums/runtime/startup_function.hpp>
+#include <einsums/runtime/state.hpp>
 
 #include <atomic>
 #include <list>
@@ -20,21 +20,21 @@
 
 namespace einsums {
 namespace detail {
-extern std::list<StartupFunctionType> global_pre_startup_functions;
-extern std::list<StartupFunctionType> global_startup_functions;
+extern std::list<startup_function_type> global_pre_startup_functions;
+extern std::list<startup_function_type> global_startup_functions;
 } // namespace detail
 
 struct EINSUMS_EXPORT runtime {
 
     runtime();
 
-    [[nodiscard]] auto get_state() const -> RuntimeState;
-    void               set_state(RuntimeState s);
+    [[nodiscard]] auto get_state() const -> runtime_state;
+    void               set_state(runtime_state s);
 
   protected:
     void init();
 
-    std::atomic<RuntimeState> _state;
+    std::atomic<runtime_state> _state;
 };
 
 } // namespace einsums

@@ -5,7 +5,9 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(thread_support_headers einsums/thread_support/spinlock.hpp einsums/thread_support/unlock_guard.hpp)
+set(thread_support_headers einsums_thread_support/atomic_count.hpp einsums/thread_support/spinlock.hpp
+                           einsums/thread_support/unlock_guard.hpp
+)
 
 set(thread_support_sources spinlock.cpp)
 

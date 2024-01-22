@@ -20,8 +20,8 @@ struct get_function_annotation {
 #if EINSUMS_HAVE_ITTNOTIFY != 0 && !defined(EINSUMS_HAVE_APEX)
 template <typename F, typename Enable = void>
 struct get_function_annotation_itt {
-    static auto call(F const &f) -> util::itt::StringHandle {
-        static util::itt::StringHandle sh(get_function_annotation<F>::call(f));
+    static auto call(F const &f) -> util::itt::string_handle {
+        static util::itt::string_handle sh(get_function_annotation<F>::call(f));
         return sh;
     }
 };

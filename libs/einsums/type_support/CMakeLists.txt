@@ -5,7 +5,7 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(type_support_headers einsums/type_support/Unused.hpp einsums/type_support/void_guard.hpp)
+set(type_support_headers einsums/type_support/unused.hpp einsums/type_support/void_guard.hpp)
 
 set(type_support_sources)
 

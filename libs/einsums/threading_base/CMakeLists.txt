@@ -5,7 +5,7 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(threading_base_headers einsums/threading_base/SchedulerState.hpp)
+set(threading_base_headers einsums/threading_base/scheduler_state.hpp)
 
 set(threading_base_sources)
 

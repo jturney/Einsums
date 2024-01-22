@@ -5,14 +5,11 @@
 
 #pragma once
 
-#include <einsums/config.hpp>
+namespace einsums::threads::corotuines::detail {
 
-#include <einsums/threading_base/SchedulerState.hpp>
+struct coroutine_self;
+struct coroutine_impl;
+struct coroutine;
+struct stackless_coroutine;
 
-namespace einsums::threads {
-
-/// Return whether the thread manager is in the state described by 'mask'
-EINSUMS_EXPORT auto thread_manager_is(RuntimeState st) -> bool;
-EINSUMS_EXPORT auto thread_managet_is_at_least(RuntimeState st) -> bool;
-
-} // namespace einsums::threads
+} // namespace einsums::threads::corotuines::detail

@@ -13,7 +13,7 @@ namespace einsums {
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 /// The type of a function which is registered to be executed as a startup or pre-startup function.
-using StartupFunctionType = std::function<void()>;
+using startup_function_type = std::function<void()>;
 
 /// \brief Add a function to be executed by an einsums thread before einsums_main but guaranteed before any startup
 /// function is executed (system-wide).
@@ -31,7 +31,7 @@ using StartupFunctionType = std::function<void()>;
 /// initialization, if necessary.
 ///
 /// \see \a einsums::register_startup_function()
-EINSUMS_EXPORT void register_pre_startup_function(StartupFunctionType f);
+EINSUMS_EXPORT void register_pre_startup_function(startup_function_type f);
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// \brief Add a function to be executed by a pika thread before pika_main but guaranteed after any pre-startup function
@@ -51,6 +51,6 @@ EINSUMS_EXPORT void register_pre_startup_function(StartupFunctionType f);
 ///       initialization (if necessary).
 ///
 /// \see    \a einsums::register_pre_startup_function()
-EINSUMS_EXPORT void register_startup_function(StartupFunctionType f);
+EINSUMS_EXPORT void register_startup_function(startup_function_type f);
 
 } // namespace einsums

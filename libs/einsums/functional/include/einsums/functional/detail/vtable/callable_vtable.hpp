@@ -15,7 +15,6 @@
 #include <einsums/type_support/void_guard.hpp>
 
 #include <cstddef>
-#include <utility>
 
 namespace einsums::util::detail {
 

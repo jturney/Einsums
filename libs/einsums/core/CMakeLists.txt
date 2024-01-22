@@ -5,8 +5,14 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(core_headers einsums/core/Alias.hpp einsums/core/AlignedAllocator.hpp einsums/OpenMP.hpp einsums/Print.hpp
-                 einsums/Section.hpp einsums/Timer.hpp
+set(core_headers
+    einsums/core/Alias.hpp
+    einsums/core/AlignedAllocator.hpp
+    einsums/core/get_and_reset_value.hpp
+    einsums/OpenMP.hpp
+    einsums/Print.hpp
+    einsums/Section.hpp
+    einsums/Timer.hpp
 )
 
 set(core_sources InitializeFinalize.cpp Print.cpp Section.cpp Timer.cpp)

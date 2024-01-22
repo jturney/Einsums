@@ -145,21 +145,21 @@ EINSUMS_EXPORT void itt_metadata_add(___itt_domain *domain, ___itt_id *id, ___it
 ///////////////////////////////////////////////////////////////////////////////
 namespace einsums::detail {
 
-struct ThreadDescription;
+struct thread_description;
 
 } // namespace einsums::detail
 
 namespace einsums::util::itt {
 
-struct StackContext {
-    EINSUMS_EXPORT StackContext();
-    EINSUMS_EXPORT ~StackContext();
+struct stack_context {
+    EINSUMS_EXPORT stack_context();
+    EINSUMS_EXPORT ~stack_context();
 
-    StackContext(StackContext const &rhs) = delete;
-    StackContext(StackContext &&rhs) noexcept : itt_context_(rhs.itt_context_) { rhs.itt_context_ = nullptr; }
+    stack_context(stack_context const &rhs) = delete;
+    stack_context(stack_context &&rhs) noexcept : itt_context_(rhs.itt_context_) { rhs.itt_context_ = nullptr; }
 
-    auto operator=(StackContext const &rhs) -> StackContext & = delete;
-    auto operator=(StackContext &&rhs) noexcept -> StackContext & {
+    auto operator=(stack_context const &rhs) -> stack_context & = delete;
+    auto operator=(stack_context &&rhs) noexcept -> stack_context & {
         if (this != &rhs) {
             itt_context_     = rhs.itt_context_;
             rhs.itt_context_ = nullptr;
@@ -170,38 +170,38 @@ struct StackContext {
     struct ___itt_caller *itt_context_ = nullptr;
 };
 
-struct CallerContext {
-    EINSUMS_EXPORT CallerContext(StackContext &ctx);
-    EINSUMS_EXPORT ~CallerContext();
+struct caller_context {
+    EINSUMS_EXPORT caller_context(stack_context &ctx);
+    EINSUMS_EXPORT ~caller_context();
 
-    StackContext &ctx_;
+    stack_context &ctx_;
 };
 
 //////////////////////////////////////////////////////////////////////////
-struct Domain {
-    EINSUMS_NON_COPYABLE(Domain);
+struct domain {
+    EINSUMS_NON_COPYABLE(domain);
 
-    Domain() = default;
-    EINSUMS_EXPORT Domain(char const *) noexcept;
+    domain() = default;
+    EINSUMS_EXPORT domain(char const *) noexcept;
 
     ___itt_domain *domain_ = nullptr;
 };
 
-struct ThreadDomain : Domain {
-    EINSUMS_NON_COPYABLE(ThreadDomain);
+struct thread_domain : domain {
+    EINSUMS_NON_COPYABLE(thread_domain);
 
-    EINSUMS_EXPORT ThreadDomain() noexcept;
+    EINSUMS_EXPORT thread_domain() noexcept;
 };
 
-struct Id {
-    EINSUMS_EXPORT Id(Domain const &domain, void *addr, unsigned long extra = 0) noexcept;
-    EINSUMS_EXPORT ~Id();
+struct id {
+    EINSUMS_EXPORT id(domain const &domain, void *addr, unsigned long extra = 0) noexcept;
+    EINSUMS_EXPORT ~id();
 
-    Id(Id const &rhs) = delete;
-    Id(Id &&rhs) noexcept : id_(rhs.id_) { rhs.id_ = nullptr; }
+    id(id const &rhs) = delete;
+    id(id &&rhs) noexcept : id_(rhs.id_) { rhs.id_ = nullptr; }
 
-    auto operator=(Id const &rhs) -> Id & = delete;
-    auto operator=(Id &&rhs) noexcept -> Id & {
+    auto operator=(id const &rhs) -> id & = delete;
+    auto operator=(id &&rhs) noexcept -> id & {
         if (this != &rhs) {
             id_     = rhs.id_;
             rhs.id_ = nullptr;
@@ -213,50 +213,50 @@ struct Id {
 };
 
 ///////////////////////////////////////////////////////////////////////////
-struct FrameContext {
-    EINSUMS_EXPORT FrameContext(Domain const &domain, Id *ident = nullptr) noexcept;
-    EINSUMS_EXPORT ~FrameContext();
+struct frame_context {
+    EINSUMS_EXPORT frame_context(domain const &domain, id *ident = nullptr) noexcept;
+    EINSUMS_EXPORT ~frame_context();
 
-    Domain const &domain_;
-    Id           *ident_ = nullptr;
+    domain const &domain_;
+    id           *ident_ = nullptr;
 };
 
-struct UndoFrameContext {
-    EINSUMS_EXPORT UndoFrameContext(FrameContext &frame) noexcept;
-    EINSUMS_EXPORT ~UndoFrameContext();
+struct undo_frame_context {
+    EINSUMS_EXPORT undo_frame_context(frame_context &frame) noexcept;
+    EINSUMS_EXPORT ~undo_frame_context();
 
-    FrameContext &frame_;
+    frame_context &frame_;
 };
 
 ///////////////////////////////////////////////////////////////////////////
-struct MarkContext {
-    EINSUMS_EXPORT MarkContext(char const *name) noexcept;
-    EINSUMS_EXPORT ~MarkContext();
+struct mark_context {
+    EINSUMS_EXPORT mark_context(char const *name) noexcept;
+    EINSUMS_EXPORT ~mark_context();
 
     int         itt_mark_;
     char const *name_ = nullptr;
 };
 
-struct UndoMarkContext {
-    EINSUMS_EXPORT UndoMarkContext(MarkContext &mark) noexcept;
-    EINSUMS_EXPORT ~UndoMarkContext();
+struct undo_mark_context {
+    EINSUMS_EXPORT undo_mark_context(mark_context &mark) noexcept;
+    EINSUMS_EXPORT ~undo_mark_context();
 
-    MarkContext &mark_;
+    mark_context &mark_;
 };
 
 ///////////////////////////////////////////////////////////////////////////
-struct StringHandle {
-    StringHandle() noexcept = default;
+struct string_handle {
+    string_handle() noexcept = default;
 
-    EINSUMS_EXPORT StringHandle(char const *s) noexcept;
+    EINSUMS_EXPORT string_handle(char const *s) noexcept;
 
-    StringHandle(___itt_string_handle *h) noexcept : handle_(h) {}
+    string_handle(___itt_string_handle *h) noexcept : handle_(h) {}
 
-    StringHandle(StringHandle const &) = default;
-    StringHandle(StringHandle &&rhs) noexcept : handle_(rhs.handle_) { rhs.handle_ = nullptr; }
+    string_handle(string_handle const &) = default;
+    string_handle(string_handle &&rhs) noexcept : handle_(rhs.handle_) { rhs.handle_ = nullptr; }
 
-    auto operator=(StringHandle const &) -> StringHandle & = default;
-    auto operator=(StringHandle &&rhs) noexcept -> StringHandle & {
+    auto operator=(string_handle const &) -> string_handle & = default;
+    auto operator=(string_handle &&rhs) noexcept -> string_handle & {
         if (this != &rhs) {
             handle_     = rhs.handle_;
             rhs.handle_ = nullptr;
@@ -264,7 +264,7 @@ struct StringHandle {
         return *this;
     }
 
-    auto operator=(___itt_string_handle *h) noexcept -> StringHandle & {
+    auto operator=(___itt_string_handle *h) noexcept -> string_handle & {
         handle_ = h;
         return *this;
     }
@@ -275,74 +275,74 @@ struct StringHandle {
 };
 
 ///////////////////////////////////////////////////////////////////////////
-struct Task {
-    EINSUMS_EXPORT Task(Domain const &, StringHandle const &, std::uint64_t metadata) noexcept;
-    EINSUMS_EXPORT Task(Domain const &, StringHandle const &) noexcept;
-    EINSUMS_EXPORT ~Task();
+struct task {
+    EINSUMS_EXPORT task(domain const &, string_handle const &, std::uint64_t metadata) noexcept;
+    EINSUMS_EXPORT task(domain const &, string_handle const &) noexcept;
+    EINSUMS_EXPORT ~task();
 
-    EINSUMS_EXPORT void add_metadata(StringHandle const &name, std::uint64_t val) noexcept;
-    EINSUMS_EXPORT void add_metadata(StringHandle const &name, double val) noexcept;
-    EINSUMS_EXPORT void add_metadata(StringHandle const &name, char const *val) noexcept;
-    EINSUMS_EXPORT void add_metadata(StringHandle const &name, void const *val) noexcept;
+    EINSUMS_EXPORT void add_metadata(string_handle const &name, std::uint64_t val) noexcept;
+    EINSUMS_EXPORT void add_metadata(string_handle const &name, double val) noexcept;
+    EINSUMS_EXPORT void add_metadata(string_handle const &name, char const *val) noexcept;
+    EINSUMS_EXPORT void add_metadata(string_handle const &name, void const *val) noexcept;
 
     template <typename T>
-    void add_metadata(StringHandle const &name, T const &val) noexcept {
+    void add_metadata(string_handle const &name, T const &val) noexcept {
         add_metadata(name, static_cast<void const *>(&val));
     }
 
-    Domain const &domain_;
+    domain const &domain_;
     ___itt_id    *id_ = nullptr;
-    StringHandle  sh_;
+    string_handle sh_;
 };
 
 ///////////////////////////////////////////////////////////////////////////
-struct HeapFunction {
-    EINSUMS_EXPORT HeapFunction(char const *name, char const *domain) noexcept;
+struct heap_function {
+    EINSUMS_EXPORT heap_function(char const *name, char const *domain) noexcept;
 
     __itt_heap_function heap_function_ = nullptr;
 };
 
-struct HeapInternalAccess {
-    EINSUMS_EXPORT HeapInternalAccess() noexcept;
-    EINSUMS_EXPORT ~HeapInternalAccess();
+struct heap_internal_access {
+    EINSUMS_EXPORT heap_internal_access() noexcept;
+    EINSUMS_EXPORT ~heap_internal_access();
 };
 
-struct HeapAllocate {
+struct heap_allocate {
     template <typename T>
-    HeapAllocate(HeapFunction &heap_function, T **&addr, std::size_t size, int init) noexcept
+    heap_allocate(heap_function &heap_function, T **&addr, std::size_t size, int init) noexcept
         : _heap_function(heap_function), _addr(reinterpret_cast<void **&>(addr)), _size(size), _init(init) {
         if (use_ittnotify_api) {
             EINSUMS_ITT_HEAP_ALLOCATE_BEGIN(_heap_function.heap_function_, _size, _init);
         }
     }
 
-    ~HeapAllocate() {
+    ~heap_allocate() {
         if (use_ittnotify_api) {
             EINSUMS_ITT_HEAP_ALLOCATE_END(_heap_function.heap_function_, _addr, _size, _init);
         }
     }
 
   private:
-    HeapFunction &_heap_function;
-    void       **&_addr;
-    std::size_t   _size;
-    int           _init;
+    heap_function &_heap_function;
+    void        **&_addr;
+    std::size_t    _size;
+    int            _init;
 };
 
-struct HeapFree {
-    EINSUMS_EXPORT HeapFree(HeapFunction &heap_function, void *addr) noexcept;
-    EINSUMS_EXPORT ~HeapFree();
+struct heap_free {
+    EINSUMS_EXPORT heap_free(heap_function &heap_function, void *addr) noexcept;
+    EINSUMS_EXPORT ~heap_free();
 
   private:
-    HeapFunction &_heap_function;
-    void         *_addr;
+    heap_function &_heap_function;
+    void          *_addr;
 };
 
 ///////////////////////////////////////////////////////////////////////////
-struct Counter {
-    EINSUMS_EXPORT Counter(char const *name, char const *domain) noexcept;
-    EINSUMS_EXPORT Counter(char const *name, char const *domain, int type) noexcept;
-    EINSUMS_EXPORT ~Counter();
+struct counter {
+    EINSUMS_EXPORT counter(char const *name, char const *domain) noexcept;
+    EINSUMS_EXPORT counter(char const *name, char const *domain, int type) noexcept;
+    EINSUMS_EXPORT ~counter();
 
     template <typename T>
     void set_value(T const &value) noexcept {
@@ -351,11 +351,11 @@ struct Counter {
         }
     }
 
-    Counter(Counter const &rhs) = delete;
-    Counter(Counter &&rhs) noexcept : _id(rhs._id) { rhs._id = nullptr; }
+    counter(counter const &rhs) = delete;
+    counter(counter &&rhs) noexcept : _id(rhs._id) { rhs._id = nullptr; }
 
-    auto operator=(Counter const &rhs) -> Counter & = delete;
-    auto operator=(Counter &&rhs) noexcept -> Counter & {
+    auto operator=(counter const &rhs) -> counter & = delete;
+    auto operator=(counter &&rhs) noexcept -> counter & {
         if (this != &rhs) {
             _id     = rhs._id;
             rhs._id = nullptr;
@@ -368,8 +368,8 @@ struct Counter {
 };
 
 ///////////////////////////////////////////////////////////////////////////
-struct Event {
-    Event(char const *name) noexcept : _event(itt_event_create(name, (int)strnlen(name, 256))) {}
+struct event {
+    event(char const *name) noexcept : _event(itt_event_create(name, (int)strnlen(name, 256))) {}
 
     void start() const noexcept { itt_event_start(_event); }
 
@@ -379,15 +379,15 @@ struct Event {
     int _event = 0;
 };
 
-struct MarkEvent {
-    MarkEvent(Event const &e) noexcept : _e(e) { _e.start(); }
-    ~MarkEvent() { _e.end(); }
+struct mark_event {
+    mark_event(event const &e) noexcept : _e(e) { _e.start(); }
+    ~mark_event() { _e.end(); }
 
   private:
-    Event _e;
+    event _e;
 };
 
-inline void event_tick(Event const &e) noexcept {
+inline void event_tick(event const &e) noexcept {
     e.start();
 }
 } // namespace einsums::util::itt
@@ -521,107 +521,107 @@ struct ThreadDescription;
 
 namespace einsums::util::itt {
 
-struct StackContext {
-    StackContext()  = default;
-    ~StackContext() = default;
+struct stack_context {
+    stack_context()  = default;
+    ~stack_context() = default;
 };
 
-struct CallerContext {
-    constexpr CallerContext(StackContext &) noexcept {}
-    ~CallerContext() = default;
-};
-
-//////////////////////////////////////////////////////////////////////////
-struct Domain {
-    EINSUMS_NON_COPYABLE(Domain);
-
-    constexpr Domain(char const *) noexcept {}
-    Domain() = default;
-};
-
-struct ThreadDomain : Domain {
-    EINSUMS_NON_COPYABLE(ThreadDomain);
-
-    ThreadDomain() = default;
-};
-
-struct Id {
-    constexpr Id(Domain const &, void *, unsigned long = 0) noexcept {}
-    ~Id() = default;
-};
-
-///////////////////////////////////////////////////////////////////////////
-struct FrameContext {
-    constexpr FrameContext(Domain const &, Id * = nullptr) noexcept {}
-    ~FrameContext() = default;
-};
-
-struct UndoFrameContext {
-    constexpr UndoFrameContext(FrameContext const &) noexcept {}
-    ~UndoFrameContext() = default;
-};
-
-///////////////////////////////////////////////////////////////////////////
-struct MarkContext {
-    constexpr MarkContext(char const *) noexcept {}
-    ~MarkContext() = default;
-};
-
-struct UndoMarkContext {
-    constexpr UndoMarkContext(MarkContext const &) noexcept {}
-    ~UndoMarkContext() = default;
-};
-
-///////////////////////////////////////////////////////////////////////////
-struct StringHandle {
-    constexpr StringHandle(char const * = nullptr) noexcept {}
+struct caller_context {
+    constexpr caller_context(stack_context &) noexcept {}
+    ~caller_context() = default;
 };
 
 //////////////////////////////////////////////////////////////////////////
-struct Task {
-    constexpr Task(Domain const &, StringHandle const &, std::uint64_t) noexcept {}
-    constexpr Task(Domain const &, StringHandle const &) noexcept {}
+struct domain {
+    EINSUMS_NON_COPYABLE(domain);
 
-    ~Task() = default;
+    constexpr domain(char const *) noexcept {}
+    domain() = default;
+};
+
+struct thread_domain : domain {
+    EINSUMS_NON_COPYABLE(thread_domain);
+
+    thread_domain() = default;
+};
+
+struct id {
+    constexpr id(domain const &, void *, unsigned long = 0) noexcept {}
+    ~id() = default;
 };
 
 ///////////////////////////////////////////////////////////////////////////
-struct HeapFunction {
-    constexpr HeapFunction(char const *, char const *) noexcept {}
-    ~HeapFunction() = default;
+struct frame_context {
+    constexpr frame_context(domain const &, id * = nullptr) noexcept {}
+    ~frame_context() = default;
 };
 
-struct HeapAllocate {
+struct undo_frame_context {
+    constexpr undo_frame_context(frame_context const &) noexcept {}
+    ~undo_frame_context() = default;
+};
+
+///////////////////////////////////////////////////////////////////////////
+struct mark_context {
+    constexpr mark_context(char const *) noexcept {}
+    ~mark_context() = default;
+};
+
+struct undo_mark_context {
+    constexpr undo_mark_context(mark_context const &) noexcept {}
+    ~undo_mark_context() = default;
+};
+
+///////////////////////////////////////////////////////////////////////////
+struct string_handle {
+    constexpr string_handle(char const * = nullptr) noexcept {}
+};
+
+//////////////////////////////////////////////////////////////////////////
+struct task {
+    constexpr task(domain const &, string_handle const &, std::uint64_t) noexcept {}
+    constexpr task(domain const &, string_handle const &) noexcept {}
+
+    ~task() = default;
+};
+
+///////////////////////////////////////////////////////////////////////////
+struct heap_function {
+    constexpr heap_function(char const *, char const *) noexcept {}
+    ~heap_function() = default;
+};
+
+struct heap_allocate {
     template <typename T>
-    constexpr HeapAllocate(HeapFunction & /*heap_function*/, T **, std::size_t, int) noexcept {}
-    ~HeapAllocate() = default;
+    constexpr heap_allocate(heap_function & /*heap_function*/, T **, std::size_t, int) noexcept {}
+    ~heap_allocate() = default;
 };
 
-struct HeapFree {
-    constexpr HeapFree(HeapFunction & /*heap_function*/, void *) noexcept {}
-    ~HeapFree() = default;
+struct heap_free {
+    constexpr heap_free(heap_function & /*heap_function*/, void *) noexcept {}
+    ~heap_free() = default;
 };
 
-struct HeapInternalAccess {
-    HeapInternalAccess()  = default;
-    ~HeapInternalAccess() = default;
+struct heap_internal_access {
+    heap_internal_access()  = default;
+    ~heap_internal_access() = default;
 };
 
-struct Counter {
-    constexpr Counter(char const * /*name*/, char const * /*domain*/) noexcept {}
-    ~Counter() = default;
+struct counter {
+    constexpr counter(char const * /*name*/, char const * /*domain*/) noexcept {}
+    ~counter() = default;
 };
 
-struct Event {
-    constexpr Event(char const *) noexcept {}
+struct event {
+    constexpr event(char const *) noexcept {}
 };
 
-struct MarkEvent {
-    constexpr MarkEvent(Event const &) noexcept {}
-    ~MarkEvent() = default;
+struct mark_event {
+    constexpr mark_event(event const &) noexcept {}
+    ~mark_event() = default;
 };
 
-inline constexpr void event_tick(Event const &) noexcept {
+inline constexpr void event_tick(event const &) noexcept {
 }
 } // namespace einsums::util::itt
 

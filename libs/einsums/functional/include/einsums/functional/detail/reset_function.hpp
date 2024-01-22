@@ -7,3 +7,20 @@
 
 #include <einsums/functional/function.hpp>
 #include <einsums/functional/unique_function.hpp>
+
+namespace einsums::util::detail {
+template <typename Sig>
+inline void reset_function(einsums::util::detail::function<Sig> &f) {
+    f.reset();
+}
+
+template <typename Sig>
+inline void reset_function(einsums::util::detail::unique_function<Sig> &f) {
+    f.reset();
+}
+
+template <typename Function>
+inline void reset_function(Function &f) {
+    f = Function();
+}
+} // namespace einsums::util::detail

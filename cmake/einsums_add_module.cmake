@@ -110,7 +110,7 @@ function(einsums_add_module libname modulename)
     endif()
 
     # generate configuration header for this module
-    set(config_header "${CMAKE_CURRENT_BINARY_DIR}/include/einsums/${modulename}/config/Defines.hpp")
+    set(config_header "${CMAKE_CURRENT_BINARY_DIR}/include/einsums/${modulename}/config/defines.hpp")
     einsums_write_config_defines_file(NAMESPACE ${modulename_upper} FILENAME ${config_header})
     set(generated_headers ${generated_headers} ${config_header})
 

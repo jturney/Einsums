@@ -5,7 +5,7 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(runtime_headers einsums/runtime/Runtime.hpp einsums/runtime/StartupFunction.hpp einsums/runtime/State.hpp)
+set(runtime_headers einsums/runtime/Runtime.hpp einsums/runtime/StartupFunction.hpp einsums/runtime/state.hpp)
 
 set(runtime_sources Runtime.cpp)
 

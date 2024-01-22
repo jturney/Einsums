@@ -17,6 +17,7 @@ Einsums modules
    /libs/einsums/concepts/docs/index.rst
    /libs/einsums/config/docs/index.rst
    /libs/einsums/core/docs/index.rst
+   /libs/einsums/coroutines/docs/index.rst
    /libs/einsums/debugging/docs/index.rst
    /libs/einsums/errors/docs/index.rst
    /libs/einsums/functional/docs/index.rst
@@ -24,6 +25,7 @@ Einsums modules
    /libs/einsums/init_runtime/docs/index.rst
    /libs/einsums/itt/docs/index.rst
    /libs/einsums/linear_algebra/docs/index.rst
+   /libs/einsums/memory/docs/index.rst
    /libs/einsums/pfr/docs/index.rst
    /libs/einsums/preprocessor/docs/index.rst
    /libs/einsums/runtime/docs/index.rst

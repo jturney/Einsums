@@ -6,6 +6,8 @@ CheckOptions:
     value: lower_case
   - key: readability-identifier-naming.PrivateMemberPrefix
     value: _
+  - key: readability-identifier-naming.ProtectedMemberPrefix
+    value: _
   - key: readability-identifier-naming.StructCase
     value: lower_case
   - key: readability-identifier-naming.FunctionCase

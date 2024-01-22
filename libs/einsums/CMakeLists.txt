@@ -15,6 +15,7 @@ set(_einsums_einsums_modules
     concepts
     config
     core
+    coroutines
     debugging
     errors
     functional
@@ -22,6 +23,7 @@ set(_einsums_einsums_modules
     init_runtime
     itt
     linear_algebra
+    memory
     pfr
     preprocessor
     runtime
