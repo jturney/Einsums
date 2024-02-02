@@ -29,9 +29,11 @@ Einsums modules
    /libs/einsums/pfr/docs/index.rst
    /libs/einsums/preprocessor/docs/index.rst
    /libs/einsums/runtime/docs/index.rst
+   /libs/einsums/string_util/docs/index.rst
    /libs/einsums/tensor/docs/index.rst
    /libs/einsums/tensor_algebra/docs/index.rst
    /libs/einsums/thread_support/docs/index.rst
    /libs/einsums/threading_base/docs/index.rst
+   /libs/einsums/topology/docs/index.rst
    /libs/einsums/type_support/docs/index.rst
    /libs/einsums/version/docs/index.rst

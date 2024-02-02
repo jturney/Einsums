@@ -355,7 +355,7 @@ einsums_option(
 
 # Thread Manager related build options
 
-set(EINSUMS_MAX_CPU_COUNT_DEFAULT "")
+set(EINSUMS_MAX_CPU_COUNT_DEFAULT "128")
 einsums_option(
     EINSUMS_WITH_MAX_CPU_COUNT
     STRING
@@ -1190,6 +1190,7 @@ include(einsums_setup_fmt)
 include(einsums_setup_allocator)
 include(einsums_setup_rangev3)
 include(einsums_setup_snitch)
+include(einsums_setup_hwloc)
 # include(einsums_setup_hptt) include(einsums_setup_h5cpp)
 
 # Other dependencies:

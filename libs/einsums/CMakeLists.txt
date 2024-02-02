@@ -27,10 +27,12 @@ set(_einsums_einsums_modules
     pfr
     preprocessor
     runtime
+    string_util
     tensor
     tensor_algebra
     thread_support
     threading_base
+    topology
     type_support
     version
 )
