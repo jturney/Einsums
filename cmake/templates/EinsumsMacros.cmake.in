@@ -1,0 +1,62 @@
+#----------------------------------------------------------------------------------------------
+# Copyright (c) The Einsums Developers. All rights reserved.
+# Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+#----------------------------------------------------------------------------------------------
+
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "@EINSUMS_CMAKE_MODULE_PATH@")
+
+include(GNUInstallDirs)
+include(einsums_utils)
+
+function(einsums_check_compiler_compatibility)
+  if (EINSUMS_IGNORE_COMPILER_COMPATIBILITY)
+    return()
+  endif ()
+
+  if (EINSUMS_WITH_BUILD_BINARY_PACKAGE)
+    string(REGEX MATCH "[0-9]+" EINSUMS_MAJOR_VERSION "${EINSUMS_CXX_COMPILER_VERSION}")
+    string(REGEX MATCH "[0-9]+" CXX_MAJOR_VERSION "${CMAKE_CXX_COMPILER_VERSION}")
+
+    if (NOT (${CMAKE_CXX_COMPILER_ID} STREQUAL ${EINSUMS_CXX_COMPILER_ID} AND
+        ${EINSUMS_MAJOR_VERSION} STREQUAL ${CXX_MAJOR_VERSION}))
+      set(MESSAGE "Compilers do not match. In order to compile einsums application it is"
+          " recommended to use the same major version of the compiler as you did for einsums. "
+          "EINSUMS_CXX_COMPILER=${EINSUMS_CXX_COMPILER}, "
+          "CMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}. "
+          "EINSUMS_CXX_COMPILER_ID=${EINSUMS_CXX_COMPILER_ID}, "
+          "CMAKE_CXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID}. "
+          "EINSUMS_CXX_MAJOR_VERSION=${EINSUMS_MAJOR_VERSION}, "
+          "CMAKE_CXX_COMPILER_VERSION=${CXX_MAJOR_VERSION}."
+          "To disable this message set EINSUMS_IGNORE_COMPILER_COMPATIBILITY to On.")
+
+      if (EINSUMS_FIND_REQUIRED)
+        einsums_error("${MESSAGE}")
+      else ()
+        einsums_warn("${MESSAGE}")
+        set(${CMAKE_FIND_PACKAGE_NAME}_NOT_FOUND_MESSAGE "${MESSAGE}" PARENT_SCOPE)
+        set(${CMAKE_FIND_PACKAGE_NAME}_FOUND False PARENT_SCOPE)
+      endif ()
+    endif ()
+  else ()
+    if (NOT (${CMAKE_CXX_COMPILER_ID} STREQUAL ${EINSUMS_CXX_COMPILER_ID} AND
+        ${CMAKE_CXX_COMPILER_VERSION} STREQUAL ${EINSUMS_CXX_COMPILER_VERSION}))
+      set(MESSAGE "Compilers do not match. In order to compile einsums application it is"
+          " recommended to use the same compiler as you did for einsums. "
+          "EINSUMS_CXX_COMPILER=${EINSUMS_CXX_COMPILER}, "
+          "CMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}. "
+          "EINSUMS_CXX_COMPILER_ID=${EINSUMS_CXX_COMPILER_ID}, "
+          "CMAKE_CXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID}. "
+          "EINSUMS_CXX_COMPILER_VERSION=${EINSUMS_CXX_COMPILER_VERSION}, "
+          "CMAKE_CXX_COMPILER_VERSION=${CMAKE_CXX_COMPILER_VERSION}."
+          "To disable this message set EINSUMS_IGNORE_COMPILER_COMPATIBILITY to On.")
+
+      if (EINSUMS_FIND_REQUIRED)
+        einsums_error("${MESSAGE}")
+      else ()
+        einsums_warn("${MESSAGE}")
+        set(${CMAKE_FIND_PACKAGE_NAME}_NOT_FOUND_MESSAGE "${MESSAGE}" PARENT_SCOPE)
+        set(${CMAKE_FIND_PACKAGE_NAME}_FOUND False PARENT_SCOPE)
+      endif ()
+    endif ()
+  endif ()
+endfunction()

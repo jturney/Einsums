@@ -1,11 +1,12 @@
 {
-  "name": "einsums",
-  "image": "jetturney/code-dev:latest",
+  "name": "Einsums",
+  // "image": "nvcr.io/nvidia/nvhpc:24.5-runtime-cuda12.4-ubuntu22.04",
+  "image": "jetturney/test",
   "runArgs": [
+    "--gpus=all",
     "--cap-add=SYS_PTRACE",
     "--security-opt",
-    "seccomp=unconfined",
-    "--userns=host"
+    "seccomp=unconfined"
   ],
   "remoteUser": "vscode",
   "customizations": {
@@ -27,7 +28,8 @@
         "ms-vscode.cmake-tools",
         "llvm-vs-code-extensions.vscode-clangd",
         "mutantdino.resourcemonitor",
-        "matepek.vscode-catch2-test-adapter"
+        "matepek.vscode-catch2-test-adapter",
+        "RSIP-Vision.nvidia-smi-plus"
       ]
     }
   }

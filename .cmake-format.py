@@ -1,12 +1,11 @@
-'''
-----------------------------------------------------------------------------------------------
- Copyright (c) The JeSstudio Developers. All rights reserved.
- Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-----------------------------------------------------------------------------------------------
-'''
+# Copyright (c) 2020 Hartmut Kaiser
+#
+# SPDX-License-Identifier: BSL-1.0
+# Distributed under the Boost Software License, Version 1.0. (See accompanying
+# file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
 # This cmake-format configuration file is a suggested configuration file for
-# formatting CMake files for the JetStudio project.
+# formatting CMake files for the einsums project.
 
 # PLEASE NOTE: This file has been created and tested with cmake-format V0.6.10
 
@@ -14,6 +13,7 @@
 # Options affecting formatting.
 # -----------------------------
 with section("format"):
+
     # If true, separate function names from parentheses with a space
     separate_fn_name_with_space = False
 
@@ -35,7 +35,7 @@ with section("format"):
 
     # If an argument group contains more than this many sub-groups (parg or kwarg
     # groups) then force it to a vertical layout.
-    max_subgroups_hwrap = 2
+    max_subgroups_hwrap = 4
 
     # If the statement spelling length (including space and parenthesis) is
     # smaller than this amount, then force reject nested layouts.
@@ -49,7 +49,7 @@ with section("format"):
     # lines, then reject the layout.
     max_lines_hwrap = 2
 
-    # If true, the parsers may infer whether or not an argument list is sortable
+    # If true, the parsers may infer whether an argument list is sortable
     # (without annotation).
     autosort = False
 
@@ -57,7 +57,7 @@ with section("format"):
     line_ending = u"auto"
 
     # How wide to allow formatted cmake files
-    line_width = 180
+    line_width = 100
 
     # If a statement is wrapped to more than one line, than dangle the closing
     # parenthesis on its own line.
@@ -77,7 +77,7 @@ with section("format"):
     max_rows_cmdline = 2
 
     # By default, if cmake-format cannot successfully fit everything into the
-    # desired linewidth it will apply the last, most aggressive attempt that it
+    # desired line width it will apply the last, most aggressive attempt that it
     # made.  If this flag is True, however, cmake-format will print error, exit
     # with non-zero status code, and write-out nothing
     require_valid_layout = False
@@ -86,7 +86,7 @@ with section("format"):
     keyword_case = u"unchanged"
 
     # If true, the argument lists which are known to be sortable will be sorted
-    # lexicographicall
+    # lexicographically
     enable_sort = True
 
     # A dictionary mapping layout nodes to a list of wrap decisions.  See the
@@ -97,6 +97,7 @@ with section("format"):
 # Options affecting comment reflow and formatting.
 # ------------------------------------------------
 with section("markup"):
+
     # If comment markup is enabled, don't reflow any comment block which matches
     # this (regex) pattern.  Default is `None` (disabled).
     literal_comment_pattern = None
@@ -140,6 +141,7 @@ with section("markup"):
 # Options affecting the linter
 # ----------------------------
 with section("lint"):
+
     # regular expression pattern describing valid function names
     function_pattern = u"[0-9a-z_]+"
 
@@ -196,6 +198,7 @@ with section("lint"):
 # Miscellaneous configurations options.
 # -------------------------------------
 with section("misc"):
+
     # A dictionary containing any per-command configuration overrides.  Currently
     # only `command_case` is supported.
     per_command = {}
@@ -204,34 +207,329 @@ with section("misc"):
 # Options affecting listfile parsing
 # ----------------------------------
 with section("parse"):
+
     # Specify structure for custom cmake functions
     # (the body of this structure was generated using
-    #     'cmake-genparsers -f python cmake/jetstudio*.cmake'
+    #     'cmake-genparsers -f python cmake/einsums*.cmake'
     #
     additional_commands = {
-        "add_einsums_library": {
+        "einsums_add_compile_test": {
             "kwargs": {
-                "COMPILER_FLAGS": "+",
-                "DEPENDS": "+",
-                "PUBLIC_DEPENDS": "+",
-                "INCLUDES": "+",
-                "PUBLIC_INCLUDES": "+",
+                "DEPENDENCIES": "+",
                 "FOLDER": 1,
                 "SOURCES": "+",
+                "SOURCE_ROOT": 1,
+            },
+            "pargs": {"flags": ["FAILURE_EXPECTED", "NOLIBS"], "nargs": "2+"},
+        },
+        "einsums_add_compile_test_target_dependencies": {
+            "kwargs": {
+                "DEPENDENCIES": "+",
+                "FOLDER": 1,
+                "SOURCES": "+",
+                "SOURCE_ROOT": 1,
+            },
+            "pargs": {"flags": ["FAILURE_EXPECTED", "NOLIBS"], "nargs": "2+"},
+        },
+        "einsums_add_config_test": {
+            "kwargs": {
+                "ARGS": "+",
+                "CMAKECXXFEATURE": 1,
+                "COMPILE_DEFINITIONS": "+",
+                "DEFINITIONS": "+",
+                "INCLUDE_DIRECTORIES": "+",
+                "LIBRARIES": "+",
+                "LINK_DIRECTORIES": "+",
+                "REQUIRED": "+",
+                "ROOT": 1,
+                "SOURCE": 1,
+            },
+            "pargs": {"flags": ["FILE", "EXECUTE"], "nargs": "1+"},
+        },
+        "einsums_add_example_target_dependencies": {
+            "kwargs": {},
+            "pargs": {"flags": ["DEPS_ONLY"], "nargs": "2+"},
+        },
+        "einsums_add_example_test": {"pargs": {"nargs": 2}},
+        "einsums_add_executable": {
+            "kwargs": {
+                "AUXILIARY": "+",
+                "COMPILE_FLAGS": "+",
+                "DEPENDENCIES": "+",
+                "FOLDER": 1,
+                "HEADERS": "+",
+                "HEADER_GLOB": 1,
+                "HEADER_ROOT": 1,
+                "INI": 1,
+                "INSTALL_SUFFIX": 1,
+                "LANGUAGE": 1,
+                "LINK_FLAGS": "+",
+                "OUTPUT_SUFFIX": 1,
+                "SOURCES": "+",
+                "SOURCE_GLOB": 1,
+                "SOURCE_ROOT": 1,
+            },
+            "pargs": {
+                "flags": [
+                    "EXCLUDE_FROM_ALL",
+                    "EXCLUDE_FROM_DEFAULT_BUILD",
+                    "INTERNAL_FLAGS",
+                    "NOLIBS",
+                ],
+                "nargs": "1+",
             },
         },
-        "extend_einsums_target": {
+        "einsums_add_header_tests": {
+            "kwargs": {
+                "DEPENDENCIES": "+",
+                "EXCLUDE": "+",
+                "EXCLUDE_FROM_ALL": "+",
+                "HEADERS": "+",
+                "HEADER_ROOT": 1,
+            },
+            "pargs": {"flags": ["NOLIBS"], "nargs": "1+"},
+        },
+        "einsums_add_headers_compile_test": {
+            "kwargs": {
+                "DEPENDENCIES": "+",
+                "FOLDER": 1,
+                "SOURCES": "+",
+                "SOURCE_ROOT": 1,
+            },
+            "pargs": {"flags": ["FAILURE_EXPECTED", "NOLIBS"], "nargs": "2+"},
+        },
+        "einsums_add_library": {
+            "kwargs": {
+                "AUXILIARY": "+",
+                "COMPILER_FLAGS": "+",
+                "DEPENDENCIES": "+",
+                "FOLDER": 1,
+                "HEADERS": "+",
+                "HEADER_GLOB": 1,
+                "HEADER_ROOT": 1,
+                "INSTALL_SUFFIX": 1,
+                "LINK_FLAGS": "+",
+                "OUTPUT_SUFFIX": 1,
+                "SOURCES": "+",
+                "SOURCE_GLOB": 1,
+                "SOURCE_ROOT": 1,
+            },
+            "pargs": {
+                "flags": [
+                    "EXCLUDE_FROM_ALL",
+                    "INTERNAL_FLAGS",
+                    "NOLIBS",
+                    "NOEXPORT",
+                    "STATIC",
+                    "NONAMEPREFIX",
+                ],
+                "nargs": "1+",
+            },
+        },
+        "einsums_add_library_headers": {
+            "kwargs": {"EXCLUDE": "+", "GLOBS": "+"},
+            "pargs": {"flags": ["APPEND"], "nargs": "2+"},
+        },
+        "einsums_add_library_headers_noglob": {
+            "kwargs": {"EXCLUDE": "+", "HEADERS": "+"},
+            "pargs": {"flags": ["APPEND"], "nargs": "1+"},
+        },
+        "einsums_add_library_sources": {
+            "kwargs": {"EXCLUDE": "+", "GLOBS": "+"},
+            "pargs": {"flags": ["APPEND"], "nargs": "2+"},
+        },
+        "einsums_add_library_sources_noglob": {
+            "kwargs": {"EXCLUDE": "+", "SOURCES": "+"},
+            "pargs": {"flags": ["APPEND"], "nargs": "1+"},
+        },
+        "einsums_add_module": {
             "kwargs": {
                 "CMAKE_SUBDIRS": "+",
                 "DEPENDENCIES": "+",
+                "EXCLUDE_FROM_GLOBAL_HEADER": "+",
+                "GLOBAL_HEADER_GEN": 1,
                 "HEADERS": "+",
                 "OBJECTS": "+",
                 "MODULE_DEPENDENCIES": "+",
                 "SOURCES": "+",
-                "DEFINES": "+",
-                "CONDITION": "+",
-                "FEATURE_INFO": "1"
             },
+            "pargs": {
+                "flags": ["FORCE_LINKING_GEN", "CUDA", "CONFIG_FILES"],
+                "nargs": "1+",
+            },
+        },
+        "einsums_add_performance_test": {"pargs": {"nargs": 2}},
+        "einsums_add_pseudo_dependencies": {"pargs": {"nargs": 0}},
+        "einsums_add_pseudo_dependencies_no_shortening": {"pargs": {"nargs": 0}},
+        "einsums_add_pseudo_target": {"pargs": {"nargs": 0}},
+        "einsums_add_regression_compile_test": {
+            "kwargs": {
+                "DEPENDENCIES": "+",
+                "FOLDER": 1,
+                "SOURCES": "+",
+                "SOURCE_ROOT": 1,
+            },
+            "pargs": {"flags": ["FAILURE_EXPECTED", "NOLIBS"], "nargs": "2+"},
+        },
+        "einsums_add_regression_test": {"pargs": {"nargs": 2}},
+        "einsums_add_source_group": {
+            "kwargs": {"CLASS": 1, "NAME": 1, "ROOT": 1, "TARGETS": "+"},
+            "pargs": {"flags": [], "nargs": "*"},
+        },
+        "einsums_add_test": {
+            "kwargs": {
+                "ARGS": "+",
+                "EXECUTABLE": 1,
+                "RANKS": 1,
+            },
+            "pargs": {"flags": ["FAILURE_EXPECTED"], "nargs": "2+"},
+        },
+        "einsums_add_test_target_dependencies": {
+            "kwargs": {"PSEUDO_DEPS_NAME": 1},
+            "pargs": {"flags": [], "nargs": "2+"},
+        },
+        "einsums_add_unit_compile_test": {
+            "kwargs": {
+                "DEPENDENCIES": "+",
+                "FOLDER": 1,
+                "SOURCES": "+",
+                "SOURCE_ROOT": 1,
+            },
+            "pargs": {"flags": ["FAILURE_EXPECTED", "NOLIBS"], "nargs": "2+"},
+        },
+        "einsums_add_unit_test": {
+            "kwargs": {
+                "DEPENDENCIES": "+",
+                "FOLDER": 1,
+                "SOURCES": "+",
+                "SOURCE_ROOT": 1,
+            },
+            "pargs": {"flags": ["FAILURE_EXPECTED", "NOLIBS"], "nargs": "2+"},
+        },
+        "einsums_add_test_and_deps_compile_test": {
+            "kwargs": {
+                "DEPENDENCIES": "+",
+                "FOLDER": 1,
+                "SOURCES": "+",
+                "SOURCE_ROOT": 1,
+            },
+            "pargs": {"flags": ["FAILURE_EXPECTED", "NOLIBS"], "nargs": "3+"},
+        },
+        "einsums_add_test_and_deps_test": {"pargs": {"nargs": 3}},
+        "einsums_create_configuration_summary": {"pargs": {"nargs": 2}},
+        "einsums_create_symbolic_link": {"pargs": {"nargs": 2}},
+        "einsums_get_target_property": {"pargs": {"nargs": 3}},
+        "einsums_add_compile_flag": {"pargs": {"nargs": 0}},
+        "einsums_add_compile_flag_if_available": {
+            "kwargs": {"CONFIGURATIONS": "+", "LANGUAGES": "+", "NAME": 1},
+            "pargs": {"flags": [], "nargs": "1+"},
+        },
+        "einsums_add_config_cond_define": {"pargs": {"nargs": 1}},
+        "einsums_add_config_define": {"pargs": {"nargs": 1}},
+        "einsums_add_config_define_namespace": {
+            "kwargs": {"DEFINE": 1, "NAMESPACE": 1, "VALUE": "+"},
+            "pargs": {"flags": [], "nargs": "*"},
+        },
+        "einsums_add_link_flag": {
+            "kwargs": {"CONFIGURATIONS": "+", "TARGETS": "+"},
+            "pargs": {"flags": [], "nargs": "1+"},
+        },
+        "einsums_add_link_flag_if_available": {
+            "kwargs": {"NAME": 1, "TARGETS": "+"},
+            "pargs": {"flags": [], "nargs": "1+"},
+        },
+        "einsums_add_target_compile_definition": {
+            "kwargs": {"CONFIGURATIONS": "+"},
+            "pargs": {"flags": ["PUBLIC"], "nargs": "1+"},
+        },
+        "einsums_add_target_compile_option": {
+            "kwargs": {"CONFIGURATIONS": "+", "LANGUAGES": "+"},
+            "pargs": {"flags": ["PUBLIC"], "nargs": "1+"},
+        },
+        "einsums_add_target_compile_option_if_available": {
+            "kwargs": {"CONFIGURATIONS": "+", "LANGUAGES": "+", "NAME": 1},
+            "pargs": {"flags": ["PUBLIC"], "nargs": "1+"},
+        },
+        "einsums_append_property": {"pargs": {"nargs": 2}},
+        "einsums_check_for_cxx11_std_atomic": {"pargs": {"nargs": 0}},
+        "einsums_check_for_cxx11_std_atomic_128bit": {"pargs": {"nargs": 0}},
+        "einsums_check_for_cxx11_std_quick_exit": {"pargs": {"nargs": 0}},
+        "einsums_check_for_cxx11_std_shared_ptr_lwg3018": {"pargs": {"nargs": 0}},
+        "einsums_check_for_cxx17_aligned_new": {"pargs": {"nargs": 0}},
+        "einsums_check_for_cxx17_hardware_destructive_interference_size": {
+            "pargs": {"nargs": 0}
+        },
+        "einsums_check_for_libfun_std_experimental_optional": {"pargs": {"nargs": 0}},
+        "einsums_check_for_unistd_h": {"pargs": {"nargs": 0}},
+        "einsums_collect_usage_requirements": {
+            "kwargs": {"EXCLUDE": "+"},
+            "pargs": {"flags": [], "nargs": "10+"},
+        },
+        "einsums_config_loglevel": {"pargs": {"nargs": 2}},
+        "einsums_construct_cflag_list": {"pargs": {"nargs": 6}},
+        "einsums_construct_library_list": {"pargs": {"nargs": 3}},
+        "einsums_cpuid": {"pargs": {"nargs": 2}},
+        "einsums_debug": {"pargs": {"nargs": 0}},
+        "einsums_error": {"pargs": {"nargs": 0}},
+        "einsums_export_modules_targets": {"pargs": {"nargs": 0}},
+        "einsums_export_targets": {"pargs": {"nargs": 0}},
+        "einsums_force_out_of_tree_build": {"pargs": {"nargs": 1}},
+        "einsums_info": {"pargs": {"nargs": 0}},
+        "einsums_message": {"pargs": {"nargs": 1}},
+        "einsums_option": {
+            "kwargs": {"CATEGORY": 1, "MODULE": 1, "STRINGS": "+"},
+            "pargs": {"flags": ["ADVANCED"], "nargs": "4+"},
+        },
+        "einsums_perform_cxx_feature_tests": {"pargs": {"nargs": 0}},
+        "einsums_print_list": {"pargs": {"nargs": 3}},
+        "einsums_remove_link_flag": {
+            "kwargs": {"CONFIGURATIONS": "+", "TARGETS": "+"},
+            "pargs": {"flags": [], "nargs": "1+"},
+        },
+        "einsums_remove_target_compile_option": {
+            "kwargs": {"CONFIGURATIONS": "+"},
+            "pargs": {"flags": ["PUBLIC"], "nargs": "1+"},
+        },
+        "einsums_sanitize_usage_requirements": {"pargs": {"nargs": 2}},
+        "einsums_set_cmake_policy": {"pargs": {"nargs": 2}},
+        "einsums_set_lib_name": {"pargs": {"nargs": 2}},
+        "einsums_set_option": {
+            "kwargs": {"HELPSTRING": 1, "TYPE": 1, "VALUE": 1},
+            "pargs": {"flags": ["FORCE"], "nargs": "1+"},
+        },
+        "einsums_setup_target": {
+            "kwargs": {
+                "COMPILE_FLAGS": "+",
+                "DEPENDENCIES": "+",
+                "FOLDER": 1,
+                "HEADER_ROOT": 1,
+                "INSTALL_FLAGS": "+",
+                "INSTALL_PDB": "+",
+                "LINK_FLAGS": "+",
+                "NAME": 1,
+                "SOVERSION": 1,
+                "TYPE": 1,
+                "VERSION": 1,
+            },
+            "pargs": {
+                "flags": [
+                    "EXPORT",
+                    "INSTALL",
+                    "INSTALL_HEADERS",
+                    "INTERNAL_FLAGS",
+                    "NOLIBS",
+                    "NONAMEPREFIX",
+                    "NOTLLKEYWORD",
+                ],
+                "nargs": "1+",
+            },
+        },
+        "einsums_warn": {"pargs": {"nargs": 0}},
+        "einsums_setup_mpi": {"pargs": {"nargs": 0}},
+        "einsums_shorten_pseudo_target": {"pargs": {"nargs": 2}},
+        "einsums_write_config_defines_file": {
+            "kwargs": {"FILENAME": 1, "NAMESPACE": 1, "TEMPLATE": 1},
+            "pargs": {"flags": [], "nargs": "*"},
         },
     }
 
@@ -245,6 +543,7 @@ with section("parse"):
 # Options affecting file encoding
 # -------------------------------
 with section("encode"):
+
     # If true, emit the unicode byte-order mark (BOM) at the start of the file
     emit_byteorder_mark = False
 
