@@ -12,5 +12,6 @@ Einsums modules
    :maxdepth: 2
 
    /libs/einsums/config/docs/index.rst
+   /libs/einsums/debugging/docs/index.rst
    /libs/einsums/preprocessor/docs/index.rst
    /libs/einsums/runtime/docs/index.rst

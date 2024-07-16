@@ -5,20 +5,19 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(config_headers
-        einsums/config.hpp
-        einsums/config/export_definitions.hpp
+set(debugging_headers einsums/debugging/attach_debugger.hpp einsums/debugging/backtrace.hpp
+                      einsums/debugging/demangle_helper.hpp einsums/debugging/detail/backtrace.hpp
 )
 
-set(config_sources version.cpp)
+set(debugging_sources attach_debugger.cpp backtrace.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
-    einsums config CONFIG_FILES
-    GLOBAL_HEADER_GEN OFF
-    SOURCES ${config_sources}
-    HEADERS ${config_headers}
-    MODULE_DEPENDENCIES einsums_preprocessor
+    einsums debugging
+    GLOBAL_HEADER_GEN ON
+    SOURCES ${debugging_sources}
+    HEADERS ${debugging_headers}
+    MODULE_DEPENDENCIES einsums_config
     DEPENDENCIES
     CMAKE_SUBDIRS examples tests
 )

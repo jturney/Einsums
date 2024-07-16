@@ -11,6 +11,7 @@ include(Einsums_Message)
 # cmake-format: off
 set(_einsums_einsums_modules
     config
+    debugging
     preprocessor
     runtime
 )

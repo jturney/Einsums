@@ -2,15 +2,15 @@
 //  Copyright (c) The Einsums Developers. All rights reserved.
 //  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 // ----------------------------------------------------------------------------------------------
-//
 
 #pragma once
 
-#include <einsums/config/defines.hpp>
+#include <einsums/config.hpp>
 
-// #include <einsums/config/attributes.hpp>
-// #include <einsums/config/compiler_specific.hpp>
-// #include <einsums/config/emulate_deleted.hpp>
-#include <einsums/config/export_definitions.hpp>
-#include <einsums/config/modules_enabled.hpp>
-#include <einsums/config/version.hpp>
+namespace einsums::debugging {
+
+/// Tries to break an attached debugger, if not supported a loop is
+/// invoked which gives enough time to attach a debugger manually.
+EINSUMS_EXPORT void attach_debugger();
+
+}

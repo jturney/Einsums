@@ -1,13 +1,36 @@
-Checks: '-*,performance-*,misc-*,-misc-non-private-member-variables-in-classes,modernize-*,bugprone-*,-bugprone-reserved-identifier,-bugprone-easily-swappable-parameters,-performance-no-int-to-ptr,readability-identifier-naming,-readability-magic-numbers,-readability-identifier-length'
-CheckOptions: {
-  { readability-identifier-naming.NamespaceCase: lower_case },
-  { readability-identifier-naming.ClassCase: CamelCase },
-  { readability-identifier-naming.PrivateMemberPrefix: _ },
-  { readability-identifier-naming.StructCase: CamelCase },
-  { readability-identifier-naming.FunctionCase: lower_case },
-  { readability-identifier-naming.VariableCase: lower_case },
-  { readability-identifier-naming.GlobalConstantCase: CamelCase },
-  { readability-identifier-naming.TypeAliasCase: CamelCase },
-  { readability-identifier-length.MinimumParameterNameLength: 0 },
-  { readability-identifier-length.MinimumVariableNameLength: 0 }
-}
+Checks: >
+  -*,
+  performance-*,
+  misc-*,
+  -misc-non-private-member-variables-in-classes,
+  modernize-*,
+  bugprone-*,
+  -bugprone-reserved-identifier,
+  -bugprone-easily-swappable-parameters,
+  -performance-no-int-to-ptr,
+  readability-identifier-naming,
+  readability-braces-around-statements,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+CheckOptions:
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.PrivateMemberPrefix
+    value: _
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  - key: readability-identifier-length.MinimumParameterNameLength
+    value: 0
+  - key: readability-identifier-length.MinimumVariableNameLength
+    value: 0
+    

@@ -13,11 +13,11 @@ IndentPPDirectives: AfterHash
 AlignConsecutiveAssignments: true
 AlignConsecutiveDeclarations: true
 IncludeCategories:
-  - Regex: '^"einsums/_.*\.hpp"'
+  - Regex: '^<einsums/_.*\.hpp>'
     Priority: 1
-  - Regex: '^"einsums/.*\.h.*"'
+  - Regex: '^<einsums/.*\.h.*>'
     Priority: 2
-  - Regex: '^"range/.*"'
+  - Regex: '^<range/.*>'
     Priority: 2
   - Regex: '^<fmt/.*>'
     Priority: 4

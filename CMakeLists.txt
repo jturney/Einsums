@@ -253,12 +253,32 @@ einsums_option(
     ADVANCED
 )
 
+einsums_option(
+    EINSUMS_WITH_STACKTRACES BOOL "Attach backtraces to einsums exceptions (default: ON)" ON
+    CATEGORY "Thread Manager" ADVANCED
+)
+
 # ##################################################################################################
 # We create a target to contain libraries like rt, dl, etc. in order to remove variables
 add_library(einsums_base_libraries INTERFACE)
 
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Intel")
     target_link_libraries(einsums_base_libraries INTERFACE imf svml irng intlc)
+endif()
+
+if(EINSUMS_WITH_STACKTRACES)
+    einsums_info("Stack traces are enabled.")
+    einsums_add_config_define(EINSUMS_HAVE_STACKTRACES)
+
+    einsums_option(
+        EINSUMS_WITH_THREAD_BACKTRACE_DEPTH STRING
+        "Thread stack back trace depth being captured (default: 20)" "20" CATEGORY "Thread Manager"
+        ADVANCED
+    )
+    einsums_add_config_define(
+        EINSUMS_HAVE_THREAD_BACKTRACE_DEPTH ${EINSUMS_WITH_THREAD_BACKTRACE_DEPTH}
+    )
+
 endif()
 
 # ##################################################################################################
@@ -270,6 +290,12 @@ include(Einsums_SetupFmt)
 
 # ##################################################################################################
 # Find other dependencies.
+
+# ##################################################################################################
+# Check for misc system headers
+# ##################################################################################################
+
+einsums_check_for_unistd_h(DEFINITIONS EINSUMS_HAVE_UNISTD_H)
 
 # ##################################################################################################
 # search path configuration
