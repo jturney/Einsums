@@ -114,49 +114,35 @@ endif()
 
 # ######################################################################################################################
 
-einsums_option(EINSUMS_CONTINUOUSLY_TEST_EINSUM BOOL "Every call to TensorAlgebra::einsum is tested" OFF)
-einsums_option(EINSUMS_TEST_EINSUM_ABORT BOOL "Abort execution if an error is found" ON)
-einsums_option(EINSUMS_WARN_NOT_IMPLEMENTED BOOL "If a specific case is not implemented in einsum then warn the user" OFF)
-einsums_option(EINSUMS_SHOW_WARNING BOOL "Does the code report warnings to the user or not" ON)
-einsums_option(EINSUMS_RUNTIME_INDICES_CHECK BOOL "Check the sizes of corresponding indices at runtime" ON)
-einsums_option(EINSUMS_TEST_NANS BOOL "Test the result of every einsum for nans" OFF)
-einsums_option(EINSUMS_USE_HPTT BOOL "Use the HPTT package for tensor transpositions" ON)
-einsums_option(EINSUMS_ENABLE_TESTING BOOL "Build testing (requires Catch2)" ${PROJECT_IS_TOP_LEVEL})
-einsums_option(EINSUMS_INSTALL_CMAKEDIR STRING "Directory to which Einsums CMake config files installed." share/cmake/Einsums)
-einsums_option(EINSUMS_H5CPP_USE_OMP_ALIGNED_ALLOC BOOL "On Mac, use omp_aligned_alloc instead of aligned_alloc. Helpful for old SDK." OFF)
-einsums_option(EINSUMS_BUILD_HIP BOOL "Build HIP GPU code." OFF)
-einsums_option(EINSUMS_COVERAGE BOOL "Enable code coverage checking" OFF)
-einsums_option(EINSUMS_FAST_INTRINSICS BOOL "When generating code for GPU, use the fast math intrinsics (__expf, __sinf, etc.) \
-rather than the normal math functions (expf, sinf, etc.) for single-precision floats and single-precision complex floats." OFF)
-einsums_option(EINSUMS_ANONYMIZE BOOL "When generating error messages, decides whether to anonymize the file names or not." OFF)
+einsums_option(
+        EINSUMS_WITH_BINARY_DIR
+        PATH
+        "Root directory for libraries and executables for the build. This does not affect the installed location of libraries and executables."
+        "${PROJECT_BINARY_DIR}"
+        CATEGORY "Build Targets"
+        ADVANCED
+)
+
+# ######################################################################################################################
+
+einsums_option(
+  EINSUMS_WITH_DEPRECATION_WARNINGS BOOL "Enable warnings for deprecated features. (default: ON)" ON ADVANCED
+)
 
 if(EINSUMS_WITH_DEPRECATION_WARNINGS)
   einsums_add_config_cond_define(EINSUMS_WITH_DEPRECATION_WARNINGS 1)
 endif()
 
-    cmake_path(APPEND HIP_INSTALL_DIR "lib" "cmake" OUTPUT_VARIABLE __hip_cmake_dir)
-
-    cmake_path(APPEND __hip_cmake_dir "AMDDeviceLibs" OUTPUT_VARIABLE AMDDeviceLibs_DIR)
-    set(ENV{AMDDeviceLibs_DIR} ${AMDDeviceLibs_DIR})
-
-    cmake_path(APPEND __hip_cmake_dir "amd_comgr" OUTPUT_VARIABLE amd_comgr_DIR)
-    set(ENV{amd_comgr_DIR} ${amd_comgr_DIR})
-
-    cmake_path(APPEND __hip_cmake_dir "hipblas" OUTPUT_VARIABLE hipblas_DIR)
-    set(ENV{hipblas_DIR} ${hipblas_DIR})
-
-    cmake_path(APPEND __hip_cmake_dir "hip" OUTPUT_VARIABLE hip_DIR)
-    set(ENV{hip_DIR} ${hipblas_DIR})
-
-    cmake_path(APPEND __hip_cmake_dir "hsa-runtime64" OUTPUT_VARIABLE hsa-runtime64_DIR)
-    set(ENV{hsa-runtime64_DIR} ${hsa-runtime64_DIR})
-
-    cmake_path(APPEND __hip_cmake_dir "hipsolver" OUTPUT_VARIABLE hipsolver_DIR)
-    set(ENV{hipsolver_DIR} ${hipsolver_DIR})
-
-    enable_language(HIP)
-
-    set(ENABLE_HIP ON)
+if(WIN32)
+  set(EINSUMS_WITH_PSEUDO_DEPENDENCIES
+      OFF
+      CACHE INTERNAL "" FORCE
+  )
+else()
+  set(EINSUMS_WITH_PSEUDO_DEPENDENCIES
+      ON
+      CACHE INTERNAL "" FORCE
+  )
 endif()
 
 einsums_option(EINSUMS_WITH_UNITY_BUILD BOOL "Enable unity build for certain build targets (default: OFF)" OFF ADVANCED)
@@ -229,9 +215,22 @@ einsums_option(
 )
 
 einsums_option(
-        EINSUMS_WITH_ITTNOTIFY BOOL "Enable Amplifier (ITT) instrumentation support." OFF
-        CATEGORY "Profiling" ADVANCED
+  EINSUMS_WITH_ITTNOTIFY BOOL "Enable Amplifier (ITT) instrumentation support." ON
+  CATEGORY "Profiling"
+  ADVANCED
 )
+
+if(EINSUMS_WITH_ITTNOTIFY)
+  find_package(Amplifier)
+
+  if(NOT AMPLIFIER_FOUND)
+    einsums_error(
+      "Intel Amplifier could not be found and EINSUMS_WITH_ITTNOTIFY=On, please specify AMPLIFIER_ROOT to point to the root of your Amplifier installation"
+    )
+  endif()
+
+  einsums_add_config_define(EINSUMS_HAVE_ITTNOTIFY)
+endif()
 
 # ######################################################################################################################
 # We create a target to contain libraries like rt, dl, etc. in order to remove variables
@@ -242,37 +241,49 @@ add_library(einsums_base_libraries INTERFACE)
 # by plugins, examples or tests should be found separately in the appropriate subdirectory.
 add_subdirectory(external)
 
-if(EINSUMS_BUILD_HIP)
-    find_package(hipblas REQUIRED)
-    find_package(hipsolver REQUIRED)
-    set(CURSES_NEED_NCURSES True)
-    find_package(Curses)
+# ######################################################################################################################
+# Find other dependencies.
+
+# ######################################################################################################################
+# search path configuration
+# ######################################################################################################################
+if(EINSUMS_WITH_FULL_RPATH)
+  include(Einsums_SetFullRPATH)
 endif()
 
-add_subdirectory(src)
+# ######################################################################################################################
+# Git commit detection
+# ######################################################################################################################
+include(Einsums_GitCommit)
+einsums_add_config_define(EINSUMS_HAVE_GIT_COMMIT "\"${EINSUMS_WITH_GIT_COMMIT}\"")
 
-if(EINSUMS_COVERAGE AND NOT MSVC)
-    target_compile_options(einsums PUBLIC $<$<COMPILE_LANG_AND_ID:CXX,Clang>:-fprofile-instr-generate -fcoverage-mapping>)
-    target_compile_options(einsums PUBLIC $<$<COMPILE_LANGUAGE:HIP>:-fprofile-instr-generate -fcoverage-mapping>)
-    target_compile_options(einsums PUBLIC $<$<COMPILE_LANG_AND_ID:CXX,GNU>:--coverage>)
-    target_link_options(einsums PUBLIC -lgcov --coverage)
-    set(COV_CMD gcov)
-endif()
+include(Einsums_SetOutputPaths)
 
-if (EINSUMS_ENABLE_TESTING AND NOT MSVC)
-    target_compile_options(einsums BEFORE PUBLIC $<$<CONFIG:Debug>:$<$<COMPILE_LANG_AND_ID:CXX,Clang>:-gdwarf-4 -O0 -g3 -ggdb>>)
-    target_compile_options(einsums BEFORE PUBLIC $<$<CONFIG:Debug>:$<$<COMPILE_LANG_AND_ID:CXX,Intel>:-gdwarf-4 -O0 -g3 -ggdb>>)
-    target_compile_options(einsums BEFORE PUBLIC $<$<CONFIG:Debug>:$<$<COMPILE_LANG_AND_ID:HIP,Clang>:-gdwarf-4 -O0 -g3 -ggdb>>)
-    target_compile_options(einsums BEFORE PUBLIC $<$<CONFIG:Debug>:$<$<COMPILE_LANG_AND_ID:CXX,GNU>:-Og -g3 -ggdb>>)
-endif()
-
-if(EINSUMS_FAST_INTRINSICS)
-    target_compile_definitions(einsums PUBLIC -DEINSUMS_FAST_INTRINSICS)
-endif()
-
-if(EINSUMS_ANONYMIZE)
-    target_compile_definitions(einsums PUBLIC -DEINSUMS_ANONYMIZE)
-endif()
+# ######################################################################################################################
+# Add custom targets for tests
+# ######################################################################################################################
+if(EINSUMS_WITH_TESTS)
+  einsums_add_pseudo_target(tests)
+  if(EINSUMS_WITH_TESTS_UNIT)
+    einsums_add_pseudo_target(tests.unit)
+    einsums_add_pseudo_dependencies(tests tests.unit)
+  endif()
+  if(EINSUMS_WITH_TESTS_REGRESSIONS)
+    einsums_add_pseudo_target(tests.regressions)
+    einsums_add_pseudo_dependencies(tests tests.regressions)
+  endif()
+  if(EINSUMS_WITH_TESTS_BENCHMARKS)
+    einsums_add_pseudo_target(tests.performance)
+    einsums_add_pseudo_dependencies(tests tests.performance)
+  endif()
+  if(EINSUMS_WITH_TESTS_HEADERS)
+    einsums_add_pseudo_target(tests.headers)
+    einsums_add_pseudo_dependencies(tests tests.headers)
+  endif()
+  if(EINSUMS_WITH_EXAMPLES AND EINSUMS_WITH_TESTS_EXAMPLES)
+    einsums_add_pseudo_target(tests.examples)
+    einsums_add_pseudo_dependencies(tests tests.examples)
+  endif()
 
   enable_testing()
   include(CTest)

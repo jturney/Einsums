@@ -153,7 +153,7 @@ struct id {
 
 ///////////////////////////////////////////////////////////////////////////
 struct frame_context {
-    EINSUMS_EXPORT frame_context(domain const &domain, id *ident = nullptr) noexcept;
+    EINSUMS_EXPORT explicit frame_context(domain const &domain, id *ident = nullptr) noexcept;
     EINSUMS_EXPORT ~frame_context();
 
     domain const &_domain;
@@ -161,7 +161,7 @@ struct frame_context {
 };
 
 struct undo_frame_context {
-    EINSUMS_EXPORT undo_frame_context(frame_context &frame) noexcept;
+    EINSUMS_EXPORT explicit undo_frame_context(frame_context &frame) noexcept;
     EINSUMS_EXPORT ~undo_frame_context();
 
     frame_context &_frame;
@@ -169,7 +169,7 @@ struct undo_frame_context {
 
 ///////////////////////////////////////////////////////////////////////////
 struct mark_context {
-    EINSUMS_EXPORT mark_context(char const *name) noexcept;
+    EINSUMS_EXPORT explicit mark_context(char const *name) noexcept;
     EINSUMS_EXPORT ~mark_context();
 
     int         _itt_mark;
@@ -177,7 +177,7 @@ struct mark_context {
 };
 
 struct undo_mark_context {
-    EINSUMS_EXPORT undo_mark_context(mark_context &mark) noexcept;
+    EINSUMS_EXPORT explicit undo_mark_context(mark_context &mark) noexcept;
     EINSUMS_EXPORT ~undo_mark_context();
 
     mark_context &_mark;
@@ -187,9 +187,9 @@ struct undo_mark_context {
 struct string_handle {
     string_handle() noexcept = default;
 
-    EINSUMS_EXPORT string_handle(char const *s) noexcept;
+    EINSUMS_EXPORT explicit string_handle(char const *s) noexcept;
 
-    string_handle(___itt_string_handle *h) noexcept : _handle(h) {}
+    explicit string_handle(___itt_string_handle *h) noexcept : _handle(h) {}
 
     string_handle(string_handle const &) = default;
     string_handle(string_handle &&rhs) noexcept : _handle(rhs._handle) { rhs._handle = nullptr; }
