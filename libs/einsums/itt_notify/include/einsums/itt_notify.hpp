@@ -5,10 +5,11 @@
 
 #pragma once
 
+#include <einsums/config.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <einsums/config.hpp>
 
 // NOLINTBEGIN(bugprone-reserved-identifier)
 struct ___itt_caller;
@@ -22,7 +23,7 @@ struct ___itt_counter;
 ///////////////////////////////////////////////////////////////////////////////
 // decide whether to use the ITT notify API if it's available
 
-// #if EINSUMS_HAVE_ITTNOTIFY != 0
+#if defined(EINSUMS_HAVE_ITTNOTIFY)
 EINSUMS_EXPORT extern bool use_ittnotify_api;
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -87,33 +88,32 @@ EINSUMS_EXPORT void itt_metadata_add(___itt_domain *domain, ___itt_id *id, ___it
 
 ///////////////////////////////////////////////////////////////////////////////
 
-namespace einsums {
-namespace itt {
+namespace einsums::itt {
 
 struct stack_context {
     EINSUMS_EXPORT stack_context();
     EINSUMS_EXPORT ~stack_context();
 
     stack_context(stack_context const &rhs) = delete;
-    stack_context(stack_context &&rhs) noexcept : itt_context_(rhs.itt_context_) { rhs.itt_context_ = nullptr; }
+    stack_context(stack_context &&rhs) noexcept : _itt_context(rhs._itt_context) { rhs._itt_context = nullptr; }
 
     stack_context &operator=(stack_context const &rhs) = delete;
     stack_context &operator=(stack_context &&rhs) noexcept {
         if (this != &rhs) {
-            itt_context_     = rhs.itt_context_;
-            rhs.itt_context_ = nullptr;
+            _itt_context     = rhs._itt_context;
+            rhs._itt_context = nullptr;
         }
         return *this;
     }
 
-    struct ___itt_caller *itt_context_ = nullptr;
+    ___itt_caller *_itt_context = nullptr;
 };
 
 struct caller_context {
-    EINSUMS_EXPORT caller_context(stack_context &ctx);
+    EINSUMS_EXPORT explicit caller_context(stack_context &ctx);
     EINSUMS_EXPORT ~caller_context();
 
-    stack_context &ctx_;
+    stack_context &_ctx;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -121,9 +121,9 @@ struct domain {
     EINSUMS_NON_COPYABLE(domain);
 
     domain() = default;
-    EINSUMS_EXPORT domain(char const *) noexcept;
+    EINSUMS_EXPORT explicit domain(char const *) noexcept;
 
-    ___itt_domain *domain_ = nullptr;
+    ___itt_domain *_domain = nullptr;
 };
 
 struct thread_domain : domain {
@@ -137,18 +137,18 @@ struct id {
     EINSUMS_EXPORT ~id();
 
     id(id const &rhs) = delete;
-    id(id &&rhs) noexcept : id_(rhs.id_) { rhs.id_ = nullptr; }
+    id(id &&rhs) noexcept : _id(rhs._id) { rhs._id = nullptr; }
 
     id &operator=(id const &rhs) = delete;
     id &operator=(id &&rhs) noexcept {
         if (this != &rhs) {
-            id_     = rhs.id_;
-            rhs.id_ = nullptr;
+            _id     = rhs._id;
+            rhs._id = nullptr;
         }
         return *this;
     }
 
-    ___itt_id *id_ = nullptr;
+    ___itt_id *_id = nullptr;
 };
 
 ///////////////////////////////////////////////////////////////////////////
@@ -156,15 +156,15 @@ struct frame_context {
     EINSUMS_EXPORT frame_context(domain const &domain, id *ident = nullptr) noexcept;
     EINSUMS_EXPORT ~frame_context();
 
-    domain const &domain_;
-    id           *ident_ = nullptr;
+    domain const &_domain;
+    id           *_ident = nullptr;
 };
 
 struct undo_frame_context {
     EINSUMS_EXPORT undo_frame_context(frame_context &frame) noexcept;
     EINSUMS_EXPORT ~undo_frame_context();
 
-    frame_context &frame_;
+    frame_context &_frame;
 };
 
 ///////////////////////////////////////////////////////////////////////////
@@ -172,15 +172,15 @@ struct mark_context {
     EINSUMS_EXPORT mark_context(char const *name) noexcept;
     EINSUMS_EXPORT ~mark_context();
 
-    int         itt_mark_;
-    char const *name_ = nullptr;
+    int         _itt_mark;
+    char const *_name = nullptr;
 };
 
 struct undo_mark_context {
     EINSUMS_EXPORT undo_mark_context(mark_context &mark) noexcept;
     EINSUMS_EXPORT ~undo_mark_context();
 
-    mark_context &mark_;
+    mark_context &_mark;
 };
 
 ///////////////////////////////////////////////////////////////////////////
@@ -189,28 +189,28 @@ struct string_handle {
 
     EINSUMS_EXPORT string_handle(char const *s) noexcept;
 
-    string_handle(___itt_string_handle *h) noexcept : handle_(h) {}
+    string_handle(___itt_string_handle *h) noexcept : _handle(h) {}
 
     string_handle(string_handle const &) = default;
-    string_handle(string_handle &&rhs) : handle_(rhs.handle_) { rhs.handle_ = nullptr; }
+    string_handle(string_handle &&rhs) noexcept : _handle(rhs._handle) { rhs._handle = nullptr; }
 
     string_handle &operator=(string_handle const &) = default;
     string_handle &operator=(string_handle &&rhs) noexcept {
         if (this != &rhs) {
-            handle_     = rhs.handle_;
-            rhs.handle_ = nullptr;
+            _handle     = rhs._handle;
+            rhs._handle = nullptr;
         }
         return *this;
     }
 
     string_handle &operator=(___itt_string_handle *h) noexcept {
-        handle_ = h;
+        _handle = h;
         return *this;
     }
 
-    explicit constexpr operator bool() const noexcept { return handle_ != nullptr; }
+    explicit constexpr operator bool() const noexcept { return _handle != nullptr; }
 
-    ___itt_string_handle *handle_ = nullptr;
+    ___itt_string_handle *_handle = nullptr;
 };
 
 ///////////////////////////////////////////////////////////////////////////
@@ -229,16 +229,16 @@ struct task {
         add_metadata(name, static_cast<void const *>(&val));
     }
 
-    domain const &domain_;
-    ___itt_id    *id_ = nullptr;
-    string_handle sh_;
+    domain const &_domain;
+    ___itt_id    *_id = nullptr;
+    string_handle _sh;
 };
 
 ///////////////////////////////////////////////////////////////////////////
 struct heap_function {
     EINSUMS_EXPORT heap_function(char const *name, char const *domain) noexcept;
 
-    __itt_heap_function heap_function_ = nullptr;
+    __itt_heap_function _heap_function = nullptr;
 };
 
 struct heap_internal_access {
@@ -249,23 +249,23 @@ struct heap_internal_access {
 struct heap_allocate {
     template <typename T>
     heap_allocate(heap_function &heap_function, T **&addr, std::size_t size, int init) noexcept
-        : heap_function_(heap_function), addr_(reinterpret_cast<void **&>(addr)), size_(size), init_(init) {
+        : _heap_function(heap_function), _addr(reinterpret_cast<void **&>(addr)), _size(size), _init(init) {
         if (use_ittnotify_api) {
-            itt_heap_allocate_begin(heap_function_.heap_function_, size_, init_);
+            itt_heap_allocate_begin(_heap_function._heap_function, _size, _init);
         }
     }
 
     ~heap_allocate() {
         if (use_ittnotify_api) {
-            itt_heap_allocate_end(heap_function_.heap_function_, addr_, size_, init_);
+            itt_heap_allocate_end(_heap_function._heap_function, _addr, _size, _init);
         }
     }
 
   private:
-    heap_function &heap_function_;
-    void        **&addr_;
-    std::size_t    size_;
-    int            init_;
+    heap_function &_heap_function;
+    void        **&_addr;
+    std::size_t    _size;
+    int            _init;
 };
 
 struct heap_free {
@@ -273,8 +273,8 @@ struct heap_free {
     EINSUMS_EXPORT ~heap_free();
 
   private:
-    heap_function &heap_function_;
-    void          *addr_;
+    heap_function &_heap_function;
+    void          *_addr;
 };
 
 ///////////////////////////////////////////////////////////////////////////
@@ -285,55 +285,54 @@ struct counter {
 
     template <typename T>
     void set_value(T const &value) noexcept {
-        if (use_ittnotify_api && id_) {
-            itt_counter_set_value(id_, const_cast<void *>(static_cast<const void *>(&value)));
+        if (use_ittnotify_api && _id) {
+            itt_counter_set_value(_id, const_cast<void *>(static_cast<const void *>(&value)));
         }
     }
 
     counter(counter const &rhs) = delete;
-    counter(counter &&rhs) noexcept : id_(rhs.id_) { rhs.id_ = nullptr; }
+    counter(counter &&rhs) noexcept : _id(rhs._id) { rhs._id = nullptr; }
 
     counter &operator=(counter const &rhs) = delete;
     counter &operator=(counter &&rhs) noexcept {
         if (this != &rhs) {
-            id_     = rhs.id_;
-            rhs.id_ = nullptr;
+            _id     = rhs._id;
+            rhs._id = nullptr;
         }
         return *this;
     }
 
   private:
-    ___itt_counter *id_ = nullptr;
+    ___itt_counter *_id = nullptr;
 };
 
 ///////////////////////////////////////////////////////////////////////////
 struct event {
-    event(char const *name) noexcept : event_(itt_event_create(name, (int)strnlen(name, 256))) {}
+    event(char const *name) noexcept : _event(itt_event_create(name, (int)strnlen(name, 256))) {}
 
-    void start() const noexcept { itt_event_start(event_); }
+    void start() const noexcept { itt_event_start(_event); }
 
-    void end() const noexcept { itt_event_end(event_); }
+    void end() const noexcept { itt_event_end(_event); }
 
   private:
-    int event_ = 0;
+    int _event = 0;
 };
 
 struct mark_event {
-    mark_event(event const &e) noexcept : e_(e) { e_.start(); }
-    ~mark_event() { e_.end(); }
+     mark_event(event const &e) noexcept : _e(e) { _e.start(); }
+    ~mark_event() { _e.end(); }
 
   private:
-    event e_;
+    event _e;
 };
 
 inline void event_tick(event const &e) noexcept {
     e.start();
 }
-} // namespace itt
-} // namespace einsums
+} // namespace einsums::itt
 
-// #else
-#if 0
+#else
+
 inline constexpr void itt_sync_create(void *, const char *, const char *) noexcept {
 }
 inline constexpr void itt_sync_rename(void *, const char *) noexcept {
@@ -456,13 +455,13 @@ inline constexpr void itt_metadata_add(___itt_domain *, ___itt_id *, ___itt_stri
 namespace einsums::itt {
 
 struct stack_context {
-    stack_context()  = default;
+     stack_context() = default;
     ~stack_context() = default;
 };
 
 struct caller_context {
     constexpr caller_context(stack_context &) noexcept {}
-    ~caller_context() = default;
+    ~         caller_context() = default;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -470,7 +469,7 @@ struct domain {
     EINSUMS_NON_COPYABLE(domain);
 
     constexpr domain(char const *) noexcept {}
-    domain() = default;
+              domain() = default;
 };
 
 struct thread_domain : domain {
@@ -481,29 +480,29 @@ struct thread_domain : domain {
 
 struct id {
     constexpr id(domain const &, void *, unsigned long = 0) noexcept {}
-    ~id() = default;
+    ~         id() = default;
 };
 
 ///////////////////////////////////////////////////////////////////////////
 struct frame_context {
     constexpr frame_context(domain const &, id * = nullptr) noexcept {}
-    ~frame_context() = default;
+    ~         frame_context() = default;
 };
 
 struct undo_frame_context {
     constexpr undo_frame_context(frame_context const &) noexcept {}
-    ~undo_frame_context() = default;
+    ~         undo_frame_context() = default;
 };
 
 ///////////////////////////////////////////////////////////////////////////
 struct mark_context {
     constexpr mark_context(char const *) noexcept {}
-    ~mark_context() = default;
+    ~         mark_context() = default;
 };
 
 struct undo_mark_context {
     constexpr undo_mark_context(mark_context const &) noexcept {}
-    ~undo_mark_context() = default;
+    ~         undo_mark_context() = default;
 };
 
 ///////////////////////////////////////////////////////////////////////////
@@ -522,7 +521,7 @@ struct task {
 ///////////////////////////////////////////////////////////////////////////
 struct heap_function {
     constexpr heap_function(char const *, char const *) noexcept {}
-    ~heap_function() = default;
+    ~         heap_function() = default;
 };
 
 struct heap_allocate {
@@ -533,17 +532,17 @@ struct heap_allocate {
 
 struct heap_free {
     constexpr heap_free(heap_function & /*heap_function*/, void *) noexcept {}
-    ~heap_free() = default;
+    ~         heap_free() = default;
 };
 
 struct heap_internal_access {
-    heap_internal_access()  = default;
+     heap_internal_access() = default;
     ~heap_internal_access() = default;
 };
 
 struct counter {
     constexpr counter(char const * /*name*/, char const * /*domain*/) noexcept {}
-    ~counter() = default;
+    ~         counter() = default;
 };
 
 struct event {
@@ -552,7 +551,7 @@ struct event {
 
 struct mark_event {
     constexpr mark_event(event const &) noexcept {}
-    ~mark_event() = default;
+    ~         mark_event() = default;
 };
 
 inline constexpr void event_tick(event const &) noexcept {

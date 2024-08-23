@@ -228,6 +228,11 @@ einsums_option(
   ${EINSUMS_FULL_RPATH_DEFAULT} ADVANCED
 )
 
+einsums_option(
+        EINSUMS_WITH_ITTNOTIFY BOOL "Enable Amplifier (ITT) instrumentation support." OFF
+        CATEGORY "Profiling" ADVANCED
+)
+
 # ######################################################################################################################
 # We create a target to contain libraries like rt, dl, etc. in order to remove variables
 add_library(einsums_base_libraries INTERFACE)
