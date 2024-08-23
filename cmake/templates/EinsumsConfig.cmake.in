@@ -1,0 +1,65 @@
+#----------------------------------------------------------------------------------------------
+# Copyright (c) The Einsums Developers. All rights reserved.
+# Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+#----------------------------------------------------------------------------------------------
+
+cmake_policy(VERSION 3.22)
+
+# Forward EINSUMS_* cache variables
+include("${CMAKE_CURRENT_LIST_DIR}/EinsumsCacheVariables.cmake")
+
+# include einsums cmake utilities
+include("${CMAKE_CURRENT_LIST_DIR}/EinsumsMacros.cmake")
+
+# include exported targets
+include("${CMAKE_CURRENT_LIST_DIR}/EinsumsInternalTargets.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/EinsumsTargets.cmake")
+
+get_filename_component(_einsums_root_dir "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+einsums_set_cmake_policy(CMP0144 NEW)
+
+set(EINSUMS_VERSION_STRING "@EINSUMS_VERSION@")
+set(EINSUMS_VERSION_MAJOR @EINSUMS_VERSION_MAJOR@)
+set(EINSUMS_VERSION_MINOR @EINSUMS_VERSION_MINOR@)
+set(EINSUMS_VERSION_PATCH @EINSUMS_VERSION_PATCH@)
+
+set(EINSUMS_DEBUG_POSTFIX "@EINSUMS_DEBUG_POSTFIX@")
+set(EINSUMS_BUILD_TYPE "@EINSUMS_BUILD_TYPE@")
+
+# We explicitly set the default to 98 to force CMake to emit a -std=c++XX flag.
+# Some compilers (clang) have a different default standard for cpp and cu files,
+# but CMake does not know about this difference. If the standard is set to the
+# .cpp default in CMake, CMake will omit the flag, resulting in the wrong
+# standard for .cu files.
+set(CMAKE_CXX_STANDARD_DEFAULT 98)
+
+set(EINSUMS_GIT_COMMIT
+    "@EINSUMS_WITH_GIT_COMMIT@"
+    CACHE STRING "Revision of einsums from Git" FORCE
+)
+
+set(EINSUMS_CXX_COMPILER
+    "@CMAKE_CXX_COMPILER@"
+    CACHE STRING "CXX compiler for einsums" FORCE
+)
+set(EINSUMS_CXX_COMPILER_ID
+    "@CMAKE_CXX_COMPILER_ID@"
+    CACHE STRING "CXX compiler id for einsums" FORCE
+)
+set(EINSUMS_CXX_COMPILER_VERSION
+    "@CMAKE_CXX_COMPILER_VERSION@"
+    CACHE STRING "CXX compiler version for einsums" FORCE
+)
+
+einsums_find_package(fmt 10 REQUIRED)
+
+if (NOT EINSUMS_CMAKE_LOGLEVEL)
+  set(EINSUMS_CMAKE_LOGLEVEL "WARN")
+endif ()
+
+einsums_check_compiler_compatibility()
+
+if (NOT DEFINED ${CMAKE_FIND_PACKAGE_NAME}_FOUND)
+  set(${CMAKE_FIND_PACKAGE_NAME}_FOUND TRUE)
+endif ()
