@@ -233,16 +233,54 @@ if(EINSUMS_WITH_ITTNOTIFY)
 endif()
 
 # ######################################################################################################################
+# CUDA/HIP configuration
+# ######################################################################################################################
+set(CUDA_OPTION_STRING "Enable support for CUDA (default: OFF)")
+set(HIP_OPTION_STRING "Enable support for HIP (default: OFF)")
+einsums_option(EINSUMS_WITH_CUDA BOOL "${CUDA_OPTION_STRING}" OFF ADVANCED)
+
+# No need for the user to specify the option explicitly
+einsums_option(EINSUMS_WITH_HIP BOOL "${HIP_OPTION_STRING}" OFF ADVANCED)
+if ("${CMAKE_CXX_COMPILER}" MATCHES "hipcc$")
+  set(EINSUMS_WITH_HIP
+          ON
+          CACHE BOOL "${HIP_OPTION_STRING}" FORCE
+  )
+endif ()
+
+if (EINSUMS_WITH_CUDA AND EINSUMS_WITH_HIP)
+  einsums_error(
+          "EINSUMS_WITH_CUDA=ON and EINSUMS_WITH_HIP=ON. Only one of them can be on at the same time.\
+ Note: EINSUMS_WITH_HIP is automatically enabled when compiling with hipcc."
+  )
+endif ()
+
+if (EINSUMS_WITH_CUDA OR EINSUMS_WITH_HIP)
+  einsums_add_config_define(EINSUMS_HAVE_GPU_SUPPORT)
+  set(EINSUMS_WITH_GPU_SUPPORT ON)
+  set(EINSUMS_WITH_GPU_SUPPORT
+          ON
+          CACHE INTERNAL "" FORCE
+  )
+else ()
+  set(EINSUMS_WITH_GPU_SUPPORT
+          OFF
+          CACHE INTERNAL "" FORCE
+  )
+endif ()
+
+# ######################################################################################################################
 # We create a target to contain libraries like rt, dl, etc. in order to remove variables
 add_library(einsums_base_libraries INTERFACE)
 
 # ######################################################################################################################
 # Find Our dependencies: These are all dependencies needed to build the core library. Dependencies that are only needed
-# by plugins, examples or tests should be found separately in the appropriate subdirectory.
-add_subdirectory(external)
+# by plugins, examples or tests should be found separately in the appropriate subdirectory. add_subdirectory(external)
 
 # ######################################################################################################################
 # Find other dependencies.
+include(Einsums_SetupFmt)
+include(Einsums_SetupHIP)
 
 # ######################################################################################################################
 # search path configuration

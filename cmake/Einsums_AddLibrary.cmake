@@ -12,7 +12,8 @@ function(einsums_add_library name)
       STATIC
       OBJECT
       NONAMEPREFIX
-      UNITY_BUILD)
+          UNITY_BUILD
+  )
   set(one_value_args
       FOLDER
       SOURCE_ROOT
@@ -20,13 +21,15 @@ function(einsums_add_library name)
       SOURCE_GLOB
       HEADER_GLOB
       OUTPUT_SUFFIX
-      INSTALL_SUFFIX)
+          INSTALL_SUFFIX
+  )
   set(multi_value_args SOURCES HEADERS AUXILIARY DEPENDENCIES COMPILER_FLAGS LINK_FLAGS)
   cmake_parse_arguments(${name} "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
 
   if(${name}_OBJECT AND ${name}_STATIC)
     einsums_error(
-      "Trying to create ${name} library with both STATIC and OBJECT. Only one can be used at the same time.")
+            "Trying to create ${name} library with both STATIC and OBJECT. Only one can be used at the same time."
+    )
   endif()
 
   if(NOT ${name}_SOURCE_ROOT)
@@ -42,14 +45,11 @@ function(einsums_add_library name)
   einsums_add_library_sources_noglob(${name} SOURCES "${${name}_SOURCES}")
 
   einsums_add_source_group(
-    NAME
-    ${name}
-    CLASS
-    "Source Files"
-    ROOT
-    ${${name}_SOURCE_ROOT}
-    TARGETS
-    ${${name}_SOURCES})
+          NAME ${name}
+          CLASS "Source Files"
+          ROOT ${${name}_SOURCE_ROOT}
+          TARGETS ${${name}_SOURCES}
+  )
 
   einsums_print_list("DEBUG" "add_library.${name}" "Sources for ${name}" ${name}_SOURCES)
   einsums_print_list("DEBUG" "add_library.${name}" "Headers for ${name}" ${name}_HEADERS)
@@ -125,8 +125,9 @@ function(einsums_add_library name)
     endforeach()
   endif()
 
-  add_library(${name} ${${name}_linktype} ${exclude_from_all} ${${name}_SOURCES} ${${name}_HEADERS}
-                      ${${name}_AUXILIARY})
+  add_library(
+          ${name} ${${name}_linktype} ${exclude_from_all} ${${name}_SOURCES} ${${name}_HEADERS} ${${name}_AUXILIARY}
+  )
 
   if(${name}_OUTPUT_SUFFIX)
     if(MSVC)
@@ -149,13 +150,15 @@ function(einsums_add_library name)
                    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO
                    "${EINSUMS_WITH_BINARY_DIR}/RelWithDebInfo/bin/${${name}_OUTPUT_SUFFIX}"
                    ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO
-                   "${EINSUMS_WITH_BINARY_DIR}/RelWithDebInfo/lib/${${name}_OUTPUT_SUFFIX}")
+              "${EINSUMS_WITH_BINARY_DIR}/RelWithDebInfo/lib/${${name}_OUTPUT_SUFFIX}"
+      )
     else()
       set_target_properties(
         ${name}
         PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${EINSUMS_WITH_BINARY_DIR}/bin/${${name}_OUTPUT_SUFFIX}"
                    LIBRARY_OUTPUT_DIRECTORY "${EINSUMS_WITH_BINARY_DIR}/lib/${${name}_OUTPUT_SUFFIX}"
-                   ARCHIVE_OUTPUT_DIRECTORY "${EINSUMS_WITH_BINARY_DIR}/lib/${${name}_OUTPUT_SUFFIX}")
+              ARCHIVE_OUTPUT_DIRECTORY "${EINSUMS_WITH_BINARY_DIR}/lib/${${name}_OUTPUT_SUFFIX}"
+      )
     endif()
   endif()
 
@@ -183,5 +186,6 @@ function(einsums_add_library name)
     FOLDER ${${name}_FOLDER}
     COMPILE_FLAGS ${${name}_COMPILE_FLAGS}
     LINK_FLAGS ${${name}_LINK_FLAGS}
-    DEPENDENCIES ${${name}_DEPENDENCIES})
+          DEPENDENCIES ${${name}_DEPENDENCIES}
+  )
 endfunction()

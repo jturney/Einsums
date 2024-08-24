@@ -10,6 +10,7 @@ include(Einsums_Message)
 
 # cmake-format: off
 set(_einsums_einsums_modules
+        concepts
     config
     itt_notify
     preprocessor

@@ -11,6 +11,8 @@ Einsums modules
 .. toctree::
    :maxdepth: 2
 
+   /libs/einsums/concepts/docs/index.rst
    /libs/einsums/config/docs/index.rst
    /libs/einsums/itt_notify/docs/index.rst
    /libs/einsums/preprocessor/docs/index.rst
+   /libs/einsums/profile/docs/index.rst
