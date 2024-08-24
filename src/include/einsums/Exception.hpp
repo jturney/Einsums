@@ -33,7 +33,7 @@ struct EinsumsException : std::exception {
     std::string _what;
 
   public:
-    EinsumsException(const char *file, const char *line, const char *function, const char *message) : _what{""} {
+    EinsumsException(const char *file, const char *line, const char *function, const char *message) {
         _what += file;
         _what += ":";
         _what += line;
@@ -43,7 +43,7 @@ struct EinsumsException : std::exception {
         _what += message;
     }
 
-    EinsumsException(const char *file, const char *line, const char *function, std::string message) : _what{""} {
+    EinsumsException(const char *file, const char *line, const char *function, const std::string &message) {
         _what += file;
         _what += ":";
         _what += line;
