@@ -7,35 +7,35 @@ include(Einsums_Message)
 
 if(EINSUMS_WITH_TESTS)
   if(EINSUMS_WITH_TESTS_UNIT)
-    einsums_add_pseudo_target(tests.unit.modules.errors)
+    einsums_add_pseudo_target(tests.unit.modules.assertion)
     einsums_add_pseudo_dependencies(
-      tests.unit.modules tests.unit.modules.errors
+      tests.unit.modules tests.unit.modules.assertion
     )
     add_subdirectory(unit)
   endif()
 
   if(EINSUMS_WITH_TESTS_REGRESSIONS)
-    einsums_add_pseudo_target(tests.regressions.modules.errors)
+    einsums_add_pseudo_target(tests.regressions.modules.assertion)
     einsums_add_pseudo_dependencies(
-      tests.regressions.modules tests.regressions.modules.errors
+      tests.regressions.modules tests.regressions.modules.assertion
     )
     add_subdirectory(regressions)
   endif()
 
   if(EINSUMS_WITH_TESTS_BENCHMARKS)
-    einsums_add_pseudo_target(tests.performance.modules.errors)
+    einsums_add_pseudo_target(tests.performance.modules.assertion)
     einsums_add_pseudo_dependencies(
-      tests.performance.modules tests.performance.modules.errors
+      tests.performance.modules tests.performance.modules.assertion
     )
     add_subdirectory(performance)
   endif()
 
   if(EINSUMS_WITH_TESTS_HEADERS)
     einsums_add_header_tests(
-      modules.errors
-      HEADERS ${errors_headers}
+      modules.assertion
+      HEADERS ${assertion_headers}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_errors
+      DEPENDENCIES einsums_assertion
     )
   endif()
 endif()

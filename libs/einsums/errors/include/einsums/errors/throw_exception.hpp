@@ -9,14 +9,15 @@
 
 #include <einsums/errors/error.hpp>
 #include <einsums/errors/exception_fwd.hpp>
+#include <einsums/preprocessor/expand.hpp>
+#include <einsums/preprocessor/nargs.hpp>
 
 #include <exception>
 #include <source_location>
 #include <string>
 #include <system_error>
 
-namespace einsums {
-namespace detail {
+namespace einsums::detail {
 
 template <typename Exception>
 [[noreturn]] EINSUMS_EXPORT void throw_exception(Exception const            &e,
@@ -32,21 +33,25 @@ template <typename Exception>
 EINSUMS_EXPORT auto get_exception(Exception const &e, std::source_location const &location = std::source_location::current(),
                                   std::string const &auxinfo = "") -> std::exception_ptr;
 
-EINSUMS_EXPORT auto get_exception(error errcode, std::string const &msg,
-                                  std::source_location const &location = std::source_location::current(), std::string const &auxinfo = "")
-    -> std::exception_ptr;
+EINSUMS_EXPORT auto get_exception(error errcode, std::string const &msg, throw_mode mode,
+                                  std::source_location const &location = std::source_location::current(),
+                                  std::string const          &auxinfo  = "") -> std::exception_ptr;
 
-EINSUMS_EXPORT auto get_exception(std::error_code const &ec, std::string const &msg,
-                                  std::source_location const &location = std::source_location::current(), std::string const &auxinfo = "")
-    -> std::exception_ptr;
+EINSUMS_EXPORT auto get_exception(std::error_code const &ec, std::string const &msg, throw_mode mode,
+                                  std::source_location const &location = std::source_location::current(),
+                                  std::string const          &auxinfo  = "") -> std::exception_ptr;
 
 EINSUMS_EXPORT void throws_if(einsums::error_code &ec, error errcode, std::string const &msg, std::source_location const &location);
 
 EINSUMS_EXPORT void rethrows_if(einsums::error_code &ec, exception const &e, std::source_location const &location);
 
-} // namespace detail
+[[noreturn]] EINSUMS_EXPORT void throw_thread_interrupted_exception();
 
-[[noreturn]] inline void throw_exception(einsums::error e, std::string const &msg, std::source_location const &location) {
+} // namespace einsums::detail
+
+namespace einsums {
+
+[[noreturn]] inline void throw_exception(error e, std::string const &msg, std::source_location const &location) {
     detail::throw_exception(e, msg, location);
 }
 

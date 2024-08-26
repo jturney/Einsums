@@ -45,7 +45,7 @@ namespace detail {
  * @tparam D The type to check.
  */
 template <typename D>
-struct is_tensor : public std::is_base_of<tensor_base::tensor_base_no_extra, D> {};
+struct is_tensor : public std::is_base_of<tensor_base::tensor_no_extra, D> {};
 
 /**
  * @struct is_typed_tensor
@@ -56,7 +56,7 @@ struct is_tensor : public std::is_base_of<tensor_base::tensor_base_no_extra, D> 
  * @tparam T The type the tensor should store.
  */
 template <typename D, typename T>
-struct is_typed_tensor : std::is_base_of<tensor_base::typed_tensor_base<T>, D> {};
+struct is_typed_tensor : std::is_base_of<tensor_base::typed_tensor<T>, D> {};
 
 /**
  * @struct is_rank_tensor
@@ -67,7 +67,7 @@ struct is_typed_tensor : std::is_base_of<tensor_base::typed_tensor_base<T>, D> {
  * @tparam Rank The rank the tensor should have.
  */
 template <typename D, size_t Rank>
-struct is_rank_tensor : public std::is_base_of<tensor_base::rank_tensor_base<Rank>, D> {};
+struct is_rank_tensor : public std::is_base_of<tensor_base::rank_tensor<Rank>, D> {};
 
 /**
  * @struct is_scalar
@@ -89,7 +89,7 @@ struct is_scalar : std::bool_constant<is_rank_tensor<D, 0>::value || !is_tensor<
  * @tparam D The tensor type to check.
  */
 template <typename D>
-struct is_lockable_tensor : std::is_base_of<tensor_base::lockable_tensor_base, D> {};
+struct is_lockable_tensor : std::is_base_of<tensor_base::lockable_tensor, D> {};
 
 /**
  * @struct is_tr_tensor
@@ -132,7 +132,7 @@ struct is_trl_tensor : std::bool_constant<is_rank_tensor<D, Rank>::value && is_t
  * @tparam D The tensor to check.
  */
 template <typename D>
-struct is_incore_tensor : std::is_base_of<tensor_base::core_tensor_base, D> {};
+struct is_incore_tensor : std::is_base_of<tensor_base::core_tensor, D> {};
 
 #ifdef __HIP__
 /**
@@ -158,7 +158,7 @@ struct is_device_tensor : public std::is_base_of<tensor_base::device_tensor_base
  * @tparam D The tensor type to check.
  */
 template <typename D>
-struct is_disk_tensor : std::is_base_of<tensor_base::disk_tensor_base, D> {};
+struct is_disk_tensor : std::is_base_of<tensor_base::disk_tensor, D> {};
 
 /**
  * @struct is_tensor_view
@@ -170,7 +170,7 @@ struct is_disk_tensor : std::is_base_of<tensor_base::disk_tensor_base, D> {};
  * @tparam D The tensor type to check.
  */
 template <typename D>
-struct is_tensor_view : std::is_base_of<tensor_base::tensor_view_base_no_extra, D> {};
+struct is_tensor_view : std::is_base_of<tensor_base::tensor_view_no_extra, D> {};
 
 /**
  * @struct is_view_of
@@ -183,7 +183,7 @@ struct is_tensor_view : std::is_base_of<tensor_base::tensor_view_base_no_extra, 
  * @tparam Viewed The type of tensor expected to be viewed.
  */
 template <typename D, typename Viewed>
-struct is_view_of : std::is_base_of<tensor_base::tensor_view_base_only_viewed<Viewed>, D> {};
+struct is_view_of : std::is_base_of<tensor_base::tensor_view_only_viewed<Viewed>, D> {};
 
 /**
  * @struct is_basic_tensor
@@ -195,7 +195,7 @@ struct is_view_of : std::is_base_of<tensor_base::tensor_view_base_only_viewed<Vi
  * @tparam D The tensor to check.
  */
 template <typename D>
-struct is_basic_tensor : std::is_base_of<tensor_base::basic_tensor_base_no_extra, D> {};
+struct is_basic_tensor : std::is_base_of<tensor_base::basic_tensor_no_extra, D> {};
 
 /**
  * @struct is_collected_tensor
@@ -210,8 +210,8 @@ struct is_basic_tensor : std::is_base_of<tensor_base::basic_tensor_base_no_extra
  */
 template <typename D, typename StoredType = void>
 struct is_collected_tensor
-    : std::bool_constant<std::is_void_v<StoredType> ? std::is_base_of_v<tensor_base::collected_tensor_base_no_extra, D>
-                                                    : std::is_base_of_v<tensor_base::collected_tensor_base_only_stored<StoredType>, D>> {};
+    : std::bool_constant<std::is_void_v<StoredType> ? std::is_base_of_v<tensor_base::collected_tensor_no_extra, D>
+                                                    : std::is_base_of_v<tensor_base::collected_tensor_only_stored<StoredType>, D>> {};
 
 /**
  * @struct is_tiled_tensor
@@ -226,9 +226,8 @@ struct is_collected_tensor
  */
 template <typename D, typename StoredType = void>
 struct is_tiled_tensor
-    : std::bool_constant<std::is_base_of_v<tensor_base::tiled_tensor_base_no_extra, D> &&
-                         (std::is_void_v<StoredType> || std::is_base_of_v<tensor_base::collected_tensor_base_only_stored<StoredType>, D>)> {
-};
+    : std::bool_constant<std::is_base_of_v<tensor_base::tiled_tensor_no_extra, D> &&
+                         (std::is_void_v<StoredType> || std::is_base_of_v<tensor_base::collected_tensor_only_stored<StoredType>, D>)> {};
 
 /**
  * @struct is_block_tensor
@@ -243,9 +242,8 @@ struct is_tiled_tensor
  */
 template <typename D, typename StoredType = void>
 struct is_block_tensor
-    : std::bool_constant<std::is_base_of_v<tensor_base::block_tensor_base_no_extra, D> &&
-                         (std::is_void_v<StoredType> || std::is_base_of_v<tensor_base::collected_tensor_base_only_stored<StoredType>, D>)> {
-};
+    : std::bool_constant<std::is_base_of_v<tensor_base::block_tensor_no_extra, D> &&
+                         (std::is_void_v<StoredType> || std::is_base_of_v<tensor_base::collected_tensor_only_stored<StoredType>, D>)> {};
 
 /**
  * @struct is_function_tensor
@@ -255,7 +253,7 @@ struct is_block_tensor
  * @tparam D The tensor type to check.
  */
 template <typename D>
-struct is_function_tensor : public std::is_base_of<tensor_base::function_tensor_base_no_extra, D> {};
+struct is_function_tensor : public std::is_base_of<tensor_base::function_tensor_no_extra, D> {};
 
 /**
  * @struct is_algebra_tensor
@@ -1496,12 +1494,12 @@ struct location_tensor_base_of {};
 
 template <CoreTensorConcept D>
 struct location_tensor_base_of<D> {
-    using type = tensor_base::core_tensor_base;
+    using type = tensor_base::core_tensor;
 };
 
 template <DiskTensorConcept D>
 struct location_tensor_base_of<D> {
-    using type = tensor_base::disk_tensor_base;
+    using type = tensor_base::disk_tensor;
 };
 
 #ifdef __HIP__

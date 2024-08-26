@@ -5,17 +5,17 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(config_headers einsums/config.hpp einsums/config/emulate_deleted.hpp einsums/config/export_definitions.hpp)
+set(assertion_headers einsums/assert.hpp einsums/assertion/evaluate_assert.hpp)
 
-set(config_sources version.cpp)
+set(assertion_sources assertion.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
-  einsums config CONFIG_FILES
+  einsums assertion
   GLOBAL_HEADER_GEN OFF
-  SOURCES ${config_sources}
-  HEADERS ${config_headers}
+  SOURCES ${assertion_sources}
+  HEADERS ${assertion_headers}
   DEPENDENCIES
-  MODULE_DEPENDENCIES einsums_preprocessor
+  MODULE_DEPENDENCIES einsums_config einsums_preprocessor
   CMAKE_SUBDIRS examples tests
 )

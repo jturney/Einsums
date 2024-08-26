@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <string>
 
 namespace einsums::string_utils {

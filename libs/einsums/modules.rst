@@ -11,6 +11,7 @@ Einsums modules
 .. toctree::
    :maxdepth: 2
 
+   /libs/einsums/assertion/docs/index.rst
    /libs/einsums/backtrace/docs/index.rst
    /libs/einsums/concepts/docs/index.rst
    /libs/einsums/config/docs/index.rst

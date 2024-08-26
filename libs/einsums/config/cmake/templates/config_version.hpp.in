@@ -50,7 +50,6 @@ namespace einsums {
 // Helper data structures allowing to automatically detect version problems
 // between applications and the core libraries.
 EINSUMS_EXPORT extern char const EINSUMS_CHECK_VERSION[];
-EINSUMS_EXPORT extern char const EINSUMS_CHECK_BOOST_VERSION[];
 } // namespace einsums
 
 ///////////////////////////////////////////////////////////////////////////////

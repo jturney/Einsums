@@ -8,6 +8,8 @@
 #include <einsums/tensor_base/common.hpp>
 
 #include <complex>
+#include <memory>
+#include <mutex>
 #include <type_traits>
 
 #if defined(__HIP__)
@@ -93,7 +95,7 @@ struct rank_tensor {
 
     virtual ~rank_tensor() = default;
 
-    virtual dim<Rank> dims() const = 0;
+    virtual einsums::dim<Rank> dims() const = 0;
 
     virtual auto dim(int d) const -> size_t = 0;
 };

@@ -6,6 +6,7 @@
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(preprocessor_headers einsums/preprocessor/cat.hpp einsums/preprocessor/config.hpp
+        einsums/preprocessor/expand.hpp
                          einsums/preprocessor/stringize.hpp
 )
 
