@@ -5,7 +5,9 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(concepts_headers einsums/concepts/complex.hpp einsums/concepts/smart_pointer.hpp einsums/concepts/tensor.hpp)
+set(concepts_headers einsums/concepts/complex.hpp einsums/concepts/smart_pointer.hpp
+        einsums/concepts/tensor.hpp
+)
 
 set(concepts_sources)
 
@@ -16,5 +18,6 @@ einsums_add_module(
         SOURCES ${concepts_sources}
         HEADERS ${concepts_headers}
         DEPENDENCIES
+        MODULE_DEPENDENCIES einsums_tensor_base
         CMAKE_SUBDIRS examples tests
 )

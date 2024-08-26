@@ -215,7 +215,7 @@ einsums_option(
 )
 
 einsums_option(
-  EINSUMS_WITH_ITTNOTIFY BOOL "Enable Amplifier (ITT) instrumentation support." ON
+        EINSUMS_WITH_ITTNOTIFY BOOL "Enable Amplifier (ITT) instrumentation support." OFF
   CATEGORY "Profiling"
   ADVANCED
 )
@@ -273,6 +273,9 @@ endif ()
 # We create a target to contain libraries like rt, dl, etc. in order to remove variables
 add_library(einsums_base_libraries INTERFACE)
 
+find_package(OpenMP REQUIRED MODULE COMPONENTS CXX)
+target_link_libraries(einsums_base_libraries INTERFACE OpenMP::OpenMP_CXX)
+
 # ######################################################################################################################
 # Find Our dependencies: These are all dependencies needed to build the core library. Dependencies that are only needed
 # by plugins, examples or tests should be found separately in the appropriate subdirectory. add_subdirectory(external)
@@ -280,7 +283,10 @@ add_library(einsums_base_libraries INTERFACE)
 # ######################################################################################################################
 # Find other dependencies.
 include(Einsums_SetupFmt)
-include(Einsums_SetupHIP)
+include(Einsums_SetupSnitch)
+include(Einsums_SetupRangev3)
+#include(Einsums_SetupCppTrace)
+#include(Einsums_SetupHIP)
 
 # ######################################################################################################################
 # search path configuration

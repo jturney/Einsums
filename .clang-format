@@ -13,6 +13,8 @@ IndentPPDirectives: AfterHash
 AlignConsecutiveAssignments: true
 AlignConsecutiveDeclarations: true
 IncludeCategories:
+  - Regex: '^<snitch/snitch.hpp>'
+    Priority: 10
   - Regex: '^<einsums/config.hpp>'
     Priority: 1
   - Regex: '^<einsums/_.*\.hpp>'

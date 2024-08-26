@@ -10,10 +10,17 @@ include(Einsums_Message)
 
 # cmake-format: off
 set(_einsums_einsums_modules
+        backtrace
         concepts
     config
+        errors
     itt_notify
     preprocessor
+        print
+        profile
+        string_utils
+        tensor
+        tensor_base
 )
 # cmake-format: on
 
