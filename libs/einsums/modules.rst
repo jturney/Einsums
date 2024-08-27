@@ -23,3 +23,4 @@ Einsums modules
    /libs/einsums/string_utils/docs/index.rst
    /libs/einsums/tensor/docs/index.rst
    /libs/einsums/tensor_base/docs/index.rst
+   /libs/einsums/util/docs/index.rst

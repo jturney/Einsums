@@ -5,17 +5,16 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(tensor_headers einsums/tensor/enumerate.hpp einsums/tensor/H5.hpp einsums/tensor/tensor.hpp)
+set(util_headers einsums/util/are_all_convertible.hpp einsums/util/arguments.hpp einsums/util/type_name.hpp)
 
-set(tensor_sources)
+set(util_sources)
 
 include(Einsums_AddModule)
 einsums_add_module(
-        einsums tensor
-        GLOBAL_HEADER_GEN ON
-        SOURCES ${tensor_sources}
-        HEADERS ${tensor_headers}
-        DEPENDENCIES Einsums::h5cpp
-        MODULE_DEPENDENCIES einsums_concepts einsums_config einsums_errors einsums_tensor_base einsums_profile einsums_print einsums_util
-        CMAKE_SUBDIRS examples tests
+  einsums util
+  GLOBAL_HEADER_GEN OFF
+  SOURCES ${util_sources}
+  HEADERS ${util_headers}
+  DEPENDENCIES
+  CMAKE_SUBDIRS examples tests
 )

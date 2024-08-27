@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <einsums/config/compiler_specific.hpp>
 #include <einsums/config/emulate_deleted.hpp>
 #include <einsums/config/export_definitions.hpp>
 #include <einsums/config/modules_enabled.hpp>

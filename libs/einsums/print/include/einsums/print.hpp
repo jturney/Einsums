@@ -10,6 +10,7 @@
 #include <fmt/color.h>
 #include <fmt/core.h>
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 #include <fmt/std.h>
 
 #include <algorithm>
@@ -54,7 +55,7 @@ void EINSUMS_EXPORT always_print_thread_id(bool onoff);
 void EINSUMS_EXPORT suppress_output(bool onoff);
 
 struct Indent {
-     Indent() { indent(); }
+    Indent() { indent(); }
     ~Indent() { deindent(); }
 };
 

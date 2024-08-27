@@ -285,6 +285,7 @@ target_link_libraries(einsums_base_libraries INTERFACE OpenMP::OpenMP_CXX)
 include(Einsums_SetupFmt)
 include(Einsums_SetupSnitch)
 include(Einsums_SetupRangev3)
+include(Einsums_SetupH5cpp)
 #include(Einsums_SetupCppTrace)
 #include(Einsums_SetupHIP)
 

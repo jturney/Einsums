@@ -22,6 +22,7 @@ set(_einsums_einsums_modules
     string_utils
     tensor
     tensor_base
+    util
 )
 # cmake-format: on
 
