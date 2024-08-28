@@ -21,10 +21,10 @@ template <typename T>
 struct is_complex : std::bool_constant<is_complex_v<T>> {};
 
 template <typename T>
-concept complex = is_complex<T>::value;
+concept Complex = is_complex<T>::value;
 
 template <typename T>
-concept not_complex = !is_complex<T>::value;
+concept NotComplex = !is_complex<T>::value;
 
 namespace detail {
 template <typename T>

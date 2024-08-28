@@ -12,16 +12,21 @@ include(Einsums_Message)
 set(_einsums_einsums_modules
     assertion
     backtrace
+    blas
     concepts
     config
     errors
+    iterator_support
     itt_notify
+    linear_algebra
     preprocessor
     print
     profile
-    string_utils
+    program_options
+    string_util
     tensor
     tensor_base
+    type_support
     util
 )
 # cmake-format: on

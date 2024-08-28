@@ -13,7 +13,7 @@ IndentPPDirectives: AfterHash
 AlignConsecutiveAssignments: true
 AlignConsecutiveDeclarations: true
 IncludeCategories:
-  - Regex: '^<snitch/snitch.hpp>'
+  - Regex: '^<catch2/catch_all.hpp>'
     Priority: 10
   - Regex: '^<einsums/config.hpp>'
     Priority: 1

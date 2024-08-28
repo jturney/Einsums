@@ -1,12 +1,12 @@
-// ----------------------------------------------------------------------------------------------
-//  Copyright (c) The Einsums Developers. All rights reserved.
-//  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-// ----------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
+// Copyright (c) The Einsums Developers. All rights reserved.
+// Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+//----------------------------------------------------------------------------------------------
 
 #include <einsums/itt_notify.hpp>
 #include <einsums/profile/section.hpp>
 #include <einsums/profile/timer.hpp>
-#include <einsums/string_utils/trim.hpp>
+#include <einsums/string_util/trim.hpp>
 
 ___itt_domain *global_domain = itt_domain_create("Einsums");
 
@@ -29,7 +29,7 @@ section::section(const std::string &name, bool push_timer) : _impl{std::make_uni
 }
 
 section::section(const std::string &name, const std::string &domain, bool pushTimer) : _impl{std::make_unique<impl>()} {
-    _impl->name       = einsums::string_utils::trim_copy(name);
+    _impl->name       = einsums::string_util::trim_copy(name);
     _impl->push_timer = pushTimer;
 
     _impl->domain  = itt_domain_create(domain.c_str());

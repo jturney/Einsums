@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <einsums/string_utils/trim.hpp>
+#include <einsums/string_util/trim.hpp>
 
 #include <fmt/format.h>
 
@@ -66,7 +66,7 @@ struct fmt::formatter<einsums::dim<Rank>> {
             oss << dim[i] << " ";
         }
         // ctx.out() is an output iterator to write to.
-        return fmt::format_to(ctx.out(), "Dim{{{}}}", einsums::string_utils::rtrim_copy(oss.str()));
+        return fmt::format_to(ctx.out(), "Dim{{{}}}", einsums::string_util::rtrim_copy(oss.str()));
     }
 };
 
@@ -93,7 +93,7 @@ struct fmt::formatter<einsums::stride<Rank>> {
             oss << dim[i] << " ";
         }
         // ctx.out() is an output iterator to write to.
-        return fmt::format_to(ctx.out(), "Stride{{{}}}", einsums::string_utils::rtrim_copy(oss.str()));
+        return fmt::format_to(ctx.out(), "Stride{{{}}}", einsums::string_util::rtrim_copy(oss.str()));
     }
 };
 
@@ -120,7 +120,7 @@ struct fmt::formatter<einsums::count<Rank>> {
             oss << dim[i] << " ";
         }
         // ctx.out() is an output iterator to write to.
-        return fmt::format_to(ctx.out(), "Count{{{}}}", einsums::string_utils::rtrim_copy(oss.str()));
+        return fmt::format_to(ctx.out(), "Count{{{}}}", einsums::string_util::rtrim_copy(oss.str()));
     }
 };
 
@@ -147,7 +147,7 @@ struct fmt::formatter<einsums::offset<Rank>> {
             oss << dim[i] << " ";
         }
         // ctx.out() is an output iterator to write to.
-        return fmt::format_to(ctx.out(), "Offset{{{}}}", einsums::string_utils::rtrim_copy(oss.str()));
+        return fmt::format_to(ctx.out(), "Offset{{{}}}", einsums::string_util::rtrim_copy(oss.str()));
     }
 };
 

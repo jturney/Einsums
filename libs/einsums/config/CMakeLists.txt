@@ -5,7 +5,15 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(config_headers einsums/config.hpp einsums/config/compiler_specific.hpp einsums/config/emulate_deleted.hpp einsums/config/export_definitions.hpp)
+set(config_headers
+        einsums/config.hpp
+        einsums/config/compiler_specific.hpp
+        einsums/config/emulate_deleted.hpp
+        einsums/config/export_definitions.hpp
+        einsums/config/forceinline.hpp
+        einsums/config/namespace.hpp
+        einsums/config/static_call_operator.hpp
+)
 
 set(config_sources version.cpp)
 

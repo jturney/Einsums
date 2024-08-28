@@ -283,7 +283,7 @@ target_link_libraries(einsums_base_libraries INTERFACE OpenMP::OpenMP_CXX)
 # ######################################################################################################################
 # Find other dependencies.
 include(Einsums_SetupFmt)
-include(Einsums_SetupSnitch)
+include(Einsums_SetupCatch)
 include(Einsums_SetupRangev3)
 include(Einsums_SetupH5cpp)
 #include(Einsums_SetupCppTrace)
@@ -333,7 +333,7 @@ if(EINSUMS_WITH_TESTS)
   enable_testing()
   include(CTest)
 
-  # TODO: Uncomment add_subdirectory(testing)
+  add_subdirectory(testing)
 endif()
 
 if(EINSUMS_WITH_EXAMPLES)

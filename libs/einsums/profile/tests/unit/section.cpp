@@ -5,7 +5,7 @@
 
 #include <einsums/profile/section.hpp>
 
-#include <snitch/snitch.hpp>
+#include <catch2/catch_all.hpp>
 
 TEST_CASE("section") {
 

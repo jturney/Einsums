@@ -100,7 +100,6 @@ function(einsums_add_executable name)
     endforeach()
   endif()
 
-  einsums_info("Add executable ${name}: ${${name}_SOURCES}")
   add_executable(${name} ${${name}_SOURCES} ${${name}_HEADERS} ${${name}_AUXILIARY})
 
   if(${name}_OUTPUT_SUFFIX)

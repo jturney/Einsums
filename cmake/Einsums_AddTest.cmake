@@ -97,8 +97,8 @@ function(einsums_add_test category name)
 
   # Only real tests, i.e. executables ending in _test, link to einsums_testing
   if(TARGET ${${name}_EXECUTABLE}_test AND ${name}_TESTING)
-    target_link_libraries(${${name}_EXECUTABLE}_test PRIVATE snitch::snitch)
-    # target_link_libraries(${${name}_EXECUTABLE}_test PRIVATE einsums_testing)
+    target_link_libraries(${${name}_EXECUTABLE}_test PRIVATE Catch2::Catch2)
+    target_link_libraries(${${name}_EXECUTABLE}_test PRIVATE einsums_testing)
   endif()
 
   if(TARGET ${${name}_EXECUTABLE}_test AND ${name}_PERFORMANCE_TESTING)

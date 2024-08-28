@@ -7,6 +7,8 @@
 
 #include <einsums/config.hpp>
 
+#include <fmt/format.h>
+
 #include <memory>
 #include <string>
 
@@ -80,7 +82,8 @@ struct EINSUMS_EXPORT section {
  * Constructs a label that includes the encompassing namespace and function names.
  * This macro also includes an extra label that will be appended to the section name.
  */
-#define LabeledSection1(x) const Section _section(fmt::format("{}::{} {}", detail::get_namespace(), __func__, x))
+#define LabeledSection1(x)                                                                                                                 \
+    const einsums::profile::Section _section##__COUNTER__##(fmt::format("{}::{} {}", detail::get_namespace(), __func__, x))
 
 /**
  * @brief Convenience wrapper to Section.
@@ -89,4 +92,4 @@ struct EINSUMS_EXPORT section {
  * in _Common.hpp is included and used.
  * Constructs a label that includes the encompassing namespace and function names.
  */
-#define LabeledSection0() const Section _section(fmt::format("{}::{}", detail::get_namespace(), __func__))
+#define LabeledSection0() const einsums::profile::Section _section##__COUNTER__##(fmt::format("{}::{}", detail::get_namespace(), __func__))

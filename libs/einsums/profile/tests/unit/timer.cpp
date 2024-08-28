@@ -5,7 +5,7 @@
 
 #include <einsums/profile/timer.hpp>
 
-#include <snitch/snitch.hpp>
+#include <catch2/catch_all.hpp>
 
 TEST_CASE("timer") {
     einsums::profile::timer::initialize();

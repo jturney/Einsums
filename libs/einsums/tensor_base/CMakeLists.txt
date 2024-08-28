@@ -16,6 +16,6 @@ einsums_add_module(
         SOURCES ${tensor_base_sources}
         HEADERS ${tensor_base_headers}
         DEPENDENCIES
-        MODULE_DEPENDENCIES einsums_string_utils
+        MODULE_DEPENDENCIES einsums_string_util
         CMAKE_SUBDIRS examples tests
 )
