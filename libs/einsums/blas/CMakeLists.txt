@@ -5,9 +5,9 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(blas_headers einsums/blas/blas.hpp einsums/blas/types.hpp)
+set(blas_headers einsums/blas/blas.hpp)
 
-set(blas_sources)
+set(blas_sources blas.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -16,6 +16,10 @@ einsums_add_module(
   SOURCES ${blas_sources}
   HEADERS ${blas_headers}
   DEPENDENCIES
-  MODULE_DEPENDENCIES einsums_config einsums_concepts
+  MODULE_DEPENDENCIES
+        einsums_config
+        einsums_concepts
+        einsums_blas_base
+        einsums_blas_vendor
   CMAKE_SUBDIRS examples tests
 )

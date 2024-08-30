@@ -32,7 +32,7 @@ struct typed_tensor {
      *
      * @brief Gets the stored data type.
      */
-    using data_type = T;
+    using value_type = T;
 
     typed_tensor()                     = default;
     typed_tensor(const typed_tensor &) = default;

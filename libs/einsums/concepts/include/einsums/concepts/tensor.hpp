@@ -786,7 +786,7 @@ constexpr inline bool is_disk_block_tensor_v = is_disk_tensor_v<D> && is_block_t
  * @tparam Rest The rest of the tensors.
  */
 template <typename First, typename... Rest>
-constexpr inline bool is_same_underlying_v = (std::is_same_v<typename First::data_type, typename Rest::data_type> && ...);
+constexpr inline bool is_same_underlying_v = (std::is_same_v<typename First::value_type, typename Rest::value_type> && ...);
 
 /**
  * @property is_same_rank_v
@@ -821,6 +821,9 @@ constexpr inline bool is_same_underlying_and_rank_v = is_same_underlying_v<First
  */
 template <typename D>
 concept TensorConcept = is_tensor_v<D>;
+
+template <typename D>
+concept NotTensorConcept = !is_tensor_v<D>;
 
 /**
  * @concept TypedTensorConcept
@@ -1346,7 +1349,6 @@ struct remove_view<D> {
 template <typename D>
 using remove_view_t = typename remove_view<D>::base_type;
 
-#if 0
 namespace detail {
 /**
  * @brief Creates a new tensor with the same type as the input but with a different rank or storage type.
@@ -1371,20 +1373,20 @@ TensorType<NewT, NewRank> create_tensor_of_same_type(const TensorType<T, Rank> &
  * @tparam TensorType The type of the
  */
 template <typename NewT, size_t NewRank, CoreTensorConcept TensorType>
-Tensor<NewT, NewRank> create_basic_tensor_like(const TensorType &tensor) {
-    return Tensor<NewT, NewRank>();
+tensor<NewT, NewRank> create_basic_tensor_like(const TensorType &) {
+    return tensor<NewT, NewRank>();
 }
 
-#    ifdef __HIP__
+#ifdef __HIP__
 template <typename NewT, size_t NewRank, DeviceTensorConcept TensorType>
 DeviceTensor<NewT, NewRank> create_basic_tensor_like(const TensorType &tensor) {
     return DeviceTensor<NewT, NewRank>();
 }
-#    endif
+#endif
 
 template <typename NewT, size_t NewRank, DiskTensorConcept TensorType>
-DiskTensor<NewT, NewRank> create_basic_tensor_like(const TensorType &tensor) {
-    return DiskTensor<NewT, NewRank>();
+disk::tensor<NewT, NewRank> create_basic_tensor_like(const TensorType &) {
+    return disk::tensor<NewT, NewRank>();
 }
 
 } // namespace detail
@@ -1399,7 +1401,7 @@ DiskTensor<NewT, NewRank> create_basic_tensor_like(const TensorType &tensor) {
  * @tparam Rank The new rank.
  */
 template <TensorConcept D, typename T, size_t Rank>
-using TensorLike = decltype(detail::create_tensor_of_same_type<T, Rank>(D()));
+using tensor_like = decltype(detail::create_tensor_of_same_type<T, Rank>(D()));
 
 /**
  * @typedef BasicTensorLike
@@ -1411,26 +1413,24 @@ using TensorLike = decltype(detail::create_tensor_of_same_type<T, Rank>(D()));
  * @tparam Rank The new rank.
  */
 template <TensorConcept D, typename T, size_t Rank>
-using BasicTensorLike = decltype(detail::create_basic_tensor_like<T, Rank>(D()));
-
-#endif
+using basic_tensor_like = decltype(detail::create_basic_tensor_like<T, Rank>(D()));
 
 /**
- * @struct data_type
+ * @struct value_type
  *
  * @brief Gets the data type of a tensor/scalar.
  *
- * Normally, you can get the data type using an expression such as typename AType::data_type. However, if you want
+ * Normally, you can get the data type using an expression such as typename AType::value_type. However, if you want
  * to support both zero-rank tensors and scalars, then this typedef can help with brevity.
  */
 template <typename D>
-struct data_type {
+struct value_type {
     using type = D;
 };
 
 template <TensorConcept D>
-struct data_type<D> {
-    using type = typename D::data_type;
+struct value_type<D> {
+    using type = typename D::value_type;
 };
 
 /**
@@ -1438,11 +1438,11 @@ struct data_type<D> {
  *
  * @brief Gets the data type of a tensor/scalar.
  *
- * Normally, you can get the data type using an expression such as typename AType::data_type. However, if you want
+ * Normally, you can get the data type using an expression such as typename AType::value_type. However, if you want
  * to support both zero-rank tensors and scalars, then this typedef can help with brevity.
  */
 template <typename D>
-using data_type_t = typename data_type<D>::type;
+using value_type_t = typename value_type<D>::type;
 
 /**
  * @property TensorRank
@@ -1535,7 +1535,6 @@ concept NoneOfType = detail::count_of_type<T, Args...>() == 0;
 
 template <typename T, typename... Args>
 concept AtLeastOneOfType = detail::count_of_type<T, Args...>() >= 1;
-
 template <typename T, size_t Num, typename... Args>
 concept NumOfType = detail::count_of_type<T, Args...>() == Num;
 

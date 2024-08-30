@@ -1,7 +1,7 @@
-// ----------------------------------------------------------------------------------------------
-//  Copyright (c) The Einsums Developers. All rights reserved.
-//  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-// ----------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
+// Copyright (c) The Einsums Developers. All rights reserved.
+// Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+//----------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -74,6 +74,7 @@ struct EINSUMS_EXPORT section {
 // Use of LabeledSection requires fmt/format.h to be included and the use of
 // (BEGIN|END)_EINSUMS_NAMESPACE_(CPP|HPP)() defined in _Common.hpp
 
+#define _SectionVariableName(name) name##__SECTION__
 /**
  * @brief Convenience wrapper to Section.
  *
@@ -83,7 +84,7 @@ struct EINSUMS_EXPORT section {
  * This macro also includes an extra label that will be appended to the section name.
  */
 #define LabeledSection1(x)                                                                                                                 \
-    const einsums::profile::Section _section##__COUNTER__##(fmt::format("{}::{} {}", detail::get_namespace(), __func__, x))
+    const einsums::profile::section _SectionVariableName(_section)(fmt::format("{}::{} {}", detail::get_namespace(), __func__, x))
 
 /**
  * @brief Convenience wrapper to Section.
@@ -92,4 +93,5 @@ struct EINSUMS_EXPORT section {
  * in _Common.hpp is included and used.
  * Constructs a label that includes the encompassing namespace and function names.
  */
-#define LabeledSection0() const einsums::profile::Section _section##__COUNTER__##(fmt::format("{}::{}", detail::get_namespace(), __func__))
+#define LabeledSection0()                                                                                                                  \
+    const einsums::profile::section _SectionVariableName(_section)(fmt::format("{}::{}", detail::get_namespace(), __func__))

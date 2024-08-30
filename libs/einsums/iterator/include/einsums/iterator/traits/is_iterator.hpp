@@ -1,0 +1,373 @@
+//----------------------------------------------------------------------------------------------
+// Copyright (c) The Einsums Developers. All rights reserved.
+// Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+//----------------------------------------------------------------------------------------------
+
+#pragma once
+
+//  Copyright (c) 2007-2021 Hartmut Kaiser
+//  Copyright (c) 2019 Austin McCartney
+//
+//  SPDX-License-Identifier: BSL-1.0
+//  Distributed under the Boost Software License, Version 1.0. (See accompanying
+//  file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+
+#include <einsums/config.hpp>
+
+#include <einsums/iterator/boost_iterator_categories.hpp>
+#include <einsums/type_support/equality.hpp>
+
+#include <iterator>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+namespace einsums::iterator::traits {
+///////////////////////////////////////////////////////////////////////////
+namespace detail {
+// This implementation of is_iterator seems to work fine even for
+// VS2013 which has an implementation of std::iterator_traits which is
+// SFINAE-unfriendly.
+template <typename T>
+struct is_iterator {
+#if defined(EINSUMS_MSVC) && defined(__CUDACC__)
+    template <typename U>
+    static typename U::iterator_category *test(U); // iterator
+
+    template <typename U>
+    static void *test(U *); // pointer
+#else
+    template <typename U, typename = typename std::iterator_traits<U>::pointer>
+    static void *test(U &&);
+#endif
+
+    static char test(...);
+
+    enum { value = sizeof(test(std::declval<T>())) == sizeof(void *) };
+};
+
+///////////////////////////////////////////////////////////////////////
+template <typename T, typename U, typename Enable = void>
+struct addition_result {};
+
+template <typename T, typename U>
+struct addition_result<T, U, std::void_t<decltype(std::declval<T>() + std::declval<U>())>> {
+    using type = decltype(std::declval<T>() + std::declval<U>());
+};
+
+template <typename T, typename Enable = void>
+struct dereference_result {};
+
+template <typename T>
+struct dereference_result<T, std::void_t<decltype(*(std::declval<T &>()))>> {
+    using type = decltype(*(std::declval<T &>()));
+};
+
+template <typename T, typename U, typename Enable = void>
+struct inplace_addition_result {};
+
+template <typename T, typename U>
+struct inplace_addition_result<T, U, std::void_t<decltype(std::declval<T>() += std::declval<U>())>> {
+    using type = decltype(std::declval<T>() += std::declval<U>());
+};
+
+template <typename T, typename U, typename Enable = void>
+struct inplace_subtraction_result {};
+
+template <typename T, typename U>
+struct inplace_subtraction_result<T, U, std::void_t<decltype(std::declval<T>() -= std::declval<U>())>> {
+    using type = decltype(std::declval<T>() -= std::declval<U>());
+};
+
+template <typename T, typename Enable = void>
+struct predecrement_result {};
+
+template <typename T>
+struct predecrement_result<T, std::void_t<decltype(--std::declval<T &>())>> {
+    using type = decltype(--std::declval<T &>());
+};
+
+template <typename T, typename Enable = void>
+struct preincrement_result {};
+
+template <typename T>
+struct preincrement_result<T, std::void_t<decltype(++std::declval<T &>())>> {
+    using type = decltype(++std::declval<T &>());
+};
+
+template <typename T, typename Enable = void>
+struct postdecrement_result {};
+
+template <typename T>
+struct postdecrement_result<T, std::void_t<decltype(std::declval<T &>()--)>> {
+    using type = decltype(std::declval<T &>()--);
+};
+
+template <typename T, typename Enable = void>
+struct postincrement_result {};
+
+template <typename T>
+struct postincrement_result<T, std::void_t<decltype(std::declval<T &>()++)>> {
+    using type = decltype(std::declval<T &>()++);
+};
+
+template <typename T, typename U, typename Enable = void>
+struct subscript_result {};
+
+template <typename T, typename U>
+struct subscript_result<T, U, std::void_t<decltype(std::declval<T &>()[std::declval<U>()])>> {
+    using type = decltype(std::declval<T &>()[std::declval<U>()]);
+};
+
+template <typename T, typename U, typename Enable = void>
+struct subtraction_result {};
+
+template <typename T, typename U>
+struct subtraction_result<T, U, std::void_t<decltype(std::declval<T>() - std::declval<U>())>> {
+    using type = decltype(std::declval<T>() - std::declval<U>());
+};
+
+///////////////////////////////////////////////////////////////////////
+template <typename Iter, typename Enable = void>
+struct bidirectional_concept : std::false_type {};
+
+template <typename Iter>
+struct bidirectional_concept<Iter,
+                             std::void_t<typename dereference_result<Iter>::type, ::einsums::type_support::equality_result_t<Iter, Iter>,
+                                         ::einsums::type_support::inequality_result_t<Iter, Iter>, typename predecrement_result<Iter>::type,
+                                         typename preincrement_result<Iter>::type, typename postdecrement_result<Iter>::type,
+                                         typename postincrement_result<Iter>::type>>
+    : std::integral_constant<
+          bool, std::is_convertible<bool, ::einsums::type_support::equality_result_t<Iter, Iter>>::value &&
+                    std::is_convertible<bool, ::einsums::type_support::inequality_result_t<Iter, Iter>>::value &&
+                    std::is_same<typename std::add_lvalue_reference<Iter>::type, typename predecrement_result<Iter>::type>::value &&
+                    std::is_same<typename std::add_lvalue_reference<Iter>::type, typename preincrement_result<Iter>::type>::value &&
+                    std::is_same<Iter, typename postdecrement_result<Iter>::type>::value &&
+                    std::is_same<Iter, typename postincrement_result<Iter>::type>::value> {};
+
+///////////////////////////////////////////////////////////////////////
+template <typename Iter, typename Enable = void>
+struct random_access_concept : std::false_type {};
+
+template <typename Iter>
+struct random_access_concept<
+    Iter, std::void_t<typename dereference_result<Iter>::type,
+                      typename subscript_result<Iter, typename std::iterator_traits<Iter>::difference_type>::type,
+                      typename addition_result<Iter, typename std::iterator_traits<Iter>::difference_type>::type,
+                      typename inplace_addition_result<Iter, typename std::iterator_traits<Iter>::difference_type>::type,
+                      typename subtraction_result<Iter, typename std::iterator_traits<Iter>::difference_type>::type,
+                      typename subtraction_result<Iter, Iter>::type,
+                      typename inplace_subtraction_result<Iter, typename std::iterator_traits<Iter>::difference_type>::type>>
+    : std::integral_constant<
+          bool,
+          bidirectional_concept<Iter>::value &&
+              std::is_same<typename dereference_result<Iter>::type,
+                           typename subscript_result<Iter, typename std::iterator_traits<Iter>::difference_type>::type>::value &&
+              std::is_same<Iter, typename addition_result<Iter, typename std::iterator_traits<Iter>::difference_type>::type>::value &&
+              std::is_same<typename std::add_lvalue_reference<Iter>::type,
+                           typename inplace_addition_result<Iter, typename std::iterator_traits<Iter>::difference_type>::type>::value &&
+              std::is_same<Iter, typename subtraction_result<Iter, typename std::iterator_traits<Iter>::difference_type>::type>::value &&
+              std::is_same<typename std::iterator_traits<Iter>::difference_type, typename subtraction_result<Iter, Iter>::type>::value &&
+              std::is_same<typename std::add_lvalue_reference<Iter>::type,
+                           typename inplace_subtraction_result<Iter, typename std::iterator_traits<Iter>::difference_type>::type>::value> {
+};
+
+///////////////////////////////////////////////////////////////////////
+template <typename Iter, typename TraversalTag>
+struct satisfy_traversal_concept : std::false_type {};
+
+/**
+ * The interface guarantees of InputIterator and ForwardIterator
+ * concepts are not sufficient to robustly distinguish whether a given
+ * type models a forward iterator or an input iterator through interface
+ * inspection and concept emulation alone, given the type in question
+ * models an iterator category no stronger than forward.
+ *
+ * That said, a type which models the BidirectionalIterator concept
+ * also models a ForwardIterator concept, by definition (and the
+ * interface guarantees on the BidirectionalIterator concept are
+ * sufficient for robust concept checking). Here we provide a
+ * specialization to capture this case, such that, bidirectional and
+ * random access iterators will be properly recognized as satisfying the
+ * ForwardIterator concept.
+ */
+template <typename Iter>
+struct satisfy_traversal_concept<Iter, forward_traversal_tag> : bidirectional_concept<Iter> {};
+
+template <typename Iter>
+struct satisfy_traversal_concept<Iter, bidirectional_traversal_tag> : bidirectional_concept<Iter> {};
+
+template <typename Iter>
+struct satisfy_traversal_concept<Iter, random_access_traversal_tag> : random_access_concept<Iter> {};
+} // namespace detail
+
+template <typename Iter, typename Enable = void>
+struct is_iterator : detail::is_iterator<std::decay_t<Iter>> {};
+
+template <typename Iter>
+using is_iterator_t = typename is_iterator<Iter>::type;
+
+template <typename Iter>
+inline constexpr bool is_iterator_v = is_iterator<Iter>::value;
+
+///////////////////////////////////////////////////////////////////////////
+namespace detail {
+
+template <typename Iter, typename Cat, typename Enable = void>
+struct belongs_to_iterator_category : std::false_type {};
+
+template <typename Iter, typename Cat>
+struct belongs_to_iterator_category<Iter, Cat, std::enable_if_t<is_iterator<Iter>::value>>
+    : std::is_base_of<Cat, typename std::iterator_traits<Iter>::iterator_category> {};
+
+///////////////////////////////////////////////////////////////////////
+template <typename Iter, typename Traversal, typename Enable = void>
+struct belongs_to_iterator_traversal : std::false_type {};
+
+template <typename Iter, typename Traversal>
+struct belongs_to_iterator_traversal<Iter, Traversal, std::enable_if_t<is_iterator<Iter>::value>>
+    : std::integral_constant<bool, std::is_base_of<Traversal, iterator_traversal_t<Iter>>::value ||
+                                       satisfy_traversal_concept<Iter, Traversal>::value> {};
+
+///////////////////////////////////////////////////////////////////////
+template <typename Iter, typename Cat, typename Enable = void>
+struct has_category : std::false_type {};
+
+template <typename Iter, typename Cat>
+struct has_category<Iter, Cat, std::enable_if_t<is_iterator<Iter>::value>>
+    : std::is_same<Cat, typename std::iterator_traits<Iter>::iterator_category> {};
+
+///////////////////////////////////////////////////////////////////////
+template <typename Iter, typename Traversal, typename Enable = void>
+struct has_traversal : std::false_type {};
+
+template <typename Iter, typename Traversal>
+struct has_traversal<Iter, Traversal, std::enable_if_t<is_iterator<Iter>::value>> : std::is_same<Traversal, iterator_traversal_t<Iter>> {};
+
+template <typename Iter>
+struct has_traversal<Iter, bidirectional_traversal_tag, std::enable_if_t<is_iterator<Iter>::value>>
+    : std::integral_constant<bool, std::is_same<bidirectional_traversal_tag, iterator_traversal_t<Iter>>::value ||
+                                       (satisfy_traversal_concept<Iter, bidirectional_traversal_tag>::value &&
+                                        !satisfy_traversal_concept<Iter, random_access_traversal_tag>::value)> {};
+
+template <typename Iter>
+struct has_traversal<Iter, random_access_traversal_tag, std::enable_if_t<is_iterator<Iter>::value>>
+    : std::integral_constant<bool, std::is_same<random_access_traversal_tag, iterator_traversal_t<Iter>>::value ||
+                                       satisfy_traversal_concept<Iter, random_access_traversal_tag>::value> {};
+} // namespace detail
+
+///////////////////////////////////////////////////////////////////////////
+template <typename Iter, typename Category>
+struct has_category : detail::has_category<std::decay_t<Iter>, Category> {};
+
+template <typename Iter, typename Category>
+inline constexpr bool has_category_v = has_category<Iter, Category>::value;
+
+///////////////////////////////////////////////////////////////////////////
+template <typename Iter, typename Enable = void>
+struct is_output_iterator
+    : std::integral_constant<bool, detail::belongs_to_iterator_category<std::decay_t<Iter>, std::output_iterator_tag>::value ||
+                                       detail::belongs_to_iterator_traversal<std::decay_t<Iter>, incrementable_traversal_tag>::value> {};
+
+template <typename Iter>
+using is_output_iterator_t = typename is_output_iterator<Iter>::type;
+
+template <typename Iter>
+inline constexpr bool is_output_iterator_v = is_output_iterator<Iter>::value;
+
+template <typename Iter, typename Enable = void>
+struct is_input_iterator
+    : std::integral_constant<bool, detail::belongs_to_iterator_category<std::decay_t<Iter>, std::input_iterator_tag>::value ||
+                                       detail::belongs_to_iterator_traversal<std::decay_t<Iter>, single_pass_traversal_tag>::value> {};
+
+template <typename Iter>
+using is_input_iterator_t = typename is_input_iterator<Iter>::type;
+
+template <typename Iter>
+inline constexpr bool is_input_iterator_v = is_input_iterator<Iter>::value;
+
+template <typename Iter, typename Enable = void>
+struct is_forward_iterator
+    : std::integral_constant<bool, detail::belongs_to_iterator_category<std::decay_t<Iter>, std::forward_iterator_tag>::value ||
+                                       detail::belongs_to_iterator_traversal<std::decay_t<Iter>, forward_traversal_tag>::value> {};
+
+template <typename Iter>
+using is_forward_iterator_t = typename is_forward_iterator<Iter>::type;
+
+template <typename Iter>
+inline constexpr bool is_forward_iterator_v = is_forward_iterator<Iter>::value;
+
+template <typename Iter, typename Enable = void>
+struct is_bidirectional_iterator
+    : std::integral_constant<bool, detail::belongs_to_iterator_category<std::decay_t<Iter>, std::bidirectional_iterator_tag>::value ||
+                                       detail::belongs_to_iterator_traversal<std::decay_t<Iter>, bidirectional_traversal_tag>::value> {};
+
+template <typename Iter>
+using is_bidirectional_iterator_t = typename is_bidirectional_iterator<Iter>::type;
+
+template <typename Iter>
+inline constexpr bool is_bidirectional_iterator_v = is_bidirectional_iterator<Iter>::value;
+
+template <typename Iter, typename Enable = void>
+struct is_random_access_iterator
+    : std::integral_constant<bool, detail::has_category<std::decay_t<Iter>, std::random_access_iterator_tag>::value ||
+                                       detail::has_traversal<std::decay_t<Iter>, random_access_traversal_tag>::value> {};
+
+template <typename Iter>
+using is_random_access_iterator_t = typename is_random_access_iterator<Iter>::type;
+
+template <typename Iter>
+inline constexpr bool is_random_access_iterator_v = is_random_access_iterator<Iter>::value;
+
+///////////////////////////////////////////////////////////////////////////
+template <typename Iter, typename Enable = void>
+struct is_zip_iterator : std::false_type {};
+
+template <typename Iter>
+using is_zip_iterator_t = typename is_zip_iterator<Iter>::type;
+
+template <typename Iter>
+inline constexpr bool is_zip_iterator_v = is_zip_iterator<Iter>::value;
+
+///////////////////////////////////////////////////////////////////////////
+// Iterators are contiguous if they are pointers (without concepts we have
+// no generic way of determining whether an iterator is contiguous)
+
+namespace detail {
+
+// Iterators returned from std::vector are contiguous (bydefinition)
+template <typename Iter, typename T = typename std::iterator_traits<Iter>::value_type>
+struct is_vector_iterator
+    : std::integral_constant<bool, std::is_same<decltype(std::declval<std::vector<T> &>().begin()), Iter>::value ||
+                                       std::is_same<decltype(std::declval<std::vector<T> &>().cbegin()), Iter>::value> {};
+} // namespace detail
+
+template <typename Iter, bool not_vector =
+// When _GLIBCXX_DEBUG is defined vectors are contiguous, but the iterators
+// are not plain pointers.
+#if defined(_GLIBCXX_DEBUG)
+                             false
+#else
+                             detail::is_vector_iterator<Iter>::value
+#endif
+          >
+struct is_contiguous_iterator : std::is_pointer<Iter>::type {
+};
+
+template <typename Iter>
+struct is_contiguous_iterator<Iter, true> : std::true_type {};
+
+template <typename Iter>
+using is_contiguous_iterator_t = typename is_contiguous_iterator<Iter>::type;
+
+template <typename Iter>
+inline constexpr bool is_contiguous_iterator_v = is_contiguous_iterator<Iter>::value;
+
+///////////////////////////////////////////////////////////////////////////
+template <typename Iter>
+using iter_value_t = typename std::iterator_traits<Iter>::value_type;
+
+template <typename Iter>
+using iter_ref_t = typename std::iterator_traits<Iter>::reference;
+
+} // namespace einsums::iterator::traits

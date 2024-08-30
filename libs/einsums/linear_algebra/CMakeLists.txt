@@ -5,9 +5,14 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(linear_algebra_headers)
+set(linear_algebra_headers
+        einsums/linear_algebra/base.hpp
+        einsums/linear_algebra/detail/index_utilities.hpp
+        einsums/linear_algebra/linear_algebra.hpp
+        einsums/linear_algebra/unoptimized.hpp
+)
 
-set(linear_algebra_sources)
+set(linear_algebra_sources linear_algebra.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -16,5 +21,6 @@ einsums_add_module(
   SOURCES ${linear_algebra_sources}
   HEADERS ${linear_algebra_headers}
   DEPENDENCIES
+  MODULE_DEPENDENCIES einsums_config einsums_blas einsums_concepts einsums_errors einsums_print einsums_assertion
   CMAKE_SUBDIRS examples tests
 )

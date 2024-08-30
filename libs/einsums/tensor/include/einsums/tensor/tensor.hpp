@@ -10,9 +10,9 @@
 #include <einsums/concepts/complex.hpp>
 #include <einsums/concepts/tensor.hpp>
 #include <einsums/errors/exception.hpp>
+#include <einsums/iterator/enumerate.hpp>
 #include <einsums/print.hpp>
 #include <einsums/profile/section.hpp>
-#include <einsums/tensor/enumerate.hpp>
 #include <einsums/util/are_all_convertible.hpp>
 #include <einsums/util/arguments.hpp>
 #include <einsums/util/type_name.hpp>
@@ -75,12 +75,14 @@ struct tensor;
 } // namespace disk
 } // namespace einsums
 
+namespace einsums {
+
 /**
  * @brief Represents options and default options for printing tensors.
  *
  */
 struct tensor_print_options {
-    int  width{5};          /// How many columns of tensor data are printed per line.
+    int  width{7};          /// How many columns of tensor data are printed per line.
     bool full_output{true}; /// Print the tensor data (true) or just name and data span information (false).
 };
 
@@ -97,7 +99,6 @@ template <einsums::TensorConcept AType>
     requires(einsums::BasicTensorConcept<AType> || !einsums::AlgebraTensorConcept<AType>)
 void fprintln(std::ostream &os, const AType &A, tensor_print_options options = {});
 
-namespace einsums {
 namespace detail {
 
 /**
@@ -170,8 +171,8 @@ struct tensor : virtual tensor_base::core_tensor,
                 virtual tensor_base::lockable_tensor,
                 virtual tensor_base::algebra_optimized_tensor {
 
-    using datatype = T;
-    using vector   = vector_type<T>;
+    using value_type = T;
+    using vector     = vector_type<T>;
 
     /**
      * @brief Construct a new Tensor object. Default constructor.
@@ -1223,7 +1224,7 @@ struct tensor_view final : public virtual tensor_base::core_tensor,
     }
 
     template <TensorConcept TensorType, typename... Args>
-        requires(std::is_same_v<T, typename TensorType::data_type>)
+        requires(std::is_same_v<T, typename TensorType::value_type>)
     auto common_initialization(TensorType &other, Args &&...args) -> void {
         constexpr std::size_t OtherRank = TensorType::rank;
 
@@ -2006,7 +2007,7 @@ inline auto ndigits(T number) -> int {
 template <einsums::TensorConcept AType>
     requires(einsums::BasicTensorConcept<AType> || !einsums::AlgebraTensorConcept<AType>)
 void println(const AType &A, tensor_print_options options) {
-    using T                    = typename AType::data_type;
+    using T                    = typename AType::value_type;
     constexpr std::size_t Rank = AType::rank;
 
     println("Name: {}", A.name());
@@ -2031,7 +2032,7 @@ void println(const AType &A, tensor_print_options options) {
             einsums::println("Type: {}", util::type_name<AType>());
         }
 
-        einsums::println("Data Type: {}", util::type_name<typename AType::data_type>());
+        einsums::println("Data Type: {}", util::type_name<typename AType::value_type>());
 
         if constexpr (Rank > 0) {
             std::ostringstream oss;
@@ -2084,7 +2085,7 @@ void println(const AType &A, tensor_print_options options) {
                     for (int j = 0; j < final_dim; j++) {
                         if (j % options.width == 0) {
                             std::ostringstream tmp;
-                            tmp << fmt::format("{}", fmt::join(", ", target_combination));
+                            tmp << fmt::format("{}", fmt::join(target_combination, ", "));
                             if (final_dim >= j + options.width)
                                 oss << fmt::format(
                                     "{:<14}", fmt::format("({}, {:{}d}-{:{}d}): ", tmp.str(), j, ndigits, j + options.width - 1, ndigits));
@@ -2133,7 +2134,7 @@ void println(const AType &A, tensor_print_options options) {
                     for (auto target_combination : std::apply(ranges::views::cartesian_product, target_dims)) {
                         std::ostringstream oss;
                         oss << "(";
-                        oss << fmt::format("{}", fmt::join(", ", target_combination));
+                        oss << fmt::format("{}", fmt::join(target_combination, ", "));
                         oss << "): ";
 
                         T value = std::apply(A, target_combination);
@@ -2173,7 +2174,7 @@ void println(const AType &A, tensor_print_options options) {
 template <einsums::TensorConcept AType>
     requires(einsums::BasicTensorConcept<AType> || !einsums::AlgebraTensorConcept<AType>)
 void fprintln(std::FILE *fp, const AType &A, tensor_print_options options) {
-    using T               = typename AType::data_type;
+    using T               = typename AType::value_type;
     constexpr std::size_t Rank = AType::rank;
 
     fprintln(fp, "Name: {}", A.name());
@@ -2198,7 +2199,7 @@ void fprintln(std::FILE *fp, const AType &A, tensor_print_options options) {
             fprintln(fp, "Type: {}", type_name<AType>());
         }
 
-        fprintln(fp, "Data Type: {}", type_name<typename AType::data_type>());
+        fprintln(fp, "Data Type: {}", type_name<typename AType::value_type>());
 
         if constexpr (Rank > 0) {
             std::ostringstream oss;
@@ -2334,7 +2335,7 @@ void fprintln(std::FILE *fp, const AType &A, tensor_print_options options) {
 template <einsums::TensorConcept AType>
     requires(einsums::BasicTensorConcept<AType> || !einsums::AlgebraTensorConcept<AType>)
 void fprintln(std::ostream &os, const AType &A, tensor_print_options options) {
-    using T               = typename AType::data_type;
+    using T               = typename AType::value_type;
     constexpr std::size_t Rank = AType::rank;
 
     fprintln(os, "Name: {}", A.name());

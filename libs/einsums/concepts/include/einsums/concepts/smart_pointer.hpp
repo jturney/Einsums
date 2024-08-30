@@ -31,9 +31,9 @@ template <typename T>
 inline constexpr bool is_smart_pointer_v = detail::is_smart_pointer_helper<T>::value;
 
 template <typename T>
-concept smart_pointer = is_smart_pointer_v<T>;
+concept SmartPointer = is_smart_pointer_v<T>;
 
 template <typename T>
-concept not_smart_pointer = !is_smart_pointer_v<T>;
+concept NonSmartPointer = !is_smart_pointer_v<T>;
 
 } // namespace einsums

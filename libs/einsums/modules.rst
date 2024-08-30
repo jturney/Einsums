@@ -14,10 +14,12 @@ Einsums modules
    /libs/einsums/assertion/docs/index.rst
    /libs/einsums/backtrace/docs/index.rst
    /libs/einsums/blas/docs/index.rst
+   /libs/einsums/blas_base/docs/index.rst
+   /libs/einsums/blas_vendor/docs/index.rst
    /libs/einsums/concepts/docs/index.rst
    /libs/einsums/config/docs/index.rst
    /libs/einsums/errors/docs/index.rst
-   /libs/einsums/iterator_support/docs/index.rst
+   /libs/einsums/iterator/docs/index.rst
    /libs/einsums/itt_notify/docs/index.rst
    /libs/einsums/linear_algebra/docs/index.rst
    /libs/einsums/preprocessor/docs/index.rst
@@ -27,5 +29,6 @@ Einsums modules
    /libs/einsums/string_util/docs/index.rst
    /libs/einsums/tensor/docs/index.rst
    /libs/einsums/tensor_base/docs/index.rst
+   /libs/einsums/tensor_utilities/docs/index.rst
    /libs/einsums/type_support/docs/index.rst
    /libs/einsums/util/docs/index.rst

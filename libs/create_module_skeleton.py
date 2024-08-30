@@ -6,6 +6,9 @@
 ----------------------------------------------------------------------------------------------
 """
 
+#  Copyright (c) The Einsums Developers. All rights reserved.
+#  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+
 import sys, os
 
 if len(sys.argv) != 3:
@@ -62,8 +65,8 @@ details.
 """
 
 root_cmakelists_template = (
-    cmake_root_header
-    + f"""
+        cmake_root_header
+        + f"""
 list(APPEND CMAKE_MODULE_PATH "${{CMAKE_CURRENT_SOURCE_DIR}}/cmake")
 
 set({module_name}_headers)
@@ -77,6 +80,7 @@ einsums_add_module(
   SOURCES ${{{module_name}_sources}}
   HEADERS ${{{module_name}_headers}}
   DEPENDENCIES
+  MODULE_DEPENDENCIES
   CMAKE_SUBDIRS examples tests
 )
 """
@@ -145,6 +149,7 @@ if module_name != "--recreate-index":
     def mkdir(path):
         if not os.path.exists(path):
             os.makedirs(path)
+
 
     mkdir(os.path.join(lib_name, module_name))
 

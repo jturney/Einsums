@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <einsums/concepts/tensor.hpp>
+
 #include <complex>
 #include <type_traits>
 
@@ -18,13 +20,19 @@ inline constexpr bool is_complex_v<std::complex<T>> =
     std::disjunction_v<std::is_same<T, float>, std::is_same<T, double>, std::is_same<T, long double>>;
 
 template <typename T>
-struct is_complex : std::bool_constant<is_complex_v<T>> {};
+concept IsComplex = requires(T t) { requires std::same_as<T, std::complex<typename T::value_type>>; };
 
 template <typename T>
-concept Complex = is_complex<T>::value;
+concept IsComplexTensor = requires(T t) {
+    requires std::same_as<typename T::value_type, std::complex<typename T::value_type::value_type>>;
+    requires TensorConcept<T>;
+};
 
 template <typename T>
-concept NotComplex = !is_complex<T>::value;
+concept Complex = IsComplex<T> || IsComplexTensor<T>;
+
+template <typename T>
+concept NotComplex = !Complex<T>;
 
 namespace detail {
 template <typename T>
@@ -36,6 +44,7 @@ template <typename T>
 struct remove_complex<std::complex<T>> {
     using type = T;
 };
+
 } // namespace detail
 
 template <typename T>

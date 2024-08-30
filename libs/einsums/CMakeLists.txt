@@ -13,10 +13,12 @@ set(_einsums_einsums_modules
     assertion
     backtrace
     blas
+    blas_base
+    blas_vendor
     concepts
     config
     errors
-    iterator_support
+    iterator
     itt_notify
     linear_algebra
     preprocessor
@@ -26,6 +28,7 @@ set(_einsums_einsums_modules
     string_util
     tensor
     tensor_base
+    tensor_utilities
     type_support
     util
 )

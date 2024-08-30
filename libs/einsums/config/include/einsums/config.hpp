@@ -10,5 +10,6 @@
 #include <einsums/config/export_definitions.hpp>
 #include <einsums/config/forceinline.hpp>
 #include <einsums/config/modules_enabled.hpp>
+#include <einsums/config/namespace.hpp>
 #include <einsums/config/static_call_operator.hpp>
 #include <einsums/config/version.hpp>

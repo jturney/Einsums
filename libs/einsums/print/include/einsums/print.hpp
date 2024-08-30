@@ -1,7 +1,7 @@
-// ----------------------------------------------------------------------------------------------
-//  Copyright (c) The Einsums Developers. All rights reserved.
-//  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-// ----------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
+// Copyright (c) The Einsums Developers. All rights reserved.
+// Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+//----------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -12,6 +12,7 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <fmt/std.h>
+#include <range/v3/utility/common_tuple.hpp>
 
 #include <algorithm>
 #include <cassert>
@@ -204,3 +205,20 @@ inline void fprintln_warn(std::ostream &os, const std::string_view &format, cons
 }
 
 } // namespace einsums
+
+template <typename... Ts>
+struct fmt::formatter<ranges::common_tuple<Ts...>> {
+    template <typename ParseContext>
+    constexpr auto parse(ParseContext &ctx) {
+        return ctx.begin();
+    }
+
+    template <typename FormatContext>
+    auto format(const ranges::common_tuple<Ts...> &ct, FormatContext &ctx) {
+        // Create a tuple from the common_tuple
+        auto tpl = static_cast<std::tuple<Ts...>>(ct);
+
+        // Join the tuple elements with a separator (default ", ")
+        return fmt::format_to(ctx.out(), "{}", fmt::join(tpl, ", "));
+    }
+};

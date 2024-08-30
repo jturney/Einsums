@@ -269,6 +269,15 @@ else ()
   )
 endif ()
 
+# Increate concepts diagnostics depth
+add_compile_options(-fconcepts-diagnostics-depth=5)
+
+# ######################################################################################################################
+# Detect BLAS/LAPACK
+find_package(TargetLAPACK REQUIRED)
+get_property(EINSUMS_LINALG_VENDOR TARGET tgt::lapack PROPERTY VENDOR)
+get_property(EINSUMS_LINALG_INT_INTERFACE TARGET tgt::lapack PROPERTY INT_INTERFACE)
+
 # ######################################################################################################################
 # We create a target to contain libraries like rt, dl, etc. in order to remove variables
 add_library(einsums_base_libraries INTERFACE)

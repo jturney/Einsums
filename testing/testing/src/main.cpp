@@ -5,6 +5,8 @@
 
 #define CATCH_CONFIG_RUNNER
 
+#include <einsums/modules/profile.hpp>
+
 #include <catch2/catch_all.hpp>
 
 int main(int argc, char **argv) {
@@ -13,12 +15,14 @@ int main(int argc, char **argv) {
 
     // Initialize einsums runtime
     // einsums::initialize();
+    einsums::profile::timer::initialize();
 
     Catch::Session session;
     session.applyCommandLine(argc, argv);
     int result = session.run();
 
     // Shutdown einsums runtime
+    einsums::profile::timer::finalize();
     // einsums::finalize(false);
 
     return result;

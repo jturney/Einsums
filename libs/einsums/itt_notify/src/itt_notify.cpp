@@ -1,9 +1,10 @@
-// ----------------------------------------------------------------------------------------------
-//  Copyright (c) The Einsums Developers. All rights reserved.
-//  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-// ----------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
+// Copyright (c) The Einsums Developers. All rights reserved.
+// Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+//----------------------------------------------------------------------------------------------
 
 #include <einsums/config.hpp>
+
 #include <einsums/itt_notify.hpp>
 
 #if defined(EINSUMS_HAVE_ITTNOTIFY)
@@ -526,7 +527,7 @@ __itt_counter itt_counter_create(char const *name, char const *domain) noexcept 
 }
 
 __itt_counter itt_counter_create_typed(char const *name, char const *domain, int type) noexcept {
-    return EINSUMS_INTERNAL_COUNTER_CREATE_TYPED(name, domain, (__itt_metadata_type)type);
+    return EINSUMS_INTERNAL_COUNTER_CREATE_TYPED(name, domain, (__itt_metavalue_type)type);
 }
 
 void itt_counter_destroy(__itt_counter id) noexcept {
