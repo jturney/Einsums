@@ -30,6 +30,7 @@ enum class error : std::uint16_t {
     invalid_status,
     permission_denied,
     tensors_incompatible,
+    disk_error,
 
     last_error,
 
@@ -41,7 +42,7 @@ namespace detail {
 
 char const *const error_names[] = {
     "success",       "no_success",    "thread_cancelled", "unknown_error",  "bad_parameter",     "dynamic_link_failure", "kernel_error",
-    "out_of_memory", "yield_aborted", "deadlock",         "invalid_status", "permission_denied", "tensors_incompatible"};
+    "out_of_memory", "yield_aborted", "deadlock",         "invalid_status", "permission_denied", "tensors_incompatible", "disk_error"};
 
 inline auto error_code_has_system_error(int e) -> bool {
     return e & static_cast<int>(einsums::error::system_error_flag);

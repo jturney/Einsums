@@ -7,6 +7,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(concepts_headers
         einsums/concepts/complex.hpp
+        einsums/concepts/file.hpp
         einsums/concepts/smart_pointer.hpp
         einsums/concepts/tensor.hpp
 )

@@ -16,9 +16,9 @@
 #    define EINSUMS_OMP_FOR_NOWAIT   _Pragma("omp for nowait")
 #    define EINSUMS_OMP_CRITICAL     _Pragma("omp critical")
 #else
-#    define EINSUMS_OMP_PARALLEL_FOR _Pragma("omp parallel for default(none)")
+#    define EINSUMS_OMP_PARALLEL_FOR _Pragma("omp parallel for")
 #    define EINSUMS_OMP_SIMD
-#    define EINSUMS_OMP_PARALLEL   _Pragma("omp parallel default(none)")
+#    define EINSUMS_OMP_PARALLEL   _Pragma("omp parallel")
 #    define EINSUMS_OMP_TASK_FOR   _Pragma("omp taskloop")
 #    define EINSUMS_OMP_TASK       _Pragma("omp task")
 #    define EINSUMS_OMP_FOR_NOWAIT _Pragma("omp for nowait")

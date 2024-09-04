@@ -6,6 +6,8 @@
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(tensor_headers
+        einsums/tensor/arithmetic_tensor.hpp
+        einsums/tensor/block_tensor.hpp
         einsums/tensor/H5.hpp
         einsums/tensor/tensor.hpp
         einsums/tensor/tensor_fwd.hpp
@@ -16,11 +18,15 @@ set(tensor_sources)
 include(Einsums_AddModule)
 einsums_add_module(
         einsums tensor
-        GLOBAL_HEADER_GEN OFF
+        GLOBAL_HEADER_GEN ON
         SOURCES ${tensor_sources}
         HEADERS ${tensor_headers}
+        EXCLUDE_FROM_GLOBAL_HEADER
+            "einsums/tensor/H5.hpp"
+            "einsums/tensor/tensor_fwd.hpp"
         DEPENDENCIES Einsums::h5cpp
         MODULE_DEPENDENCIES
+            einsums_assertion
             einsums_concepts
             einsums_config
             einsums_errors

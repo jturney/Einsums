@@ -7,6 +7,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(linear_algebra_headers
         einsums/linear_algebra/base.hpp
+        einsums/linear_algebra/block_tensor.hpp
         einsums/linear_algebra/detail/index_utilities.hpp
         einsums/linear_algebra/linear_algebra.hpp
         einsums/linear_algebra/unoptimized.hpp
