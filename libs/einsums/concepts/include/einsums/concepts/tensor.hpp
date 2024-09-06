@@ -21,7 +21,7 @@ template <typename T, size_t Rank>
 struct tensor;
 }
 
-#if defined(__HIP__)
+#if defined(EINSUMS_COMPUTE_CODE)
 template <typename T, size_t Rank>
 struct device_tensor;
 #endif
@@ -134,7 +134,7 @@ struct is_trl_tensor : std::bool_constant<is_rank_tensor<D, Rank>::value && is_t
 template <typename D>
 struct is_incore_tensor : std::is_base_of<tensor_base::core_tensor, D> {};
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @struct is_device_tensor
  *
@@ -368,7 +368,7 @@ constexpr inline bool is_trl_tensor_v = detail::is_trl_tensor<D, Rank, T>::value
 template <typename D>
 constexpr inline bool is_incore_tensor_v = detail::is_incore_tensor<D>::value;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @property is_device_tensor_v
  *
@@ -506,7 +506,7 @@ constexpr inline bool is_algebra_tensor_v = detail::is_algebra_tensor<D>::value;
  */
 template <typename... Tensors>
 constexpr inline bool is_in_same_place_v = (is_incore_tensor_v<Tensors> && ...) || (is_disk_tensor_v<Tensors> && ...)
-#if defined(__HIP__)
+#if defined(EINSUMS_COMPUTE_CODE)
                                            || (is_device_tensor_v<Tensors> && ...)
 #endif
     ;
@@ -523,7 +523,7 @@ constexpr inline bool is_in_same_place_v = (is_incore_tensor_v<Tensors> && ...) 
 template <typename D, size_t Rank, typename T>
 constexpr inline bool is_incore_rank_tensor_v = is_incore_tensor_v<D> && is_tr_tensor_v<D, Rank, T>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @property is_device_rank_tensor_v
  *
@@ -597,7 +597,7 @@ constexpr inline bool is_rank_block_tensor_v = is_block_tensor_v<D> && is_tr_ten
 template <typename D, size_t Rank, typename T>
 constexpr inline bool is_incore_rank_basic_tensor_v = is_basic_tensor_v<D> && is_tr_tensor_v<D, Rank, T> && is_incore_tensor_v<D>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @property is_device_rank_basic_tensor_v
  *
@@ -623,7 +623,7 @@ constexpr inline bool is_device_rank_basic_tensor_v = is_basic_tensor_v<D> && is
 template <typename D, size_t Rank, typename T>
 constexpr inline bool is_incore_rank_block_tensor_v = is_block_tensor_v<D> && is_tr_tensor_v<D, Rank, T> && is_incore_tensor_v<D>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @property is_device_rank_block_tensor_v
  *
@@ -649,7 +649,7 @@ constexpr inline bool is_device_rank_block_tensor_v = is_block_tensor_v<D> && is
 template <typename D, size_t Rank, typename T>
 constexpr inline bool is_incore_rank_tiled_tensor_v = is_tiled_tensor_v<D> && is_tr_tensor_v<D, Rank, T> && is_incore_tensor_v<D>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @property is_device_rank_tiled_tensor_v
  *
@@ -675,7 +675,7 @@ constexpr inline bool is_device_rank_tiled_tensor_v = is_tiled_tensor_v<D> && is
 template <typename D>
 constexpr inline bool is_incore_basic_tensor_v = is_incore_tensor_v<D> && is_basic_tensor_v<D>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @property is_device_basic_tensor_v
  *
@@ -713,7 +713,7 @@ constexpr inline bool is_disk_basic_tensor_v = is_disk_tensor_v<D> && is_basic_t
 template <typename D>
 constexpr inline bool is_incore_tiled_tensor_v = is_incore_tensor_v<D> && is_tiled_tensor_v<D>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @property is_device_tiled_tensor_v
  *
@@ -751,7 +751,7 @@ constexpr inline bool is_disk_tiled_tensor_v = is_disk_tensor_v<D> && is_tiled_t
 template <typename D>
 constexpr inline bool is_incore_block_tensor_v = is_incore_tensor_v<D> && is_block_tensor_v<D>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @property is_device_block_tensor_v
  *
@@ -899,7 +899,7 @@ concept TRLTensorConcept = is_trl_tensor_v<D, Rank, T>;
 template <typename D>
 concept CoreTensorConcept = is_incore_tensor_v<D>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @concept DeviceTensorConcept
  *
@@ -1036,7 +1036,7 @@ concept AlgebraTensorConcept = is_algebra_tensor_v<D>;
 template <typename D, size_t Rank, typename T>
 concept CoreRankTensor = is_incore_rank_tensor_v<D, Rank, T>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @concept DeviceRankTensor
  *
@@ -1110,7 +1110,7 @@ concept RankBlockTensor = is_rank_block_tensor_v<D, Rank, T>;
 template <typename D, size_t Rank, typename T>
 concept CoreRankBasicTensor = is_incore_rank_basic_tensor_v<D, Rank, T>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @concept DeviceRankBasicTensor
  *
@@ -1136,7 +1136,7 @@ concept DeviceRankBasicTensor = is_device_rank_basic_tensor_v<D, Rank, T>;
 template <typename D, size_t Rank, typename T>
 concept CoreRankBlockTensor = is_incore_rank_block_tensor_v<D, Rank, T>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @concept DeviceRankBlockTensor
  *
@@ -1162,7 +1162,7 @@ concept DeviceRankBlockTensor = is_device_rank_block_tensor_v<D, Rank, T>;
 template <typename D, size_t Rank, typename T>
 concept CoreRankTiledTensor = is_incore_rank_tiled_tensor_v<D, Rank, T>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @concept DeviceRankTiledTensor
  *
@@ -1186,7 +1186,7 @@ concept DeviceRankTiledTensor = is_device_rank_tiled_tensor_v<D, Rank, T>;
 template <typename D>
 concept CoreBasicTensorConcept = is_incore_basic_tensor_v<D>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @concept DeviceBasicTensorConcept
  *
@@ -1208,7 +1208,7 @@ concept DeviceBasicTensorConcept = is_device_basic_tensor_v<D>;
 template <typename D>
 concept CoreBlockTensorConcept = is_incore_block_tensor_v<D>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @concept DeviceBlockTensorConcept
  *
@@ -1230,7 +1230,7 @@ concept DeviceBlockTensorConcept = is_device_block_tensor_v<D>;
 template <typename D>
 concept CoreTiledTensorConcept = is_incore_tiled_tensor_v<D>;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @concept DeviceTiledTensorConcept
  *
@@ -1377,7 +1377,7 @@ tensor<NewT, NewRank> create_basic_tensor_like(const TensorType &) {
     return tensor<NewT, NewRank>();
 }
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 template <typename NewT, size_t NewRank, DeviceTensorConcept TensorType>
 DeviceTensor<NewT, NewRank> create_basic_tensor_like(const TensorType &tensor) {
     return DeviceTensor<NewT, NewRank>();
@@ -1502,7 +1502,7 @@ struct location_tensor_base_of<D> {
     using type = tensor_base::disk_tensor;
 };
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 template <DeviceTensorConcept D>
 struct location_tensor_base_of<D> {
     using type = tensor_base::device_tensor_base;

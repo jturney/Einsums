@@ -14,6 +14,7 @@
 #include <einsums/linear_algebra/base.hpp>
 #include <einsums/linear_algebra/block_tensor.hpp>
 #include <einsums/linear_algebra/detail/index_utilities.hpp>
+#include <einsums/linear_algebra/tiled_tensor.hpp>
 #include <einsums/linear_algebra/unoptimized.hpp>
 #include <einsums/tensor/tensor.hpp>
 

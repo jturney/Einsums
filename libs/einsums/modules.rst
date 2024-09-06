@@ -32,3 +32,4 @@ Einsums modules
    /libs/einsums/tensor_utilities/docs/index.rst
    /libs/einsums/type_support/docs/index.rst
    /libs/einsums/util/docs/index.rst
+   /libs/einsums/version/docs/index.rst

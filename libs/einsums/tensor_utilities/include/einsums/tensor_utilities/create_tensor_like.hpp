@@ -34,8 +34,8 @@ auto create_tensor_like(const TensorType<DataType, Rank> &t) -> tensor<DataType,
     return tensor<DataType, Rank>{t.name(), t.dims()};
 }
 
-#ifndef DOXYGEN_SHOULD_SKIP_THIS
-#    ifdef __HIP__
+#ifndef DOXYGEN
+#    if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @brief Creates a new tensor with the same rank and dimensions of the provided tensor.
  *
@@ -74,7 +74,7 @@ auto create_tensor_like(const TensorType<DataType, Rank> &tensor) -> block_tenso
     return block_tensor<DataType, Rank>{"(unnamed)", tensor.vector_dims()};
 }
 
-#    ifdef __HIP__
+#    if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @brief Creates a new tensor with the same rank, dimensions, and block sizes of the provided tensor.
  *
@@ -121,7 +121,7 @@ auto create_tensor_like(const std::string name, const TensorType<DataType, Rank>
 }
 
 #ifndef DOXYGEN_SHOULD_SKIP_THIS
-#    ifdef __HIP__
+#    if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @brief Creates a new tensor with the same rank and dimensions of the provided tensor.
  *
@@ -164,7 +164,7 @@ auto create_tensor_like(const std::string name, const TensorType<DataType, Rank>
     return block_tensor<DataType, Rank>{name, tensor.vector_dims()};
 }
 
-#    ifdef __HIP__
+#    if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @brief Creates a new tensor with the same, rank, dimensions, and block parameters of the provided tensor.
  *

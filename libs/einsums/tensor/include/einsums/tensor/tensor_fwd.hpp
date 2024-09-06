@@ -27,7 +27,7 @@ struct block_tensor;
 template <typename T, size_t Rank>
 struct tiled_tensor;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 template <typename T, size_t Rank>
 struct device_tensor;
 

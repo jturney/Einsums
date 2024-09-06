@@ -27,7 +27,7 @@ void gemm(const U alpha, const AType &A, const BType &B, const U beta, CType *C)
 
     using T = typename AType::value_type;
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
     if constexpr (einsums::detail::IsDeviceTensorV<AType>) {
         using namespace einsums::gpu;
 
@@ -59,7 +59,7 @@ void gemm(const U alpha, const AType &A, const BType &B, const U beta, CType *C)
             }
             gemm<TransA, TransB>(static_cast<T>(alpha), A.block(i), B.block(i), static_cast<T>(beta), &(C->block(i)));
         }
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
     }
 #endif
 }

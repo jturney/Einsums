@@ -96,7 +96,7 @@ auto create_random_tensor(const std::string &name, MultiIndex... index) -> tenso
     return A;
 }
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 template <typename T = double, bool Normalize = false, typename... MultiIndex>
 auto create_random_gpu_tensor(const std::string &name, MultiIndex... index) -> DeviceTensor<T, sizeof...(MultiIndex)> {
     DeviceTensor<T, sizeof...(MultiIndex)> out{name, einsums::detail::DEV_ONLY, index...};

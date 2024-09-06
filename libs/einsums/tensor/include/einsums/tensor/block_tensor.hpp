@@ -18,7 +18,7 @@
 #include <einsums/tensor_base/tensor_base.hpp>
 #include <einsums/util/type_name.hpp>
 
-#if defined(__HIP__)
+#if defined(EINSUMS_COMPUTE_CODE)
 #    include <einsums/tensor/device_tensor.hpp>
 #endif
 
@@ -891,7 +891,7 @@ struct block_tensor : public virtual tensor_base::block_tensor<T, Rank, tensor<T
     // size_t dim(int d) const override { return detail::block_tensor<T, Rank, Tensor>::dim(d); }
 };
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @struct BlockDeviceTensor
  *

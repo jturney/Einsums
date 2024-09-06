@@ -10,6 +10,7 @@ set(linear_algebra_headers
         einsums/linear_algebra/block_tensor.hpp
         einsums/linear_algebra/detail/index_utilities.hpp
         einsums/linear_algebra/linear_algebra.hpp
+        einsums/linear_algebra/tiled_tensor.hpp
         einsums/linear_algebra/unoptimized.hpp
 )
 

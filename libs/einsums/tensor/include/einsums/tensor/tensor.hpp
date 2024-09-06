@@ -53,7 +53,7 @@
 #include <utility>
 #include <vector>
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 #    include <hip/hip_common.h>
 #    include <hip/hip_runtime.h>
 #    include <hip/hip_runtime_api.h>
@@ -651,7 +651,7 @@ struct tensor : virtual tensor_base::core_tensor,
         einsums::offset<Rank> offset{};
         einsums::stride<Rank> stride = _strides;
 
-        auto ranges = get_array_from_tuple<std::array<range, Rank>>(std::forward_as_tuple(index...));
+        auto ranges = util::arguments::get_array_from_tuple<std::array<range, Rank>>(std::forward_as_tuple(index...));
 
         for (int r = 0; r < Rank; r++) {
             auto range = ranges[r];
@@ -777,7 +777,7 @@ struct tensor : virtual tensor_base::core_tensor,
         return *this;
     }
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
     auto operator=(const device_tensor<T, Rank> &other) -> tensor<T, Rank> & {
         bool realloc{false};
         for (int i = 0; i < Rank; i++) {
@@ -2011,7 +2011,7 @@ void fprintln(Output fp, const AType &A, tensor_print_options options) {
                 fprintln(fp, "Type: In Core Tensor");
             else
                 fprintln(fp, "Type: In Core Tensor View");
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
         } else if constexpr (DeviceTensorConcept<AType>) {
             if constexpr (!DeviceTensorViewConcept<AType>)
                 fprintln(fp, "Type: Device Tensor");
@@ -2063,7 +2063,7 @@ void fprintln(Output fp, const AType &A, tensor_print_options options) {
 
                 fprintln(fp, "{}", oss.str());
                 fprintln(fp);
-#ifndef __HIP__
+#if !defined(EINSUMS_COMPUTE_CODE)
             } else if constexpr (Rank > 1 && einsums::CoreTensorConcept<AType>) {
 #else
             } else if constexpr (Rank > 1 && (einsums::CoreTensorConcept<AType> || einsums::DeviceTensorConcept<AType>)) {
@@ -2114,7 +2114,7 @@ void fprintln(Output fp, const AType &A, tensor_print_options options) {
                     fprintln(fp, "{}", oss.str());
                     fprintln(fp);
                 }
-#ifndef __HIP__
+#if !defined(EINSUMS_COMPUTE_CODE)
             } else if constexpr (Rank == 1 && einsums::CoreTensorConcept<AType>) {
 #else
             } else if constexpr (Rank == 1 && (einsums::CoreTensorConcept<AType> || einsums::DeviceTensorConcept<AType>)) {

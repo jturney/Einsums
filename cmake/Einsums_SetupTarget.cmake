@@ -132,6 +132,10 @@ function(einsums_setup_target target)
     set(install_export EXPORT einsums_targets)
   endif()
 
+#  set_target_properties(${target} PROPERTIES
+#    BUILD_WITH_INSTALL_RPATH TRUE
+#  )
+
   if(target_INSTALL AND NOT target_EXCLUDE_FROM_ALL)
     install(TARGETS ${target} ${install_export} ${target_INSTALL_FLAGS})
     if(target_INSTALL_PDB)

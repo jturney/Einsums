@@ -41,7 +41,7 @@ endif()
 # ######################################################################################################################
 set(EINSUMS_VERSION_MAJOR 1)
 set(EINSUMS_VERSION_MINOR 0)
-set(EINSUMS_VERSION_SUBMINOR 0)
+set(EINSUMS_VERSION_PATCH 0)
 set(EINSUMS_VERSION_DATE 20240822)
 set(EINSUMS_VERSION_TAG "-trunk")
 
@@ -269,7 +269,7 @@ else ()
   )
 endif ()
 
-# Increate concepts diagnostics depth
+# Increase concepts diagnostics depth
 add_compile_options(-fconcepts-diagnostics-depth=5)
 
 # ######################################################################################################################
@@ -285,6 +285,15 @@ add_library(einsums_base_libraries INTERFACE)
 find_package(OpenMP REQUIRED MODULE COMPONENTS CXX)
 target_link_libraries(einsums_base_libraries INTERFACE OpenMP::OpenMP_CXX)
 
+# ##################################################################################################
+# C++ feature tests
+# ##################################################################################################
+# Need to set up CUDA/HIP before feature tests to enable the respective languages
+include(Einsums_SetupCUDA)
+include(Einsums_SetupHIP)
+include(Einsums_PerformCXXFeatureTests)
+einsums_perform_cxx_feature_tests()
+
 # ######################################################################################################################
 # Find Our dependencies: These are all dependencies needed to build the core library. Dependencies that are only needed
 # by plugins, examples or tests should be found separately in the appropriate subdirectory. add_subdirectory(external)
@@ -296,7 +305,6 @@ include(Einsums_SetupCatch)
 include(Einsums_SetupRangev3)
 include(Einsums_SetupH5cpp)
 #include(Einsums_SetupCppTrace)
-#include(Einsums_SetupHIP)
 
 # ######################################################################################################################
 # search path configuration

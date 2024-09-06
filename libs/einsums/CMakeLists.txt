@@ -31,6 +31,7 @@ set(_einsums_einsums_modules
     tensor_utilities
     type_support
     util
+    version
 )
 # cmake-format: on
 

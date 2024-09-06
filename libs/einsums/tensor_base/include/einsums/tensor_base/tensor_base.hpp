@@ -12,7 +12,7 @@
 #include <mutex>
 #include <type_traits>
 
-#if defined(__HIP__)
+#if defined(EINSUMS_COMPUTE_CODE)
 #    include <hip/hip_complex.h>
 #endif
 
@@ -40,7 +40,7 @@ struct typed_tensor {
     virtual ~typed_tensor() = default;
 };
 
-#if defined(__HIP__)
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @struct device_typed_tensor
  *
@@ -198,7 +198,7 @@ struct core_tensor {
     virtual ~core_tensor() = default;
 };
 
-#ifdef __HIP__
+#if defined(EINSUMS_COMPUTE_CODE)
 /**
  * @struct device_tensor
  *

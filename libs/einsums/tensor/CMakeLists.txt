@@ -8,9 +8,11 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 set(tensor_headers
         einsums/tensor/arithmetic_tensor.hpp
         einsums/tensor/block_tensor.hpp
+        einsums/tensor/detail/hash.hpp
         einsums/tensor/H5.hpp
         einsums/tensor/tensor.hpp
         einsums/tensor/tensor_fwd.hpp
+        einsums/tensor/tiled_tensor.hpp
 )
 
 set(tensor_sources)

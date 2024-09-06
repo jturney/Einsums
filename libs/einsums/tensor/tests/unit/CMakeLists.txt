@@ -3,7 +3,14 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-set(tensor_tests block_tensor block_tensor_info block_tensor_operations tensor)
+set(tensor_tests
+        block_tensor
+        block_tensor_info
+        block_tensor_operations
+        tensor tiled_tensor
+        tiled_tensor_gemm
+        tiled_tensor_gemv
+)
 
 foreach (test ${tensor_tests})
     set(sources ${test}.cpp)
