@@ -45,9 +45,9 @@ set(EINSUMS_VERSION_PATCH 0)
 set(EINSUMS_VERSION_DATE 20240822)
 set(EINSUMS_VERSION_TAG "-trunk")
 
-set(EINSUMS_VERSION "${EINSUMS_VERSION_MAJOR}.${EINSUMS_VERSION_MINOR}.${EINSUMS_VERSION_SUBMINOR}")
+set(EINSUMS_VERSION "${EINSUMS_VERSION_MAJOR}.${EINSUMS_VERSION_MINOR}.${EINSUMS_VERSION_PATCH}")
 set(EINSUMS_VERSION_FULL
-    "${EINSUMS_VERSION_MAJOR}.${EINSUMS_VERSION_MINOR}.${EINSUMS_VERSION_SUBMINOR}${EINSUMS_VERSION_TAG}"
+    "${EINSUMS_VERSION_MAJOR}.${EINSUMS_VERSION_MINOR}.${EINSUMS_VERSION_PATCH}${EINSUMS_VERSION_TAG}"
 )
 
 set(EINSUMS_LIBRARY_VERSION "${EINSUMS_VERSION}")
@@ -233,6 +233,23 @@ if(EINSUMS_WITH_ITTNOTIFY)
 endif()
 
 # ######################################################################################################################
+# Thread Manager related build options
+# ######################################################################################################################
+set(EINSUMS_MAX_CPU_COUNT_DEFAULT "64")
+einsums_option(
+        EINSUMS_WITH_MAX_CPU_COUNT
+        STRING
+        "Einsums applications will not use more than this number of OS threads (default: \"${EINSUMS_MAX_CPU_COUNT_DEFAULT}\")"
+        "${EINSUMS_MAX_CPU_COUNT_DEFAULT}"
+        CATEGORY "Thread Manager"
+        ADVANCED
+)
+einsums_add_config_define(EINSUMS_MAX_CPU_COUNT ${EINSUMS_WITH_MAX_CPU_COUNT})
+if (EINSUMS_WITH_MAX_CPU_COUNT GREATER 64)
+  einsums_add_config_define(EINSUMS_HAVE_MORE_THAN_64_THREADS)
+endif()
+
+# ######################################################################################################################
 # CUDA/HIP configuration
 # ######################################################################################################################
 set(CUDA_OPTION_STRING "Enable support for CUDA (default: OFF)")
@@ -294,6 +311,11 @@ include(Einsums_SetupHIP)
 include(Einsums_PerformCXXFeatureTests)
 einsums_perform_cxx_feature_tests()
 
+# ##################################################################################################
+# Check for misc system headers
+# ##################################################################################################
+einsums_check_for_unistd_h(DEFINITIONS EINSUMS_HAVE_UNISTD_H)
+
 # ######################################################################################################################
 # Find Our dependencies: These are all dependencies needed to build the core library. Dependencies that are only needed
 # by plugins, examples or tests should be found separately in the appropriate subdirectory. add_subdirectory(external)
@@ -304,6 +326,8 @@ include(Einsums_SetupFmt)
 include(Einsums_SetupCatch)
 include(Einsums_SetupRangev3)
 include(Einsums_SetupH5cpp)
+include(Einsums_SetupHWLOC)
+include(Einsums_SetupSpdlog)
 #include(Einsums_SetupCppTrace)
 
 # ######################################################################################################################

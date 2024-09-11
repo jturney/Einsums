@@ -10,7 +10,7 @@
 #include <source_location>
 #include <string>
 
-namespace einsums::assertion::detail {
+namespace einsums::detail {
 
 EINSUMS_EXPORT void handle_assert(std::source_location const &loc, const char *expr, std::string const &msg) noexcept;
 

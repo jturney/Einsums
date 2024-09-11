@@ -17,13 +17,13 @@
 #include <string>
 #include <type_traits>
 
-namespace einsums::assertion {
+namespace einsums::detail {
 
 using assertion_handler_type = void (*)(std::source_location const &loc, const char *expr, std::string const &msg);
 
 EINSUMS_EXPORT void set_assertion_handler(assertion_handler_type handler);
 
-} // namespace einsums::assertion
+} // namespace einsums::detail
 
 #if defined(DOXYGEN)
 /// \def EINSUMS_ASSERT(expr, msg)
@@ -49,13 +49,13 @@ EINSUMS_EXPORT void set_assertion_handler(assertion_handler_type handler);
 /// \cond NOINTERNAL
 #    define EINSUMS_ASSERT_(expr, ...)                                                                                                     \
         (!!(expr) ? void()                                                                                                                 \
-                  : ::einsums::assertion::detail::handle_assert(std::source_location::current(), EINSUMS_PP_STRINGIZE(expr),               \
-                                                                fmt::format(__VA_ARGS__))) /**/
+                  : ::einsums::detail::handle_assert(std::source_location::current(), EINSUMS_PP_STRINGIZE(expr),                          \
+                                                     fmt::format(__VA_ARGS__))) /**/
 
 #    define EINSUMS_ASSERT_LOCKED_(l, expr, ...)                                                                                           \
         (!!(expr) ? void()                                                                                                                 \
-                  : ((l).unlock(), ::einsums::assertion::detail::handle_assert(                                                            \
-                                       std::source_location::current(), EINSUMS_PP_STRINGIZE(expr), fmt::format(__VA_ARGS__)))) /**/
+                  : ((l).unlock(), ::einsums::detail::handle_assert(std::source_location::current(), EINSUMS_PP_STRINGIZE(expr),           \
+                                                                    fmt::format(__VA_ARGS__)))) /**/
 
 #    if defined(EINSUMS_DEBUG)
 #        if defined(EINSUMS_COMPUTE_DEVICE_CODE)

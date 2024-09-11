@@ -10,25 +10,37 @@ include(Einsums_Message)
 
 # cmake-format: off
 set(_einsums_einsums_modules
+    affinity
     assertion
     backtrace
     blas
     blas_base
     blas_vendor
+    command_line_handling
     concepts
     config
+    debugging
     errors
+    filesystem
+    functional
+    ini
+    init_runtime
     iterator
     itt_notify
     linear_algebra
+    logging
     preprocessor
     print
     profile
     program_options
+    runtime
+    runtime_configuration
     string_util
     tensor
     tensor_base
     tensor_utilities
+    threading_base
+    topology
     type_support
     util
     version

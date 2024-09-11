@@ -9,7 +9,7 @@
 
 #include <iostream>
 
-namespace einsums::assertion {
+namespace einsums::detail {
 
 namespace {
 auto get_handler() -> assertion_handler_type & {
@@ -39,4 +39,4 @@ void handle_assert(std::source_location const &loc, const char *expr, std::strin
 }
 
 } // namespace detail
-} // namespace einsums::assertion
+} // namespace einsums::detail

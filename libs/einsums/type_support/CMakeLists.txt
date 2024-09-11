@@ -9,6 +9,7 @@ set(type_support_headers
         einsums/type_support/equality.hpp
         einsums/type_support/lazy_conditional.hpp
         einsums/type_support/type_identity.hpp
+        einsums/type_support/unused.hpp
 )
 
 set(type_support_sources)
