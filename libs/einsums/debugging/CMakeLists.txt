@@ -5,7 +5,10 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(debugging_headers einsums/debugging/attach_debugger.hpp)
+set(debugging_headers
+        einsums/debugging/attach_debugger.hpp
+        einsums/debugging/environ.hpp
+)
 
 set(debugging_sources attach_debugger.cpp)
 

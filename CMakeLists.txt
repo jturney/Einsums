@@ -287,7 +287,7 @@ else ()
 endif ()
 
 # Increase concepts diagnostics depth
-add_compile_options(-fconcepts-diagnostics-depth=5)
+#add_compile_options(-fconcepts-diagnostics-depth=5)
 
 # ######################################################################################################################
 # Detect BLAS/LAPACK

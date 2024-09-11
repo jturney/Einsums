@@ -62,7 +62,7 @@ struct EINSUMS_EXPORT affinity_data {
     std::size_t                             _pu_offset;   ///< offset of the first processing unit to use
     std::size_t                             _pu_step;     ///< step between processing units
     std::size_t                             _used_cores;
-    std::size_t                             _affinity_domain;
+    std::string                             _affinity_domain;
     std::vector<threads::detail::mask_type> _affinity_masks;
     std::vector<std::size_t>                _pu_nums;
     threads::detail::mask_type              _no_affinity;      ///< mask of processing units which have no affinity

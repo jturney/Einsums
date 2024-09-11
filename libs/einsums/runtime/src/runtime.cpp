@@ -176,7 +176,7 @@ einsums::threads::callback_notifier::on_startstop_type global_on_start_func;
 einsums::threads::callback_notifier::on_startstop_type global_on_stop_func;
 einsums::threads::callback_notifier::on_error_type     global_on_error_func;
 
-runtime::runtime(einsums::util::runtime_configuration &rtcfg, bool initialize) : _rtcfg(rtcfg), _topology {
+runtime::runtime(einsums::util::runtime_configuration &rtcfg, bool initialize) : _rtcfg(rtcfg) {
 }
 
 #if 0

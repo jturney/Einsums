@@ -18,7 +18,7 @@ struct EINSUMS_EXPORT runtime;
 EINSUMS_EXPORT runtime  &get_runtime();
 EINSUMS_EXPORT runtime *&get_runtime_ptr();
 
-EINSUMS_EXPORT util::runtime_configuration const &get_config();
+EINSUMS_EXPORT einsums::util::runtime_configuration const &get_config();
 
 EINSUMS_EXPORT void on_exit() noexcept;
 EINSUMS_EXPORT void on_abort(int signal) noexcept;

@@ -34,6 +34,7 @@ Einsums modules
    /libs/einsums/print/docs/index.rst
    /libs/einsums/profile/docs/index.rst
    /libs/einsums/program_options/docs/index.rst
+   /libs/einsums/resource_partitioner/docs/index.rst
    /libs/einsums/runtime/docs/index.rst
    /libs/einsums/runtime_configuration/docs/index.rst
    /libs/einsums/string_util/docs/index.rst

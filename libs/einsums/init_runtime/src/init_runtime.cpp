@@ -167,7 +167,7 @@ int run_or_start(std::function<int(program_options::variables_map &vm)> const &f
         EINSUMS_THROW_EXCEPTION(error::invalid_status, "runtime already initialized");
     }
 
-    command_line_handling cmdline(util::runtime_configuration(argv[0]), params.cfg, f);
+    command_line_handling cmdline(einsums::util::runtime_configuration(argv[0]), params.cfg, f);
     auto                  cmdline_result = cmdline.call(params.desc_cmdline, argc, argv);
 
     activate_global_options(cmdline);

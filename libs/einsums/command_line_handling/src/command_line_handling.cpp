@@ -389,11 +389,11 @@ void command_line_handling::handle_arguments(detail::manage_config &cfgmap, eins
     _affinity_bind = detail::handle_affinity_bind(cfgmap, _vm, "");
     if (!_affinity_bind.empty()) {
 #if defined(__APPLE__)
-        if (affinity_bind_ != "none") {
-            std::cerr << "Warning: thread binding set to \"" << affinity_bind_
+        if (_affinity_bind != "none") {
+            std::cerr << "Warning: thread binding set to \"" << _affinity_bind
                       << "\" but thread binding is not supported on macOS. Ignoring option." << std::endl;
         }
-        affinity_bind_ = "";
+        _affinity_bind = "";
 #else
         ini_config.emplace_back("einsums.bind!=" + _affinity_bind);
 #endif
@@ -401,10 +401,10 @@ void command_line_handling::handle_arguments(detail::manage_config &cfgmap, eins
 
     _pu_step = detail::handle_pu_step(cfgmap, _vm, 1);
 #if defined(__APPLE__)
-    if (pu_step_ != 1) {
-        std::cerr << "Warning: PU step set to \"" << pu_step_ << "\" but thread binding is not supported on macOS. Ignoring option."
+    if (_pu_step != 1) {
+        std::cerr << "Warning: PU step set to \"" << _pu_step << "\" but thread binding is not supported on macOS. Ignoring option."
                   << std::endl;
-        pu_step_ = 1;
+        _pu_step = 1;
     }
 #endif
     ini_config.emplace_back("einsums.pu_step=" + std::to_string(_pu_step));

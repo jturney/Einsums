@@ -51,7 +51,12 @@ einsums_add_module(
   GLOBAL_HEADER_GEN OFF
   SOURCES ${program_options_sources}
   HEADERS ${program_options_headers}
-  MODULE_DEPENDENCIES einsums_config einsums_assertion einsums_iterator einsums_string_util
+        MODULE_DEPENDENCIES
+        einsums_config
+        einsums_assertion
+        einsums_debugging
+        einsums_iterator
+        einsums_string_util
 #        einsums_datastructures einsums_iterator
   CMAKE_SUBDIRS examples tests
 )

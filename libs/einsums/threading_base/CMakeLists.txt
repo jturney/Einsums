@@ -7,10 +7,13 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(threading_base_headers
         einsums/threading_base/callback_notifier.hpp
+        einsums/threading_base/scheduler_mode.hpp
         einsums/threading_base/scheduler_state.hpp
 )
 
-set(threading_base_sources)
+set(threading_base_sources
+        scheduler_mode.cpp
+)
 
 include(Einsums_AddModule)
 einsums_add_module(

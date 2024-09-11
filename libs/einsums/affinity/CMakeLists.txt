@@ -12,6 +12,7 @@ set(affinity_headers
 
 set(affinity_sources
         affinity_data.cpp
+        parse_affinity_options.cpp
 )
 
 include(Einsums_AddModule)

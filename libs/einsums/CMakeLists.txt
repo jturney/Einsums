@@ -33,6 +33,7 @@ set(_einsums_einsums_modules
     print
     profile
     program_options
+        resource_partitioner
     runtime
     runtime_configuration
     string_util

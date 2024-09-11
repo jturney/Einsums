@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 // #include <einsums/debugging/environ.hpp>
+#include <einsums/debugging/environ.hpp>
 #include <einsums/program_options/config.hpp>
 #include <einsums/program_options/detail/cmdline.hpp>
 #include <einsums/program_options/detail/config_file.hpp>
