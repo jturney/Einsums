@@ -16,7 +16,7 @@
 
 namespace einsums::resource {
 
-struct socket;
+struct numa_domain;
 struct core;
 struct pu;
 

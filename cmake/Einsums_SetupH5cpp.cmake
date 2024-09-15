@@ -79,26 +79,6 @@ install(
         EXPORT EinsumsH5cppTarget
         NAMESPACE Einsums::
         FILE EinsumsH5cppTarget.cmake
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Einsums
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/einsums
         COMPONENT cmake
 )
-
-
-#install(
-#        TARGETS Einsums_h5cpp
-#        EXPORT Einsums_h5cpp
-#        COMPONENT Einsums_Development
-#)
-#
-#install(
-#        DIRECTORY
-#        ${h5cpp_SOURCE_DIR}/h5cpp
-#        COMPONENT ${ein}_Development
-#        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/einsums
-#)
-#
-#export(
-#        TARGETS Einsums_h5cpp
-#        NAMESPACE Einsums::
-#        FILE "${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/Einsums/EinsumsH5cppTarget.cmake"
-#)

@@ -216,7 +216,8 @@ int init(std::function<int(einsums::program_options::variables_map &)> f, int ar
 }
 
 int init(std::function<int(int, char **)> f, int argc, const char *const *argv, init_params const &params) {
-    std::function<int(einsums::program_options::variables_map &)> main_f = bind_back(einsums::detail::init_helper, f);
+    std::function<int(einsums::program_options::variables_map &)> main_f =
+        einsums::util::detail::bind_back(einsums::detail::init_helper, f);
     return detail::init_start_impl(std::move(main_f), argc, argv, params, true);
 }
 
@@ -237,7 +238,8 @@ void start(std::function<int(einsums::program_options::variables_map &)> f, int 
 }
 
 void start(std::function<int(int, char **)> f, int argc, const char *const *argv, init_params const &params) {
-    std::function<int(einsums::program_options::variables_map &)> main_f = bind_back(einsums::detail::init_helper, f);
+    std::function<int(einsums::program_options::variables_map &)> main_f =
+        einsums::util::detail::bind_back(einsums::detail::init_helper, f);
     if (detail::init_start_impl(std::move(main_f), argc, argv, params, false) != 0) {
         EINSUMS_UNREACHABLE;
     }

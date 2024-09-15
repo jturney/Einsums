@@ -8,6 +8,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 set(util_headers
         einsums/util/are_all_convertible.hpp
         einsums/util/arguments.hpp
+        einsums/util/get_and_reset_value.hpp
         einsums/util/ios_flags_saver.hpp
         einsums/util/type_name.hpp
         einsums/util/manage_config.hpp

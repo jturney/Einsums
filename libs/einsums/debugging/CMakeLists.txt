@@ -7,10 +7,13 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(debugging_headers
         einsums/debugging/attach_debugger.hpp
+        einsums/debugging/backtrace.hpp
+        einsums/debugging/detail/backtrace.hpp
+        einsums/debugging/demangle_helper.hpp
         einsums/debugging/environ.hpp
 )
 
-set(debugging_sources attach_debugger.cpp)
+set(debugging_sources attach_debugger.cpp backtrace.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(

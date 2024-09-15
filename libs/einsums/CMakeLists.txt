@@ -11,6 +11,7 @@ include(Einsums_Message)
 # cmake-format: off
 set(_einsums_einsums_modules
     affinity
+    allocator_support
     assertion
     backtrace
     blas
@@ -18,9 +19,12 @@ set(_einsums_einsums_modules
     blas_vendor
     command_line_handling
     concepts
+    concurrency
     config
+    coroutines
     debugging
     errors
+    execution_base
     filesystem
     functional
     ini
@@ -28,19 +32,23 @@ set(_einsums_einsums_modules
     iterator
     itt_notify
     linear_algebra
+    lock_registration
     logging
+    memory
     preprocessor
     print
     profile
     program_options
-        resource_partitioner
+    resource_partitioner
     runtime
     runtime_configuration
     string_util
     tensor
     tensor_base
     tensor_utilities
+    thread_support
     threading_base
+    timing
     topology
     type_support
     util

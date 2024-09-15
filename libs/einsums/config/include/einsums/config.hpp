@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <einsums/config/attributes.hpp>
+#include <einsums/config/compiler_fence.hpp>
 #include <einsums/config/compiler_specific.hpp>
 #include <einsums/config/emulate_deleted.hpp>
 #include <einsums/config/export_definitions.hpp>

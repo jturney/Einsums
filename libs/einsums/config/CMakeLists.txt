@@ -7,6 +7,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(config_headers
         einsums/config.hpp
+        einsums/config/attributes.hpp
+        einsums/config/compiler_fence.hpp
         einsums/config/compiler_specific.hpp
         einsums/config/emulate_deleted.hpp
         einsums/config/export_definitions.hpp

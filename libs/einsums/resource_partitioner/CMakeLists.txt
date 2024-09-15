@@ -6,8 +6,10 @@
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(resource_partitioner_headers
-        einsums/resource_partitioner/detail/create_partitioner.hpp
+        einsums/resource_partitioner/partitioner.hpp
         einsums/resource_partitioner/partitioner_fwd.hpp
+        einsums/resource_partitioner/detail/create_partitioner.hpp
+        einsums/resource_partitioner/detail/partitioner.hpp
 )
 
 set(resource_partitioner_sources)

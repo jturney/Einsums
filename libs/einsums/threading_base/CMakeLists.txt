@@ -23,6 +23,14 @@ einsums_add_module(
   HEADERS ${threading_base_headers}
   DEPENDENCIES
   MODULE_DEPENDENCIES
+        einsums_affinity
+        einsums_allocator_support
+        einsums_assertion
         einsums_config
+        einsums_debugging
+        einsums_errors
+        einsums_functional
+        einsums_logging
+        einsums_type_support
   CMAKE_SUBDIRS examples tests
 )
