@@ -11,6 +11,7 @@
 #include <einsums/tensor_utilities/diagonal.hpp>
 
 #include <string>
+#include <numbers>
 
 namespace einsums {
 

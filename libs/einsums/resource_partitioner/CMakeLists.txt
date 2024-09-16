@@ -6,13 +6,12 @@
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(resource_partitioner_headers
-        einsums/resource_partitioner/partitioner.hpp
-        einsums/resource_partitioner/partitioner_fwd.hpp
+        einsums/resource_partitioner/partitioner.hpp einsums/resource_partitioner/partitioner_fwd.hpp
         einsums/resource_partitioner/detail/create_partitioner.hpp
         einsums/resource_partitioner/detail/partitioner.hpp
 )
 
-set(resource_partitioner_sources)
+set(resource_partitioner_sources detail_partitioner.cpp partitioner.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -21,12 +20,7 @@ einsums_add_module(
         SOURCES ${resource_partitioner_sources}
         HEADERS ${resource_partitioner_headers}
         DEPENDENCIES
-        MODULE_DEPENDENCIES
-        einsums_affinity
-        einsums_config
-        einsums_runtime_configuration
-        einsums_errors
-        einsums_ini
-        einsums_threading_base
+        MODULE_DEPENDENCIES einsums_affinity einsums_config einsums_runtime_configuration einsums_errors
+        einsums_ini einsums_threading_base
         CMAKE_SUBDIRS examples tests
 )
