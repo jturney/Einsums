@@ -11,9 +11,10 @@ set(debugging_headers
         einsums/debugging/detail/backtrace.hpp
         einsums/debugging/demangle_helper.hpp
         einsums/debugging/environ.hpp
+        einsums/debugging/print.hpp
 )
 
-set(debugging_sources attach_debugger.cpp backtrace.cpp)
+set(debugging_sources attach_debugger.cpp backtrace.cpp print.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(

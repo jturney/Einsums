@@ -47,7 +47,12 @@ struct combined_tagged_state {
         EINSUMS_ASSERT(!(state_ex & ~state_ex_mask));
         EINSUMS_ASSERT(!(state & ~tag_mask));
 
+        EINSUMS_DISABLE_WARNING_PUSH
+        // clang-format off
+        EINSUMS_DISABLE_WARNING(-Wshift-count-overflow)
+        // clang-format on
         return (state << state_shift) | (state_ex << state_ex_mask) | tag;
+        EINSUMS_DISABLE_WARNING_POP
     }
 
   public:

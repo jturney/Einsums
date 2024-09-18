@@ -66,13 +66,13 @@ class function<R(Ts...)> : public detail::basic_function<R(Ts...), true> {
 ///////////////////////////////////////////////////////////////////////////////
 namespace einsums::detail {
 template <typename Sig>
-struct get_function_address<util::detail::function<Sig>> {
-    static constexpr std::size_t call(util::detail::function<Sig> const &f) noexcept { return f.get_function_address(); }
+struct get_function_address<einsums::util::detail::function<Sig>> {
+    static constexpr std::size_t call(einsums::util::detail::function<Sig> const &f) noexcept { return f.get_function_address(); }
 };
 
 template <typename Sig>
-struct get_function_annotation<util::detail::function<Sig>> {
-    static constexpr char const *call(util::detail::function<Sig> const &f) noexcept { return f.get_function_annotation(); }
+struct get_function_annotation<einsums::util::detail::function<Sig>> {
+    static constexpr char const *call(einsums::util::detail::function<Sig> const &f) noexcept { return f.get_function_annotation(); }
 };
 } // namespace einsums::detail
 #endif

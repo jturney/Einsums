@@ -70,7 +70,7 @@ template <typename F, std::size_t... Is, typename... Ts>
 class bound<F, index_pack<Is...>, Ts...> {
   public:
     template <typename F_, typename... Ts_, typename = std::enable_if_t<std::is_constructible_v<F, F_>>>
-    constexpr explicit bound(F_ &&f, Ts_ &&...vs) : _f(std::forward<F_>(f)), _args(std::piecewise_construct, std::forward<Ts>(vs)...) {}
+    constexpr explicit bound(F_ &&f, Ts_ &&...vs) : _f(std::forward<F_>(f)), _args(std::piecewise_construct, std::forward<Ts_>(vs)...) {}
 
 #if !defined(__NVCC__) && !defined(__CUDACC__)
     bound(bound const &) = default;

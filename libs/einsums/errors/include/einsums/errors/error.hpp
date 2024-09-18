@@ -33,6 +33,8 @@ enum class error : std::uint16_t {
     disk_error,
     assertion_failure,
     bad_function_call,
+    thread_not_interruptable,
+    null_thread_id,
 
     last_error,
 
@@ -57,7 +59,9 @@ char const *const error_names[] = {"success",
                                    "tensors_incompatible",
                                    "disk_error",
                                    "assertion_failure",
-                                   "bad_function_call"};
+                                   "bad_function_call",
+                                   "thread_not_interruptable",
+                                   "null_thread_id"};
 
 inline auto error_code_has_system_error(int e) -> bool {
     return e & static_cast<int>(einsums::error::system_error_flag);

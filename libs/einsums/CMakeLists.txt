@@ -42,6 +42,7 @@ set(_einsums_einsums_modules
     resource_partitioner
     runtime
     runtime_configuration
+    schedulers
     string_util
     tensor
     tensor_base

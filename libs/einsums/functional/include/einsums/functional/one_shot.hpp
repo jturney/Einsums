@@ -84,14 +84,14 @@ constexpr one_shot_wrapper<std::decay_t<F>> one_shot(F &&f) {
 namespace einsums::detail {
 #if defined(EINSUMS_HAVE_THREAD_DESCRIPTION)
 template <typename F>
-struct get_function_address<util::detail::one_shot_wrapper<F>> {
-    static constexpr std::size_t call(util::detail::one_shot_wrapper<F> const &f) noexcept { return f.get_function_address(); }
+struct get_function_address<einsums::util::detail::one_shot_wrapper<F>> {
+    static constexpr std::size_t call(einsums::util::detail::one_shot_wrapper<F> const &f) noexcept { return f.get_function_address(); }
 };
 
 ///////////////////////////////////////////////////////////////////////////
 template <typename F>
-struct get_function_annotation<util::detail::one_shot_wrapper<F>> {
-    static constexpr char const *call(util::detail::one_shot_wrapper<F> const &f) noexcept { return f.get_function_annotation(); }
+struct get_function_annotation<einsums::util::detail::one_shot_wrapper<F>> {
+    static constexpr char const *call(einsums::util::detail::one_shot_wrapper<F> const &f) noexcept { return f.get_function_annotation(); }
 };
 
 #endif

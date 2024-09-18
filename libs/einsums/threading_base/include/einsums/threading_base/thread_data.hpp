@@ -1,0 +1,550 @@
+//----------------------------------------------------------------------------------------------
+// Copyright (c) The Einsums Developers. All rights reserved.
+// Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+//----------------------------------------------------------------------------------------------
+
+#pragma once
+
+#include <einsums/config.hpp>
+
+#include <einsums/assert.hpp>
+#include <einsums/concurrency/spinlock_pool.hpp>
+#include <einsums/coroutines/coroutine.hpp>
+#include <einsums/coroutines/detail/combined_tagged_state.hpp>
+#include <einsums/coroutines/thread_id_type.hpp>
+#include <einsums/debugging/backtrace.hpp>
+#include <einsums/execution_base/this_thread.hpp>
+#include <einsums/functional/function.hpp>
+#include <einsums/logging.hpp>
+#include <einsums/modules/errors.hpp>
+#include <einsums/modules/memory.hpp>
+#include <einsums/thread_support/atomic_count.hpp>
+#include <einsums/threading_base/thread_description.hpp>
+#include <einsums/threading_base/thread_init_data.hpp>
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <forward_list>
+#include <memory>
+#include <mutex>
+#include <stack>
+#include <string>
+#include <utility>
+
+// clang-format off
+#include <einsums/config/warnings_prefix.hpp>
+// clang-format on
+
+namespace einsums::threads::detail {
+
+struct EINSUMS_EXPORT thread_data;
+
+////////////////////////////////////////////////////////////////////////////
+/// The function \a get_self_id_data returns the data of the einsums thread id
+/// associated with the current thread (or nullptr if the current thread is
+/// not a einsums thread).
+EINSUMS_EXPORT thread_data *get_self_id_data();
+
+////////////////////////////////////////////////////////////////////////////
+/// A \a thread is the representation of a ParalleX thread. It's a first
+/// class object in ParalleX. In our implementation this is a user level
+/// thread running on top of one of the OS threads spawned by the \a
+/// thread-manager.
+///
+/// A \a thread encapsulates:
+///  - A thread status word (see the functions \a thread#get_state and
+///    \a thread#set_state)
+///  - A function to execute (the thread function)
+///  - A frame (in this implementation this is a block of memory used as
+///    the threads stack)
+///  - A block of registers (not implemented yet)
+///
+/// Generally, \a threads are not created or executed directly. All
+/// functionality related to the management of \a threads is
+/// implemented by the thread-manager.
+struct thread_data : public detail::thread_data_reference_counting {
+    thread_data(thread_data const &)            = delete;
+    thread_data(thread_data &&)                 = delete;
+    thread_data &operator=(thread_data const &) = delete;
+    thread_data &operator=(thread_data &&)      = delete;
+
+    using spinlock_pool = einsums::concurrency::detail::spinlock_pool<thread_data>;
+
+    /// The get_state function queries the state of this thread instance.
+    ///
+    /// \returns        This function returns the current state of this
+    ///                 thread. It will return one of the values as defined
+    ///                 by the \a thread_state enumeration.
+    ///
+    /// \note           This function will be seldom used directly. Most of
+    ///                 the time the state of a thread will be retrieved
+    ///                 by using the function \a thread_manager#get_state.
+    thread_state get_state(std::memory_order order = std::memory_order_acquire) const noexcept { return current_state_.load(order); }
+
+    /// The set_state function changes the state of this thread instance.
+    ///
+    /// \param newstate [in] The new state to be set for the thread.
+    ///
+    /// \note           This function will be seldom used directly. Most of
+    ///                 the time the state of a thread will have to be
+    ///                 changed using the thread_manager. Moreover,
+    ///                 changing the thread state using this function does
+    ///                 not change its scheduling status. It only sets the
+    ///                 thread's status word. To change the thread's
+    ///                 scheduling status \a thread_manager#set_state should
+    ///                 be used.
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    thread_state set_state(thread_schedule_state state, thread_restart_state state_ex = thread_restart_state::unknown,
+                           std::memory_order load_order     = std::memory_order_acquire,
+                           std::memory_order exchange_order = std::memory_order_seq_cst) noexcept
+    // NOLINTEND(bugprone-easily-swappable-parameters)
+    {
+        thread_state prev_state = current_state_.load(load_order);
+
+        for (;;) {
+            thread_state tmp = prev_state;
+
+            // ABA prevention for state only (not for state_ex)
+            std::int64_t tag = tmp.tag();
+            if (state != tmp.state())
+                ++tag;
+
+            if (state_ex == thread_restart_state::unknown)
+                state_ex = tmp.state_ex();
+
+            if (EINSUMS_LIKELY(current_state_.compare_exchange_strong(tmp, thread_state(state, state_ex, tag), exchange_order))) {
+                return prev_state;
+            }
+
+            prev_state = tmp;
+        }
+    }
+
+    bool set_state_tagged(thread_schedule_state newstate, thread_state &prev_state, thread_state &new_tagged_state,
+                          std::memory_order exchange_order = std::memory_order_seq_cst) noexcept {
+        new_tagged_state = thread_state(newstate, prev_state.state_ex(), prev_state.tag() + 1);
+
+        thread_state tmp = prev_state;
+        return current_state_.compare_exchange_strong(tmp, new_tagged_state, exchange_order);
+    }
+
+    /// The restore_state function changes the state of this thread
+    /// instance depending on its current state. It will change the state
+    /// atomically only if the current state is still the same as passed
+    /// as the second parameter. Otherwise it won't touch the thread state
+    /// of this instance.
+    ///
+    /// \param newstate [in] The new state to be set for the thread.
+    /// \param oldstate [in] The old state of the thread which still has to
+    ///                 be the current state.
+    ///
+    /// \note           This function will be seldom used directly. Most of
+    ///                 the time the state of a thread will have to be
+    ///                 changed using the thread_manager. Moreover,
+    ///                 changing the thread state using this function does
+    ///                 not change its scheduling status. It only sets the
+    ///                 thread's status word. To change the thread's
+    ///                 scheduling status \a thread_manager#set_state should
+    ///                 be used.
+    ///
+    /// \returns This function returns \a true if the state has been
+    ///          changed successfully
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    bool restore_state(thread_state new_state, thread_state old_state, std::memory_order load_order = std::memory_order_relaxed,
+                       std::memory_order load_exchange = std::memory_order_seq_cst) noexcept
+    // NOLINTEND(bugprone-easily-swappable-parameters)
+    {
+        // ignore the state_ex while compare-exchanging
+        thread_state         current_state = current_state_.load(load_order);
+        thread_restart_state state_ex      = current_state.state_ex();
+
+        // ABA prevention for state only (not for state_ex)
+        std::int64_t tag = current_state.tag();
+        if (new_state.state() != old_state.state())
+            ++tag;
+
+        thread_state old_tmp(old_state.state(), state_ex, old_state.tag());
+        thread_state new_tmp(new_state.state(), state_ex, tag);
+
+        return current_state_.compare_exchange_strong(old_tmp, new_tmp, load_exchange);
+    }
+
+    bool restore_state(thread_schedule_state new_state, thread_restart_state state_ex, thread_state old_state,
+                       std::memory_order load_exchange = std::memory_order_seq_cst) noexcept {
+        // ABA prevention for state only (not for state_ex)
+        std::int64_t tag = old_state.tag();
+        if (new_state != old_state.state())
+            ++tag;
+
+        return current_state_.compare_exchange_strong(old_state, thread_state(new_state, state_ex, tag), load_exchange);
+    }
+
+  protected:
+    /// The set_state function changes the extended state of this
+    /// thread instance.
+    ///
+    /// \param newstate [in] The new extended state to be set for the
+    ///                 thread.
+    ///
+    /// \note           This function will be seldom used directly. Most of
+    ///                 the time the state of a thread will have to be
+    ///                 changed using the thread_manager.
+    thread_restart_state set_state_ex(thread_restart_state new_state) noexcept {
+        thread_state prev_state = current_state_.load(std::memory_order_acquire);
+
+        for (;;) {
+            thread_state tmp = prev_state;
+
+            if (EINSUMS_LIKELY(current_state_.compare_exchange_strong(tmp, thread_state(tmp.state(), new_state, tmp.tag())))) {
+                return prev_state.state_ex();
+            }
+
+            prev_state = tmp;
+        }
+    }
+
+  public:
+#if !defined(EINSUMS_HAVE_THREAD_DESCRIPTION)
+    ::einsums::detail::thread_description get_description() const { return ::einsums::detail::thread_description("<unknown>"); }
+
+    ::einsums::detail::thread_description set_description(::einsums::detail::thread_description /*value*/) {
+        return ::einsums::detail::thread_description("<unknown>");
+    }
+
+    ::einsums::detail::thread_description get_lco_description() const { return ::einsums::detail::thread_description("<unknown>"); }
+    ::einsums::detail::thread_description set_lco_description(::einsums::detail::thread_description /*value*/) {
+        return ::einsums::detail::thread_description("<unknown>");
+    }
+#else
+    ::einsums::detail::thread_description get_description() const {
+        std::lock_guard<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+        return description_;
+    }
+    ::einsums::detail::thread_description set_description(::einsums::detail::thread_description value) {
+        std::lock_guard<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+        std::swap(description_, value);
+        return value;
+    }
+
+    ::einsums::detail::thread_description get_lco_description() const {
+        std::lock_guard<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+        return lco_description_;
+    }
+    ::einsums::detail::thread_description set_lco_description(::einsums::detail::thread_description value) {
+        std::lock_guard<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+        std::swap(lco_description_, value);
+        return value;
+    }
+#endif
+
+#if !defined(EINSUMS_HAVE_THREAD_PARENT_REFERENCE)
+    /// Return the thread id of the parent thread
+    constexpr thread_id_type get_parent_thread_id() const noexcept { return invalid_thread_id; }
+
+    /// Return the phase of the parent thread
+    constexpr std::size_t get_parent_thread_phase() const noexcept { return 0; }
+#else
+    /// Return the thread id of the parent thread
+    thread_id_type get_parent_thread_id() const noexcept { return parent_thread_id_; }
+
+    /// Return the phase of the parent thread
+    std::size_t get_parent_thread_phase() const noexcept { return parent_thread_phase_; }
+#endif
+
+#ifdef EINSUMS_HAVE_THREAD_DEADLOCK_DETECTION
+    void                  set_marked_state(thread_schedule_state mark) const noexcept { marked_state_ = mark; }
+    thread_schedule_state get_marked_state() const noexcept { return marked_state_; }
+#endif
+
+#if !defined(EINSUMS_HAVE_THREAD_BACKTRACE_ON_SUSPENSION)
+
+#    ifdef EINSUMS_HAVE_THREAD_FULLBACKTRACE_ON_SUSPENSION
+    constexpr char const *get_backtrace() const noexcept { return nullptr; }
+    char const           *set_backtrace(char const *) noexcept { return nullptr; }
+#    else
+    constexpr debug::detail::backtrace const *get_backtrace() const noexcept { return nullptr; }
+    debug::detail::backtrace const           *set_backtrace(debug::detail::backtrace const *) noexcept { return nullptr; }
+#    endif
+
+#else // defined(EINSUMS_HAVE_THREAD_BACKTRACE_ON_SUSPENSION
+
+#    ifdef EINSUMS_HAVE_THREAD_FULLBACKTRACE_ON_SUSPENSION
+    char const *get_backtrace() const noexcept {
+        std::lock_guard<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+        return backtrace_;
+    }
+    char const *set_backtrace(char const *value) noexcept {
+        std::lock_guard<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+
+        char const *bt = backtrace_;
+        backtrace_     = value;
+        return bt;
+    }
+#    else
+    debug::detail::backtrace const *get_backtrace() const noexcept {
+        std::lock_guard<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+        return backtrace_;
+    }
+    debug::detail::backtrace const *set_backtrace(debug::detail::backtrace const *value) noexcept {
+        std::lock_guard<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+
+        debug::detail::backtrace const *bt = backtrace_;
+        backtrace_                         = value;
+        return bt;
+    }
+#    endif
+
+    // Generate full backtrace for captured stack
+    std::string backtrace() {
+        std::lock_guard<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+
+        std::string bt;
+        if (0 != backtrace_) {
+#    ifdef EINSUMS_HAVE_THREAD_FULLBACKTRACE_ON_SUSPENSION
+            bt = *backtrace_;
+#    else
+            bt = backtrace_->trace();
+#    endif
+        }
+        return bt;
+    }
+#endif
+
+    // convenience object to temporarily change priority
+    struct scoped_thread_priority {
+        einsums::execution::thread_priority old_priority_;
+
+      public:
+        explicit scoped_thread_priority(einsums::execution::thread_priority new_p)
+            : old_priority_{threads::detail::get_self_id_data()->get_priority()} {
+            einsums::threads::detail::get_self_id_data()->set_priority(new_p);
+        }
+
+        ~scoped_thread_priority() { einsums::threads::detail::get_self_id_data()->set_priority(old_priority_); }
+
+        scoped_thread_priority(scoped_thread_priority &&)                 = delete;
+        scoped_thread_priority(scoped_thread_priority const &)            = delete;
+        scoped_thread_priority &operator=(scoped_thread_priority &&)      = delete;
+        scoped_thread_priority &operator=(scoped_thread_priority const &) = delete;
+    };
+
+    constexpr execution::thread_priority get_priority() const noexcept { return priority_; }
+    void                                 set_priority(execution::thread_priority priority) noexcept { priority_ = priority; }
+
+    // handle thread interruption
+    bool interruption_requested() const noexcept {
+        std::lock_guard<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+        return requested_interrupt_;
+    }
+
+    bool interruption_enabled() const noexcept {
+        std::lock_guard<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+        return enabled_interrupt_;
+    }
+
+    bool set_interruption_enabled(bool enable) noexcept {
+        std::lock_guard<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+        std::swap(enabled_interrupt_, enable);
+        return enable;
+    }
+
+    void interrupt(bool flag = true) {
+        std::unique_lock<einsums::detail::spinlock> l(spinlock_pool::spinlock_for(this));
+        if (flag && !enabled_interrupt_) {
+            l.unlock();
+            EINSUMS_THROW_EXCEPTION(einsums::error::thread_not_interruptable, "interrupts are disabled for this thread");
+            return;
+        }
+        requested_interrupt_ = flag;
+    }
+
+    bool interruption_point(bool throw_on_interrupt = true);
+
+    bool add_thread_exit_callback(util::detail::function<void()> const &f);
+    void run_thread_exit_callbacks();
+    void free_thread_exit_callbacks();
+
+    EINSUMS_FORCEINLINE bool is_stackless() const noexcept { return is_stackless_; }
+
+    void destroy_thread() override;
+
+    scheduler_base *get_scheduler_base() const noexcept { return scheduler_base_; }
+
+    std::size_t get_last_worker_thread_num() const noexcept { return last_worker_thread_num_.load(std::memory_order_relaxed); }
+
+    void set_last_worker_thread_num(std::size_t last_worker_thread_num) noexcept {
+        last_worker_thread_num_.store(last_worker_thread_num, std::memory_order_relaxed);
+    }
+
+    std::ptrdiff_t get_stack_size() const noexcept { return stacksize_; }
+
+    execution::thread_stacksize get_stack_size_enum() const noexcept { return stacksize_enum_; }
+
+    template <typename ThreadQueue>
+    ThreadQueue &get_queue() noexcept {
+        return *static_cast<ThreadQueue *>(queue_);
+    }
+
+    /// \brief Execute the thread function
+    ///
+    /// \returns        This function returns the thread state the thread
+    ///                 should be scheduled from this point on. The thread
+    ///                 manager will use the returned value to set the
+    ///                 thread's scheduling status.
+    inline coroutine_type::result_type operator()(einsums::execution::this_thread::detail::agent_storage *agent_storage);
+
+    virtual thread_id_type get_thread_id() const { return thread_id_type{const_cast<thread_data *>(this)}; }
+
+#if !defined(EINSUMS_HAVE_THREAD_PHASE_INFORMATION)
+    virtual std::size_t get_thread_phase() const noexcept { return 0; }
+#else
+    virtual std::size_t get_thread_phase() const noexcept = 0;
+#endif
+    virtual std::size_t get_thread_data() const           = 0;
+    virtual std::size_t set_thread_data(std::size_t data) = 0;
+
+    virtual void init()                              = 0;
+    virtual void rebind(thread_init_data &init_data) = 0;
+
+#if defined(EINSUMS_HAVE_APEX)
+    std::shared_ptr<einsums::detail::external_timer::task_wrapper> get_timer_data() const noexcept { return timer_data_; }
+    void set_timer_data(std::shared_ptr<einsums::detail::external_timer::task_wrapper> data) noexcept { timer_data_ = data; }
+#endif
+
+    // Construct a new \a thread
+    thread_data(thread_init_data &init_data, void *queue, std::ptrdiff_t stacksize, bool is_stackless = false,
+                thread_id_addref addref = thread_id_addref::yes);
+
+    virtual ~thread_data() override;
+    virtual void destroy() = 0;
+
+  protected:
+    void rebind_base(thread_init_data &init_data);
+
+  private:
+    mutable std::atomic<thread_state> current_state_;
+
+    ///////////////////////////////////////////////////////////////////////
+    // Debugging/logging information
+#ifdef EINSUMS_HAVE_THREAD_DESCRIPTION
+    ::einsums::detail::thread_description description_;
+    ::einsums::detail::thread_description lco_description_;
+#endif
+
+#ifdef EINSUMS_HAVE_THREAD_PARENT_REFERENCE
+    thread_id_type parent_thread_id_;
+    std::size_t    parent_thread_phase_;
+#endif
+
+#ifdef EINSUMS_HAVE_THREAD_DEADLOCK_DETECTION
+    mutable thread_schedule_state marked_state_;
+#endif
+
+#ifdef EINSUMS_HAVE_THREAD_BACKTRACE_ON_SUSPENSION
+#    ifdef EINSUMS_HAVE_THREAD_FULLBACKTRACE_ON_SUSPENSION
+    char const *backtrace_;
+#    else
+    debug::detail::backtrace const *backtrace_;
+#    endif
+#endif
+    ///////////////////////////////////////////////////////////////////////
+    execution::thread_priority priority_;
+
+    bool       requested_interrupt_;
+    bool       enabled_interrupt_;
+    bool       ran_exit_funcs_;
+    bool const is_stackless_;
+
+    // Singly linked list (heap-allocated)
+    std::forward_list<util::detail::function<void()>> exit_funcs_;
+
+    // reference to scheduler which created/manages this thread
+    scheduler_base          *scheduler_base_;
+    std::atomic<std::size_t> last_worker_thread_num_;
+
+    std::ptrdiff_t              stacksize_;
+    execution::thread_stacksize stacksize_enum_;
+
+    void *queue_;
+
+  public:
+#if defined(EINSUMS_HAVE_APEX)
+    std::shared_ptr<einsums::detail::external_timer::task_wrapper> timer_data_;
+#endif
+};
+
+EINSUMS_FORCEINLINE thread_data *get_thread_id_data(thread_id_ref_type const &tid) {
+    return static_cast<thread_data *>(tid.get().get());
+}
+
+EINSUMS_FORCEINLINE thread_data *get_thread_id_data(thread_id_type const &tid) {
+    return static_cast<thread_data *>(tid.get());
+}
+
+namespace detail {
+EINSUMS_EXPORT void set_self_ptr(thread_self *);
+}
+
+///////////////////////////////////////////////////////////////////////
+/// The function \a get_self returns a reference to the (OS thread
+/// specific) self reference to the current einsums thread.
+EINSUMS_EXPORT thread_self &get_self();
+
+/// The function \a get_self_ptr returns a pointer to the (OS thread
+/// specific) self reference to the current einsums thread.
+EINSUMS_EXPORT thread_self *get_self_ptr();
+
+/// The function \a get_ctx_ptr returns a pointer to the internal data
+/// associated with each coroutine.
+EINSUMS_EXPORT thread_self_impl_type *get_ctx_ptr();
+
+/// The function \a get_self_ptr_checked returns a pointer to the (OS
+/// thread specific) self reference to the current einsums thread.
+EINSUMS_EXPORT thread_self *get_self_ptr_checked(error_code &ec = throws);
+
+/// The function \a get_self_id returns the einsums thread id of the current
+/// thread (or zero if the current thread is not a einsums thread).
+EINSUMS_EXPORT thread_id_type get_self_id();
+
+/// The function \a get_parent_id returns the einsums thread id of the
+/// current thread's parent (or zero if the current thread is not a
+/// einsums thread).
+///
+/// \note This function will return a meaningful value only if the
+///       code was compiled with EINSUMS_HAVE_THREAD_PARENT_REFERENCE
+///       being defined.
+EINSUMS_EXPORT thread_id_type get_parent_id();
+
+/// The function \a get_parent_phase returns the einsums phase of the
+/// current thread's parent (or zero if the current thread is not a
+/// einsums thread).
+///
+/// \note This function will return a meaningful value only if the
+///       code was compiled with EINSUMS_HAVE_THREAD_PARENT_REFERENCE
+///       being defined.
+EINSUMS_EXPORT std::size_t get_parent_phase();
+
+/// The function \a get_self_stacksize returns the stack size of the
+/// current thread (or zero if the current thread is not a einsums thread).
+EINSUMS_EXPORT std::ptrdiff_t get_self_stacksize();
+
+/// The function \a get_self_stacksize_enum returns the stack size of the /
+// current thread (or thread_stacksize::default if the current thread is not
+// a einsums thread).
+EINSUMS_EXPORT execution::thread_stacksize get_self_stacksize_enum();
+} // namespace einsums::threads::detail
+
+#include <einsums/config/warnings_suffix.hpp>
+#include <einsums/threading_base/thread_data_stackful.hpp>
+#include <einsums/threading_base/thread_data_stackless.hpp>
+
+namespace einsums::threads::detail {
+EINSUMS_FORCEINLINE coroutine_type::result_type
+                    thread_data::operator()(einsums::execution::this_thread::detail::agent_storage *agent_storage) {
+    if (is_stackless()) {
+        return static_cast<thread_data_stackless *>(this)->call();
+    }
+    return static_cast<thread_data_stackful *>(this)->call(agent_storage);
+}
+} // namespace einsums::threads::detail

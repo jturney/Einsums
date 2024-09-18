@@ -102,7 +102,7 @@ class basic_function<R(Ts...), Copyable> : public function_base {
     }
 
     basic_function &operator=(basic_function &&other) noexcept {
-        base_type::op_assign(EINSUMS_MOVE(other), get_empty_vtable());
+        base_type::op_assign(std::move(other), get_empty_vtable());
         return *this;
     }
 

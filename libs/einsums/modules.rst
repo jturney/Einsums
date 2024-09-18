@@ -43,6 +43,7 @@ Einsums modules
    /libs/einsums/resource_partitioner/docs/index.rst
    /libs/einsums/runtime/docs/index.rst
    /libs/einsums/runtime_configuration/docs/index.rst
+   /libs/einsums/schedulers/docs/index.rst
    /libs/einsums/string_util/docs/index.rst
    /libs/einsums/tensor/docs/index.rst
    /libs/einsums/tensor_base/docs/index.rst
