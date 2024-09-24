@@ -1,7 +1,7 @@
-// ----------------------------------------------------------------------------------------------
-//  Copyright (c) The Einsums Developers. All rights reserved.
-//  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-// ----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
+// Copyright (c) The Einsums Developers. All rights reserved.
+// Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -120,7 +120,7 @@ template <typename E>
 struct exception_with_info : public E, public exception_with_info_base {
     explicit exception_with_info(E const &e, exception_info xi) : E(e), exception_with_info_base(typeid(E), std::move(xi)) {}
 
-    explicit exception_with_info(E &&e, exception_info xi) : E(PIKA_MOVE(e)), exception_with_info_base(typeid(E), std::move(xi)) {}
+    explicit exception_with_info(E &&e, exception_info xi) : E(std::move(e)), exception_with_info_base(typeid(E), std::move(xi)) {}
 };
 
 } // namespace detail

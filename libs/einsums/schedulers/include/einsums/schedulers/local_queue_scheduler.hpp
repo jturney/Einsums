@@ -9,7 +9,6 @@
 
 #include <einsums/affinity/affinity_data.hpp>
 #include <einsums/assert.hpp>
-#include <einsums/config/warnings_prefix.hpp>
 #include <einsums/functional/function.hpp>
 #include <einsums/logging.hpp>
 #include <einsums/modules/errors.hpp>
@@ -34,6 +33,8 @@
 #include <string>
 #include <type_traits>
 #include <vector>
+
+#include <einsums/config/warnings_prefix.hpp>
 
 // TODO: add branch prediction and function heat
 

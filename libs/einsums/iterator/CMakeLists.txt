@@ -6,10 +6,17 @@
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(iterator_headers
-        einsums/iterator/enumerate.hpp
         einsums/iterator/boost_iterator_categories.hpp
+        einsums/iterator/counting_iterator.hpp
+        einsums/iterator/counting_shape.hpp
+        einsums/iterator/enumerate.hpp
+        einsums/iterator/iterator_adaptor.hpp
         einsums/iterator/iterator_facade.hpp
+        einsums/iterator/iterator_range.hpp
+        einsums/iterator/range.hpp
         einsums/iterator/traits/is_iterator.hpp
+        einsums/iterator/traits/is_range.hpp
+        einsums/iterator/traits/is_sentinel_for.hpp
 )
 
 set(iterator_sources)

@@ -21,6 +21,6 @@ einsums_add_module(
         HEADERS ${resource_partitioner_headers}
         DEPENDENCIES
         MODULE_DEPENDENCIES einsums_affinity einsums_config einsums_runtime_configuration einsums_errors
-        einsums_ini einsums_threading_base
+        einsums_ini einsums_threading_base einsums_thread_pools
         CMAKE_SUBDIRS examples tests
 )

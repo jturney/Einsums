@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -28,7 +28,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace einsums::iterator {
+namespace einsums::util {
 ///////////////////////////////////////////////////////////////////////////
 // Helper class to gain access to the implementation functions in the
 // derived (user-defined) iterator classes.
@@ -399,9 +399,9 @@ using postfix_increment_result_t = typename postfix_increment_result<Iterator, V
 ///////////////////////////////////////////////////////////////////////////
 EINSUMS_NVCC_PRAGMA_HD_WARNING_DISABLE
 template <typename Derived, typename T, typename Category, typename Reference, typename Distance, typename Pointer>
-EINSUMS_HOST_DEVICE inline iterator::detail::postfix_increment_result_t<Derived, typename Derived::value_type, typename Derived::reference>
+EINSUMS_HOST_DEVICE inline util::detail::postfix_increment_result_t<Derived, typename Derived::value_type, typename Derived::reference>
 operator++(iterator_facade<Derived, T, Category, Reference, Distance, Pointer> &i, int) {
-    using iterator_type = iterator::detail::postfix_increment_result_t<Derived, typename Derived::value_type, typename Derived::reference>;
+    using iterator_type = util::detail::postfix_increment_result_t<Derived, typename Derived::value_type, typename Derived::reference>;
 
     iterator_type tmp(*static_cast<Derived *>(&i));
     ++i;
@@ -421,14 +421,14 @@ struct enable_operator_interoperable_ex
 #define EINSUMS_UTIL_ITERATOR_FACADE_INTEROP_HEAD(prefix, op, result_type)                                                                 \
     template <typename Derived1, typename T1, typename Category1, typename Reference1, typename Distance1, typename Pointer1,              \
               typename Derived2, typename T2, typename Category2, typename Reference2, typename Distance2, typename Pointer2>              \
-    EINSUMS_HOST_DEVICE prefix typename einsums::iterator::detail::enable_operator_interoperable<Derived1, Derived2, result_type>::type    \
+    EINSUMS_HOST_DEVICE prefix typename einsums::util::detail::enable_operator_interoperable<Derived1, Derived2, result_type>::type    \
                         operator op(iterator_facade<Derived1, T1, Category1, Reference1, Distance1, Pointer1> const &lhs,                  \
                                     iterator_facade<Derived2, T2, Category2, Reference2, Distance2, Pointer2> const &rhs) /**/
 
 #define EINSUMS_UTIL_ITERATOR_FACADE_INTEROP_HEAD_EX(prefix, op, result_type, cond)                                                        \
     template <typename Derived1, typename T1, typename Category1, typename Reference1, typename Distance1, typename Pointer1,              \
               typename Derived2, typename T2, typename Category2, typename Reference2, typename Distance2, typename Pointer2>              \
-    EINSUMS_HOST_DEVICE prefix typename einsums::iterator::detail::enable_operator_interoperable_ex<                                       \
+    EINSUMS_HOST_DEVICE prefix typename einsums::util::detail::enable_operator_interoperable_ex<                                       \
         Derived1, Derived2, result_type, cond<typename Derived1::iterator_category, typename Derived2::iterator_category>>::type           \
     operator op(iterator_facade<Derived1, T1, Category1, Reference1, Distance1, Pointer1> const &lhs,                                      \
                 iterator_facade<Derived2, T2, Category2, Reference2, Distance2, Pointer2> const &rhs) /**/

@@ -14,11 +14,14 @@ set(functional_headers
         einsums/functional/function.hpp
         einsums/functional/invoke.hpp
         einsums/functional/one_shot.hpp
+        einsums/functional/tag_invoke.hpp
         einsums/functional/unique_function.hpp
         einsums/functional/detail/basic_functon.hpp
         einsums/functional/detail/empty_function.hpp
         einsums/functional/detail/invoke_result_plain_function.hpp
         einsums/functional/detail/reset_function.hpp
+        einsums/functional/detail/tag_fallback_invoke.hpp
+        einsums/functional/detail/tag_priority_invoke.hpp
         einsums/functional/detail/vtable/callable_vtable.hpp
         einsums/functional/detail/vtable/copyable_vtable.hpp
         einsums/functional/detail/vtable/function_vtable.hpp
@@ -28,10 +31,7 @@ set(functional_headers
         einsums/functional/traits/is_bind_expression.hpp
 )
 
-set(functional_sources
-        basic_function.cpp
-        empty_function.cpp
-)
+set(functional_sources basic_function.cpp empty_function.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -44,11 +44,7 @@ einsums_add_module(
   SOURCES ${functional_sources}
   HEADERS ${functional_headers}
   DEPENDENCIES
-  MODULE_DEPENDENCIES
-        einsums_assertion
-        einsums_config
-        einsums_debugging
-        einsums_errors
+        MODULE_DEPENDENCIES einsums_assertion einsums_config einsums_datastructures einsums_debugging einsums_errors
         einsums_type_support
   CMAKE_SUBDIRS examples tests
 )

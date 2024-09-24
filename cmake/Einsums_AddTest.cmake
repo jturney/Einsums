@@ -81,7 +81,7 @@ function(einsums_add_test category name)
   endif()
 
   set(_full_name "${category}.${name}")
-  add_test(NAME "${category}.${name}" COMMAND ${valgrind_cmd} ${cmd} ${args})
+  add_test(NAME "${category}.${name}" COMMAND ${valgrind_cmd} ${cmd} - ${args})
   if(${run_serial})
     set_tests_properties("${_full_name}" PROPERTIES RUN_SERIAL TRUE)
   endif()

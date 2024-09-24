@@ -6,18 +6,16 @@
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(concurrency_headers
-  einsums/concurrency/barrier.hpp
-  einsums/concurrency/cache_line_data.hpp
+        einsums/concurrency/barrier.hpp
+        einsums/concurrency/cache_line_data.hpp
     einsums/concurrency/concurrentqueue.hpp
     einsums/concurrency/deque.hpp
-
     einsums/concurrency/spinlock.hpp
-  einsums/concurrency/spinlock_pool.hpp
-  einsums/concurrency/detail/fibhash.hpp
+        einsums/concurrency/spinlock_pool.hpp
+        einsums/concurrency/detail/fibhash.hpp
     einsums/concurrency/detail/contiguous_index_queue.hpp
     einsums/concurrency/detail/freelist.hpp
     einsums/concurrency/detail/tagged_ptr_pair.hpp
-
 )
 
 set(concurrency_sources barrier.cpp)

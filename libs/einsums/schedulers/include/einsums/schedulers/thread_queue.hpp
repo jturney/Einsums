@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -17,10 +17,10 @@
 #include <einsums/schedulers/maintain_queue_wait_times.hpp>
 #include <einsums/schedulers/queue_helpers.hpp>
 #include <einsums/thread_support/unlock_guard.hpp>
+#include <einsums/threading_base/detail/thread_data_stackful.hpp>
+#include <einsums/threading_base/detail/thread_data_stackless.hpp>
 #include <einsums/threading_base/scheduler_base.hpp>
 #include <einsums/threading_base/thread_data.hpp>
-#include <einsums/threading_base/thread_data_stackful.hpp>
-#include <einsums/threading_base/thread_data_stackless.hpp>
 #include <einsums/threading_base/thread_queue_init_parameters.hpp>
 #include <einsums/util/get_and_reset_value.hpp>
 
@@ -226,7 +226,7 @@ class thread_queue {
             // pushing the new thread into the pending queue of the
             // specified thread_queue
             ++added;
-            schedule_thread(EINSUMS_MOVE(thrd));
+            schedule_thread(std::move(thrd));
         }
 
         if (added) {
@@ -288,7 +288,7 @@ class thread_queue {
         } else if (stacksize == parameters_.nostack_stacksize_) {
             thread_heap_nostack_.push_back(thrd);
         } else {
-            EINSUMS_ASSERT_MSG(false, fmt::format("Invalid stack size {}", stacksize));
+            EINSUMS_ASSERT_MSG(false, "Invalid stack size {}", stacksize);
         }
     }
 #endif
@@ -547,13 +547,13 @@ class thread_queue {
                     if (id) {
                         *id = thrd;
                     }
-                    schedule_thread(EINSUMS_MOVE(thrd));
+                    schedule_thread(std::move(thrd));
                 } else {
                     // if the thread should not be scheduled the id must be
                     // returned to the caller as otherwise the thread would
                     // go out of scope right away.
                     EINSUMS_ASSERT(id != nullptr);
-                    *id = EINSUMS_MOVE(thrd);
+                    *id = std::move(thrd);
                 }
 
                 if (&ec != &throws)
@@ -580,7 +580,7 @@ class thread_queue {
         new (td) task_description{EINSUMS_MOVE(data),
                                   duration<std::uint64_t, std::nano>(high_resolution_clock::now().time_since_epoch()).count()};
 #else
-        new (td) task_description{EINSUMS_MOVE(data)}; //-V106
+        new (td) task_description{std::move(data)}; //-V106
 #endif
         new_tasks_.push(td);
         if (&ec != &throws)
@@ -755,7 +755,7 @@ class thread_queue {
                 thrd->set_state(threads::detail::thread_schedule_state::pending, einsums::threads::detail::thread_restart_state::abort);
 
                 // thread holds self-reference
-                EINSUMS_ASSERT(thrd->count_ > 1);
+                EINSUMS_ASSERT(thrd->_count > 1);
                 schedule_thread(threads::detail::thread_id_ref_type(thrd));
             }
         }

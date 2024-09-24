@@ -1,8 +1,8 @@
 
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #include <einsums/config.hpp>
 
@@ -35,11 +35,11 @@
 namespace einsums::resource::detail {
 ///////////////////////////////////////////////////////////////////////////
 [[noreturn]] void throw_runtime_error(std::string const &func, std::string const &message) {
-    EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, func, "{}", message);
+    EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "{}: {}", func, message);
 }
 
 [[noreturn]] void throw_invalid_argument(std::string const &func, std::string const &message) {
-    EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, func, "{}", message);
+    EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "{}: {}", func, message);
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -53,7 +53,7 @@ init_pool_data::init_pool_data(std::string const &name, scheduling_policy sched,
 }
 
 init_pool_data::init_pool_data(std::string const &name, scheduler_function create_func, einsums::threads::scheduler_mode mode)
-    : pool_name_(name), scheduling_policy_(user_defined), num_threads_(0), mode_(mode), create_function_(EINSUMS_MOVE(create_func)) {
+    : pool_name_(name), scheduling_policy_(user_defined), num_threads_(0), mode_(mode), create_function_(std::move(create_func)) {
     if (name.empty()) {
         throw_invalid_argument("init_pool_data::init_pool_data", "cannot instantiate a thread_pool with empty string as a name.");
     }
@@ -190,7 +190,7 @@ partitioner::partitioner()
 
     std::string default_scheduler_mode_str = rtcfg_.get_entry("einsums.default_scheduler_mode", std::string());
     if (!default_scheduler_mode_str.empty()) {
-        default_scheduler_mode_ = threads::scheduler_mode(einsums::detail::from_string<std::size_t>(default_scheduler_mode_str));
+        default_scheduler_mode_ = threads::scheduler_mode(einsums::string_util::from_string<std::size_t>(default_scheduler_mode_str));
         EINSUMS_ASSERT_MSG((default_scheduler_mode_ & ~threads::scheduler_mode::all_flags) == threads::scheduler_mode{},
                            "einsums.default_scheduler_mode contains unknown scheduler modes");
     }
@@ -217,39 +217,37 @@ bool partitioner::pu_exposed(std::size_t pu_num) {
 void partitioner::fill_topology_vectors() {
     threads::detail::topology &topo = get_topology();
 
-    std::size_t pid            = 0;
-    std::size_t num_numa_nodes = topo.get_number_of_numa_nodes();
-    if (num_numa_nodes == 0)
-        num_numa_nodes = topo.get_number_of_sockets();
-    numa_domains_.reserve(num_numa_nodes);
+    std::size_t pid         = 0;
+    std::size_t num_sockets = topo.get_number_of_sockets();
+    sockets_.reserve(num_sockets);
 
-    // loop on the numa-domains
-    for (std::size_t i = 0; i != num_numa_nodes; ++i) {
-        numa_domains_.emplace_back(i);          // add a numa domain
-        numa_domain &nd = numa_domains_.back(); // numa-domain just added
+    // loop on the sockets
+    for (std::size_t i = 0; i != num_sockets; ++i) {
+        sockets_.emplace_back(i);     // add a socket
+        socket &nd = sockets_.back(); // socket just added
 
-        std::size_t numa_node_cores = topo.get_number_of_numa_node_cores(i);
-        nd.cores_.reserve(numa_node_cores);
+        std::size_t socket_cores = topo.get_number_of_socket_cores(i);
+        nd._cores.reserve(socket_cores);
 
-        bool numa_domain_contains_exposed_cores = false;
+        bool socket_contains_exposed_cores = false;
 
         // loop on the cores
-        for (std::size_t j = 0; j != numa_node_cores; ++j) {
-            nd.cores_.emplace_back(j, &nd);
-            core &c = nd.cores_.back();
+        for (std::size_t j = 0; j != socket_cores; ++j) {
+            nd._cores.emplace_back(j, &nd);
+            core &c = nd._cores.back();
 
             std::size_t core_pus = topo.get_number_of_core_pus(j);
-            c.pus_.reserve(core_pus);
+            c._pus.reserve(core_pus);
 
             bool core_contains_exposed_pus = false;
 
             // loop on the processing units
             for (std::size_t k = 0; k != core_pus; ++k) {
                 if (pu_exposed(pid)) {
-                    c.pus_.emplace_back(pid, &c, affinity_data_.get_thread_occupancy(topo, pid));
-                    pu &p = c.pus_.back();
+                    c._pus.emplace_back(pid, &c, affinity_data_.get_thread_occupancy(topo, pid));
+                    pu &p = c._pus.back();
 
-                    if (p.thread_occupancy_ == 0) {
+                    if (p._thread_occupancy == 0) {
                         throw_runtime_error("partitioner::fill_topology_vectors", "PU #" + std::to_string(pid) + " has thread occupancy 0");
                     }
                     core_contains_exposed_pus = true;
@@ -258,14 +256,14 @@ void partitioner::fill_topology_vectors() {
             }
 
             if (core_contains_exposed_pus) {
-                numa_domain_contains_exposed_cores = true;
+                socket_contains_exposed_cores = true;
             } else {
-                nd.cores_.pop_back();
+                nd._cores.pop_back();
             }
         }
 
-        if (!numa_domain_contains_exposed_cores) {
-            numa_domains_.pop_back();
+        if (!socket_contains_exposed_cores) {
+            sockets_.pop_back();
         }
     }
 }
@@ -304,10 +302,10 @@ std::size_t partitioner::assign_cores(std::size_t first_core) {
 void partitioner::setup_pools() {
     // Assign all free resources to the default pool
     bool first = true;
-    for (einsums::resource::numa_domain &d : numa_domains_) {
-        for (einsums::resource::core &c : d.cores_) {
-            for (einsums::resource::pu &p : c.pus_) {
-                if (p.thread_occupancy_count_ == 0) {
+    for (einsums::resource::socket &d : sockets_) {
+        for (einsums::resource::core &c : d._cores) {
+            for (einsums::resource::pu &p : c._pus) {
+                if (p._thread_occupancy_count == 0) {
                     // The default pool resources are assigned non-
                     // exclusively if dynamic pools are enabled.
                     // Also, by default, the first PU is always exclusive
@@ -433,8 +431,8 @@ void partitioner::reconfigure_affinities_locked() {
     }
 
     affinity_data_.set_num_threads(new_pu_nums.size());
-    affinity_data_.set_pu_nums(EINSUMS_MOVE(new_pu_nums));
-    affinity_data_.set_affinity_masks(EINSUMS_MOVE(new_affinity_masks));
+    affinity_data_.set_pu_nums(std::move(new_pu_nums));
+    affinity_data_.set_affinity_masks(std::move(new_affinity_masks));
 }
 
 // Returns true if any of the pools defined by the user is empty of resources
@@ -492,8 +490,7 @@ void partitioner::create_thread_pool(std::string const &pool_name, scheduler_fun
     std::unique_lock<mutex_type> l(mtx_);
 
     if (pool_name == get_default_pool_name()) {
-        initial_thread_pools_[0] =
-            detail::init_pool_data(get_default_pool_name(), EINSUMS_MOVE(scheduler_creation), default_scheduler_mode_);
+        initial_thread_pools_[0] = detail::init_pool_data(get_default_pool_name(), std::move(scheduler_creation), default_scheduler_mode_);
         return;
     }
 
@@ -506,11 +503,11 @@ void partitioner::create_thread_pool(std::string const &pool_name, scheduler_fun
         }
     }
 
-    initial_thread_pools_.push_back(detail::init_pool_data(pool_name, EINSUMS_MOVE(scheduler_creation), default_scheduler_mode_));
+    initial_thread_pools_.push_back(detail::init_pool_data(pool_name, std::move(scheduler_creation), default_scheduler_mode_));
 }
 
 // ----------------------------------------------------------------------
-// Add processing units to pools via pu/core/domain api
+// Add processing units to pools via pu/core/socket api
 // ----------------------------------------------------------------------
 void partitioner::add_resource(pu const &p, std::string const &pool_name, bool exclusive, std::size_t num_threads) {
     std::unique_lock<mutex_type> l(mtx_);
@@ -523,15 +520,15 @@ void partitioner::add_resource(pu const &p, std::string const &pool_name, bool e
 
     if (mode_ & mode_allow_oversubscription) {
         // increment occupancy counter
-        get_pool_data(l, pool_name).add_resource(p.id_, exclusive, num_threads);
-        ++p.thread_occupancy_count_;
+        get_pool_data(l, pool_name).add_resource(p._id, exclusive, num_threads);
+        ++p._thread_occupancy_count;
         return;
     }
 
     // check occupancy counter and increment it
-    if (p.thread_occupancy_count_ == 0) {
-        get_pool_data(l, pool_name).add_resource(p.id_, exclusive, num_threads);
-        ++p.thread_occupancy_count_;
+    if (p._thread_occupancy_count == 0) {
+        get_pool_data(l, pool_name).add_resource(p._id, exclusive, num_threads);
+        ++p._thread_occupancy_count;
 
         // Make sure the total number of requested threads does not exceed
         // the number of threads requested on the command line
@@ -547,8 +544,8 @@ void partitioner::add_resource(pu const &p, std::string const &pool_name, bool e
         }
     } else {
         l.unlock();
-        throw std::runtime_error("partitioner::add_resource: PU #" + std::to_string(p.id_) + " can be assigned only " +
-                                 std::to_string(p.thread_occupancy_) + " threads according to affinity bindings.");
+        throw std::runtime_error("partitioner::add_resource: PU #" + std::to_string(p._id) + " can be assigned only " +
+                                 std::to_string(p._thread_occupancy) + " threads according to affinity bindings.");
     }
 }
 
@@ -559,21 +556,21 @@ void partitioner::add_resource(std::vector<pu> const &pv, std::string const &poo
 }
 
 void partitioner::add_resource(core const &c, std::string const &pool_name, bool exclusive) {
-    add_resource(c.pus_, pool_name, exclusive);
+    add_resource(c._pus, pool_name, exclusive);
 }
 
 void partitioner::add_resource(std::vector<core> const &cv, std::string const &pool_name, bool exclusive) {
     for (const core &c : cv) {
-        add_resource(c.pus_, pool_name, exclusive);
+        add_resource(c._pus, pool_name, exclusive);
     }
 }
 
-void partitioner::add_resource(numa_domain const &nd, std::string const &pool_name, bool exclusive) {
-    add_resource(nd.cores_, pool_name, exclusive);
+void partitioner::add_resource(socket const &nd, std::string const &pool_name, bool exclusive) {
+    add_resource(nd._cores, pool_name, exclusive);
 }
 
-void partitioner::add_resource(std::vector<numa_domain> const &ndv, std::string const &pool_name, bool exclusive) {
-    for (const numa_domain &d : ndv) {
+void partitioner::add_resource(std::vector<socket> const &ndv, std::string const &pool_name, bool exclusive) {
+    for (const socket &d : ndv) {
         add_resource(d, pool_name, exclusive);
     }
 }
@@ -707,8 +704,7 @@ void partitioner::unassign_pu(std::string const &pool_name, std::size_t virt_cor
 
 std::size_t partitioner::shrink_pool(std::string const &pool_name, util::detail::function<void(std::size_t)> const &remove_pu) {
     if (!(mode_ & mode_allow_dynamic_pools)) {
-        EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "partitioner::shrink_pool",
-                                "dynamic pools have not been enabled for the partitioner");
+        EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "dynamic pools have not been enabled for the partitioner");
     }
 
     std::vector<std::size_t> pu_nums_to_remove;
@@ -731,8 +727,7 @@ std::size_t partitioner::shrink_pool(std::string const &pool_name, util::detail:
     }
 
     if (!has_non_exclusive_pus) {
-        EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "partitioner::shrink_pool", "pool '{}' has no non-exclusive pus associated",
-                                pool_name);
+        EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "pool '{}' has no non-exclusive pus associated", pool_name);
     }
 
     for (std::size_t pu_num : pu_nums_to_remove) {
@@ -744,8 +739,7 @@ std::size_t partitioner::shrink_pool(std::string const &pool_name, util::detail:
 
 std::size_t partitioner::expand_pool(std::string const &pool_name, util::detail::function<void(std::size_t)> const &add_pu) {
     if (!(mode_ & mode_allow_dynamic_pools)) {
-        EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "partitioner::expand_pool",
-                                "dynamic pools have not been enabled for the partitioner");
+        EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "dynamic pools have not been enabled for the partitioner");
     }
 
     std::vector<std::size_t> pu_nums_to_add;
@@ -768,8 +762,7 @@ std::size_t partitioner::expand_pool(std::string const &pool_name, util::detail:
     }
 
     if (!has_non_exclusive_pus) {
-        EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "partitioner::expand_pool", "pool '{}' has no non-exclusive pus associated",
-                                pool_name);
+        EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "pool '{}' has no non-exclusive pus associated", pool_name);
     }
 
     for (std::size_t pu_num : pu_nums_to_add) {

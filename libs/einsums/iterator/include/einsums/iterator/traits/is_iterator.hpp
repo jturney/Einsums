@@ -1,16 +1,9 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
-
-//  Copyright (c) 2007-2021 Hartmut Kaiser
-//  Copyright (c) 2019 Austin McCartney
-//
-//  SPDX-License-Identifier: BSL-1.0
-//  Distributed under the Boost Software License, Version 1.0. (See accompanying
-//  file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
 #include <einsums/config.hpp>
 
@@ -22,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums::iterator::traits {
+namespace einsums::traits {
 ///////////////////////////////////////////////////////////////////////////
 namespace detail {
 // This implementation of is_iterator seems to work fine even for
@@ -132,14 +125,13 @@ template <typename Iter, typename Enable = void>
 struct bidirectional_concept : std::false_type {};
 
 template <typename Iter>
-struct bidirectional_concept<Iter,
-                             std::void_t<typename dereference_result<Iter>::type, ::einsums::type_support::equality_result_t<Iter, Iter>,
-                                         ::einsums::type_support::inequality_result_t<Iter, Iter>, typename predecrement_result<Iter>::type,
-                                         typename preincrement_result<Iter>::type, typename postdecrement_result<Iter>::type,
-                                         typename postincrement_result<Iter>::type>>
+struct bidirectional_concept<Iter, std::void_t<typename dereference_result<Iter>::type, ::einsums::detail::equality_result_t<Iter, Iter>,
+                                               ::einsums::detail::inequality_result_t<Iter, Iter>, typename predecrement_result<Iter>::type,
+                                               typename preincrement_result<Iter>::type, typename postdecrement_result<Iter>::type,
+                                               typename postincrement_result<Iter>::type>>
     : std::integral_constant<
-          bool, std::is_convertible<bool, ::einsums::type_support::equality_result_t<Iter, Iter>>::value &&
-                    std::is_convertible<bool, ::einsums::type_support::inequality_result_t<Iter, Iter>>::value &&
+          bool, std::is_convertible<bool, ::einsums::detail::equality_result_t<Iter, Iter>>::value &&
+                    std::is_convertible<bool, ::einsums::detail::inequality_result_t<Iter, Iter>>::value &&
                     std::is_same<typename std::add_lvalue_reference<Iter>::type, typename predecrement_result<Iter>::type>::value &&
                     std::is_same<typename std::add_lvalue_reference<Iter>::type, typename preincrement_result<Iter>::type>::value &&
                     std::is_same<Iter, typename postdecrement_result<Iter>::type>::value &&
@@ -192,13 +184,13 @@ struct satisfy_traversal_concept : std::false_type {};
  * ForwardIterator concept.
  */
 template <typename Iter>
-struct satisfy_traversal_concept<Iter, forward_traversal_tag> : bidirectional_concept<Iter> {};
+struct satisfy_traversal_concept<Iter, einsums::forward_traversal_tag> : bidirectional_concept<Iter> {};
 
 template <typename Iter>
-struct satisfy_traversal_concept<Iter, bidirectional_traversal_tag> : bidirectional_concept<Iter> {};
+struct satisfy_traversal_concept<Iter, einsums::bidirectional_traversal_tag> : bidirectional_concept<Iter> {};
 
 template <typename Iter>
-struct satisfy_traversal_concept<Iter, random_access_traversal_tag> : random_access_concept<Iter> {};
+struct satisfy_traversal_concept<Iter, einsums::random_access_traversal_tag> : random_access_concept<Iter> {};
 } // namespace detail
 
 template <typename Iter, typename Enable = void>
@@ -226,7 +218,7 @@ struct belongs_to_iterator_traversal : std::false_type {};
 
 template <typename Iter, typename Traversal>
 struct belongs_to_iterator_traversal<Iter, Traversal, std::enable_if_t<is_iterator<Iter>::value>>
-    : std::integral_constant<bool, std::is_base_of<Traversal, iterator_traversal_t<Iter>>::value ||
+    : std::integral_constant<bool, std::is_base_of<Traversal, einsums::traits::iterator_traversal_t<Iter>>::value ||
                                        satisfy_traversal_concept<Iter, Traversal>::value> {};
 
 ///////////////////////////////////////////////////////////////////////
@@ -242,18 +234,19 @@ template <typename Iter, typename Traversal, typename Enable = void>
 struct has_traversal : std::false_type {};
 
 template <typename Iter, typename Traversal>
-struct has_traversal<Iter, Traversal, std::enable_if_t<is_iterator<Iter>::value>> : std::is_same<Traversal, iterator_traversal_t<Iter>> {};
+struct has_traversal<Iter, Traversal, std::enable_if_t<is_iterator<Iter>::value>>
+    : std::is_same<Traversal, einsums::traits::iterator_traversal_t<Iter>> {};
 
 template <typename Iter>
-struct has_traversal<Iter, bidirectional_traversal_tag, std::enable_if_t<is_iterator<Iter>::value>>
-    : std::integral_constant<bool, std::is_same<bidirectional_traversal_tag, iterator_traversal_t<Iter>>::value ||
-                                       (satisfy_traversal_concept<Iter, bidirectional_traversal_tag>::value &&
-                                        !satisfy_traversal_concept<Iter, random_access_traversal_tag>::value)> {};
+struct has_traversal<Iter, einsums::bidirectional_traversal_tag, std::enable_if_t<is_iterator<Iter>::value>>
+    : std::integral_constant<bool, std::is_same<einsums::bidirectional_traversal_tag, einsums::traits::iterator_traversal_t<Iter>>::value ||
+                                       (satisfy_traversal_concept<Iter, einsums::bidirectional_traversal_tag>::value &&
+                                        !satisfy_traversal_concept<Iter, einsums::random_access_traversal_tag>::value)> {};
 
 template <typename Iter>
-struct has_traversal<Iter, random_access_traversal_tag, std::enable_if_t<is_iterator<Iter>::value>>
-    : std::integral_constant<bool, std::is_same<random_access_traversal_tag, iterator_traversal_t<Iter>>::value ||
-                                       satisfy_traversal_concept<Iter, random_access_traversal_tag>::value> {};
+struct has_traversal<Iter, einsums::random_access_traversal_tag, std::enable_if_t<is_iterator<Iter>::value>>
+    : std::integral_constant<bool, std::is_same<einsums::random_access_traversal_tag, einsums::traits::iterator_traversal_t<Iter>>::value ||
+                                       satisfy_traversal_concept<Iter, einsums::random_access_traversal_tag>::value> {};
 } // namespace detail
 
 ///////////////////////////////////////////////////////////////////////////
@@ -266,8 +259,9 @@ inline constexpr bool has_category_v = has_category<Iter, Category>::value;
 ///////////////////////////////////////////////////////////////////////////
 template <typename Iter, typename Enable = void>
 struct is_output_iterator
-    : std::integral_constant<bool, detail::belongs_to_iterator_category<std::decay_t<Iter>, std::output_iterator_tag>::value ||
-                                       detail::belongs_to_iterator_traversal<std::decay_t<Iter>, incrementable_traversal_tag>::value> {};
+    : std::integral_constant<bool,
+                             detail::belongs_to_iterator_category<std::decay_t<Iter>, std::output_iterator_tag>::value ||
+                                 detail::belongs_to_iterator_traversal<std::decay_t<Iter>, einsums::incrementable_traversal_tag>::value> {};
 
 template <typename Iter>
 using is_output_iterator_t = typename is_output_iterator<Iter>::type;
@@ -277,8 +271,9 @@ inline constexpr bool is_output_iterator_v = is_output_iterator<Iter>::value;
 
 template <typename Iter, typename Enable = void>
 struct is_input_iterator
-    : std::integral_constant<bool, detail::belongs_to_iterator_category<std::decay_t<Iter>, std::input_iterator_tag>::value ||
-                                       detail::belongs_to_iterator_traversal<std::decay_t<Iter>, single_pass_traversal_tag>::value> {};
+    : std::integral_constant<bool,
+                             detail::belongs_to_iterator_category<std::decay_t<Iter>, std::input_iterator_tag>::value ||
+                                 detail::belongs_to_iterator_traversal<std::decay_t<Iter>, einsums::single_pass_traversal_tag>::value> {};
 
 template <typename Iter>
 using is_input_iterator_t = typename is_input_iterator<Iter>::type;
@@ -289,7 +284,7 @@ inline constexpr bool is_input_iterator_v = is_input_iterator<Iter>::value;
 template <typename Iter, typename Enable = void>
 struct is_forward_iterator
     : std::integral_constant<bool, detail::belongs_to_iterator_category<std::decay_t<Iter>, std::forward_iterator_tag>::value ||
-                                       detail::belongs_to_iterator_traversal<std::decay_t<Iter>, forward_traversal_tag>::value> {};
+                                       detail::belongs_to_iterator_traversal<std::decay_t<Iter>, einsums::forward_traversal_tag>::value> {};
 
 template <typename Iter>
 using is_forward_iterator_t = typename is_forward_iterator<Iter>::type;
@@ -299,8 +294,9 @@ inline constexpr bool is_forward_iterator_v = is_forward_iterator<Iter>::value;
 
 template <typename Iter, typename Enable = void>
 struct is_bidirectional_iterator
-    : std::integral_constant<bool, detail::belongs_to_iterator_category<std::decay_t<Iter>, std::bidirectional_iterator_tag>::value ||
-                                       detail::belongs_to_iterator_traversal<std::decay_t<Iter>, bidirectional_traversal_tag>::value> {};
+    : std::integral_constant<bool,
+                             detail::belongs_to_iterator_category<std::decay_t<Iter>, std::bidirectional_iterator_tag>::value ||
+                                 detail::belongs_to_iterator_traversal<std::decay_t<Iter>, einsums::bidirectional_traversal_tag>::value> {};
 
 template <typename Iter>
 using is_bidirectional_iterator_t = typename is_bidirectional_iterator<Iter>::type;
@@ -311,7 +307,7 @@ inline constexpr bool is_bidirectional_iterator_v = is_bidirectional_iterator<It
 template <typename Iter, typename Enable = void>
 struct is_random_access_iterator
     : std::integral_constant<bool, detail::has_category<std::decay_t<Iter>, std::random_access_iterator_tag>::value ||
-                                       detail::has_traversal<std::decay_t<Iter>, random_access_traversal_tag>::value> {};
+                                       detail::has_traversal<std::decay_t<Iter>, einsums::random_access_traversal_tag>::value> {};
 
 template <typename Iter>
 using is_random_access_iterator_t = typename is_random_access_iterator<Iter>::type;
@@ -370,4 +366,4 @@ using iter_value_t = typename std::iterator_traits<Iter>::value_type;
 template <typename Iter>
 using iter_ref_t = typename std::iterator_traits<Iter>::reference;
 
-} // namespace einsums::iterator::traits
+} // namespace einsums::traits

@@ -16,6 +16,8 @@ set(threading_base_headers
     einsums/threading_base/detail/global_activity_count.hpp
     einsums/threading_base/detail/reset_backtrace.hpp
     einsums/threading_base/detail/reset_lco_description.hpp
+        einsums/threading_base/detail/thread_data_stackful.hpp
+        einsums/threading_base/detail/thread_data_stackless.hpp
     einsums/threading_base/detail/tracy.hpp
     einsums/threading_base/execution_agent.hpp
     einsums/threading_base/external_timer.hpp
@@ -28,8 +30,8 @@ set(threading_base_headers
     einsums/threading_base/set_thread_state.hpp
     einsums/threading_base/set_thread_state_timed.hpp
     einsums/threading_base/thread_data.hpp
-    einsums/threading_base/thread_data_stackful.hpp
-    einsums/threading_base/thread_data_stackless.hpp
+        einsums/threading_base/detail/thread_data_stackful.hpp
+        einsums/threading_base/detail/thread_data_stackless.hpp
     einsums/threading_base/thread_description.hpp
     einsums/threading_base/thread_helpers.hpp
     einsums/threading_base/thread_init_data.hpp
@@ -37,7 +39,8 @@ set(threading_base_headers
     einsums/threading_base/thread_pool_base.hpp
     einsums/threading_base/thread_queue_init_parameters.hpp
     einsums/threading_base/thread_specific_ptr.hpp
-    einsums/threading_base/threading_base_fwd.hpp)
+        einsums/threading_base/threading_base_fwd.hpp
+)
 
 set(threading_base_sources
     annotated_function.cpp
@@ -67,6 +70,8 @@ include(Einsums_AddModule)
 einsums_add_module(
   einsums threading_base
   GLOBAL_HEADER_GEN ON
+        EXCLUDE_FROM_GLOBAL_HEADER "einsums/threading_base/detail/thread_data_stackful.hpp"
+        "einsums/threading_base/detail/thread_data_stackless.hpp"
   SOURCES ${threading_base_sources}
   HEADERS ${threading_base_headers}
   DEPENDENCIES

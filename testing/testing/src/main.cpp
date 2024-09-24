@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #define CATCH_CONFIG_RUNNER
 
@@ -19,6 +19,8 @@ int main(int argc, char **argv) {
 
     Catch::Session session;
     session.applyCommandLine(argc, argv);
+    // auto cli = session.cli();
+    // session.cli(cli);
     int result = session.run();
 
     // Shutdown einsums runtime

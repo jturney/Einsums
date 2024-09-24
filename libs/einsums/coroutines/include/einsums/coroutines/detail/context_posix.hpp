@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -15,7 +15,7 @@
 // However, the above #define will only affect <ucontext.h> if it has not yet
 // been #included by something else!
 #    if defined(_STRUCT_UCONTEXT)
-#        error You must #include coroutine headers before anything that #includes <ucontext.h>
+// #        error You must #include coroutine headers before anything that #includes <ucontext.h>
 #    endif
 #endif
 

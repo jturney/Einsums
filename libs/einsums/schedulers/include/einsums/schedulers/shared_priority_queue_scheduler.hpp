@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -12,7 +12,6 @@
 #include <einsums/config.hpp>
 
 #include <einsums/assert.hpp>
-#include <einsums/config/warnings_prefix.hpp>
 #include <einsums/debugging/print.hpp>
 #include <einsums/execution_base/this_thread.hpp>
 #include <einsums/functional/function.hpp>
@@ -50,6 +49,7 @@
 #    define EINSUMS_DETAIL_SHARED_PRIORITY_SCHEDULER_LINUX
 #endif
 
+#include <einsums/config/warnings_prefix.hpp>
 // #define SHARED_PRIORITY_SCHEDULER_DEBUG_NUMA
 
 namespace einsums::debug::detail {
@@ -194,18 +194,11 @@ class shared_priority_queue_scheduler : public scheduler_base {
         std::size_t local_num = local_thread_number();
         EINSUMS_ASSERT(local_num < num_workers_);
         if (local_num == std::size_t(-1)) {
-            // clang-format off
-                using namespace einsums::threads::detail;
-                EINSUMS_DETAIL_DP(spq_deb<7>, debug(str<>("cleanup_terminated")
-                    , "v1 aborted"
-                    , "num_workers_", num_workers_
-                    , "thread_number"
-                    , "global", get_global_thread_num_tss()
-                    , "local", get_local_thread_num_tss()
-                    , "pool", get_thread_pool_num_tss()
-                    , "parent offset", parent_pool_->get_thread_offset()
-                    , parent_pool_->get_pool_name()));
-            // clang-format on
+            using namespace einsums::threads::detail;
+            EINSUMS_DETAIL_DP(spq_deb<7>,
+                              debug(str<>("cleanup_terminated"), "v1 aborted", "num_workers_", num_workers_, "thread_number", "global",
+                                    get_global_thread_num_tss(), "local", get_local_thread_num_tss(), "pool", get_thread_pool_num_tss(),
+                                    "parent offset", _parent_pool->get_thread_offset(), _parent_pool->get_pool_name()));
             return false;
         }
 
@@ -257,22 +250,16 @@ class shared_priority_queue_scheduler : public scheduler_base {
 
         using execution::thread_schedule_hint_mode;
         using namespace einsums::debug::detail;
-        switch (data.schedulehint.mode) {
+        switch (data.schedule_hint.mode) {
         case execution::thread_schedule_hint_mode::none: {
             EINSUMS_DETAIL_DP(spq_deb<7>, set(msg, "HINT_NONE  "));
             // Create thread on this worker thread if possible
-            if (EINSUMS_UNLIKELY(local_num == std::size_t(-1))) {
-                // clang-format off
-                    using namespace einsums::threads::detail;
-                    EINSUMS_DETAIL_DP(spq_deb<7>, debug(str<>("create_thread")
-                        , "x-pool", "num_workers_", num_workers_
-                        , "thread_number"
-                        , "global", get_global_thread_num_tss()
-                        , "local", get_local_thread_num_tss()
-                        , "pool", get_thread_pool_num_tss()
-                        , "parent offset", parent_pool_->get_thread_offset()
-                        , parent_pool_->get_pool_name()));
-                // clang-format on
+            if (EINSUMS_UNLIKELY(local_num == static_cast<std::size_t>(-1))) {
+                using namespace einsums::threads::detail;
+                EINSUMS_DETAIL_DP(spq_deb<7>,
+                                  debug(str<>("create_thread"), "x-pool", "num_workers_", num_workers_, "thread_number", "global",
+                                        get_global_thread_num_tss(), "local", get_local_thread_num_tss(), "pool", get_thread_pool_num_tss(),
+                                        "parent offset", _parent_pool->get_thread_offset(), _parent_pool->get_pool_name()));
                 // This is a task being injected from a thread on another
                 // pool - we can schedule on any thread available
                 thread_num = numa_holder_[0].thread_queue(0)->worker_next(static_cast<std::size_t>(num_workers_));
@@ -283,13 +270,13 @@ class shared_priority_queue_scheduler : public scheduler_base {
                     q_index    = q_lookup_[thread_num];
                 }
                 EINSUMS_DETAIL_DP(spq_deb<7>, debug(str<>("create_thread"), "scheduler_mode::assign_work_thread_parent", "thread_num",
-                                                    thread_num, "pool", parent_pool_->get_pool_name()));
+                                                    thread_num, "pool", _parent_pool->get_pool_name()));
             } else /*(round_robin)*/
             {
                 domain_num = d_lookup_[thread_num];
                 q_index    = q_lookup_[thread_num];
                 EINSUMS_DETAIL_DP(spq_deb<7>, debug(str<>("create_thread"), "scheduler_mode::assign_work_round_robin", "thread_num",
-                                                    thread_num, "pool", parent_pool_->get_pool_name(),
+                                                    thread_num, "pool", _parent_pool->get_pool_name(),
                                                     typename thread_holder_type::queue_data_print(
                                                         numa_holder_[domain_num].thread_queue(static_cast<std::size_t>(q_index)))));
                 thread_num = numa_holder_[domain_num]
@@ -307,7 +294,7 @@ class shared_priority_queue_scheduler : public scheduler_base {
             EINSUMS_DETAIL_DP(spq_deb<7>, set(msg, "HINT_THREAD"));
             // @TODO. We should check that the thread num is valid
             // Create thread on requested worker thread
-            thread_num = select_active_pu(l, data.schedulehint.hint);
+            thread_num = select_active_pu(l, data.schedule_hint.hint);
             domain_num = d_lookup_[thread_num];
             q_index    = q_lookup_[thread_num];
             break;
@@ -316,7 +303,7 @@ class shared_priority_queue_scheduler : public scheduler_base {
             // Create thread on requested NUMA domain
             EINSUMS_DETAIL_DP(spq_deb<7>, set(msg, "HINT_NUMA  "));
             // TODO: This case does not handle suspended PUs.
-            domain_num = fast_mod(data.schedulehint.hint, num_domains_);
+            domain_num = fast_mod(data.schedule_hint.hint, num_domains_);
             // if the thread creating the new task is on the domain
             // assigned to the new task - try to reuse the core as well
             if (local_num != std::size_t(-1) && d_lookup_[local_num] == domain_num) {
@@ -332,8 +319,8 @@ class shared_priority_queue_scheduler : public scheduler_base {
             break;
         }
         default:
-            EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "shared_priority_queue_scheduler::create_thread",
-                                    "Invalid schedule hint mode: {}", static_cast<std::size_t>(data.schedulehint.mode));
+            EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "Invalid schedule hint mode: {}",
+                                    static_cast<std::size_t>(data.schedule_hint.mode));
         }
         // we do not allow threads created on other queues to 'run now'
         // as this causes cross-thread allocations and map accesses
@@ -341,19 +328,10 @@ class shared_priority_queue_scheduler : public scheduler_base {
             data.run_now = false;
             EINSUMS_DETAIL_DP(spq_deb<6>, debug(str<>("create_thread"), "run_now OVERRIDE "));
         }
-        // clang-format off
-            EINSUMS_DETAIL_DP(spq_deb<5>, debug(str<>("create_thread")
-                , "pool", parent_pool_->get_pool_name()
-                , "hint", msg
-                , "dest"
-                , "D", dec<2>(domain_num)
-                , "Q", dec<3>(q_index)
-                , "this"
-                , "D", dec<2>(d_lookup_[thread_num])
-                , "Q", dec<3>(thread_num)
-                , "run_now ", data.run_now
-                , threadinfo<threads::detail::thread_init_data>(data)));
-        // clang-format on
+        EINSUMS_DETAIL_DP(spq_deb<5>,
+                          debug(str<>("create_thread"), "pool", _parent_pool->get_pool_name(), "hint", msg, "dest", "D", dec<2>(domain_num),
+                                "Q", dec<3>(q_index), "this", "D", dec<2>(d_lookup_[thread_num]), "Q", dec<3>(thread_num), "run_now ",
+                                data.run_now, threadinfo<threads::detail::thread_init_data>(data)));
         numa_holder_[domain_num].thread_queue(static_cast<std::size_t>(q_index))->create_thread(data, thrd, local_num, ec);
     }
 
@@ -587,20 +565,12 @@ class shared_priority_queue_scheduler : public scheduler_base {
                 // pool - we can schedule on any thread available
                 thread_num = numa_holder_[0].thread_queue(0)->worker_next(num_workers_);
                 q_index    = 0;
-                // clang-format off
-                    using namespace einsums::threads::detail;
-                    EINSUMS_DETAIL_DP(spq_deb<5>, debug(str<>("schedule_thread")
-                        , "x-pool thread schedule"
-                        , "num_workers_", num_workers_
-                        , "thread_number"
-                        , "global", get_global_thread_num_tss()
-                        , "local", get_local_thread_num_tss()
-                        , "pool", get_thread_pool_num_tss()
-                        , "parent offset", parent_pool_->get_thread_offset()
-                        , parent_pool_->get_pool_name()
-                        , threadinfo<threads::detail::thread_id_ref_type*>(
-                            &thrd)));
-                // clang-format on
+                using namespace einsums::threads::detail;
+                EINSUMS_DETAIL_DP(spq_deb<5>,
+                                  debug(str<>("schedule_thread"), "x-pool thread schedule", "num_workers_", num_workers_, "thread_number",
+                                        "global", get_global_thread_num_tss(), "local", get_local_thread_num_tss(), "pool",
+                                        get_thread_pool_num_tss(), "parent offset", _parent_pool->get_thread_offset(),
+                                        _parent_pool->get_pool_name(), threadinfo<threads::detail::thread_id_ref_type *>(&thrd)));
             } else if (!round_robin_) /*assign_parent*/
             {
                 domain_num = d_lookup_[thread_num];
@@ -645,8 +615,8 @@ class shared_priority_queue_scheduler : public scheduler_base {
         }
 
         default:
-            EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "shared_priority_queue_scheduler::schedule_thread",
-                                    "Invalid schedule hint mode: {}", static_cast<std::size_t>(schedulehint.mode));
+            EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "Invalid schedule hint mode: {}",
+                                    static_cast<std::size_t>(schedulehint.mode));
         }
 
         EINSUMS_DETAIL_DP(
@@ -780,7 +750,7 @@ class shared_priority_queue_scheduler : public scheduler_base {
             initialized_ = true;
 
             // used to make sure thread ids are valid for this scheduler
-            pool_index_ = std::size_t(parent_pool_->get_pool_index());
+            pool_index_ = std::size_t(_parent_pool->get_pool_index());
 
             // For each worker thread, count which numa domain each
             // belongs to and build lists of useful indexes/refs
@@ -868,7 +838,7 @@ class shared_priority_queue_scheduler : public scheduler_base {
         // store local thread number and pool index in thread local
         // storage, the global number has already been set
         einsums::threads::detail::set_local_thread_num_tss(local_thread);
-        einsums::threads::detail::set_thread_pool_num_tss(parent_pool_->get_pool_id().index());
+        einsums::threads::detail::set_thread_pool_num_tss(_parent_pool->get_pool_id().index());
 
         // one thread holder per core (shared by PUs)
         thread_holder_type *thread_holder = nullptr;
@@ -988,29 +958,27 @@ class shared_priority_queue_scheduler : public scheduler_base {
 
     void on_stop_thread(std::size_t thread_num) override {
         if (thread_num > num_workers_) {
-            EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "shared_priority_queue_scheduler::on_stop_thread",
-                                    "Invalid thread number: {}", std::to_string(thread_num));
+            EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "Invalid thread number: {}", std::to_string(thread_num));
         }
         // @TODO Do we need to do any queue related cleanup here?
     }
 
     void on_error(std::size_t thread_num, std::exception_ptr const & /* e */) override {
         if (thread_num > num_workers_) {
-            EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "shared_priority_queue_scheduler::on_error", "Invalid thread number: {}",
-                                    std::to_string(thread_num));
+            EINSUMS_THROW_EXCEPTION(einsums::error::bad_parameter, "Invalid thread number: {}", std::to_string(thread_num));
         }
         // @TODO Do we need to do any queue related cleanup here?
     }
 
 #ifdef EINSUMS_HAVE_THREAD_CREATION_AND_CLEANUP_RATES
     std::uint64_t get_creation_time(bool /* reset */) override {
-        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "shared_priority_scheduler::get_creation_time",
+        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status,
                                 "the shared_priority_scheduler does not support the get_creation_time performance "
                                 "counter");
         return 0;
     }
     std::uint64_t get_cleanup_time(bool /* reset */) override {
-        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "shared_priority_scheduler::get_cleanup_time",
+        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status,
                                 "the shared_priority_scheduler does not support the get_cleanup_time performance "
                                 "counter");
         return 0;
@@ -1019,42 +987,41 @@ class shared_priority_queue_scheduler : public scheduler_base {
 
 #ifdef EINSUMS_HAVE_THREAD_STEALING_COUNTS
     std::int64_t get_num_pending_misses(std::size_t /* num */, bool /* reset */) override {
-        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "shared_priority_scheduler::get_num_pending_misses",
-                                "the shared_priority_scheduler does not support the get_num_pending_misses "
-                                "performance counter");
+        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "the shared_priority_scheduler does not support the get_num_pending_misses "
+                                                                "performance counter");
         return 0;
     }
 
     std::int64_t get_num_pending_accesses(std::size_t /* num */, bool /* reset */) override {
-        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "shared_priority_scheduler::get_num_pending_accesses",
+        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status,
                                 "the shared_priority_scheduler does not support the get_num_pending_accesses "
                                 "performance counter");
         return 0;
     }
 
     std::int64_t get_num_stolen_from_pending(std::size_t /* num */, bool /* reset */) override {
-        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "shared_priority_scheduler::get_num_stolen_from_pending",
+        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status,
                                 "the shared_priority_scheduler does not support the get_num_stolen_from_pending "
                                 "performance counter");
         return 0;
     }
 
     std::int64_t get_num_stolen_to_pending(std::size_t /* num */, bool /* reset */) override {
-        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "shared_priority_scheduler::get_creation_time",
+        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status,
                                 "the shared_priority_scheduler does not support the get_creation_time performance "
                                 "counter");
         return 0;
     }
 
     std::int64_t get_num_stolen_from_staged(std::size_t /* num */, bool /* reset */) override {
-        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "shared_priority_scheduler::get_num_stolen_from_staged",
+        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status,
                                 "the shared_priority_scheduler does not support the get_num_stolen_from_staged "
                                 "performance counter");
         return 0;
     }
 
     std::int64_t get_num_stolen_to_staged(std::size_t /* num */, bool /* reset */) override {
-        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "shared_priority_scheduler::get_num_stolen_to_staged",
+        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status,
                                 "the shared_priority_scheduler does not support the get_num_stolen_to_staged "
                                 "performance counter");
         return 0;
@@ -1063,13 +1030,13 @@ class shared_priority_queue_scheduler : public scheduler_base {
 
 #ifdef EINSUMS_HAVE_THREAD_QUEUE_WAITTIME
     std::int64_t get_average_thread_wait_time(std::size_t /* num_thread */ = std::size_t(-1)) const override {
-        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "shared_priority_scheduler::get_average_thread_wait_time",
+        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status,
                                 "the shared_priority_scheduler does not support the get_average_thread_wait_time "
                                 "performance counter");
         return 0;
     }
     std::int64_t get_average_task_wait_time(std::size_t /* num_thread */ = std::size_t(-1)) const override {
-        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "shared_priority_scheduler::get_average_task_wait_time",
+        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status,
                                 "the shared_priority_scheduler does not support the get_average_task_wait_time "
                                 "performance counter");
         return 0;

@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -100,7 +100,7 @@ using get_full_build_string_type = std::function<std::string()>;
 EINSUMS_EXPORT void set_get_full_build_string(get_full_build_string_type f);
 EINSUMS_EXPORT std::string get_full_build_string();
 
-EINSUMS_EXPORT einsums::exception_info custom_exception_info(std::string const &func, std::string const &file, long line,
+EINSUMS_EXPORT einsums::exception_info custom_exception_info(std::source_location const& location,
                                                              std::string const &auxinfo);
 
 ///////////////////////////////////////////////////////////////////////////

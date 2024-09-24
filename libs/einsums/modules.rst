@@ -23,8 +23,10 @@ Einsums modules
    /libs/einsums/concurrency/docs/index.rst
    /libs/einsums/config/docs/index.rst
    /libs/einsums/coroutines/docs/index.rst
+   /libs/einsums/datastructures/docs/index.rst
    /libs/einsums/debugging/docs/index.rst
    /libs/einsums/errors/docs/index.rst
+   /libs/einsums/execution/docs/index.rst
    /libs/einsums/execution_base/docs/index.rst
    /libs/einsums/filesystem/docs/index.rst
    /libs/einsums/functional/docs/index.rst
@@ -45,10 +47,14 @@ Einsums modules
    /libs/einsums/runtime_configuration/docs/index.rst
    /libs/einsums/schedulers/docs/index.rst
    /libs/einsums/string_util/docs/index.rst
+   /libs/einsums/synchronization/docs/index.rst
    /libs/einsums/tensor/docs/index.rst
    /libs/einsums/tensor_base/docs/index.rst
    /libs/einsums/tensor_utilities/docs/index.rst
+   /libs/einsums/thread_manager/docs/index.rst
+   /libs/einsums/thread_pools/docs/index.rst
    /libs/einsums/thread_support/docs/index.rst
+   /libs/einsums/threading/docs/index.rst
    /libs/einsums/threading_base/docs/index.rst
    /libs/einsums/timing/docs/index.rst
    /libs/einsums/topology/docs/index.rst

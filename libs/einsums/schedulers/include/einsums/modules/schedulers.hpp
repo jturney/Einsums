@@ -6,10 +6,10 @@
 
 #pragma once
 
-#include <pika/config.hpp>
+#include <einsums/config.hpp>
 
-#include <pika/schedulers/local_priority_queue_scheduler.hpp>
-#include <pika/schedulers/local_queue_scheduler.hpp>
-#include <pika/schedulers/shared_priority_queue_scheduler.hpp>
-#include <pika/schedulers/static_priority_queue_scheduler.hpp>
-#include <pika/schedulers/static_queue_scheduler.hpp>
+#include <einsums/schedulers/local_priority_queue_scheduler.hpp>
+#include <einsums/schedulers/local_queue_scheduler.hpp>
+#include <einsums/schedulers/shared_priority_queue_scheduler.hpp>
+#include <einsums/schedulers/static_priority_queue_scheduler.hpp>
+#include <einsums/schedulers/static_queue_scheduler.hpp>

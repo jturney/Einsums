@@ -25,7 +25,7 @@ if(NOT CMAKE_BUILD_TYPE)
   )
 endif()
 
-project(Einsums LANGUAGES CXX)
+project(Einsums LANGUAGES C CXX)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -816,6 +816,11 @@ if(EINSUMS_WITH_THREAD_DEBUG_INFO)
     einsums_add_config_define(EINSUMS_HAVE_THREAD_DESCRIPTION_FULL)
   endif()
 endif()
+
+einsums_option(EINSUMS_WITH_STDEXEC BOOL "Use stdexec for sender/receiver functionality." OFF CATEGORY "Advanced")
+if (EINSUMS_WITH_STDEXEC)
+    einsums_add_config_define(EINSUMS_HAVE_STDEXEC)
+endif ()
 
 # ##################################################################################################
 # Special diagnostic flags, do not enable by default, only if needed

@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -32,9 +32,7 @@
 #include <string>
 #include <utility>
 
-// clang-format off
 #include <einsums/config/warnings_prefix.hpp>
-// clang-format on
 
 namespace einsums::threads::detail {
 
@@ -64,10 +62,10 @@ EINSUMS_EXPORT thread_data *get_self_id_data();
 /// functionality related to the management of \a threads is
 /// implemented by the thread-manager.
 struct thread_data : public detail::thread_data_reference_counting {
-    thread_data(thread_data const &)            = delete;
-    thread_data(thread_data &&)                 = delete;
-    thread_data &operator=(thread_data const &) = delete;
-    thread_data &operator=(thread_data &&)      = delete;
+                 thread_data(thread_data const &) = delete;
+                 thread_data(thread_data &&)      = delete;
+    thread_data &operator=(thread_data const &)   = delete;
+    thread_data &operator=(thread_data &&)        = delete;
 
     using spinlock_pool = einsums::concurrency::detail::spinlock_pool<thread_data>;
 
@@ -323,10 +321,10 @@ struct thread_data : public detail::thread_data_reference_counting {
 
         ~scoped_thread_priority() { einsums::threads::detail::get_self_id_data()->set_priority(old_priority_); }
 
-        scoped_thread_priority(scoped_thread_priority &&)                 = delete;
-        scoped_thread_priority(scoped_thread_priority const &)            = delete;
-        scoped_thread_priority &operator=(scoped_thread_priority &&)      = delete;
-        scoped_thread_priority &operator=(scoped_thread_priority const &) = delete;
+                                scoped_thread_priority(scoped_thread_priority &&)      = delete;
+                                scoped_thread_priority(scoped_thread_priority const &) = delete;
+        scoped_thread_priority &operator=(scoped_thread_priority &&)                   = delete;
+        scoped_thread_priority &operator=(scoped_thread_priority const &)              = delete;
     };
 
     constexpr execution::thread_priority get_priority() const noexcept { return priority_; }
@@ -416,7 +414,7 @@ struct thread_data : public detail::thread_data_reference_counting {
     thread_data(thread_init_data &init_data, void *queue, std::ptrdiff_t stacksize, bool is_stackless = false,
                 thread_id_addref addref = thread_id_addref::yes);
 
-    virtual ~thread_data() override;
+    virtual ~    thread_data() override;
     virtual void destroy() = 0;
 
   protected:
@@ -536,8 +534,8 @@ EINSUMS_EXPORT execution::thread_stacksize get_self_stacksize_enum();
 } // namespace einsums::threads::detail
 
 #include <einsums/config/warnings_suffix.hpp>
-#include <einsums/threading_base/thread_data_stackful.hpp>
-#include <einsums/threading_base/thread_data_stackless.hpp>
+#include <einsums/threading_base/detail/thread_data_stackful.hpp>
+#include <einsums/threading_base/detail/thread_data_stackless.hpp>
 
 namespace einsums::threads::detail {
 EINSUMS_FORCEINLINE coroutine_type::result_type

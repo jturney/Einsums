@@ -14,6 +14,7 @@ set(config_headers
         einsums/config/emulate_deleted.hpp
         einsums/config/export_definitions.hpp
         einsums/config/forceinline.hpp
+        einsums/config/manual_profiling.hpp
         einsums/config/namespace.hpp
         einsums/config/static_call_operator.hpp
 )

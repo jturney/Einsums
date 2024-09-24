@@ -9,11 +9,11 @@ set(type_support_headers
         einsums/type_support/decay.hpp
         einsums/type_support/equality.hpp
         einsums/type_support/lazy_conditional.hpp
-        einsums/type_support/member_pack.hpp
         einsums/type_support/pack.hpp
         einsums/type_support/type_identity.hpp
         einsums/type_support/unused.hpp
         einsums/type_support/void_guard.hpp
+        einsums/type_support/detail/with_result_of.hpp
 )
 
 set(type_support_sources)

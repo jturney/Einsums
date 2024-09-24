@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -9,7 +9,6 @@
 
 #include <einsums/allocator_support/internal_allocator.hpp>
 #include <einsums/assert.hpp>
-#include <einsums/config/warnings_prefix.hpp>
 #include <einsums/coroutines/thread_id_type.hpp>
 #include <einsums/functional/function.hpp>
 #include <einsums/modules/errors.hpp>
@@ -20,6 +19,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <utility>
+
+#include <einsums/config/warnings_prefix.hpp>
 
 namespace einsums::threads::detail {
 ///////////////////////////////////////////////////////////////////////////
@@ -39,7 +40,7 @@ namespace einsums::threads::detail {
 /// Generally, \a threads are not created or executed directly. All
 /// functionality related to the management of \a threads is
 /// implemented by the thread-manager.
-class EINSUMS_EXPORT thread_data_stackful : public thread_data {
+struct EINSUMS_EXPORT thread_data_stackful : public thread_data {
   private:
     // Avoid warning about using 'this' in initializer list
     thread_data *this_() { return this; }

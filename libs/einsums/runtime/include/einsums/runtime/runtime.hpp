@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -9,39 +9,64 @@
 
 #include <einsums/assert.hpp>
 #include <einsums/modules/program_options.hpp>
-#include <einsums/modules/runtime_configuration.hpp>
+#include <einsums/modules/thread_manager.hpp>
 #include <einsums/modules/topology.hpp>
+#include <einsums/runtime/runtime_fwd.hpp>
 #include <einsums/runtime/shutdown_function.hpp>
 #include <einsums/runtime/startup_function.hpp>
+#include <einsums/runtime/state.hpp>
+#include <einsums/runtime/thread_hooks.hpp>
+#include <einsums/runtime_configuration/runtime_configuration.hpp>
 #include <einsums/threading_base/callback_notifier.hpp>
-#include <einsums/threading_base/scheduler_state.hpp>
 
+#include <atomic>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
 #include <list>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include <einsums/config/warnings_prefix.hpp>
+
+///////////////////////////////////////////////////////////////////////////////
 namespace einsums::detail {
 
+///////////////////////////////////////////////////////////////////////
+// There is no need to protect these global from thread concurrent
+// access as they are accessed during early startup only.
 extern std::list<startup_function_type>  global_pre_startup_functions;
 extern std::list<startup_function_type>  global_startup_functions;
 extern std::list<shutdown_function_type> global_pre_shutdown_functions;
 extern std::list<shutdown_function_type> global_shutdown_functions;
 
-struct EINSUMS_EXPORT runtime {
-
+///////////////////////////////////////////////////////////////////////////
+class EINSUMS_EXPORT runtime {
+  public:
+    /// Generate a new notification policy instance for the given thread
+    /// name prefix
     using notification_policy_type = einsums::threads::callback_notifier;
     virtual notification_policy_type get_notification_policy(char const *prefix);
 
     runtime_state get_state() const;
     void          set_state(runtime_state s);
 
-    using einsums_main_function_type      = int();
+    /// The \a einsums_main_function_type is the default function type usable
+    /// as the main einsums thread function.
+    using einsums_main_function_type = int();
+
     using einsums_errorsink_function_type = void(std::uint32_t, std::string const &);
 
     /// Construct a new einsums runtime instance
-    explicit runtime(util::runtime_configuration &rtcfg, bool initialize);
+    explicit runtime(einsums::util::runtime_configuration &rtcfg, bool initialize);
 
   protected:
-    explicit runtime(util::runtime_configuration &rtcfg);
+    explicit runtime(einsums::util::runtime_configuration &rtcfg);
 
     void set_notification_policies(notification_policy_type &&notifier);
 
@@ -49,29 +74,31 @@ struct EINSUMS_EXPORT runtime {
     void init();
 
   public:
-    /// The destructor makes sure all einsums runtime services are properly shut down before exiting
+    /// \brief The destructor makes sure all einsums runtime services are
+    ///        properly shut down before exiting.
     virtual ~runtime();
 
-    /// Manage list of functions to call on exit
-    void on_exit(std::function<void()> const &f);
+    /// \brief Manage list of functions to call on exit
+    void on_exit(einsums::util::detail::function<void()> const &f);
 
-    /// Manage runtime 'starting' state
+    /// \brief Manage runtime 'stopped' state
     void starting();
 
-    /// Call all registered on_exit functions
+    /// \brief Call all registered on_exit functions
     void stopping();
 
     /// This accessor returns whether the runtime instance has been stopped
     bool stopped() const;
 
-    /// access configuration information
-    util::runtime_configuration       &get_config();
-    util::runtime_configuration const &get_config() const;
+    /// \brief access configuration information
+    einsums::util::runtime_configuration &get_config();
 
-    /// Return the system uptime measure on the thread executing this call.
+    einsums::util::runtime_configuration const &get_config() const;
+
+    /// \brief Return the system uptime measure on the thread executing this call
     static std::uint64_t get_system_uptime();
 
-    threads::detail::topology const &get_topology() const;
+    einsums::threads::detail::topology const &get_topology() const;
 
     /// \brief Run the einsums runtime system, use the given function for the
     ///        main \a thread and block waiting for all threads to
@@ -95,7 +122,7 @@ struct EINSUMS_EXPORT runtime {
     /// \returns          This function will return the value as returned
     ///                   as the result of the invocation of the function
     ///                   object given by the parameter \p func.
-    virtual int run(std::function<einsums_main_function_type> const &func);
+    virtual int run(einsums::util::detail::function<einsums_main_function_type> const &func);
 
     /// \brief Run the einsums runtime system, initially use the given number
     ///        of (OS) threads in the thread-manager and block waiting for
@@ -125,7 +152,7 @@ struct EINSUMS_EXPORT runtime {
     ///                   return the value as returned as the result of the
     ///                   invocation of the function object given by the
     ///                   parameter \p func. Otherwise it will return zero.
-    virtual int start(std::function<einsums_main_function_type> const &func, bool blocking = false);
+    virtual int start(einsums::util::detail::function<einsums_main_function_type> const &func, bool blocking = false);
 
     /// \brief Start the runtime system
     ///
@@ -169,7 +196,7 @@ struct EINSUMS_EXPORT runtime {
 
     /// \brief Allow access to the thread manager instance used by the einsums
     ///        runtime.
-    //    virtual einsums::threads::detail::thread_manager &get_thread_manager();
+    virtual einsums::threads::detail::thread_manager &get_thread_manager();
 
     /// \brief Report a non-recoverable error to the runtime system
     ///
@@ -291,35 +318,34 @@ struct EINSUMS_EXPORT runtime {
     void init_global_data();
     void deinit_global_data();
 
-    //    einsums::threads::detail::thread_result_type
-    //    run_helper(einsums::util::detail::function<runtime::einsums_main_function_type> const &func, int &result, bool
-    //    call_startup_functions);
+    einsums::threads::detail::thread_result_type
+    run_helper(einsums::util::detail::function<runtime::einsums_main_function_type> const &func, int &result, bool call_startup_functions);
 
     void wait_helper(std::mutex &mtx, std::condition_variable &cond, bool &running);
 
     // list of functions to call on exit
-    using on_exit_type = std::vector<std::function<void()>>;
-    on_exit_type       _on_exit_functions;
-    mutable std::mutex _mtx;
+    using on_exit_type = std::vector<einsums::util::detail::function<void()>>;
+    on_exit_type       on_exit_functions_;
+    mutable std::mutex mtx_;
 
-    einsums::util::runtime_configuration _rtcfg;
+    einsums::util::runtime_configuration rtcfg_;
 
     // topology and affinity data
-    einsums::threads::detail::topology &_topology;
+    einsums::threads::detail::topology &topology_;
 
-    std::atomic<runtime_state> _state;
+    std::atomic<runtime_state> state_;
 
     // support tying in external functions to be called for thread events
-    notification_policy_type::on_startstop_type _on_start_func;
-    notification_policy_type::on_startstop_type _on_stop_func;
-    notification_policy_type::on_error_type     _on_error_func;
+    notification_policy_type::on_startstop_type on_start_func_;
+    notification_policy_type::on_startstop_type on_stop_func_;
+    notification_policy_type::on_error_type     on_error_func_;
 
-    int _result;
+    int result_;
 
-    std::exception_ptr _exception;
+    std::exception_ptr exception_;
 
-    notification_policy_type _notifier;
-    //    std::unique_ptr<einsums::threads::detail::thread_manager> thread_manager_;
+    notification_policy_type                                  notifier_;
+    std::unique_ptr<einsums::threads::detail::thread_manager> thread_manager_;
 
   private:
     /// \brief Helper function to stop the runtime.
@@ -347,30 +373,32 @@ struct EINSUMS_EXPORT runtime {
     void call_startup_functions(bool pre_startup);
     void call_shutdown_functions(bool pre_shutdown);
 
-    std::list<startup_function_type>  _pre_startup_functions;
-    std::list<startup_function_type>  _startup_functions;
-    std::list<shutdown_function_type> _pre_shutdown_functions;
-    std::list<shutdown_function_type> _shutdown_functions;
+    std::list<startup_function_type>  pre_startup_functions_;
+    std::list<startup_function_type>  startup_functions_;
+    std::list<shutdown_function_type> pre_shutdown_functions_;
+    std::list<shutdown_function_type> shutdown_functions_;
 
-    bool                    _stop_called;
-    bool                    _stop_done;
-    std::condition_variable _wait_condition;
+    bool                    stop_called_;
+    bool                    stop_done_;
+    std::condition_variable wait_condition_;
 };
 
 EINSUMS_EXPORT void set_signal_handlers();
 
-EINSUMS_EXPORT char const *get_runtime_state_name(runtime_state st);
+EINSUMS_EXPORT char const *get_runtime_state_name(einsums::runtime_state st);
 
 namespace util {
+///////////////////////////////////////////////////////////////////////////
+// retrieve the command line arguments for the current process
+EINSUMS_EXPORT bool retrieve_commandline_arguments(einsums::program_options::options_description const &app_options,
+                                                   einsums::program_options::variables_map             &vm);
 
-EINSUMS_EXPORT bool retrieve_commandline_arguments(program_options::options_description const &app_options,
-                                                   program_options::variables_map             &vm);
-EINSUMS_EXPORT bool retrieve_commandline_arguments(std::string const &appname, program_options::variables_map &vm);
-
+///////////////////////////////////////////////////////////////////////////
+// retrieve the command line arguments for the current process
+EINSUMS_EXPORT bool retrieve_commandline_arguments(std::string const &appname, einsums::program_options::variables_map &vm);
 } // namespace util
 
 namespace threads {
-
 /// \brief Returns the stack size name.
 ///
 /// Get the readable string representing the given stack size constant.
@@ -389,18 +417,19 @@ EINSUMS_EXPORT std::ptrdiff_t get_default_stack_size();
 /// Get the stack size corresponding to the given stack size enumeration.
 ///
 /// \param size this represents the stack size
-// EINSUMS_EXPORT std::ptrdiff_t get_stack_size(execution::thread_stacksize);
-
+EINSUMS_EXPORT std::ptrdiff_t get_stack_size(execution::thread_stacksize);
 } // namespace threads
 
 } // namespace einsums::detail
 
 namespace einsums {
-
 /// Returns true when the runtime is initialized, false otherwise.
 ///
 /// Returns true while in a @ref einsums::init call, or between calls of @ref einsums::start and @ref
 /// einsums::stop, otherwise false.
+///
+/// Added in 0.22.0.
 EINSUMS_EXPORT bool is_runtime_initialized() noexcept;
-
 } // namespace einsums
+
+#include <einsums/config/warnings_suffix.hpp>

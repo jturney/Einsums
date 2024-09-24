@@ -1,17 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
-
-#pragma once
-
-//  Copyright (c) 2021 Hartmut Kaiser
-//
-//  SPDX-License-Identifier: BSL-1.0
-//  Distributed under the Boost Software License, Version 1.0. (See accompanying
-//  file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
-
-// (C) Copyright Jeremy Siek 2002.
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -23,7 +13,7 @@
 #include <iterator>
 #include <type_traits>
 
-namespace einsums::iterator {
+namespace einsums::iterators {
 
 // Traversal Categories
 struct no_traversal_tag {};
@@ -46,27 +36,25 @@ namespace detail {
 // for new-style types.
 template <typename Cat>
 struct std_category_to_traversal
-    : einsums::type_support::lazy_conditional<
-          std::is_convertible<Cat, std::random_access_iterator_tag>::value,
-          ::einsums::type_support::type_identity<random_access_traversal_tag>,
-          einsums::type_support::lazy_conditional<
+    : einsums::detail::lazy_conditional<
+          std::is_convertible<Cat, std::random_access_iterator_tag>::value, ::einsums::detail::type_identity<random_access_traversal_tag>,
+          einsums::detail::lazy_conditional<
               std::is_convertible<Cat, std::bidirectional_iterator_tag>::value,
-              ::einsums::type_support::type_identity<bidirectional_traversal_tag>,
-              einsums::type_support::lazy_conditional<
-                  std::is_convertible<Cat, std::forward_iterator_tag>::value, ::einsums::type_support::type_identity<forward_traversal_tag>,
-                  einsums::type_support::lazy_conditional<
-                      std::is_convertible<Cat, std::input_iterator_tag>::value,
-                      ::einsums::type_support::type_identity<single_pass_traversal_tag>,
-                      einsums::type_support::lazy_conditional<std::is_convertible<Cat, std::output_iterator_tag>::value,
-                                                              ::einsums::type_support::type_identity<incrementable_traversal_tag>,
-                                                              ::einsums::type_support::type_identity<no_traversal_tag>>>>>> {};
+              ::einsums::detail::type_identity<bidirectional_traversal_tag>,
+              einsums::detail::lazy_conditional<
+                  std::is_convertible<Cat, std::forward_iterator_tag>::value, ::einsums::detail::type_identity<forward_traversal_tag>,
+                  einsums::detail::lazy_conditional<
+                      std::is_convertible<Cat, std::input_iterator_tag>::value, ::einsums::detail::type_identity<single_pass_traversal_tag>,
+                      einsums::detail::lazy_conditional<std::is_convertible<Cat, std::output_iterator_tag>::value,
+                                                        ::einsums::detail::type_identity<incrementable_traversal_tag>,
+                                                        ::einsums::detail::type_identity<no_traversal_tag>>>>>> {};
 } // namespace detail
 
 // Convert an iterator category into a traversal tag
 template <typename Cat>
 struct iterator_category_to_traversal
-    : einsums::type_support::lazy_conditional<std::is_convertible<Cat, incrementable_traversal_tag>::value,
-                                              ::einsums::type_support::type_identity<Cat>, detail::std_category_to_traversal<Cat>> {};
+    : einsums::detail::lazy_conditional<std::is_convertible<Cat, incrementable_traversal_tag>::value, ::einsums::detail::type_identity<Cat>,
+                                        detail::std_category_to_traversal<Cat>> {};
 
 // Trait to get an iterator's traversal category
 template <typename Iterator>
@@ -75,32 +63,40 @@ struct iterator_traversal : iterator_category_to_traversal<typename std::iterato
 // Convert an iterator traversal to one of the traversal tags.
 template <typename Traversal>
 struct pure_traversal_tag
-    : einsums::type_support::lazy_conditional<
-          std::is_convertible<Traversal, random_access_traversal_tag>::value,
-          ::einsums::type_support::type_identity<random_access_traversal_tag>,
-          einsums::type_support::lazy_conditional<
+    : einsums::detail::lazy_conditional<
+          std::is_convertible<Traversal, random_access_traversal_tag>::value, ::einsums::detail::type_identity<random_access_traversal_tag>,
+          einsums::detail::lazy_conditional<
               std::is_convertible<Traversal, bidirectional_traversal_tag>::value,
-              ::einsums::type_support::type_identity<bidirectional_traversal_tag>,
-              einsums::type_support::lazy_conditional<
-                  std::is_convertible<Traversal, forward_traversal_tag>::value,
-                  ::einsums::type_support::type_identity<forward_traversal_tag>,
-                  einsums::type_support::lazy_conditional<
+              ::einsums::detail::type_identity<bidirectional_traversal_tag>,
+              einsums::detail::lazy_conditional<
+                  std::is_convertible<Traversal, forward_traversal_tag>::value, ::einsums::detail::type_identity<forward_traversal_tag>,
+                  einsums::detail::lazy_conditional<
                       std::is_convertible<Traversal, single_pass_traversal_tag>::value,
-                      ::einsums::type_support::type_identity<single_pass_traversal_tag>,
-                      einsums::type_support::lazy_conditional<std::is_convertible<Traversal, incrementable_traversal_tag>::value,
-                                                              ::einsums::type_support::type_identity<incrementable_traversal_tag>,
-                                                              ::einsums::type_support::type_identity<no_traversal_tag>>>>>> {};
+                      ::einsums::detail::type_identity<single_pass_traversal_tag>,
+                      einsums::detail::lazy_conditional<std::is_convertible<Traversal, incrementable_traversal_tag>::value,
+                                                        ::einsums::detail::type_identity<incrementable_traversal_tag>,
+                                                        ::einsums::detail::type_identity<no_traversal_tag>>>>>> {};
 
 // Trait to retrieve one of the iterator traversal tags from the
 // iterator category or traversal.
 template <typename Iterator>
 struct pure_iterator_traversal : pure_traversal_tag<typename iterator_traversal<Iterator>::type> {};
+} // namespace einsums::iterators
+
+namespace einsums {
+
+using einsums::iterators::bidirectional_traversal_tag;
+using einsums::iterators::forward_traversal_tag;
+using einsums::iterators::incrementable_traversal_tag;
+using einsums::iterators::no_traversal_tag;
+using einsums::iterators::random_access_traversal_tag;
+using einsums::iterators::single_pass_traversal_tag;
 
 namespace traits {
 
 ///////////////////////////////////////////////////////////////////////
 template <typename Traversal>
-using pure_traversal_tag = pure_traversal_tag<Traversal>;
+using pure_traversal_tag = einsums::iterators::pure_traversal_tag<Traversal>;
 
 template <typename Traversal>
 using pure_traversal_tag_t = typename pure_traversal_tag<Traversal>::type;
@@ -109,7 +105,7 @@ template <typename Traversal>
 inline constexpr bool pure_traversal_tag_v = pure_traversal_tag<Traversal>::value;
 
 template <typename Iterator>
-using pure_iterator_traversal = pure_iterator_traversal<Iterator>;
+using pure_iterator_traversal = einsums::iterators::pure_iterator_traversal<Iterator>;
 
 template <typename Iterator>
 using pure_iterator_traversal_t = typename pure_iterator_traversal<Iterator>::type;
@@ -119,7 +115,7 @@ inline constexpr bool pure_iterator_traversal_v = pure_iterator_traversal<Iterat
 
 ///////////////////////////////////////////////////////////////////////
 template <typename Cat>
-using iterator_category_to_traversal = iterator_category_to_traversal<Cat>;
+using iterator_category_to_traversal = einsums::iterators::iterator_category_to_traversal<Cat>;
 
 template <typename Cat>
 using iterator_category_to_traversal_t = typename iterator_category_to_traversal<Cat>::type;
@@ -128,13 +124,14 @@ template <typename Cat>
 inline constexpr bool iterator_category_to_traversal_v = iterator_category_to_traversal<Cat>::value;
 
 template <typename Iterator>
-using iterator_traversal = iterator_traversal<Iterator>;
+using iterator_traversal = einsums::iterators::iterator_traversal<Iterator>;
 
 template <typename Iterator>
 using iterator_traversal_t = typename iterator_traversal<Iterator>::type;
 
 template <typename Iterator>
 inline constexpr bool iterator_traversal_v = iterator_traversal<Iterator>::value;
-
 } // namespace traits
-} // namespace einsums::iterator
+} // namespace einsums
+
+#undef EINSUMS_ITERATOR_TRAVERSAL_TAG_NS

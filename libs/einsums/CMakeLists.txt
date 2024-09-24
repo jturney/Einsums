@@ -22,8 +22,10 @@ set(_einsums_einsums_modules
     concurrency
     config
     coroutines
+        datastructures
     debugging
     errors
+        execution
     execution_base
     filesystem
     functional
@@ -44,10 +46,14 @@ set(_einsums_einsums_modules
     runtime_configuration
     schedulers
     string_util
+        synchronization
     tensor
     tensor_base
     tensor_utilities
+        thread_manager
+        thread_pools
     thread_support
+        threading
     threading_base
     timing
     topology

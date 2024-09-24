@@ -13,6 +13,8 @@ IndentPPDirectives: AfterHash
 AlignConsecutiveAssignments: true
 AlignConsecutiveDeclarations: true
 IncludeCategories:
+  - Regex: '^<einsums/config/warnings_prefix.hpp>'
+    Priority: 100
   - Regex: '^<catch2/catch_all.hpp>'
     Priority: 10
   - Regex: '^<einsums/testing.hpp>'

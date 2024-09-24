@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -13,8 +13,6 @@
 #include <einsums/threading_base/print.hpp>
 #include <einsums/threading_base/scheduler_base.hpp>
 #include <einsums/threading_base/thread_data.hpp>
-#include <einsums/threading_base/thread_data_stackful.hpp>
-#include <einsums/threading_base/thread_data_stackless.hpp>
 #include <einsums/threading_base/thread_queue_init_parameters.hpp>
 #include <einsums/type_support/unused.hpp>
 
@@ -142,7 +140,7 @@ struct queue_holder_thread {
     // ------------------------------------------------------------
     struct queue_mc_print {
         const QueueType *const q_;
-        explicit queue_mc_print(const QueueType *const q) : q_(q) {}
+        explicit               queue_mc_print(const QueueType *const q) : q_(q) {}
         //
         friend std::ostream &operator<<(std::ostream &os, const queue_mc_print &d) {
             os << "n " << debug::detail::dec<3>(d.q_->new_tasks_count_.data_) << " w "
@@ -153,7 +151,7 @@ struct queue_holder_thread {
 
     struct queue_data_print {
         const queue_holder_thread *q_;
-        explicit queue_data_print(const queue_holder_thread *q) : q_(q) {}
+        explicit                   queue_data_print(const queue_holder_thread *q) : q_(q) {}
         //
         friend std::ostream &operator<<(std::ostream &os, const queue_data_print &d) {
             os << "D " << debug::detail::dec<2>(d.q_->domain_index_) << " Q " << debug::detail::dec<3>(d.q_->queue_index_) << " TM "
@@ -263,23 +261,23 @@ struct queue_holder_thread {
             ::einsums::detail::tq_deb.debug(debug::detail::str<>("schedule_thread"), queue_data_print(this),
                                             debug::detail::threadinfo<threads::detail::thread_id_ref_type *>(&thrd),
                                             "queueing execution::thread_priority::bound");
-            bp_queue_->schedule_work(EINSUMS_MOVE(thrd), other_end);
+            bp_queue_->schedule_work(std::move(thrd), other_end);
         } else if (hp_queue_ && (priority == execution::thread_priority::high || priority == execution::thread_priority::high_recursive ||
                                  priority == execution::thread_priority::boost)) {
             ::einsums::detail::tq_deb.debug(debug::detail::str<>("schedule_thread"), queue_data_print(this),
                                             debug::detail::threadinfo<threads::detail::thread_id_ref_type *>(&thrd),
                                             "queueing execution::thread_priority::high");
-            hp_queue_->schedule_work(EINSUMS_MOVE(thrd), other_end);
+            hp_queue_->schedule_work(std::move(thrd), other_end);
         } else if (lp_queue_ && (priority == execution::thread_priority::low)) {
             ::einsums::detail::tq_deb.debug(debug::detail::str<>("schedule_thread"), queue_data_print(this),
                                             debug::detail::threadinfo<threads::detail::thread_id_ref_type *>(&thrd),
                                             "queueing execution::thread_priority::low");
-            lp_queue_->schedule_work(EINSUMS_MOVE(thrd), other_end);
+            lp_queue_->schedule_work(std::move(thrd), other_end);
         } else {
             ::einsums::detail::tq_deb.debug(debug::detail::str<>("schedule_thread"), queue_data_print(this),
                                             debug::detail::threadinfo<threads::detail::thread_id_ref_type *>(&thrd),
                                             "queueing execution::thread_priority::normal");
-            np_queue_->schedule_work(EINSUMS_MOVE(thrd), other_end);
+            np_queue_->schedule_work(std::move(thrd), other_end);
         }
     }
 
@@ -449,7 +447,7 @@ struct queue_holder_thread {
         } else if (stacksize == parameters_.nostack_stacksize_) {
             thread_heap_nostack_.push_front(tid);
         } else {
-            EINSUMS_ASSERT_MSG(false, fmt::format("Invalid stack size {}", stacksize));
+            EINSUMS_ASSERT_MSG(false, "Invalid stack size {}", stacksize);
         }
     }
 #endif

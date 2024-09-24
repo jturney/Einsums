@@ -12,6 +12,7 @@ set(errors_headers
         einsums/errors/exception_fwd.hpp
         einsums/errors/exception_info.hpp
         einsums/errors/throw_exception.hpp
+        einsums/errors/try_catch_exception_ptr.hpp
 )
 
 set(errors_sources error_code.cpp exception.cpp throw_exception.cpp)
@@ -22,7 +23,6 @@ einsums_add_module(
   GLOBAL_HEADER_GEN ON
   SOURCES ${errors_sources}
   HEADERS ${errors_headers}
-  MODULE_DEPENDENCIES
-        einsums_assertion einsums_config einsums_preprocessor
+        MODULE_DEPENDENCIES einsums_assertion einsums_config einsums_preprocessor
   CMAKE_SUBDIRS examples tests
 )

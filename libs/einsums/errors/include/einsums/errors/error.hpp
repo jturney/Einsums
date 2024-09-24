@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -35,6 +35,9 @@ enum class error : std::uint16_t {
     bad_function_call,
     thread_not_interruptable,
     null_thread_id,
+    unhandled_exception,
+    lock_error,
+    thread_resource_error,
 
     last_error,
 
@@ -61,7 +64,10 @@ char const *const error_names[] = {"success",
                                    "assertion_failure",
                                    "bad_function_call",
                                    "thread_not_interruptable",
-                                   "null_thread_id"};
+                                   "null_thread_id",
+                                   "unhandled_exception",
+                                   "lock_error",
+                                   "thread_resource_error"};
 
 inline auto error_code_has_system_error(int e) -> bool {
     return e & static_cast<int>(einsums::error::system_error_flag);

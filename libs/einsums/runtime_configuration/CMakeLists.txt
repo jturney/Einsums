@@ -11,10 +11,7 @@ set(runtime_configuration_headers
         einsums/runtime_configuration/runtime_configuration_fwd.hpp
 )
 
-set(runtime_configuration_sources
-        init_ini_data.cpp
-        runtime_configuration.cpp
-)
+set(runtime_configuration_sources init_ini_data.cpp runtime_configuration.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -26,10 +23,12 @@ einsums_add_module(
   MODULE_DEPENDENCIES
         einsums_program_options
         einsums_errors
+        einsums_filesystem
+        einsums_itt_notify
         einsums_logging
         einsums_ini
-        einsums_string_util
-        einsums_type_support
+        einsums_coroutines
         einsums_version
+        einsums_synchronization
   CMAKE_SUBDIRS examples tests
 )

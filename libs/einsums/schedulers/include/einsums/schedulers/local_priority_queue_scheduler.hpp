@@ -10,7 +10,6 @@
 #include <einsums/affinity/affinity_data.hpp>
 #include <einsums/assert.hpp>
 #include <einsums/concurrency/cache_line_data.hpp>
-#include <einsums/config/warnings_prefix.hpp>
 #include <einsums/functional/function.hpp>
 #include <einsums/logging.hpp>
 #include <einsums/modules/errors.hpp>
@@ -37,6 +36,8 @@
 #include <type_traits>
 #include <vector>
 
+#include <einsums/config/warnings_prefix.hpp>
+
 // TODO: add branch prediction and function heat
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -44,7 +45,7 @@ namespace einsums::threads::detail {
 ///////////////////////////////////////////////////////////////////////////
 /// The local_priority_queue_scheduler maintains exactly one queue of work
 /// items (threads) per OS thread, where this OS thread pulls its next work
-/// from. Additionally it maintains separate queues: several for high
+/// from. Additionally, it maintains separate queues: several for high
 /// priority threads and one for low priority threads.
 /// High priority threads are executed by the first N OS threads before any
 /// other work is executed. Low priority threads are executed by the last
@@ -63,10 +64,10 @@ class EINSUMS_EXPORT local_priority_queue_scheduler : public scheduler_base {
     //    the maxcount per queue
     struct init_parameter {
         init_parameter(std::size_t num_queues, einsums::detail::affinity_data const &affinity_data,
-                       std::size_t num_high_priority_queues = std::size_t(-1), thread_queue_init_parameters thread_queue_init = {},
+                       std::size_t num_high_priority_queues = static_cast<std::size_t>(-1), thread_queue_init_parameters thread_queue_init = {},
                        char const *description = "local_priority_queue_scheduler")
             : num_queues_(num_queues),
-              num_high_priority_queues_(num_high_priority_queues == std::size_t(-1) ? num_queues : num_high_priority_queues),
+              num_high_priority_queues_(num_high_priority_queues == static_cast<std::size_t>(-1) ? num_queues : num_high_priority_queues),
               thread_queue_init_(thread_queue_init), affinity_data_(affinity_data), description_(description) {}
 
         init_parameter(std::size_t num_queues, einsums::detail::affinity_data const &affinity_data, char const *description)

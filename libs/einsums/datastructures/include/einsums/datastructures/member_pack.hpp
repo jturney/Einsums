@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -44,7 +44,7 @@ struct member_leaf {
     member_leaf() = default;
 
     template <typename U>
-    explicit constexpr member_leaf(std::piecewise_construct_t, U &&v) : member(std::forward<U>(v)) {}
+    explicit constexpr member_leaf(std::piecewise_construct_t, U &&v) : member(std::forward<U>v)) {}
 };
 
 template <std::size_t I, typename T>
@@ -52,7 +52,7 @@ struct member_leaf<I, T, /*Empty*/ true> : T {
     member_leaf() = default;
 
     template <typename U>
-    explicit constexpr member_leaf(std::piecewise_construct_t, U &&v) : T(std::forward<U>(v)) {}
+    explicit constexpr member_leaf(std::piecewise_construct_t, U &&v) : T(std::forward<U>v)) {}
 };
 
 template <std::size_t I, typename T>

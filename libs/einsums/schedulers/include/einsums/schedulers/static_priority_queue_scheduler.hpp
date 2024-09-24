@@ -1,14 +1,13 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
 #include <einsums/config.hpp>
 
 #include <einsums/assert.hpp>
-#include <einsums/config/warnings_prefix.hpp>
 #include <einsums/schedulers/local_priority_queue_scheduler.hpp>
 #include <einsums/schedulers/lockfree_queue_backends.hpp>
 
@@ -18,6 +17,8 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+
+#include <einsums/config/warnings_prefix.hpp>
 
 ///////////////////////////////////////////////////////////////////////////////
 namespace einsums::threads::detail {

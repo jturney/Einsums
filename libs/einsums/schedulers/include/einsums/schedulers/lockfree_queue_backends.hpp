@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -40,7 +40,7 @@ struct lockfree_fifo_backend {
 
     bool push(const_reference val, bool /*other_end*/ = false) { return queue_.enqueue(val); }
 
-    bool push(rvalue_reference val, bool /*other_end*/ = false) { return queue_.enqueue(EINSUMS_MOVE(val)); }
+    bool push(rvalue_reference val, bool /*other_end*/ = false) { return queue_.enqueue(std::move(val)); }
 
     bool pop(reference val, bool /* steal */ = true) { return queue_.try_dequeue(val); }
 
@@ -80,8 +80,8 @@ struct lockfree_lifo_backend {
 
     bool push(rvalue_reference val, bool other_end = false) {
         if (other_end)
-            return queue_.push_right(EINSUMS_MOVE(val));
-        return queue_.push_left(EINSUMS_MOVE(val));
+            return queue_.push_right(std::move(val));
+        return queue_.push_left(std::move(val));
     }
 
     bool pop(reference val, bool /* steal */ = true) { return queue_.pop_left(val); }
@@ -115,7 +115,7 @@ struct lockfree_abp_fifo_backend {
 
     bool push(const_reference val, bool /*other_end*/ = false) { return queue_.push_left(val); }
 
-    bool push(rvalue_reference val, bool /*other_end*/ = false) { return queue_.push_left(EINSUMS_MOVE(val)); }
+    bool push(rvalue_reference val, bool /*other_end*/ = false) { return queue_.push_left(std::move(val)); }
 
     bool pop(reference val, bool steal = true) {
         if (steal)
@@ -155,8 +155,8 @@ struct lockfree_abp_lifo_backend {
 
     bool push(const_reference val, bool other_end = false) {
         if (other_end)
-            return queue_.push_right(EINSUMS_MOVE(val));
-        return queue_.push_left(EINSUMS_MOVE(val));
+            return queue_.push_right(std::move(val));
+        return queue_.push_left(std::move(val));
     }
 
     bool push(rvalue_reference val, bool other_end = false) {

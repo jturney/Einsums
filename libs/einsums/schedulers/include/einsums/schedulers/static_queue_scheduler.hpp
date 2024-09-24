@@ -1,14 +1,13 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
 #include <einsums/config.hpp>
 
 #include <einsums/assert.hpp>
-#include <einsums/config/warnings_prefix.hpp>
 #include <einsums/logging.hpp>
 #include <einsums/schedulers/deadlock_detection.hpp>
 #include <einsums/schedulers/local_queue_scheduler.hpp>
@@ -25,6 +24,8 @@
 #include <mutex>
 #include <string>
 #include <vector>
+
+#include <einsums/config/warnings_prefix.hpp>
 
 // TODO: add branch prediction and function heat
 

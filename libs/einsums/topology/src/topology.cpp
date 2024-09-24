@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #include <einsums/config.hpp>
 
@@ -292,6 +292,13 @@ std::size_t topology::get_pu_number(std::size_t num_core, std::size_t num_pu, er
     core_obj = hwloc_get_obj_by_type(topo, HWLOC_OBJ_PU, static_cast<unsigned>(num_core));
 
     return std::size_t(core_obj->logical_index);
+}
+
+mask_cref_type topology::get_machine_affinity_mask(error_code& ec) const
+{
+    if (&ec != &throws) ec = make_success_code();
+
+    return _machine_affinity_mask;
 }
 
 mask_cref_type topology::get_socket_affinity_mask(std::size_t num_thread, einsums::error_code &ec) const {

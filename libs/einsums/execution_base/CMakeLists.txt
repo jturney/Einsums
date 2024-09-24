@@ -8,9 +8,13 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 set(execution_base_headers
   einsums/execution_base/agent_base.hpp
   einsums/execution_base/agent_ref.hpp
+        einsums/execution_base/completion_scheduler.hpp
   einsums/execution_base/context_base.hpp
   einsums/execution_base/detail/spinlock_deadlock_detection.hpp
+        einsums/execution_base/operation_state.hpp
+        einsums/execution_base/receiver.hpp
   einsums/execution_base/resource_base.hpp
+        einsums/execution_base/sender.hpp
   einsums/execution_base/this_thread.hpp
 )
 

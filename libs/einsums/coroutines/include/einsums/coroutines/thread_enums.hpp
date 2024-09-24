@@ -104,7 +104,7 @@ namespace detail {
 /// Get the readable string representing the name of the given thread_priority
 /// constant.
 ///
-/// \param this represents the thread priority.
+/// \param priority this represents the thread priority.
 EINSUMS_EXPORT char const *get_thread_priority_name(thread_priority priority);
 } // namespace detail
 

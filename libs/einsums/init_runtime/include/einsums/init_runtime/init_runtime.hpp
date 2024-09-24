@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -48,6 +48,9 @@ EINSUMS_MAYBE_UNUSED static char **dummy_argv      = default_argv;
 EINSUMS_MAYBE_UNUSED static const einsums::program_options::options_description default_desc =
     einsums::program_options::options_description("Usage: " EINSUMS_APPLICATION_STRING " [options]");
 
+// Utilities to init the thread_pools of the resource partitioner
+using rp_callback_type =
+    einsums::util::detail::function<void(einsums::resource::partitioner &, einsums::program_options::variables_map const &)>;
 } // namespace detail
 
 struct init_params {
@@ -55,6 +58,8 @@ struct init_params {
     std::vector<std::string>                                                    cfg;
     mutable startup_function_type                                               startup;
     mutable shutdown_function_type                                              shutdown;
+    einsums::resource::partitioner_mode                                         rp_mode = ::einsums::resource::mode_default;
+    einsums::detail::rp_callback_type                                           rp_callback;
 };
 
 EINSUMS_EXPORT int init(std::function<int(einsums::program_options::variables_map &)> f, int argc, const char *const *argv,

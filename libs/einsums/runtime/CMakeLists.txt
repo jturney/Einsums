@@ -11,12 +11,15 @@ set(runtime_headers
         einsums/runtime/debugging.hpp
         einsums/runtime/get_os_thread_count.hpp
         einsums/runtime/get_thread_name.hpp
+        einsums/runtime/state.hpp
         einsums/runtime/report_error.hpp
         einsums/runtime/runtime.hpp
         einsums/runtime/runtime_fwd.hpp
         einsums/runtime/runtime_handlers.hpp
         einsums/runtime/shutdown_function.hpp
         einsums/runtime/startup_function.hpp
+        einsums/runtime/thread_hooks.hpp
+        einsums/runtime/thread_pool_helpers.hpp
 )
 
 set(runtime_sources
@@ -24,6 +27,8 @@ set(runtime_sources
         debugging.cpp
         runtime.cpp
         runtime_handlers.cpp
+        state.cpp
+        thread_pool_helpers.cpp
 )
 
 include(Einsums_AddModule)
@@ -34,13 +39,18 @@ einsums_add_module(
   HEADERS ${runtime_headers}
   DEPENDENCIES
   MODULE_DEPENDENCIES
-        einsums_config
+        einsums_command_line_handling
         einsums_debugging
         einsums_errors
+        einsums_execution
+        einsums_logging
+        einsums_program_options
+        einsums_resource_partitioner
         einsums_runtime_configuration
-        einsums_string_util
+        einsums_threading
         einsums_threading_base
+        einsums_thread_manager
+        einsums_timing
         einsums_topology
-        einsums_version
   CMAKE_SUBDIRS examples tests
 )

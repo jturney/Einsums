@@ -37,6 +37,8 @@ einsums_add_module(
         einsums_runtime_configuration
         einsums_preprocessor
         einsums_program_options
+        einsums_threading
+        einsums_threading_base
         einsums_util
   CMAKE_SUBDIRS examples tests
 )

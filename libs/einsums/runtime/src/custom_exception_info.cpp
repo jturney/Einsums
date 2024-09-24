@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #include <einsums/config.hpp>
 
@@ -221,7 +221,7 @@ std::string get_execution_environment() {
     return retval;
 }
 
-einsums::exception_info custom_exception_info(std::string const &func, std::string const &file, long line, std::string const &auxinfo) {
+einsums::exception_info custom_exception_info(std::source_location const &location, std::string const &auxinfo) {
     std::int64_t pid = ::getpid();
 
     // Add trace information?
@@ -229,8 +229,8 @@ einsums::exception_info custom_exception_info(std::string const &func, std::stri
     std::string env(get_execution_environment());
     std::string config(configuration_string());
 
-    return einsums::exception_info().set(throw_function(func), throw_file(file), throw_line(line), throw_env(env), throw_config(config),
-                                         throw_auxinfo(auxinfo));
+    return einsums::exception_info().set(throw_function(location.function_name()), throw_file(location.file_name()),
+                                         throw_line(location.line()), throw_env(env), throw_config(config), throw_auxinfo(auxinfo));
 }
 
 std::string get_error_host_name(einsums::exception_info const &xi) {

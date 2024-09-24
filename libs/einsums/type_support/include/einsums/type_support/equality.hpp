@@ -1,14 +1,14 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
 #include <type_traits>
 #include <utility>
 
-namespace einsums::type_support {
+namespace einsums::detail {
 
 template <typename T, typename U, typename Enable = void>
 struct equality_result {};

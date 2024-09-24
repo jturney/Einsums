@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -44,7 +44,7 @@ namespace einsums::program_options {
     implicitly moves data pointer, like for stream operation.
 */
 template <class Derived, class ValueType>
-class eof_iterator : public iterator::iterator_facade<Derived, ValueType const, std::forward_iterator_tag> {
+class eof_iterator : public util::iterator_facade<Derived, ValueType const, std::forward_iterator_tag> {
   public:
     eof_iterator() : m_at_eof(false) {}
 
@@ -58,7 +58,7 @@ class eof_iterator : public iterator::iterator_facade<Derived, ValueType const, 
     void found_eof() { m_at_eof = true; }
 
   private: // iterator core operations
-    friend class einsums::iterator::iterator_core_access;
+    friend class einsums::util::iterator_core_access;
 
     void increment() { static_cast<Derived &>(*this).get(); }
 

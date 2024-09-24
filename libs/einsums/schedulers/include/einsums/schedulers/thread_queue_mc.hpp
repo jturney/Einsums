@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -105,7 +105,7 @@ class thread_queue_mc {
             // pushing the new thread into the pending queue of the
             // specified thread_queue
             ++added;
-            schedule_work(EINSUMS_MOVE(tid), stealing);
+            schedule_work(std::move(tid), stealing);
         }
 
         return added;
@@ -175,13 +175,13 @@ class thread_queue_mc {
                 if (id) {
                     *id = tid;
                 }
-                schedule_work(EINSUMS_MOVE(tid), false);
+                schedule_work(std::move(tid), false);
             } else {
                 // if the thread should not be scheduled the id must be
                 // returned to the caller as otherwise the thread would
                 // go out of scope right away.
                 EINSUMS_ASSERT(id != nullptr);
-                *id = EINSUMS_MOVE(tid);
+                *id = std::move(tid);
             }
 
             if (&ec != &throws)
@@ -201,7 +201,7 @@ class thread_queue_mc {
         // later thread creation
         ++new_tasks_count_.data_;
 
-        new_task_items_.push(task_description(EINSUMS_MOVE(data)));
+        new_task_items_.push(task_description(std::move(data)));
 
         if (&ec != &throws)
             ec = make_success_code();
@@ -243,7 +243,7 @@ class thread_queue_mc {
             debug::detail::dec<3>(queue_index_), "n", debug::detail::dec<4>(new_tasks_count_.data_), "w",
             debug::detail::dec<4>(work_items_count_.data_), debug::detail::threadinfo<threads::detail::thread_id_ref_type *>(&thrd));
         //
-        work_items_.push(EINSUMS_MOVE(thrd), other_end);
+        work_items_.push(std::move(thrd), other_end);
 #ifdef DEBUG_QUEUE_EXTRA
         debug_queue(work_items_);
 #endif

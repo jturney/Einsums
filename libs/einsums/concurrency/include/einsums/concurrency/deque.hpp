@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -11,7 +11,7 @@
 #include <einsums/concurrency/detail/tagged_ptr_pair.hpp>
 
 #include <atomic>
-// #include <boost/lockfree/detail/tagged_ptr.hpp>
+#include <boost/lockfree/detail/tagged_ptr.hpp>
 #include <cstddef>
 #include <memory>
 #include <new>
@@ -44,7 +44,7 @@ struct deque_node //-V690
         : left(pointer(lptr, ltag)), right(pointer(rptr, rtag)), data(v) {}
 
     deque_node(deque_node *lptr, deque_node *rptr, T &&v, tag_t ltag = 0, tag_t rtag = 0)
-        : left(pointer(lptr, ltag)), right(pointer(rptr, rtag)), data(EINSUMS_MOVE(v)) {}
+        : left(pointer(lptr, ltag)), right(pointer(rptr, rtag)), data(std::move(v)) {}
 };
 
 // FIXME: A lot of these methods can be dropped; in fact, it may make sense to
@@ -158,7 +158,7 @@ struct deque {
         if (chunk == nullptr) {
             throw std::bad_alloc();
         }
-        new (chunk) node(lptr, rptr, EINSUMS_MOVE(v), ltag, rtag);
+        new (chunk) node(lptr, rptr, std::move(v), ltag, rtag);
         return chunk;
     }
 
@@ -259,7 +259,7 @@ struct deque {
     // Complexity: O(Processes)
     bool push_left(T data) {
         // Allocate the new node which we will be inserting.
-        node *n = alloc_node(nullptr, nullptr, EINSUMS_MOVE(data));
+        node *n = alloc_node(nullptr, nullptr, std::move(data));
 
         if (n == nullptr)
             return false;
@@ -309,7 +309,7 @@ struct deque {
     // Complexity: O(Processes)
     bool push_right(T data) {
         // Allocate the new node which we will be inserting.
-        node *n = alloc_node(nullptr, nullptr, EINSUMS_MOVE(data));
+        node *n = alloc_node(nullptr, nullptr, std::move(data));
 
         if (n == nullptr)
             return false;
@@ -371,7 +371,7 @@ struct deque {
                 // Try to set both anchor pointer
                 if (anchor_.cas(lrs, anchor_pair(nullptr, nullptr, lrs.get_left_tag(), lrs.get_right_tag() + 1))) {
                     // Set the result, deallocate the popped node, and return.
-                    r = EINSUMS_MOVE(lrs.get_left_ptr()->data);
+                    r = std::move(lrs.get_left_ptr()->data);
                     dealloc_node(lrs.get_left_ptr());
                     return true;
                 }
@@ -390,7 +390,7 @@ struct deque {
                 // node.
                 if (anchor_.cas(lrs, anchor_pair(prev.get_ptr(), lrs.get_right_ptr(), lrs.get_left_tag(), lrs.get_right_tag() + 1))) {
                     // Set the result, deallocate the popped node, and return.
-                    r = EINSUMS_MOVE(lrs.get_left_ptr()->data);
+                    r = std::move(lrs.get_left_ptr()->data);
                     dealloc_node(lrs.get_left_ptr());
                     return true;
                 }
@@ -423,7 +423,7 @@ struct deque {
                 // Try to set both anchor pointer
                 if (anchor_.cas(lrs, anchor_pair(nullptr, nullptr, lrs.get_left_tag(), lrs.get_right_tag() + 1))) {
                     // Set the result, deallocate the popped node, and return.
-                    r = EINSUMS_MOVE(lrs.get_right_ptr()->data);
+                    r = std::move(lrs.get_right_ptr()->data);
                     dealloc_node(lrs.get_right_ptr());
                     return true;
                 }
@@ -442,7 +442,7 @@ struct deque {
                 // node.
                 if (anchor_.cas(lrs, anchor_pair(lrs.get_left_ptr(), prev.get_ptr(), lrs.get_left_tag(), lrs.get_right_tag() + 1))) {
                     // Set the result, deallocate the popped node, and return.
-                    r = EINSUMS_MOVE(lrs.get_right_ptr()->data);
+                    r = std::move(lrs.get_right_ptr()->data);
                     dealloc_node(lrs.get_right_ptr());
                     return true;
                 }
