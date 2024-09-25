@@ -527,6 +527,8 @@ bool thread_manager::cleanup_terminated(bool delete_all) {
 
 ///////////////////////////////////////////////////////////////////////////
 void thread_manager::register_thread(thread_init_data &data, thread_id_ref_type &id, error_code &ec) {
+    EINSUMS_LOG(info, "in register_thread");
+
     thread_pool_base *pool      = nullptr;
     auto              thrd_data = get_self_id_data();
     if (thrd_data) {
@@ -534,6 +536,8 @@ void thread_manager::register_thread(thread_init_data &data, thread_id_ref_type 
     } else {
         pool = &default_pool();
     }
+
+    EINSUMS_LOG(info, "in register_thread: calling pool->create_thread");
     pool->create_thread(data, id, ec);
 }
 

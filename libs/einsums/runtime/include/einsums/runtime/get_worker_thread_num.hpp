@@ -5,10 +5,4 @@
 
 #pragma once
 
-#include <einsums/config.hpp>
-
-#include <einsums/runtime_configuration/runtime_configuration.hpp>
-
-namespace einsums::detail {
-EINSUMS_EXPORT void init_logging(const util::runtime_configuration &ini);
-}
+#include <einsums/threading_base/thread_num_tss.hpp>

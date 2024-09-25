@@ -359,9 +359,9 @@ void runtime_configuration::pre_initialize_logging_ini() {
         "[einsums.log]",
         "level = ${EINSUMS_LOG_LEVEL:3}",
         "destination = ${EINSUMS_LOG_DESTINATION:cerr}",
-        "format = ${EINSUMS_LOG_FORMAT:"
-        "[%Y-%m-%d %H:%M:%S.%F] [%n] [%^%l%$] [host:%j] [pid:%P] [tid:%t] "
-        "[pool:%w] [parent:%q] [task:%k] [%s:%#/%!] %v"
+        // "format = ${EINSUMS_LOG_FORMAT:[%Y-%m-%d %H:%M:%S.%F] [%n] [%^%l%$] [host:%j] [pid:%P] [tid:%t] [pool:%w] [parent:%q] [task:%k]
+        // [%s:%#/%!] %v"
+        "format = ${EINSUMS_LOG_FORMAT:[%n] [%^%l%$] [pool:%w] [%s:%#/%!] %v"
         "}",
     };
 

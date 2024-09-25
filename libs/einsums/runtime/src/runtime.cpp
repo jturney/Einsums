@@ -883,6 +883,7 @@ void handle_print_bind(std::size_t num_threads) {
 
 einsums::threads::detail::thread_result_type
 runtime::run_helper(einsums::util::detail::function<runtime::einsums_main_function_type> const &func, int &result, bool call_startup) {
+    EINSUMS_LOG(info, "in run_helper")
     bool caught_exception = false;
     try {
         {
@@ -973,6 +974,7 @@ int runtime::start(einsums::util::detail::function<einsums_main_function_type> c
     // certain einsums functionality from the main thread. Also calls
     // registered startup callbacks.
     init_tss_helper("main-thread", 0, 0, "", "");
+    EINSUMS_LOG(info, "(1st stage) runtime::start: called init_tss_helper to register the main-thread");
 
     // start the thread manager
     thread_manager_->run();

@@ -105,7 +105,7 @@ int init_helper(einsums::program_options::variables_map & /*vm*/, einsums::util:
 
 void activate_global_options(detail::command_line_handling &cmdline) {
 #if defined(__linux) || defined(linux) || defined(__linux__) || defined(__FreeBSD__)
-    einsums::threads::coroutines::detail::posix::use_guard_pages = cmdline._rtcfg.use_stack_guard_pages();
+    einsums::coroutines::detail::posix::use_guard_pages = cmdline._rtcfg.use_stack_guard_pages();
 #endif
 #ifdef EINSUMS_HAVE_VERIFY_LOCKS
     if (cmdline._rtcfg.enable_lock_detection()) {
@@ -250,7 +250,7 @@ void init_environment(detail::command_line_handling &cmdline) {
 int run_or_start(einsums::util::detail::function<int(einsums::program_options::variables_map &vm)> const &f, int argc,
                  const char *const *argv, init_params const &params, bool blocking) {
     if (einsums::detail::get_runtime_ptr() != nullptr) {
-        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "einsums::start/init", "runtime already initialized");
+        EINSUMS_THROW_EXCEPTION(einsums::error::invalid_status, "runtime already initialized");
     }
 
     einsums::detail::command_line_handling cmdline{einsums::util::runtime_configuration(argv[0]), params.cfg, f};

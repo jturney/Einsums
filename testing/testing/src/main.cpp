@@ -5,27 +5,36 @@
 
 #define CATCH_CONFIG_RUNNER
 
+#include <einsums/init.hpp>
+#include <einsums/logging.hpp>
 #include <einsums/modules/profile.hpp>
 
 #include <catch2/catch_all.hpp>
 
-int main(int argc, char **argv) {
+int einsums_main() {
+    EINSUMS_LOG(info, "in einsums_main")
     Catch::StringMaker<float>::precision  = 10;
     Catch::StringMaker<double>::precision = 17;
+
+    Catch::Session session;
+    // session.applyCommandLine(argc, argv);
+    // auto cli = session.cli();
+    // session.cli(cli);
+    int result = session.run();
+    return result;
+}
+
+int main(int argc, char **argv) {
 
     // Initialize einsums runtime
     // einsums::initialize();
     einsums::profile::timer::initialize();
 
-    Catch::Session session;
-    session.applyCommandLine(argc, argv);
-    // auto cli = session.cli();
-    // session.cli(cli);
-    int result = session.run();
+    einsums::init(einsums_main, argc, argv);
 
     // Shutdown einsums runtime
     einsums::profile::timer::finalize();
     // einsums::finalize(false);
 
-    return result;
+    return 0;
 }

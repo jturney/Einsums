@@ -11,6 +11,7 @@ set(runtime_headers
         einsums/runtime/debugging.hpp
         einsums/runtime/get_os_thread_count.hpp
         einsums/runtime/get_thread_name.hpp
+        einsums/runtime/get_worker_thread_num.hpp
         einsums/runtime/state.hpp
         einsums/runtime/report_error.hpp
         einsums/runtime/runtime.hpp
@@ -22,13 +23,8 @@ set(runtime_headers
         einsums/runtime/thread_pool_helpers.hpp
 )
 
-set(runtime_sources
-        custom_exception_info.cpp
-        debugging.cpp
-        runtime.cpp
-        runtime_handlers.cpp
-        state.cpp
-        thread_pool_helpers.cpp
+set(runtime_sources custom_exception_info.cpp debugging.cpp runtime.cpp runtime_handlers.cpp
+        state.cpp thread_pool_helpers.cpp
 )
 
 include(Einsums_AddModule)
