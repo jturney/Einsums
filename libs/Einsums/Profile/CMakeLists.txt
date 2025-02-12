@@ -10,7 +10,7 @@ set(ProfileHeaders Einsums/Profile/LabeledSection.hpp Einsums/Profile/Timer.hpp)
 set(ProfileSources Section.cpp Timer.cpp)
 
 if (EINSUMS_WITH_OMP_TOOLS_H)
-  list(APPEND ProfileSource OMPT.cpp)
+  list(APPEND ProfileSources OMPT.cpp)
 endif()
 
 include(Einsums_AddModule)

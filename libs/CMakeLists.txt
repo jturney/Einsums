@@ -60,7 +60,6 @@ set(einsums_libs_public_static SHARED)
 if (EINSUMS_WITH_COVERAGE)
   set(einsums_libs_public_static STATIC)
 endif ()
-set(einsums_libs_public_static STATIC)
 
 foreach(lib ${EINSUMS_LIBS})
   add_library(${lib} ${einsums_libs_public_static} src/dummy.cpp)
