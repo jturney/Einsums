@@ -19,10 +19,90 @@
 
 namespace einsums {
 
+namespace {
+
+ompt_set_callback_t  ompt_set_callback{nullptr};
+ompt_finalize_tool_t ompt_finalize_tool{nullptr};
+
+} // namespace
+
+int einsums_ompt_register(ompt_callbacks_t e, ompt_callback_t c, char const *name) {
+    ompt_set_result_t rc = ompt_set_callback(e, c);
+    switch (rc) {
+    case ompt_set_error:
+        println_warn("Failed to register OMPT callback {}!", name);
+        break;
+    case ompt_set_never:
+        println_warn("OMPT callback {} never supported by this runtime.", name);
+        break;
+    case ompt_set_impossible:
+        println_warn("OMPT callback {} impossible from this runtime", name);
+        break;
+    case ompt_set_sometimes:
+        println_warn("OMPT callback {} sometimes supported by this runtime", name);
+        break;
+    case ompt_set_sometimes_paired:
+        println_warn("OMPT callback {} sometimes paired by this runtime.", name);
+        break;
+    case ompt_set_always:
+    default:
+        break;
+    }
+    return 0;
+}
+
+void thread_begin(ompt_thread_t thread_type, ompt_data_t *thread_data) {
+    switch (thread_type) {
+    case ompt_thread_initial:
+        println("OpenMP Initial Thread {}", thread_data->ptr);
+        break;
+    case ompt_thread_worker:
+        println("OpenMP Worker Thread {}", thread_data->ptr);
+        break;
+    case ompt_thread_other:
+        println("OpenMP Other Thread {}", thread_data->ptr);
+        break;
+    case ompt_thread_unknown:
+        println("OpenMP Unknown Thread {}", thread_data->ptr);
+        break;
+    }
+}
+
+void thread_end(ompt_data_t *thread_data) {
+    printf("OpenMP Thread End %p\n", thread_data->ptr);
+}
+
+void parallel_begin(ompt_data_t        *encountering_task_data,  /* data of encountering task           */
+                    ompt_frame_t const *encountering_task_frame, /* frame data of encountering task     */
+                    ompt_data_t        *parallel_data,           /* data of parallel region             */
+                    unsigned int        requested_team_size,     /* requested number of threads in team */
+                    int                 flags,                   /* flags */
+                    void const         *codeptr_ra               /* return address of runtime call      */
+) {
+    EINSUMS_LOG_TRACE("OpenMP Parallel Region: Parallel Region Begin {}", requested_team_size);
+}
+
+void parallel_end(ompt_data_t *parallel_data,          /* data of parallel region             */
+                  ompt_data_t *encountering_task_data, /* data of encountering task           */
+                  int          flags,                  /* flags              */
+                  void const  *codeptr_ra              /* return address of runtime call      */
+) {
+    EINSUMS_LOG_TRACE("OpenMP Parallel Region: Parallel Region End");
+}
+
 int ompt_initialize(ompt_function_lookup_t lookup, int initial_device_num, ompt_data_t *tool_data) {
-    // It appears that the Einsums runtime is up and running at this point. But refrain from
-    // using Einsums printing routines just in case.
+    // It appears that the Einsums printing routines are available at this point. Logging is not
+    // available as the Einsums runtime isn't initialized yet.
     // println("Initializing OMPT");
+    ompt_finalize_tool = reinterpret_cast<ompt_finalize_tool_t>(lookup("ompt_finalize_tool"));
+    ompt_set_callback  = reinterpret_cast<ompt_set_callback_t>(lookup("ompt_set_callback"));
+
+    // Register mandatory events
+    einsums_ompt_register(ompt_callback_thread_begin, reinterpret_cast<ompt_callback_t>(thread_begin), "thread_begin");
+    einsums_ompt_register(ompt_callback_thread_end, reinterpret_cast<ompt_callback_t>(thread_end), "thread_end");
+    einsums_ompt_register(ompt_callback_parallel_begin, reinterpret_cast<ompt_callback_t>(parallel_begin), "parallel_begin");
+    einsums_ompt_register(ompt_callback_parallel_end, reinterpret_cast<ompt_callback_t>(parallel_end), "parallel_end");
+
     return 1;
 }
 

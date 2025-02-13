@@ -20,6 +20,11 @@ int einsums_main() {
 
     tensor_algebra::einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B);
 
+#pragma omp parallel for
+    for (int i = 0; i < 10; i++) {
+        println("Hello world {}", i);
+    }
+
     return finalize();
 }
 
