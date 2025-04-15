@@ -3,9 +3,30 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-set(TensorAlgebraTests Dot.cpp DotGPU.hip Einsum1.cpp Einsum2.cpp Einsum3.cpp Einsum4.cpp Einsum5.cpp Einsum6.cpp Einsum7.cpp Element.cpp
-Hadamard.cpp Indices.cpp KhatriRao.cpp MixedPrecision.cpp OuterProduct.cpp Sort.cpp Transpose.cpp UniquePointer.cpp
-GPUTensorAlgebra.hip GPUTensorAlgebraTasks.hip QChemTests.cpp TensorAlgebraTasks.cpp)
+set(TensorAlgebraTests
+    Dot.cpp
+    DotGPU.hip
+    Einsum1.cpp
+    Einsum2.cpp
+    Einsum3.cpp
+    Einsum4.cpp
+    Einsum5.cpp
+    Einsum6.cpp
+    Einsum7.cpp
+    Element.cpp
+    Hadamard.cpp
+    Indices.cpp
+    KhatriRao.cpp
+    MixedPrecision.cpp
+    OuterProduct.cpp
+    Sort.cpp
+    Transpose.cpp
+    UniquePointer.cpp
+    GPUTensorAlgebra.hip
+    GPUTensorAlgebraTasks.hip
+    QChemTests.cpp
+    TensorAlgebraTasks.cpp
+)
 
 file(GLOB __data_files data/water_sto3g/*)
 file(COPY ${__data_files} DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/data/water_sto3g)
@@ -31,11 +52,8 @@ foreach(test ${TensorAlgebraTests})
   source_group("Source Files" FILES ${Sources})
 
   einsums_add_executable(
-    ${TestName}_test
-    INTERNAL_FLAGS
-    SOURCES ${Sources}
-    ${${TestName}_${TestExtension}_FLAGS}
-    NOINSTALL
+    ${TestName}_test INTERNAL_FLAGS SOURCES ${Sources} ${${TestName}_${TestExtension}_FLAGS}
+                                            NOINSTALL
   )
 
   einsums_add_unit_test(
