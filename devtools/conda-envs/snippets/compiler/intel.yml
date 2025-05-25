@@ -5,3 +5,4 @@ channels:
 dependencies:
   - cxx-compiler
   - dpcpp_linux-64
+  - intel-openmp
