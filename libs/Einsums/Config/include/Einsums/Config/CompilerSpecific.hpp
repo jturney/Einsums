@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -11,16 +11,16 @@
 
 #if defined(__INTEL_LLVM_COMPILER) || defined(__INTEL_COMPILER)
 #    define EINSUMS_OMP_PARALLEL_FOR_SIMD _Pragma("omp parallel for simd")
-#    define EINSUMS_OMP_PARALLEL_FOR _Pragma("omp parallel for")
-#    define EINSUMS_OMP_SIMD         _Pragma("omp simd")
-#    define EINSUMS_OMP_PARALLEL     _Pragma("omp parallel")
-#    define EINSUMS_OMP_TASK_FOR     _Pragma("omp taskloop simd")
-#    define EINSUMS_OMP_TASK         _Pragma("omp task")
-#    define EINSUMS_OMP_FOR_NOWAIT   _Pragma("omp for nowait")
-#    define EINSUMS_OMP_CRITICAL     _Pragma("omp critical")
+#    define EINSUMS_OMP_PARALLEL_FOR      _Pragma("omp parallel for")
+#    define EINSUMS_OMP_SIMD              _Pragma("omp simd")
+#    define EINSUMS_OMP_PARALLEL          _Pragma("omp parallel")
+#    define EINSUMS_OMP_TASK_FOR          _Pragma("omp taskloop simd")
+#    define EINSUMS_OMP_TASK              _Pragma("omp task")
+#    define EINSUMS_OMP_FOR_NOWAIT        _Pragma("omp for nowait")
+#    define EINSUMS_OMP_CRITICAL          _Pragma("omp critical")
 #else
 #    define EINSUMS_OMP_PARALLEL_FOR_SIMD _Pragma("omp parallel for")
-#    define EINSUMS_OMP_PARALLEL_FOR _Pragma("omp parallel for")
+#    define EINSUMS_OMP_PARALLEL_FOR      _Pragma("omp parallel for")
 #    define EINSUMS_OMP_SIMD
 #    define EINSUMS_OMP_PARALLEL   _Pragma("omp parallel")
 #    define EINSUMS_OMP_TASK_FOR   _Pragma("omp taskloop")
@@ -38,6 +38,38 @@
 #endif
 
 #define EINSUMS_ALWAYS_INLINE __attribute__((always_inline)) inline
+
+#if defined(__GNUC__) || defined(__clang__)
+#    define EINSUMS_ASSUME_ALIGNED(ptr, alignment)                                                                                         \
+        ([](auto *p) -> decltype(p) {                                                                                                      \
+            static_assert(std::is_pointer_v<decltype(p)>, "ASSUME_ALIGNED expects a pointer");                                             \
+            assert(reinterpret_cast<std::uintptr_t>(p) % (alignment) == 0 && "Pointer is not properly aligned");                           \
+            return reinterpret_cast<decltype(p)>(__builtin_assume_aligned(p, alignment));                                                  \
+        }(ptr))
+#elif defined(_MSC_VER)
+#    define EINSUMS_ASSUME_ALIGNED(ptr, alignment)                                                                                         \
+        ([](auto *p) -> decltype(p) {                                                                                                      \
+            static_assert(std::is_pointer_v<decltype(p)>, "ASSUME_ALIGNED expects a pointer");                                             \
+            assert(reinterpret_cast<std::uintptr_t>(p) % (alignment) == 0 && "Pointer is not properly aligned");                           \
+            __assume(((uintptr_t)(p) & ((alignment) - 1)) == 0);                                                                           \
+            return p;                                                                                                                      \
+        }(ptr))
+#else
+#    define EINSUMS_ASSUME_ALIGNED(ptr, alignment)                                                                                         \
+        ([](auto *p) -> decltype(p) {                                                                                                      \
+            static_assert(std::is_pointer_v<decltype(p)>, "ASSUME_ALIGNED expects a pointer");                                             \
+            assert(reinterpret_cast<std::uintptr_t>(p) % (alignment) == 0 && "Pointer is not properly aligned");                           \
+            return p;                                                                                                                      \
+        }(ptr))
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#    define EINSUMS_RESTRICT __restrict__
+#elif defined(_MSC_VER)
+#    define EINSUMS_RESTRICT __restrict
+#else
+#    define EINSUMS_RESTRICT
+#endif
 
 // clang-format off
 #if defined(_MSC_VER)

@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #include <Einsums/Config.hpp>
 
@@ -11,6 +11,7 @@
 #include <Einsums/TypeSupport/Lockable.hpp>
 
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -153,10 +154,10 @@ RuntimeConfiguration::parse_command_line(std::function<void(argparse::ArgumentPa
     // Imperative that pre_initialize is called first as it is responsible for setting
     // default values. This is done in the constructor.
     // There should be a mechanism that allows the user to change the program name.
-    if (original[0].length() > 0) {
-        argument_parser.reset(new argparse::ArgumentParser(original[0]));
+    if (!original[0].empty()) {
+        argument_parser = std::make_unique<argparse::ArgumentParser>(original[0]);
     } else {
-        argument_parser.reset(new argparse::ArgumentParser("einsums"));
+        argument_parser = std::make_unique<argparse::ArgumentParser>("einsums");
     }
 
     /*
