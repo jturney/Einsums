@@ -31,8 +31,9 @@ foreach (example_program ${example_programs})
 
   target_compile_options(TA_${example_program} PRIVATE
           $<$<AND:$<CXX_COMPILER_ID:GNU>,$<CONFIG:Release>>:-march=native -mfma -ffast-math -mavx2>
-          $<$<AND:$<CXX_COMPILER_ID:Clang>,$<CONFIG:Release>>:-march=native -mfma -ffast-math -mavx2>
-          $<$<AND:$<CXX_COMPILER_ID:Intel>,$<CONFIG:Release>>:-xHost>
+          $<$<AND:$<CXX_COMPILER_ID:Clang>,$<CONFIG:Release>>:-march=native -march=core-avx2 -ffast-math>
+          $<$<AND:$<CXX_COMPILER_ID:Intel>,$<CONFIG:Release>>:-xHost -march=core-avx2 -ffast-math>
+          $<$<AND:$<CXX_COMPILER_ID:IntelLLVM>,$<CONFIG:Release>>:-xHost -march=core-avx2 -ffast-math>
           $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/arch:AVX>
   )
 
