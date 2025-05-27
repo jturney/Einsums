@@ -9,6 +9,7 @@ set(TensorUtilitiesHeaders
     Einsums/TensorUtilities/ARange.hpp
     Einsums/TensorUtilities/CreateIdentity.hpp
     Einsums/TensorUtilities/CreateIncrementedTensor.hpp
+    Einsums/TensorUtilities/CreateOnesTensor.hpp
     Einsums/TensorUtilities/CreateRandomDefinite.hpp
     Einsums/TensorUtilities/CreateRandomSemidefinite.hpp
     Einsums/TensorUtilities/CreateRandomTensor.hpp

@@ -14,7 +14,15 @@ else ()
   return()
 endif()
 
-set(example_programs Dot Packing)
+set(example_programs Dot Packing Packing2)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set(ASM_FLAG -S -masm=intel -fverbose-asm)
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+    set(ASM_FLAG -S -masm=intel)
+elseif(MSVC)
+    set(ASM_FLAG /FAcs)
+endif()
 
 foreach (example_program ${example_programs})
   set(sources ${example_program}.cpp)

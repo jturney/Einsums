@@ -244,7 +244,11 @@ int Runtime::run(std::function<EinsumsMainFunctionType> const &func) {
     // Once we start using a thread pool / threading manager we can
     // pass the function to the pool and have the manager handle it.
     EINSUMS_LOG_INFO("running user provided function");
-    int result = func();
+    auto result = func();
+
+    // The user should've called finalize in their function.
+    // If they didn't go a head and do it for them.
+    finalize();
 
     return result;
 }

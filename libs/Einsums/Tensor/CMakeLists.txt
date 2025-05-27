@@ -17,7 +17,7 @@ set(TensorHeaders
     Einsums/Tensor/TiledTensor.hpp
 )
 
-set(TensorSources TensorDefs.cpp Requirements.cpp)
+set(TensorSources Memory.cpp TensorDefs.cpp Requirements.cpp)
 
 if(EINSUMS_WITH_GPU_SUPPORT)
   set_source_files_properties(TensorDefs.cpp PROPERTIES LANGUAGE CXX)

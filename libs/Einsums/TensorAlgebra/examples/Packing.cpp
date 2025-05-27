@@ -69,10 +69,8 @@ void pack_matrix(double *EINSUMS_RESTRICT dest, double const *EINSUMS_RESTRICT s
     }
 }
 
-void tiled_packed_extracted_dgemm(int const n, double const *EINSUMS_RESTRICT A, double const *EINSUMS_RESTRICT B,
+void tiled_packed_extracted_dgemm(int const block_size, int const n, double const *EINSUMS_RESTRICT A, double const *EINSUMS_RESTRICT B,
                                   double *EINSUMS_RESTRICT C) {
-    int const block_size = 64;
-
     A = EINSUMS_ASSUME_ALIGNED(A, 32);
     B = EINSUMS_ASSUME_ALIGNED(B, 32);
     C = EINSUMS_ASSUME_ALIGNED(C, 32);
@@ -96,13 +94,13 @@ void tiled_packed_extracted_dgemm(int const n, double const *EINSUMS_RESTRICT A,
 
 struct Arguments {
     int n;
-    int batch_size;
+    int block_size;
 };
 
 int einsums_main(Arguments const &arguments) {
     using namespace einsums;
 
-    println("Arguments: n {} batch_size {}", arguments.n, arguments.batch_size);
+    println("Arguments: n {} block_size {}", arguments.n, arguments.block_size);
 
     size_t i = arguments.n;
 
@@ -114,12 +112,12 @@ int einsums_main(Arguments const &arguments) {
         // naive_dgemm(i, A.data(), B.data(), C.data());
     }
     {
-        profile::Timer t("tiled_dgemm");
-        tiled_dgemm(arguments.batch_size, i, A.data(), B.data(), C.data());
+        // profile::Timer t("tiled_dgemm");
+        // tiled_dgemm(arguments.block_size, i, A.data(), B.data(), C.data());
     }
     {
         profile::Timer t("tiled_packed_extracted_dgemm");
-        tiled_packed_extracted_dgemm(i, A.data(), B.data(), C.data());
+        tiled_packed_extracted_dgemm(arguments.block_size, i, A.data(), B.data(), C.data());
     }
     {
         profile::Timer t("BLAS");
@@ -133,8 +131,8 @@ int main(int argc, char **argv) {
     Arguments           arguments{};
     einsums::InitParams params{};
     params.register_arguments = [&arguments](argparse::ArgumentParser &parser) {
-        parser.add_argument("--n").default_value(4096).store_into(arguments.n);
-        parser.add_argument("--batch_size").default_value(128).store_into(arguments.batch_size);
+        parser.add_argument("--n").default_value(1024).store_into(arguments.n);
+        parser.add_argument("--block_size").default_value(128).store_into(arguments.block_size);
     };
 
     // Another alternative to use a lambda for func is to use std::bind.
