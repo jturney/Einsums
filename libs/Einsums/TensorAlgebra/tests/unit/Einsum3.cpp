@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 
@@ -125,6 +125,8 @@ TEMPLATE_TEST_CASE("einsum3", "[tensor_algebra]", float, double) {
         auto A  = create_random_tensor<TestType>("A", 3, 4, 5);
         auto B  = create_random_tensor<TestType>("B", 4, 3, 5);
 
+        C0.zero();
+        C1.zero();
         // profile::push("einsum: 3x5 <- 3x4x5 * 4x3x5");
         REQUIRE_NOTHROW(einsum(Indices{i, l}, &C0, Indices{i, j, k}, A, Indices{j, i, k}, B));
         // profile::pop();
@@ -146,8 +148,8 @@ TEMPLATE_TEST_CASE("einsum3", "[tensor_algebra]", float, double) {
 
         for (size_t i0 = 0; i0 < 3; i0++) {
             for (size_t j0 = 0; j0 < 5; j0++) {
-                // REQUIRE(C0(i0, j0) == C1(i0, j0));?
-                REQUIRE_THAT(C0(i0, j0), Catch::Matchers::WithinRel(C1(i0, j0), TestType{0.0001}));
+                // REQUIRE(C0(i0, j0) == C1(i0, j0));
+                CHECK_THAT(C0(i0, j0), Catch::Matchers::WithinRel(C1(i0, j0), TestType{0.0001}));
             }
         }
     }

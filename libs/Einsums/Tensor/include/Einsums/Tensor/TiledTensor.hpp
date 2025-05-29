@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -1731,13 +1731,13 @@ struct TiledDeviceTensorView final : public tensor_base::TiledTensor<T, Rank, De
     }
 };
 
-TENSOR_EXPORT(TiledDeviceTensor)
-TENSOR_EXPORT(TiledDeviceTensorView)
+// EINSUMS_TENSOR_EXPORT(TiledDeviceTensor)
+// EINSUMS_TENSOR_EXPORT(TiledDeviceTensorView)
 
 #endif
 
-TENSOR_EXPORT(TiledTensor)
-TENSOR_EXPORT(TiledTensorView)
+EINSUMS_TENSOR_EXPORT(TiledTensor)
+EINSUMS_TENSOR_EXPORT(TiledTensorView)
 
 /**
  * Prints a TiledTensor to standard output.

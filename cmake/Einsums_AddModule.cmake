@@ -13,6 +13,7 @@ function(einsums_add_module libname modulename)
   set(one_value_args BASE_LIBNAME)
   set(multi_value_args
       SOURCES
+      GENERATED_SOURCES
       HEADERS
       OBJECTS
       PRIVATE_DEPENDENCIES
@@ -126,6 +127,7 @@ function(einsums_add_module libname modulename)
 
   # create library modules
   add_library(${libname}_${modulename} ${module_library_type} ${sources} ${${modulename}_OBJECTS})
+  target_sources(${libname}_${modulename} PRIVATE ${${modulename}_GENERATED_SOURCES})
   einsums_append_coverage_compiler_flags_to_target(${libname}_${modulename} ${module_public_keyword})
 
   if(EINSUMS_WITH_CHECK_MODULE_DEPENDENCIES)

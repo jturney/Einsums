@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -2342,9 +2342,9 @@ void println(AType const &A, TensorPrintOptions options) {
     fprintln(std::cout, A, options);
 }
 
-TENSOR_EXPORT_RANK(Tensor, 0)
-TENSOR_EXPORT(Tensor)
-TENSOR_EXPORT(TensorView)
+EINSUMS_TENSOR_EXPORT_RANK(Tensor, 0)
+EINSUMS_TENSOR_EXPORT(Tensor)
+EINSUMS_TENSOR_EXPORT(TensorView)
 #endif
 
 } // namespace einsums

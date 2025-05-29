@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 /**
  * @file BlockTensor.hpp
@@ -1590,14 +1590,14 @@ void fprintln(std::ostream &os, AType const &A, TensorPrintOptions options = {})
     }
 }
 
-TENSOR_EXPORT_RANK(BlockTensor, 2)
-TENSOR_EXPORT_RANK(BlockTensor, 3)
-TENSOR_EXPORT_RANK(BlockTensor, 4)
+EINSUMS_TENSOR_EXPORT_RANK(BlockTensor, 2)
+EINSUMS_TENSOR_EXPORT_RANK(BlockTensor, 3)
+EINSUMS_TENSOR_EXPORT_RANK(BlockTensor, 4)
 
 #    ifdef EINSUMS_COMPUTE_CODE
-TENSOR_EXPORT_RANK(BlockDeviceTensor, 2)
-TENSOR_EXPORT_RANK(BlockDeviceTensor, 3)
-TENSOR_EXPORT_RANK(BlockDeviceTensor, 4)
+// EINSUMS_TENSOR_EXPORT_RANK(BlockDeviceTensor, 2)
+// EINSUMS_TENSOR_EXPORT_RANK(BlockDeviceTensor, 3)
+// EINSUMS_TENSOR_EXPORT_RANK(BlockDeviceTensor, 4)
 #    endif
 
 #endif

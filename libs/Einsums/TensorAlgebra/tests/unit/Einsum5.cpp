@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 
@@ -16,8 +16,8 @@ TEMPLATE_TEST_CASE("einsum5", "[tensor_algebra]", float, double) {
         // This one is to represent a two-electron integral transformation
         auto gMO0 = create_tensor<TestType>("g0", 3, 3, 3, 3);
         auto gMO1 = create_tensor<TestType>("g1", 3, 3, 3, 3);
-        // zero(gMO0);
-        // zero(gMO1);
+        zero(gMO0);
+        zero(gMO1);
         auto A = create_random_tensor<TestType>("A", 3, 3, 3, 3);
         auto B = create_random_tensor<TestType>("B", 3, 3);
 

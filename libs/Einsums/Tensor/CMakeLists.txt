@@ -37,10 +37,40 @@ if(EINSUMS_WITH_GPU_SUPPORT)
 endif()
 endif()
 
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+# Path
+set(GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+file(MAKE_DIRECTORY ${GENERATED_DIR})
+set(GENERATED_STAMP ${GENERATED_DIR}/GeneratedInstantiations.stamp)
+
+# 2. Capture the output of the generation command
+execute_process(
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/cmake/scripts/generate_instantiations.py --output_dir ${GENERATED_DIR} ${TensorHeaders} --list_files
+        OUTPUT_VARIABLE FILES_OUTPUT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+string(REPLACE "\n" ";" GENERATED_FILES_OUTPUT "${FILES_OUTPUT}")
+
+# 1. Define the generation command
+add_custom_command(
+        OUTPUT ${GENERATED_FILES_OUTPUT}
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/cmake/scripts/generate_instantiations.py
+            --output_dir ${GENERATED_DIR}
+            ${TensorHeaders}
+        DEPENDS ${CMAKE_SOURCE_DIR}/cmake/scripts/generate_instantiations.py
+        COMMENT "Regenerating template instantiations"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+add_custom_target(generate_tensor_instantiations DEPENDS ${GENERATED_FILE_OUTPUT})
+
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums Tensor
   SOURCES ${TensorSources}
+  GENERATED_SOURCES ${GENERATED_FILES_OUTPUT}
   HEADERS ${TensorHeaders}
   DEPENDENCIES Einsums::h5cpp ${TensorGPUDeps}
   MODULE_DEPENDENCIES
@@ -58,3 +88,5 @@ einsums_add_module(
     ${TensorGPUModules}
   CMAKE_SUBDIRS examples tests
 )
+
+add_dependencies(Einsums_Tensor generate_tensor_instantiations)

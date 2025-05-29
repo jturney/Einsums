@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 
@@ -38,6 +38,8 @@ TEMPLATE_TEST_CASE("einsum4", "[tensor_algebra]", float, double) {
         auto A    = create_random_tensor<TestType>("A", 3, 3, 3, 3);
         auto B    = create_random_tensor<TestType>("B", 3, 3);
 
+        gMO0.zero();
+        gMO1.zero();
         REQUIRE_NOTHROW(einsum(Indices{i, j, k, l}, &gMO0, Indices{i, j, k, p}, A, Indices{p, l}, B));
 
         for (size_t i0 = 0; i0 < gMO0.dim(0); i0++) {

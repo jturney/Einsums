@@ -1,3 +1,8 @@
+//----------------------------------------------------------------------------------------------
+// Copyright (c) The Einsums Developers. All rights reserved.
+// Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+//----------------------------------------------------------------------------------------------
+
 #pragma once
 
 #include <Einsums/Config.hpp>
@@ -2236,14 +2241,14 @@ void println(AType const &A, einsums::TensorPrintOptions options = {}) {
 #endif
 
 #if !defined(EINSUMS_WINDOWS) && !defined(DOXYGEN)
-extern template class EINSUMS_EXPORT RuntimeTensor<float>;
-extern template class EINSUMS_EXPORT RuntimeTensor<double>;
-extern template class EINSUMS_EXPORT RuntimeTensor<std::complex<float>>;
-extern template class EINSUMS_EXPORT RuntimeTensor<std::complex<double>>;
+EINSUMS_TENSOR_EXPORT_T(RuntimeTensor, float);
+EINSUMS_TENSOR_EXPORT_T(RuntimeTensor, double);
+EINSUMS_TENSOR_EXPORT_T(RuntimeTensor, std::complex<float>);
+EINSUMS_TENSOR_EXPORT_T(RuntimeTensor, std::complex<double>);
 
-extern template class EINSUMS_EXPORT RuntimeTensorView<float>;
-extern template class EINSUMS_EXPORT RuntimeTensorView<double>;
-extern template class EINSUMS_EXPORT RuntimeTensorView<std::complex<float>>;
-extern template class EINSUMS_EXPORT RuntimeTensorView<std::complex<double>>;
+EINSUMS_TENSOR_EXPORT_T(RuntimeTensorView, float);
+EINSUMS_TENSOR_EXPORT_T(RuntimeTensorView, double);
+EINSUMS_TENSOR_EXPORT_T(RuntimeTensorView, std::complex<float>);
+EINSUMS_TENSOR_EXPORT_T(RuntimeTensorView, std::complex<double>);
 #endif
 } // namespace einsums

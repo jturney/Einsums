@@ -712,9 +712,9 @@ auto create_disk_tensor_like(h5::fd_t &file, Tensor<T, Rank> const &tensor) -> D
 
 #ifndef DOXYGEN
 
-TENSOR_EXPORT(DiskTensor)
+EINSUMS_TENSOR_EXPORT(DiskTensor)
 
-TENSOR_EXPORT_DISK_VIEW(DiskView)
+EINSUMS_TENSOR_EXPORT_DISK_VIEW(DiskView)
 
 #endif
 
