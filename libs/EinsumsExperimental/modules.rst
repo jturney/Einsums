@@ -12,3 +12,4 @@ EinsumsExperimental Modules
     :maxdepth: 2
 
     /libs/EinsumsExperimental/Graph/docs/index.rst
+    /libs/EinsumsExperimental/Topology/docs/index.rst

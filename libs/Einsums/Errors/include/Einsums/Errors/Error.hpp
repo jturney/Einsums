@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -120,6 +120,10 @@ struct EINSUMS_EXPORT too_many_args : num_argument_error {
     using num_argument_error::num_argument_error;
 };
 
+struct EINSUMS_EXPORT bad_parameter : std::invalid_argument {
+    using std::invalid_argument::invalid_argument;
+};
+
 /**
  * @struct access_denied
  *
@@ -173,6 +177,15 @@ struct EINSUMS_EXPORT uninitialized_error : std::runtime_error {
  * Indicates that an error happened when making a system call.
  */
 struct EINSUMS_EXPORT system_error : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+/**
+ * @struct no_success
+ *
+ * Indicates that an error happened when calling some library function.
+ */
+struct EINSUMS_EXPORT no_success : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
@@ -241,9 +254,9 @@ struct hip_exception : std::exception {
      */
     bool operator!=(hipError_t other) const { return error != other; }
 
-    template<hipError_t error2>
+    template <hipError_t error2>
     friend bool operator==(hipError_t, hip_exception<error2> const &);
-    template<hipError_t error2>
+    template <hipError_t error2>
     friend bool operator!=(hipError_t, hip_exception<error2> const &);
 };
 
@@ -401,9 +414,9 @@ struct EINSUMS_EXPORT hipblas_exception : std::exception {
      */
     bool operator!=(hipblasStatus_t other) const { return error != other; }
 
-    template<hipblasStatus_t error2>
+    template <hipblasStatus_t error2>
     friend bool operator==(hipblasStatus_t, hipblas_exception<error2> const &);
-    template<hipblasStatus_t error2>
+    template <hipblasStatus_t error2>
     friend bool operator!=(hipblasStatus_t, hipblas_exception<error2> const &);
 };
 
@@ -699,9 +712,9 @@ struct EINSUMS_EXPORT hipsolver_exception : std::exception {
      */
     bool operator!=(hipsolverStatus_t other) const { return error != other; }
 
-    template<hipsolverStatus_t error2>
+    template <hipsolverStatus_t error2>
     friend bool operator==(hipsolverStatus_t, hipsolver_exception<error2> const &);
-    template<hipsolverStatus_t error2>
+    template <hipsolverStatus_t error2>
     friend bool operator!=(hipsolverStatus_t, hipsolver_exception<error> const &);
 };
 

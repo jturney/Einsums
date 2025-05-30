@@ -19,8 +19,8 @@
       <option name="separateBefore" value="true" />
       <option name="separateAfter" value="true" />
       <option name="prefixLines" value="false" />
-      <option name="lenBefore" value="94" />
-      <option name="lenAfter" value="94" />
+      <option name="lenBefore" value="96" />
+      <option name="lenAfter" value="96" />
       <option name="filler" value="-" />
     </LanguageOptions>
   </settings>

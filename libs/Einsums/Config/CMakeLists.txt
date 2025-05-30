@@ -10,7 +10,8 @@ set(ConfigHeaders
     Einsums/Config/Alias.hpp
     Einsums/Config/BranchHints.hpp
     Einsums/Config/CompilerSpecific.hpp
-        Einsums/Config/Debug.hpp
+    Einsums/Config/Debug.hpp
+    Einsums/Config/Deleted.hpp
     Einsums/Config/ExportDefinitions.hpp
     Einsums/Config/ForceInline.hpp
     Einsums/Config/Namespace.hpp

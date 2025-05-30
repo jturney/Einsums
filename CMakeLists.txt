@@ -370,6 +370,33 @@ einsums_option(
   ADVANCED
 )
 
+# Thread Manager related build options
+set(EINSUMS_MAX_CPU_COUNT_DEFAULT "64")
+einsums_option(
+        EINSUMS_WITH_MAX_CPU_COUNT
+        STRING
+        "einsums applications will not use more than this number of OS-threads (default: \"${EINSUMS_MAX_CPU_COUNT_DEFAULT}\")"
+        "${EINSUMS_MAX_CPU_COUNT_DEFAULT}"
+        CATEGORY "Thread Manager"
+        ADVANCED
+)
+einsums_add_config_define(EINSUMS_HAVE_MAX_CPU_COUNT ${EINSUMS_WITH_MAX_CPU_COUNT})
+if (EINSUMS_WITH_MAX_CPU_COUNT GREATER 64)
+  einsums_add_config_define(EINSUMS_HAVE_MORE_THAN_64_THREADS)
+endif()
+
+# Threadlevel Nice option
+einsums_option(
+        EINSUMS_WITH_NICE_THREADLEVEL BOOL
+        "Set einsums worker threads to have high NICE level (may impact performance) (default: OFF)" OFF ADVANCED
+)
+if (EINSUMS_WITH_NICE_THREADLEVEL)
+  einsums_info("Nice threadlevel is enabled.")
+  einsums_add_config_define(EINSUMS_HAVE_NICE_THREADLEVEL)
+else()
+  einsums_info("Nice threadlevel is disabled.")
+endif()
+
 # ##################################################################################################
 # We create a target to contain libraries like rt, dl, etc. in order to remove variables
 add_library(einsums_base_libraries INTERFACE)
@@ -713,6 +740,7 @@ include(Einsums_SetupH5cpp)
 include(Einsums_SetupArgparse)
 include(Einsums_SetupSpdlog)
 include(Einsums_SetupAllocator)
+include(Einsums_SetupHwloc)
 
 if(EINSUMS_USE_LIBRETT AND EINSUMS_WITH_GPU_SUPPORT)
   include(Einsums_SetupLibreTT)

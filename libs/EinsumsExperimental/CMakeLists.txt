@@ -10,6 +10,7 @@ include(Einsums_Message)
 # cmake-format: off
 set(_EinsumsExperimental_modules
   Graph
+  Topology
   )
 # cmake-format: on
 

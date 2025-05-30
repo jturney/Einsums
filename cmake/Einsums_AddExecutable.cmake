@@ -12,7 +12,7 @@ function(einsums_add_executable name)
       HEADER_ROOT
       SOURCE_GLOB
       HEADER_GLOB
-          OUTPUT_NAME
+      OUTPUT_NAME
       OUTPUT_SUFFIX
       INSTALL_SUFFIX
       LANGUAGE

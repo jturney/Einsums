@@ -14,6 +14,7 @@ set(TypeSupportHeaders
     Einsums/TypeSupport/TypeName.hpp
     Einsums/TypeSupport/Lockable.hpp
     Einsums/TypeSupport/Singleton.hpp
+    Einsums/TypeSupport/Unused.hpp
 )
 
 set(TypeSupportSources)
