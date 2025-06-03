@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
-// Copyright (c) The Einsums Developers. All Rights Reserved.
+//----------------------------------------------------------------------------------------------
+// Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -21,15 +21,15 @@
 
 namespace einsums {
 
-int setup_EinsumsExperimental_Topology();
+int setup_EinsumsExperimental_Hardware();
 
-void add_EinsumsExperimental_Topology_arguments(argparse::ArgumentParser &);
-void initialize_EinsumsExperimental_Topology();
-void finalize_EinsumsExperimental_Topology();
+void add_EinsumsExperimental_Hardware_arguments(argparse::ArgumentParser &);
+void initialize_EinsumsExperimental_Hardware();
+void finalize_EinsumsExperimental_Hardware();
 
 namespace detail {
 
-static int initialize_module_EinsumsExperimental_Topology = setup_EinsumsExperimental_Topology();
+static int initialize_module_EinsumsExperimental_Hardware = setup_EinsumsExperimental_Hardware();
 
 }
-}
+} // namespace einsums

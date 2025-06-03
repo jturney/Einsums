@@ -22,6 +22,7 @@ set(_Einsums_modules
   FFT
   GPUMemory
   GPUStreams
+  Hardware
   HPTT
   Iterator
   LinearAlgebra

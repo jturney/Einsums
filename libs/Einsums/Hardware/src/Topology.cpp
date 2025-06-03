@@ -7,9 +7,9 @@
 
 #include <Einsums/Assert.hpp>
 #include <Einsums/Errors.hpp>
+#include <Einsums/Hardware/CPUMask.hpp>
+#include <Einsums/Hardware/Topology.hpp>
 #include <Einsums/Logging.hpp>
-#include <Einsums/Topology/CPUMask.hpp>
-#include <Einsums/Topology/Topology.hpp>
 #include <Einsums/TypeSupport/Unused.hpp>
 
 #include <fmt/ostream.h>
@@ -43,7 +43,7 @@
 #    include <unistd.h>
 #endif
 
-namespace einsums::topology::detail {
+namespace einsums::hardware {
 
 void write_to_log(char const *valuename, std::size_t value) {
     EINSUMS_LOG_DEBUG("topology: {}: {}", valuename, value);
@@ -225,34 +225,34 @@ Topology::Topology() : _topology(nullptr), _use_pus_as_cores(false), _machine_af
     _main_thread_affinity_mask = get_cpubind_mask();
 }
 
-void Topology::write_to_log() {
+void Topology::write_to_log() const {
     std::size_t num_of_sockets = get_number_of_sockets();
     if (num_of_sockets == 0)
         num_of_sockets = 1;
-    detail::write_to_log("num_sockets", num_of_sockets);
+    hardware::write_to_log("num_sockets", num_of_sockets);
 
     std::size_t num_of_nodes = get_number_of_numa_nodes();
     if (num_of_nodes == 0)
         num_of_nodes = 1;
-    detail::write_to_log("num_of_nodes", num_of_nodes);
+    hardware::write_to_log("num_of_nodes", num_of_nodes);
 
     std::size_t num_of_cores = get_number_of_cores();
     if (num_of_cores == 0)
         num_of_cores = 1;
-    detail::write_to_log("num_of_cores", num_of_cores);
+    hardware::write_to_log("num_of_cores", num_of_cores);
 
-    detail::write_to_log("num_of_pus", _num_of_pus);
+    hardware::write_to_log("num_of_pus", _num_of_pus);
 
-    detail::write_to_log("socket_number", _socket_numbers);
-    detail::write_to_log("numa_node_number", _numa_node_numbers);
-    detail::write_to_log("core_number", _core_numbers);
+    hardware::write_to_log("socket_number", _socket_numbers);
+    hardware::write_to_log("numa_node_number", _numa_node_numbers);
+    hardware::write_to_log("core_number", _core_numbers);
 
-    detail::write_to_log_mask("machine_affinity_mask", _machine_affinity_mask);
+    hardware::write_to_log_mask("machine_affinity_mask", _machine_affinity_mask);
 
-    detail::write_to_log_mask("socket_affinity_mask", _socket_affinity_masks);
-    detail::write_to_log_mask("numa_node_affinity_mask", _numa_node_affinity_masks);
-    detail::write_to_log_mask("core_affinity_mask", _core_affinity_masks);
-    detail::write_to_log_mask("thread_affinity_mask", _thread_affinity_masks);
+    hardware::write_to_log_mask("socket_affinity_mask", _socket_affinity_masks);
+    hardware::write_to_log_mask("numa_node_affinity_mask", _numa_node_affinity_masks);
+    hardware::write_to_log_mask("core_affinity_mask", _core_affinity_masks);
+    hardware::write_to_log_mask("thread_affinity_mask", _thread_affinity_masks);
 }
 
 Topology::~Topology() {
@@ -344,7 +344,7 @@ void Topology::set_thread_affinity_mask(MaskCRefType mask) {
     for (std::size_t i = 0; i != mask_size(mask); ++i) {
         if (test(mask, i)) {
             hwloc_obj_t const pu_obj = hwloc_get_obj_by_depth(_topology, pu_depth, unsigned(i));
-            EINSUMS_ASSERT(i == detail::get_index(pu_obj));
+            EINSUMS_ASSERT(i == hardware::get_index(pu_obj));
             hwloc_bitmap_set(cpuset, static_cast<unsigned int>(pu_obj->os_index));
         }
     }
@@ -403,7 +403,7 @@ auto Topology::get_thread_affinity_mask_from_lva(void const *lva) -> MaskType {
                 hwloc_obj_t const pu_obj = hwloc_get_obj_by_depth(_topology, pu_depth, i);
                 unsigned          idx    = static_cast<unsigned>(pu_obj->os_index);
                 if (hwloc_bitmap_isset(cpuset, idx) != 0)
-                    set(mask, detail::get_index(pu_obj));
+                    set(mask, hardware::get_index(pu_obj));
             }
 
             hwloc_bitmap_free(cpuset);
@@ -431,7 +431,7 @@ auto Topology::init_numa_node_number(std::size_t num_thread) -> std::size_t {
     {
         std::unique_lock lk(_topology_mutex);
         obj = hwloc_get_obj_by_type(_topology, HWLOC_OBJ_PU, static_cast<unsigned>(num_pu));
-        EINSUMS_ASSERT(num_pu == detail::get_index(obj));
+        EINSUMS_ASSERT(num_pu == hardware::get_index(obj));
     }
 
     hwloc_obj_t tmp = nullptr;
@@ -459,12 +459,12 @@ auto Topology::init_node_number(std::size_t num_thread, hwloc_obj_type_t type) -
         {
             std::unique_lock lk(_topology_mutex);
             obj = hwloc_get_obj_by_type(_topology, HWLOC_OBJ_PU, static_cast<unsigned>(num_pu));
-            EINSUMS_ASSERT(num_pu == detail::get_index(obj));
+            EINSUMS_ASSERT(num_pu == hardware::get_index(obj));
         }
 
         while (obj) {
             if (hwloc_compare_types(obj->type, type) == 0) {
-                return detail::get_index(obj);
+                return hardware::get_index(obj);
             }
             obj = obj->parent;
         }
@@ -484,7 +484,7 @@ void Topology::extract_node_mask(hwloc_obj_t parent, MaskType &mask) {
     while (obj) {
         if (hwloc_compare_types(HWLOC_OBJ_PU, obj->type) == 0) {
             do {
-                set(mask, detail::get_index(obj)); //-V106
+                set(mask, hardware::get_index(obj)); //-V106
                 {
                     std::unique_lock lk(_topology_mutex);
                     obj = hwloc_get_next_child(_topology, parent, obj);
@@ -594,7 +594,7 @@ std::size_t Topology::get_number_of_socket_pus(std::size_t num_socket) {
     }
 
     if (socket_obj) {
-        EINSUMS_ASSERT(num_socket == detail::get_index(socket_obj));
+        EINSUMS_ASSERT(num_socket == hardware::get_index(socket_obj));
         std::size_t pu_count = 0;
         return extract_node_count(socket_obj, HWLOC_OBJ_PU, pu_count);
     }
@@ -611,9 +611,9 @@ std::size_t Topology::get_number_of_numa_node_pus(std::size_t numa_node) {
     }
 
     if (node_obj) {
-        EINSUMS_ASSERT(numa_node == detail::get_index(node_obj));
+        EINSUMS_ASSERT(numa_node == hardware::get_index(node_obj));
         std::size_t pu_count = 0;
-        node_obj             = detail::adjust_node_obj(node_obj);
+        node_obj             = hardware::adjust_node_obj(node_obj);
         return extract_node_count(node_obj, HWLOC_OBJ_PU, pu_count);
     }
 
@@ -629,7 +629,7 @@ std::size_t Topology::get_number_of_core_pus(std::size_t core) {
     }
 
     if (!_use_pus_as_cores && core_obj) {
-        EINSUMS_ASSERT(core == detail::get_index(core_obj));
+        EINSUMS_ASSERT(core == hardware::get_index(core_obj));
         std::size_t pu_count = 0;
         return extract_node_count(core_obj, HWLOC_OBJ_PU, pu_count);
     }
@@ -646,7 +646,7 @@ std::size_t Topology::get_number_of_socket_cores(std::size_t num_socket) {
     }
 
     if (socket_obj) {
-        EINSUMS_ASSERT(num_socket == detail::get_index(socket_obj));
+        EINSUMS_ASSERT(num_socket == hardware::get_index(socket_obj));
         std::size_t pu_count = 0;
         return extract_node_count(socket_obj, _use_pus_as_cores ? HWLOC_OBJ_PU : HWLOC_OBJ_CORE, pu_count);
     }
@@ -662,16 +662,16 @@ std::size_t Topology::get_number_of_numa_node_cores(std::size_t numa_node) {
     }
 
     if (node_obj) {
-        EINSUMS_ASSERT(numa_node == detail::get_index(node_obj));
+        EINSUMS_ASSERT(numa_node == hardware::get_index(node_obj));
         std::size_t pu_count = 0;
-        node_obj             = detail::adjust_node_obj(node_obj);
+        node_obj             = hardware::adjust_node_obj(node_obj);
         return extract_node_count(node_obj, _use_pus_as_cores ? HWLOC_OBJ_PU : HWLOC_OBJ_CORE, pu_count);
     }
 
     return get_number_of_cores();
 }
 
-HwlocBitmapPtr Topology::cpuset_to_nodeset(MaskCRefType mask) {
+HwlocBitmapPtr Topology::cpuset_to_nodeset(MaskCRefType mask) const {
     hwloc_bitmap_t cpuset  = mask_to_bitmap(mask, HWLOC_OBJ_PU);
     hwloc_bitmap_t nodeset = hwloc_bitmap_alloc();
 #if HWLOC_API_VERSION >= 0x0002'0000
@@ -732,7 +732,7 @@ void Topology::print_affinity_mask(std::ostream &os, std::size_t num_thread, Mas
             return;
         }
 
-        if (!test(m, detail::get_index(obj))) //-V106
+        if (!test(m, hardware::get_index(obj))) //-V106
             continue;
 
         if (first) {
@@ -742,10 +742,10 @@ void Topology::print_affinity_mask(std::ostream &os, std::size_t num_thread, Mas
             os << "      ";
         }
 
-        detail::print_info(os, obj);
+        hardware::print_info(os, obj);
 
         while (obj->parent) {
-            detail::print_info(os, obj->parent, true);
+            hardware::print_info(os, obj->parent, true);
             obj = obj->parent;
         }
 
@@ -786,7 +786,7 @@ MaskType Topology::init_socket_affinity_mask_from_socket(std::size_t num_socket)
     }
 
     if (socket_obj) {
-        EINSUMS_ASSERT(num_socket == detail::get_index(socket_obj));
+        EINSUMS_ASSERT(num_socket == hardware::get_index(socket_obj));
 
         MaskType socket_affinity_mask = MaskType();
         resize(socket_affinity_mask, get_number_of_pus());
@@ -812,11 +812,11 @@ MaskType Topology::init_numa_node_affinity_mask_from_numa_node(std::size_t numa_
     }
 
     if (numa_node_obj) {
-        EINSUMS_ASSERT(numa_node == detail::get_index(numa_node_obj));
+        EINSUMS_ASSERT(numa_node == hardware::get_index(numa_node_obj));
         MaskType node_affinity_mask = MaskType();
         resize(node_affinity_mask, get_number_of_pus());
 
-        numa_node_obj = detail::adjust_node_obj(numa_node_obj);
+        numa_node_obj = hardware::adjust_node_obj(numa_node_obj);
         extract_node_mask(numa_node_obj, node_affinity_mask);
         return node_affinity_mask;
     }
@@ -839,7 +839,7 @@ MaskType Topology::init_core_affinity_mask_from_core(std::size_t core, MaskCRefT
     }
 
     if (core_obj) {
-        EINSUMS_ASSERT(num_core == detail::get_index(core_obj));
+        EINSUMS_ASSERT(num_core == hardware::get_index(core_obj));
         MaskType core_affinity_mask = MaskType();
         resize(core_affinity_mask, get_number_of_pus());
 
@@ -869,11 +869,11 @@ MaskType Topology::init_thread_affinity_mask(std::size_t num_thread) {
         return get_core_affinity_mask(num_thread);
     }
 
-    EINSUMS_ASSERT(num_pu == detail::get_index(obj));
+    EINSUMS_ASSERT(num_pu == hardware::get_index(obj));
     MaskType mask = MaskType();
     resize(mask, get_number_of_pus());
 
-    set(mask, detail::get_index(obj)); //-V106
+    set(mask, hardware::get_index(obj)); //-V106
 
     return mask;
 }
@@ -903,16 +903,16 @@ MaskType Topology::init_thread_affinity_mask(std::size_t num_core, std::size_t n
     if (!obj)
         return empty_mask; // get_core_affinity_mask(num_thread, false);
 
-    EINSUMS_ASSERT(num_core == detail::get_index(obj));
+    EINSUMS_ASSERT(num_core == hardware::get_index(obj));
 
     MaskType mask = MaskType();
     resize(mask, get_number_of_pus());
 
     if (_use_pus_as_cores) {
-        set(mask, detail::get_index(obj)); //-V106
+        set(mask, hardware::get_index(obj)); //-V106
     } else {
-        num_pu %= obj->arity;                                //-V101 //-V104
-        set(mask, detail::get_index(obj->children[num_pu])); //-V106
+        num_pu %= obj->arity;                                  //-V101 //-V104
+        set(mask, hardware::get_index(obj->children[num_pu])); //-V106
     }
 
     return mask;
@@ -986,11 +986,11 @@ void Topology::set_cpubind_mask_main_thread(MaskType mask) {
         for (unsigned int i = 0; i != get_number_of_pus(); ++i) {
             hwloc_obj_t const pu_obj = hwloc_get_obj_by_depth(_topology, pu_depth, i);
             unsigned          idx    = static_cast<unsigned>(pu_obj->os_index);
-            EINSUMS_ASSERT(i == detail::get_index(pu_obj));
+            EINSUMS_ASSERT(i == hardware::get_index(pu_obj));
             EINSUMS_ASSERT(idx < mask_size(mask));
-            EINSUMS_ASSERT(detail::get_index(pu_obj) < mask_size(logical_mask));
+            EINSUMS_ASSERT(hardware::get_index(pu_obj) < mask_size(logical_mask));
             if (test(mask, idx)) {
-                set(logical_mask, detail::get_index(pu_obj));
+                set(logical_mask, hardware::get_index(pu_obj));
             }
         }
     }
@@ -1020,7 +1020,7 @@ MaskType Topology::get_cpubind_mask() {
             hwloc_obj_t const pu_obj = hwloc_get_obj_by_depth(_topology, pu_depth, i);
             unsigned          idx    = static_cast<unsigned>(pu_obj->os_index);
             if (hwloc_bitmap_isset(cpuset, idx) != 0)
-                set(mask, detail::get_index(pu_obj));
+                set(mask, hardware::get_index(pu_obj));
         }
     }
 #endif // __APPLE__
@@ -1055,7 +1055,7 @@ MaskType Topology::get_cpubind_mask(std::thread &handle) {
             hwloc_obj_t const pu_obj = hwloc_get_obj_by_depth(_topology, pu_depth, i);
             unsigned          idx    = static_cast<unsigned>(pu_obj->os_index);
             if (hwloc_bitmap_isset(cpuset, idx) != 0)
-                set(mask, detail::get_index(pu_obj));
+                set(mask, hardware::get_index(pu_obj));
         }
     }
 
@@ -1167,7 +1167,7 @@ int Topology::get_numa_domain(void const *addr) {
     }
 
     MaskType mask = bitmap_to_mask(ns, HWLOC_OBJ_NUMANODE);
-    return static_cast<int>(detail::find_first(mask));
+    return static_cast<int>(hardware::find_first(mask));
 #else
     EINSUMS_UNUSED(addr);
     return 0;
@@ -1189,7 +1189,7 @@ hwloc_bitmap_t Topology::mask_to_bitmap(MaskCRefType mask, hwloc_obj_type_t htyp
     for (std::size_t i = 0; i != mask_size(mask); ++i) {
         if (test(mask, i)) {
             hwloc_obj_t const hw_obj = hwloc_get_obj_by_depth(_topology, depth, unsigned(i));
-            EINSUMS_ASSERT(i == detail::get_index(hw_obj));
+            EINSUMS_ASSERT(i == hardware::get_index(hw_obj));
             hwloc_bitmap_set(bitmap, static_cast<unsigned int>(hw_obj->os_index));
         }
     }
@@ -1208,7 +1208,7 @@ MaskType Topology::bitmap_to_mask(hwloc_bitmap_t bitmap, hwloc_obj_type_t htype)
         hwloc_obj_t const pu_obj = hwloc_get_obj_by_depth(_topology, pu_depth, i);
         unsigned          idx    = static_cast<unsigned>(pu_obj->os_index);
         if (hwloc_bitmap_isset(bitmap, idx) != 0)
-            set(mask, detail::get_index(pu_obj));
+            set(mask, hardware::get_index(pu_obj));
     }
     return mask;
 }
@@ -1222,7 +1222,7 @@ void Topology::print_mask_vector(std::ostream &os, std::vector<MaskType> const &
     }
 
     for (std::size_t i = 0; i != s; i++) {
-        os << detail::to_string(v[i]) << "\n";
+        os << hardware::to_string(v[i]) << "\n";
     }
     os << "\n";
 }
@@ -1252,7 +1252,7 @@ void Topology::print_hwloc(std::ostream &os) {
     //! -------------------------------------- topology (affinity masks)
     os << "[HWLOC topology info] affinity masks :\n"
        << "machine               : \n"
-       << detail::to_string(_machine_affinity_mask) << "\n";
+       << hardware::to_string(_machine_affinity_mask) << "\n";
 
     os << "socket                : \n";
     print_mask_vector(os, _socket_affinity_masks);
@@ -1292,7 +1292,7 @@ struct hw_concurrency {
 };
 
 unsigned int hardware_concurrency() noexcept {
-    static detail::hw_concurrency hwc;
+    static hardware::hw_concurrency hwc;
     return static_cast<unsigned int>(hwc.num_of_cores_);
 }
-} // namespace einsums::topology::detail
+} // namespace einsums::hardware

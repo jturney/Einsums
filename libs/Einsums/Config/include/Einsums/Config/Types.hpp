@@ -104,7 +104,7 @@ using config_mapping_type =
  *
  * Objects of this type can hold maps of configuration variables. They can also act as a subject,
  * which can attach observers. When a configuration variable is updated, this map will notify its
- * observers with the new information. it has all of the methods and typedefs available from std::map.
+ * observers with the new information. it has all methods and typedefs available from std::map.
  *
  * @tparam Value The type of data to be associated with each key.
  */

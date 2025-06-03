@@ -7,12 +7,12 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Topology/CPUMask.hpp>
+#include <Einsums/Hardware/CPUMask.hpp>
 #include <Einsums/TypeSupport/Singleton.hpp>
 
 #include <hwloc.h>
 
-namespace einsums::topology::detail {
+namespace einsums::hardware {
 
 struct HwlocBitmapWrapper {
     EINSUMS_NON_COPYABLE(HwlocBitmapWrapper);
@@ -143,9 +143,9 @@ struct EINSUMS_EXPORT Topology {
     MaskType get_cpubind_mask(std::thread &handle);
 
     /// convert a cpu mask into a numa node mask in hwloc bitmap form
-    HwlocBitmapPtr cpuset_to_nodeset(MaskCRefType cpuset);
+    HwlocBitmapPtr cpuset_to_nodeset(MaskCRefType cpuset) const;
 
-    void write_to_log();
+    void write_to_log() const;
 
     /// This is equivalent to malloc(), except that it tries to allocate
     /// page-aligned memory from the OS.
@@ -255,4 +255,4 @@ inline std::size_t get_memory_page_size() {
     return Topology::_memory_page_size;
 }
 
-} // namespace einsums::topology::detail
+} // namespace einsums::hardware

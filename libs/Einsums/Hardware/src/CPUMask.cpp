@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/Topology/CPUMask.hpp>
+#include <Einsums/Hardware/CPUMask.hpp>
 
 #include <iomanip>
 #include <sstream>
@@ -15,7 +15,7 @@
 #    define EINSUMS_CPU_MASK_PREFIX "0b"
 #endif
 
-namespace einsums::topology::detail {
+namespace einsums::hardware {
 
 std::string to_string(MaskCRefType val) {
     std::ostringstream ostr;
@@ -23,4 +23,4 @@ std::string to_string(MaskCRefType val) {
     return ostr.str();
 }
 
-} // namespace einsums::topology::detail
+} // namespace einsums::hardware

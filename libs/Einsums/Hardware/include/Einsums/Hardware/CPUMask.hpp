@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -16,7 +16,7 @@
 #    include <bitset>
 #endif
 
-namespace einsums::topology::detail {
+namespace einsums::hardware {
 
 #if !defined(EINSUMS_HAVE_MORE_THAN_64_THREADS) || (defined(EINSUMS_HAVE_MAX_CPU_COUNT) && EINSUMS_HAVE_MAX_CPU_COUNT <= 64)
 
@@ -174,4 +174,4 @@ inline void reset(MaskType &mask) {
 
 EINSUMS_EXPORT std::string to_string(MaskCRefType);
 
-} // namespace einsums::topology::detail
+} // namespace einsums::hardware

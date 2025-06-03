@@ -5,9 +5,9 @@
 
 #include "InitModule.hpp"
 
+#include <Einsums/Hardware/Topology.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Runtime.hpp>
-#include <Einsums/Topology/Topology.hpp>
 
 #include <argparse/argparse.hpp>
 
@@ -22,7 +22,7 @@ namespace einsums {
  * Logging will not be available by the time the initialization routines are run.
  */
 
-int setup_EinsumsExperimental_Topology() {
+int setup_EinsumsExperimental_Hardware() {
     // Auto-generated code. Do not touch if you are unsure of what you are doing.
     // Instead, modify the other functions below.
     // If you don't need a function, you may remove its respective line from the
@@ -30,9 +30,9 @@ int setup_EinsumsExperimental_Topology() {
     static bool is_initialized = false;
 
     if (!is_initialized) {
-        register_arguments(add_EinsumsExperimental_Topology_arguments);
-        register_startup_function(initialize_EinsumsExperimental_Topology);
-        register_shutdown_function(finalize_EinsumsExperimental_Topology);
+        register_arguments(add_EinsumsExperimental_Hardware_arguments);
+        register_startup_function(initialize_EinsumsExperimental_Hardware);
+        register_shutdown_function(finalize_EinsumsExperimental_Hardware);
 
         is_initialized = true;
     }
@@ -40,7 +40,7 @@ int setup_EinsumsExperimental_Topology() {
     return 0;
 }
 
-EINSUMS_EXPORT void add_EinsumsExperimental_Topology_arguments(argparse::ArgumentParser &parser) {
+EINSUMS_EXPORT void add_EinsumsExperimental_Hardware_arguments(argparse::ArgumentParser &parser) {
     /** @todo Fill in.
      *
      * If you are not using one of the following maps, you may remove references to it.
@@ -93,15 +93,51 @@ EINSUMS_EXPORT void add_EinsumsExperimental_Topology_arguments(argparse::Argumen
      *   .help("Dummy int argument.")
      *   .store_into(global_int["dummy-bool2"]);
      */
+    parser.add_argument("--einsums:bind")
+        .default_value("pu")
+        .choices("none", "pu", "core", "socket", "machine")
+        .help("Thread binding")
+        .store_into(global_string["einsums:bind"]);
+
+    parser.add_argument("--einsums:os-threads")
+        .default_value(static_cast<int64_t>(hardware::hardware_concurrency()))
+        .help("Number of OS threads to use")
+        .store_into(global_int["einsums:os-threads"]);
+
+    parser.add_argument("--einsums:cores")
+        .default_value(static_cast<int64_t>(hardware::hardware_concurrency()))
+        .help("Number of CPU cores to use")
+        .store_into(global_int["einsums:cores"]);
+
+    parser.add_argument("--einsums:pu-offset")
+        .default_value(int64_t(0))
+        .help("Offset to the the first processing unit to use")
+        .store_into(global_int["einsums:pu-offset"]);
+
+    parser.add_argument("--einsums:pu-step")
+        .default_value(int64_t(1))
+        .help("Increment to use to get to the next processing unit to use")
+        .store_into(global_int["einsums:pu-step"]);
+
+    parser.add_argument("--einsums:affinity")
+        .default_value("pu")
+        .choices("none", "pu", "core", "socket", "machine")
+        .help("Thread affinity")
+        .store_into(global_string["einsums:affinity"]);
+
+    parser.add_argument("--einsums:ignore-process-mask").default_value(false).store_into(global_bool["einsums:ignore-process-mask"]);
 }
 
-void initialize_EinsumsExperimental_Topology() {
+void initialize_EinsumsExperimental_Hardware() {
+    // By this point commmand-line arguments have already been processed and are available in global_config.
+    // Perform some validation of the options here.
+
     EINSUMS_LOG_INFO("Initializing hwloc topology");
-    // Call the singleton to Topology early before OpenMP has a chance to change anything
-    topology::detail::Topology &topo = topology::detail::Topology::get_singleton();
+    // Call the singleton to Hardware early before OpenMP has a chance to change anything
+    hardware::Topology &topo = hardware::Topology::get_singleton();
 }
 
-void finalize_EinsumsExperimental_Topology() {
+void finalize_EinsumsExperimental_Hardware() {
     /// @todo Fill in.
 }
 

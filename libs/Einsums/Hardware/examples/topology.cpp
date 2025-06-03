@@ -3,8 +3,8 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Hardware/Topology.hpp>
 #include <Einsums/Runtime.hpp>
-#include <Einsums/Topology/Topology.hpp>
 
 #include <sstream>
 
@@ -13,7 +13,7 @@ int einsums_main() {
 
     std::stringstream ostr;
 
-    topology::detail::Topology &topo = topology::detail::Topology::get_singleton();
+    hardware::Topology &topo = hardware::Topology::get_singleton();
     topo.print_hwloc(ostr);
 
     std::cout << ostr.str() << std::endl;
