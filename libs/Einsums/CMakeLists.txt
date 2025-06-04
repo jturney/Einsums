@@ -22,8 +22,8 @@ set(_Einsums_modules
   FFT
   GPUMemory
   GPUStreams
-  Hardware
   HPTT
+  Hardware
   Iterator
   LinearAlgebra
   Logging
@@ -37,6 +37,7 @@ set(_Einsums_modules
   TensorAlgebra
   TensorBase
   TensorUtilities
+  Threads
   TypeSupport
   Utilities
   Version

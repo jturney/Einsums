@@ -25,6 +25,7 @@ Einsums Modules
     /libs/Einsums/GPUMemory/docs/index.rst
     /libs/Einsums/GPUStreams/docs/index.rst
     /libs/Einsums/HPTT/docs/index.rst
+    /libs/Einsums/Hardware/docs/index.rst
     /libs/Einsums/Iterator/docs/index.rst
     /libs/Einsums/LinearAlgebra/docs/index.rst
     /libs/Einsums/Logging/docs/index.rst
@@ -38,6 +39,7 @@ Einsums Modules
     /libs/Einsums/TensorAlgebra/docs/index.rst
     /libs/Einsums/TensorBase/docs/index.rst
     /libs/Einsums/TensorUtilities/docs/index.rst
+    /libs/Einsums/Threads/docs/index.rst
     /libs/Einsums/TypeSupport/docs/index.rst
     /libs/Einsums/Utilities/docs/index.rst
     /libs/Einsums/Version/docs/index.rst
