@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #include <Einsums/Config.hpp>
 
@@ -69,8 +69,8 @@ EINSUMS_EXPORT BOOL WINAPI termination_handler(DWORD ctrl_type) {
 
     try {
         auto &global_config = GlobalConfigMap::get_singleton();
-        attach = global_config.get_bool("attach-debugger", true);
-    } catch(...) {
+        attach              = global_config.get_bool("attach-debugger", true);
+    } catch (...) {
         attach = true;
     }
 
@@ -99,7 +99,7 @@ void set_signal_handlers() {
 #if defined(EINSUMS_WINDOWS)
     SetConsoleCtrlHandler(termination_handler, TRUE);
 #else
-    struct sigaction new_action;
+    struct sigaction new_action {};
     new_action.sa_handler = termination_handler;
     sigemptyset(&new_action.sa_mask);
     new_action.sa_flags = 0;
@@ -262,8 +262,7 @@ int Runtime::run() {
 } // namespace detail
 
 bool is_running() {
-    detail::Runtime *rt = runtime_ptr();
-    if (nullptr != rt)
+    if (detail::Runtime *rt = runtime_ptr(); nullptr != rt)
         return rt->state() == RuntimeState::Running;
     return false;
 }
@@ -287,12 +286,11 @@ void register_pre_startup_function(StartupFunctionType f) {
     if (runtime != nullptr) {
         if (runtime->state() > RuntimeState::PreStartup) {
             EINSUMS_THROW_EXCEPTION(invalid_runtime_state, "Too late to register a pre-startup function");
-            return;
         }
         runtime->add_pre_startup_function(std::move(f));
     } else {
-        auto                                &runtime_vars = detail::RuntimeVars::get_singleton();
-        std::lock_guard<detail::RuntimeVars> guard(runtime_vars);
+        auto           &runtime_vars = detail::RuntimeVars::get_singleton();
+        std::lock_guard guard(runtime_vars);
         runtime_vars.global_pre_startup_functions.emplace_back(std::move(f));
     }
 }
@@ -302,12 +300,11 @@ void register_startup_function(StartupFunctionType f) {
     if (runtime != nullptr) {
         if (runtime->state() > RuntimeState::Startup) {
             EINSUMS_THROW_EXCEPTION(invalid_runtime_state, "Too late to register a startup function");
-            return;
         }
         runtime->add_startup_function(std::move(f));
     } else {
-        auto                                &runtime_vars = detail::RuntimeVars::get_singleton();
-        std::lock_guard<detail::RuntimeVars> guard(runtime_vars);
+        auto           &runtime_vars = detail::RuntimeVars::get_singleton();
+        std::lock_guard guard(runtime_vars);
         runtime_vars.global_startup_functions.emplace_back(std::move(f));
     }
 }
@@ -317,12 +314,11 @@ void register_pre_shutdown_function(ShutdownFunctionType f) {
     if (runtime != nullptr) {
         if (runtime->state() > RuntimeState::PreShutdown) {
             EINSUMS_THROW_EXCEPTION(invalid_runtime_state, "Too late to register a pre-shutdown function");
-            return;
         }
         runtime->add_pre_shutdown_function(std::move(f));
     } else {
-        auto                                &runtime_vars = detail::RuntimeVars::get_singleton();
-        std::lock_guard<detail::RuntimeVars> guard(runtime_vars);
+        auto           &runtime_vars = detail::RuntimeVars::get_singleton();
+        std::lock_guard guard(runtime_vars);
         runtime_vars.global_pre_shutdown_functions.emplace_back(std::move(f));
     }
 }
@@ -332,12 +328,11 @@ void register_shutdown_function(ShutdownFunctionType f) {
     if (runtime != nullptr) {
         if (runtime->state() > RuntimeState::Shutdown) {
             EINSUMS_THROW_EXCEPTION(invalid_runtime_state, "Too late to register a shutdown function");
-            return;
         }
         runtime->add_pre_shutdown_function(std::move(f));
     } else {
-        auto                                &runtime_vars = detail::RuntimeVars::get_singleton();
-        std::lock_guard<detail::RuntimeVars> guard(runtime_vars);
+        auto           &runtime_vars = detail::RuntimeVars::get_singleton();
+        std::lock_guard guard(runtime_vars);
         runtime_vars.global_shutdown_functions.emplace_back(std::move(f));
     }
 }

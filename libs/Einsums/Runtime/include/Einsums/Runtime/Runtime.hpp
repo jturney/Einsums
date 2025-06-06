@@ -1,7 +1,7 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -12,6 +12,7 @@
 #include <Einsums/Runtime/ShutdownFunction.hpp>
 #include <Einsums/Runtime/StartupFunction.hpp>
 #include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
+#include <Einsums/ThreadsBase/RuntimeState.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
 
 #include <list>
@@ -19,36 +20,6 @@
 #include <string_view>
 
 namespace einsums {
-
-/**
- * @struct invalid_runtime_state
- *
- * Indicates that the code is handling data that is uninitialized.
- */
-struct EINSUMS_EXPORT invalid_runtime_state : std::runtime_error {
-    using std::runtime_error::runtime_error;
-};
-
-/**
- * @enum RuntimeState
- *
- * @brief Holds the possible states for the runtime.
- */
-enum class RuntimeState : std::int8_t {
-    Invalid        = -1,      /**< The state is invalid. */
-    Initialized    = 0,       /**< The runtime has been initialized. */
-    PreStartup     = 1,       /**< The runtime is running the pre-startup functions. */
-    Startup        = 2,       /**< The runtime is running the startup functions. */
-    PreMain        = 3,       /**< The runtime is preparing to run the main function. */
-    Starting       = 4,       /**< The runtime is starting the main function. */
-    Running        = 5,       /**< The main function is running. */
-    PreShutdown    = 6,       /**< The pre-shutdown functions are running. */
-    Shutdown       = 7,       /**< The shutdown functions are running. */
-    Stopping       = 8,       /**< The runtime is stopping. */
-    Terminating    = 9,       /**< The runtime is terminating. */
-    Stopped        = 10,      /**< The runtime has stopped. */
-    LastValidState = Stopped, /**< Indicates the last valid state. Anything past this is considered invalid. */
-};
 
 namespace detail {
 
@@ -85,7 +56,7 @@ struct EINSUMS_EXPORT Runtime : public design_pats::Lockable<std::recursive_mute
     /// but guaranteed to be executed before any startup function registered
     /// with \a add_startup_function.
     ///
-    /// \param  f   The function 'f' will be called  before pika_main is executed. This is very useful
+    /// \param  f   The function 'f' will be called  before einsums_main is executed. This is very useful
     ///             to setup the runtime environment of the application
     ///             (install performance counters, etc.)
     ///
@@ -174,7 +145,7 @@ EINSUMS_EXPORT RuntimeConfiguration &runtime_config();
 /// or not, e.g.  whether the current state of the runtime system is
 /// \a einsums::RuntimeState::Running
 ///
-/// \note   This function needs to be executed on a pika-thread. It will
+/// \note   This function needs to be executed on a einsums-thread. It will
 ///         return false otherwise.
 EINSUMS_EXPORT bool is_running();
 
@@ -208,11 +179,20 @@ struct fmt::formatter<einsums::RuntimeState> : formatter<string_view> {
         case einsums::RuntimeState::Running:
             name = "Running";
             break;
+        case einsums::RuntimeState::Suspended:
+            name = "Suspended";
+            break;
+        case einsums::RuntimeState::PreSleep:
+            name = "PreSleep";
+            break;
+        case einsums::RuntimeState::Sleeping:
+            name = "Sleeping";
+            break;
         case einsums::RuntimeState::PreShutdown:
             name = "PreShutdown";
             break;
         case einsums::RuntimeState::Shutdown:
-            name = "Shutown";
+            name = "Shutdown";
             break;
         case einsums::RuntimeState::Stopping:
             name = "Stopping";

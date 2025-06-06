@@ -5,18 +5,17 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(ThreadsHeaders Einsums/Threads/ScheduledThreadPool.hpp)
+set(CoroutinesHeaders)
 
-set(ThreadsSources InitModule.hpp ModuleVars.hpp InitModule.cpp ModuleVars.cpp)
+set(CoroutinesSources InitModule.hpp ModuleVars.hpp InitModule.cpp ModuleVars.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
-  Einsums Threads
-  SOURCES ${ThreadsSources}
-  HEADERS ${ThreadsHeaders}
+  Einsums Coroutines
+  SOURCES ${CoroutinesSources}
+  HEADERS ${CoroutinesHeaders}
   DEPENDENCIES
   MODULE_DEPENDENCIES Einsums_Runtime Einsums_Logging Einsums_TypeSupport Einsums_Config
-                      Einsums_Debugging Einsums_ThreadsBase
   CMAKE_SUBDIRS examples tests
   BASE_LIBNAME Einsums
 )

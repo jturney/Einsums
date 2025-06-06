@@ -8,7 +8,8 @@
 #include <Einsums/Assert.hpp>
 #include <Einsums/Debugging/Backtrace.hpp>
 #include <Einsums/Errors.hpp>
-#include <Einsums/Threads/detail/TrackLocks.hpp>
+
+#include <../../ThreadsBase/include/Einsums/ThreadsBase/TrackLocks.hpp>
 
 namespace einsums::threads {
 

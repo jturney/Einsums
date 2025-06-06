@@ -1,0 +1,54 @@
+repos:
+  - repo: https://github.com/cheshirekow/cmake-format-precommit
+    rev: v0.6.10
+    hooks:
+      - id: cmake-format
+        name: Ensure CMake files are formatted correctly
+        files: (CMakeLists.txt|.*\.cmake)$
+        exclude: (.*cmake-build-.*|.*build/.*)
+        additional_dependencies: [cmake-format==0.6.10]
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v16.0.6
+    hooks:
+      - id: clang-format
+        name: Ensure C++ files are formatted correctly
+        files: \.(cpp|hpp)$
+        exclude: (.*cmake-build-.*|.*build/.*)
+        args: [--style=file]
+
+  - repo: https://github.com/Lucas-C/pre-commit-hooks
+    rev: v1.5.4
+    hooks:
+      - id: insert-license
+        name: "Check license: C++"
+        files: \.(cpp|hpp)
+        exclude: (.*cmake-build-.*|.*build/.*)
+        args:
+          - --license-filepath
+          - devtools/LicenseHeader.txt
+          - --comment-style
+          - "//----------------------------------------------------------------------------------------------|//|//----------------------------------------------------------------------------------------------"
+          - --detect-license-in-X-top-lines=3
+
+      - id: insert-license
+        name: "Check license: CMake"
+        files: (CMakeLists.txt|.*\.cmake)$
+        exclude: (.*cmake-build-.*|.*build/.*)
+        args:
+          - --license-filepath
+          - devtools/LicenseHeader.txt
+          - --comment-style
+          - "#----------------------------------------------------------------------------------------------|#|#----------------------------------------------------------------------------------------------"
+          - --detect-license-in-X-top-lines=3
+
+      - id: insert-license
+        name: "Check license: Python"
+        files: \.py$
+        exclude: (.*cmake-build-.*|.*build/.*)
+        args:
+          - --license-filepath
+          - devtools/LicenseHeader.txt
+          - --comment-style
+          - "#"
+          - --detect-license-in-X-top-lines=3

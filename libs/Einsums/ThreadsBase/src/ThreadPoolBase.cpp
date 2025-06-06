@@ -3,17 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#pragma once
+#include <Einsums/ThreadsBase/ThreadPoolBase.hpp>
 
-#include <cstdint>
+namespace einsums::threads::detail {
 
-namespace einsums::threads {
-
-/// This enumeration describes the possible modes of a scheduler.
-enum class SchedulerMode : std::uint32_t {
-    /// As the name suggests, this option can be used to disable all other options.
-    NothingSpecial = 0x000,
-    
-};
-
+ThreadPoolBase::ThreadPoolBase(ThreadPoolInitParameters const &init)
+    : _id(init._index, init._name), _thread_offset(init._thread_offset), _affinity_data(init._affinity_data), _notifier(init._notifier) {
 }
+
+} // namespace einsums::threads::detail

@@ -16,6 +16,7 @@ set(_Einsums_modules
   BufferAllocator
   Concepts
   Config
+  Coroutines
   Debugging
   Decomposition
   Errors
@@ -38,6 +39,7 @@ set(_Einsums_modules
   TensorBase
   TensorUtilities
   Threads
+  ThreadsBase
   TypeSupport
   Utilities
   Version
@@ -51,4 +53,3 @@ foreach(module ${_Einsums_modules})
   einsums_info("    ${module}")
   add_subdirectory(${module})
 endforeach()
-

@@ -57,9 +57,9 @@ set(EINSUMS_LIBS
 
 include(Einsums_CodeCoverage)
 set(einsums_libs_public_static SHARED)
-if (EINSUMS_WITH_COVERAGE OR NOT BUILD_SHARED_LIBS)
-  set(einsums_libs_public_static STATIC)
-endif ()
+if(EINSUMS_WITH_COVERAGE OR NOT BUILD_SHARED_LIBS)
+  set(einsums_libs_public_static STATIC Einsums/Threads/src/SchedulerMode.cpp)
+endif()
 
 foreach(lib ${EINSUMS_LIBS})
   add_library(${lib} ${einsums_libs_public_static} src/dummy.cpp)
@@ -103,11 +103,8 @@ foreach(lib ${EINSUMS_LIBS})
   endif()
 
   set_target_properties(
-    ${lib}
-    PROPERTIES VERSION ${EINSUMS_VERSION}
-               SOVERSION ${EINSUMS_SOVERSION}
-               OUTPUT_NAME ${lib}
-               FOLDER "Core"
+    ${lib} PROPERTIES VERSION ${EINSUMS_VERSION} SOVERSION ${EINSUMS_SOVERSION} OUTPUT_NAME ${lib}
+                      FOLDER "Core"
   )
   install(
     TARGETS ${lib}
@@ -133,12 +130,7 @@ if(EINSUMS_BUILD_PYTHON OR EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
     set(EINSUMS_PYTHON_LIB_NAME ${lib})
     pybind11_add_module(${lib} MODULE src/dummy.cpp)
 
-    set_target_properties(
-      ${lib}
-      PROPERTIES OUTPUT_NAME ${lib}
-                 EXPORT_NAME ${lib}
-                 FOLDER "Core"
-    )
+    set_target_properties(${lib} PROPERTIES OUTPUT_NAME ${lib} EXPORT_NAME ${lib} FOLDER "Core")
 
     # adds some RPATH and link flags
     einsums_extend_with_python(${lib})
