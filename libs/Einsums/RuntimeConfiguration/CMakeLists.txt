@@ -5,7 +5,11 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(RuntimeConfigurationHeaders Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp)
+set(RuntimeConfigurationHeaders
+    Einsums/RuntimeConfiguration/StartupFunction.hpp
+    Einsums/RuntimeConfiguration/ShutdownFunction.hpp
+    Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp
+)
 
 set(RuntimeConfigurationSources RuntimeConfiguration.cpp)
 

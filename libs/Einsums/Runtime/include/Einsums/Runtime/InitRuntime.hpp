@@ -1,15 +1,15 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #pragma once
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Runtime/ShutdownFunction.hpp>
-#include <Einsums/Runtime/StartupFunction.hpp>
 #include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
+#include <Einsums/RuntimeConfiguration/ShutdownFunction.hpp>
+#include <Einsums/RuntimeConfiguration/StartupFunction.hpp>
 
 #include <functional>
 #include <string>

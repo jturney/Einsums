@@ -9,9 +9,9 @@
 
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
-#include <Einsums/Runtime/ShutdownFunction.hpp>
-#include <Einsums/Runtime/StartupFunction.hpp>
 #include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
+#include <Einsums/RuntimeConfiguration/ShutdownFunction.hpp>
+#include <Einsums/RuntimeConfiguration/StartupFunction.hpp>
 #include <Einsums/ThreadsBase/RuntimeState.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
 

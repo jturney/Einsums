@@ -30,7 +30,7 @@ einsums_add_module(
   SOURCES ${HardwareSources}
   HEADERS ${HardwareHeaders}
   DEPENDENCIES einsums_internal::hwloc
-  MODULE_DEPENDENCIES Einsums_Assertion Einsums_Runtime Einsums_Logging Einsums_TypeSupport Einsums_Config
+  MODULE_DEPENDENCIES Einsums_Assertion Einsums_Logging Einsums_TypeSupport Einsums_Config Einsums_Print Einsums_RuntimeConfiguration
   CMAKE_SUBDIRS examples tests
   BASE_LIBNAME Einsums
 )

@@ -25,7 +25,7 @@ einsums_add_module(
   SOURCES ${ThreadsBaseSources}
   HEADERS ${ThreadsBaseHeaders}
   DEPENDENCIES
-  MODULE_DEPENDENCIES Einsums_Logging Einsums_TypeSupport Einsums_Config
+  MODULE_DEPENDENCIES Einsums_Logging Einsums_TypeSupport Einsums_Config Einsums_Hardware
   CMAKE_SUBDIRS examples tests
   BASE_LIBNAME Einsums
 )

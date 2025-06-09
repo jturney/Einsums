@@ -16,6 +16,7 @@ Einsums Modules
     /libs/Einsums/BLASBase/docs/index.rst
     /libs/Einsums/BLASVendor/docs/index.rst
     /libs/Einsums/BufferAllocator/docs/index.rst
+    /libs/Einsums/CommandLine/docs/index.rst
     /libs/Einsums/Concepts/docs/index.rst
     /libs/Einsums/Config/docs/index.rst
     /libs/Einsums/Coroutines/docs/index.rst

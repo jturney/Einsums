@@ -1,10 +1,10 @@
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//--------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------
 
 #include <Einsums/Runtime.hpp>
-#include <Einsums/Runtime/ShutdownFunction.hpp>
+#include <Einsums/RuntimeConfiguration.hpp>
 #include <Einsums/Utilities/Random.hpp>
 
 #include <catch2/catch_get_random_seed.hpp>

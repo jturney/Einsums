@@ -14,6 +14,7 @@ set(_Einsums_modules
   BLASBase
   BLASVendor
   BufferAllocator
+  CommandLine
   Concepts
   Config
   Coroutines
@@ -53,3 +54,4 @@ foreach(module ${_Einsums_modules})
   einsums_info("    ${module}")
   add_subdirectory(${module})
 endforeach()
+

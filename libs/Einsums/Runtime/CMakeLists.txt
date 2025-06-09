@@ -10,8 +10,6 @@ set(RuntimeHeaders
     Einsums/Runtime/InitRuntime.hpp
     Einsums/Runtime/Runtime.hpp
     Einsums/Runtime/RuntimeForward.hpp
-    Einsums/Runtime/StartupFunction.hpp
-    Einsums/Runtime/ShutdownFunction.hpp
     Einsums/Runtime/Detail/InitLogging.hpp
 )
 
