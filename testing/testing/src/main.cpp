@@ -4,18 +4,15 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/Runtime.hpp>
-#include <Einsums/Runtime/ShutdownFunction.hpp>
 #include <Einsums/Utilities/Random.hpp>
 
-#include <catch2/catch_get_random_seed.hpp>
 #include <catch2/catch_session.hpp>
-#include <catch2/internal/catch_context.hpp>
-#include <functional>
 
 #define CATCH_CONFIG_RUNNER
 #include <catch2/catch_all.hpp>
 
-int einsums_main(int argc, char *const *const argv) {
+namespace {
+auto einsums_main(int argc, char *const *const argv) -> int {
     int result;
 #pragma omp parallel
     {
@@ -26,9 +23,8 @@ int einsums_main(int argc, char *const *const argv) {
 
             Catch::StringMaker<float>::precision  = std::numeric_limits<float>::digits10;
             Catch::StringMaker<double>::precision = std::numeric_limits<double>::digits10;
-            auto seed                             = session.config().rngSeed();
 
-            einsums::seed_random(seed);
+            einsums::seed_random(session.config().rngSeed());
 
             result = session.run();
             einsums::finalize();
@@ -36,7 +32,8 @@ int einsums_main(int argc, char *const *const argv) {
     }
     return result;
 }
+}
 
-int main(int argc, char **argv) {
+auto main(int argc, char **argv) -> int {
     return einsums::start(einsums_main, argc, argv);
 }

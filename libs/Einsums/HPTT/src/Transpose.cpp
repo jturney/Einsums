@@ -1,29 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
-
-/*
-  Copyright 2018 Paul Springer
-
-  Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are
-  met:
-
-  1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
-
-  2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the
-  documentation and/or other materials provided with the distribution.
-
-  3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this
-  software without specific prior written permission.
-
-  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-  HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
-  ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
-  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+//--------------------------------------------------------------------------------------------
 
 /**
  * \file
@@ -47,12 +25,18 @@
 #    include <omp.h>
 #endif
 
+#include <Einsums/Config.hpp>
+
 #include <Einsums/HPTT/ComputeNode.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
 #include <Einsums/HPTT/Macros.hpp>
 #include <Einsums/HPTT/Plan.hpp>
 #include <Einsums/HPTT/Transpose.hpp>
 #include <Einsums/HPTT/Utils.hpp>
+
+#ifdef __AVX__
+#    include <immintrin.h>
+#endif
 
 namespace hptt {
 
@@ -95,7 +79,6 @@ static void streamingStore(floatType *out, floatType const *in) {
 }
 
 #ifdef __AVX__
-#    include <immintrin.h>
 
 template <typename floatType>
 static INLINE void prefetch(floatType const *A, size_t const lda) {
@@ -111,10 +94,9 @@ struct micro_kernel<double, betaIsZero, conjA> {
         __m256d reg_beta  = _mm256_set1_pd(beta);  // do not alter the content of B
                                                    // Load A
         __m256d rowA0, rowA1, rowA2, rowA3;
-        __m256i indicesA;
+        __m128i indicesA;
         if (innerStrideA != 1) {
-            indicesA = _mm256_set_epi32(7 * innerStrideA, 6 * innerStrideA, 5 * innerStrideA, 4 * innerStrideA, 3 * innerStrideA,
-                                        2 * innerStrideA, 1 * innerStrideA, 0 * innerStrideA);
+            indicesA = _mm_set_epi32(3 * innerStrideA, 2 * innerStrideA, 1 * innerStrideA, 0 * innerStrideA);
             rowA0    = _mm256_i32gather_pd((A + 0 * lda), indicesA, sizeof(double));
             rowA1    = _mm256_i32gather_pd((A + 1 * lda), indicesA, sizeof(double));
             rowA2    = _mm256_i32gather_pd((A + 2 * lda), indicesA, sizeof(double));
@@ -146,10 +128,9 @@ struct micro_kernel<double, betaIsZero, conjA> {
         // Load B
         if constexpr (!betaIsZero) {
             __m256d rowB0, rowB1, rowB2, rowB3;
-            __m256i indicesB;
+            __m128i indicesB;
             if (innerStrideB != 1) {
-                indicesB = _mm256_set_epi32(7 * innerStrideB, 6 * innerStrideB, 5 * innerStrideB, 4 * innerStrideB, 3 * innerStrideB,
-                                            2 * innerStrideB, 1 * innerStrideB, 0 * innerStrideB);
+                indicesB = _mm_set_epi32(3 * innerStrideB, 2 * innerStrideB, 1 * innerStrideB, 0 * innerStrideB);
                 rowB0    = _mm256_i32gather_pd((B + 0 * ldb), indicesB, sizeof(double));
                 rowB1    = _mm256_i32gather_pd((B + 1 * ldb), indicesB, sizeof(double));
                 rowB2    = _mm256_i32gather_pd((B + 2 * ldb), indicesB, sizeof(double));
@@ -167,10 +148,10 @@ struct micro_kernel<double, betaIsZero, conjA> {
             rowB3 = _mm256_add_pd(_mm256_mul_pd(rowB3, reg_beta), rowA3);
             // Store B
             if (innerStrideB != 1) {
-                _mm256_i32scatter_epi32((B + 0 * ldb), indicesB, rowB0, sizeof(double));
-                _mm256_i32scatter_epi32((B + 1 * ldb), indicesB, rowB1, sizeof(double));
-                _mm256_i32scatter_epi32((B + 2 * ldb), indicesB, rowB2, sizeof(double));
-                _mm256_i32scatter_epi32((B + 3 * ldb), indicesB, rowB3, sizeof(double));
+                _mm256_i32scatter_pd((B + 0 * ldb), indicesB, rowB0, sizeof(double));
+                _mm256_i32scatter_pd((B + 1 * ldb), indicesB, rowB1, sizeof(double));
+                _mm256_i32scatter_pd((B + 2 * ldb), indicesB, rowB2, sizeof(double));
+                _mm256_i32scatter_pd((B + 3 * ldb), indicesB, rowB3, sizeof(double));
             } else {
                 _mm256_storeu_pd((B + 0 * ldb), rowB0);
                 _mm256_storeu_pd((B + 1 * ldb), rowB1);
@@ -180,12 +161,11 @@ struct micro_kernel<double, betaIsZero, conjA> {
         } else {
             // Store B
             if (innerStrideB != 1) {
-                __m256i indicesB = _mm256_set_epi32(7 * innerStrideB, 6 * innerStrideB, 5 * innerStrideB, 4 * innerStrideB,
-                                                    3 * innerStrideB, 2 * innerStrideB, 1 * innerStrideB, 0 * innerStrideB);
-                _mm256_i32scatter_epi32((B + 0 * ldb), indicesB, rowA0, sizeof(double));
-                _mm256_i32scatter_epi32((B + 1 * ldb), indicesB, rowA1, sizeof(double));
-                _mm256_i32scatter_epi32((B + 2 * ldb), indicesB, rowA2, sizeof(double));
-                _mm256_i32scatter_epi32((B + 3 * ldb), indicesB, rowA3, sizeof(double));
+                __m128i indicesB = _mm_set_epi32(3 * innerStrideB, 2 * innerStrideB, 1 * innerStrideB, 0 * innerStrideB);
+                _mm256_i32scatter_pd((B + 0 * ldb), indicesB, rowA0, sizeof(double));
+                _mm256_i32scatter_pd((B + 1 * ldb), indicesB, rowA1, sizeof(double));
+                _mm256_i32scatter_pd((B + 2 * ldb), indicesB, rowA2, sizeof(double));
+                _mm256_i32scatter_pd((B + 3 * ldb), indicesB, rowA3, sizeof(double));
             } else {
                 _mm256_storeu_pd((B + 0 * ldb), rowA0);
                 _mm256_storeu_pd((B + 1 * ldb), rowA1);
@@ -198,7 +178,8 @@ struct micro_kernel<double, betaIsZero, conjA> {
 
 template <bool betaIsZero, bool conjA>
 struct micro_kernel<float, betaIsZero, conjA> {
-    static void execute(float const *A, size_t const lda, float *B, size_t const ldb, float const alpha, float const beta) {
+    static void execute(float const *A, size_t const lda, size_t const innerStrideA, float *B, size_t const ldb, size_t const innerStrideB,
+                        float const alpha, float const beta) {
         __m256 reg_alpha = _mm256_set1_ps(alpha); // do not alter the content of B
         __m256 reg_beta  = _mm256_set1_ps(beta);  // do not alter the content of B
         // Load A
@@ -299,14 +280,14 @@ struct micro_kernel<float, betaIsZero, conjA> {
             rowB7 = _mm256_add_ps(_mm256_mul_ps(rowB7, reg_beta), rowA7);
             // Store B
             if (innerStrideB != 1) {
-                _mm256_i32scatter_epi32((B + 0 * ldb), indicesB, rowB0, sizeof(float));
-                _mm256_i32scatter_epi32((B + 1 * ldb), indicesB, rowB1, sizeof(float));
-                _mm256_i32scatter_epi32((B + 2 * ldb), indicesB, rowB2, sizeof(float));
-                _mm256_i32scatter_epi32((B + 3 * ldb), indicesB, rowB3, sizeof(float));
-                _mm256_i32scatter_epi32((B + 4 * ldb), indicesB, rowB4, sizeof(float));
-                _mm256_i32scatter_epi32((B + 5 * ldb), indicesB, rowB5, sizeof(float));
-                _mm256_i32scatter_epi32((B + 6 * ldb), indicesB, rowB6, sizeof(float));
-                _mm256_i32scatter_epi32((B + 7 * ldb), indicesB, rowB7, sizeof(float));
+                _mm256_i32scatter_ps((B + 0 * ldb), indicesB, rowB0, sizeof(float));
+                _mm256_i32scatter_ps((B + 1 * ldb), indicesB, rowB1, sizeof(float));
+                _mm256_i32scatter_ps((B + 2 * ldb), indicesB, rowB2, sizeof(float));
+                _mm256_i32scatter_ps((B + 3 * ldb), indicesB, rowB3, sizeof(float));
+                _mm256_i32scatter_ps((B + 4 * ldb), indicesB, rowB4, sizeof(float));
+                _mm256_i32scatter_ps((B + 5 * ldb), indicesB, rowB5, sizeof(float));
+                _mm256_i32scatter_ps((B + 6 * ldb), indicesB, rowB6, sizeof(float));
+                _mm256_i32scatter_ps((B + 7 * ldb), indicesB, rowB7, sizeof(float));
             } else {
                 _mm256_storeu_ps((B + 0 * ldb), rowB0);
                 _mm256_storeu_ps((B + 1 * ldb), rowB1);
@@ -321,14 +302,14 @@ struct micro_kernel<float, betaIsZero, conjA> {
             if (innerStrideB != 1) {
                 __m256i indicesB = _mm256_set_epi32(7 * innerStrideB, 6 * innerStrideB, 5 * innerStrideB, 4 * innerStrideB,
                                                     3 * innerStrideB, 2 * innerStrideB, 1 * innerStrideB, 0 * innerStrideB);
-                _mm256_i32scatter_epi32((B + 0 * ldb), indicesB, rowA0, sizeof(float));
-                _mm256_i32scatter_epi32((B + 1 * ldb), indicesB, rowA1, sizeof(float));
-                _mm256_i32scatter_epi32((B + 2 * ldb), indicesB, rowA2, sizeof(float));
-                _mm256_i32scatter_epi32((B + 3 * ldb), indicesB, rowA3, sizeof(float));
-                _mm256_i32scatter_epi32((B + 4 * ldb), indicesB, rowA4, sizeof(float));
-                _mm256_i32scatter_epi32((B + 5 * ldb), indicesB, rowA5, sizeof(float));
-                _mm256_i32scatter_epi32((B + 6 * ldb), indicesB, rowA6, sizeof(float));
-                _mm256_i32scatter_epi32((B + 7 * ldb), indicesB, rowA7, sizeof(float));
+                _mm256_i32scatter_ps((B + 0 * ldb), indicesB, rowA0, sizeof(float));
+                _mm256_i32scatter_ps((B + 1 * ldb), indicesB, rowA1, sizeof(float));
+                _mm256_i32scatter_ps((B + 2 * ldb), indicesB, rowA2, sizeof(float));
+                _mm256_i32scatter_ps((B + 3 * ldb), indicesB, rowA3, sizeof(float));
+                _mm256_i32scatter_ps((B + 4 * ldb), indicesB, rowA4, sizeof(float));
+                _mm256_i32scatter_ps((B + 5 * ldb), indicesB, rowA5, sizeof(float));
+                _mm256_i32scatter_ps((B + 6 * ldb), indicesB, rowA6, sizeof(float));
+                _mm256_i32scatter_ps((B + 7 * ldb), indicesB, rowA7, sizeof(float));
             } else {
                 _mm256_storeu_ps((B + 0 * ldb), rowA0);
                 _mm256_storeu_ps((B + 1 * ldb), rowA1);
@@ -1096,12 +1077,12 @@ void transpose_int_constStride1(floatType const *A, floatType *B, floatType cons
     } else {
         if constexpr (useStreamingStores) {
             if constexpr (conjA) {
-#pragma vector nontemporal
+                EINSUMS_VECTOR_NONTEMPORAL
                 for (ptrdiff_t i = plan->start; i < end; i += inc) {
                     B[i * ldb] = alpha * conj(A[(i + offDiffAB) * lda]);
                 }
             } else {
-#pragma vector nontemporal
+                EINSUMS_VECTOR_NONTEMPORAL
                 for (ptrdiff_t i = plan->start; i < end; i += inc) {
                     B[i * ldb] = alpha * A[(i + offDiffAB) * lda];
                 }
@@ -1123,9 +1104,9 @@ Transpose<floatType>::Transpose(size_t const *sizeA, int const *perm, size_t con
                                 size_t const *offsetA, size_t const *offsetB, size_t const innerStrideA, size_t const innerStrideB,
                                 int const dim, floatType const *A, floatType const alpha, floatType *B, floatType const beta,
                                 SelectionMethod const selectionMethod, int const numThreads, int const *threadIds, bool const useRowMajor)
-    : A_(A), B_(B), alpha_(alpha), beta_(beta), dim_(-1), innerStrideA_(0), innerStrideB_(0), numThreads_(numThreads), masterPlan_(nullptr),
-      selectionMethod_(selectionMethod), maxAutotuningCandidates_(-1), selectedParallelStrategyId_(-1), selectedLoopOrderId_(-1),
-      conjA_(false) {
+    : A_(A), B_(B), alpha_(alpha), beta_(beta), dim_(-1), innerStrideA_(0), innerStrideB_(0), numThreads_(numThreads),
+      selectedParallelStrategyId_(-1), selectedLoopOrderId_(-1), conjA_(false), masterPlan_(nullptr), selectionMethod_(selectionMethod),
+      maxAutotuningCandidates_(-1) {
 #ifdef _OPENMP
     omp_init_lock(&writelock);
 #endif
@@ -1174,12 +1155,12 @@ Transpose<floatType>::Transpose(size_t const *sizeA, int const *perm, size_t con
 
 template <typename floatType>
 Transpose<floatType>::Transpose(Transpose<floatType> const &other)
-    : A_(other.A_), B_(other.B_), alpha_(other.alpha_), beta_(other.beta_), dim_(other.dim_), numThreads_(other.numThreads_),
-      masterPlan_(other.masterPlan_), selectionMethod_(other.selectionMethod_),
-      selectedParallelStrategyId_(other.selectedParallelStrategyId_), selectedLoopOrderId_(other.selectedLoopOrderId_),
-      maxAutotuningCandidates_(other.maxAutotuningCandidates_), sizeA_(other.sizeA_), perm_(other.perm_), outerSizeA_(other.outerSizeA_),
-      outerSizeB_(other.outerSizeB_), offsetA_(other.offsetA_), offsetB_(other.offsetB_), innerStrideA_(other.innerStrideA_),
-      innerStrideB_(other.innerStrideB_), lda_(other.lda_), ldb_(other.ldb_), threadIds_(other.threadIds_), conjA_(other.conjA_) {
+    : A_(other.A_), B_(other.B_), alpha_(other.alpha_), beta_(other.beta_), dim_(other.dim_), sizeA_(other.sizeA_), perm_(other.perm_),
+      outerSizeA_(other.outerSizeA_), outerSizeB_(other.outerSizeB_), offsetA_(other.offsetA_), offsetB_(other.offsetB_),
+      innerStrideA_(other.innerStrideA_), innerStrideB_(other.innerStrideB_), lda_(other.lda_), ldb_(other.ldb_),
+      threadIds_(other.threadIds_), numThreads_(other.numThreads_), selectedParallelStrategyId_(other.selectedParallelStrategyId_),
+      selectedLoopOrderId_(other.selectedLoopOrderId_), conjA_(other.conjA_), masterPlan_(other.masterPlan_),
+      selectionMethod_(other.selectionMethod_), maxAutotuningCandidates_(other.maxAutotuningCandidates_) {
 #ifdef _OPENMP
     omp_init_lock(&writelock);
 #endif
@@ -1272,8 +1253,8 @@ static void axpy_2D(floatType const *A, size_t const (&lda)[2], floatType *B, si
     } else {
         if constexpr (useStreamingStores)
             HPTT_DUPLICATE(spawnThreads, for (size_t j = myStart; j < myEnd; j++)
-                                             _Pragma("vector nontemporal") for (size_t i = offsetB_; i < n0 + offsetB_;
-                                                                                i++) if constexpr (conjA) B[(i * ldb[0]) + j * ldb[1]] =
+                                             EINSUMS_VECTOR_NONTEMPORAL for (size_t i = offsetB_; i < n0 + offsetB_;
+                                                                             i++) if constexpr (conjA) B[(i * ldb[0]) + j * ldb[1]] =
                                                  alpha * conj(A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]]);
                            else B[(i * ldb[0]) + j * ldb[1]] = alpha * A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]];)
         else
@@ -1361,7 +1342,7 @@ void Transpose<floatType>::execute_expert() noexcept {
 
     HPTT_DUPLICATE(
         spawnThreads,
-        for (int taskId = myStart; taskId < myEnd; taskId++) if (perm_[0] != 0) {
+        for (unsigned long taskId = myStart; taskId < myEnd; taskId++) if (perm_[0] != 0) {
             auto rootNode = masterPlan_->getRootNode(taskId);
             if (conjA_)
                 transpose_int<blocking_, blocking_, betaIsZero, floatType, useStreamingStores, true>(
@@ -1590,7 +1571,7 @@ void Transpose<floatType>::getBestParallelismStrategy(std::vector<int> &bestPara
             float lb2 = getLoadBalance(strat2);
             //         printVector(strat2,"strat2");
             //         printf("strat2: %f\n",getLoadBalance(strat2));
-            if (lb1 > 0.8 && lb2 < 0.85 || lb1 > lb2 && lb1 > 0.75) {
+            if ((lb1 > 0.8 && lb2 < 0.85) || (lb1 > lb2 && lb1 > 0.75)) {
                 std::copy(strat1.begin(), strat1.end(), bestParallelismStrategy.begin());
                 return;
             }
@@ -1803,7 +1784,7 @@ void Transpose<floatType>::verifyParameter(size_t const *size, int const *perm, 
 template <typename floatType>
 void Transpose<floatType>::computeLeadingDimensions() {
     lda_[0] = innerStrideA_;
-    if (outerSizeA_[0] == -1)
+    if (outerSizeA_[0] == -1ul)
         for (int i = 1; i < dim_; ++i)
             lda_[i] = lda_[i - 1] * sizeA_[i - 1];
     else
@@ -1811,7 +1792,7 @@ void Transpose<floatType>::computeLeadingDimensions() {
             lda_[i] = outerSizeA_[i - 1] * lda_[i - 1];
 
     ldb_[0] = innerStrideB_;
-    if (outerSizeB_[0] == -1)
+    if (outerSizeB_[0] == -1ul)
         for (int i = 1; i < dim_; ++i)
             ldb_[i] = ldb_[i - 1] * sizeA_[perm_[i - 1]];
     else
@@ -1861,19 +1842,19 @@ void Transpose<floatType>::skipIndices(size_t const *sizeA, int const *perm, siz
     }
     // compact arrays (remove -1)
     for (int i = 0; i < dim; ++i)
-        if (sizeA_[i] == -1) {
+        if (sizeA_[i] == -1ul) {
             int j = i + 1;
             for (; j < dim; ++j)
-                if (sizeA_[j] != -1)
+                if (sizeA_[j] != -1ul)
                     break;
             if (j < dim)
                 std::swap(sizeA_[i], sizeA_[j]);
         }
     for (int i = 0; i < dim; ++i)
-        if (outerSizeA_[i] == -1) {
+        if (outerSizeA_[i] == -1ul) {
             int j = i + 1;
             for (; j < dim; ++j)
-                if (outerSizeA_[j] != -1)
+                if (outerSizeA_[j] != -1ul)
                     break;
             if (j < dim) {
                 std::swap(outerSizeA_[i], outerSizeA_[j]);
@@ -1881,10 +1862,10 @@ void Transpose<floatType>::skipIndices(size_t const *sizeA, int const *perm, siz
             }
         }
     for (int i = 0; i < dim; ++i)
-        if (outerSizeB_[i] == -1) {
+        if (outerSizeB_[i] == -1ul) {
             int j = i + 1;
             for (; j < dim; ++j)
-                if (outerSizeB_[j] != -1)
+                if (outerSizeB_[j] != -1ul)
                     break;
             if (j < dim) {
                 std::swap(outerSizeB_[i], outerSizeB_[j]);
@@ -2002,11 +1983,11 @@ void Transpose<floatType>::fuseIndices() {
         perm_ = perm;
         // remove gaps in the perm, if requried (e.g., perm=3,1,0 -> 2,1,0)
         int currentValue = 0;
-        for (int i = 0; i < perm_.size(); ++i) {
+        for (unsigned long i = 0; i < perm_.size(); ++i) {
             // find smallest element in perm_ and rename it to currentValue
             int minValue = std::numeric_limits<int>::max();
             int minPos   = -1;
-            for (int pos = 0; pos < perm_.size(); ++pos) {
+            for (unsigned long pos = 0; pos < perm_.size(); ++pos) {
                 if (perm_[pos] >= currentValue && perm_[pos] < minValue) {
                     minValue = perm_[pos];
                     minPos   = pos;
@@ -2023,10 +2004,10 @@ void Transpose<floatType>::fuseIndices() {
         // compact outer size (e.g.: outerSizeA_[] = {24,-1,5,-1,13} ->
         // {24,5,13,-1,-1} -> {24,5,13}
         for (int i = 0; i < dim_; ++i)
-            if (outerSizeA_[i] == -1) {
+            if (outerSizeA_[i] == -1ul) {
                 int j = i + 1;
                 for (; j < dim_; ++j)
-                    if (outerSizeA_[j] != -1)
+                    if (outerSizeA_[j] != -1ul)
                         break;
                 if (j < dim_) {
                     std::swap(outerSizeA_[i], outerSizeA_[j]);
@@ -2034,10 +2015,10 @@ void Transpose<floatType>::fuseIndices() {
                 }
             }
         for (int i = 0; i < dim_; ++i)
-            if (outerSizeB_[i] == -1) {
+            if (outerSizeB_[i] == -1ul) {
                 int j = i + 1;
                 for (; j < dim_; ++j)
-                    if (outerSizeB_[j] != -1)
+                    if (outerSizeB_[j] != -1ul)
                         break;
                 if (j < dim_) {
                     std::swap(outerSizeB_[i], outerSizeB_[j]);
@@ -2282,9 +2263,9 @@ void Transpose<floatType>::createPlans(std::vector<std::shared_ptr<Plan>> &plans
     // heuristics, search the space with a growing rectangle (from best to worst,
     // see line marked with ***)
     bool done = false;
-    for (int start = 0; start < std::max(parallelismStrategies.size(), loopOrders.size()) && !done; start++)
-        for (int i = 0; i < parallelismStrategies.size() && !done; i++) {
-            for (int j = 0; j < loopOrders.size() && !done; j++) {
+    for (unsigned long start = 0; start < std::max(parallelismStrategies.size(), loopOrders.size()) && !done; start++)
+        for (unsigned long i = 0; i < parallelismStrategies.size() && !done; i++) {
+            for (unsigned long j = 0; j < loopOrders.size() && !done; j++) {
                 if (i > start || j > start || (i != start && j != start))
                     continue; // these are already done ***
 
@@ -2349,8 +2330,8 @@ void Transpose<floatType>::createPlans(std::vector<std::shared_ptr<Plan>> &plans
                     }
                 }
                 plans.push_back(plan);
-                if (selectionMethod_ == ESTIMATE || selectionMethod_ == MEASURE && plans.size() > 200 ||
-                    selectionMethod_ == PATIENT && plans.size() > 400 || selectionMethod_ == CRAZY && plans.size() > 800)
+                if (selectionMethod_ == ESTIMATE || (selectionMethod_ == MEASURE && plans.size() > 200) ||
+                    (selectionMethod_ == PATIENT && plans.size() > 400) || (selectionMethod_ == CRAZY && plans.size() > 800))
                     done = true;
             }
         }

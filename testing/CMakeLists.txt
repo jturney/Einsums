@@ -4,3 +4,4 @@
 #----------------------------------------------------------------------------------------------
 
 add_subdirectory(testing)
+add_subdirectory(performance_testing)

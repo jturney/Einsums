@@ -488,6 +488,12 @@ einsums_perform_cxx_feature_tests()
 # ##################################################################################################
 einsums_check_for_unistd_h(DEFINITIONS EINSUMS_HAVE_UNISTD_H)
 
+# ##################################################################################################
+# Check for misc system headers
+# ##################################################################################################
+einsums_add_compile_flag_if_available(-march=native)
+#einsums_add_compile_flag_if_available(-mtune=native)
+
 if(NOT WIN32)
   # ################################################################################################
   # Macro definitions for system headers

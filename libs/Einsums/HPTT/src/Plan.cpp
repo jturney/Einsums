@@ -32,7 +32,7 @@
 namespace hptt {
 
 Plan::Plan(std::vector<int> loopOrder, std::vector<int> numThreadsAtLoop)
-    : rootNodes_(), loopOrder_(loopOrder), numThreadsAtLoop_(numThreadsAtLoop) {
+    :  loopOrder_(loopOrder), numThreadsAtLoop_(numThreadsAtLoop) {
     numTasks_ = 1;
     for (auto nt : numThreadsAtLoop)
         numTasks_ *= nt;

@@ -42,7 +42,7 @@ namespace hptt {
  */
 class Plan {
   public:
-    Plan() : rootNodes_(), numTasks_(0) {}
+    Plan() = default;
 
     /**
      * Construct a plan. Initialize the loop order and the number of threads for each level of loop.
@@ -80,7 +80,7 @@ class Plan {
      *
      * The number of tasks to spawn for the calculation.
      */
-    int numTasks_;
+    int numTasks_{0};
 
     /**
      * @var loopOrder_

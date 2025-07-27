@@ -8,16 +8,17 @@
 #include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
-int einsums_main() {
+namespace {
+auto einsums_main() -> int {
     using namespace einsums;
 
-    size_t i{10};
+    size_t const i{10};
 
     auto A = create_random_tensor("A", i, i);
     auto B = create_random_tensor("B", i, i);
     auto C = create_zero_tensor("C", i, i);
 
-    tensor_algebra::einsum(Indices{index::i, index::j}, &C, Indices{index::i, index::k}, A, Indices{index::k, index::i}, B);
+    tensor_algebra::einsum(Indices{index::i, index::j}, &C, Indices{index::i, index::k}, A, Indices{index::k, index::j}, B);
 
     println(A);
     println(B);
@@ -26,7 +27,8 @@ int einsums_main() {
     finalize();
     return EXIT_SUCCESS;
 }
+}
 
-int main(int argc, char **argv) {
+auto main(int argc, char **argv) -> int {
     return einsums::start(einsums_main, argc, argv);
 }

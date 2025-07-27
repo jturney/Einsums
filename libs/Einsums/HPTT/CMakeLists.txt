@@ -27,6 +27,6 @@ einsums_add_module(
   SOURCES ${HPTTSources}
   HEADERS ${HPTTHeaders}
   DEPENDENCIES
-  MODULE_DEPENDENCIES Einsums_BLASBase
+  MODULE_DEPENDENCIES Einsums_BLASBase Einsums_Config
   CMAKE_SUBDIRS examples tests
 )

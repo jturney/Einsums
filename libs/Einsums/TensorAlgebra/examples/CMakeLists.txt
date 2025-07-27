@@ -16,7 +16,7 @@ else()
   return()
 endif()
 
-set(example_programs Dot)
+set(example_programs Dot Gemm)
 
 foreach(example_program ${example_programs})
   set(sources ${example_program}.cpp)

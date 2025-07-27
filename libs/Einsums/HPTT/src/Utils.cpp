@@ -1,29 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
-
-/*
-  Copyright 2018 Paul Springer
-
-  Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are
-  met:
-
-  1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
-
-  2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the
-  documentation and/or other materials provided with the distribution.
-
-  3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this
-  software without specific prior written permission.
-
-  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-  HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
-  ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
-  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+//--------------------------------------------------------------------------------------------
 
 /**
  * @author: Paul Springer (springer@aices.rwth-aachen.de)
@@ -50,7 +28,7 @@ void getPrimeFactors(std::uint8_t n, std::list<std::uint8_t> &primeFactors) {
     std::uint64_t factor_list = detail::char_factors[n];
 
     constexpr std::uint64_t mask_0 = 0xffUL, mask_1 = 0xff00UL, mask_2 = 0xff0000UL, mask_3 = 0xff000000UL, mask_4 = 0xff00000000UL,
-                            mask_5 = 0xff0000000000UL, mask_6 = 0xff000000000000UL, mask_7 = 0xff00000000000000UL;
+                            mask_5 = 0xff0000000000UL, mask_6 = 0xff000000000000UL;
 
     // Extract the factors.
     std::uint8_t factor = factor_list & mask_0;
@@ -205,7 +183,7 @@ void getPrimeFactors(std::int8_t n, std::list<std::int8_t> &primeFactors) {
     std::uint64_t factor_list = detail::char_factors[n];
 
     constexpr std::uint64_t mask_0 = 0xffUL, mask_1 = 0xff00UL, mask_2 = 0xff0000UL, mask_3 = 0xff000000UL, mask_4 = 0xff00000000UL,
-                            mask_5 = 0xff0000000000UL, mask_6 = 0xff000000000000UL, mask_7 = 0xff00000000000000UL;
+                            mask_5 = 0xff0000000000UL;
 
     // Extract the factors.
     std::uint8_t factor = factor_list & mask_0;

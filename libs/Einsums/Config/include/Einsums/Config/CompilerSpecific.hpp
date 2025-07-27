@@ -1,7 +1,7 @@
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 // Copyright (c) The Einsums Developers. All rights reserved.
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-//----------------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------
 
 #pragma once
 
@@ -14,10 +14,12 @@
 #    define EINSUMS_OMP_PRAGMA(stuff)      EINSUMS_PRAGMA(omp stuff)
 #    define EINSUMS_OMP_SIMD_PRAGMA(stuff) EINSUMS_PRAGMA(omp stuff simd)
 #    define EINSUMS_OMP_SIMD               _Pragma("omp simd")
+#    define EINSUMS_VECTOR_NONTEMPORAL     _Pragma("vector nontemporal")
 #else
 #    define EINSUMS_OMP_PRAGMA(stuff)      EINSUMS_PRAGMA(omp stuff)
 #    define EINSUMS_OMP_SIMD_PRAGMA(stuff) EINSUMS_PRAGMA(omp stuff)
 #    define EINSUMS_OMP_SIMD
+#    define EINSUMS_VECTOR_NONTEMPORAL
 #endif
 
 #define EINSUMS_OMP_PARALLEL_FOR_SIMD EINSUMS_OMP_SIMD_PRAGMA(parallel for)

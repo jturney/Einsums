@@ -118,7 +118,8 @@ function(einsums_setup_target target)
 
   target_link_libraries(${target} ${__tll_public} ${target_DEPENDENCIES})
 
-  if(target_INTERNAL_FLAGS AND TARGET einsums_private_flags)
+#  if(target_INTERNAL_FLAGS AND TARGET einsums_private_flags)
+  if (TARGET einsums_private_flags)
     target_link_libraries(${target} ${__tll_private} einsums_private_flags)
   endif()
 
