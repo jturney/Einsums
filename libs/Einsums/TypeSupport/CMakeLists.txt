@@ -8,14 +8,16 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 set(TypeSupportHeaders
     Einsums/TypeSupport/AreAllConvertible.hpp
     Einsums/TypeSupport/Arguments.hpp
+    Einsums/TypeSupport/Casting.hpp
     Einsums/TypeSupport/CountOfType.hpp
+    Einsums/TypeSupport/InsertionOrderedMap.hpp
+    Einsums/TypeSupport/Lockable.hpp
     Einsums/TypeSupport/Observable.hpp
     Einsums/TypeSupport/StringLiteral.hpp
-    Einsums/TypeSupport/TypeName.hpp
-    Einsums/TypeSupport/Lockable.hpp
     Einsums/TypeSupport/Singleton.hpp
+    Einsums/TypeSupport/TypeName.hpp
     Einsums/TypeSupport/TypeSwitch.hpp
-        Einsums/TypeSupport/InsertionOrderedMap.hpp
+    Einsums/TypeSupport/TypeTraits.hpp
 )
 
 set(TypeSupportSources)

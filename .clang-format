@@ -4,7 +4,7 @@ BasedOnStyle: LLVM
 IndentWidth: 4
 ---
 Language: Cpp
-ColumnLimit: 140
+ColumnLimit: 97
 IncludeBlocks: Regroup
 AlwaysBreakTemplateDeclarations: Yes
 AllowShortFunctionsOnASingleLine: InlineOnly

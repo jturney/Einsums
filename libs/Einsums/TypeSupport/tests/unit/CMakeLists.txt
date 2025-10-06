@@ -12,7 +12,7 @@
 # set(Example1_cpp_FLAGS DEPENDENCIES SomeOtherGreatLibrary) set(Example2_hip_PARAMETERS THREADS 1)
 
 # Name of test file. Include .cpp, .hip, etc. extension.
-set(TypeSupportTests TypeNames.cpp)
+set(TypeSupportTests Casting.cpp TypeNames.cpp)
 
 foreach(test ${TypeSupportTests})
   # Extract base name of test Example1.cpp -> Example1, Example.2.hip -> Example

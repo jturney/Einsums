@@ -199,6 +199,13 @@ einsums_option(
   EINSUMS_WITH_COVERAGE BOOL "Enable code coverage generation" OFF ADVANCED CATEGORY "Debugging"
 )
 
+# Provide public options to globally control RTTI and EH
+einsums_option(EINSUMS_ENABLE_EH BOOL "Enable Exception handling" OFF ADVANCED CATEGORY "Compiling")
+einsums_option(EINSUMS_ENABLE_RTTI BOOL "Enable run time type information" OFF ADVANCED CATEGORY "Compiling")
+if(EINSUMS_ENABLE_EH AND NOT EINSUMS_ENABLE_RTTI)
+  einsums_error("Exception handling requires RTTI. You must set EINSUMS_ENABLE_RTTI to ON")
+endif()
+
 # ##################################################################################################
 
 if(WIN32)
@@ -534,24 +541,6 @@ else()
   add_definitions(-D_ITERATOR_DEBUG_LEVEL=0)
 endif(NOT WIN32)
 
-# Add exception handling flags based on the compiler and platform
-if(MSVC)
-  # For MSVC, use /EHsc or /EHa depending on the level of SEH required
-  add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/EHsc>)
-elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  # For Clang and ClangCL
-  if(WIN32)
-    # ClangCL on Windows
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fcxx-exceptions -fseh-exceptions>)
-  else()
-    # Clang on macOS/Linux
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fcxx-exceptions>)
-  endif()
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  # For GCC (Linux/macOS)
-  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fexceptions>)
-endif()
-
 # Configure Warnings
 if(EINSUMS_WITH_COMPILER_WARNINGS)
   if(MSVC) # Adding special warning settings for the MSVC compiler ...
@@ -755,7 +744,41 @@ if(EINSUMS_WITH_SANITIZERS AND NOT MSVC)
   einsums_add_config_define(EINSUMS_HAVE_SANITIZERS)
 endif()
 
-# Note: on windows systems the ':' will be converted to a ';' at runtime
+# Add exception handling flags based on the compiler and platform
+#if(MSVC)
+#  # For MSVC, use /EHsc or /EHa depending on the level of SEH required
+#  add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/EHsc>)
+#elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+#  # For Clang and ClangCL
+#  if(WIN32)
+#    # ClangCL on Windows
+#    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fcxx-exceptions -fseh-exceptions>)
+#  else()
+#    # Clang on macOS/Linux
+#    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fcxx-exceptions>)
+#  endif()
+#elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+#  # For GCC (Linux/macOS)
+#  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fexceptions>)
+#endif()
+
+if (EINSUMS_ENABLE_EH)
+  target_compile_options(einsums_public_flags INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/EHsc>)
+else()
+  target_compile_definitions(einsums_public_flags INTERFACE $<$<CXX_COMPILER_ID:MSVC>:_HAS_EXCEPTIONS=0>)
+  target_compile_options(einsums_public_flags INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/EHs-c->)
+
+  target_compile_options(einsums_public_flags INTERFACE $<$<BOOL:${EINSUMS_COMPILER_IS_GCC_COMPATIBLE}>:-fno-exceptions>)
+endif()
+
+if (EINSUMS_ENABLE_RTTI)
+  target_compile_options(einsums_public_flags INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/GR>)
+else()
+  target_compile_options(einsums_public_flags INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/GR->)
+  target_compile_options(einsums_public_flags INTERFACE $<$<BOOL:${EINSUMS_COMPILER_IS_GCC_COMPATIBLE}>:-fno-rtti>)
+endif()
+
+  # Note: on windows systems the ':' will be converted to a ';' at runtime
 einsums_add_config_cond_define(
   EINSUMS_DEFAULT_COMPONENT_PATH_SUFFIXES
   "\"/${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}:/${CMAKE_INSTALL_BINDIR}/${PROJECT_NAME}:/lib/${PROJECT_NAME}:/bin/${PROJECT_NAME}\""
