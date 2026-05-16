@@ -4,6 +4,7 @@
 
 #include <pybind11/pybind11.h>
 #include <pybind11/complex.h>
+#include <pybind11/functional.h>
 #include <pybind11/numpy.h>
 #include <pybind11/operators.h>
 #include <pybind11/stl.h>
@@ -15,10 +16,10 @@ PYBIND11_MODULE(fixture_namespace_module, m) {
     auto _sub_graph     = m.def_submodule("graph");
     auto _sub_graph_ops = _sub_graph.def_submodule("ops");
 
-    _sub_graph.def("inherited", &einsums::fixture::graph::inherited, py::arg("x"),
+    _sub_graph.def("inherited", static_cast<int (*)(int)>(&einsums::fixture::graph::inherited), py::arg("x"),
                    R"einsums(Inherits the enclosing namespace's module — binds into ``graph``.)einsums");
-    _sub_graph_ops.def("overridden", &einsums::fixture::graph::overridden, py::arg("x"),
+    _sub_graph_ops.def("overridden", static_cast<int (*)(int)>(&einsums::fixture::graph::overridden), py::arg("x"),
                        R"einsums(Per-entity override binds into ``graph.ops`` instead.)einsums");
-    m.def("top_level", &einsums::fixture::top_level, py::arg("x"),
+    m.def("top_level", static_cast<int (*)(int)>(&einsums::fixture::top_level), py::arg("x"),
           R"einsums(Outside the annotated namespace — binds at the top level.)einsums");
 }

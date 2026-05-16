@@ -4,6 +4,7 @@
 
 #include <pybind11/pybind11.h>
 #include <pybind11/complex.h>
+#include <pybind11/functional.h>
 #include <pybind11/numpy.h>
 #include <pybind11/operators.h>
 #include <pybind11/stl.h>
@@ -11,10 +12,6 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(fixture_enums, m) {
-    py::class_<einsums::fixture::Engine>(m, "Engine")
-        .def("current_state",
-             static_cast<einsums::fixture::Engine::State (einsums::fixture::Engine::*)() const>(&einsums::fixture::Engine::current_state));
-
     py::enum_<einsums::fixture::Layout>(m, "Layout")
         .value("RowMajor", einsums::fixture::Layout::RowMajor, R"einsums(Row-major contiguous storage.)einsums")
         .value("ColumnMajor", einsums::fixture::Layout::ColumnMajor, R"einsums(Column-major contiguous storage.)einsums");
@@ -29,4 +26,8 @@ PYBIND11_MODULE(fixture_enums, m) {
         .value("Idle", einsums::fixture::Engine::State::Idle)
         .value("Running", einsums::fixture::Engine::State::Running)
         .value("Stopped", einsums::fixture::Engine::State::Stopped);
+
+    py::class_<einsums::fixture::Engine>(m, "Engine")
+        .def("current_state",
+             static_cast<einsums::fixture::Engine::State (einsums::fixture::Engine::*)() const>(&einsums::fixture::Engine::current_state));
 }
