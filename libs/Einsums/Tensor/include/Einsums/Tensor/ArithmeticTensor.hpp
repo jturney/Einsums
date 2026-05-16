@@ -47,8 +47,7 @@ struct MultiplicationOp {};
 struct DivisionOp {};
 
 template <CanBeComplex T, typename... MultiIndex>
-// requires requires { IsComplex<T> || !IsComplex<T>; }
-constexpr T compute_arithmetic(T scalar, MultiIndex... inds) {
+constexpr T compute_arithmetic(T scalar, MultiIndex... /*inds*/) {
     return scalar;
 }
 
@@ -135,7 +134,7 @@ struct ArithmeticTensor : tensor_base::CoreTensor {
      *
      * @brief Type of the tuple that holds the data needed to perform the arithmetic operations.
      */
-    using tuple_type = std::tuple<Args...>;
+    using tuple_type = std::tuple<Args...>; // NOLINT(readability-identifier-naming)
 
     /**
      * Construct a new ArithmeticTensor using the given tuple and the dimensions.
@@ -172,14 +171,14 @@ struct ArithmeticTensor : tensor_base::CoreTensor {
      *
      * @return The dimension along the axis being queried.
      */
-    size_t dim(int d) const { return _dims[d]; }
+    [[nodiscard]] size_t dim(int d) const { return _dims[d]; }
 
     /**
      * @brief Gets the name of the tensor.
      *
      * @return The name of the tensor.
      */
-    std::string const &name() const { return _name; }
+    [[nodiscard]] std::string const &name() const { return _name; }
 
     /**
      * @brief Sets the name of the tensor.
@@ -191,7 +190,7 @@ struct ArithmeticTensor : tensor_base::CoreTensor {
     /**
      * Indicates that the tensor is contiguous.
      */
-    bool full_view_of_underlying() const noexcept { return false; }
+    [[nodiscard]] bool full_view_of_underlying() const noexcept { return false; }
 };
 
 } // namespace einsums

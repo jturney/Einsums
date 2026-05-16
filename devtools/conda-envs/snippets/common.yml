@@ -29,3 +29,5 @@ dependencies:
   - pytest-cov
   - coverage
   - scipy
+  - textual
+  - rich

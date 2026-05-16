@@ -84,8 +84,9 @@ function(einsums_add_test category name)
     set(run_serial TRUE)
   endif()
 
-  set(args "--einsums:no-install-signal-handlers")
-  set(args ${args} "--einsums:no-profiler-report")
+  set(args "--einsums:debug:no-install-signal-handlers")
+  set(args ${args} "--einsums:debug:no-attach-debugger")
+  set(args ${args} "--einsums:profile:no-report")
   set(args "${${name}_ARGS}" "${${name}_UNPARSED_ARGUMENTS}" ${args})
 
   set(_script_location ${PROJECT_BINARY_DIR})
@@ -93,7 +94,7 @@ function(einsums_add_test category name)
   set(cmd ${_exe})
 
   if(${name}_WRAPPER)
-    list(PREPEND cmd "${${name}_WRAPPER}" ${_preflags_list_})
+    list(PREPEND cmd "${${name}_WRAPPER}")
   endif()
 
   if(EINSUMS_WITH_TESTS_VALGRIND)
@@ -130,7 +131,9 @@ function(einsums_add_test category name)
   endif()
 
   if(TARGET ${${name}_EXECUTABLE}_test AND ${name}_PERFORMANCE_TESTING)
-    # target_link_libraries(${${name}_EXECUTABLE}_test PRIVATE einsums_performance_testing)
+    target_link_libraries(${${name}_EXECUTABLE}_test PRIVATE Catch2::Catch2)
+    target_link_libraries(${${name}_EXECUTABLE}_test PRIVATE einsums_testing)
+    target_link_libraries(${${name}_EXECUTABLE}_test PRIVATE einsums_performance)
   endif()
 
 endfunction(einsums_add_test)
@@ -258,6 +261,56 @@ function(einsums_add_unit_test subcategory name)
 endfunction(einsums_add_unit_test)
 
 #:
+#: .. cmake:command:: einsums_add_python_unit_test
+#:
+#:    Register a pytest-based unit test under ``Tests.Unit.<subcategory>``.
+#:
+#:    Runs ``Python_EXECUTABLE -m pytest <script>`` with ``PYTHONPATH`` set to
+#:    the directory containing the built ``einsums`` extension. The test is
+#:    skipped silently when ``EINSUMS_BUILD_PYTHON`` / ``EINSUMS_PYBIND_AUTOGEN``
+#:    are off or the ``PyEinsums`` target is not present.
+#:
+#:    **Signature**
+#:    ``einsums_add_python_unit_test(<subcategory> <name> SCRIPT <python-file>)``
+#:
+#:    **Example**
+#:    .. code-block:: cmake
+#:
+#:       einsums_add_python_unit_test(Modules.Tensor RuntimeTensorPython
+#:                                    SCRIPT test_runtime_tensor_python.py)
+function(einsums_add_python_unit_test subcategory name)
+  if(NOT EINSUMS_BUILD_PYTHON OR NOT EINSUMS_PYBIND_AUTOGEN)
+    return()
+  endif()
+
+  cmake_parse_arguments(_pyt "" "SCRIPT" "" ${ARGN})
+  if(NOT _pyt_SCRIPT)
+    message(FATAL_ERROR "einsums_add_python_unit_test(${name}): SCRIPT argument is required")
+  endif()
+
+  set(_test_name "Tests.Unit.${subcategory}.${name}")
+  # PyEinsums lives in ``${CMAKE_BINARY_DIR}/lib/einsums/_core.*.so`` as
+  # part of the einsums Python package. PYTHONPATH points at the *parent*
+  # directory so ``import einsums`` resolves the package.
+  add_test(
+    NAME "${_test_name}"
+    COMMAND "${Python_EXECUTABLE}" -m pytest -q --tb=short "${CMAKE_CURRENT_SOURCE_DIR}/${_pyt_SCRIPT}"
+  )
+  set_tests_properties(
+    "${_test_name}" PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/lib"
+    LABELS "UNIT_ONLY;PYTHON"
+  )
+  einsums_add_pseudo_target("${_test_name}")
+  einsums_add_pseudo_dependencies("Tests.Unit.${subcategory}" "${_test_name}")
+  # PyEinsums is finalized after all per-module CMakeLists run. Stash the
+  # pseudo-target name in a global property; einsums_finalize_pybind() walks
+  # the property and wires add_dependencies(... PyEinsums) once that target
+  # exists.
+  set_property(GLOBAL APPEND PROPERTY EINSUMS_PYTHON_UNIT_TEST_TARGETS "${_test_name}")
+endfunction(einsums_add_python_unit_test)
+
+#:
 #: .. cmake:command:: einsums_add_regression_test
 #:
 #:    Define a regression test under ``Tests.Regressions.<subcategory>`` and wire its pseudo‑target.
@@ -298,6 +351,13 @@ function(einsums_add_performance_test subcategory name)
     "Performance" "${subcategory}" ${name} ${ARGN} RUN_SERIAL PERFORMANCE_TESTING
   )
   einsums_set_test_properties("Tests.Performance.${subcategory}.${name}" "PERFORMANCE_ONLY")
+
+  # Performance tests are built with "all" but excluded from default ctest.
+  # Run via:  ctest --test-dir build -L PERFORMANCE_ONLY
+  #       or: python -m devtools.benchmarks run --build-dir build
+  set_tests_properties(
+    "Tests.Performance.${subcategory}.${name}" PROPERTIES DISABLED TRUE
+  )
 endfunction(einsums_add_performance_test)
 
 #:

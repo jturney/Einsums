@@ -9,6 +9,15 @@ repos:
         additional_dependencies: [ cmake-format==0.6.10 ]
         args: [ "-c", ".cmake-format.py" ]
 
+  - repo: local
+    hooks:
+      - id: cmake-audit
+        name: Audit CMake files for undefined-variable typos
+        entry: tools/cmake-audit/cmake_audit.py
+        language: python
+        files: (CMakeLists.txt|.*\.cmake)$
+        exclude: (.*cmake-build-.*|.*build/.*|.*\.einsums-studio/.*)
+
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v16.0.6
     hooks:
@@ -23,7 +32,7 @@ repos:
     hooks:
       - id: insert-license
         name: "Check license: C++"
-        files: \.(cpp|hpp)
+        files: \.(cpp|hpp)$
         exclude: (.*cmake-build-.*|.*build/.*)
         args:
           - --license-filepath

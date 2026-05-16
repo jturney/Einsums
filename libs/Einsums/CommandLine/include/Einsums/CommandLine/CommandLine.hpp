@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <concepts>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -41,8 +42,9 @@ struct Range {
     long long max_v = (std::numeric_limits<long long>::max)();
 };
 
+// NOLINTNEXTLINE
 inline Range RangeBetween(long long min_v, long long max_v) {
-    return Range{min_v, max_v};
+    return Range{.min_v = min_v, .max_v = max_v};
 }
 
 struct ParseResult {
@@ -57,15 +59,12 @@ struct ExclusiveCategory;
 
 // -------------------------- Registry ------------------------------------- //
 
-struct Registry {
+struct EINSUMS_EXPORT Registry {
     std::list<OptionBase *>        options;
     std::list<OptionCategory *>    categories;
     std::list<ExclusiveCategory *> exclusions;
 
-    static Registry &instance() {
-        static Registry R;
-        return R;
-    }
+    static Registry &instance();
 
     void add_option(OptionBase *o) { options.push_back(o); }
     void add_category(OptionCategory *c) { categories.push_back(c); }
@@ -145,18 +144,21 @@ inline bool parse_value(std::string_view sv, long long &out, std::string &err) {
     return false;
 }
 inline bool parse_value(std::string_view sv, double &out, std::string &err) {
+    // Note: std::from_chars for double is not available on all platforms (e.g. Apple Clang),
+    // so we use std::stod with exception handling instead.
     try {
-        size_t      idx = 0;
         std::string tmp(sv);
-        double      v = std::stod(tmp, &idx);
-        if (idx == tmp.size()) {
-            out = v;
+        size_t      pos = 0;
+        out             = std::stod(tmp, &pos);
+        if (pos == tmp.size()) {
             return true;
         }
-    } catch (...) {
+        err = fmt::format("invalid real '{}'", sv);
+        return false;
+    } catch (std::exception const &) {
+        err = fmt::format("invalid real '{}'", sv);
+        return false;
     }
-    err = fmt::format("invalid real '{}'", sv);
-    return false;
 }
 
 // -------------------------- Core types ----------------------------------- //
@@ -252,6 +254,7 @@ struct Setter {
     std::function<void(T const &)> fn;
     Setter() = default;
     template <typename F>
+        requires(!std::same_as<std::remove_cvref_t<T>, Setter>)
     explicit Setter(F &&f) : fn(std::forward<F>(f)) {}
 };
 
@@ -270,18 +273,20 @@ struct ImplicitValueTag {
 // template <typename T> ImplicitValueTag(std::decay_t<T>)->ImplicitValueTag<std::decay_t<T>>;
 
 template <typename T>
-inline auto Default(T &&v) -> DefaultTag<std::decay_t<T>> {
+inline auto Default(T &&v) -> DefaultTag<std::decay_t<T>> { // NOLINT
     return {std::forward<T>(v)};
 }
 
 template <typename T>
-inline auto ImplicitValue(T &&v) -> ImplicitValueTag<std::decay_t<T>> {
+inline auto ImplicitValue(T &&v) -> ImplicitValueTag<std::decay_t<T>> { // NOLINT
     return {std::forward<T>(v)};
 }
 
 struct ValueNameTag {
     std::string name;
 };
+
+// NOLINTNEXTLINE
 inline ValueNameTag ValueName(std::string n) {
     return {std::move(n)};
 }
@@ -303,6 +308,7 @@ struct Flag : OptionBase {
         (apply_arg(std::forward<Args>(args)), ...);
     }
 
+    // NOLINTNEXTLINE
     Flag &OnSet(std::function<void(bool const &)> f) {
         setter = std::move(f);
         return *this;
@@ -323,7 +329,7 @@ struct Flag : OptionBase {
     void apply_arg(Occurrence o) { occurrence = o; }
     void apply_arg(Location<bool> loc) { bound = loc.ptr; }
     void apply_arg(std::function<void(bool const &)> f) { setter = std::move(f); }
-    void apply_arg(Setter<bool> s) { setter = s.fn; }
+    void apply_arg(Setter<bool> const &s) { setter = s.fn; }
     void apply_arg(DefaultTag<bool> d) {
         value = d.v;
         if (bound)
@@ -375,7 +381,7 @@ struct Flag : OptionBase {
         fmt::print("  {:<{}}  {:<{}}  {}\n", fmt::format("--{}", long_name), pad_long, shorts, pad_short, help);
     }
 
-    bool get() const { return bound ? *bound : value; }
+    [[nodiscard]] bool get() const { return bound ? *bound : value; }
 };
 
 EINSUMS_EXPORT std::shared_ptr<ExclusiveCategory> make_yes_no(Flag &yes_flag, Flag &no_flag, bool default_value = false);
@@ -410,14 +416,17 @@ struct Opt : OptionBase {
     }
 
     // Fluent
+    // NOLINTNEXTLINE
     Opt &Implicit(T v) {
         implicit_value = std::move(v);
         return *this;
     }
+    // NOLINTNEXTLINE
     Opt &ValueName(StringRef n) {
         value_name = std::string(n.s);
         return *this;
     }
+    // NOLINTNEXTLINE
     Opt &OnSet(std::function<void(T const &)> f) {
         setter = std::move(f);
         return *this;
@@ -463,9 +472,10 @@ struct Opt : OptionBase {
   public:
     template <typename U = T>
     bool assign_checked(T const &tmp, std::string &error, bool from_config) {
+        (void)from_config;
         if constexpr (std::is_arithmetic_v<U>) {
             if (range.has_value()) {
-                long long vll = static_cast<long long>(tmp);
+                auto vll = static_cast<long long>(tmp);
                 if (vll < range->min_v || vll > range->max_v) {
                     error = fmt::format("value for '--{}' out of range [{}, {}]", long_name, range->min_v, range->max_v);
                     return false;
@@ -604,7 +614,7 @@ struct List : OptionBase {
         fmt::print("  {:<{}}  {:<{}}  {}\n", fmt::format("--{} <v1,v2,...>", long_name), pad_long, shorts, pad_short, help);
     }
 
-    std::vector<T> const &values() const { return vals; }
+    [[nodiscard]] std::vector<T> const &values() const { return vals; }
 };
 
 // -------------------------- OptEnum ------------------------------------- //
@@ -702,8 +712,8 @@ struct OptEnum : OptionBase {
                    keys);
     }
 
-    Enum const &get() const { return bound ? *bound : value; }
-    std::string to_string() const {
+    Enum const               &get() const { return bound ? *bound : value; }
+    [[nodiscard]] std::string to_string() const {
         for (auto &kv : mapping)
             if ((bound ? *bound : value) == kv.second)
                 return kv.first;
@@ -780,7 +790,7 @@ inline std::map<std::string, std::string, std::less<>> read_config(std::string_v
     if (!f)
         return kv;
     std::string buf;
-    char        tmp[4096];
+    char        tmp[4096]; // NOLINT
     size_t      n;
     while ((n = fread(tmp, 1, sizeof(tmp), f)) > 0)
         buf.append(tmp, tmp + n);
@@ -1012,7 +1022,7 @@ inline ParseResult parse_internal(std::vector<std::string> const &args, char con
                 v = std::string_view(it->second);
             if (!o->parse_token(o->long_name, v, err, /*from_config=*/true)) {
                 fmt::print(stderr, "config error for '{}': {}\n", o->long_name, err);
-                return {false, 1};
+                return {.ok = false, .exit_code = 1};
             }
         }
     }
@@ -1034,7 +1044,7 @@ inline ParseResult parse_internal(std::vector<std::string> const &args, char con
         if (pos_index >= pos.size()) {
             // No positional to consume -> treat as unknown (per your policy)
             if (unknown_args)
-                unknown_args->push_back(std::string(token));
+                unknown_args->emplace_back(token);
             err.clear();
             return true;
         }
@@ -1076,7 +1086,7 @@ inline ParseResult parse_internal(std::vector<std::string> const &args, char con
             OptionBase      *o    = detail::find_long(name);
             if (!o) {
                 if (unknown_args)
-                    unknown_args->push_back(std::string(tok));
+                    unknown_args->emplace_back(tok);
                 continue;
             }
 
@@ -1089,24 +1099,24 @@ inline ParseResult parse_internal(std::vector<std::string> const &args, char con
                     std::string_view next = args[i + 1];
                     if (!looks_like_option_token(next)) {
                         val = std::string_view(args[++i]); // consume as value
-                    } // else leave val = nullopt to allow ImplicitValue(...)
-                } // else leave val = nullopt
+                    }                                      // else leave val = nullopt to allow ImplicitValue(...)
+                }                                          // else leave val = nullopt
             }
 
             std::string err;
             if (!o->parse_token(name, val, err)) {
                 fmt::print(stderr, "error: {}\n", err);
-                return {false, 1};
+                return {.ok = false, .exit_code = 1};
             }
             if (o->on_seen)
                 o->on_seen();
             if (o->long_name == "help") {
                 print_help(prog);
-                return {false, 0};
+                return {.ok = false, .exit_code = 0};
             }
             if (o->long_name == "version") {
                 print_version(prog, version);
-                return {false, 0};
+                return {.ok = false, .exit_code = 0};
             }
             continue;
         }
@@ -1135,25 +1145,25 @@ inline ParseResult parse_internal(std::vector<std::string> const &args, char con
                             std::string_view next = args[i + 1];
                             if (!looks_like_option_token(next)) {
                                 val = std::string_view(args[++i]); // consume as value
-                            } // else leave nullopt to allow ImplicitValue(...)
-                        } // else leave nullopt
+                            }                                      // else leave nullopt to allow ImplicitValue(...)
+                        }                                          // else leave nullopt
                     }
                 }
 
                 std::string err;
                 if (!o->parse_token(std::string_view(&c, 1), val, err)) {
                     fmt::print(stderr, "error: {}\n", err);
-                    return {false, 1};
+                    return {.ok = false, .exit_code = 1};
                 }
                 if (o->on_seen)
                     o->on_seen();
                 if (o->long_name == "help") {
                     print_help(prog);
-                    return {false, 0};
+                    return {.ok = false, .exit_code = 0};
                 }
                 if (o->long_name == "version") {
                     print_version(prog, version);
-                    return {false, 0};
+                    return {.ok = false, .exit_code = 0};
                 }
             }
             continue;
@@ -1163,7 +1173,7 @@ inline ParseResult parse_internal(std::vector<std::string> const &args, char con
         std::string err;
         if (!consume_positional(tok, err)) {
             fmt::print(stderr, "error: {}\n", err);
-            return {false, 1};
+            return {.ok = false, .exit_code = 1};
         }
     }
 
@@ -1171,12 +1181,12 @@ inline ParseResult parse_internal(std::vector<std::string> const &args, char con
     for (auto *o : Registry::instance().options) {
         if ((o->occurrence == Occurrence::Required || o->occurrence == Occurrence::OneOrMore) && o->occurrences == 0) {
             fmt::print(stderr, "error: missing required option '--{}'\n", o->long_name);
-            return {false, 1};
+            return {.ok = false, .exit_code = 1};
         }
         std::string err;
         if (!o->validate(err)) {
             fmt::print(stderr, "error: {}\n", err);
-            return {false, 1};
+            return {.ok = false, .exit_code = 1};
         }
     }
 
@@ -1196,11 +1206,11 @@ inline ParseResult parse_internal(std::vector<std::string> const &args, char con
                     fmt::print(stderr, "--{}\n", (*it)->long_name);
                 }
             }
-            return {false, 1};
+            return {.ok = false, .exit_code = 1};
         }
     }
 
-    return {true, 0};
+    return {.ok = true, .exit_code = 0};
 }
 
 /**

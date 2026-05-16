@@ -12,10 +12,8 @@
 
 #include <fmt/format.h>
 
-#include <exception>
 #include <source_location>
 #include <string>
-#include <type_traits>
 
 #ifdef EINSUMS_COMPUTE_DEVICE_CODE
 #    include <cassert>
@@ -28,7 +26,7 @@ namespace einsums::detail {
  *
  * @versionadded{2.0.0}
  */
-struct assertion_error : std::logic_error {
+struct assertion_error : std::logic_error { // NOLINT(readability-identifier-naming)
   public:
     using std::logic_error::logic_error;
 };
@@ -40,6 +38,7 @@ struct assertion_error : std::logic_error {
  *
  * @versionadded{1.0.0}
  */
+// NOLINTNEXTLINE(readability-identifier-naming)
 using assertion_handler_type = void (*)(std::source_location const &loc, char const *expr, std::string const &msg);
 
 /**

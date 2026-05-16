@@ -7,15 +7,10 @@
 
 #include <condition_variable>
 #include <functional>
-#include <iostream>
 #include <list>
 #include <mutex>
-#include <thread>
-#include <vector>
 
-namespace einsums {
-
-namespace design_pats {
+namespace einsums::design_pats {
 
 /**
  * @struct Observable
@@ -97,7 +92,7 @@ struct Observable {
      * @versionadded{1.0.0}
      */
     T const &get_value() const {
-        std::lock_guard<std::mutex> lock(_mutex);
+        std::scoped_lock lock(_mutex);
         return _state;
     }
 
@@ -157,7 +152,7 @@ struct Observable {
      * @versionadded{1.0.0}
      */
     void attach(std::function<void(T const &)> observer) {
-        std::lock_guard<std::mutex> lock(_observer_mutex);
+        std::scoped_lock lock(_observer_mutex);
         _observers.push_back(std::move(observer));
     }
 
@@ -167,7 +162,7 @@ struct Observable {
      * @versionadded{1.0.0}
      */
     void detach(std::function<void(T const &)> const &observer) {
-        std::lock_guard<std::mutex> lock(_observer_mutex);
+        std::scoped_lock lock(_observer_mutex);
 
         _observers.remove_if([&observer](auto const &elem) { return observer.target() == elem.target(); });
     }
@@ -191,7 +186,7 @@ struct Observable {
         _value_changed++;
         _mutex.unlock();
 
-        std::lock_guard<std::mutex> lock(_observer_mutex);
+        std::scoped_lock lock(_observer_mutex);
         for (auto const &observer : _observers) {
             observer(*this); // Call each registered observer with the new values
         }
@@ -212,5 +207,4 @@ struct Observable {
     std::list<std::function<void(T const &)>> _observers{};      ///< List of observers
     std::mutex                                _observer_mutex{}; ///< Protects the observer list
 };
-} // namespace design_pats
-} // namespace einsums
+} // namespace einsums::design_pats

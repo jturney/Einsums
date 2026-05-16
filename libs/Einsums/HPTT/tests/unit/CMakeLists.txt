@@ -3,8 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-set(HPTTTests # CreatePlan
-)
+set(HPTTTests LargeTranspose HalfPrecisionTranspose)
 
 foreach(test ${HPTTTests})
   set(sources ${test}.cpp)

@@ -22,6 +22,17 @@ details are found in the reference. Follow the links below to find more informat
     arguments
 
 .. toctree::
+    :caption: Tutorials
+    :maxdepth: 1
+
+    tutorial_tensors
+    tutorial_einsum
+    tutorial_views
+    tutorial_linalg
+    tutorial_compute_graph
+    tutorial_performance
+
+.. toctree::
     :caption: User's Reference
     :maxdepth: 1
 
@@ -191,6 +202,13 @@ As of right now, Einsums is capable of the following:
 * Taking advantage of tensor layout. If the tensor is block diagonal or has blocks of zeros, the :cpp:class:`BlockTensor` and :cpp:class:`TiledTensor`
   classes can parallelize certain operations.
 * Mapping operations over all of a tensor's indices.
+* **PackedGemm backend**: BLIS-style cache-blocked packing for high-rank tensor contractions with multi-M,
+  multi-N, multi-K, and batch dimensions, automatically dispatched from ``einsum``.
+* **Computation graphs**: Capture, optimize, and replay sequences of tensor operations
+  (similar to CUDA Graphs). Includes 13 optimization passes, parallel execution,
+  control flow, and profiler integration with an interactive node viewer.
+* **Built-in profiler**: Real-time TCP server with imgui-based viewer showing flame graphs,
+  timelines, hotspots, and compute graph DAG visualization.
 * Limited interaction with Python.
     * A form of the ``einsum`` call works in Python. All Einsums functions exposed to Python can also consume NumPy arrays.
 * GPU acceleration for all of the above using HIP. Uses hipBLAS and hipSolver for the GPU linear algebra operations.

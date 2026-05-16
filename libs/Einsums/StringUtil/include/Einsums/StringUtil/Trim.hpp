@@ -6,6 +6,7 @@
 #pragma once
 
 #include <algorithm>
+#include <ranges>
 #include <string>
 
 namespace einsums::string_util {
@@ -18,7 +19,7 @@ namespace einsums::string_util {
  * @versionadded{1.0.0}
  */
 static inline void ltrim(std::string &s) {
-    auto first_nospace = std::find_if(s.cbegin(), s.cend(), [](unsigned char ch) { return !std::isspace(ch); });
+    auto first_nospace = std::ranges::find_if(s, [](unsigned char ch) { return !std::isspace(ch); });
     if (first_nospace != s.cend()) {
         s.erase(s.begin(), first_nospace);
     }
@@ -32,7 +33,7 @@ static inline void ltrim(std::string &s) {
  * @versionadded{1.0.0}
  */
 static inline void rtrim(std::string &s) {
-    s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), s.end());
+    s.erase(std::ranges::find_if(std::views::reverse(s), [](unsigned char ch) { return !std::isspace(ch); }).base(), s.end());
 }
 
 /**

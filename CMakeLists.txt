@@ -228,11 +228,47 @@ einsums_option(
 )
 if(EINSUMS_WITH_PRECOMPILED_HEADERS)
   set(EINSUMS_WITH_PRECOMPILED_HEADERS_INTERNAL ON)
-  # Only create the targets here. They will be configured later once all the modules are known.
-  add_library(einsums_precompiled_headers OBJECT libs/src/dummy.cpp)
-  add_executable(einsums_exe_precompiled_headers libs/src/dummy_main.cpp)
 
+  # PCH target for library modules (OBJECT library)
+  add_library(einsums_precompiled_headers OBJECT libs/src/dummy.cpp)
+  target_link_libraries(einsums_precompiled_headers PRIVATE einsums_base_libraries einsums_private_flags)
+  target_precompile_headers(einsums_precompiled_headers PRIVATE
+    # Standard library headers used across most modules
+    <algorithm>
+    <complex>
+    <cstddef>
+    <cstdint>
+    <functional>
+    <memory>
+    <string>
+    <string_view>
+    <tuple>
+    <type_traits>
+    <utility>
+    <vector>
+    # fmt (used via spdlog/logging throughout)
+    <fmt/format.h>
+  )
   set_target_properties(einsums_precompiled_headers PROPERTIES FOLDER "Core")
+
+  # PCH target for test/example executables
+  add_executable(einsums_exe_precompiled_headers libs/src/dummy_main.cpp)
+  target_link_libraries(einsums_exe_precompiled_headers PRIVATE einsums_base_libraries einsums_private_flags)
+  target_precompile_headers(einsums_exe_precompiled_headers PRIVATE
+    <algorithm>
+    <complex>
+    <cstddef>
+    <cstdint>
+    <functional>
+    <memory>
+    <string>
+    <string_view>
+    <tuple>
+    <type_traits>
+    <utility>
+    <vector>
+    <fmt/format.h>
+  )
   set_target_properties(einsums_exe_precompiled_headers PROPERTIES FOLDER "Core")
 endif()
 
@@ -335,6 +371,17 @@ if(EINSUMS_WITH_CUDA AND EINSUMS_WITH_HIP)
   )
 endif()
 
+# MPS (Metal Performance Shaders) — auto-enabled on Apple when no CUDA/HIP
+if(APPLE AND NOT EINSUMS_WITH_CUDA AND NOT EINSUMS_WITH_HIP)
+  einsums_option(EINSUMS_WITH_MPS BOOL "Enable Metal Performance Shaders GPU backend (default: ON on macOS)" ON CATEGORY "Build Targets")
+else()
+  einsums_option(EINSUMS_WITH_MPS BOOL "Enable Metal Performance Shaders GPU backend" OFF ADVANCED CATEGORY "Build Targets")
+endif()
+
+if(EINSUMS_WITH_MPS)
+  include(Einsums_SetupMPS)
+endif()
+
 if(EINSUMS_WITH_CUDA OR EINSUMS_WITH_HIP)
   einsums_add_config_define(EINSUMS_HAVE_GPU_SUPPORT)
   set(EINSUMS_WITH_GPU_SUPPORT ON)
@@ -350,6 +397,13 @@ else()
   )
 endif()
 
+# MPI distributed computing (optional)
+einsums_option(EINSUMS_WITH_MPI BOOL "Enable MPI distributed computing (default: OFF)" OFF CATEGORY "Build Targets")
+if(EINSUMS_WITH_MPI)
+  einsums_add_config_define(EINSUMS_HAVE_MPI)
+  find_package(MPI REQUIRED COMPONENTS CXX)
+endif()
+
 einsums_option(EINSUMS_USE_LIBRETT BOOL "Whether to build Einsums with LibreTT for GPU tensor contractions." OFF CATEGORY "Build Targets")
 
 if(EINSUMS_USE_LIBRETT)
@@ -359,13 +413,15 @@ endif()
 # ##################################################################################################
 # Utility configuration
 # ##################################################################################################
+
+# TODO Reenable hidden visiblity by default. Will require auditing all types the cross TU boundardies.
 set(EINSUMS_HIDDEN_VISIBILITY_DEFAULT ON)
-if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
-  set(EINSUMS_HIDDEN_VISIBILITY_DEFAULT OFF)
-endif()
-if(APPLE)
-  set(EINSUMS_HIDDEN_VISIBILITY_DEFAULT OFF)
-endif()
+# if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+#   set(EINSUMS_HIDDEN_VISIBILITY_DEFAULT OFF)
+# endif()
+# if(APPLE)
+#   set(EINSUMS_HIDDEN_VISIBILITY_DEFAULT OFF)
+# endif()
 
 einsums_option(
   EINSUMS_WITH_HIDDEN_VISIBILITY
@@ -451,14 +507,16 @@ einsums_option(
 )
 
 # Tuning and other things.
-einsums_option(
-  EINSUMS_ROW_MAJOR_DEFAULT BOOL "If true, tensors will be created in row-major by default. If false, they will be column-major." ON
-  CATEGORY "Generic" ADVANCED
-)
-
-if(EINSUMS_ROW_MAJOR_DEFAULT)
-  einsums_add_config_define(EINSUMS_ROW_MAJOR_DEFAULT)
-endif()
+#
+# Note: a previous EINSUMS_ROW_MAJOR_DEFAULT CMake option lived here.
+# It was wired to a `row_major_default` constant + `--row-major` CLI
+# flag in f7b072e8 (Sept 2025), then accidentally deleted from
+# Config/CompilerSpecific.hpp in 4bfe4491 (Dec 2025) during an
+# unrelated command-line-options refactor. The option + emitted
+# define became orphaned (nothing read the macro) and tensors have
+# been column-major-only since. Removed for clarity — if a per-build
+# layout default is ever re-added, the TensorImpl stride initializer
+# (~line 1770 of TensorImpl.hpp) is the place to wire it.
 
 # ##################################################################################################
 # Special diagnostic flags, do not enable by default, only if needed
@@ -517,7 +575,7 @@ include(Einsums_SetupCUDA)
 include(Einsums_SetupHIP)
 include(Einsums_SetupFFT)
 include(Einsums_SetupTracy)
-# include(Einsums_SetupHighway)   ## This is currently found in LinearAlgebra/examples
+include(Einsums_SetupImGui)
 include(Einsums_PerformCXXFeatureTests)
 einsums_perform_cxx_feature_tests()
 
@@ -585,9 +643,15 @@ if(EINSUMS_WITH_COMPILER_WARNINGS)
     einsums_add_compile_flag(-wd4828)
 
   else() # Trial and error approach for any other compiler ...
-    einsums_add_compile_flag_if_available(-Wall)
-    einsums_add_compile_flag_if_available(-Wextra)
-    einsums_add_compile_flag_if_available(-Wpedantic)
+    # NOTE: a typo in cmake/Einsums_AddCompileFlag.cmake (`${_conf}` vs.
+    # `${_config}`) silently disabled this entire block of warning flags
+    # for years. Fixing the typo uncorked thousands of accumulated
+    # warnings. The flags below are commented out as a single block until
+    # someone has time to do a focused warning-cleanup pass — re-enable
+    # them in chunks (one flag at a time, fix the cascade, repeat).
+    # einsums_add_compile_flag_if_available(-Wall)
+    # einsums_add_compile_flag_if_available(-Wextra)
+    # einsums_add_compile_flag_if_available(-Wpedantic)
     einsums_add_compile_flag_if_available(-Wno-strict-aliasing)
     einsums_add_compile_flag_if_available(-Wno-sign-promo)
     einsums_add_compile_flag_if_available(-Wno-attributes)
@@ -597,7 +661,6 @@ if(EINSUMS_WITH_COMPILER_WARNINGS)
     # warning
     einsums_add_compile_flag_if_available(-Wno-noexcept-type)
 
-    # Be extra strict about format checks Boost.Logging is built on fprintf, sadly
     einsums_add_compile_flag_if_available(-Wformat=2)
     einsums_add_compile_flag_if_available(-Wno-format-nonliteral)
 
@@ -605,23 +668,27 @@ if(EINSUMS_WITH_COMPILER_WARNINGS)
     einsums_add_compile_flag_if_available(-Winit-self)
 
     # For portability
-    einsums_add_compile_flag_if_available(-Wdouble-promotion)
+    # einsums_add_compile_flag_if_available(-Wdouble-promotion)
 
     # Warn about casting that violates qualifiers or alignment
-    einsums_add_compile_flag_if_available(-Wcast-qual)
+    # einsums_add_compile_flag_if_available(-Wcast-qual)
     if(NOT "${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
       # Clang is overeager in reporting cast alignment problems in Boost
       einsums_add_compile_flag_if_available(-Wcast-align)
     endif()
 
     einsums_add_compile_flag_if_available(-Werror=parentheses)
-    einsums_add_compile_flag_if_available(-Werror=reorder)
+    # TODO: re-enable once member-init-list ordering is cleaned up across
+    #       TensorImpl/Tensor headers.
+    # einsums_add_compile_flag_if_available(-Werror=reorder)
     einsums_add_compile_flag_if_available(-Werror=return-type)
     einsums_add_compile_flag_if_available(-Werror=sequence-point)
     einsums_add_compile_flag_if_available(-Werror=uninitialized)
     einsums_add_compile_flag_if_available(-Werror=format)
     einsums_add_compile_flag_if_available(-Werror=missing-braces)
-    einsums_add_compile_flag_if_available(-Werror=sign-compare)
+    # TODO: re-enable once int/size_t comparisons are cleaned up across
+    #       Tensor/LinearAlgebra/CommandLine headers.
+    # einsums_add_compile_flag_if_available(-Werror=sign-compare)
   endif()
 endif()
 
@@ -743,10 +810,10 @@ endif()
 if(EINSUMS_BUILD_PYTHON OR EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
   if(EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
     find_package(
-      Python "${EINSUMS_BUILD_PYTHON}" EXACT COMPONENTS Interpreter Development NumPy REQUIRED
+      Python "${EINSUMS_BUILD_PYTHON}" EXACT COMPONENTS Interpreter Development REQUIRED
     )
   else()
-    find_package(Python 3.10 COMPONENTS Interpreter Development NumPy REQUIRED)
+    find_package(Python 3.10 COMPONENTS Interpreter Development REQUIRED)
   endif()
 
   include(Einsums_SetupPybind11)
@@ -801,6 +868,8 @@ endif()
 # ##################################################################################################
 include(Einsums_GitCommit)
 einsums_add_config_define(EINSUMS_HAVE_GIT_COMMIT "\"${EINSUMS_WITH_GIT_COMMIT}\"")
+einsums_add_config_define(EINSUMS_HAVE_GIT_BRANCH "\"${EINSUMS_WITH_GIT_BRANCH}\"")
+einsums_add_config_define(EINSUMS_HAVE_GIT_DIRTY ${EINSUMS_WITH_GIT_DIRTY})
 
 include(Einsums_SetOutputPaths)
 
@@ -847,9 +916,77 @@ set(CMAKE_DEBUG_POSTFIX "d")
 set(EINSUMS_DEBUG_POSTFIX "d")
 
 # ##################################################################################################
+# Python autogen support — must precede libs/ so that PyEinsums-related
+# targets exist by the time individual modules' einsums_add_module(...)
+# hooks try to attach to them.
+# ##################################################################################################
+einsums_option(
+  EINSUMS_PYBIND_AUTOGEN BOOL "Build the einsums-pybind codegen tool and auto-generate Python bindings" OFF CATEGORY
+  "Advanced" ADVANCED
+)
+if(EINSUMS_PYBIND_AUTOGEN)
+  add_subdirectory(tools/einsums-pybind)
+
+  # Detect Clang's resource-dir and (on macOS) the SDK path so libtooling
+  # invocations can find system headers (``stdarg.h``, libc++ headers,
+  # macOS-specific includes). Without these, even a ``#include <string>``
+  # fails when running einsums-pybind standalone.
+  set(_pyb_clang_candidate "")
+  if(CMAKE_CXX_COMPILER MATCHES "clang")
+    set(_pyb_clang_candidate "${CMAKE_CXX_COMPILER}")
+  elseif(EXISTS "$ENV{CONDA_PREFIX}/bin/clang++")
+    set(_pyb_clang_candidate "$ENV{CONDA_PREFIX}/bin/clang++")
+  endif()
+  if(_pyb_clang_candidate)
+    execute_process(
+      COMMAND "${_pyb_clang_candidate}" -print-resource-dir
+      OUTPUT_VARIABLE EINSUMS_PYBIND_CLANG_RESOURCE_DIR
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+  endif()
+  if(APPLE AND CMAKE_OSX_SYSROOT)
+    set(EINSUMS_PYBIND_SYSROOT "${CMAKE_OSX_SYSROOT}")
+  endif()
+  # Third-party headers (fmt, spdlog, hdf5, ...) live in the active conda
+  # env's include dir. Project compile lines use ``-isystem ${CONDA}/include``;
+  # mirror that for codegen so transitive includes (e.g. Config.hpp ->
+  # fmt/format.h) resolve.
+  if(DEFINED ENV{CONDA_PREFIX} AND EXISTS "$ENV{CONDA_PREFIX}/include")
+    set(EINSUMS_PYBIND_EXTRA_ISYSTEM "$ENV{CONDA_PREFIX}/include")
+  endif()
+  message(STATUS "einsums-pybind resource-dir: ${EINSUMS_PYBIND_CLANG_RESOURCE_DIR}")
+  if(EINSUMS_PYBIND_SYSROOT)
+    message(STATUS "einsums-pybind sysroot: ${EINSUMS_PYBIND_SYSROOT}")
+  endif()
+  if(EINSUMS_PYBIND_EXTRA_ISYSTEM)
+    message(STATUS "einsums-pybind extra -isystem: ${EINSUMS_PYBIND_EXTRA_ISYSTEM}")
+  endif()
+endif()
+if(EINSUMS_BUILD_PYTHON AND EINSUMS_PYBIND_AUTOGEN)
+  add_subdirectory(libs/Einsums/Python)
+endif()
+
+# ##################################################################################################
 # Add libraries
 # ##################################################################################################
 add_subdirectory(libs)
+
+# ##################################################################################################
+# Finalize the einsums-pybind aggregator (single ``import einsums``).
+# Must run AFTER add_subdirectory(libs) so every annotated module has
+# already appended to the global PYBIND properties.
+# ##################################################################################################
+if(EINSUMS_BUILD_PYTHON AND EINSUMS_PYBIND_AUTOGEN)
+  include(Einsums_FinalizePybind)
+  einsums_finalize_pybind()
+endif()
+# Top-level einsums/ Python package was removed in favor of the einsums-pybind
+# codegen output. The codegen-driven extension is registered via
+# einsums_finalize_pybind() above.
+# if(EINSUMS_BUILD_PYTHON)
+#   add_subdirectory(einsums)
+# endif()
 
 # ##################################################################################################
 # Documentation toolchain (Sphinx, Doxygen, Breathe)
@@ -867,6 +1004,7 @@ einsums_option(EINSUMS_WITH_PROFILING_DEVTOOLS BOOL "Enable profile programs in 
 if (EINSUMS_WITH_PROFILING_DEVTOOLS)
   add_subdirectory(devtools/profiling)
 endif ()
+
 
 # ##################################################################################################
 # installation instructions

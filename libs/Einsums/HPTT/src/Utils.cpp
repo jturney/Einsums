@@ -29,22 +29,20 @@
  * @author: Paul Springer (springer@aices.rwth-aachen.de)
  */
 
+#include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/HPTT/Utils.hpp>
 
-#include <bit>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <list>
-#include <stdexcept>
-#include <stdio.h>
-#include <stdlib.h>
-#include <vector>
 
 #include "Primes.hpp"
 
 namespace hptt {
 
 template <>
-void getPrimeFactors(std::uint8_t n, std::list<std::uint8_t> &primeFactors) {
+void get_prime_factors(std::uint8_t n, std::list<std::uint8_t> &primeFactors) {
     primeFactors.clear();
 
     std::uint64_t factor_list = detail::char_factors[n];
@@ -113,7 +111,7 @@ void getPrimeFactors(std::uint8_t n, std::list<std::uint8_t> &primeFactors) {
 }
 
 template <>
-void getPrimeFactors(std::uint16_t n, std::list<std::uint16_t> &primeFactors) {
+void get_prime_factors(std::uint16_t n, std::list<std::uint16_t> &primeFactors) {
     primeFactors.clear();
 
     /*
@@ -125,8 +123,7 @@ void getPrimeFactors(std::uint16_t n, std::list<std::uint16_t> &primeFactors) {
 
     uint16_t quotient = n;
 
-    for (uint8_t index = 0; index < SHORT_PRIMES; index++) {
-        std::uint16_t prime = detail::short_primes[index];
+    for (unsigned short prime : detail::short_primes) {
         while (quotient % prime == 0) {
             quotient /= prime;
             primeFactors.push_back(prime);
@@ -154,7 +151,7 @@ void getPrimeFactors(std::uint16_t n, std::list<std::uint16_t> &primeFactors) {
 }
 
 template <>
-void getPrimeFactors(std::uint32_t n, std::list<std::uint32_t> &primeFactors) {
+void get_prime_factors(std::uint32_t n, std::list<std::uint32_t> &primeFactors) {
     primeFactors.clear();
 
     /*
@@ -166,8 +163,7 @@ void getPrimeFactors(std::uint32_t n, std::list<std::uint32_t> &primeFactors) {
 
     uint32_t quotient = n;
 
-    for (uint16_t index = 0; index < INT_PRIMES; index++) {
-        std::uint32_t prime = detail::int_primes[index];
+    for (unsigned int prime : detail::int_primes) {
         while (quotient % prime == 0) {
             quotient /= prime;
             primeFactors.push_back(prime);
@@ -195,7 +191,7 @@ void getPrimeFactors(std::uint32_t n, std::list<std::uint32_t> &primeFactors) {
 }
 
 template <>
-void getPrimeFactors(std::int8_t n, std::list<std::int8_t> &primeFactors) {
+void get_prime_factors(std::int8_t n, std::list<std::int8_t> &primeFactors) {
     primeFactors.clear();
 
     if (n <= 0) {
@@ -260,7 +256,7 @@ void getPrimeFactors(std::int8_t n, std::list<std::int8_t> &primeFactors) {
 }
 
 template <>
-void getPrimeFactors(std::int16_t n, std::list<std::int16_t> &primeFactors) {
+void get_prime_factors(std::int16_t n, std::list<std::int16_t> &primeFactors) {
     primeFactors.clear();
 
     /*
@@ -272,8 +268,7 @@ void getPrimeFactors(std::int16_t n, std::list<std::int16_t> &primeFactors) {
 
     int16_t quotient = n;
 
-    for (uint8_t index = 0; index < SHORT_PRIMES; index++) {
-        std::int16_t prime = detail::short_primes[index];
+    for (short prime : detail::short_primes) {
         while (quotient % prime == 0) {
             quotient /= prime;
             primeFactors.push_back(prime);
@@ -301,7 +296,7 @@ void getPrimeFactors(std::int16_t n, std::list<std::int16_t> &primeFactors) {
 }
 
 template <>
-void getPrimeFactors(std::int32_t n, std::list<std::int32_t> &primeFactors) {
+void get_prime_factors(std::int32_t n, std::list<std::int32_t> &primeFactors) {
     primeFactors.clear();
 
     /*
@@ -313,8 +308,7 @@ void getPrimeFactors(std::int32_t n, std::list<std::int32_t> &primeFactors) {
 
     int32_t quotient = n;
 
-    for (uint16_t index = 0; index < INT_PRIMES; index++) {
-        std::int32_t prime = detail::int_primes[index];
+    for (int prime : detail::int_primes) {
         while (quotient % prime == 0) {
             quotient /= prime;
             primeFactors.push_back(prime);
@@ -341,14 +335,14 @@ void getPrimeFactors(std::int32_t n, std::list<std::int32_t> &primeFactors) {
     }
 }
 
-int findPos(int value, int const *array, int n) {
+int find_pos(int value, int const *array, int n) {
     for (int i = 0; i < n; ++i)
         if (array[i] == value)
             return i;
     return -1;
 }
 
-void trashCache(double *A, double *B, int n) {
+void trash_cache(double *A, double *B, int n) {
 #ifdef _OPENMP
 #    pragma omp parallel
 #endif
@@ -381,15 +375,15 @@ static constexpr uint64_t factorials[]   = {1UL,
 
 uint64_t factorial(uint8_t n) {
     if (n >= num_factorials) {
-        throw std::overflow_error("Can not take a factorial that large!");
+        EINSUMS_THROW_EXCEPTION(std::overflow_error, "Can not take a factorial that large!");
     } else {
         return factorials[n];
     }
 }
 
-void accountForRowMajor(size_t const *sizeA, size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA,
-                        size_t const *offsetB, int const *perm, size_t *tmpSizeA, size_t *tmpOuterSizeA, size_t *tmpOuterSizeB,
-                        size_t *tmpOffsetA, size_t *tmpOffsetB, int *tmpPerm, int const dim, bool const useRowMajor) {
+void account_for_row_major(size_t const *sizeA, size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA,
+                           size_t const *offsetB, int const *perm, size_t *tmpSizeA, size_t *tmpOuterSizeA, size_t *tmpOuterSizeB,
+                           size_t *tmpOffsetA, size_t *tmpOffsetB, int *tmpPerm, int const dim, bool const useRowMajor) {
     for (int i = 0; i < dim; ++i) {
         int idx = i;
         if (useRowMajor) {
@@ -420,7 +414,7 @@ void accountForRowMajor(size_t const *sizeA, size_t const *outerSizeA, size_t co
 
 } // namespace hptt
 
-extern "C" void randomNumaAwareInit(float *data, long const *size, int dim) {
+extern "C" void random_numa_aware_init(float *data, long const *size, int dim) {
     long totalSize = 1;
     for (int i = 0; i < dim; i++)
         totalSize *= size[i];

@@ -60,7 +60,7 @@ class EINSUMS_EXPORT Einsums_BufferAllocator_vars final : public design_pats::Lo
      *
      * @versionadded{1.1.0}
      */
-    static void update_max_size(config_mapping_type<std::string> const &options);
+    static void update_max_size(ConfigMappingType<std::string> const &options);
 
     /**
      * @brief Get the maximum size of the counter.

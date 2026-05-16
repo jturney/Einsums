@@ -9,10 +9,6 @@
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
-#ifdef EINSUMS_COMPUTE_CODE
-#    include <Einsums/hipBLAS.hpp>
-#endif
-
 namespace einsums {
 namespace linear_algebra {
 namespace detail {
@@ -133,27 +129,6 @@ BiggestTypeT<T, TOther> impl_dot(einsums::detail::TensorImpl<T> const &in, einsu
     if (in.dims() != out.dims()) {
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not add two tensors with different sizes!");
     }
-
-#ifdef EINSUMS_COMPUTE_CODE
-    if constexpr (std::is_same_v<T, TOther> && blas::IsBlasableV<T>) {
-        // If one or both of the tensors are on GPU, use the GPU algorithm.
-        if (in.get_gpu_pointer() || out.get_gpu_pointer()) {
-            try {
-                auto in_lock  = in.gpu_cache_tensor();
-                auto out_lock = out.gpu_cache_tensor();
-
-                // Make sure the pointers got allocated.
-                if (in.get_gpu_pointer() && out.get_gpu_pointer()) {
-                    return blas::gpu::dot(in.size(), in.get_gpu_pointer().get(), 1, out.get_gpu_pointer().get(), 1);
-                }
-            } catch (std::exception &) {
-                // We couldn't allocate the pointers.
-            }
-        }
-
-        // No writeback since the tensors are const.
-    }
-#endif
 
     if (in.is_column_major() != out.is_column_major()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
@@ -281,31 +256,6 @@ BiggestTypeT<T, TOther> impl_true_dot(einsums::detail::TensorImpl<T> const &in, 
     if (in.dims() != out.dims()) {
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not add two tensors with different sizes!");
     }
-
-#ifdef EINSUMS_COMPUTE_CODE
-    if constexpr (std::is_same_v<T, TOther> && blas::IsBlasableV<T>) {
-        // If one or both of the tensors are on GPU, use the GPU algorithm.
-        if (in.get_gpu_pointer() || out.get_gpu_pointer()) {
-            try {
-                auto in_lock  = in.gpu_cache_tensor();
-                auto out_lock = out.gpu_cache_tensor();
-
-                // Make sure the pointers got allocated.
-                if (in.get_gpu_pointer() && out.get_gpu_pointer()) {
-                    if constexpr (IsComplexV<T>) {
-                        return blas::gpu::dotc(in.size(), in.get_gpu_pointer().get(), 1, out.get_gpu_pointer().get(), 1);
-                    } else {
-                        return blas::gpu::dot(in.size(), in.get_gpu_pointer().get(), 1, out.get_gpu_pointer().get(), 1);
-                    }
-                }
-            } catch (std::exception &) {
-                // We couldn't allocate the pointers.
-            }
-        }
-
-        // No copy since the tensors are const.
-    }
-#endif
 
     if (in.is_column_major() != out.is_column_major()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
@@ -513,18 +463,18 @@ BiggestTypeT<A, B, C> impl_dot(einsums::detail::TensorImpl<A> const &a, einsums:
 
 #ifndef DOXYGEN
 extern template EINSUMS_EXPORT float  impl_dot<float, float>(einsums::detail::TensorImpl<float> const &a,
-                                                             einsums::detail::TensorImpl<float> const &b);
+                                                            einsums::detail::TensorImpl<float> const &b);
 extern template EINSUMS_EXPORT double impl_dot<double, double>(einsums::detail::TensorImpl<double> const &a,
                                                                einsums::detail::TensorImpl<double> const &b);
 extern template EINSUMS_EXPORT        std::complex<float>
                                impl_dot<std::complex<float>, std::complex<float>>(einsums::detail::TensorImpl<std::complex<float>> const &a,
-                                                                                  einsums::detail::TensorImpl<std::complex<float>> const &b);
+                                                   einsums::detail::TensorImpl<std::complex<float>> const &b);
 extern template EINSUMS_EXPORT std::complex<double>
 impl_dot<std::complex<double>, std::complex<double>>(einsums::detail::TensorImpl<std::complex<double>> const &a,
                                                      einsums::detail::TensorImpl<std::complex<double>> const &b);
 
 extern template EINSUMS_EXPORT float  impl_true_dot<float, float>(einsums::detail::TensorImpl<float> const &a,
-                                                                  einsums::detail::TensorImpl<float> const &b);
+                                                                 einsums::detail::TensorImpl<float> const &b);
 extern template EINSUMS_EXPORT double impl_true_dot<double, double>(einsums::detail::TensorImpl<double> const &a,
                                                                     einsums::detail::TensorImpl<double> const &b);
 extern template EINSUMS_EXPORT        std::complex<float>

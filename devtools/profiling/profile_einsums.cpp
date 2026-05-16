@@ -94,7 +94,7 @@ void register_args() {
                                  einsums::cl::Location(global_bools["c"]));
 }
 
-int main(int argc, char **argv) {
+int         main(int argc, char **argv) {
 #pragma omp parallel
     {
 #pragma omp single

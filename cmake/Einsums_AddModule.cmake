@@ -162,7 +162,7 @@ include(Einsums_CodeCoverage)
 #:    it into the parent ``einsums`` library.
 function(einsums_add_module libname modulename)
   # Retrieve arguments
-  set(options CONFIG_FILES)
+  set(options CONFIG_FILES PYBIND)
   set(one_value_args BASE_LIBNAME)
   set(multi_value_args
       SOURCES
@@ -234,9 +234,17 @@ function(einsums_add_module libname modulename)
             headers
   )
 
-  # generate configuration header for this module
+  # Generate the per-module Defines.hpp. Skip this for the module that owns
+  # CONFIG_FILES (currently "Config"), because for that module the per-module
+  # path `<basename>/<modulename>/Defines.hpp` collides with the global path
+  # `<PROJECT_NAME>/Config/Defines.hpp` written below. Writing both would
+  # overwrite the file twice per CMake regen (once with the CONFIG-namespace
+  # subset, once with the default-namespace full set), bumping mtime every
+  # regen and cascading a full Einsums rebuild.
   set(config_header "${CMAKE_CURRENT_BINARY_DIR}/include/${basename}/${modulename}/Defines.hpp")
-  einsums_write_config_defines_file(NAMESPACE ${modulename_upper} FILENAME ${config_header})
+  if(NOT ${modulename}_CONFIG_FILES)
+    einsums_write_config_defines_file(NAMESPACE ${modulename_upper} FILENAME ${config_header})
+  endif()
   set(module_header "${CMAKE_CURRENT_BINARY_DIR}/include/${basename}/${modulename}.hpp")
   einsums_write_module_header(NAMESPACE ${modulename_upper} FILENAME ${module_header})
   set(generated_headers ${generated_headers} ${config_header} ${module_header})
@@ -259,9 +267,13 @@ function(einsums_add_module libname modulename)
   endif()
 
   # collect zombie generated headers
+  # ConfigStrings.hpp is generated later by einsums_create_configuration_summary
+  # (not here), so skip it — otherwise we delete it and every regen recreates
+  # it fresh, bumping mtime and cascading a full Einsums rebuild.
   file(GLOB_RECURSE zombie_generated_headers ${CMAKE_CURRENT_BINARY_DIR}/include/*.hpp)
   list(REMOVE_ITEM zombie_generated_headers ${generated_headers} ${compat_headers}
        ${CMAKE_CURRENT_BINARY_DIR}/include/${PROJECT_NAME}/Config/ModulesEnabled.hpp
+       ${CMAKE_CURRENT_BINARY_DIR}/include/${PROJECT_NAME}/Config/ConfigStrings.hpp
   )
   foreach(zombie_header IN LISTS zombie_generated_headers)
     einsums_warn("      Removing zombie generated header: ${zombie_header}")
@@ -334,7 +346,7 @@ function(einsums_add_module libname modulename)
     target_link_libraries(${libname}_${modulename} PRIVATE einsums_private_flags)
   endif()
 
-  if(EINSUMS_WITH_PRECOMPILED_HEADERS)
+  if(EINSUMS_WITH_PRECOMPILED_HEADERS AND NOT module_is_interface_library)
     target_precompile_headers(${libname}_${modulename} REUSE_FROM einsums_precompiled_headers)
   endif()
 
@@ -450,6 +462,44 @@ function(einsums_add_module libname modulename)
         OPTIONAL
       )
     endforeach()
+  endif()
+
+  # ----------------------------------------------------------------------
+  # Python autogen hook (Phase 5).
+  #
+  # When the module opts in via ``PYBIND`` and EINSUMS_PYBIND_AUTOGEN is
+  # set, run einsums-pybind on the module's HEADERS to emit a pybind11
+  # binding TU into ``${BIN}/generated/pybind/<libname>_<modulename>_pybind.cpp``,
+  # then build that into a Python extension named
+  # ``PyEinsums_<modulename>`` linked against the module's library so the
+  # bound symbols resolve. This runs at build time (not configure time)
+  # so editing a header retriggers regeneration on the next build.
+  # ----------------------------------------------------------------------
+  if(${modulename}_PYBIND AND EINSUMS_BUILD_PYTHON AND EINSUMS_PYBIND_AUTOGEN)
+    if(NOT TARGET einsums-pybind)
+      message(WARNING
+          "Module ${modulename} requested PYBIND but einsums-pybind target is missing — skipping autogen."
+      )
+    elseif(NOT headers)
+      message(STATUS "Module ${modulename}: PYBIND set but no HEADERS to scan — skipping autogen.")
+    else()
+      # Record the inputs needed by einsums_finalize_pybind. The actual
+      # add_custom_command goes in at finalize time so (a) it lives in
+      # root scope (CMake silently drops cross-scope custom-command
+      # outputs from target_sources, gotcha), and (b) every module's
+      # MODULE_DEPENDENCIES targets exist by then — Tensor for example
+      # depends on TypeSupport/TensorBase/TensorImpl/Utilities which all
+      # appear later in libs/Einsums/CMakeLists.txt and aren't TARGETs
+      # yet at this point.
+      set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_MODULES "${modulename}")
+      set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_LINK_TARGETS "${libname}_${modulename}")
+      set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_HEADERS_${modulename} ${headers})
+      set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_RELHEADERS_${modulename} ${${modulename}_HEADERS})
+      set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_DEPS_${modulename} ${${modulename}_MODULE_DEPENDENCIES})
+      set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_HEADER_ROOT_${modulename} "${HEADER_ROOT}")
+      set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_BIN_INC_${modulename} "${CMAKE_CURRENT_BINARY_DIR}/include")
+      set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_LIBNAME_${modulename} "${libname}")
+    endif()
   endif()
 
   # Link modules to their higher-level libraries

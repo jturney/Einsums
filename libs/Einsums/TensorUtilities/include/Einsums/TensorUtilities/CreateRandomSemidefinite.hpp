@@ -6,6 +6,8 @@
 #pragma once
 
 #include <Einsums/LinearAlgebra.hpp>
+#include <Einsums/Python/Annotations.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/Diagonal.hpp>
 
@@ -57,6 +59,7 @@ auto create_random_semidefinite(std::string const &name, int rows, int cols, Rem
 
     Evecs = std::get<0>(pair);
 
+    // NOLINTNEXTLINE(bugprone-random-generator-seed)
     std::default_random_engine engine;
 
     // Create random eigenvalues. Need to calculate the standard deviation from the mean.
@@ -88,6 +91,22 @@ auto create_random_semidefinite(std::string const &name, int rows, int cols, Rem
     ret.set_name(name);
 
     return ret;
+}
+
+/**
+ * @brief Python-bindable runtime-rank create_random_semidefinite.
+ *
+ * Builds a square positive (or negative) semi-definite matrix and returns it
+ * as a RuntimeTensor. Adapter over the typed Tensor<T, 2> entry point.
+ */
+template <typename T = double>
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_AS("create_random_semidefinite", double)
+    EINSUMS_PYBIND_INSTANTIATE_AS("create_random_semidefinite", float)
+        EINSUMS_PYBIND_INSTANTIATE_AS("create_random_semidefinite", std::complex<double>)
+            EINSUMS_PYBIND_INSTANTIATE_AS("create_random_semidefinite",
+                                          std::complex<float>) auto create_random_semidefinite(std::string const &name, int n)
+                -> RuntimeTensor<T> {
+    return RuntimeTensor<T>(create_random_semidefinite<T>(name, n, n));
 }
 
 } // namespace einsums

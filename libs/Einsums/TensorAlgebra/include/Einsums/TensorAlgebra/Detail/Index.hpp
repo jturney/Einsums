@@ -202,7 +202,7 @@ struct Indices : std::tuple<Args...> {
     /**
      * Construct a new Indices object using the given indices.
      */
-    Indices(Args... args) : std::tuple<Args...>(args...) {};
+    Indices(Args... args) : std::tuple<Args...>(args...){};
 };
 
 } // namespace einsums

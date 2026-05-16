@@ -18,11 +18,13 @@ set(_Einsums_modules
   CommandLine
   Concepts
   Config
+  CXX23
   Debugging
   Errors
   FFT
-  GPUMemory
-  GPUStreams
+  GPU
+  Comm
+  SIMD
   HPTT
   Iterator
   LinearAlgebra
@@ -30,20 +32,25 @@ set(_Einsums_modules
   Preprocessor
   Print
   Profile
+  PythonDemo
   Runtime
   RuntimeConfiguration
   StringUtil
+  TaskPool
   Tensor
+  PackedGemm
   TensorAlgebra
+  ComputeGraphTypes
+  ComputeGraph
+  TensorIO
   TensorBase
   TensorImpl
   TensorUtilities
   TypeSupport
   Utilities
   Version
-  hipBLAS
-  hipBLASVendor
   )
+
 # cmake-format: on
 
 einsums_info("")

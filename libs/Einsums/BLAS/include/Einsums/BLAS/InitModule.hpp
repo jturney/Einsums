@@ -21,25 +21,25 @@ namespace einsums {
  *
  * @versionadded{1.1.0}
  */
-EINSUMS_EXPORT int setup_Einsums_BLAS();
+EINSUMS_EXPORT int setup_Einsums_BLAS(); // NOLINT(readability-identifier-naming)
 
 /**
  * @brief Initialize the BLAS runtime.
  *
  * @versionadded{1.0.0}
  */
-EINSUMS_EXPORT void initialize_Einsums_BLAS();
+EINSUMS_EXPORT void initialize_Einsums_BLAS(); // NOLINT(readability-identifier-naming)
 
 /**
  * @brief Finalize the BLAS runtime.
  *
  * @versionadded{1.0.0}
  */
-EINSUMS_EXPORT void finalize_Einsums_BLAS();
+EINSUMS_EXPORT void finalize_Einsums_BLAS(); // NOLINT(readability-identifier-naming)
 
 namespace detail {
 #ifndef DOXYGEN
-static int initialize_module_Einsums_BLAS = setup_Einsums_BLAS();
+static int initialize_module_Einsums_BLAS = setup_Einsums_BLAS(); // NOLINT(bugprone-throwing-static-initialization)
 #endif
 
 } // namespace detail

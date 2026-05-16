@@ -45,8 +45,11 @@ if __name__ == "__main__":
         prog="merge_yml.py",
         description="Creates a conda environment yml file to develop Einsums.",
         usage="""
-        
-%(prog)s [OPTIONS] [COMPILER=default] [BLAS=openblas]""",
+
+%(prog)s [OPTIONS] [COMPILER=default] [BLAS=openblas]
+
+Options:
+  --docs    Include documentation build dependencies (Sphinx, Doxygen, etc.)""",
     )
 
     parser.add_argument(
@@ -65,9 +68,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "blas",
         nargs="?",
-        choices=["mkl", "openblas"],
+        choices=["accelerate", "mkl", "openblas"],
         default="openblas",
-        help="The BLAS library to use (optional; choices: mkl, openblas)",
+        help="The BLAS library to use (optional; choices: accelerate, mkl, openblas)",
     )
 
     args = parser.parse_args()
@@ -82,9 +85,13 @@ if __name__ == "__main__":
         print(f"Defaulting to MKL for BLAS.")
         args.blas = "mkl"
 
+    if platform.system() == "Darwin":
+        # Default to Accelerate for BLAS
+        print(f"Defaulting to Accelerate for BLAS on macOS.")
+        args.blas = "accelerate"
+
     snippets = ["snippets/common.yml", f"snippets/compiler/{args.compiler}.yml",
                 f"snippets/blas/{args.blas}.yml", f"snippets/os/{platform.system()}.yml"]
     if args.docs:
         snippets.append("snippets/docs.yml")
-
     merge_yaml_files(args.output, *snippets)

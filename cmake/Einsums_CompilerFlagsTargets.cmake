@@ -11,6 +11,15 @@ add_library(einsums_public_flags INTERFACE)
 target_compile_features(einsums_private_flags INTERFACE cxx_std_${EINSUMS_WITH_CXX_STANDARD})
 target_compile_features(einsums_public_flags INTERFACE cxx_std_${EINSUMS_WITH_CXX_STANDARD})
 
+# Make the EINSUMS_PYBIND_* annotation macros reachable from every module via
+# ``#include "Einsums/Python/Annotations.hpp"``. The macros expand to
+# ``[[clang::annotate(...)]]`` under Clang and to nothing on every other
+# compiler, so the include is harmless when the autogen tool isn't running.
+target_include_directories(einsums_public_flags
+    INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/libs/Einsums/Python/include>
+              $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+
 # Set other flags that should always be set
 
 # EINSUMS_DEBUG must be set without a generator expression as it determines ABI compatibility.

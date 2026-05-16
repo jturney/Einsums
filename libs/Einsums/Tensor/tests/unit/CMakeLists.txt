@@ -6,17 +6,13 @@
 set(TensorTests
     ArithmeticTensor.cpp
     BlockTensor.cpp
-    BlockDeviceTensor.hip
     RuntimeTensors.cpp
     TensorView.cpp
-    DeviceTensor_extras.hip
-    DeviceTensor.hip
-    DeviceTensorView.hip
-    DeviceTiledTensor.hip
     FunctionTensor.cpp
+    Symmetry.cpp
     TiledTensor.cpp
     Tensor.cpp
- Disk.cpp)
+    Disk.cpp)
 
 foreach(test ${TensorTests})
   # Extract base name of test Example1.cpp -> Example1, Example.2.hip -> Example
@@ -46,3 +42,13 @@ foreach(test ${TensorTests})
 
   einsums_add_unit_test("Modules.Tensor" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS})
 endforeach()
+
+einsums_add_python_unit_test(
+  "Modules.Tensor" RuntimeTensorPython
+  SCRIPT test_runtime_tensor_python.py
+)
+
+einsums_add_python_unit_test(
+  "Modules.Tensor" NumpyInteropPython
+  SCRIPT test_numpy_interop_python.py
+)

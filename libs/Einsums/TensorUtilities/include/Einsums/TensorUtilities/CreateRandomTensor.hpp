@@ -9,15 +9,13 @@
 #include <Einsums/Concepts/NamedRequirements.hpp>
 #include <Einsums/Config/CompilerSpecific.hpp>
 #include <Einsums/Logging.hpp>
+#include <Einsums/Python/Annotations.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 #include <Einsums/Utilities/Random.hpp>
 
-#include <bit>
-#include <complex>
 #include <concepts>
-#include <limits>
-#include <numbers>
 #include <omp.h>
 #include <random>
 #include <string>
@@ -110,9 +108,11 @@ auto create_random_tensor(bool row_major, std::string const &name, Distribution 
 template <typename T = double, bool Normalize = false, std::integral... MultiIndex>
 auto create_random_tensor(std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     if constexpr (IsComplexV<T>) {
-        return create_random_tensor<T, Normalize>(GlobalConfigMap::get_singleton().get_bool("row-major"), name, detail::unit_circle_distribution<T>(), index...);
+        return create_random_tensor<T, Normalize>(GlobalConfigMap::get_singleton().get_bool("row-major"), name,
+                                                  detail::UnitCircleDistribution<T>(), index...);
     } else {
-        return create_random_tensor<T, Normalize>(GlobalConfigMap::get_singleton().get_bool("row-major"), name, std::uniform_real_distribution<T>(-1, 1), index...);
+        return create_random_tensor<T, Normalize>(GlobalConfigMap::get_singleton().get_bool("row-major"), name,
+                                                  std::uniform_real_distribution<T>(-1, 1), index...);
     }
 }
 
@@ -145,7 +145,7 @@ auto create_random_tensor(std::string const &name, MultiIndex... index) -> Tenso
 template <typename T = double, bool Normalize = false, std::integral... MultiIndex>
 auto create_random_tensor(bool row_major, std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     if constexpr (IsComplexV<T>) {
-        return create_random_tensor<T, Normalize>(row_major, name, detail::unit_circle_distribution<T>(), index...);
+        return create_random_tensor<T, Normalize>(row_major, name, detail::UnitCircleDistribution<T>(), index...);
     } else {
         return create_random_tensor<T, Normalize>(row_major, name, std::uniform_real_distribution<T>(-1, 1), index...);
     }
@@ -236,10 +236,29 @@ auto create_random_tensor(bool row_major, std::string const &name, Distribution 
 template <typename T = double, bool Normalize = false, Container Indices>
 auto create_random_tensor(std::string const &name, Indices const &index) -> RuntimeTensor<T> {
     if constexpr (IsComplexV<T>) {
-        return create_random_tensor<T, Normalize>(GlobalConfigMap::get_singleton().get_bool("row-major"), name, detail::unit_circle_distribution<T>(), index);
+        return create_random_tensor<T, Normalize>(GlobalConfigMap::get_singleton().get_bool("row-major"), name,
+                                                  detail::UnitCircleDistribution<T>(), index);
     } else {
-        return create_random_tensor<T, Normalize>(GlobalConfigMap::get_singleton().get_bool("row-major"), name, std::uniform_real_distribution<T>(-1, 1), index);
+        return create_random_tensor<T, Normalize>(GlobalConfigMap::get_singleton().get_bool("row-major"), name,
+                                                  std::uniform_real_distribution<T>(-1, 1), index);
     }
+}
+
+/**
+ * @brief Python-bindable runtime-rank create_random_tensor.
+ *
+ * Concrete-typed overload taking ``std::vector<size_t>`` so the
+ * einsums-pybind codegen can emit a direct binding. Forwards to the
+ * templated container overload above. Exposed across the four bound
+ * dtypes (float, double, complex<float>, complex<double>).
+ */
+template <typename T = double>
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_AS("create_random_tensor", double)
+    EINSUMS_PYBIND_INSTANTIATE_AS("create_random_tensor", float) EINSUMS_PYBIND_INSTANTIATE_AS("create_random_tensor", std::complex<double>)
+        EINSUMS_PYBIND_INSTANTIATE_AS("create_random_tensor",
+                                      std::complex<float>) auto create_random_tensor(std::string const         &name,
+                                                                                     std::vector<size_t> const &dims) -> RuntimeTensor<T> {
+    return create_random_tensor<T, false>(name, dims);
 }
 
 /**
@@ -271,19 +290,10 @@ auto create_random_tensor(std::string const &name, Indices const &index) -> Runt
 template <typename T = double, bool Normalize = false, Container Indices>
 auto create_random_tensor(bool row_major, std::string const &name, Indices const &index) -> RuntimeTensor<T> {
     if constexpr (IsComplexV<T>) {
-        return create_random_tensor<T, Normalize>(row_major, name, detail::unit_circle_distribution<T>(), index);
+        return create_random_tensor<T, Normalize>(row_major, name, detail::UnitCircleDistribution<T>(), index);
     } else {
         return create_random_tensor<T, Normalize>(row_major, name, std::uniform_real_distribution<T>(-1, 1), index);
     }
 }
-
-#if defined(EINSUMS_COMPUTE_CODE)
-template <typename T = double, bool Normalize = false, typename... MultiIndex>
-auto create_random_gpu_tensor(std::string const &name, MultiIndex... index) -> DeviceTensor<T, sizeof...(MultiIndex)> {
-    DeviceTensor<T, sizeof...(MultiIndex)> out{name, einsums::detail::DEV_ONLY, index...};
-    out = create_random_tensor<T, Normalize, MultiIndex...>(name, index...);
-    return out;
-}
-#endif
 
 } // namespace einsums

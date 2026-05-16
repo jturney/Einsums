@@ -7,9 +7,10 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(UtilitiesHeaders Einsums/Utilities/Tuple.hpp Einsums/Utilities/Random.hpp
                      Einsums/Utilities/InitModule.hpp Einsums/Utilities/InCollection.hpp
+        Einsums/Utilities/TemporaryFilename.hpp
 )
 
-set(UtilitiesSources Random.cpp InitModule.cpp)
+set(UtilitiesSources Random.cpp InitModule.cpp TemporaryFilename.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(

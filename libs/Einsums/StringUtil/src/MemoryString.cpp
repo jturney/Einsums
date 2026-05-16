@@ -9,10 +9,9 @@
 
 #include <string>
 
-namespace einsums {
-namespace string_util {
+namespace einsums::string_util {
 
-namespace detail {
+namespace {
 
 static constexpr size_t get_prefix(char ch) {
     switch (ch) {
@@ -79,7 +78,7 @@ static constexpr int char_to_int(char ch) {
     }
 }
 
-} // namespace detail
+} // namespace
 
 size_t memory_string(std::string const &mem_spec) {
 
@@ -88,7 +87,7 @@ size_t memory_string(std::string const &mem_spec) {
 
     trim(mem_copy);
 
-    enum { INT_PART, FRAC_PART, PREFIX, UNIT, END } state;
+    enum : std::uint8_t { INT_PART, FRAC_PART, PREFIX, UNIT, END } state;
 
     state = INT_PART;
 
@@ -97,10 +96,10 @@ size_t memory_string(std::string const &mem_spec) {
         switch (state) {
         case INT_PART:
             if (std::isalpha(ch)) {
-                size_t prefix = detail::get_prefix(ch);
+                size_t prefix = get_prefix(ch);
 
                 if (prefix == 0) {
-                    size_t unit = detail::get_unit(ch);
+                    size_t unit = get_unit(ch);
 
                     if (unit == 0) {
                         EINSUMS_THROW_EXCEPTION(
@@ -119,7 +118,7 @@ size_t memory_string(std::string const &mem_spec) {
                 state = FRAC_PART;
             } else if (std::isdigit(ch)) {
                 out *= 10;
-                out += detail::char_to_int(ch);
+                out += char_to_int(ch);
             } else if (std::isspace(ch)) {
                 state = PREFIX;
             } else {
@@ -129,10 +128,10 @@ size_t memory_string(std::string const &mem_spec) {
             break;
         case FRAC_PART:
             if (std::isalpha(ch)) {
-                size_t prefix = detail::get_prefix(ch);
+                size_t prefix = get_prefix(ch);
 
                 if (prefix == 0) {
-                    size_t unit = detail::get_unit(ch);
+                    size_t unit = get_unit(ch);
 
                     if (unit == 0) {
                         EINSUMS_THROW_EXCEPTION(
@@ -149,7 +148,7 @@ size_t memory_string(std::string const &mem_spec) {
                 }
             } else if (std::isdigit(ch)) {
                 mult /= 10;
-                out += detail::char_to_int(ch) * mult;
+                out += char_to_int(ch) * mult;
             } else if (std::isspace(ch)) {
                 state = PREFIX;
             } else {
@@ -159,10 +158,10 @@ size_t memory_string(std::string const &mem_spec) {
             break;
         case PREFIX:
             if (std::isalpha(ch)) {
-                size_t prefix = detail::get_prefix(ch);
+                size_t prefix = get_prefix(ch);
 
                 if (prefix == 0) {
-                    size_t unit = detail::get_unit(ch);
+                    size_t unit = get_unit(ch);
 
                     if (unit == 0) {
                         EINSUMS_THROW_EXCEPTION(
@@ -186,7 +185,7 @@ size_t memory_string(std::string const &mem_spec) {
             break;
         case UNIT:
             if (std::isalpha(ch)) {
-                size_t unit = detail::get_unit(ch);
+                size_t unit = get_unit(ch);
 
                 if (unit == 0) {
                     EINSUMS_THROW_EXCEPTION(
@@ -215,6 +214,4 @@ size_t memory_string(std::string const &mem_spec) {
 
     return (size_t)out;
 }
-} // namespace string_util
-
-} // namespace einsums
+} // namespace einsums::string_util

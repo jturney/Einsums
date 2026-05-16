@@ -3,7 +3,11 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-set(profile_tests)
+set(profile_tests
+    ProfileRingBuffer.cpp
+    ProfileConsumer.cpp
+    ProfileAnnotations.cpp
+)
 
 foreach(test ${profile_tests})
   # Extract base name of test Example1.cpp -> Example1, Example.2.hip -> Example

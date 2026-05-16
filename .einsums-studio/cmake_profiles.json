@@ -1,0 +1,15 @@
+{
+    "active": "Build",
+    "profiles": [
+        {
+            "buildDirectory": "build",
+            "buildType": "RelWithDebInfo",
+            "enabled": true,
+            "generator": "Ninja",
+            "name": "Build",
+            "pythonExtraPaths": [
+                "build/lib"
+            ]
+        }
+    ]
+}

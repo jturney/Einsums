@@ -8,104 +8,103 @@
 #include <memory>
 
 namespace einsums {
+using std::toupper;
 
 EINSUMS_SINGLETON_IMPL(GlobalConfigMap)
 
 GlobalConfigMap::GlobalConfigMap()
-    : str_map_{ConfigMap<std::string>::create()}, int_map_{ConfigMap<std::int64_t>::create()}, double_map_{ConfigMap<double>::create()},
-      bool_map_{ConfigMap<bool>::create()} {
+    : _str_map{ConfigMap<std::string>::create()}, _int_map{ConfigMap<std::int64_t>::create()}, _double_map{ConfigMap<double>::create()},
+      _bool_map{ConfigMap<bool>::create()} {
 }
 
 bool GlobalConfigMap::empty() const noexcept {
-    return str_map_->get_value().empty() && int_map_->get_value().empty() && double_map_->get_value().empty();
+    return _str_map->get_value().empty() && _int_map->get_value().empty() && _double_map->get_value().empty();
 }
 
 size_t GlobalConfigMap::size() const noexcept {
-    return str_map_->get_value().size() + int_map_->get_value().size() + double_map_->get_value().size();
+    return _str_map->get_value().size() + _int_map->get_value().size() + _double_map->get_value().size();
 }
 
 size_t GlobalConfigMap::max_size() const noexcept {
-    return str_map_->get_value().max_size() + int_map_->get_value().max_size() + double_map_->get_value().max_size();
+    return _str_map->get_value().max_size() + _int_map->get_value().max_size() + _double_map->get_value().max_size();
 }
 
 std::string GlobalConfigMap::get_string(std::string const &key) const noexcept {
-    if (str_map_->get_value().contains(key)) {
-        return str_map_->get_value().at(key);
+    if (_str_map->get_value().contains(key)) {
+        return _str_map->get_value().at(key);
     } else {
         return "";
     }
 }
 
-std::string GlobalConfigMap::get_string(std::string const &key, std::string const &dephault) const noexcept {
-    if (str_map_->get_value().contains(key)) {
-        return str_map_->get_value().at(key);
+std::string GlobalConfigMap::get_string(std::string const &key, std::string const &default_value) const noexcept {
+    if (_str_map->get_value().contains(key)) {
+        return _str_map->get_value().at(key);
     } else {
-        return dephault;
+        return default_value;
     }
 }
 
-std::int64_t GlobalConfigMap::get_int(std::string const &key, std::int64_t dephault) const noexcept {
-    if (int_map_->get_value().contains(key)) {
-        return int_map_->get_value().at(key);
+std::int64_t GlobalConfigMap::get_int(std::string const &key, std::int64_t default_value) const noexcept {
+    if (_int_map->get_value().contains(key)) {
+        return _int_map->get_value().at(key);
     } else {
-        return dephault;
+        return default_value;
     }
 }
-double GlobalConfigMap::get_double(std::string const &key, double dephault) const noexcept {
-    if (double_map_->get_value().contains(key)) {
-        return double_map_->get_value().at(key);
+double GlobalConfigMap::get_double(std::string const &key, double default_value) const noexcept {
+    if (_double_map->get_value().contains(key)) {
+        return _double_map->get_value().at(key);
     } else {
-        return dephault;
+        return default_value;
     }
 }
-bool GlobalConfigMap::get_bool(std::string const &key, bool dephault) const noexcept {
-    if (bool_map_->get_value().contains(key)) {
-        return bool_map_->get_value().at(key);
+bool GlobalConfigMap::get_bool(std::string const &key, bool default_value) const noexcept {
+    if (_bool_map->get_value().contains(key)) {
+        return _bool_map->get_value().at(key);
     } else {
-        return dephault;
+        return default_value;
     }
 }
 
 void GlobalConfigMap::set_string(std::string const &key, std::string const &value) {
-    (*str_map_).get_value()[key] = value;
+    (*_str_map).get_value()[key] = value;
 }
 
 void GlobalConfigMap::set_int(std::string const &key, std::int64_t value) {
-    (*int_map_).get_value()[key] = value;
+    (*_int_map).get_value()[key] = value;
 }
 
 void GlobalConfigMap::set_double(std::string const &key, double value) {
-    (*double_map_).get_value()[key] = value;
+    (*_double_map).get_value()[key] = value;
 }
 
 void GlobalConfigMap::set_bool(std::string const &key, bool value) {
-    (*bool_map_).get_value()[key] = value;
+    (*_bool_map).get_value()[key] = value;
 }
 
 std::shared_ptr<ConfigMap<std::string>> GlobalConfigMap::get_string_map() noexcept {
-    return str_map_;
+    return _str_map;
 }
 std::shared_ptr<ConfigMap<std::int64_t>> GlobalConfigMap::get_int_map() noexcept {
-    return int_map_;
+    return _int_map;
 }
 std::shared_ptr<ConfigMap<double>> GlobalConfigMap::get_double_map() noexcept {
-    return double_map_;
+    return _double_map;
 }
 std::shared_ptr<ConfigMap<bool>> GlobalConfigMap::get_bool_map() noexcept {
-    return bool_map_;
+    return _bool_map;
 }
 
-size_t einsums::hashes::insensitive_hash<std::string>::operator()(std::string const &str) const noexcept {
+size_t einsums::hashes::InsensitiveHash<std::string>::operator()(std::string const &str) const noexcept {
     size_t hash = 0;
 
-    // Calculate the mask. If size_t is N bytes, mask for the top N bits.
-    // The first part creates a Mersenne value with the appropriate number of bits.
-    // The second shifts it to the top.
-    constexpr size_t mask = (((size_t)1 << sizeof(size_t)) - 1) << (7 * sizeof(size_t));
+    // Calculate the mask for the top byte of size_t.
+    constexpr size_t mask = static_cast<size_t>(0xFF) << (8 * (sizeof(size_t) - 1));
 
-    for (char ch : str) {
-        char upper = std::toupper(ch);
-        if (upper == '-') { // Convert dashes to underscores.
+    for (char const ch : str) {
+        char upper = toupper(ch); // NOLINT
+        if (upper == '-') {       // Convert dashes to underscores.
             upper = '_';
         }
 
@@ -120,18 +119,16 @@ size_t einsums::hashes::insensitive_hash<std::string>::operator()(std::string co
     return hash;
 }
 
-size_t einsums::hashes::insensitive_hash<char *>::operator()(char const *str) const noexcept {
+size_t einsums::hashes::InsensitiveHash<char *>::operator()(char const *str) const noexcept {
     size_t hash = 0;
 
-    // Calculate the mask. If size_t is N bytes, mask for the top N bits.
-    // The first part creates a Mersenne value with the appropriate number of bits.
-    // The second shifts it to the top.
-    constexpr size_t mask       = (((size_t)1 << sizeof(size_t)) - 1) << (7 * sizeof(size_t));
+    // Calculate the mask for the top byte of size_t.
+    constexpr size_t mask       = static_cast<size_t>(0xFF) << (8 * (sizeof(size_t) - 1));
     size_t           curr_index = 0;
 
     while (str[curr_index] != 0) {
-        char upper = std::toupper(str[curr_index]);
-        if (upper == '-') { // Convert dashes to underscores.
+        char upper = std::toupper(str[curr_index]); // NOLINT
+        if (upper == '-') {                         // Convert dashes to underscores.
             upper = '_';
         }
 
@@ -148,40 +145,40 @@ size_t einsums::hashes::insensitive_hash<char *>::operator()(char const *str) co
 }
 
 void GlobalConfigMap::lock() {
-    str_map_->lock();
-    int_map_->lock();
-    double_map_->lock();
-    bool_map_->lock();
+    _str_map->lock();
+    _int_map->lock();
+    _double_map->lock();
+    _bool_map->lock();
 }
 
 bool GlobalConfigMap::try_lock() {
-    bool res = str_map_->try_lock();
+    bool res = _str_map->try_lock();
 
     if (!res) {
         return false;
     }
 
-    res = int_map_->try_lock();
+    res = _int_map->try_lock();
 
     if (!res) {
-        str_map_->unlock();
+        _str_map->unlock();
         return false;
     }
 
-    res = double_map_->try_lock();
+    res = _double_map->try_lock();
 
     if (!res) {
-        str_map_->unlock();
-        int_map_->unlock();
+        _str_map->unlock();
+        _int_map->unlock();
         return false;
     }
 
-    res = bool_map_->try_lock();
+    res = _bool_map->try_lock();
 
     if (!res) {
-        str_map_->unlock();
-        int_map_->unlock();
-        double_map_->unlock();
+        _str_map->unlock();
+        _int_map->unlock();
+        _double_map->unlock();
         return false;
     }
 
@@ -189,10 +186,10 @@ bool GlobalConfigMap::try_lock() {
 }
 
 void GlobalConfigMap::unlock(bool notify) {
-    str_map_->unlock(notify);
-    int_map_->unlock(notify);
-    double_map_->unlock(notify);
-    bool_map_->unlock(notify);
+    _str_map->unlock(notify);
+    _int_map->unlock(notify);
+    _double_map->unlock(notify);
+    _bool_map->unlock(notify);
 }
 
 } // namespace einsums

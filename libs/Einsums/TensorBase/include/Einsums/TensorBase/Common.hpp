@@ -17,6 +17,18 @@
 namespace einsums {
 
 /**
+ * @brief Sentinel value for ``Tensor::Rank`` on tensor types whose rank is
+ *        not known at compile time (e.g. ``GeneralRuntimeTensor``).
+ *
+ * Concepts that compare ``Rank`` across tensor types (``IsSameRankV``,
+ * ``SameRank``, ``SameUnderlyingAndRank``) treat any operand whose
+ * ``Rank == dynamic_rank`` as a wildcard — no compile-time mismatch can
+ * be inferred against it. Runtime-rank checks remain the caller's
+ * responsibility.
+ */
+inline constexpr int dynamic_rank = -1;
+
+/**
  * @def DEFINE_STRUCT
  *
  * @brief Convenience macro for creating a type derived from a std::array.

@@ -10,9 +10,10 @@
 // Some elements of these tests come from Intel MKL
 // examples/c/dft/sources/basic_dp_real_dft_1d.c
 
+namespace {
 template <typename T>
 auto moda(int K, int L, int M) -> T {
-    return (T)(((long long)K * L) % M);
+    return static_cast<T>(((static_cast<long long>(K) * L) % M));
 }
 
 template <typename T>
@@ -30,11 +31,12 @@ void init_data(einsums::Tensor<T, 1> &data, int N, int H) {
 // Initialize array data to produce unit peak at y(H)
 template <typename T>
 void init_data(einsums::Tensor<std::complex<T>, 1> &data, int N, int H) {
-    double TWOPI = 6.2831853071795864769, phase;
-    int    n;
+    double const TWOPI = 6.2831853071795864769;
+    double       phase;
+    int          n;
 
     for (n = 0; n < N / 2 + 1; n++) {
-        phase = moda<T>(n, H, N) / N;
+        phase = static_cast<double>(moda<T>(n, H, N) / N);
         data(n).real(cos(TWOPI * phase) / N);
         data(n).imag(-sin(TWOPI * phase) / N);
     }
@@ -45,7 +47,7 @@ auto verify_r(einsums::Tensor<T, 1> &x) -> void {
     T   err, errthr, maxerr;
     int n;
 
-    errthr = 2.5 * log((T)N) / logf(2.0) * std::numeric_limits<T>::epsilon();
+    errthr = T{2.5} * log(static_cast<T>(N)) / std::numbers::ln2_v<T> * std::numeric_limits<T>::epsilon();
     maxerr = 0.0;
     for (n = 0; n < N; n++) {
         T re_exp = 0.0, re_got;
@@ -91,20 +93,18 @@ auto ifft1d_1() -> void {
 
     // Initialize data
     {
-        SourceBase TWOPI = 6.2831853071795864769, phase;
-        int        n;
+        double const TWOPI = 6.2831853071795864769;
+        double       phase;
+        int          n;
 
         for (n = 0; n < N; n++) {
-            phase = moda<SourceBase>(n, -H, N) / N;
+            phase = static_cast<double>(moda<SourceBase>(n, -H, N) / N);
             x_data(n).real(cos(TWOPI * phase) / N);
             x_data(n).imag(sin(TWOPI * phase) / N);
         }
     }
 
     fft::ifft(x_data, &x_result);
-
-    // println(x_data);
-    // println(x_result);
 
     // Verify that x has unit peak at H
     {
@@ -219,6 +219,7 @@ auto fft1d_1() -> void {
     }
 }
 
+} // namespace
 TEST_CASE("fft1") {
     fft1d_1<float, std::complex<float>>();
 }

@@ -30,6 +30,8 @@ enum AlgorithmChoice {
     GER,          /// Outer product
     GEMV,         /// Matrix-vector product
     GEMM,         /// Matrix-matrix product
+    PACKED_GEMM,  /// Used packed GEMM backend
+    SORT_GEMM,    /// Auto sort (permute) + GEMM
     INDETERMINATE /// Something happened and the einsum call failed.
 };
 } // namespace detail
@@ -390,13 +392,6 @@ constexpr auto last_stride(std::tuple<PositionsInX...> const &indices, XType con
     }
 }
 
-#ifdef EINSUMS_COMPUTE_CODE
-template <DeviceTensorConcept XType, typename... PositionsInX>
-constexpr auto last_stride(std::tuple<PositionsInX...> const &indices, XType const &X) -> size_t {
-    return X.stride(std::get<sizeof...(PositionsInX) - 1>(indices));
-}
-#endif
-
 template <typename XType, typename... PositionsInX>
 constexpr auto last_stride(std::tuple<PositionsInX...> const &indices, einsums::detail::TensorImpl<XType> const &X) -> size_t {
     if (X.is_row_major()) {
@@ -749,6 +744,24 @@ struct CUnique {
  */
 template <class T>
 using CUniqueT = typename CUnique<T>::type;
+
+/**
+ * @struct DecayElements
+ *
+ * Applies std::decay_t to each element type in a tuple.
+ * Useful for stripping const/ref qualifiers added by DifferenceT/IntersectT
+ * when tuple_cat produces const-qualified element types.
+ */
+template <typename Tuple>
+struct DecayElements;
+
+template <typename... Ts>
+struct DecayElements<std::tuple<Ts...>> {
+    using type = std::tuple<std::decay_t<Ts>...>;
+};
+
+template <typename Tuple>
+using DecayElementsT = typename DecayElements<Tuple>::type;
 
 /**
  * @struct Reverse

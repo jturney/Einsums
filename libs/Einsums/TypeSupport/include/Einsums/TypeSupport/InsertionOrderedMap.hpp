@@ -5,8 +5,6 @@
 
 #pragma once
 
-#include <algorithm>
-#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -16,183 +14,203 @@ namespace einsums {
 template <class K, class V, class Hash = std::hash<K>, class Eq = std::equal_to<K>>
 class InsertionOrderedMap {
   public:
-    using map_type      = std::unordered_map<K, V, Hash, Eq>;
-    using value_type    = typename map_type::value_type; // pair<const K, V>
-    using size_type     = typename map_type::size_type;
-    using map_iterator  = typename map_type::iterator;
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    using map_type = std::unordered_map<K, V, Hash, Eq>;
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    using value_type = typename map_type::value_type; // pair<const K, V>
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    using size_type = typename map_type::size_type;
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    using map_iterator = typename map_type::iterator;
+    // NOLINTNEXTLINE(readability-identifier-naming)
     using map_citerator = typename map_type::const_iterator;
 
   private:
     // We iterate over order_ (vector of iterators into map_) to preserve insertion order.
-    std::vector<map_iterator> order_;
-    map_type                  map_;
-
-    // (Optional) accelerate find->order position; skip for brevity/clarity.
-    // std::unordered_map<K, size_t, Hash, Eq> pos_;
+    std::vector<map_iterator>               _order;
+    map_type                                _map;
+    std::unordered_map<K, size_t, Hash, Eq> _pos; // key -> index in order_ for O(1) find
 
   public:
     InsertionOrderedMap() = default;
 
     // ----- Iterator types that yield references into map_ -----
-    class iterator {
+    class Iterator {
       public:
-        using vec_iter          = typename std::vector<map_iterator>::const_iterator;
-        using difference_type   = std::ptrdiff_t;
+        // NOLINTNEXTLINE(readability-identifier-naming)
+        using vec_iter = typename std::vector<map_iterator>::const_iterator;
+        // NOLINTNEXTLINE(readability-identifier-naming)
+        using difference_type = std::ptrdiff_t;
+        // NOLINTNEXTLINE(readability-identifier-naming)
         using iterator_category = std::bidirectional_iterator_tag;
-        using reference         = value_type &;
-        using pointer           = value_type *;
+        // NOLINTNEXTLINE(readability-identifier-naming)
+        using reference = value_type &;
+        // NOLINTNEXTLINE(readability-identifier-naming)
+        using pointer = value_type *;
 
-        iterator() = default;
-        iterator(vec_iter it) : it_(it) {}
+        Iterator() = default;
+        Iterator(vec_iter it) : _it(it) {}
 
-        reference operator*() const { return **it_; }
-        pointer   operator->() const { return std::addressof(**it_); }
+        reference operator*() const { return **_it; }
+        pointer   operator->() const { return std::addressof(**_it); }
 
-        iterator &operator++() {
-            ++it_;
+        Iterator &operator++() {
+            ++_it;
             return *this;
         }
-        iterator operator++(int) {
+        Iterator operator++(int) {
             auto tmp = *this;
             ++*this;
             return tmp;
         }
-        iterator &operator--() {
-            --it_;
+        Iterator &operator--() {
+            --_it;
             return *this;
         }
-        iterator operator--(int) {
+        Iterator operator--(int) {
             auto tmp = *this;
             --*this;
             return tmp;
         }
 
-        friend bool operator==(iterator const &a, iterator const &b) { return a.it_ == b.it_; }
-        friend bool operator!=(iterator const &a, iterator const &b) { return !(a == b); }
+        friend bool operator==(Iterator const &a, Iterator const &b) { return a._it == b._it; }
+        friend bool operator!=(Iterator const &a, Iterator const &b) { return !(a == b); }
         // expose order iterator for internal construction
-        vec_iter raw() const { return it_; }
+        vec_iter raw() const { return _it; }
 
       private:
-        vec_iter it_{};
+        vec_iter _it{};
     };
 
-    class const_iterator {
+    class ConstIterator {
       public:
-        using vec_iter          = typename std::vector<map_iterator>::const_iterator;
-        using difference_type   = std::ptrdiff_t;
+        // NOLINTNEXTLINE(readability-identifier-naming)
+        using vec_iter = typename std::vector<map_iterator>::const_iterator;
+        // NOLINTNEXTLINE(readability-identifier-naming)
+        using difference_type = std::ptrdiff_t;
+        // NOLINTNEXTLINE(readability-identifier-naming)
         using iterator_category = std::bidirectional_iterator_tag;
-        using reference         = value_type const &;
-        using pointer           = value_type const *;
+        // NOLINTNEXTLINE(readability-identifier-naming)
+        using reference = value_type const &;
+        // NOLINTNEXTLINE(readability-identifier-naming)
+        using pointer = value_type const *;
 
-        const_iterator() = default;
-        const_iterator(vec_iter it) : it_(it) {}
-        const_iterator(iterator const &it) : it_(it.raw()) {}
+        ConstIterator() = default;
+        ConstIterator(vec_iter it) : _it(it) {}
+        ConstIterator(Iterator const &it) : _it(it.raw()) {}
 
-        reference operator*() const { return **it_; }
-        pointer   operator->() const { return std::addressof(**it_); }
+        reference operator*() const { return **_it; }
+        pointer   operator->() const { return std::addressof(**_it); }
 
-        const_iterator &operator++() {
-            ++it_;
+        ConstIterator &operator++() {
+            ++_it;
             return *this;
         }
-        const_iterator operator++(int) {
+        ConstIterator operator++(int) {
             auto tmp = *this;
             ++*this;
             return tmp;
         }
-        const_iterator &operator--() {
-            --it_;
+        ConstIterator &operator--() {
+            --_it;
             return *this;
         }
-        const_iterator operator--(int) {
+        ConstIterator operator--(int) {
             auto tmp = *this;
             --*this;
             return tmp;
         }
 
-        friend bool operator==(const_iterator const &a, const_iterator const &b) { return a.it_ == b.it_; }
-        friend bool operator!=(const_iterator const &a, const_iterator const &b) { return !(a == b); }
+        friend bool operator==(ConstIterator const &a, ConstIterator const &b) { return a._it == b._it; }
+        friend bool operator!=(ConstIterator const &a, ConstIterator const &b) { return !(a == b); }
 
       private:
-        vec_iter it_{};
+        vec_iter _it{};
     };
 
     // ----- Capacity -----
-    [[nodiscard]] bool empty() const noexcept { return map_.empty(); }
-    size_type          size() const noexcept { return map_.size(); }
+    [[nodiscard]] bool empty() const noexcept { return _map.empty(); }
+    size_type          size() const noexcept { return _map.size(); }
 
     // ----- Iteration (in insertion order) -----
-    iterator       begin() { return iterator{order_.begin()}; }
-    iterator       end() { return iterator{order_.end()}; }
-    const_iterator begin() const { return cbegin(); }
-    const_iterator end() const { return cend(); }
-    const_iterator cbegin() const { return const_iterator{order_.begin()}; }
-    const_iterator cend() const { return const_iterator{order_.end()}; }
+    Iterator      begin() { return Iterator{_order.begin()}; }
+    Iterator      end() { return Iterator{_order.end()}; }
+    ConstIterator begin() const { return cbegin(); }
+    ConstIterator end() const { return cend(); }
+    ConstIterator cbegin() const { return ConstIterator{_order.begin()}; }
+    ConstIterator cend() const { return ConstIterator{_order.end()}; }
 
-    // ----- Lookup -----
-    iterator find(K const &key) {
-        auto mit = map_.find(key);
-        if (mit == map_.end())
+    // ----- Lookup (O(1) via pos_ index) -----
+    Iterator find(K const &key) {
+        auto pit = _pos.find(key);
+        if (pit == _pos.end())
             return end();
-        // locate iterator in order_ (O(n)); for O(1) maintain a pos_ index.
-        auto vit = std::find_if(order_.begin(), order_.end(), [&](map_iterator const &it) { return it == mit; });
-        if (vit == order_.end())
-            return end(); // should not happen
-        return iterator{vit};
+        return Iterator{_order.begin() + static_cast<std::ptrdiff_t>(pit->second)};
     }
 
-    const_iterator find(K const &key) const {
-        auto mit = map_.find(key);
-        if (mit == map_.end())
+    ConstIterator find(K const &key) const {
+        auto pit = _pos.find(key);
+        if (pit == _pos.end())
             return cend();
-        auto vit = std::find_if(order_.begin(), order_.end(), [&](map_iterator const &it) { return it == mit; });
-        if (vit == order_.end())
-            return cend();
-        return const_iterator{vit};
+        return ConstIterator{_order.begin() + static_cast<std::ptrdiff_t>(pit->second)};
     }
 
     // ----- Insertion -----
     // insert/emplace preserve first-in insertion order
-    std::pair<iterator, bool> insert(value_type const &kv) {
-        auto [mit, inserted] = map_.insert(kv);
-        if (inserted)
-            order_.push_back(mit);
-        // find order position (last if inserted)
-        auto vit = inserted ? std::prev(order_.end())
-                            : std::find_if(order_.begin(), order_.end(), [&](map_iterator const &it) { return it == mit; });
-        return {iterator{vit}, inserted};
+    std::pair<Iterator, bool> insert(value_type const &kv) {
+        auto [mit, inserted] = _map.insert(kv);
+        if (inserted) {
+            _pos[mit->first] = _order.size();
+            _order.push_back(mit);
+        }
+        size_t idx = _pos[mit->first];
+        return {Iterator{_order.begin() + static_cast<std::ptrdiff_t>(idx)}, inserted};
     }
 
     template <class... Args>
-    std::pair<iterator, bool> emplace(Args &&...args) {
-        auto [mit, inserted] = map_.emplace(std::forward<Args>(args)...);
-        if (inserted)
-            order_.push_back(mit);
-        auto vit = inserted ? std::prev(order_.end())
-                            : std::find_if(order_.begin(), order_.end(), [&](map_iterator const &it) { return it == mit; });
-        return {iterator{vit}, inserted};
+    std::pair<Iterator, bool> emplace(Args &&...args) {
+        auto [mit, inserted] = _map.emplace(std::forward<Args>(args)...);
+        if (inserted) {
+            _pos[mit->first] = _order.size();
+            _order.push_back(mit);
+        }
+        size_t idx = _pos[mit->first];
+        return {Iterator{_order.begin() + static_cast<std::ptrdiff_t>(idx)}, inserted};
     }
 
     // like operator[]: inserts default if missing and returns reference
     V &operator[](K const &key) {
-        auto [mit, inserted] = map_.try_emplace(key);
-        if (inserted)
-            order_.push_back(mit);
+        auto [mit, inserted] = _map.try_emplace(key);
+        if (inserted) {
+            _pos[key] = _order.size();
+            _order.push_back(mit);
+        }
         return mit->second;
     }
 
-    V       &at(K const &key) { return map_.at(key); }
-    V const &at(K const &key) const { return map_.at(key); }
+    V       &at(K const &key) { return _map.at(key); }
+    V const &at(K const &key) const { return _map.at(key); }
 
-    // (optional) erase by key; keeps order_ in sync
+    /// Returns 1 if the key exists, 0 otherwise (compatible with std::map::count).
+    size_type count(K const &key) const { return _map.count(key); }
+
+    /// Check whether a key exists.
+    bool contains(K const &key) const { return _map.count(key) != 0; }
+
+    // (optional) erase by key; keeps order_ and pos_ in sync
     size_type erase(K const &key) {
-        auto mit = map_.find(key);
-        if (mit == map_.end())
+        auto pit = _pos.find(key);
+        if (pit == _pos.end())
             return 0;
-        auto vit = std::find_if(order_.begin(), order_.end(), [&](map_iterator const &it) { return it == mit; });
-        if (vit != order_.end())
-            order_.erase(vit);
-        map_.erase(mit);
+        size_t idx = pit->second;
+        // Remove from order_ and update pos_ for shifted elements
+        _order.erase(_order.begin() + static_cast<std::ptrdiff_t>(idx));
+        _pos.erase(pit);
+        // Update indices for all elements after the erased one
+        for (size_t i = idx; i < _order.size(); ++i) {
+            _pos[_order[i]->first] = i;
+        }
+        _map.erase(key);
         return 1;
     }
 };

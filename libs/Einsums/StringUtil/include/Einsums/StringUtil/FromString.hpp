@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/StringUtil/BadLexicalCast.hpp>
 
 #include <algorithm>
@@ -21,7 +22,7 @@ namespace einsums {
  * @versionadded{1.0.0}
  */
 template <typename T, typename Enable = void>
-struct from_string_impl {
+struct FromStringImpl {
 
     /**
      * @brief Performs the string conversion.
@@ -56,12 +57,12 @@ T check_out_of_range(U const &value) {
     U const max = (std::numeric_limits<T>::max)();
     if constexpr (std::is_unsigned_v<U>) {
         if (value > max) {
-            throw std::out_of_range("from_string: out of range");
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "from_string: out of range");
         }
     } else {
         U const min = (std::numeric_limits<T>::min)();
         if (value < min || value > max) {
-            throw std::out_of_range("from_string: out of range");
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "from_string: out of range");
         }
     }
     return static_cast<T>(value);
@@ -85,13 +86,13 @@ void check_only_whitespace(std::basic_string<Char> const &s, std::size_t pos) {
     i = std::find_if(i, s.end(), [](int c) { return !std::isspace(c); });
 
     if (i != s.end()) {
-        throw std::invalid_argument("from_string: found non-whitespace after token");
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "from_string: found non-whitespace after token");
     }
 }
 
 #ifndef DOXYGEN
 template <typename T>
-struct from_string_impl<T, std::enable_if_t<std::is_integral_v<T>>> {
+struct FromStringImpl<T, std::enable_if_t<std::is_integral_v<T>>> {
     template <typename Char>
     static void call(std::basic_string<Char> const &value, int &target) {
         std::size_t pos = 0;
@@ -137,17 +138,17 @@ struct from_string_impl<T, std::enable_if_t<std::is_integral_v<T>>> {
 
     template <typename Char, typename U>
     static void call(std::basic_string<Char> const &value, U &target) {
-        using promoted_t = decltype(+std::declval<U>());
-        static_assert(!std::is_same_v<promoted_t, U>, "");
+        using PromotedT = decltype(+std::declval<U>());
+        static_assert(!std::is_same_v<PromotedT, U>);
 
-        promoted_t promoted;
+        PromotedT promoted;
         call(value, promoted);
         target = check_out_of_range<U>(promoted);
     }
 };
 
 template <typename T>
-struct from_string_impl<T, std::enable_if_t<std::is_floating_point_v<T>>> {
+struct FromStringImpl<T, std::enable_if_t<std::is_floating_point_v<T>>> {
     template <typename Char>
     static void call(std::basic_string<Char> const &value, float &target) {
         std::size_t pos = 0;
@@ -187,7 +188,7 @@ template <typename T, typename Char>
 T from_string(std::basic_string<Char> const &v) {
     T target;
     try {
-        from_string_impl<T>::call(v, target);
+        FromStringImpl<T>::call(v, target);
     } catch (...) {
         return bad_lexical_cast();
     }
@@ -211,7 +212,7 @@ template <typename T, typename U, typename Char>
 T from_string(std::basic_string<Char> const &v, U &&default_value) {
     T target;
     try {
-        from_string_impl<T>::call(v, target);
+        FromStringImpl<T>::call(v, target);
         return target;
     } catch (...) {
         return std::forward<U>(default_value);
@@ -223,7 +224,7 @@ template <typename T>
 T from_string(std::string const &v) {
     T target;
     try {
-        from_string_impl<T>::call(v, target);
+        FromStringImpl<T>::call(v, target);
     } catch (...) {
         throw bad_lexical_cast();
     }
@@ -234,7 +235,7 @@ template <typename T, typename U>
 T from_string(std::string const &v, U &&default_value) {
     T target;
     try {
-        from_string_impl<T>::call(v, target);
+        FromStringImpl<T>::call(v, target);
         return target;
     } catch (...) {
         return std::forward<U>(default_value);

@@ -7,6 +7,8 @@
 
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/LinearAlgebra.hpp>
+#include <Einsums/Python/Annotations.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/Diagonal.hpp>
 
@@ -58,6 +60,7 @@ auto create_random_definite(std::string const &name, int rows, int cols, RemoveC
 
     Evecs = std::get<0>(pair);
 
+    // NOLINTNEXTLINE(bugprone-random-generator-seed)
     std::default_random_engine engine;
 
     // Create random eigenvalues. Need to calculate the standard deviation from the mean.
@@ -87,6 +90,22 @@ auto create_random_definite(std::string const &name, int rows, int cols, RemoveC
     ret.set_name(name);
 
     return ret;
+}
+
+/**
+ * @brief Python-bindable runtime-rank create_random_definite.
+ *
+ * Builds a square SPD (or SND if mean < 0) matrix and returns it as a
+ * RuntimeTensor. Adapter over the typed Tensor<T, 2> entry point.
+ */
+template <typename T = double>
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_AS("create_random_definite", double)
+    EINSUMS_PYBIND_INSTANTIATE_AS("create_random_definite", float)
+        EINSUMS_PYBIND_INSTANTIATE_AS("create_random_definite", std::complex<double>)
+            EINSUMS_PYBIND_INSTANTIATE_AS("create_random_definite",
+                                          std::complex<float>) auto create_random_definite(std::string const &name, int n)
+                -> RuntimeTensor<T> {
+    return RuntimeTensor<T>(create_random_definite<T>(name, n, n));
 }
 
 } // namespace einsums

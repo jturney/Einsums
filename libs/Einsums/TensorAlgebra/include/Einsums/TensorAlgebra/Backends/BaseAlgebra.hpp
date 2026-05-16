@@ -14,7 +14,6 @@
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
 
-#include <cmath>
 #include <cstddef>
 #include <tuple>
 #include <type_traits>
@@ -45,10 +44,10 @@ std::remove_cvref_t<T> einsums_generic_link_loop(std::tuple<LinkDims...> const  
 
         T sum{0.0};
 
-        EINSUMS_OMP_PARALLEL_FOR
+        // No OMP here — the link loop is always nested inside the parallel target loop.
         for (size_t i = 0; i < curr_dim; i++) {
             sum += einsums_generic_link_loop<__I + 1, T, ConjA, ConjB>(link_dims, A_link_strides, B_link_strides, A_index + i * A_stride,
-                                                                     B_index + i * B_stride, A, B);
+                                                                       B_index + i * B_stride, A, B);
         }
         return sum;
     }
@@ -72,12 +71,22 @@ void einsums_generic_target_loop(std::tuple<TargetDims...> const &target_dims, s
         size_t const B_stride = B_target_strides[__I];
         size_t const C_stride = C_target_strides[__I];
 
-        EINSUMS_OMP_PARALLEL_FOR
-        for (size_t i = 0; i < curr_dim; i++) {
-            einsums_generic_target_loop<__I + 1, ConjA, ConjB>(target_dims, link_dims, C_target_strides, A_target_strides, B_target_strides,
-                                                             A_link_strides, B_link_strides, C_index + i * C_stride, A_index + i * A_stride,
-                                                             B_index + i * B_stride, std::forward<T>(C_prefactor), C,
-                                                             std::forward<T>(AB_prefactor), A, B);
+        // Only parallelize the outermost target dimension to avoid nested OMP overhead and stack overflow.
+        if constexpr (__I == 0) {
+            EINSUMS_OMP_PARALLEL_FOR
+            for (size_t i = 0; i < curr_dim; i++) {
+                einsums_generic_target_loop<__I + 1, ConjA, ConjB>(target_dims, link_dims, C_target_strides, A_target_strides,
+                                                                   B_target_strides, A_link_strides, B_link_strides, C_index + i * C_stride,
+                                                                   A_index + i * A_stride, B_index + i * B_stride,
+                                                                   std::forward<T>(C_prefactor), C, std::forward<T>(AB_prefactor), A, B);
+            }
+        } else {
+            for (size_t i = 0; i < curr_dim; i++) {
+                einsums_generic_target_loop<__I + 1, ConjA, ConjB>(target_dims, link_dims, C_target_strides, A_target_strides,
+                                                                   B_target_strides, A_link_strides, B_link_strides, C_index + i * C_stride,
+                                                                   A_index + i * A_stride, B_index + i * B_stride,
+                                                                   std::forward<T>(C_prefactor), C, std::forward<T>(AB_prefactor), A, B);
+            }
         }
     }
 }
@@ -89,10 +98,11 @@ template <bool ConjA, bool ConjB, typename... CUniqueIndices, typename... AUniqu
     requires(CoreBasicTensorConcept<CType> || (!TensorConcept<CType> && sizeof...(CIndices) == 0))
 void einsum_generic_algorithm(std::tuple<CUniqueIndices...> const &C_unique, std::tuple<AUniqueIndices...> const & /*A_unique*/,
                               std::tuple<BUniqueIndices...> const & /*B_unique*/, std::tuple<LinkUniqueIndices...> const &link_unique,
-                              std::tuple<CIndices...> const &C_indices, std::tuple<AIndices...> const &A_indices,
+                              std::tuple<CIndices...> const & /*C_indices*/, std::tuple<AIndices...> const               &A_indices,
                               std::tuple<BIndices...> const &B_indices, std::tuple<TargetDims...> const &target_dims,
                               std::tuple<LinkDims...> const &link_dims, std::tuple<TargetPositionInC...> const &target_position_in_C,
-                              std::tuple<LinkPositionInLink...> const &link_position_in_link, ValueTypeT<CType> const C_prefactor, CType *C,
+                              std::tuple<LinkPositionInLink...> const & /*link_position_in_link*/, ValueTypeT<CType> const C_prefactor,
+                              CType                                                                         *C,
                               std::conditional_t<(sizeof(typename AType::ValueType) > sizeof(typename BType::ValueType)),
                                                  typename AType::ValueType, typename BType::ValueType> const AB_prefactor,
                               AType const &A, BType const &B) {

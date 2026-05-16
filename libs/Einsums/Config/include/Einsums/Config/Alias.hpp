@@ -18,6 +18,6 @@
  */
 #define ALIAS_TEMPLATE_FUNC(highLevelFunction, lowLevelFunction)                                                                           \
     template <typename... Args>                                                                                                            \
-    inline auto highLevelFunction(Args &&...args) -> decltype(lowLevelFunction(std::forward<Args>(args)...)) {                             \
+    inline auto highLevelFunction(Args &&...args)->decltype(lowLevelFunction(std::forward<Args>(args)...)) {                               \
         return lowLevelFunction(std::forward<Args>(args)...);                                                                              \
     }

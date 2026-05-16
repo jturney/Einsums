@@ -21,7 +21,7 @@ TEMPLATE_TEST_CASE("Full-Full", "[tensor]", float, double, int) {
     }
 
     SECTION("Row-Row") {
-        detail::TensorImpl<TestType> input(input_data.data(), {3, 3, 3}, true);
+        detail::TensorImpl<TestType> const input(input_data.data(), {3, 3, 3}, true);
 
         detail::TensorImpl<std::remove_cv_t<TestType>> output(output_data.data(), {3, 3, 3}, true);
 
@@ -88,7 +88,7 @@ TEMPLATE_TEST_CASE("Full-Full", "[tensor]", float, double, int) {
     }
 
     SECTION("Row-Column") {
-        detail::TensorImpl<TestType> input(input_data.data(), {3, 3, 3}, false);
+        detail::TensorImpl<TestType> const input(input_data.data(), {3, 3, 3}, false);
 
         detail::TensorImpl<std::remove_cv_t<TestType>> output(output_data.data(), {3, 3, 3}, true);
 
@@ -159,7 +159,7 @@ TEMPLATE_TEST_CASE("Full-Full", "[tensor]", float, double, int) {
     }
 
     SECTION("Column-Row") {
-        detail::TensorImpl<TestType> input(input_data.data(), {3, 3, 3}, true);
+        detail::TensorImpl<TestType> const input(input_data.data(), {3, 3, 3}, true);
 
         detail::TensorImpl<std::remove_cv_t<TestType>> output(output_data.data(), {3, 3, 3}, false);
 
@@ -230,7 +230,7 @@ TEMPLATE_TEST_CASE("Full-Full", "[tensor]", float, double, int) {
     }
 
     SECTION("Column-Column") {
-        detail::TensorImpl<TestType> input(input_data.data(), {3, 3, 3}, false);
+        detail::TensorImpl<TestType> const input(input_data.data(), {3, 3, 3}, false);
 
         detail::TensorImpl<std::remove_cv_t<TestType>> output(output_data.data(), {3, 3, 3}, false);
 
@@ -307,7 +307,7 @@ TEMPLATE_TEST_CASE("View-View", "[tensor]", float, double, int) {
 
     SECTION("Row Major") {
 
-        detail::TensorImpl<TestType> input(input_data.data(), {3, 3, 3}, {16, 4, 1});
+        detail::TensorImpl<TestType> const input(input_data.data(), {3, 3, 3}, {16, 4, 1});
 
         detail::TensorImpl<std::remove_cv_t<TestType>> output(output_data.data(), {3, 3, 3}, {16, 4, 1});
 
@@ -375,7 +375,7 @@ TEMPLATE_TEST_CASE("View-View", "[tensor]", float, double, int) {
 
     SECTION("Column Major") {
 
-        detail::TensorImpl<TestType> input(input_data.data(), {3, 3, 3}, {1, 4, 16});
+        detail::TensorImpl<TestType> const input(input_data.data(), {3, 3, 3}, {1, 4, 16});
 
         detail::TensorImpl<std::remove_cv_t<TestType>> output(output_data.data(), {3, 3, 3}, {1, 4, 16});
 

@@ -8,8 +8,8 @@
 #include <Einsums/Config/ExportDefinitions.hpp>
 
 #include <string>
-namespace einsums {
-namespace string_util {
+
+namespace einsums::string_util {
 
 /**
  * @brief Converts a memory specification string into a number of bytes.
@@ -31,5 +31,4 @@ namespace string_util {
  * @throws std::runtime_error If the string is improperly formatted.
  */
 EINSUMS_EXPORT size_t memory_string(std::string const &mem_spec);
-} // namespace string_util
-} // namespace einsums
+} // namespace einsums::string_util

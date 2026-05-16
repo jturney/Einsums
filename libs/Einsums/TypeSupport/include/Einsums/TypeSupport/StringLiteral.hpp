@@ -51,21 +51,21 @@ struct StringLiteral {
      *
      * @versionadded{1.0.0}
      */
-    constexpr StringLiteral(char const (&str)[N]) { std::copy_n(str, N, std::data(_arr)); }
+    constexpr StringLiteral(char const (&str)[N]) { std::copy_n(str, N, std::data(_arr)); } // NOLINT(modernize-avoid-c-arrays)
 
     /**
      * Returns the value as a string.
      *
      * @versionadded{1.0.0}
      */
-    std::string str() const { return std::string(string_view()); }
+    [[nodiscard]] std::string str() const { return std::string(string_view()); }
 
     /**
      * Returns the value as a string view.
      *
      * @versionadded{1.0.0}
      */
-    constexpr std::string_view string_view() const { return std::string_view(std::data(_arr), N - 1); }
+    [[nodiscard]] constexpr std::string_view string_view() const { return std::string_view(std::data(_arr), N - 1); }
 
     /**
      * @property _arr

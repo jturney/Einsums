@@ -26,7 +26,7 @@
   public:                                                                                                                                  \
     Type(PrivateConstructorStuff /*ignore*/) : Type() {                                                                                    \
     }                                                                                                                                      \
-    static auto get_singleton() -> Type &;                                                                                                 \
+    static auto get_singleton()->Type &;                                                                                                   \
     Type(const Type &) = delete;                                                                                                           \
     Type(Type &&)      = delete;
 
@@ -38,7 +38,7 @@
  * @versionadded{1.0.0}
  */
 #define EINSUMS_SINGLETON_IMPL(Type)                                                                                                       \
-    auto Type::get_singleton() -> Type & {                                                                                                 \
+    auto Type::get_singleton()->Type & {                                                                                                   \
         static std::unique_ptr<Type> singleton_instance = std::make_unique<Type>(PrivateConstructorStuff());                               \
         if (!singleton_instance) {                                                                                                         \
             singleton_instance = std::make_unique<Type>(PrivateConstructorStuff());                                                        \

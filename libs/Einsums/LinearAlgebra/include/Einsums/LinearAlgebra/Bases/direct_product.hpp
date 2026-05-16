@@ -11,10 +11,6 @@
 
 #include <fmt/format.h>
 
-#ifdef EINSUMS_COMPUTE_CODE
-#    include <Einsums/hipBLAS.hpp>
-#endif
-
 namespace einsums {
 namespace linear_algebra {
 namespace detail {
@@ -82,55 +78,6 @@ void impl_direct_product(CType alpha, einsums::detail::TensorImpl<AType> const &
     if (A.dims() != B.dims() || A.dims() != C->dims()) {
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not combine tensors with different sizes!");
     }
-
-#ifdef EINSUMS_COMPUTE_CODE
-    if constexpr (std::is_same_v<AType, BType> && std::is_same_v<AType, CType> && blas::IsBlasableV<AType>) {
-        int number_of_cached_tensors = 0;
-
-        if (A.get_gpu_pointer()) {
-            number_of_cached_tensors++;
-        }
-
-        if (B.get_gpu_pointer()) {
-            number_of_cached_tensors++;
-        }
-
-        if (C->get_gpu_pointer()) {
-            number_of_cached_tensors++;
-        }
-
-        // If two or more tensors are cached, do the GPU algorithm.
-        if (number_of_cached_tensors >= 2) {
-            try {
-
-                auto A_lock = A.gpu_cache_tensor();
-                auto B_lock = B.gpu_cache_tensor();
-                auto C_lock = C->gpu_cache_tensor();
-
-                // Next, make sure that all of the pointers were able to be allocated.
-                if (A.get_gpu_pointer() && B.get_gpu_pointer() && C->get_gpu_pointer()) {
-
-                    if (beta == CType{0.0}) {
-                        // memset has been overloaded for GPUPointers.
-                        std::memset(C->get_gpu_pointer(), 0, C->size() * sizeof(CType));
-                    } else if (beta != CType{1.0}) {
-                        blas::gpu::scal(C->size(), beta, C->get_gpu_pointer().get(), 1);
-                    }
-
-                    blas::gpu::dirprod(A.size(), alpha, A.get_gpu_pointer().get(), 1, B.get_gpu_pointer().get(), 1,
-                                       C->get_gpu_pointer().get(), 1);
-
-                    return;
-                }
-            } catch (std::exception &e) {
-                // We couldn't do the GPU algorithm. Do the CPU algorithm.
-            }
-        }
-
-        // Otherwise, perform a writeback any tensors on the GPU and perform the in-core algorithm.
-        C->tensor_from_gpu();
-    }
-#endif
 
     if (A.is_column_major() != B.is_column_major() || A.is_column_major() != C->is_column_major()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");

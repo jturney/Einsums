@@ -38,7 +38,7 @@ impl_true_dot<std::complex<float>, std::complex<float>>(einsums::detail::TensorI
                                                         einsums::detail::TensorImpl<std::complex<float>> const &b);
 template std::complex<double>
               impl_true_dot<std::complex<double>, std::complex<double>>(einsums::detail::TensorImpl<std::complex<double>> const &a,
-                                                                        einsums::detail::TensorImpl<std::complex<double>> const &b);
+                                                          einsums::detail::TensorImpl<std::complex<double>> const &b);
 template void impl_gemm<float, float, float, float, float>(char transA, char transB, float alpha,
                                                            einsums::detail::TensorImpl<float> const &A,
                                                            einsums::detail::TensorImpl<float> const &B, float beta,

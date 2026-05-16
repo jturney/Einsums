@@ -6,6 +6,7 @@
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile/Profile.hpp>
+#include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #if defined(EINSUMS_HAVE_PROFILER)
 namespace einsums::profile {
@@ -36,7 +37,7 @@ auto strip_ansi_sequences(std::string const &s) -> std::string {
                 }
                 continue;
             } else if (c1 == ']') {
-                // OSC: ESC ] ... terminated by BEL or ESC \
+                // OSC: ESC ] ... terminated by BEL or ESC '\'
                 i += 2;
                 while (i < s.size()) {
                     if (s[i] == '\x07') {
@@ -46,13 +47,13 @@ auto strip_ansi_sequences(std::string const &s) -> std::string {
                     if (s[i] == '\x1b' && i + 1 < s.size() && s[i + 1] == '\\') {
                         i += 2;
                         break;
-                    } // ESC \
-                    if (s[i] == '\x1b') break; // new ESC -> bail out
+                    } // ESC '\'
+                    if (s[i] == '\x1b')
+                        break; // new ESC -> bail out
                     ++i;
                 }
                 continue;
             } else {
-                // Other ESC sequences (2-byte minimum)
                 i += 2;
                 continue;
             }
@@ -64,278 +65,257 @@ auto strip_ansi_sequences(std::string const &s) -> std::string {
     return out;
 }
 
-// compute visible width (in code units; doesn't attempt grapheme width)
 auto visible_width(std::string const &s) -> size_t {
     return strip_ansi_sequences(s).size();
 }
 
-// print the original string (keeps ANSI/hyperlink escapes) and pad based on visible width
-void fmt_pad_and_print(std::ostream &os, std::string const &s, size_t width) {
-    size_t const vlen = visible_width(s);
-    fmt::print(os, "{}", s);
-    if (vlen < width) {
-        fmt::print(os, "{}", std::string(width - vlen, ' '));
-    }
-}
-
-template <typename... Args>
-void safe_print(std::ostream &os, fmt::text_style style, std::string_view format_str, Args &&...args) {
-    std::string output;
-    if (detail::is_terminal(os)) {
-        output = fmt::format(style, fmt::runtime(format_str), std::forward<Args>(args)...);
-    } else {
-        output = fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...);
-    }
-    fmt::print(os, "{}", output);
-}
-
-// ---------------------- Helpers for OSC-8 clickable links ----------------------
 auto make_clickable_file_line(std::string const &file, int line, std::string const &display) -> std::string {
     if (file.empty() || line <= 0)
         return display;
-    // OSC 8 format: ESC ] 8 ; ; URI ST <text> ESC ] 8 ; ; ST
-    // ST is ESC '\'
     std::string const uri = "file://" + file + ":" + std::to_string(line);
     std::string const esc = "\x1b]8;;";
     std::string const st  = "\x1b\\";
     return esc + uri + st + display + esc + st;
 }
 
-// ------------------ printing helpers ------------------
 auto ns_to_ms(ns const t) -> double {
     return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t).count();
 }
 
-auto escape_json(std::string const &s) -> std::string {
-    std::ostringstream o;
-    for (unsigned char const c : s) { // unsigned to avoid sign-extension issues
-        switch (c) {
-        case '"':
-            o << "\\\"";
-            break;
-        case '\\':
-            o << "\\\\";
-            break;
-        case '\b':
-            o << "\\b";
-            break;
-        case '\f':
-            o << "\\f";
-            break;
-        case '\n':
-            o << "\\n";
-            break;
-        case '\r':
-            o << "\\r";
-            break;
-        case '\t':
-            o << "\\t";
-            break;
-        default:
-            if (c <= 0x1F) { // control characters
-                o << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(c) << std::dec << std::setfill(' ');
-            } else {
-                o << c;
-            }
-        }
-    }
-    return o.str();
-}
-
-// color selection matching PNG thresholds
-auto style_for_percent(double p) -> fmt::text_style {
-    // thresholds: >80 hot red (bold), >65 light red, >20 yellow, <20 cyan/dim gray
-    if (p > 80.0)
-        return fg(fmt::color::red) | fmt::emphasis::bold;
-    if (p > 65.0)
-        return fg(fmt::color{0xFF6B6B}) | fmt::emphasis::bold; // light red
-    if (p > 20.0)
-        return fg(fmt::color::yellow);
-    if (p > 0.0)
-        return fg(fmt::color::turquoise);
-    return fg(fmt::color::gray);
-}
+// Use the shared json_escape from TypeSupport.
+auto const &escape_json = ::einsums::json_escape;
 
 } // namespace
 
+auto Profiler::instance() -> Profiler & {
+    static Profiler p;
+    return p;
+}
+
 void Profiler::print(bool detailed, std::ostream &os) {
-    std::lock_guard const lock(_mutex);
-    // compute per-thread totals (sum of top-level nodes exclusive)
-    for (auto &tkv : thread_data()) {
-        auto const &thread          = tkv.first;
-        double      thread_total_ms = 0.0;
-        for (auto &c : tkv.second.children) {
+    // Flush pending events before reading the tree
+    flush();
+    // Acquire shared lock on consumer's tree
+    auto        lock       = _consumer->lock_shared();
+    auto const &thread_map = _consumer->thread_data();
+
+    for (auto const &tkv : thread_map) {
+        auto const &thread_id = tkv.first;
+        auto const &ts        = tkv.second;
+
+        double thread_total_ms = 0.0;
+        for (auto const &c : ts.root.children) {
             thread_total_ms += ns_to_ms(c.second->total_exclusive);
         }
 
         // header
-        fmt::print(os, "\n");
-        safe_print(os, fmt::emphasis::bold | fg(fmt::color::white), "Thread: {}  (total exclusive: {:-7.3f} ms)\n", thread,
-                   thread_total_ms);
-        fmt::print(os, "{:-^157}\n", "");
+        std::string       tname        = _consumer->thread_name(thread_id);
+        std::string const thread_label = tname.empty() ? fmt::format("{}", thread_id) : fmt::format("{} ({})", tname, thread_id);
+        fprintln(os);
+        fprintln(os, fmt::emphasis::bold | fg(fmt::color::white), "Thread: {}  (total exclusive: {:-7.3f} ms)", thread_label,
+                 thread_total_ms);
+        fprintln(os, "{:-^157}", "");
 
-        // column header: % | time(ms) | name | file:line | func
         if (!detailed) {
-            fmt::print(os, " {:>10}  {:^10}  {:^13}  {:<60}  {:<30}  {:<}\n", "total(ms)", "count", "mean(ms)", "name", "file:line",
-                       "function");
-            fmt::print(os, "{:-^157}\n", "");
+            fprintln(os, " {:>10}  {:^10}  {:^13}  {:<60}  {:<30}  {:<}", "total(ms)", "count", "mean(ms)", "name", "file:line",
+                     "function");
+            fprintln(os, "{:-^157}", "");
         } else {
-            // show extra cols for min/max/avg and counters
-            fmt::print(os, " {:>10}  {:<60}  {:<30}  {:<20}  {:>8} {:>8} {:>8}\n", "total(ms)", "name", "file:line", "function", "min",
-                       "max", "avg");
-            fmt::print(os, "{:-^120}\n", "");
+            fprintln(os, " {:>10}  {:<60}  {:<30}  {:<20}  {:>8} {:>8} {:>8}", "total(ms)", "name", "file:line", "function", "min", "max",
+                     "avg");
+            fprintln(os, "{:-^120}", "");
         }
 
-        std::vector<AggNode *> nodes;
-        for (auto &c : tkv.second.children)
+        std::vector<AggNode const *> nodes;
+        for (auto const &c : ts.root.children)
             nodes.push_back(c.second.get());
 
-        for (auto *n : nodes) {
+        for (auto const *n : nodes) {
             print_node_recursive(os, n, thread_total_ms, 0, detailed);
         }
-        fmt::print(os, "\n");
+        fprintln(os);
     }
+
+    // Print profiler overhead summary
+    fprintln(os);
+    fprintln(os, fmt::emphasis::bold | fg(fmt::color::white), "Profiler overhead");
+    fprintln(os, "{:-^80}", "");
+    fprintln(os, "  push():  avg {:.1f} ns  ({} calls, {:.3f} ms total)", avg_push_overhead_ns(), total_push_count(),
+             static_cast<double>(_push_overhead_ns.load(std::memory_order_relaxed)) / 1'000'000.0);
+    fprintln(os, "  pop():   avg {:.1f} ns  ({} calls, {:.3f} ms total)", avg_pop_overhead_ns(), total_pop_count(),
+             static_cast<double>(_pop_overhead_ns.load(std::memory_order_relaxed)) / 1'000'000.0);
+    auto dropped = _consumer->dropped_count();
+    if (dropped > 0) {
+        fprintln(os, fg(fmt::color::red), "  dropped events: {}", dropped);
+    }
+    fprintln(os);
 }
 
 auto Profiler::export_json(std::string const &path) -> std::optional<std::string> {
-    std::lock_guard const lock(_mutex);
-    std::ofstream         ofs(path, std::ios::trunc);
+    flush();
+    auto        lock       = _consumer->lock_shared();
+    auto const &thread_map = _consumer->thread_data();
+
+    std::ofstream ofs(path, std::ios::trunc);
     if (!ofs)
         return std::nullopt;
     ofs << "{\n";
-    bool firstThread = true;
-    for (auto &tkv : thread_data()) {
-        if (!firstThread)
+    bool first_thread = true;
+    for (auto const &tkv : thread_map) {
+        if (!first_thread)
             ofs << ",\n";
-        firstThread = false;
+        first_thread = false;
         ofs << fmt::format("  \"{}\": ", tkv.first);
-        write_node_json(ofs, tkv.second, 2);
+        write_node_json(ofs, tkv.second.root, 2);
     }
     ofs << "\n}\n";
     return path;
 }
 
-void Profiler::write_node_json(std::ostream &ofs, AggNode const &n, int indent) {
+void Profiler::write_node_json(std::ostream &ofs, AggNode const &n, int indent) { // NOLINT
     std::string const ind(indent, ' ');
     ofs << ind << "{\n";
-    ofs << ind << "  \"name\": \"" << escape_json(n.name) << "\",\n";
+    ofs << ind << R"(  "name": ")" << escape_json(n.name) << "\",\n";
     ofs << ind << "  \"call_count\": " << n.call_count << ",\n";
     ofs << ind << "  \"exclusive_ms\": " << std::fixed << std::setprecision(6) << ns_to_ms(n.total_exclusive) << ",\n";
     ofs << ind << "  \"exclusive_min_ms\": " << ns_to_ms(n.exclusive_min) << ",\n";
     ofs << ind << "  \"exclusive_max_ms\": " << ns_to_ms(n.exclusive_max) << ",\n";
 
+    // annotations
+    ofs << ind << "  \"annotations\": {";
+    {
+        bool first = true;
+        for (auto const &a : n.annotations) {
+            if (!first)
+                ofs << ", ";
+            first = false;
+            // Check if there's a numeric annotation for this key
+            auto nit = n.numeric_annotations.find(a.first);
+            if (nit != n.numeric_annotations.end()) {
+                ofs << "\"" << escape_json(a.first)
+                    << "\": " << nit->second.total / static_cast<double>(std::max(static_cast<uint64_t>(1), nit->second.count));
+            } else {
+                ofs << "\"" << escape_json(a.first) << "\": \"" << escape_json(a.second) << "\"";
+            }
+        }
+    }
+    ofs << "},\n";
+
     // counters
     ofs << ind << "  \"counters\": {";
-    bool first = true;
-    for (auto &c : n.counters_total) {
-        if (!first)
-            ofs << ", ";
-        first              = false;
-        uint64_t const tot = c.second;
-        uint64_t const mn  = n.counters_min.at(c.first);
-        uint64_t const mx  = n.counters_max.at(c.first);
-        ofs << "\"" << escape_json(c.first) << R"(": {"total": )" << tot << ", \"min\": " << mn << ", \"max\": " << mx << "}";
+    {
+        bool first = true;
+        for (auto const &c : n.counters_total) {
+            if (!first)
+                ofs << ", ";
+            first              = false;
+            uint64_t const tot = c.second;
+            uint64_t const mn  = n.counters_min.at(c.first);
+            uint64_t const mx  = n.counters_max.at(c.first);
+            ofs << "\"" << escape_json(c.first) << R"(": {"total": )" << tot << ", \"min\": " << mn << ", \"max\": " << mx << "}";
+        }
     }
     ofs << "},\n";
 
     ofs << ind << "  \"children\": [\n";
-    bool firstChild = true;
-    for (auto &ch : n.children) {
-        if (!firstChild)
+    bool first_child = true;
+    for (auto const &ch : n.children) {
+        if (!first_child)
             ofs << ",\n";
-        firstChild = false;
+        first_child = false;
         write_node_json(ofs, *ch.second, indent + 4);
     }
     ofs << "\n" << ind << "  ]\n";
     ofs << ind << "}";
 }
 
+// NOLINTNEXTLINE
 void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double thread_total_ms, int depth, bool detailed) {
-    // depth indentation
-    std::string const indent(2 * depth, ' ');
-    double            excl_ms = ns_to_ms(n->total_exclusive);
-    double const      pct     = (thread_total_ms > 0.0) ? (excl_ms / thread_total_ms * 100.0) : 0.0;
+    std::string const indent(static_cast<size_t>(2) * static_cast<size_t>(depth), ' ');
+    double const      excl_ms = ns_to_ms(n->total_exclusive);
 
-    // name truncated to fit
     std::string name = indent + n->name;
     if (name.size() > 60)
         name = name.substr(0, 57) + "...";
 
-    // file:line & func retrieval is not stored in AggNode (we store in ActiveFrame). For this summary,
-    // we will not show file:line per node unless we had stored it per node earlier.
-    // The user requested clickable file:line; to provide that we need to attach one canonical file:line to the aggregated node.
-    // For simplicity, we will display the first-seen file:line if present. (We can extend to store file+line per node.)
-    // We'll attempt to extract a stored file:line from a node metadata map if available (not implemented) — fallback to blank.
-    std::string func = n->function;
-
-    // style
-    auto style = style_for_percent(pct);
-
-    // time, name, file:line (clickable), func
-    fmt::print(os, " ");
-    fmt::print(os, "{:10.3f}  ", excl_ms);
-    fmt::print(os, "{:10}  ", n->call_count);
-
-    auto variance = [](uint64_t n, int64_t M2) -> double { return (n > 1) ? double(M2) / (n - 1) : 0.0; };
+    auto variance = [](uint64_t n, int64_t M2) -> double { return (n > 1) ? static_cast<double>(M2) / static_cast<double>(n - 1) : 0.0; };
     auto stddev   = [variance](uint64_t n, int64_t M2) -> double { return sqrt(variance(n, M2)); };
 
-    // average and standard deviation
-    std::ostringstream oss;
-    fmt::print(oss, fmt::runtime("{:7.3f}±{:3.3f}"), double(n->total_exclusive_mean) / 1'000'000.0,
-               stddev(n->call_count, n->total_exclusive_M2) / 1'000'000.0);
-    fmt::print(os, "{:13}  ", oss.str());
+    std::string const mean_str = fmt::format("{:7.3f}\u00B1{:3.3f}", static_cast<double>(n->total_exclusive_mean) / 1'000'000.0,
+                                             stddev(n->call_count, n->total_exclusive_M2) / 1'000'000.0);
 
-    fmt::print(os, "{:<60}  ", name);
-    // clickable file:line (if present)
-    // inside print_node_recursive when printing one node:
+    // Build file:line field
+    std::string file_field;
     if (!n->file.empty()) {
-        // show just filename:line as the visible text, but link to full path
         std::string shortname;
         try {
             shortname = std::filesystem::path(n->file).filename().string();
         } catch (...) {
-            shortname = n->file; // fallback
+            shortname = n->file;
         }
         std::string const file_display = fmt::format("{}:{}", shortname, n->line);
-        std::string       clickable;
         if (detail::is_terminal(os)) {
-            clickable = make_clickable_file_line(n->file, n->line, file_display);
+            std::string const clickable = make_clickable_file_line(n->file, n->line, file_display);
+            // Pad based on visible width (excludes ANSI escape sequences)
+            size_t const vlen = visible_width(clickable);
+            file_field        = clickable;
+            if (vlen < 30)
+                file_field += std::string(30 - vlen, ' ');
         } else {
-            clickable = file_display;
+            file_field = fmt::format("{:<30}", file_display);
         }
-        fmt_pad_and_print(os, clickable, 30);
-        fmt::print(os, "  "); // extra spacing between columns if needed
     } else {
-        fmt::print(os, "{:<30}  ", ""); // no file info
+        file_field = fmt::format("{:<30}", "");
     }
 
-    // function name
-    fmt::print(os, "{:<}\n", func);
+    // Build annotations string
+    std::string annotations_str;
+    if (!n->annotations.empty()) {
+        annotations_str = "  ";
+        bool first      = true;
+        for (auto const &a : n->annotations) {
+            if (!first)
+                annotations_str += " ";
+            first = false;
+            annotations_str += fmt::format("{}={}", a.first, a.second);
+        }
+    }
+
+    fprintln(os, " {:10.3f}  {:10}  {:13}  {:<60}  {}  {:<}{}", excl_ms, n->call_count, mean_str, name, file_field, n->function,
+             annotations_str);
 
     if (detailed) {
-        double min_ms = ns_to_ms(n->exclusive_min);
-        double max_ms = ns_to_ms(n->exclusive_max);
-        double avg_ms = (n->call_count > 0) ? (ns_to_ms(n->total_exclusive) / n->call_count) : 0.0;
-        fmt::print(os, "{:6}   {:>10.3f}  (min {:>6.3f}  max {:>6.3f}  avg {:>6.3f})\n", "", excl_ms, min_ms, max_ms, avg_ms);
+        double const min_ms = ns_to_ms(n->exclusive_min);
+        double const max_ms = ns_to_ms(n->exclusive_max);
+        double const avg_ms = (n->call_count > 0) ? (ns_to_ms(n->total_exclusive) / static_cast<double>(n->call_count)) : 0.0;
+        fprintln(os, "{:6}   {:>10.3f}  (min {:>6.3f}  max {:>6.3f}  avg {:>6.3f})", "", excl_ms, min_ms, max_ms, avg_ms);
         if (!n->counters_total.empty()) {
-            // print counters in one compact line
-            fmt::print(os, "{:6}   Counters:", "");
-            for (auto &c : n->counters_total) {
+            std::string counters = fmt::format("{:6}   Counters:", "");
+            for (auto const &c : n->counters_total) {
                 uint64_t tot = c.second;
                 uint64_t mn  = n->counters_min.at(c.first);
                 uint64_t mx  = n->counters_max.at(c.first);
-                double   avg = (n->call_count > 0) ? static_cast<double>(tot) / n->call_count : 0.0;
-                fmt::print(os, " {}(tot={},min={},max={},avg={:.1f})", c.first, tot, mn, mx, avg);
+                double   avg = (n->call_count > 0) ? static_cast<double>(tot) / static_cast<double>(n->call_count) : 0.0;
+                counters += fmt::format(" {}(tot={},min={},max={},avg={:.1f})", c.first, tot, mn, mx, avg);
             }
-            fmt::print(os, "\n");
+            fprintln(os, counters);
+        }
+        // Show numeric annotation stats in detailed mode
+        if (!n->numeric_annotations.empty()) {
+            std::string annot_stats = fmt::format("{:6}   Annotations:", "");
+            for (auto const &na : n->numeric_annotations) {
+                double avg = (na.second.count > 0) ? na.second.total / static_cast<double>(na.second.count) : 0.0;
+                annot_stats += fmt::format(" {}(avg={:.1f},min={:.1f},max={:.1f})", na.first, avg, na.second.min_val, na.second.max_val);
+            }
+            fprintln(os, annot_stats);
         }
     }
 
     std::vector<AggNode const *> children;
-    for (auto &c : n->children)
+    for (auto const &c : n->children)
         children.push_back(c.second.get());
 
-    for (auto *ch : children) {
+    for (auto const *ch : children) {
         print_node_recursive(os, ch, thread_total_ms, depth + 1, detailed);
     }
 }

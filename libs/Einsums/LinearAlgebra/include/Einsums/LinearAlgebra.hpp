@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Assert.hpp>
 #include <Einsums/BLAS.hpp>
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Concepts/SmartPointer.hpp>
@@ -19,10 +20,6 @@
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
-
-#ifdef EINSUMS_COMPUTE_CODE
-#    include <Einsums/LinearAlgebra/GPULinearAlgebra.hpp>
-#endif
 
 #include <algorithm>
 #include <cmath>
@@ -159,6 +156,35 @@ void gemm(char transA, char transB, U const alpha, AType const &A, BType const &
     detail::gemm(transA, transB, alpha, A, B, beta, C);
 }
 
+// Runtime-rank overloads. These accept tensors whose rank is known only at
+// runtime (RuntimeTensor / RuntimeTensorView) by routing directly through
+// the TensorImpl-level kernel, which performs a runtime rank-2 check and
+// throws ``rank_error`` on mismatch. Distinguished from the static-rank
+// overloads above by requiring at least one operand to be dynamic-rank;
+// concept overload resolution disambiguates the calls.
+template <bool TransA, bool TransB, BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType, typename U>
+    requires requires {
+        requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank || std::remove_cvref_t<BType>::Rank == einsums::dynamic_rank ||
+                         std::remove_cvref_t<CType>::Rank == einsums::dynamic_rank;
+        requires std::convertible_to<U, typename AType::ValueType>;
+        requires SameUnderlying<AType, BType, CType>;
+    }
+void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C) {
+    LabeledSection0();
+    detail::gemm<TransA, TransB>(alpha, A.impl(), B.impl(), beta, &C->impl());
+}
+
+template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType, typename U>
+    requires requires {
+        requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank || std::remove_cvref_t<BType>::Rank == einsums::dynamic_rank ||
+                         std::remove_cvref_t<CType>::Rank == einsums::dynamic_rank;
+        requires std::convertible_to<U, typename AType::ValueType>;
+        requires SameUnderlying<AType, BType, CType>;
+    }
+void gemm(char transA, char transB, U const alpha, AType const &A, BType const &B, U const beta, CType *C) {
+    detail::gemm(transA, transB, alpha, A.impl(), B.impl(), beta, &C->impl());
+}
+
 /**
  * @brief General matrix multiplication. Returns new tensor.
  *
@@ -195,7 +221,7 @@ template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, ty
         requires std::convertible_to<U, typename AType::ValueType>;
         requires SameUnderlying<AType, BType>;
     }
-auto gemm(U const alpha, AType const &A, BType const &B) -> RemoveViewT<AType> {
+[[nodiscard]] auto gemm(U const alpha, AType const &A, BType const &B) -> RemoveViewT<AType> {
     LabeledSection0();
 
     RemoveViewT<AType> C{"gemm result", TransA ? A.dim(1) : A.dim(0), TransB ? B.dim(0) : B.dim(1)};
@@ -313,6 +339,31 @@ void gemv(char transA, U const alpha, AType const &A, XType const &z, U const be
     detail::gemv(transA, alpha, A, z, beta, y);
 }
 
+// Runtime-rank gemv overloads — accept dynamic-rank operands. The detail
+// kernel runtime-checks A.rank() == 2 and z.rank() == y.rank() == 1.
+template <bool TransA, BasicTensorConcept AType, BasicTensorConcept XType, BasicTensorConcept YType, typename U>
+    requires requires {
+        requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank || std::remove_cvref_t<XType>::Rank == einsums::dynamic_rank ||
+                         std::remove_cvref_t<YType>::Rank == einsums::dynamic_rank;
+        requires SameUnderlying<AType, XType, YType>;
+        requires std::convertible_to<U, typename AType::ValueType>;
+    }
+void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
+    LabeledSection("gemv<TransA={}>", TransA);
+    detail::gemv<TransA>(alpha, A.impl(), z.impl(), beta, &y->impl());
+}
+
+template <BasicTensorConcept AType, BasicTensorConcept XType, BasicTensorConcept YType, typename U>
+    requires requires {
+        requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank || std::remove_cvref_t<XType>::Rank == einsums::dynamic_rank ||
+                         std::remove_cvref_t<YType>::Rank == einsums::dynamic_rank;
+        requires SameUnderlying<AType, XType, YType>;
+        requires std::convertible_to<U, typename AType::ValueType>;
+    }
+void gemv(char transA, U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
+    detail::gemv(transA, alpha, A.impl(), z.impl(), beta, &y->impl());
+}
+
 /**
  * Computes all eigenvalues and, optionally, eigenvectors of a real symmetric matrix.
  *
@@ -362,6 +413,20 @@ template <bool ComputeEigenvectors = true, MatrixConcept AType, VectorConcept WT
 void syev(AType *A, WType *W) {
     LabeledSection("syev<ComputeEigenvectors={}>", ComputeEigenvectors);
     detail::syev<ComputeEigenvectors>(A, W);
+}
+
+// Runtime-rank syev overload — runtime rank-2 + rank-1 check inside the
+// TensorImpl-level kernel.
+template <bool ComputeEigenvectors = true, BasicTensorConcept AType, BasicTensorConcept WType>
+    requires requires {
+        requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank || std::remove_cvref_t<WType>::Rank == einsums::dynamic_rank;
+        requires InSamePlace<AType, WType>;
+        requires SameUnderlying<AType, WType>;
+        requires !Complex<AType>;
+    }
+void syev(AType *A, WType *W) {
+    LabeledSection("syev<ComputeEigenvectors={}>", ComputeEigenvectors);
+    detail::syev<ComputeEigenvectors>(&A->impl(), &W->impl());
 }
 
 /**
@@ -460,6 +525,23 @@ void heev(AType *A, WType *W) {
     detail::heev<ComputeEigenvectors>(A, W);
 }
 
+// Runtime-rank heev overload. The TensorImpl-level ``heev`` deduces a single
+// ``AType`` for both operands; for the complex→real eigenvalue case we
+// instead route through the ``syev`` impl which has a separate signature
+// for the real-eigenvalue output (heev forwards to syev internally).
+template <bool ComputeEigenvectors = true, BasicTensorConcept AType, BasicTensorConcept WType>
+    requires requires {
+        requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank || std::remove_cvref_t<WType>::Rank == einsums::dynamic_rank;
+        requires InSamePlace<AType, WType>;
+        requires Complex<AType>;
+        requires NotComplex<WType>;
+        requires std::is_same_v<typename WType::ValueType, RemoveComplexT<typename AType::ValueType>>;
+    }
+void heev(AType *A, WType *W) {
+    LabeledSection("heev<ComputeEigenvectors={}>", ComputeEigenvectors);
+    detail::syev<ComputeEigenvectors>(&A->impl(), &W->impl());
+}
+
 /**
  * Solve a system of linear equations.
  *
@@ -492,10 +574,22 @@ template <MatrixConcept AType, TensorConcept BType>
         requires SameUnderlying<AType, BType>;
         requires MatrixConcept<BType> || VectorConcept<BType>;
     }
-auto gesv(AType *A, BType *B) -> int {
+[[nodiscard]] auto gesv(AType *A, BType *B) -> int {
 
     LabeledSection0();
     return detail::gesv(A, B);
+}
+
+// Runtime-rank gesv overload — TensorImpl-level kernel runtime-checks rank-2
+// + rank-1-or-2.
+template <BasicTensorConcept AType, BasicTensorConcept BType>
+    requires requires {
+        requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank || std::remove_cvref_t<BType>::Rank == einsums::dynamic_rank;
+        requires SameUnderlying<AType, BType>;
+    }
+[[nodiscard]] auto gesv(AType *A, BType *B) -> int {
+    LabeledSection0();
+    return detail::gesv(&A->impl(), &B->impl());
 }
 
 /**
@@ -534,10 +628,10 @@ auto gesv(AType *A, BType *B) -> int {
  */
 template <bool ComputeEigenvectors = true, MatrixConcept AType>
     requires(NotComplex<AType>)
-auto syev(AType const &A) -> std::tuple<RemoveViewT<AType>, BasicTensorLike<AType, typename AType::ValueType, 1>> {
+[[nodiscard]] auto syev(AType const &A) -> std::tuple<RemoveViewT<AType>, BasicTensorLike<AType, typename AType::ValueType, 1>> {
     LabeledSection0();
 
-    assert(A.dim(0) == A.dim(1));
+    EINSUMS_ASSERT(A.dim(0) == A.dim(1));
 
     RemoveViewT<AType> a = A;
 
@@ -662,8 +756,8 @@ void scale_column(size_t col, typename AType::ValueType scale, AType *A) {
  * @endversion
  */
 template <MatrixConcept AType>
-auto pow(AType const &a, typename AType::ValueType alpha,
-         typename AType::ValueType cutoff = std::numeric_limits<typename AType::ValueType>::epsilon()) -> RemoveViewT<AType> {
+[[nodiscard]] auto pow(AType const &a, typename AType::ValueType alpha,
+                       typename AType::ValueType cutoff = std::numeric_limits<typename AType::ValueType>::epsilon()) -> RemoveViewT<AType> {
     LabeledSection0();
 
     return detail::pow(a, alpha, cutoff);
@@ -693,7 +787,7 @@ template <TensorConcept AType, TensorConcept BType>
         requires SameRank<AType, BType>;
         requires InSamePlace<AType, BType>;
     }
-auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
+[[nodiscard]] auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
 
     LabeledSection0();
 
@@ -725,7 +819,7 @@ template <TensorConcept AType, TensorConcept BType>
         requires SameRank<AType, BType>;
         requires InSamePlace<AType, BType>;
     }
-auto true_dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
+[[nodiscard]] auto true_dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
 
     LabeledSection0();
 
@@ -755,7 +849,7 @@ template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
         requires InSamePlace<AType, BType, CType>;
         requires SameRank<AType, BType, CType>;
     }
-auto dot(AType const &A, BType const &B, CType const &C)
+[[nodiscard]] auto dot(AType const &A, BType const &B, CType const &C)
     -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType, typename CType::ValueType> {
 
     LabeledSection0();
@@ -854,6 +948,18 @@ void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType 
     LabeledSection0();
 
     detail::ger(alpha, X, Y, A);
+}
+
+// Runtime-rank ger overload.
+template <BasicTensorConcept AType, BasicTensorConcept XType, BasicTensorConcept YType>
+    requires requires {
+        requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank || std::remove_cvref_t<XType>::Rank == einsums::dynamic_rank ||
+                         std::remove_cvref_t<YType>::Rank == einsums::dynamic_rank;
+        requires SameUnderlying<AType, XType, YType>;
+    }
+void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
+    LabeledSection0();
+    detail::ger(alpha, X.impl(), Y.impl(), &A->impl());
 }
 
 /**
@@ -959,6 +1065,25 @@ template <MatrixConcept TensorType, typename Pivots>
     return detail::getrf(A, pivot);
 }
 
+// Runtime-rank getrf overload — TensorImpl-level kernel runtime-checks rank-2.
+template <BasicTensorConcept TensorType, typename Pivots>
+    requires requires(Pivots a, size_t ind) {
+        requires std::remove_cvref_t<TensorType>::Rank == einsums::dynamic_rank;
+        typename Pivots::value_type;
+        typename Pivots::size_type;
+        { a.size() } -> std::same_as<typename Pivots::size_type>;
+        { a.data() } -> std::same_as<typename Pivots::value_type *>;
+        a[ind];
+        requires std::same_as<blas::int_t, typename Pivots::value_type>;
+    }
+[[nodiscard]] auto getrf(TensorType *A, Pivots *pivot) -> int {
+    auto pivot_size = std::min(A->dim(0), A->dim(1));
+    if (pivot->size() < pivot_size) {
+        pivot->resize(pivot_size);
+    }
+    return detail::getrf(&A->impl(), pivot);
+}
+
 /**
  * @brief Computes the inverse of a matrix using the LU factorization computed by getrf.
  *
@@ -1031,6 +1156,17 @@ void invert(TensorType *A) {
     detail::invert(A);
 }
 
+// Runtime-rank invert overload — TensorImpl-level kernel runtime-checks
+// rank-2 + square.
+template <BasicTensorConcept TensorType>
+    requires requires {
+        requires std::remove_cvref_t<TensorType>::Rank == einsums::dynamic_rank;
+        requires CoreTensorConcept<TensorType>;
+    }
+void invert(TensorType *A) {
+    detail::invert(&A->impl());
+}
+
 #if !defined(DOXYGEN)
 template <SmartPointer SmartPtr>
 void invert(SmartPtr *A) {
@@ -1094,7 +1230,7 @@ enum class Norm : char {
  */
 template <MatrixConcept AType>
     requires(CoreTensorConcept<AType>)
-auto norm(Norm norm_type, AType const &a) -> RemoveComplexT<typename AType::ValueType> {
+[[nodiscard]] auto norm(Norm norm_type, AType const &a) -> RemoveComplexT<typename AType::ValueType> {
     LabeledSection0();
 
     return detail::norm(static_cast<char>(norm_type), a);
@@ -1115,7 +1251,7 @@ auto norm(Norm norm_type, AType const &a) -> RemoveComplexT<typename AType::Valu
  * @endversion
  */
 template <TensorConcept AType>
-auto vec_norm(AType const &a) -> RemoveComplexT<typename AType::ValueType> {
+[[nodiscard]] auto vec_norm(AType const &a) -> RemoveComplexT<typename AType::ValueType> {
     LabeledSection0();
     return detail::vec_norm(a);
 }
@@ -1164,7 +1300,7 @@ enum class Vectors : char {
  */
 template <MatrixConcept AType>
     requires(CoreTensorConcept<AType>)
-auto svd(AType const &A, Vectors jobu = Vectors::ALL, Vectors jobvt = Vectors::ALL)
+[[nodiscard]] auto svd(AType const &A, Vectors jobu = Vectors::ALL, Vectors jobvt = Vectors::ALL)
     -> std::tuple<std::optional<Tensor<typename AType::ValueType, 2>>, Tensor<RemoveComplexT<typename AType::ValueType>, 1>,
                   std::optional<Tensor<typename AType::ValueType, 2>>> {
     LabeledSection0();
@@ -1272,7 +1408,7 @@ auto svd_nullspace(AType const &_A) -> Tensor<typename AType::ValueType, 2> {
  */
 template <MatrixConcept AType>
     requires(CoreTensorConcept<AType>)
-auto svd_dd(AType const &A, Vectors job = Vectors::ALL)
+[[nodiscard]] auto svd_dd(AType const &A, Vectors job = Vectors::ALL)
     -> std::tuple<std::optional<Tensor<typename AType::ValueType, 2>>, Tensor<RemoveComplexT<typename AType::ValueType>, 1>,
                   std::optional<Tensor<typename AType::ValueType, 2>>> {
     return detail::svd_dd(A, static_cast<char>(job));
@@ -1290,13 +1426,10 @@ auto svd_dd(AType const &A, Vectors job = Vectors::ALL)
  * @throws std::invalid_argument If a parameter passed to one of the internal calls is invalid.
  *
  * @versionadded{1.0.0}
- *
- * @todo LAPACK provides {un,or}mqr which multiplies matrices by the Q matrix from geqrf without explicitly generating the Q matrix.
- * It might be something to look into.
  */
 template <MatrixConcept AType>
     requires(CoreTensorConcept<AType>)
-auto truncated_svd(AType const &_A, size_t k)
+[[nodiscard]] auto truncated_svd(AType const &_A, size_t k)
     -> std::tuple<Tensor<typename AType::ValueType, 2>, Tensor<RemoveComplexT<typename AType::ValueType>, 1>,
                   Tensor<typename AType::ValueType, 2>> {
     using T = typename AType::ValueType;
@@ -1323,31 +1456,64 @@ auto truncated_svd(AType const &_A, size_t k)
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "An unknown error has occurred in geqrf.");
     }
 
-    // Extract Matrix Q out of QR factorization
+    // Apply Q^T to A without explicitly forming Q, using ormqr/unmqr.
+    // This avoids the O(m*(k+5)^2) cost of orgqr/ungqr.
+    // B = Q^T * A: copy A into a workspace, apply Q^T from the left,
+    // then extract the first (k+5) rows.
+    Tensor<T, 2> A_work("A_work", m, n);
+    for (size_t col = 0; col < n; ++col) {
+        for (size_t row = 0; row < m; ++row) {
+            A_work(row, col) = _A(row, col);
+        }
+    }
+
     int info2;
     if constexpr (!IsComplexV<T>) {
-        info2 = blas::orgqr(m, k + 5, tau.dim(0), Y.data(), Y.impl().get_lda(), const_cast<T const *>(tau.data()));
+        info2 = blas::ormqr('L', 'T', m, n, tau.dim(0), Y.data(), Y.impl().get_lda(), tau.data(), A_work.data(), A_work.impl().get_lda());
     } else {
-        info2 = blas::ungqr(m, k + 5, tau.dim(0), Y.data(), Y.impl().get_lda(), const_cast<T const *>(tau.data()));
+        info2 = blas::unmqr('L', 'C', m, n, tau.dim(0), Y.data(), Y.impl().get_lda(), tau.data(), A_work.data(), A_work.impl().get_lda());
     }
 
     if (info2 < 0) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "The {} parameter to orgqr/ungqr was invalid! #1 (m): {}, #2 (n): {}, #4 (lda): {}.",
-                                print::ordinal(-info1), m, k + 5, Y.impl().get_lda());
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "The {} parameter to ormqr/unmqr was invalid.", print::ordinal(-info2));
     } else if (info2 > 0) {
-        EINSUMS_THROW_EXCEPTION(std::runtime_error, "An unknown error has occurred in orgqr/ungqr.");
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "An unknown error has occurred in ormqr/unmqr.");
     }
 
-    // Cast the matrix A into a smaller rank (B)
+    // Extract first (k+5) rows of Q^T * A into B.
     Tensor<T, 2> B("B", k + 5, n);
-    gemm<true, false>(T{1.0}, Y, _A, T{0.0}, &B);
+    for (size_t col = 0; col < n; ++col) {
+        for (size_t row = 0; row < k + 5; ++row) {
+            B(row, col) = A_work(row, col);
+        }
+    }
 
     // Perform svd on B
     auto [Utilde, S, Vt] = svd_dd(B);
 
-    // Cast U back into full basis
+    // Apply Q to Utilde to get U = Q * Utilde, again without forming Q.
+    // Place Utilde ((k+5)×(k+5)) into an m×(k+5) workspace with zero padding.
     Tensor<T, 2> U("U", m, k + 5);
-    gemm<false, false>(T{1.0}, Y, Utilde.value(), T{0.0}, &U);
+    U.zero();
+    auto &Ut = Utilde.value();
+    for (size_t col = 0; col < k + 5; ++col) {
+        for (size_t row = 0; row < k + 5; ++row) {
+            U(row, col) = Ut(row, col);
+        }
+    }
+
+    int info3;
+    if constexpr (!IsComplexV<T>) {
+        info3 = blas::ormqr('L', 'N', m, k + 5, tau.dim(0), Y.data(), Y.impl().get_lda(), tau.data(), U.data(), U.impl().get_lda());
+    } else {
+        info3 = blas::unmqr('L', 'N', m, k + 5, tau.dim(0), Y.data(), Y.impl().get_lda(), tau.data(), U.data(), U.impl().get_lda());
+    }
+
+    if (info3 < 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "The {} parameter to ormqr/unmqr was invalid.", print::ordinal(-info3));
+    } else if (info3 > 0) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "An unknown error has occurred in ormqr/unmqr.");
+    }
 
     return std::make_tuple(U, S, Vt.value());
 }
@@ -1362,13 +1528,11 @@ auto truncated_svd(AType const &_A, size_t k)
  * @return A tuple containing the eigenvectors and eigenvalues.
  *
  * @versionadded{1.0.0}
- *
- * @todo LAPACK provides {un,or}mqr which multiplies matrices by the Q matrix from geqrf without explicitly generating the Q matrix.
- * It might be something to look into.
  */
 template <MatrixConcept AType>
     requires(CoreTensorConcept<AType>)
-auto truncated_syev(AType const &A, size_t k) -> std::tuple<Tensor<typename AType::ValueType, 2>, Tensor<typename AType::ValueType, 1>> {
+[[nodiscard]] auto truncated_syev(AType const &A, size_t k)
+    -> std::tuple<Tensor<typename AType::ValueType, 2>, Tensor<typename AType::ValueType, 1>> {
     using T = typename AType::ValueType;
     LabeledSection0();
 
@@ -1396,29 +1560,62 @@ auto truncated_syev(AType const &A, size_t k) -> std::tuple<Tensor<typename ATyp
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "An unknown error has occurred in geqrf.");
     }
 
-    // Extract Matrix Q out of QR factorization
+    // Apply Q^T to A without forming Q, using ormqr/unmqr.
+    // B = Q^T * A * Q: first compute Q^T * A, then multiply by Q from the right.
+
+    // Step 1: Btemp = Q^T * A  (apply Q^T from the left to a copy of A)
+    Tensor<T, 2> A_work("A_work", n, n);
+    for (size_t col = 0; col < n; ++col) {
+        for (size_t row = 0; row < n; ++row) {
+            A_work(row, col) = A(row, col);
+        }
+    }
+
     blas::int_t info2;
     if constexpr (!IsComplexV<T>) {
-        info2 = blas::orgqr(n, k + 5, tau.dim(0), Y.data(), Y.impl().get_lda(), const_cast<T const *>(tau.data()));
+        info2 = blas::ormqr('L', 'T', n, n, tau.dim(0), Y.data(), Y.impl().get_lda(), tau.data(), A_work.data(), A_work.impl().get_lda());
     } else {
-        info2 = blas::ungqr(n, k + 5, tau.dim(0), Y.data(), Y.impl().get_lda(), const_cast<T const *>(tau.data()));
+        info2 = blas::unmqr('L', 'C', n, n, tau.dim(0), Y.data(), Y.impl().get_lda(), tau.data(), A_work.data(), A_work.impl().get_lda());
     }
 
-    if (info1 < 0) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "The {} parameter to geqrf was invalid! #1 (m): {}, #2 (n): {}, #4 (lda): {}.",
-                                print::ordinal(-info1), n, k + 5, Y.impl().get_lda());
-    } else if (info1 > 0) {
-        EINSUMS_THROW_EXCEPTION(std::runtime_error, "An unknown error has occurred in geqrf.");
+    if (info2 < 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "The {} parameter to ormqr/unmqr was invalid.", print::ordinal(-info2));
+    } else if (info2 > 0) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "An unknown error has occurred in ormqr/unmqr.");
     }
 
-    Tensor<T, 2> &Q1 = Y;
-
-    // Cast the matrix A into a smaller rank (B)
-    // B = Q^T * A * Q
+    // Step 2: B = (Q^T * A) * Q  — apply Q from the right to the first (k+5) rows of A_work
+    // A_work is now Q^T * A (n×n). We need B = (first k+5 rows) * Q = Btemp * Q.
+    // Use ormqr with side='R' on the first (k+5) rows.
     Tensor<T, 2> Btemp("Btemp", k + 5, n);
-    gemm<true, false>(1.0, Q1, A, 0.0, &Btemp);
+    for (size_t col = 0; col < n; ++col) {
+        for (size_t row = 0; row < k + 5; ++row) {
+            Btemp(row, col) = A_work(row, col);
+        }
+    }
+
+    blas::int_t info2b;
+    if constexpr (!IsComplexV<T>) {
+        info2b =
+            blas::ormqr('R', 'N', k + 5, n, tau.dim(0), Y.data(), Y.impl().get_lda(), tau.data(), Btemp.data(), Btemp.impl().get_lda());
+    } else {
+        info2b =
+            blas::unmqr('R', 'N', k + 5, n, tau.dim(0), Y.data(), Y.impl().get_lda(), tau.data(), Btemp.data(), Btemp.impl().get_lda());
+    }
+
+    if (info2b < 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "The {} parameter to ormqr/unmqr was invalid.", print::ordinal(-info2b));
+    } else if (info2b > 0) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "An unknown error has occurred in ormqr/unmqr.");
+    }
+
+    // Extract (k+5)×(k+5) block: B = Btemp[:, :k+5]
     Tensor<T, 2> B("B", k + 5, k + 5);
-    gemm<false, false>(1.0, Btemp, Q1, 0.0, &B);
+    for (size_t col = 0; col < k + 5; ++col) {
+        for (size_t row = 0; row < k + 5; ++row) {
+            B(row, col) = Btemp(row, col);
+        }
+    }
 
     // Create buffer for eigenvalues
     Tensor<T, 1> w("eigenvalues", k + 5);
@@ -1426,9 +1623,28 @@ auto truncated_syev(AType const &A, size_t k) -> std::tuple<Tensor<typename ATyp
     // Diagonalize B
     syev(&B, &w);
 
-    // Cast U back into full basis (B is column-major so we need to transpose it)
+    // Apply Q to B (eigenvectors) to get U = Q * B, without forming Q.
+    // B is (k+5)×(k+5), result U is n×(k+5).
     Tensor<T, 2> U("U", n, k + 5);
-    gemm<false, true>(1.0, Q1, B, 0.0, &U);
+    U.zero();
+    for (size_t col = 0; col < k + 5; ++col) {
+        for (size_t row = 0; row < k + 5; ++row) {
+            U(row, col) = B(row, col);
+        }
+    }
+
+    blas::int_t info3;
+    if constexpr (!IsComplexV<T>) {
+        info3 = blas::ormqr('L', 'N', n, k + 5, tau.dim(0), Y.data(), Y.impl().get_lda(), tau.data(), U.data(), U.impl().get_lda());
+    } else {
+        info3 = blas::unmqr('L', 'N', n, k + 5, tau.dim(0), Y.data(), Y.impl().get_lda(), tau.data(), U.data(), U.impl().get_lda());
+    }
+
+    if (info3 < 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "The {} parameter to ormqr/unmqr was invalid.", print::ordinal(-info3));
+    } else if (info3 > 0) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "An unknown error has occurred in ormqr/unmqr.");
+    }
 
     return std::make_tuple(U, w);
 }
@@ -1775,7 +1991,7 @@ inline auto solve_continuous_lyapunov(AType const &A, QType const &Q) -> Tensor<
  */
 template <MatrixConcept AType>
     requires(CoreTensorConcept<AType>)
-auto qr(AType const &A) -> std::tuple<Tensor<typename AType::ValueType, 2>, Tensor<typename AType::ValueType, 2>> {
+[[nodiscard]] auto qr(AType const &A) -> std::tuple<Tensor<typename AType::ValueType, 2>, Tensor<typename AType::ValueType, 2>> {
     return detail::qr(A);
 }
 

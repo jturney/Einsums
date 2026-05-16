@@ -231,6 +231,7 @@ foreach(output_format ${EINSUMS_WITH_DOCUMENTATION_OUTPUT_FORMATS})
   add_dependencies(docs docs-${output_format})
 endforeach()
 
+
 add_custom_target(
   git_docs
   COMMAND

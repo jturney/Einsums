@@ -516,3 +516,4 @@ nitpick_ignore_regex = {(r"c(pp)?:identifier", r"size_t"),
 suppress_warnings = [
     "duplicate_declaration.cpp"
 ]
+

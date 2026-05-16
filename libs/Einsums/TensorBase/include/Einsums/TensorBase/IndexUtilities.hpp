@@ -12,7 +12,6 @@
 
 #include <cstdarg>
 #include <cstddef>
-#include <source_location>
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
@@ -22,18 +21,19 @@ namespace einsums {
 
 #ifndef DOXYGEN
 template <typename UniqueIndex, int BDim, typename BType>
-inline size_t get_dim_ranges_for_many_b(BType const &B, std::tuple<> const &B_indices) {
+inline size_t get_dim_ranges_for_many_b(BType const & /*B*/, std::tuple<> const & /*B_indices*/) {
     return 1;
 }
 
 template <typename UniqueIndex, int BDim, typename BType, typename BHead>
-inline auto get_dim_ranges_for_many_b(BType const &B, std::tuple<BHead> const &B_indices)
-    -> std::enable_if<std::is_same_v<BHead, UniqueIndex>, size_t> {
+inline auto get_dim_ranges_for_many_b(BType const &B, std::tuple<BHead> const & /*B_indices*/) -> size_t
+    requires std::is_same_v<BHead, UniqueIndex>
+{
     return B.dim(BDim);
 }
 
 template <typename UniqueIndex, int BDim, typename BType, typename BHead, typename... BIndices>
-inline size_t get_dim_ranges_for_many_b(BType const &B, std::tuple<BHead, BIndices...> const &B_indices) {
+inline size_t get_dim_ranges_for_many_b(BType const &B, std::tuple<BHead, BIndices...> const & /*B_indices*/) {
     if constexpr (std::is_same_v<BHead, UniqueIndex>) {
         return B.dim(BDim);
     } else {
@@ -42,13 +42,13 @@ inline size_t get_dim_ranges_for_many_b(BType const &B, std::tuple<BHead, BIndic
 }
 
 template <typename UniqueIndex, int ADim, typename AType, typename BType, typename... BIndices>
-inline size_t get_dim_ranges_for_many_a(AType const &A, std::tuple<> const &A_indices, BType const &B,
+inline size_t get_dim_ranges_for_many_a(AType const & /*A*/, std::tuple<> const & /*A_indices*/, BType const &B,
                                         std::tuple<BIndices...> const &B_indices) {
     return get_dim_ranges_for_many_b<UniqueIndex, 0>(B, B_indices);
 }
 
 template <typename UniqueIndex, int ADim, typename AType, typename BType, typename AHead, typename... BIndices>
-inline size_t get_dim_ranges_for_many_a(AType const &A, std::tuple<AHead> const &A_indices, BType const &B,
+inline size_t get_dim_ranges_for_many_a(AType const &A, std::tuple<AHead> const & /*A_indices*/, BType const &B,
                                         std::tuple<BIndices...> const &B_indices) {
     if constexpr (std::is_same_v<AHead, UniqueIndex>) {
         return A.dim(ADim);
@@ -58,8 +58,10 @@ inline size_t get_dim_ranges_for_many_a(AType const &A, std::tuple<AHead> const 
 }
 
 template <typename UniqueIndex, int ADim, typename AType, typename BType, typename AHead, typename... AIndices, typename... BIndices>
-inline auto get_dim_ranges_for_many_a(AType const &A, std::tuple<AHead, AIndices...> const &A_indices, BType const &B,
-                                      std::tuple<BIndices...> const &B_indices) -> std::enable_if_t<sizeof...(AIndices) != 0, size_t> {
+inline auto get_dim_ranges_for_many_a(AType const &A, std::tuple<AHead, AIndices...> const & /*A_indices*/, BType const &B,
+                                      std::tuple<BIndices...> const &B_indices) -> size_t
+    requires(sizeof...(AIndices) != 0)
+{
     if constexpr (std::is_same_v<AHead, UniqueIndex>) {
         return A.dim(ADim);
     } else {
@@ -68,7 +70,7 @@ inline auto get_dim_ranges_for_many_a(AType const &A, std::tuple<AHead, AIndices
 }
 
 template <typename UniqueIndex, int CDim, typename CType, typename AType, typename BType, typename... AIndices, typename... BIndices>
-inline size_t get_dim_ranges_for_many_c(CType const &C, std::tuple<> const &C_indices, AType const &A,
+inline size_t get_dim_ranges_for_many_c(CType const & /*C*/, std::tuple<> const & /*C_indices*/, AType const &A,
                                         std::tuple<AIndices...> const &A_indices, BType const &B,
                                         std::tuple<BIndices...> const &B_indices) {
     return get_dim_ranges_for_many_a<UniqueIndex, 0>(A, A_indices, B, B_indices);
@@ -76,7 +78,7 @@ inline size_t get_dim_ranges_for_many_c(CType const &C, std::tuple<> const &C_in
 
 template <typename UniqueIndex, int CDim, typename CType, typename AType, typename BType, typename CHead, typename... AIndices,
           typename... BIndices>
-inline size_t get_dim_ranges_for_many_c(CType const &C, std::tuple<CHead> const &C_indices, AType const &A,
+inline size_t get_dim_ranges_for_many_c(CType const &C, std::tuple<CHead> const & /*C_indices*/, AType const &A,
                                         std::tuple<AIndices...> const &A_indices, BType const &B,
                                         std::tuple<BIndices...> const &B_indices) {
     if constexpr (std::is_same_v<CHead, UniqueIndex>) {
@@ -88,9 +90,11 @@ inline size_t get_dim_ranges_for_many_c(CType const &C, std::tuple<CHead> const 
 
 template <typename UniqueIndex, int CDim, typename CType, typename AType, typename BType, typename CHead, typename... CIndices,
           typename... AIndices, typename... BIndices>
-inline auto get_dim_ranges_for_many_c(CType const &C, std::tuple<CHead, CIndices...> const &C_indices, AType const &A,
+inline auto get_dim_ranges_for_many_c(CType const &C, std::tuple<CHead, CIndices...> const & /*C_indices*/, AType const &A,
                                       std::tuple<AIndices...> const &A_indices, BType const &B, std::tuple<BIndices...> const &B_indices)
-    -> std::enable_if_t<sizeof...(CIndices) != 0, size_t> {
+    -> size_t
+    requires(sizeof...(CIndices) != 0)
+{
     if constexpr (std::is_same_v<CHead, UniqueIndex>) {
         return C.dim(CDim);
     } else {
@@ -115,7 +119,7 @@ template <typename CType, typename AType, typename BType, typename... CIndices, 
           typename... AllUniqueIndices>
 inline auto get_dim_ranges_for_many(CType const &C, std::tuple<CIndices...> const &C_indices, AType const &A,
                                     std::tuple<AIndices...> const &A_indices, BType const &B, std::tuple<BIndices...> const &B_indices,
-                                    std::tuple<AllUniqueIndices...> const &All_unique_indices) {
+                                    std::tuple<AllUniqueIndices...> const & /*All_unique_indices*/) {
     return std::array{get_dim_ranges_for_many_c<AllUniqueIndices, 0>(C, C_indices, A, A_indices, B, B_indices)...};
 }
 
@@ -405,7 +409,7 @@ EINSUMS_HOSTDEV void sentinel_to_sentinels_zero_imp(Extra &&extra) = delete;
  * @brief Implementation details for the sentinel_to_sentinels function. This clears the outputs.
  */
 template <typename Stride, typename Sentinel, typename... Rest>
-EINSUMS_HOSTDEV void sentinel_to_sentinels_zero_imp(Stride &&strides, Sentinel &sentinel, Rest &&...rest) {
+EINSUMS_HOSTDEV void sentinel_to_sentinels_zero_imp(Stride && /*strides*/, Sentinel &sentinel, Rest &&...rest) {
     sentinel = 0;
 
     sentinel_to_sentinels_zero_imp(std::forward<Rest>(rest)...);
@@ -726,8 +730,7 @@ size_t dims_to_strides(std::vector<size_t, Alloc1> const &dims, std::vector<size
  */
 template <typename arr_type1, typename arr_type2, size_t Dims>
     requires(std::is_integral_v<arr_type1> && std::is_integral_v<arr_type2>)
-constexpr size_t dims_to_strides(std::array<arr_type1, Dims> const &dims, std::array<arr_type2, Dims> &out,
-                                 bool row_major) {
+constexpr size_t dims_to_strides(std::array<arr_type1, Dims> const &dims, std::array<arr_type2, Dims> &out, bool row_major) {
     size_t stride = 1;
 
     if (row_major) {
@@ -845,8 +848,7 @@ template <typename arr_type2, size_t Dims, typename... TupleDims>
         requires sizeof...(TupleDims) == Dims;
         requires std::is_integral_v<arr_type2>;
     }
-constexpr size_t dims_to_strides(std::tuple<TupleDims...> const &dims, std::array<arr_type2, Dims> &out,
-                                 bool row_major) {
+constexpr size_t dims_to_strides(std::tuple<TupleDims...> const &dims, std::array<arr_type2, Dims> &out, bool row_major) {
 
     if (row_major) {
         return detail::dims_to_strides<0, true>(dims, out);
@@ -889,8 +891,9 @@ int compile_index_table(std::tuple<Head> const &, Index const &, int &out) {
 }
 
 template <int __I, typename Head, typename... UniqueIndices, typename Index>
-auto compile_index_table(std::tuple<Head, UniqueIndices...> const &, Index const &index, int &out)
-    -> std::enable_if_t<sizeof...(UniqueIndices) != 0, int> {
+auto compile_index_table(std::tuple<Head, UniqueIndices...> const &, Index const &index, int &out) -> int
+    requires(sizeof...(UniqueIndices) != 0)
+{
     if constexpr (std::is_same_v<Head, Index>) {
         out = __I;
     } else {

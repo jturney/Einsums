@@ -74,10 +74,31 @@ function(einsums_create_configuration_summary message module_name)
   endif()
 
   if("${module_name_uc}" STREQUAL "EINSUMS")
+    # Write via a temp file + compare_files so we only touch ConfigStrings.hpp
+    # when the content actually changes. Without this, Einsums_AddModule's
+    # zombie cleanup deletes ConfigStrings.hpp on every regen (it's generated
+    # by this function, not add_module), then configure_file recreates it from
+    # scratch — bumping mtime each regen and cascading a full Einsums rebuild.
+    set(_out "${EINSUMS_BINARY_DIR}/libs/${PROJECT_NAME}/Config/include/${PROJECT_NAME}/Config/ConfigStrings.hpp")
+    set(_tmp "${_out}.tmp")
+    get_filename_component(_out_dir "${_out}" DIRECTORY)
+    if(NOT IS_DIRECTORY "${_out_dir}")
+      file(MAKE_DIRECTORY "${_out_dir}")
+    endif()
     configure_file(
       "${EINSUMS_SOURCE_DIR}/cmake/templates/ConfigDefinesStrings.hpp.in"
-      "${EINSUMS_BINARY_DIR}/libs/${PROJECT_NAME}/Config/include/${PROJECT_NAME}/Config/ConfigStrings.hpp"
+      "${_tmp}"
       @ONLY
     )
+    execute_process(
+      COMMAND ${CMAKE_COMMAND} -E compare_files "${_out}" "${_tmp}"
+      RESULT_VARIABLE _cmp_res
+      ERROR_QUIET
+    )
+    if(_cmp_res)
+      file(RENAME "${_tmp}" "${_out}")
+    else()
+      file(REMOVE "${_tmp}")
+    endif()
   endif()
 endfunction()

@@ -12,16 +12,9 @@
 #    include <Einsums/Tensor/Tensor.hpp>
 #    include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
 
-#    ifdef EINSUMS_COMPUTE_CODE
-#        include <Einsums/Tensor/DeviceTensor.hpp>
-#    endif
-
 #    include <algorithm>
-#    include <cmath>
 #    include <cstddef>
-#    include <stdexcept>
 #    include <tuple>
-#    include <type_traits>
 #    include <utility>
 
 namespace einsums::tensor_algebra {
@@ -66,34 +59,16 @@ auto khatri_rao(std::tuple<AIndices...> const &, AType const &A, std::tuple<BInd
         }
     });
 
-#    ifdef EINSUMS_COMPUTE_CODE
-    if constexpr (std::is_same_v<OutType, DeviceTensor<T, 2>>) {
-        auto result_dims = std::tuple_cat(std::make_tuple("KR product"), std::make_tuple(einsums::detail::DEV_ONLY), A_only_dims,
-                                          B_only_dims, A_common_dims);
-        // Construct resulting tensor
-        auto result = std::make_from_tuple<DeviceTensor<T, std::tuple_size_v<decltype(result_dims)> - 2>>(result_dims);
-        // Perform the actual Khatri-Rao product using our einsum routine.
-        einsum<ConjA, ConjB>(std::tuple_cat(A_only, B_only, common), &result, std::tuple_cat(A_only, common), A,
-                             std::tuple_cat(B_only, common), B);
+    auto result_dims = std::tuple_cat(std::make_tuple("KR product"), A_only_dims, B_only_dims, A_common_dims);
+    // Construct resulting tensor
+    auto result = std::make_from_tuple<Tensor<T, std::tuple_size_v<decltype(result_dims)> - 1>>(result_dims);
+    // Perform the actual Khatri-Rao product using our einsum routine.
+    einsum<ConjA, ConjB>(std::tuple_cat(A_only, B_only, common), &result, std::tuple_cat(A_only, common), A, std::tuple_cat(B_only, common),
+                         B);
 
-        // Return a reconstruction of the result tensor ... this can be considered as a simple reshape of the tensor.
+    // Return a reconstruction of the result tensor ... this can be considered as a simple reshape of the tensor.
 
-        return OutType{std::move(result), "KR product", -1, detail::product_dims(A_common_position, A)};
-    } else {
-#    endif
-        auto result_dims = std::tuple_cat(std::make_tuple("KR product"), A_only_dims, B_only_dims, A_common_dims);
-        // Construct resulting tensor
-        auto result = std::make_from_tuple<Tensor<T, std::tuple_size_v<decltype(result_dims)> - 1>>(result_dims);
-        // Perform the actual Khatri-Rao product using our einsum routine.
-        einsum<ConjA, ConjB>(std::tuple_cat(A_only, B_only, common), &result, std::tuple_cat(A_only, common), A,
-                             std::tuple_cat(B_only, common), B);
-
-        // Return a reconstruction of the result tensor ... this can be considered as a simple reshape of the tensor.
-
-        return OutType{std::move(result), "KR product", -1, detail::product_dims(A_common_position, A)};
-#    ifdef EINSUMS_COMPUTE_CODE
-    }
-#    endif
+    return OutType{std::move(result), "KR product", -1, detail::product_dims(A_common_position, A)};
 }
 } // namespace einsums::tensor_algebra
 

@@ -26,60 +26,60 @@ namespace detail {
  * @versionadded{1.1.0}
  */
 template <typename T>
-struct circle_distribution {};
+struct CircleDistribution {};
 
 #ifndef DOXYGEN
 template <>
-struct circle_distribution<float> {
+struct CircleDistribution<float> {
   public:
-    circle_distribution(float center, float radius) : mag_dist_(center - radius, center + radius) {}
+    CircleDistribution(float center, float radius) : _mag_dist(center - radius, center + radius) {}
 
-    ~circle_distribution() = default;
+    ~CircleDistribution() = default;
 
     template <typename Generator>
     float operator()(Generator &generator) {
-        return mag_dist_(generator);
+        return _mag_dist(generator);
     }
 
   private:
-    std::uniform_real_distribution<float> mag_dist_;
+    std::uniform_real_distribution<float> _mag_dist;
 };
 
 template <>
-struct circle_distribution<double> {
+struct CircleDistribution<double> {
   public:
-    circle_distribution(double center, double radius) : mag_dist_(center - radius, center + radius) {}
+    CircleDistribution(double center, double radius) : _mag_dist(center - radius, center + radius) {}
 
-    ~circle_distribution() = default;
+    ~CircleDistribution() = default;
 
     template <typename Generator>
     double operator()(Generator &generator) {
-        return mag_dist_(generator);
+        return _mag_dist(generator);
     }
 
   private:
-    std::uniform_real_distribution<double> mag_dist_;
+    std::uniform_real_distribution<double> _mag_dist;
 };
 
 // For this case, we can just use the normal uniform distribution. The boundary of the region will not be included.
 template <typename T>
-struct circle_distribution<std::complex<T>> {
+struct CircleDistribution<std::complex<T>> {
   public:
-    circle_distribution(std::complex<T> center, T radius)
-        : center_{center}, mag_dist_(0, radius), angle_dist_(0, 2 * std::numbers::pi_v<T>) {}
+    CircleDistribution(std::complex<T> center, T radius)
+        : _center{center}, _mag_dist(0, radius), _angle_dist(0, 2 * std::numbers::pi_v<T>) {}
 
-    ~circle_distribution() = default;
+    ~CircleDistribution() = default;
 
     template <typename Generator>
     std::complex<T> operator()(Generator &generator) {
-        T mag = mag_dist_(generator), angle = angle_dist_(generator);
+        T mag = _mag_dist(generator), angle = _angle_dist(generator);
 
-        return std::complex<T>{mag * std::cos(angle), mag * std::sin(angle)} + center_;
+        return std::complex<T>{mag * std::cos(angle), mag * std::sin(angle)} + _center;
     }
 
   private:
-    std::complex<T>                   center_;
-    std::uniform_real_distribution<T> mag_dist_, angle_dist_;
+    std::complex<T>                   _center;
+    std::uniform_real_distribution<T> _mag_dist, _angle_dist;
 };
 #endif
 
@@ -95,58 +95,58 @@ struct circle_distribution<std::complex<T>> {
  * @versionadded{1.1.0}
  */
 template <typename T>
-struct unit_circle_distribution {};
+struct UnitCircleDistribution {};
 
 #ifndef DOXYGEN
 template <>
-struct unit_circle_distribution<float> {
+struct UnitCircleDistribution<float> {
   public:
-    unit_circle_distribution() : mag_dist_(-1.0f, 1.0f) {}
+    UnitCircleDistribution() : _mag_dist(-1.0f, 1.0f) {}
 
-    ~unit_circle_distribution() = default;
+    ~UnitCircleDistribution() = default;
 
     template <typename Generator>
     float operator()(Generator &generator) {
-        return mag_dist_(generator);
+        return _mag_dist(generator);
     }
 
   private:
-    std::uniform_real_distribution<float> mag_dist_;
+    std::uniform_real_distribution<float> _mag_dist;
 };
 
 template <>
-struct unit_circle_distribution<double> {
+struct UnitCircleDistribution<double> {
   public:
-    unit_circle_distribution() : mag_dist_(-1.0, 1.0) {}
+    UnitCircleDistribution() : _mag_dist(-1.0, 1.0) {}
 
-    ~unit_circle_distribution() = default;
+    ~UnitCircleDistribution() = default;
 
     template <typename Generator>
     double operator()(Generator &generator) {
-        return mag_dist_(generator);
+        return _mag_dist(generator);
     }
 
   private:
-    std::uniform_real_distribution<double> mag_dist_;
+    std::uniform_real_distribution<double> _mag_dist;
 };
 
 // For this case, we can just use the normal uniform distribution. The boundary of the region will not be included.
 template <typename T>
-struct unit_circle_distribution<std::complex<T>> {
+struct UnitCircleDistribution<std::complex<T>> {
   public:
-    unit_circle_distribution() : mag_dist_(0, 1), angle_dist_(0, 2 * std::numbers::pi_v<T>) {}
+    UnitCircleDistribution() : _mag_dist(0, 1), _angle_dist(0, 2 * std::numbers::pi_v<T>) {}
 
-    ~unit_circle_distribution() = default;
+    ~UnitCircleDistribution() = default;
 
     template <typename Generator>
     std::complex<T> operator()(Generator &generator) {
-        T mag = mag_dist_(generator), angle = angle_dist_(generator);
+        T mag = _mag_dist(generator), angle = _angle_dist(generator);
 
         return std::complex<T>{std::cos(angle), std::sin(angle)};
     }
 
   private:
-    std::uniform_real_distribution<T> mag_dist_, angle_dist_;
+    std::uniform_real_distribution<T> _mag_dist, _angle_dist;
 };
 #endif
 
