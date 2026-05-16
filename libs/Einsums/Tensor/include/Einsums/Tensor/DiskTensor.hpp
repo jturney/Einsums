@@ -1110,7 +1110,7 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
             EINSUMS_THROW_EXCEPTION(access_denied, "Attempting to write data to a read only disk view.");
         }
 
-        get();
+        (void)get();
 
         std::memcpy(_tensor.data(), other, _tensor.size() * sizeof(T));
 
