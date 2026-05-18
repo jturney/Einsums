@@ -25,17 +25,22 @@ namespace einsums::compute_graph::passes {
  *
  * @note This pass does NOT modify the graph — it is analysis only.
  */
-class EINSUMS_EXPORT MemoryPlanning : public OptimizerPass {
+class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) EINSUMS_EXPORT MemoryPlanning
+    : public OptimizerPass {
   public:
+    EINSUMS_PYBIND_EXPOSE MemoryPlanning() = default;
+
     [[nodiscard]] std::string name() const override { return "MemoryPlanning"; }
     bool                      run(Graph &graph) override;
     void                      print_report(std::ostream &os) const;
 
-    [[nodiscard]] size_t total_memory() const { return _total_memory; }
-    [[nodiscard]] size_t peak_memory() const { return _peak_memory; }
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("total_memory") [[nodiscard]] size_t total_memory() const { return _total_memory; }
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("peak_memory") [[nodiscard]] size_t peak_memory() const { return _peak_memory; }
 
     /// Device memory: total across all device-resident tensors.
-    [[nodiscard]] size_t device_total_memory() const { return _device_total_memory; }
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("device_total_memory") [[nodiscard]] size_t device_total_memory() const {
+        return _device_total_memory;
+    }
 
     /// Device memory: peak simultaneously live.
     [[nodiscard]] size_t device_peak_memory() const { return _device_peak_memory; }

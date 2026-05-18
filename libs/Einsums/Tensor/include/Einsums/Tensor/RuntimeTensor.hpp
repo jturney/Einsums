@@ -1006,7 +1006,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     /**
      * @brief Returns the linear size of the tensor.
      */
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE virtual auto size() const -> size_t { return _data.size(); }
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("size") virtual auto size() const -> size_t { return _data.size(); }
 
     /**
      * @brief Returns whether the tensor sees all of the underlying data.

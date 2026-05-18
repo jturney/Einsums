@@ -22,13 +22,16 @@ namespace einsums::compute_graph::passes {
  * The Scale node is removed from the graph and its effect is absorbed
  * into the following operation's prefactor.
  */
-class EINSUMS_EXPORT ScaleAbsorption : public OptimizerPass {
+class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) EINSUMS_EXPORT ScaleAbsorption
+    : public OptimizerPass {
   public:
+    EINSUMS_PYBIND_EXPOSE ScaleAbsorption() = default;
+
     [[nodiscard]] std::string name() const override { return "ScaleAbsorption"; }
     bool                      run(Graph &graph) override;
 
     /// Number of scale nodes absorbed in the last run.
-    [[nodiscard]] size_t num_absorbed() const { return _num_absorbed; }
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("num_absorbed") [[nodiscard]] size_t num_absorbed() const { return _num_absorbed; }
 
   private:
     size_t _num_absorbed{0};

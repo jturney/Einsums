@@ -151,12 +151,12 @@ void worker_loop(int worker_id) {
 }
 
 int einsums_main() {
-    einsums::println("Profile live demo — running for 60 seconds.");
+    einsums::println("Profile live demo — running for 30 seconds.");
     einsums::println("Connect with:  python devtools/profiling/profile_viewer.py");
     einsums::println("");
 
     int constexpr num_workers = 3;
-    int constexpr run_seconds = 60;
+    int constexpr run_seconds = 30;
 
     std::vector<std::thread> workers;
     workers.reserve(num_workers);

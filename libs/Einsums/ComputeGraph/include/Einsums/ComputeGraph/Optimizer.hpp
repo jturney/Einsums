@@ -39,11 +39,13 @@ class Graph;
  * @note Passes that modify the graph should call graph.mark_sorted() if they
  *       produce a valid topological ordering, to prevent unnecessary re-sorting.
  */
-class OptimizerPass {
+class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) OptimizerPass {
   public:
     virtual ~OptimizerPass() = default;
 
-    [[nodiscard]] virtual std::string name() const = 0;
+    /// @brief Human-readable pass name — exposed so Python tests can
+    ///        assert which pass they're invoking.
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("name") [[nodiscard]] virtual std::string name() const = 0;
 
     /**
      * @brief Run the optimization pass on the given graph.
@@ -88,6 +90,11 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     /// annotate with EINSUMS_PYBIND_EXPOSE.
     EINSUMS_PYBIND_EXPOSE PassManager() = default;
 
+    // The vector-of-shared_ptr storage makes PassManager copyable; we
+    // don't promise that to C++ callers (NOCOPY/NOMOVE controls the
+    // Python binding), but no explicit delete is needed for the binding
+    // to compile.
+
     /**
      * @brief Add a pass to the end of the pipeline.
      *
@@ -106,7 +113,27 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      */
     template <typename PassType, typename... Args>
     PassManager &add(Args &&...args) {
-        _passes.push_back(std::make_unique<PassType>(std::forward<Args>(args)...));
+        _passes.push_back(std::make_shared<PassType>(std::forward<Args>(args)...));
+        return *this;
+    }
+
+    /**
+     * @brief Non-templated overload taking shared ownership of a pass.
+     *
+     * Exists so the Python binding can write ``pm.add(cg.CSE())``: the
+     * templated form can't be bound directly because pybind11 has no way
+     * to deduce ``PassType`` from a Python call site. C++ callers should
+     * prefer ``add<PassType>(...)`` since it constructs in place. Stored
+     * as ``shared_ptr`` to match the pybind11 holder type — pybind can't
+     * transfer ownership of a Python-held ``unique_ptr`` across the FFI
+     * boundary without ``py::smart_holder``.
+     */
+    // The parameter name ``optimizer_pass`` rather than ``pass`` so the
+    // pyi codegen (which copies parameter names verbatim) doesn't emit
+    // a method signature whose argument name collides with Python's
+    // ``pass`` keyword — pyright can't parse it.
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RVP(reference_internal) PassManager &add(std::shared_ptr<OptimizerPass> optimizer_pass) {
+        _passes.push_back(std::move(optimizer_pass));
         return *this;
     }
 
@@ -122,12 +149,12 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @brief Get the list of passes for inspection.
      * @return Const reference to the pass list.
      */
-    [[nodiscard]] std::vector<std::unique_ptr<OptimizerPass>> const &passes() const { return _passes; }
+    [[nodiscard]] std::vector<std::shared_ptr<OptimizerPass>> const &passes() const { return _passes; }
 
     /**
      * @brief Number of passes in the pipeline.
      */
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] size_t size() const { return _passes.size(); }
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("size") [[nodiscard]] size_t size() const { return _passes.size(); }
 
     /**
      * @brief Create a PassManager with all built-in passes in recommended order.
@@ -192,7 +219,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     EINSUMS_PYBIND_EXPOSE void populate_default();
 
   private:
-    std::vector<std::unique_ptr<OptimizerPass>> _passes;
+    std::vector<std::shared_ptr<OptimizerPass>> _passes;
 };
 
 } // namespace einsums::compute_graph

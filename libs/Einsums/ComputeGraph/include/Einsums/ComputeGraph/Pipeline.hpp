@@ -145,7 +145,8 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @param[in] condition Predicate called after each iteration. Return false to stop.
      * @return Reference to the loop body's Graph.
      */
-    Graph &add_loop(std::string name, size_t max_iterations, LoopCondition condition);
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RVP(reference_internal) Graph &add_loop(std::string name, size_t max_iterations,
+                                                                                 LoopCondition condition);
 
     /**
      * @brief Add a one-shot stage with lambda-captured body.

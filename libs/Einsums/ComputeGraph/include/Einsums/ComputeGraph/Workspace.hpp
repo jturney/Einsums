@@ -68,7 +68,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     Workspace(Workspace &&)                 = default;
     Workspace &operator=(Workspace &&)      = default;
 
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] std::string const &name() const { return _name; }
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("name") [[nodiscard]] std::string const &name() const { return _name; }
 
     /**
      * @brief Declare a tensor with deferred allocation. No initialization.
@@ -205,7 +205,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     [[nodiscard]] std::vector<TensorHandle> &tensor_handles() { return _handles; }
 
     /// Number of declared tensors.
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] size_t size() const { return _handles.size(); }
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("size") [[nodiscard]] size_t size() const { return _handles.size(); }
 
     /// Materialize and initialize all deferred tensors.
     EINSUMS_PYBIND_EXPOSE void materialize_all() {

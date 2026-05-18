@@ -211,7 +211,7 @@ def test_default_pass_manager_loads_passes():
     pm = cg.default_pass_manager()
     # Phase C.17 ships ~27 passes in the canonical pipeline; allow some slack
     # so this doesn't break every time someone adds a pass.
-    assert pm.size >= 20
+    assert pm.size() >= 20
 
 
 def test_apply_pass_manager_preserves_correctness():
@@ -292,10 +292,10 @@ def test_executor_names():
 def test_workspace_lifecycle():
     """Workspace exposes its lifecycle hooks; empty workspace materialize is a no-op."""
     ws = cg.Workspace("scratch")
-    assert ws.name == "scratch"
-    assert ws.size == 0
+    assert ws.name() == "scratch"
+    assert ws.size() == 0
     ws.materialize_all()
-    assert ws.size == 0
+    assert ws.size() == 0
 
 
 @pytest.mark.parametrize(
@@ -313,7 +313,7 @@ def test_workspace_declare_tensor_dispatches_on_dtype(dtype, expected_class):
     t = ws.declare_tensor("t", [3, 4], dtype=dtype)
     assert type(t).__name__ == expected_class
     ws.materialize_all()
-    assert t.size == 12
+    assert t.size() == 12
 
 
 def test_workspace_declare_zero_tensor():

@@ -83,7 +83,7 @@ assert w.crunch(100) == 5050
 # surface so the (T) x (Rank) cross-product collapses to (T) x (Alloc).
 t = m.RuntimeTensorD('weights', [3, 4])
 assert t.dim(0) == 3 and t.dim(1) == 4
-assert t.size() == 12 and t.rank() == 2
+assert t.size == 12 and t.rank() == 2
 
 # Submodule + exception (Phase 9c)
 assert hasattr(m, 'demo'), 'expected einsums.demo submodule'

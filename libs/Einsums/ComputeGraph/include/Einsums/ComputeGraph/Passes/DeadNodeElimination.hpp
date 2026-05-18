@@ -27,13 +27,16 @@ namespace einsums::compute_graph::passes {
  * @note Control flow nodes (Conditional, Loop) and Alloc/Free nodes are
  *       never eliminated.
  */
-class EINSUMS_EXPORT DeadNodeElimination : public OptimizerPass {
+class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) EINSUMS_EXPORT DeadNodeElimination
+    : public OptimizerPass {
   public:
+    EINSUMS_PYBIND_EXPOSE DeadNodeElimination() = default;
+
     [[nodiscard]] std::string name() const override { return "DeadNodeElimination"; }
     bool                      run(Graph &graph) override;
 
     /// Number of nodes eliminated in the last run.
-    [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
 
   private:
     size_t _num_eliminated{0};

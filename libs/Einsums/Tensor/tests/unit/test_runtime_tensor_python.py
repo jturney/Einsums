@@ -80,4 +80,4 @@ def test_dim_size_rank_match_numpy():
     arr = np.asarray(t)
     assert t.rank() == arr.ndim == 3
     assert [t.dim(i) for i in range(3)] == list(arr.shape)
-    assert t.size() == arr.size
+    assert t.size == arr.size
