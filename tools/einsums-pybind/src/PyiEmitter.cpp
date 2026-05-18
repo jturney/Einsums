@@ -1650,6 +1650,15 @@ void emit_class(std::ostringstream &os, BoundClass const &cls, NameMap const &na
     if (is_hidden(cls)) {
         return;
     }
+    // External annotated classes are recorded only so the type
+    // translator can map cross-module C++ names to their Python
+    // identifiers. Their full definitions live in the owning module's
+    // own .pyi fragment; re-emitting empty shells here would produce
+    // duplicate `class Foo: ...` entries once the aggregator
+    // concatenates fragments.
+    if (cls.is_external) {
+        return;
+    }
 
     // Exception classes (registered via py::register_exception): emit
     // as a Python Exception subclass. We don't try to bind methods.

@@ -20,10 +20,18 @@ layout under --pkg-dir:
 
 Imports are deduplicated; the script writes a single shared header at
 the top of each output file. Empty submodules are skipped.
+
+If a submodule has a sibling hand-written helper module at
+``--py-helpers-dir/<sub>.py`` (e.g. ``einsums/graph.py`` providing
+``default_pass_manager`` on top of the compiled ``einsums._core.graph``),
+its top-level public declarations are merged into ``<sub>.pyi``. Pyright
+reads ``.pyi`` exclusively when both files exist, so without this merge
+the helpers would be invisible to static analysis.
 """
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import sys
 from pathlib import Path
@@ -49,6 +57,75 @@ import numpy.typing
 """
 
 
+def _is_docstring(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
+
+
+def _stub_function(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    """Replace a def's body with ``[docstring,] ...`` while keeping the
+    signature, decorators, and any annotations intact."""
+    body: list[ast.stmt] = []
+    if node.body and _is_docstring(node.body[0]):
+        body.append(node.body[0])
+    body.append(ast.Expr(value=ast.Constant(value=...)))
+    node.body = body
+    return node
+
+
+def _stub_class(node: ast.ClassDef) -> ast.ClassDef:
+    """Strip a class body down to docstring + public method/attribute stubs."""
+    new_body: list[ast.stmt] = []
+    for child in node.body:
+        if _is_docstring(child):
+            new_body.append(child)
+        elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # Skip name-mangled single-underscore methods; keep dunder
+            # methods (__init__, __getitem__, …) since they're part of
+            # the public protocol pyright cares about.
+            if child.name.startswith("_") and not child.name.startswith("__"):
+                continue
+            new_body.append(_stub_function(child))
+        elif isinstance(child, (ast.Assign, ast.AnnAssign)):
+            new_body.append(child)
+    if not new_body:
+        new_body.append(ast.Expr(value=ast.Constant(value=...)))
+    node.body = new_body
+    return node
+
+
+def render_py_helpers(py_path: Path) -> str:
+    """Render the public surface of a hand-written ``.py`` helper as a stub.
+
+    Keeps every top-level import (decorators and type-hint helpers depend
+    on them), and rewrites public top-level ``def``/``class`` bodies to
+    ``...``. Private top-level names (leading underscore) are dropped —
+    they're implementation detail of the runtime shim, not part of the
+    module's documented surface.
+    """
+    source = py_path.read_text()
+    tree = ast.parse(source)
+    keep: list[ast.stmt] = []
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            keep.append(node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name.startswith("_"):
+                continue
+            keep.append(_stub_function(node))
+        elif isinstance(node, ast.ClassDef):
+            if node.name.startswith("_"):
+                continue
+            keep.append(_stub_class(node))
+    if not keep:
+        return ""
+    new_tree = ast.Module(body=keep, type_ignores=[])
+    return ast.unparse(new_tree)
+
+
 def parse_fragment(path: Path) -> dict[str, str]:
     """Return {submodule_name: body} for each ``# %%submodule:`` block."""
     text = path.read_text()
@@ -69,8 +146,14 @@ def parse_fragment(path: Path) -> dict[str, str]:
     return {sm: "".join(lines).rstrip() + "\n" for sm, lines in blocks.items() if lines}
 
 
-def aggregate(frag_dir: Path, pkg_dir: Path) -> dict[str, Path]:
-    """Read every *.pyi in `frag_dir` and write per-submodule files into `pkg_dir`."""
+def aggregate(frag_dir: Path, pkg_dir: Path, py_helpers_dir: Path | None = None) -> dict[str, Path]:
+    """Read every *.pyi in `frag_dir` and write per-submodule files into `pkg_dir`.
+
+    When ``py_helpers_dir`` is given, any ``<sub>.py`` file there whose name
+    matches a generated submodule has its public surface appended to the
+    submodule's ``.pyi`` so pyright (which prefers ``.pyi`` over a sibling
+    ``.py``) still sees hand-written helpers.
+    """
     by_sub: dict[str, list[str]] = {}
     for frag in sorted(frag_dir.glob("*.pyi")):
         for sub, body in parse_fragment(frag).items():
@@ -81,7 +164,17 @@ def aggregate(frag_dir: Path, pkg_dir: Path) -> dict[str, Path]:
     for sub, parts in by_sub.items():
         out_name = "_core.pyi" if sub == "" else f"{sub}.pyi"
         out_path = pkg_dir / out_name
-        out_path.write_text(SHARED_HEADER + "\n".join(parts).rstrip() + "\n")
+        text = SHARED_HEADER + "\n".join(parts).rstrip() + "\n"
+        # Hand-written helper modules only exist for named submodules
+        # (graph.py, …) — there is no top-level einsums-package helper
+        # that needs to merge into _core.pyi.
+        if py_helpers_dir is not None and sub:
+            helper_py = py_helpers_dir / f"{sub}.py"
+            if helper_py.is_file():
+                helper_stub = render_py_helpers(helper_py)
+                if helper_stub:
+                    text += f"\n# helpers from einsums/{sub}.py\n{helper_stub.rstrip()}\n"
+        out_path.write_text(text)
         written[sub] = out_path
 
     # PEP 561: empty marker file telling type-checkers this package
@@ -89,9 +182,19 @@ def aggregate(frag_dir: Path, pkg_dir: Path) -> dict[str, Path]:
     (pkg_dir / "py.typed").write_text("")
 
     # __init__.pyi: re-export everything from _core so ``import einsums``
-    # gives pyright the full top-level surface.
+    # gives pyright the full top-level surface, plus an explicit
+    # re-export of each generated submodule. At runtime the package's
+    # __getattr__ lazy-binds these to einsums._core.<sub>, so pyright
+    # needs the static hint to know they exist as attributes of einsums.
+    # The `as X` form is PEP 484's explicit re-export marker.
+    submodule_names = sorted(sub for sub in written if sub)
     init_pyi = pkg_dir / "__init__.pyi"
-    init_pyi.write_text(SHARED_HEADER + "from einsums._core import *  # noqa: F401,F403\n")
+    init_body = SHARED_HEADER + "from einsums._core import *  # noqa: F401,F403\n"
+    if submodule_names:
+        init_body += "\n"
+        for sub in submodule_names:
+            init_body += f"from . import {sub} as {sub}\n"
+    init_pyi.write_text(init_body)
 
     return written
 
@@ -102,13 +205,20 @@ def main(argv: list[str] | None = None) -> int:
                    help="Directory containing per-module .pyi fragments.")
     p.add_argument("--pkg-dir", required=True, type=Path,
                    help="Destination einsums/ package directory.")
+    p.add_argument("--py-helpers-dir", type=Path, default=None,
+                   help="Source directory of hand-written einsums/*.py helper "
+                        "modules. When set, public top-level decls in "
+                        "<sub>.py are merged into <sub>.pyi.")
     args = p.parse_args(argv)
 
     if not args.frag_dir.is_dir():
         print(f"aggregate_stubs: {args.frag_dir} is not a directory", file=sys.stderr)
         return 1
+    if args.py_helpers_dir is not None and not args.py_helpers_dir.is_dir():
+        print(f"aggregate_stubs: {args.py_helpers_dir} is not a directory", file=sys.stderr)
+        return 1
 
-    written = aggregate(args.frag_dir, args.pkg_dir)
+    written = aggregate(args.frag_dir, args.pkg_dir, args.py_helpers_dir)
     if written:
         names = ", ".join(sorted(p.name for p in written.values()))
         print(f"aggregate_stubs: wrote {names} to {args.pkg_dir}")

@@ -284,13 +284,18 @@ function(einsums_finalize_pybind)
     # it whenever any fragment changes.
     set(_stubs_stamp "${CMAKE_BINARY_DIR}/generated/pybind/.stubs.stamp")
     set(_aggregator  "${CMAKE_SOURCE_DIR}/tools/einsums-pybind/scripts/aggregate_stubs.py")
+    # Collect the hand-written .py helpers so editing them re-runs the
+    # aggregator (which merges their public surface into the matching
+    # <sub>.pyi for pyright).
+    file(GLOB _py_helpers CONFIGURE_DEPENDS "${_pkg_src}/*.py")
     add_custom_command(
         OUTPUT ${_stubs_stamp}
         COMMAND ${Python_EXECUTABLE} ${_aggregator}
-                --frag-dir "${CMAKE_BINARY_DIR}/generated/pybind"
-                --pkg-dir  "${_pkg_dir}"
+                --frag-dir       "${CMAKE_BINARY_DIR}/generated/pybind"
+                --pkg-dir        "${_pkg_dir}"
+                --py-helpers-dir "${_pkg_src}"
         COMMAND ${CMAKE_COMMAND} -E touch ${_stubs_stamp}
-        DEPENDS ${_aggregator} ${_generated_stubs}
+        DEPENDS ${_aggregator} ${_generated_stubs} ${_py_helpers}
         COMMENT "einsums-pybind: aggregating .pyi stubs into ${_pkg_dir}"
         VERBATIM
     )
