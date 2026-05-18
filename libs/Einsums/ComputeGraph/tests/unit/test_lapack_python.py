@@ -23,10 +23,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-
-
-REAL_DTYPES = ["float32", "float64"]
-COMPLEX_DTYPES = ["complex64", "complex128"]
+from einsums.testing import ALL_DTYPES, REAL_DTYPES
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -34,7 +31,7 @@ COMPLEX_DTYPES = ["complex64", "complex128"]
 # ──────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("dtype", REAL_DTYPES + COMPLEX_DTYPES)
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
 def test_trace_eager_matches_numpy(dtype):
     A = einsums.create_random_tensor("A", [4, 4], dtype=dtype)
     expected = np.trace(np.asarray(A))

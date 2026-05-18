@@ -18,11 +18,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-
-
-REAL_DTYPES = ["float32", "float64"]
-COMPLEX_DTYPES = ["complex64", "complex128"]
-ALL_DTYPES = REAL_DTYPES + COMPLEX_DTYPES
+from einsums.testing import ALL_DTYPES, REAL_DTYPES, assert_close
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -36,7 +32,7 @@ def test_axpy_eager(dtype):
     Y = einsums.create_random_tensor("Y", [4, 3], dtype=dtype)
     expected = np.asarray(Y) + 2.0 * np.asarray(X)
     einsums.linalg.axpy(2.0, X, Y)
-    np.testing.assert_allclose(np.asarray(Y), expected, rtol=1e-5, atol=1e-6)
+    assert_close(Y, expected)
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
@@ -51,7 +47,7 @@ def test_axpy_in_graph_capture(dtype):
     assert g.num_nodes() == 1
     g.execute()
 
-    np.testing.assert_allclose(np.asarray(Y), expected, rtol=1e-5, atol=1e-6)
+    assert_close(Y, expected)
 
 
 def test_axpy_complex_alpha_on_complex_tensor():
@@ -60,7 +56,7 @@ def test_axpy_complex_alpha_on_complex_tensor():
     alpha = 1.0 + 2.0j
     expected = np.asarray(Y) + alpha * np.asarray(X)
     einsums.linalg.axpy(alpha, X, Y)
-    np.testing.assert_allclose(np.asarray(Y), expected, rtol=1e-12)
+    assert_close(Y, expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -74,7 +70,7 @@ def test_axpby_eager(dtype):
     Y = einsums.create_random_tensor("Y", [3, 4], dtype=dtype)
     expected = 2.0 * np.asarray(X) + 3.0 * np.asarray(Y)
     einsums.linalg.axpby(2.0, X, 3.0, Y)
-    np.testing.assert_allclose(np.asarray(Y), expected, rtol=1e-5, atol=1e-6)
+    assert_close(Y, expected)
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
@@ -84,7 +80,7 @@ def test_axpby_zero_beta_overwrites_y(dtype):
     Y = einsums.create_random_tensor("Y", [4, 4], dtype=dtype)
     expected = 1.5 * np.asarray(X)
     einsums.linalg.axpby(1.5, X, 0.0, Y)
-    np.testing.assert_allclose(np.asarray(Y), expected, rtol=1e-5, atol=1e-6)
+    assert_close(Y, expected)
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
@@ -97,7 +93,7 @@ def test_axpby_in_graph_capture(dtype):
     with cg.capture(g):
         einsums.linalg.axpby(0.5, X, 0.25, Y)
     g.execute()
-    np.testing.assert_allclose(np.asarray(Y), expected, rtol=1e-5, atol=1e-6)
+    assert_close(Y, expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -112,7 +108,7 @@ def test_gemv_eager_no_transpose(dtype):
     y = einsums.create_zero_tensor("y", [4], dtype=dtype)
     expected = np.asarray(A) @ np.asarray(x)
     einsums.linalg.gemv(1.0, A, x, 0.0, y)
-    np.testing.assert_allclose(np.asarray(y), expected, rtol=1e-5)
+    assert_close(y, expected)
 
 
 @pytest.mark.parametrize("dtype", REAL_DTYPES)
@@ -122,7 +118,7 @@ def test_gemv_eager_transpose(dtype):
     y = einsums.create_zero_tensor("y", [4], dtype=dtype)
     expected = np.asarray(A).T @ np.asarray(x)
     einsums.linalg.gemv(1.0, A, x, 0.0, y, trans_a=True)
-    np.testing.assert_allclose(np.asarray(y), expected, rtol=1e-5)
+    assert_close(y, expected)
 
 
 @pytest.mark.parametrize("dtype", REAL_DTYPES)
@@ -138,7 +134,7 @@ def test_gemv_in_graph_capture(dtype):
     assert g.num_nodes() == 1
     g.execute()
 
-    np.testing.assert_allclose(np.asarray(y), expected, rtol=1e-5)
+    assert_close(y, expected)
 
 
 def test_gemv_accumulating_beta():
@@ -149,7 +145,7 @@ def test_gemv_accumulating_beta():
     y_before = np.asarray(y).copy()
     expected = np.asarray(A) @ np.asarray(x) + 0.5 * y_before
     einsums.linalg.gemv(1.0, A, x, 0.5, y)
-    np.testing.assert_allclose(np.asarray(y), expected, rtol=1e-12)
+    assert_close(y, expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -164,7 +160,7 @@ def test_ger_eager(dtype):
     A = einsums.create_zero_tensor("A", [4, 5], dtype=dtype)
     expected = np.outer(np.asarray(X), np.asarray(Y))
     einsums.linalg.ger(1.0, X, Y, A)
-    np.testing.assert_allclose(np.asarray(A), expected, rtol=1e-5)
+    assert_close(A, expected)
 
 
 @pytest.mark.parametrize("dtype", REAL_DTYPES)
@@ -180,7 +176,7 @@ def test_ger_in_graph_capture(dtype):
     assert g.num_nodes() == 1
     g.execute()
 
-    np.testing.assert_allclose(np.asarray(A), expected, rtol=1e-5)
+    assert_close(A, expected)
 
 
 def test_ger_accumulates_into_a():
@@ -191,4 +187,4 @@ def test_ger_accumulates_into_a():
     A_before = np.asarray(A).copy()
     expected = A_before + np.outer(np.asarray(X), np.asarray(Y))
     einsums.linalg.ger(1.0, X, Y, A)
-    np.testing.assert_allclose(np.asarray(A), expected, rtol=1e-12)
+    assert_close(A, expected)

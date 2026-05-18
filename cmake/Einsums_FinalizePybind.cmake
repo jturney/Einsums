@@ -277,6 +277,10 @@ function(einsums_finalize_pybind)
     configure_file("${_pkg_src}/__init__.py" "${_pkg_dir}/__init__.py" COPYONLY)
     configure_file("${_pkg_src}/rc.py"       "${_pkg_dir}/rc.py"       COPYONLY)
     configure_file("${_pkg_src}/graph.py"    "${_pkg_dir}/graph.py"    COPYONLY)
+    # einsums.testing — pure-Python sub-package of test helpers.
+    file(MAKE_DIRECTORY "${_pkg_dir}/testing")
+    configure_file("${_pkg_src}/testing/__init__.py"
+                   "${_pkg_dir}/testing/__init__.py" COPYONLY)
 
     # Aggregate per-module .pyi fragments into per-submodule stub files
     # (einsums/_core.pyi, einsums/<sub>.pyi) plus the PEP-561 ``py.typed``
@@ -286,8 +290,11 @@ function(einsums_finalize_pybind)
     set(_aggregator  "${CMAKE_SOURCE_DIR}/tools/einsums-pybind/scripts/aggregate_stubs.py")
     # Collect the hand-written .py helpers so editing them re-runs the
     # aggregator (which merges their public surface into the matching
-    # <sub>.pyi for pyright).
-    file(GLOB _py_helpers CONFIGURE_DEPENDS "${_pkg_src}/*.py")
+    # <sub>.pyi for pyright). Both top-level files (graph.py, rc.py) and
+    # pure-Python helper sub-packages (testing/__init__.py) are tracked
+    # so __init__.pyi's submodule re-exports stay in sync.
+    file(GLOB _py_helpers      CONFIGURE_DEPENDS "${_pkg_src}/*.py")
+    file(GLOB _py_helper_pkgs  CONFIGURE_DEPENDS "${_pkg_src}/*/__init__.py")
     add_custom_command(
         OUTPUT ${_stubs_stamp}
         COMMAND ${Python_EXECUTABLE} ${_aggregator}
@@ -295,7 +302,7 @@ function(einsums_finalize_pybind)
                 --pkg-dir        "${_pkg_dir}"
                 --py-helpers-dir "${_pkg_src}"
         COMMAND ${CMAKE_COMMAND} -E touch ${_stubs_stamp}
-        DEPENDS ${_aggregator} ${_generated_stubs} ${_py_helpers}
+        DEPENDS ${_aggregator} ${_generated_stubs} ${_py_helpers} ${_py_helper_pkgs}
         COMMENT "einsums-pybind: aggregating .pyi stubs into ${_pkg_dir}"
         VERBATIM
     )

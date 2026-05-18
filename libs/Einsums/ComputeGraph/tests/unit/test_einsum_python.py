@@ -19,11 +19,10 @@ import numpy as np
 import pytest
 
 import einsums
+from einsums.testing import ALL_DTYPES, REAL_DTYPES, assert_close
 
-EINSUM_DTYPES = ["float32", "float64", "complex64", "complex128"]
 
-
-@pytest.mark.parametrize("dtype", EINSUM_DTYPES)
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
 def test_matmul(dtype):
     A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
     B = einsums.create_random_tensor("B", [5, 3], dtype=dtype)
@@ -35,7 +34,7 @@ def test_matmul(dtype):
     np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5, atol=1e-6)
 
 
-@pytest.mark.parametrize("dtype", EINSUM_DTYPES)
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
 def test_outer_product(dtype):
     A = einsums.create_random_tensor("A", [3], dtype=dtype)
     B = einsums.create_random_tensor("B", [4], dtype=dtype)
@@ -47,7 +46,7 @@ def test_outer_product(dtype):
     np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5, atol=1e-6)
 
 
-@pytest.mark.parametrize("dtype", EINSUM_DTYPES)
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
 def test_batched_matmul(dtype):
     A = einsums.create_random_tensor("A", [2, 3, 4], dtype=dtype)
     B = einsums.create_random_tensor("B", [2, 4, 5], dtype=dtype)

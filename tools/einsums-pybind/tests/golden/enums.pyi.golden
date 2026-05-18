@@ -19,10 +19,11 @@ class Severity(enum.IntEnum):
     Warning = 1
     Error = 2
 
+class State(enum.IntEnum):
+    Idle = 0
+    Running = 1
+    Stopped = 2
+
 class Engine:
-    def current_state(self) -> Engine.State: ...
-    class State(enum.IntEnum):
-        Idle = 0
-        Running = 1
-        Stopped = 2
+    def current_state(self) -> State: ...
 

@@ -97,20 +97,37 @@ def _stub_class(node: ast.ClassDef) -> ast.ClassDef:
     return node
 
 
+def _public_assign_targets(node: ast.Assign | ast.AnnAssign) -> bool:
+    """True if every target name in the assignment is public (no leading
+    underscore), so it belongs in the rendered stub."""
+    if isinstance(node, ast.AnnAssign):
+        target = node.target
+        return isinstance(target, ast.Name) and not target.id.startswith("_")
+    for target in node.targets:
+        if not isinstance(target, ast.Name) or target.id.startswith("_"):
+            return False
+    return True
+
+
 def render_py_helpers(py_path: Path) -> str:
     """Render the public surface of a hand-written ``.py`` helper as a stub.
 
     Keeps every top-level import (decorators and type-hint helpers depend
-    on them), and rewrites public top-level ``def``/``class`` bodies to
-    ``...``. Private top-level names (leading underscore) are dropped —
-    they're implementation detail of the runtime shim, not part of the
-    module's documented surface.
+    on them), public top-level ``def``/``class`` bodies (rewritten to
+    ``...``), and public top-level constant assignments. Private top-level
+    names (leading underscore) are dropped — they're implementation detail
+    of the runtime shim, not part of the module's documented surface.
     """
     source = py_path.read_text()
     tree = ast.parse(source)
     keep: list[ast.stmt] = []
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
+            # SHARED_HEADER already pulls in ``from __future__ import
+            # annotations``. Re-emitting it here produces a harmless but
+            # ugly duplicate; skip it.
+            if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+                continue
             keep.append(node)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name.startswith("_"):
@@ -120,6 +137,9 @@ def render_py_helpers(py_path: Path) -> str:
             if node.name.startswith("_"):
                 continue
             keep.append(_stub_class(node))
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            if _public_assign_targets(node):
+                keep.append(node)
     if not keep:
         return ""
     new_tree = ast.Module(body=keep, type_ignores=[])
@@ -188,11 +208,34 @@ def aggregate(frag_dir: Path, pkg_dir: Path, py_helpers_dir: Path | None = None)
     # needs the static hint to know they exist as attributes of einsums.
     # The `as X` form is PEP 484's explicit re-export marker.
     submodule_names = sorted(sub for sub in written if sub)
+    # Pure-Python helper sub-packages (e.g. ``einsums/testing/``) have no
+    # C++ fragment, so they never appear in ``written``. Surface them so
+    # pyright resolves ``from einsums.testing import …`` — and emit each
+    # one's ``__init__.pyi`` from the source. Without an explicit stub
+    # pyright treats the parent's ``__init__.pyi`` as authoritative for
+    # submodule resolution and the .py source becomes invisible.
+    pkg_helper_names: list[str] = []
+    if py_helpers_dir is not None:
+        for child in sorted(py_helpers_dir.iterdir()):
+            if (child.is_dir()
+                    and (child / "__init__.py").is_file()
+                    and child.name not in submodule_names):
+                pkg_helper_names.append(child.name)
+                # Mirror the source layout into the destination so pyright
+                # finds a stub for each sub-package alongside the .py.
+                helper_stub = render_py_helpers(child / "__init__.py")
+                if helper_stub:
+                    sub_dir = pkg_dir / child.name
+                    sub_dir.mkdir(parents=True, exist_ok=True)
+                    (sub_dir / "__init__.pyi").write_text(
+                        SHARED_HEADER + helper_stub.rstrip() + "\n"
+                    )
+    all_sub_names = sorted(set(submodule_names) | set(pkg_helper_names))
     init_pyi = pkg_dir / "__init__.pyi"
     init_body = SHARED_HEADER + "from einsums._core import *  # noqa: F401,F403\n"
-    if submodule_names:
+    if all_sub_names:
         init_body += "\n"
-        for sub in submodule_names:
+        for sub in all_sub_names:
             init_body += f"from . import {sub} as {sub}\n"
     init_pyi.write_text(init_body)
 

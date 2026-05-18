@@ -16,10 +16,7 @@ import numpy as np
 import pytest
 
 import einsums
-
-REAL_DTYPES = ["float32", "float64"]
-COMPLEX_DTYPES = ["complex64", "complex128"]
-ALL_DTYPES = REAL_DTYPES + COMPLEX_DTYPES
+from einsums.testing import ALL_DTYPES, COMPLEX_DTYPES, assert_close
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
@@ -27,7 +24,7 @@ def test_scale_by_two(dtype):
     A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
     before = np.asarray(A).copy()
     einsums.linalg.scale(2.0, A)
-    np.testing.assert_allclose(np.asarray(A), 2.0 * before, rtol=1e-5, atol=1e-6)
+    assert_close(A, 2.0 * before)
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
@@ -50,7 +47,7 @@ def test_scale_complex_factor_on_complex_tensor(dtype):
     A = einsums.create_random_tensor("A", [3, 3], dtype=dtype)
     before = np.asarray(A).copy()
     einsums.linalg.scale(1.0 + 2.0j, A)
-    np.testing.assert_allclose(np.asarray(A), (1.0 + 2.0j) * before, rtol=1e-5, atol=1e-6)
+    assert_close(A, (1.0 + 2.0j) * before)
 
 
 def test_scale_rank_3():

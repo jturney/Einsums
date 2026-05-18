@@ -19,8 +19,7 @@ import numpy as np
 import pytest
 
 import einsums
-
-ALL_DTYPES = ["float32", "float64", "complex64", "complex128"]
+from einsums.testing import ALL_DTYPES, COMPLEX_DTYPES, assert_close
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
@@ -30,7 +29,7 @@ def test_transpose_2d(dtype):
 
     einsums.permute("ji <- ij", C, A)
 
-    np.testing.assert_allclose(np.asarray(C), np.asarray(A).T, rtol=1e-5, atol=1e-6)
+    assert_close(C, np.asarray(A).T)
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
@@ -51,7 +50,7 @@ def test_rank3_permute(dtype):
     einsums.permute("kji <- ijk", C, A)
 
     expected = np.transpose(np.asarray(A), (2, 1, 0))
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5, atol=1e-6)
+    assert_close(C, expected)
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
@@ -61,7 +60,7 @@ def test_default_prefactors_overwrite_C(dtype):
 
     einsums.permute("ji <- ij", C, A)  # c_pf=0, a_pf=1 by default
 
-    np.testing.assert_allclose(np.asarray(C), np.asarray(A).T, rtol=1e-5, atol=1e-6)
+    assert_close(C, np.asarray(A).T)
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
@@ -73,10 +72,10 @@ def test_kwargs_accumulate_and_scale(dtype):
     einsums.permute("ji <- ij", C, A, c_pf=1.0, a_pf=2.0)
 
     expected = 10.0 + 2.0 * np.asarray(A).T
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5, atol=1e-6)
+    assert_close(C, expected)
 
 
-@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("dtype", COMPLEX_DTYPES)
 def test_complex_prefactors(dtype):
     A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
     C = einsums.create_zero_tensor("C", [4, 3], dtype=dtype)
@@ -84,7 +83,7 @@ def test_complex_prefactors(dtype):
     einsums.permute("ji <- ij", C, A, c_pf=0.0 + 0.0j, a_pf=1.0 + 1.0j)
 
     expected = (1.0 + 1.0j) * np.asarray(A).T
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5, atol=1e-6)
+    assert_close(C, expected)
 
 
 def test_multi_char_indices_2d():

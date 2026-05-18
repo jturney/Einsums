@@ -7,6 +7,7 @@
 
 #include <cctype>
 #include <cstddef>
+#include <functional>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -147,13 +148,16 @@ void collect_class_names(BoundClass const &cls, NameMap &out, std::string const 
         py_class = parent_py.empty() ? py_name_for(cls) : (parent_py + "." + py_name_for(cls));
         out.add(cls.qualified_name, py_class);
     }
-    // Nested enums inherit the parent's dotted Python prefix.
+    // Nested enums are lifted to module-level pybind registrations by
+    // Emitter.cpp (``py::enum_<Parent::Inner>(_sub_x, "Inner")``), so at
+    // runtime they're reachable as ``submodule.Inner`` — NOT
+    // ``Parent.Inner``. Register them in the name map without the parent
+    // prefix so type annotations resolve correctly.
     for (auto const &e : cls.nested_enums) {
         if (is_hidden(e)) {
             continue;
         }
-        std::string const dotted = py_class.empty() ? py_name_for(e) : (py_class + "." + py_name_for(e));
-        out.add(e.qualified_name, dotted);
+        out.add(e.qualified_name, py_name_for(e));
     }
     for (auto const &n : cls.nested_classes) {
         collect_class_names(n, out, py_class);
@@ -1600,17 +1604,10 @@ void emit_class_body(std::ostringstream &os, BoundClass const &cls, ClassEmissio
         }
     }
 
-    // Nested enums
-    for (auto const &e : cls.nested_enums) {
-        if (is_hidden(e)) {
-            continue;
-        }
-        os << "    class " << py_name_for(e) << "(enum.IntEnum):\n";
-        for (auto const &v : e.enumerators) {
-            os << "        " << v.name << " = " << v.value << "\n";
-        }
-        wrote_anything = true;
-    }
+    // Nested enums are emitted at module scope (matching Emitter.cpp's
+    // pybind registration) — see the top-level emission loop. Skipping
+    // them here so the parent class body doesn't shadow them with a
+    // wrong-scope copy.
 
     // Nested classes
     for (auto const &n : cls.nested_classes) {
@@ -1765,6 +1762,25 @@ std::string emit_pyi(Module const &module_, PyiOptions const &opts) {
 
     NameMap const names = build_name_map(module_);
 
+    // Collect every nested enum (recursively, through nested classes) so
+    // we can emit them at module scope alongside top-level enums —
+    // mirroring Emitter.cpp's ``py::enum_<Parent::Inner>(_sub_x, "Inner")``
+    // placement. The parent class's body skips them.
+    std::vector<BoundEnum const *>                nested_enums;
+    std::function<void(BoundClass const &)> const collect_nested = [&](BoundClass const &c) {
+        for (auto const &e : c.nested_enums) {
+            if (!is_hidden(e)) {
+                nested_enums.push_back(&e);
+            }
+        }
+        for (auto const &n : c.nested_classes) {
+            collect_nested(n);
+        }
+    };
+    for (auto const &c : module_.classes) {
+        collect_nested(c);
+    }
+
     // Group entities by submodule path so the aggregator can route
     // each block to the right per-submodule .pyi file. The sentinel
     // ``# %%submodule: <name>`` marks the start of a block; an empty
@@ -1783,6 +1799,9 @@ std::string emit_pyi(Module const &module_, PyiOptions const &opts) {
     for (auto const &e : module_.enums) {
         note(submodule_of(e));
     }
+    for (BoundEnum const *e : nested_enums) {
+        note(submodule_of(*e));
+    }
     for (auto const &c : module_.classes) {
         note(submodule_of(c));
     }
@@ -1797,6 +1816,11 @@ std::string emit_pyi(Module const &module_, PyiOptions const &opts) {
         for (auto const &e : module_.enums) {
             if (submodule_of(e) == sm) {
                 emit_enum(block, e);
+            }
+        }
+        for (BoundEnum const *e : nested_enums) {
+            if (submodule_of(*e) == sm) {
+                emit_enum(block, *e);
             }
         }
         for (auto const &c : module_.classes) {
