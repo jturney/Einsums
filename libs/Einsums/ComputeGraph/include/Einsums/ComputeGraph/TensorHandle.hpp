@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
+#include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
@@ -331,7 +332,7 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
  * @return A TensorHandle with rank=0 and no dims/strides.
  */
 template <typename T>
-    requires std::is_arithmetic_v<T>
+    requires(std::is_arithmetic_v<T> || IsComplexV<T>)
 TensorHandle make_scalar_handle(T *scalar, TensorId id, std::string name = "scalar") {
     TensorHandle h;
     h.tensor_ptr   = scalar;

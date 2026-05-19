@@ -28,6 +28,7 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace einsums::compute_graph {
 
@@ -212,6 +213,47 @@ void element_transform(CType *C, UnaryOperator unary_op) {
 
     auto executor = [c_slot, unary_op]() { tensor_algebra::element_transform(static_cast<CType *>(c_slot->ptr), unary_op); };
 
+    ctx.record(OpKind::ElementTransform, "element_transform", {c_id}, {c_id}, std::move(executor));
+}
+
+/// Python-friendly element_transform wrapper.
+///
+/// The generic ``element_transform`` template requires ``RankTensorConcept``
+/// (compile-time rank), which ``GeneralRuntimeTensor`` doesn't satisfy, so it
+/// can't be reused here. This overload walks the contiguous underlying storage
+/// directly and accepts ``std::function<T(T)>`` so pybind11's caster can wrap a
+/// Python callable. A serial loop (rather than the OMP-parallel path used by
+/// ``tensor_algebra::element_transform``) keeps the per-call GIL acquire from
+/// causing thread contention — fine for the small unary maps typical of
+/// SCF/MP2 (eigenvalues, denominators).
+template <CoreBasicTensorConcept TensorType>
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    void element_transform_python(TensorType *C, std::function<typename TensorType::ValueType(typename TensorType::ValueType)> unary_op) {
+    using T = typename TensorType::ValueType;
+
+    auto apply = [unary_op](TensorType *target) {
+        T           *data = target->data();
+        size_t const n    = target->size();
+        for (size_t i = 0; i < n; ++i) {
+            data[i] = unary_op(data[i]);
+        }
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        apply(C);
+        return;
+    }
+
+    auto [c_id, c_slot] = ctx.get_slot(*C);
+    auto executor       = [c_slot, apply]() { apply(static_cast<TensorType *>(c_slot->ptr)); };
     ctx.record(OpKind::ElementTransform, "element_transform", {c_id}, {c_id}, std::move(executor));
 }
 
@@ -536,6 +578,50 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
     ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor));
 }
 
+/// Python-friendly graph-aware dot: writes the result into ``result->data()[0]``.
+///
+/// ``result`` is a pre-allocated rank-1 (or higher, but only element 0 is
+/// touched) tensor that gives Python users a graph-native scalar handle —
+/// SCF energy patterns like ``e = ½ Σ D · (H+F)`` can be captured.
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
+    requires requires {
+        requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>;
+        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
+    }
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    void dot_python(ResultType *result, AType const &A, BType const &B) {
+    if (result->size() < 1) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dot: result tensor must have at least one element");
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        result->data()[0] = linear_algebra::dot(A, B);
+        return;
+    }
+
+    // Register the result as a normal tensor slot (not a scalar handle) so
+    // downstream tensor ops (scale, axpy, ...) on the same tensor see the
+    // same slot id — get_or_register_scalar would key by data()[0] and
+    // collide with get_slot(*result), giving rank-0 metadata to the scale.
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [b_id, b_slot] = ctx.get_slot(B);
+    auto [r_id, r_slot] = ctx.get_slot(*result);
+
+    auto executor = [a_slot, b_slot, r_slot]() {
+        auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
+        r_ptr->data()[0] = linear_algebra::dot(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
+    };
+    ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // direct_product: C = alpha * (A ⊙ B) + beta * C
 // ─────────────────────────────────────────────────────────────────────────────
@@ -566,6 +652,146 @@ EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::G
     };
 
     ctx.record(OpKind::DirectProduct, "direct_product", {a_id, b_id}, {c_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// outer_sum: rank-N result(i_0,...,i_{N-1}) = Σ_k c_k * v_k(i_k)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Outer sum of N rank-1 vectors with per-axis coefficients.
+///
+/// Fills ``result`` with
+///   ``result(i_0, i_1, ..., i_{N-1}) = Σ_k coefficients[k] * vectors[k](i_k)``.
+///
+/// Canonical use case is the MP2/CC energy denominator:
+///   Δ(i,j,a,b) = ε_i + ε_j − ε_a − ε_b
+///     ↪ outer_sum(&Δ, {ε_occ, ε_occ, ε_virt, ε_virt}, {+1, +1, -1, -1})
+///
+/// If ``coefficients`` is empty, defaults to all +1.
+///
+/// Capture-aware: outside capture executes immediately; inside capture
+/// records a Custom node with each input vector and the result as
+/// dependencies. ``result->rank()`` must equal ``vectors.size()`` and
+/// ``result->dim(k)`` must equal ``vectors[k]->dim(0)``.
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept VectorType>
+    requires std::is_same_v<typename ResultType::ValueType, typename VectorType::ValueType>
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    void outer_sum(ResultType *result, std::vector<VectorType const *> vectors, std::vector<double> coefficients) {
+    using T = typename ResultType::ValueType;
+
+    size_t const N = vectors.size();
+    if (N == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: must provide at least one vector");
+    }
+    if (result->rank() != N) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::outer_sum: result rank ({}) must equal number of vectors ({})", result->rank(), N);
+    }
+    for (size_t k = 0; k < N; ++k) {
+        if (vectors[k] == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: vector[{}] is null", k);
+        }
+        if (vectors[k]->rank() != 1) {
+            EINSUMS_THROW_EXCEPTION(rank_error, "cg::outer_sum: vector[{}] must be rank-1; got rank {}", k, vectors[k]->rank());
+        }
+        if (vectors[k]->dim(0) != result->dim(k)) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: vector[{}] length ({}) doesn't match result dim {} ({})", k,
+                                    vectors[k]->dim(0), k, result->dim(k));
+        }
+    }
+
+    std::vector<T> effective_coeffs(N, T{1});
+    if (!coefficients.empty()) {
+        if (coefficients.size() != N) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: coefficients length ({}) must equal number of vectors ({})",
+                                    coefficients.size(), N);
+        }
+        for (size_t k = 0; k < N; ++k)
+            effective_coeffs[k] = static_cast<T>(coefficients[k]);
+    }
+
+    auto apply = [vectors, effective_coeffs, N](ResultType *r) {
+        size_t const        total = r->size();
+        std::vector<size_t> idx(N, 0);
+        std::vector<size_t> dims(N), strides(N);
+        for (size_t k = 0; k < N; ++k) {
+            dims[k]    = r->dim(k);
+            strides[k] = r->stride(k);
+        }
+        T *out = r->data();
+        for (size_t count = 0; count < total; ++count) {
+            T sum{};
+            for (size_t k = 0; k < N; ++k) {
+                sum += effective_coeffs[k] * vectors[k]->data()[idx[k]];
+            }
+            size_t offset = 0;
+            for (size_t k = 0; k < N; ++k)
+                offset += idx[k] * strides[k];
+            out[offset] = sum;
+            // Increment multi-index (axis 0 fastest — direction is irrelevant for correctness).
+            for (size_t k = 0; k < N; ++k) {
+                if (++idx[k] < dims[k])
+                    break;
+                idx[k] = 0;
+            }
+        }
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        apply(result);
+        return;
+    }
+
+    std::vector<TensorId> in_ids;
+    in_ids.reserve(N);
+    std::vector<TensorSlot const *> v_slots;
+    v_slots.reserve(N);
+    for (size_t k = 0; k < N; ++k) {
+        auto [vid, vslot] = ctx.get_slot(*vectors[k]);
+        in_ids.push_back(vid);
+        v_slots.push_back(vslot);
+    }
+    auto [r_id, r_slot] = ctx.get_slot(*result);
+
+    auto executor = [v_slots, r_slot, effective_coeffs, N]() {
+        auto                           *r_ptr = static_cast<ResultType *>(r_slot->ptr);
+        std::vector<VectorType const *> rebound(N);
+        for (size_t k = 0; k < N; ++k)
+            rebound[k] = static_cast<VectorType const *>(v_slots[k]->ptr);
+
+        size_t const        total = r_ptr->size();
+        std::vector<size_t> idx(N, 0);
+        std::vector<size_t> dims(N), strides(N);
+        for (size_t k = 0; k < N; ++k) {
+            dims[k]    = r_ptr->dim(k);
+            strides[k] = r_ptr->stride(k);
+        }
+        T *out = r_ptr->data();
+        for (size_t count = 0; count < total; ++count) {
+            T sum{};
+            for (size_t k = 0; k < N; ++k) {
+                sum += effective_coeffs[k] * rebound[k]->data()[idx[k]];
+            }
+            size_t offset = 0;
+            for (size_t k = 0; k < N; ++k)
+                offset += idx[k] * strides[k];
+            out[offset] = sum;
+            for (size_t k = 0; k < N; ++k) {
+                if (++idx[k] < dims[k])
+                    break;
+                idx[k] = 0;
+            }
+        }
+    };
+
+    ctx.record(OpKind::Custom, "outer_sum", in_ids, {r_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -602,6 +828,42 @@ void norm(RemoveComplexT<typename AType::ValueType> *result, linear_algebra::Nor
 
     auto executor = [result, norm_type, a_slot]() { *result = linear_algebra::norm(norm_type, *static_cast<AType const *>(a_slot->ptr)); };
 
+    ctx.record(OpKind::Norm, "norm", {a_id}, {r_id}, std::move(executor));
+}
+
+/// Python-friendly graph-aware norm: writes the result into ``result->data()[0]``.
+///
+/// For complex inputs the result is real-valued (e.g. complex<double> input
+/// requires a ``double`` result tensor). Use ``Norm::ONE``, ``Norm::TWO``,
+/// ``Norm::INFINITY_``, ``Norm::FROBENIUS``, etc.
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires requires { requires std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>>; }
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<float,  std::allocator<float>>,  einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<float,  std::allocator<float>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const &A) {
+    if (result->size() < 1) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::norm: result tensor must have at least one element");
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        result->data()[0] = linear_algebra::norm(norm_type, A);
+        return;
+    }
+
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [r_id, r_slot] = ctx.get_slot(*result);
+
+    auto executor = [norm_type, a_slot, r_slot]() {
+        auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
+        r_ptr->data()[0] = linear_algebra::norm(norm_type, *static_cast<AType const *>(a_slot->ptr));
+    };
     ctx.record(OpKind::Norm, "norm", {a_id}, {r_id}, std::move(executor));
 }
 
@@ -700,6 +962,55 @@ void trace(typename AType::ValueType *result, AType const &A) {
         for (size_t i = 0; i < a.dim(0); ++i)
             sum += a(i, i);
         *result = sum;
+    };
+
+    ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor));
+}
+
+/// Python-friendly graph-aware trace: writes the diagonal sum into
+/// ``result->data()[0]``. Runtime-rank input must be a square rank-2 tensor.
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires requires { requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>; }
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    void trace_python(ResultType *result, AType const &A) {
+    using T = typename AType::ValueType;
+
+    if (result->size() < 1) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: result tensor must have at least one element");
+    }
+    if (A.rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::trace: input must be rank-2; got rank {}.", A.rank());
+    }
+    if (A.dim(0) != A.dim(1)) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
+    }
+
+    auto compute = [](AType const &a) -> T {
+        T sum = T{};
+        for (size_t i = 0; i < a.dim(0); ++i)
+            sum += a(i, i);
+        return sum;
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        result->data()[0] = compute(A);
+        return;
+    }
+
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [r_id, r_slot] = ctx.get_slot(*result);
+
+    auto executor = [a_slot, r_slot, compute]() {
+        auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
+        r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr));
     };
 
     ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor));

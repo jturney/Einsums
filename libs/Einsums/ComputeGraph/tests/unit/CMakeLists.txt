@@ -68,6 +68,7 @@ set(ComputeGraphTests
     test_blas_python.py
     test_capture_python.py
     test_einsum_python.py
+    test_element_transform_python.py
     test_error_reporting_python.py
     test_executor_python.py
     test_graph_python.py
@@ -75,6 +76,7 @@ set(ComputeGraphTests
     test_linalg_new_python.py
     test_loop_python.py
     test_mixed_ops_python.py
+    test_outer_sum_python.py
     test_pass_chain_parenthesization_python.py
     test_pass_constant_folding_python.py
     test_pass_cse_python.py
@@ -87,6 +89,7 @@ set(ComputeGraphTests
     test_pass_scale_absorption_python.py
     test_pass_symmetry_propagation_python.py
     test_permute_python.py
+    test_scalar_writers_python.py
     test_scale_python.py
 )
 

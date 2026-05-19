@@ -181,13 +181,13 @@ class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUM
     /**
      * @brief Look up or create a TensorId for a scalar value.
      *
-     * @tparam T An arithmetic type.
+     * @tparam T An arithmetic or complex-arithmetic type.
      * @param[in] scalar Pointer to the scalar.
      * @param[in] name Human-readable name.
      * @return The scalar's TensorId in the current graph.
      */
     template <typename T>
-        requires std::is_arithmetic_v<T>
+        requires(std::is_arithmetic_v<T> || IsComplexV<T>)
     TensorId get_or_register_scalar(T *scalar, std::string name = "scalar") {
         void *ptr = static_cast<void *>(scalar);
         auto  it  = _ptr_to_id.find(ptr);
