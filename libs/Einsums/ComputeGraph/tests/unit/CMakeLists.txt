@@ -65,13 +65,19 @@ set(ComputeGraphTests
     TensorRankConcept.cpp
     View.cpp
     Workspace.cpp
+    test_axpy_axpby_views_python.py
     test_blas_python.py
     test_block_copy_python.py
     test_capture_python.py
+    test_direct_product_views_python.py
     test_einsum_python.py
+    test_einsum_views_python.py
     test_element_transform_python.py
     test_error_reporting_python.py
     test_executor_python.py
+    test_gemm_views_python.py
+    test_gemv_views_python.py
+    test_ger_views_python.py
     test_graph_python.py
     test_lapack_python.py
     test_linalg_new_python.py
@@ -92,6 +98,7 @@ set(ComputeGraphTests
     test_permute_python.py
     test_scalar_writers_python.py
     test_scale_python.py
+    test_symm_gemm_views_python.py
     test_view_python.py
 )
 

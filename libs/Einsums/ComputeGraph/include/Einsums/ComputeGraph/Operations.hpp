@@ -389,20 +389,36 @@ EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<st
 /// X and Y must have the same dtype and shape; the operation is
 /// element-wise. Eager outside graph capture; recorded as a node when
 /// inside a capture context.
-template <TensorConcept XType>
+template <TensorConcept XType, TensorConcept YType>
+    requires SameUnderlying<XType, YType>
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
-EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<float>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<double>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<double>>)
+// All 4 combinations of (X, Y) x (owning, view), per dtype. Same-dtype
+// across operands is enforced by SameUnderlying above.
+//
+// float
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+// complex<float>
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
-    void axpy(typename XType::ValueType alpha, XType const &X, XType *Y) {
+    void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         linear_algebra::axpy(alpha, X, Y);
@@ -414,7 +430,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<do
 
     auto label    = fmt::format("axpy(alpha={}, {}, {})", alpha, X.name(), Y->name());
     auto executor = [alpha, x_slot, y_slot]() {
-        linear_algebra::axpy(alpha, *static_cast<XType const *>(x_slot->ptr), static_cast<XType *>(y_slot->ptr));
+        linear_algebra::axpy(alpha, *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
     };
 
     ctx.record(OpKind::Axpy, std::move(label), {x_id}, {y_id}, std::move(executor));
@@ -428,20 +444,35 @@ EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<do
 ///
 /// Like ``axpy`` but also scales the destination by ``beta`` first.
 /// X and Y must have the same dtype and shape.
-template <TensorConcept T>
+template <TensorConcept XType, TensorConcept YType>
+    requires SameUnderlying<XType, YType>
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
-EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<float>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<double>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<double>>)
+// All 4 combinations of (X, Y) x (owning, view), per dtype.
+//
+// float
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+// complex<float>
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
-    void axpby(typename T::ValueType alpha, T const &X, typename T::ValueType beta, T *Y) {
+    void axpby(typename XType::ValueType alpha, XType const &X, typename XType::ValueType beta, YType *Y) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         linear_algebra::axpby(alpha, X, beta, Y);
@@ -453,7 +484,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<d
 
     auto label    = fmt::format("axpby(alpha={}, beta={})", alpha, beta);
     auto executor = [alpha, x_slot, beta, y_slot]() {
-        linear_algebra::axpby(alpha, *static_cast<T const *>(x_slot->ptr), beta, static_cast<T *>(y_slot->ptr));
+        linear_algebra::axpby(alpha, *static_cast<XType const *>(x_slot->ptr), beta, static_cast<YType *>(y_slot->ptr));
     };
 
     ctx.record(OpKind::Axpby, std::move(label), {x_id}, {y_id}, std::move(executor));
@@ -491,18 +522,62 @@ void gemm(U const alpha, T const &A, T const &B, U const beta, T *C) {
 /// the transpose of the corresponding matrix. All three tensors must be
 /// rank 2; a clear ``rank_error`` is raised up front otherwise rather
 /// than letting the BLAS kernel fail mid-pipeline.
-template <bool TransA, bool TransB, RuntimeRankTensorConcept T, typename U>
-    requires std::convertible_to<U, typename T::ValueType>
+///
+/// A, B, C may be any combination of owning ``RuntimeTensor`` and
+/// ``RuntimeTensorView`` so long as they share an underlying element type.
+/// Views alias their parents so writes through C-view land in the parent
+/// and the optimization passes see the dependency via ``TensorHandle::aliases``.
+template <bool TransA, bool TransB, RuntimeRankTensorConcept AType, RuntimeRankTensorConcept BType, RuntimeRankTensorConcept CType,
+          typename U>
+    requires requires {
+        requires std::convertible_to<U, typename AType::ValueType>;
+        requires SameUnderlying<AType, BType, CType>;
+    }
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
 EINSUMS_PYBIND_TEMPLATE_KWARGS("trans_a", "trans_b")
-EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
-EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
-EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
-EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+// All 8 combinations of (A, B, C) x (owning, view), per dtype, per (TransA, TransB)
+// bool pair. INSTANTIATE_BOOLS expands each line to 4 entries (T/F)x(T/F).
+//
+// float — AAA/AAV/AVA/AVV/VAA/VAV/VVA/VVV (A = owning, V = view)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          float)
+// double
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          double)
+// complex<float>
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            std::complex<float>)
+// complex<double>
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
     // clang-format on
-    void gemm(U const alpha, T const &A, T const &B, U const beta, T *C) {
+    void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C) {
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
     }
@@ -519,8 +594,8 @@ EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<std::comp
 
     auto label    = fmt::format("gemm<{},{}>", TransA ? "T" : "N", TransB ? "T" : "N");
     auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
-        linear_algebra::gemm<TransA, TransB>(alpha, *static_cast<T const *>(a_slot->ptr), *static_cast<T const *>(b_slot->ptr), beta,
-                                             static_cast<T *>(c_slot->ptr));
+        linear_algebra::gemm<TransA, TransB>(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr),
+                                             beta, static_cast<CType *>(c_slot->ptr));
     };
 
     ctx.record(OpKind::Gemm, std::move(label), {a_id, b_id}, {c_id}, std::move(executor));
@@ -565,10 +640,45 @@ template <bool TransA, RuntimeRankTensorConcept AType, RuntimeRankTensorConcept 
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
 EINSUMS_PYBIND_TEMPLATE_KWARGS("trans_a")
-EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                float)
-EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               double)
-EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  std::complex<float>)
+// All 8 combinations of (A, X, Y) x (owning, view), per dtype. Same-dtype
+// across operands is enforced by SameUnderlying above.
+//
+// float
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          float)
+// double
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          double)
+// complex<float>
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            std::complex<float>)
+// complex<double>
 EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
     // clang-format on
     void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
     if (A.rank() != 2 || z.rank() != 1 || y->rank() != 1) {
@@ -628,10 +738,45 @@ template <RuntimeRankTensorConcept AType, RuntimeRankTensorConcept XType, Runtim
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
-EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+// All 8 combinations of (A, X, Y) x (owning, view), per dtype. Same-dtype
+// across operands is enforced by SameUnderlying above.
+//
+// float
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+// complex<float>
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
 EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
     if (X.rank() != 1 || Y.rank() != 1 || A->rank() != 2) {
@@ -722,10 +867,47 @@ template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType, CoreB
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
-EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+// All 8 combinations of (Result, A, B) x (owning, view), per dtype. Same-dtype
+// across operands is enforced by the requires clause above. View arguments
+// alias their parent so reads through them participate in the graph's
+// dependency edges via TensorHandle::aliases.
+//
+// float — RRR/RRV/RVR/RVV/VRR/VRV/VVR/VVV
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::RuntimeTensorView<float>,                                                    einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::RuntimeTensorView<float>,                                                    einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<float>,                                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<float>,                                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<float>,                                          einsums::RuntimeTensorView<float>,                                                    einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<float>,                                          einsums::RuntimeTensorView<float>,                                                    einsums::RuntimeTensorView<float>)
+// double
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::RuntimeTensorView<double>,                                                  einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::RuntimeTensorView<double>,                                                  einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<double>,                                         einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<double>,                                         einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<double>,                                         einsums::RuntimeTensorView<double>,                                                  einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<double>,                                         einsums::RuntimeTensorView<double>,                                                  einsums::RuntimeTensorView<double>)
+// complex<float>
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void dot_python(ResultType *result, AType const &A, BType const &B) {
     if (result->size() < 1) {
@@ -761,10 +943,45 @@ template <typename T, TensorConcept AType, TensorConcept BType, TensorConcept CT
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
-EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", float,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", double,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<float>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+// All 8 combinations of (A, B, C) x (owning, view), per dtype. The first
+// template argument is the scalar dtype for alpha/beta.
+//
+// float
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", float, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", float, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", float, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", float, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", double, einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", double, einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", double, einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", double, einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+// complex<float>
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<float>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<float>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<float>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<float>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<float>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<float>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<float>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<float>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
 EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
     auto &ctx = CaptureContext::current();
@@ -809,10 +1026,34 @@ template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept VectorType>
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
-EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+// All 4 combinations of (Result, Vectors) x (owning, view), per dtype. The
+// vectors list is homogeneous — every element must be the same C++ type,
+// since VectorType is a single template parameter shared across the list.
+// For the canonical MP2 denominator use case (all four eps vectors are
+// owning tensors) this is fine. If you really need a mix of owning and
+// view vectors in one call, materialize the view side into an owning
+// tensor first via block_copy.
+//
+// float
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+// complex<float>
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
 EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void outer_sum(ResultType *result, std::vector<VectorType const *> vectors, std::vector<double> coefficients) {
     using T = typename ResultType::ValueType;
@@ -824,16 +1065,15 @@ EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<std::co
     if (result->rank() != N) {
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::outer_sum: result rank ({}) must equal number of vectors ({})", result->rank(), N);
     }
+    // Capture-time checks: only rank and null. Dim matching is deferred to
+    // execute time because views report their parent's dims at capture time —
+    // the slice dims aren't resolved until the View executor runs.
     for (size_t k = 0; k < N; ++k) {
         if (vectors[k] == nullptr) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: vector[{}] is null", k);
         }
         if (vectors[k]->rank() != 1) {
             EINSUMS_THROW_EXCEPTION(rank_error, "cg::outer_sum: vector[{}] must be rank-1; got rank {}", k, vectors[k]->rank());
-        }
-        if (vectors[k]->dim(0) != result->dim(k)) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: vector[{}] length ({}) doesn't match result dim {} ({})", k,
-                                    vectors[k]->dim(0), k, result->dim(k));
         }
     }
 
@@ -848,6 +1088,13 @@ EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<std::co
     }
 
     auto apply = [vectors, effective_coeffs, N](ResultType *r) {
+        // Dim check (deferred from capture time so view operands can resolve).
+        for (size_t k = 0; k < N; ++k) {
+            if (vectors[k]->dim(0) != r->dim(k)) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: vector[{}] length ({}) doesn't match result dim {} ({})", k,
+                                        vectors[k]->dim(0), k, r->dim(k));
+            }
+        }
         size_t const        total = r->size();
         std::vector<size_t> idx(N, 0);
         std::vector<size_t> dims(N), strides(N);
@@ -897,6 +1144,13 @@ EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<std::co
         for (size_t k = 0; k < N; ++k)
             rebound[k] = static_cast<VectorType const *>(v_slots[k]->ptr);
 
+        // Dim check (deferred from capture time so view operands can resolve).
+        for (size_t k = 0; k < N; ++k) {
+            if (rebound[k]->dim(0) != r_ptr->dim(k)) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: vector[{}] length ({}) doesn't match result dim {} ({})", k,
+                                        rebound[k]->dim(0), k, r_ptr->dim(k));
+            }
+        }
         size_t const        total = r_ptr->size();
         std::vector<size_t> idx(N, 0);
         std::vector<size_t> dims(N), strides(N);
@@ -972,10 +1226,30 @@ template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
+// All 4 combinations of (Result, A) x (owning, view), per dtype mapping. Norm
+// returns a real value, so for complex inputs the result must be the
+// corresponding real dtype (float for complex<float>, double for complex<double>).
+//
+// float input -> float result
 EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<float,  std::allocator<float>>,  einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<float,  std::allocator<float>>,  einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::RuntimeTensorView<float>,                             einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::RuntimeTensorView<float>,                             einsums::RuntimeTensorView<float>)
+// double input -> double result
 EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::RuntimeTensorView<double>,                            einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::RuntimeTensorView<double>,                            einsums::RuntimeTensorView<double>)
+// complex<float> input -> float result
 EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<float,  std::allocator<float>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<float,  std::allocator<float>>,  einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::RuntimeTensorView<float>,                             einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::RuntimeTensorView<float>,                             einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double> input -> double result
 EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::RuntimeTensorView<double>,                            einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::RuntimeTensorView<double>,                            einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const &A) {
     if (result->size() < 1) {
@@ -1105,10 +1379,29 @@ template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
-EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+// All 4 combinations of (Result, A) x (owning, view), per dtype. Same-dtype
+// across operands is enforced by the requires clause above.
+//
+// float
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                              einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                              einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::RuntimeTensorView<float>,                                                        einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::RuntimeTensorView<float>,                                                        einsums::RuntimeTensorView<float>)
+// double
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,                            einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,                            einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::RuntimeTensorView<double>,                                                       einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::RuntimeTensorView<double>,                                                       einsums::RuntimeTensorView<double>)
+// complex<float>
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,  einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::RuntimeTensorView<std::complex<float>>,                                          einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::RuntimeTensorView<std::complex<float>>,                                          einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void trace_python(ResultType *result, AType const &A) {
     using T = typename AType::ValueType;
@@ -1160,10 +1453,46 @@ template <bool TransA, bool TransB, RuntimeRankTensorConcept AType, RuntimeRankT
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
 EINSUMS_PYBIND_TEMPLATE_KWARGS("trans_a", "trans_b")
-EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+// All 8 combinations of (A, B, C) x (owning, view), per dtype, per
+// (TransA, TransB) bool pair. INSTANTIATE_BOOLS expands each line to 4
+// entries.
+//
+// float
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+// complex<float>
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
 EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void symm_gemm(AType const &A, BType const &B, CType *C) {
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
@@ -2326,18 +2655,45 @@ template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept
              std::is_same_v<typename AType::ValueType, typename CType::ValueType>)
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
-EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,
-                              einsums::GeneralRuntimeTensor<float, std::allocator<float>>,
-                              einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,
-                              einsums::GeneralRuntimeTensor<double, std::allocator<double>>,
-                              einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,
-                              einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,
-                              einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,
-                              einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,
-                              einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+// All 8 combinations of (C, A, B) x (owning, view), per dtype. Same-dtype
+// across operands is enforced by the requires clause above.
+//
+// float — OOO/OOV/OVO/OVV/VOO/VOV/VVO/VVV in (C, A, B) order
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+// complex<float>
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void einsum_python(std::string const &spec, CType *C, AType const &A, BType const &B,
                        typename CType::ValueType c_pf  = typename CType::ValueType{0},
