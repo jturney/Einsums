@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+import numpy as np
+import pytest
+
 import einsums
 import einsums.graph as cg
 
@@ -103,3 +106,60 @@ def test_lih_rank3_batched_gemm_hoists():
     pass_inst = cg.LoopInvariantHoisting()
     assert _run(pass_inst, g)
     assert pass_inst.num_hoisted == 1
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Execution after LIH — verifies that the rewritten graph still runs and
+# produces correct values. The previous suite only checked num_hoisted;
+# without executing the graph the tensor-id rewrite and loop-input wiring
+# couldn't be exercised.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_lih_does_not_corrupt_body_when_nothing_is_invariant():
+    """Regression: an early bug moved every body node into a temporary
+    ``remaining`` vector, then short-circuited on ``hoisted.empty()``
+    without putting them back — turning the loop body into a no-op."""
+    value = einsums.create_zero_tensor("value", [1])
+    np.asarray(value)[0] = 1.0
+
+    g = cg.Graph("preserve-body")
+    body = g.add_loop("loop", 5, lambda it: it < 2)
+    with cg.capture(body):
+        einsums.linalg.scale(2.0, value)   # self-modifying — never invariant
+
+    pass_inst = cg.LoopInvariantHoisting()
+    _run(pass_inst, g)
+    assert pass_inst.num_hoisted == 0
+
+    g.execute()
+    # cond returns True for it=0, True for it=1, False for it=2 →
+    # body runs 3 times → value = 1 * 2^3 = 8.
+    assert float(np.asarray(value)[0]) == pytest.approx(8.0)
+
+
+def test_lih_executes_correctly_after_hoist():
+    """Hoist a real invariant gemm and confirm the rewritten graph executes
+    end-to-end. Exercises the tensor-id remap from body to parent graph
+    and the explicit loop-input edge that orders the hoisted node first."""
+    A = einsums.create_random_tensor("A", [3, 4])
+    B = einsums.create_random_tensor("B", [4, 5])
+    C = einsums.create_zero_tensor("C", [3, 5])
+    accum = einsums.create_zero_tensor("accum", [3, 5])
+
+    g = cg.Graph("hoist-exec")
+    body = g.add_loop("loop", 3, lambda it: it < 2)
+    with cg.capture(body):
+        einsums.einsum("ij <- ik ; kj", C, A, B)   # invariant — A, B never change
+        einsums.linalg.axpy(1.0, C, accum)         # self-modifying — stays in body
+
+    pass_inst = cg.LoopInvariantHoisting()
+    assert _run(pass_inst, g)
+    assert pass_inst.num_hoisted == 1
+
+    g.execute()
+    expected_C = np.asarray(A) @ np.asarray(B)
+    np.testing.assert_allclose(np.asarray(C), expected_C, rtol=1e-5)
+    # cond returns True for it=0, True for it=1, False for it=2 →
+    # body runs 3 times → accum = 3 * C.
+    np.testing.assert_allclose(np.asarray(accum), 3.0 * expected_C, rtol=1e-5)

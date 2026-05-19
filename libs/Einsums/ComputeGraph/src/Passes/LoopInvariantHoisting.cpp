@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp>
 #include <Einsums/Logging.hpp>
 
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -90,32 +91,89 @@ bool LoopInvariantHoisting::run(Graph &graph) {
             }
         }
 
-        // Move invariant nodes from body to parent graph, before the loop node
+        // Bail out cheaply if nothing's invariant — otherwise we'd move-from
+        // every body_nodes entry just to put them back, and a ``continue``
+        // path that left ``body_nodes`` with moved-from std::function
+        // executors would silently turn the loop body into a no-op.
+        bool any_invariant = false;
+        for (bool v : invariant) {
+            if (v) {
+                any_invariant = true;
+                break;
+            }
+        }
+        if (!any_invariant)
+            continue;
+
+        // Move invariant nodes from body to parent graph. Hoisted nodes
+        // reference TensorIds from the body graph's tensor table, but those
+        // IDs are not registered in the parent graph — naively appending the
+        // node to the parent leaves later passes (and the executor) unable
+        // to resolve its tensors. So for each TensorId the hoisted node
+        // touches, we register the corresponding TensorHandle in the parent
+        // and rewrite the node's input/output IDs to use the parent's ID.
+        // The body's tensor table is left untouched so non-hoisted body
+        // nodes still see their original IDs.
+        std::unordered_map<TensorId, TensorId> id_remap;
+        auto                                   remap_or_register = [&](TensorId body_tid) -> TensorId {
+            auto it = id_remap.find(body_tid);
+            if (it != id_remap.end())
+                return it->second;
+            TensorHandle handle     = loop_desc->body->tensor(body_tid);
+            TensorId     parent_tid = graph.register_tensor(std::move(handle));
+            id_remap[body_tid]      = parent_tid;
+            return parent_tid;
+        };
+
         std::vector<Node> hoisted;
         std::vector<Node> remaining;
         for (size_t bi = 0; bi < body_nodes.size(); bi++) {
             if (invariant[bi]) {
-                hoisted.push_back(std::move(body_nodes[bi]));
-                EINSUMS_LOG_INFO("LoopInvariantHoisting: hoisting '{}' out of loop '{}'", hoisted.back().label, nodes[loop_idx].label);
+                Node h = std::move(body_nodes[bi]);
+                for (auto &tid : h.inputs)
+                    tid = remap_or_register(tid);
+                for (auto &tid : h.outputs)
+                    tid = remap_or_register(tid);
+                EINSUMS_LOG_INFO("LoopInvariantHoisting: hoisting '{}' out of loop '{}'", h.label, nodes[loop_idx].label);
+                hoisted.push_back(std::move(h));
                 _num_hoisted++;
             } else {
                 remaining.push_back(std::move(body_nodes[bi]));
             }
         }
 
-        if (hoisted.empty())
-            continue;
+        // Collect each hoisted node's output IDs so we can wire them as
+        // inputs of the Loop node below — without this data-flow edge,
+        // ``topological_sort`` has nothing tying the hoisted producers
+        // to the loop's body.
+        std::vector<TensorId> hoisted_output_ids;
+        for (auto const &h : hoisted) {
+            for (auto tid : h.outputs)
+                hoisted_output_ids.push_back(tid);
+        }
 
         // Update body to only contain remaining (non-hoisted) nodes
         body_nodes = std::move(remaining);
 
-        // Collect hoisted nodes to insert after the main loop completes
-        // (inserting during iteration would invalidate pointers/iterators)
-        for (auto &h : hoisted) {
-            nodes.push_back(std::move(h));
+        // Insert hoisted nodes directly BEFORE the loop in the parent's
+        // ``nodes`` vector. ``topological_sort`` (Kahn's algorithm)
+        // processes nodes in their current order when building dataflow
+        // edges and again when ties exist in the ready queue. Appending
+        // at the end leaves the loop ahead of its newly-introduced
+        // producers, which both prevents the edge from being recorded
+        // (the writer is seen after the reader) and biases the queue
+        // toward the wrong order.
+        size_t const n_hoisted = hoisted.size();
+        nodes.insert(nodes.begin() + static_cast<std::ptrdiff_t>(loop_idx), std::make_move_iterator(hoisted.begin()),
+                     std::make_move_iterator(hoisted.end()));
+        loop_idx += n_hoisted; // The loop has shifted; keep the outer index in sync.
+
+        // Wire the loop's data-flow dependency on the hoisted nodes' outputs.
+        // With the hoisted nodes placed before the loop, the topo sort will
+        // now build the writer→reader edge correctly.
+        for (auto tid : hoisted_output_ids) {
+            nodes[loop_idx].inputs.push_back(tid);
         }
-        // Note: hoisted nodes are appended at the end; topological_sort
-        // will place them correctly before the loop node on next sort.
     }
 
     if (_num_hoisted > 0) {

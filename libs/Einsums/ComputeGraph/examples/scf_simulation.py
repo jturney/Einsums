@@ -208,18 +208,11 @@ with cg.capture(body):
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# 5. Execute.
-#
-# We deliberately don't apply the default optimization passes here. The
-# default pass manager includes DeadNodeElimination, which is conservative
-# about loop-body outputs: the only "live" tensor exiting a loop body is
-# usually whatever the convergence-test callback reads next time around,
-# and DNE has no visibility into the Python callback. The result on this
-# graph is that DNE eliminates the body's compute nodes and the loop
-# becomes a no-op. A loop-aware DNE — or an explicit "loop output"
-# annotation — is the right long-term fix; for now, runs that contain
-# add_loop should skip DNE (or use a curated pass list that excludes it).
+# 5. Apply the default optimization passes and run.
 # ──────────────────────────────────────────────────────────────────────────
+
+pm = cg.default_pass_manager()
+g.apply(pm)
 
 print(f"\n--- Starting SCF (H2/STO-3G, R=1.4 bohr) ---\n")
 g.execute()
