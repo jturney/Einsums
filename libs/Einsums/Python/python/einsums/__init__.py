@@ -102,6 +102,119 @@ def build_info() -> dict[str, str]:
     }
 
 
+# ----------------------------------------------------------------------
+# Capture-aware __getitem__ on RuntimeTensor classes
+# ----------------------------------------------------------------------
+# Outside of a graph capture, ``t[1:3, :]`` returns a non-graph
+# RuntimeTensorView via the codegen's index protocol — the same behavior
+# numpy users expect. Inside ``with cg.capture(g):`` though, that view
+# isn't registered with the graph, so subsequent ops on it would see an
+# off-graph tensor (or fail to find it as a slot).
+#
+# We monkey-patch __getitem__ on each RuntimeTensor class once at _core
+# load time so slice-only access inside capture routes through
+# ``cg.view`` automatically. The view it returns aliases the parent
+# (TensorHandle::aliases is set), so reads/writes through it propagate
+# correctly. Anything we can't translate (integer indices, strided
+# slices, mismatched arity) raises a clear error so the user knows to
+# either drop out of capture or use ``cg.view`` directly with a custom
+# axis spec.
+
+_RUNTIME_TENSOR_CLASS_NAMES = ("RuntimeTensorF", "RuntimeTensorD", "RuntimeTensorC", "RuntimeTensorZ")
+_runtime_tensor_getitem_patched = False
+
+
+def _make_capture_aware_getitem(orig_getitem):
+    """Wrap a RuntimeTensor's __getitem__ to dispatch to ``cg.view`` when
+    we're inside a graph capture and the key is a pure slice expression."""
+
+    def wrapper(self, key):
+        # Defer the import: graph.py imports _core, which imports us, so
+        # we can't import at module-load time without a cycle. By the
+        # time this wrapper is hit, _core has loaded and graph.py is
+        # safely importable.
+        from . import graph as _g
+        ctx = _g.CaptureContext.current()
+        if not ctx.is_capturing():
+            return orig_getitem(self, key)
+
+        # Normalize key to a tuple.
+        key_tuple = key if isinstance(key, tuple) else (key,)
+        rank = self.rank()
+
+        # Expand a single Ellipsis to enough full slices to fill the rank.
+        if any(k is Ellipsis for k in key_tuple):
+            n_ellipsis = sum(1 for k in key_tuple if k is Ellipsis)
+            if n_ellipsis > 1:
+                raise IndexError("only one Ellipsis allowed in index")
+            ellipsis_pos = next(i for i, k in enumerate(key_tuple) if k is Ellipsis)
+            n_explicit = len(key_tuple) - 1
+            n_fill = rank - n_explicit
+            if n_fill < 0:
+                raise IndexError(
+                    f"too many indices for tensor of rank {rank}: got {n_explicit} explicit + Ellipsis"
+                )
+            key_tuple = (
+                key_tuple[:ellipsis_pos]
+                + (slice(None),) * n_fill
+                + key_tuple[ellipsis_pos + 1 :]
+            )
+
+        if len(key_tuple) != rank:
+            raise IndexError(
+                f"cg.view auto-dispatch: index has {len(key_tuple)} elements but tensor has rank {rank}; "
+                f"use cg.view directly for partial indexing inside capture"
+            )
+
+        ranges = []
+        for axis, k in enumerate(key_tuple):
+            if isinstance(k, slice):
+                if k.step is not None and k.step != 1:
+                    raise IndexError(
+                        f"cg.view auto-dispatch: axis {axis} has step={k.step}; "
+                        f"only step=1 slices are supported"
+                    )
+                if k.start is None and k.stop is None:
+                    ranges.append((-1, -1))  # full axis
+                else:
+                    lo = 0 if k.start is None else int(k.start)
+                    hi = self.dim(axis) if k.stop is None else int(k.stop)
+                    ranges.append((lo, hi))
+            elif isinstance(k, int):
+                raise IndexError(
+                    f"cg.view auto-dispatch: integer index at axis {axis} would reduce rank, "
+                    f"which cg.view doesn't yet support (rank-preserving slices only). "
+                    f"Use a slice like {k}:{k + 1} or call cg.view directly."
+                )
+            else:
+                raise IndexError(
+                    f"cg.view auto-dispatch: unsupported index type {type(k).__name__} at axis {axis}"
+                )
+
+        return _g.view(self, ranges)
+
+    return wrapper
+
+
+def _patch_runtime_tensor_getitem(core):
+    """Install the capture-aware ``__getitem__`` on each RuntimeTensor class.
+
+    Idempotent — the global ``_runtime_tensor_getitem_patched`` flag
+    prevents double-wrapping (which would deepen the call stack and
+    confuse error reporting).
+    """
+    global _runtime_tensor_getitem_patched
+    if _runtime_tensor_getitem_patched:
+        return
+    for cls_name in _RUNTIME_TENSOR_CLASS_NAMES:
+        cls = getattr(core, cls_name, None)
+        if cls is None:
+            continue
+        orig = cls.__getitem__
+        cls.__getitem__ = _make_capture_aware_getitem(orig)
+    _runtime_tensor_getitem_patched = True
+
+
 def __getattr__(name):
     """PEP 562 lazy attribute lookup.
 
@@ -129,6 +242,7 @@ def __getattr__(name):
     # avoiding the package-attribute lookup that ``from . import _core``
     # would do (and which would re-enter ``__getattr__``).
     core = _importlib.import_module("._core", __name__)
+    _patch_runtime_tensor_getitem(core)
     try:
         attr = getattr(core, name)
     except AttributeError as exc:

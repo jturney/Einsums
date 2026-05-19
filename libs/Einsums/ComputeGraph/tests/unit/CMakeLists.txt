@@ -65,6 +65,7 @@ set(ComputeGraphTests
     TensorRankConcept.cpp
     View.cpp
     Workspace.cpp
+    test_auto_view_python.py
     test_axpy_axpby_views_python.py
     test_blas_python.py
     test_block_copy_python.py
