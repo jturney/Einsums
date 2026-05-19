@@ -7,7 +7,6 @@
 #include <Einsums/BLAS.hpp>
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
-#include <Einsums/LinearAlgebra/Bases/high_precision.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 

@@ -9,7 +9,7 @@ set(LinearAlgebraHeaders
     Einsums/LinearAlgebra.hpp Einsums/LinearAlgebra/Base.hpp Einsums/LinearAlgebra/BlockTensor.hpp
     Einsums/LinearAlgebra/TiledTensor.hpp Einsums/LinearAlgebra/Bases/dot.hpp
     Einsums/LinearAlgebra/Bases/direct_product.hpp Einsums/LinearAlgebra/Bases/gemm.hpp Einsums/LinearAlgebra/Bases/gemv.hpp
-    Einsums/LinearAlgebra/Bases/ger.hpp Einsums/LinearAlgebra/Bases/high_precision.hpp Einsums/LinearAlgebra/Bases/norm.hpp Einsums/LinearAlgebra/Bases/sum_square.hpp
+    Einsums/LinearAlgebra/Bases/ger.hpp Einsums/LinearAlgebra/Bases/compensated_sum.hpp Einsums/LinearAlgebra/Bases/norm.hpp Einsums/LinearAlgebra/Bases/sum_square.hpp
     Einsums/LinearAlgebra/Bases/syev.hpp
     Einsums/LinearAlgebra/DiskAlgebra.hpp
 )

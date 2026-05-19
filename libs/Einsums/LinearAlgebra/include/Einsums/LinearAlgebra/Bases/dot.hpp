@@ -5,7 +5,7 @@
 
 #pragma once
 #include <Einsums/BLAS.hpp>
-#include <Einsums/LinearAlgebra/Bases/high_precision.hpp>
+#include <Einsums/LinearAlgebra/Bases/compensated_sum.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
