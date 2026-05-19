@@ -43,6 +43,7 @@ endif()
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums GPU
+  PYBIND
   SOURCES ${GPUSources}
   HEADERS ${GPUHeaders}
   DEPENDENCIES ${GPU_VENDOR_DEPS}
@@ -52,11 +53,22 @@ einsums_add_module(
 
 # MPS: Objective-C++ files cannot use C++ precompiled headers.
 # Disable PCH for the .mm file and enable ObjC compilation.
+#
+# The visibility flags here are load-bearing — without them, MPSBackend.mm
+# ends up exporting libc++ weak symbols (e.g. ``std::piecewise_construct``)
+# with default visibility while the rest of the project is built with
+# hidden visibility (see EINSUMS_WITH_HIDDEN_VISIBILITY in root CMakeLists).
+# The linker then resolves direct-access references in other TUs to the
+# default-visibility copy from this .mm TU, producing the warning flood:
+#   ld: warning: direct access ... to global weak symbol ... means the
+#   weak symbol cannot be overridden at runtime.
+# Pinning ``-fvisibility=hidden -fvisibility-inlines-hidden`` matches the
+# rest of the project and clears the warnings.
 if(EINSUMS_WITH_MPS)
   set_source_files_properties(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/MPSBackend.mm
     PROPERTIES
       SKIP_PRECOMPILE_HEADERS ON
-      COMPILE_FLAGS "-fobjc-arc"
+      COMPILE_FLAGS "-fobjc-arc -fvisibility=hidden -fvisibility-inlines-hidden"
   )
 endif()

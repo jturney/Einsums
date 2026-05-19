@@ -77,3 +77,15 @@ std::shared_ptr<spdlog::sinks::sink> get_spdlog_sink(std::string const &env) {
 }
 
 } // namespace einsums::detail
+
+namespace einsums {
+
+void set_log_level(int level) {
+    detail::get_einsums_logger().set_level(static_cast<spdlog::level::level_enum>(level));
+}
+
+int get_log_level() {
+    return static_cast<int>(detail::get_einsums_logger().level());
+}
+
+} // namespace einsums

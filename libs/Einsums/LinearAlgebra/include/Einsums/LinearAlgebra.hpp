@@ -18,6 +18,7 @@
 #include <Einsums/LinearAlgebra/DiskAlgebra.hpp>
 #include <Einsums/LinearAlgebra/TiledTensor.hpp>
 #include <Einsums/Profile.hpp>
+#include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 
@@ -261,6 +262,33 @@ void symm_gemm(AType const &A, BType const &B, CType *C) {
     LabeledSection0();
 
     detail::symm_gemm<TransA, TransB>(A, B, C);
+}
+
+// Runtime-rank symm_gemm overload — checks rank-2 at runtime and computes
+// ``C = B^T * A * B`` (with optional transposes) via two gemm calls.
+template <bool TransA, bool TransB, BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
+    requires requires {
+        requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank || std::remove_cvref_t<BType>::Rank == einsums::dynamic_rank ||
+                         std::remove_cvref_t<CType>::Rank == einsums::dynamic_rank;
+        requires InSamePlace<AType, BType, CType>;
+        requires SameUnderlying<AType, BType, CType>;
+    }
+void symm_gemm(AType const &A, BType const &B, CType *C) {
+    LabeledSection0();
+
+    if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
+    }
+
+    size_t const temp_rows = TransA ? A.dim(1) : A.dim(0);
+    size_t const temp_cols = TransB ? B.dim(0) : B.dim(1);
+
+    using T = typename AType::ValueType;
+    *C      = typename CType::ValueType(0.0);
+
+    Tensor<T, 2> temp{"temp", temp_rows, temp_cols};
+    gemm<TransA, TransB>(T{1.0}, A, B, T{0.0}, &temp);
+    gemm<!TransB, false>(T{1.0}, B, temp, T{0.0}, C);
 }
 
 /**
@@ -1179,7 +1207,7 @@ void invert(SmartPtr *A) {
 /**
  * @brief Indicates the type of norm to compute.
  */
-enum class Norm : char {
+enum class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("linalg") Norm : char{
     MAXABS    = 'M', /**< \f$val = max(abs(Aij))\f$, largest absolute value of the matrix A. */
     ONE       = '1', /**< \f$val = norm1(A)\f$, 1-norm of the matrix A (maximum column sum) */
     INFTY     = 'I', /**< \f$val = normI(A)\f$, infinity norm of the matrix A (maximum row sum) */
@@ -1236,6 +1264,19 @@ template <MatrixConcept AType>
     return detail::norm(static_cast<char>(norm_type), a);
 }
 
+// Runtime-rank norm overload — delegates to the TensorImpl form which
+// already handles rank-1 (vector) and rank-2 (matrix) inputs.
+template <BasicTensorConcept AType>
+    requires requires {
+        requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank;
+        requires CoreTensorConcept<AType>;
+    }
+[[nodiscard]] auto norm(Norm norm_type, AType const &a) -> RemoveComplexT<typename AType::ValueType> {
+    LabeledSection0();
+
+    return detail::norm(static_cast<char>(norm_type), a.impl());
+}
+
 /**
  * Compute the Euclidean norm of a vector. For higher-rank tensors,
  * this is the same as taking the square root of the sum of the squares of all of the elements.
@@ -1265,7 +1306,7 @@ template <TensorConcept AType>
  *      input should be const and should not be overwritten.
  * @endversion
  */
-enum class Vectors : char {
+enum class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("linalg") Vectors : char{
     ALL  = 'A' /**< Compute all vectors. */,
     SOME = 'S' /**< Compute some of the vectors. The number is the smaller of the number of rows and columns. */,
     // Unused since the A tensor should be const.
@@ -1417,8 +1458,14 @@ template <MatrixConcept AType>
 /**
  * Perform the truncated singular value decomposition of a matrix.
  *
+ * Randomized SVD with a fixed over-sampling factor of 5: the algorithm
+ * draws an ``n x (k+5)`` sketch and runs a small dense SVD against it,
+ * which requires ``A.dim(0) >= k + 5``. Calling with ``m < k + 5`` will
+ * trip an out-of-range access inside the projection step. (See Halko,
+ * Martinsson & Tropp, 2011, for the over-sampling rationale.)
+ *
  * @tparam AType The type of the matrix.
- * @param[in] _A The matrix to decompose.
+ * @param[in] _A The matrix to decompose. Must have ``_A.dim(0) >= k + 5``.
  * @param[in] k The number of singular values to use.
  *
  * @return A tuple containing the vectors and singular values.
@@ -1521,8 +1568,14 @@ template <MatrixConcept AType>
 /**
  * Perform the truncated eigendecomposition of a matrix.
  *
+ * Randomized variant: like ``truncated_svd``, the algorithm uses an
+ * over-sampling factor of 5 internally and requires ``A.dim(0) >= k + 5``.
+ * Smaller inputs will trip an out-of-range access inside the projection
+ * step. Results are *approximate* top-``k`` eigenpairs; expect some drift
+ * from a full ``syev`` for tightly clustered eigenvalues.
+ *
  * @tparam AType The type of the matrix.
- * @param[in] A The matrix to decompose.
+ * @param[in] A The matrix to decompose. Must have ``A.dim(0) >= k + 5``.
  * @param[in] k The number of eigenvalues to use.
  *
  * @return A tuple containing the eigenvectors and eigenvalues.

@@ -277,6 +277,7 @@ function(einsums_finalize_pybind)
     configure_file("${_pkg_src}/__init__.py" "${_pkg_dir}/__init__.py" COPYONLY)
     configure_file("${_pkg_src}/rc.py"       "${_pkg_dir}/rc.py"       COPYONLY)
     configure_file("${_pkg_src}/graph.py"    "${_pkg_dir}/graph.py"    COPYONLY)
+    configure_file("${_pkg_src}/profile.py"  "${_pkg_dir}/profile.py"  COPYONLY)
     # einsums.testing — pure-Python sub-package of test helpers.
     file(MAKE_DIRECTORY "${_pkg_dir}/testing")
     configure_file("${_pkg_src}/testing/__init__.py"

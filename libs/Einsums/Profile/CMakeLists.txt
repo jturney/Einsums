@@ -30,6 +30,7 @@ endif()
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums Profile
+  PYBIND
   SOURCES ${ProfileSources}
   HEADERS ${ProfileHeaders}
   DEPENDENCIES ${ProfileDeps}

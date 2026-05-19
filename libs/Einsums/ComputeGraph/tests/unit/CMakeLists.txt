@@ -72,6 +72,7 @@ set(ComputeGraphTests
     test_executor_python.py
     test_graph_python.py
     test_lapack_python.py
+    test_linalg_new_python.py
     test_loop_python.py
     test_mixed_ops_python.py
     test_pass_chain_parenthesization_python.py

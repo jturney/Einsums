@@ -201,9 +201,9 @@ EINSUMS_EXPORT void zaxpby(int_t const n, std::complex<double> const a, std::com
  *
  * @versionadded{1.0.0}
  */
-auto ssyev(char job, char uplo, int_t n, float *a, int_t lda, float *w, float *work, int_t lwork) -> int_t;
+EINSUMS_EXPORT auto ssyev(char job, char uplo, int_t n, float *a, int_t lda, float *w, float *work, int_t lwork) -> int_t;
 /// @copydoc ssyev
-auto dsyev(char job, char uplo, int_t n, double *a, int_t lda, double *w, double *work, int_t lwork) -> int_t;
+EINSUMS_EXPORT auto dsyev(char job, char uplo, int_t n, double *a, int_t lda, double *w, double *work, int_t lwork) -> int_t;
 
 /**
  * Performs symmetric tridiagonal matrix diagonalization.
@@ -217,9 +217,9 @@ auto dsyev(char job, char uplo, int_t n, double *a, int_t lda, double *w, double
  *
  * @versionadded{2.0.0}
  */
-auto ssterf(int_t n, float *d, float *e) -> int_t;
+EINSUMS_EXPORT auto ssterf(int_t n, float *d, float *e) -> int_t;
 /// @copydoc ssterf
-auto dsterf(int_t n, double *d, double *e) -> int_t;
+EINSUMS_EXPORT auto dsterf(int_t n, double *d, double *e) -> int_t;
 
 /**
  * Compute the eigendecomposition of a general matrix.
@@ -240,17 +240,17 @@ auto dsterf(int_t n, double *d, double *e) -> int_t;
  *
  * @versionadded{1.0.0}
  */
-auto sgeev(char jobvl, char jobvr, int_t n, float *a, int_t lda, std::complex<float> *w, float *vl, int_t ldvl, float *vr, int_t ldvr)
-    -> int_t;
+EINSUMS_EXPORT auto sgeev(char jobvl, char jobvr, int_t n, float *a, int_t lda, std::complex<float> *w, float *vl, int_t ldvl, float *vr,
+                          int_t ldvr) -> int_t;
 /// @copydoc sgeev
-auto dgeev(char jobvl, char jobvr, int_t n, double *a, int_t lda, std::complex<double> *w, double *vl, int_t ldvl, double *vr, int_t ldvr)
-    -> int_t;
+EINSUMS_EXPORT auto dgeev(char jobvl, char jobvr, int_t n, double *a, int_t lda, std::complex<double> *w, double *vl, int_t ldvl,
+                          double *vr, int_t ldvr) -> int_t;
 /// @copydoc sgeev
-auto cgeev(char jobvl, char jobvr, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *w, std::complex<float> *vl, int_t ldvl,
-           std::complex<float> *vr, int_t ldvr) -> int_t;
+EINSUMS_EXPORT auto cgeev(char jobvl, char jobvr, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *w,
+                          std::complex<float> *vl, int_t ldvl, std::complex<float> *vr, int_t ldvr) -> int_t;
 /// @copydoc sgeev
-auto zgeev(char jobvl, char jobvr, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *w, std::complex<double> *vl,
-           int_t ldvl, std::complex<double> *vr, int_t ldvr) -> int_t;
+EINSUMS_EXPORT auto zgeev(char jobvl, char jobvr, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *w,
+                          std::complex<double> *vl, int_t ldvl, std::complex<double> *vr, int_t ldvr) -> int_t;
 
 /**
  * Computes all eigenvalues and, optionally, eigenvectors of a Hermitian matrix.
@@ -274,10 +274,10 @@ auto zgeev(char jobvl, char jobvr, int_t n, std::complex<double> *a, int_t lda, 
  *
  * @versionadded{1.0.0}
  */
-auto cheev(char job, char uplo, int_t n, std::complex<float> *a, int_t lda, float *w, std::complex<float> *work, int_t lwork, float *rwork)
-    -> int_t;
-auto zheev(char job, char uplo, int_t n, std::complex<double> *a, int_t lda, double *w, std::complex<double> *work, int_t lwork,
-           double *rwork) -> int_t;
+EINSUMS_EXPORT auto cheev(char job, char uplo, int_t n, std::complex<float> *a, int_t lda, float *w, std::complex<float> *work, int_t lwork,
+                          float *rwork) -> int_t;
+EINSUMS_EXPORT auto zheev(char job, char uplo, int_t n, std::complex<double> *a, int_t lda, double *w, std::complex<double> *work,
+                          int_t lwork, double *rwork) -> int_t;
 
 /**
  * Computes the solution to system of linear equations @f$\mathbf{Ax} = \mathbf{B}@f$ for general
@@ -295,13 +295,14 @@ auto zheev(char job, char uplo, int_t n, std::complex<double> *a, int_t lda, dou
  * The absolute value indicates which parameter was invalid.
  * @versionadded{1.0.0}
  */
-auto sgesv(int_t n, int_t nrhs, float *a, int_t lda, int_t *ipiv, float *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto sgesv(int_t n, int_t nrhs, float *a, int_t lda, int_t *ipiv, float *b, int_t ldb) -> int_t;
 /// @copydoc sgesv
-auto dgesv(int_t n, int_t nrhs, double *a, int_t lda, int_t *ipiv, double *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto dgesv(int_t n, int_t nrhs, double *a, int_t lda, int_t *ipiv, double *b, int_t ldb) -> int_t;
 /// @copydoc sgesv
-auto cgesv(int_t n, int_t nrhs, std::complex<float> *a, int_t lda, int_t *ipiv, std::complex<float> *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto cgesv(int_t n, int_t nrhs, std::complex<float> *a, int_t lda, int_t *ipiv, std::complex<float> *b, int_t ldb) -> int_t;
 /// @copydoc sgesv
-auto zgesv(int_t n, int_t nrhs, std::complex<double> *a, int_t lda, int_t *ipiv, std::complex<double> *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto zgesv(int_t n, int_t nrhs, std::complex<double> *a, int_t lda, int_t *ipiv, std::complex<double> *b, int_t ldb)
+    -> int_t;
 
 /**
  * Scales a vector by a scalar. Supports real scalars by real vectors, complex scalars by complex vectors,
@@ -354,9 +355,9 @@ EINSUMS_EXPORT void zdrscl(int_t n, double alpha, std::complex<double> *vec, int
  *
  * @versionadded{1.0.0}
  */
-auto sdot(int_t n, float const *x, int_t incx, float const *y, int_t incy) -> float;
+EINSUMS_EXPORT auto sdot(int_t n, float const *x, int_t incx, float const *y, int_t incy) -> float;
 /// @copydoc sdot
-auto ddot(int_t n, double const *x, int_t incx, double const *y, int_t incy) -> double;
+EINSUMS_EXPORT auto ddot(int_t n, double const *x, int_t incx, double const *y, int_t incy) -> double;
 /**
  * Compute the unconjugated dot product between two vectors. The dot product is normally defined to be @f$ \sum_{i} x_i^*y_i@f$,
  * where the left vector is conjugated. However, this function performs @f$\sum_{i} x_iy_i@f$, akin to how it is done for
@@ -375,9 +376,11 @@ auto ddot(int_t n, double const *x, int_t incx, double const *y, int_t incy) -> 
  *
  * @versionadded{1.0.0}
  */
-auto cdot(int_t n, std::complex<float> const *x, int_t incx, std::complex<float> const *y, int_t incy) -> std::complex<float>;
+EINSUMS_EXPORT auto cdot(int_t n, std::complex<float> const *x, int_t incx, std::complex<float> const *y, int_t incy)
+    -> std::complex<float>;
 /// @copydoc cdot
-auto zdot(int_t n, std::complex<double> const *x, int_t incx, std::complex<double> const *y, int_t incy) -> std::complex<double>;
+EINSUMS_EXPORT auto zdot(int_t n, std::complex<double> const *x, int_t incx, std::complex<double> const *y, int_t incy)
+    -> std::complex<double>;
 /**
  * Compute the dot product between two vectors. The dot product is normally defined to be @f$ \sum_{i} x_i^*y_i@f$,
  * where the left vector is conjugated. This is how this function works. There is another way, where the first vector is not conjugated. For
@@ -394,9 +397,11 @@ auto zdot(int_t n, std::complex<double> const *x, int_t incx, std::complex<doubl
  *
  * @versionadded{1.0.0}
  */
-auto cdotc(int_t n, std::complex<float> const *x, int_t incx, std::complex<float> const *y, int_t incy) -> std::complex<float>;
+EINSUMS_EXPORT auto cdotc(int_t n, std::complex<float> const *x, int_t incx, std::complex<float> const *y, int_t incy)
+    -> std::complex<float>;
 /// @copydoc cdotc
-auto zdotc(int_t n, std::complex<double> const *x, int_t incx, std::complex<double> const *y, int_t incy) -> std::complex<double>;
+EINSUMS_EXPORT auto zdotc(int_t n, std::complex<double> const *x, int_t incx, std::complex<double> const *y, int_t incy)
+    -> std::complex<double>;
 
 /**
  * Scale and add a vector to another. Performs @f$\mathbf{y} := \alpha\mathbf{x} + \mathbf{y}@f$.
@@ -506,13 +511,13 @@ EINSUMS_EXPORT void zgerc(int_t m, int_t n, std::complex<double> alpha, std::com
  *
  * @versionadded{1.0.0}
  */
-auto sgetrf(int_t m, int_t n, float *A, int_t lda, int_t *ipiv) -> int_t;
+EINSUMS_EXPORT auto sgetrf(int_t m, int_t n, float *A, int_t lda, int_t *ipiv) -> int_t;
 /// @copydoc sgetrf
-auto dgetrf(int_t m, int_t n, double *A, int_t lda, int_t *ipiv) -> int_t;
+EINSUMS_EXPORT auto dgetrf(int_t m, int_t n, double *A, int_t lda, int_t *ipiv) -> int_t;
 /// @copydoc sgetrf
-auto cgetrf(int_t m, int_t n, std::complex<float> *A, int_t lda, int_t *ipiv) -> int_t;
+EINSUMS_EXPORT auto cgetrf(int_t m, int_t n, std::complex<float> *A, int_t lda, int_t *ipiv) -> int_t;
 /// @copydoc sgetrf
-auto zgetrf(int_t m, int_t n, std::complex<double> *A, int_t lda, int_t *ipiv) -> int_t;
+EINSUMS_EXPORT auto zgetrf(int_t m, int_t n, std::complex<double> *A, int_t lda, int_t *ipiv) -> int_t;
 
 /*!
  * Computes the inverse of a matrix using the LU factorization computed
@@ -528,13 +533,13 @@ auto zgetrf(int_t m, int_t n, std::complex<double> *A, int_t lda, int_t *ipiv) -
  *
  * @versionadded{1.0.0}
  */
-auto sgetri(int_t n, float *A, int_t lda, int_t const *ipiv) -> int_t;
+EINSUMS_EXPORT auto sgetri(int_t n, float *A, int_t lda, int_t const *ipiv) -> int_t;
 /// @copydoc sgetri
-auto dgetri(int_t n, double *A, int_t lda, int_t const *ipiv) -> int_t;
+EINSUMS_EXPORT auto dgetri(int_t n, double *A, int_t lda, int_t const *ipiv) -> int_t;
 /// @copydoc sgetri
-auto cgetri(int_t n, std::complex<float> *A, int_t lda, int_t const *ipiv) -> int_t;
+EINSUMS_EXPORT auto cgetri(int_t n, std::complex<float> *A, int_t lda, int_t const *ipiv) -> int_t;
 /// @copydoc sgetri
-auto zgetri(int_t n, std::complex<double> *A, int_t lda, int_t const *ipiv) -> int_t;
+EINSUMS_EXPORT auto zgetri(int_t n, std::complex<double> *A, int_t lda, int_t const *ipiv) -> int_t;
 
 /**
  * Computes matrix norms.
@@ -551,13 +556,13 @@ auto zgetri(int_t n, std::complex<double> *A, int_t lda, int_t const *ipiv) -> i
  *
  * @versionadded{1.0.0}
  */
-auto slange(char norm_type, int_t m, int_t n, float const *A, int_t lda, float *work) -> float;
+EINSUMS_EXPORT auto slange(char norm_type, int_t m, int_t n, float const *A, int_t lda, float *work) -> float;
 /// @copydoc slange
-auto dlange(char norm_type, int_t m, int_t n, double const *A, int_t lda, double *work) -> double;
+EINSUMS_EXPORT auto dlange(char norm_type, int_t m, int_t n, double const *A, int_t lda, double *work) -> double;
 /// @copydoc slange
-auto clange(char norm_type, int_t m, int_t n, std::complex<float> const *A, int_t lda, float *work) -> float;
+EINSUMS_EXPORT auto clange(char norm_type, int_t m, int_t n, std::complex<float> const *A, int_t lda, float *work) -> float;
 /// @copydoc slange
-auto zlange(char norm_type, int_t m, int_t n, std::complex<double> const *A, int_t lda, double *work) -> double;
+EINSUMS_EXPORT auto zlange(char norm_type, int_t m, int_t n, std::complex<double> const *A, int_t lda, double *work) -> double;
 
 /**
  * Compute the sum of squares of a vector without overflow. The sum of squares will be <tt>scale * scale * sumsq</tt>.
@@ -590,13 +595,13 @@ EINSUMS_EXPORT void zlassq(int_t n, std::complex<double> const *x, int_t incx, d
  *
  * @versionadded{2.0.0}
  */
-float snrm2(int_t n, float const *x, int_t incx);
+EINSUMS_EXPORT float snrm2(int_t n, float const *x, int_t incx);
 /// @copydoc snrm2
-double dnrm2(int_t n, double const *x, int_t incx);
+EINSUMS_EXPORT double dnrm2(int_t n, double const *x, int_t incx);
 /// @copydoc snrm2
-float scnrm2(int_t n, std::complex<float> const *x, int_t incx);
+EINSUMS_EXPORT float scnrm2(int_t n, std::complex<float> const *x, int_t incx);
 /// @copydoc snrm2
-double dznrm2(int_t n, std::complex<double> const *x, int_t incx);
+EINSUMS_EXPORT double dznrm2(int_t n, std::complex<double> const *x, int_t incx);
 
 /**
  * Compute the singular value decomposition using the QR algorithm.
@@ -619,17 +624,17 @@ double dznrm2(int_t n, std::complex<double> const *x, int_t incx);
  *
  * @versionadded{1.0.0}
  */
-auto sgesvd(char jobu, char jobvt, int_t m, int_t n, float *a, int_t lda, float *s, float *u, int_t ldu, float *vt, int_t ldvt,
-            float *superb) -> int_t;
+EINSUMS_EXPORT auto sgesvd(char jobu, char jobvt, int_t m, int_t n, float *a, int_t lda, float *s, float *u, int_t ldu, float *vt,
+                           int_t ldvt, float *superb) -> int_t;
 /// @copydoc sgesvd
-auto dgesvd(char jobu, char jobvt, int_t m, int_t n, double *a, int_t lda, double *s, double *u, int_t ldu, double *vt, int_t ldvt,
-            double *superb) -> int_t;
+EINSUMS_EXPORT auto dgesvd(char jobu, char jobvt, int_t m, int_t n, double *a, int_t lda, double *s, double *u, int_t ldu, double *vt,
+                           int_t ldvt, double *superb) -> int_t;
 /// @copydoc sgesvd
-auto cgesvd(char jobu, char jobvt, int_t m, int_t n, std::complex<float> *a, int_t lda, float *s, std::complex<float> *u, int_t ldu,
-            std::complex<float> *vt, int_t ldvt, std::complex<float> *superb) -> int_t;
+EINSUMS_EXPORT auto cgesvd(char jobu, char jobvt, int_t m, int_t n, std::complex<float> *a, int_t lda, float *s, std::complex<float> *u,
+                           int_t ldu, std::complex<float> *vt, int_t ldvt, std::complex<float> *superb) -> int_t;
 /// @copydoc sgesvd
-auto zgesvd(char jobu, char jobvt, int_t m, int_t n, std::complex<double> *a, int_t lda, double *s, std::complex<double> *u, int_t ldu,
-            std::complex<double> *vt, int_t ldvt, std::complex<double> *superb) -> int_t;
+EINSUMS_EXPORT auto zgesvd(char jobu, char jobvt, int_t m, int_t n, std::complex<double> *a, int_t lda, double *s, std::complex<double> *u,
+                           int_t ldu, std::complex<double> *vt, int_t ldvt, std::complex<double> *superb) -> int_t;
 
 /**
  * Compute the singular value decomposition using the divide-and-conquer algorithm.
@@ -650,15 +655,16 @@ auto zgesvd(char jobu, char jobvt, int_t m, int_t n, std::complex<double> *a, in
  *
  * @versionadded{1.0.0}
  */
-auto sgesdd(char jobz, int_t m, int_t n, float *a, int_t lda, float *s, float *u, int_t ldu, float *vt, int_t ldvt) -> int_t;
+EINSUMS_EXPORT auto sgesdd(char jobz, int_t m, int_t n, float *a, int_t lda, float *s, float *u, int_t ldu, float *vt, int_t ldvt) -> int_t;
 /// @copydoc sgesdd
-auto dgesdd(char jobz, int_t m, int_t n, double *a, int_t lda, double *s, double *u, int_t ldu, double *vt, int_t ldvt) -> int_t;
+EINSUMS_EXPORT auto dgesdd(char jobz, int_t m, int_t n, double *a, int_t lda, double *s, double *u, int_t ldu, double *vt, int_t ldvt)
+    -> int_t;
 /// @copydoc sgesdd
-auto cgesdd(char jobz, int_t m, int_t n, std::complex<float> *a, int_t lda, float *s, std::complex<float> *u, int_t ldu,
-            std::complex<float> *vt, int_t ldvt) -> int_t;
+EINSUMS_EXPORT auto cgesdd(char jobz, int_t m, int_t n, std::complex<float> *a, int_t lda, float *s, std::complex<float> *u, int_t ldu,
+                           std::complex<float> *vt, int_t ldvt) -> int_t;
 /// @copydoc sgesdd
-auto zgesdd(char jobz, int_t m, int_t n, std::complex<double> *a, int_t lda, double *s, std::complex<double> *u, int_t ldu,
-            std::complex<double> *vt, int_t ldvt) -> int_t;
+EINSUMS_EXPORT auto zgesdd(char jobz, int_t m, int_t n, std::complex<double> *a, int_t lda, double *s, std::complex<double> *u, int_t ldu,
+                           std::complex<double> *vt, int_t ldvt) -> int_t;
 
 /**
  * Perform Schur decomposition on a matrix.
@@ -679,9 +685,9 @@ auto zgesdd(char jobz, int_t m, int_t n, std::complex<double> *a, int_t lda, dou
  *
  * @versionadded{1.0.0}
  */
-auto sgees(char jobvs, int_t n, float *a, int_t lda, int_t *sdim, float *wr, float *wi, float *vs, int_t ldvs) -> int_t;
+EINSUMS_EXPORT auto sgees(char jobvs, int_t n, float *a, int_t lda, int_t *sdim, float *wr, float *wi, float *vs, int_t ldvs) -> int_t;
 /// @copydoc sgees
-auto dgees(char jobvs, int_t n, double *a, int_t lda, int_t *sdim, double *wr, double *wi, double *vs, int_t ldvs) -> int_t;
+EINSUMS_EXPORT auto dgees(char jobvs, int_t n, double *a, int_t lda, int_t *sdim, double *wr, double *wi, double *vs, int_t ldvs) -> int_t;
 /**
  * Perform Schur decomposition on a matrix.
  *
@@ -700,11 +706,11 @@ auto dgees(char jobvs, int_t n, double *a, int_t lda, int_t *sdim, double *wr, d
  *
  * @versionadded{1.1.0}
  */
-auto cgees(char jobvs, int_t n, std::complex<float> *a, int_t lda, int_t *sdim, std::complex<float> *w, std::complex<float> *vs, int_t ldvs)
-    -> int_t;
+EINSUMS_EXPORT auto cgees(char jobvs, int_t n, std::complex<float> *a, int_t lda, int_t *sdim, std::complex<float> *w,
+                          std::complex<float> *vs, int_t ldvs) -> int_t;
 /// @copydoc cgees
-auto zgees(char jobvs, int_t n, std::complex<double> *a, int_t lda, int_t *sdim, std::complex<double> *w, std::complex<double> *vs,
-           int_t ldvs) -> int_t;
+EINSUMS_EXPORT auto zgees(char jobvs, int_t n, std::complex<double> *a, int_t lda, int_t *sdim, std::complex<double> *w,
+                          std::complex<double> *vs, int_t ldvs) -> int_t;
 
 /**
  * Solve a Sylvester equation of the form @f$\mathbf{AX} \pm \mathbf{XB} = \alpha\mathbf{C}@f$.
@@ -727,11 +733,11 @@ auto zgees(char jobvs, int_t n, std::complex<double> *a, int_t lda, int_t *sdim,
  *
  * @versionadded{1.0.0}
  */
-auto strsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, float const *a, int_t lda, float const *b, int_t ldb, float *c, int_t ldc,
-            float *scale) -> int_t;
+EINSUMS_EXPORT auto strsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, float const *a, int_t lda, float const *b, int_t ldb,
+                           float *c, int_t ldc, float *scale) -> int_t;
 /// @copydoc strsyl
-auto dtrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, double const *a, int_t lda, double const *b, int_t ldb, double *c,
-            int_t ldc, double *scale) -> int_t;
+EINSUMS_EXPORT auto dtrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, double const *a, int_t lda, double const *b, int_t ldb,
+                           double *c, int_t ldc, double *scale) -> int_t;
 /**
  * Solve a Sylvester equation of the form @f$\mathbf{AX} \pm \mathbf{XB} = \alpha\mathbf{C}@f$.
  *
@@ -753,11 +759,11 @@ auto dtrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, double const *
  *
  * @versionadded{2.0.0}
  */
-auto ctrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, std::complex<float> const *a, int_t lda, std::complex<float> const *b,
-            int_t ldb, std::complex<float> *c, int_t ldc, float *scale) -> int_t;
+EINSUMS_EXPORT auto ctrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, std::complex<float> const *a, int_t lda,
+                           std::complex<float> const *b, int_t ldb, std::complex<float> *c, int_t ldc, float *scale) -> int_t;
 /// @copydoc ctrsyl
-auto ztrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, std::complex<double> const *a, int_t lda, std::complex<double> const *b,
-            int_t ldb, std::complex<double> *c, int_t ldc, double *scale) -> int_t;
+EINSUMS_EXPORT auto ztrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, std::complex<double> const *a, int_t lda,
+                           std::complex<double> const *b, int_t ldb, std::complex<double> *c, int_t ldc, double *scale) -> int_t;
 
 /**
  * Perform QR decomposition.
@@ -773,13 +779,13 @@ auto ztrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, std::complex<d
  *
  * @versionadded{1.0.0}
  */
-auto sgeqrf(int_t m, int_t n, float *a, int_t lda, float *tau) -> int_t;
+EINSUMS_EXPORT auto sgeqrf(int_t m, int_t n, float *a, int_t lda, float *tau) -> int_t;
 /// @copydoc sgeqrf
-auto dgeqrf(int_t m, int_t n, double *a, int_t lda, double *tau) -> int_t;
+EINSUMS_EXPORT auto dgeqrf(int_t m, int_t n, double *a, int_t lda, double *tau) -> int_t;
 /// @copydoc sgeqrf
-auto cgeqrf(int_t m, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *tau) -> int_t;
+EINSUMS_EXPORT auto cgeqrf(int_t m, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *tau) -> int_t;
 /// @copydoc sgeqrf
-auto zgeqrf(int_t m, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *tau) -> int_t;
+EINSUMS_EXPORT auto zgeqrf(int_t m, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *tau) -> int_t;
 
 /**
  * Extract the Q matrix from a QR decomposition.
@@ -795,13 +801,13 @@ auto zgeqrf(int_t m, int_t n, std::complex<double> *a, int_t lda, std::complex<d
  *
  * @versionadded{1.0.0}
  */
-auto sorgqr(int_t m, int_t n, int_t k, float *a, int_t lda, float const *tau) -> int_t;
+EINSUMS_EXPORT auto sorgqr(int_t m, int_t n, int_t k, float *a, int_t lda, float const *tau) -> int_t;
 /// @copydoc sorgqr
-auto dorgqr(int_t m, int_t n, int_t k, double *a, int_t lda, double const *tau) -> int_t;
+EINSUMS_EXPORT auto dorgqr(int_t m, int_t n, int_t k, double *a, int_t lda, double const *tau) -> int_t;
 /// @copydoc sorgqr
-auto cungqr(int_t m, int_t n, int_t k, std::complex<float> *a, int_t lda, std::complex<float> const *tau) -> int_t;
+EINSUMS_EXPORT auto cungqr(int_t m, int_t n, int_t k, std::complex<float> *a, int_t lda, std::complex<float> const *tau) -> int_t;
 /// @copydoc sorgqr
-auto zungqr(int_t m, int_t n, int_t k, std::complex<double> *a, int_t lda, std::complex<double> const *tau) -> int_t;
+EINSUMS_EXPORT auto zungqr(int_t m, int_t n, int_t k, std::complex<double> *a, int_t lda, std::complex<double> const *tau) -> int_t;
 
 /**
  * Multiply a general matrix by the orthogonal matrix Q from geqrf.
@@ -822,15 +828,17 @@ auto zungqr(int_t m, int_t n, int_t k, std::complex<double> *a, int_t lda, std::
  * @param[in] ldc Leading dimension of c.
  * @return 0 on success; negative value indicates invalid parameter.
  */
-auto sormqr(char side, char trans, int_t m, int_t n, int_t k, float const *a, int_t lda, float const *tau, float *c, int_t ldc) -> int_t;
+EINSUMS_EXPORT auto sormqr(char side, char trans, int_t m, int_t n, int_t k, float const *a, int_t lda, float const *tau, float *c,
+                           int_t ldc) -> int_t;
 /// @copydoc sormqr
-auto dormqr(char side, char trans, int_t m, int_t n, int_t k, double const *a, int_t lda, double const *tau, double *c, int_t ldc) -> int_t;
+EINSUMS_EXPORT auto dormqr(char side, char trans, int_t m, int_t n, int_t k, double const *a, int_t lda, double const *tau, double *c,
+                           int_t ldc) -> int_t;
 /// @copydoc sormqr
-auto cunmqr(char side, char trans, int_t m, int_t n, int_t k, std::complex<float> const *a, int_t lda, std::complex<float> const *tau,
-            std::complex<float> *c, int_t ldc) -> int_t;
+EINSUMS_EXPORT auto cunmqr(char side, char trans, int_t m, int_t n, int_t k, std::complex<float> const *a, int_t lda,
+                           std::complex<float> const *tau, std::complex<float> *c, int_t ldc) -> int_t;
 /// @copydoc sormqr
-auto zunmqr(char side, char trans, int_t m, int_t n, int_t k, std::complex<double> const *a, int_t lda, std::complex<double> const *tau,
-            std::complex<double> *c, int_t ldc) -> int_t;
+EINSUMS_EXPORT auto zunmqr(char side, char trans, int_t m, int_t n, int_t k, std::complex<double> const *a, int_t lda,
+                           std::complex<double> const *tau, std::complex<double> *c, int_t ldc) -> int_t;
 
 /**
  * Perform LQ decomposition.
@@ -846,13 +854,13 @@ auto zunmqr(char side, char trans, int_t m, int_t n, int_t k, std::complex<doubl
  *
  * @versionadded{1.0.0}
  */
-auto sgelqf(int_t m, int_t n, float *a, int_t lda, float *tau) -> int_t;
+EINSUMS_EXPORT auto sgelqf(int_t m, int_t n, float *a, int_t lda, float *tau) -> int_t;
 /// @copydoc sgelqf
-auto dgelqf(int_t m, int_t n, double *a, int_t lda, double *tau) -> int_t;
+EINSUMS_EXPORT auto dgelqf(int_t m, int_t n, double *a, int_t lda, double *tau) -> int_t;
 /// @copydoc sgelqf
-auto cgelqf(int_t m, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *tau) -> int_t;
+EINSUMS_EXPORT auto cgelqf(int_t m, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *tau) -> int_t;
 /// @copydoc sgelqf
-auto zgelqf(int_t m, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *tau) -> int_t;
+EINSUMS_EXPORT auto zgelqf(int_t m, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *tau) -> int_t;
 
 /**
  * Extract the Q matrix from a LQ decomposition.
@@ -868,13 +876,13 @@ auto zgelqf(int_t m, int_t n, std::complex<double> *a, int_t lda, std::complex<d
  *
  * @versionadded{1.0.0}
  */
-auto sorglq(int_t m, int_t n, int_t k, float *a, int_t lda, float const *tau) -> int_t;
+EINSUMS_EXPORT auto sorglq(int_t m, int_t n, int_t k, float *a, int_t lda, float const *tau) -> int_t;
 /// @copydoc sorglq
-auto dorglq(int_t m, int_t n, int_t k, double *a, int_t lda, double const *tau) -> int_t;
+EINSUMS_EXPORT auto dorglq(int_t m, int_t n, int_t k, double *a, int_t lda, double const *tau) -> int_t;
 /// @copydoc sorglq
-auto cunglq(int_t m, int_t n, int_t k, std::complex<float> *a, int_t lda, std::complex<float> const *tau) -> int_t;
+EINSUMS_EXPORT auto cunglq(int_t m, int_t n, int_t k, std::complex<float> *a, int_t lda, std::complex<float> const *tau) -> int_t;
 /// @copydoc sorglq
-auto zunglq(int_t m, int_t n, int_t k, std::complex<double> *a, int_t lda, std::complex<double> const *tau) -> int_t;
+EINSUMS_EXPORT auto zunglq(int_t m, int_t n, int_t k, std::complex<double> *a, int_t lda, std::complex<double> const *tau) -> int_t;
 
 /**
  * Copy one vector to another.
@@ -914,9 +922,9 @@ EINSUMS_EXPORT void zcopy(int_t n, std::complex<double> const *x, int_t incx, st
  *
  * @versionadded{2.0.0}
  */
-int_t slascl(char type, int_t kl, int_t ku, float cfrom, float cto, int_t m, int_t n, float *vec, int_t lda);
+EINSUMS_EXPORT int_t slascl(char type, int_t kl, int_t ku, float cfrom, float cto, int_t m, int_t n, float *vec, int_t lda);
 /// @copydoc slascl
-int_t dlascl(char type, int_t kl, int_t ku, double cfrom, double cto, int_t m, int_t n, double *vec, int_t lda);
+EINSUMS_EXPORT int_t dlascl(char type, int_t kl, int_t ku, double cfrom, double cto, int_t m, int_t n, double *vec, int_t lda);
 
 /**
  * Perform the direct product between two vectors and add it to another.
@@ -954,13 +962,13 @@ EINSUMS_EXPORT void zdirprod(int_t n, std::complex<double> alpha, std::complex<d
  *
  * @versionadded{2.0.0}
  */
-float sasum(int_t n, float const *x, int_t incx);
+EINSUMS_EXPORT float sasum(int_t n, float const *x, int_t incx);
 /// @copydoc sasum
-double dasum(int_t n, double const *x, int_t incx);
+EINSUMS_EXPORT double dasum(int_t n, double const *x, int_t incx);
 /// @copydoc sasum
-float scasum(int_t n, std::complex<float> const *x, int_t incx);
+EINSUMS_EXPORT float scasum(int_t n, std::complex<float> const *x, int_t incx);
 /// @copydoc sasum
-double dzasum(int_t n, std::complex<double> const *x, int_t incx);
+EINSUMS_EXPORT double dzasum(int_t n, std::complex<double> const *x, int_t incx);
 
 /**
  * Computes the sum of the absolute values of the input vector.
@@ -973,9 +981,9 @@ double dzasum(int_t n, std::complex<double> const *x, int_t incx);
  *
  * @versionadded{2.0.0}
  */
-float scsum1(int_t n, std::complex<float> const *x, int_t incx);
+EINSUMS_EXPORT float scsum1(int_t n, std::complex<float> const *x, int_t incx);
 /// @copydoc scsum1
-double dzsum1(int_t n, std::complex<double> const *x, int_t incx);
+EINSUMS_EXPORT double dzsum1(int_t n, std::complex<double> const *x, int_t incx);
 
 /**
  * Conjugate a vector.
@@ -1004,13 +1012,13 @@ EINSUMS_EXPORT void cswap(int_t n, std::complex<float> *x, int_t incx, std::comp
 EINSUMS_EXPORT void zswap(int_t n, std::complex<double> *x, int_t incx, std::complex<double> *y, int_t incy);
 
 /// Index of the element with maximum absolute value (0-based).
-auto isamax(int_t n, float const *x, int_t incx) -> int_t;
+EINSUMS_EXPORT auto isamax(int_t n, float const *x, int_t incx) -> int_t;
 /// @copydoc isamax
-auto idamax(int_t n, double const *x, int_t incx) -> int_t;
+EINSUMS_EXPORT auto idamax(int_t n, double const *x, int_t incx) -> int_t;
 /// @copydoc isamax
-auto icamax(int_t n, std::complex<float> const *x, int_t incx) -> int_t;
+EINSUMS_EXPORT auto icamax(int_t n, std::complex<float> const *x, int_t incx) -> int_t;
 /// @copydoc isamax
-auto izamax(int_t n, std::complex<double> const *x, int_t incx) -> int_t;
+EINSUMS_EXPORT auto izamax(int_t n, std::complex<double> const *x, int_t incx) -> int_t;
 
 // --- BLAS Level 2 ---
 
@@ -1102,90 +1110,95 @@ EINSUMS_EXPORT void zher2k(char uplo, char trans, int_t n, int_t k, std::complex
 // --- LAPACK ---
 
 /// Cholesky factorization of a symmetric/Hermitian positive-definite matrix.
-auto spotrf(char uplo, int_t n, float *a, int_t lda) -> int_t;
+EINSUMS_EXPORT auto spotrf(char uplo, int_t n, float *a, int_t lda) -> int_t;
 /// @copydoc spotrf
-auto dpotrf(char uplo, int_t n, double *a, int_t lda) -> int_t;
+EINSUMS_EXPORT auto dpotrf(char uplo, int_t n, double *a, int_t lda) -> int_t;
 /// @copydoc spotrf
-auto cpotrf(char uplo, int_t n, std::complex<float> *a, int_t lda) -> int_t;
+EINSUMS_EXPORT auto cpotrf(char uplo, int_t n, std::complex<float> *a, int_t lda) -> int_t;
 /// @copydoc spotrf
-auto zpotrf(char uplo, int_t n, std::complex<double> *a, int_t lda) -> int_t;
+EINSUMS_EXPORT auto zpotrf(char uplo, int_t n, std::complex<double> *a, int_t lda) -> int_t;
 
 /// Solve a symmetric/Hermitian positive-definite system using Cholesky factorization.
-auto spotrs(char uplo, int_t n, int_t nrhs, float const *a, int_t lda, float *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto spotrs(char uplo, int_t n, int_t nrhs, float const *a, int_t lda, float *b, int_t ldb) -> int_t;
 /// @copydoc spotrs
-auto dpotrs(char uplo, int_t n, int_t nrhs, double const *a, int_t lda, double *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto dpotrs(char uplo, int_t n, int_t nrhs, double const *a, int_t lda, double *b, int_t ldb) -> int_t;
 /// @copydoc spotrs
-auto cpotrs(char uplo, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, std::complex<float> *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto cpotrs(char uplo, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, std::complex<float> *b, int_t ldb)
+    -> int_t;
 /// @copydoc spotrs
-auto zpotrs(char uplo, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, std::complex<double> *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto zpotrs(char uplo, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, std::complex<double> *b, int_t ldb)
+    -> int_t;
 
 /// Invert a symmetric/Hermitian positive-definite matrix from its Cholesky factorization.
-auto spotri(char uplo, int_t n, float *a, int_t lda) -> int_t;
+EINSUMS_EXPORT auto spotri(char uplo, int_t n, float *a, int_t lda) -> int_t;
 /// @copydoc spotri
-auto dpotri(char uplo, int_t n, double *a, int_t lda) -> int_t;
+EINSUMS_EXPORT auto dpotri(char uplo, int_t n, double *a, int_t lda) -> int_t;
 /// @copydoc spotri
-auto cpotri(char uplo, int_t n, std::complex<float> *a, int_t lda) -> int_t;
+EINSUMS_EXPORT auto cpotri(char uplo, int_t n, std::complex<float> *a, int_t lda) -> int_t;
 /// @copydoc spotri
-auto zpotri(char uplo, int_t n, std::complex<double> *a, int_t lda) -> int_t;
+EINSUMS_EXPORT auto zpotri(char uplo, int_t n, std::complex<double> *a, int_t lda) -> int_t;
 
 /// Generalized symmetric eigenvalue problem: A*x = lambda*B*x.
-auto ssygv(int_t itype, char jobz, char uplo, int_t n, float *a, int_t lda, float *b, int_t ldb, float *w) -> int_t;
+EINSUMS_EXPORT auto ssygv(int_t itype, char jobz, char uplo, int_t n, float *a, int_t lda, float *b, int_t ldb, float *w) -> int_t;
 /// @copydoc ssygv
-auto dsygv(int_t itype, char jobz, char uplo, int_t n, double *a, int_t lda, double *b, int_t ldb, double *w) -> int_t;
+EINSUMS_EXPORT auto dsygv(int_t itype, char jobz, char uplo, int_t n, double *a, int_t lda, double *b, int_t ldb, double *w) -> int_t;
 /// Generalized Hermitian eigenvalue problem: A*x = lambda*B*x.
-auto chegv(int_t itype, char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *b, int_t ldb, float *w)
-    -> int_t;
+EINSUMS_EXPORT auto chegv(int_t itype, char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *b, int_t ldb,
+                          float *w) -> int_t;
 /// @copydoc chegv
-auto zhegv(int_t itype, char jobz, char uplo, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *b, int_t ldb, double *w)
-    -> int_t;
+EINSUMS_EXPORT auto zhegv(int_t itype, char jobz, char uplo, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *b,
+                          int_t ldb, double *w) -> int_t;
 
 /// Symmetric eigenvalue decomposition using divide-and-conquer.
-auto ssyevd(char jobz, char uplo, int_t n, float *a, int_t lda, float *w) -> int_t;
+EINSUMS_EXPORT auto ssyevd(char jobz, char uplo, int_t n, float *a, int_t lda, float *w) -> int_t;
 /// @copydoc ssyevd
-auto dsyevd(char jobz, char uplo, int_t n, double *a, int_t lda, double *w) -> int_t;
+EINSUMS_EXPORT auto dsyevd(char jobz, char uplo, int_t n, double *a, int_t lda, double *w) -> int_t;
 /// Hermitian eigenvalue decomposition using divide-and-conquer.
-auto cheevd(char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, float *w) -> int_t;
+EINSUMS_EXPORT auto cheevd(char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, float *w) -> int_t;
 /// @copydoc cheevd
-auto zheevd(char jobz, char uplo, int_t n, std::complex<double> *a, int_t lda, double *w) -> int_t;
+EINSUMS_EXPORT auto zheevd(char jobz, char uplo, int_t n, std::complex<double> *a, int_t lda, double *w) -> int_t;
 
 /// Solve a general system using an existing LU factorization.
-auto sgetrs(char trans, int_t n, int_t nrhs, float const *a, int_t lda, int_t const *ipiv, float *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto sgetrs(char trans, int_t n, int_t nrhs, float const *a, int_t lda, int_t const *ipiv, float *b, int_t ldb) -> int_t;
 /// @copydoc sgetrs
-auto dgetrs(char trans, int_t n, int_t nrhs, double const *a, int_t lda, int_t const *ipiv, double *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto dgetrs(char trans, int_t n, int_t nrhs, double const *a, int_t lda, int_t const *ipiv, double *b, int_t ldb) -> int_t;
 /// @copydoc sgetrs
-auto cgetrs(char trans, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, int_t const *ipiv, std::complex<float> *b, int_t ldb)
-    -> int_t;
+EINSUMS_EXPORT auto cgetrs(char trans, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, int_t const *ipiv,
+                           std::complex<float> *b, int_t ldb) -> int_t;
 /// @copydoc sgetrs
-auto zgetrs(char trans, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, int_t const *ipiv, std::complex<double> *b,
-            int_t ldb) -> int_t;
+EINSUMS_EXPORT auto zgetrs(char trans, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, int_t const *ipiv,
+                           std::complex<double> *b, int_t ldb) -> int_t;
 
 /// Solve a least-squares problem using QR or LQ factorization.
-auto sgels(char trans, int_t m, int_t n, int_t nrhs, float *a, int_t lda, float *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto sgels(char trans, int_t m, int_t n, int_t nrhs, float *a, int_t lda, float *b, int_t ldb) -> int_t;
 /// @copydoc sgels
-auto dgels(char trans, int_t m, int_t n, int_t nrhs, double *a, int_t lda, double *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto dgels(char trans, int_t m, int_t n, int_t nrhs, double *a, int_t lda, double *b, int_t ldb) -> int_t;
 /// @copydoc sgels
-auto cgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<float> *a, int_t lda, std::complex<float> *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto cgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<float> *a, int_t lda, std::complex<float> *b, int_t ldb)
+    -> int_t;
 /// @copydoc sgels
-auto zgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<double> *a, int_t lda, std::complex<double> *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto zgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<double> *a, int_t lda, std::complex<double> *b, int_t ldb)
+    -> int_t;
 
 /// Solve a triangular system with multiple RHS.
-auto strtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, float const *a, int_t lda, float *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto strtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, float const *a, int_t lda, float *b, int_t ldb) -> int_t;
 /// @copydoc strtrs
-auto dtrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, double const *a, int_t lda, double *b, int_t ldb) -> int_t;
+EINSUMS_EXPORT auto dtrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, double const *a, int_t lda, double *b, int_t ldb)
+    -> int_t;
 /// @copydoc strtrs
-auto ctrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, std::complex<float> *b,
-            int_t ldb) -> int_t;
+EINSUMS_EXPORT auto ctrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda,
+                           std::complex<float> *b, int_t ldb) -> int_t;
 /// @copydoc strtrs
-auto ztrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, std::complex<double> *b,
-            int_t ldb) -> int_t;
+EINSUMS_EXPORT auto ztrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda,
+                           std::complex<double> *b, int_t ldb) -> int_t;
 
 /// Invert a triangular matrix.
-auto strtri(char uplo, char diag, int_t n, float *a, int_t lda) -> int_t;
+EINSUMS_EXPORT auto strtri(char uplo, char diag, int_t n, float *a, int_t lda) -> int_t;
 /// @copydoc strtri
-auto dtrtri(char uplo, char diag, int_t n, double *a, int_t lda) -> int_t;
+EINSUMS_EXPORT auto dtrtri(char uplo, char diag, int_t n, double *a, int_t lda) -> int_t;
 /// @copydoc strtri
-auto ctrtri(char uplo, char diag, int_t n, std::complex<float> *a, int_t lda) -> int_t;
+EINSUMS_EXPORT auto ctrtri(char uplo, char diag, int_t n, std::complex<float> *a, int_t lda) -> int_t;
 /// @copydoc strtri
-auto ztrtri(char uplo, char diag, int_t n, std::complex<double> *a, int_t lda) -> int_t;
+EINSUMS_EXPORT auto ztrtri(char uplo, char diag, int_t n, std::complex<double> *a, int_t lda) -> int_t;
 
 } // namespace einsums::blas::vendor

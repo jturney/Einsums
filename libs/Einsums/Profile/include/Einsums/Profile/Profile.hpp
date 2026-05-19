@@ -14,6 +14,7 @@
 #include <Einsums/Profile/RingBuffer.hpp>
 #include <Einsums/Profile/Server.hpp>
 #include <Einsums/Profile/StringTable.hpp>
+#include <Einsums/Python/Annotations.hpp>
 #include <Einsums/TypeSupport/InsertionOrderedMap.hpp>
 
 #include <atomic>
@@ -314,7 +315,7 @@ struct ScopedZone {
 // ---------------------- Annotation API ----------------------
 
 /// Attach a string annotation to the current profiling zone.
-inline void annotate(std::string_view key, std::string_view value) {
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline void annotate(std::string_view key, std::string_view value) {
     auto &prof = Profiler::instance();
     auto &st   = prof.string_table();
 
@@ -329,7 +330,7 @@ inline void annotate(std::string_view key, std::string_view value) {
 }
 
 /// Attach an integer annotation to the current profiling zone.
-inline void annotate(std::string_view key, int64_t value) {
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline void annotate(std::string_view key, int64_t value) {
     auto &prof = Profiler::instance();
     auto &st   = prof.string_table();
 
@@ -344,7 +345,7 @@ inline void annotate(std::string_view key, int64_t value) {
 }
 
 /// Attach a floating-point annotation to the current profiling zone.
-inline void annotate(std::string_view key, double value) {
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline void annotate(std::string_view key, double value) {
     auto &prof = Profiler::instance();
     auto &st   = prof.string_table();
 
@@ -366,7 +367,7 @@ inline void annotate_dims(std::string_view key, std::span<int64_t const> dims) {
 }
 
 /// Record a memory allocation in the current profiling zone.
-inline void mem_alloc(int64_t bytes) {
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline void mem_alloc(int64_t bytes) {
     Event evt{};
     evt.type      = EventType::MemAlloc;
     evt.timestamp = Clock::now();
@@ -375,12 +376,82 @@ inline void mem_alloc(int64_t bytes) {
 }
 
 /// Record a memory deallocation in the current profiling zone.
-inline void mem_free(int64_t bytes) {
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline void mem_free(int64_t bytes) {
     Event evt{};
     evt.type      = EventType::MemFree;
     evt.timestamp = Clock::now();
     evt.mem_bytes = bytes;
     Profiler::instance().emit_event(evt);
+}
+
+// ---------------------- Python bindings ----------------------
+// Thin free-function wrappers around the Profiler singleton so the
+// einsums.profile Python submodule can drive push/pop/flush/print without
+// having to bind the Profiler class itself (which holds non-copyable
+// unique_ptrs and exposes an ostream& on print()).
+
+/// Begin a profile region. Pair with ``pop()`` — usually via the
+/// ``einsums.profile.section(name)`` context manager.
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline void push(std::string const &name, std::string const &file = "", int line = 0,
+                                                                        std::string const &func = "") {
+    Profiler::instance().push(name, file, line, func);
+}
+
+/// End the innermost profile region.
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline void pop() {
+    Profiler::instance().pop();
+}
+
+/// Drain all per-thread ring buffers into the aggregated tree. Call before
+/// ``print_report`` / ``export_json`` to make sure recent events are visible.
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline void flush() {
+    Profiler::instance().flush();
+}
+
+/// Print the compact (or detailed) report to standard output.
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline void print_report(bool detailed = false) {
+    Profiler::instance().print(detailed);
+    // Flush std::cout so pytest's capfd (and any non-tty stdout) sees the
+    // output before the caller returns. Profiler::print otherwise leaves
+    // the data in C++ stdio's userspace buffer.
+    std::cout.flush();
+}
+
+/// Write the aggregated profile to JSON. Returns the resolved path on
+/// success or ``None`` on failure.
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline std::optional<std::string> export_json(
+    std::string const &path = "einsums_profile.json") {
+    return Profiler::instance().export_json(path);
+}
+
+/// Set a human-readable name for the calling thread.
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline void set_thread_name(std::string const &name) {
+    Profiler::instance().set_thread_name(name);
+}
+
+/// Return the profiler's thread id for the calling thread.
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline uint32_t current_thread_id() {
+    return Profiler::current_thread_id();
+}
+
+/// Average per-call overhead of ``push`` in nanoseconds.
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline double avg_push_overhead_ns() {
+    return Profiler::instance().avg_push_overhead_ns();
+}
+
+/// Average per-call overhead of ``pop`` in nanoseconds.
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline double avg_pop_overhead_ns() {
+    return Profiler::instance().avg_pop_overhead_ns();
+}
+
+/// Total number of ``push`` calls observed since process start.
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline uint64_t total_push_count() {
+    return Profiler::instance().total_push_count();
+}
+
+/// Total number of ``pop`` calls observed since process start.
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("profile") inline uint64_t total_pop_count() {
+    return Profiler::instance().total_pop_count();
 }
 
 #    define LabeledSection(name_format, ...)                                                                                               \

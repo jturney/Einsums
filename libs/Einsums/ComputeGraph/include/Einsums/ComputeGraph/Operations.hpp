@@ -492,7 +492,15 @@ template <TensorConcept AType, TensorConcept BType>
         requires SameRank<AType, BType>;
         requires InSamePlace<AType, BType>;
     }
-auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
     if (CaptureContext::current().is_capturing()) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::dot(A, B) returning scalar cannot be used during graph capture. "
                                                   "Use cg::einsum(\" <- i ; i\", &result, A, B) instead.");
@@ -533,7 +541,15 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
 // ─────────────────────────────────────────────────────────────────────────────
 
 template <typename T, TensorConcept AType, TensorConcept BType, TensorConcept CType>
-void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", float,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", double,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<float>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         linear_algebra::direct_product(alpha, A, B, beta, C);
@@ -557,7 +573,15 @@ void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 template <TensorConcept AType>
-auto norm(linear_algebra::Norm norm_type, AType const &A) -> RemoveComplexT<typename AType::ValueType> {
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    auto norm(linear_algebra::Norm norm_type, AType const &A) -> RemoveComplexT<typename AType::ValueType> {
     if (CaptureContext::current().is_capturing()) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::norm() returning scalar cannot be used during graph capture.");
     }
@@ -685,6 +709,42 @@ void trace(typename AType::ValueType *result, AType const &A) {
 // symm_gemm: C = op(B)^T * op(A) * op(B)
 // ─────────────────────────────────────────────────────────────────────────────
 
+template <bool TransA, bool TransB, RuntimeRankTensorConcept AType, RuntimeRankTensorConcept BType, RuntimeRankTensorConcept CType>
+    requires requires {
+        requires InSamePlace<AType, BType, CType>;
+        requires SameUnderlying<AType, BType, CType>;
+    }
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_TEMPLATE_KWARGS("trans_a", "trans_b")
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    void symm_gemm(AType const &A, BType const &B, CType *C) {
+    if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
+    }
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        linear_algebra::symm_gemm<TransA, TransB>(A, B, C);
+        return;
+    }
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [b_id, b_slot] = ctx.get_slot(B);
+    auto [c_id, c_slot] = ctx.get_slot(*C);
+    auto executor       = [a_slot, b_slot, c_slot]() {
+        linear_algebra::symm_gemm<TransA, TransB>(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr),
+                                                  static_cast<CType *>(c_slot->ptr));
+    };
+    ctx.record(OpKind::SymmGemm, "symm_gemm", {a_id, b_id}, {c_id}, std::move(executor));
+}
+
+// Original compile-time-rank symm_gemm — kept under a different signature
+// for legacy C++ callers; the runtime-rank form above is what the Python
+// bindings target.
 template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, MatrixConcept CType>
     requires requires {
         requires InSamePlace<AType, BType, CType>;
@@ -1071,6 +1131,48 @@ auto svd_dd(AType const &A, linear_algebra::Vectors job = linear_algebra::Vector
     return linear_algebra::svd_dd(A, job);
 }
 
+/// Divide-and-conquer singular value decomposition (returning): ``A = U * diag(S) * Vt``.
+///
+/// Faster than ``svd`` for large matrices; uses LAPACK's ``gesdd`` driver.
+/// Returns ``(U, S, Vt)`` like ``svd``. ``job`` controls whether the
+/// singular vectors are computed (``ALL``, ``SOME``, or ``NONE``).
+/// Cannot be used during graph capture (returns by value); ``A`` is left
+/// unmodified.
+template <RuntimeRankTensorConcept AType>
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("svd_dd", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("svd_dd", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("svd_dd", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("svd_dd", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    auto svd_dd(AType const &A, linear_algebra::Vectors job = linear_algebra::Vectors::ALL) -> std::tuple<
+        einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
+        einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
+        einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
+    if (CaptureContext::current().is_capturing()) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::svd_dd(A) returning form cannot be used during graph capture.");
+    }
+    if (A.rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::svd_dd requires rank-2 input; got rank {}.", A.rank());
+    }
+
+    using T  = typename AType::ValueType;
+    using R  = RemoveComplexT<T>;
+    using RT = einsums::GeneralRuntimeTensor<T, std::allocator<T>>;
+    using RR = einsums::GeneralRuntimeTensor<R, std::allocator<R>>;
+
+    Tensor<T, 2> a_static{A.name(), A.dim(0), A.dim(1)};
+    std::memcpy(a_static.data(), A.data(), A.size() * sizeof(T));
+
+    auto [U_opt, S_static, Vt_opt] = linear_algebra::svd_dd(a_static, job);
+    if (!U_opt || !Vt_opt) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "cg::svd_dd: SVD computation did not return U and V^T as expected.");
+    }
+    return std::make_tuple(RT{std::move(*U_opt)}, RR{std::move(S_static)}, RT{std::move(*Vt_opt)});
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // truncated_svd
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1081,6 +1183,49 @@ auto truncated_svd(AType const &A, size_t k) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::truncated_svd(A, k) returning form cannot be used during graph capture.");
     }
     return linear_algebra::truncated_svd(A, k);
+}
+
+/// Rank-``k`` truncated SVD (returning): keeps the top ``k`` singular
+/// triples of ``A``. Returns ``(U_k, S_k, Vt_k)`` with ``U_k`` of shape
+/// ``(m, k)``, ``S_k`` of shape ``(k,)``, and ``Vt_k`` of shape ``(k, n)``.
+///
+/// Randomized algorithm with over-sampling factor 5 — requires
+/// ``A.dim(0) >= k + 5``. Smaller inputs raise ``IndexError`` from the
+/// projection step. Results are approximate; expect small drift versus a
+/// full ``svd``.
+///
+/// Cannot be used during graph capture (returns by value); ``A`` is left
+/// unmodified.
+template <RuntimeRankTensorConcept AType>
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("truncated_svd", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("truncated_svd", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("truncated_svd", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("truncated_svd", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    auto truncated_svd(AType const &A, size_t k) -> std::tuple<
+        einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
+        einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
+        einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
+    if (CaptureContext::current().is_capturing()) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::truncated_svd(A, k) returning form cannot be used during graph capture.");
+    }
+    if (A.rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::truncated_svd requires rank-2 input; got rank {}.", A.rank());
+    }
+
+    using T  = typename AType::ValueType;
+    using R  = RemoveComplexT<T>;
+    using RT = einsums::GeneralRuntimeTensor<T, std::allocator<T>>;
+    using RR = einsums::GeneralRuntimeTensor<R, std::allocator<R>>;
+
+    Tensor<T, 2> a_static{A.name(), A.dim(0), A.dim(1)};
+    std::memcpy(a_static.data(), A.data(), A.size() * sizeof(T));
+
+    auto [U_static, S_static, Vt_static] = linear_algebra::truncated_svd(a_static, k);
+    return std::make_tuple(RT{std::move(U_static)}, RR{std::move(S_static)}, RT{std::move(Vt_static)});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1094,6 +1239,47 @@ auto truncated_syev(AType const &A, size_t k) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::truncated_syev(A, k) returning form cannot be used during graph capture.");
     }
     return linear_algebra::truncated_syev(A, k);
+}
+
+/// Rank-``k`` truncated symmetric eigendecomposition (returning): keeps the
+/// top ``k`` eigenpairs of a real symmetric ``A``. Returns
+/// ``(eigenvectors, eigenvalues)`` where eigenvectors has shape ``(n, k)``
+/// and eigenvalues has shape ``(k,)``.
+///
+/// Randomized algorithm with over-sampling factor 5 — requires
+/// ``A.dim(0) >= k + 5``. Smaller inputs raise ``IndexError`` from the
+/// projection step. Results are approximate top-``k`` eigenpairs; expect
+/// small drift versus a full ``syev``, especially for tightly clustered
+/// eigenvalues.
+///
+/// Cannot be used during graph capture (returns by value); ``A`` is left
+/// unmodified.
+template <RuntimeRankTensorConcept AType>
+    requires(NotComplex<AType>)
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("truncated_syev", einsums::GeneralRuntimeTensor<float,  std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("truncated_syev", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    // clang-format on
+    auto truncated_syev(AType const &A, size_t k)
+        -> std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
+                      einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
+    if (CaptureContext::current().is_capturing()) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::truncated_syev(A, k) returning form cannot be used during graph capture.");
+    }
+    if (A.rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::truncated_syev requires rank-2 input; got rank {}.", A.rank());
+    }
+
+    using T  = typename AType::ValueType;
+    using RT = einsums::GeneralRuntimeTensor<T, std::allocator<T>>;
+
+    Tensor<T, 2> a_static{A.name(), A.dim(0), A.dim(1)};
+    std::memcpy(a_static.data(), A.data(), A.size() * sizeof(T));
+
+    auto [V_static, W_static] = linear_algebra::truncated_syev(a_static, k);
+    return std::make_tuple(RT{std::move(V_static)}, RT{std::move(W_static)});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1153,6 +1339,41 @@ auto pow(AType const &A, typename AType::ValueType alpha,
         EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::pow(A, alpha) returning form cannot be used during graph capture.");
     }
     return linear_algebra::pow(A, alpha, cutoff);
+}
+
+/// Matrix power: ``A^alpha`` via eigendecomposition.
+///
+/// Returns a freshly-allocated square matrix. ``alpha`` may be negative; an
+/// optional ``cutoff`` zeros out eigenvalues whose magnitude is below
+/// ``cutoff * max|eig|`` before exponentiation (guards against near-singular
+/// inputs when ``alpha < 0``). Cannot be used during graph capture (returns
+/// by value); ``A`` is left unmodified.
+template <RuntimeRankTensorConcept AType>
+    requires(NotComplex<AType>)
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("pow", einsums::GeneralRuntimeTensor<float,  std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("pow", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    // clang-format on
+    auto pow(AType const &A, typename AType::ValueType alpha,
+             typename AType::ValueType cutoff = std::numeric_limits<typename AType::ValueType>::epsilon())
+        -> einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>> {
+    if (CaptureContext::current().is_capturing()) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::pow(A, alpha) returning form cannot be used during graph capture.");
+    }
+    if (A.rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::pow requires rank-2 input; got rank {}.", A.rank());
+    }
+
+    using T  = typename AType::ValueType;
+    using RT = einsums::GeneralRuntimeTensor<T, std::allocator<T>>;
+
+    Tensor<T, 2> a_static{A.name(), A.dim(0), A.dim(1)};
+    std::memcpy(a_static.data(), A.data(), A.size() * sizeof(T));
+
+    auto result_static = linear_algebra::pow(a_static, alpha, cutoff);
+    return RT{std::move(result_static)};
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

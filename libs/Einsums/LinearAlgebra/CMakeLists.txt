@@ -19,6 +19,7 @@ set(LinearAlgebraSources LinearAlgebra.cpp ForwardDeclarations.cpp)
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums LinearAlgebra
+  PYBIND
   SOURCES ${LinearAlgebraSources}
   HEADERS ${LinearAlgebraHeaders}
   MODULE_DEPENDENCIES

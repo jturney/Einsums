@@ -12,6 +12,7 @@ set(VersionSources Version.cpp)
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums Version
+  PYBIND
   SOURCES ${VersionSources}
   HEADERS ${VersionHeaders}
   DEPENDENCIES

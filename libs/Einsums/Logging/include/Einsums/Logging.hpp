@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Logging/Defines.hpp>
+#include <Einsums/Python/Annotations.hpp>
 
 #include <spdlog/sinks/sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -201,3 +202,17 @@ EINSUMS_EXPORT EINSUMS_DETAIL_DECLARE_SPDLOG(einsums)
 #endif
 
 } // namespace einsums::detail
+
+namespace einsums {
+
+/// Set the runtime log level on the einsums logger. Values mirror
+/// spdlog: 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=CRITICAL, 6=OFF.
+/// Out-of-range values are clamped by spdlog. Compile-time disablement
+/// (``EINSUMS_ACTIVE_LOG_LEVEL``) takes precedence — runtime
+/// ``set_log_level(0)`` cannot re-enable TRACE in a Release build.
+EINSUMS_PYBIND_EXPOSE EINSUMS_EXPORT void set_log_level(int level);
+
+/// Return the current runtime log level on the einsums logger.
+EINSUMS_PYBIND_EXPOSE EINSUMS_EXPORT int get_log_level();
+
+} // namespace einsums
