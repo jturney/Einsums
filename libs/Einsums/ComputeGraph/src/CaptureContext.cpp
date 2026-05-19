@@ -29,15 +29,22 @@ void CaptureContext::end_capture() {
     if (!_capturing) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext: not currently capturing.");
     }
-    _graph->topological_sort();
-    _graph->validate_shapes_at_capture();
-    profile::annotate("num_nodes", static_cast<int64_t>(_graph->num_nodes()));
-    profile::annotate("num_tensors", static_cast<int64_t>(_graph->num_tensors()));
-    register_graph(_graph);
-    profile::Profiler::instance().pop(); // End capture region
+
+    // Reset capture state and balance the profiler push unconditionally —
+    // before running validation/finalization that can throw. If validation
+    // fails the caller still sees the exception, but the next `with
+    // cg.capture(...)` is no longer locked out by a stale `_capturing` flag.
+    Graph *g   = _graph;
     _capturing = false;
     _graph     = nullptr;
     _ptr_to_id.clear();
+    profile::Profiler::instance().pop();
+
+    g->topological_sort();
+    g->validate_shapes_at_capture();
+    profile::annotate("num_nodes", static_cast<int64_t>(g->num_nodes()));
+    profile::annotate("num_tensors", static_cast<int64_t>(g->num_tensors()));
+    register_graph(g);
 }
 
 } // namespace einsums::compute_graph

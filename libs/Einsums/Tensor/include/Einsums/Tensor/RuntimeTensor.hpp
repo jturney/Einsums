@@ -1738,7 +1738,7 @@ struct EINSUMS_PYBIND_EXPOSE
      *
      * @param d The axis to query. Negative indices will be wrapped around.
      */
-    [[nodiscard]] virtual auto dim(int d) const -> size_t { return _impl.dim(d); }
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE virtual auto dim(int d) const -> size_t { return _impl.dim(d); }
 
     /**
      * @brief Gets the dimensions of the tensor.
@@ -1750,7 +1750,7 @@ struct EINSUMS_PYBIND_EXPOSE
      *
      * @param d The axis to query. Negative indices will be wrapped around.
      */
-    [[nodiscard]] virtual auto stride(int d) const -> size_t { return _impl.stride(d); }
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE virtual auto stride(int d) const -> size_t { return _impl.stride(d); }
 
     /**
      * @brief Gets the strides of the tensor.
@@ -1771,7 +1771,7 @@ struct EINSUMS_PYBIND_EXPOSE
     /**
      * @brief Returns the linear size of the tensor.
      */
-    [[nodiscard]] virtual auto size() const noexcept -> size_t { return _impl.size(); }
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("size") virtual auto size() const noexcept -> size_t { return _impl.size(); }
 
     /**
      * @brief Checks whether the tensor sees all of the underlying data.

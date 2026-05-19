@@ -55,6 +55,10 @@ EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::GeneralRuntimeTensor<float, std:
 EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void scale(typename AType::ValueType factor, AType *A) {
     auto &ctx = CaptureContext::current();
@@ -193,6 +197,121 @@ void transpose(CType *C, AType const &A) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// block_copy: slab copy between same-rank tensors
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Copy a contiguous N-dimensional sub-region of @p src into @p dst.
+///
+/// For each axis k, copies @p extents[k] elements starting at @p src_offsets[k]
+/// in src into @p dst_offsets[k] in dst:
+///
+///   dst[dst_offsets + i] = src[src_offsets + i]   for all i in extents
+///
+/// Both tensors must have the same rank and dtype. Uses per-axis strides so
+/// arbitrary memory layouts are handled correctly. Capture-aware: outside
+/// capture, runs immediately; inside capture, records a node with src as an
+/// input dependency and dst as an output.
+///
+/// Common patterns:
+///   * Extract occupied MO block:  block_copy(&C_occ, C, {0,0}, {0,0}, {nbf, nocc})
+///   * Extract (ia|jb) ERI block:  block_copy(&iajb, eri_mo, {0,0,0,0},
+///                                             {0, nocc, 0, nocc},
+///                                             {nocc, nvirt, nocc, nvirt})
+template <CoreBasicTensorConcept DstType, CoreBasicTensorConcept SrcType>
+    requires std::is_same_v<typename DstType::ValueType, typename SrcType::ValueType>
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+// dst is a view, src is an owning tensor — common when writing a tensor into a slab of a larger destination.
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<float>,                                                   einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<double>,                                                  einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<float>>,                                     einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<double>>,                                    einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+// dst is an owning tensor, src is a view — common when extracting a slab into a freshly-allocated dst.
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+// Both view — copying between two captured view slabs.
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<float>,                                                   einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<double>,                                                  einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<float>>,                                     einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<double>>,                                    einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void block_copy(DstType *dst, SrcType const &src, std::vector<size_t> dst_offsets, std::vector<size_t> src_offsets,
+                    std::vector<size_t> extents) {
+    size_t const N = extents.size();
+    if (N == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::block_copy: extents must be non-empty");
+    }
+    if (dst->rank() != N || src.rank() != N) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::block_copy: rank mismatch — dst rank={}, src rank={}, extents.size()={}", dst->rank(),
+                                src.rank(), N);
+    }
+    if (dst_offsets.size() != N || src_offsets.size() != N) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::block_copy: dst_offsets ({}) and src_offsets ({}) must match extents ({})",
+                                dst_offsets.size(), src_offsets.size(), N);
+    }
+    for (size_t k = 0; k < N; ++k) {
+        if (dst_offsets[k] + extents[k] > dst->dim(k)) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::block_copy: dst axis {} — offset {} + extent {} exceeds dim {}", k,
+                                    dst_offsets[k], extents[k], dst->dim(k));
+        }
+        if (src_offsets[k] + extents[k] > src.dim(k)) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::block_copy: src axis {} — offset {} + extent {} exceeds dim {}", k,
+                                    src_offsets[k], extents[k], src.dim(k));
+        }
+    }
+
+    auto apply = [dst_offsets, src_offsets, extents, N](DstType *d, SrcType const *s) {
+        using T      = typename DstType::ValueType;
+        size_t total = 1;
+        for (size_t k = 0; k < N; ++k)
+            total *= extents[k];
+
+        std::vector<size_t> idx(N, 0);
+        std::vector<size_t> d_str(N), s_str(N);
+        for (size_t k = 0; k < N; ++k) {
+            d_str[k] = d->stride(k);
+            s_str[k] = s->stride(k);
+        }
+        T       *d_data = d->data();
+        T const *s_data = s->data();
+
+        for (size_t count = 0; count < total; ++count) {
+            size_t d_off = 0, s_off = 0;
+            for (size_t k = 0; k < N; ++k) {
+                d_off += (dst_offsets[k] + idx[k]) * d_str[k];
+                s_off += (src_offsets[k] + idx[k]) * s_str[k];
+            }
+            d_data[d_off] = s_data[s_off];
+            // Axis 0 fastest — correctness-only, not cache-aware.
+            for (size_t k = 0; k < N; ++k) {
+                if (++idx[k] < extents[k])
+                    break;
+                idx[k] = 0;
+            }
+        }
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        apply(dst, &src);
+        return;
+    }
+
+    auto [s_id, s_slot] = ctx.get_slot(src);
+    auto [d_id, d_slot] = ctx.get_slot(*dst);
+
+    auto executor = [s_slot, d_slot, apply]() { apply(static_cast<DstType *>(d_slot->ptr), static_cast<SrcType const *>(s_slot->ptr)); };
+    ctx.record(OpKind::Custom, "block_copy", {s_id}, {d_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // element_transform
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -234,6 +353,10 @@ EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::GeneralRuntimeTensor
 EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void element_transform_python(TensorType *C, std::function<typename TensorType::ValueType(typename TensorType::ValueType)> unary_op) {
     using T = typename TensorType::ValueType;
@@ -274,6 +397,10 @@ EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<float, std::
 EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void axpy(typename XType::ValueType alpha, XType const &X, XType *Y) {
     auto &ctx = CaptureContext::current();
@@ -309,6 +436,10 @@ EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<float, std:
 EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void axpby(typename T::ValueType alpha, T const &X, typename T::ValueType beta, T *Y) {
     auto &ctx = CaptureContext::current();

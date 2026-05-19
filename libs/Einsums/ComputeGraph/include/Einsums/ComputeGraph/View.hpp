@@ -333,6 +333,49 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     return slice_ref;
 }
 
+/// @brief Python-friendly wrapper over @ref view_runtime.
+///
+/// Takes a list of ``(lo, hi)`` integer pairs, one per parent axis. A pair
+/// with both values < 0 (the conventional ``(-1, -1)``) means "full axis";
+/// any other pair becomes a ``[lo, hi)`` range slice.
+///
+/// Must be called inside a capture context. The returned view is owned by the
+/// active graph and aliases the parent — writes through it land in the parent,
+/// and the graph's optimization passes treat it as a dependency on the parent.
+///
+/// @code
+///   with cg.capture(g):
+///       C_occ = einsums.graph.view(C, [(-1, -1), (0, nocc)])  # C[:, :nocc]
+///       einsums.linalg.gemm(2.0, C_occ, C_occ, 0.0, D, trans_b=True)
+/// @endcode
+template <RuntimeRankTensorConcept ParentT>
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("graph")
+EINSUMS_PYBIND_RVP(reference)
+EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_python(
+        ParentT &parent, std::vector<std::pair<std::int64_t, std::int64_t>> const &ranges) {
+    if (ranges.size() != parent.rank()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::view: ranges length ({}) must equal parent rank ({})", ranges.size(),
+                                parent.rank());
+    }
+    std::vector<ViewAxis> axes;
+    axes.reserve(ranges.size());
+    for (auto const &[lo, hi] : ranges) {
+        if (lo < 0 && hi < 0) {
+            axes.push_back(ViewAxis::full());
+        } else {
+            axes.push_back(ViewAxis::range(lo, hi));
+        }
+    }
+    return view_runtime(parent, axes);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // write_param — explicit dataflow write into a Pipeline parameter.
 // ─────────────────────────────────────────────────────────────────────────────

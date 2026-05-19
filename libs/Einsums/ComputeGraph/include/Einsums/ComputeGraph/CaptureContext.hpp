@@ -271,8 +271,16 @@ struct CaptureGuard {
      */
     explicit CaptureGuard(Graph &g) { CaptureContext::current().begin_capture(g); }
 
-    /// End capture and finalize the graph.
-    ~CaptureGuard() { CaptureContext::current().end_capture(); }
+    /// End capture and finalize the graph. Swallows exceptions: a throwing
+    /// destructor would call ``std::terminate`` if we were unwinding from a
+    /// captured op that itself threw. Callers who want to see finalization
+    /// errors should call ``end_capture()`` explicitly.
+    ~CaptureGuard() {
+        try {
+            CaptureContext::current().end_capture();
+        } catch (...) { // NOLINT(bugprone-empty-catch): destructor must not throw
+        }
+    }
 
     CaptureGuard(CaptureGuard const &)            = delete;
     CaptureGuard &operator=(CaptureGuard const &) = delete;

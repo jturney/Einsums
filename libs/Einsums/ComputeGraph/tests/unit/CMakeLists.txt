@@ -66,6 +66,7 @@ set(ComputeGraphTests
     View.cpp
     Workspace.cpp
     test_blas_python.py
+    test_block_copy_python.py
     test_capture_python.py
     test_einsum_python.py
     test_element_transform_python.py
@@ -91,6 +92,7 @@ set(ComputeGraphTests
     test_permute_python.py
     test_scalar_writers_python.py
     test_scale_python.py
+    test_view_python.py
 )
 
 foreach(test ${ComputeGraphTests})
