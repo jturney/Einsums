@@ -513,7 +513,17 @@ void gemm(U const alpha, T const &A, T const &B, U const beta, T *C) {
                                              static_cast<T *>(c_slot->ptr));
     };
 
-    ctx.record(OpKind::Gemm, std::move(label), {a_id, b_id}, {c_id}, std::move(executor));
+    // When beta != 0 the gemm accumulates into C (``C = α·A·B + β·C``), so it
+    // *reads* C as well as writing it. List C as an input in that case so the
+    // scheduler and loop-invariance analysis see the read-modify-write — without
+    // it, an accumulating gemm looks like a pure producer and can be wrongly
+    // hoisted out of a loop or reordered. A pure overwrite (beta == 0) keeps the
+    // two-input form and stays eligible for those optimizations.
+    std::vector<TensorId> inputs = {a_id, b_id};
+    if (beta != U{}) {
+        inputs.push_back(c_id);
+    }
+    ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor));
 }
 
 /// Graph-aware GEMM: ``C = alpha * op(A) * op(B) + beta * C``.
@@ -598,7 +608,14 @@ EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex
                                              beta, static_cast<CType *>(c_slot->ptr));
     };
 
-    ctx.record(OpKind::Gemm, std::move(label), {a_id, b_id}, {c_id}, std::move(executor));
+    // beta != 0 → the gemm reads C as well as writing it (``C = α·A·B + β·C``);
+    // list C as an input so loop-invariance and scheduling see the read. See the
+    // matching note on the TransA/TransB overload above.
+    std::vector<TensorId> inputs = {a_id, b_id};
+    if (beta != U{}) {
+        inputs.push_back(c_id);
+    }
+    ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -627,7 +644,13 @@ void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y)
                                      static_cast<YType *>(y_slot->ptr));
     };
 
-    ctx.record(OpKind::Gemv, std::move(label), {a_id, z_id}, {y_id}, std::move(executor));
+    // beta != 0 → gemv reads y as well as writing it; list it as an input so
+    // loop-invariance and scheduling see the read (see the gemm note above).
+    std::vector<TensorId> inputs = {a_id, z_id};
+    if (beta != U{}) {
+        inputs.push_back(y_id);
+    }
+    ctx.record(OpKind::Gemv, std::move(label), std::move(inputs), {y_id}, std::move(executor));
 }
 
 /// Graph-aware GEMV: ``y = alpha * op(A) * z + beta * y``.
@@ -701,7 +724,13 @@ EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex
                                      static_cast<YType *>(y_slot->ptr));
     };
 
-    ctx.record(OpKind::Gemv, std::move(label), {a_id, z_id}, {y_id}, std::move(executor));
+    // beta != 0 → gemv reads y as well as writing it; list it as an input so
+    // loop-invariance and scheduling see the read (see the gemm note above).
+    std::vector<TensorId> inputs = {a_id, z_id};
+    if (beta != U{}) {
+        inputs.push_back(y_id);
+    }
+    ctx.record(OpKind::Gemv, std::move(label), std::move(inputs), {y_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -726,7 +755,10 @@ void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType 
                             static_cast<AType *>(a_slot->ptr));
     };
 
-    ctx.record(OpKind::Ger, "ger", {x_id, y_id}, {a_id}, std::move(executor));
+    // ger always accumulates (``A += α·X·Y^T``), so it reads A as well as
+    // writing it — list A as an input so loop-invariance and scheduling see the
+    // read-modify-write (see the gemm note above).
+    ctx.record(OpKind::Ger, "ger", {x_id, y_id, a_id}, {a_id}, std::move(executor));
 }
 
 /// Graph-aware GER (rank-1 update): ``A += alpha * X * Y^T``.
@@ -798,7 +830,10 @@ EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<dou
                             static_cast<AType *>(a_slot->ptr));
     };
 
-    ctx.record(OpKind::Ger, "ger", {x_id, y_id}, {a_id}, std::move(executor));
+    // ger always accumulates (``A += α·X·Y^T``), so it reads A as well as
+    // writing it — list A as an input so loop-invariance and scheduling see the
+    // read-modify-write (see the gemm note above).
+    ctx.record(OpKind::Ger, "ger", {x_id, y_id, a_id}, {a_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

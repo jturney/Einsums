@@ -36,6 +36,7 @@ set(ComputeGraphTests
     GraphCapture.cpp
     GraphFeatures.cpp
     HardwareProfile.cpp
+    LoopOptimizationCorrectness.cpp
     MemoryNodes.cpp
     MixedOps.cpp
     OperationsCoverage.cpp
@@ -45,6 +46,7 @@ set(ComputeGraphTests
     Pass_CSE.cpp
     Pass_DeadNodeElimination.cpp
     Pass_ElementWiseFusion.cpp
+    Pass_FreeInsertion.cpp
     Pass_InplaceOptimization.cpp
     Pass_LoopInvariantHoisting.cpp
     Pass_MemoryPlanning.cpp
@@ -55,6 +57,7 @@ set(ComputeGraphTests
     PermuteFusion.cpp
     PipelineLoop.cpp
     Rebind.cpp
+    RecursionPlumbing.cpp
     RuntimeTensorEinsum.cpp
     RuntimeTensorLAPACK.cpp
     RuntimeTensorOwnership.cpp
@@ -76,6 +79,7 @@ set(ComputeGraphTests
     test_element_transform_python.py
     test_error_reporting_python.py
     test_executor_python.py
+    test_fuzz_differential_python.py
     test_gemm_views_python.py
     test_gemv_views_python.py
     test_ger_views_python.py
@@ -84,6 +88,7 @@ set(ComputeGraphTests
     test_linalg_new_python.py
     test_loop_python.py
     test_mixed_ops_python.py
+    test_mp2_python.py
     test_outer_sum_python.py
     test_pass_chain_parenthesization_python.py
     test_pass_constant_folding_python.py
@@ -98,6 +103,7 @@ set(ComputeGraphTests
     test_pass_symmetry_propagation_python.py
     test_permute_python.py
     test_scalar_writers_python.py
+    test_scf_python.py
     test_scale_python.py
     test_symm_gemm_views_python.py
     test_view_python.py

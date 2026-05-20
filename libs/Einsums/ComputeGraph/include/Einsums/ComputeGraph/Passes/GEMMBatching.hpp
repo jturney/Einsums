@@ -47,6 +47,11 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
     [[nodiscard]] std::string name() const override { return "GEMMBatching"; }
     bool                      run(Graph &graph) override;
 
+    /// Safe on loop bodies / conditional branches: batches sibling GEMMs
+    /// within the single graph it's handed (one iteration's worth of
+    /// nodes). See docs/loop_handling_audit.md.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+
     /// Number of batches created this run (one per collapsed group).
     [[nodiscard]] size_t num_batches() const { return _num_batches; }
 

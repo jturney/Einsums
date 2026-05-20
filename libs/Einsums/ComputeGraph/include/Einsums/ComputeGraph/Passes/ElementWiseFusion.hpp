@@ -37,6 +37,11 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
     [[nodiscard]] std::string name() const override { return "ElementWiseFusion"; }
     bool                      run(Graph &graph) override;
 
+    /// Safe on loop bodies / conditional branches: a local fusion of
+    /// adjacent element-wise ops within the graph it's handed.
+    /// See docs/loop_handling_audit.md.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+
     EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("num_fused") [[nodiscard]] size_t num_fused() const { return _num_fused; }
 
   private:

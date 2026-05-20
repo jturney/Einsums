@@ -99,6 +99,7 @@
 #include <Einsums/ComputeGraph/Passes/DistributionPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributiveFactoring.hpp>
 #include <Einsums/ComputeGraph/Passes/ElementWiseFusion.hpp>
+#include <Einsums/ComputeGraph/Passes/FreeInsertion.hpp>
 #include <Einsums/ComputeGraph/Passes/GEMMBatching.hpp>
 #include <Einsums/ComputeGraph/Passes/GPUDiagnostics.hpp>
 #include <Einsums/ComputeGraph/Passes/GPUPlacement.hpp>

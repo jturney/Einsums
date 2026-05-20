@@ -11,18 +11,50 @@
 #include <Einsums/Logging.hpp>
 
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 #include <variant>
 
 namespace einsums::compute_graph::passes {
 
 namespace {
 
+/// Soundness context for an inference run on one graph. A symmetry tag is
+/// only ever a *guarantee* about the tensor's final contents, so we infer
+/// it only when nothing can invalidate it after the producing op:
+///   - the tensor has exactly one writer in this graph (no later overwrite
+///     could destroy the inferred structure), and
+///   - the tensor isn't referenced by a child sub-graph (a nested loop /
+///     conditional body could write it without this graph's node list
+///     showing it — a Loop node doesn't list its body's writes).
+/// Without these guards a stale tag could claim symmetry the data no longer
+/// has. They make the pass strictly conservative and therefore safe to
+/// recurse into loop bodies.
+struct InferGuard {
+    std::unordered_map<TensorId, int> writer_count;
+    std::unordered_set<void const *>  subtree_ptrs;
+
+    [[nodiscard]] bool safe(Graph const &graph, TensorId tid) const {
+        if (auto it = writer_count.find(tid); it == writer_count.end() || it->second != 1) {
+            return false;
+        }
+        auto it = graph.tensors_map().find(tid);
+        if (it == graph.tensors_map().end()) {
+            return false;
+        }
+        return it->second.tensor_ptr == nullptr || subtree_ptrs.count(it->second.tensor_ptr) == 0;
+    }
+};
+
 /// Try to push an inferred descriptor to a graph-owned tensor handle.
 /// Returns true if the descriptor was applied (either taking on a new value
 /// or overwriting ``nullptr`` on the backing tensor).
-bool apply_inferred(TensorHandle &handle, SymmetryDescriptor desc) {
+bool apply_inferred(Graph &graph, TensorId out_tid, SymmetryDescriptor desc, InferGuard const &guard) {
+    auto &handle = graph.tensor(out_tid);
     if (!handle.is_intermediate)
         return false; // Never mutate user-owned tensor state.
+    if (!guard.safe(graph, out_tid))
+        return false; // Could be overwritten later / by a child body — don't tag.
     // Skip if the tensor already has an equivalent descriptor — avoids
     // redundant work and spurious "new inference" reports on re-runs.
     if (handle.symmetry_hint && *handle.symmetry_hint == desc)
@@ -36,23 +68,22 @@ bool apply_inferred(TensorHandle &handle, SymmetryDescriptor desc) {
 
 /// Rule: ``C = α·A`` — Scale preserves its input's symmetry. Detects
 /// ``OpKind::Scale`` nodes and copies the descriptor from input to output.
-bool propagate_scale(Graph &graph, Node const &node) {
+bool propagate_scale(Graph &graph, Node const &node, InferGuard const &guard) {
     if (node.kind != OpKind::Scale)
         return false;
     if (node.inputs.size() != 1 || node.outputs.size() != 1)
         return false;
 
-    auto const &in  = graph.tensor(node.inputs[0]);
-    auto       &out = graph.tensor(node.outputs[0]);
+    auto const &in = graph.tensor(node.inputs[0]);
     if (!in.symmetry_hint)
         return false;
-    return apply_inferred(out, *in.symmetry_hint);
+    return apply_inferred(graph, node.outputs[0], *in.symmetry_hint, guard);
 }
 
 /// Rule: ``C = α·A + β·B`` (or simple sum) — if A and B carry identical
 /// descriptors, C inherits them. Applies to OpKind::Axpy and
 /// OpKind::Axpby when the descriptors match exactly.
-bool propagate_linear_combination(Graph &graph, Node const &node) {
+bool propagate_linear_combination(Graph &graph, Node const &node, InferGuard const &guard) {
     if (node.kind != OpKind::Axpy && node.kind != OpKind::Axpby)
         return false;
     if (node.inputs.size() < 2 || node.outputs.size() != 1)
@@ -65,8 +96,7 @@ bool propagate_linear_combination(Graph &graph, Node const &node) {
     if (!(*a.symmetry_hint == *b.symmetry_hint))
         return false;
 
-    auto &out = graph.tensor(node.outputs[0]);
-    return apply_inferred(out, *a.symmetry_hint);
+    return apply_inferred(graph, node.outputs[0], *a.symmetry_hint, guard);
 }
 
 /// Rule: ``C = AᵀA`` / ``AAᵀ`` / ``AᴴA`` via einsum — when the same tensor
@@ -84,7 +114,7 @@ bool propagate_linear_combination(Graph &graph, Node const &node) {
 /// We only need the scalar type from the EinsumDescriptor to pick between
 /// the symmetric and Hermitian output tag; that information is on the
 /// underlying tensor's descriptor, which we read from the handle.
-bool propagate_self_contraction(Graph &graph, Node const &node) {
+bool propagate_self_contraction(Graph &graph, Node const &node, InferGuard const &guard) {
     if (node.kind != OpKind::Einsum)
         return false;
     if (node.inputs.size() != 2 || node.outputs.size() != 1)
@@ -102,15 +132,14 @@ bool propagate_self_contraction(Graph &graph, Node const &node) {
     if (desc->spec.link_indices.size() != 1)
         return false;
 
-    auto       &out = graph.tensor(node.outputs[0]);
-    auto const &in  = graph.tensor(node.inputs[0]);
+    auto const &in = graph.tensor(node.inputs[0]);
 
     bool const is_complex = in.dtype == packed_gemm::ScalarType::Complex64 || in.dtype == packed_gemm::ScalarType::Complex128;
     bool const one_conj   = desc->conj_a ^ desc->conj_b; // XOR — exactly one side conjugated
 
     if (is_complex && one_conj)
-        return apply_inferred(out, SymmetryDescriptor::hermitian_pair(0, 1));
-    return apply_inferred(out, SymmetryDescriptor::symmetric_pair(0, 1));
+        return apply_inferred(graph, node.outputs[0], SymmetryDescriptor::hermitian_pair(0, 1), guard);
+    return apply_inferred(graph, node.outputs[0], SymmetryDescriptor::symmetric_pair(0, 1), guard);
 }
 
 /// Rule: permute of a rank-2 symmetric/Hermitian tensor stays
@@ -118,7 +147,7 @@ bool propagate_self_contraction(Graph &graph, Node const &node) {
 /// preserving) and the swap permute (``{j,i}`` — for a symmetric tensor the
 /// output equals the input). Beta must be zero (pure overwrite); otherwise
 /// we can't reason about what C was before the add.
-bool propagate_permute(Graph &graph, Node const &node) {
+bool propagate_permute(Graph &graph, Node const &node, InferGuard const &guard) {
     if (node.kind != OpKind::Permute && node.kind != OpKind::Transpose)
         return false;
     if (node.inputs.size() != 1 || node.outputs.size() != 1)
@@ -145,8 +174,7 @@ bool propagate_permute(Graph &graph, Node const &node) {
     if (op.permutation[0] != 1 || op.permutation[1] != 0 || op.sign != +1)
         return false;
 
-    auto &out = graph.tensor(node.outputs[0]);
-    return apply_inferred(out, *in.symmetry_hint);
+    return apply_inferred(graph, node.outputs[0], *in.symmetry_hint, guard);
 }
 
 } // namespace
@@ -157,14 +185,33 @@ bool SymmetryPropagation::run(Graph &graph) {
     _num_inferred     = 0;
     auto const &nodes = graph.nodes();
 
+    // Build the soundness guard for this graph: writer counts + the set of
+    // tensor pointers referenced by child sub-graphs. Only single-writer,
+    // not-used-by-a-child tensors get tagged.
+    InferGuard guard;
     for (auto const &node : nodes) {
-        if (propagate_scale(graph, node))
+        // Lifecycle nodes (Alloc/Free/Materialize/Initialize) list the tensor
+        // as an output but don't write a *value* that could invalidate an
+        // inferred symmetry — a freshly created/zeroed tensor is then filled
+        // by exactly one real op. Count only value-producing nodes.
+        if (node.kind == OpKind::Alloc || node.kind == OpKind::Free || node.kind == OpKind::Materialize ||
+            node.kind == OpKind::Initialize) {
+            continue;
+        }
+        for (auto tid : node.outputs) {
+            guard.writer_count[tid]++;
+        }
+    }
+    graph.collect_subtree_referenced_ptrs(guard.subtree_ptrs);
+
+    for (auto const &node : nodes) {
+        if (propagate_scale(graph, node, guard))
             ++_num_inferred;
-        if (propagate_linear_combination(graph, node))
+        if (propagate_linear_combination(graph, node, guard))
             ++_num_inferred;
-        if (propagate_self_contraction(graph, node))
+        if (propagate_self_contraction(graph, node, guard))
             ++_num_inferred;
-        if (propagate_permute(graph, node))
+        if (propagate_permute(graph, node, guard))
             ++_num_inferred;
     }
 

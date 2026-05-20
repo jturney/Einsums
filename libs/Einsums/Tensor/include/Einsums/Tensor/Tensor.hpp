@@ -20,6 +20,7 @@
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Python/Annotations.hpp>
+#include <Einsums/Tensor/PendingInit.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
@@ -1434,11 +1435,27 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     /// descriptor so the symmetry survives across copies.
     std::unique_ptr<SymmetryDescriptor> _symmetry{};
 
+    /// Post-materialize init policy. Set at declaration time (e.g. by
+    /// ``Workspace::declare_zero_tensor``) and consumed by ``make_handle``
+    /// so the init metadata reaches a Graph that captures this tensor
+    /// later. POD-ish so it's safe across copies / moves; see
+    /// ``Einsums/Tensor/PendingInit.hpp``.
+    PendingInit _pending_init{PendingInit::None};
+
     template <typename T_, size_t Rank_>
     friend struct TensorView;
 
     template <typename T_, size_t OtherRank, typename Alloc2>
     friend struct GeneralTensor;
+
+  public:
+    /// Pending post-materialize init kind. Defaults to ``None``.
+    [[nodiscard]] PendingInit pending_init() const { return _pending_init; }
+
+    /// Tag this tensor with a post-materialize init policy. Used by
+    /// declaration helpers (Workspace / Graph) so capture-time handles
+    /// created via ``make_handle`` pick up the same init behavior.
+    void set_pending_init(PendingInit k) { _pending_init = k; }
 };
 
 /**
@@ -2062,7 +2079,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
     template <typename... MultiIndex>
         requires(AtLeastOneOfType<AllT, std::remove_cvref_t<MultiIndex>...> || AtLeastOneOfType<Range, std::remove_cvref_t<MultiIndex>...>)
     [[nodiscard]] auto operator()(MultiIndex &&...index) -> TensorView<T, count_of_type<AllT, std::remove_cvref_t<MultiIndex>...>() +
-                                                                count_of_type<Range, std::remove_cvref_t<MultiIndex>...>()> {
+                                                                              count_of_type<Range, std::remove_cvref_t<MultiIndex>...>()> {
         static_assert(sizeof...(MultiIndex) == Rank);
 
         return TensorView<T, count_of_type<AllT, std::remove_cvref_t<MultiIndex>...>() +
@@ -2083,7 +2100,8 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
 
     template <typename... MultiIndex>
         requires(AtLeastOneOfType<AllT, MultiIndex...> || AtLeastOneOfType<Range, MultiIndex...>)
-    [[nodiscard]] auto subscript(MultiIndex &&...index) -> TensorView<T, count_of_type<AllT, MultiIndex...>() + count_of_type<Range, MultiIndex...>()> {
+    [[nodiscard]] auto subscript(MultiIndex &&...index)
+        -> TensorView<T, count_of_type<AllT, MultiIndex...>() + count_of_type<Range, MultiIndex...>()> {
         static_assert(sizeof...(MultiIndex) == Rank);
 
         return TensorView<T, count_of_type<AllT, std::remove_cvref_t<MultiIndex>...>() +

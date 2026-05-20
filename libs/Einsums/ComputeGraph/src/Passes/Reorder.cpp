@@ -23,23 +23,59 @@ bool Reorder::run(Graph &graph) {
 
     size_t const n = nodes.size();
 
-    // Build adjacency and in-degree from data dependencies.
+    // Build adjacency and in-degree from data dependencies. We must encode all
+    // three hazard classes, not just true dependencies — otherwise the
+    // memory-aware reordering below can float a write ahead of a read of the
+    // old value (or ahead of an earlier write), corrupting in-place reuse:
+    //
+    //   RAW (true):  writer → reader   — reader needs the produced value.
+    //   WAW (output): writer → writer  — the later write must win.
+    //   WAR (anti):  reader → writer   — the overwrite can't happen until
+    //                                    every reader of the old value is done.
+    //
+    // Tracking only ``last_writer`` (the original implementation) covered RAW
+    // and WAW but silently dropped WAR, so e.g. a gemm reading t0 followed by
+    // an axpy overwriting t0 had no edge and could be swapped. Every edge added
+    // here points from a lower to a higher program index, so program order
+    // remains a valid topological order and no cycle is ever introduced.
+    //
     // Use sets to deduplicate edges — a tensor appearing in both inputs and
     // outputs of the same pair of nodes should only count once.
-    std::unordered_map<TensorId, size_t>    last_writer;
-    std::vector<std::unordered_set<size_t>> adj_set(n);
+    std::unordered_map<TensorId, size_t>              last_writer;
+    std::unordered_map<TensorId, std::vector<size_t>> readers_since_write;
+    std::vector<std::unordered_set<size_t>>           adj_set(n);
 
     for (size_t i = 0; i < n; i++) {
-        for (auto tid : nodes[i].inputs) {
-            auto it = last_writer.find(tid);
+        // Use effective I/O so Loop/Conditional nodes (whose own input/output
+        // lists are empty) carry dependency edges for the tensors their bodies
+        // touch — otherwise the memory-aware reorder below can float a loop
+        // past a producer or consumer of one of those tensors.
+        auto [eff_in, eff_out] = graph.effective_io(nodes[i]);
+        for (auto raw_tid : eff_in) {
+            // Resolve view aliases to the owning buffer, or a write through a
+            // view of T looks unrelated to a read of T and gets reordered past it.
+            TensorId const tid = graph.resolve_alias(raw_tid);
+            auto           it  = last_writer.find(tid);
             if (it != last_writer.end() && it->second != i) {
-                adj_set[it->second].insert(i);
+                adj_set[it->second].insert(i); // RAW: writer → reader
             }
+            readers_since_write[tid].push_back(i); // remember for a later WAR edge
         }
-        for (auto tid : nodes[i].outputs) {
-            auto it = last_writer.find(tid);
+        for (auto raw_tid : eff_out) {
+            TensorId const tid = graph.resolve_alias(raw_tid);
+            auto           it  = last_writer.find(tid);
             if (it != last_writer.end() && it->second != i) {
-                adj_set[it->second].insert(i);
+                adj_set[it->second].insert(i); // WAW: previous writer → this writer
+            }
+            // WAR: every node that read the old value must precede this write.
+            auto rit = readers_since_write.find(tid);
+            if (rit != readers_since_write.end()) {
+                for (size_t const r : rit->second) {
+                    if (r != i) {
+                        adj_set[r].insert(i);
+                    }
+                }
+                rit->second.clear(); // reads before this write are now satisfied
             }
             last_writer[tid] = i;
         }

@@ -27,6 +27,7 @@
 #include <mutex>
 #include <ostream>
 #include <queue>
+#include <set>
 #include <unordered_set>
 
 namespace einsums::compute_graph {
@@ -578,6 +579,173 @@ TensorHandle const &Graph::tensor(TensorId id) const {
     return it->second;
 }
 
+void Graph::for_each_subgraph(std::function<void(Graph &)> const &visitor) {
+    for (auto &node : _nodes) {
+        if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+            if (loop->body) {
+                visitor(*loop->body);
+            }
+        } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+            if (cond->then_branch) {
+                visitor(*cond->then_branch);
+            }
+            if (cond->else_branch) {
+                visitor(*cond->else_branch);
+            }
+        }
+    }
+}
+
+void Graph::for_each_subgraph(std::function<void(Graph const &)> const &visitor) const {
+    for (auto const &node : _nodes) {
+        if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+            if (loop->body) {
+                visitor(*loop->body);
+            }
+        } else if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+            if (cond->then_branch) {
+                visitor(*cond->then_branch);
+            }
+            if (cond->else_branch) {
+                visitor(*cond->else_branch);
+            }
+        }
+    }
+}
+
+void Graph::collect_subtree_referenced_ptrs(std::unordered_set<void const *> &out) const {
+    // Insert the tensor pointers referenced (read or written) by one graph's
+    // own nodes. Resolves each TensorId through that graph's own map.
+    auto collect_own = [](Graph const &g, std::unordered_set<void const *> &acc) {
+        auto add = [&](TensorId tid) {
+            auto it = g._tensors.find(tid);
+            if (it != g._tensors.end() && it->second.tensor_ptr != nullptr) {
+                acc.insert(it->second.tensor_ptr);
+            }
+        };
+        for (auto const &node : g._nodes) {
+            for (auto tid : node.inputs) {
+                add(tid);
+            }
+            for (auto tid : node.outputs) {
+                add(tid);
+            }
+        }
+    };
+
+    for_each_subgraph([&](Graph const &sub) {
+        collect_own(sub, out);                    // sub's own references
+        sub.collect_subtree_referenced_ptrs(out); // and sub's descendants
+    });
+}
+
+std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node const &node) {
+    std::vector<TensorId> ins  = node.inputs;
+    std::vector<TensorId> outs = node.outputs;
+
+    if (node.kind != OpKind::Loop && node.kind != OpKind::Conditional) {
+        return {ins, outs};
+    }
+
+    auto is_lifecycle = [](OpKind kind) {
+        return kind == OpKind::Alloc || kind == OpKind::Free || kind == OpKind::Materialize || kind == OpKind::Initialize;
+    };
+
+    // Walk the node's subtree (body / branches, recursively) and collect the
+    // buffer pointers it reads and writes, keeping one representative handle per
+    // buffer. Each sub-graph resolves its own TensorIds, so we key on the stable
+    // tensor_ptr; the handle lets us register the buffer in the parent below if
+    // it isn't already known there.
+    std::set<void const *>                         read_ptrs;
+    std::set<void const *>                         write_ptrs;
+    std::unordered_map<void const *, TensorHandle> rep_handle;
+    std::function<void(Graph const &)>             collect = [&](Graph const &sub) {
+        for (auto const &nd : sub._nodes) {
+            if (is_lifecycle(nd.kind)) {
+                continue;
+            }
+            auto note = [&](TensorId tid, std::set<void const *> &dst) {
+                // Resolve view aliases to the owning buffer so a read/write
+                // through a view inside the subtree is attributed to the parent
+                // tensor — otherwise an op outside the control-flow node that
+                // touches the owner sees no dependency and can be misordered.
+                auto it = sub._tensors.find(sub.resolve_alias(tid));
+                if (it != sub._tensors.end() && it->second.tensor_ptr != nullptr) {
+                    dst.insert(it->second.tensor_ptr);
+                    rep_handle.emplace(it->second.tensor_ptr, it->second);
+                }
+            };
+            for (auto tid : nd.inputs) {
+                note(tid, read_ptrs);
+            }
+            for (auto tid : nd.outputs) {
+                note(tid, write_ptrs);
+            }
+        }
+        sub.for_each_subgraph(collect);
+    };
+
+    if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+        if (loop->body) {
+            collect(*loop->body);
+        }
+    } else if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+        if (cond->then_branch) {
+            collect(*cond->then_branch);
+        }
+        if (cond->else_branch) {
+            collect(*cond->else_branch);
+        }
+    }
+
+    // Map subtree buffer pointers back to this graph's TensorIds. A buffer used
+    // only inside sub-graphs has no parent TensorId yet; register one (a stable
+    // shared id) so two control-flow nodes touching the same buffer resolve to
+    // the same id and a dependency edge forms between them.
+    std::unordered_map<void const *, TensorId> ptr_to_tid;
+    for (auto const &[tid, handle] : _tensors) {
+        if (handle.tensor_ptr != nullptr) {
+            ptr_to_tid.emplace(handle.tensor_ptr, tid);
+        }
+    }
+    auto resolve = [&](void const *ptr) -> TensorId {
+        auto it = ptr_to_tid.find(ptr);
+        if (it != ptr_to_tid.end()) {
+            return it->second;
+        }
+        TensorId const tid = register_tensor(rep_handle.at(ptr));
+        ptr_to_tid.emplace(ptr, tid);
+        return tid;
+    };
+
+    // Collect the mapped TensorIds into ordered sets so the appended order is
+    // deterministic (the dependency edge set is order-independent, but a stable
+    // order keeps builds and any downstream iteration reproducible).
+    std::set<TensorId> add_in;
+    std::set<TensorId> add_out;
+    for (auto const *p : read_ptrs) {
+        add_in.insert(resolve(p));
+    }
+    for (auto const *p : write_ptrs) {
+        add_out.insert(resolve(p));
+    }
+
+    std::unordered_set<TensorId> have_in(ins.begin(), ins.end());
+    std::unordered_set<TensorId> have_out(outs.begin(), outs.end());
+    for (TensorId const tid : add_in) {
+        if (have_in.insert(tid).second) {
+            ins.push_back(tid);
+        }
+    }
+    for (TensorId const tid : add_out) {
+        if (have_out.insert(tid).second) {
+            outs.push_back(tid);
+        }
+    }
+
+    return {ins, outs};
+}
+
 void Graph::topological_sort() {
     if (_nodes.empty()) {
         _sorted = true;
@@ -612,8 +780,12 @@ void Graph::topological_sort() {
     std::vector<size_t>                               in_degree(n, 0);
 
     for (size_t i = 0; i < n; i++) {
+        // Control-flow nodes carry no SSA I/O of their own; use the effective
+        // (subtree-augmented) lists so a Loop/Conditional depends on producers
+        // of the tensors its body reads and precedes consumers of what it writes.
+        auto [eff_in, eff_out] = effective_io(_nodes[i]);
         // Read-after-write: this node reads T → depends on last writer of T
-        for (auto raw : _nodes[i].inputs) {
+        for (auto raw : eff_in) {
             TensorId const tid = resolve_owner(raw);
             auto           it  = last_writer.find(tid);
             if (it != last_writer.end() && it->second != i) {
@@ -623,7 +795,7 @@ void Graph::topological_sort() {
             last_readers[tid].push_back(i);
         }
         // Write-after-write + write-after-read: this node writes T
-        for (auto raw : _nodes[i].outputs) {
+        for (auto raw : eff_out) {
             TensorId const tid = resolve_owner(raw);
             // Write-after-write: depends on last writer
             auto writ = last_writer.find(tid);
@@ -684,7 +856,8 @@ void Graph::topological_sort() {
         std::unordered_map<TensorId, size_t>              lw;
         std::unordered_map<TensorId, std::vector<size_t>> lr;
         for (size_t i2 = 0; i2 < n; i2++) {
-            for (auto raw : _nodes[i2].inputs) {
+            auto [eff_in, eff_out] = effective_io(_nodes[i2]);
+            for (auto raw : eff_in) {
                 TensorId const tid = resolve_owner(raw);
                 auto           it2 = lw.find(tid);
                 if (it2 != lw.end() && it2->second != i2) {
@@ -693,7 +866,7 @@ void Graph::topological_sort() {
                 }
                 lr[tid].push_back(i2);
             }
-            for (auto raw : _nodes[i2].outputs) {
+            for (auto raw : eff_out) {
                 TensorId const tid = resolve_owner(raw);
                 auto           it2 = lw.find(tid);
                 if (it2 != lw.end() && it2->second != i2) {
@@ -718,7 +891,7 @@ void Graph::topological_sort() {
     _sorted = true;
 }
 
-std::pair<Graph &, Graph &> Graph::add_conditional(std::string label, std::function<bool()> predicate) {
+std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, std::function<bool()> predicate) {
     auto then_graph = std::make_shared<Graph>(label + "/then");
     auto else_graph = std::make_shared<Graph>(label + "/else");
 

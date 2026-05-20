@@ -45,6 +45,14 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
     [[nodiscard]] std::string name() const override { return "ConstantFolding"; }
     bool                      run(Graph &graph) override;
 
+    /// Recurse into loop bodies / conditional branches. Safe now that
+    /// run() only folds nodes whose tensors are materialized at pass time
+    /// (see the materialization guard in run()): a loop body's deferred
+    /// workspace tensors are simply skipped rather than executed against
+    /// unallocated storage. Loop-carried tensors are never folded because
+    /// they appear in ``written_tensors``. See docs/loop_handling_audit.md.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+
     /// Number of nodes folded in the last run.
     EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("num_folded") [[nodiscard]] size_t num_folded() const { return _num_folded; }
 

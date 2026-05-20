@@ -46,6 +46,33 @@ bool ConstantFolding::run(Graph &graph) {
         }
     }
 
+    // A node may only be folded if every tensor it touches has real backing
+    // data *right now* — folding executes the node at pass time and bakes
+    // the result. ConstantFolding runs before the MaterializationPass, and
+    // Materialize nodes only allocate at graph-execution time, so a deferred
+    // (shell) tensor has no storage during this pass. This matters
+    // especially inside loop bodies, whose workspace tensors are deferred:
+    // without this guard, recursing into a body and executing a node that
+    // reads/writes a shell tensor would crash. Eager tensors
+    // (create_*_tensor) are Materialized from the start and fold normally.
+    auto all_tensors_materialized = [&](Node const &node) {
+        auto materialized = [&](TensorId tid) {
+            auto it = graph.tensors_map().find(tid);
+            return it != graph.tensors_map().end() && it->second.alloc_state == AllocState::Materialized;
+        };
+        for (auto tid : node.inputs) {
+            if (!materialized(tid)) {
+                return false;
+            }
+        }
+        for (auto tid : node.outputs) {
+            if (!materialized(tid)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     _num_folded = 0;
     std::vector<bool> folded(nodes.size(), false);
 
@@ -72,6 +99,11 @@ bool ConstantFolding::run(Graph &graph) {
         }
 
         if (!all_inputs_constant) {
+            continue;
+        }
+
+        // Don't execute a node whose tensors aren't materialized yet (see above).
+        if (!all_tensors_materialized(node)) {
             continue;
         }
 

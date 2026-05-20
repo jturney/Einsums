@@ -13,6 +13,7 @@
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <vector>
 
 namespace einsums::compute_graph::passes {
@@ -121,85 +122,92 @@ bool GPUPlacement::run(Graph &graph) {
     }
 
     _num_placed = 0;
-    auto &nodes = graph.nodes();
 
-    // Phase 1: Identify candidates and compute effective bytes.
+    // Phase 1: Identify candidates across the whole graph tree (loop
+    // bodies, conditional branches, nesting). A hot GEMM inside an SCF
+    // loop is the common case, so body candidates must be considered.
+    // recurse_into_subgraphs() stays false — we walk here so that Phase 2
+    // can place everything within a *single shared* device-memory budget
+    // rather than letting the parent and each body each consume the full
+    // budget (which would over-subscribe device memory and risk OOM).
     struct Candidate {
+        Graph *owner;
         size_t node_idx;
         size_t eff_bytes;
     };
     std::vector<Candidate> candidates;
 
-    for (size_t idx = 0; idx < nodes.size(); ++idx) {
-        auto &node = nodes[idx];
+    std::function<void(Graph &)> collect = [&](Graph &g) {
+        auto &gnodes = g.nodes();
+        for (size_t idx = 0; idx < gnodes.size(); ++idx) {
+            auto &node = gnodes[idx];
 
-        if (node.target == Target::GPU)
-            continue;
+            if (node.target == Target::GPU)
+                continue;
 
-        bool const is_candidate = is_gpu_capable_op(node.kind) || node.kind == OpKind::Einsum;
-        if (!is_candidate)
-            continue;
+            bool const is_candidate = is_gpu_capable_op(node.kind) || node.kind == OpKind::Einsum;
+            if (!is_candidate)
+                continue;
 
-        // Check if the backend supports the tensor element types.
-        if (!node_dtypes_supported(node, graph)) {
-            EINSUMS_LOG_DEBUG("GPUPlacement: skipping node {} — unsupported dtype for GPU backend", node.id);
-            continue;
-        }
-
-        size_t eff_bytes = node.estimated_bytes;
-        if (eff_bytes == 0) {
-            eff_bytes = compute_bytes_from_tensors(node, graph);
-        }
-
-        // Decide whether this node benefits from GPU execution.
-        if (node.estimated_flops > 0) {
-            // Cost model: compare estimated CPU time vs GPU time + transfer overhead.
-            auto         flops    = static_cast<double>(node.estimated_flops);
-            auto         bytes    = static_cast<double>(eff_bytes);
-            double const cpu_time = flops / (cpu_throughput_gflops * 1e9); // seconds
-            double const gpu_time = flops / (gpu_throughput_gflops * 1e9)  // compute
-                                    + bytes / (pcie_bandwidth_gbs * 1e9)   // transfer
-                                    + gpu_launch_overhead_us * 1e-6;       // launch
-            if (gpu_time >= cpu_time) {
-                EINSUMS_LOG_DEBUG("GPUPlacement: cost model rejects node {} (cpu={:.3f}us, gpu={:.3f}us)", node.id, cpu_time * 1e6,
-                                  gpu_time * 1e6);
+            if (!node_dtypes_supported(node, g)) {
+                EINSUMS_LOG_DEBUG("GPUPlacement: skipping node {} — unsupported dtype for GPU backend", node.id);
                 continue;
             }
-        } else {
-            // No flops estimate — fall back to size thresholds.
-            if (eff_bytes < _min_bytes)
-                continue;
-        }
 
-        candidates.push_back({.node_idx = idx, .eff_bytes = eff_bytes});
-    }
+            size_t eff_bytes = node.estimated_bytes;
+            if (eff_bytes == 0) {
+                eff_bytes = compute_bytes_from_tensors(node, g);
+            }
+
+            // Decide whether this node benefits from GPU execution.
+            if (node.estimated_flops > 0) {
+                auto         flops    = static_cast<double>(node.estimated_flops);
+                auto         bytes    = static_cast<double>(eff_bytes);
+                double const cpu_time = flops / (cpu_throughput_gflops * 1e9);
+                double const gpu_time = flops / (gpu_throughput_gflops * 1e9) + bytes / (pcie_bandwidth_gbs * 1e9) //
+                                        + gpu_launch_overhead_us * 1e-6;
+                if (gpu_time >= cpu_time) {
+                    EINSUMS_LOG_DEBUG("GPUPlacement: cost model rejects node {} (cpu={:.3f}us, gpu={:.3f}us)", node.id, cpu_time * 1e6,
+                                      gpu_time * 1e6);
+                    continue;
+                }
+            } else {
+                if (eff_bytes < _min_bytes)
+                    continue;
+            }
+
+            candidates.push_back({.owner = &g, .node_idx = idx, .eff_bytes = eff_bytes});
+        }
+        g.for_each_subgraph([&](Graph &sub) { collect(sub); });
+    };
+    collect(graph);
 
     if (candidates.empty())
         return false;
 
-    // Phase 2: Budget-aware greedy placement.
+    // Phase 2: Budget-aware greedy placement across the whole tree.
     // Sort candidates by bytes descending — prioritize the largest operations.
     std::ranges::sort(candidates, [](Candidate const &a, Candidate const &b) { return a.eff_bytes > b.eff_bytes; });
 
-    size_t budget = gpu::available_device_memory();
-    size_t used   = 0;
+    size_t const budget = gpu::available_device_memory();
+    size_t       used   = 0;
 
     for (auto const &cand : candidates) {
+        auto &placed_node = cand.owner->nodes()[cand.node_idx];
+
         if (used + cand.eff_bytes > budget) {
-            EINSUMS_LOG_INFO("GPUPlacement: skipping node {} (needs {} bytes, budget has {} remaining)", nodes[cand.node_idx].id,
-                             cand.eff_bytes, budget - used);
+            EINSUMS_LOG_INFO("GPUPlacement: skipping node {} (needs {} bytes, budget has {} remaining)", placed_node.id, cand.eff_bytes,
+                             budget - used);
             continue;
         }
 
-        auto &placed_node        = nodes[cand.node_idx];
         placed_node.target       = Target::GPU;
         placed_node.cpu_fallback = placed_node.execute; // Save original CPU executor for fallback.
         used += cand.eff_bytes;
         _num_placed++;
 
-        EINSUMS_LOG_INFO("GPUPlacement: placed {} node {} ({}) on GPU (bytes={}, budget_used={}/{})",
-                         op_kind_name(nodes[cand.node_idx].kind), nodes[cand.node_idx].id, nodes[cand.node_idx].label, cand.eff_bytes, used,
-                         budget);
+        EINSUMS_LOG_INFO("GPUPlacement: placed {} node {} ({}) on GPU (bytes={}, budget_used={}/{})", op_kind_name(placed_node.kind),
+                         placed_node.id, placed_node.label, cand.eff_bytes, used, budget);
     }
 
     if (_num_placed > 0) {

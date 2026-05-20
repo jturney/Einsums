@@ -23,10 +23,12 @@
 
 #include <fmt/format.h>
 
+#include <functional>
 #include <iosfwd>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace einsums::compute_graph {
@@ -328,6 +330,97 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     /// Mutable access to the tensor registry (for testing / optimization passes).
     [[nodiscard]] std::unordered_map<TensorId, TensorHandle> &tensors_map() { return _tensors; }
 
+    /**
+     * @brief Invoke @p visitor on each immediate child sub-graph.
+     *
+     * Walks this graph's nodes and, for every control-flow node, hands the
+     * visitor a mutable reference to each owned sub-graph:
+     *   - ``OpKind::Loop``         → ``LoopDescriptor::body``
+     *   - ``OpKind::Conditional``  → ``ConditionalDescriptor::then_branch`` and
+     *                                ``else_branch`` (when non-null)
+     *
+     * Does **not** recurse into nested control flow — visitor must do its own
+     * descent if it wants the whole sub-tree. The order of visits is the node
+     * order in the parent graph (with then-branch visited before else-branch
+     * for conditional nodes).
+     *
+     * Used by optimization passes that need to look inside or run on
+     * sub-graphs. PassManager::run() calls this when a pass overrides
+     * ``OptimizerPass::recurse_into_subgraphs()`` to true.
+     */
+    void for_each_subgraph(std::function<void(Graph &)> const &visitor);
+
+    /// Const overload of @ref for_each_subgraph. Visitor sees ``Graph const &``.
+    void for_each_subgraph(std::function<void(Graph const &)> const &visitor) const;
+
+    /**
+     * @brief Collect the underlying tensor pointers referenced anywhere in
+     *        this graph's descendant sub-graphs.
+     *
+     * Walks every loop body / conditional branch (recursively) and inserts
+     * each referenced tensor's ``TensorHandle::tensor_ptr`` into @p out.
+     * Does **not** include this graph's own node references — only its
+     * descendants'.
+     *
+     * Why pointers, not TensorIds: each Graph assigns its own TensorIds, so
+     * the same underlying tensor used in a parent and in a nested body has
+     * *different* ids in each map. The ``tensor_ptr`` is the stable identity
+     * across graphs.
+     *
+     * Used by passes that must treat a tensor consumed only by a nested
+     * control-flow body as live — e.g. DeadNodeElimination, which would
+     * otherwise eliminate the producer of a tensor that only a nested loop
+     * reads (a Loop node does not list its body's tensor reads as inputs).
+     */
+    void collect_subtree_referenced_ptrs(std::unordered_set<void const *> &out) const;
+
+    /**
+     * @brief Effective (scheduling) inputs/outputs of a node.
+     *
+     * For ordinary nodes this is just ``{node.inputs, node.outputs}``. For a
+     * Loop or Conditional node — whose declared input/output lists are empty
+     * because the body/branches are captured after the node is created — this
+     * augments them with the tensors the *subtree* reads (→ inputs) and writes
+     * (→ outputs), mapped from the subtree's buffer pointers back to this
+     * graph's TensorIds.
+     *
+     * Schedulers (``topological_sort`` and the Reorder pass) must use this
+     * instead of the raw node lists, or a control-flow node has no dependency
+     * edges and can be floated past a producer/consumer of a tensor its body
+     * touches — silently reordering it relative to surrounding ops. The node's
+     * own lists are left untouched so structural passes (e.g. DeadNodeElimination)
+     * still see control-flow nodes as having no SSA outputs.
+     *
+     * Not const: a buffer used *only* inside sub-graphs has no TensorId in this
+     * (parent) graph, so it would be dropped from the mapping and two
+     * control-flow nodes touching the same such buffer would get no edge between
+     * them. To give those buffers a stable shared id this registers a handle for
+     * them in the parent on first sight (idempotent; the orphan handle is
+     * harmless — no parent node references it).
+     */
+    std::pair<std::vector<TensorId>, std::vector<TensorId>> effective_io(Node const &node);
+
+    /**
+     * @brief Resolve a TensorId through its alias chain to the owning buffer.
+     *
+     * A view's ``TensorHandle::aliases`` points at its parent; this follows that
+     * chain (bounded) and returns the underlying owner's id (or @p id unchanged
+     * if it isn't a view). Any analysis that reasons about *which buffer* a node
+     * reads/writes — scheduling (topological_sort, Reorder), liveness
+     * (DeadNodeElimination) — must resolve through this, or a write through a
+     * view looks unrelated to a read of its parent.
+     */
+    [[nodiscard]] TensorId resolve_alias(TensorId id) const {
+        for (int hops = 0; hops < 32; ++hops) {
+            auto it = _tensors.find(id);
+            if (it == _tensors.end() || it->second.aliases == 0) {
+                return id;
+            }
+            id = it->second.aliases;
+        }
+        return id;
+    }
+
     /// Access dependency info (populated by topological_sort()).
     [[nodiscard]] DependencyInfo const &dependencies() const { return _deps; }
 
@@ -352,7 +445,12 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @param[in] label Human-readable label for profiling.
      * @param[in] predicate Function returning true for then-branch, false for else-branch.
      *                      Can inspect tensor values and external state.
-     * @return Pair of references: (then_branch_graph, else_branch_graph).
+     * @return Tuple of references: (then_branch_graph, else_branch_graph).
+     *         A tuple (not a pair) so the method can be bound to Python —
+     *         pybind11 can't cast a pair/tuple of *references* to a
+     *         non-copyable type cleanly, but a reference-tuple return casts
+     *         each branch with ``reference_internal``. Structured bindings
+     *         (``auto [t, e] = ...``) work identically for C++ callers.
      *
      * @code
      * auto [then_g, else_g] = graph.add_conditional("converge_check",
@@ -361,7 +459,8 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * { CaptureGuard g(else_g); cg::einsum(...); }
      * @endcode
      */
-    std::pair<Graph &, Graph &> add_conditional(std::string label, std::function<bool()> predicate);
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RVP(reference_internal) std::tuple<Graph &, Graph &> add_conditional(
+        std::string label, std::function<bool()> predicate);
 
     /**
      * @brief Add a conditional node with lambda-captured branches.
@@ -1008,10 +1107,14 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     std::vector<Node>                          _nodes;
     std::unordered_map<TensorId, TensorHandle> _tensors;
     NodeId                                     _next_node_id{0};
-    TensorId                                   _next_tensor_id{0};
-    bool                                       _sorted{false};
-    bool                                       _executed{false}; ///< True after first successful execute (caching)
-    DependencyInfo                             _deps;            ///< Populated by topological_sort()
+    // Starts at 1: id 0 is reserved as the "no tensor" / "no alias" sentinel
+    // (TensorHandle::aliases defaults to 0 and the codebase tests `aliases == 0`
+    // for "not a view"). If a real tensor could be id 0, a view of it would have
+    // aliases == 0 and silently fail to resolve to its parent in the scheduler.
+    TensorId       _next_tensor_id{1};
+    bool           _sorted{false};
+    bool           _executed{false}; ///< True after first successful execute (caching)
+    DependencyInfo _deps;            ///< Populated by topological_sort()
 
     /// Type-erased storage for graph-owned tensors (from create_tensor()).
     /// Each entry uses a typed deleter captured at creation time.

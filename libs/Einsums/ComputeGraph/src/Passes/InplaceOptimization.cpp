@@ -12,14 +12,16 @@
 
 namespace einsums::compute_graph::passes {
 
-bool InplaceOptimization::run(Graph &graph) {
+namespace {
+
+// Count single-producer/single-consumer intermediate candidates in one
+// graph, adding to @p candidates.
+void count_candidates(Graph &graph, size_t &candidates) {
     graph.topological_sort();
 
     auto const &nodes   = graph.nodes();
     auto const &tensors = graph.tensors_map();
-    _num_candidates     = 0;
 
-    // Count writers and readers for each tensor
     std::unordered_map<TensorId, size_t> write_count;
     std::unordered_map<TensorId, size_t> read_count;
 
@@ -36,7 +38,6 @@ bool InplaceOptimization::run(Graph &graph) {
         }
     }
 
-    // Find candidates: intermediate tensors with exactly 1 writer and 1 reader
     for (auto const &[tid, handle] : tensors) {
         if (!handle.is_intermediate)
             continue;
@@ -45,12 +46,27 @@ bool InplaceOptimization::run(Graph &graph) {
         auto rc = read_count.count(tid) ? read_count[tid] : 0;
 
         if (wc == 1 && rc == 1) {
-            _num_candidates++;
+            candidates++;
             EINSUMS_LOG_INFO("InplaceOptimization: candidate tensor '{}' (id={}, {} bytes) — "
                              "single producer, single consumer",
                              handle.name, tid, handle.total_bytes());
         }
     }
+}
+
+void accumulate(Graph &graph, size_t &candidates) {
+    count_candidates(graph, candidates);
+    graph.for_each_subgraph([&](Graph &sub) { accumulate(sub, candidates); });
+}
+
+} // namespace
+
+bool InplaceOptimization::run(Graph &graph) {
+    // Aggregate candidate count over the whole graph tree so body-resident
+    // intermediates are considered too. recurse_into_subgraphs() stays
+    // false — we aggregate here rather than being re-run per sub-graph.
+    _num_candidates = 0;
+    accumulate(graph, _num_candidates);
 
     // Analysis only — does not modify the graph
     return false;

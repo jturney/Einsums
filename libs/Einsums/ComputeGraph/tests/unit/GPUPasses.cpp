@@ -184,6 +184,106 @@ TEST_CASE("GPUPlacement - mix of large and small nodes places selectively", "[Co
     CHECK(graph.nodes()[1].target == cg::Target::CPU);
 }
 
+TEST_CASE("GPUPlacement - places a GEMM inside a loop body", "[ComputeGraph][GPU][Loop]") {
+    // The hot GEMM lives entirely inside an SCF-style loop body. The
+    // loop-aware placement walks the tree and must place it on GPU — a
+    // flat-graph-only pass would leave it on CPU.
+    auto A = create_random_tensor<float>("A", 128, 128);
+    auto B = create_random_tensor<float>("B", 128, 128);
+    auto C = create_zero_tensor<float>("C", 128, 128);
+
+    cg::Graph graph("gpu-placement-loop");
+    auto     &body = graph.add_loop("iter", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
+    }
+
+    cg::passes::GPUPlacement pass;
+    bool const               modified = pass.run(graph);
+
+    if constexpr (einsums::gpu::has_gpu || einsums::gpu::is_mock) {
+        CHECK(modified);
+        CHECK(pass.num_placed() == 1);
+        // The body's einsum is the placed node, not the parent Loop node.
+        CHECK(body.nodes()[0].target == cg::Target::GPU);
+        // The parent only holds the Loop node — still CPU/control-flow.
+        CHECK(graph.nodes()[0].target == cg::Target::CPU);
+    }
+}
+
+TEST_CASE("GPUPlacement - shared budget across loop boundary", "[ComputeGraph][GPU][Loop]") {
+    // Two large GEMMs compete for device memory: one at the parent level,
+    // one inside the loop body. With a budget that fits only one, the
+    // shared-budget placement must place exactly one (the larger), not
+    // both — proving parent and body draw from the same budget.
+    auto Abig = create_random_tensor<float>("Abig", 256, 256);
+    auto Bbig = create_random_tensor<float>("Bbig", 256, 256);
+    auto Cbig = create_zero_tensor<float>("Cbig", 256, 256);
+    auto Asm  = create_random_tensor<float>("Asm", 128, 128);
+    auto Bsm  = create_random_tensor<float>("Bsm", 128, 128);
+    auto Csm  = create_zero_tensor<float>("Csm", 128, 128);
+
+    cg::Graph graph("gpu-shared-budget");
+    {
+        cg::CaptureGuard const guard(graph); // parent-level large GEMM
+        cg::einsum("ik;kj->ij", 0.0, &Cbig, 1.0, Abig, Bbig);
+    }
+    auto &body = graph.add_loop("iter", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body); // body-level smaller GEMM
+        cg::einsum("ik;kj->ij", 0.0, &Csm, 1.0, Asm, Bsm);
+    }
+
+    if constexpr (einsums::gpu::has_gpu || einsums::gpu::is_mock) {
+        // Budget fits the 256^3 GEMM (3 * 256*256*4 = 786432 bytes) but not
+        // both it and the 128 GEMM (196608 bytes).
+        size_t const saved = einsums::gpu::available_device_memory();
+        einsums::gpu::set_mock_device_memory_limit(800000);
+
+        cg::passes::GPUPlacement pass;
+        pass.run(graph);
+        CHECK(pass.num_placed() == 1);
+        // The larger (parent) GEMM wins the budget; the body GEMM stays CPU.
+        CHECK(graph.nodes()[0].target == cg::Target::GPU);
+        CHECK(body.nodes()[0].target == cg::Target::CPU);
+
+        einsums::gpu::set_mock_device_memory_limit(saved);
+    }
+}
+
+TEST_CASE("TransferInsertion - inserts transfers inside a loop body", "[ComputeGraph][GPU][Loop]") {
+    // After GPUPlacement marks a body GEMM as GPU, TransferInsertion must
+    // recurse and insert H2D before it (and D2H after) so the body is
+    // self-contained — otherwise the GPU op reads host-only memory.
+    auto A = create_random_tensor<float>("A", 128, 128);
+    auto B = create_random_tensor<float>("B", 128, 128);
+    auto C = create_zero_tensor<float>("C", 128, 128);
+
+    cg::Graph graph("xfer-loop");
+    auto     &body = graph.add_loop("iter", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
+    }
+
+    if constexpr (einsums::gpu::has_gpu || einsums::gpu::is_mock) {
+        cg::PassManager pm;
+        pm.add<cg::passes::GPUPlacement>();
+        pm.add<cg::passes::TransferInsertion>();
+        graph.apply(pm);
+
+        // The body should now contain H2D transfer node(s).
+        size_t h2d = 0;
+        for (auto const &n : body.nodes()) {
+            if (n.kind == cg::OpKind::HostToDevice) {
+                h2d++;
+            }
+        }
+        CHECK(h2d >= 1);
+    }
+}
+
 TEST_CASE("GPUPlacement - idempotent (running twice has no effect)", "[ComputeGraph][GPU]") {
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
@@ -801,6 +901,33 @@ TEST_CASE("GPUDiagnostics - reports correct counts after pipeline", "[ComputeGra
     diag->print_report(oss);
     CHECK_FALSE(oss.str().empty());
     CHECK(oss.str().find("GPU nodes") != std::string::npos);
+}
+
+TEST_CASE("GPUDiagnostics - aggregates node counts inside a loop body", "[ComputeGraph][GPU][Loop]") {
+    // Two CPU einsums inside a loop body. A flat-graph-only pass would
+    // count zero nodes (the top-level graph holds just the Loop node); the
+    // aggregating pass must count the body's nodes.
+    auto A = create_random_tensor<float>("A", 16, 16);
+    auto B = create_random_tensor<float>("B", 16, 16);
+    auto C = create_zero_tensor<float>("C", 16, 16);
+    auto D = create_zero_tensor<float>("D", 16, 16);
+
+    cg::Graph graph("diag-loop");
+    auto     &body = graph.add_loop("iter", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &D, 1.0, C, B);
+    }
+
+    cg::passes::GPUDiagnostics diag;
+    diag.run(graph);
+
+    // 3 CPU nodes: the parent-level Loop node (counted as non-GPU) plus
+    // the two body einsums. The key point is that the body's nodes are
+    // now included in the count — a flat-graph-only pass would report 1.
+    CHECK(diag.cpu_nodes() == 3);
+    CHECK(diag.gpu_nodes() == 0);
 }
 
 TEST_CASE("MemoryPlanning - device memory tracking", "[ComputeGraph][GPU]") {

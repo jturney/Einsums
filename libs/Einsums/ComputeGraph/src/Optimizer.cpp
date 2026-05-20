@@ -82,6 +82,29 @@ bool get_pass_flag(std::string const &key, bool default_val) {
 
 } // namespace
 
+namespace {
+
+/// Run a single pass on @p graph and, when the pass opts in via
+/// ``recurse_into_subgraphs()``, on every descendant loop body /
+/// conditional branch in post-order (children before re-running on parent
+/// is not required — passes either rewrite a level in isolation or hoist
+/// from children into the parent in a single ``run()`` call on the
+/// parent). Returns ``true`` if any invocation of @p pass modified its
+/// graph.
+bool run_pass_recursive(OptimizerPass &pass, Graph &graph) {
+    bool modified = pass.run(graph);
+    if (pass.recurse_into_subgraphs()) {
+        graph.for_each_subgraph([&](Graph &sub) {
+            if (run_pass_recursive(pass, sub)) {
+                modified = true;
+            }
+        });
+    }
+    return modified;
+}
+
+} // namespace
+
 bool PassManager::run(Graph &graph) {
     profile::Profiler::instance().push(fmt::format("PassManager::run({})", graph.name()));
 
@@ -103,7 +126,10 @@ bool PassManager::run(Graph &graph) {
         auto   t0           = std::chrono::high_resolution_clock::now();
 
         if (analyze) {
-            // Analysis-only: save node list, run pass, log results, restore
+            // Analysis-only: save node list, run pass, log results, restore.
+            // Sub-graph recursion is intentionally skipped here — we only
+            // want to *measure* the top-level effect, not mutate
+            // descendants (we don't snapshot them).
             auto       saved_nodes  = graph.nodes();
             bool const saved_sorted = true; // will be re-sorted anyway
 
@@ -118,7 +144,7 @@ bool PassManager::run(Graph &graph) {
             graph.nodes() = std::move(saved_nodes);
             graph.topological_sort();
         } else {
-            bool const modified = pass->run(graph);
+            bool const modified = run_pass_recursive(*pass, graph);
             auto       t1       = std::chrono::high_resolution_clock::now();
             double     ms       = std::chrono::duration<double, std::milli>(t1 - t0).count();
 

@@ -43,6 +43,17 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
 
     [[nodiscard]] std::string name() const override { return "CSE"; }
 
+    /// NOTE: stays opt-out. CSE has a latent soundness gap with
+    /// mutable-tensor reuse: it merges two nodes that compute the same
+    /// value into *different* output tensors and redirects readers of the
+    /// duplicate's output to the original's — which is wrong when that
+    /// output is subsequently written independently (e.g. the SCF body's
+    /// ``axpby(1,H,0,F)`` and ``axpby(1,H,0,sum_HF)``, where F and sum_HF
+    /// then diverge). Recursing exposed this on the SCF example. Until CSE
+    /// gains a write-once precondition on the merged output it must not run
+    /// on bodies. See docs/loop_handling_audit.md.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
+
     /**
      * @brief Run the CSE pass on the graph.
      * @param[in,out] graph The graph to optimize.

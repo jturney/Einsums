@@ -559,3 +559,181 @@ TEST_CASE("cg::run does build + run in one expression", "[ComputeGraph][Facade]"
         for (size_t jj = 0; jj < 4; jj++)
             CHECK(A(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Loop-aware Materialization (Step 2 of loop_handling_audit.md)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("Materialization hoists workspace tensors used inside a loop body", "[ComputeGraph][Materialization][Loop]") {
+    // A workspace-declared tensor that is only referenced inside a loop
+    // body would historically remain Deferred after a Materialization
+    // pass run on the parent graph — the pass scanned only the parent's
+    // tensor_map. The loop-aware version walks descendant graphs and
+    // hoists Materialize/Initialize nodes to the parent just before the
+    // owning Loop node, so allocation happens once per outer execution
+    // (not per iteration).
+    auto B = create_random_tensor<double>("B", 4, 4);
+
+    cg::Workspace ws("ws");
+    // A is a body-only intermediate. No parent-level op references it.
+    auto &A = ws.declare_zero_tensor<double, 2>("A", 4, 4);
+
+    cg::Graph g("loop_parent");
+    auto     &body = g.add_loop("compute", /*max_iterations=*/1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;jk->ij", 0.0, &A, 1.0, B, B);
+    }
+
+    REQUIRE_FALSE(A.is_materialized());
+
+    cg::passes::Materialization mat;
+    bool const                  modified = mat.run(g);
+    CHECK(modified);
+    CHECK(mat.num_materialized() >= 1);
+
+    // The hoisted Materialize+Initialize nodes should sit *before* the
+    // Loop node in the parent's node list — that's what makes
+    // allocation happen once per outer execution instead of per
+    // iteration.
+    auto const &parent_nodes = g.nodes();
+    REQUIRE(parent_nodes.size() >= 2);
+    bool found_mat_before_loop = false;
+    for (size_t i = 0; i + 1 < parent_nodes.size(); i++) {
+        if (parent_nodes[i].kind == cg::OpKind::Materialize && parent_nodes[i + 1].kind == cg::OpKind::Loop) {
+            found_mat_before_loop = true;
+            break;
+        }
+        if (parent_nodes[i].kind == cg::OpKind::Materialize) {
+            // Or Initialize between Materialize and Loop is also fine.
+            for (size_t j = i + 1; j < parent_nodes.size(); j++) {
+                if (parent_nodes[j].kind == cg::OpKind::Loop) {
+                    found_mat_before_loop = true;
+                    break;
+                }
+                if (parent_nodes[j].kind != cg::OpKind::Initialize) {
+                    break;
+                }
+            }
+            if (found_mat_before_loop) {
+                break;
+            }
+        }
+    }
+    CHECK(found_mat_before_loop);
+
+    // Execute and confirm the body actually wrote into A.
+    g.execute();
+    CHECK(A.is_materialized());
+
+    // Reference: A = B B^T
+    Tensor<double, 2> C_ref{"Cref", 4, 4};
+    C_ref.zero();
+    einsum(Indices{i, j}, &C_ref, Indices{i, k}, B, Indices{j, k}, B);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            CHECK(A(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+        }
+    }
+}
+
+TEST_CASE("Workspace declare_zero_tensor propagates pending_init through capture (Step 2.5)",
+          "[ComputeGraph][Materialization][Loop][Init]") {
+    // Without init_kind propagation, body's capture-time handle for a
+    // workspace-declared tensor was missing init_kind, so the hoisted
+    // Materialize would allocate but not zero — the body had to
+    // overwrite the tensor before any read. After Step 2.5, the
+    // tensor's ``pending_init()`` survives through ``make_handle``, the
+    // body handle gets ``InitKind::Zero`` + ``zero_fn``, and the
+    // Materialization pass emits both Materialize and Initialize at the
+    // parent level.
+    auto B = create_random_tensor<double>("B", 3, 3);
+
+    cg::Workspace ws("ws");
+    auto         &A = ws.declare_zero_tensor<double, 2>("A_init_check", 3, 3);
+    REQUIRE(A.pending_init() == PendingInit::Zero);
+
+    cg::Graph g("loop_with_zero_init");
+    auto     &body = g.add_loop("body", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;jk->ij", 0.0, &A, 1.0, B, B);
+    }
+
+    // After capture, body's handle for A should also reflect the
+    // workspace's init policy — that's what make_handle now propagates.
+    bool body_handle_has_init = false;
+    for (auto const &[tid, h] : body.tensors_map()) {
+        if (h.tensor_ptr == static_cast<void *>(&A)) {
+            body_handle_has_init = (h.init_kind == cg::InitKind::Zero) && static_cast<bool>(h.zero_fn);
+            break;
+        }
+    }
+    CHECK(body_handle_has_init);
+
+    cg::passes::Materialization mat;
+    REQUIRE(mat.run(g));
+    CHECK(mat.num_materialized() == 1);
+    CHECK(mat.num_initialized() == 1);
+
+    bool found_init = false;
+    for (auto const &n : g.nodes()) {
+        if (n.kind == cg::OpKind::Initialize) {
+            found_init = true;
+            break;
+        }
+    }
+    CHECK(found_init);
+
+    g.execute();
+    CHECK(A.is_materialized());
+
+    Tensor<double, 2> C_ref{"Cref", 3, 3};
+    C_ref.zero();
+    einsum(Indices{i, j}, &C_ref, Indices{i, k}, B, Indices{j, k}, B);
+    for (size_t ii = 0; ii < 3; ii++) {
+        for (size_t jj = 0; jj < 3; jj++) {
+            CHECK(A(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+        }
+    }
+}
+
+TEST_CASE("Materialization hoists deeply-nested workspace tensors past every loop", "[ComputeGraph][Materialization][Loop]") {
+    // Outer loop → inner loop → workspace tensor. The pass should hoist
+    // the lifecycle nodes all the way up to the outermost parent so the
+    // tensor allocates exactly once, regardless of nesting depth.
+    auto B = create_random_tensor<double>("B", 3, 3);
+
+    cg::Workspace ws("ws");
+    auto         &A = ws.declare_zero_tensor<double, 2>("A_deep", 3, 3);
+
+    cg::Graph g("outer");
+    auto     &outer_body = g.add_loop("outer", 1, [](size_t) { return false; });
+    auto     &inner_body = outer_body.add_loop("inner", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(inner_body);
+        cg::einsum("ik;jk->ij", 0.0, &A, 1.0, B, B);
+    }
+
+    REQUIRE_FALSE(A.is_materialized());
+
+    cg::passes::Materialization mat;
+    bool const                  modified = mat.run(g);
+    CHECK(modified);
+
+    // The outer parent should now contain a Materialize node *before*
+    // the outer Loop — neither the outer body nor the inner body owns
+    // it after hoisting.
+    auto const &parent_nodes = g.nodes();
+    size_t      mat_count    = 0;
+    size_t      loop_count   = 0;
+    for (auto const &n : parent_nodes) {
+        if (n.kind == cg::OpKind::Materialize) {
+            mat_count++;
+        } else if (n.kind == cg::OpKind::Loop) {
+            loop_count++;
+        }
+    }
+    CHECK(mat_count >= 1);
+    CHECK(loop_count == 1);
+}

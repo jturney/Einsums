@@ -29,6 +29,11 @@ class EINSUMS_EXPORT StreamAssignment : public OptimizerPass {
     [[nodiscard]] std::string name() const override { return "StreamAssignment"; }
     bool                      run(Graph &graph) override;
 
+    /// Safe on loop bodies / conditional branches: assigns a stream id to
+    /// each node based purely on its kind, scoped to the graph it's
+    /// handed. See docs/loop_handling_audit.md.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+
     [[nodiscard]] size_t num_assigned() const { return _num_assigned; }
 
   private:

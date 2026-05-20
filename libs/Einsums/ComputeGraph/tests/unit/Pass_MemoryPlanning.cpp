@@ -91,3 +91,45 @@ TEST_CASE("MemoryPlanning - rank-3 BatchedGemm tensor liveness", "[ComputeGraph]
     CHECK(pass.total_memory() == expected_total);
     CHECK(pass.peak_memory() > 0);
 }
+
+// ── Loop-aware aggregation (analysis-aggregation group) ──────────────────
+
+TEST_CASE("MemoryPlanning - aggregates tensors inside a loop body", "[ComputeGraph][Passes][Loop]") {
+    // The matmul lives entirely inside a loop body. A flat-graph-only pass
+    // would report zero footprint (the top-level graph holds just the Loop
+    // node). The aggregating pass must account for the body's tensors.
+    auto A = create_random_tensor<double>("A", 10, 10);
+    auto B = create_random_tensor<double>("B", 10, 10);
+    auto C = create_zero_tensor<double>("C", 10, 10);
+
+    cg::Graph g("mp_loop");
+    auto     &body = g.add_loop("iter", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+
+    auto [modified, pass] = g.apply<cg::passes::MemoryPlanning>();
+    CHECK_FALSE(modified);
+    // A, B, C are each 10x10 doubles and all live inside the body.
+    CHECK(pass.total_memory() == 3 * size_t{10 * 10} * sizeof(double));
+    CHECK(pass.peak_memory() > 0);
+}
+
+TEST_CASE("MemoryPlanning - aggregates across nested loops", "[ComputeGraph][Passes][Loop]") {
+    auto A = create_random_tensor<double>("A", 8, 8);
+    auto C = create_zero_tensor<double>("C", 8, 8);
+
+    cg::Graph g("mp_nested");
+    auto     &outer = g.add_loop("outer", 1, [](size_t) { return false; });
+    auto     &inner = outer.add_loop("inner", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(inner);
+        cg::einsum("ik;kj->ij", &C, A, A);
+    }
+
+    auto [modified, pass] = g.apply<cg::passes::MemoryPlanning>();
+    CHECK_FALSE(modified);
+    // A and C, both 8x8 doubles, used in the innermost body.
+    CHECK(pass.total_memory() == 2 * size_t{8 * 8} * sizeof(double));
+}

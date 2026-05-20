@@ -57,6 +57,14 @@ class EINSUMS_EXPORT ContractionPlanning : public OptimizerPass {
     [[nodiscard]] std::string name() const override { return "ContractionPlanning"; }
     bool                      run(Graph &graph) override;
 
+    /// Recurse into loop bodies / conditional branches. Safe: restructuring a
+    /// GEMM chain to its optimal parenthesization is numerically equivalent
+    /// (matrix-chain associativity), per-graph, and the intermediates it
+    /// creates via create_tensor_dynamic are *eager* (allocated at pass time,
+    /// not deferred) so they don't depend on the Materialization pass that
+    /// runs earlier in the pipeline. See docs/loop_handling_audit.md.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+
     // ── Report ─────────────────────────────────────────────────────────────
 
     /// Per-chain report from the last run.

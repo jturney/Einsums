@@ -116,6 +116,15 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     Tensor<T, Rank> &declare_zero_tensor(std::string tensor_name, Dims... dims) {
         auto &t                   = declare_tensor<T, Rank>(tensor_name, dims...);
         _handles.back().init_kind = InitKind::Zero;
+        // Tag the tensor itself so the same init kind reaches any Graph
+        // that captures this tensor later — make_handle reads
+        // tensor.pending_init() and populates the new handle's
+        // init_kind / zero_fn. Without this the workspace's canonical
+        // handle would have init metadata, but each per-graph handle
+        // built from this tensor via capture would not, so the
+        // Materialization pass couldn't emit an Initialize node for
+        // body-resident workspace tensors.
+        t.set_pending_init(PendingInit::Zero);
         return t;
     }
 
@@ -127,6 +136,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     Tensor<T, Rank> &declare_random_tensor(std::string tensor_name, Dims... dims) {
         auto &t                   = declare_tensor<T, Rank>(tensor_name, dims...);
         _handles.back().init_kind = InitKind::Random;
+        t.set_pending_init(PendingInit::Random);
         return t;
     }
 
@@ -181,6 +191,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
                     GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string tensor_name, std::vector<size_t> dims) {
         auto &t                   = declare_runtime_tensor<T, Alloc>(std::move(tensor_name), std::move(dims));
         _handles.back().init_kind = InitKind::Zero;
+        t.set_pending_init(PendingInit::Zero);
         return t;
     }
 
@@ -195,6 +206,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
                     GeneralRuntimeTensor<T, Alloc> &declare_random_runtime_tensor(std::string tensor_name, std::vector<size_t> dims) {
         auto &t                   = declare_runtime_tensor<T, Alloc>(std::move(tensor_name), std::move(dims));
         _handles.back().init_kind = InitKind::Random;
+        t.set_pending_init(PendingInit::Random);
         return t;
     }
 

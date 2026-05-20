@@ -189,3 +189,76 @@ TEST_CASE("SymmetryPropagation - inferred C executes correctly via gemm dispatch
         for (int jj = 0; jj < 6; ++jj)
             CHECK(D(ii, jj) == Catch::Approx(D_ref(ii, jj)).margin(1e-10));
 }
+
+// ── Loop-aware behavior (single-writer + no-child-write guards) ──────────
+
+TEST_CASE("SymmetryPropagation - infers on a self-contraction inside a loop body", "[ComputeGraph][Symmetry][Loop]") {
+    // S = A·Aᵀ inside a loop body is symmetric every iteration. With the
+    // pass recursing, the body intermediate S should get tagged.
+    auto A = create_random_tensor<double>("A", 4, 3);
+
+    cg::Graph g("sym_loop");
+    auto     &body = g.add_loop("iter", 1, [](size_t) { return false; });
+    auto     &S    = body.create_zero_tensor<double, 2>("S", 4, 4);
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;jk->ij", &S, A, A); // S = A·Aᵀ → symmetric
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::SymmetryPropagation>();
+    pm.run(g);
+
+    REQUIRE(S.has_symmetry());
+    REQUIRE(S.symmetry()->ops[0].sign == +1);
+}
+
+TEST_CASE("SymmetryPropagation - does NOT tag a multi-writer body tensor", "[ComputeGraph][Symmetry][Loop]") {
+    // S is made symmetric by a self-contraction, then overwritten in-place
+    // by a non-symmetric add. The single-writer guard must refuse to tag S
+    // (its final value isn't symmetric).
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+
+    cg::Graph g("sym_multiwriter");
+    auto     &body = g.add_loop("iter", 1, [](size_t) { return false; });
+    auto     &S    = body.create_zero_tensor<double, 2>("S", 4, 4);
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;jk->ij", &S, A, A); // S = A·Aᵀ (symmetric)
+        cg::axpy(1.0, B, &S);              // S += B (destroys symmetry) — 2nd writer
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::SymmetryPropagation>();
+    pm.run(g);
+
+    CHECK_FALSE(S.has_symmetry()); // two writers → not tagged
+}
+
+TEST_CASE("SymmetryPropagation - does NOT tag a tensor written by a nested loop", "[ComputeGraph][Symmetry][Loop]") {
+    // S is made symmetric in the outer body, but a nested loop also writes
+    // it (non-symmetrically). A Loop node doesn't list its body's writes, so
+    // without the subtree guard the pass would wrongly tag S. It must not.
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+
+    cg::Graph g("sym_nested");
+    auto     &outer = g.add_loop("outer", 1, [](size_t) { return false; });
+    auto     &S     = outer.create_zero_tensor<double, 2>("S", 4, 4);
+    {
+        cg::CaptureGuard const guard(outer);
+        cg::einsum("ik;jk->ij", &S, A, A); // S = A·Aᵀ (symmetric) in outer body
+    }
+    auto &inner = outer.add_loop("inner", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(inner);
+        cg::axpy(1.0, B, &S); // nested loop writes S non-symmetrically
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::SymmetryPropagation>();
+    pm.run(g);
+
+    CHECK_FALSE(S.has_symmetry()); // referenced by a child sub-graph → not tagged
+}

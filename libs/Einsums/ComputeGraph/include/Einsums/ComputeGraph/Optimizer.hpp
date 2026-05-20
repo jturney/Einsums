@@ -53,6 +53,36 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
      * @return True if the graph was modified, false if no changes were made.
      */
     virtual bool run(Graph &graph) = 0;
+
+    /**
+     * @brief Should ``PassManager`` re-invoke this pass on every sub-graph?
+     *
+     * Controls whether the PassManager automatically descends into
+     * loop bodies and conditional branches (via
+     * ``Graph::for_each_subgraph``) and calls ``run()`` again at each
+     * level. Default ``false`` — preserves the historical flat-graph
+     * behavior.
+     *
+     * Passes whose semantics are *correct on a flat sub-graph* (CSE,
+     * ScaleAbsorption, PermuteFusion, …) should return ``true`` once
+     * verified — that lets the same per-pass tests cover bodies.
+     *
+     * Passes whose effect must *cross the loop boundary* (Materialization
+     * hoisting allocs to the parent, FreeInsertion placing frees after
+     * the loop, TransferInsertion hoisting H2D for loop-invariant inputs)
+     * should keep this ``false`` and instead walk children themselves
+     * inside ``run()`` via ``Graph::for_each_subgraph``. Their output
+     * lands in the *parent* graph, not the child.
+     *
+     * Passes that need parent context to decide correctness (DNE post-loop
+     * liveness, ConstantFolding iteration-variance check, Reorder
+     * boundary respect) must also keep this ``false`` until they grow the
+     * required cross-graph reasoning.
+     *
+     * See ``libs/Einsums/ComputeGraph/docs/loop_handling_audit.md`` for
+     * the per-pass plan.
+     */
+    [[nodiscard]] virtual bool recurse_into_subgraphs() const { return false; }
 };
 
 /**

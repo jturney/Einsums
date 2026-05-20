@@ -85,14 +85,13 @@ bool is_gemm_pattern(EinsumDescriptor const &desc, Graph const &graph, Node cons
     return true;
 }
 
-} // namespace
-
-bool ChainParenthesization::run(Graph &graph) {
+// Analyze the GEMM chains in a single graph, adding their original and
+// optimal FLOP counts into the accumulators. Pulled out of run() so the
+// pass can aggregate over loop bodies / conditional branches.
+void analyze_chain_flops(Graph &graph, size_t &orig_acc, size_t &opt_acc) {
     graph.topological_sort();
 
     auto const &nodes = graph.nodes();
-    _original_flops   = 0;
-    _optimal_flops    = 0;
 
     // Find chains of GEMM einsums: sequences where node[i]'s output
     // is node[i+1]'s input (one of them).
@@ -155,7 +154,7 @@ bool ChainParenthesization::run(Graph &graph) {
     }
 
     if (chains.empty()) {
-        return false;
+        return;
     }
 
     // For each chain, compute original and optimal FLOP counts
@@ -176,7 +175,7 @@ bool ChainParenthesization::run(Graph &graph) {
         for (size_t idx = 0; idx < n; idx++) {
             orig += 2 * chain[idx].M * chain[idx].K * chain[idx].N;
         }
-        _original_flops += orig;
+        orig_acc += orig;
 
         // DP for optimal parenthesization
         // m[i][j] = minimum cost to multiply matrices i through j
@@ -197,7 +196,7 @@ bool ChainParenthesization::run(Graph &graph) {
             }
         }
 
-        _optimal_flops += m[0][n - 1];
+        opt_acc += m[0][n - 1];
 
         if (m[0][n - 1] < orig) {
             EINSUMS_LOG_INFO("ChainParenthesization: chain of {} GEMMs, dimensions: [{}]", n, fmt::join(p, " x "));
@@ -205,6 +204,23 @@ bool ChainParenthesization::run(Graph &graph) {
                              100.0 * (1.0 - static_cast<double>(m[0][n - 1]) / static_cast<double>(orig)));
         }
     }
+}
+
+// Accumulate chain-flop analysis over a graph and all its descendants.
+void accumulate(Graph &graph, size_t &orig_acc, size_t &opt_acc) {
+    analyze_chain_flops(graph, orig_acc, opt_acc);
+    graph.for_each_subgraph([&](Graph &sub) { accumulate(sub, orig_acc, opt_acc); });
+}
+
+} // namespace
+
+bool ChainParenthesization::run(Graph &graph) {
+    // Aggregate over the whole graph tree: a GEMM chain that lives entirely
+    // inside a loop body is counted too. recurse_into_subgraphs() stays
+    // false — we aggregate here rather than being re-run per sub-graph.
+    _original_flops = 0;
+    _optimal_flops  = 0;
+    accumulate(graph, _original_flops, _optimal_flops);
 
     // This pass is analysis/reporting only — restructuring the graph would
     // require creating new intermediate tensors with type information we

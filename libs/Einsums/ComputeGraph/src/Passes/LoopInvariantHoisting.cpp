@@ -8,11 +8,80 @@
 #include <Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp>
 #include <Einsums/Logging.hpp>
 
+#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace einsums::compute_graph::passes {
+
+namespace {
+
+bool is_lifecycle(OpKind kind) {
+    return kind == OpKind::Alloc || kind == OpKind::Free || kind == OpKind::Materialize || kind == OpKind::Initialize;
+}
+
+bool prefactor_is_zero(PrefactorScalar const &pf) {
+    return std::visit([](auto v) { return v == decltype(v){}; }, pf);
+}
+
+/// A node that reads its own destination is self-modifying across iterations
+/// and must never be hoisted out of a loop — hoisting drops the per-iteration
+/// update. This covers the always-accumulating ops (scale/axpy/axpby/element-
+/// transform) and any einsum/permute/batched-gemm with a *nonzero* destination
+/// prefactor (``C = c_pf*C + …`` reads the old C). A pure overwrite (prefactor
+/// zero) does not read its output and may still be hoisted.
+bool reads_its_output(Node const &nd) {
+    switch (nd.kind) {
+    case OpKind::Scale:
+    case OpKind::Axpy:
+    case OpKind::Axpby:
+    case OpKind::ElementTransform:
+        return true;
+    default:
+        break;
+    }
+    if (auto const *e = std::get_if<EinsumDescriptor>(&nd.op_data)) {
+        return !prefactor_is_zero(e->c_prefactor);
+    }
+    if (auto const *p = std::get_if<PermuteDescriptor>(&nd.op_data)) {
+        return p->beta != 0.0;
+    }
+    if (auto const *b = std::get_if<BatchedGemmDescriptor>(&nd.op_data)) {
+        return b->beta != 0.0;
+    }
+    return false;
+}
+
+/// Count real (non-lifecycle) writers of each tensor across @p g and every
+/// descendant sub-graph, keyed by the tensor's underlying pointer (stable
+/// across graphs). A producer can only be hoisted out of a loop when each
+/// of its outputs has exactly one such writer in the loop subtree — itself.
+/// Otherwise another node in the loop also writes that tensor, and removing
+/// the producer's per-iteration write changes which write wins (e.g. an
+/// einsum that resets C followed by an in-place scale that would then
+/// accumulate). Reads don't count, so a consumer of the produced value
+/// doesn't block the hoist.
+void count_subtree_writers_by_ptr(Graph const &g, std::unordered_map<void const *, int> &writers) {
+    for (auto const &n : g.nodes()) {
+        if (is_lifecycle(n.kind)) {
+            continue;
+        }
+        for (auto tid : n.outputs) {
+            // Resolve view aliases to the owning buffer: a write through a view
+            // of T is a write to T, so it must count against T's pointer (not
+            // the view object's). Otherwise an invariant-looking consumer of T
+            // would be hoisted past a view-write that mutates T each iteration.
+            auto it = g.tensors_map().find(g.resolve_alias(tid));
+            if (it != g.tensors_map().end() && it->second.tensor_ptr != nullptr) {
+                writers[it->second.tensor_ptr]++;
+            }
+        }
+    }
+    g.for_each_subgraph([&](Graph const &sub) { count_subtree_writers_by_ptr(sub, writers); });
+}
+
+} // namespace
 
 bool LoopInvariantHoisting::run(Graph &graph) {
     auto &nodes  = graph.nodes();
@@ -36,6 +105,12 @@ bool LoopInvariantHoisting::run(Graph &graph) {
             }
         }
 
+        // Real value-writer count per tensor pointer across the loop subtree.
+        // Used to refuse hoisting a producer whose output is also written by
+        // another node in the loop (which would change which write wins).
+        std::unordered_map<void const *, int> subtree_writers;
+        count_subtree_writers_by_ptr(*loop_desc->body, subtree_writers);
+
         // Identify invariant nodes: all inputs are NOT written by any body node
         // Iterate in order and propagate (hoisted outputs become invariant)
         std::unordered_set<TensorId> hoisted_outputs;
@@ -50,37 +125,101 @@ bool LoopInvariantHoisting::run(Graph &graph) {
                 continue;
             }
 
-            // A node that writes to a tensor it also reads is self-modifying
-            // (e.g., scale(C) reads and writes C). Never hoist these.
-            bool self_modifying = false;
+            // A node that reads the tensor it writes is self-modifying
+            // (scale(C), or an accumulating gemm C = C + A·B). Never hoist
+            // these — the per-iteration update would be lost. ``reads_its_output``
+            // covers the always-accumulating ops and nonzero-prefactor einsum/
+            // permute/gemm; the explicit input==output scan catches any other op
+            // that lists the same tensor as both an input and an output.
+            bool self_modifying = reads_its_output(bnode);
             for (auto out_tid : bnode.outputs) {
+                if (self_modifying)
+                    break;
                 for (auto in_tid : bnode.inputs) {
                     if (out_tid == in_tid) {
                         self_modifying = true;
                         break;
                     }
                 }
-                // Also check: does the node write to a tensor with no inputs listed
-                // but the operation inherently reads it? (scale has no inputs, only outputs)
-                // Scale reads the tensor it writes — check by OpKind
-                if (bnode.kind == OpKind::Scale || bnode.kind == OpKind::Axpy || bnode.kind == OpKind::Axpby ||
-                    bnode.kind == OpKind::ElementTransform) {
-                    self_modifying = true;
-                }
-                if (self_modifying)
-                    break;
             }
             if (self_modifying)
                 continue;
 
             bool all_inputs_invariant = true;
             for (auto tid : bnode.inputs) {
-                bool const written_in_body = body_writes.count(tid) > 0;
-                bool const from_hoisted    = hoisted_outputs.count(tid) > 0;
+                // A tensor counts as written-in-body if a *direct* body node
+                // writes it, OR if any node anywhere in the loop body subtree
+                // writes the same underlying buffer. The latter catches writes
+                // performed inside nested subgraphs — a conditional branch or
+                // an inner loop — which never appear in this body's own output
+                // lists. Without it, an input mutated only inside a conditional
+                // would look invariant and the consumer would be wrongly
+                // hoisted out of the loop.
+                bool written_in_body = body_writes.count(tid) > 0;
+                if (!written_in_body) {
+                    auto hit = loop_desc->body->tensors_map().find(loop_desc->body->resolve_alias(tid));
+                    if (hit != loop_desc->body->tensors_map().end() && hit->second.tensor_ptr != nullptr) {
+                        auto wit = subtree_writers.find(hit->second.tensor_ptr);
+                        if (wit != subtree_writers.end() && wit->second > 0) {
+                            written_in_body = true;
+                        }
+                    }
+                }
+                bool const from_hoisted = hoisted_outputs.count(tid) > 0;
                 if (written_in_body && !from_hoisted) {
                     all_inputs_invariant = false;
                     break;
                 }
+            }
+
+            // Refuse to hoist a producer whose output is written by more than
+            // one value-node in the loop subtree. Removing its per-iteration
+            // write would change which write wins each iteration — e.g. an
+            // einsum that resets C, followed by an in-place op that would then
+            // accumulate across iterations instead of starting fresh. (A
+            // DiskRead with no inputs is "invariant" by the input check above;
+            // this guard stops it being hoisted when something else in the
+            // loop overwrites its destination.) Reads of the output are fine.
+            bool single_writer_outputs = true;
+            for (auto out_tid : bnode.outputs) {
+                auto hit = loop_desc->body->tensors_map().find(loop_desc->body->resolve_alias(out_tid));
+                if (hit == loop_desc->body->tensors_map().end() || hit->second.tensor_ptr == nullptr) {
+                    single_writer_outputs = false; // can't prove single-writer → be safe
+                    break;
+                }
+                auto wit = subtree_writers.find(hit->second.tensor_ptr);
+                if (wit == subtree_writers.end() || wit->second != 1) {
+                    single_writer_outputs = false;
+                    break;
+                }
+            }
+            if (!single_writer_outputs) {
+                continue;
+            }
+
+            // Refuse to hoist a producer whose output is read by an *earlier*
+            // body node. That earlier read observes the value from the previous
+            // iteration (the output is loop-carried *through* this producer), so
+            // computing it once before the loop would change what the earlier
+            // reader sees. Reads by *later* body nodes are fine — they consume
+            // this iteration's value, which is loop-invariant once hoisted.
+            bool output_read_earlier = false;
+            for (auto out_tid : bnode.outputs) {
+                for (size_t bj = 0; bj < bi && !output_read_earlier; bj++) {
+                    // Use *effective* reads so an earlier control-flow node (a
+                    // nested loop / conditional) that reads the output inside its
+                    // subtree counts — its own raw input list is empty.
+                    auto [ein, eout] = loop_desc->body->effective_io(body_nodes[bj]);
+                    if (std::ranges::find(ein, out_tid) != ein.end()) {
+                        output_read_earlier = true;
+                    }
+                }
+                if (output_read_earlier) {
+                    break;
+                }
+            }
+            if (output_read_earlier) {
+                continue;
             }
 
             if (all_inputs_invariant) {
@@ -96,7 +235,7 @@ bool LoopInvariantHoisting::run(Graph &graph) {
         // path that left ``body_nodes`` with moved-from std::function
         // executors would silently turn the loop body into a no-op.
         bool any_invariant = false;
-        for (bool v : invariant) {
+        for (bool const v : invariant) {
             if (v) {
                 any_invariant = true;
                 break;
@@ -119,9 +258,29 @@ bool LoopInvariantHoisting::run(Graph &graph) {
             auto it = id_remap.find(body_tid);
             if (it != id_remap.end())
                 return it->second;
-            TensorHandle handle     = loop_desc->body->tensor(body_tid);
-            TensorId     parent_tid = graph.register_tensor(std::move(handle));
-            id_remap[body_tid]      = parent_tid;
+            TensorHandle handle = loop_desc->body->tensor(body_tid);
+            // If the parent already has a TensorId for this underlying buffer,
+            // reuse it rather than minting a fresh one. The buffer's identity is
+            // its pointer; registering a *new* id for an already-known buffer
+            // would hide the write-after-write / read-after-write relationship
+            // between the hoisted node and the parent nodes that touch the same
+            // tensor (the scheduler keys on TensorId), so a later pass like
+            // Reorder could swap them and the wrong write would win.
+            TensorId parent_tid = 0;
+            bool     reused     = false;
+            if (handle.tensor_ptr != nullptr) {
+                for (auto const &[tid, h] : graph.tensors_map()) {
+                    if (h.tensor_ptr == handle.tensor_ptr) {
+                        parent_tid = tid;
+                        reused     = true;
+                        break;
+                    }
+                }
+            }
+            if (!reused) {
+                parent_tid = graph.register_tensor(std::move(handle));
+            }
+            id_remap[body_tid] = parent_tid;
             return parent_tid;
         };
 

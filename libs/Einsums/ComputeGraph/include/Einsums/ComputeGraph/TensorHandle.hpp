@@ -12,6 +12,7 @@
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
+#include <Einsums/Tensor/PendingInit.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 
 #include <cstddef>
@@ -269,6 +270,70 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
     // views don't have anything to release.
     if constexpr (requires(CleanTensor &t) { t.release(); }) {
         h.release_fn = [tensor_mut]() { tensor_mut->release(); };
+    }
+
+    // materialize_fn: allocate backing storage for a deferred tensor. When a
+    // workspace-declared tensor is later referenced by ops in some Graph's
+    // capture, that Graph's tensor_map gets a fresh handle made by this
+    // function — workspace's canonical handle (with its own ``materialize_fn``)
+    // is *not* shared. Synthesizing the callback here means the Materialization
+    // pass can hoist allocation of body-resident workspace tensors out of a
+    // loop without having to look up workspace's canonical handle.
+    //
+    // Owning tensors expose ``materialize()``; TensorView / RuntimeTensorView
+    // do not — the if-constexpr keeps the function type-erased for both. For
+    // workspace-declared tensors, the workspace's own canonical handle also
+    // sets ``materialize_fn`` (so ``Workspace::materialize_all()`` still works
+    // unchanged) — both closures end up calling the same ``ptr->materialize()``,
+    // which is idempotent.
+    if constexpr (requires(CleanTensor &t) { t.materialize(); }) {
+        h.materialize_fn = [tensor_mut]() { tensor_mut->materialize(); };
+    }
+
+    // Post-materialize init: if the tensor was tagged with a pending-init
+    // policy at declaration time (e.g. by ``Workspace::declare_zero_tensor``),
+    // propagate that to the handle so the Materialization pass knows to emit
+    // an Initialize node alongside the Materialize. ``pending_init()`` lives
+    // on the tensor itself — not on workspace's _handles vector — so the
+    // information survives capture into bodies the workspace doesn't own.
+    if constexpr (requires(CleanTensor const &t) { t.pending_init(); }) {
+        switch (tensor.pending_init()) {
+        case PendingInit::Zero:
+            h.init_kind = InitKind::Zero;
+            if constexpr (requires(CleanTensor &t) {
+                              t.materialize();
+                              t.zero();
+                          }) {
+                h.zero_fn = [tensor_mut]() {
+                    tensor_mut->materialize();
+                    tensor_mut->zero();
+                };
+            }
+            break;
+        case PendingInit::Random:
+            h.init_kind = InitKind::Random;
+            // Random fill matches Workspace::declare_random_*'s inline loop:
+            // uniform on [-1, 1) using ``std::rand``. Done here so a
+            // body-resident handle can self-initialize without consulting
+            // workspace.
+            if constexpr (requires(CleanTensor &t) {
+                              t.materialize();
+                              t.data();
+                              t.size();
+                          }) {
+                h.random_fn = [tensor_mut]() {
+                    tensor_mut->materialize();
+                    auto *data = tensor_mut->data();
+                    for (size_t idx = 0; idx < tensor_mut->size(); idx++) {
+                        // NOLINTNEXTLINE(misc-predictable-rand)
+                        data[idx] = static_cast<ValType>(static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0);
+                    }
+                };
+            }
+            break;
+        case PendingInit::None:
+            break;
+        }
     }
 
     // Symmetry metadata: seed the handle from the backing tensor's current

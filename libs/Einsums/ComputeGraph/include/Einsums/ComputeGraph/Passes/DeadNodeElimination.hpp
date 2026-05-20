@@ -35,6 +35,13 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
     [[nodiscard]] std::string name() const override { return "DeadNodeElimination"; }
     bool                      run(Graph &graph) override;
 
+    /// Recurse into loop bodies / conditional branches. Safe now that
+    /// run() treats any tensor referenced by a descendant sub-graph as
+    /// live (via Graph::collect_subtree_referenced_ptrs) — so a producer
+    /// feeding only a nested loop is never eliminated. See
+    /// docs/loop_handling_audit.md.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+
     /// Number of nodes eliminated in the last run.
     EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
 

@@ -35,6 +35,12 @@ class EINSUMS_EXPORT TransferElimination : public OptimizerPass {
     [[nodiscard]] std::string name() const override { return "TransferElimination"; }
     bool                      run(Graph &graph) override;
 
+    /// Recurse into loop bodies / conditional branches. Per-graph cleanup
+    /// of redundant transfers within each body (its existing is_loop_tensor
+    /// pin keeps tensors needed by a nested loop from being evicted). See
+    /// docs/loop_handling_audit.md.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+
     /// Number of transfer nodes removed in the last run.
     [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
 

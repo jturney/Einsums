@@ -16,6 +16,7 @@
 #include <Einsums/GPU/DeviceVector.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Python/Protocol.hpp>
+#include <Einsums/Tensor/PendingInit.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
@@ -1198,6 +1199,9 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
 
     std::unique_ptr<SymmetryDescriptor> _symmetry{};
 
+    /// Post-materialize init policy. See @ref GeneralTensor::_pending_init.
+    PendingInit _pending_init{PendingInit::None};
+
     uint64_t _alive_canary{kAliveCanary};
 
     template <typename TOther>
@@ -1205,6 +1209,13 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
 
     template <typename TOther, typename Alloc2>
     friend class GeneralRuntimeTensor;
+
+  public:
+    /// Pending post-materialize init kind. Defaults to ``None``.
+    [[nodiscard]] PendingInit pending_init() const { return _pending_init; }
+
+    /// Tag this tensor with a post-materialize init policy.
+    void set_pending_init(PendingInit k) { _pending_init = k; }
 };
 
 /**

@@ -30,6 +30,11 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
     [[nodiscard]] std::string name() const override { return "ScaleAbsorption"; }
     bool                      run(Graph &graph) override;
 
+    /// Safe on loop bodies / conditional branches: a local rewrite that
+    /// only folds scale into the next op within the graph it's handed.
+    /// See docs/loop_handling_audit.md.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+
     /// Number of scale nodes absorbed in the last run.
     EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("num_absorbed") [[nodiscard]] size_t num_absorbed() const { return _num_absorbed; }
 

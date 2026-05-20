@@ -85,3 +85,29 @@ TEST_CASE("ChainParenthesization - no chain for single gemm", "[ComputeGraph][Ch
     REQUIRE(pass.original_flops() == 0);
     REQUIRE(pass.optimal_flops() == 0);
 }
+
+// ── Loop-aware aggregation (analysis-aggregation group) ──────────────────
+
+TEST_CASE("ChainParenthesization - detects a chain inside a loop body", "[ComputeGraph][Chain][Loop]") {
+    // The GEMM chain lives entirely inside the loop body. A flat-graph-only
+    // pass would see only the Loop node and report zero flops; the
+    // aggregating pass must detect and cost the body's chain.
+    auto A  = create_random_tensor<double>("A", 100, 1);
+    auto B  = create_random_tensor<double>("B", 1, 100);
+    auto C  = create_random_tensor<double>("C", 100, 1);
+    auto T1 = create_zero_tensor<double>("T1", 100, 100);
+    auto T2 = create_zero_tensor<double>("T2", 100, 1);
+
+    cg::Graph g("chain_in_loop");
+    auto     &body = g.add_loop("iter", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", &T1, A, B);
+        cg::einsum("ik;kj->ij", &T2, T1, C);
+    }
+
+    auto [modified, pass] = g.apply<cg::passes::ChainParenthesization>();
+    REQUIRE(pass.original_flops() > 0);
+    REQUIRE(pass.optimal_flops() > 0);
+    REQUIRE(pass.optimal_flops() < pass.original_flops());
+}

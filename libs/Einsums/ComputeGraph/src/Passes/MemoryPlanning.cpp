@@ -16,18 +16,29 @@
 
 namespace einsums::compute_graph::passes {
 
-bool MemoryPlanning::run(Graph &graph) {
+namespace {
+
+// Per-graph memory stats. Totals are summed across the graph tree; peaks
+// are maxed (the worst single graph's simultaneously-live footprint). A
+// precise cross-loop peak would need loop-carried liveness tracking; max
+// is a defensible lower bound for a reporting pass and strictly better
+// than ignoring loop bodies entirely.
+struct MemStats {
+    size_t total{0};
+    size_t peak{0};
+    size_t device_total{0};
+    size_t device_peak{0};
+};
+
+MemStats analyze_one(Graph &graph) {
     graph.topological_sort();
 
     auto const &nodes   = graph.nodes();
     auto const &tensors = graph.tensors_map();
 
+    MemStats stats;
     if (nodes.empty() || tensors.empty()) {
-        _total_memory        = 0;
-        _peak_memory         = 0;
-        _device_total_memory = 0;
-        _device_peak_memory  = 0;
-        return false;
+        return stats;
     }
 
     size_t const n = nodes.size();
@@ -77,12 +88,10 @@ bool MemoryPlanning::run(Graph &graph) {
     }
 
     // ── Host memory analysis ────────────────────────────────────────────────
-    _total_memory = 0;
     for (auto const &[tid, interval] : intervals) {
-        _total_memory += interval.bytes;
+        stats.total += interval.bytes;
     }
 
-    _peak_memory = 0;
     for (size_t i = 0; i < n; i++) {
         size_t live_bytes = 0;
         for (auto const &[tid, interval] : intervals) {
@@ -90,21 +99,19 @@ bool MemoryPlanning::run(Graph &graph) {
                 live_bytes += interval.bytes;
             }
         }
-        _peak_memory = std::max(_peak_memory, live_bytes);
+        stats.peak = std::max(stats.peak, live_bytes);
     }
 
     // ── Device memory analysis ──────────────────────────────────────────────
     // Only consider tensors that are actually used on the device.
-    _device_total_memory = 0;
     for (auto const &[tid, interval] : intervals) {
         if (interval.on_device) {
-            _device_total_memory += interval.bytes;
+            stats.device_total += interval.bytes;
         }
     }
 
     // Device peak: simulate which device tensors are live at each node.
     // A device tensor is "live" from its first GPU/transfer use to its last.
-    _device_peak_memory = 0;
     for (size_t i = 0; i < n; i++) {
         size_t live_bytes = 0;
         for (auto const &[tid, interval] : intervals) {
@@ -112,8 +119,37 @@ bool MemoryPlanning::run(Graph &graph) {
                 live_bytes += interval.bytes;
             }
         }
-        _device_peak_memory = std::max(_device_peak_memory, live_bytes);
+        stats.device_peak = std::max(stats.device_peak, live_bytes);
     }
+
+    return stats;
+}
+
+// Accumulate stats over @p graph and every descendant (loop bodies,
+// conditional branches, nesting). Totals sum; peaks take the max.
+void accumulate(Graph &graph, MemStats &acc) {
+    MemStats const s = analyze_one(graph);
+    acc.total += s.total;
+    acc.device_total += s.device_total;
+    acc.peak        = std::max(acc.peak, s.peak);
+    acc.device_peak = std::max(acc.device_peak, s.device_peak);
+    graph.for_each_subgraph([&](Graph &sub) { accumulate(sub, acc); });
+}
+
+} // namespace
+
+bool MemoryPlanning::run(Graph &graph) {
+    // Walk the whole graph tree so loop bodies / conditional branches
+    // contribute to the reported footprint. recurse_into_subgraphs() stays
+    // false — this pass aggregates here rather than being re-run per
+    // sub-graph (which would clobber the counters with the last subgraph).
+    MemStats acc;
+    accumulate(graph, acc);
+
+    _total_memory        = acc.total;
+    _peak_memory         = acc.peak;
+    _device_total_memory = acc.device_total;
+    _device_peak_memory  = acc.device_peak;
 
     return false;
 }

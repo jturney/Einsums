@@ -39,6 +39,15 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
 
     [[nodiscard]] std::string name() const override { return "Reorder"; }
 
+    /// NOTE: stays opt-out. Although reordering is scoped to one graph,
+    /// its memory-aware sort does not fully preserve the anti-dependencies
+    /// (WAR/WAW) created by a loop body's heavy in-place tensor reuse —
+    /// recursing reordered the SCF body's E_elec/D/F snapshot+recompute
+    /// sequence and broke multi-iteration convergence (HeH+). Until the
+    /// reorder respects all anti-dependencies it must not run on bodies.
+    /// See docs/loop_handling_audit.md.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
+
     /**
      * @brief Run the memory-aware reorder pass.
      * @param[in,out] graph The graph to reorder.

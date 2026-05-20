@@ -45,6 +45,15 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
     [[nodiscard]] std::string name() const override { return "SymmetryPropagation"; }
     bool                      run(Graph &graph) override;
 
+    /// Recurse into loop bodies / conditional branches. Safe: the pass only
+    /// reads op structure (no execution, no node changes) and tags a tensor
+    /// only when its symmetry is *guaranteed* — single-writer in this graph
+    /// and not written by a child sub-graph (see the InferGuard in run()).
+    /// So a body intermediate proven symmetric by a self-contraction gets
+    /// tagged per iteration; anything that could be invalidated is left
+    /// untagged. See docs/loop_handling_audit.md.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+
     /// Number of tensor handles this pass tagged with an inferred descriptor.
     EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("num_inferred") [[nodiscard]] std::size_t num_inferred() const { return _num_inferred; }
 

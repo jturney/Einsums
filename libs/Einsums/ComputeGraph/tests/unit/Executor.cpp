@@ -696,6 +696,123 @@ TEST_CASE("IOPrefetch - empty graph", "[ComputeGraph][Passes][IO]") {
     CHECK_FALSE(modified);
 }
 
+TEST_CASE("IOPrefetch - hoists a loop-invariant DiskRead out of the loop body", "[ComputeGraph][Passes][IO][Loop]") {
+    // A DiskRead whose destination is read-only in the body produces the
+    // same data every iteration. Hoisting it before the loop means the file
+    // is read ONCE, not once per iteration. The read executor bumps a
+    // counter so we can assert exactly that.
+    constexpr size_t N          = 5;
+    auto             data       = create_zero_tensor<double>("data", 4, 4); // eager
+    auto             acc        = create_zero_tensor<double>("acc", 4, 4);  // eager
+    int              read_count = 0;
+
+    cg::Graph g("io_loop");
+    auto     &body = g.add_loop("iter", N, [](size_t it) { return it + 1 < N; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::read("load", "fake.h5", "/d", &data, [&]() {
+            read_count++;
+            for (size_t k = 0; k < data.size(); ++k)
+                data.data()[k] = 1.0;
+        });
+        cg::axpy(1.0, data, &acc); // acc += data (data is read-only here)
+    }
+
+    // Apply IOPrefetch in isolation so the test exercises this pass's loop
+    // handling directly, not the full pipeline's interactions (e.g.
+    // LoopInvariantHoisting also moves loop-invariant nodes).
+    cg::passes::IOPrefetch ioprefetch;
+    bool const             modified = ioprefetch.run(g);
+    CHECK(modified);
+    // The DiskRead must be gone from the body (hoisted to the parent).
+    size_t body_reads = 0;
+    for (auto const &n : body.nodes()) {
+        if (n.kind == cg::OpKind::DiskRead)
+            body_reads++;
+    }
+    CHECK(body_reads == 0);
+
+    g.execute();
+
+    // Read once (hoisted), not N times.
+    CHECK(read_count == 1);
+    // acc = N * data (= N * ones).
+    for (size_t k = 0; k < acc.size(); ++k) {
+        CHECK(acc.data()[k] == Catch::Approx(static_cast<double>(N)));
+    }
+}
+
+TEST_CASE("IOPrefetch - does NOT hoist when the destination is overwritten in the body", "[ComputeGraph][Passes][IO][Loop]") {
+    // The destination is re-read every iteration and then OVERWRITTEN by an
+    // einsum (a second value-writer the optimizer can't absorb away). The
+    // read must stay in the body — hoisting would freeze stale data. The
+    // read counter must show one read per iteration.
+    constexpr size_t N          = 4;
+    auto             B          = create_random_tensor<double>("B", 4, 4);
+    auto             data       = create_zero_tensor<double>("data", 4, 4);
+    auto             acc        = create_zero_tensor<double>("acc", 4, 4);
+    int              read_count = 0;
+
+    cg::Graph g("io_loop_mutated");
+    auto     &body = g.add_loop("iter", N, [](size_t it) { return it + 1 < N; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::read("load", "fake.h5", "/d", &data, [&]() {
+            read_count++;
+            for (size_t k = 0; k < data.size(); ++k)
+                data.data()[k] = 1.0;
+        });
+        cg::einsum("ik;kj->ij", &data, B, B); // overwrites data — second writer
+        cg::axpy(1.0, data, &acc);
+    }
+
+    // IOPrefetch in isolation (see note above).
+    cg::passes::IOPrefetch ioprefetch;
+    ioprefetch.run(g);
+
+    size_t body_reads = 0;
+    for (auto const &n : body.nodes()) {
+        if (n.kind == cg::OpKind::DiskRead)
+            body_reads++;
+    }
+    CHECK(body_reads == 1); // stayed in the body (data has two writers)
+
+    g.execute();
+    CHECK(read_count == static_cast<int>(N)); // read every iteration
+}
+
+TEST_CASE("IOPrefetch - hoists a DiskRead out of a nested loop", "[ComputeGraph][Passes][IO][Loop]") {
+    // Read in an inner loop body, read-only — must be hoisted all the way
+    // out, past the outer loop, and read exactly once.
+    constexpr size_t No         = 2;
+    constexpr size_t Ni         = 3;
+    auto             data       = create_zero_tensor<double>("data", 3, 3);
+    auto             acc        = create_zero_tensor<double>("acc", 3, 3);
+    int              read_count = 0;
+
+    cg::Graph g("io_nested");
+    auto     &outer = g.add_loop("outer", No, [](size_t it) { return it + 1 < No; });
+    auto     &inner = outer.add_loop("inner", Ni, [](size_t it) { return it + 1 < Ni; });
+    {
+        cg::CaptureGuard const guard(inner);
+        cg::read("load", "fake.h5", "/d", &data, [&]() {
+            read_count++;
+            for (size_t k = 0; k < data.size(); ++k)
+                data.data()[k] = 1.0;
+        });
+        cg::axpy(1.0, data, &acc); // acc += data
+    }
+
+    // IOPrefetch in isolation (see note above).
+    cg::passes::IOPrefetch ioprefetch;
+    ioprefetch.run(g);
+    g.execute();
+
+    CHECK(read_count == 1);                 // hoisted past both loops
+    for (size_t k = 0; k < acc.size(); ++k) // acc = No*Ni * ones
+        CHECK(acc.data()[k] == Catch::Approx(static_cast<double>(No * Ni)));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Wide fan-out
 // ═══════════════════════════════════════════════════════════════════════════════

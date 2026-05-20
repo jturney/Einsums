@@ -14,6 +14,59 @@
 
 namespace einsums::compute_graph::passes {
 
+namespace {
+
+// A Free we plan to insert into the *parent* graph.
+//
+// position : insert AFTER this parent-node index.
+// owner    : graph whose tensor_map holds the handle (parent for flat
+//            frees; a descendant body/branch for hoisted frees).
+// tid      : tensor id within `owner`.
+// owns_tid : true when `tid` lives in the graph being mutated, so the
+//            Free node can carry it as an input for dependency tracking.
+//            False for hoisted frees — the tid belongs to a child graph,
+//            so we leave the Free's inputs empty and rely on position
+//            (FreeInsertion runs near the end of the pipeline and marks
+//            the graph sorted, so nothing reorders it).
+struct FreePlan {
+    size_t   position;
+    Graph   *owner;
+    TensorId tid;
+    bool     owns_tid;
+};
+
+// Is `name` already freed by an existing Free node anywhere in `nodes`?
+// Used for idempotency across repeated pass runs. Label-based because a
+// hoisted Free doesn't carry the (foreign) child tid as an input.
+bool already_has_free_named(std::vector<Node> const &nodes, std::string const &name) {
+    auto const want = fmt::format("free({})", name);
+    return std::ranges::any_of(nodes, [&](Node const &n) { return n.kind == OpKind::Free && n.label == want; });
+}
+
+// Collect freeable intermediates from every descendant of `graph` (loop
+// bodies, conditional branches, and any nesting underneath), in
+// post-order. A body-scoped intermediate is live across every iteration
+// of the loop that contains it, so its single Free belongs in the parent
+// *after* the outermost enclosing loop — never inside the body, which
+// would free-then-reuse each iteration.
+struct DescendantFreeable {
+    Graph   *owner;
+    TensorId tid;
+};
+
+void collect_descendant_freeable(Graph &graph, size_t min_bytes, std::vector<DescendantFreeable> &out) {
+    graph.for_each_subgraph([&](Graph &sub) {
+        for (auto const &[tid, handle] : sub.tensors_map()) {
+            if (handle.is_intermediate && handle.release_fn && handle.aliases == 0 && handle.total_bytes() >= min_bytes) {
+                out.push_back({.owner = &sub, .tid = tid});
+            }
+        }
+        collect_descendant_freeable(sub, min_bytes, out);
+    });
+}
+
+} // namespace
+
 bool FreeInsertion::run(Graph &graph) {
     _num_freed = 0;
 
@@ -22,10 +75,6 @@ bool FreeInsertion::run(Graph &graph) {
 
     if (nodes.empty())
         return false;
-
-    // Find the last node that references each intermediate tensor.
-    // A tensor is "referenced" if it appears in a node's inputs or outputs.
-    std::unordered_map<TensorId, size_t> last_use; // TensorId → last node index
 
     // Resolve a TensorId through any chain of aliases to the underlying owner.
     // Aliases (View outputs) read/write through the parent's storage, so a use
@@ -41,7 +90,20 @@ bool FreeInsertion::run(Graph &graph) {
         return id;
     };
 
+    // ── Part A: parent-level intermediates ────────────────────────────────
+    // Find the last node that references each intermediate, then free it
+    // right after that node. Unchanged from the original flat-graph logic.
+    std::unordered_map<TensorId, size_t> last_use;
+
     for (size_t idx = 0; idx < nodes.size(); idx++) {
+        // A Free node carries the freed tensor as an input purely for
+        // dependency ordering — it isn't a real "use" that extends the
+        // tensor's lifetime. Skipping it keeps the pass idempotent: on a
+        // repeated run, last_use stays at the genuine final consumer, so
+        // the forward dedup scan below still finds the existing Free.
+        if (nodes[idx].kind == OpKind::Free) {
+            continue;
+        }
         for (auto tid : nodes[idx].inputs) {
             TensorId const owner = resolve_owner(tid);
             auto           it    = tensors.find(owner);
@@ -58,16 +120,7 @@ bool FreeInsertion::run(Graph &graph) {
         }
     }
 
-    if (last_use.empty())
-        return false;
-
-    // Build insertion list: for each intermediate, insert a Free node after its last use.
-    struct Insertion {
-        size_t   position; // Insert AFTER this node index
-        TensorId tid;
-        size_t   bytes;
-    };
-    std::vector<Insertion> insertions;
+    std::vector<FreePlan> plans;
 
     for (auto const &[tid, last_idx] : last_use) {
         auto it = tensors.find(tid);
@@ -76,21 +129,15 @@ bool FreeInsertion::run(Graph &graph) {
 
         auto const &handle = it->second;
 
-        // Only free intermediates that have a release function and are above size threshold.
-        // Small tensors are kept alive to avoid alloc/free overhead in re-executed graphs.
         if (!handle.is_intermediate || !handle.release_fn)
             continue;
         if (handle.total_bytes() < _min_bytes)
             continue;
-
-        // Aliasing tensors (Views) don't own their storage — the parent does.
-        // Freeing the alias would tear down the view object but leave the
-        // parent's data alone; we'd then crash on the next re-execute when
-        // the View executor tries to re-emplace into a destroyed holder.
+        // Aliasing tensors (Views) don't own their storage.
         if (handle.aliases != 0)
             continue;
 
-        // Don't free tensors that are already Free'd (avoid duplicates on re-run)
+        // Don't double-free across repeated runs.
         bool already_freed = false;
         for (size_t idx = last_idx + 1; idx < nodes.size(); idx++) {
             if (nodes[idx].kind == OpKind::Free) {
@@ -107,28 +154,66 @@ bool FreeInsertion::run(Graph &graph) {
         if (already_freed)
             continue;
 
-        insertions.push_back({.position = last_idx, .tid = tid, .bytes = handle.total_bytes()});
+        plans.push_back({.position = last_idx, .owner = &graph, .tid = tid, .owns_tid = true});
     }
 
-    if (insertions.empty())
+    // ── Part B: body-resident intermediates, hoisted to after the loop ────
+    // For each Loop / Conditional node in the parent, every freeable
+    // intermediate reachable inside it (at any nesting depth) gets a single
+    // Free emitted in the parent immediately after the owning node.
+    for (size_t i = 0; i < nodes.size(); i++) {
+        Node const &node = nodes[i];
+
+        auto collect_from = [&](Graph &child) {
+            std::vector<DescendantFreeable> found;
+            for (auto const &[tid, handle] : child.tensors_map()) {
+                if (handle.is_intermediate && handle.release_fn && handle.aliases == 0 && handle.total_bytes() >= _min_bytes) {
+                    found.push_back({.owner = &child, .tid = tid});
+                }
+            }
+            collect_descendant_freeable(child, _min_bytes, found);
+
+            for (auto const &f : found) {
+                auto const &handle = f.owner->tensor(f.tid);
+                if (already_has_free_named(nodes, handle.name)) {
+                    continue;
+                }
+                plans.push_back({.position = i, .owner = f.owner, .tid = f.tid, .owns_tid = false});
+            }
+        };
+
+        if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+            if (loop->body) {
+                collect_from(*loop->body);
+            }
+        } else if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+            if (cond->then_branch) {
+                collect_from(*cond->then_branch);
+            }
+            if (cond->else_branch) {
+                collect_from(*cond->else_branch);
+            }
+        }
+    }
+
+    if (plans.empty())
         return false;
 
     // Sort by position descending so inserts don't shift earlier positions.
-    std::ranges::sort(insertions, [](Insertion const &a, Insertion const &b) { return a.position > b.position; });
+    std::ranges::sort(plans, [](FreePlan const &a, FreePlan const &b) { return a.position > b.position; });
 
-    for (auto const &ins : insertions) {
-        auto it = tensors.find(ins.tid);
-        if (it == tensors.end())
-            continue;
+    for (auto const &plan : plans) {
+        auto &handle = plan.owner->tensor(plan.tid);
 
-        auto const  &handle = it->second;
         auto         rel_fn = handle.release_fn;
-        size_t const bytes  = ins.bytes;
+        size_t const bytes  = handle.total_bytes();
 
         Node free_node;
-        free_node.kind    = OpKind::Free;
-        free_node.label   = fmt::format("free({})", handle.name);
-        free_node.inputs  = {ins.tid}; // Dependency: runs after last consumer
+        free_node.kind  = OpKind::Free;
+        free_node.label = fmt::format("free({})", handle.name);
+        if (plan.owns_tid) {
+            free_node.inputs = {plan.tid}; // Dependency: runs after last consumer.
+        }
         free_node.outputs = {};
 
         free_node.execute = [rel_fn, bytes, name = handle.name]() {
@@ -137,10 +222,9 @@ bool FreeInsertion::run(Graph &graph) {
                 EINSUMS_LOG_DEBUG("FreeInsertion: released '{}' ({} bytes)", name, bytes);
             }
         };
-
         free_node.estimated_bytes = bytes;
 
-        nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(ins.position + 1), std::move(free_node));
+        nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(plan.position + 1), std::move(free_node));
         _num_freed++;
     }
 

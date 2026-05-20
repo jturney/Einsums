@@ -9,11 +9,16 @@
 #include <Einsums/Logging.hpp>
 
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace einsums::compute_graph::passes {
 
 namespace {
+
+bool is_lifecycle(OpKind kind) {
+    return kind == OpKind::Alloc || kind == OpKind::Free || kind == OpKind::Materialize || kind == OpKind::Initialize;
+}
 
 /// Check if two EinsumDescriptors are equivalent.
 bool einsum_desc_equal(EinsumDescriptor const &a, EinsumDescriptor const &b) {
@@ -63,6 +68,35 @@ bool op_data_equal(OpData const &a, OpData const &b) {
     return std::holds_alternative<std::monostate>(a) && std::holds_alternative<std::monostate>(b);
 }
 
+/// True when a PrefactorScalar variant holds a zero value.
+bool prefactor_is_zero(PrefactorScalar const &pf) {
+    return std::visit([](auto v) { return v == decltype(v){}; }, pf);
+}
+
+/// Whether a node may participate in CSE at all.
+///
+/// CSE eliminates a duplicate node by redirecting readers of its output onto
+/// another node's output. That is only valid for a *pure overwrite* producer:
+/// the output must be a function of the inputs alone, never read back. Ops that
+/// accumulate into or otherwise read their destination — axpby/axpy/scale/
+/// element-transform (monostate op_data here), or an einsum/permute/batched
+/// gemm with a nonzero destination prefactor — are excluded. Two such nodes
+/// writing different buffers are not the same computation (they read different
+/// destinations), and their scalar coefficients may not even be represented in
+/// op_data, so op_data_equal cannot tell them apart.
+bool cse_eligible(Node const &nd) {
+    if (auto const *e = std::get_if<EinsumDescriptor>(&nd.op_data)) {
+        return prefactor_is_zero(e->c_prefactor);
+    }
+    if (auto const *p = std::get_if<PermuteDescriptor>(&nd.op_data)) {
+        return p->beta == 0.0;
+    }
+    if (auto const *b = std::get_if<BatchedGemmDescriptor>(&nd.op_data)) {
+        return b->beta == 0.0;
+    }
+    return false;
+}
+
 /// Check if two nodes compute the same thing.
 bool nodes_equivalent(Node const &a, Node const &b) {
     if (a.kind != b.kind)
@@ -91,8 +125,37 @@ bool CSE::run(Graph &graph) {
     // Build a remapping of tensor IDs for eliminated nodes.
     std::unordered_map<TensorId, TensorId> tensor_redirect;
 
+    // Resolve a TensorId in this graph to its underlying buffer pointer
+    // (stable identity for a tensor; null when unresolved).
+    auto ptr_of = [&](TensorId tid) -> void const * {
+        auto it = graph.tensors_map().find(tid);
+        return (it != graph.tensors_map().end()) ? it->second.tensor_ptr : nullptr;
+    };
+
+    // Count real (non-lifecycle) writers of each buffer across the graph.
+    // CSE eliminates node j by redirecting readers of its output to node i's
+    // output. That is only sound when the surviving buffer holds a *stable*
+    // value: if anything writes node i's output again (e.g. a later in-place
+    // scale), the redirected readers would observe the mutated value instead
+    // of the common subexpression. So every output buffer involved in a merge
+    // must have exactly one writer — the producing node itself.
+    std::unordered_map<void const *, int> writer_count;
+    for (auto const &nd : nodes) {
+        if (is_lifecycle(nd.kind))
+            continue;
+        for (auto out : nd.outputs) {
+            if (auto const *p = ptr_of(out))
+                writer_count[p]++;
+        }
+    }
+
     for (size_t i = 0; i < nodes.size(); i++) {
         if (remove[i])
+            continue;
+
+        // Only pure-overwrite producers may be a CSE survivor/candidate. (Since
+        // a matched pair must have equal op_data, checking node i covers j.)
+        if (!cse_eligible(nodes[i]))
             continue;
 
         for (size_t j = i + 1; j < nodes.size(); j++) {
@@ -117,6 +180,54 @@ bool CSE::run(Graph &graph) {
             if (nodes[i].outputs.size() != nodes[j].outputs.size())
                 continue;
             if (!op_data_equal(nodes[i].op_data, nodes[j].op_data))
+                continue;
+
+            // Guard B: both producers' output buffers must be written exactly
+            // once (by themselves). Otherwise redirecting readers onto a buffer
+            // that gets mutated again would hand them the wrong value.
+            bool single_writer = true;
+            for (auto out : nodes[i].outputs) {
+                auto const *p = ptr_of(out);
+                if (p == nullptr || writer_count[p] != 1) {
+                    single_writer = false;
+                    break;
+                }
+            }
+            if (single_writer) {
+                for (auto out : nodes[j].outputs) {
+                    auto const *p = ptr_of(out);
+                    if (p == nullptr || writer_count[p] != 1) {
+                        single_writer = false;
+                        break;
+                    }
+                }
+            }
+            if (!single_writer)
+                continue;
+
+            // Guard A: the shared inputs must not be overwritten between i and
+            // j. If some intervening node writes one of node i's inputs, then
+            // node i (at its position) and node j (at its position) actually
+            // read different values, so they are not the *same* computation at
+            // runtime and the merge would reuse a stale result.
+            std::unordered_set<void const *> input_ptrs;
+            for (auto in : nodes[i].inputs) {
+                if (auto const *p = ptr_of(in))
+                    input_ptrs.insert(p);
+            }
+            bool inputs_stable = true;
+            for (size_t k = i + 1; k < j && inputs_stable; k++) {
+                if (remove[k] || is_lifecycle(nodes[k].kind))
+                    continue;
+                for (auto out : nodes[k].outputs) {
+                    auto const *p = ptr_of(out);
+                    if (p != nullptr && input_ptrs.count(p) > 0) {
+                        inputs_stable = false;
+                        break;
+                    }
+                }
+            }
+            if (!inputs_stable)
                 continue;
 
             // Equivalent! Redirect j's outputs to i's outputs.

@@ -44,23 +44,27 @@ TEST_CASE("LoopInvariantHoisting - nothing to hoist", "[ComputeGraph][Passes]") 
 }
 
 TEST_CASE("LoopInvariantHoisting - hoists invariant node", "[ComputeGraph][Passes]") {
-    auto A = create_random_tensor<double>("A", 3, 3);
-    auto B = create_random_tensor<double>("B", 3, 3);
-    auto C = create_zero_tensor<double>("C", 3, 3);
+    // C = A·B is invariant (A, B never written in the loop) and C is its only
+    // writer, so it's safe to compute once before the loop; the body then
+    // accumulates the invariant C into acc each iteration.
+    auto A   = create_random_tensor<double>("A", 3, 3);
+    auto B   = create_random_tensor<double>("B", 3, 3);
+    auto C   = create_zero_tensor<double>("C", 3, 3);
+    auto acc = create_zero_tensor<double>("acc", 3, 3);
 
     cg::Graph graph("hoist_test");
 
     auto &body = graph.add_loop("loop", 5, [](size_t iter) { return iter < 4; });
     {
         cg::CaptureGuard const guard(body);
-        cg::einsum("ik;kj->ij", &C, A, B);
-        cg::scale(0.9, &C);
+        cg::einsum("ik;kj->ij", &C, A, B); // invariant, single-writer of C
+        cg::axpy(1.0, C, &acc);            // acc += C (reads C; self-modifying on acc)
     }
 
     auto [modified, pass] = graph.apply<cg::passes::LoopInvariantHoisting>();
 
     REQUIRE(modified);
-    REQUIRE(pass.num_hoisted() == 1);
+    REQUIRE(pass.num_hoisted() == 1); // the einsum
 
     cg::LoopDescriptor const *loop_desc = nullptr;
     for (auto const &node : graph.nodes()) {
@@ -69,7 +73,40 @@ TEST_CASE("LoopInvariantHoisting - hoists invariant node", "[ComputeGraph][Passe
             break;
     }
     REQUIRE(loop_desc != nullptr);
-    REQUIRE(loop_desc->body->num_nodes() == 1);
+    REQUIRE(loop_desc->body->num_nodes() == 1); // only the axpy remains
+}
+
+TEST_CASE("LoopInvariantHoisting - does NOT hoist a producer whose output is overwritten in-place", "[ComputeGraph][Passes]") {
+    // C = A·B (invariant inputs) but C is then scaled in place every
+    // iteration. Hoisting the einsum out would remove the per-iteration
+    // reset, so the scale would compound: C, 0.9C, 0.81C, … instead of
+    // 0.9·(A·B) every iteration. The single-writer guard must refuse the
+    // hoist, and the executed result must be 0.9·(A·B).
+    constexpr size_t N = 5;
+    auto             A = create_random_tensor<double>("A", 3, 3);
+    auto             B = create_random_tensor<double>("B", 3, 3);
+    auto             C = create_zero_tensor<double>("C", 3, 3);
+
+    cg::Graph graph("no_hoist_overwrite");
+    auto     &body = graph.add_loop("loop", N, [](size_t iter) { return iter + 1 < N; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", &C, A, B); // C = A·B
+        cg::scale(0.9, &C);                // C *= 0.9  (second writer of C)
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::LoopInvariantHoisting>();
+    CHECK_FALSE(modified);
+    CHECK(pass.num_hoisted() == 0); // C has two writers — not hoisted
+
+    graph.execute();
+
+    // Correct result: C = 0.9 * (A·B) (the reset runs every iteration).
+    auto C_ref = create_zero_tensor<double>("C_ref", 3, 3);
+    einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    for (size_t k = 0; k < C.size(); ++k) {
+        CHECK(C.data()[k] == Catch::Approx(0.9 * C_ref.data()[k]));
+    }
 }
 
 TEST_CASE("LoopInvariantHoisting - dependency chain partially hoists", "[ComputeGraph][Passes]") {
@@ -148,4 +185,39 @@ TEST_CASE("LoopInvariantHoisting - rank-3 BatchedGemm hoists", "[ComputeGraph][P
 
     CHECK(modified);
     CHECK(pass.num_hoisted() == 1);
+}
+
+TEST_CASE("LoopInvariantHoisting - hoisted node with a deferred output stays materialized", "[ComputeGraph][Passes][Loop]") {
+    // LIH runs before MaterializationPass. If it hoists an invariant einsum
+    // whose output is a workspace (deferred) tensor, the full pipeline must
+    // still place the Materialize before the hoisted node — otherwise the
+    // hoisted einsum would write unallocated storage. Verify via the full
+    // default pipeline + a correctness check.
+    constexpr size_t N = 4;
+    auto             A = create_random_tensor<double>("A", 3, 3); // eager, invariant
+    auto             B = create_random_tensor<double>("B", 3, 3);
+
+    cg::Workspace ws("ws");
+    auto         &W   = ws.declare_zero_tensor<double, 2>("W", 3, 3); // deferred output
+    auto         &acc = ws.declare_zero_tensor<double, 2>("acc", 3, 3);
+
+    cg::Graph g("lih_deferred");
+    auto     &body = g.add_loop("loop", N, [](size_t it) { return it + 1 < N; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", &W, A, B); // W = A·B (invariant, single-writer) → hoistable
+        cg::axpy(1.0, W, &acc);            // acc += W
+    }
+
+    auto pm = cg::PassManager::create_default();
+    g.apply(pm);
+    ws.materialize_all();
+    REQUIRE_NOTHROW(g.execute());
+
+    // acc = N * (A·B).
+    auto AB = create_zero_tensor<double>("AB", 3, 3);
+    einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
+    for (size_t k = 0; k < acc.size(); ++k) {
+        CHECK(acc.data()[k] == Catch::Approx(static_cast<double>(N) * AB.data()[k]));
+    }
 }

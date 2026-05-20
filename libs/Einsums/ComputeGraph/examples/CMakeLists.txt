@@ -59,3 +59,52 @@ foreach(example_program ${example_programs})
     )
   endif()
 endforeach()
+
+# Python-script examples. Registered as plain ctest entries that run the
+# script through the build's einsums extension (PYTHONPATH points at
+# ``${CMAKE_BINARY_DIR}/lib`` where ``_core.*.so`` sits). Each script also
+# enrolls in the global ``EINSUMS_PYTHON_UNIT_TEST_TARGETS`` list so
+# ``einsums_finalize_pybind()`` wires the PyEinsums build dependency once
+# that target exists — mirrors how ``einsums_add_python_unit_test`` does it.
+if(EINSUMS_BUILD_PYTHON
+   AND EINSUMS_PYBIND_AUTOGEN
+   AND EINSUMS_WITH_TESTS
+   AND EINSUMS_WITH_TESTS_EXAMPLES
+)
+  set(python_example_scripts
+      mp2_simulation.py
+      scf_simulation.py
+  )
+  foreach(_script ${python_example_scripts})
+    get_filename_component(_stem ${_script} NAME_WE)
+    # snake_case -> CamelCase, matching the cpp example naming style so
+    # ``mp2_simulation`` registers as ``Mp2Simulation``.
+    set(_camel "")
+    string(REPLACE "_" ";" _parts "${_stem}")
+    foreach(_part IN LISTS _parts)
+      if(_part STREQUAL "")
+        continue()
+      endif()
+      string(SUBSTRING "${_part}" 0 1 _head)
+      string(TOUPPER "${_head}" _head)
+      string(SUBSTRING "${_part}" 1 -1 _tail)
+      string(APPEND _camel "${_head}${_tail}")
+    endforeach()
+
+    set(_test_name "Tests.Examples.Modules.Einsums.ComputeGraph.${_camel}")
+    add_test(
+      NAME "${_test_name}"
+      COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/${_script}"
+    )
+    set_tests_properties(
+      "${_test_name}" PROPERTIES
+      ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/lib"
+      LABELS "EXAMPLES_ONLY;PYTHON"
+    )
+    einsums_add_pseudo_target("${_test_name}")
+    einsums_add_pseudo_dependencies(
+      "Tests.Examples.Modules.Einsums.ComputeGraph" "${_test_name}"
+    )
+    set_property(GLOBAL APPEND PROPERTY EINSUMS_PYTHON_UNIT_TEST_TARGETS "${_test_name}")
+  endforeach()
+endif()

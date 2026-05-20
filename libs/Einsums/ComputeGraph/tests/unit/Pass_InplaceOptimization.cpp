@@ -77,3 +77,26 @@ TEST_CASE("InplaceOptimization - rank-3 BatchedGemm intermediate with sole consu
     auto [_m, pass] = graph.apply<cg::passes::InplaceOptimization>();
     CHECK(pass.num_candidates() >= 0);
 }
+
+// ── Loop-aware aggregation (analysis-aggregation group) ──────────────────
+
+TEST_CASE("InplaceOptimization - counts a candidate inside a loop body", "[ComputeGraph][Passes][Loop]") {
+    // A body-created intermediate with a single producer + single consumer
+    // is an in-place candidate. The aggregating pass must find it even
+    // though it lives inside the loop body.
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+
+    cg::Graph g("inplace_loop");
+    auto     &body = g.add_loop("iter", 1, [](size_t) { return false; });
+    auto     &T    = body.create_zero_tensor<double, 2>("T", 4, 4);
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", &T, A, B); // sole writer of T
+        cg::einsum("ik;kj->ij", &C, T, A); // sole reader of T
+    }
+
+    auto [_m, pass] = g.apply<cg::passes::InplaceOptimization>();
+    CHECK(pass.num_candidates() >= 1);
+}

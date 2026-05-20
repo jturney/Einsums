@@ -42,19 +42,42 @@ def test_lih_nothing_to_hoist():
 
 
 def test_lih_hoists_invariant_node():
+    # C = A·B is invariant and C's only writer, so it hoists; the body then
+    # accumulates the invariant C into acc each iteration.
     A = einsums.create_random_tensor("A", [3, 3])
     B = einsums.create_random_tensor("B", [3, 3])
     C = einsums.create_zero_tensor("C", [3, 3])
+    acc = einsums.create_zero_tensor("acc", [3, 3])
 
     g = cg.Graph("hoist_test")
     body = g.add_loop("loop", 5, lambda it: it < 4)
     with cg.capture(body):
-        einsums.einsum("ij <- ik ; kj", C, A, B)
-        einsums.linalg.scale(0.9, C)
+        einsums.einsum("ij <- ik ; kj", C, A, B)  # invariant, single-writer of C
+        einsums.linalg.axpy(1.0, C, acc)           # acc += C (reads C)
 
     pass_inst = cg.LoopInvariantHoisting()
     assert _run(pass_inst, g)
     assert pass_inst.num_hoisted == 1
+
+
+def test_lih_does_not_hoist_overwritten_output():
+    # C = A·B then C *= 0.9 in place every iteration. Hoisting the einsum
+    # would drop the per-iteration reset and the scale would compound, so
+    # the single-writer guard must refuse the hoist.
+    A = einsums.create_random_tensor("A", [3, 3])
+    B = einsums.create_random_tensor("B", [3, 3])
+    C = einsums.create_zero_tensor("C", [3, 3])
+
+    g = cg.Graph("no_hoist_overwrite")
+    body = g.add_loop("loop", 5, lambda it: it + 1 < 5)
+    with cg.capture(body):
+        einsums.einsum("ij <- ik ; kj", C, A, B)  # C = A·B
+        einsums.linalg.scale(0.9, C)               # second writer of C
+
+    pass_inst = cg.LoopInvariantHoisting()
+    modified = _run(pass_inst, g)
+    assert not modified
+    assert pass_inst.num_hoisted == 0
 
 
 def test_lih_dependency_chain_partially_hoists():
