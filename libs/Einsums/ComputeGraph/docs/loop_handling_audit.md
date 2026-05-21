@@ -582,3 +582,64 @@ The high-value next steps change the *dimension* under test, ranked:
    oracle and graph never disagree on the branch.
 6. **Negative / error-path fuzzing.** Malformed einsum specs and mismatched shapes
    should produce graceful errors, not crashes — an untested robustness surface.
+
+## AddressSanitizer recipe (validated 2026-05-21)
+
+ASan was run over both the C++ unit suite and the Python differential fuzzer. It
+found two real memory bugs the differential oracle is blind to — both fixed:
+- **#17** profiler ring-buffer heap-use-after-free (transient DataflowExecutor
+  worker threads vs. the Consumer's raw pointer; fixed via shared ownership).
+- **#18** the tensor destruction "canary" read freed memory (UB *and* unreliable);
+  replaced with a `weak_ptr` liveness token.
+
+After those, the **full 150-test C++ unit suite** and the **full ~4900-case Python
+fuzzer** are both ASan-clean.
+
+### Build (separate dir; no MLIR — it's removed)
+
+`EINSUMS_WITH_SANITIZERS` is a STRING passed straight to `-fsanitize=`, so use
+`=address`, **not** `=ON`. The Python bindings need BOTH `EINSUMS_BUILD_PYTHON=ON`
+*and* `EINSUMS_PYBIND_AUTOGEN=ON` (the latter builds the codegen tool and creates
+the `PyEinsums` target). pybind11's FindPython may grab the *base* conda python —
+pin the env interpreter explicitly, or the `_core.so` is built for the wrong ABI.
+
+```
+CONDA=/Users/jturney/miniconda3/envs/einsums-dev
+cmake -S . -B build-asan -GNinja \
+  -DCMAKE_PREFIX_PATH=$CONDA \
+  -DCMAKE_C_COMPILER=$CONDA/bin/clang -DCMAKE_CXX_COMPILER=$CONDA/bin/clang++ \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DEINSUMS_WITH_SANITIZERS=address \
+  -DEINSUMS_BUILD_PYTHON=ON -DEINSUMS_PYBIND_AUTOGEN=ON \
+  -DPython_EXECUTABLE=$CONDA/bin/python3.14 \
+  -DEINSUMS_WITH_TESTS=ON -DEINSUMS_WITH_TESTS_UNIT=ON \
+  -DEINSUMS_WITH_TESTS_BENCHMARKS=OFF -DEINSUMS_WITH_TESTS_EXAMPLES=OFF \
+  -DEINSUMS_WITH_TESTS_HEADERS=OFF -DEINSUMS_WITH_TESTS_REGRESSIONS=OFF \
+  -DEINSUMS_WITH_TESTS_EXTERNAL_BUILD=OFF
+cmake --build build-asan                       # C++ tests
+cmake --build build-asan --target PyEinsums    # instrumented _core.so
+```
+
+### Run — C++ suite (ASan linked into the test `main`, the clean path)
+
+```
+ASAN_OPTIONS=detect_leaks=0:abort_on_error=0 \
+  ctest --test-dir build-asan -L UNIT_ONLY
+```
+
+### Run — Python fuzzer (preload the runtime; conda python is not SIP-blocked)
+
+The ASan-instrumented `_core.so` is loaded by a non-ASan python, so the ASan
+runtime must be force-loaded first (else "AddressSanitizer ... loaded too late").
+`detect_leaks=0` (LSan unsupported on arm64 macOS) and `detect_container_overflow=0`
+(std::vector redzone annotations mismatch across the un-instrumented libpython /
+numpy / BLAS boundary) are required; no suppressions file was needed beyond those.
+
+```
+ASANRT=$CONDA/lib/clang/22/lib/darwin/libclang_rt.asan_osx_dynamic.dylib
+DYLD_INSERT_LIBRARIES=$ASANRT \
+ASAN_OPTIONS=detect_leaks=0:detect_container_overflow=0:abort_on_error=1 \
+PYTHONPATH=build-asan/lib \
+  $CONDA/bin/python3.14 -m pytest \
+  libs/Einsums/ComputeGraph/tests/unit/test_fuzz_differential_python.py
+```
