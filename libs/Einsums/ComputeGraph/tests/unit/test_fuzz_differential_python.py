@@ -423,10 +423,13 @@ def build_cg(stmts, graph, m, v, t, tag):
 
 
 def _make_pool(m_arrays, v_arrays, t_arrays, name):
+    # The tensor dtype is inferred per seed array, so the same builder serves
+    # both the real and complex suites (complex arrays → complex128 tensors).
     def mk(prefix, arrays):
         out = []
         for idx, arr in enumerate(arrays):
-            tn = einsums.create_zero_tensor(f"{name}_{prefix}{idx}", list(arr.shape))
+            dt = "complex128" if np.iscomplexobj(arr) else "float64"
+            tn = einsums.create_zero_tensor(f"{name}_{prefix}{idx}", list(arr.shape), dtype=dt)
             np.asarray(tn)[...] = arr
             out.append(tn)
         return out
@@ -490,10 +493,14 @@ def check_program(prog, m_arrays, v_arrays, t_arrays, label):
         _cmp(stage, gt, ot, "t")
 
 
-def _seed_arrays(rng):
-    m = [rng.standard_normal(sh) for sh in MAT_SHAPES]
-    v = [rng.standard_normal((L,)) for L in VEC_LENS]
-    t = [rng.standard_normal(sh) for sh in R3_SHAPES]
+def _seed_arrays(rng, dtype="float64"):
+    def gen(sh):
+        r = rng.standard_normal(sh)
+        return r + 1j * rng.standard_normal(sh) if dtype == "complex128" else r
+
+    m = [gen(sh) for sh in MAT_SHAPES]
+    v = [gen((L,)) for L in VEC_LENS]
+    t = [gen(sh) for sh in R3_SHAPES]
     return m, v, t
 
 
@@ -828,3 +835,61 @@ def test_fuzz_random_pipeline_replay(seed):
            [np.asarray(x).copy() for x in vecs],
            [np.asarray(x).copy() for x in r3])
     _assert_pools(got, oracle, prog, "RANDOM-PIPELINE+REPLAY", extra=f"  order={order}")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Complex dtype — the same programs/passes over complex128 tensors.
+#
+# Probed and confirmed: every op uses *no* conjugation (plain transpose, geru
+# not gerc, einsum conj_a/conj_b=false, symm uses B^T not B^H), so the identical
+# numpy oracle is correct for complex. Scalars stay real (valid and common on
+# complex tensors; complex prefactors are a separate axis). The only difference
+# from the real suites is complex seed arrays → complex128 tensors.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize("seed", range(300))
+def test_fuzz_flat_complex(seed):
+    rng = np.random.default_rng(80_000 + seed)
+    prog = _gen_block(rng, depth=0, max_stmts=10)
+    check_program(prog, *_seed_arrays(rng, "complex128"), f"cflat{seed}")
+
+
+@pytest.mark.parametrize("seed", range(300))
+def test_fuzz_control_flow_complex(seed):
+    rng = np.random.default_rng(90_000 + seed)
+    prog = _gen_block(rng, depth=3, max_stmts=6)
+    check_program(prog, *_seed_arrays(rng, "complex128"), f"ccf{seed}")
+
+
+@pytest.mark.parametrize("seed", range(200))
+def test_fuzz_deep_complex(seed):
+    rng = np.random.default_rng(100_000 + seed)
+    prog = _gen_block(rng, depth=4, max_stmts=4)
+    check_program(prog, *_seed_arrays(rng, "complex128"), f"cdeep{seed}")
+
+
+@pytest.mark.parametrize("seed", range(250))
+def test_fuzz_random_pipeline_complex(seed):
+    """Random pass-pipeline permutation over complex128 tensors — the strongest
+    interaction test on the complex paths through every pass."""
+    rng = np.random.default_rng(110_000 + seed)
+    prog = _gen_block(rng, depth=3, max_stmts=6)
+    m, v, t = _seed_arrays(rng, "complex128")
+    oracle = _oracle(prog, m, v, t)
+    if not _usable(*oracle):
+        pytest.skip("oracle overflowed — numerically degenerate program")
+
+    order = list(_SAFE_PASSES)
+    rng.shuffle(order)
+
+    g, mats, vecs, r3 = _build(prog, m, v, t, f"crnd{seed}")
+    pm = cg.PassManager()
+    for name in order:
+        pm.add(getattr(_G, name)())
+    g.apply(pm)
+    g.execute()
+    got = ([np.asarray(x).copy() for x in mats],
+           [np.asarray(x).copy() for x in vecs],
+           [np.asarray(x).copy() for x in r3])
+    _assert_pools(got, oracle, prog, "COMPLEX-RANDOM-PIPELINE", extra=f"  order={order}")

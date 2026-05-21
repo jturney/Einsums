@@ -499,8 +499,15 @@ is now robust), but the longer run exposed a 15th, unrelated bug:
     members destruct (`Profile/.../Profile.hpp`). Lesson: a long-running Python
     test process is itself a cheap shutdown-race fuzzer.
 
-After the fixes: ~2300 fuzz cases (degenerate overflow/NaN programs auto-skipped)
-across seven modes + the full 83-test ComputeGraph suite (C++ and Python) pass.
+A complex128 suite (~1050 cases, flat/control-flow/deep/random-pipeline) found no
+further bugs — confirming complex tensor data flows correctly through every op and
+pass. Every cg op uses *no* conjugation (plain transpose, `geru` not `gerc`, einsum
+`conj=false`, symm `B^T A B`), so the identical numpy oracle is correct for complex;
+scalars stay real (einsum prefactor bindings are real-only).
+
+After the fixes: ~3350 fuzz cases (real + complex; degenerate overflow/NaN programs
+auto-skipped) across seven modes × two dtypes + the full 83-test ComputeGraph suite
+(C++ and Python) pass.
 The harness is registered as
 `Tests.Unit.Modules.ComputeGraph.FuzzDifferentialPython`. Conditionals became
 fuzzable once `add_conditional` was bound to Python (return type changed from
