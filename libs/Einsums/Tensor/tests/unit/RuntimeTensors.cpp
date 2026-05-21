@@ -571,32 +571,25 @@ TEMPLATE_TEST_CASE("RuntimeTensor::resize_deferred — shape change without allo
     }
 }
 
-TEST_CASE("RuntimeTensor::is_alive — destruction canary", "[tensor][runtime][lifecycle]") {
+TEST_CASE("RuntimeTensor liveness token tracks destruction", "[tensor][runtime][lifecycle]") {
     using namespace einsums;
 
-    SECTION("live tensor reports alive") {
-        RuntimeTensor<double> t;
-        REQUIRE(t.is_alive());
+    SECTION("token from a live tensor is not expired") {
+        RuntimeTensor<double> const t;
+        std::weak_ptr<void> const   w = t.liveness_token();
+        REQUIRE_FALSE(w.expired());
     }
 
-    SECTION("after destructor, canary memory no longer matches the magic value") {
-        // Placement-new into a stack buffer so we can inspect memory
-        // post-destructor without object-lifetime UB on the destroyed
-        // object (we read raw bytes, not the object's members).
-        alignas(RuntimeTensor<double>) std::byte buf[sizeof(RuntimeTensor<double>)];
-        auto                                    *t = ::new (buf) RuntimeTensor<double>();
-        REQUIRE(t->is_alive());
-        t->~GeneralRuntimeTensor();
-
-        bool found_canary = false;
-        for (std::size_t i = 0; i + sizeof(uint64_t) <= sizeof(buf); ++i) {
-            uint64_t maybe = 0;
-            std::memcpy(&maybe, buf + i, sizeof(uint64_t));
-            if (maybe == RuntimeTensor<double>::kAliveCanary) {
-                found_canary = true;
-                break;
-            }
+    SECTION("token expires once the tensor is destroyed") {
+        // The graph's runtime validator holds exactly this weak_ptr to detect a
+        // destroyed (dangling) captured tensor without ever touching its memory
+        // — unlike the old canary, this is definitive and free of UB.
+        std::weak_ptr<void> w;
+        {
+            RuntimeTensor<double> const t;
+            w = t.liveness_token();
+            REQUIRE_FALSE(w.expired());
         }
-        REQUIRE_FALSE(found_canary);
+        REQUIRE(w.expired());
     }
 }

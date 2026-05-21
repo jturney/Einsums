@@ -355,7 +355,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     }
 
     // HIP clang doesn't like it when this is defaulted.
-    virtual ~GeneralRuntimeTensor() { _alive_canary = 0; }
+    virtual ~GeneralRuntimeTensor() {}
 
     /**
      * @brief Set all of the data in the tensor to zero.
@@ -1183,12 +1183,18 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
         resize_deferred(std::vector<size_t>{static_cast<size_t>(dims)...});
     }
 
-    /// Destruction canary used by ComputeGraph's runtime validator
-    /// (TensorHandle.hpp:308). Compares against kAliveCanary; the
-    /// destructor overwrites with 0 so use-after-free is detectable.
-    [[nodiscard]] bool is_alive() const { return _alive_canary == kAliveCanary; }
-
-    static constexpr uint64_t kAliveCanary = 0xC0FFEE'DEAD'BEEF'42ULL;
+    /// Lazily-created liveness token used by ComputeGraph's runtime validator
+    /// (see make_handle). The validator holds a std::weak_ptr to it so it can
+    /// detect destruction without dereferencing a possibly-freed tensor — the
+    /// old canary read freed memory (UB) and was unreliable (a reused-but-
+    /// unchanged canary read as alive). Created on first request, so tensors
+    /// never captured into a graph pay nothing.
+    [[nodiscard]] std::weak_ptr<void> liveness_token() const {
+        if (!_life_token) {
+            _life_token = std::make_shared<char>();
+        }
+        return _life_token;
+    }
 
   protected:
     Vector _data{};
@@ -1202,7 +1208,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     /// Post-materialize init policy. See @ref GeneralTensor::_pending_init.
     PendingInit _pending_init{PendingInit::None};
 
-    uint64_t _alive_canary{kAliveCanary};
+    mutable std::shared_ptr<void> _life_token;
 
     template <typename TOther>
     friend class RuntimeTensorView;

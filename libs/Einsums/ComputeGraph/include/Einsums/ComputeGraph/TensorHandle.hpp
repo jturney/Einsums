@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <numeric>
 #include <span>
 #include <string>
@@ -368,12 +369,21 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
     };
 
     h.name_hash = std::hash<std::string>{}(h.name);
-    h.validator = [tensor_mut, expected_hash = h.name_hash]() -> bool {
+    // Capture a liveness token (weak_ptr) so destruction is detected WITHOUT
+    // dereferencing a possibly-freed tensor. Types without the token skip the
+    // check (they were unchecked before too). `life_token` is empty for those,
+    // and `has_life_token` gates the .expired() probe so an empty weak_ptr (which
+    // reports expired) is never mistaken for a destroyed tensor.
+    constexpr bool      has_life_token = requires { tensor_mut->liveness_token(); };
+    std::weak_ptr<void> life_token;
+    if constexpr (has_life_token) {
+        life_token = tensor_mut->liveness_token();
+    }
+    h.validator = [tensor_mut, life_token, expected_hash = h.name_hash]() -> bool {
         try {
-            // Check the destruction canary first — deterministic, no UB.
-            if constexpr (requires { tensor_mut->is_alive(); }) {
-                if (!tensor_mut->is_alive())
-                    return false;
+            if constexpr (has_life_token) {
+                if (life_token.expired())
+                    return false; // tensor destroyed — definitive, no UB
             }
             return std::hash<std::string>{}(tensor_mut->name()) == expected_hash;
         } catch (...) {

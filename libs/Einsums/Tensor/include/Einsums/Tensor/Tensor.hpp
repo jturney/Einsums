@@ -183,10 +183,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     /**
      * @brief Destroy the Tensor object.
      */
-    ~GeneralTensor() {
-        _alive_canary = 0;
-        ProfileMemFree(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
-    }
+    ~GeneralTensor() { ProfileMemFree(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T))); }
 
     /**
      * @brief Default move constructor.
@@ -1411,13 +1408,21 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         return TensorView<T, Rank - sizeof...(MultiIndex) + 1>(_impl.tie_indices(std::forward<MultiIndex>(index)...));
     }
 
-    /// Check if this tensor object has not been destroyed. Used by graph validation.
-    bool is_alive() const { return _alive_canary == kAliveCanary; }
-
-    static constexpr uint64_t kAliveCanary = 0xC0FFEE'DEAD'BEEF'42ULL;
+    /// Lazily-created token whose lifetime tracks this object. The graph's
+    /// validator (see make_handle) holds a std::weak_ptr to it to detect
+    /// destruction WITHOUT dereferencing a possibly-freed tensor — reading a
+    /// destroyed object's memory (the old canary approach) is UB and unreliable.
+    /// Created on first request, so tensors never captured into a graph pay
+    /// nothing.
+    [[nodiscard]] std::weak_ptr<void> liveness_token() const {
+        if (!_life_token) {
+            _life_token = std::make_shared<char>();
+        }
+        return _life_token;
+    }
 
   private:
-    uint64_t _alive_canary{kAliveCanary};
+    mutable std::shared_ptr<void> _life_token;
 
     std::string _name{"(unnamed)"};
 
@@ -1502,7 +1507,7 @@ struct GeneralTensor<T, 0, Alloc> final : tensor_base::CoreTensor,
     /**
      * Default destructor
      */
-    ~GeneralTensor() { _alive_canary = 0; }
+    ~GeneralTensor() = default;
 
     /**
      * Create a new zero-rank tensor with the given name.
@@ -1604,13 +1609,21 @@ struct GeneralTensor<T, 0, Alloc> final : tensor_base::CoreTensor,
      */
     [[nodiscard]] Stride<0> strides() const { return Stride{}; }
 
-    /// Check if this tensor object has not been destroyed. Used by graph validation.
-    bool is_alive() const { return _alive_canary == kAliveCanary; }
-
-    static constexpr uint64_t kAliveCanary = 0xC0FFEE'DEAD'BEEF'42ULL;
+    /// Lazily-created token whose lifetime tracks this object. The graph's
+    /// validator (see make_handle) holds a std::weak_ptr to it to detect
+    /// destruction WITHOUT dereferencing a possibly-freed tensor — reading a
+    /// destroyed object's memory (the old canary approach) is UB and unreliable.
+    /// Created on first request, so tensors never captured into a graph pay
+    /// nothing.
+    [[nodiscard]] std::weak_ptr<void> liveness_token() const {
+        if (!_life_token) {
+            _life_token = std::make_shared<char>();
+        }
+        return _life_token;
+    }
 
   private:
-    uint64_t _alive_canary{kAliveCanary};
+    mutable std::shared_ptr<void> _life_token;
 
     /**
      * @var _name
