@@ -505,9 +505,17 @@ pass. Every cg op uses *no* conjugation (plain transpose, `geru` not `gerc`, ein
 `conj=false`, symm `B^T A B`), so the identical numpy oracle is correct for complex;
 scalars stay real (einsum prefactor bindings are real-only).
 
-After the fixes: ~3350 fuzz cases (real + complex; degenerate overflow/NaN programs
-auto-skipped) across seven modes × two dtypes + the full 83-test ComputeGraph suite
-(C++ and Python) pass.
+A **deferred-tensor mode** (half the matrices declared via `Workspace.declare_zero_tensor`,
+run both with explicit `materialize_all()` and via the default manager's
+MaterializationPass) found a 16th bug: MaterializationPass materialized a deferred
+buffer **twice** when it was used both inside a loop body and in the parent (one
+buffer, two graph-local TensorIds), and the second `init_zero` wiped a loop's
+accumulation before a later read. Fixed by deduping materialization requests by
+underlying `tensor_ptr` — materialize once, at the earliest use.
+
+After the fixes: ~3750 fuzz cases (real + complex; eager and deferred allocation;
+degenerate overflow/NaN programs auto-skipped) across eight modes × two dtypes +
+the full 83-test ComputeGraph suite (C++ and Python) pass.
 The harness is registered as
 `Tests.Unit.Modules.ComputeGraph.FuzzDifferentialPython`. Conditionals became
 fuzzable once `add_conditional` was bound to Python (return type changed from

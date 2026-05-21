@@ -902,6 +902,161 @@ def test_fuzz_deep_complex(seed):
     check_program(prog, *_seed_arrays(rng, "complex128"), f"cdeep{seed}")
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Deferred (workspace) tensors — exercise the MaterializationPass / deferred
+# allocation path differentially, which the all-eager suites above never touch.
+#
+# Half the matrices are declared deferred (workspace, zero-initialized at
+# materialize time); the rest stay eager with random data so nonzero values
+# still flow. Each program runs two ways and both must match an oracle in which
+# the deferred matrices start at zero:
+#   * RAW       — explicit ws.materialize_all() then execute (no passes).
+#   * OPTIMIZED — default manager (its MaterializationPass allocates/zeroes the
+#                 deferred tensors) then execute.
+# This validates that MaterializationPass produces the same result as explicit
+# materialization, across the full op / control-flow / view / dtype surface.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _deferred_mask(n):
+    return [i % 2 == 1 for i in range(n)]
+
+
+def _make_pool_deferred(m_arrays, v_arrays, t_arrays, name, mask):
+    ws = _G.Workspace(f"{name}_ws")
+
+    def eager(prefix, arrays):
+        out = []
+        for idx, arr in enumerate(arrays):
+            dt = "complex128" if np.iscomplexobj(arr) else "float64"
+            tn = einsums.create_zero_tensor(f"{name}_{prefix}{idx}", list(arr.shape), dtype=dt)
+            np.asarray(tn)[...] = arr
+            out.append(tn)
+        return out
+
+    mats = []
+    for idx, arr in enumerate(m_arrays):
+        dt = "complex128" if np.iscomplexobj(arr) else "float64"
+        if mask[idx]:
+            # Deferred, zero-initialized — no storage until materialized.
+            mats.append(ws.declare_zero_tensor(f"{name}_dm{idx}", list(arr.shape), dt))
+        else:
+            tn = einsums.create_zero_tensor(f"{name}_m{idx}", list(arr.shape), dtype=dt)
+            np.asarray(tn)[...] = arr
+            mats.append(tn)
+
+    return mats, eager("v", v_arrays), eager("t", t_arrays), ws
+
+
+def _referenced_mats(stmts, acc):
+    """Matrix-pool indices the program reads or writes (recursing into bodies).
+    A deferred matrix the program never references is *not* materialized by the
+    pass (correctly — nothing uses it), so its post-execute value is undefined
+    and must be excluded from the comparison."""
+    for s in stmts:
+        k = s[0]
+        if k == "scale" or k == "etransform" or k == "vscale" or k == "gemv":
+            acc.add(s[2])
+        elif k == "axpy":
+            acc.update((s[2], s[3]))
+        elif k == "axpby":
+            acc.update((s[2], s[4]))
+        elif k == "gemm":
+            acc.update((s[2], s[3], s[5]))
+        elif k == "einsum":
+            acc.update((s[3], s[4], s[6]))
+        elif k == "perm":
+            acc.update((s[3], s[4]))
+        elif k == "symm":
+            acc.update((s[1], s[2], s[3]))
+        elif k == "ger":
+            acc.add(s[4])
+        elif k == "vaxpy":
+            acc.update((s[2], s[3]))
+        elif k == "vgemm":
+            acc.update((s[2], s[7], s[9]))
+        elif k == "loop":
+            _referenced_mats(s[2], acc)
+        elif k == "cond":
+            _referenced_mats(s[2], acc)
+            _referenced_mats(s[3], acc)
+        # beinsum operands live in the rank-3 pool, not the matrix pool.
+    return acc
+
+
+def check_program_deferred(prog, m_arrays, v_arrays, t_arrays, label):
+    mask = _deferred_mask(len(m_arrays))
+    # Deferred matrices start at zero (Initialize/materialize zeroes them).
+    om = [np.zeros_like(a) if mask[i] else a.copy() for i, a in enumerate(m_arrays)]
+    ov = [a.copy() for a in v_arrays]
+    ot = [a.copy() for a in t_arrays]
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        interp_np(prog, om, ov, ot)
+    if not _usable(om, ov, ot):
+        pytest.skip("oracle overflowed — numerically degenerate program")
+
+    referenced = _referenced_mats(prog, set())
+    skip_m = {i for i in range(len(m_arrays)) if mask[i] and i not in referenced}
+
+    def _check(stage, mats, vecs, r3):
+        gm = [np.asarray(x) for x in mats]
+        gv = [np.asarray(x) for x in vecs]
+        gt = [np.asarray(x) for x in r3]
+        for i in range(len(om)):
+            if i in skip_m:  # unused deferred tensor — never materialized
+                continue
+            if not np.allclose(gm[i], om[i], rtol=RTOL, atol=ATOL):
+                raise AssertionError(f"{stage} disagrees on m{i}\nprogram={prog!r}\ngot=\n{gm[i]}\noracle=\n{om[i]}")
+        for i in range(len(ov)):
+            if not np.allclose(gv[i], ov[i], rtol=RTOL, atol=ATOL):
+                raise AssertionError(f"{stage} disagrees on v{i}\nprogram={prog!r}")
+        for i in range(len(ot)):
+            if not np.allclose(gt[i], ot[i], rtol=RTOL, atol=ATOL):
+                raise AssertionError(f"{stage} disagrees on t{i}\nprogram={prog!r}")
+
+    # RAW: materialize the workspace explicitly, no optimization passes.
+    mats, vecs, r3, ws = _make_pool_deferred(m_arrays, v_arrays, t_arrays, f"{label}_raw", mask)
+    g = cg.Graph(f"{label}_raw")
+    build_cg(prog, g, mats, vecs, r3, f"{label}_raw")
+    ws.materialize_all()
+    g.execute()
+    _check("DEFERRED-RAW", mats, vecs, r3)
+
+    # OPTIMIZED: the default manager's MaterializationPass allocates/zeroes.
+    mats2, vecs2, r32, _ = _make_pool_deferred(m_arrays, v_arrays, t_arrays, f"{label}_opt", mask)
+    g2 = cg.Graph(f"{label}_opt")
+    build_cg(prog, g2, mats2, vecs2, r32, f"{label}_opt")
+    g2.apply(cg.default_pass_manager())
+    g2.execute()
+    _check("DEFERRED-OPTIMIZED", mats2, vecs2, r32)
+
+
+def test_regression_deferred_loop_accumulate_then_read():
+    """A deferred tensor (m1) accumulated inside a loop and then read by a
+    parent op. MaterializationPass must materialize+zero it ONCE before the
+    loop — emitting a second Initialize before the later read re-zeroes it and
+    wipes the loop's accumulation. (m1 is deferred under _deferred_mask.)"""
+    prog = [
+        ("loop", 3, [("axpby", 0.5, 0, 0.5, 1)]),  # m1 += accumulate from m0
+        ("axpy", 1.0, 1, 2),                        # m2 += m1 (reads m1 outside the loop)
+    ]
+    check_program_deferred(prog, *_square_seed_arrays(np.random.default_rng(31337)), "def_accum")
+
+
+@pytest.mark.parametrize("seed", range(250))
+def test_fuzz_deferred(seed):
+    rng = np.random.default_rng(120_000 + seed)
+    prog = _gen_block(rng, depth=2, max_stmts=6)
+    check_program_deferred(prog, *_seed_arrays(rng), f"def{seed}")
+
+
+@pytest.mark.parametrize("seed", range(150))
+def test_fuzz_deferred_complex(seed):
+    rng = np.random.default_rng(130_000 + seed)
+    prog = _gen_block(rng, depth=2, max_stmts=6)
+    check_program_deferred(prog, *_seed_arrays(rng, "complex128"), f"cdef{seed}")
+
+
 @pytest.mark.parametrize("seed", range(250))
 def test_fuzz_random_pipeline_complex(seed):
     """Random pass-pipeline permutation over complex128 tensors — the strongest

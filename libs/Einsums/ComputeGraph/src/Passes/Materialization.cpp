@@ -219,41 +219,63 @@ bool Materialization::run(Graph &graph) {
     };
     std::vector<Insertion> insertions;
 
-    for (auto tid : own_deferred) {
-        auto &handle = graph.tensor(tid);
+    // A deferred tensor used both in the parent and inside a sub-graph (or in
+    // more than one sub-graph) is ONE underlying buffer but shows up once in
+    // own_deferred and again in hoists. It must be materialized + initialized
+    // exactly ONCE, before its earliest use — emitting a lifecycle pair per
+    // use-site re-runs Initialize (e.g. re-zeroes the buffer) and clobbers a
+    // value an earlier use already produced (e.g. a loop's accumulation read by
+    // a later parent op). Dedup by the underlying tensor_ptr, preferring a
+    // parent-owning request so the node carries the parent TensorId (and thus
+    // its dependency edges), placed at the earliest position across all uses.
+    struct Req {
+        size_t   position;
+        bool     owns_tid;
+        Graph   *owner;
+        TensorId tid;
+    };
+    std::vector<Req>                         reqs;
+    std::unordered_map<void const *, size_t> req_of_ptr;
+    auto                                     add_req = [&](void const *ptr, size_t position, bool owns_tid, Graph *owner, TensorId tid) {
+        // A null ptr can't be deduped reliably — keep it as its own request.
+        if (ptr != nullptr) {
+            if (auto it = req_of_ptr.find(ptr); it != req_of_ptr.end()) {
+                Req &b     = reqs[it->second];
+                b.position = std::min(b.position, position);
+                if (owns_tid && !b.owns_tid) {
+                    b.owns_tid = true;
+                    b.owner    = owner;
+                    b.tid      = tid;
+                }
+                return;
+            }
+            req_of_ptr.emplace(ptr, reqs.size());
+        }
+        reqs.push_back({position, owns_tid, owner, tid});
+    };
 
+    for (auto tid : own_deferred) {
+        auto  &handle     = graph.tensor(tid);
         size_t insert_pos = 0;
         if (auto it = first_use.find(tid); it != first_use.end()) {
             insert_pos = it->second;
         }
-
-        auto new_nodes = build_lifecycle_nodes(handle, /*owns_tid=*/true);
-        // Stats: count of Materialize + (Initialize if present).
-        _num_materialized++;
-        if (handle.init_kind != InitKind::None) {
-            _num_initialized++;
-        }
-
-        bool const is_dist = handle.is_distributed && !handle.is_replicated;
-        EINSUMS_LOG_INFO("Materialization: inserting materialize({}){} before position {}", handle.name, is_dist ? " [distributed]" : "",
-                         insert_pos);
-
-        insertions.push_back({.position = insert_pos, .new_nodes = std::move(new_nodes)});
+        add_req(handle.tensor_ptr, insert_pos, /*owns_tid=*/true, &graph, tid);
     }
-
     for (auto const &h : hoists) {
         auto &handle = h.handle_owner->tensor(h.tid);
+        add_req(handle.tensor_ptr, h.owning_node_index, /*owns_tid=*/false, h.handle_owner, h.tid);
+    }
 
-        auto new_nodes = build_lifecycle_nodes(handle, /*owns_tid=*/false);
+    for (auto const &r : reqs) {
+        auto &handle    = r.owner->tensor(r.tid);
+        auto  new_nodes = build_lifecycle_nodes(handle, r.owns_tid);
         _num_materialized++;
         if (handle.init_kind != InitKind::None) {
             _num_initialized++;
         }
-
-        EINSUMS_LOG_INFO("Materialization: hoisting materialize({}) from '{}' to position {}", handle.name, h.handle_owner->name(),
-                         h.owning_node_index);
-
-        insertions.push_back({.position = h.owning_node_index, .new_nodes = std::move(new_nodes)});
+        EINSUMS_LOG_INFO("Materialization: materialize({}) at position {} (owns_tid={})", handle.name, r.position, r.owns_tid);
+        insertions.push_back({.position = r.position, .new_nodes = std::move(new_nodes)});
     }
 
     // ── 5. Apply, descending so earlier positions don't shift ────────────
