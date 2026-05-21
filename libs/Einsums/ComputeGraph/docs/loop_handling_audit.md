@@ -643,3 +643,35 @@ PYTHONPATH=build-asan/lib \
   $CONDA/bin/python3.14 -m pytest \
   libs/Einsums/ComputeGraph/tests/unit/test_fuzz_differential_python.py
 ```
+
+## UndefinedBehaviorSanitizer (validated 2026-05-21)
+
+Same machinery as ASan — `EINSUMS_WITH_SANITIZERS` accepts `undefined`, so swap the
+flag and reuse everything above. UBSan catches a complementary bug class ASan can't:
+signed-integer overflow, invalid shifts/enum values, float→int overflow, misaligned
+pointers, null derefs — i.e. exactly the stride/dim/index arithmetic the fuzzer
+permutes. Configure `-DEINSUMS_WITH_SANITIZERS=undefined` (or `address,undefined` to
+compose both in one build), build, then run:
+
+```
+# C++ unit suite (UBSan runtime auto-linked into each test main)
+UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=0:report_error_type=1 \
+  ctest --test-dir build-ubsan -L UNIT_ONLY -V 2>&1 | grep "runtime error:"
+
+# Python fuzzer — preload the *ubsan* runtime (mirror the ASan dyld trick)
+UBRT=$CONDA/lib/clang/22/lib/darwin/libclang_rt.ubsan_osx_dynamic.dylib
+DYLD_INSERT_LIBRARIES=$UBRT \
+UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=0:report_error_type=1 \
+PYTHONPATH=build-ubsan/lib \
+  $CONDA/bin/python3.14 -m pytest \
+  libs/Einsums/ComputeGraph/tests/unit/test_fuzz_differential_python.py
+```
+
+UBSan reports are recoverable by default (it prints and continues), so ctest/pytest
+still exit 0 even on a finding — **grep the output for `runtime error:`** rather than
+trusting the exit code. A quick positive control (`int x=0x7fffffff; x+=argc;`) is worth
+keeping to confirm the runtime is actually engaged.
+
+Result: both suites UBSan-clean — 150 C++ unit tests (~29s) and the full ~4900-case
+Python fuzzer (4868 passed, 32 skipped, ~22s), zero `runtime error:` diagnostics. No
+new bugs beyond ASan's #17/#18; this run was pure verification.
