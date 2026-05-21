@@ -48,11 +48,19 @@ void Consumer::consumer_loop() {
     auto last_tick = std::chrono::steady_clock::now();
     while (_running.load(std::memory_order_relaxed)) {
         drain_all();
-        // Call tick callback every ~500ms
+        // Call tick callback every ~500ms. Snapshot it under the lock (the main
+        // thread may install it after this loop has started) and invoke outside.
         auto now = std::chrono::steady_clock::now();
-        if (_tick_callback && (now - last_tick) >= std::chrono::milliseconds(500)) {
+        if ((now - last_tick) >= std::chrono::milliseconds(500)) {
+            std::function<void()> tick;
+            {
+                std::scoped_lock const lock(_tick_mutex);
+                tick = _tick_callback;
+            }
             last_tick = now;
-            _tick_callback();
+            if (tick) {
+                tick();
+            }
         }
         // Wait for notification from producers or timeout after 1ms.
         // If notified (e.g., by flush() or shutdown()), wake immediately.

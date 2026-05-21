@@ -166,7 +166,12 @@ class EINSUMS_EXPORT Consumer {
     void notify() { _wake_cv.notify_one(); }
 
     /// Set a callback to be invoked after each drain cycle (e.g., for server tick).
-    void set_tick_callback(std::function<void()> cb) { _tick_callback = std::move(cb); }
+    /// Guarded by _tick_mutex: the consumer thread is started in the constructor
+    /// and reads/calls _tick_callback concurrently with this setter.
+    void set_tick_callback(std::function<void()> cb) {
+        std::scoped_lock const lock(_tick_mutex);
+        _tick_callback = std::move(cb);
+    }
 
     /// Get recent timeline events for Gantt chart. Caller must hold shared lock.
     auto timeline_events() const -> std::vector<TimelineEvent> const & { return _timeline_events; }
@@ -232,7 +237,9 @@ class EINSUMS_EXPORT Consumer {
     // Dropped event counter
     std::atomic<uint64_t> _dropped{0};
 
-    // Tick callback (e.g., for server)
+    // Tick callback (e.g., for server). Set on the main thread after the consumer
+    // thread is already running, so access is guarded by _tick_mutex.
+    std::mutex            _tick_mutex;
     std::function<void()> _tick_callback;
 
     // Timeline events for Gantt chart (circular buffer, protected by tree_mutex_)
