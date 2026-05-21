@@ -483,10 +483,25 @@ touches must resolve view aliases** (`Graph::resolve_alias`). `topological_sort`
 already did; Reorder, DNE, LIH, and `effective_io` did not until views fuzzed
 them. (And a sentinel must never collide with a valid id.)
 
-After the fixes: 814 fuzz cases (800 random over a mixed-shape pool of matrices,
-vectors, and rank-3 tensors — einsum / batched einsum / symm_gemm / gemv / ger /
-transpose / view-slice ops; + regressions) + the full 83-test ComputeGraph suite
-(C++ and Python) pass. The harness is registered as
+A later escalation (element_transform + view-as-gemm-operand ops; bigger/deeper
+programs; and four new execution modes — re-execution/replay, random pass-pipeline
+permutations, double-optimize idempotency, and random-pipeline+replay) found no
+*new* ComputeGraph soundness bugs (strong evidence the alias/scheduling machinery
+is now robust), but the longer run exposed a 15th, unrelated bug:
+
+15. **Profiler shutdown SIGSEGV** — `einsums::profile::Server::tick(this=0x0)` on
+    the background consumer thread. The `Profiler` Meyers singleton destroys
+    `_server` before the consumer thread (members destruct in reverse order),
+    while the consumer's periodic tick callback still runs `_server->tick()`. The
+    `Py_AtExit→finalize()→Profiler::shutdown()` path exists but is guarded by
+    `is_running()` and races with C++ static destruction. Fixed by adding an
+    explicit `~Profiler()` that stops the consumer thread (and server) before the
+    members destruct (`Profile/.../Profile.hpp`). Lesson: a long-running Python
+    test process is itself a cheap shutdown-race fuzzer.
+
+After the fixes: ~2300 fuzz cases (degenerate overflow/NaN programs auto-skipped)
+across seven modes + the full 83-test ComputeGraph suite (C++ and Python) pass.
+The harness is registered as
 `Tests.Unit.Modules.ComputeGraph.FuzzDifferentialPython`. Conditionals became
 fuzzable once `add_conditional` was bound to Python (return type changed from
 `std::pair<Graph&,Graph&>` to `std::tuple<Graph&,Graph&>`). `cg::read`/DiskRead
