@@ -1466,10 +1466,12 @@ void Graph::execute() {
 
     _timing_report.clear();
 
-    profile::Profiler::instance().push(fmt::format("ComputeGraph::execute({})", _name));
+    // RAII zones (see execute(Executor&)): a node that throws must still pop its
+    // profiler zone, or the tree depth grows without bound across failed runs.
+    profile::ScopedZone const _exec_zone(fmt::format("ComputeGraph::execute({})", _name));
 
     for (auto &node : _nodes) {
-        profile::Profiler::instance().push(fmt::format("graph:{}/{}", _name, node.label));
+        profile::ScopedZone const _node_zone(fmt::format("graph:{}/{}", _name, node.label));
 
         // Annotate with operation metadata
         profile::annotate("op_kind", op_kind_name(node.kind));
@@ -1632,8 +1634,7 @@ void Graph::execute() {
 
         double const ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
         _timing_report.push_back({.id = node.id, .label = node.label, .kind = node.kind, .duration_ms = ms});
-
-        profile::Profiler::instance().pop();
+        // _node_zone pops here (and on any early continue / thrown node).
     }
 
     // Final D2H flush (discrete GPU only).
@@ -1658,7 +1659,7 @@ void Graph::execute() {
         }
     }
 
-    profile::Profiler::instance().pop();
+    // _exec_zone pops here.
     _executed = true;
 }
 
@@ -1676,9 +1677,14 @@ void Graph::execute(Executor &executor) {
 
     _timing_report.clear();
 
-    profile::Profiler::instance().push(fmt::format("ComputeGraph::execute({}, executor={})", _name, executor.name()));
-    executor.execute(*this);
-    profile::Profiler::instance().pop();
+    {
+        // RAII: pop the profiler zone even if the executor propagates an
+        // exception. A bare push/pop here leaks an unclosed zone on every
+        // failed execute, deepening the profiler tree without bound (which
+        // makes the profiler→viewer serialization progressively slower).
+        profile::ScopedZone const _zone(fmt::format("ComputeGraph::execute({}, executor={})", _name, executor.name()));
+        executor.execute(*this);
+    }
     _executed = true;
 }
 

@@ -710,3 +710,32 @@ Regression tests: `test_python_callback_under_executor_does_not_deadlock` and
 Known latent issues found but NOT yet fixed: `EINSUMS_WITH_PROFILER=OFF` does not
 compile (unguarded `profile::Profiler::instance()` call sites); `Consumer::set_tick_callback`
 races with the consumer thread at startup (TSan-flagged, data-independent).
+
+## Exception propagation through the executors (2026-05-21)
+
+An exception-injection fuzz mode (`check_program_raises` / `test_fuzz_executor_propagates_exception*`)
+runs a program with a deliberately-throwing `element_transform` (a Python callable
+that raises) and demands every executor *raise* — never hang, never silently
+complete. It uncovered a chain of bugs:
+
+- **Python exception → interpreter-finalize crash.** A Python callback that raises
+  on a worker thread let a `pybind11::error_already_set` escape onto the worker;
+  its off-GIL destruction corrupts the CPython thread state and crashes at
+  finalization (`gilstate_tss_set: failed to set current tstate`). Fixed in
+  `element_transform_python` (Operations.hpp): hold the GIL across the element
+  loop and translate any Python exception to a `std::runtime_error` while the GIL
+  is held, so only a plain C++ exception crosses the worker boundary (guarded by
+  `PyEinsums_EXPORTS` since the binding TU includes pybind11 *after* this header).
+- **Profiler zone leak on throw → quadratic slowdown.** `Graph::execute` pushed a
+  profiler zone per node / per call with a bare `pop()` that a thrown node skipped,
+  so the aggregation tree deepened by one per failed run. With the profiler server
+  streaming to a viewer, serializing the ever-deeper tree (`write_node_json`
+  recursion) went quadratic. Fixed by using `profile::ScopedZone` RAII in both
+  `execute` overloads (pops on any exit, including `continue` and throw).
+
+**Known-unfixed (bug #6, test skipped):** a *control-flow* graph (loop/conditional)
+with a throwing node, run under a parallel executor, hits
+`thread::join: Resource deadlock avoided` — a nested subgraph execution on a worker
+thread joins its own pool during exception unwinding. Flat graphs are fully covered;
+the control-flow exception variant (`test_fuzz_executor_propagates_exception_control_flow`)
+is `@pytest.mark.skip`'d pending this fix.

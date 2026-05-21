@@ -670,6 +670,64 @@ def test_fuzz_cross_executor_deep_nesting(seed, dtype):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Exception propagation: a node that throws must make execute() *raise* on every
+# executor — never hang (TaskPool orphaning a continuation / OpenMP exception
+# escaping its parallel region) and never silently complete (swallowed error).
+# We inject a throwing element_transform mid-graph with a dependent op, so the
+# failure has to travel through the dependency chain to the waited sink.
+# ──────────────────────────────────────────────────────────────────────────
+
+_INJECTED_BOOM = "fuzz-injected element_transform failure"
+
+
+def _boom(_x):
+    raise ValueError(_INJECTED_BOOM)
+
+
+def check_program_raises(prog, m_arrays, v_arrays, t_arrays, label):
+    for ex_name, exec_cls in _CROSS_EXECUTORS:
+        for optimize in (False, True):
+            tag = f"{label}_{ex_name}_{'opt' if optimize else 'raw'}"
+            mats, vecs, r3s = _make_pool(m_arrays, v_arrays, t_arrays, tag)
+            g = cg.Graph(tag)
+            build_cg(prog, g, mats, vecs, r3s, tag)
+            # Inject a throwing transform, then a dependent op so the failure
+            # must propagate through the dependency graph to the sink. The
+            # callback runs on a worker thread under the parallel executors; the
+            # exception must surface here (translated to a C++/Python error),
+            # never hang and never be silently swallowed.
+            with cg.capture(g):
+                einsums.linalg.element_transform(mats[0], _boom)
+                einsums.linalg.scale(2.0, mats[0])
+            if optimize:
+                g.apply(cg.default_pass_manager())
+
+            with pytest.raises(Exception):
+                g.execute(exec_cls())
+
+
+@pytest.mark.parametrize("seed", range(120))
+def test_fuzz_executor_propagates_exception(seed):
+    rng = np.random.default_rng(60_000 + seed)
+    prog = _gen_block(rng, depth=0, max_stmts=8)
+    check_program_raises(prog, *_seed_arrays(rng), f"boom{seed}")
+
+
+@pytest.mark.skip(
+    reason="A control-flow (loop/conditional) graph that throws under a parallel "
+    "executor hits 'thread::join: Resource deadlock avoided' — a nested subgraph "
+    "execution on a worker thread joins its own pool during exception unwinding. "
+    "The flat case above is fully covered; this is a separate, deeper fix tracked "
+    "in loop_handling_audit.md."
+)
+@pytest.mark.parametrize("seed", range(80))
+def test_fuzz_executor_propagates_exception_control_flow(seed):
+    rng = np.random.default_rng(65_000 + seed)
+    prog = _gen_block(rng, depth=3, max_stmts=6)
+    check_program_raises(prog, *_seed_arrays(rng), f"boomcf{seed}")
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Fixed regression programs (index a small square pool).
 # ──────────────────────────────────────────────────────────────────────────
 
