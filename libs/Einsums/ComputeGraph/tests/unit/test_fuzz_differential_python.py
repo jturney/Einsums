@@ -552,14 +552,15 @@ def _run_program_exec(prog, m_arrays, v_arrays, t_arrays, name, optimize, exec_c
             [np.asarray(x).copy() for x in r3s])
 
 
-def check_program_cross_executor(prog, m_arrays, v_arrays, t_arrays, label):
-    rtol, atol = _DTYPE_TOL["float64"]
-    cap = _DTYPE_CAP["float64"]
+def check_program_cross_executor(prog, m_arrays, v_arrays, t_arrays, label, dtype="float64"):
+    rtol, atol = _DTYPE_TOL[dtype]
+    cap = _DTYPE_CAP[dtype]
+    dt = np.dtype(dtype)
     om = [a.copy() for a in m_arrays]
     ov = [a.copy() for a in v_arrays]
     ot = [a.copy() for a in t_arrays]
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        interp_np(prog, om, ov, ot)
+        interp_np(prog, om, ov, ot, dt)
     if not _usable(om, ov, ot, cap=cap):
         pytest.skip("oracle overflowed — numerically degenerate program")
 
@@ -636,23 +637,36 @@ def test_fuzz_deep_nesting(seed, dtype):
 
 # ──────────────────────────────────────────────────────────────────────────
 # Cross-executor fuzz: same random programs, run through Sequential / OpenMP /
-# Dataflow (raw + optimized), all vs the numpy oracle. float64 only — the parallel
-# executors are the slow part, and node-level concurrency does not perturb numerics.
+# Dataflow (raw + optimized), all vs the numpy oracle. Covers flat / control-flow
+# / deep-nesting across all four dtypes. Node-level concurrency should not perturb
+# numerics, so the same per-dtype tolerances as check_program apply. This is what
+# caught the GIL deadlock on Python-callback nodes and would catch a parallel
+# scheduler that drops/misorders work the Sequential path gets right.
 # ──────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("seed", range(150))
-def test_fuzz_cross_executor_flat(seed):
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@pytest.mark.parametrize("seed", range(120))
+def test_fuzz_cross_executor_flat(seed, dtype):
     rng = np.random.default_rng(70_000 + seed)
     prog = _gen_block(rng, depth=0, max_stmts=10)
-    check_program_cross_executor(prog, *_seed_arrays(rng), f"xflat{seed}")
+    check_program_cross_executor(prog, *_seed_arrays(rng, dtype), f"xflat{seed}", dtype=dtype)
 
 
-@pytest.mark.parametrize("seed", range(150))
-def test_fuzz_cross_executor_control_flow(seed):
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@pytest.mark.parametrize("seed", range(120))
+def test_fuzz_cross_executor_control_flow(seed, dtype):
     rng = np.random.default_rng(80_000 + seed)
     prog = _gen_block(rng, depth=3, max_stmts=6)
-    check_program_cross_executor(prog, *_seed_arrays(rng), f"xcf{seed}")
+    check_program_cross_executor(prog, *_seed_arrays(rng, dtype), f"xcf{seed}", dtype=dtype)
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@pytest.mark.parametrize("seed", range(80))
+def test_fuzz_cross_executor_deep_nesting(seed, dtype):
+    rng = np.random.default_rng(90_000 + seed)
+    prog = _gen_block(rng, depth=4, max_stmts=4)
+    check_program_cross_executor(prog, *_seed_arrays(rng, dtype), f"xdeep{seed}", dtype=dtype)
 
 
 # ──────────────────────────────────────────────────────────────────────────
