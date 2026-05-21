@@ -227,3 +227,58 @@ def test_dataflow_with_budget_runs_successfully():
 
     expected = np.asarray(A) @ np.asarray(B)
     np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Python callbacks under parallel executors — GIL regression.
+#
+# element_transform invokes a Python callable per element. On a parallel
+# executor that callback runs on a worker thread and re-acquires the GIL. If
+# Graph.execute() holds the GIL while waiting for its workers, the worker can
+# never take it → deadlock. execute() must release the GIL (it does, via
+# py::call_guard<py::gil_scoped_release>). This test would hang forever on the
+# OpenMP/Dataflow backends before that fix.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("ExecCls", EXECUTORS)
+def test_python_callback_under_executor_does_not_deadlock(ExecCls):
+    A = einsums.create_random_tensor("A", [4, 4])
+    before = np.asarray(A).copy()
+
+    g = cg.Graph(f"pycb-{ExecCls.__name__}")
+    with cg.capture(g):
+        # A Python lambda runs per element on whatever thread the executor uses.
+        einsums.linalg.element_transform(A, lambda x: 0.5 * x + 1.0)
+
+    g.execute(ExecCls())
+    np.testing.assert_allclose(np.asarray(A), 0.5 * before + 1.0, rtol=1e-5)
+
+
+def test_python_callback_among_parallel_nodes():
+    """A Python-callback node sharing a dependency level with BLAS nodes — the
+    exact shape (independent element_transform + gemm) that wedged the parallel
+    executors before the GIL release was added to execute()."""
+    A = einsums.create_random_tensor("A", [4, 4])
+    B = einsums.create_random_tensor("B", [4, 4])
+    C = einsums.create_zero_tensor("C", [4, 4])
+    D = einsums.create_random_tensor("D", [4, 4])
+
+    a0 = np.asarray(A).copy()
+    b0 = np.asarray(B).copy()
+    d0 = np.asarray(D).copy()
+
+    for ExecCls in (cg.OpenMPExecutor, cg.DataflowExecutor):
+        np.asarray(A)[:] = a0
+        np.asarray(B)[:] = b0
+        np.asarray(D)[:] = d0
+        np.asarray(C)[:] = 0.0
+
+        g = cg.Graph(f"mixed-{ExecCls.__name__}")
+        with cg.capture(g):
+            einsums.linalg.gemm(1.0, A, B, 0.0, C)        # BLAS node
+            einsums.linalg.element_transform(D, lambda x: -x)  # Python-callback node (independent)
+
+        g.execute(ExecCls())
+        np.testing.assert_allclose(np.asarray(C), a0 @ b0, rtol=1e-5)
+        np.testing.assert_allclose(np.asarray(D), -d0, rtol=1e-5)

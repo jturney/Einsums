@@ -31,12 +31,13 @@ namespace detail {
 /// @brief Shared state for a TaskHandle. Holds the result, exception, and continuations.
 template <typename T>
 struct SharedState {
-    std::mutex                                  mutex;
-    std::condition_variable                     cv;
-    std::optional<T>                            result;
-    std::exception_ptr                          exception;
-    bool                                        ready{false};
-    std::vector<std::function<void(T const &)>> continuations;
+    std::mutex                                           mutex;
+    std::condition_variable                              cv;
+    std::optional<T>                                     result;
+    std::exception_ptr                                   exception;
+    bool                                                 ready{false};
+    std::vector<std::function<void(T const &)>>          continuations;
+    std::vector<std::function<void(std::exception_ptr)>> exc_continuations;
 
     void set_value(T value) {
         std::vector<std::function<void(T const &)>> conts;
@@ -45,6 +46,7 @@ struct SharedState {
             result = std::move(value);
             ready  = true;
             conts  = std::move(continuations);
+            exc_continuations.clear(); // success: failure handlers will never run
         }
         cv.notify_all();
         for (auto &c : conts) {
@@ -53,12 +55,20 @@ struct SharedState {
     }
 
     void set_exception(std::exception_ptr ep) {
+        std::vector<std::function<void(std::exception_ptr)>> econts;
         {
             std::scoped_lock lock(mutex);
             exception = std::move(ep);
             ready     = true;
+            econts    = std::move(exc_continuations);
+            continuations.clear(); // failure: success handlers will never run
         }
         cv.notify_all();
+        // Propagate the failure downstream so dependents complete (with this
+        // exception) instead of being orphaned and hanging forever.
+        for (auto &c : econts) {
+            c(exception);
+        }
     }
 
     T get() {
@@ -83,15 +93,31 @@ struct SharedState {
         return ready;
     }
 
-    void add_continuation(std::function<void(T const &)> cont) {
-        std::scoped_lock lock(mutex);
-        if (ready) {
-            if (result) {
-                cont(*result);
+    /// Register completion handlers. @p on_ok runs with the value on success;
+    /// @p on_err runs with the exception on failure. Exactly one fires. If the
+    /// state is already complete the matching handler runs immediately, but only
+    /// after the lock is released (never run user code while holding the mutex —
+    /// it can re-enter the pool / acquire other locks and deadlock).
+    void on_complete(std::function<void(T const &)> on_ok, std::function<void(std::exception_ptr)> on_err) {
+        bool run_ok  = false;
+        bool run_err = false;
+        {
+            std::scoped_lock lock(mutex);
+            if (ready) {
+                if (exception) {
+                    run_err = true;
+                } else {
+                    run_ok = true;
+                }
+            } else {
+                continuations.push_back(std::move(on_ok));
+                exc_continuations.push_back(std::move(on_err));
             }
-            // If exception, don't run continuation
-        } else {
-            continuations.push_back(std::move(cont));
+        }
+        if (run_ok) {
+            on_ok(*result); // result/exception are stable once ready
+        } else if (run_err) {
+            on_err(exception);
         }
     }
 };
@@ -99,11 +125,12 @@ struct SharedState {
 /// @brief Specialization for void.
 template <>
 struct SharedState<void> {
-    std::mutex                         mutex;
-    std::condition_variable            cv;
-    std::exception_ptr                 exception;
-    bool                               ready{false};
-    std::vector<std::function<void()>> continuations;
+    std::mutex                                           mutex;
+    std::condition_variable                              cv;
+    std::exception_ptr                                   exception;
+    bool                                                 ready{false};
+    std::vector<std::function<void()>>                   continuations;
+    std::vector<std::function<void(std::exception_ptr)>> exc_continuations;
 
     void set_value() {
         std::vector<std::function<void()>> conts;
@@ -111,6 +138,7 @@ struct SharedState<void> {
             std::scoped_lock const lock(mutex);
             ready = true;
             conts = std::move(continuations);
+            exc_continuations.clear(); // success: failure handlers will never run
         }
         cv.notify_all();
         for (auto &c : conts) {
@@ -119,12 +147,20 @@ struct SharedState<void> {
     }
 
     void set_exception(std::exception_ptr ep) {
+        std::vector<std::function<void(std::exception_ptr)>> econts;
         {
             std::scoped_lock const lock(mutex);
             exception = std::move(ep);
             ready     = true;
+            econts    = std::move(exc_continuations);
+            continuations.clear(); // failure: success handlers will never run
         }
         cv.notify_all();
+        // Propagate the failure downstream so dependents complete (with this
+        // exception) instead of being orphaned and hanging forever.
+        for (auto &c : econts) {
+            c(exception);
+        }
     }
 
     void get() {
@@ -139,12 +175,28 @@ struct SharedState<void> {
 
     [[nodiscard]] bool is_ready() const { return ready; }
 
-    void add_continuation(std::function<void()> cont) {
-        std::scoped_lock const lock(mutex);
-        if (ready && !exception) {
-            cont();
-        } else if (!ready) {
-            continuations.push_back(std::move(cont));
+    /// See SharedState<T>::on_complete. Exactly one of @p on_ok / @p on_err
+    /// fires; if already complete it runs after the lock is released.
+    void on_complete(std::function<void()> on_ok, std::function<void(std::exception_ptr)> on_err) {
+        bool run_ok  = false;
+        bool run_err = false;
+        {
+            std::scoped_lock const lock(mutex);
+            if (ready) {
+                if (exception) {
+                    run_err = true;
+                } else {
+                    run_ok = true;
+                }
+            } else {
+                continuations.push_back(std::move(on_ok));
+                exc_continuations.push_back(std::move(on_err));
+            }
+        }
+        if (run_ok) {
+            on_ok();
+        } else if (run_err) {
+            on_err(exception);
         }
     }
 };
@@ -249,14 +301,22 @@ TaskHandle<std::vector<T>> when_all(std::vector<TaskHandle<T>> handles) {
 
     auto results   = std::make_shared<std::vector<T>>(n);
     auto remaining = std::make_shared<std::atomic<size_t>>(n);
+    auto failed    = std::make_shared<std::atomic<bool>>(false);
 
     for (size_t i = 0; i < n; i++) {
-        handles[i].state()->add_continuation([i, results, remaining, combined_state](T const &val) {
-            (*results)[i] = val;
-            if (remaining->fetch_sub(1) == 1) {
-                combined_state->set_value(std::move(*results));
-            }
-        });
+        handles[i].state()->on_complete(
+            [i, results, remaining, combined_state, failed](T const &val) {
+                (*results)[i] = val;
+                if (remaining->fetch_sub(1) == 1 && !failed->load()) {
+                    combined_state->set_value(std::move(*results));
+                }
+            },
+            [combined_state, failed](std::exception_ptr ep) {
+                // First input failure propagates to the combined handle.
+                if (!failed->exchange(true)) {
+                    combined_state->set_exception(ep);
+                }
+            });
     }
 
     return TaskHandle<std::vector<T>>(combined_state);
@@ -273,13 +333,20 @@ inline TaskHandle<void> when_all(std::vector<TaskHandle<void>> handles) {
     }
 
     auto remaining = std::make_shared<std::atomic<size_t>>(n);
+    auto failed    = std::make_shared<std::atomic<bool>>(false);
 
     for (size_t i = 0; i < n; i++) {
-        handles[i].state()->add_continuation([remaining, combined_state]() {
-            if (remaining->fetch_sub(1) == 1) {
-                combined_state->set_value();
-            }
-        });
+        handles[i].state()->on_complete(
+            [remaining, combined_state, failed]() {
+                if (remaining->fetch_sub(1) == 1 && !failed->load()) {
+                    combined_state->set_value();
+                }
+            },
+            [combined_state, failed](std::exception_ptr ep) {
+                if (!failed->exchange(true)) {
+                    combined_state->set_exception(ep);
+                }
+            });
     }
 
     return TaskHandle<void>(combined_state);
@@ -293,23 +360,30 @@ namespace detail {
 /// slot I of the shared tuple, and decrements the remaining counter.
 template <size_t I, typename Tuple, typename T>
 void register_tuple_continuation(TaskHandle<T> &handle, std::shared_ptr<Tuple> results,
-                                 std::shared_ptr<std::atomic<size_t>> const &remaining,
-                                 std::shared_ptr<SharedState<Tuple>>         combined_state) {
-    handle.state()->add_continuation([results, remaining, combined_state](T const &val) {
-        std::get<I>(*results) = val;
-        if (remaining->fetch_sub(1) == 1) {
-            combined_state->set_value(std::move(*results));
-        }
-    });
+                                 std::shared_ptr<std::atomic<size_t>> const &remaining, std::shared_ptr<SharedState<Tuple>> combined_state,
+                                 std::shared_ptr<std::atomic<bool>> const &failed) {
+    handle.state()->on_complete(
+        [results, remaining, combined_state, failed](T const &val) {
+            std::get<I>(*results) = val;
+            if (remaining->fetch_sub(1) == 1 && !failed->load()) {
+                combined_state->set_value(std::move(*results));
+            }
+        },
+        [combined_state, failed](std::exception_ptr ep) {
+            if (!failed->exchange(true)) {
+                combined_state->set_exception(ep);
+            }
+        });
 }
 
 /// Recursively register continuations for each handle in the tuple.
 template <size_t I = 0, typename TupleState, typename Combined, typename... Ts>
 void register_all_continuations(std::tuple<TaskHandle<Ts>...> &handles, std::shared_ptr<TupleState> results,
-                                std::shared_ptr<std::atomic<size_t>> remaining, std::shared_ptr<Combined> combined_state) {
+                                std::shared_ptr<std::atomic<size_t>> remaining, std::shared_ptr<Combined> combined_state,
+                                std::shared_ptr<std::atomic<bool>> failed) {
     if constexpr (I < sizeof...(Ts)) {
-        register_tuple_continuation<I>(std::get<I>(handles), results, remaining, combined_state);
-        register_all_continuations<I + 1>(handles, results, remaining, combined_state);
+        register_tuple_continuation<I>(std::get<I>(handles), results, remaining, combined_state, failed);
+        register_all_continuations<I + 1>(handles, results, remaining, combined_state, failed);
     }
 }
 
@@ -339,9 +413,10 @@ auto when_all(TaskHandle<Ts>... handles) -> TaskHandle<std::tuple<Ts...>> {
     } else {
         auto results   = std::make_shared<TupleType>();
         auto remaining = std::make_shared<std::atomic<size_t>>(N);
+        auto failed    = std::make_shared<std::atomic<bool>>(false);
 
         auto handle_tuple = std::make_tuple(handles...);
-        detail::register_all_continuations(handle_tuple, results, remaining, combined_state);
+        detail::register_all_continuations(handle_tuple, results, remaining, combined_state, failed);
 
         return TaskHandle<TupleType>(std::move(combined_state));
     }

@@ -520,6 +520,67 @@ def check_program(prog, m_arrays, v_arrays, t_arrays, label, dtype="float64"):
         _cmp(stage, gt, ot, "t")
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Cross-executor differential
+#
+# check_program uses the default (Sequential) executor, so it validates the
+# *passes*. The parallel executors — OpenMP (task-based) and Dataflow (TaskPool
+# continuations) — instead schedule independent nodes *concurrently* from the
+# graph's dependency edges (RAW/WAR/WAW, plus effective_io for control-flow
+# subtrees). A missing or wrong edge there does not show up under Sequential at
+# all; it surfaces as a divergent result here (and, run under a sanitizer, as a
+# data race). So we replay each random program through all three executors, raw
+# and optimized, and demand every run agrees with the numpy oracle.
+# ──────────────────────────────────────────────────────────────────────────
+
+_CROSS_EXECUTORS = [
+    ("Sequential", cg.SequentialExecutor),
+    ("OpenMP", cg.OpenMPExecutor),
+    ("Dataflow", cg.DataflowExecutor),
+]
+
+
+def _run_program_exec(prog, m_arrays, v_arrays, t_arrays, name, optimize, exec_cls):
+    mats, vecs, r3s = _make_pool(m_arrays, v_arrays, t_arrays, name)
+    g = cg.Graph(name)
+    build_cg(prog, g, mats, vecs, r3s, name)
+    if optimize:
+        g.apply(cg.default_pass_manager())
+    g.execute(exec_cls())
+    return ([np.asarray(x).copy() for x in mats],
+            [np.asarray(x).copy() for x in vecs],
+            [np.asarray(x).copy() for x in r3s])
+
+
+def check_program_cross_executor(prog, m_arrays, v_arrays, t_arrays, label):
+    rtol, atol = _DTYPE_TOL["float64"]
+    cap = _DTYPE_CAP["float64"]
+    om = [a.copy() for a in m_arrays]
+    ov = [a.copy() for a in v_arrays]
+    ot = [a.copy() for a in t_arrays]
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        interp_np(prog, om, ov, ot)
+    if not _usable(om, ov, ot, cap=cap):
+        pytest.skip("oracle overflowed — numerically degenerate program")
+
+    def _cmp(stage, got, oracle, kind):
+        for idx in range(len(oracle)):
+            if not np.allclose(got[idx], oracle[idx], rtol=rtol, atol=atol):
+                raise AssertionError(
+                    f"{stage} disagrees with oracle on {kind}{idx}\n"
+                    f"program={prog!r}\ngot=\n{got[idx]}\noracle=\n{oracle[idx]}"
+                )
+
+    for ex_name, exec_cls in _CROSS_EXECUTORS:
+        for optimize in (False, True):
+            stage = f"{ex_name}/{'opt' if optimize else 'raw'}"
+            tag = f"{label}_{ex_name}_{'opt' if optimize else 'raw'}"
+            gm, gv, gt = _run_program_exec(prog, m_arrays, v_arrays, t_arrays, tag, optimize, exec_cls)
+            _cmp(stage, gm, om, "m")
+            _cmp(stage, gv, ov, "v")
+            _cmp(stage, gt, ot, "t")
+
+
 def _seed_arrays(rng, dtype="float64"):
     is_complex = dtype in ("complex64", "complex128")
 
@@ -571,6 +632,27 @@ def test_fuzz_deep_nesting(seed, dtype):
     rng = np.random.default_rng(50_000 + seed)
     prog = _gen_block(rng, depth=4, max_stmts=4)
     check_program(prog, *_seed_arrays(rng, dtype), f"deep{seed}", dtype=dtype)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Cross-executor fuzz: same random programs, run through Sequential / OpenMP /
+# Dataflow (raw + optimized), all vs the numpy oracle. float64 only — the parallel
+# executors are the slow part, and node-level concurrency does not perturb numerics.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("seed", range(150))
+def test_fuzz_cross_executor_flat(seed):
+    rng = np.random.default_rng(70_000 + seed)
+    prog = _gen_block(rng, depth=0, max_stmts=10)
+    check_program_cross_executor(prog, *_seed_arrays(rng), f"xflat{seed}")
+
+
+@pytest.mark.parametrize("seed", range(150))
+def test_fuzz_cross_executor_control_flow(seed):
+    rng = np.random.default_rng(80_000 + seed)
+    prog = _gen_block(rng, depth=3, max_stmts=6)
+    check_program_cross_executor(prog, *_seed_arrays(rng), f"xcf{seed}")
 
 
 # ──────────────────────────────────────────────────────────────────────────

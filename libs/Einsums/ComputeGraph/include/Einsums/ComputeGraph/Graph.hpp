@@ -136,7 +136,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @throws std::runtime_error If a tensor appears to have been destroyed (use-after-free detected).
      * @throws std::runtime_error If a cycle is detected during topological sort.
      */
-    EINSUMS_PYBIND_EXPOSE void execute();
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RELEASE_GIL void execute();
 
     /**
      * @brief Execute using a custom executor.
@@ -145,8 +145,14 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * node execution to the provided executor.
      *
      * @param[in] executor The execution backend (e.g., OpenMPExecutor).
+     *
+     * @note The GIL is released for the duration of execution. The parallel
+     *       executors run nodes on worker threads; any node that invokes a
+     *       Python callback (e.g. element_transform) re-acquires the GIL from
+     *       its worker. Holding the GIL here would deadlock that re-acquire
+     *       against the waiting main thread.
      */
-    EINSUMS_PYBIND_EXPOSE void execute(Executor &executor);
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RELEASE_GIL void execute(Executor &executor);
 
     // Note: execute() always instruments with the profiler (no separate execute_profiled variant).
 

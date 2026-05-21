@@ -173,8 +173,9 @@ class EINSUMS_EXPORT TaskPool {
         // Async when_all: returns TaskHandle<tuple<Ts...>>
         auto combined = when_all(inputs...);
 
-        // When all inputs are ready, submit the callable with the results
-        combined.state()->add_continuation(
+        // When all inputs are ready, submit the callable with the results.
+        // If any input failed, propagate its exception instead of running f.
+        combined.state()->on_complete(
             [this, name = std::move(name), f = std::forward<F>(callable), result_state](TupleType const &results) mutable {
                 enqueue([name = std::move(name), f = std::move(f), result_state, results]() mutable {
                     try {
@@ -188,7 +189,8 @@ class EINSUMS_EXPORT TaskPool {
                         result_state->set_exception(std::current_exception());
                     }
                 });
-            });
+            },
+            [result_state](std::exception_ptr ep) { result_state->set_exception(ep); });
 
         return TaskHandle<R>(std::move(result_state));
     }
@@ -199,20 +201,22 @@ class EINSUMS_EXPORT TaskPool {
         using R    = std::invoke_result_t<F>;
         auto state = std::make_shared<detail::SharedState<R>>();
 
-        input.state()->add_continuation([this, name = std::move(name), f = std::forward<F>(callable), state]() mutable {
-            enqueue([name = std::move(name), f = std::move(f), state]() mutable {
-                try {
-                    if constexpr (std::is_void_v<R>) {
-                        f();
-                        state->set_value();
-                    } else {
-                        state->set_value(f());
+        input.state()->on_complete(
+            [this, name = std::move(name), f = std::forward<F>(callable), state]() mutable {
+                enqueue([name = std::move(name), f = std::move(f), state]() mutable {
+                    try {
+                        if constexpr (std::is_void_v<R>) {
+                            f();
+                            state->set_value();
+                        } else {
+                            state->set_value(f());
+                        }
+                    } catch (...) {
+                        state->set_exception(std::current_exception());
                     }
-                } catch (...) {
-                    state->set_exception(std::current_exception());
-                }
-            });
-        });
+                });
+            },
+            [state](std::exception_ptr ep) { state->set_exception(ep); });
 
         return TaskHandle<R>(std::move(state));
     }
@@ -314,21 +318,23 @@ auto TaskHandle<T>::then(std::string name, F &&next_fn) -> TaskHandle<std::invok
     using R    = std::invoke_result_t<F, T>;
     auto state = std::make_shared<detail::SharedState<R>>();
 
-    _state->add_continuation([name = std::move(name), f = std::forward<F>(next_fn), state](T const &val) mutable {
-        // Submit continuation to the pool
-        TaskPool::get_singleton().enqueue([f = std::move(f), state, val]() mutable {
-            try {
-                if constexpr (std::is_void_v<R>) {
-                    f(val);
-                    state->set_value();
-                } else {
-                    state->set_value(f(val));
+    _state->on_complete(
+        [name = std::move(name), f = std::forward<F>(next_fn), state](T const &val) mutable {
+            // Submit continuation to the pool
+            TaskPool::get_singleton().enqueue([f = std::move(f), state, val]() mutable {
+                try {
+                    if constexpr (std::is_void_v<R>) {
+                        f(val);
+                        state->set_value();
+                    } else {
+                        state->set_value(f(val));
+                    }
+                } catch (...) {
+                    state->set_exception(std::current_exception());
                 }
-            } catch (...) {
-                state->set_exception(std::current_exception());
-            }
-        });
-    });
+            });
+        },
+        [state](std::exception_ptr ep) { state->set_exception(ep); });
 
     return TaskHandle<R>(std::move(state));
 }
@@ -343,20 +349,22 @@ auto TaskHandle<void>::then(std::string name, F &&next_fn) -> TaskHandle<std::in
     using R    = std::invoke_result_t<F>;
     auto state = std::make_shared<detail::SharedState<R>>();
 
-    _state->add_continuation([name = std::move(name), f = std::forward<F>(next_fn), state]() mutable {
-        TaskPool::get_singleton().enqueue([f = std::move(f), state]() mutable {
-            try {
-                if constexpr (std::is_void_v<R>) {
-                    f();
-                    state->set_value();
-                } else {
-                    state->set_value(f());
+    _state->on_complete(
+        [name = std::move(name), f = std::forward<F>(next_fn), state]() mutable {
+            TaskPool::get_singleton().enqueue([f = std::move(f), state]() mutable {
+                try {
+                    if constexpr (std::is_void_v<R>) {
+                        f();
+                        state->set_value();
+                    } else {
+                        state->set_value(f());
+                    }
+                } catch (...) {
+                    state->set_exception(std::current_exception());
                 }
-            } catch (...) {
-                state->set_exception(std::current_exception());
-            }
-        });
-    });
+            });
+        },
+        [state](std::exception_ptr ep) { state->set_exception(ep); });
 
     return TaskHandle<R>(std::move(state));
 }

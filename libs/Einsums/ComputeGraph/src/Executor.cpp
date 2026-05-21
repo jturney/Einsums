@@ -98,13 +98,29 @@ void OpenMPExecutor::execute(Graph &graph) {
         levels[level[i]].push_back(i);
     }
 
+    // An exception must NOT escape an OpenMP structured block — doing so leaves
+    // the team waiting at the join barrier forever (deadlock). Catch any node
+    // failure inside the region, keep the first, and rethrow after the barrier.
+    std::exception_ptr first_exc;
+    std::mutex         exc_mutex;
+
     for (auto const &group : levels) {
         if (group.size() == 1) {
             execute_timed(nodes[group[0]], graph);
         } else {
 #    pragma omp parallel for schedule(dynamic)
             for (size_t g = 0; g < group.size(); g++) { // NOLINT(modernize-loop-convert)
-                execute_timed_mt(nodes[group[g]], graph, timing_mutex);
+                try {
+                    execute_timed_mt(nodes[group[g]], graph, timing_mutex);
+                } catch (...) {
+                    std::scoped_lock const lock(exc_mutex);
+                    if (!first_exc) {
+                        first_exc = std::current_exception();
+                    }
+                }
+            }
+            if (first_exc) {
+                std::rethrow_exception(first_exc); // safely outside the parallel region
             }
         }
     }

@@ -216,7 +216,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * One-shot stages execute once. Loop stages repeat until their condition
      * returns false or max_iterations is reached.
      */
-    EINSUMS_PYBIND_EXPOSE void execute();
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RELEASE_GIL void execute();
 
     /**
      * @brief Execute all stages using a custom executor.

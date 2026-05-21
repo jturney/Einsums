@@ -675,3 +675,38 @@ keeping to confirm the runtime is actually engaged.
 Result: both suites UBSan-clean — 150 C++ unit tests (~29s) and the full ~4900-case
 Python fuzzer (4868 passed, 32 skipped, ~22s), zero `runtime error:` diagnostics. No
 new bugs beyond ASan's #17/#18; this run was pure verification.
+
+## Cross-executor differential + the GIL deadlock (2026-05-21)
+
+Extended the fuzzer with a cross-executor mode (`check_program_cross_executor`,
+`test_fuzz_cross_executor_{flat,control_flow}`): replay each random program through
+Sequential / OpenMP / Dataflow, raw and optimized, all vs the numpy oracle. It hung
+on the *second* seed. Root-causing (TSan + repeated `sample` + a pure-C++ TaskPool
+repro) found three distinct bugs, all fixed:
+
+1. **GIL deadlock (the actual hang).** A node that runs a Python callable
+   (`element_transform` with a Python lambda) executes that callback via pybind's
+   `func_wrapper`, which `gil_scoped_acquire`s. On a parallel executor the node runs
+   on a worker thread, but the bound `Graph::execute` held the GIL while blocking on
+   its workers → the worker's `take_gil` never returns. Fix: `EINSUMS_PYBIND_RELEASE_GIL`
+   on `Graph::execute` (both overloads) and `Pipeline::execute`. Fingerprint:
+   Sequential OK, OpenMP+Dataflow hang, `OMP_NUM_THREADS=1` fixes only OpenMP, TSan
+   clean, worker stack ends in `take_gil`.
+2. **TaskPool dropped continuations on a thrown task** (`TaskHandle.hpp`):
+   `set_exception` never fired continuations and `add_continuation` ran them only on
+   success, so a throwing task orphaned its downstream `when_all`/`dataflow` subtree
+   (idle-workers/blocked-main wedge). Fix: `exc_continuations` + `on_complete(ok,err)`
+   (runs the chosen branch *after* unlocking — also kills a latent inline-under-lock
+   hazard); `set_exception` propagates; `when_all`/`then`/`dataflow` forward the
+   exception (first-failure-wins). Validated by a pure-C++ repro that wedges in <10
+   iterations only when a non-sink task throws.
+3. **OpenMP executor let an exception escape `#pragma omp parallel for`** → join-
+   barrier deadlock. Fix: catch per-iteration, keep the first `exception_ptr`,
+   rethrow after the region.
+
+Regression tests: `test_python_callback_under_executor_does_not_deadlock` and
+`test_python_callback_among_parallel_nodes` in `test_executor_python.py`.
+
+Known latent issues found but NOT yet fixed: `EINSUMS_WITH_PROFILER=OFF` does not
+compile (unguarded `profile::Profiler::instance()` call sites); `Consumer::set_tick_callback`
+races with the consumer thread at startup (TSan-flagged, data-independent).
