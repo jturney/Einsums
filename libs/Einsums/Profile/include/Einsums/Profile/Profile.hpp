@@ -227,6 +227,23 @@ struct EINSUMS_EXPORT Profiler {
         // which calls prof.shutdown() + prof.print() during the shutdown phase.
     }
 
+    // Stop the background consumer thread before members are destroyed. The
+    // consumer's periodic tick callback calls into ``_server``; members destruct
+    // in reverse declaration order, so ``_server`` would otherwise be torn down
+    // while the thread is still ticking, and the thread would dereference a
+    // destroyed Server (an intermittent shutdown SIGSEGV). This is the fallback
+    // for interpreter/static shutdown when einsums::finalize() — which already
+    // calls shutdown() — was not invoked (e.g. a Python process exiting). Both
+    // calls are idempotent with finalize()'s.
+    ~Profiler() {
+        if (_consumer) {
+            _consumer->shutdown();
+        }
+        if (_server) {
+            _server->shutdown();
+        }
+    }
+
     void write_node_json(std::ostream &ofs, AggNode const &n, int indent);
     void print_node_recursive(std::ostream &os, AggNode const *n, double thread_total_ms, int depth, bool detailed);
 
