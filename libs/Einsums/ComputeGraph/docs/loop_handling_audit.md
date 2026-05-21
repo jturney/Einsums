@@ -513,9 +513,15 @@ buffer, two graph-local TensorIds), and the second `init_zero` wiped a loop's
 accumulation before a later read. Fixed by deduping materialization requests by
 underlying `tensor_ptr` — materialize once, at the earliest use.
 
-After the fixes: ~3750 fuzz cases (real + complex; eager and deferred allocation;
-degenerate overflow/NaN programs auto-skipped) across eight modes × two dtypes +
-the full 83-test ComputeGraph suite (C++ and Python) pass.
+The deferred mode was then extended to defer all three pools (matrices, vectors,
+rank-3) and to a **replay** variant (execute the optimized graph twice — deferred
+tensors re-zero each execute via their Initialize node, eager tensors carry over);
+no further bugs surfaced, confirming the materialization / Free / Initialize
+machinery is replay-safe for deferred tensors.
+
+After the fixes: ~4100 fuzz cases (real + complex; eager and deferred allocation;
+single-execute and replay; degenerate overflow/NaN programs auto-skipped) across
+ten modes × two dtypes + the full 83-test ComputeGraph suite (C++ and Python) pass.
 The harness is registered as
 `Tests.Unit.Modules.ComputeGraph.FuzzDifferentialPython`. Conditionals became
 fuzzable once `add_conditional` was bound to Python (return type changed from
