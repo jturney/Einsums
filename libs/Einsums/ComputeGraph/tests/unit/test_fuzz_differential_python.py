@@ -60,6 +60,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
+from einsums.testing import ALL_DTYPES
 
 # ──────────────────────────────────────────────────────────────────────────
 # Pool layout — fixed so the generator and the per-trial seed arrays agree.
@@ -68,8 +69,29 @@ import einsums.graph as cg
 DIMS = (2, 3, 4)
 R3_DIMS = (2, 3)
 COPIES = 3  # copies of each matrix shape / vector length / rank-3 shape
+
+# Differential tolerances and a magnitude cap, per dtype. These are *looser*
+# than einsums.testing.tolerance_for (which assumes the same computation): here
+# we compare a numpy oracle against BLAS and against a reordered optimized graph,
+# so single precision needs more slack. Real miscompiles differ by O(1), well
+# outside these, so generous tolerances avoid fp false positives without hiding
+# bugs. The cap skips programs whose values grow past where the dtype keeps
+# enough absolute resolution for the tolerance to be meaningful.
+_DTYPE_TOL = {
+    "float32": (1e-3, 1e-3),
+    "complex64": (1e-3, 1e-3),
+    "float64": (1e-5, 1e-5),
+    "complex128": (1e-5, 1e-5),
+}
+_DTYPE_CAP = {"float32": 1e3, "complex64": 1e3, "float64": 1e8, "complex128": 1e8}
+
+# Defaults used by the non-dtype-parametrized modes (which run in float64).
 RTOL = 1e-5
 ATOL = 1e-5
+
+MAT_SHAPES = [(r, c) for r in DIMS for c in DIMS for _ in range(COPIES)]
+VEC_LENS = [d for d in DIMS for _ in range(COPIES)]
+R3_SHAPES = [(a, b, c) for a in R3_DIMS for b in R3_DIMS for c in R3_DIMS for _ in range(COPIES)]
 
 MAT_SHAPES = [(r, c) for r in DIMS for c in DIMS for _ in range(COPIES)]
 VEC_LENS = [d for d in DIMS for _ in range(COPIES)]
@@ -287,45 +309,51 @@ def _gen_primitive(rng):
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def interp_np(stmts, m, v, t):
+def interp_np(stmts, m, v, t, dt=None):
+    # When dt is given the oracle is kept in that precision: a Python-float
+    # scalar times a float32 array would otherwise promote to float64, making
+    # the oracle more accurate than the float32 graph and creating spurious
+    # mismatches. Slice assignments (vscale/vaxpy) cast automatically into the
+    # already-typed destination array, so only the rebinding ops need a cast.
+    cast = (lambda x: np.asarray(x).astype(dt, copy=False)) if dt is not None else (lambda x: x)
     for s in stmts:
         k = s[0]
         if k == "scale":
             _, a, x = s
-            m[x] = m[x] * a
+            m[x] = cast(m[x] * a)
         elif k == "axpy":
             _, a, x, y = s
-            m[y] = m[y] + a * m[x]
+            m[y] = cast(m[y] + a * m[x])
         elif k == "axpby":
             _, a, x, b, y = s
-            m[y] = a * m[x] + b * m[y]
+            m[y] = cast(a * m[x] + b * m[y])
         elif k == "gemm":
             _, a, A, B, b, C = s
-            m[C] = a * (m[A] @ m[B]) + b * m[C]
+            m[C] = cast(a * (m[A] @ m[B]) + b * m[C])
         elif k == "einsum":
             _, spec, ab, A, B, cpf, C = s
-            m[C] = ab * EINSUM_PATTERNS[spec][0](m[A], m[B]) + cpf * m[C]
+            m[C] = cast(ab * EINSUM_PATTERNS[spec][0](m[A], m[B]) + cpf * m[C])
         elif k == "beinsum":
             _, spec, ab, A, B, cpf, C = s
-            t[C] = ab * BEINSUM_PATTERNS[spec][0](t[A], t[B]) + cpf * t[C]
+            t[C] = cast(ab * BEINSUM_PATTERNS[spec][0](t[A], t[B]) + cpf * t[C])
         elif k == "perm":
             _, a, cpf, A, C = s
-            m[C] = a * m[A].T + cpf * m[C]
+            m[C] = cast(a * m[A].T + cpf * m[C])
         elif k == "symm":
             _, A, B, C = s
-            m[C] = m[B].T @ m[A] @ m[B]
+            m[C] = cast(m[B].T @ m[A] @ m[B])
         elif k == "gemv":
             _, a, A, x, b, y = s
-            v[y] = a * (m[A] @ v[x]) + b * v[y]
+            v[y] = cast(a * (m[A] @ v[x]) + b * v[y])
         elif k == "ger":
             _, a, x, y, A = s
-            m[A] = m[A] + a * np.outer(v[x], v[y])
+            m[A] = cast(m[A] + a * np.outer(v[x], v[y]))
         elif k == "etransform":
             _, fn, M = s
-            m[M] = ETRANSFORM_FNS[fn](m[M])
+            m[M] = cast(ETRANSFORM_FNS[fn](m[M]))
         elif k == "vgemm":
             _, a, M, r0, r1, c0, c1, B, b, C = s
-            m[C] = a * (m[M][r0:r1, c0:c1] @ m[B]) + b * m[C]
+            m[C] = cast(a * (m[M][r0:r1, c0:c1] @ m[B]) + b * m[C])
         elif k == "vscale":
             _, a, M, r0, r1, c0, c1 = s
             m[M][r0:r1, c0:c1] = m[M][r0:r1, c0:c1] * a
@@ -335,10 +363,10 @@ def interp_np(stmts, m, v, t):
         elif k == "loop":
             _, n, body = s
             for _ in range(n):
-                interp_np(body, m, v, t)
+                interp_np(body, m, v, t, dt)
         elif k == "cond":
             _, flag, then, els = s
-            interp_np(then if flag else els, m, v, t)
+            interp_np(then if flag else els, m, v, t, dt)
         else:  # pragma: no cover
             raise AssertionError(f"unknown opcode {k!r}")
 
@@ -428,8 +456,7 @@ def _make_pool(m_arrays, v_arrays, t_arrays, name):
     def mk(prefix, arrays):
         out = []
         for idx, arr in enumerate(arrays):
-            dt = "complex128" if np.iscomplexobj(arr) else "float64"
-            tn = einsums.create_zero_tensor(f"{name}_{prefix}{idx}", list(arr.shape), dtype=dt)
+            tn = einsums.create_zero_tensor(f"{name}_{prefix}{idx}", list(arr.shape), dtype=str(arr.dtype))
             np.asarray(tn)[...] = arr
             out.append(tn)
         return out
@@ -454,25 +481,29 @@ def _run_program(prog, m_arrays, v_arrays, t_arrays, name, optimize):
             [np.asarray(x).copy() for x in r3s])
 
 
-def _usable(*pools):
+def _usable(*pools, cap=1e8):
     """A trial is only meaningful if the oracle stayed numerically sane. Bigger
-    programs with repeated accumulation can overflow to inf/NaN (or to values so
-    large that a 1e-5 relative tolerance is dominated by fp noise); such cases
-    test floating-point overflow, not pass soundness, so we skip them."""
+    programs with repeated accumulation can overflow to inf/NaN (or grow so large
+    the dtype loses enough absolute resolution that the tolerance is dominated by
+    fp noise); such cases test floating-point overflow, not pass soundness, so we
+    skip them. The cap is tighter for single precision (see _DTYPE_CAP)."""
     for pool in pools:
         for arr in pool:
-            if arr.size and (not np.all(np.isfinite(arr)) or np.max(np.abs(arr)) > 1e8):
+            if arr.size and (not np.all(np.isfinite(arr)) or np.max(np.abs(arr)) > cap):
                 return False
     return True
 
 
-def check_program(prog, m_arrays, v_arrays, t_arrays, label):
+def check_program(prog, m_arrays, v_arrays, t_arrays, label, dtype="float64"):
+    rtol, atol = _DTYPE_TOL[dtype]
+    cap = _DTYPE_CAP[dtype]
+    dt = np.dtype(dtype)
     om = [a.copy() for a in m_arrays]
     ov = [a.copy() for a in v_arrays]
     ot = [a.copy() for a in t_arrays]
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        interp_np(prog, om, ov, ot)
-    if not _usable(om, ov, ot):
+        interp_np(prog, om, ov, ot, dt)
+    if not _usable(om, ov, ot, cap=cap):
         pytest.skip("oracle overflowed — numerically degenerate program")
 
     rm, rv, rt = _run_program(prog, m_arrays, v_arrays, t_arrays, f"{label}_raw", optimize=False)
@@ -480,9 +511,9 @@ def check_program(prog, m_arrays, v_arrays, t_arrays, label):
 
     def _cmp(stage, got, oracle, kind):
         for idx in range(len(oracle)):
-            if not np.allclose(got[idx], oracle[idx], rtol=RTOL, atol=ATOL):
+            if not np.allclose(got[idx], oracle[idx], rtol=rtol, atol=atol):
                 raise AssertionError(
-                    f"{stage} disagrees with oracle on {kind}{idx}"
+                    f"{stage} disagrees with oracle on {kind}{idx} (dtype={dtype})"
                     f"{' (a pass miscompiled)' if stage == 'OPTIMIZED' else ''}\n"
                     f"program={prog!r}\ngot=\n{got[idx]}\noracle=\n{oracle[idx]}"
                 )
@@ -494,9 +525,13 @@ def check_program(prog, m_arrays, v_arrays, t_arrays, label):
 
 
 def _seed_arrays(rng, dtype="float64"):
+    is_complex = dtype in ("complex64", "complex128")
+
     def gen(sh):
-        r = rng.standard_normal(sh)
-        return r + 1j * rng.standard_normal(sh) if dtype == "complex128" else r
+        a = rng.standard_normal(sh)
+        if is_complex:
+            a = a + 1j * rng.standard_normal(sh)
+        return a.astype(np.dtype(dtype))
 
     m = [gen(sh) for sh in MAT_SHAPES]
     v = [gen((L,)) for L in VEC_LENS]
@@ -518,25 +553,28 @@ def _square_seed_arrays(rng, n_mats=4, n_vecs=3, n=3, n_r3=2):
 # ──────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("seed", range(400))
-def test_fuzz_flat(seed):
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@pytest.mark.parametrize("seed", range(200))
+def test_fuzz_flat(seed, dtype):
     rng = np.random.default_rng(seed)
     prog = _gen_block(rng, depth=0, max_stmts=10)
-    check_program(prog, *_seed_arrays(rng), f"flat{seed}")
+    check_program(prog, *_seed_arrays(rng, dtype), f"flat{seed}", dtype=dtype)
 
 
-@pytest.mark.parametrize("seed", range(400))
-def test_fuzz_with_control_flow(seed):
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@pytest.mark.parametrize("seed", range(200))
+def test_fuzz_with_control_flow(seed, dtype):
     rng = np.random.default_rng(10_000 + seed)
     prog = _gen_block(rng, depth=3, max_stmts=6)
-    check_program(prog, *_seed_arrays(rng), f"cf{seed}")
+    check_program(prog, *_seed_arrays(rng, dtype), f"cf{seed}", dtype=dtype)
 
 
-@pytest.mark.parametrize("seed", range(300))
-def test_fuzz_deep_nesting(seed):
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@pytest.mark.parametrize("seed", range(120))
+def test_fuzz_deep_nesting(seed, dtype):
     rng = np.random.default_rng(50_000 + seed)
     prog = _gen_block(rng, depth=4, max_stmts=4)
-    check_program(prog, *_seed_arrays(rng), f"deep{seed}")
+    check_program(prog, *_seed_arrays(rng, dtype), f"deep{seed}", dtype=dtype)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -679,7 +717,7 @@ def test_regression_complex_einsum_prefactor():
         ("beinsum", "ijb <- ikb ; kjb", 1.2 + 0.4j, 0, 1, 0.0, 2),          # t2 = (1.2+0.4j)*(t0@t1)_b
         ("loop", 3, [("beinsum", "ijb <- ikb ; kjb", 0.5 - 0.3j, 0, 1, 1.0 + 0j, 2)]),  # accumulate complex
     ]
-    check_program(prog, [], [], t, "cplx_beinsum_pf")
+    check_program(prog, [], [], t, "cplx_beinsum_pf", dtype="complex128")
 
 
 def test_regression_complex_gemm_and_2d_einsum_prefactor():
@@ -695,7 +733,7 @@ def test_regression_complex_gemm_and_2d_einsum_prefactor():
         ("gemm", 0.7 + 0.2j, 0, 1, 0.3 - 0.9j, 2),         # complex alpha and beta (accumulate)
         ("einsum", "ij <- ik ; kj", -0.6 + 0.5j, 0, 1, 1.0 + 0j, 3),  # complex ab_pf accumulate
     ]
-    check_program(prog, m, [], [], "cplx_gemm_pf")
+    check_program(prog, m, [], [], "cplx_gemm_pf", dtype="complex128")
 
 
 def test_regression_view_in_loop():
@@ -870,36 +908,11 @@ def test_fuzz_random_pipeline_replay(seed):
     _assert_pools(got, oracle, prog, "RANDOM-PIPELINE+REPLAY", extra=f"  order={order}")
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Complex dtype — the same programs/passes over complex128 tensors.
-#
-# Probed and confirmed: every op uses *no* conjugation (plain transpose, geru
-# not gerc, einsum conj_a/conj_b=false, symm uses B^T not B^H), so the identical
-# numpy oracle is correct for complex. Scalars stay real (valid and common on
-# complex tensors; complex prefactors are a separate axis). The only difference
-# from the real suites is complex seed arrays → complex128 tensors.
-# ══════════════════════════════════════════════════════════════════════════
-
-
-@pytest.mark.parametrize("seed", range(300))
-def test_fuzz_flat_complex(seed):
-    rng = np.random.default_rng(80_000 + seed)
-    prog = _gen_block(rng, depth=0, max_stmts=10)
-    check_program(prog, *_seed_arrays(rng, "complex128"), f"cflat{seed}")
-
-
-@pytest.mark.parametrize("seed", range(300))
-def test_fuzz_control_flow_complex(seed):
-    rng = np.random.default_rng(90_000 + seed)
-    prog = _gen_block(rng, depth=3, max_stmts=6)
-    check_program(prog, *_seed_arrays(rng, "complex128"), f"ccf{seed}")
-
-
-@pytest.mark.parametrize("seed", range(200))
-def test_fuzz_deep_complex(seed):
-    rng = np.random.default_rng(100_000 + seed)
-    prog = _gen_block(rng, depth=4, max_stmts=4)
-    check_program(prog, *_seed_arrays(rng, "complex128"), f"cdeep{seed}")
+# Note on complex: every cg op uses *no* conjugation (plain transpose, geru not
+# gerc, einsum conj_a/conj_b=false, symm uses B^T not B^H), so the identical numpy
+# oracle is correct for complex. The flat/control-flow/deep modes above run over
+# all four dtypes (float32/float64/complex64/complex128) via @parametrize; scalars
+# stay real (complex prefactors are covered by dedicated regressions).
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -932,7 +945,7 @@ def _make_pool_deferred(m_arrays, v_arrays, t_arrays, name):
         mask = _deferred_mask(len(arrays))
         out = []
         for idx, arr in enumerate(arrays):
-            dt = "complex128" if np.iscomplexobj(arr) else "float64"
+            dt = str(arr.dtype)
             if mask[idx]:
                 out.append(ws.declare_zero_tensor(f"{name}_d{prefix}{idx}", list(arr.shape), dt))
             else:

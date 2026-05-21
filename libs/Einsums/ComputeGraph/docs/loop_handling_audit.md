@@ -519,9 +519,18 @@ tensors re-zero each execute via their Initialize node, eager tensors carry over
 no further bugs surfaced, confirming the materialization / Free / Initialize
 machinery is replay-safe for deferred tensors.
 
-After the fixes: ~4100 fuzz cases (real + complex; eager and deferred allocation;
-single-execute and replay; degenerate overflow/NaN programs auto-skipped) across
-ten modes × two dtypes + the full 83-test ComputeGraph suite (C++ and Python) pass.
+The core modes (flat/control-flow/deep) are then parametrized over all four
+dtypes (`@pytest.mark.parametrize("dtype", ALL_DTYPES)`): float32, float64,
+complex64, complex128 — the first coverage of single precision through the
+passes. Two care points keep it false-positive-free: the oracle computes in the
+trial precision (`interp_np` casts per op, else float32 promotes to float64), and
+differential tolerances are looser than `tolerance_for`'s same-computation values
+(1e-3 for single, 1e-5 for double) with a tighter magnitude cap for single
+precision. No dtype bugs found.
+
+After the fixes: ~4250 fuzz cases (all four dtypes; eager and deferred allocation;
+single-execute and replay; degenerate overflow/NaN programs auto-skipped) + the
+full 83-test ComputeGraph suite (C++ and Python) pass.
 The harness is registered as
 `Tests.Unit.Modules.ComputeGraph.FuzzDifferentialPython`. Conditionals became
 fuzzable once `add_conditional` was bound to Python (return type changed from
