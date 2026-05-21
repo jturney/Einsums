@@ -542,3 +542,43 @@ The harness is registered as
 fuzzable once `add_conditional` was bound to Python (return type changed from
 `std::pair<Graph&,Graph&>` to `std::tuple<Graph&,Graph&>`). `cg::read`/DiskRead
 fuzzing is still deferred.
+
+## Further stress-testing ideas (2026-05-21)
+
+After ~4900 differential cases across all the modes/dtypes above, more *random
+numerical* programs hit diminishing returns (several rounds found nothing). The
+differential oracle only checks whether the numbers match — it is blind to memory
+safety, concurrency, and to passes/executors the fuzzer never actually triggers.
+The high-value next steps change the *dimension* under test, ranked:
+
+1. **Sanitizers (ASan/UBSan) over the corpus.** Differential testing verifies
+   values, not memory. The passes/executor do heavy pointer work (moving nodes,
+   view aliasing, by-`tensor_ptr` dedup, deferred materialize/free, `adopt`
+   deleters); a use-after-free / OOB can produce correct numbers by luck and stay
+   invisible to the oracle (the profiler shutdown SIGSEGV was that class, found
+   only by chance). ASan finds them deterministically. **Build gotcha:**
+   `EINSUMS_WITH_SANITIZERS` is a *STRING passed straight to* `-fsanitize=` (valid:
+   `address;leak;memory;thread;undefined`) — use `-DEINSUMS_WITH_SANITIZERS=address`,
+   **not** `=ON` (which would emit `-fsanitize=ON`). The flags ride
+   `einsums_public_flags`, so libEinsums + C++ tests are instrumented (ASan in the
+   test `main` → clean); driving the Python harness under ASan needs the clang
+   ASan runtime `DYLD_INSERT_LIBRARIES`'d into the conda python.
+2. **Cross-executor differential.** The fuzzer only uses sequential `execute()`.
+   `SequentialExecutor` / `OpenMPExecutor` / `DataflowExecutor` are all bound and
+   `execute(executor)` works; run each program through all three and demand they
+   agree — tests the parallel/dataflow dependency scheduling (separate code) for
+   races / missing edges.
+3. **Pass-firing coverage instrumentation.** We don't know which passes actually
+   fire (`modified=True`) on fuzz inputs; a never-firing pass is untested even
+   though it "passes." Measure per-pass fire-rate and bias generation to trigger
+   the cold ones (GEMMBatching needs identical sibling einsums; Distributive-
+   Factoring / ChainParenthesization need specific chain structure).
+4. **Bit-exact determinism check.** Execute the optimized graph twice and require
+   *bit-identical* output (stronger than oracle-close) — catches nondeterministic
+   scheduling (e.g. unordered-pointer iteration in `effective_io`).
+5. **Data-dependent conditionals with safe margins.** Conditionals are coin-flips
+   today; the predicate-reads-a-tensor path is only in the SCF/MP2 examples. Use
+   `mean(T) > threshold` with a guaranteed margin (computed from the oracle) so
+   oracle and graph never disagree on the branch.
+6. **Negative / error-path fuzzing.** Malformed einsum specs and mismatched shapes
+   should produce graceful errors, not crashes — an untested robustness surface.
