@@ -116,8 +116,8 @@ struct ThreadState {
 
 // ---------------------- Thread registration info ----------------------
 struct ThreadRegistration {
-    uint32_t         thread_id;
-    EventRingBuffer *ring_buffer;
+    uint32_t                         thread_id;
+    std::shared_ptr<EventRingBuffer> ring_buffer; ///< Shared so it outlives a transient producer thread.
 };
 
 // ---------------------- Consumer thread ----------------------
@@ -131,7 +131,7 @@ class EINSUMS_EXPORT Consumer {
     Consumer &operator=(Consumer const &) = delete;
 
     /// Register a thread's ring buffer. Called once per thread on first push().
-    void register_thread(uint32_t thread_id, EventRingBuffer *rb);
+    void register_thread(uint32_t thread_id, std::shared_ptr<EventRingBuffer> rb);
 
     /// Set a human-readable name for a thread.
     void set_thread_name(uint32_t thread_id, std::string name);

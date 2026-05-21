@@ -18,9 +18,9 @@ Consumer::~Consumer() {
     shutdown();
 }
 
-void Consumer::register_thread(uint32_t thread_id, EventRingBuffer *rb) {
+void Consumer::register_thread(uint32_t thread_id, std::shared_ptr<EventRingBuffer> rb) {
     std::scoped_lock const lock(_reg_mutex);
-    _registrations.push_back({.thread_id = thread_id, .ring_buffer = rb});
+    _registrations.push_back({.thread_id = thread_id, .ring_buffer = std::move(rb)});
 }
 
 void Consumer::set_thread_name(uint32_t thread_id, std::string name) {

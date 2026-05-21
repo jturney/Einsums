@@ -252,12 +252,19 @@ struct EINSUMS_EXPORT Profiler {
     }
 
     // ------------------ thread-local ring buffer ------------------
-    static auto thread_ring_buffer() -> std::unique_ptr<EventRingBuffer> & {
+    // The ring buffer is *shared* with the Consumer: a producer thread (e.g. a
+    // transient TaskPool worker) can exit while the Consumer's drain thread is
+    // still popping residual events, so ownership must outlive the thread. With
+    // a thread_local unique_ptr the buffer was freed on thread exit while the
+    // Consumer held a raw pointer to it — a heap-use-after-free (caught by ASan
+    // via the DataflowExecutor). Shared ownership lets the buffer live until the
+    // last of {producer thread, Consumer} releases it.
+    static auto thread_ring_buffer() -> std::shared_ptr<EventRingBuffer> & {
         thread_local auto rb = [] {
-            auto ptr = std::make_unique<EventRingBuffer>();
+            auto ptr = std::make_shared<EventRingBuffer>();
             auto tid = thread_key();
-            // Register with consumer and open hardware counters for this thread
-            Profiler::instance()._consumer->register_thread(tid, ptr.get());
+            // Register with consumer (shares ownership) and open hardware counters.
+            Profiler::instance()._consumer->register_thread(tid, ptr);
             get_counter_backend().open_thread_counters();
             // Auto-name the thread: the first thread to initialize is "main"
             static std::atomic<bool> first_thread{true};
