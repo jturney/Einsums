@@ -125,7 +125,13 @@ jobs:
 
       - name: Test (CTest) - Unit Tests
         working-directory: "${{ github.workspace }}/build"
-        run: ctest --rerun-failed --output-on-failure
+        # UBSan is recoverable by default: it prints "runtime error:" and continues
+        # with exit 0, so a finding would NOT fail ctest. halt_on_error=1 turns every
+        # UB report into an abort -> non-zero exit -> red CI. ASan/LSan already abort.
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1:report_error_type=1
+          ASAN_OPTIONS: abort_on_error=1:print_stacktrace=1
+        run: ctest --output-on-failure
 
 #      - name: Test (pytest) - unit tests
 #        working-directory: "${{github.workspace}}/installed"

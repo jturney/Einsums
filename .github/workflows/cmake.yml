@@ -29,6 +29,12 @@ jobs:
     if: ${{ contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src') }}
     uses: ./.github/workflows/macos-build-and-test.yml
 
+  sanitizers:
+    name: Sanitizers
+    needs: [ detect_changes ]
+    if: ${{ contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src') }}
+    uses: ./.github/workflows/linux-build-and-test-sanitizer.yml
+
   documentation:
     name: Documentation
     needs: [ detect_changes ]
