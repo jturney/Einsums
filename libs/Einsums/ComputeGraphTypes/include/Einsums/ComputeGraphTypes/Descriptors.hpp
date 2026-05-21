@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 
+#include <complex>
 #include <string>
 #include <vector>
 
@@ -60,18 +61,18 @@ enum class BlasScalar : std::uint8_t {
  * order; this descriptor carries the shared BLAS parameters.
  */
 struct BatchedGemmDescriptor {
-    int        m{0};           ///< Rows of each C (and A if trans_a == 'N').
-    int        n{0};           ///< Cols of each C (and B if trans_b == 'N').
-    int        k{0};           ///< Link dimension.
-    int        lda{0};         ///< Leading dim of each A (row-major stride).
-    int        ldb{0};         ///< Leading dim of each B.
-    int        ldc{0};         ///< Leading dim of each C.
-    char       trans_a{'N'};   ///< BLAS transpose flag for A ('N' or 'T').
-    char       trans_b{'N'};   ///< BLAS transpose flag for B.
-    double     alpha{1.0};     ///< A*B prefactor (real part; imag assumed 0 for complex).
-    double     beta{0.0};      ///< C prefactor.
-    int        batch_count{0}; ///< Number of GEMMs fused into this call.
-    BlasScalar scalar{BlasScalar::Double};
+    int                  m{0};            ///< Rows of each C (and A if trans_a == 'N').
+    int                  n{0};            ///< Cols of each C (and B if trans_b == 'N').
+    int                  k{0};            ///< Link dimension.
+    int                  lda{0};          ///< Leading dim of each A (row-major stride).
+    int                  ldb{0};          ///< Leading dim of each B.
+    int                  ldc{0};          ///< Leading dim of each C.
+    char                 trans_a{'N'};    ///< BLAS transpose flag for A ('N' or 'T').
+    char                 trans_b{'N'};    ///< BLAS transpose flag for B.
+    std::complex<double> alpha{1.0, 0.0}; ///< A*B prefactor (full complex; imag part used for complex tensors).
+    std::complex<double> beta{0.0, 0.0};  ///< C prefactor.
+    int                  batch_count{0};  ///< Number of GEMMs fused into this call.
+    BlasScalar           scalar{BlasScalar::Double};
 
     /// Strided-batched mode: when true, the batched executor reads a
     /// single base pointer per operand from the live slot and computes

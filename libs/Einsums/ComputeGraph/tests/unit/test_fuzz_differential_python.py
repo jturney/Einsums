@@ -665,6 +665,39 @@ def test_regression_element_transform_in_loop():
     check_program(prog, *_square_seed_arrays(np.random.default_rng(9753)), "etransform_loop")
 
 
+def test_regression_complex_einsum_prefactor():
+    """Complex einsum/batched-einsum prefactors (phase factors) must not be
+    truncated to their real part — regression for BatchedGemmDescriptor carrying
+    only a real alpha/beta. Covers the direct batched path and accumulation."""
+    rng = np.random.default_rng(4242)
+
+    def cplx(sh):
+        return rng.standard_normal(sh) + 1j * rng.standard_normal(sh)
+
+    t = [cplx((3, 3, 2)) for _ in range(3)]
+    prog = [
+        ("beinsum", "ijb <- ikb ; kjb", 1.2 + 0.4j, 0, 1, 0.0, 2),          # t2 = (1.2+0.4j)*(t0@t1)_b
+        ("loop", 3, [("beinsum", "ijb <- ikb ; kjb", 0.5 - 0.3j, 0, 1, 1.0 + 0j, 2)]),  # accumulate complex
+    ]
+    check_program(prog, [], [], t, "cplx_beinsum_pf")
+
+
+def test_regression_complex_gemm_and_2d_einsum_prefactor():
+    """Complex prefactors on gemm and 2D einsum (non-batched and via the
+    GEMMBatching pass under the default manager)."""
+    rng = np.random.default_rng(4343)
+
+    def cplx(sh):
+        return rng.standard_normal(sh) + 1j * rng.standard_normal(sh)
+
+    m = [cplx((3, 3)) for _ in range(4)]
+    prog = [
+        ("gemm", 0.7 + 0.2j, 0, 1, 0.3 - 0.9j, 2),         # complex alpha and beta (accumulate)
+        ("einsum", "ij <- ik ; kj", -0.6 + 0.5j, 0, 1, 1.0 + 0j, 3),  # complex ab_pf accumulate
+    ]
+    check_program(prog, m, [], [], "cplx_gemm_pf")
+
+
 def test_regression_view_in_loop():
     """A view write inside a loop, interleaved with a full-tensor write."""
     prog = [

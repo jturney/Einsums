@@ -416,21 +416,21 @@ bool try_gpu_batched_gemm(BatchedGemmDescriptor const &desc, Node const &node, s
     switch (desc.scalar) {
     case BlasScalar::Float: {
         gpu::blas::gemm_strided_batched<float>(
-            desc.trans_a, desc.trans_b, desc.m, desc.n, desc.k, static_cast<float>(desc.alpha), static_cast<float const *>(ptr_a), desc.lda,
-            desc.batch_stride_a, static_cast<float const *>(ptr_b), desc.ldb, desc.batch_stride_b, static_cast<float>(desc.beta),
-            static_cast<float *>(ptr_c), desc.ldc, desc.batch_stride_c, desc.batch_count);
+            desc.trans_a, desc.trans_b, desc.m, desc.n, desc.k, static_cast<float>(desc.alpha.real()), static_cast<float const *>(ptr_a),
+            desc.lda, desc.batch_stride_a, static_cast<float const *>(ptr_b), desc.ldb, desc.batch_stride_b,
+            static_cast<float>(desc.beta.real()), static_cast<float *>(ptr_c), desc.ldc, desc.batch_stride_c, desc.batch_count);
         return true;
     }
     case BlasScalar::Double: {
-        gpu::blas::gemm_strided_batched<double>(desc.trans_a, desc.trans_b, desc.m, desc.n, desc.k, desc.alpha,
+        gpu::blas::gemm_strided_batched<double>(desc.trans_a, desc.trans_b, desc.m, desc.n, desc.k, desc.alpha.real(),
                                                 static_cast<double const *>(ptr_a), desc.lda, desc.batch_stride_a,
-                                                static_cast<double const *>(ptr_b), desc.ldb, desc.batch_stride_b, desc.beta,
+                                                static_cast<double const *>(ptr_b), desc.ldb, desc.batch_stride_b, desc.beta.real(),
                                                 static_cast<double *>(ptr_c), desc.ldc, desc.batch_stride_c, desc.batch_count);
         return true;
     }
     case BlasScalar::ComplexFloat: {
-        std::complex<float> const alpha{static_cast<float>(desc.alpha), 0.0f};
-        std::complex<float> const beta{static_cast<float>(desc.beta), 0.0f};
+        std::complex<float> const alpha{static_cast<float>(desc.alpha.real()), static_cast<float>(desc.alpha.imag())};
+        std::complex<float> const beta{static_cast<float>(desc.beta.real()), static_cast<float>(desc.beta.imag())};
         gpu::blas::gemm_strided_batched<std::complex<float>>(
             desc.trans_a, desc.trans_b, desc.m, desc.n, desc.k, alpha, static_cast<std::complex<float> const *>(ptr_a), desc.lda,
             desc.batch_stride_a, static_cast<std::complex<float> const *>(ptr_b), desc.ldb, desc.batch_stride_b, beta,
@@ -438,8 +438,8 @@ bool try_gpu_batched_gemm(BatchedGemmDescriptor const &desc, Node const &node, s
         return true;
     }
     case BlasScalar::ComplexDouble: {
-        std::complex<double> const alpha{desc.alpha, 0.0};
-        std::complex<double> const beta{desc.beta, 0.0};
+        std::complex<double> const alpha = desc.alpha;
+        std::complex<double> const beta  = desc.beta;
         gpu::blas::gemm_strided_batched<std::complex<double>>(
             desc.trans_a, desc.trans_b, desc.m, desc.n, desc.k, alpha, static_cast<std::complex<double> const *>(ptr_a), desc.lda,
             desc.batch_stride_a, static_cast<std::complex<double> const *>(ptr_b), desc.ldb, desc.batch_stride_b, beta,

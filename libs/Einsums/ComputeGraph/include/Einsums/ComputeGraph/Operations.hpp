@@ -2588,8 +2588,8 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
                     d.ldc     = c_slice_dim(1);
                 }
 
-                d.alpha          = as_real<double>(params->ab_pf);
-                d.beta           = as_real<double>(params->c_pf);
+                d.alpha          = as<std::complex<double>>(params->ab_pf);
+                d.beta           = as<std::complex<double>>(params->c_pf);
                 d.batch_count    = static_cast<int>(flat_batch);
                 d.strided        = true;
                 d.batch_stride_a = static_cast<std::int64_t>(a_slice_dim(0)) * static_cast<std::int64_t>(a_slice_dim(1));
@@ -2615,13 +2615,14 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
                     T const **blas_b = swap_ab ? a_arr.data() : b_arr.data();
 
                     if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
-                        T alpha{static_cast<typename T::value_type>(d.alpha), typename T::value_type{0}};
-                        T beta{static_cast<typename T::value_type>(d.beta), typename T::value_type{0}};
+                        using R = typename T::value_type;
+                        T alpha{static_cast<R>(d.alpha.real()), static_cast<R>(d.alpha.imag())};
+                        T beta{static_cast<R>(d.beta.real()), static_cast<R>(d.beta.imag())};
                         blas::gemm_batch<T>(d.trans_a, d.trans_b, d.m, d.n, d.k, alpha, blas_a, d.lda, blas_b, d.ldb, beta, c_arr.data(),
                                             d.ldc, d.batch_count);
                     } else {
-                        blas::gemm_batch<T>(d.trans_a, d.trans_b, d.m, d.n, d.k, static_cast<T>(d.alpha), blas_a, d.lda, blas_b, d.ldb,
-                                            static_cast<T>(d.beta), c_arr.data(), d.ldc, d.batch_count);
+                        blas::gemm_batch<T>(d.trans_a, d.trans_b, d.m, d.n, d.k, static_cast<T>(d.alpha.real()), blas_a, d.lda, blas_b,
+                                            d.ldb, static_cast<T>(d.beta.real()), c_arr.data(), d.ldc, d.batch_count);
                     }
                 };
 

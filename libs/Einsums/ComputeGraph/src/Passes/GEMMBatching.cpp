@@ -37,13 +37,13 @@ void run_batched_gemm(BatchedGemmDescriptor const &d, std::vector<void const *> 
         b_arr[i] = static_cast<T const *>(b_vs[i]);
         c_arr[i] = static_cast<T *>(c_vs[i]);
     }
-    blas::gemm_batch<T>(d.trans_a, d.trans_b, d.m, d.n, d.k, static_cast<T>(d.alpha), a_arr.data(), d.lda, b_arr.data(), d.ldb,
-                        static_cast<T>(d.beta), c_arr.data(), d.ldc, d.batch_count);
+    blas::gemm_batch<T>(d.trans_a, d.trans_b, d.m, d.n, d.k, static_cast<T>(d.alpha.real()), a_arr.data(), d.lda, b_arr.data(), d.ldb,
+                        static_cast<T>(d.beta.real()), c_arr.data(), d.ldc, d.batch_count);
 }
 
-// Complex prefactors come in as plain doubles (imag assumed 0 — matches
-// the rest of the capture path, where the user-visible alpha/beta are
-// real). Converting through std::complex<T> preserves real-only logic.
+// The descriptor carries the full complex prefactor; preserve both parts when
+// dispatching the complex batched GEMM (a complex einsum prefactor like a phase
+// factor must not be truncated to its real part).
 template <typename Complex>
 void run_batched_gemm_complex(BatchedGemmDescriptor const &d, std::vector<void const *> const &a_vs, std::vector<void const *> const &b_vs,
                               std::vector<void *> const &c_vs) {
@@ -56,8 +56,8 @@ void run_batched_gemm_complex(BatchedGemmDescriptor const &d, std::vector<void c
         b_arr[i] = static_cast<Complex const *>(b_vs[i]);
         c_arr[i] = static_cast<Complex *>(c_vs[i]);
     }
-    Complex alpha{static_cast<T>(d.alpha), T{0}};
-    Complex beta{static_cast<T>(d.beta), T{0}};
+    Complex alpha{static_cast<T>(d.alpha.real()), static_cast<T>(d.alpha.imag())};
+    Complex beta{static_cast<T>(d.beta.real()), static_cast<T>(d.beta.imag())};
     blas::gemm_batch<Complex>(d.trans_a, d.trans_b, d.m, d.n, d.k, alpha, a_arr.data(), d.lda, b_arr.data(), d.ldb, beta, c_arr.data(),
                               d.ldc, d.batch_count);
 }
@@ -185,11 +185,11 @@ bool GEMMBatching::run(Graph &graph) {
         d.ldc     = ldc;
         d.trans_a = key.trans_a;
         d.trans_b = key.trans_b;
-        // BatchedGemmDescriptor stores prefactors as ``double`` (real part
-        // for complex; see header). The complex GEMM dispatch lifts back
-        // via ``Complex{static_cast<T>(alpha), T{0}}`` at execute time.
-        d.alpha       = as_real<double>(first_desc->ab_prefactor);
-        d.beta        = as_real<double>(first_desc->c_prefactor);
+        // The descriptor carries the full complex prefactor; the batch key
+        // (alpha_bits/beta_bits) already hashes the full value, so only einsums
+        // with bit-identical prefactors (real and imaginary) are grouped here.
+        d.alpha       = as<std::complex<double>>(first_desc->ab_prefactor);
+        d.beta        = as<std::complex<double>>(first_desc->c_prefactor);
         d.batch_count = static_cast<int>(group.size());
         d.scalar      = key.scalar;
 
