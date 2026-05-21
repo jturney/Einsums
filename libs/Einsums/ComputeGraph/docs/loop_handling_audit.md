@@ -528,9 +528,15 @@ differential tolerances are looser than `tolerance_for`'s same-computation value
 (1e-3 for single, 1e-5 for double) with a tighter magnitude cap for single
 precision. No dtype bugs found.
 
-After the fixes: ~4250 fuzz cases (all four dtypes; eager and deferred allocation;
-single-execute and replay; degenerate overflow/NaN programs auto-skipped) + the
-full 83-test ComputeGraph suite (C++ and Python) pass.
+A `cg.Pipeline` multi-stage mode was also added (a program is a sequence of stage
+sub-programs sharing one tensor pool — a later stage reads what an earlier wrote;
+oracle = interp over the concatenation; run raw and with the default manager
+applied per stage, over all dtypes). No pipeline bugs found.
+
+After the fixes: ~4900 fuzz cases (all four dtypes; eager and deferred allocation;
+single graphs and multi-stage pipelines; single-execute and replay; degenerate
+overflow/NaN programs auto-skipped) + the full 83-test ComputeGraph suite
+(C++ and Python) pass.
 The harness is registered as
 `Tests.Unit.Modules.ComputeGraph.FuzzDifferentialPython`. Conditionals became
 fuzzable once `add_conditional` was bound to Python (return type changed from
