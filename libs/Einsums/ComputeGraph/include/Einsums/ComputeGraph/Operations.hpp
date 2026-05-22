@@ -7,6 +7,7 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
@@ -2327,6 +2328,7 @@ template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept
     requires requires {
         requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
         requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
+        requires !detail::any_tiled_v<AType, BType, CType>;
     }
 void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
             BType const &B) {
@@ -2677,6 +2679,64 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     };
 
     ctx.record(OpKind::Einsum, std::move(label), {a_id, b_id}, {c_id}, std::move(executor), std::move(desc));
+}
+
+/**
+ * @brief Tiled einsum (Tier B1): einsum over TiledRuntimeTensor operands.
+ *
+ * Selected when any operand is tiled. Walks the tile grid and composes dense
+ * per-tile contractions (see detail::tiled_runtime_einsum). All three operands
+ * must be tiled; the contraction is recorded as a single opaque ``Custom`` node
+ * so the einsum-rewriting passes don't try to synthesize dense intermediates
+ * for it.
+ */
+template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
+    requires requires {
+        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
+        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
+        requires detail::any_tiled_v<AType, BType, CType>;
+    }
+void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
+            BType const &B) {
+    using T = typename AType::ValueType;
+    static_assert(IsTiledTensorV<std::remove_cvref_t<AType>> && IsTiledTensorV<std::remove_cvref_t<BType>> &&
+                      IsTiledTensorV<std::remove_cvref_t<CType>>,
+                  "cg::einsum with a tiled operand currently requires all of A, B, C to be TiledRuntimeTensor "
+                  "(mixed tiled/dense is not supported yet)");
+
+    auto parse_result = parse_einsum_spec(static_cast<std::string_view>(spec));
+    if (!parse_result) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}", parse_result.error().message);
+    }
+    auto &parsed = parse_result.value();
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        detail::tiled_runtime_einsum<T>(parsed, c_pf, C, ab_pf, A, B);
+        return;
+    }
+
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [b_id, b_slot] = ctx.get_slot(B);
+    auto [c_id, c_slot] = ctx.get_slot(*C);
+
+    auto params  = ctx.graph()->create_params(c_pf, ab_pf);
+    auto indices = ctx.graph()->create_indices(parsed.a_indices, parsed.b_indices, parsed.c_indices, std::vector<std::string>{});
+
+    auto label = fmt::format("tiled einsum: C[{}] = A[{}] * B[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
+                             fmt::join(parsed.b_indices, ","));
+
+    auto executor = [indices, params, a_slot, b_slot, c_slot]() {
+        ParsedEinsumSpec live{indices->c_indices, indices->a_indices, indices->b_indices, /*raw*/ std::string{}};
+        detail::tiled_runtime_einsum<T>(live, as<T>(params->c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params->ab_pf),
+                                        *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
+    };
+
+    // Opaque Custom node: participates in dependency ordering + lifecycle but is
+    // invisible to the einsum-rewriting passes (chain parenthesization /
+    // contraction planning), which would otherwise synthesize *dense*
+    // intermediates. Tier B1 = no cross-tile graph optimization.
+    ctx.record(OpKind::Custom, std::move(label), {a_id, b_id}, {c_id}, std::move(executor));
 }
 
 /**

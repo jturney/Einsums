@@ -65,7 +65,9 @@ set(ComputeGraphTests
     StridedBatchedGemm.cpp
     StringEinsum.cpp
     TensorLifetime.cpp
+    TiledRuntimeEinsum.cpp
     TensorRankConcept.cpp
+    TiledRuntimeTensorLifetime.cpp
     View.cpp
     Workspace.cpp
     test_auto_view_python.py

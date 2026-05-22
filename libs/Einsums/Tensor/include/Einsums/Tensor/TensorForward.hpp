@@ -79,6 +79,9 @@ using RuntimeTensor = GeneralRuntimeTensor<T, std::allocator<T>>;
 template <typename T>
 using BufferRuntimeTensor = GeneralRuntimeTensor<T, BufferAllocator<T>>;
 
+template <typename T>
+struct TiledRuntimeTensor;
+
 /// GPU-resident runtime-rank tensor using the gpu:: abstraction layer.
 /// Mirrors GPUTensor but with rank known only at runtime. Not exposed to
 /// Python — ComputeGraph optimization passes (GPUPlacement, etc.) own

@@ -62,11 +62,12 @@ struct TensorHandle {
     std::vector<size_t>     strides;                                 ///< Stride of each dimension, in elements
     packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Unknown}; ///< Element type enum for runtime dispatch
     bool                    is_intermediate{false};                  ///< True if this tensor is owned by the graph (from create_tensor())
-    bool                    is_distributed{false};                   ///< True if this tensor is distributed across ranks
-    bool                    is_replicated{true};                     ///< True if distributed tensor is replicated on all ranks
-    AllocState              alloc_state{AllocState::Materialized};   ///< Whether data is allocated (Materialized) or deferred
-    InitKind                init_kind{InitKind::None};               ///< How to initialize after materialization
-    Residency               residency{Residency::Host};              ///< Where the tensor data currently lives (updated by GPU passes)
+    bool                    is_tiled{false};       ///< True if a tile-wise sparse tensor (no single contiguous data() buffer)
+    bool                    is_distributed{false}; ///< True if this tensor is distributed across ranks
+    bool                    is_replicated{true};   ///< True if distributed tensor is replicated on all ranks
+    AllocState              alloc_state{AllocState::Materialized}; ///< Whether data is allocated (Materialized) or deferred
+    InitKind                init_kind{InitKind::None};             ///< How to initialize after materialization
+    Residency               residency{Residency::Host};            ///< Where the tensor data currently lives (updated by GPU passes)
 
     /// Type-erased function to allocate backing storage for a deferred tensor.
     /// Called by MaterializationPass. Null for already-materialized tensors.
@@ -230,6 +231,13 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
     for (size_t i = 0; i < h.rank; i++) {
         h.dims[i]    = tensor.dim(i);
         h.strides[i] = tensor.stride(i);
+    }
+
+    // Tile-wise sparse tensors (TiledRuntimeTensor) advertise themselves so the
+    // graph can flag the handle and keep them out of dense buffer-level passes;
+    // their data_ptr is null (multi-tile) since there is no single buffer.
+    if constexpr (requires { tensor.is_tiled_tensor(); }) {
+        h.is_tiled = tensor.is_tiled_tensor();
     }
 
     // swap_data: redirect the tensor's internal data pointer to a new buffer.
