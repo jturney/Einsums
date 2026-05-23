@@ -27,6 +27,21 @@ DTYPE_TO_TRT = {
     np.complex128: einsums.TiledRuntimeTensorZ,
 }
 
+# 1-element dense result tensors for scalar reductions: same dtype for
+# dot/trace, the real type for norm.
+_RT = {
+    np.float32: einsums.RuntimeTensorF,
+    np.float64: einsums.RuntimeTensorD,
+    np.complex64: einsums.RuntimeTensorC,
+    np.complex128: einsums.RuntimeTensorZ,
+}
+_REAL_RT = {
+    np.float32: einsums.RuntimeTensorF,
+    np.float64: einsums.RuntimeTensorD,
+    np.complex64: einsums.RuntimeTensorF,
+    np.complex128: einsums.RuntimeTensorD,
+}
+
 
 def _make(dtype, name, grid, fill=None):
     """Build a tiled tensor over ``grid`` (list per axis), populate every tile,
@@ -150,3 +165,37 @@ def test_tiled_einsum_rank4_two_contractions(dtype):
     einsums.einsum("ijab <- ijcd ; cdab", C, A, B)
 
     assert_close(_gather_nd(C, (3, 2, 3, 2), dtype), np.einsum("ijcd,cdab->ijab", aref, bref))
+
+
+# ── Scalar reductions (dot / norm / trace) ──────────────────────────────────
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_tiled_dot(dtype):
+    aref = (1.0 + np.arange(45, dtype=dtype)).reshape(5, 9)
+    bref = (2.0 - np.arange(45, dtype=dtype)).reshape(5, 9)
+    A = _make_nd(dtype, "A", [[2, 3], [4, 5]], aref)
+    B = _make_nd(dtype, "B", [[2, 3], [4, 5]], bref)
+    r = _RT[np.dtype(dtype).type]("r", [1])
+    einsums.linalg.dot(r, A, B)
+    # cg::dot is non-conjugated (sum A*B), matching np.sum(A*B).
+    assert_close(np.asarray(r)[0], np.sum(aref * bref))
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_tiled_norm_frobenius(dtype):
+    aref = (1.0 + np.arange(45, dtype=dtype)).reshape(5, 9)
+    A = _make_nd(dtype, "A", [[2, 3], [4, 5]], aref)
+    r = _REAL_RT[np.dtype(dtype).type]("r", [1])
+    einsums.linalg.norm(r, einsums.linalg.Norm.FROBENIUS, A)
+    assert_close(np.asarray(r)[0], np.linalg.norm(aref.ravel()))
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_tiled_trace(dtype):
+    # Square, with matching row/col tile partition so diagonal tiles are square.
+    sref = (1.0 + np.arange(25, dtype=dtype)).reshape(5, 5)
+    S = _make_nd(dtype, "S", [[2, 3], [2, 3]], sref)
+    r = _RT[np.dtype(dtype).type]("r", [1])
+    einsums.linalg.trace(r, S)
+    assert_close(np.asarray(r)[0], np.trace(sref))

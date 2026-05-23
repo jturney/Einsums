@@ -11,8 +11,11 @@
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <stdexcept>
+#include <vector>
 
 namespace einsums::compute_graph::detail {
 
@@ -76,6 +79,76 @@ void tiled_axpy(T alpha, TiledRuntimeTensor<T> const &X, TiledRuntimeTensor<T> *
         y_tile.materialize();
         linear_algebra::axpy(alpha, x_tile, &y_tile);
     }
+}
+
+// ── Scalar reductions ────────────────────────────────────────────────────────
+
+/// Tiled dot: sum over shared tiles of the dense per-tile dot (non-conjugated,
+/// matching linear_algebra::dot). X and Y must share a tile grid; a tile present
+/// in only one operand contributes nothing.
+template <typename T>
+T tiled_dot(TiledRuntimeTensor<T> const &A, TiledRuntimeTensor<T> const &B) {
+    if (A.tile_sizes() != B.tile_sizes()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dot (tiled): operands must share the same tile grid");
+    }
+    T acc{0};
+    for (auto const &kv : A.tiles()) {
+        if (B.has_tile(kv.first)) {
+            acc += linear_algebra::dot(kv.second, B.tile(kv.first));
+        }
+    }
+    return acc;
+}
+
+/// Tiled trace: sum the diagonals of the diagonal tiles. Requires a rank-2
+/// tensor whose two axes share the same tile partition (so each (i,i) tile is
+/// square and the global diagonal is exactly the union of their diagonals).
+template <typename T>
+T tiled_trace(TiledRuntimeTensor<T> const &A) {
+    if (A.rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::trace (tiled): input must be rank-2; got rank {}.", A.rank());
+    }
+    if (A.tile_sizes()[0] != A.tile_sizes()[1]) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace (tiled): the two axes must share the same tile partition (square grid)");
+    }
+    T         acc{0};
+    int const n = static_cast<int>(A.tile_sizes()[0].size());
+    for (int i = 0; i < n; ++i) {
+        std::vector<int> const coord{i, i};
+        if (A.has_tile(coord)) {
+            auto const  &t = A.tile(coord);
+            size_t const m = std::min(t.dim(0), t.dim(1)); // square, but be safe
+            for (size_t k = 0; k < m; ++k) {
+                acc += t(std::vector<size_t>{k, k});
+            }
+        }
+    }
+    return acc;
+}
+
+/// Tiled norm. FROBENIUS = sqrt(sum of per-tile Frobenius norms squared);
+/// MAXABS = max over tiles. The induced ONE/INFTY/TWO norms need cross-tile
+/// row/column aggregation and are not supported.
+template <typename T>
+RemoveComplexT<T> tiled_norm(linear_algebra::Norm norm_type, TiledRuntimeTensor<T> const &A) {
+    using R = RemoveComplexT<T>;
+    if (norm_type == linear_algebra::Norm::FROBENIUS) {
+        R sumsq{0};
+        for (auto const &kv : A.tiles()) {
+            R const n = linear_algebra::norm(linear_algebra::Norm::FROBENIUS, kv.second);
+            sumsq += n * n;
+        }
+        return std::sqrt(sumsq);
+    }
+    if (norm_type == linear_algebra::Norm::MAXABS) {
+        R m{0};
+        for (auto const &kv : A.tiles()) {
+            m = std::max(m, linear_algebra::norm(linear_algebra::Norm::MAXABS, kv.second));
+        }
+        return m;
+    }
+    EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                            "cg::norm (tiled): only FROBENIUS and MAXABS are supported (ONE/INFTY/TWO need cross-tile aggregation)");
 }
 
 } // namespace einsums::compute_graph::detail

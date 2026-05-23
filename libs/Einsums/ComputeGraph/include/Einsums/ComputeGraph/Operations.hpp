@@ -980,10 +980,12 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
 /// ``result`` is a pre-allocated rank-1 (or higher, but only element 0 is
 /// touched) tensor that gives Python users a graph-native scalar handle —
 /// SCF energy patterns like ``e = ½ Σ D · (H+F)`` can be captured.
-template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
+template <CoreBasicTensorConcept ResultType, typename AType, typename BType>
     requires requires {
         requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>;
         requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
+        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
+        requires(CoreBasicTensorConcept<BType> || IsTiledTensorV<std::remove_cvref_t<BType>>);
     }
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
@@ -1029,15 +1031,30 @@ EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<dou
 EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::RuntimeTensorView<std::complex<double>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+// all-tiled operands, dense scalar result, per dtype
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void dot_python(ResultType *result, AType const &A, BType const &B) {
+    using T = typename AType::ValueType;
     if (result->size() < 1) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dot: result tensor must have at least one element");
     }
 
+    // Tiled operands compose per-tile dots; dense delegate to linear_algebra.
+    auto compute = [](AType const &a, BType const &b) -> T {
+        if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+            return detail::tiled_dot<T>(a, b);
+        } else {
+            return linear_algebra::dot(a, b);
+        }
+    };
+
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        result->data()[0] = linear_algebra::dot(A, B);
+        result->data()[0] = compute(A, B);
         return;
     }
 
@@ -1049,9 +1066,9 @@ EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<dou
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [r_id, r_slot] = ctx.get_slot(*result);
 
-    auto executor = [a_slot, b_slot, r_slot]() {
+    auto executor = [a_slot, b_slot, r_slot, compute]() {
         auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
-        r_ptr->data()[0] = linear_algebra::dot(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
+        r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
     };
     ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor));
 }
@@ -1342,8 +1359,11 @@ void norm(RemoveComplexT<typename AType::ValueType> *result, linear_algebra::Nor
 /// For complex inputs the result is real-valued (e.g. complex<double> input
 /// requires a ``double`` result tensor). Use ``Norm::ONE``, ``Norm::TWO``,
 /// ``Norm::INFINITY_``, ``Norm::FROBENIUS``, etc.
-template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
-    requires requires { requires std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>>; }
+template <CoreBasicTensorConcept ResultType, typename AType>
+    requires requires {
+        requires std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>>;
+        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
+    }
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
@@ -1371,24 +1391,38 @@ EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std:
 EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<std::complex<double>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::RuntimeTensorView<double>,                            einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::RuntimeTensorView<double>,                            einsums::RuntimeTensorView<std::complex<double>>)
+// tiled operand, real scalar result (RemoveComplexT of operand's type)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::TiledRuntimeTensor<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::TiledRuntimeTensor<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const &A) {
+    using R = RemoveComplexT<typename AType::ValueType>;
     if (result->size() < 1) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::norm: result tensor must have at least one element");
     }
 
+    auto compute = [](linear_algebra::Norm nt, AType const &a) -> R {
+        if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+            return detail::tiled_norm<typename AType::ValueType>(nt, a);
+        } else {
+            return linear_algebra::norm(nt, a);
+        }
+    };
+
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        result->data()[0] = linear_algebra::norm(norm_type, A);
+        result->data()[0] = compute(norm_type, A);
         return;
     }
 
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [r_id, r_slot] = ctx.get_slot(*result);
 
-    auto executor = [norm_type, a_slot, r_slot]() {
+    auto executor = [norm_type, a_slot, r_slot, compute]() {
         auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
-        r_ptr->data()[0] = linear_algebra::norm(norm_type, *static_cast<AType const *>(a_slot->ptr));
+        r_ptr->data()[0] = compute(norm_type, *static_cast<AType const *>(a_slot->ptr));
     };
     ctx.record(OpKind::Norm, "norm", {a_id}, {r_id}, std::move(executor));
 }
@@ -1495,8 +1529,11 @@ void trace(typename AType::ValueType *result, AType const &A) {
 
 /// Python-friendly graph-aware trace: writes the diagonal sum into
 /// ``result->data()[0]``. Runtime-rank input must be a square rank-2 tensor.
-template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
-    requires requires { requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>; }
+template <CoreBasicTensorConcept ResultType, typename AType>
+    requires requires {
+        requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>;
+        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
+    }
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
@@ -1523,6 +1560,11 @@ EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::comple
 EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,einsums::RuntimeTensorView<std::complex<double>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::RuntimeTensorView<std::complex<double>>)
+// tiled operand, dense scalar result, per dtype
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::TiledRuntimeTensor<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::TiledRuntimeTensor<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::TiledRuntimeTensor<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void trace_python(ResultType *result, AType const &A) {
     using T = typename AType::ValueType;
@@ -1538,10 +1580,14 @@ EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::RuntimeTensorView<std::complex<d
     }
 
     auto compute = [](AType const &a) -> T {
-        T sum = T{};
-        for (size_t i = 0; i < a.dim(0); ++i)
-            sum += a(i, i);
-        return sum;
+        if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+            return detail::tiled_trace<T>(a);
+        } else {
+            T sum = T{};
+            for (size_t i = 0; i < a.dim(0); ++i)
+                sum += a(i, i);
+            return sum;
+        }
     };
 
     auto &ctx = CaptureContext::current();
