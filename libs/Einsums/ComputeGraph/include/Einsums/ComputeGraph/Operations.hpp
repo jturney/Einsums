@@ -70,6 +70,10 @@ EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::RuntimeTensorView<float>)
 EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::RuntimeTensorView<double>)
 EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::RuntimeTensorView<std::complex<float>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void scale(typename AType::ValueType factor, AType *A) {
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
@@ -477,6 +481,10 @@ EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<std::complex
 EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
     if constexpr (IsTiledTensorV<std::remove_cvref_t<XType>> || IsTiledTensorV<std::remove_cvref_t<YType>>) {
@@ -2833,13 +2841,15 @@ void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
 /// 4-argument form (no explicit prefactors); Graph::create_params still
 /// stores prefactors as doubles internally, which would narrow the
 /// imaginary part out of a complex ``c_pf``/``ab_pf``.
-template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
+template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
     requires(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
              std::is_same_v<typename AType::ValueType, typename CType::ValueType>)
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 // All 8 combinations of (C, A, B) x (owning, view), per dtype. Same-dtype
-// across operands is enforced by the requires clause above.
+// across operands is enforced by the requires clause above. Plus the all-tiled
+// case (TiledRuntimeTensor) — TensorConcept (not BasicTensorConcept) so a tiled
+// operand is admitted; the body's einsum() dispatches to the tiled tile-walk.
 //
 // float — OOO/OOV/OVO/OVV/VOO/VOV/VVO/VVV in (C, A, B) order
 EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
@@ -2877,6 +2887,11 @@ EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<std::complex<
 EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+// all-tiled (TiledRuntimeTensor), per dtype
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void einsum_python(std::string const &spec, CType *C, AType const &A, BType const &B,
                        typename CType::ValueType c_pf  = typename CType::ValueType{0},
