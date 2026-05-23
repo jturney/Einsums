@@ -390,7 +390,8 @@ void element_transform(CType *C, UnaryOperator unary_op) {
 /// ``tensor_algebra::element_transform``) keeps the per-call GIL acquire from
 /// causing thread contention — fine for the small unary maps typical of
 /// SCF/MP2 (eigenvalues, denominators).
-template <CoreBasicTensorConcept TensorType>
+template <typename TensorType>
+    requires(CoreBasicTensorConcept<TensorType> || IsTiledTensorV<std::remove_cvref_t<TensorType>>)
 // clang-format off
 EINSUMS_PYBIND_EXPOSE
 EINSUMS_PYBIND_MODULE("linalg")
@@ -402,11 +403,17 @@ EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<fl
 EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<double>)
 EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<std::complex<float>>)
 EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::TiledRuntimeTensor<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::TiledRuntimeTensor<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::TiledRuntimeTensor<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void element_transform_python(TensorType *C, std::function<typename TensorType::ValueType(typename TensorType::ValueType)> unary_op) {
     using T = typename TensorType::ValueType;
 
-    auto apply = [unary_op](TensorType *target) {
+    // Operate on one data-bearing unit (the whole dense tensor, or a single
+    // tile). Generic so it accepts both TensorType* and RuntimeTensor<T>*.
+    auto apply = [unary_op](auto *target) {
         T           *data = target->data();
         size_t const n    = target->size();
 #if defined(PyEinsums_EXPORTS)
@@ -433,14 +440,27 @@ EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<st
 #endif
     };
 
+    // Apply across the whole tensor: one call for dense, once per (materialized)
+    // tile for tiled. Absent tiles are zero and left untouched.
+    auto run = [apply](TensorType *target) {
+        if constexpr (IsTiledTensorV<std::remove_cvref_t<TensorType>>) {
+            for (auto &kv : target->tiles()) {
+                kv.second.materialize();
+                apply(&kv.second);
+            }
+        } else {
+            apply(target);
+        }
+    };
+
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        apply(C);
+        run(C);
         return;
     }
 
     auto [c_id, c_slot] = ctx.get_slot(*C);
-    auto executor       = [c_slot, apply]() { apply(static_cast<TensorType *>(c_slot->ptr)); };
+    auto executor       = [c_slot, run]() { run(static_cast<TensorType *>(c_slot->ptr)); };
     ctx.record(OpKind::ElementTransform, "element_transform", {c_id}, {c_id}, std::move(executor));
 }
 

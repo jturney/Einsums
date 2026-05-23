@@ -192,6 +192,14 @@ def test_tiled_norm_frobenius(dtype):
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_tiled_element_transform(dtype):
+    aref = (0.5 + np.arange(45, dtype=dtype)).reshape(5, 9)
+    A = _make_nd(dtype, "A", [[2, 3], [4, 5]], aref)
+    einsums.linalg.element_transform(A, lambda x: x * x)
+    assert_close(_gather_nd(A, (5, 9), dtype), aref * aref)
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
 def test_tiled_trace(dtype):
     # Square, with matching row/col tile partition so diagonal tiles are square.
     sref = (1.0 + np.arange(25, dtype=dtype)).reshape(5, 5)
