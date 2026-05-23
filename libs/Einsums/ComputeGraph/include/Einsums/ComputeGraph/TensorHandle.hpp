@@ -26,6 +26,26 @@
 namespace einsums::compute_graph {
 
 /**
+ * @brief A tensor the graph can capture into a handle.
+ *
+ * Either a dense, in-core basic tensor (GeneralTensor, TensorView,
+ * RuntimeTensor, ...) or a tile-wise sparse in-core tensor
+ * (TiledRuntimeTensor). The latter no longer satisfies BasicTensorConcept (a
+ * tiled tensor isn't a single-buffer tensor), but it still exposes the metadata
+ * surface make_handle needs — name/rank/dim/stride/data (with data() null for
+ * the multi-tile case) — so we admit it explicitly here.
+ */
+template <typename D>
+concept GraphCapturableTensor =
+    CoreBasicTensorConcept<D> || (IsIncoreTensorV<std::remove_cvref_t<D>> && IsTiledTensorV<std::remove_cvref_t<D>> && requires(D t) {
+        t.data();
+        t.stride(0);
+        t.strides();
+        t.rank();
+        t.name();
+    });
+
+/**
  * @brief Unique identifier for a tensor within a computation graph.
  *
  * Each tensor registered with a Graph receives a unique TensorId.
@@ -209,7 +229,7 @@ struct TensorHandle {
  * // handle.name == "A", handle.rank == 2, handle.dims == {10, 10}
  * @endcode
  */
-template <CoreBasicTensorConcept TensorType>
+template <GraphCapturableTensor TensorType>
 TensorHandle make_handle(TensorType const &tensor, TensorId id) {
     TensorHandle h;
     h.tensor_ptr = const_cast<void *>(static_cast<void const *>(&tensor));

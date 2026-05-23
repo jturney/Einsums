@@ -154,7 +154,7 @@ class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUM
      * @param[in] tensor The tensor to look up or register.
      * @return The tensor's TensorId in the current graph.
      */
-    template <CoreBasicTensorConcept TensorType>
+    template <GraphCapturableTensor TensorType>
     TensorId get_or_register(TensorType const &tensor) {
         void *ptr = const_cast<void *>(static_cast<void const *>(&tensor));
 
@@ -212,7 +212,7 @@ class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUM
      * @param[in] tensor The tensor.
      * @return Pair of (TensorId, TensorSlot pointer).
      */
-    template <CoreBasicTensorConcept TensorType>
+    template <GraphCapturableTensor TensorType>
     std::pair<TensorId, TensorSlot *> get_slot(TensorType const &tensor) {
         TensorId id = get_or_register(tensor);
         return {id, _graph->get_or_create_slot(tensor, id)};
@@ -224,7 +224,7 @@ class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUM
     /// — the @ref get_slot path requires the object's address to match
     /// a re-registration cycle, but explicit-registration callers can
     /// bypass that.
-    template <CoreBasicTensorConcept TensorType>
+    template <GraphCapturableTensor TensorType>
     TensorSlot *create_slot_for(TensorType const &tensor, TensorId id) {
         return _graph->get_or_create_slot(tensor, id);
     }

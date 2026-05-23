@@ -2690,11 +2690,10 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
  * so the einsum-rewriting passes don't try to synthesize dense intermediates
  * for it.
  */
-template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
+template <TiledTensorConcept AType, TiledTensorConcept BType, TiledTensorConcept CType>
     requires requires {
         requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
         requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
-        requires detail::any_tiled_v<AType, BType, CType>;
     }
 void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
             BType const &B) {
@@ -2753,6 +2752,17 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
  * @endcode
  */
 template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
+    requires requires {
+        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
+        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
+    }
+void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
+    using T = typename AType::ValueType;
+    einsum(spec, T{0}, C, T{1}, A, B);
+}
+
+/// Default-prefactor tiled einsum (delegates to the tiled prefactor overload).
+template <TiledTensorConcept AType, TiledTensorConcept BType, TiledTensorConcept CType>
     requires requires {
         requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
         requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;

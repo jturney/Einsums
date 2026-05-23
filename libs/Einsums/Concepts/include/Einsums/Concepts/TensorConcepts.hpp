@@ -248,11 +248,19 @@ constexpr inline bool IsViewOfV = requires {
  * @versionadded{1.0.0}
  */
 template <typename D>
-constexpr inline bool IsBasicTensorV = requires(D tensor) {
-    tensor.data();
-    tensor.stride(0);
-    tensor.strides();
-};
+constexpr inline bool IsBasicTensorV =
+    // A structured (tiled) tensor is NOT a basic (single-buffer) tensor, even if
+    // it exposes data()/stride()/strides() for graph capture (TiledRuntimeTensor
+    // returns null/advisory values). Excluding it here keeps a tiled tensor from
+    // matching basic-tensor overloads that would dereference its absent whole-
+    // tensor buffer, and resolves the basic-vs-tiled overload ambiguity in
+    // linear_algebra. Plain TiledTensor never satisfied this (no flat data()),
+    // so existing types are unaffected.
+    !std::is_base_of_v<einsums::tensor_base::TiledTensorNoExtra, std::remove_cvref_t<D>> && requires(D tensor) {
+        tensor.data();
+        tensor.stride(0);
+        tensor.strides();
+    };
 
 /**
  * @property IsCollectedTensorV
