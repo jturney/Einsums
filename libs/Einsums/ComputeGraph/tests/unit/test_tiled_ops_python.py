@@ -207,3 +207,80 @@ def test_tiled_trace(dtype):
     r = _RT[np.dtype(dtype).type]("r", [1])
     einsums.linalg.trace(r, S)
     assert_close(np.asarray(r)[0], np.trace(sref))
+
+
+# ── Eigendecomposition: syev / heev (dense + tiled) ─────────────────────────
+
+
+def _block_diag_full(blocks):
+    n = sum(b.shape[0] for b in blocks)
+    M = np.zeros((n, n), dtype=blocks[0].dtype)
+    o = 0
+    for b in blocks:
+        s = b.shape[0]
+        M[o : o + s, o : o + s] = b
+        o += s
+    return M
+
+
+def _make_block_diag(dtype, name, blocks):
+    part = [b.shape[0] for b in blocks]
+    t = DTYPE_TO_TRT[np.dtype(dtype).type](name, [part, part])
+    for i in range(len(part)):
+        t.add_tile([i, i])
+    t.materialize()
+    for i in range(len(part)):
+        np.asarray(t.tile_view([i, i]))[...] = blocks[i]
+    return t
+
+
+def _gather_vec(t, n, dtype):
+    sz, off = t.tile_sizes()[0], t.tile_offsets()[0]
+    v = np.zeros(n, dtype=dtype)
+    for i in range(len(sz)):
+        if t.has_tile([i]):
+            v[off[i] : off[i] + sz[i]] = np.asarray(t.tile_view([i]))
+    return v
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_dense_syev(dtype):
+    M = np.array([[2, 1, 0], [1, 2, 1], [0, 1, 2]], dtype=dtype)
+    A = _RT[np.dtype(dtype).type]("A", [3, 3])
+    np.asarray(A)[...] = M
+    W = _RT[np.dtype(dtype).type]("W", [3])
+    einsums.linalg.syev(A, W)
+    assert_close(np.sort(np.asarray(W)), np.linalg.eigvalsh(M))
+
+
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+def test_dense_heev(dtype):
+    rdtype = np.float32 if dtype == np.complex64 else np.float64
+    M = np.array([[2, 1j], [-1j, 2]], dtype=dtype)
+    A = _RT[np.dtype(dtype).type]("A", [2, 2])
+    np.asarray(A)[...] = M
+    W = _REAL_RT[np.dtype(dtype).type]("W", [2])
+    einsums.linalg.heev(A, W)
+    assert_close(np.sort(np.asarray(W)), np.linalg.eigvalsh(M))
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_tiled_syev_block_diagonal(dtype):
+    b0 = np.array([[2, 1], [1, 2]], dtype=dtype)
+    b1 = np.array([[4, 1, 0], [1, 5, 1], [0, 1, 6]], dtype=dtype)
+    A = _make_block_diag(dtype, "A", [b0, b1])
+    W = DTYPE_TO_TRT[np.dtype(dtype).type]("W", [[2, 3]])
+    einsums.linalg.syev(A, W)
+    # Per-block eigenvalues, gathered, equal the full block-diagonal spectrum.
+    assert_close(np.sort(_gather_vec(W, 5, dtype)), np.linalg.eigvalsh(_block_diag_full([b0, b1])))
+
+
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+def test_tiled_heev_block_diagonal(dtype):
+    rdtype = np.float32 if dtype == np.complex64 else np.float64
+    b0 = np.array([[2, 1j], [-1j, 2]], dtype=dtype)
+    b1 = np.array([[3, 0, 1j], [0, 4, 0], [-1j, 0, 5]], dtype=dtype)
+    A = _make_block_diag(dtype, "A", [b0, b1])
+    W = DTYPE_TO_TRT[rdtype]("W", [[2, 3]])  # eigenvalues are real -> real tiled tensor
+    einsums.linalg.heev(A, W)
+    assert_close(np.sort(_gather_vec(W, 5, rdtype)), np.linalg.eigvalsh(_block_diag_full([b0, b1])))

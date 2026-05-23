@@ -1953,6 +1953,47 @@ void heev(AType *A, WType *W) {
     ctx.record(OpKind::Heev, "heev", {a_id}, {a_id, w_id}, std::move(executor));
 }
 
+/// Python-facing syev: real-symmetric eigendecomposition (in place; A receives
+/// eigenvectors, W the eigenvalues). A wrapper because the templated syev has a
+/// leading non-type ``bool ComputeEigenvectors`` parameter the pybind codegen
+/// can't pin via INSTANTIATE_AS; this fixes it to true and presents a clean,
+/// type-only signature. Accepts dense (RuntimeTensor) or tiled operands; the
+/// inner syev<true>() dispatches accordingly.
+template <typename AType, typename WType>
+    requires(std::is_same_v<typename AType::ValueType, typename WType::ValueType> && !IsComplexV<typename AType::ValueType> &&
+             (CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>) &&
+             (CoreBasicTensorConcept<WType> || IsTiledTensorV<std::remove_cvref_t<WType>>))
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("syev", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("syev", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("syev", einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("syev", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
+    // clang-format on
+    void syev_python(AType *A, WType *W) {
+    syev<true>(A, W);
+}
+
+/// Python-facing heev: Hermitian eigendecomposition (complex A, real W). See
+/// syev_python for why this wrapper exists.
+template <typename AType, typename WType>
+    requires(IsComplexV<typename AType::ValueType> &&
+             std::is_same_v<typename WType::ValueType, RemoveComplexT<typename AType::ValueType>> &&
+             (CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>) &&
+             (CoreBasicTensorConcept<WType> || IsTiledTensorV<std::remove_cvref_t<WType>>))
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("heev", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("heev", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("heev", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("heev", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<double>)
+    // clang-format on
+    void heev_python(AType *A, WType *W) {
+    heev<true>(A, W);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // gesv: solve AX = B
 // ─────────────────────────────────────────────────────────────────────────────
