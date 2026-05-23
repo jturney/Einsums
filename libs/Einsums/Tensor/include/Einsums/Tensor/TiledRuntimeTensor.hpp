@@ -10,12 +10,14 @@
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
+#include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/HashFunctions.hpp>
 #include <Einsums/TensorBase/TensorBase.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
 
+#include <complex>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -57,9 +59,20 @@ namespace einsums {
  * @versionadded{2.0.0}
  */
 template <typename T>
-struct TiledRuntimeTensor : public tensor_base::CoreTensor,
-                            public tensor_base::TiledTensorNoExtra,
-                            public design_pats::Lockable<std::recursive_mutex> {
+struct
+    // clang-format off
+EINSUMS_PYBIND_EXPOSE
+// No buffer protocol: a multi-tile tensor has no single contiguous buffer.
+// Python fills/reads it per tile via tile_view(), which yields a numpy-backed
+// RuntimeTensorView over one tile.
+EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorF", TiledRuntimeTensor<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorD", TiledRuntimeTensor<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorC", TiledRuntimeTensor<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<double>>)
+    // clang-format on
+    TiledRuntimeTensor : public tensor_base::CoreTensor,
+                         public tensor_base::TiledTensorNoExtra,
+                         public design_pats::Lockable<std::recursive_mutex> {
   public:
     /// The dense tensor type stored for each populated tile.
     using StoredType = RuntimeTensor<T>;
@@ -95,7 +108,7 @@ struct TiledRuntimeTensor : public tensor_base::CoreTensor,
         rebuild_grid();
     }
 
-    TiledRuntimeTensor(std::string name, std::vector<std::vector<int>> tile_sizes)
+    EINSUMS_PYBIND_EXPOSE TiledRuntimeTensor(std::string name, std::vector<std::vector<int>> tile_sizes)
         : TiledRuntimeTensor(std::move(name), std::move(tile_sizes), GlobalConfigMap::get_singleton().get_bool("row-major")) {}
 
     TiledRuntimeTensor(TiledRuntimeTensor const &)            = default;
@@ -107,11 +120,11 @@ struct TiledRuntimeTensor : public tensor_base::CoreTensor,
     // ── Shape / metadata ─────────────────────────────────────────────
 
     /// Runtime rank (number of grid axes).
-    [[nodiscard]] size_t rank() const noexcept { return _dims.size(); }
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE size_t rank() const noexcept { return _dims.size(); }
 
     /// Global extent along axis @p d (sum of that axis's tile sizes). Supports
     /// Python-style negative indexing.
-    [[nodiscard]] size_t dim(int d) const {
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE size_t dim(int d) const {
         int const r = static_cast<int>(_dims.size());
         if (d < 0) {
             d += r;
@@ -123,7 +136,7 @@ struct TiledRuntimeTensor : public tensor_base::CoreTensor,
     }
 
     /// Global shape (one extent per axis).
-    [[nodiscard]] std::vector<size_t> dims() const { return _dims; }
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::vector<size_t> dims() const { return _dims; }
 
     /// Row/column-major stride of the *global* bounding shape along axis @p d.
     /// Advisory only — a tiled tensor has no single contiguous buffer; these
@@ -148,8 +161,8 @@ struct TiledRuntimeTensor : public tensor_base::CoreTensor,
     /// A tiled tensor is always considered a full view of itself.
     [[nodiscard]] bool full_view_of_underlying() const noexcept { return true; }
 
-    [[nodiscard]] std::string const &name() const noexcept { return _name; }
-    void                             set_name(std::string const &new_name) { _name = new_name; }
+    [[nodiscard]] EINSUMS_PYBIND_GETTER("name") std::string const &name() const noexcept { return _name; }
+    EINSUMS_PYBIND_SETTER("name") void set_name(std::string const &new_name) { _name = new_name; }
 
     [[nodiscard]] bool is_row_major() const noexcept { return _row_major; }
 
@@ -182,7 +195,7 @@ struct TiledRuntimeTensor : public tensor_base::CoreTensor,
 
     /// Number of grid cells (product of the per-axis tile counts). This is the
     /// number of *possible* tiles, not the number populated.
-    [[nodiscard]] size_t grid_size() const noexcept {
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE size_t grid_size() const noexcept {
         size_t g = 1;
         for (auto const &axis : _tile_sizes) {
             g *= axis.size();
@@ -191,13 +204,13 @@ struct TiledRuntimeTensor : public tensor_base::CoreTensor,
     }
 
     /// Number of populated (non-zero) tiles.
-    [[nodiscard]] size_t num_filled_tiles() const noexcept { return _tiles.size(); }
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE size_t num_filled_tiles() const noexcept { return _tiles.size(); }
 
     /// The per-axis tile sizes (the grid).
-    [[nodiscard]] std::vector<std::vector<int>> const &tile_sizes() const noexcept { return _tile_sizes; }
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::vector<std::vector<int>> const &tile_sizes() const noexcept { return _tile_sizes; }
 
     /// The per-axis tile offsets (running sums of the tile sizes).
-    [[nodiscard]] std::vector<std::vector<int>> const &tile_offsets() const noexcept { return _tile_offsets; }
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::vector<std::vector<int>> const &tile_offsets() const noexcept { return _tile_offsets; }
 
     /// Read-only access to the populated tiles.
     [[nodiscard]] map_type const &tiles() const noexcept { return _tiles; }
@@ -206,7 +219,9 @@ struct TiledRuntimeTensor : public tensor_base::CoreTensor,
     [[nodiscard]] map_type &tiles() noexcept { return _tiles; }
 
     /// True if a tile exists at the given grid coordinate.
-    [[nodiscard]] bool has_tile(std::vector<int> const &coord) const { return _tiles.find(normalize(coord)) != _tiles.end(); }
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE bool has_tile(std::vector<int> const &coord) const {
+        return _tiles.find(normalize(coord)) != _tiles.end();
+    }
 
     /**
      * @brief Declare a tile at @p coord (deferred — no storage allocated).
@@ -218,7 +233,7 @@ struct TiledRuntimeTensor : public tensor_base::CoreTensor,
      *
      * @param coord The grid coordinate, one index per axis.
      */
-    void add_tile(std::vector<int> const &coord) {
+    EINSUMS_PYBIND_EXPOSE void add_tile(std::vector<int> const &coord) {
         std::vector<int> key = normalize(coord);
         if (_tiles.find(key) != _tiles.end()) {
             return;
@@ -260,13 +275,23 @@ struct TiledRuntimeTensor : public tensor_base::CoreTensor,
     /// Access an existing tile; throws if it is not populated.
     [[nodiscard]] StoredType const &tile(std::vector<int> const &coord) const { return _tiles.at(normalize(coord)); }
 
+    /// Python-facing tile accessor: materialize the tile at @p coord (creating
+    /// it if absent) and return a numpy-backed view of it. KEEP_ALIVE(0,1) ties
+    /// this tensor's lifetime to the returned view, so the tile's storage
+    /// outlives any numpy array Python builds from it.
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) RuntimeTensorView<T> tile_view(std::vector<int> const &coord) {
+        auto &t = tile(coord);
+        t.materialize();
+        return RuntimeTensorView<T>(t);
+    }
+
     // ── Deferred-allocation lifecycle ────────────────────────────────
     //
     // Mirrors RuntimeTensor's API so ComputeGraph's make_handle SFINAE probes
     // pick up the same capabilities. These operate tile-by-tile.
 
     /// Allocate backing storage for every populated tile. Idempotent.
-    void materialize() {
+    EINSUMS_PYBIND_EXPOSE void materialize() {
         for (auto &[coord, t] : _tiles) {
             t.materialize();
         }
@@ -285,21 +310,21 @@ struct TiledRuntimeTensor : public tensor_base::CoreTensor,
 
     /// Release backing storage for every populated tile, returning to the
     /// deferred state. The sparsity pattern (which tiles exist) is preserved.
-    void release() {
+    EINSUMS_PYBIND_EXPOSE void release() {
         for (auto &[coord, t] : _tiles) {
             t.release();
         }
     }
 
     /// Zero every populated tile.
-    void zero() {
+    EINSUMS_PYBIND_EXPOSE void zero() {
         for (auto &[coord, t] : _tiles) {
             t.zero();
         }
     }
 
     /// Set every element of every populated tile to @p val.
-    void set_all(T val) {
+    EINSUMS_PYBIND_EXPOSE void set_all(T val) {
         for (auto &[coord, t] : _tiles) {
             t.set_all(val);
         }
@@ -384,5 +409,16 @@ struct TiledRuntimeTensor : public tensor_base::CoreTensor,
 
     mutable std::shared_ptr<void> _life_token;
 };
+
+// Explicit instantiations live in TensorDefs.cpp (built into libEinsums with
+// default visibility via EINSUMS_EXPORT). The pybind codegen TU is compiled
+// with hidden visibility, so it must NOT re-instantiate these — extern template
+// makes it link against libEinsums's copies instead.
+#if !defined(EINSUMS_WINDOWS) && !defined(DOXYGEN)
+extern template class EINSUMS_EXPORT TiledRuntimeTensor<float>;
+extern template class EINSUMS_EXPORT TiledRuntimeTensor<double>;
+extern template class EINSUMS_EXPORT TiledRuntimeTensor<std::complex<float>>;
+extern template class EINSUMS_EXPORT TiledRuntimeTensor<std::complex<double>>;
+#endif
 
 } // namespace einsums

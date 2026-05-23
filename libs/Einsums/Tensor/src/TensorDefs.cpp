@@ -11,6 +11,7 @@
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
+#include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 #include <Einsums/Tensor/TiledTensor.hpp>
 
 #include <H5Lpublic.h>
@@ -56,6 +57,11 @@ template class RuntimeTensorView<float>;
 template class RuntimeTensorView<double>;
 template class RuntimeTensorView<std::complex<float>>;
 template class RuntimeTensorView<std::complex<double>>;
+
+template class TiledRuntimeTensor<float>;
+template class TiledRuntimeTensor<double>;
+template class TiledRuntimeTensor<std::complex<float>>;
+template class TiledRuntimeTensor<std::complex<double>>;
 #endif
 
 namespace {
