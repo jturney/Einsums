@@ -12,6 +12,8 @@ gathered dense view against a numpy reference.
 
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 import pytest
 
@@ -88,3 +90,63 @@ def test_tiled_einsum_gemm(dtype):
 
     assert C.num_filled_tiles() == 4
     assert_close(_gather(C, 5, 7), aref @ bref)
+
+
+# ── Rank-3 / rank-4 validation (the engine is rank-generic; CC contractions
+#    are rank-3/4-dominated) ─────────────────────────────────────────────────
+
+
+def _make_nd(dtype, name, grid, ref=None):
+    """Build an N-D tiled tensor over ``grid`` (one tile-size list per axis),
+    populate every tile, and optionally fill from a dense reference array."""
+    t = DTYPE_TO_TRT[np.dtype(dtype).type](name, grid)
+    sizes, offs = t.tile_sizes(), t.tile_offsets()
+    counts = [range(len(s)) for s in sizes]
+    for coord in itertools.product(*counts):
+        t.add_tile(list(coord))
+    t.materialize()
+    if ref is not None:
+        for coord in itertools.product(*counts):
+            slc = tuple(slice(offs[ax][coord[ax]], offs[ax][coord[ax]] + sizes[ax][coord[ax]]) for ax in range(len(sizes)))
+            np.asarray(t.tile_view(list(coord)))[...] = ref[slc]
+    return t
+
+
+def _gather_nd(t, shape, dtype):
+    sizes, offs = t.tile_sizes(), t.tile_offsets()
+    M = np.zeros(shape, dtype=dtype)
+    for coord in itertools.product(*[range(len(s)) for s in sizes]):
+        if t.has_tile(list(coord)):
+            slc = tuple(slice(offs[ax][coord[ax]], offs[ax][coord[ax]] + sizes[ax][coord[ax]]) for ax in range(len(sizes)))
+            M[slc] = np.asarray(t.tile_view(list(coord)))
+    return M
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_tiled_einsum_rank3(dtype):
+    # C[i,j,k] = sum_l A[i,j,l] B[l,k]; contracted l partition {3,4} aligns (A axis 2, B axis 0).
+    ipart, jpart, lpart, kpart = [2, 3], [2], [3, 4], [2, 3]
+    aref = (1.0 + np.arange(5 * 2 * 7, dtype=dtype)).reshape(5, 2, 7)
+    bref = (2.0 - np.arange(7 * 5, dtype=dtype)).reshape(7, 5)
+    A = _make_nd(dtype, "A", [ipart, jpart, lpart], aref)
+    B = _make_nd(dtype, "B", [lpart, kpart], bref)
+    C = DTYPE_TO_TRT[np.dtype(dtype).type]("C", [ipart, jpart, kpart])  # empty: infer-and-create
+
+    einsums.einsum("ijk <- ijl ; lk", C, A, B)
+
+    assert_close(_gather_nd(C, (5, 2, 5), dtype), np.einsum("ijl,lk->ijk", aref, bref))
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_tiled_einsum_rank4_two_contractions(dtype):
+    # C[i,j,a,b] = sum_{c,d} A[i,j,c,d] B[c,d,a,b]  (CCSD-like; contract c,d).
+    ipart, jpart, cpart, dpart, apart, bpart = [2, 1], [2], [2, 1], [3], [1, 2], [2]
+    aref = (1.0 + np.arange(3 * 2 * 3 * 3, dtype=dtype)).reshape(3, 2, 3, 3)
+    bref = (0.5 - np.arange(3 * 3 * 3 * 2, dtype=dtype)).reshape(3, 3, 3, 2)
+    A = _make_nd(dtype, "A", [ipart, jpart, cpart, dpart], aref)
+    B = _make_nd(dtype, "B", [cpart, dpart, apart, bpart], bref)
+    C = DTYPE_TO_TRT[np.dtype(dtype).type]("C", [ipart, jpart, apart, bpart])
+
+    einsums.einsum("ijab <- ijcd ; cdab", C, A, B)
+
+    assert_close(_gather_nd(C, (3, 2, 3, 2), dtype), np.einsum("ijcd,cdab->ijab", aref, bref))
