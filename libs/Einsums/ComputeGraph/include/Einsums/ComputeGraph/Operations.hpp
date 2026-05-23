@@ -8,6 +8,7 @@
 #include <Einsums/BLAS.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
+#include <Einsums/ComputeGraph/Detail/TiledRuntimeElementwise.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
@@ -71,35 +72,50 @@ EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::RuntimeTensorView<std::complex<f
 EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void scale(typename AType::ValueType factor, AType *A) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        linear_algebra::scale(factor, A);
-        return;
-    }
-
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-
-    ScaleDescriptor desc;
-    if constexpr (IsComplexV<typename AType::ValueType>) {
-        desc.factor = static_cast<double>(factor.real());
-    } else {
-        desc.factor = static_cast<double>(factor);
-    }
-
-    auto factor_str = [&]() -> std::string {
-        if constexpr (IsComplexV<typename AType::ValueType>) {
-            return fmt::format("({},{})", factor.real(), factor.imag());
-        } else {
-            return fmt::format("{}", factor);
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        // Tiled: scale every populated tile. Eager, or an opaque Custom node
+        // (the einsum-rewriting passes don't apply to a tiled per-tile op).
+        using T   = typename AType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            detail::tiled_scale<T>(factor, A);
+            return;
         }
-    }();
-    auto label    = fmt::format("scale({}, {})", factor_str, A->name());
-    auto executor = [factor, a_slot]() {
-        auto *a_ptr = static_cast<AType *>(a_slot->ptr);
-        linear_algebra::scale(factor, a_ptr);
-    };
+        auto [a_id, a_slot] = ctx.get_slot(*A);
+        auto label          = fmt::format("tiled scale({})", A->name());
+        auto executor       = [factor, a_slot]() { detail::tiled_scale<T>(factor, static_cast<AType *>(a_slot->ptr)); };
+        ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor));
+    } else {
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            linear_algebra::scale(factor, A);
+            return;
+        }
 
-    ctx.record(OpKind::Scale, std::move(label), {a_id}, {a_id}, std::move(executor), std::move(desc));
+        auto [a_id, a_slot] = ctx.get_slot(*A);
+
+        ScaleDescriptor desc;
+        if constexpr (IsComplexV<typename AType::ValueType>) {
+            desc.factor = static_cast<double>(factor.real());
+        } else {
+            desc.factor = static_cast<double>(factor);
+        }
+
+        auto factor_str = [&]() -> std::string {
+            if constexpr (IsComplexV<typename AType::ValueType>) {
+                return fmt::format("({},{})", factor.real(), factor.imag());
+            } else {
+                return fmt::format("{}", factor);
+            }
+        }();
+        auto label    = fmt::format("scale({}, {})", factor_str, A->name());
+        auto executor = [factor, a_slot]() {
+            auto *a_ptr = static_cast<AType *>(a_slot->ptr);
+            linear_algebra::scale(factor, a_ptr);
+        };
+
+        ctx.record(OpKind::Scale, std::move(label), {a_id}, {a_id}, std::move(executor), std::move(desc));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -345,6 +361,21 @@ void element_transform(CType *C, UnaryOperator unary_op) {
     ctx.record(OpKind::ElementTransform, "element_transform", {c_id}, {c_id}, std::move(executor));
 }
 
+/// Tiled element_transform: apply @p unary_op to every stored tile. (The generic
+/// overload requires BasicTensorConcept, which a tiled tensor no longer
+/// satisfies, so this is selected unambiguously for tiled operands.)
+template <TiledTensorConcept CType, typename UnaryOperator>
+void element_transform(CType *C, UnaryOperator unary_op) {
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        detail::tiled_element_transform(C, unary_op);
+        return;
+    }
+    auto [c_id, c_slot] = ctx.get_slot(*C);
+    auto executor       = [c_slot, unary_op]() { detail::tiled_element_transform(static_cast<CType *>(c_slot->ptr), unary_op); };
+    ctx.record(OpKind::Custom, "tiled element_transform", {c_id}, {c_id}, std::move(executor));
+}
+
 /// Python-friendly element_transform wrapper.
 ///
 /// The generic ``element_transform`` template requires ``RankTensorConcept``
@@ -448,21 +479,39 @@ EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<do
 EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        linear_algebra::axpy(alpha, X, Y);
-        return;
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<XType>> || IsTiledTensorV<std::remove_cvref_t<YType>>) {
+        static_assert(IsTiledTensorV<std::remove_cvref_t<XType>> && IsTiledTensorV<std::remove_cvref_t<YType>>,
+                      "cg::axpy with a tiled operand requires both X and Y to be TiledRuntimeTensor");
+        using T   = typename XType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            detail::tiled_axpy<T>(alpha, X, Y);
+            return;
+        }
+        auto [x_id, x_slot] = ctx.get_slot(X);
+        auto [y_id, y_slot] = ctx.get_slot(*Y);
+        auto label          = fmt::format("tiled axpy({}, {})", X.name(), Y->name());
+        auto executor       = [alpha, x_slot, y_slot]() {
+            detail::tiled_axpy<T>(alpha, *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
+        };
+        ctx.record(OpKind::Custom, std::move(label), {x_id}, {y_id}, std::move(executor));
+    } else {
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            linear_algebra::axpy(alpha, X, Y);
+            return;
+        }
+
+        auto [x_id, x_slot] = ctx.get_slot(X);
+        auto [y_id, y_slot] = ctx.get_slot(*Y);
+
+        auto label    = fmt::format("axpy(alpha={}, {}, {})", alpha, X.name(), Y->name());
+        auto executor = [alpha, x_slot, y_slot]() {
+            linear_algebra::axpy(alpha, *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
+        };
+
+        ctx.record(OpKind::Axpy, std::move(label), {x_id}, {y_id}, std::move(executor));
     }
-
-    auto [x_id, x_slot] = ctx.get_slot(X);
-    auto [y_id, y_slot] = ctx.get_slot(*Y);
-
-    auto label    = fmt::format("axpy(alpha={}, {}, {})", alpha, X.name(), Y->name());
-    auto executor = [alpha, x_slot, y_slot]() {
-        linear_algebra::axpy(alpha, *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
-    };
-
-    ctx.record(OpKind::Axpy, std::move(label), {x_id}, {y_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

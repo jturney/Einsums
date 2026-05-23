@@ -930,7 +930,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @param[in] tensor_id The TensorId of this tensor.
      * @return Pointer to the slot (stable for the lifetime of the graph).
      */
-    template <CoreBasicTensorConcept TensorType>
+    template <GraphCapturableTensor TensorType>
     TensorSlot *get_or_create_slot(TensorType const &tensor, TensorId tensor_id) {
         auto it = _slot_map.find(tensor_id);
         if (it != _slot_map.end()) {
@@ -963,7 +963,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @throws std::invalid_argument If rank or dimensions don't match.
      * @throws std::out_of_range If no slot exists for this TensorId.
      */
-    template <CoreBasicTensorConcept TensorType>
+    template <GraphCapturableTensor TensorType>
     void rebind(TensorId id, TensorType &new_tensor) {
         auto it = _slot_map.find(id);
         if (it == _slot_map.end()) {
@@ -1022,7 +1022,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * graph.rebind(A1, A2);  // Swap A1 for A2, one line
      * @endcode
      */
-    template <CoreBasicTensorConcept TensorType>
+    template <GraphCapturableTensor TensorType>
     void rebind(TensorType const &old_tensor, TensorType &new_tensor) {
         void *old_ptr = const_cast<void *>(static_cast<void const *>(&old_tensor));
 

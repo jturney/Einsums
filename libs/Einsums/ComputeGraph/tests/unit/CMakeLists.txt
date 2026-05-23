@@ -66,6 +66,7 @@ set(ComputeGraphTests
     StringEinsum.cpp
     TensorLifetime.cpp
     TiledRuntimeEinsum.cpp
+    TiledRuntimeElementwise.cpp
     TensorRankConcept.cpp
     TiledRuntimeTensorLifetime.cpp
     View.cpp
