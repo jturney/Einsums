@@ -65,6 +65,7 @@ set(ComputeGraphTests
     StridedBatchedGemm.cpp
     StringEinsum.cpp
     TensorLifetime.cpp
+    TiledRuntimeEig.cpp
     TiledRuntimeEinsum.cpp
     TiledRuntimeElementwise.cpp
     TensorRankConcept.cpp

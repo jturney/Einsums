@@ -1892,6 +1892,47 @@ EINSUMS_PYBIND_INSTANTIATE_BOOLS("heev", einsums::GeneralRuntimeTensor<std::comp
     ctx.record(OpKind::Heev, "heev", {a_id}, {a_id, w_id}, std::move(executor));
 }
 
+/// Tiled real-symmetric eigendecomposition: independently diagonalize each
+/// diagonal block of a block-diagonal tiled matrix. A is overwritten in place
+/// with the per-block eigenvectors; W (tiled rank-1, partitioned like A's rows)
+/// receives each block's eigenvalues. Off-diagonal tiles are rejected (the op is
+/// only meaningful for a block-diagonal operator).
+template <bool ComputeEigenvectors = true, TiledTensorConcept AType, TiledTensorConcept WType>
+    requires(std::is_same_v<typename AType::ValueType, typename WType::ValueType> && !IsComplexV<typename AType::ValueType>)
+void syev(AType *A, WType *W) {
+    using T   = typename AType::ValueType;
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        detail::tiled_syev<ComputeEigenvectors, T>(A, W);
+        return;
+    }
+    auto [a_id, a_slot] = ctx.get_slot(*A);
+    auto [w_id, w_slot] = ctx.get_slot(*W);
+    auto executor       = [a_slot, w_slot]() {
+        detail::tiled_syev<ComputeEigenvectors, T>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
+    };
+    ctx.record(OpKind::Syev, "syev", {a_id}, {a_id, w_id}, std::move(executor));
+}
+
+/// Tiled Hermitian eigendecomposition (complex analogue of the tiled syev). W
+/// holds the real eigenvalues.
+template <bool ComputeEigenvectors = true, TiledTensorConcept AType, TiledTensorConcept WType>
+    requires(IsComplexV<typename AType::ValueType> && std::is_same_v<typename WType::ValueType, RemoveComplexT<typename AType::ValueType>>)
+void heev(AType *A, WType *W) {
+    using T   = typename AType::ValueType;
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        detail::tiled_heev<ComputeEigenvectors, T>(A, W);
+        return;
+    }
+    auto [a_id, a_slot] = ctx.get_slot(*A);
+    auto [w_id, w_slot] = ctx.get_slot(*W);
+    auto executor       = [a_slot, w_slot]() {
+        detail::tiled_heev<ComputeEigenvectors, T>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
+    };
+    ctx.record(OpKind::Heev, "heev", {a_id}, {a_id, w_id}, std::move(executor));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // gesv: solve AX = B
 // ─────────────────────────────────────────────────────────────────────────────

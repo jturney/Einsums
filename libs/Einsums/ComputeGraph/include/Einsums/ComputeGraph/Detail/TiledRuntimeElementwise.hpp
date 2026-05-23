@@ -151,4 +151,56 @@ RemoveComplexT<T> tiled_norm(linear_algebra::Norm norm_type, TiledRuntimeTensor<
                             "cg::norm (tiled): only FROBENIUS and MAXABS are supported (ONE/INFTY/TWO need cross-tile aggregation)");
 }
 
+// ── Per-block eigendecomposition (block-diagonal only) ───────────────────────
+
+/// Shared driver for tiled syev/heev: validate a block-diagonal square grid and
+/// run the dense per-block eigensolver @p block_op on each diagonal tile,
+/// writing that block's eigenvalues into W's matching rank-1 tile. A is
+/// overwritten with the per-block eigenvectors in place.
+template <typename T, typename WT, typename BlockOp>
+void tiled_eig_impl(TiledRuntimeTensor<T> *A, TiledRuntimeTensor<WT> *W, BlockOp block_op, char const *name) {
+    if (A->rank() != 2 || W->rank() != 1) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "{}: A must be rank-2 and W rank-1; got {}, {}.", name, A->rank(), W->rank());
+    }
+    if (A->tile_sizes()[0] != A->tile_sizes()[1]) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: the two axes must share the same tile partition (square grid)", name);
+    }
+    if (A->tile_sizes()[0] != W->tile_sizes()[0]) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: W's tile partition must match A's row partition", name);
+    }
+    for (auto const &kv : A->tiles()) {
+        if (kv.first[0] != kv.first[1]) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: requires a block-diagonal tiled matrix (no off-diagonal tiles)", name);
+        }
+    }
+    int const n = static_cast<int>(A->tile_sizes()[0].size());
+    for (int i = 0; i < n; ++i) {
+        auto &w = W->tile({i}); // rank-1 eigenvalue block
+        w.materialize();
+        w.zero(); // absent diagonal block -> zero block -> zero eigenvalues
+        std::vector<int> const diag{i, i};
+        if (A->has_tile(diag)) {
+            auto &a = A->tile(diag);
+            a.materialize();
+            block_op(&a, &w);
+        }
+    }
+}
+
+/// Tiled real-symmetric eigendecomposition: per diagonal block, dense syev.
+template <bool ComputeEigenvectors, typename T>
+void tiled_syev(TiledRuntimeTensor<T> *A, TiledRuntimeTensor<T> *W) {
+    tiled_eig_impl(
+        A, W, [](RuntimeTensor<T> *a, RuntimeTensor<T> *w) { linear_algebra::syev<ComputeEigenvectors>(a, w); }, "cg::syev (tiled)");
+}
+
+/// Tiled Hermitian eigendecomposition: per diagonal block, dense heev. W holds
+/// the (real) eigenvalues.
+template <bool ComputeEigenvectors, typename T>
+void tiled_heev(TiledRuntimeTensor<T> *A, TiledRuntimeTensor<RemoveComplexT<T>> *W) {
+    tiled_eig_impl(
+        A, W, [](RuntimeTensor<T> *a, RuntimeTensor<RemoveComplexT<T>> *w) { linear_algebra::heev<ComputeEigenvectors>(a, w); },
+        "cg::heev (tiled)");
+}
+
 } // namespace einsums::compute_graph::detail
