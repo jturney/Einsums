@@ -309,11 +309,15 @@ function(einsums_finalize_pybind)
     )
     add_custom_target(PyEinsumsStubs ALL DEPENDS ${_stubs_stamp})
     add_dependencies(PyEinsumsStubs PyEinsums)
-    # Link the umbrella ``Einsums`` library so transitive helpers
-    # (e.g. einsums::make_temp_path used in Tensor sources) resolve.
-    # The per-module targets in ${_targets} are also linked explicitly
-    # for robustness in the face of dead-symbol elimination.
-    target_link_libraries(PyEinsums PRIVATE Einsums ${_targets})
+    # Link ONLY the umbrella ``Einsums`` shared library. Linking the per-module
+    # targets (${_targets}) as well baked each module's object files into _core.so
+    # on top of libEinsums.dylib, duplicating code/RTTI. Everything _core needs is
+    # in libEinsums.dylib, so we rely on it alone — any symbol the bindings
+    # reference must therefore be exported by libEinsums (EINSUMS_EXPORT). With
+    # EINSUMS_WITH_HIDDEN_VISIBILITY off (the Apple/Clang default) it has default
+    # visibility and exports everything; if hidden visibility is turned on, the
+    # bindings' referenced symbols must carry EINSUMS_EXPORT.
+    target_link_libraries(PyEinsums PRIVATE Einsums)
 
     list(LENGTH _modules _count)
     message(STATUS "einsums-pybind: PyEinsums aggregates ${_count} module(s): ${_modules}")

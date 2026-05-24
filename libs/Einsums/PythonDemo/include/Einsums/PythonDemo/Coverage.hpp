@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <Einsums/Config.hpp>
+
 #include <Einsums/Python/Annotations.hpp>
 
 #include <stdexcept>
@@ -14,7 +16,7 @@
 namespace einsums::pythondemo {
 
 /// Vec3 — exercises operator binding and read-write fields.
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("Vec3") Vec3 {
+class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("Vec3") Vec3 {
   public:
     EINSUMS_PYBIND_EXPOSE Vec3();
 
@@ -38,11 +40,11 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("Vec3") Vec3 {
 /// The factory returns a pointer that pybind11 keeps alive via the
 /// shared_ptr holder; the borrow() method exposes the embedded child by
 /// reference, with the parent kept alive for the borrow's lifetime.
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("Resource") EINSUMS_PYBIND_HOLDER(std::shared_ptr) Resource {
+class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("Resource") EINSUMS_PYBIND_HOLDER(std::shared_ptr) Resource {
   public:
     /// Inner type returned by reference; a separate small bound class so we
     /// can prove the @rvp(reference_internal) policy is honored.
-    class EINSUMS_PYBIND_EXPOSE Slot {
+    class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE Slot {
       public:
         EINSUMS_PYBIND_EXPOSE explicit Slot(int v);
 
@@ -67,17 +69,17 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("Resource") EINSUMS_PYBIND_HOL
 
 /// CounterError — exercises @exception. Lives in the ``demo`` submodule
 /// to also exercise @module.
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_EXCEPTION EINSUMS_PYBIND_MODULE("demo") CounterError : public std::runtime_error {
+class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_EXCEPTION EINSUMS_PYBIND_MODULE("demo") CounterError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
 };
 
 /// Helper that the binding raises so the smoke test can catch it.
 /// Lives in the ``demo`` submodule alongside its exception type.
-EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("demo") void raise_counter_error(std::string const &msg);
+EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("demo") EINSUMS_EXPORT void raise_counter_error(std::string const &msg);
 
 /// Worker — exercises RELEASE_GIL on a long-running method.
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("Worker") Worker {
+class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("Worker") Worker {
   public:
     EINSUMS_PYBIND_EXPOSE Worker();
 

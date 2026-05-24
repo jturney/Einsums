@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <Einsums/Config.hpp>
+
 #include <Einsums/Python/Annotations.hpp>
 
 #include <string>
@@ -17,7 +19,7 @@ namespace einsums::pythondemo {
 /// end-to-end against a real Einsums module. It pulls in no other
 /// Einsums modules and uses no template machinery beyond what the
 /// emitter already handles.
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("Counter") Counter {
+class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("Counter") Counter {
   public:
     /// Default-construct a counter starting at zero.
     EINSUMS_PYBIND_EXPOSE Counter();
@@ -47,6 +49,6 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("Counter") Counter {
 
 /// Free function — proof that m.def() emission works through the autogen
 /// path, not just class methods.
-EINSUMS_PYBIND_EXPOSE long sum_of_squares(long n);
+EINSUMS_PYBIND_EXPOSE EINSUMS_EXPORT long sum_of_squares(long n);
 
 } // namespace einsums::pythondemo
