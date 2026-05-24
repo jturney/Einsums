@@ -34,7 +34,12 @@ elseif(EINSUMS_WITH_HIP)
   set(GPU_VENDOR_DEPS hip::host hip::device roc::hipblas roc::hipsolver)
 elseif(EINSUMS_WITH_MPS)
   list(APPEND GPUSources MPSBackend.mm)
-  set(GPU_VENDOR_DEPS einsums_mps)
+  # Link the Apple frameworks by absolute path rather than via the
+  # `einsums_mps` INTERFACE IMPORTED target: imported targets can't be carried
+  # by export(EXPORT ...), so routing them through einsums_mps left external
+  # consumers (e.g. psi4) with a dangling `-leinsums_mps` in libEinsums's link
+  # interface. Plain framework paths export cleanly.
+  set(GPU_VENDOR_DEPS ${METAL_FRAMEWORK} ${MPS_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
 else()
   # Mock backend: no vendor deps, uses CPU BLAS
   set(GPU_VENDOR_DEPS)
