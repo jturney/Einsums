@@ -5,10 +5,17 @@
 
 """Python package shell for einsums.
 
-Keeping this file dead-simple is load-bearing: importing ``einsums`` (or any
-subpackage like ``einsums.rc``) must NOT trigger the C++ runtime to start
-up. The compiled extension lives at ``einsums._core`` and is loaded lazily
-on first attribute access.
+Importing ``einsums`` (or any subpackage like ``einsums.rc``) loads the
+compiled extension ``einsums._core`` so its bindings — types *and* functions
+— are registered immediately. This is what lets an external module that
+merely *receives* an einsums object (e.g. psi4 returning a
+``TiledRuntimeTensor``) work after a plain ``import einsums``, with no need
+to ``import einsums._core`` explicitly.
+
+Loading ``_core`` only **registers** the bindings; it does NOT start the C++
+runtime. Runtime startup (``einsums::initialize``) is deferred to the first
+real use via :func:`_ensure_initialized`, so ``einsums.rc`` can still be
+configured first and is read at init time.
 
 Typical usage::
 
@@ -16,13 +23,33 @@ Typical usage::
     einsums.rc.threads = 8         # optional pre-init config
 
     import einsums
-    einsums.gemm(...)              # _core loads here, runtime initializes
+    einsums.gemm(...)              # runtime initializes here, using rc
+
+``import einsums.rc`` is optional — ``einsums.rc`` is always present with
+default (``None``) values, and the runtime initializes from those defaults
+on first use if nothing was configured.
 """
 
 import importlib as _importlib
 
 from . import rc  # noqa: F401  (exposed as einsums.rc)
 from .rc import LogLevel  # noqa: F401  (exposed as einsums.LogLevel)
+
+# Eager-load the compiled extension so its bindings are registered as soon as
+# the package is imported. This only registers types/functions — _core's
+# module init does not start the runtime (see PyEinsumsMain.cpp). Runtime
+# startup is deferred to _ensure_initialized() on first real use.
+from . import _core as _core  # noqa: F401
+
+
+def _ensure_initialized() -> None:
+    """Start the einsums runtime from ``einsums.rc`` on first real use.
+
+    Idempotent — ``_core._initialize_from_rc()`` no-ops once the runtime is
+    running. Called lazily (not at import) so ``einsums.rc`` settings made
+    after ``import einsums`` but before the first compute still take effect.
+    """
+    _core._initialize_from_rc()
 
 
 # ----------------------------------------------------------------------
@@ -62,10 +89,10 @@ def set_log_level(level) -> None:
     ``set_log_level(LogLevel.TRACE)`` cannot re-enable TRACE messages in
     a Release build.
     """
-    core = _importlib.import_module("._core", __name__)
+    _ensure_initialized()
     if isinstance(level, LogLevel):
         level = level.value
-    core.set_log_level(int(level))
+    _core.set_log_level(int(level))
 
 
 def get_log_level() -> "LogLevel":
@@ -75,8 +102,8 @@ def get_log_level() -> "LogLevel":
     :class:`LogLevel` member (e.g. spdlog's CRITICAL / OFF which we don't
     expose in the Python enum yet).
     """
-    core = _importlib.import_module("._core", __name__)
-    raw = core.get_log_level()
+    _ensure_initialized()
+    raw = _core.get_log_level()
     try:
         return LogLevel(raw)
     except ValueError:
@@ -238,13 +265,12 @@ def __getattr__(name):
     if name.startswith("_"):
         raise AttributeError(f"module 'einsums' has no attribute {name!r}")
 
-    # ``importlib.import_module`` returns the loaded module object directly,
-    # avoiding the package-attribute lookup that ``from . import _core``
-    # would do (and which would re-enter ``__getattr__``).
-    core = _importlib.import_module("._core", __name__)
-    _patch_runtime_tensor_getitem(core)
+    # _core is already loaded (eager import above); touching a compiled symbol
+    # is the first "real use", so bring the runtime up now (honoring einsums.rc).
+    _ensure_initialized()
+    _patch_runtime_tensor_getitem(_core)
     try:
-        attr = getattr(core, name)
+        attr = getattr(_core, name)
     except AttributeError as exc:
         raise AttributeError(f"module 'einsums' has no attribute {name!r}") from exc
 
@@ -253,8 +279,7 @@ def __getattr__(name):
 
 
 def __dir__():
-    core = _importlib.import_module("._core", __name__)
     return sorted(
-        set(globals()) | set(dir(core)) |
+        set(globals()) | set(dir(_core)) |
         {"__version__", "version_info", "build_info", "set_log_level", "get_log_level", "LogLevel"}
     )
