@@ -8,6 +8,7 @@
 #include <atomic>
 #include <numeric>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -149,8 +150,22 @@ TEST_CASE("TaskPool - dataflow void input", "[TaskPool]") {
 TEST_CASE("TaskPool - metrics", "[TaskPool]") {
     auto &pool = TaskPool::get_singleton();
 
+    // Test order is randomized, so this case may run before any other — do NOT
+    // rely on prior tests having submitted work (that made this test flaky at a
+    // rate of ~1/N when it happened to run first). Generate our own activity.
+    //
+    // total_submitted is incremented synchronously inside enqueue(), but a
+    // worker bumps total_completed *just after* the task body runs — i.e. a hair
+    // after wait() can return — so spin until that increment lands.
+    pool.submit("metrics_probe", []() {}).wait();
+
     auto m = pool.snapshot_metrics();
-    REQUIRE(m.total_submitted > 0); // Previous tests submitted tasks
+    for (int spin = 0; m.total_completed == 0 && spin < 1'000'000; ++spin) {
+        std::this_thread::yield();
+        m = pool.snapshot_metrics();
+    }
+
+    REQUIRE(m.total_submitted > 0);
     REQUIRE(m.total_completed > 0);
     REQUIRE(m.per_worker_executed.size() == pool.num_workers());
 }

@@ -733,9 +733,23 @@ complete. It uncovered a chain of bugs:
   recursion) went quadratic. Fixed by using `profile::ScopedZone` RAII in both
   `execute` overloads (pops on any exit, including `continue` and throw).
 
-**Known-unfixed (bug #6, test skipped):** a *control-flow* graph (loop/conditional)
-with a throwing node, run under a parallel executor, hits
-`thread::join: Resource deadlock avoided` — a nested subgraph execution on a worker
-thread joins its own pool during exception unwinding. Flat graphs are fully covered;
-the control-flow exception variant (`test_fuzz_executor_propagates_exception_control_flow`)
-is `@pytest.mark.skip`'d pending this fix.
+**Bug #6 (mostly fixed): control-flow body BLAS opened a libomp region from a
+worker thread.** A Loop/Conditional node runs its body via `body->execute()`
+*inline on whatever thread executes the node*. Under a parallel executor that is a
+worker thread, so the body's multithreaded BLAS opened an OpenMP parallel region
+from a foreign (non-main) thread; with several workers doing so concurrently,
+libomp's thread pool intermittently deadlocked (`thread::join: Resource deadlock
+avoided`; ~3% of such graphs, *not* depth-dependent — one control-flow node is
+enough; flat graphs never hit it). Diagnosed with TSan (the racing access was
+`dgemm_batch .omp_outlined` on a worker running a loop body) and confirmed by env
+sweep (`OMP_NUM_THREADS=1` → clean, `=8` → wedges). **Fix:** `TaskPool::worker_loop`
+now calls `omp_set_num_threads(1)` per worker — the `nthreads-var` ICV is
+thread-scoped (the prior comment claiming it is process-global was mistaken), so
+worker BLAS runs single-threaded (no foreign-thread libomp region) while the main
+thread keeps full OpenMP. The pool already parallelizes *across* nodes. After this,
+single-executor control-flow + exception runs clean (Dataflow 26/80 → 80/80).
+
+**Still open (test skipped):** an intermittent `thread::join` EDEADLK that only
+triggers when the *same process* cycles seq+omp+df over control-flow + exception
+graphs (the fuzz harness does; real callers pick one executor and never hit it).
+`test_fuzz_executor_propagates_exception_control_flow` stays `@pytest.mark.skip`'d.

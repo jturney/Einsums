@@ -714,11 +714,11 @@ def test_fuzz_executor_propagates_exception(seed):
 
 
 @pytest.mark.skip(
-    reason="A control-flow (loop/conditional) graph that throws under a parallel "
-    "executor hits 'thread::join: Resource deadlock avoided' — a nested subgraph "
-    "execution on a worker thread joins its own pool during exception unwinding. "
-    "The flat case above is fully covered; this is a separate, deeper fix tracked "
-    "in loop_handling_audit.md."
+    reason="Single-executor control-flow + exception is fixed (worker BLAS is now "
+    "single-threaded, so a control-flow body's BLAS no longer opens a libomp region "
+    "from a worker thread). What remains is a separate, intermittent thread::join "
+    "EDEADLK that only triggers when this case cycles seq+omp+df in one process — a "
+    "fuzz-only pattern; real callers pick one executor. Tracked in loop_handling_audit.md."
 )
 @pytest.mark.parametrize("seed", range(80))
 def test_fuzz_executor_propagates_exception_control_flow(seed):

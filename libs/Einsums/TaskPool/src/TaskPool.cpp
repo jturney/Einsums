@@ -129,12 +129,19 @@ void TaskPool::shutdown() {
 void TaskPool::worker_loop(size_t worker_id) {
     tls_worker_id = static_cast<int>(worker_id);
 
-    // Note: We intentionally do NOT call omp_set_num_threads(1) here.
-    // That function is process-global in most OpenMP implementations and
-    // would cripple OpenMP parallelism on the main thread and other workers.
-    // Instead, BLAS calls within tasks naturally use the OMP thread count
-    // set by the main thread. If oversubscription is a concern, users
-    // should set OMP_NUM_THREADS=1 when running with TaskPool.
+#ifdef _OPENMP
+    // Run BLAS (and any other OpenMP code) single-threaded on worker threads.
+    // omp_set_num_threads sets the *thread-scoped* nthreads-var ICV, so this
+    // affects only parallel regions this worker encounters — the main thread
+    // and its OpenMP parallelism are untouched. This is both the right policy
+    // (the pool parallelizes across nodes, so nested per-node BLAS threads only
+    // oversubscribe) AND a correctness fix: a libomp parallel region opened from
+    // a foreign (non-main) thread, with several workers doing so concurrently,
+    // can deadlock libomp's thread pool — e.g. a control-flow node whose body
+    // runs inline on a worker and calls multithreaded BLAS would intermittently
+    // wedge at the fork/join barrier.
+    omp_set_num_threads(1);
+#endif
 
     // Register thread name with profiler (safe to call from any thread after
     // Profiler singleton is initialized — the thread-local ring buffer is
