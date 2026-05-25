@@ -1,9 +1,9 @@
 .. Copyright (c) The Einsums Developers. All rights reserved.
    Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
-==================================
+========================================
 Views, Aliasing, and Pipeline Parameters
-==================================
+========================================
 
 The ``cg::view()`` operation records a non-owning slice of a tensor inside a
 graph. Like Einsums' ``TensorView``, it shares storage with the parent — no
@@ -190,6 +190,56 @@ If a value should drive optimization decisions, make it a build-time
 constant (``Const(...)``). If the value should vary across runs without
 rebuilding the graph, make it a ``Param``.
 
+.. _view-permute:
+
+Rank-reducing indices and axis permutations
+===========================================
+
+Beyond ``Full``/``Range`` slicing, a view can permute axes (transpose-via-view)
+and drop axes (rank-reducing integer index). Both are zero-copy: the result
+aliases the parent with reordered dims/strides and, for a drop, an added
+pointer offset.
+
+- **Permute** — :cpp:func:`cg::permute_view` reorders the axes: result axis
+  ``k`` aliases parent axis ``perm[k]``. The full-reversal case is an ordinary
+  transpose. Available on both the typed and runtime-rank paths.
+
+  .. code-block:: cpp
+
+     // Transpose a matrix as a view: At(i, j) == A(j, i).
+     auto &At = cg::permute_view(A, std::array<size_t, 2>{1, 0});
+
+- **Drop** — ``cg::ViewAxis::drop(i)`` indexes an axis at ``i`` and removes it
+  from the result, so ``ResultRank == parent.rank() - (#Drop axes)``; the
+  dropped axis contributes only ``i * stride`` to the slice's base pointer.
+  Drop is supported on the **runtime-rank** path only
+  (``cg::view_runtime`` / the Python ``view_indexed`` below). The typed,
+  compile-time-rank ``cg::view<T, Rank>(...)`` is ``Full``/``Range`` only and
+  throws on a ``Drop`` axis.
+
+A ``Drop`` axis and a permutation cannot be combined in one call (chain two
+views instead).
+
+Python / runtime-rank surface
+=============================
+
+``RuntimeTensor`` (the Python-facing tensor) uses the runtime-rank entry
+points, which the numpy-style Python API drives automatically inside a
+capture:
+
+- ``einsums.graph.view(parent, ranges)`` — list of ``(lo, hi)`` per axis
+  (``(-1, -1)`` = full). Rank-preserving slices.
+- ``einsums.graph.view_indexed(parent, specs)`` — list of ``(kind, a, b)``
+  per axis: ``0`` full, ``1`` range ``[a, b)``, ``2`` drop at ``a``. Backs
+  rank-reducing indexing.
+- ``einsums.graph.permute_view(parent, perm)`` — axis permutation.
+
+So under ``with cg.capture(g):`` the ordinary numpy spellings record View
+nodes: ``A[i]`` and ``A[:, j]`` rank-reduce (via ``view_indexed``), ``A[1:3]``
+slices (via ``view``), and ``A.T`` / ``A.transpose(axes)`` permute (via
+``permute_view``). Outside capture these resolve eagerly to plain
+``RuntimeTensorView``\s.
+
 Graph editor (Einsums Studio) integration
 =========================================
 
@@ -220,21 +270,23 @@ Saved ``.eingraph`` files round-trip through ``op_kind_from_string`` —
 the string identifiers are ``"View"``, ``"WriteParam"``, and ``"Trace"``
 respectively.
 
-v1 limitations
-==============
+Limitations
+===========
 
-These are documented restrictions for now; each will be lifted in a follow-up:
-
-- Only ``Full`` and ``Range`` axes. ``Drop`` (rank-reducing single-index
-  pick) throws at capture; rank-preserving slicing covers the HF use case.
-- Only ``ResultRank == parent.rank()``.
-- Slice strides are inherited from the parent. No stride remapping; no
-  transpose-via-view.
+- Slices are contiguous (``step == 1``); strided slicing is not yet supported.
 - Single-node only: slicing a distributed tensor whose partition straddles
   the slice yields undefined data. A pass-level check will be added when
   distributed View support lands.
 - GPU placement: a View follows its parent's residency. If GPU passes
   promote the parent, you'll get host-residency mismatches.
+
+Earlier restrictions that have since been lifted: an axis
+:ref:`permutation <view-permute>` gives transpose-via-view (typed and
+runtime-rank), and ``Drop`` (rank-reducing index) is implemented on the
+runtime-rank path (``cg::view_runtime`` / Python ``view_indexed``), so its
+``ResultRank`` may be less than the parent's. The typed compile-time
+``cg::view<T, Rank>`` remains ``Full``/``Range`` only. A ``Drop`` axis and a
+permutation cannot be combined in a single call (chain two views instead).
 
 Reference
 =========
@@ -257,14 +309,26 @@ Reference
 
    - ``ViewAxis::full()`` — keep entire axis.
    - ``ViewAxis::range(lo, hi)`` — keep ``[lo, hi)``.
-   - ``ViewAxis::drop(i)`` — pick single index (v2; throws today).
+   - ``ViewAxis::drop(i)`` — pick single index ``i``, removing the axis from
+     the result (rank-reducing). Honored by the runtime-rank ``view_runtime``;
+     the typed ``cg::view`` throws on it.
 
 .. cpp:function:: template<typename T, size_t Rank, ...> \
                   TensorView<T, Rank>& cg::view(ParentT &parent, Axes &&...axes)
 
    Record a ``View`` node and return a graph-owned slice ``TensorView`` that
-   downstream operations can consume. ``parent`` must outlive the graph;
-   exactly ``Rank`` axis specs must be supplied (rank-preserving in v1).
+   downstream operations can consume. ``parent`` must outlive the graph. One
+   axis spec per parent axis; ``Rank`` is the result rank (``parent.rank()``
+   minus the number of ``Drop`` axes).
+
+.. cpp:function:: template<CoreBasicTensorConcept ParentT, size_t Rank> \
+                  TensorView<..., Rank>& cg::permute_view(ParentT &parent, std::array<size_t, Rank> const &perm)
+
+   Record a transpose / axis-permutation View: result axis ``k`` aliases
+   parent axis ``perm[k]`` (``perm`` a permutation of ``[0, Rank)``).
+   Runtime-rank counterpart: ``cg::view_runtime`` accepts a trailing
+   ``perm`` vector, and the Python binding ``einsums.graph.permute_view``
+   takes a list.
 
 .. cpp:function:: template<typename T> void cg::write_param(std::string name, T &source)
 

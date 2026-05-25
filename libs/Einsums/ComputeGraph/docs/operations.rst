@@ -61,6 +61,18 @@ scale
 
    cg::scale(2.5, &A);   // A *= 2.5
 
+shift
+-----
+
+.. code-block:: cpp
+
+   cg::shift(3.0, &A);   // A += 3.0 (adds a scalar to every element)
+
+The additive complement of ``scale``. A tight compiled loop (not a
+Python-callback ``element_transform``), so it backs the Python numpy-style
+scalar ``+`` / ``-`` operators (``A + c``, ``A += c``). Records an opaque
+``OpKind::Custom`` node when capturing.
+
 gemm
 ----
 
@@ -99,7 +111,12 @@ dot
 
 .. code-block:: cpp
 
-   auto result = cg::dot(A, B);   // Returns scalar (always eagerly executed)
+   // Eager (outside capture): returns the scalar inner product.
+   auto result = cg::dot(A, B);   // the scalar-return form throws during capture
+
+   // Recorded (inside capture): writes into a pre-allocated [1] tensor at
+   // execute time — the graph-resident form (also accepts cg::view operands).
+   cg::dot(&result_tensor, A, B);
 
 norm
 ----
@@ -125,6 +142,24 @@ trace
 
 Records an ``OpKind::Trace`` node (label-only — the executor body is just a
 diagonal-sum loop, with no special pass treatment).
+
+sum / max
+---------
+
+.. code-block:: cpp
+
+   // Reduce every element to a scalar, written into result->data()[0].
+   // Like dot/trace: recorded into the graph when capturing, eager otherwise.
+   cg::sum(&result, A);   // result[0] = Σ A_i   (any dtype)
+   cg::max(&result, A);   // result[0] = max A_i (real dtypes only)
+
+``result`` is a pre-allocated rank-1 ``[1]`` tensor (a graph-native scalar
+handle, as for the scalar-writing ``cg::dot`` / ``cg::trace``). Both are
+stride-correct, so they reduce slice/transpose views, not just contiguous
+storage. They back the Python ``A.sum()`` / ``A.mean()`` / ``A.max()``
+methods. ``max`` is real-only — complex has no natural ordering, so use
+``cg::norm(MAXABS, A)`` for the largest magnitude. Each records an opaque
+``OpKind::Custom`` node when capturing.
 
 direct_product
 --------------
