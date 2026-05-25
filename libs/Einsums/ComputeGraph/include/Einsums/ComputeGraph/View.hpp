@@ -298,10 +298,14 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
         EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime requires one ViewAxis per parent rank ({} given, parent has rank {})",
                                 axis_vec.size(), rank);
     }
-    for (auto const &ax : axis_vec) {
+    // Drop axes (rank-reducing integer index) remove a parent axis from the
+    // result: result rank = parent rank - #Drop. axis_vec is parent-indexed in
+    // this (perm-empty) mode. Drops and a permutation don't co-occur from the
+    // Python paths (transpose = perm only; indexing = drop/range only).
+    size_t n_drop = 0;
+    for (auto const &ax : axis_vec)
         if (ax.kind == ViewAxis::Kind::Drop)
-            EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime: ViewAxis::Drop is not yet supported");
-    }
+            ++n_drop;
     // ``perm`` (empty == identity) maps result axis i -> parent axis perm[i],
     // so a transpose/permutation becomes a graph-registered, parent-aliasing
     // view. Validate it's a genuine permutation of [0, rank).
@@ -316,7 +320,10 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
             seen[p] = true;
         }
     }
-    auto const parent_axis = [&perm](size_t i) -> size_t { return perm.empty() ? i : perm[i]; };
+    if (n_drop > 0 && !perm.empty())
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime: Drop axes cannot be combined with a permutation");
+    size_t const result_rank = rank - n_drop;
+    auto const   parent_axis = [&perm](size_t i) -> size_t { return perm.empty() ? i : perm[i]; };
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
@@ -325,13 +332,18 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
 
     auto *holder = new Holder;
 
-    // Placeholder: build a "full parent" view (permuted, if requested) so the
-    // holder's address is valid before the first execute() runs and the
-    // registered handle below sees the correct (post-permute) dims/strides.
-    std::vector<size_t> parent_dims(rank), parent_strides(rank);
+    // Placeholder: build a "full parent" view (permuted and/or with dropped
+    // axes removed) so the holder's address is valid before the first
+    // execute() runs and the registered handle below sees the correct
+    // post-permute / post-drop rank and dims (ranges resolve at execute).
+    std::vector<size_t> parent_dims, parent_strides;
+    parent_dims.reserve(result_rank);
+    parent_strides.reserve(result_rank);
     for (size_t i = 0; i < rank; ++i) {
-        parent_dims[i]    = parent.dim(parent_axis(i));
-        parent_strides[i] = parent.stride(parent_axis(i));
+        if (axis_vec[i].kind == ViewAxis::Kind::Drop)
+            continue; // dropped axes do not appear in the result
+        parent_dims.push_back(parent.dim(parent_axis(i)));
+        parent_strides.push_back(parent.stride(parent_axis(i)));
     }
     holder->view.emplace(::einsums::detail::TensorImpl<T>(const_cast<T *>(parent.data()), parent_dims, parent_strides));
 
@@ -355,7 +367,7 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     ViewDescriptor desc;
     desc.parent_id   = parent_id;
     desc.axes        = axis_vec;
-    desc.result_rank = rank;
+    desc.result_rank = result_rank;
     desc.permutation = perm;
 
     auto params_ptr = ctx.params_ptr();
@@ -372,18 +384,18 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
         if (parent_ptr->data() == nullptr)
             EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime executor: parent has no backing data (deferred?)");
 
-        std::vector<size_t> slice_dims(rank), slice_strides(rank);
+        std::vector<size_t> slice_dims, slice_strides; // result rank == #non-drop axes
         std::ptrdiff_t      ptr_offset = 0;
 
         for (size_t i = 0; i < rank; ++i) {
-            // Result axis i maps to parent axis p (perm[i], or i for identity);
-            // axis_vec[i] slices that parent axis.
-            size_t const p   = perm.empty() ? i : perm[i];
-            auto const  &ax  = axis_vec[i];
-            slice_strides[i] = parent_ptr->stride(p);
+            // Result reads parent axis p (perm[i], or i for identity); axis_vec[i]
+            // slices/drops that axis. Drop contributes only an offset (no result axis).
+            size_t const p  = perm.empty() ? i : perm[i];
+            auto const  &ax = axis_vec[i];
             switch (ax.kind) {
             case ViewAxis::Kind::Full:
-                slice_dims[i] = parent_ptr->dim(p);
+                slice_dims.push_back(parent_ptr->dim(p));
+                slice_strides.push_back(parent_ptr->stride(p));
                 break;
             case ViewAxis::Kind::Range: {
                 std::int64_t const lo = ax.lo.resolve(*params_ptr);
@@ -391,11 +403,17 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
                 if (lo < 0 || hi < lo || hi > static_cast<std::int64_t>(parent_ptr->dim(p)))
                     EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::view_runtime: range out of parent dim");
                 ptr_offset += lo * static_cast<std::ptrdiff_t>(parent_ptr->stride(p));
-                slice_dims[i] = static_cast<size_t>(hi - lo);
+                slice_dims.push_back(static_cast<size_t>(hi - lo));
+                slice_strides.push_back(parent_ptr->stride(p));
                 break;
             }
-            case ViewAxis::Kind::Drop:
-                EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime: Drop axis not supported in v1");
+            case ViewAxis::Kind::Drop: {
+                std::int64_t const idx = ax.lo.resolve(*params_ptr);
+                if (idx < 0 || idx >= static_cast<std::int64_t>(parent_ptr->dim(p)))
+                    EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::view_runtime: drop index out of parent dim");
+                ptr_offset += idx * static_cast<std::ptrdiff_t>(parent_ptr->stride(p));
+                break; // dropped axis: offset only, no result axis
+            }
             }
         }
 
@@ -447,6 +465,52 @@ EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<std::complex
             axes.push_back(ViewAxis::full());
         } else {
             axes.push_back(ViewAxis::range(lo, hi));
+        }
+    }
+    return view_runtime(parent, axes);
+}
+
+/// @brief Python-friendly indexed view supporting rank-reducing integer indices.
+///
+/// One ``(kind, a, b)`` triple per parent axis:
+///   * ``kind == 0`` — full axis (``a``/``b`` ignored)
+///   * ``kind == 1`` — range ``[a, b)``
+///   * ``kind == 2`` — drop: index the axis at ``a`` (removes it from the result)
+/// Result rank = parent rank − (number of drop axes). This is what backs
+/// capture-mode rank-reducing reads like ``A[i]`` / ``A[:, j]`` (the plain
+/// ``view`` above only does full/range, i.e. rank-preserving slices).
+template <RuntimeRankTensorConcept ParentT>
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("graph")
+EINSUMS_PYBIND_RVP(reference)
+EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_indexed_python(
+        ParentT &parent, std::vector<std::tuple<int, std::int64_t, std::int64_t>> const &specs) {
+    if (specs.size() != parent.rank()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::view_indexed: specs length ({}) must equal parent rank ({})", specs.size(),
+                                parent.rank());
+    }
+    std::vector<ViewAxis> axes;
+    axes.reserve(specs.size());
+    for (auto const &[kind, a, b] : specs) {
+        switch (kind) {
+        case 0:
+            axes.push_back(ViewAxis::full());
+            break;
+        case 1:
+            axes.push_back(ViewAxis::range(a, b));
+            break;
+        case 2:
+            axes.push_back(ViewAxis::drop(a));
+            break;
+        default:
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::view_indexed: unknown axis kind {} (expected 0=full, 1=range, 2=drop)",
+                                    kind);
         }
     }
     return view_runtime(parent, axes);

@@ -151,12 +151,16 @@ def test_captured_mp2_iajb_via_slicing():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_captured_int_index_raises():
+def test_captured_int_index_rank_reduces():
+    """Integer indices inside capture now rank-reduce via cg.view_indexed
+    (the Drop axis), matching eager numpy semantics."""
     big = einsums.create_random_tensor("big", [4, 6])
-    g = cg.Graph("err-int")
-    with pytest.raises(IndexError, match="integer index"):
-        with cg.capture(g):
-            _ = big[0, :3]
+    ref = np.asarray(big).copy()
+    g = cg.Graph("int-index")
+    with cg.capture(g):
+        sub = big[0, :3]  # drop axis 0, range axis 1 -> (3,)
+    g.execute()
+    np.testing.assert_allclose(np.asarray(sub), ref[0, :3], rtol=1e-5)
 
 
 def test_captured_strided_slice_raises():
@@ -167,12 +171,23 @@ def test_captured_strided_slice_raises():
             _ = big[::2, :3]
 
 
-def test_captured_arity_mismatch_raises():
+def test_captured_short_key_pads_trailing_axes():
+    """A key shorter than the rank gets implicit trailing ':' (numpy)."""
+    big = einsums.create_random_tensor("big", [4, 6])
+    ref = np.asarray(big).copy()
+    g = cg.Graph("short-key")
+    with cg.capture(g):
+        sub = big[:3]  # == big[:3, :] -> (3, 6)
+    g.execute()
+    np.testing.assert_allclose(np.asarray(sub), ref[:3], rtol=1e-5)
+
+
+def test_captured_too_many_indices_raises():
     big = einsums.create_random_tensor("big", [4, 6])
     g = cg.Graph("err-arity")
-    with pytest.raises(IndexError, match="elements but tensor has rank"):
+    with pytest.raises(IndexError, match="too many indices"):
         with cg.capture(g):
-            _ = big[:3]  # only one axis given for a rank-2 tensor
+            _ = big[1, 2, 3]  # 3 indices for a rank-2 tensor
 
 
 def test_captured_double_ellipsis_raises():

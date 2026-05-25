@@ -188,38 +188,45 @@ def _make_capture_aware_getitem(orig_getitem):
                 + key_tuple[ellipsis_pos + 1 :]
             )
 
+        # A key shorter than the rank has implicit trailing ':' (numpy).
+        if len(key_tuple) < rank:
+            key_tuple = key_tuple + (slice(None),) * (rank - len(key_tuple))
         if len(key_tuple) != rank:
             raise IndexError(
-                f"cg.view auto-dispatch: index has {len(key_tuple)} elements but tensor has rank {rank}; "
-                f"use cg.view directly for partial indexing inside capture"
+                f"too many indices for tensor of rank {rank}: got {len(key_tuple)}"
             )
 
-        ranges = []
+        # Build one (kind, a, b) spec per axis: 0=full, 1=range[a,b), 2=drop@a.
+        specs = []
+        has_drop = False
         for axis, k in enumerate(key_tuple):
             if isinstance(k, slice):
                 if k.step is not None and k.step != 1:
                     raise IndexError(
-                        f"cg.view auto-dispatch: axis {axis} has step={k.step}; "
-                        f"only step=1 slices are supported"
+                        f"cg.view auto-dispatch: axis {axis} has step={k.step}; only step=1 slices are supported"
                     )
                 if k.start is None and k.stop is None:
-                    ranges.append((-1, -1))  # full axis
+                    specs.append((0, 0, 0))  # full axis
                 else:
                     lo = 0 if k.start is None else int(k.start)
                     hi = self.dim(axis) if k.stop is None else int(k.stop)
-                    ranges.append((lo, hi))
+                    specs.append((1, lo, hi))
             elif isinstance(k, int):
-                raise IndexError(
-                    f"cg.view auto-dispatch: integer index at axis {axis} would reduce rank, "
-                    f"which cg.view doesn't yet support (rank-preserving slices only). "
-                    f"Use a slice like {k}:{k + 1} or call cg.view directly."
-                )
+                dim = self.dim(axis)
+                if k < -dim or k >= dim:
+                    raise IndexError(f"index {k} out of bounds for axis {axis} with size {dim}")
+                specs.append((2, k % dim, 0))  # drop (normalize negatives)
+                has_drop = True
             else:
                 raise IndexError(
                     f"cg.view auto-dispatch: unsupported index type {type(k).__name__} at axis {axis}"
                 )
 
-        return _g.view(self, ranges)
+        # Rank-reducing (any int index) -> view_indexed (Drop); else the
+        # rank-preserving cg.view path (unchanged).
+        if has_drop:
+            return _g.view_indexed(self, specs)
+        return _g.view(self, [(-1, -1) if kind == 0 else (a, b) for (kind, a, b) in specs])
 
     return wrapper
 

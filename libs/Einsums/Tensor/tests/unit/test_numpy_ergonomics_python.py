@@ -347,6 +347,71 @@ def test_setitem_block_in_capture():
     assert_close(np.asarray(C)[0:2, :], sv)
 
 
+def test_setitem_int_key_in_capture():
+    """Int-key assignment in capture works now that __getitem__ rank-reduces
+    via the Drop axis."""
+    C = einsums.create_zero_tensor("C", [3, 4], dtype="float64")
+    row = einsums.create_random_tensor("row", [4], dtype="float64")
+    rv = np.asarray(row).copy()
+    g = cg.Graph("si-int")
+    with cg.capture(g):
+        C[1] = row
+    g.execute()
+    assert_close(np.asarray(C)[1], rv)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# capture-mode rank-reducing reads (Drop axis)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_rank_reducing_read_in_capture():
+    """A[i] / A[:,j,:] / A[i,j] inside cg.capture rank-reduce (Drop)."""
+    R = einsums.create_random_tensor("R", [2, 3, 4], dtype="float64")
+    r = np.asarray(R).copy()
+    g = cg.Graph("drop")
+    with cg.capture(g):
+        a = R[1]          # (3, 4)
+        b = R[:, 2, :]    # (2, 4)
+        c = R[0, 1]       # (4,)
+        s = a + a         # consume a dropped view in a captured op
+    g.execute()
+    assert_close(np.asarray(a), r[1])
+    assert_close(np.asarray(b), r[:, 2, :])
+    assert_close(np.asarray(c), r[0, 1])
+    assert_close(np.asarray(s), 2.0 * r[1])
+
+
+def test_negative_int_index_in_capture():
+    R = einsums.create_random_tensor("R", [2, 3, 4], dtype="float64")
+    r = np.asarray(R).copy()
+    g = cg.Graph("drop-neg")
+    with cg.capture(g):
+        d = R[-1]
+    g.execute()
+    assert_close(np.asarray(d), r[-1])
+
+
+def test_matmul_on_dropped_view_in_capture():
+    """A dropped (rank-reduced) view feeds gemv inside capture."""
+    R = einsums.create_random_tensor("R", [2, 3, 4], dtype="float64")
+    v = einsums.create_random_tensor("v", [4], dtype="float64")
+    r, vv = np.asarray(R).copy(), np.asarray(v).copy()
+    g = cg.Graph("drop-matvec")
+    with cg.capture(g):
+        y = R[0] @ v      # R[0] is (3,4); @ v(4) -> (3,)
+    g.execute()
+    assert_close(np.asarray(y), r[0] @ vv)
+
+
+def test_too_many_indices_in_capture_raises():
+    R = einsums.create_random_tensor("R", [2, 3], dtype="float64")
+    g = cg.Graph("drop-bad")
+    with pytest.raises(IndexError):
+        with cg.capture(g):
+            _ = R[0, 1, 2]
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Tier-2 arithmetic operators (dispatch to einsums.linalg, NOT numpy)
 # ──────────────────────────────────────────────────────────────────────────
