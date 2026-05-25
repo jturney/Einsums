@@ -465,6 +465,32 @@ def test_matmul_on_dropped_view_in_capture():
     assert_close(np.asarray(y), r[0] @ vv)
 
 
+def test_dropped_view_matvec_repeated():
+    """Deterministic guard for the noncontiguous-gemv OpenMP data race.
+
+    ``R[0]`` of a column-major (2,3,4) tensor is a (3,4) view with strides
+    {2,6} — neither unit — so gemv takes impl_gemv_noncontiguous, which runs
+    multithreaded on the main thread under capture execution. The old
+    ``collapse(2)`` parallelized over (link, target) and raced on the shared
+    ``Y[target] += ...`` accumulation, intermittently dropping a contribution
+    so one output element came out wrong (~10% of calls). A single call only
+    catches it ~10% of the time; looping makes the guard deterministic
+    (1 - 0.9**200 ≈ certain). Each iteration uses fresh tensors so a lost
+    update shows up as a wrong element vs numpy."""
+    for trial in range(200):
+        R = einsums.create_random_tensor(f"R{trial}", [2, 3, 4], dtype="float64")
+        v = einsums.create_random_tensor(f"v{trial}", [4], dtype="float64")
+        r, vv = np.asarray(R).copy(), np.asarray(v).copy()
+        g = cg.Graph(f"drop-matvec-{trial}")
+        with cg.capture(g):
+            y = R[0] @ v
+        g.execute()
+        got, exp = np.asarray(y), r[0] @ vv
+        assert np.allclose(got, exp, rtol=1e-12, atol=1e-12), (
+            f"trial {trial}: {got} != {exp} (diff {got - exp})"
+        )
+
+
 def test_too_many_indices_in_capture_raises():
     R = einsums.create_random_tensor("R", [2, 3], dtype="float64")
     g = cg.Graph("drop-bad")

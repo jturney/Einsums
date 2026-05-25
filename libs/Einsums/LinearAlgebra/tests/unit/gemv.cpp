@@ -196,3 +196,59 @@ TEST_CASE("gemv2") {
         gemv_test2<std::complex<float>>();
     }
 }
+
+// Correctness of gemv on a 2D view whose strides are BOTH non-unit (a slab of
+// a 3D tensor, e.g. R[0,:,:] of a column-major (2,d1,d2)). is_gemmable() is
+// false so this takes impl_gemv_noncontiguous. Regression context: that path
+// used to ``collapse(2)`` over (link, target), racing on ``Y[target] += ...``.
+// The race only manifests when the kernel runs multi-threaded — which depends
+// on this TU's OpenMP/instantiation context, so this is a correctness check,
+// not a reliable race detector (the deterministic race guard is the looped
+// Python test test_dropped_view_matvec_repeated, exercising the _core path
+// that actually parallelizes).
+template <typename T>
+void test_gemv_noncontiguous_view() {
+    constexpr size_t d0 = 2, d1 = 192, d2 = 96;
+    Tensor<T, 1>     backing = create_tensor<T>("backing", d0 * d1 * d2);
+    for (size_t i = 0; i < d0 * d1 * d2; ++i)
+        backing.data()[i] = T(static_cast<double>((i % 7) - 3)); // small integers, mixed-sign
+
+    TensorView<T, 2> A{backing.data(), Dim<2>{d1, d2}, Stride<2>{d0, d0 * d1}};
+    REQUIRE_FALSE(A.impl().is_gemmable()); // must take the noncontiguous path
+
+    Tensor<T, 1> x = create_tensor<T>("x", d2);
+    for (size_t k = 0; k < d2; ++k)
+        x.data()[k] = T(static_cast<double>(k % 5) - 2.0);
+
+    std::vector<T> ref(d1);
+    for (size_t i = 0; i < d1; ++i) {
+        T acc{};
+        for (size_t k = 0; k < d2; ++k)
+            acc += A(i, k) * x(k);
+        ref[i] = acc;
+    }
+
+    Tensor<T, 1> y = create_tensor<T>("y", d1);
+    for (size_t i = 0; i < d1; ++i)
+        y.data()[i] = T(-12345.0); // poison: a missed write is detectable
+    einsums::linear_algebra::gemv<false>(T(1.0), A, x, T(0.0), &y);
+    for (size_t i = 0; i < d1; ++i) {
+        INFO("element " << i);
+        REQUIRE(y(i) == ref[i]);
+    }
+}
+
+TEST_CASE("gemv noncontiguous view") {
+    SECTION("double") {
+        test_gemv_noncontiguous_view<double>();
+    }
+    SECTION("float") {
+        test_gemv_noncontiguous_view<float>();
+    }
+    SECTION("complex<double>") {
+        test_gemv_noncontiguous_view<std::complex<double>>();
+    }
+    SECTION("complex<float>") {
+        test_gemv_noncontiguous_view<std::complex<float>>();
+    }
+}

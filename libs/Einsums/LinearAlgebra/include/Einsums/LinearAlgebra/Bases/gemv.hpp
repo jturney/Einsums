@@ -36,29 +36,42 @@ void impl_gemv_noncontiguous(char transA, YType alpha, einsums::detail::TensorIm
     blas::scal(Y->dim(0), beta, Y_data, incy);
 
     // Do the matrix multiplication.
+    //
+    // Parallelize over the *output* index (target) only — each Y element is
+    // owned by exactly one thread, which sums its contributions over all
+    // links into a local accumulator and writes the result once. A previous
+    // ``collapse(2)`` parallelized the link loop too, so multiple threads did
+    // an unsynchronized read-modify-write (``Y_data[target] += ...``) on the
+    // same Y element for different links — a data race that intermittently
+    // dropped contributions, leaving one output element wrong run-to-run.
     if constexpr (IsComplexV<YType>) {
         if (tA == 'c') {
-            EINSUMS_OMP_PRAGMA(parallel for collapse(2))
-            for (size_t link = 0; link < link_dim; link++) {
-                for (size_t target = 0; target < target_dim; target++) {
-                    Y_data[target * incy] +=
-                        alpha * std::conj(A_data[a_target_stride * target + a_link_stride * link]) * X_data[incx * link];
+            EINSUMS_OMP_PRAGMA(parallel for)
+            for (size_t target = 0; target < target_dim; target++) {
+                YType acc = zero;
+                for (size_t link = 0; link < link_dim; link++) {
+                    acc += std::conj(A_data[a_target_stride * target + a_link_stride * link]) * X_data[incx * link];
                 }
+                Y_data[target * incy] += alpha * acc;
             }
         } else {
-            EINSUMS_OMP_PRAGMA(parallel for collapse(2))
-            for (size_t link = 0; link < link_dim; link++) {
-                for (size_t target = 0; target < target_dim; target++) {
-                    Y_data[target * incy] += alpha * A_data[a_target_stride * target + a_link_stride * link] * X_data[incx * link];
+            EINSUMS_OMP_PRAGMA(parallel for)
+            for (size_t target = 0; target < target_dim; target++) {
+                YType acc = zero;
+                for (size_t link = 0; link < link_dim; link++) {
+                    acc += A_data[a_target_stride * target + a_link_stride * link] * X_data[incx * link];
                 }
+                Y_data[target * incy] += alpha * acc;
             }
         }
     } else {
-        EINSUMS_OMP_PRAGMA(parallel for collapse(2))
-        for (size_t link = 0; link < link_dim; link++) {
-            for (size_t target = 0; target < target_dim; target++) {
-                Y_data[target * incy] += alpha * A_data[a_target_stride * target + a_link_stride * link] * X_data[incx * link];
+        EINSUMS_OMP_PRAGMA(parallel for)
+        for (size_t target = 0; target < target_dim; target++) {
+            YType acc = zero;
+            for (size_t link = 0; link < link_dim; link++) {
+                acc += A_data[a_target_stride * target + a_link_stride * link] * X_data[incx * link];
             }
+            Y_data[target * incy] += alpha * acc;
         }
     }
 }
