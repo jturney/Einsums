@@ -257,11 +257,32 @@ def test_matmul_shape_mismatch_raises():
         _ = A @ B
 
 
-def test_matmul_rank_guard():
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_matmul_matrix_vector(dtype):
+    """A @ x (gemv) and v @ A (A^T x) match numpy."""
+    A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
+    x = einsums.create_random_tensor("x", [4], dtype=dtype)
+    v = einsums.create_random_tensor("v", [3], dtype=dtype)
+    assert_close(np.asarray(A @ x), np.asarray(A) @ np.asarray(x))
+    assert_close(np.asarray(v @ A), np.asarray(v) @ np.asarray(A))
+
+
+def test_matmul_matvec_in_capture():
     A = einsums.create_random_tensor("A", [3, 4], dtype="float64")
+    x = einsums.create_random_tensor("x", [4], dtype="float64")
+    a, xv = np.asarray(A).copy(), np.asarray(x).copy()
+    g = cg.Graph("gv")
+    with cg.capture(g):
+        y = A @ x
+    g.execute()
+    assert_close(np.asarray(y), a @ xv)
+
+
+def test_matmul_vector_inner_product_raises():
+    """v @ w (inner product) raises -> use einsums.linalg.dot, so @ always returns a tensor."""
     v = einsums.create_random_tensor("v", [4], dtype="float64")
     with pytest.raises(ValueError):
-        _ = A @ v
+        _ = v @ v
 
 
 def test_matmul_dtype_mismatch_raises():
@@ -269,6 +290,61 @@ def test_matmul_dtype_mismatch_raises():
     B = einsums.create_random_tensor("B", [4, 2], dtype="float32")
     with pytest.raises(TypeError):
         _ = A @ B
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# __setitem__ : sub-view assignment
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_setitem_element():
+    A = einsums.create_zero_tensor("A", [3, 4], dtype="float64")
+    A[1, 2] = 9.0
+    assert np.asarray(A)[1, 2] == 9.0
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_setitem_row_and_block(dtype):
+    A = einsums.create_zero_tensor("A", [4, 4], dtype=dtype)
+    row = einsums.create_random_tensor("row", [4], dtype=dtype)
+    blk = einsums.create_random_tensor("blk", [2, 4], dtype=dtype)
+    A[1] = row                       # rank-reducing int key (A[1, :])
+    A[2:4, :] = blk                  # slice block
+    assert_close(np.asarray(A)[1], np.asarray(row))
+    assert_close(np.asarray(A)[2:4, :], np.asarray(blk))
+
+
+def test_setitem_scalar_fill_block():
+    A = einsums.create_zero_tensor("A", [4, 4], dtype="float64")
+    A[0:2, 0:2] = 7.0
+    assert np.all(np.asarray(A)[0:2, 0:2] == 7.0)
+    assert np.all(np.asarray(A)[2:, :] == 0.0)  # rest untouched
+
+
+def test_setitem_numpy_rhs():
+    A = einsums.create_zero_tensor("A", [3, 4], dtype="float64")
+    A[2, :] = np.arange(4.0)
+    assert_close(np.asarray(A)[2], np.arange(4.0))
+
+
+def test_setitem_shape_mismatch_raises():
+    A = einsums.create_zero_tensor("A", [3, 4], dtype="float64")
+    with pytest.raises(ValueError):
+        A[0] = einsums.zeros((3,), dtype="float64")  # wrong length
+
+
+def test_setitem_block_in_capture():
+    """Slice-key block assignment records into a graph (sub-view dims resolve
+    at execute, so the assignment is correct even though the captured view's
+    dims are a placeholder at capture time)."""
+    C = einsums.create_zero_tensor("C", [3, 4], dtype="float64")
+    src = einsums.create_random_tensor("src", [2, 4], dtype="float64")
+    sv = np.asarray(src).copy()
+    g = cg.Graph("si")
+    with cg.capture(g):
+        C[0:2, :] = src
+    g.execute()
+    assert_close(np.asarray(C)[0:2, :], sv)
 
 
 # ──────────────────────────────────────────────────────────────────────────

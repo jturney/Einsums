@@ -244,6 +244,95 @@ def _patch_runtime_tensor_getitem(core):
 
 
 # ----------------------------------------------------------------------
+# __setitem__ for sub-view assignment (A[block] = value)
+# ----------------------------------------------------------------------
+# The codegen binds __setitem__ for full-element scalar writes (A[1,2] = x).
+# This wrapper adds the partial/slice cases (A[i] = vec, A[1:3, :] = mat,
+# A[...] = B): it resolves the target sub-view via __getitem__, coerces the
+# RHS to an einsums tensor of the matching shape (a tensor is used directly,
+# a scalar becomes a full(...) block, an array-like is ingested with
+# asarray), and copies it in with axpby — which is stride-aware (sub-views of
+# a column-major tensor are strided) and capture-aware. Full-element writes
+# still fall through to the bound scalar setter.
+
+_runtime_tensor_setitem_patched = False
+
+
+def _assignment_target_shape(self, key):
+    """Result shape of ``self[key]`` computed from the key + parent dims.
+
+    Used instead of reading ``self[key].shape`` because under capture the
+    sub-view's dims are a placeholder (the full parent) until execute — only
+    the parent's own dims are known at capture time. Contiguous (step==1)
+    slices and rank-reducing int indices only."""
+    rank = self.rank()
+    kt = key if isinstance(key, tuple) else (key,)
+    if any(k is Ellipsis for k in kt):
+        pos = next(i for i, k in enumerate(kt) if k is Ellipsis)
+        n_fill = rank - (len(kt) - 1)
+        kt = kt[:pos] + (slice(None),) * n_fill + kt[pos + 1:]
+    elif len(kt) < rank:
+        kt = kt + (slice(None),) * (rank - len(kt))  # implicit trailing ':'
+    shape = []
+    for axis, k in enumerate(kt):
+        if isinstance(k, int):
+            continue  # rank-reducing index drops this axis
+        if isinstance(k, slice):
+            start, stop, step = k.indices(self.dim(axis))
+            if step != 1:
+                raise IndexError(f"assignment: axis {axis} step={step}; only step==1 supported")
+            shape.append(stop - start)
+        else:
+            raise IndexError(f"assignment: unsupported index type {type(k).__name__} at axis {axis}")
+    return tuple(shape)
+
+
+def _make_setitem(orig_setitem):
+    def wrapper(self, key, value):
+        key_tuple = key if isinstance(key, tuple) else (key,)
+        # int indices reduce rank; a result rank of 0 is a single element.
+        n_int = sum(1 for k in key_tuple if isinstance(k, int))
+        if self.rank() - n_int <= 0:
+            return orig_setitem(self, key, value)  # scalar element write
+
+        tshape = _assignment_target_shape(self, key)  # real shape (capture-safe)
+        sub = self[key]  # capture-aware __getitem__ -> a sub-view aliasing self
+        sub_dtype = _DTYPE_SUFFIX[type(sub).__name__[-1]]
+
+        if _is_einsums_tensor(value):
+            rhs = value
+        elif isinstance(value, _numbers.Number):
+            rhs = full(tshape, value, dtype=sub_dtype)
+        else:
+            rhs = asarray(value, dtype=sub_dtype)
+
+        if _tensor_shape(rhs) != tshape:
+            raise ValueError(
+                f"shape mismatch in assignment: target {tshape} <- {_tensor_shape(rhs)}"
+            )
+        if _is_einsums_tensor(value) and _dtype_for_class(type(value)) != _dtype_for_class(type(sub)):
+            raise TypeError(
+                f"dtype mismatch in assignment: target {sub_dtype} <- {_dtype_for_class(type(value))}"
+            )
+        _core.linalg.axpby(1.0, rhs, 0.0, sub)  # sub = rhs (sub aliases self)
+
+    return wrapper
+
+
+def _patch_runtime_tensor_setitem(core):
+    """Install sub-view-aware ``__setitem__`` on each RuntimeTensor class."""
+    global _runtime_tensor_setitem_patched
+    if _runtime_tensor_setitem_patched:
+        return
+    for cls_name in _RUNTIME_TENSOR_CLASS_NAMES:
+        cls = getattr(core, cls_name, None)
+        if cls is None:
+            continue
+        cls.__setitem__ = _make_setitem(cls.__setitem__)
+    _runtime_tensor_setitem_patched = True
+
+
+# ----------------------------------------------------------------------
 # A[o, v, ...] sugar for tiled tensors
 # ----------------------------------------------------------------------
 # TiledRuntimeTensor.view([s0, s1, ...]) takes one IndexSpace per axis and
@@ -460,14 +549,17 @@ def _alloc_output(name, shape, dtype_name):
 
 
 def _tensor_matmul(self, other):
-    """``A @ B`` -> ``einsums.linalg.gemm`` into a fresh output tensor.
+    """``A @ B`` -> einsums gemm (matrix-matrix) or gemv (matrix-vector).
 
     Stays on Einsums code paths instead of falling through to numpy. When
-    invoked inside ``with cg.capture(g):`` the gemm call is recorded into
-    the active graph (the C++ capture context intercepts it), so ``A @ B``
-    composes inside a captured workflow just like a direct gemm call would.
-    Only rank-2 @ rank-2 with matching dtype is handled; anything else
-    raises so the operation never silently leaves Einsums.
+    invoked inside ``with cg.capture(g):`` the gemm/gemv call is recorded
+    into the active graph (the C++ capture context intercepts it), so ``@``
+    composes inside a captured workflow. Supported, matching numpy:
+      * (m,k) @ (k,n) -> (m,n)   gemm
+      * (m,k) @ (k,)  -> (m,)    gemv
+      * (k,)  @ (k,n) -> (n,)    gemv (A^T x)
+    Two vectors (inner product) raises -> use einsums.linalg.dot; higher
+    ranks (batched) are not supported. dtypes must match.
     """
     if not _is_einsums_tensor(other):
         raise TypeError(
@@ -475,30 +567,45 @@ def _tensor_matmul(self, other):
             f"right-hand side, got {type(other).__name__!r}. Convert it to an "
             "einsums tensor first to keep the operation on Einsums."
         )
-    if self.rank() != 2 or other.rank() != 2:
-        raise ValueError(
-            f"einsums '@' currently supports rank-2 @ rank-2 (gemm); "
-            f"got rank {self.rank()} @ rank {other.rank()}"
-        )
-    if self.dim(1) != other.dim(0):
-        raise ValueError(
-            f"matmul shape mismatch: {_tensor_shape(self)} @ {_tensor_shape(other)}"
-        )
     if _dtype_for_class(type(self)) != _dtype_for_class(type(other)):
         raise TypeError(
             f"einsums '@' requires matching dtypes; got {_dtype_for_class(type(self))} "
             f"and {_dtype_for_class(type(other))}"
         )
 
-    m, n = self.dim(0), other.dim(1)
-    out_name = f"{getattr(self, 'name', 'A')}@{getattr(other, 'name', 'B')}"
-    # create_*_tensor takes dtype as a string ("float64"), not an np.dtype.
+    ra, rb = self.rank(), other.rank()
     dtype_name = _DTYPE_SUFFIX[type(self).__name__[-1]]
-    C = _alloc_output(out_name, [m, n], dtype_name)
-    # beta=0 -> C's zero init is overwritten; alpha=1 -> plain product.
-    # Inside cg.capture this records a gemm node instead of executing.
-    _core.linalg.gemm(1.0, self, other, 0.0, C)
-    return C
+    out_name = f"{getattr(self, 'name', 'A')}@{getattr(other, 'name', 'B')}"
+
+    if ra == 2 and rb == 2:  # matrix-matrix: gemm
+        if self.dim(1) != other.dim(0):
+            raise ValueError(f"matmul shape mismatch: {_tensor_shape(self)} @ {_tensor_shape(other)}")
+        C = _alloc_output(out_name, [self.dim(0), other.dim(1)], dtype_name)
+        _core.linalg.gemm(1.0, self, other, 0.0, C)  # beta=0 overwrites C's zero init
+        return C
+
+    if ra == 2 and rb == 1:  # matrix-vector: y = A x
+        if self.dim(1) != other.dim(0):
+            raise ValueError(f"matvec shape mismatch: {_tensor_shape(self)} @ {_tensor_shape(other)}")
+        y = _alloc_output(out_name, [self.dim(0)], dtype_name)
+        _core.linalg.gemv(1.0, self, other, 0.0, y)
+        return y
+
+    if ra == 1 and rb == 2:  # vector-matrix: y = A^T x
+        if self.dim(0) != other.dim(0):
+            raise ValueError(f"vecmat shape mismatch: {_tensor_shape(self)} @ {_tensor_shape(other)}")
+        y = _alloc_output(out_name, [other.dim(1)], dtype_name)
+        _core.linalg.gemv(1.0, other, self, 0.0, y, trans_a=True)
+        return y
+
+    if ra == 1 and rb == 1:
+        raise ValueError(
+            "einsums '@' on two vectors is an inner product; use einsums.linalg.dot(v, w)"
+        )
+    raise ValueError(
+        f"einsums '@' supports rank-2 @ rank-2 (gemm) and matrix-vector (gemv); "
+        f"got rank {ra} @ rank {rb}"
+    )
 
 
 # ----------------------------------------------------------------------
@@ -743,6 +850,7 @@ def _bootstrap():
     """
     _ensure_initialized()
     _patch_runtime_tensor_getitem(_core)
+    _patch_runtime_tensor_setitem(_core)
     _patch_tiled_tensor_getitem(_core)
     _patch_numpy_ergonomics(_core)
 
