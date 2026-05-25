@@ -7,7 +7,8 @@ the Einsums test suite does not provide. Run them by hand.
 
 | Script | Checks |
 | --- | --- |
-| `so_one_electron_tiled.py` | `MintsHelper.so_overlap_tiled()` / `so_kinetic_tiled()` / `so_potential_tiled()` reproduce the per-irrep blocks of the existing symmetry-blocked `so_*()` matrices. |
+| `matrix_alias.py` | `Matrix.to_einsums_tiled()` exposes a symmetry-blocked psi4 `Matrix` as a `TiledRuntimeTensor` that **aliases** the irrep blocks (zero-copy, block h ↔ tile (h, h^symmetry)). Demonstrates shared storage both ways — writes through the Matrix or the tensor are visible to both. The zero-copy bridge toward an Einsums-tensor backend for `Matrix`. |
+| `so_one_electron_tiled.py` | Uses `Matrix.to_einsums_tiled()` on the SO overlap/kinetic/potential matrices: each tile equals the per-irrep block, and mutating the matrix shows through the tile (verifies the alias on real integrals). |
 | `so_two_electron_eri_tiled.py` | `MintsHelper.so_eri_tiled()` (rank-4 SO ERIs, legacy `TwoBodySOInt` functor path): C1 matches `ao_eri()` exactly; C2v tiles are all symmetry-allowed irrep quadruples with 8-fold permutational symmetry. |
 | `ao_eri_dense.py` | `MintsHelper.ao_eri_einsums()` (dense rank-4 AO ERIs via the performant shell-batched `compute_shell` primitive): matches `ao_eri()` and obeys 8-fold permutational symmetry. |
 | `df_three_index.py` | `DFTensor.Qso_einsums()` / `Qov_einsums()` / `Qvv_einsums()` (density-fitted 3-index `(Q\|pq)` as dense rank-3 `RuntimeTensor` — DF has no symmetry): exactly match the `Qso()`/`Qov()`/`Qvv()` matrices reshaped, and reconstruct the AO ERIs within DF error. |
