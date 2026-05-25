@@ -11,6 +11,7 @@ set(TensorTests
     FunctionTensor.cpp
     Symmetry.cpp
     TiledTensor.cpp
+    TiledRuntimeTensorAlias.cpp
     Tensor.cpp
     Disk.cpp)
 

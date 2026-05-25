@@ -167,8 +167,14 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     /**
      * @brief Default copy constructor.
      */
-    GeneralRuntimeTensor(GeneralRuntimeTensor<T, Alloc> const &copy) : _name{copy._name}, _impl(copy.impl()), _data(copy.vector_data()) {
-        _impl.set_data(_data.data());
+    GeneralRuntimeTensor(GeneralRuntimeTensor<T, Alloc> const &copy)
+        : _name{copy._name}, _impl(copy.impl()), _data(copy.vector_data()), _aliased(copy._aliased) {
+        // An aliased tensor does not own _data; keep _impl pointing at the
+        // external buffer (copy.impl() already carries it) rather than
+        // repointing at our empty _data.
+        if (!_aliased) {
+            _impl.set_data(_data.data());
+        }
     }
 
     /**
@@ -431,13 +437,16 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
 
     /**
      * @brief Get the pointer to the stored data.
+     *
+     * For an aliased tensor (@ref alias_to) the data lives in an external
+     * buffer, not the owned _data, so return the impl's pointer.
      */
-    [[nodiscard]] Pointer data() noexcept { return _data.data(); }
+    [[nodiscard]] Pointer data() noexcept { return _aliased ? _impl.data() : _data.data(); }
 
     /**
      * @copydoc data()
      */
-    [[nodiscard]] ConstPointer data() const noexcept { return _data.data(); }
+    [[nodiscard]] ConstPointer data() const noexcept { return _aliased ? _impl.data() : _data.data(); }
 
     /**
      * @brief Get the pointer to the stored data starting at the given index.
@@ -1097,20 +1106,38 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
         _impl.set_data(_data.data());
     }
 
-    /// True iff backing storage is allocated (or the tensor is rank-0
-    /// with no data needed). Mirrors GeneralTensor's contract.
-    [[nodiscard]] bool is_materialized() const { return !_data.empty() || _impl.size() == 0; }
+    /// True iff backing storage is available — owned (_data non-empty),
+    /// aliased to an external buffer, or rank-0 with no data needed.
+    [[nodiscard]] bool is_materialized() const { return _aliased || !_data.empty() || _impl.size() == 0; }
 
     /// Release backing storage, returning to the deferred state. Dims and
     /// strides are preserved. data() returns a sentinel pointer until
     /// materialize() is called again. Used by FreeInsertion to free
-    /// intermediates after their last consumer.
+    /// intermediates after their last consumer. No-op for aliased tensors —
+    /// they don't own their memory, so there is nothing to free.
     void release() {
-        if (_data.empty())
+        if (_aliased || _data.empty())
             return;
         _data.clear();
         _data.shrink_to_fit();
         _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel — dims/strides preserved
+    }
+
+    /// Re-point this tensor at an external buffer it does NOT own (zero-copy
+    /// alias), with the given layout. The previous owned storage (if any) is
+    /// dropped — the caller guarantees @p ptr outlives this tensor. Used to
+    /// wrap foreign block memory (e.g. a psi4 Matrix irrep block) as a tile of
+    /// a TiledRuntimeTensor without copying. After this the tensor reports
+    /// materialized and is release-proof. EXPERIMENTAL (zero-copy bridge).
+    void alias_to(T *ptr, bool row_major) {
+        std::vector<size_t> d(_impl.rank());
+        for (size_t i = 0; i < d.size(); ++i) {
+            d[i] = _impl.dim(static_cast<int>(i));
+        }
+        _data.clear();
+        _data.shrink_to_fit();
+        _impl    = detail::TensorImpl<T>(ptr, d, row_major);
+        _aliased = true;
     }
 
     /// Override the internal data pointer. Used by the GPU executor's
@@ -1202,6 +1229,11 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     std::string _name{"(unnamed)"};
 
     detail::TensorImpl<T> _impl{};
+
+    /// True when _impl points at memory this tensor does NOT own (see
+    /// @ref alias_to). Such a tensor is permanently "materialized" and
+    /// release()/materialize() leave its external buffer untouched.
+    bool _aliased{false};
 
     std::unique_ptr<SymmetryDescriptor> _symmetry{};
 

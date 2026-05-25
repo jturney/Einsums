@@ -319,6 +319,18 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
     /// Access an existing tile; throws if it is not populated.
     [[nodiscard]] StoredType const &tile(std::vector<int> const &coord) const { return _tiles.at(normalize(coord)); }
 
+    /// EXPERIMENTAL (zero-copy bridge). Add a tile at @p coord that ALIASES the
+    /// external buffer @p ptr instead of owning a copy. The tile takes the grid
+    /// dims for @p coord and the given layout (row_major matches psi4's
+    /// contiguous irrep blocks). @p ptr must outlive this tensor. This lets a
+    /// psi4 Matrix/Vector be wrapped as a tiled Einsums tensor with no copy —
+    /// the precursor to making such tensors the storage backend.
+    void add_alias_tile(std::vector<int> const &coord, T *ptr, bool row_major) {
+        std::vector<int> const key = normalize(coord);
+        add_tile(key);                           // create a deferred tile (fixes its dims)
+        _tiles.at(key).alias_to(ptr, row_major); // re-point it at the external buffer
+    }
+
     /// Python-facing tile accessor: materialize the tile at @p coord (creating
     /// it if absent) and return a numpy-backed view of it. KEEP_ALIVE(0,1) ties
     /// this tensor's lifetime to the returned view, so the tile's storage
