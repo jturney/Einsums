@@ -352,6 +352,54 @@ def _tensor_T(self):
     return self.transpose_view()
 
 
+def _permuted_view(self, perm):
+    """Zero-copy axis-permuted view, graph-aware.
+
+    Inside ``cg.capture`` routes through ``cg.permute_view`` (graph-registered,
+    parent-aliasing); eagerly uses the C++ ``permute_view`` method. Backs
+    ``.transpose`` and ``.swapaxes``."""
+    _g = _importlib.import_module("einsums.graph")
+    if _g.current_graph() is not None:
+        return _g.permute_view(self, perm)
+    return self.permute_view(perm)
+
+
+def _normalize_axes(self, axes):
+    """Resolve numpy-style ``transpose`` axis args to a perm list.
+
+    Accepts ``transpose()`` (reverse — numpy default), ``transpose(0, 2, 1)``,
+    or ``transpose((0, 2, 1))``; negative axes are allowed."""
+    rank = self.rank()
+    if len(axes) == 0:
+        return list(range(rank - 1, -1, -1))
+    if len(axes) == 1 and isinstance(axes[0], (tuple, list)):
+        axes = tuple(axes[0])
+    if len(axes) != rank:
+        raise ValueError(f".transpose(): got {len(axes)} axes for a rank-{rank} tensor")
+    perm = [int(a) % rank for a in axes]
+    if sorted(perm) != list(range(rank)):
+        raise ValueError(f".transpose(): {tuple(axes)} is not a permutation of 0..{rank - 1}")
+    return perm
+
+
+def _tensor_transpose(self, *axes):
+    """``A.transpose(*axes)`` — zero-copy permuted view (numpy semantics)."""
+    return _permuted_view(self, _normalize_axes(self, axes))
+
+
+def _tensor_swapaxes(self, axis1, axis2):
+    """``A.swapaxes(i, j)`` — zero-copy view with two axes exchanged."""
+    rank = self.rank()
+    perm = list(range(rank))
+    perm[axis1 % rank], perm[axis2 % rank] = perm[axis2 % rank], perm[axis1 % rank]
+    return _permuted_view(self, perm)
+
+
+def _tensor_copy(self):
+    """``A.copy()`` — a fresh dense tensor holding a copy of A (like numpy)."""
+    return _copy_of(self, f"{getattr(self, 'name', 'A')}_copy")
+
+
 def _tensor_len(self):
     rank = self.rank()
     if rank == 0:
@@ -663,6 +711,9 @@ def _patch_numpy_ergonomics(core):
         cls.__len__ = _tensor_len
         cls.__repr__ = _tensor_repr
         cls.__array__ = _tensor_array
+        cls.transpose = _tensor_transpose
+        cls.swapaxes = _tensor_swapaxes
+        cls.copy = _tensor_copy
         cls.__matmul__ = _tensor_matmul
         # Tier-2 arithmetic operators (dispatch to einsums.linalg).
         cls.__add__ = _tensor_add

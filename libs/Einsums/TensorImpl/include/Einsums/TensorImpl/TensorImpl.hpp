@@ -1328,6 +1328,36 @@ struct TensorImpl final {
     }
 
     /**
+     * @brief Create an axis-permuted view: result axis i takes parent axis ``perm[i]``.
+     *
+     * Like @ref transpose_view but for an arbitrary permutation of the axes
+     * (``transpose_view`` is the full-reversal special case). Does not move data;
+     * only the dims/strides are reordered. @p perm must be a permutation of
+     * ``[0, rank)`` (unchecked here — callers validate).
+     */
+    [[nodiscard]] constexpr TensorImpl<T> permute_view(std::vector<size_t> const &perm) {
+        BufferVector<size_t> new_dims, new_strides;
+        new_dims.reserve(perm.size());
+        new_strides.reserve(perm.size());
+        for (size_t const ax : perm) {
+            new_dims.push_back(_dims[ax]);
+            new_strides.push_back(_strides[ax]);
+        }
+        return TensorImpl<T>(_ptr, std::move(new_dims), std::move(new_strides));
+    }
+
+    [[nodiscard]] constexpr TensorImpl<T> const permute_view(std::vector<size_t> const &perm) const {
+        BufferVector<size_t> new_dims, new_strides;
+        new_dims.reserve(perm.size());
+        new_strides.reserve(perm.size());
+        for (size_t const ax : perm) {
+            new_dims.push_back(_dims[ax]);
+            new_strides.push_back(_strides[ax]);
+        }
+        return TensorImpl<T>(_ptr, std::move(new_dims), std::move(new_strides));
+    }
+
+    /**
      * @brief Create a row-major view.
      *
      * This does not permute the data. It only reverses the dimensions and strides,

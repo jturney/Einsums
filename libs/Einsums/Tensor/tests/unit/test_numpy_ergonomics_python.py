@@ -123,6 +123,68 @@ def test_permute_view_general_axes_in_capture():
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# .transpose / .swapaxes / .copy
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_transpose_forms(dtype):
+    R = einsums.create_random_tensor("R", [2, 3, 4], dtype=dtype)
+    r = np.asarray(R).copy()
+    assert_close(np.asarray(R.transpose()), r.transpose())                 # default reverse
+    assert_close(np.asarray(R.transpose(2, 0, 1)), np.transpose(r, (2, 0, 1)))  # explicit
+    assert_close(np.asarray(R.transpose((1, 2, 0))), np.transpose(r, (1, 2, 0)))  # tuple
+    assert_close(np.asarray(R.transpose(-1, -2, -3)), np.transpose(r, (-1, -2, -3)))  # negative
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_swapaxes(dtype):
+    R = einsums.create_random_tensor("R", [2, 3, 4], dtype=dtype)
+    r = np.asarray(R).copy()
+    assert_close(np.asarray(R.swapaxes(0, 2)), np.swapaxes(r, 0, 2))
+    assert_close(np.asarray(R.swapaxes(-1, 1)), np.swapaxes(r, -1, 1))
+
+
+def test_transpose_is_a_view():
+    """transpose returns a zero-copy view: writes propagate to the parent."""
+    A = einsums.create_zero_tensor("A", [2, 3], dtype="float64")
+    np.asarray(A.transpose(1, 0))[0, 1] = 9.0  # == A[1, 0]
+    assert np.asarray(A)[1, 0] == 9.0
+
+
+def test_transpose_bad_axes_raises():
+    R = einsums.create_random_tensor("R", [2, 3, 4], dtype="float64")
+    with pytest.raises(ValueError):
+        R.transpose(0, 0, 1)          # not a permutation
+    with pytest.raises(ValueError):
+        R.transpose(0, 1)             # wrong count
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_copy_is_independent(dtype):
+    B = einsums.create_random_tensor("B", [3, 3], dtype=dtype)
+    b = np.asarray(B).copy()
+    Bc = B.copy()
+    assert_close(np.asarray(Bc), b)
+    np.asarray(Bc)[0, 0] = 123.0      # mutate the copy
+    assert np.asarray(B)[0, 0] == b[0, 0]  # original untouched
+
+
+def test_transpose_swapaxes_copy_in_capture():
+    """transpose/swapaxes route through cg.permute_view under capture; copy records."""
+    R = einsums.create_random_tensor("R", [2, 3, 4], dtype="float64")
+    B = einsums.create_random_tensor("B", [3, 3], dtype="float64")
+    r, b = np.asarray(R).copy(), np.asarray(B).copy()
+    g = cg.Graph("views")
+    with cg.capture(g):
+        S = R.transpose(2, 0, 1) + R.transpose(2, 0, 1)  # 2 * permuted
+        U = B.swapaxes(0, 1).copy()                       # copy of B^T
+    g.execute()
+    assert_close(np.asarray(S), 2.0 * np.transpose(r, (2, 0, 1)))
+    assert_close(np.asarray(U), b.T)
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # __array__
 # ──────────────────────────────────────────────────────────────────────────
 

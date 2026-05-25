@@ -1060,6 +1060,13 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
 
     [[nodiscard]] RuntimeTensorView<T> const transpose_view() const { return RuntimeTensorView<T>(_impl.transpose_view()); }
 
+    // Zero-copy axis-permuted view (result axis i takes parent axis perm[i]).
+    // Backs the eager ``.transpose(axes)`` / ``.swapaxes`` (see einsums/__init__.py);
+    // the capture path uses cg.permute_view instead. KEEP_ALIVE(0,1) ties storage.
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) RuntimeTensorView<T> permute_view(std::vector<size_t> const &perm) {
+        return RuntimeTensorView<T>(_impl.permute_view(perm));
+    }
+
     [[nodiscard]] RuntimeTensorView<T> to_row_major() { return RuntimeTensorView<T>(_impl.to_row_major()); }
 
     [[nodiscard]] RuntimeTensorView<T> const to_row_major() const { return RuntimeTensorView<T>(_impl.to_row_major()); }
@@ -1928,6 +1935,13 @@ struct EINSUMS_PYBIND_EXPOSE
     }
 
     [[nodiscard]] RuntimeTensorView<T> const transpose_view() const { return RuntimeTensorView<T>(_impl.transpose_view()); }
+
+    // Zero-copy axis-permuted view (result axis i takes parent axis perm[i]).
+    // Backs the eager ``.transpose(axes)`` / ``.swapaxes`` (see einsums/__init__.py);
+    // the capture path uses cg.permute_view instead. KEEP_ALIVE(0,1) ties storage.
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) RuntimeTensorView<T> permute_view(std::vector<size_t> const &perm) {
+        return RuntimeTensorView<T>(_impl.permute_view(perm));
+    }
 
     [[nodiscard]] RuntimeTensorView<T> to_row_major() { return RuntimeTensorView<T>(_impl.to_row_major()); }
 
