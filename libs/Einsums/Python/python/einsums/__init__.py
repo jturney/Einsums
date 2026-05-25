@@ -242,6 +242,36 @@ def _patch_runtime_tensor_getitem(core):
     _runtime_tensor_getitem_patched = True
 
 
+# ----------------------------------------------------------------------
+# A[o, v, ...] sugar for tiled tensors
+# ----------------------------------------------------------------------
+# TiledRuntimeTensor.view([s0, s1, ...]) takes one IndexSpace per axis and
+# returns a TiledRuntimeTensorView. We add subscript sugar so the natural
+# ``A[o, v, o, v]`` (IndexSpace per axis) maps onto it — matching how users
+# think about occupied/virtual orbital blocks per irrep.
+
+_TILED_TENSOR_CLASS_NAMES = ("TiledRuntimeTensorF", "TiledRuntimeTensorD", "TiledRuntimeTensorC", "TiledRuntimeTensorZ")
+_tiled_tensor_getitem_patched = False
+
+
+def _tiled_getitem(self, key):
+    spaces = list(key) if isinstance(key, tuple) else [key]
+    return self.view(spaces)
+
+
+def _patch_tiled_tensor_getitem(core):
+    """Install ``__getitem__`` -> ``view`` on each TiledRuntimeTensor class."""
+    global _tiled_tensor_getitem_patched
+    if _tiled_tensor_getitem_patched:
+        return
+    for cls_name in _TILED_TENSOR_CLASS_NAMES:
+        cls = getattr(core, cls_name, None)
+        if cls is None:
+            continue
+        cls.__getitem__ = _tiled_getitem
+    _tiled_tensor_getitem_patched = True
+
+
 def __getattr__(name):
     """PEP 562 lazy attribute lookup.
 
@@ -269,6 +299,7 @@ def __getattr__(name):
     # is the first "real use", so bring the runtime up now (honoring einsums.rc).
     _ensure_initialized()
     _patch_runtime_tensor_getitem(_core)
+    _patch_tiled_tensor_getitem(_core)
     try:
         attr = getattr(_core, name)
     except AttributeError as exc:

@@ -22,9 +22,53 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace einsums {
+
+template <typename T>
+struct TiledRuntimeTensorView;
+
+/**
+ * @struct IndexSpace
+ *
+ * @brief A per-irrep selection of indices along one axis of a tiled tensor.
+ *
+ * Each axis of a @ref TiledRuntimeTensor is partitioned into per-irrep blocks.
+ * An IndexSpace picks a half-open ``[start, stop)`` sub-range out of each
+ * irrep's block, so a single IndexSpace can describe e.g. "the occupied
+ * orbitals" (``[0, nocc_h)`` in every irrep ``h``) or "the virtuals"
+ * (``[nocc_h, nmo_h)``). Slicing a tiled tensor with one IndexSpace per axis
+ * (``A.view({o, v, o, v})``) yields a @ref TiledRuntimeTensorView.
+ *
+ * @versionadded{2.0.0}
+ */
+struct EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("IndexSpace") IndexSpace {
+    /// Per-irrep half-open ``[start, stop)`` ranges; one entry per irrep on the
+    /// axis this space applies to.
+    std::vector<std::pair<int, int>> ranges;
+
+    IndexSpace() = default;
+
+    /// Build from explicit per-irrep ``(start, stop)`` ranges.
+    EINSUMS_PYBIND_EXPOSE explicit IndexSpace(std::vector<std::pair<int, int>> r) : ranges(std::move(r)) {}
+
+    /// Number of irreps this space covers.
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE int nirrep() const { return static_cast<int>(ranges.size()); }
+
+    /// First index selected in irrep @p h.
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE int start(int h) const { return ranges.at(static_cast<size_t>(h)).first; }
+
+    /// One past the last index selected in irrep @p h.
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE int stop(int h) const { return ranges.at(static_cast<size_t>(h)).second; }
+
+    /// Number of indices selected in irrep @p h.
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE int length(int h) const {
+        auto const &p = ranges.at(static_cast<size_t>(h));
+        return p.second - p.first;
+    }
+};
 
 /**
  * @struct TiledRuntimeTensor
@@ -285,6 +329,11 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
         return RuntimeTensorView<T>(t);
     }
 
+    /// Create a non-owning @ref TiledRuntimeTensorView restricted to one
+    /// @ref IndexSpace per axis (e.g. ``A.view({o, v, o, v})``). The view keeps
+    /// this tensor alive; defined out-of-line below TiledRuntimeTensorView.
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) TiledRuntimeTensorView<T> view(std::vector<IndexSpace> const &spaces);
+
     // ── Deferred-allocation lifecycle ────────────────────────────────
     //
     // Mirrors RuntimeTensor's API so ComputeGraph's make_handle SFINAE probes
@@ -419,6 +468,133 @@ extern template class EINSUMS_EXPORT TiledRuntimeTensor<float>;
 extern template class EINSUMS_EXPORT TiledRuntimeTensor<double>;
 extern template class EINSUMS_EXPORT TiledRuntimeTensor<std::complex<float>>;
 extern template class EINSUMS_EXPORT TiledRuntimeTensor<std::complex<double>>;
+#endif
+
+/**
+ * @struct TiledRuntimeTensorView
+ *
+ * @brief A non-owning, per-irrep-sliced view of a @ref TiledRuntimeTensor.
+ *
+ * Produced by @ref TiledRuntimeTensor::view with one @ref IndexSpace per axis.
+ * It does not own data: each populated tile is exposed as a
+ * @ref RuntimeTensorView sub-block of the parent tile (via
+ * @ref RuntimeTensor::at_view), so a view like ``A[o, v, o, v]`` over an MO
+ * tensor selects the occ/vir sub-blocks of every symmetry-allowed tile with no
+ * copies. The parent must outlive the view.
+ *
+ * @tparam T The data type stored in each tile.
+ *
+ * @versionadded{2.0.0}
+ */
+template <typename T>
+struct
+    // clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorViewF", TiledRuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorViewD", TiledRuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorViewC", TiledRuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorViewZ", TiledRuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    TiledRuntimeTensorView : public tensor_base::CoreTensor,
+                             public tensor_base::TiledTensorNoExtra {
+  public:
+    using ValueType = T;
+
+    /// Compile-time rank sentinel; the real rank is the number of axes (== the
+    /// number of IndexSpaces). See @ref einsums::dynamic_rank.
+    static constexpr int Rank = dynamic_rank;
+
+    TiledRuntimeTensorView() = default;
+
+    /// Build a view of @p parent selecting @p spaces[k] along axis @p k. One
+    /// IndexSpace per axis, each covering every irrep on that axis. Computes the
+    /// reduced per-axis tile sizes and global dims; no data is touched.
+    TiledRuntimeTensorView(TiledRuntimeTensor<T> &parent, std::vector<IndexSpace> spaces, std::string name)
+        : _parent(&parent), _spaces(std::move(spaces)), _name(std::move(name)) {
+        auto const &parent_sizes = parent.tile_sizes();
+        if (_spaces.size() != parent_sizes.size()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "TiledRuntimeTensorView: got {} index spaces for a rank-{} tensor",
+                                    _spaces.size(), parent_sizes.size());
+        }
+        std::size_t const r = _spaces.size();
+        _tile_sizes.resize(r);
+        _dims.assign(r, 0);
+        for (std::size_t k = 0; k < r; ++k) {
+            auto const &axis = parent_sizes[k];
+            if (_spaces[k].ranges.size() != axis.size()) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                        "TiledRuntimeTensorView: axis {} index space covers {} irreps but the tensor has {}", k,
+                                        _spaces[k].ranges.size(), axis.size());
+            }
+            _tile_sizes[k].resize(axis.size());
+            for (std::size_t h = 0; h < axis.size(); ++h) {
+                auto const &rng = _spaces[k].ranges[h];
+                if (rng.first < 0 || rng.second > axis[h] || rng.first > rng.second) {
+                    EINSUMS_THROW_EXCEPTION(std::out_of_range,
+                                            "TiledRuntimeTensorView: axis {} irrep {} range [{}, {}) outside tile size {}", k, h, rng.first,
+                                            rng.second, axis[h]);
+                }
+                int const len     = rng.second - rng.first;
+                _tile_sizes[k][h] = len;
+                _dims[k] += static_cast<std::size_t>(len);
+            }
+        }
+    }
+
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::size_t rank() const noexcept { return _spaces.size(); }
+
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::vector<std::size_t> dims() const { return _dims; }
+
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::size_t dim(int d) const {
+        int const r = static_cast<int>(_dims.size());
+        if (d < 0) {
+            d += r;
+        }
+        return _dims.at(static_cast<std::size_t>(d));
+    }
+
+    /// Per-axis, per-irrep sizes of the selected sub-blocks.
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::vector<std::vector<int>> const &tile_sizes() const noexcept { return _tile_sizes; }
+
+    /// The view shares the parent's sparsity pattern (same populated coords).
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE bool has_tile(std::vector<int> const &coord) const { return _parent->has_tile(coord); }
+
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::size_t num_filled_tiles() const noexcept { return _parent->num_filled_tiles(); }
+
+    [[nodiscard]] EINSUMS_PYBIND_GETTER("name") std::string const &name() const noexcept { return _name; }
+
+    /// Sub-view of the parent's tile at @p coord, restricted to this view's
+    /// per-axis ranges for that tile's irreps. The result is a live
+    /// @ref RuntimeTensorView onto the parent tile's storage.
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) RuntimeTensorView<T> tile_view(std::vector<int> const &coord) {
+        auto &t = _parent->tile(coord);
+        t.materialize();
+        std::vector<SliceSpec> specs(_spaces.size());
+        for (std::size_t k = 0; k < _spaces.size(); ++k) {
+            auto const &rng = _spaces[k].ranges.at(static_cast<std::size_t>(coord[k]));
+            specs[k]        = SliceSpec{SliceSpec::Kind::Range, 0, rng.first, rng.second, 1};
+        }
+        return t.at_view(specs);
+    }
+
+  private:
+    TiledRuntimeTensor<T>        *_parent = nullptr;
+    std::vector<IndexSpace>       _spaces;
+    std::vector<std::size_t>      _dims;
+    std::vector<std::vector<int>> _tile_sizes;
+    std::string                   _name;
+};
+
+template <typename T>
+TiledRuntimeTensorView<T> TiledRuntimeTensor<T>::view(std::vector<IndexSpace> const &spaces) {
+    return TiledRuntimeTensorView<T>(*this, spaces, _name + " (view)");
+}
+
+#if !defined(EINSUMS_WINDOWS) && !defined(DOXYGEN)
+extern template class EINSUMS_EXPORT TiledRuntimeTensorView<float>;
+extern template class EINSUMS_EXPORT TiledRuntimeTensorView<double>;
+extern template class EINSUMS_EXPORT TiledRuntimeTensorView<std::complex<float>>;
+extern template class EINSUMS_EXPORT TiledRuntimeTensorView<std::complex<double>>;
 #endif
 
 } // namespace einsums

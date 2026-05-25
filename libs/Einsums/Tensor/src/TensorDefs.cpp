@@ -62,6 +62,11 @@ template class TiledRuntimeTensor<float>;
 template class TiledRuntimeTensor<double>;
 template class TiledRuntimeTensor<std::complex<float>>;
 template class TiledRuntimeTensor<std::complex<double>>;
+
+template class TiledRuntimeTensorView<float>;
+template class TiledRuntimeTensorView<double>;
+template class TiledRuntimeTensorView<std::complex<float>>;
+template class TiledRuntimeTensorView<std::complex<double>>;
 #endif
 
 namespace {
