@@ -8,6 +8,8 @@
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
+#include <array>
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -445,6 +447,67 @@ TEST_CASE("View - chained slicing: view of view", "[ComputeGraph][View]") {
     for (size_t i = 0; i < 2; ++i)
         for (size_t j = 0; j < 3; ++j)
             REQUIRE(dst(i, j) == Catch::Approx(100 + 10 * (i + 2) + j));
+}
+
+TEST_CASE("View - typed permute_view transposes, aliases parent", "[ComputeGraph][View][Permute]") {
+    // A is 3x4; the transpose view is 4x3 with At(i,j) == A(j,i).
+    Tensor<double, 2> A("A", 3, 4);
+    for (size_t i = 0; i < 3; ++i)
+        for (size_t j = 0; j < 4; ++j)
+            A(i, j) = static_cast<double>(10 * i + j);
+
+    Tensor<double, 2> dst("dst", 4, 3);
+    dst.zero();
+
+    cg::Pipeline pipe("permute_view");
+    {
+        auto                  &stage = pipe.add_stage("s");
+        cg::CaptureGuard const g(stage);
+
+        auto &At = cg::permute_view(A, std::array<size_t, 2>{1, 0}); // A^T (4x3)
+        cg::permute("ij <- ij", 0.0, &dst, 1.0, At);                 // dst = At
+    }
+    pipe.execute();
+
+    for (size_t i = 0; i < 4; ++i)
+        for (size_t j = 0; j < 3; ++j)
+            REQUIRE(dst(i, j) == Catch::Approx(10.0 * j + i)); // At(i,j) = A(j,i)
+}
+
+TEST_CASE("View - permute_view rank-3 axis permutation", "[ComputeGraph][View][Permute]") {
+    // R is 2x3x4; permute axes to (4,2,3) via perm {2,0,1}: V(i,j,k) = R(j,k,i).
+    Tensor<double, 3> R("R", 2, 3, 4);
+    for (size_t i = 0; i < 2; ++i)
+        for (size_t j = 0; j < 3; ++j)
+            for (size_t k = 0; k < 4; ++k)
+                R(i, j, k) = static_cast<double>(100 * i + 10 * j + k);
+
+    Tensor<double, 3> dst("dst", 4, 2, 3);
+    dst.zero();
+
+    cg::Pipeline pipe("permute_view3");
+    {
+        auto                  &stage = pipe.add_stage("s");
+        cg::CaptureGuard const g(stage);
+
+        auto &V = cg::permute_view(R, std::array<size_t, 3>{2, 0, 1});
+        cg::permute("ijk <- ijk", 0.0, &dst, 1.0, V);
+    }
+    pipe.execute();
+
+    for (size_t i = 0; i < 4; ++i)         // result axis 0 <- R axis 2 (k)
+        for (size_t j = 0; j < 2; ++j)     // result axis 1 <- R axis 0 (i)
+            for (size_t k = 0; k < 3; ++k) // result axis 2 <- R axis 1 (j)
+                REQUIRE(dst(i, j, k) == Catch::Approx(100.0 * j + 10.0 * k + i));
+}
+
+TEST_CASE("View - permute_view rejects a non-bijection", "[ComputeGraph][View][Permute][Errors]") {
+    Tensor<double, 2>      A("A", 3, 3);
+    cg::Pipeline           pipe("permute_view_bad");
+    auto                  &stage = pipe.add_stage("s");
+    cg::CaptureGuard const g(stage);
+    // {0, 0} is not a permutation of [0, 2).
+    REQUIRE_THROWS(cg::permute_view(A, std::array<size_t, 2>{0, 0}));
 }
 
 TEST_CASE("Trace - eager form", "[ComputeGraph][Trace]") {

@@ -1050,7 +1050,13 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
 
     [[nodiscard]] bool is_column_major() const { return _impl.is_column_major(); }
 
-    [[nodiscard]] RuntimeTensorView<T> transpose_view() { return RuntimeTensorView<T>(_impl.transpose_view()); }
+    // Zero-copy transposed (reversed-axis) view. Exposed to Python as the
+    // ``.T`` property (see einsums/__init__.py); KEEP_ALIVE(0,1) ties this
+    // tensor's storage to the returned view so numpy arrays built from it
+    // stay valid.
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) RuntimeTensorView<T> transpose_view() {
+        return RuntimeTensorView<T>(_impl.transpose_view());
+    }
 
     [[nodiscard]] RuntimeTensorView<T> const transpose_view() const { return RuntimeTensorView<T>(_impl.transpose_view()); }
 
@@ -1913,7 +1919,13 @@ struct EINSUMS_PYBIND_EXPOSE
 
     [[nodiscard]] bool is_column_major() const { return _impl.is_column_major(); }
 
-    [[nodiscard]] RuntimeTensorView<T> transpose_view() { return RuntimeTensorView<T>(_impl.transpose_view()); }
+    // Zero-copy transposed (reversed-axis) view. Exposed to Python as the
+    // ``.T`` property (see einsums/__init__.py); KEEP_ALIVE(0,1) ties this
+    // tensor's storage to the returned view so numpy arrays built from it
+    // stay valid.
+    [[nodiscard]] EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) RuntimeTensorView<T> transpose_view() {
+        return RuntimeTensorView<T>(_impl.transpose_view());
+    }
 
     [[nodiscard]] RuntimeTensorView<T> const transpose_view() const { return RuntimeTensorView<T>(_impl.transpose_view()); }
 

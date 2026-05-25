@@ -63,6 +63,28 @@ def default_pass_manager():
     return pm
 
 
+# Python-side stack of graphs currently being captured. The C++
+# CaptureContext owns the authoritative capture state, but its ``graph()``
+# accessor isn't bound to Python — and operator helpers in
+# ``einsums/__init__.py`` need the active graph so they can allocate
+# intermediate outputs (for ``A + B``, ``A @ B``, …) via
+# ``graph.create_zero_tensor`` instead of the process-owned
+# ``_core.create_zero_tensor``. Graph-owned intermediates outlive
+# ``graph.execute()``; process-owned ones can be GC'd mid-chain, which
+# surfaces as "tensor ... appears to have been destroyed".
+_capture_graph_stack = []
+
+
+def current_graph():
+    """Return the innermost graph currently being captured, or ``None``.
+
+    Used by the numpy-ergonomics operators to decide where to allocate
+    operator outputs. ``None`` means we're not inside ``cg.capture``, so
+    eager (process-owned) allocation is correct.
+    """
+    return _capture_graph_stack[-1] if _capture_graph_stack else None
+
+
 @_contextlib.contextmanager
 def capture(graph):
     """Context manager wrapping CaptureContext::begin_capture / end_capture.
@@ -81,7 +103,9 @@ def capture(graph):
     """
     ctx = _core().CaptureContext.current()
     ctx.begin_capture(graph)
+    _capture_graph_stack.append(graph)
     try:
         yield graph
     finally:
+        _capture_graph_stack.pop()
         ctx.end_capture()

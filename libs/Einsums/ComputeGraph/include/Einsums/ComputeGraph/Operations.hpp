@@ -465,6 +465,60 @@ EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::TiledRuntimeTensor<s
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// shift: A += beta (add a scalar to every element)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Graph-aware in-place scalar shift: ``A += beta``.
+///
+/// The additive complement of @ref scale. Unlike the Python-callable
+/// @ref element_transform_python (a Python call per element), this is a tight
+/// compiled loop, so it's the fast backing for the numpy-style scalar ``+`` /
+/// ``-`` operators (e.g. ``A + 1.0``, ``A += c``). In-place — no allocation —
+/// which is what lets a denominator scratch be reused across a loop instead of
+/// allocating a fresh tensor per iteration. Records an opaque @ref
+/// OpKind::Custom node when capturing (no einsum pass rewrites it), or runs
+/// eagerly otherwise.
+///
+/// Walks the contiguous backing storage (``data()[0..size())``), matching
+/// @ref element_transform_python's convention — correct for dense tensors and
+/// the contiguous views the operators produce.
+template <CoreBasicTensorConcept AType>
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("shift", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("shift", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("shift", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("shift", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("shift", einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("shift", einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("shift", einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("shift", einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void shift(typename AType::ValueType beta, AType *A) {
+    using T = typename AType::ValueType;
+
+    auto run = [beta](AType *target) {
+        T           *data = target->data();
+        size_t const n    = target->size();
+        for (size_t i = 0; i < n; ++i) {
+            data[i] += beta;
+        }
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        run(A);
+        return;
+    }
+
+    auto [a_id, a_slot] = ctx.get_slot(*A);
+    auto label          = fmt::format("shift({})", A->name());
+    auto executor       = [a_slot, run]() { run(static_cast<AType *>(a_slot->ptr)); };
+    ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // axpy: Y += alpha * X
 // ─────────────────────────────────────────────────────────────────────────────
 

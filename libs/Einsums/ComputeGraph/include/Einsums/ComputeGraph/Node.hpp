@@ -161,6 +161,11 @@ struct ViewDescriptor {
     TensorId              parent_id{0};   ///< The tensor being sliced.
     std::vector<ViewAxis> axes;           ///< One entry per parent-tensor axis.
     size_t                result_rank{0}; ///< parent.rank - count(Drop). Cached for passes.
+    /// Axis permutation: result axis ``i`` reads parent axis ``permutation[i]``
+    /// (and ``axes[i]`` slices that parent axis). Empty == identity (no
+    /// transpose). Used to express ``.T`` / transpose-via-view as a
+    /// graph-registered, parent-aliasing view.
+    std::vector<size_t> permutation;
 };
 
 /**

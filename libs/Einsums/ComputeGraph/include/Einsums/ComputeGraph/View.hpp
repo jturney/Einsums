@@ -91,39 +91,57 @@ struct RuntimeViewHolder {
 /// @param[in] axes    One ViewAxis per parent rank.
 /// @return Reference to a graph-owned ``TensorView<T, Rank>`` that subsequent
 ///         ``cg::*`` calls (einsum, gemm, …) can consume by value/reference.
-template <typename T, size_t Rank, CoreBasicTensorConcept ParentT, typename... Axes>
-TensorView<T, Rank> &view(ParentT &parent, Axes &&...axes) {
-    using Holder = detail::ViewHolder<T, Rank>;
+namespace detail {
 
-    static_assert(sizeof...(Axes) == Rank, "cg::view requires one ViewAxis per parent rank (rank-preserving slices only in v1)");
-    static_assert(std::is_same_v<typename ParentT::ValueType, T>, "cg::view: T must match parent's ValueType");
+/// Shared body for the typed @ref cg::view and @ref cg::permute_view.
+///
+/// @p axis_vec has one @ref ViewAxis per parent rank (the slice/full of
+/// result axis i). @p perm is the axis permutation — result axis i aliases
+/// parent axis ``perm[i]`` (empty == identity). Records an
+/// @ref OpKind::View node and returns a reference to the graph-owned,
+/// parent-aliasing slice. (Runtime-rank counterpart: @ref view_runtime.)
+template <typename T, size_t Rank, CoreBasicTensorConcept ParentT>
+TensorView<T, Rank> &record_typed_view(ParentT &parent, std::vector<ViewAxis> const &axis_vec, std::vector<size_t> const &perm) {
+    using Holder = ViewHolder<T, Rank>;
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view called outside of capture");
     }
 
-    // Collect axes as a vector so we can do runtime work with them.
-    std::vector<ViewAxis> axis_vec{ViewAxis(std::forward<Axes>(axes))...};
     for (auto const &ax : axis_vec) {
         if (ax.kind == ViewAxis::Kind::Drop)
             EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view: ViewAxis::Drop is not yet supported");
     }
+    // ``perm`` (empty == identity) maps result axis i -> parent axis perm[i].
+    // Validate it's a genuine permutation of [0, Rank).
+    if (!perm.empty()) {
+        if (perm.size() != Rank)
+            EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view: permutation length ({}) must equal rank ({})", perm.size(), Rank);
+        std::array<bool, Rank> seen{};
+        for (size_t const p : perm) {
+            if (p >= Rank || seen[p])
+                EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view: permutation must be a bijection of [0, {})", Rank);
+            seen[p] = true;
+        }
+    }
+    auto const parent_axis = [&perm](size_t i) -> size_t { return perm.empty() ? i : perm[i]; };
 
     // Allocate a holder on the heap. Owned by the graph so its address
     // is stable across the lifetime of every executor that captured it.
     auto *holder = new Holder;
 
     // At capture time we don't yet have a ParamTable to resolve Param
-    // bounds against. Emplace a "full parent" view as a placeholder so
-    // the holder's view has a valid object — its address is what
-    // downstream ops will capture. The first execute() will re-emplace
+    // bounds against. Emplace a "full parent" view (permuted, if requested)
+    // as a placeholder so the holder's view has a valid object — its address
+    // is what downstream ops will capture, and the handle registered below
+    // sees the correct post-permute dims. The first execute() re-emplaces
     // with the actual computed bounds.
     Stride<Rank> parent_strides;
     Dim<Rank>    parent_dims;
     for (size_t i = 0; i < Rank; ++i) {
-        parent_dims[i]    = parent.dim(i);
-        parent_strides[i] = parent.stride(i);
+        parent_dims[i]    = parent.dim(parent_axis(i));
+        parent_strides[i] = parent.stride(parent_axis(i));
     }
     holder->view.emplace(parent.data(), parent_dims, parent_strides);
 
@@ -152,13 +170,14 @@ TensorView<T, Rank> &view(ParentT &parent, Axes &&...axes) {
     desc.parent_id   = parent_id;
     desc.axes        = axis_vec;
     desc.result_rank = Rank;
+    desc.permutation = perm;
 
     // Capture references to the resolved-at-execute-time pieces.
     auto params_ptr = ctx.params_ptr();
 
     auto label = fmt::format("view {} <- {}", handle.name, parent.name());
 
-    auto executor = [holder, axis_vec, parent_slot, params_ptr, slot]() {
+    auto executor = [holder, axis_vec, perm, parent_slot, params_ptr, slot]() {
         if (!params_ptr)
             EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view executor: no ParamTable bound to graph");
 
@@ -175,17 +194,19 @@ TensorView<T, Rank> &view(ParentT &parent, Axes &&...axes) {
         std::ptrdiff_t                 ptr_offset = 0;
 
         for (size_t i = 0; i < Rank; ++i) {
-            auto const &ax   = axis_vec[i];
-            slice_strides[i] = parent_ptr->stride(i);
+            // Result axis i maps to parent axis p; axis_vec[i] slices it.
+            size_t const p   = perm.empty() ? i : perm[i];
+            auto const  &ax  = axis_vec[i];
+            slice_strides[i] = parent_ptr->stride(p);
             switch (ax.kind) {
             case ViewAxis::Kind::Full:
                 offsets[i]    = 0;
-                slice_dims[i] = parent_ptr->dim(i);
+                slice_dims[i] = parent_ptr->dim(p);
                 break;
             case ViewAxis::Kind::Range: {
                 std::int64_t const lo = ax.lo.resolve(*params_ptr);
                 std::int64_t const hi = ax.hi.resolve(*params_ptr);
-                if (lo < 0 || hi < lo || hi > static_cast<std::int64_t>(parent_ptr->dim(i)))
+                if (lo < 0 || hi < lo || hi > static_cast<std::int64_t>(parent_ptr->dim(p)))
                     EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::view: range out of parent dim");
                 offsets[i]    = lo;
                 slice_dims[i] = static_cast<size_t>(hi - lo);
@@ -194,7 +215,7 @@ TensorView<T, Rank> &view(ParentT &parent, Axes &&...axes) {
             case ViewAxis::Kind::Drop:
                 EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view: Drop axis not supported in v1");
             }
-            ptr_offset += offsets[i] * static_cast<std::ptrdiff_t>(parent_ptr->stride(i));
+            ptr_offset += offsets[i] * static_cast<std::ptrdiff_t>(parent_ptr->stride(p));
         }
 
         // Re-emplace the view with the new pointer/dims/strides. Address
@@ -213,6 +234,15 @@ TensorView<T, Rank> &view(ParentT &parent, Axes &&...axes) {
     return slice_ref;
 }
 
+} // namespace detail
+
+template <typename T, size_t Rank, CoreBasicTensorConcept ParentT, typename... Axes>
+TensorView<T, Rank> &view(ParentT &parent, Axes &&...axes) {
+    static_assert(sizeof...(Axes) == Rank, "cg::view requires one ViewAxis per parent rank (rank-preserving slices only in v1)");
+    static_assert(std::is_same_v<typename ParentT::ValueType, T>, "cg::view: T must match parent's ValueType");
+    return detail::record_typed_view<T, Rank, ParentT>(parent, std::vector<ViewAxis>{ViewAxis(std::forward<Axes>(axes))...}, {});
+}
+
 /// Type-deducing overload — infers @c T and @c Rank from @p parent. The
 /// codegen path emits this form so it doesn't have to spell out
 /// ``view<typename T::ValueType, T::Rank>(...)`` boilerplate.
@@ -224,6 +254,31 @@ TensorView<typename std::remove_cvref_t<ParentT>::ValueType, std::remove_cvref_t
     return view<T, R, ParentT>(parent, std::forward<Axes>(axes)...);
 }
 
+/// @brief Typed (compile-time rank) transpose / axis-permutation view.
+///
+/// Result axis i aliases parent axis ``perm[i]``; @p perm must be a
+/// permutation of ``[0, Rank)``. Compile-time-rank counterpart to the
+/// runtime ``cg::permute_view`` that backs Python's capture-aware ``.T``.
+/// Records a graph-registered, parent-aliasing view that downstream typed
+/// ``cg::*`` ops (einsum, gemm, …) can consume — unlike a raw
+/// ``transpose_view``, whose shared data pointer is invisible to the graph.
+/// @p Rank is deduced from the @p perm array (and asserted to equal the
+/// parent's rank).
+///
+/// @code
+///   with-capture:
+///     auto &At = cg::permute_view(A, std::array<size_t, 2>{1, 0});  // A^T
+///     cg::gemm(1.0, At, B, 0.0, C);
+/// @endcode
+template <CoreBasicTensorConcept ParentT, size_t Rank>
+    requires HasCompileTimeRank<ParentT>
+TensorView<typename std::remove_cvref_t<ParentT>::ValueType, Rank> &permute_view(ParentT &parent, std::array<size_t, Rank> const &perm) {
+    using T = typename std::remove_cvref_t<ParentT>::ValueType;
+    static_assert(Rank == std::remove_cvref_t<ParentT>::Rank, "cg::permute_view: perm length must equal the parent's rank");
+    std::vector<ViewAxis> axes(Rank, ViewAxis::full());
+    return detail::record_typed_view<T, Rank, ParentT>(parent, axes, std::vector<size_t>(perm.begin(), perm.end()));
+}
+
 /// @brief Runtime-rank counterpart to cg::view: record a non-owning slice
 ///        of a RuntimeTensor parent.
 ///
@@ -233,7 +288,8 @@ TensorView<typename std::remove_cvref_t<ParentT>::ValueType, std::remove_cvref_t
 /// iteration by re-emplacing a heap-stored RuntimeTensorView with new
 /// pointer / dims / strides.
 template <RuntimeRankTensorConcept ParentT>
-RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtime(ParentT &parent, std::vector<ViewAxis> const &axis_vec) {
+RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtime(ParentT &parent, std::vector<ViewAxis> const &axis_vec,
+                                                                                  std::vector<size_t> const &perm = {}) {
     using T      = typename std::remove_cvref_t<ParentT>::ValueType;
     using Holder = detail::RuntimeViewHolder<T>;
 
@@ -246,6 +302,21 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
         if (ax.kind == ViewAxis::Kind::Drop)
             EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime: ViewAxis::Drop is not yet supported");
     }
+    // ``perm`` (empty == identity) maps result axis i -> parent axis perm[i],
+    // so a transpose/permutation becomes a graph-registered, parent-aliasing
+    // view. Validate it's a genuine permutation of [0, rank).
+    if (!perm.empty()) {
+        if (perm.size() != rank)
+            EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime: permutation length ({}) must equal parent rank ({})", perm.size(),
+                                    rank);
+        std::vector<bool> seen(rank, false);
+        for (size_t const p : perm) {
+            if (p >= rank || seen[p])
+                EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime: permutation must be a bijection of [0, {})", rank);
+            seen[p] = true;
+        }
+    }
+    auto const parent_axis = [&perm](size_t i) -> size_t { return perm.empty() ? i : perm[i]; };
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
@@ -254,12 +325,13 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
 
     auto *holder = new Holder;
 
-    // Placeholder: build a "full parent" view so the holder's address is
-    // valid before the first execute() runs.
+    // Placeholder: build a "full parent" view (permuted, if requested) so the
+    // holder's address is valid before the first execute() runs and the
+    // registered handle below sees the correct (post-permute) dims/strides.
     std::vector<size_t> parent_dims(rank), parent_strides(rank);
     for (size_t i = 0; i < rank; ++i) {
-        parent_dims[i]    = parent.dim(i);
-        parent_strides[i] = parent.stride(i);
+        parent_dims[i]    = parent.dim(parent_axis(i));
+        parent_strides[i] = parent.stride(parent_axis(i));
     }
     holder->view.emplace(::einsums::detail::TensorImpl<T>(const_cast<T *>(parent.data()), parent_dims, parent_strides));
 
@@ -284,11 +356,12 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     desc.parent_id   = parent_id;
     desc.axes        = axis_vec;
     desc.result_rank = rank;
+    desc.permutation = perm;
 
     auto params_ptr = ctx.params_ptr();
     auto label      = fmt::format("view_rt {} <- {}", handle.name, parent.name());
 
-    auto executor = [holder, axis_vec, parent_slot, params_ptr, slot, rank]() {
+    auto executor = [holder, axis_vec, perm, parent_slot, params_ptr, slot, rank]() {
         if (!params_ptr)
             EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime executor: no ParamTable bound to graph");
 
@@ -303,18 +376,21 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
         std::ptrdiff_t      ptr_offset = 0;
 
         for (size_t i = 0; i < rank; ++i) {
-            auto const &ax   = axis_vec[i];
-            slice_strides[i] = parent_ptr->stride(i);
+            // Result axis i maps to parent axis p (perm[i], or i for identity);
+            // axis_vec[i] slices that parent axis.
+            size_t const p   = perm.empty() ? i : perm[i];
+            auto const  &ax  = axis_vec[i];
+            slice_strides[i] = parent_ptr->stride(p);
             switch (ax.kind) {
             case ViewAxis::Kind::Full:
-                slice_dims[i] = parent_ptr->dim(i);
+                slice_dims[i] = parent_ptr->dim(p);
                 break;
             case ViewAxis::Kind::Range: {
                 std::int64_t const lo = ax.lo.resolve(*params_ptr);
                 std::int64_t const hi = ax.hi.resolve(*params_ptr);
-                if (lo < 0 || hi < lo || hi > static_cast<std::int64_t>(parent_ptr->dim(i)))
+                if (lo < 0 || hi < lo || hi > static_cast<std::int64_t>(parent_ptr->dim(p)))
                     EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::view_runtime: range out of parent dim");
-                ptr_offset += lo * static_cast<std::ptrdiff_t>(parent_ptr->stride(i));
+                ptr_offset += lo * static_cast<std::ptrdiff_t>(parent_ptr->stride(p));
                 slice_dims[i] = static_cast<size_t>(hi - lo);
                 break;
             }
@@ -374,6 +450,44 @@ EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<std::complex
         }
     }
     return view_runtime(parent, axes);
+}
+
+/// @brief Python-friendly transpose / axis-permutation view.
+///
+/// Records a graph View whose result axis ``i`` aliases parent axis
+/// ``perm[i]`` (``perm`` must be a permutation of ``[0, rank)``). The returned
+/// view is graph-owned and aliases the parent, so — unlike the raw
+/// ``RuntimeTensor.transpose_view()`` (which shares the parent's data pointer
+/// and is invisible to the graph) — a transposed tensor can be fed to captured
+/// gemm/axpy/etc. ops. This is what backs the capture-aware ``A.T``.
+///
+/// @code
+///   with cg.capture(g):
+///       At = einsums.graph.permute_view(A, [1, 0])   # A.T, graph-registered
+///       einsums.linalg.gemm(1.0, At, B, 0.0, C)
+/// @endcode
+template <RuntimeRankTensorConcept ParentT>
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("graph")
+EINSUMS_PYBIND_RVP(reference)
+EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &permute_view_python(ParentT                   &parent,
+                                                                                             std::vector<size_t> const &perm) {
+    if (perm.size() != parent.rank()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::permute_view: perm length ({}) must equal parent rank ({})", perm.size(),
+                                parent.rank());
+    }
+    std::vector<ViewAxis> axes(parent.rank(), ViewAxis::full());
+    return view_runtime(parent, axes, perm);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

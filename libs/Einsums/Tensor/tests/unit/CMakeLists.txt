@@ -55,6 +55,11 @@ einsums_add_python_unit_test(
 )
 
 einsums_add_python_unit_test(
+  "Modules.Tensor" NumpyErgonomicsPython
+  SCRIPT test_numpy_ergonomics_python.py
+)
+
+einsums_add_python_unit_test(
   "Modules.Tensor" TiledRuntimeTensorPython
   SCRIPT test_tiled_runtime_tensor_python.py
 )
