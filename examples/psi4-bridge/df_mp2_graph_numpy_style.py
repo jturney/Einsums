@@ -134,9 +134,6 @@ ev_np = eps[nocc:]                                       # virtual energies (num
 dft = psi4.core.DFTensor(primary, aux, C, nocc, nvir)
 B = dft.Qov_einsums()                                    # (naux, nocc, nvir)
 print(f"B (Q|ov) shape = {B.shape}")
-# Per-i (naux, nvir) slabs, sliced eagerly (integer-index slicing isn't recorded
-# by the capture-aware __getitem__); the captured einsums read these views.
-Bslab = [B[:, i, :] for i in range(nocc)]
 
 # D_ab = -e_a - e_b, ingested with einsums.asarray (one-time setup, not loop math).
 Dbase = einsums.asarray(-ev_np[:, None] - ev_np[None, :], name="-ea-eb")
@@ -156,15 +153,17 @@ W = einsums.zeros((nvir, nvir), name="w(ab)")
 g = cg.Graph("df-mp2 numpy-style (pair-driven)")
 with cg.capture(g):
     for i in range(nocc):
+        Bi = B[:, i, :]                                             # (naux, nvir) slab: rank-reducing index, recorded in capture
         for j in range(i, nocc):
-            I = Bslab[i].T @ Bslab[j]                                # I_ab = (ia|jb)
-            K = 2.0 * I - I.T                                        # K = 2 I - I^T
-            la.axpby(1.0, Dbase, 0.0, W)                             # W = Dbase  (reuse, no alloc)
-            W += eo[i] + eo[j]                                       # W = (e_i+e_j) - e_a - e_b  (in-place scalar shift)
-            la.element_transform(W, recip)                           # W = 1 / denom
-            T = I * W                                                # T = I * W  (Hadamard)
-            la.dot(e_pair, K, T)                                     # e_pair = sum K*T
-            E += (1.0 if i == j else 2.0) * e_pair                   # E += (2-d_ij) e_pair
+            Bj = B[:, j, :]
+            I = Bi.T @ Bj                           # I_ab = (ia|jb)
+            K = 2.0 * I - I.T                       # K = 2 I - I^T
+            la.axpby(1.0, Dbase, 0.0, W)            # W = Dbase  (reuse, no alloc)
+            W += eo[i] + eo[j]                      # W = (e_i+e_j) - e_a - e_b  (in-place scalar shift)
+            la.element_transform(W, recip)          # W = 1 / denom
+            T = I * W                               # T = I * W  (Hadamard)
+            la.dot(e_pair, K, T)                    # e_pair = sum K*T
+            E += (1.0 if i == j else 2.0) * e_pair  # E += (2-d_ij) e_pair
 print(f"captured graph '{g.name}': {g.num_nodes()} nodes, {g.num_tensors()} tensors")
 
 # ---- run the optimization passes -------------------------------------------
