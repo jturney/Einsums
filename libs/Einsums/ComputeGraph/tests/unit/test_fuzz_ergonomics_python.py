@@ -6,15 +6,30 @@
 """Differential fuzzer for the numpy-style ergonomics layer.
 
 Generates a random program of numpy-style operations — operators (``@`` /
-``+`` / ``-`` / ``*`` / ``/`` / unary), ``.T`` / ``.transpose`` /
-``.swapaxes``, slicing and rank-reducing indexing, and the ``.sum`` /
-``.mean`` / ``.max`` reductions — over a pool of tensors, then runs the *same*
-program three ways and demands they all agree:
+``+`` / ``-`` / ``*`` / ``/`` / unary), in-place RMW (``+=`` / ``-=`` / ``*=``
+/ ``/=``), ``.T`` / ``.transpose`` / ``.swapaxes``, slicing and rank-reducing
+indexing, and the ``.sum`` / ``.mean`` / ``.max`` reductions — over a pool of
+tensors, then runs the *same* program four ways and demands they all agree:
 
   1. **numpy oracle** — the program applied to numpy arrays.
   2. **einsums eager** — the same Python expressions on einsums tensors.
   3. **einsums capture** — the same expressions recorded into a ``cg.Graph``,
-     then ``execute()``-d.
+     then ``execute()``-d with no optimization passes.
+  4. **einsums optimized** — the captured graph after ``default_pass_manager()``,
+     then executed. If #3 matches but #4 doesn't, a pass miscompiled the graph.
+
+In-place ops only target owning storage (not views) so the oracle stays simple;
+they stress the read-modify-write hazards under capture + the alias-aware
+scheduler that the optimization passes rely on.
+
+Seed range note: the committed range (80 seeds) is green on all four arms.
+Bumping it surfaces a *known, separate* optimizer bug (bug-optimizer-scale-view-
+alias): under the full ``default_pass_manager()`` pipeline, an in-place ``Scale``
+isn't always ordered before a ``View`` that aliases the scaled tensor, so the
+view reads unscaled data (raw-capture is correct → a pass miscompiled). It is
+rare (~0.3%, complex-only so far) and needs the multi-pass pipeline plus a
+view-of-an-in-place-scaled tensor; see the buglog. Raise the range once that
+optimizer bug is fixed.
 
 Because numpy arrays and einsums tensors share the operator/method syntax, a
 single interpreter (:func:`_run_chain`) drives all three; only the operand
@@ -65,36 +80,63 @@ def _seed_shapes(rng):
             + [(int(rng.choice(_DIMS)),) for _ in range(2)])
 
 
+# Ops that mutate pool[args[0]] in place (RMW) instead of appending a result.
+_INPLACE = frozenset({"iadd", "isub", "iscale", "idiv"})
+
+
 def _gen_program(rng, shapes, n_steps):
-    """A list of ``(op, arg_indices, scalar)`` steps, each producing a new
-    pool tensor. Shapes are tracked so only valid operands are chosen."""
+    """A list of ``(op, arg_indices, scalar)`` steps. Functional ops append a
+    new pool tensor; in-place ops (``_INPLACE``) mutate an existing slot.
+    Shapes are tracked so only valid operands are chosen; ``is_view`` tracks
+    which slots are zero-copy views (transpose/slice/index) so in-place ops
+    only target owning storage (mutating through a view would alias its
+    parent — sound but excluded here to keep the oracle simple)."""
     shapes = list(shapes)
+    is_view = [False] * len(shapes)
+    alias_root = list(range(len(shapes)))  # ultimate owning tensor each slot aliases
     steps = []
+    _VIEW_OPS = ("transpose", "slice", "index")
     for _ in range(n_steps):
+        # candidate := (op, args, out_shape | None, result_is_view); None => in-place
         cands = []
         for i, si in enumerate(shapes):
+            owning_i = not is_view[i]
             for op in ("smul", "sadd", "ssub", "sdiv", "neg"):
-                cands.append((op, (i,), si))
+                cands.append((op, (i,), si, False))
             if len(si) == 2:
-                cands.append(("transpose", (i,), (si[1], si[0])))
+                cands.append(("transpose", (i,), (si[1], si[0]), True))
             if si[0] >= 2:                                  # slice: drop row 0
-                cands.append(("slice", (i,), (si[0] - 1, *si[1:])))
+                cands.append(("slice", (i,), (si[0] - 1, *si[1:]), True))
             if len(si) >= 2:                                # index: rank-reduce
-                cands.append(("index", (i,), si[1:]))
+                cands.append(("index", (i,), si[1:], True))
+            if owning_i:                                    # in-place scalar
+                cands.append(("iscale", (i,), None, False))
+                cands.append(("idiv", (i,), None, False))
             for j, sj in enumerate(shapes):
                 if si == sj:
                     for op in ("add", "sub", "had"):
-                        cands.append((op, (i, j), si))
+                        cands.append((op, (i, j), si, False))
+                    # In-place accumulate, but never when the source aliases the
+                    # target (e.g. A -= A.T) — that's an order-dependent
+                    # read/write overlap that numpy resolves by copying and BLAS
+                    # axpy does not, so the two legitimately disagree.
+                    if owning_i and alias_root[j] != i:
+                        cands.append(("iadd", (i, j), None, False))
+                        cands.append(("isub", (i, j), None, False))
                 if len(si) == 2 and len(sj) == 2 and si[1] == sj[0]:
-                    cands.append(("matmul", (i, j), (si[0], sj[1])))
+                    cands.append(("matmul", (i, j), (si[0], sj[1]), False))
                 if len(si) == 2 and len(sj) == 1 and si[1] == sj[0]:
-                    cands.append(("matmul", (i, j), (si[0],)))
+                    cands.append(("matmul", (i, j), (si[0],), False))
                 if len(si) == 1 and len(sj) == 2 and si[0] == sj[0]:
-                    cands.append(("matmul", (i, j), (sj[1],)))
-        op, args, out_shape = cands[int(rng.integers(len(cands)))]
+                    cands.append(("matmul", (i, j), (sj[1],), False))
+        op, args, out_shape, res_view = cands[int(rng.integers(len(cands)))]
         sc = float(rng.uniform(0.5, 2.0)) * (1.0 if rng.random() < 0.5 else -1.0)
         steps.append((op, args, sc))
-        shapes.append(out_shape)
+        if out_shape is not None:        # functional op grows the pool
+            shapes.append(out_shape)
+            is_view.append(res_view)
+            # A view aliases its source's root; an owning result is its own root.
+            alias_root.append(alias_root[args[0]] if op in _VIEW_OPS else len(alias_root))
     return steps
 
 
@@ -120,8 +162,17 @@ def _apply(step, pool):
 
 def _run_chain(steps, pool):
     pool = list(pool)
-    for step in steps:
-        pool.append(_apply(step, pool))
+    for op, args, sc in steps:
+        if op in _INPLACE:
+            # Augmented assignment exercises __iadd__/__isub__/__imul__/__itruediv__
+            # (in place for numpy and eager; an RMW node under capture). Reassigning
+            # the slot is fine — those dunders return the same (mutated) object.
+            if op == "iadd": pool[args[0]] += pool[args[1]]
+            elif op == "isub": pool[args[0]] -= pool[args[1]]
+            elif op == "iscale": pool[args[0]] *= sc
+            elif op == "idiv": pool[args[0]] /= sc
+        else:
+            pool.append(_apply((op, args, sc), pool))
     return pool
 
 
@@ -163,16 +214,29 @@ def test_fuzz_ergonomics(seed, dtype):
     if any(p.size and (not np.all(np.isfinite(p)) or np.max(np.abs(p)) > cap) for p in npool):
         pytest.skip("oracle overflowed — numerically degenerate program")
 
+    # Each einsums arm gets its OWN fresh inputs — in-place ops mutate them.
+    def fresh(prefix):
+        return [einsums.asarray(a, name=f"{prefix}{i}") for i, a in enumerate(inputs)]
+
     # einsums eager
-    epool = _run_chain(steps, [einsums.asarray(a, name=f"e{i}") for i, a in enumerate(inputs)])
+    epool = _run_chain(steps, fresh("e"))
     ered = _reductions(epool, real)
 
-    # einsums capture -> execute
+    # einsums capture -> execute  (no optimization passes)
     g = cg.Graph(f"fuzz_ergo_{seed}")
     with cg.capture(g):
-        cpool = _run_chain(steps, [einsums.asarray(a, name=f"c{i}") for i, a in enumerate(inputs)])
+        cpool = _run_chain(steps, fresh("c"))
         cred = _reductions(cpool, real)
     g.execute()
+
+    # einsums capture -> default passes -> execute. If the raw arm matches but
+    # this one doesn't, a pass miscompiled the graph.
+    g_opt = cg.Graph(f"fuzz_ergo_opt_{seed}")
+    with cg.capture(g_opt):
+        opool = _run_chain(steps, fresh("o"))
+        ored = _reductions(opool, real)
+    g_opt.apply(cg.default_pass_manager())
+    g_opt.execute()
 
     rtol, atol = _TOL[dtype]
 
@@ -189,3 +253,5 @@ def test_fuzz_ergonomics(seed, dtype):
     cmp("eager-reduction", ered, nred)
     cmp("capture-pool", cpool, npool)
     cmp("capture-reduction", cred, nred)
+    cmp("optimized-pool", opool, npool)
+    cmp("optimized-reduction", ored, nred)

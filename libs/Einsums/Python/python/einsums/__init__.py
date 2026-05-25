@@ -595,7 +595,10 @@ def _alloc_output(name, shape, dtype_name):
     _g = _importlib.import_module("einsums.graph")
     g = _g.current_graph()
     if g is not None:
-        return g.create_zero_tensor(name, [int(s) for s in shape], dtype=dtype_name)
+        # intermediate=False: the caller gets a Python handle to this result and
+        # may read it after execute(), so DeadNodeElimination must not prune its
+        # producer even when nothing downstream in the graph consumes it.
+        return g.create_zero_tensor(name, [int(s) for s in shape], dtype=dtype_name, intermediate=False)
     return _core.create_zero_tensor(name, [int(s) for s in shape], dtype=dtype_name)
 
 

@@ -656,13 +656,19 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
             EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("create_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
                 EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("create_tensor", T = std::complex<double>,
                                                      Alloc = std::allocator<std::complex<double>>)
-                    GeneralRuntimeTensor<T, Alloc> &create_runtime_tensor(std::string name, std::vector<size_t> dims) {
+                    GeneralRuntimeTensor<T, Alloc> &create_runtime_tensor(std::string name, std::vector<size_t> dims,
+                                                                          bool intermediate = true) {
         using TensorType = GeneralRuntimeTensor<T, Alloc>;
         auto *ptr        = new TensorType(name, std::move(dims));
         _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
 
+        // ``intermediate`` controls DeadNodeElimination: a graph-owned
+        // intermediate with no in-graph consumer is prunable, but a
+        // user-visible result (one a caller holds a Python handle to and reads
+        // after execute — e.g. the numpy-ergonomics operators' outputs) must
+        // be kept even when nothing downstream in the graph reads it.
         auto handle            = make_handle(*ptr, 0);
-        handle.is_intermediate = true;
+        handle.is_intermediate = intermediate;
         auto id                = register_tensor(std::move(handle));
 
         AllocDescriptor desc;
@@ -690,8 +696,9 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
             EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
                 EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = std::complex<double>,
                                                      Alloc = std::allocator<std::complex<double>>)
-                    GeneralRuntimeTensor<T, Alloc> &create_zero_runtime_tensor(std::string name, std::vector<size_t> dims) {
-        auto &t = create_runtime_tensor<T, Alloc>(std::move(name), std::move(dims));
+                    GeneralRuntimeTensor<T, Alloc> &create_zero_runtime_tensor(std::string name, std::vector<size_t> dims,
+                                                                               bool intermediate = true) {
+        auto &t = create_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), intermediate);
         t.zero();
         return t;
     }
