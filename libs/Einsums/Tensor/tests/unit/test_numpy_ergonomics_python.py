@@ -812,3 +812,50 @@ def test_init_stub_has_constructors():
 def test_generated_stubs_parse():
     for name in ("_core.pyi", "__init__.pyi"):
         _ast.parse((_stub_dir() / name).read_text())  # raises SyntaxError on bad stub
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Regressions for two capture-mode view bugs found by the ergonomics fuzzer
+# (test_fuzz_ergonomics_python.py): a captured range-slice reported full-parent
+# dims, mis-sizing operators that read dims/size at capture time; and a
+# slice-of-a-slice collided in get_slot and resolved the wrong parent.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_capture_range_slice_matmul_shape():
+    """matmul whose operand is a captured range slice sizes its output from
+    the real sliced extent, not the full parent."""
+    A = einsums.create_random_tensor("A", [5, 4], dtype="float64")
+    B = einsums.create_random_tensor("B", [4, 2], dtype="float64")
+    a, b = np.asarray(A).copy(), np.asarray(B).copy()
+    g = cg.Graph("rs-mm")
+    with cg.capture(g):
+        C = A[1:3, :] @ B          # (2,4) @ (4,2) -> (2,2)
+    g.execute()
+    assert C.shape == (2, 2)
+    assert_close(np.asarray(C), a[1:3, :] @ b)
+
+
+def test_capture_range_slice_mean():
+    """mean of a captured range slice divides by the sliced count, not the
+    full-parent count."""
+    A = einsums.create_random_tensor("A", [5, 4], dtype="float64")
+    a = np.asarray(A).copy()
+    g = cg.Graph("rs-mean")
+    with cg.capture(g):
+        m = A[1:3, :].mean()
+    g.execute()
+    assert_close(np.asarray(m)[0], a[1:3, :].mean())
+
+
+def test_capture_chained_slice():
+    """A slice of a slice resolves the inner view as its parent (not the
+    original tensor)."""
+    v = einsums.create_random_tensor("v", [6], dtype="float64")
+    vv = np.asarray(v).copy()
+    g = cg.Graph("chain-slice")
+    with cg.capture(g):
+        a = v[1:]
+        b = a[1:]          # == v[2:]
+    g.execute()
+    assert_close(np.asarray(b), vv[2:])

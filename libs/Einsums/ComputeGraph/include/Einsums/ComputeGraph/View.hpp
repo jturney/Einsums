@@ -137,10 +137,19 @@ TensorView<T, Rank> &record_typed_view(ParentT &parent, std::vector<ViewAxis> co
     // is what downstream ops will capture, and the handle registered below
     // sees the correct post-permute dims. The first execute() re-emplaces
     // with the actual computed bounds.
+    // Constant Range bounds get their real sliced extent in the placeholder so
+    // downstream ops that read dims at capture time see correct sizes (see the
+    // runtime-rank view_runtime for the rationale).
+    auto const placeholder_dim = [&](size_t i, size_t p) -> size_t {
+        auto const &ax = axis_vec[i];
+        if (ax.kind == ViewAxis::Kind::Range && ax.lo.is_const() && ax.hi.is_const())
+            return static_cast<size_t>(ax.hi.const_value() - ax.lo.const_value());
+        return parent.dim(p);
+    };
     Stride<Rank> parent_strides;
     Dim<Rank>    parent_dims;
     for (size_t i = 0; i < Rank; ++i) {
-        parent_dims[i]    = parent.dim(parent_axis(i));
+        parent_dims[i]    = placeholder_dim(i, parent_axis(i));
         parent_strides[i] = parent.stride(parent_axis(i));
     }
     holder->view.emplace(parent.data(), parent_dims, parent_strides);
@@ -336,16 +345,38 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     // axes removed) so the holder's address is valid before the first
     // execute() runs and the registered handle below sees the correct
     // post-permute / post-drop rank and dims (ranges resolve at execute).
+    // A Range axis with constant bounds gets its real sliced extent (hi - lo)
+    // in the placeholder, not the full parent dim — downstream operators read
+    // the captured view's dims/size at *capture* time (matmul's output alloc,
+    // mean's divisor, elementwise same-shape checks), so a full-parent
+    // placeholder would mis-size them. Param-bounded ranges aren't known until
+    // execute and fall back to the parent dim.
+    auto const placeholder_dim = [&](size_t i, size_t p) -> size_t {
+        auto const &ax = axis_vec[i];
+        if (ax.kind == ViewAxis::Kind::Range && ax.lo.is_const() && ax.hi.is_const())
+            return static_cast<size_t>(ax.hi.const_value() - ax.lo.const_value());
+        return parent.dim(p);
+    };
+    // Also apply the constant slice/drop offset to the placeholder data
+    // pointer. Beyond matching the resolved view for const bounds, this gives
+    // a view a data pointer distinct from its parent's, so get_slot doesn't
+    // collide them — required for chained views (a slice of a slice) to
+    // resolve the correct parent at execute.
+    std::ptrdiff_t      ph_offset = 0;
     std::vector<size_t> parent_dims, parent_strides;
     parent_dims.reserve(result_rank);
     parent_strides.reserve(result_rank);
     for (size_t i = 0; i < rank; ++i) {
-        if (axis_vec[i].kind == ViewAxis::Kind::Drop)
+        auto const  &ax = axis_vec[i];
+        size_t const p  = parent_axis(i);
+        if (ax.kind != ViewAxis::Kind::Full && ax.lo.is_const())
+            ph_offset += ax.lo.const_value() * static_cast<std::ptrdiff_t>(parent.stride(p));
+        if (ax.kind == ViewAxis::Kind::Drop)
             continue; // dropped axes do not appear in the result
-        parent_dims.push_back(parent.dim(parent_axis(i)));
-        parent_strides.push_back(parent.stride(parent_axis(i)));
+        parent_dims.push_back(placeholder_dim(i, p));
+        parent_strides.push_back(parent.stride(p));
     }
-    holder->view.emplace(::einsums::detail::TensorImpl<T>(const_cast<T *>(parent.data()), parent_dims, parent_strides));
+    holder->view.emplace(::einsums::detail::TensorImpl<T>(const_cast<T *>(parent.data()) + ph_offset, parent_dims, parent_strides));
 
     auto *graph = ctx.graph();
     if (graph == nullptr)

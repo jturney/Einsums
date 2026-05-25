@@ -84,6 +84,7 @@ set(ComputeGraphTests
     test_error_reporting_python.py
     test_executor_python.py
     test_fuzz_differential_python.py
+    test_fuzz_ergonomics_python.py
     test_gemm_views_python.py
     test_gemv_views_python.py
     test_ger_views_python.py
