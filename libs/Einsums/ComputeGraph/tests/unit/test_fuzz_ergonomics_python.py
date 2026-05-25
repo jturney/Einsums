@@ -22,14 +22,16 @@ In-place ops only target owning storage (not views) so the oracle stays simple;
 they stress the read-modify-write hazards under capture + the alias-aware
 scheduler that the optimization passes rely on.
 
-Seed range note: the committed range (80 seeds) is green on all four arms.
-Bumping it surfaces a *known, separate* optimizer bug (bug-optimizer-scale-view-
-alias): under the full ``default_pass_manager()`` pipeline, an in-place ``Scale``
-isn't always ordered before a ``View`` that aliases the scaled tensor, so the
-view reads unscaled data (raw-capture is correct → a pass miscompiled). It is
-rare (~0.3%, complex-only so far) and needs the multi-pass pipeline plus a
-view-of-an-in-place-scaled tensor; see the buglog. Raise the range once that
-optimizer bug is fixed.
+Seed range note: the committed range (200 seeds) is green on all four arms.
+It used to be capped at 80 to dodge bug-optimizer-scale-view-alias — a
+view-of-a-view (e.g. ``(A.T)[1:]``) created inside capture took an eager
+raw-slice path with ``aliases == 0``, so the scheduler (Reorder) couldn't see
+that a reduction over it depended on an in-place ``Scale`` of the owning
+tensor and floated the read ahead of the write. The fix wired slicing a view
+through ``cg.view``/``view_indexed`` (now instantiated for ``RuntimeTensorView``
+parents, with the capture-aware ``__getitem__`` installed on the view classes),
+so the slice aliases its parent chain. The cap is lifted; raise it further to
+widen coverage.
 
 Because numpy arrays and einsums tensors share the operator/method syntax, a
 single interpreter (:func:`_run_chain`) drives all three; only the operand
@@ -191,7 +193,7 @@ def _as_flat(x):
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
-@pytest.mark.parametrize("seed", range(80))
+@pytest.mark.parametrize("seed", range(200))
 def test_fuzz_ergonomics(seed, dtype):
     rng = np.random.default_rng(seed)
     real = not dtype.startswith("complex")

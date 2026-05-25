@@ -147,6 +147,51 @@ def test_captured_mp2_iajb_via_slicing():
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Captured: slicing a VIEW (view-of-a-view) stays graph-aware
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_captured_slice_of_view_aliases_parent_chain():
+    """Slicing a view (``(A.T)[1:]``) must route through cg.view too, so the
+    sub-view aliases the parent chain. Regression for
+    bug-optimizer-scale-view-alias: the slice used to take a raw eager path
+    with ``aliases == 0``, so a reduction over it had no dependency on an
+    in-place ``Scale`` of the owning tensor and the optimizer's Reorder pass
+    floated the read ahead of the write — reading unscaled data."""
+    A = einsums.create_random_tensor("A", [2, 3])
+    ref = np.asarray(A).copy()
+    factor = -1.84
+
+    g = cg.Graph("slice-of-view")
+    out = einsums.create_zero_tensor("out", [2, 2])
+    with cg.capture(g):
+        einsums.linalg.scale(factor, A)   # in-place scale of the owner
+        sub = A.T[1:]                      # (A.T)[1:] — a view of a view
+        einsums.linalg.axpy(1.0, sub, out)
+    # The full default pipeline (incl. Reorder) must preserve scale-before-read.
+    g.apply(cg.default_pass_manager())
+    g.execute()
+
+    expected = (ref * factor).T[1:]
+    np.testing.assert_allclose(np.asarray(out), expected, rtol=1e-5)
+
+
+def test_captured_slice_of_view_is_graph_registered():
+    """The view-of-a-view is a graph-registered RuntimeTensorView, not the
+    raw eager kind — i.e. the capture-aware __getitem__ fires on view
+    classes, mirroring how it already fires on owning tensors."""
+    A = einsums.create_random_tensor("A", [4, 6])
+    g = cg.Graph("slice-of-view-reg")
+    with cg.capture(g):
+        sub = A.T[1:]          # rank-2 view-of-view
+        assert sub.rank() == 2
+        assert sub.dim(0) == 5   # (6 - 1) after dropping row 0 of the transpose
+        assert sub.dim(1) == 4
+    g.execute()
+    np.testing.assert_allclose(np.asarray(sub), np.asarray(A).T[1:], rtol=1e-5)
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Captured: unsupported keys raise IndexError with a clear message
 # ──────────────────────────────────────────────────────────────────────────
 

@@ -149,6 +149,13 @@ def build_info() -> dict[str, str]:
 # axis spec.
 
 _RUNTIME_TENSOR_CLASS_NAMES = ("RuntimeTensorF", "RuntimeTensorD", "RuntimeTensorC", "RuntimeTensorZ")
+# Views need the same capture-aware __getitem__: slicing a view (e.g.
+# ``(A.T)[1:]``) must also route through ``cg.view`` so the resulting
+# sub-view aliases the parent chain. Without this it falls back to a raw
+# eager slice with ``aliases == 0`` — invisible to the scheduler, which
+# then can reorder a read of it ahead of an in-place write to the owning
+# tensor (bug-optimizer-scale-view-alias).
+_RUNTIME_TENSOR_VIEW_CLASS_NAMES = ("RuntimeTensorViewF", "RuntimeTensorViewD", "RuntimeTensorViewC", "RuntimeTensorViewZ")
 _runtime_tensor_getitem_patched = False
 
 
@@ -241,7 +248,7 @@ def _patch_runtime_tensor_getitem(core):
     global _runtime_tensor_getitem_patched
     if _runtime_tensor_getitem_patched:
         return
-    for cls_name in _RUNTIME_TENSOR_CLASS_NAMES:
+    for cls_name in _RUNTIME_TENSOR_CLASS_NAMES + _RUNTIME_TENSOR_VIEW_CLASS_NAMES:
         cls = getattr(core, cls_name, None)
         if cls is None:
             continue
