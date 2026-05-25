@@ -1231,13 +1231,14 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
  */
 template <typename T>
 struct EINSUMS_PYBIND_EXPOSE
-    // Same Plan C protocol surface as GeneralRuntimeTensor: zero-copy
-    // numpy interop via buffer protocol, Python iter, scalar subscript.
-    // Slice/partial-tuple subscript on a view is not yet emitted (would
-    // need a nested at_view returning another RuntimeTensorView).
+    // Same Plan C protocol surface as GeneralRuntimeTensor: zero-copy numpy
+    // interop via buffer protocol, Python iter, scalar subscript, AND
+    // slice/partial-tuple subscript — at_view returns a nested
+    // RuntimeTensorView, so a view slices just like a full tensor.
     EINSUMS_PYBIND_BUFFER_PROTOCOL EINSUMS_PYBIND_BUFFER_PROTOCOL_STD(data = data, rank = rank, dim = dim, stride = stride,
                                                                       element_type = T)
-        EINSUMS_PYBIND_INDEX_PROTOCOL_STD(element_type = T, rank = rank, dim = dim, at_element = at_element, set_element = set_element)
+        EINSUMS_PYBIND_INDEX_PROTOCOL_STD(element_type = T, rank = rank, dim = dim, at_element = at_element, set_element = set_element,
+                                          at_view = at_view, view_type = einsums::RuntimeTensorView<T>)
             EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorViewF", RuntimeTensorView<float>)
                 EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorViewD", RuntimeTensorView<double>)
                     EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorViewC", RuntimeTensorView<std::complex<float>>)
@@ -1818,6 +1819,51 @@ struct EINSUMS_PYBIND_EXPOSE
      * Pure-C++ entry point used by the codegen index protocol.
      */
     T at_element(std::vector<std::int64_t> const &idx) const { return _impl.subscript(idx); }
+
+    /**
+     * @brief Slice this view, producing a nested RuntimeTensorView.
+     *
+     * Pure-C++ entry point used by the codegen index protocol for
+     * slice/partial-tuple subscript. Mirrors RuntimeTensor::at_view: ``Index``
+     * specs collapse an axis, ``Range`` re-strides it, ``Full`` keeps it. The
+     * new view composes onto this view's own strides/offset (the view-of-view
+     * constructor resolves the base pointer via ``this->data(offsets)``), so
+     * slicing a view behaves exactly like slicing a full tensor.
+     */
+    RuntimeTensorView<T> at_view(std::vector<einsums::SliceSpec> const &specs) const {
+        std::size_t const r = _impl.rank();
+        if (specs.size() != r) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "at_view: spec count {} does not match view rank {}", specs.size(), r);
+        }
+        std::vector<std::size_t> view_dims;
+        std::vector<std::size_t> view_strides;
+        std::vector<std::size_t> offsets(r, 0);
+        view_dims.reserve(r);
+        view_strides.reserve(r);
+        for (std::size_t i = 0; i < r; ++i) {
+            auto const &s = specs[i];
+            switch (s.kind) {
+            case einsums::SliceSpec::Kind::Index:
+                offsets[i] = static_cast<std::size_t>(s.index);
+                break;
+            case einsums::SliceSpec::Kind::Range: {
+                offsets[i]              = static_cast<std::size_t>(s.start);
+                std::int64_t const span = s.stop - s.start;
+                std::int64_t const step = s.step != 0 ? s.step : 1;
+                std::int64_t const n    = step > 0 ? (span + step - 1) / step : 0;
+                view_dims.push_back(static_cast<std::size_t>(n < 0 ? 0 : n));
+                view_strides.push_back(_impl.stride(i) * static_cast<std::size_t>(step));
+                break;
+            }
+            case einsums::SliceSpec::Kind::Full:
+                offsets[i] = 0;
+                view_dims.push_back(_impl.dim(i));
+                view_strides.push_back(_impl.stride(i));
+                break;
+            }
+        }
+        return RuntimeTensorView<T>(*this, view_dims, view_strides, offsets);
+    }
 
     /**
      * @brief Write a single element by full integer index.

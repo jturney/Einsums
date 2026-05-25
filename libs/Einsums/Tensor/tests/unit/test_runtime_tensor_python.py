@@ -68,6 +68,31 @@ def test_getitem_ellipsis_returns_full_view():
     assert np.array_equal(np.asarray(full), [[1.0, 2.0], [3.0, 4.0]])
 
 
+def test_slice_a_view_returns_nested_view():
+    # Slicing a RuntimeTensorView (not just a full tensor) must work: the
+    # pair/batch-driven correlated methods slice the same tensor repeatedly.
+    t = einsums.RuntimeTensorD("g", [5, 3, 4])
+    ref = np.arange(60, dtype=np.float64).reshape(5, 3, 4)
+    np.asarray(t)[...] = ref
+    view = t[:, :, :]  # a RuntimeTensorView
+    # integer index collapses an axis; range re-strides; both on the view
+    assert np.array_equal(np.asarray(view[:, 1, :]), ref[:, 1, :])
+    assert np.array_equal(np.asarray(view[1:4, :, 2:4]), ref[1:4, :, 2:4])
+    # a view-of-a-view stays a live view onto the same storage
+    np.asarray(view[:, 0, :])[...] = -1.0
+    assert np.all(np.asarray(t)[:, 0, :] == -1.0)
+
+
+def test_slice_a_tiled_tile_view():
+    # A TiledRuntimeTensor only hands out tile *views*; users need to slice them.
+    t = einsums.TiledRuntimeTensorD("tt", [[5], [3], [4]])
+    ref = np.arange(60, dtype=np.float64).reshape(5, 3, 4)
+    tv = t.tile_view([0, 0, 0])  # materializes the (0,0,0) tile, returns a view
+    np.asarray(tv)[...] = ref
+    assert np.array_equal(np.asarray(tv[:, 2, :]), ref[:, 2, :])
+    assert np.array_equal(np.asarray(tv[0:2, :, :]), ref[0:2, :, :])
+
+
 def test_setitem_int_writes_scalar():
     t = einsums.RuntimeTensorD("s", [3])
     np.asarray(t)[...] = 0.0
