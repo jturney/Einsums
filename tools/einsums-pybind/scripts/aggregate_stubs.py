@@ -56,6 +56,68 @@ import numpy.typing
 
 """
 
+# Hand-written overlay for the NumPy-style ergonomics layer that
+# ``einsums/__init__.py`` installs at runtime (monkey-patched onto the bound
+# RuntimeTensor classes + module-level constructors). The codegen reads the
+# C++ AST and can't see runtime patching, so these stubs are maintained here.
+#
+# Two parts: top-level ``def``\\s become module functions appended to
+# ``__init__.pyi``; the ``_TensorErgonomics`` methods are injected into every
+# ``RuntimeTensor{F,D,C,Z}`` / ``RuntimeTensorView{F,D,C,Z}`` class in
+# ``_core.pyi``. Keep in sync with ``_patch_numpy_ergonomics`` and the
+# constructors in ``einsums/__init__.py``.
+ERGONOMICS_OVERLAY = '''
+def zeros(shape: Any, dtype: Any = ..., name: Any = ...) -> Any: ...
+def ones(shape: Any, dtype: Any = ..., name: Any = ...) -> Any: ...
+def empty(shape: Any, dtype: Any = ..., name: Any = ...) -> Any: ...
+def full(shape: Any, fill_value: Any, dtype: Any = ..., name: Any = ...) -> Any: ...
+def eye(n: int, m: Any = ..., dtype: Any = ..., name: Any = ...) -> Any: ...
+def array(obj: Any, dtype: Any = ..., name: Any = ...) -> Any: ...
+def asarray(obj: Any, dtype: Any = ..., name: Any = ...) -> Any: ...
+def zeros_like(t: Any, dtype: Any = ..., name: Any = ...) -> Any: ...
+def ones_like(t: Any, dtype: Any = ..., name: Any = ...) -> Any: ...
+def empty_like(t: Any, dtype: Any = ..., name: Any = ...) -> Any: ...
+def full_like(t: Any, fill_value: Any, dtype: Any = ..., name: Any = ...) -> Any: ...
+
+class _TensorErgonomics:
+    @property
+    def shape(self) -> tuple[int, ...]: ...
+    @property
+    def ndim(self) -> int: ...
+    @property
+    def dtype(self) -> numpy.dtype[Any]: ...
+    @property
+    def T(self) -> Any: ...
+    def __len__(self) -> int: ...
+    def __repr__(self) -> str: ...
+    def __array__(self, dtype: Any = ..., copy: Any = ...) -> numpy.ndarray[Any, Any]: ...
+    def __getitem__(self, key: Any) -> Any: ...
+    def __setitem__(self, key: Any, value: Any) -> None: ...
+    def transpose(self, *axes: Any) -> Any: ...
+    def swapaxes(self, axis1: int, axis2: int) -> Any: ...
+    def copy(self) -> Any: ...
+    def sum(self) -> Any: ...
+    def mean(self) -> Any: ...
+    def max(self) -> Any: ...
+    def __matmul__(self, other: Any) -> Any: ...
+    def __add__(self, other: Any) -> Any: ...
+    def __radd__(self, other: Any) -> Any: ...
+    def __sub__(self, other: Any) -> Any: ...
+    def __rsub__(self, other: Any) -> Any: ...
+    def __mul__(self, other: Any) -> Any: ...
+    def __rmul__(self, other: Any) -> Any: ...
+    def __truediv__(self, other: Any) -> Any: ...
+    def __neg__(self) -> Any: ...
+    def __pos__(self) -> Any: ...
+    def __iadd__(self, other: Any) -> Any: ...
+    def __isub__(self, other: Any) -> Any: ...
+    def __imul__(self, other: Any) -> Any: ...
+    def __itruediv__(self, other: Any) -> Any: ...
+'''
+
+# Tensor classes (in _core.pyi) that receive the ergonomics methods.
+_ERGONOMICS_CLASS_RE = re.compile(r"^class (RuntimeTensor(?:View)?[FDCZ]):\s*$")
+
 
 def _is_docstring(node: ast.stmt) -> bool:
     return (
@@ -166,6 +228,58 @@ def parse_fragment(path: Path) -> dict[str, str]:
     return {sm: "".join(lines).rstrip() + "\n" for sm, lines in blocks.items() if lines}
 
 
+def load_ergonomics_overlay() -> tuple[str, str]:
+    """Parse :data:`ERGONOMICS_OVERLAY` into (module_funcs, tensor_methods).
+
+    ``module_funcs`` is the rendered top-level constructor stubs (for
+    ``__init__.pyi``); ``tensor_methods`` is the ``_TensorErgonomics`` class
+    body rendered as a 4-space-indented method block (for injection into each
+    bound tensor class in ``_core.pyi``).
+    """
+    tree = ast.parse(ERGONOMICS_OVERLAY)
+    funcs: list[ast.stmt] = []
+    methods: list[str] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            funcs.append(_stub_function(node))
+        elif isinstance(node, ast.ClassDef) and node.name == "_TensorErgonomics":
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    rendered = ast.unparse(_stub_function(child))
+                    methods.append("\n".join("    " + ln for ln in rendered.split("\n")))
+    module_text = ast.unparse(ast.Module(body=funcs, type_ignores=[])) if funcs else ""
+    return module_text, "\n".join(methods)
+
+
+def inject_tensor_methods(core_text: str, methods_block: str) -> str:
+    """Append the ergonomics method block to the end of each bound tensor
+    class body — after the codegen members, so the class docstring stays
+    first. A class body ends at the next column-0 statement (or EOF)."""
+    if not methods_block:
+        return core_text
+    out: list[str] = []
+    pending = False  # inside a target class, methods not yet appended
+
+    def flush() -> None:
+        nonlocal pending
+        if pending:
+            out.append(methods_block)
+            pending = False
+
+    for line in core_text.split("\n"):
+        # A column-0 non-blank, non-comment line ends the current class body.
+        if pending and line and not line[0].isspace() and not line.startswith("#"):
+            flush()
+        if _ERGONOMICS_CLASS_RE.match(line):
+            flush()  # safety: close any still-open target class
+            out.append(line)
+            pending = True
+            continue
+        out.append(line)
+    flush()  # EOF
+    return "\n".join(out)
+
+
 def aggregate(frag_dir: Path, pkg_dir: Path, py_helpers_dir: Path | None = None) -> dict[str, Path]:
     """Read every *.pyi in `frag_dir` and write per-submodule files into `pkg_dir`.
 
@@ -178,6 +292,11 @@ def aggregate(frag_dir: Path, pkg_dir: Path, py_helpers_dir: Path | None = None)
     for frag in sorted(frag_dir.glob("*.pyi")):
         for sub, body in parse_fragment(frag).items():
             by_sub.setdefault(sub, []).append(f"# from: {frag.name}\n{body}")
+
+    # NumPy-style ergonomics installed at runtime by einsums/__init__.py
+    # (invisible to the C++ codegen): constructor functions for __init__.pyi,
+    # and methods to inject into each bound tensor class in _core.pyi.
+    ergonomics_funcs, ergonomics_methods = load_ergonomics_overlay()
 
     pkg_dir.mkdir(parents=True, exist_ok=True)
     written: dict[str, Path] = {}
@@ -194,6 +313,9 @@ def aggregate(frag_dir: Path, pkg_dir: Path, py_helpers_dir: Path | None = None)
                 helper_stub = render_py_helpers(helper_py)
                 if helper_stub:
                     text += f"\n# helpers from einsums/{sub}.py\n{helper_stub.rstrip()}\n"
+        # Attach the runtime-patched ergonomics methods to the tensor classes.
+        if sub == "":
+            text = inject_tensor_methods(text, ergonomics_methods)
         out_path.write_text(text)
         written[sub] = out_path
 
@@ -237,6 +359,9 @@ def aggregate(frag_dir: Path, pkg_dir: Path, py_helpers_dir: Path | None = None)
         init_body += "\n"
         for sub in all_sub_names:
             init_body += f"from . import {sub} as {sub}\n"
+    # NumPy-style constructors defined in einsums/__init__.py (not in _core).
+    if ergonomics_funcs:
+        init_body += "\n# NumPy-style constructors (einsums/__init__.py)\n" + ergonomics_funcs.rstrip() + "\n"
     init_pyi.write_text(init_body)
 
     return written
