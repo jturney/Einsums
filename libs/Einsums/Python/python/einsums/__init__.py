@@ -496,6 +496,50 @@ def _tensor_copy(self):
     return _copy_of(self, f"{getattr(self, 'name', 'A')}_copy")
 
 
+def _is_capturing():
+    """True when inside ``cg.capture`` (see _alloc_output for the import note)."""
+    return _importlib.import_module("einsums.graph").current_graph() is not None
+
+
+def _tensor_sum(self):
+    """``A.sum()`` -> sum of all elements (einsums.linalg.sum).
+
+    Eager: returns a Python scalar. Inside ``cg.capture``: returns a graph
+    ``[1]`` tensor (read its element after execute). Works on views."""
+    dtype_name = _DTYPE_SUFFIX[type(self).__name__[-1]]
+    out = _alloc_output(f"sum({getattr(self, 'name', 'A')})", [1], dtype_name)
+    _core.linalg.sum(out, self)
+    return out if _is_capturing() else out[0]
+
+
+def _tensor_mean(self):
+    """``A.mean()`` -> sum / size."""
+    n = self.size  # `size` is a property, not a method
+    if n == 0:
+        raise ValueError("mean of an empty tensor")
+    s = _tensor_sum(self)
+    if _is_capturing():
+        _core.linalg.scale(1.0 / n, s)  # s is a graph [1] tensor
+        return s
+    return s / n
+
+
+def _tensor_max(self):
+    """``A.max()`` -> maximum element (real dtypes; einsums.linalg.max).
+
+    Complex has no natural ordering — use ``linalg.norm(MAXABS, A)`` for the
+    largest magnitude. Eager returns a scalar; capture returns a graph ``[1]``."""
+    dtype_name = _DTYPE_SUFFIX[type(self).__name__[-1]]
+    if dtype_name.startswith("complex"):
+        raise TypeError(
+            "einsums '.max()' is not defined for complex tensors; "
+            "use einsums.linalg.norm(einsums.linalg.Norm.MAXABS, A) for the largest magnitude"
+        )
+    out = _alloc_output(f"max({getattr(self, 'name', 'A')})", [1], dtype_name)
+    _core.linalg.max(out, self)
+    return out if _is_capturing() else out[0]
+
+
 def _tensor_len(self):
     rank = self.rank()
     if rank == 0:
@@ -828,6 +872,9 @@ def _patch_numpy_ergonomics(core):
         cls.transpose = _tensor_transpose
         cls.swapaxes = _tensor_swapaxes
         cls.copy = _tensor_copy
+        cls.sum = _tensor_sum
+        cls.mean = _tensor_mean
+        cls.max = _tensor_max
         cls.__matmul__ = _tensor_matmul
         # Tier-2 arithmetic operators (dispatch to einsums.linalg).
         cls.__add__ = _tensor_add

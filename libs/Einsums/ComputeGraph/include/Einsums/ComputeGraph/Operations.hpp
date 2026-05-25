@@ -33,6 +33,7 @@
 #endif
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1145,6 +1146,122 @@ EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<
         r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
     };
     ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// reductions: sum / max  (write a scalar into result->data()[0])
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace detail {
+/// Stride-correct fold over every element of a dense tensor or view.
+///
+/// Walks the logical index space with an odometer (multi-index -> offset via
+/// strides), so non-contiguous views (slices, transposes) reduce correctly,
+/// not just contiguous storage. O(size * rank).
+template <typename TensorType, typename Acc, typename Op>
+Acc reduce_elements(TensorType const &A, Acc init, Op op) {
+    using T           = typename TensorType::ValueType;
+    size_t const rank = A.rank();
+    size_t const n    = A.size();
+    T const     *base = A.data();
+    if (base == nullptr || n == 0)
+        return init;
+    std::vector<size_t> dims(rank), strides(rank), idx(rank, 0);
+    for (size_t a = 0; a < rank; ++a) {
+        dims[a]    = A.dim(a);
+        strides[a] = A.stride(a);
+    }
+    Acc acc = init;
+    for (size_t k = 0; k < n; ++k) {
+        size_t off = 0;
+        for (size_t a = 0; a < rank; ++a)
+            off += idx[a] * strides[a];
+        acc = op(acc, base[off]);
+        for (size_t a = rank; a-- > 0;) { // increment the odometer
+            if (++idx[a] < dims[a])
+                break;
+            idx[a] = 0;
+        }
+    }
+    return acc;
+}
+} // namespace detail
+
+/// Graph-aware sum of every element, written into ``result->data()[0]``.
+///
+/// Mirrors dot_python's scalar-into-[1]-tensor convention: eager when not
+/// capturing, an opaque @ref OpKind::Custom node otherwise. Stride-correct
+/// (works on slice/transpose views). Backs the numpy-style ``A.sum()`` /
+/// ``A.mean()``.
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>)
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                              einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                              einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,                            einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,                            einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,  einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void sum_python(ResultType *result, AType const &A) {
+    using T = typename AType::ValueType;
+    if (result->size() < 1)
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::sum: result tensor must have at least one element");
+
+    auto compute = [](AType const &a) -> T { return detail::reduce_elements(a, T{0}, [](T acc, T x) { return acc + x; }); };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        result->data()[0] = compute(A);
+        return;
+    }
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [r_id, r_slot] = ctx.get_slot(*result);
+    auto executor       = [a_slot, r_slot, compute]() {
+        static_cast<ResultType *>(r_slot->ptr)->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr));
+    };
+    ctx.record(OpKind::Custom, "sum", {a_id}, {r_id}, std::move(executor));
+}
+
+/// Graph-aware maximum element (real dtypes), written into ``result->data()[0]``.
+/// Backs the numpy-style ``A.max()``. Real-only — complex ordering is not
+/// meaningful (use ``norm(MAXABS)`` for the largest magnitude).
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>)
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+EINSUMS_PYBIND_INSTANTIATE_AS("max", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,   einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("max", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,   einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("max", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("max", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+    // clang-format on
+    void max_python(ResultType *result, AType const &A) {
+    using T = typename AType::ValueType;
+    if (result->size() < 1)
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::max: result tensor must have at least one element");
+    if (A.size() == 0)
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::max: cannot reduce an empty tensor");
+
+    auto compute = [](AType const &a) -> T {
+        return detail::reduce_elements(a, std::numeric_limits<T>::lowest(), [](T acc, T x) { return x > acc ? x : acc; });
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        result->data()[0] = compute(A);
+        return;
+    }
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [r_id, r_slot] = ctx.get_slot(*result);
+    auto executor       = [a_slot, r_slot, compute]() {
+        static_cast<ResultType *>(r_slot->ptr)->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr));
+    };
+    ctx.record(OpKind::Custom, "max", {a_id}, {r_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

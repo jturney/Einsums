@@ -170,6 +170,67 @@ def test_copy_is_independent(dtype):
     assert np.asarray(B)[0, 0] == b[0, 0]  # original untouched
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# reductions: .sum / .mean / .max
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_sum_and_mean(dtype):
+    A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
+    a = np.asarray(A)
+    assert_close(A.sum(), a.sum())
+    assert_close(A.mean(), a.mean())
+
+
+@pytest.mark.parametrize("dtype", REAL_DTYPES)
+def test_max(dtype):
+    A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
+    assert_close(A.max(), np.asarray(A).max())
+
+
+def test_sum_max_on_views():
+    """Reductions are stride-correct on transpose / slice views."""
+    A = einsums.create_random_tensor("A", [3, 4], dtype="float64")
+    a = np.asarray(A)
+    assert_close(A.T.sum(), a.T.sum())
+    assert_close(A[1:3, :].sum(), a[1:3, :].sum())
+    assert_close(A[1:3, :].max(), a[1:3, :].max())
+
+
+def test_max_complex_raises():
+    Z = einsums.create_random_tensor("Z", [2, 2], dtype="complex128")
+    with pytest.raises(TypeError):
+        Z.max()
+
+
+def test_reductions_in_capture():
+    """sum/mean/max record into graph [1] tensors; read after execute."""
+    B = einsums.create_random_tensor("B", [4, 5], dtype="float64")
+    b = np.asarray(B).copy()
+    g = cg.Graph("red")
+    with cg.capture(g):
+        s = B.sum()
+        m = B.mean()
+        mx = B.max()
+    g.execute()
+    assert_close(np.asarray(s)[0], b.sum())
+    assert_close(np.asarray(m)[0], b.mean())
+    assert_close(np.asarray(mx)[0], b.max())
+
+
+def test_reduction_feeds_downstream_op_in_capture():
+    """The [1] sum result is a real tensor slot, so downstream ops compose."""
+    C = einsums.create_random_tensor("C", [3, 3], dtype="float64")
+    c = np.asarray(C).copy()
+    g = cg.Graph("red2")
+    with cg.capture(g):
+        tot = C.sum()
+        tot += 100.0
+    g.execute()
+    assert_close(np.asarray(tot)[0], c.sum() + 100.0)
+
+
 def test_transpose_swapaxes_copy_in_capture():
     """transpose/swapaxes route through cg.permute_view under capture; copy records."""
     R = einsums.create_random_tensor("R", [2, 3, 4], dtype="float64")
