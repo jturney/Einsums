@@ -191,6 +191,45 @@ def test_captured_slice_of_view_is_graph_registered():
     np.testing.assert_allclose(np.asarray(sub), np.asarray(A).T[1:], rtol=1e-5)
 
 
+def test_captured_assign_into_slice_of_view_writes_parent():
+    """Write-side twin: ``(A.T)[1:] = X`` inside capture must route the target
+    through cg.view too (the capture-aware __setitem__ is installed on the
+    view classes), so the write lands in A's storage and any later read of an
+    aliasing slice is correctly ordered after it. Without it the slice-assign
+    target is a raw eager view with aliases == 0."""
+    A = einsums.create_zero_tensor("A", [2, 3])
+    rhs = einsums.create_random_tensor("rhs", [2, 2])
+
+    g = cg.Graph("assign-into-slice-of-view")
+    with cg.capture(g):
+        A.T[1:] = rhs          # write through a view-of-a-view into A's storage
+    g.execute()
+
+    # A.T has shape (3,2); [1:] is rows 1..2 of A.T == columns 1..2 of A.
+    expected = np.zeros((2, 3))
+    expected.T[1:] = np.asarray(rhs)
+    np.testing.assert_allclose(np.asarray(A), expected, rtol=1e-5)
+
+
+def test_captured_assign_then_read_slice_of_view_ordering():
+    """A write through a view-of-a-view followed by a read of an aliasing
+    slice must stay ordered under the full optimizer pipeline (the dependency
+    is only visible if the slice-assign target aliases the parent chain)."""
+    A = einsums.create_zero_tensor("A", [2, 3])
+    rhs = einsums.create_random_tensor("rhs", [2, 2])
+    out = einsums.create_zero_tensor("out", [2, 2])
+
+    g = cg.Graph("assign-read-slice-of-view")
+    with cg.capture(g):
+        A.T[1:] = rhs          # write through view-of-view
+        sub = A.T[1:]          # read the same region back
+        einsums.linalg.axpy(1.0, sub, out)
+    g.apply(cg.default_pass_manager())
+    g.execute()
+
+    np.testing.assert_allclose(np.asarray(out), np.asarray(rhs), rtol=1e-5)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Captured: unsupported keys raise IndexError with a clear message
 # ──────────────────────────────────────────────────────────────────────────

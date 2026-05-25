@@ -334,13 +334,20 @@ def _make_setitem(orig_setitem):
 
 
 def _patch_runtime_tensor_setitem(core):
-    """Install sub-view-aware ``__setitem__`` on each RuntimeTensor class."""
+    """Install sub-view-aware ``__setitem__`` on each RuntimeTensor class.
+
+    Views (``RuntimeTensorView{F,D,C,Z}``) are patched too — symmetric with
+    the capture-aware ``__getitem__`` — so slice-assignment into a view of a
+    view (``(A.T)[1:] = X``) resolves the target through ``cg.view`` and
+    aliases the parent chain. Without it the write would take the eager raw
+    path with ``aliases == 0`` (the write-side twin of
+    bug-optimizer-scale-view-alias)."""
     global _runtime_tensor_setitem_patched
     if _runtime_tensor_setitem_patched:
         return
-    for cls_name in _RUNTIME_TENSOR_CLASS_NAMES:
+    for cls_name in _RUNTIME_TENSOR_CLASS_NAMES + _RUNTIME_TENSOR_VIEW_CLASS_NAMES:
         cls = getattr(core, cls_name, None)
-        if cls is None:
+        if cls is None or not hasattr(cls, "__setitem__"):
             continue
         cls.__setitem__ = _make_setitem(cls.__setitem__)
     _runtime_tensor_setitem_patched = True
