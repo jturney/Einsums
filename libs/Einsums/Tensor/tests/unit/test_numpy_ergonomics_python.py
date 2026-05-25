@@ -747,3 +747,68 @@ def test_constructor_inside_capture_is_graph_owned():
         acc = acc + A
     g.execute()
     assert_close(np.asarray(acc), 2.0 * a)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Stub verification: the runtime-patched ergonomics layer is monkey-patched
+# onto the bound classes, so it can't be auto-stubbed from the C++ AST — it's
+# injected by tools/einsums-pybind/scripts/aggregate_stubs.py. These tests
+# guard against that injection silently breaking (verified end-to-end with
+# pyright: 0 errors resolving t.shape / t @ t / t.sum() / einsums.zeros, ...).
+# ──────────────────────────────────────────────────────────────────────────
+
+import ast as _ast
+import pathlib as _pathlib
+import re as _re
+
+
+def _stub_dir() -> _pathlib.Path:
+    return _pathlib.Path(einsums.__file__).parent
+
+
+_HAS_STUBS = (_stub_dir() / "_core.pyi").is_file()
+_skip_no_stubs = pytest.mark.skipif(not _HAS_STUBS, reason="stubs not generated (build PyEinsumsStubs)")
+
+# Ergonomics members (monkey-patched at runtime) that must appear in the
+# generated tensor-class stubs — keep in sync with _patch_numpy_ergonomics.
+_ERGONOMICS_METHODS = (
+    "shape", "ndim", "dtype", "T", "__len__", "__repr__", "__array__",
+    "__getitem__", "__setitem__", "transpose", "swapaxes", "copy",
+    "sum", "mean", "max", "__matmul__", "__add__", "__radd__", "__sub__",
+    "__rsub__", "__mul__", "__rmul__", "__truediv__", "__neg__", "__pos__",
+    "__iadd__", "__isub__", "__imul__", "__itruediv__",
+)
+_CONSTRUCTORS = (
+    "zeros", "ones", "empty", "full", "eye", "array", "asarray",
+    "zeros_like", "ones_like", "empty_like", "full_like",
+)
+
+
+@_skip_no_stubs
+@pytest.mark.parametrize("cls", ["RuntimeTensorD", "RuntimeTensorViewD",
+                                 "RuntimeTensorC", "RuntimeTensorViewZ"])
+def test_stub_has_ergonomics_methods(cls):
+    core = (_stub_dir() / "_core.pyi").read_text()
+    m = _re.search(rf"\nclass {cls}:\n", core)
+    assert m, f"{cls} not found in _core.pyi"
+    block = core[m.end():]
+    nxt = _re.search(r"\nclass \w", block)
+    if nxt:
+        block = block[: nxt.start()]
+    missing = [name for name in _ERGONOMICS_METHODS if f"def {name}(" not in block]
+    assert not missing, f"{cls} stub missing: {missing}"
+    # codegen members must survive the injection
+    assert 'def rank(' in block and 'def transpose_view(' in block
+
+
+@_skip_no_stubs
+def test_init_stub_has_constructors():
+    init = (_stub_dir() / "__init__.pyi").read_text()
+    missing = [fn for fn in _CONSTRUCTORS if f"def {fn}(" not in init]
+    assert not missing, f"__init__.pyi missing constructors: {missing}"
+
+
+@_skip_no_stubs
+def test_generated_stubs_parse():
+    for name in ("_core.pyi", "__init__.pyi"):
+        _ast.parse((_stub_dir() / name).read_text())  # raises SyntaxError on bad stub
