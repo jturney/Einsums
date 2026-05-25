@@ -117,3 +117,65 @@ einsum(0.0,  Indices{}, &e_ccd,
        0.25, Indices{i, j, a, b}, new_t_oovv,
              Indices{i, j, a, b}, g_oovv);
 ```
+
+## Python: a NumPy-style API
+
+The `einsums` Python package (built with `EINSUMS_BUILD_PYTHON=ON`) wraps the
+same engine with a NumPy-shaped surface, so tensor code reads like NumPy while
+every operation dispatches to Einsums' own kernels (BLAS, etc.) — *not* to
+NumPy. Tensors implement the buffer protocol, so `np.asarray(t)` is a zero-copy
+view; that is the explicit escape hatch when you actually want NumPy.
+
+```python
+import numpy as np
+import einsums
+
+# Construction (NumPy-style; default dtype float64)
+A = einsums.zeros((3, 4))
+B = einsums.ones((4, 2))
+M = einsums.asarray(np.arange(12.0).reshape(3, 4))   # ingest a NumPy array
+Z = einsums.full((2, 2), 1 + 2j, dtype="complex128")
+
+# Attributes
+A.shape          # (3, 4)
+A.ndim, len(A)   # 2, 3
+A.dtype          # dtype('float64')
+
+# Operators dispatch to Einsums (gemm / gemv / axpy / scale / ...), never NumPy
+C = A @ B            # matrix-matrix (gemm) -> (3, 2)
+y = A @ B[:, 0]      # matrix-vector (gemv) -> (3,)
+S = einsums.ones((3, 3))
+K = 2.0 * S - S.T    # scalar mul, subtraction, transpose view
+M += 1.0             # in-place scalar shift
+H = M * M            # element-wise (Hadamard)
+
+# Indexing: reads return zero-copy views, assignment writes through
+row   = M[1]                      # rank-reducing -> (4,)
+block = M[1:3, :]                 # slice view -> (2, 4)
+M[0, :] = einsums.full((4,), 5.0) # sub-view assignment
+M[2:, :] = 0.0                    # scalar fill
+
+# Transpose views, a dense copy, and reductions
+At = M.transpose(1, 0)            # also M.T / M.swapaxes(0, 1)
+Mc = M.copy()
+total, mean, largest = M.sum(), M.mean(), M.max()
+```
+
+The same code composes inside a **ComputeGraph** capture, where each operation
+is *recorded* into a graph that is then optimized and executed. Operators,
+`.T`, indexing, and reductions are all capture-aware:
+
+```python
+import einsums.graph as cg
+
+g = cg.Graph("workflow")
+with cg.capture(g):
+    G = A.T @ A          # gemm on a graph-registered transpose view -> (4, 4)
+    e = (A * A).sum()    # reduction -> a 1-element graph tensor
+g.execute()              # run the optimized graph
+```
+
+See [`examples/psi4-bridge/df_mp2_numpy_style.py`](examples/psi4-bridge/df_mp2_numpy_style.py)
+(eager) and
+[`df_mp2_graph_numpy_style.py`](examples/psi4-bridge/df_mp2_graph_numpy_style.py)
+(captured) for a full density-fitted MP2 written this way, checked against psi4.
