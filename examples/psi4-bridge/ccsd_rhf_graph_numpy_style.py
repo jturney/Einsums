@@ -71,13 +71,21 @@ t2 = E("i,j,a,b <- i,j,a,b ; i,j,a,b", G["oovv"], Dijab, SH2, 1.0, "t2init")  # 
 # MP2 guess t2 = oovv / Dijab (eager)
 la.direct_division(1.0, G["oovv"], Dijab, 0.0, t2)
 
-# ── pre-allocated scratch (held outside capture so it survives the graph) ────
+# ── deferred graph-owned scratch: declared on the GRAPH (not eager) so the
+#    memory passes engage. g.declare_zero_tensor registers an AllocState::Deferred
+#    handle with no Alloc node; MaterializationPass inserts Materialize+Initialize
+#    (hoisted to the parent, allocated once before the loop) and MemoryPlanning can
+#    then see the body's footprint. Eager create_zero_tensor stays opaque to both. ─
+g = cg.Graph("ccsd")
+def dz(name, shape): return g.declare_zero_tensor(name, list(shape), dtype="float64")
 S = {}
 for nm, sh in [("Tau", SH2), ("Taut", SH2), ("Fae", VV), ("Fmi", OO), ("Fme", NV2),
                ("Wmnij", OOOO), ("Wmbej", OVVO), ("Wmbje", OVOV), ("Zmbij", OVOO), ("jnfb", SH2),
                ("r1", NV2), ("r2", SH2), ("be", VV), ("jm", OO), ("imea", SH2), ("imeb", SH2),
                ("tmp", SH2), ("tmpP", SH2), ("rd1", NV2), ("rd2", SH2)]:
-    S[nm] = zt(nm, sh)
+    S[nm] = dz(nm, sh)
+# scalars stay eager: cg.dot validates its result size at capture, and the
+# predicate reads Ecorr between iterations — both need a live 1-element tensor.
 e1 = zt("e1", (1,)); e2 = zt("e2", (1,)); Ecorr = zt("Ecorr", (1,))
 
 def ein(spec, A, B, out, pf=1.0, acc=False):
@@ -90,7 +98,6 @@ def symacc(spec, A, B, pf, sign=1.0):                # r2 += sign * sym(pf*(A⊗
     la.axpby(sign, S["tmpP"], 1.0, S["r2"])
 
 # ── CCSD iteration as a graph loop ───────────────────────────────────────────
-g = cg.Graph("ccsd")
 e_prev = [1e9]
 def cont(it):
     e = float(np.asarray(Ecorr)[0]); d = abs(e - e_prev[0]); e_prev[0] = e
@@ -183,15 +190,17 @@ with cg.capture(body):
     la.dot(e1, Tau, G["oovv"]); la.dot(e2, Tau, oovv_ba)
     la.axpby(2.0, e1, 0.0, Ecorr); la.axpby(-1.0, e2, 1.0, Ecorr)
 
-print(f"captured loop body: {body.num_nodes()} nodes")
+print(f"captured loop body: {body.num_nodes()} nodes; parent {g.num_nodes()} nodes")
 
-# Optimization passes recurse into the loop body (each pass opts in via
-# OptimizerPass::recurse_into_subgraphs()), so the top-level g.apply reaches the
-# body. On this body only Reorder fires (reschedules): it's hand-written with
-# pre-allocated reused scratch + in-place ops, so MemoryPlanning/InplaceOptimization
-# have nothing to add and CSE can't fold the multi-writer scratch. Correctness holds.
+# The big scratch is graph-owned DEFERRED (g.declare_zero_tensor), so the memory
+# passes now have work: MaterializationPass turns each deferred handle into a
+# Materialize+Initialize pair HOISTED to the parent (allocated/zeroed once before
+# the loop, not per iteration) — parent node count grows, body stays put. Passes
+# also recurse into the body (each opts in via recurse_into_subgraphs), where
+# Reorder reschedules; the scratch is reused in place so CSE/InplaceOptimization
+# have nothing to fold. Correctness holds (vs psi4 conv CCSD).
 mod = g.apply(cg.default_pass_manager())
-print(f"optimized (passes recurse into body): modified={mod}, body {body.num_nodes()} nodes")
+print(f"optimized: modified={mod}, parent {g.num_nodes()} nodes (Materialize hoisted), body {body.num_nodes()} nodes")
 
 g.execute()
 e_new = float(np.asarray(Ecorr)[0])
