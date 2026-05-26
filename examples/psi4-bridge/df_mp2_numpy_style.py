@@ -18,8 +18,7 @@ Side-by-side with the explicit form (see df_mp2_energy.py):
     einsums.einsum("ab <- Qa ; Qb", I, Bi, Bj)  I = Bi.T @ Bj        # .T view + @ (gemm)
     permute + axpby + axpby  -> K               K = 2.0 * I - I.T    # scalar*, -, .T
     axpby + axpby            -> denom           W = Dbase + (e_i + e_j)   # scalar add
-    element_transform(W, 1/x)                   element_transform(W, 1/x)   (no operator)
-    direct_product(1, I, W, 0, T)               T = I * W            # * = Hadamard
+    element_transform(1/x) + direct_product     T = I / W            # / = Hadamard divide
     dot(K, T)                                   einsums.linalg.dot(K, T)    (reduction)
 
 The numpy-like abilities exercised here:
@@ -28,11 +27,12 @@ The numpy-like abilities exercised here:
     * einsums.zeros(shape)          accumulator allocation
     * A.T                           zero-copy transpose view
     * A @ B                         matmul -> einsums gemm
-    * 2.0 * A, A - B, A * B         scalar scaling, subtraction, element-wise product
+    * 2.0 * A, A - B, A * B, A / B  scalar scaling, subtraction, element-wise product/quotient
     * A.shape / A.ndim              numpy-parity attributes
 
-Two ops have no operator spelling and stay explicit: the elementwise reciprocal
-(einsums.linalg.element_transform) and the full reduction (einsums.linalg.dot).
+One op has no operator spelling and stays explicit: the full reduction
+(einsums.linalg.dot). The elementwise quotient now has the '/' operator
+(direct_division), so building the amplitude denominator needs no reciprocal callback.
 
 numpy itself appears only to ingest psi4 data and read scalar orbital energies —
 never for tensor math. Checked against psi4's own DF-MP2.
@@ -109,7 +109,6 @@ print(f"B (Q|ov) shape = {B.shape}   nocc = {nocc}  nvir = {nvir}")
 # a one-time numpy outer sum. This is setup/data-prep, not tensor math in the loop.
 Dbase = einsums.asarray(-ev_np[:, None] - ev_np[None, :], name="-ea-eb")
 assert Dbase.shape == (nvir, nvir)
-recip = lambda x: 1.0 / x
 
 # ---- pair-driven DF-MP2, tensor math via numpy-style einsums operators ------
 e_corr = 0.0
@@ -119,9 +118,8 @@ for i in range(nocc):
         Bj = B[:, j, :]
         I = Bi.T @ Bj                            # I_ab = sum_Q B^Q_ia B^Q_jb  (gemm)
         K = 2.0 * I - I.T                        # K_ab = 2 I_ab - I_ba
-        W = Dbase + (eo[i] + eo[j])              # (e_i+e_j) - e_a - e_b  (scalar add)
-        la.element_transform(W, recip)           # W = 1 / denom  (no operator form)
-        T = I * W                                # T_ab = I_ab w_ab  (Hadamard)
+        W = Dbase + (eo[i] + eo[j])              # denom = (e_i+e_j) - e_a - e_b  (scalar add)
+        T = I / W                                # T_ab = I_ab / denom  (Hadamard divide)
         e_pair = float(la.dot(K, T))             # sum_ab K_ab T_ab  (reduction)
         e_corr += e_pair if i == j else 2.0 * e_pair   # i<=j symmetry
 

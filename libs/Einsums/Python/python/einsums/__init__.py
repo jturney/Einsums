@@ -805,9 +805,18 @@ def _tensor_rmul(self, other):
 
 
 def _tensor_truediv(self, other):
+    # scalar -> scaling by 1/c; tensor -> element-wise (Hadamard) quotient,
+    # matching numpy '/'. The tensor case is capture-aware (records a graph
+    # DirectDivision node), so `K / D` builds amplitude denominators with no
+    # per-element reciprocal callback.
     if isinstance(other, _numbers.Number):
         out = _zeros_like(self, f"{getattr(self, 'name', 'A')}/c")
         _core.linalg.axpy(1.0 / other, self, out)
+        return out
+    if _is_einsums_tensor(other):
+        _require_same_shape("/", self, other)
+        out = _zeros_like(self, f"{getattr(self, 'name', 'A')}/{getattr(other, 'name', 'B')}")
+        _core.linalg.direct_division(1.0, self, other, 0.0, out)
         return out
     _reject_operand("/", other)
 

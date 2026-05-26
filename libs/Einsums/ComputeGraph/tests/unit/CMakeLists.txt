@@ -77,6 +77,7 @@ set(ComputeGraphTests
     test_blas_python.py
     test_block_copy_python.py
     test_capture_python.py
+    test_direct_division_python.py
     test_direct_product_views_python.py
     test_einsum_python.py
     test_einsum_views_python.py

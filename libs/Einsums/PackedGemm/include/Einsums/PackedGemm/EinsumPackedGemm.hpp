@@ -298,8 +298,15 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // (Tensor<T, K>) and runtime-rank (RuntimeTensor<T, Alloc>) operands.
             auto rank_of = [](auto const &t) -> int {
                 using TT = std::remove_cvref_t<decltype(t)>;
+                // TT::Rank exists for BOTH compile-time tensors (Rank = K >= 0) and
+                // runtime-rank tensors (Rank = dynamic_rank = -1, a sentinel). Only
+                // trust it when it is a real rank; otherwise read the live rank.
                 if constexpr (requires { TT::Rank; }) {
-                    return static_cast<int>(TT::Rank);
+                    if constexpr (TT::Rank >= 0) {
+                        return static_cast<int>(TT::Rank);
+                    } else {
+                        return static_cast<int>(t.rank());
+                    }
                 } else {
                     return static_cast<int>(t.rank());
                 }

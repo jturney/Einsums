@@ -15,9 +15,8 @@ Per occupied pair i<=j, captured into one graph:
 
     I      = Bi.T @ Bj                        .T view + @ (gemm)
     K      = 2.0 * I - I.T                     scalar*, -, .T view
-    W      = Dbase (reused); W += e_i+e_j      in-place scalar shift
-    W      = 1 / W                            element_transform         (reciprocal)
-    T      = I * W                            *                         (Hadamard operator)
+    W      = Dbase (reused); W += e_i+e_j      in-place scalar shift (W = denom)
+    T      = I / W                            /                         (Hadamard divide operator)
     e_pair = sum_ab K_ab T_ab                 einsums.linalg.dot        (reduction -> [1])
     E     += (2 - d_ij) * e_pair              scalar*, +=               (operators -> E[0])
 
@@ -34,9 +33,11 @@ per pair would pin nocc^2 denominators in memory. Overwriting W from Dbase and
 shifting it in place with ``W += (e_i + e_j)`` (the in-place scalar form, which
 allocates nothing) keeps the denominator footprint at O(v^2).
 
-Only two ops have no operator spelling and stay explicit — same as the eager
-numpy-style file: the elementwise reciprocal (element_transform) and the full
-reduction (dot, written into a 1-element tensor for in-graph accumulation).
+Only one op has no operator spelling and stays explicit — same as the eager
+numpy-style file: the full reduction (dot, written into a 1-element tensor for
+in-graph accumulation). The amplitude denominator is now the '/' operator
+(direct_division), which records a graph DirectDivision node — no per-element
+reciprocal callback, so the whole per-pair body is operators + one dot.
 
 numpy itself appears only to ingest psi4 data and read scalar orbital energies.
 Checked against psi4's own DF-MP2.
@@ -137,7 +138,6 @@ print(f"B (Q|ov) shape = {B.shape}")
 
 # D_ab = -e_a - e_b, ingested with einsums.asarray (one-time setup, not loop math).
 Dbase = einsums.asarray(-ev_np[:, None] - ev_np[None, :], name="-ea-eb")
-recip = lambda x: 1.0 / x
 
 # e_pair / E accumulate across pairs. W is a reused denominator scratch:
 # unlike eager mode (where operator results are GC'd), every operator output in
@@ -159,9 +159,8 @@ with cg.capture(g):
             I = Bi.T @ Bj                           # I_ab = (ia|jb)
             K = 2.0 * I - I.T                       # K = 2 I - I^T
             la.axpby(1.0, Dbase, 0.0, W)            # W = Dbase  (reuse, no alloc)
-            W += eo[i] + eo[j]                      # W = (e_i+e_j) - e_a - e_b  (in-place scalar shift)
-            la.element_transform(W, recip)          # W = 1 / denom
-            T = I * W                               # T = I * W  (Hadamard)
+            W += eo[i] + eo[j]                      # W = denom = (e_i+e_j) - e_a - e_b  (in-place scalar shift)
+            T = I / W                               # T = I / denom  (Hadamard divide)
             la.dot(e_pair, K, T)                    # e_pair = sum K*T
             E += (1.0 if i == j else 2.0) * e_pair  # E += (2-d_ij) e_pair
 print(f"captured graph '{g.name}': {g.num_nodes()} nodes, {g.num_tensors()} tensors")

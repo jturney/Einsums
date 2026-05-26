@@ -12,6 +12,7 @@
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/CompilerSpecific.hpp>
 #include <Einsums/Errors/Error.hpp>
+#include <Einsums/LinearAlgebra/Bases/direct_division.hpp>
 #include <Einsums/LinearAlgebra/Bases/direct_product.hpp>
 #include <Einsums/LinearAlgebra/Bases/dot.hpp>
 #include <Einsums/LinearAlgebra/Bases/gemm.hpp>
@@ -961,6 +962,18 @@ template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicT
     requires SameUnderlyingAndRank<AType, BType, CType>
 void direct_product(typename AType::ValueType alpha, AType const &A, BType const &B, typename CType::ValueType beta, CType *C) {
     direct_product(alpha, A.impl(), B.impl(), beta, &C->impl());
+}
+
+template <typename AType, typename BType, typename CType>
+void direct_division(CType alpha, einsums::detail::TensorImpl<AType> const &A, einsums::detail::TensorImpl<BType> const &B, CType beta,
+                     einsums::detail::TensorImpl<CType> *C) {
+    impl_direct_division(alpha, A, B, beta, C);
+}
+
+template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicTensorConcept CType>
+    requires SameUnderlyingAndRank<AType, BType, CType>
+void direct_division(typename AType::ValueType alpha, AType const &A, BType const &B, typename CType::ValueType beta, CType *C) {
+    direct_division(alpha, A.impl(), B.impl(), beta, &C->impl());
 }
 
 template <CoreBasicTensorConcept AType>

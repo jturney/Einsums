@@ -55,11 +55,27 @@ void string_gemm(ParsedEinsumSpec const &parsed, T c_pf, CType *C, T ab_pf, ATyp
                                 links.size());
     }
 
-    std::string const &k  = links[0];
-    char               ta = (parsed.a_indices[0] == k) ? 't' : 'n';
-    char               tb = (parsed.b_indices[1] == k) ? 't' : 'n';
+    std::string const &k = links[0];
 
-    linear_algebra::gemm(ta, tb, ab_pf, A, B, c_pf, C);
+    // A GEMM op(A)·op(B) yields rows = A's free (non-link) index, cols = B's free
+    // index. The output may be requested in EITHER order, so honor c_indices:
+    //   C = [freeA, freeB] -> op(A)·op(B)
+    //   C = [freeB, freeA] -> op(B)·op(A)   (the transposed product)
+    // Without this, a transposed-output contraction (e.g. "ia <- ma ; mi") writes
+    // the result with swapped dimensions and trips gemm's dimension check.
+    std::string const &freeA = (parsed.a_indices[0] == k) ? parsed.a_indices[1] : parsed.a_indices[0];
+
+    if (parsed.c_indices[0] == freeA) {
+        // op(A) must be [freeA, k]; op(B) must be [k, freeB].
+        char ta = (parsed.a_indices[0] == k) ? 't' : 'n';
+        char tb = (parsed.b_indices[1] == k) ? 't' : 'n';
+        linear_algebra::gemm(ta, tb, ab_pf, A, B, c_pf, C);
+    } else {
+        // Transposed output C = [freeB, freeA]: op(B) must be [freeB, k], op(A) [k, freeA].
+        char tb = (parsed.b_indices[0] == k) ? 't' : 'n';
+        char ta = (parsed.a_indices[1] == k) ? 't' : 'n';
+        linear_algebra::gemm(tb, ta, ab_pf, B, A, c_pf, C);
+    }
 }
 
 // ── GEMV dispatch (rank-2 × rank-1 → rank-1) ───────────────────────────────

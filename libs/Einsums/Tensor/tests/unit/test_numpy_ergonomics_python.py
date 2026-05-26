@@ -639,11 +639,14 @@ def test_add_rejects_numpy_rhs():
         _ = A + np.zeros((3, 4))
 
 
-def test_tensor_division_unsupported():
-    A = einsums.create_random_tensor("A", [3, 4], dtype="float64")
-    B = einsums.create_random_tensor("B", [3, 4], dtype="float64")
-    with pytest.raises(TypeError):
-        _ = A / B
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_elementwise_div_matches_numpy(dtype):
+    """``A / B`` (both tensors) is element-wise (Hadamard) division, like numpy
+    — backed by linalg.direct_division. Was previously unsupported."""
+    A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [3, 4], dtype=dtype)
+    np.asarray(B)[...] += 2.0  # keep the denominator away from zero
+    assert_close(np.asarray(A / B), np.asarray(A) / np.asarray(B))
 
 
 def test_add_shape_mismatch_raises():

@@ -1435,6 +1435,77 @@ EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::R
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// direct_division: C = alpha * (A ⊘ B) + beta * C
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <typename T, TensorConcept AType, TensorConcept BType, TensorConcept CType>
+// clang-format off
+EINSUMS_PYBIND_EXPOSE
+EINSUMS_PYBIND_MODULE("linalg")
+// All 8 combinations of (A, B, C) x (owning, view), per dtype. The first
+// template argument is the scalar dtype for alpha/beta.
+//
+// float
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", float, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", float, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", float, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", float, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", double, einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", double, einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", double, einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", double, einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+// complex<float>
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<float>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<float>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<float>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<float>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<float>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<float>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<float>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<float>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+EINSUMS_PYBIND_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) {
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("direct_division eager");
+        linear_algebra::direct_division(alpha, A, B, beta, C);
+        return;
+    }
+
+    LabeledSection("direct_division capture");
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [b_id, b_slot] = ctx.get_slot(B);
+    auto [c_id, c_slot] = ctx.get_slot(*C);
+
+    auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
+        LabeledSection("direct_division execute");
+        ProfileAnnotate("size", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->size()));
+        linear_algebra::direct_division(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), beta,
+                                        static_cast<CType *>(c_slot->ptr));
+    };
+
+    ctx.record(OpKind::DirectDivision, "direct_division", {a_id, b_id}, {c_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // outer_sum: rank-N result(i_0,...,i_{N-1}) = Σ_k c_k * v_k(i_k)
 // ─────────────────────────────────────────────────────────────────────────────
 

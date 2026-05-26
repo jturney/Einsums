@@ -4,6 +4,7 @@
 #----------------------------------------------------------------------------------------------
 
 set(linear_algebra_tests
+    direct_div.cpp
     direct_prod.cpp
     dot.cpp
     geev.cpp

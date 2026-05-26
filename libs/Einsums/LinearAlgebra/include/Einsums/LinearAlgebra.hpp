@@ -2075,6 +2075,35 @@ void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
 }
 
 /**
+ * Compute the element-wise (Hadamard) quotient of two tensors and accumulate it
+ * into another. The counterpart to @ref direct_product, for building reciprocals
+ * and quotients (e.g. amplitude denominators @f$1/\Delta@f$) without a per-element
+ * host callback.
+ *
+ * @f[
+ *  c_i := \alpha \frac{a_i}{b_i} + \beta c_i
+ * @f]
+ *
+ * @tparam AType The type of the A (numerator) tensor.
+ * @tparam BType The type of the B (denominator) tensor.
+ * @tparam CType The type of the C tensor.
+ * @tparam T The type of the scale factors.
+ * @param[in] alpha The scale factor for the quotient.
+ * @param[in] A,B The numerator and denominator tensors.
+ * @param[in] beta The scale factor for the output.
+ * @param[out] C The output tensor.
+ *
+ * @versionadded{2.0.0}
+ */
+template <TensorConcept AType, TensorConcept BType, TensorConcept CType, typename T>
+    requires(SameRank<AType, BType, CType>)
+void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) {
+    LabeledSection0();
+
+    detail::direct_division(alpha, A, B, beta, C);
+}
+
+/**
  * Computes the determinant of a matrix.
  *
  * @tparam AType The type of the matrix.
