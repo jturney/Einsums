@@ -924,6 +924,39 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
         return it != _slot_map.end() ? it->second.get() : nullptr;
     }
 
+    /**
+     * @brief Redirect a tensor's executor slot to another tensor's buffer.
+     *
+     * Repoints the slot for @p from so that any executor lambda which captured
+     * it resolves to @p to's tensor at the next execute(). This is the
+     * execution-side companion to the TensorId metadata rewrite that
+     * redirect-based passes (e.g. CSE) perform on Node::inputs.
+     *
+     * The distinction matters because executor lambdas resolve their operands
+     * through the captured TensorSlot pointer — *not* through Node::inputs.
+     * Rewriting Node::inputs alone keeps liveness analysis correct for
+     * downstream passes (MemoryPlanning, FreeInsertion) but is invisible to a
+     * lambda baked at capture time; without this slot redirect a consumer of
+     * an eliminated duplicate would keep reading the duplicate's (now
+     * never-written) buffer. See CSE.
+     *
+     * No-op if either slot is absent — a tensor never captured through a slot
+     * has no baked lambda to fix. The caller guarantees @p from and @p to have
+     * identical type and dimensions (CSE only merges nodes with equal op_data
+     * and output shapes), so no validation is performed.
+     *
+     * @param[in] from TensorId whose slot should be repointed.
+     * @param[in] to   TensorId whose current buffer @p from should resolve to.
+     */
+    void redirect_slot(TensorId from, TensorId to) {
+        TensorSlot const *to_slot   = find_slot(to);
+        TensorSlot       *from_slot = find_slot(from);
+        if (to_slot == nullptr || from_slot == nullptr) {
+            return;
+        }
+        from_slot->ptr = to_slot->ptr;
+    }
+
     // ── Rebind support ──────────────────────────────────────────────────────
 
     /**

@@ -75,6 +75,59 @@ TEST_CASE("CSE - eliminates duplicate einsum", "[ComputeGraph][CSE]") {
     }
 }
 
+TEST_CASE("CSE - surviving consumer of an eliminated duplicate reads the survivor", "[ComputeGraph][CSE]") {
+    // Regression for the CSE soundness bug where folding a duplicate producer
+    // corrupted a *downstream* consumer of that duplicate. Executor lambdas
+    // resolve operands through their captured TensorSlot, not Node::inputs, so
+    // CSE's TensorId metadata redirect alone is invisible at run time: a node
+    // reading the eliminated duplicate's output kept reading its (now
+    // never-written) buffer and silently produced zeros. The earlier tests only
+    // check the survivor's value or the node count, so they missed this.
+    //
+    // Diamond shape: C and D are identical products (D is eliminated); OUT reads
+    // D. After CSE, D's producer is gone and OUT must resolve to C's buffer via
+    // Graph::redirect_slot.
+    auto A   = create_random_tensor<double>("A", 4, 3);
+    auto B   = create_random_tensor<double>("B", 3, 5);
+    auto F   = create_random_tensor<double>("F", 5, 2);
+    auto C   = create_zero_tensor<double>("C", 4, 5);
+    auto D   = create_zero_tensor<double>("D", 4, 5);
+    auto OUT = create_zero_tensor<double>("OUT", 4, 2);
+
+    cg::Graph graph("cse_surviving_consumer");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);   // survivor
+        cg::einsum("ik;kj->ij", &D, A, B);   // duplicate (eliminated)
+        cg::einsum("ik;kj->ij", &OUT, D, F); // consumer of the eliminated duplicate
+    }
+
+    REQUIRE(graph.num_nodes() == 3);
+
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+
+    REQUIRE(modified);
+    REQUIRE(graph.num_nodes() == 2); // D's producer folded away
+
+    graph.execute();
+
+    // Reference: OUT = (A·B)·F
+    auto AB = create_zero_tensor<double>("AB", 4, 5);
+    tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
+    auto OUT_ref = create_zero_tensor<double>("OUTref", 4, 2);
+    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, AB, Indices{k, j}, F);
+
+    double max_abs = 0.0;
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 2; jj++) {
+            max_abs = std::max(max_abs, std::abs(OUT(ii, jj)));
+            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-12);
+        }
+    }
+    // Guard against the failure mode being masked by an all-zero reference.
+    REQUIRE(max_abs > 1e-10);
+}
+
 TEST_CASE("CSE - three identical einsums reduces to one", "[ComputeGraph][CSE]") {
     auto A = create_random_tensor<double>("A", 4, 3);
     auto B = create_random_tensor<double>("B", 3, 5);

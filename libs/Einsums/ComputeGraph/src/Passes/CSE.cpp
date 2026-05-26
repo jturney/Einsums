@@ -231,8 +231,23 @@ bool CSE::run(Graph &graph) {
                 continue;
 
             // Equivalent! Redirect j's outputs to i's outputs.
+            //
+            // Two redirects are needed, for two different consumers:
+            //   1. tensor_redirect + the Node::inputs rewrite below — keeps the
+            //      TensorId metadata correct so liveness-based passes
+            //      (MemoryPlanning, FreeInsertion) see node i's output as the
+            //      live buffer and node j's as dead.
+            //   2. Graph::redirect_slot — repoints node j's output slot at node
+            //      i's buffer so any *already-baked* executor lambda that
+            //      captured j's slot reads i's result at execute time. Without
+            //      this the metadata rewrite is invisible at runtime and a
+            //      surviving consumer of node j's output reads a never-written
+            //      buffer (silent wrong results). Node i is a survivor (never
+            //      itself removed in this pass), so its slot ptr is stable and
+            //      copying it here is durable across re-execution.
             for (size_t k = 0; k < nodes[i].outputs.size(); k++) {
                 tensor_redirect[nodes[j].outputs[k]] = nodes[i].outputs[k];
+                graph.redirect_slot(nodes[j].outputs[k], nodes[i].outputs[k]);
             }
 
             remove[j] = true;
