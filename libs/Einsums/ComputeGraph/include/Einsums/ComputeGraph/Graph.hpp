@@ -703,6 +703,74 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
         return t;
     }
 
+    /**
+     * @brief Declare a graph-owned runtime-rank tensor with DEFERRED allocation.
+     *
+     * The runtime-rank, pybind-exposed analog of declare_tensor(): a shell tensor
+     * (valid metadata, no data) registered in THIS graph's tensor map with
+     * AllocState::Deferred. No Alloc node is inserted — the MaterializationPass
+     * inserts Materialize+Initialize at the right position, and MemoryPlanning /
+     * FreeInsertion / InplaceOptimization can then plan, reuse, and free its
+     * buffer (unlike create_*_tensor, which is allocated eagerly and so is opaque
+     * to those passes). Use this for graph/loop-body scratch you want the memory
+     * passes to manage.
+     */
+    template <typename T, typename Alloc = std::allocator<T>>
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_tensor", T = float, Alloc = std::allocator<float>)
+        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_tensor", T = double, Alloc = std::allocator<double>)
+            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<double>,
+                                                     Alloc = std::allocator<std::complex<double>>)
+                    GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::vector<size_t> dims,
+                                                                           bool intermediate = false) {
+        using TensorType = GeneralRuntimeTensor<T, Alloc>;
+        auto *ptr        = new TensorType(typename TensorType::DeferredAlloc{}, name, std::move(dims));
+        _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
+
+        auto handle            = make_handle(*ptr, 0);
+        handle.is_intermediate = intermediate;
+        handle.alloc_state     = AllocState::Deferred;
+        handle.materialize_fn  = [ptr]() { ptr->materialize(); };
+        handle.release_fn      = [ptr]() { ptr->release(); };
+        handle.zero_fn         = [ptr]() {
+            ptr->materialize();
+            ptr->zero();
+        };
+        handle.random_fn = [ptr]() {
+            ptr->materialize();
+            auto *data = ptr->data();
+            for (size_t idx = 0; idx < ptr->size(); idx++) {
+                // NOLINTNEXTLINE(misc-predictable-rand)
+                data[idx] = static_cast<T>(static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0);
+            }
+        };
+        register_tensor(std::move(handle));
+        // No Alloc node — MaterializationPass inserts Materialize + Initialize.
+        return *ptr;
+    }
+
+    /// Runtime-rank analog of declare_zero_tensor() (graph-owned, deferred, zeroed
+    /// at materialize time).
+    template <typename T, typename Alloc = std::allocator<T>>
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = float, Alloc = std::allocator<float>)
+        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = double, Alloc = std::allocator<double>)
+            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<float>,
+                                                 Alloc = std::allocator<std::complex<float>>)
+                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<double>,
+                                                     Alloc = std::allocator<std::complex<double>>)
+                    GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::vector<size_t> dims,
+                                                                                bool intermediate = false) {
+        auto &t = declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), intermediate);
+        for (auto &[tid, handle] : _tensors) {
+            if (handle.tensor_ptr == &t) {
+                handle.init_kind = InitKind::Zero;
+                break;
+            }
+        }
+        t.set_pending_init(PendingInit::Zero);
+        return t;
+    }
+
     // ── Deferred tensor declaration ─────────────────────────────────────────
 
     /**

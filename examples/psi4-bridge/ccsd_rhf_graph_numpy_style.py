@@ -185,13 +185,13 @@ with cg.capture(body):
 
 print(f"captured loop body: {body.num_nodes()} nodes")
 
-# Optimization passes. NB: passes applied to `g` only see the top-level loop node
-# (1 node) and don't recurse — apply them to the loop BODY subgraph. On this body
-# only Reorder fires: the body is hand-written with pre-allocated reused scratch +
-# in-place ops, so MemoryPlanning/InplaceOptimization have nothing to add and CSE
-# can't fold the (multi-writer) scratch. Reorder reschedules; correctness holds.
-mod = body.apply(cg.default_pass_manager())
-print(f"optimized loop body: modified={mod}, {body.num_nodes()} nodes")
+# Optimization passes recurse into the loop body (each pass opts in via
+# OptimizerPass::recurse_into_subgraphs()), so the top-level g.apply reaches the
+# body. On this body only Reorder fires (reschedules): it's hand-written with
+# pre-allocated reused scratch + in-place ops, so MemoryPlanning/InplaceOptimization
+# have nothing to add and CSE can't fold the multi-writer scratch. Correctness holds.
+mod = g.apply(cg.default_pass_manager())
+print(f"optimized (passes recurse into body): modified={mod}, body {body.num_nodes()} nodes")
 
 g.execute()
 e_new = float(np.asarray(Ecorr)[0])
