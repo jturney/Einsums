@@ -16,6 +16,7 @@
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra.hpp>
+#include <Einsums/Profile.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
 #include <Einsums/TensorAlgebra/Backends/ElementTransform.hpp>
@@ -83,20 +84,27 @@ EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<std::complex<
         using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
+            LabeledSection("scale eager");
             detail::tiled_scale<T>(factor, A);
             return;
         }
+        LabeledSection("scale capture");
         auto [a_id, a_slot] = ctx.get_slot(*A);
         auto label          = fmt::format("tiled scale({})", A->name());
-        auto executor       = [factor, a_slot]() { detail::tiled_scale<T>(factor, static_cast<AType *>(a_slot->ptr)); };
+        auto executor       = [factor, a_slot]() {
+            LabeledSection("scale execute");
+            detail::tiled_scale<T>(factor, static_cast<AType *>(a_slot->ptr));
+        };
         ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor));
     } else {
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
+            LabeledSection("scale eager");
             linear_algebra::scale(factor, A);
             return;
         }
 
+        LabeledSection("scale capture");
         auto [a_id, a_slot] = ctx.get_slot(*A);
 
         ScaleDescriptor desc;
@@ -115,6 +123,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<std::complex<
         }();
         auto label    = fmt::format("scale({}, {})", factor_str, A->name());
         auto executor = [factor, a_slot]() {
+            LabeledSection("scale execute");
             auto *a_ptr = static_cast<AType *>(a_slot->ptr);
             linear_algebra::scale(factor, a_ptr);
         };
@@ -147,10 +156,12 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("permute eager");
         dispatch::string_permute(parsed, beta, C, alpha, A);
         return;
     }
 
+    LabeledSection("permute capture");
     // Capture mode with slots
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [c_id, c_slot] = ctx.get_slot(*C);
@@ -169,6 +180,7 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
     auto label = fmt::format("permute: C[{}] = A[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","));
 
     auto executor = [parsed, beta, alpha, a_slot, c_slot]() {
+        LabeledSection("permute execute");
         dispatch::string_permute<AType, CType>(parsed, static_cast<T>(beta), static_cast<CType *>(c_slot->ptr), static_cast<T>(alpha),
                                                *static_cast<AType const *>(a_slot->ptr));
     };
@@ -213,14 +225,17 @@ template <TensorConcept CType, TensorConcept AType>
 void transpose(CType *C, AType const &A) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("transpose eager");
         tensor_algebra::transpose(C, A);
         return;
     }
 
+    LabeledSection("transpose capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
     auto executor = [c_slot, a_slot]() {
+        LabeledSection("transpose execute");
         tensor_algebra::transpose(static_cast<CType *>(c_slot->ptr), *static_cast<AType const *>(a_slot->ptr));
     };
 
@@ -331,14 +346,19 @@ EINSUMS_PYBIND_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::comp
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("block_copy eager");
         apply(dst, &src);
         return;
     }
 
+    LabeledSection("block_copy capture");
     auto [s_id, s_slot] = ctx.get_slot(src);
     auto [d_id, d_slot] = ctx.get_slot(*dst);
 
-    auto executor = [s_slot, d_slot, apply]() { apply(static_cast<DstType *>(d_slot->ptr), static_cast<SrcType const *>(s_slot->ptr)); };
+    auto executor = [s_slot, d_slot, apply]() {
+        LabeledSection("block_copy execute");
+        apply(static_cast<DstType *>(d_slot->ptr), static_cast<SrcType const *>(s_slot->ptr));
+    };
     ctx.record(OpKind::Custom, "block_copy", {s_id}, {d_id}, std::move(executor));
 }
 
@@ -355,13 +375,18 @@ template <CoreTensorConcept CType, typename UnaryOperator>
 void element_transform(CType *C, UnaryOperator unary_op) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("element_transform eager");
         tensor_algebra::element_transform(C, unary_op);
         return;
     }
 
+    LabeledSection("element_transform capture");
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
-    auto executor = [c_slot, unary_op]() { tensor_algebra::element_transform(static_cast<CType *>(c_slot->ptr), unary_op); };
+    auto executor = [c_slot, unary_op]() {
+        LabeledSection("element_transform execute");
+        tensor_algebra::element_transform(static_cast<CType *>(c_slot->ptr), unary_op);
+    };
 
     ctx.record(OpKind::ElementTransform, "element_transform", {c_id}, {c_id}, std::move(executor));
 }
@@ -373,11 +398,16 @@ template <TiledTensorConcept CType, typename UnaryOperator>
 void element_transform(CType *C, UnaryOperator unary_op) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("element_transform eager");
         detail::tiled_element_transform(C, unary_op);
         return;
     }
+    LabeledSection("element_transform capture");
     auto [c_id, c_slot] = ctx.get_slot(*C);
-    auto executor       = [c_slot, unary_op]() { detail::tiled_element_transform(static_cast<CType *>(c_slot->ptr), unary_op); };
+    auto executor       = [c_slot, unary_op]() {
+        LabeledSection("element_transform execute");
+        detail::tiled_element_transform(static_cast<CType *>(c_slot->ptr), unary_op);
+    };
     ctx.record(OpKind::Custom, "tiled element_transform", {c_id}, {c_id}, std::move(executor));
 }
 
@@ -456,12 +486,17 @@ EINSUMS_PYBIND_INSTANTIATE_AS("element_transform", einsums::TiledRuntimeTensor<s
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("element_transform_python eager");
         run(C);
         return;
     }
 
+    LabeledSection("element_transform_python capture");
     auto [c_id, c_slot] = ctx.get_slot(*C);
-    auto executor       = [c_slot, run]() { run(static_cast<TensorType *>(c_slot->ptr)); };
+    auto executor       = [c_slot, run]() {
+        LabeledSection("element_transform_python execute");
+        run(static_cast<TensorType *>(c_slot->ptr));
+    };
     ctx.record(OpKind::ElementTransform, "element_transform", {c_id}, {c_id}, std::move(executor));
 }
 
@@ -509,13 +544,18 @@ EINSUMS_PYBIND_INSTANTIATE_AS("shift", einsums::RuntimeTensorView<std::complex<d
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("shift eager");
         run(A);
         return;
     }
 
+    LabeledSection("shift capture");
     auto [a_id, a_slot] = ctx.get_slot(*A);
     auto label          = fmt::format("shift({})", A->name());
-    auto executor       = [a_slot, run]() { run(static_cast<AType *>(a_slot->ptr)); };
+    auto executor       = [a_slot, run]() {
+        LabeledSection("shift execute");
+        run(static_cast<AType *>(a_slot->ptr));
+    };
     ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor));
 }
 
@@ -568,28 +608,34 @@ EINSUMS_PYBIND_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<d
         using T   = typename XType::ValueType;
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
+            LabeledSection("axpy eager");
             detail::tiled_axpy<T>(alpha, X, Y);
             return;
         }
+        LabeledSection("axpy capture");
         auto [x_id, x_slot] = ctx.get_slot(X);
         auto [y_id, y_slot] = ctx.get_slot(*Y);
         auto label          = fmt::format("tiled axpy({}, {})", X.name(), Y->name());
         auto executor       = [alpha, x_slot, y_slot]() {
+            LabeledSection("axpy execute");
             detail::tiled_axpy<T>(alpha, *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
         };
         ctx.record(OpKind::Custom, std::move(label), {x_id}, {y_id}, std::move(executor));
     } else {
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
+            LabeledSection("axpy eager");
             linear_algebra::axpy(alpha, X, Y);
             return;
         }
 
+        LabeledSection("axpy capture");
         auto [x_id, x_slot] = ctx.get_slot(X);
         auto [y_id, y_slot] = ctx.get_slot(*Y);
 
         auto label    = fmt::format("axpy(alpha={}, {}, {})", alpha, X.name(), Y->name());
         auto executor = [alpha, x_slot, y_slot]() {
+            LabeledSection("axpy execute");
             linear_algebra::axpy(alpha, *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
         };
 
@@ -636,15 +682,18 @@ EINSUMS_PYBIND_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<d
     void axpby(typename XType::ValueType alpha, XType const &X, typename XType::ValueType beta, YType *Y) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("axpby eager");
         linear_algebra::axpby(alpha, X, beta, Y);
         return;
     }
 
+    LabeledSection("axpby capture");
     auto [x_id, x_slot] = ctx.get_slot(X);
     auto [y_id, y_slot] = ctx.get_slot(*Y);
 
     auto label    = fmt::format("axpby(alpha={}, beta={})", alpha, beta);
     auto executor = [alpha, x_slot, beta, y_slot]() {
+        LabeledSection("axpby execute");
         linear_algebra::axpby(alpha, *static_cast<XType const *>(x_slot->ptr), beta, static_cast<YType *>(y_slot->ptr));
     };
 
@@ -660,16 +709,24 @@ template <bool TransA, bool TransB, MatrixConcept T, typename U>
 void gemm(U const alpha, T const &A, T const &B, U const beta, T *C) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("gemm eager");
         linear_algebra::gemm<TransA, TransB>(alpha, A, B, beta, C);
         return;
     }
 
+    LabeledSection("gemm capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
     auto label    = fmt::format("gemm<{},{}>", TransA ? "T" : "N", TransB ? "T" : "N");
     auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
+        LabeledSection("gemm execute");
+        ProfileAnnotate("trans", TransA ? (TransB ? "TT" : "TN") : (TransB ? "NT" : "NN"));
+        ProfileAnnotate("m", static_cast<int64_t>(static_cast<T *>(c_slot->ptr)->dim(0)));
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<T *>(c_slot->ptr)->dim(1)));
+        ProfileAnnotate(
+            "k", static_cast<int64_t>(TransA ? static_cast<T const *>(a_slot->ptr)->dim(0) : static_cast<T const *>(a_slot->ptr)->dim(1)));
         linear_algebra::gemm<TransA, TransB>(alpha, *static_cast<T const *>(a_slot->ptr), *static_cast<T const *>(b_slot->ptr), beta,
                                              static_cast<T *>(c_slot->ptr));
     };
@@ -755,16 +812,24 @@ EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("gemm eager");
         linear_algebra::gemm<TransA, TransB>(alpha, A, B, beta, C);
         return;
     }
 
+    LabeledSection("gemm capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
     auto label    = fmt::format("gemm<{},{}>", TransA ? "T" : "N", TransB ? "T" : "N");
     auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
+        LabeledSection("gemm execute");
+        ProfileAnnotate("trans", TransA ? (TransB ? "TT" : "TN") : (TransB ? "NT" : "NN"));
+        ProfileAnnotate("m", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->dim(0)));
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->dim(1)));
+        ProfileAnnotate("k", static_cast<int64_t>(TransA ? static_cast<AType const *>(a_slot->ptr)->dim(0)
+                                                         : static_cast<AType const *>(a_slot->ptr)->dim(1)));
         linear_algebra::gemm<TransA, TransB>(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr),
                                              beta, static_cast<CType *>(c_slot->ptr));
     };
@@ -791,16 +856,22 @@ template <bool TransA, MatrixConcept AType, VectorConcept XType, VectorConcept Y
 void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("gemv eager");
         linear_algebra::gemv<TransA>(alpha, A, z, beta, y);
         return;
     }
 
+    LabeledSection("gemv capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [z_id, z_slot] = ctx.get_slot(z);
     auto [y_id, y_slot] = ctx.get_slot(*y);
 
     auto label    = fmt::format("gemv<{}>", TransA ? "T" : "N");
     auto executor = [alpha, a_slot, z_slot, beta, y_slot]() {
+        LabeledSection("gemv execute");
+        ProfileAnnotate("trans", TransA ? "T" : "N");
+        ProfileAnnotate("m", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(1)));
         linear_algebra::gemv<TransA>(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<XType const *>(z_slot->ptr), beta,
                                      static_cast<YType *>(y_slot->ptr));
     };
@@ -871,16 +942,22 @@ EINSUMS_PYBIND_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("gemv eager");
         linear_algebra::gemv<TransA>(alpha, A, z, beta, y);
         return;
     }
 
+    LabeledSection("gemv capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [z_id, z_slot] = ctx.get_slot(z);
     auto [y_id, y_slot] = ctx.get_slot(*y);
 
     auto label    = fmt::format("gemv<{}>", TransA ? "T" : "N");
     auto executor = [alpha, a_slot, z_slot, beta, y_slot]() {
+        LabeledSection("gemv execute");
+        ProfileAnnotate("trans", TransA ? "T" : "N");
+        ProfileAnnotate("m", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(1)));
         linear_algebra::gemv<TransA>(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<XType const *>(z_slot->ptr), beta,
                                      static_cast<YType *>(y_slot->ptr));
     };
@@ -903,15 +980,20 @@ template <MatrixConcept AType, VectorConcept XType, VectorConcept YType>
 void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("ger eager");
         linear_algebra::ger(alpha, X, Y, A);
         return;
     }
 
+    LabeledSection("ger capture");
     auto [x_id, x_slot] = ctx.get_slot(X);
     auto [y_id, y_slot] = ctx.get_slot(Y);
     auto [a_id, a_slot] = ctx.get_slot(*A);
 
     auto executor = [alpha, x_slot, y_slot, a_slot]() {
+        LabeledSection("ger execute");
+        ProfileAnnotate("m", static_cast<int64_t>(static_cast<XType const *>(x_slot->ptr)->dim(0)));
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<YType const *>(y_slot->ptr)->dim(0)));
         linear_algebra::ger(alpha, *static_cast<XType const *>(x_slot->ptr), *static_cast<YType const *>(y_slot->ptr),
                             static_cast<AType *>(a_slot->ptr));
     };
@@ -978,15 +1060,20 @@ EINSUMS_PYBIND_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<dou
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("ger eager");
         linear_algebra::ger(alpha, X, Y, A);
         return;
     }
 
+    LabeledSection("ger capture");
     auto [x_id, x_slot] = ctx.get_slot(X);
     auto [y_id, y_slot] = ctx.get_slot(Y);
     auto [a_id, a_slot] = ctx.get_slot(*A);
 
     auto executor = [alpha, x_slot, y_slot, a_slot]() {
+        LabeledSection("ger execute");
+        ProfileAnnotate("m", static_cast<int64_t>(static_cast<XType const *>(x_slot->ptr)->dim(0)));
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<YType const *>(y_slot->ptr)->dim(0)));
         linear_algebra::ger(alpha, *static_cast<XType const *>(x_slot->ptr), *static_cast<YType const *>(y_slot->ptr),
                             static_cast<AType *>(a_slot->ptr));
     };
@@ -1035,15 +1122,18 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("dot eager");
         *result = linear_algebra::dot(A, B);
         return;
     }
 
+    LabeledSection("dot capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
     TensorId r_id       = ctx.get_or_register_scalar(result, "dot_result");
 
     auto executor = [result, a_slot, b_slot]() {
+        LabeledSection("dot execute");
         *result = linear_algebra::dot(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
     };
 
@@ -1129,10 +1219,12 @@ EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("dot_python eager");
         result->data()[0] = compute(A, B);
         return;
     }
 
+    LabeledSection("dot_python capture");
     // Register the result as a normal tensor slot (not a scalar handle) so
     // downstream tensor ops (scale, axpy, ...) on the same tensor see the
     // same slot id — get_or_register_scalar would key by data()[0] and
@@ -1142,6 +1234,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<
     auto [r_id, r_slot] = ctx.get_slot(*result);
 
     auto executor = [a_slot, b_slot, r_slot, compute]() {
+        LabeledSection("dot_python execute");
         auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
         r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
     };
@@ -1216,12 +1309,15 @@ EINSUMS_PYBIND_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<std::complex<
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("sum_python eager");
         result->data()[0] = compute(A);
         return;
     }
+    LabeledSection("sum_python capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [r_id, r_slot] = ctx.get_slot(*result);
     auto executor       = [a_slot, r_slot, compute]() {
+        LabeledSection("sum_python execute");
         static_cast<ResultType *>(r_slot->ptr)->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr));
     };
     ctx.record(OpKind::Custom, "sum", {a_id}, {r_id}, std::move(executor));
@@ -1253,12 +1349,15 @@ EINSUMS_PYBIND_INSTANTIATE_AS("max", einsums::GeneralRuntimeTensor<double, std::
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("max_python eager");
         result->data()[0] = compute(A);
         return;
     }
+    LabeledSection("max_python capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [r_id, r_slot] = ctx.get_slot(*result);
     auto executor       = [a_slot, r_slot, compute]() {
+        LabeledSection("max_python execute");
         static_cast<ResultType *>(r_slot->ptr)->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr));
     };
     ctx.record(OpKind::Custom, "max", {a_id}, {r_id}, std::move(executor));
@@ -1315,15 +1414,19 @@ EINSUMS_PYBIND_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::R
     void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("direct_product eager");
         linear_algebra::direct_product(alpha, A, B, beta, C);
         return;
     }
 
+    LabeledSection("direct_product capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
     auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
+        LabeledSection("direct_product execute");
+        ProfileAnnotate("size", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->size()));
         linear_algebra::direct_product(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), beta,
                                        static_cast<CType *>(c_slot->ptr));
     };
@@ -1452,10 +1555,12 @@ EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::compl
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("outer_sum eager");
         apply(result);
         return;
     }
 
+    LabeledSection("outer_sum capture");
     std::vector<TensorId> in_ids;
     in_ids.reserve(N);
     std::vector<TensorSlot const *> v_slots;
@@ -1468,6 +1573,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::compl
     auto [r_id, r_slot] = ctx.get_slot(*result);
 
     auto executor = [v_slots, r_slot, effective_coeffs, N]() {
+        LabeledSection("outer_sum execute");
         auto                           *r_ptr = static_cast<ResultType *>(r_slot->ptr);
         std::vector<VectorType const *> rebound(N);
         for (size_t k = 0; k < N; ++k)
@@ -1533,14 +1639,19 @@ template <TensorConcept AType>
 void norm(RemoveComplexT<typename AType::ValueType> *result, linear_algebra::Norm norm_type, AType const &A) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("norm eager");
         *result = linear_algebra::norm(norm_type, A);
         return;
     }
 
+    LabeledSection("norm capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     TensorId r_id       = ctx.get_or_register_scalar(result, "norm_result");
 
-    auto executor = [result, norm_type, a_slot]() { *result = linear_algebra::norm(norm_type, *static_cast<AType const *>(a_slot->ptr)); };
+    auto executor = [result, norm_type, a_slot]() {
+        LabeledSection("norm execute");
+        *result = linear_algebra::norm(norm_type, *static_cast<AType const *>(a_slot->ptr));
+    };
 
     ctx.record(OpKind::Norm, "norm", {a_id}, {r_id}, std::move(executor));
 }
@@ -1604,14 +1715,17 @@ EINSUMS_PYBIND_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std:
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("norm_python eager");
         result->data()[0] = compute(norm_type, A);
         return;
     }
 
+    LabeledSection("norm_python capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [r_id, r_slot] = ctx.get_slot(*result);
 
     auto executor = [norm_type, a_slot, r_slot, compute]() {
+        LabeledSection("norm_python execute");
         auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
         r_ptr->data()[0] = compute(norm_type, *static_cast<AType const *>(a_slot->ptr));
     };
@@ -1693,6 +1807,7 @@ void trace(typename AType::ValueType *result, AType const &A) {
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("trace eager");
         if (A.dim(0) != A.dim(1))
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
         T sum = T{};
@@ -1702,10 +1817,12 @@ void trace(typename AType::ValueType *result, AType const &A) {
         return;
     }
 
+    LabeledSection("trace capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     TensorId r_id       = ctx.get_or_register_scalar(result, "trace_result");
 
     auto executor = [result, a_slot]() {
+        LabeledSection("trace execute");
         auto const &a = *static_cast<AType const *>(a_slot->ptr);
         if (a.dim(0) != a.dim(1))
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
@@ -1783,14 +1900,17 @@ EINSUMS_PYBIND_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::comple
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("trace_python eager");
         result->data()[0] = compute(A);
         return;
     }
 
+    LabeledSection("trace_python capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [r_id, r_slot] = ctx.get_slot(*result);
 
     auto executor = [a_slot, r_slot, compute]() {
+        LabeledSection("trace_python execute");
         auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
         r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr));
     };
@@ -1858,13 +1978,19 @@ EINSUMS_PYBIND_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::co
     }
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("symm_gemm eager");
         linear_algebra::symm_gemm<TransA, TransB>(A, B, C);
         return;
     }
+    LabeledSection("symm_gemm capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
     auto executor       = [a_slot, b_slot, c_slot]() {
+        LabeledSection("symm_gemm execute");
+        ProfileAnnotate("a_n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
+        ProfileAnnotate("b_m", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->dim(0)));
+        ProfileAnnotate("b_n", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->dim(1)));
         linear_algebra::symm_gemm<TransA, TransB>(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr),
                                                   static_cast<CType *>(c_slot->ptr));
     };
@@ -1882,15 +2008,21 @@ template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, Ma
 void symm_gemm(AType const &A, BType const &B, CType *C) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("symm_gemm eager");
         linear_algebra::symm_gemm<TransA, TransB>(A, B, C);
         return;
     }
 
+    LabeledSection("symm_gemm capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
     auto executor = [a_slot, b_slot, c_slot]() {
+        LabeledSection("symm_gemm execute");
+        ProfileAnnotate("a_n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
+        ProfileAnnotate("b_m", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->dim(0)));
+        ProfileAnnotate("b_n", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->dim(1)));
         linear_algebra::symm_gemm<TransA, TransB>(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr),
                                                   static_cast<CType *>(c_slot->ptr));
     };
@@ -1919,14 +2051,18 @@ template <bool ComputeEigenvectors = true, MatrixConcept AType, VectorConcept WT
 void syev(AType *A, WType *W) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("syev eager");
         linear_algebra::syev<ComputeEigenvectors>(A, W);
         return;
     }
 
+    LabeledSection("syev capture");
     auto [a_id, a_slot] = ctx.get_slot(*A);
     auto [w_id, w_slot] = ctx.get_slot(*W);
 
     auto executor = [a_slot, w_slot]() {
+        LabeledSection("syev execute");
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
         linear_algebra::syev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
     };
 
@@ -1956,14 +2092,18 @@ EINSUMS_PYBIND_INSTANTIATE_BOOLS("syev", einsums::GeneralRuntimeTensor<double, s
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("syev eager");
         linear_algebra::syev<ComputeEigenvectors>(A, W);
         return;
     }
 
+    LabeledSection("syev capture");
     auto [a_id, a_slot] = ctx.get_slot(*A);
     auto [w_id, w_slot] = ctx.get_slot(*W);
 
     auto executor = [a_slot, w_slot]() {
+        LabeledSection("syev execute");
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
         linear_algebra::syev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
     };
 
@@ -2034,14 +2174,18 @@ template <bool ComputeEigenvectors = true, MatrixConcept AType, VectorConcept WT
 void heev(AType *A, WType *W) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("heev eager");
         linear_algebra::heev<ComputeEigenvectors>(A, W);
         return;
     }
 
+    LabeledSection("heev capture");
     auto [a_id, a_slot] = ctx.get_slot(*A);
     auto [w_id, w_slot] = ctx.get_slot(*W);
 
     auto executor = [a_slot, w_slot]() {
+        LabeledSection("heev execute");
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
         linear_algebra::heev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
     };
     ctx.record(OpKind::Heev, "heev", {a_id}, {a_id, w_id}, std::move(executor));
@@ -2070,14 +2214,18 @@ EINSUMS_PYBIND_INSTANTIATE_BOOLS("heev", einsums::GeneralRuntimeTensor<std::comp
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("heev eager");
         linear_algebra::heev<ComputeEigenvectors>(A, W);
         return;
     }
 
+    LabeledSection("heev capture");
     auto [a_id, a_slot] = ctx.get_slot(*A);
     auto [w_id, w_slot] = ctx.get_slot(*W);
 
     auto executor = [a_slot, w_slot]() {
+        LabeledSection("heev execute");
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
         linear_algebra::heev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
     };
     ctx.record(OpKind::Heev, "heev", {a_id}, {a_id, w_id}, std::move(executor));
@@ -2094,12 +2242,15 @@ void syev(AType *A, WType *W) {
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("syev eager");
         detail::tiled_syev<ComputeEigenvectors, T>(A, W);
         return;
     }
+    LabeledSection("syev capture");
     auto [a_id, a_slot] = ctx.get_slot(*A);
     auto [w_id, w_slot] = ctx.get_slot(*W);
     auto executor       = [a_slot, w_slot]() {
+        LabeledSection("syev execute");
         detail::tiled_syev<ComputeEigenvectors, T>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
     };
     ctx.record(OpKind::Syev, "syev", {a_id}, {a_id, w_id}, std::move(executor));
@@ -2113,12 +2264,15 @@ void heev(AType *A, WType *W) {
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("heev eager");
         detail::tiled_heev<ComputeEigenvectors, T>(A, W);
         return;
     }
+    LabeledSection("heev capture");
     auto [a_id, a_slot] = ctx.get_slot(*A);
     auto [w_id, w_slot] = ctx.get_slot(*W);
     auto executor       = [a_slot, w_slot]() {
+        LabeledSection("heev execute");
         detail::tiled_heev<ComputeEigenvectors, T>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
     };
     ctx.record(OpKind::Heev, "heev", {a_id}, {a_id, w_id}, std::move(executor));
@@ -2177,13 +2331,18 @@ template <MatrixConcept AType, TensorConcept BType>
 auto gesv(AType *A, BType *B) -> int {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("gesv eager");
         return linear_algebra::gesv(A, B);
     }
 
+    LabeledSection("gesv capture");
     auto [a_id, a_slot] = ctx.get_slot(*A);
     auto [b_id, b_slot] = ctx.get_slot(*B);
 
     auto executor = [a_slot, b_slot]() {
+        LabeledSection("gesv execute");
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
+        ProfileAnnotate("nrhs", static_cast<int64_t>(static_cast<BType *>(b_slot->ptr)->dim(1)));
         std::ignore = linear_algebra::gesv(static_cast<AType *>(a_slot->ptr), static_cast<BType *>(b_slot->ptr));
     };
     ctx.record(OpKind::Gesv, "gesv", {a_id, b_id}, {a_id, b_id}, std::move(executor));
@@ -2214,13 +2373,18 @@ EINSUMS_PYBIND_INSTANTIATE_AS("gesv", einsums::GeneralRuntimeTensor<std::complex
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("gesv eager");
         return linear_algebra::gesv(A, B);
     }
 
+    LabeledSection("gesv capture");
     auto [a_id, a_slot] = ctx.get_slot(*A);
     auto [b_id, b_slot] = ctx.get_slot(*B);
 
     auto executor = [a_slot, b_slot]() {
+        LabeledSection("gesv execute");
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
+        ProfileAnnotate("nrhs", static_cast<int64_t>(static_cast<BType *>(b_slot->ptr)->dim(1)));
         std::ignore = linear_algebra::gesv(static_cast<AType *>(a_slot->ptr), static_cast<BType *>(b_slot->ptr));
     };
     ctx.record(OpKind::Gesv, "gesv", {a_id, b_id}, {a_id, b_id}, std::move(executor));
@@ -2236,13 +2400,19 @@ template <MatrixConcept AType>
 void invert(AType *A) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("invert eager");
         linear_algebra::invert(A);
         return;
     }
 
+    LabeledSection("invert capture");
     auto [a_id, a_slot] = ctx.get_slot(*A);
 
-    auto executor = [a_slot]() { linear_algebra::invert(static_cast<AType *>(a_slot->ptr)); };
+    auto executor = [a_slot]() {
+        LabeledSection("invert execute");
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
+        linear_algebra::invert(static_cast<AType *>(a_slot->ptr));
+    };
     ctx.record(OpKind::Invert, "invert", {a_id}, {a_id}, std::move(executor));
 }
 
@@ -2267,13 +2437,19 @@ EINSUMS_PYBIND_INSTANTIATE_AS("invert", einsums::GeneralRuntimeTensor<std::compl
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("invert eager");
         linear_algebra::invert(A);
         return;
     }
 
+    LabeledSection("invert capture");
     auto [a_id, a_slot] = ctx.get_slot(*A);
 
-    auto executor = [a_slot]() { linear_algebra::invert(static_cast<AType *>(a_slot->ptr)); };
+    auto executor = [a_slot]() {
+        LabeledSection("invert execute");
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
+        linear_algebra::invert(static_cast<AType *>(a_slot->ptr));
+    };
     ctx.record(OpKind::Invert, "invert", {a_id}, {a_id}, std::move(executor));
 }
 
@@ -2632,7 +2808,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<std::complex<
     T   ret{1.0};
     int parity = 0;
     for (size_t i = 0; i < A.dim(0); ++i) {
-        if (pivots[i] != static_cast<blas::int_t>(i + 1)) {
+        if (std::cmp_not_equal(pivots[i], i + 1)) {
             ++parity;
         }
     }
@@ -2749,10 +2925,12 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("einsum eager");
         dispatch::string_einsum(parsed, c_pf, C, ab_pf, A, B);
         return;
     }
 
+    LabeledSection("einsum capture");
     // Capture mode with slots
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
@@ -3004,6 +3182,11 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
 
                 bool const swap_ab  = row_mode;
                 auto       executor = [d, swap_ab, a_slot, b_slot, c_slot]() {
+                    LabeledSection("einsum batched execute");
+                    ProfileAnnotate("m", static_cast<int64_t>(d.m));
+                    ProfileAnnotate("n", static_cast<int64_t>(d.n));
+                    ProfileAnnotate("k", static_cast<int64_t>(d.k));
+                    ProfileAnnotate("batch", static_cast<int64_t>(d.batch_count));
                     auto const *base_a = static_cast<T const *>(static_cast<AType const *>(a_slot->ptr)->data());
                     auto const *base_b = static_cast<T const *>(static_cast<BType const *>(b_slot->ptr)->data());
                     auto       *base_c = static_cast<T *>(static_cast<CType *>(c_slot->ptr)->data());
@@ -3049,6 +3232,10 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     // tiny (three vector<string> copies by reference + one std::string)
     // so this is cheap compared to the contraction itself.
     auto executor = [indices, params, a_slot, b_slot, c_slot]() {
+        LabeledSection("einsum execute");
+        ProfileAnnotate("a_size", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->size()));
+        ProfileAnnotate("b_size", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->size()));
+        ProfileAnnotate("c_size", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->size()));
         ParsedEinsumSpec parsed_live{indices->c_indices, indices->a_indices, indices->b_indices, /*raw*/ std::string{}};
         dispatch::string_einsum(parsed_live, as<T>(params->c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params->ab_pf),
                                 *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
@@ -3087,10 +3274,12 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("einsum eager");
         detail::tiled_runtime_einsum<T>(parsed, c_pf, C, ab_pf, A, B);
         return;
     }
 
+    LabeledSection("einsum capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
@@ -3102,7 +3291,11 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
                              fmt::join(parsed.b_indices, ","));
 
     auto executor = [indices, params, a_slot, b_slot, c_slot]() {
-        ParsedEinsumSpec live{indices->c_indices, indices->a_indices, indices->b_indices, /*raw*/ std::string{}};
+        LabeledSection("einsum execute");
+        ParsedEinsumSpec live{.c_indices   = indices->c_indices,
+                              .a_indices   = indices->a_indices,
+                              .b_indices   = indices->b_indices,
+                              /*raw*/ .raw = std::string{}};
         detail::tiled_runtime_einsum<T>(live, as<T>(params->c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params->ab_pf),
                                         *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
     };
@@ -3252,10 +3445,12 @@ void parallel_for(std::string name, size_t begin, size_t end, F &&body, std::tup
                   std::tuple<WriteTensors *...> writes) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("parallel_for eager");
         task_pool::TaskPool::get_singleton().parallel_for(name, begin, end, std::forward<F>(body));
         return;
     }
 
+    LabeledSection("parallel_for capture");
     // Collect input tensor IDs
     std::vector<TensorId> input_ids;
     std::apply([&](auto *...ptrs) { (input_ids.push_back(ctx.get_or_register(*ptrs)), ...); }, reads);
@@ -3265,6 +3460,7 @@ void parallel_for(std::string name, size_t begin, size_t end, F &&body, std::tup
     std::apply([&](auto *...ptrs) { (output_ids.push_back(ctx.get_or_register(*ptrs)), ...); }, writes);
 
     auto executor = [name, begin, end, body = std::forward<F>(body)]() mutable {
+        LabeledSection("parallel_for execute");
         task_pool::TaskPool::get_singleton().parallel_for(name, begin, end, body);
     };
 
@@ -3287,15 +3483,18 @@ template <typename F, CoreBasicTensorConcept... TensorTypes>
 void parallel_for(std::string name, size_t begin, size_t end, F &&body, TensorTypes *...tensors) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("parallel_for eager");
         task_pool::TaskPool::get_singleton().parallel_for(name, begin, end, std::forward<F>(body));
         return;
     }
 
+    LabeledSection("parallel_for capture");
     // All listed tensors are both inputs and outputs
     std::vector<TensorId> tensor_ids;
     (tensor_ids.push_back(ctx.get_or_register(*tensors)), ...);
 
     auto executor = [name, begin, end, body = std::forward<F>(body)]() mutable {
+        LabeledSection("parallel_for execute");
         task_pool::TaskPool::get_singleton().parallel_for(name, begin, end, body);
     };
 
@@ -3322,17 +3521,20 @@ void parallel_reduce(std::string name, size_t begin, size_t end, Acc *result, In
                      TensorTypes *...tensors) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
+        LabeledSection("parallel_reduce eager");
         *result = task_pool::TaskPool::get_singleton().parallel_reduce<Acc>(name, begin, end, std::forward<InitFactory>(init),
                                                                             std::forward<Body>(body), std::forward<Combiner>(combine));
         return;
     }
 
+    LabeledSection("parallel_reduce capture");
     // Input tensors
     std::vector<TensorId> tensor_ids;
     (tensor_ids.push_back(ctx.get_or_register(*tensors)), ...);
 
     auto executor = [name, begin, end, result, init = std::forward<InitFactory>(init), body = std::forward<Body>(body),
                      combine = std::forward<Combiner>(combine)]() mutable {
+        LabeledSection("parallel_reduce execute");
         *result = task_pool::TaskPool::get_singleton().parallel_reduce<Acc>(name, begin, end, init, body, combine);
     };
 
