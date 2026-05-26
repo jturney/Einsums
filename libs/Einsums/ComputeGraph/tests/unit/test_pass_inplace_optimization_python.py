@@ -49,7 +49,7 @@ def test_inplace_optimization_finds_candidates():
     C = einsums.create_zero_tensor("C", [3, 3])
 
     g = cg.Graph("inplace_test")
-    T = g.create_zero_tensor("T", [3, 3], "float64")
+    T = g.create_zero_tensor("T", [3, 3], dtype="float64")
     with cg.capture(g):
         einsums.einsum("ij <- ik ; kj", T, A, B)  # writes T
         einsums.einsum("ij <- ik ; kj", C, T, A)  # reads T (sole consumer)
@@ -64,7 +64,7 @@ def test_inplace_optimization_rank3_batched_gemm_with_sole_consumer():
     B = einsums.create_random_tensor("B", [5, 6, 4])
 
     g = cg.Graph("inplace_rank3")
-    T = g.create_zero_tensor("T", [3, 6, 4], "float64")
+    T = g.create_zero_tensor("T", [3, 6, 4], dtype="float64")
     with cg.capture(g):
         einsums.einsum("ijb <- ikb ; kjb", T, A, B)
         einsums.linalg.scale(0.5, T)

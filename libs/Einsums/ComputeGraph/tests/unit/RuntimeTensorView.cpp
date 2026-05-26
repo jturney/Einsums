@@ -69,11 +69,28 @@ TEST_CASE("cg::view_runtime — wrong axis count throws", "[ComputeGraph][Runtim
     REQUIRE_THROWS(cg::view_runtime(A, std::vector<cg::ViewAxis>{cg::ViewAxis::full(), cg::ViewAxis::full(), cg::ViewAxis::full()}));
 }
 
-TEST_CASE("cg::view_runtime — Drop axis throws", "[ComputeGraph][RuntimeTensor][View]") {
-    RuntimeTensor<double>  A("A", {3UL, 3UL});
-    cg::Pipeline           pipe("view_rt_drop");
-    auto                  &stage = pipe.add_stage("s");
-    cg::CaptureGuard const g(stage);
+TEST_CASE("cg::view_runtime — Drop axis reduces rank", "[ComputeGraph][RuntimeTensor][View]") {
+    RuntimeTensor<double> A("A", {3UL, 3UL});
+    for (size_t i = 0; i < 3; ++i)
+        for (size_t j = 0; j < 3; ++j)
+            A(i, j) = static_cast<double>(10 * i + j);
 
-    REQUIRE_THROWS(cg::view_runtime(A, std::vector<cg::ViewAxis>{cg::ViewAxis::drop(1), cg::ViewAxis::full()}));
+    cg::Pipeline               pipe("view_rt_drop");
+    RuntimeTensorView<double> *slice_ptr = nullptr;
+    {
+        auto                  &stage = pipe.add_stage("s");
+        cg::CaptureGuard const g(stage);
+        // Drop axis 0 at index 1 (row 1), keep axis 1: result is the rank-1 row A(1, :).
+        auto &slice = cg::view_runtime(A, std::vector<cg::ViewAxis>{cg::ViewAxis::drop(1), cg::ViewAxis::full()});
+        slice_ptr   = &slice;
+        REQUIRE(slice.rank() == 1);
+        REQUIRE(slice.dim(0) == 3);
+    }
+    pipe.execute();
+
+    // After execute the drop offset is resolved; the view aliases row 1 of the parent.
+    REQUIRE(slice_ptr->rank() == 1);
+    REQUIRE(slice_ptr->dim(0) == 3);
+    for (size_t j = 0; j < 3; ++j)
+        REQUIRE((*slice_ptr)(j) == Catch::Approx(10.0 + static_cast<double>(j)));
 }

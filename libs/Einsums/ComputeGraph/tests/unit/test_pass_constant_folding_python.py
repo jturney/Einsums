@@ -43,7 +43,7 @@ def test_constant_folding_user_owned_not_assumed_constant():
 
 def test_constant_folding_written_intermediate_is_not_constant():
     g = cg.Graph("cf_intermediate")
-    T = g.create_zero_tensor("T", [3, 3], "float64")
+    T = g.create_zero_tensor("T", [3, 3], dtype="float64")
     np.asarray(T)[np.arange(3), np.arange(3)] = 1.0
 
     with cg.capture(g):

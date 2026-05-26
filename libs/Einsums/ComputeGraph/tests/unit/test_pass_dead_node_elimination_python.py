@@ -49,7 +49,7 @@ def test_dne_eliminates_intermediate_with_no_reader():
     B = einsums.create_random_tensor("B", [3, 3])
 
     g = cg.Graph("dne_intermediate")
-    T = g.create_zero_tensor("T", [3, 3], "float64")
+    T = g.create_zero_tensor("T", [3, 3], dtype="float64")
     with cg.capture(g):
         einsums.einsum("ij <- ik ; kj", T, A, B)
 
@@ -68,7 +68,7 @@ def test_dne_keeps_intermediate_with_reader():
     C = einsums.create_zero_tensor("C", [3, 3])
 
     g = cg.Graph("dne_live_intermediate")
-    T = g.create_zero_tensor("T", [3, 3], "float64")
+    T = g.create_zero_tensor("T", [3, 3], dtype="float64")
     with cg.capture(g):
         einsums.einsum("ij <- ik ; kj", T, A, B)
         einsums.einsum("ij <- ik ; kj", C, T, A)
@@ -83,7 +83,7 @@ def test_dne_rank3_batched_gemm_intermediate_eliminated():
     B = einsums.create_random_tensor("B", [5, 6, 4])
 
     g = cg.Graph("dne_rank3")
-    T = g.create_zero_tensor("T", [3, 6, 4], "float64")
+    T = g.create_zero_tensor("T", [3, 6, 4], dtype="float64")
     with cg.capture(g):
         einsums.einsum("ijb <- ikb ; kjb", T, A, B)
 
