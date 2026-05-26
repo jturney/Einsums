@@ -1,0 +1,33 @@
+# ThreadSanitizer suppressions for the Einsums CI "thread" sanitizer leg.
+#
+# Purpose: silence *false positives* that come from libraries TSan cannot
+# reason about, so that a genuine race in Einsums' own code still fails CI.
+# Do NOT add entries for einsums:: functions here — those are the races we
+# want to catch (e.g. bug-dropped-view-gemv-flaky-element, a collapse(2)
+# accumulation race in impl_gemv_noncontiguous). If a finding points at our
+# own kernel, fix the kernel; don't suppress it.
+#
+# Format: https://github.com/google/sanitizers/wiki/ThreadSanitizerSuppressions
+#   race:<substring of a frame symbol/file>
+#   called_from_lib:<library soname>
+#   deadlock:<substring>
+#
+# Why these are needed: the default Linux toolchain here is GCC, whose OpenMP
+# runtime (libgomp) and the vendor BLAS (OpenBLAS) are NOT instrumented and use
+# their own thread pools / synchronization that TSan does not model. TSan then
+# misreports accesses separated by an OpenMP barrier (or inside OpenBLAS's
+# threads) as concurrent. These suppressions scope that noise out.
+#
+# This list is a starting scaffold — expect to extend it after the first CI
+# run on the thread leg surfaces the actual (false-positive) stacks. Keep each
+# entry as specific as possible and comment why it is a false positive.
+
+# --- GCC OpenMP runtime (libgomp): barriers/reductions TSan can't see ---
+called_from_lib:libgomp.so
+race:libgomp
+race:GOMP_
+
+# --- OpenBLAS: its own thread pool, uninstrumented ---
+called_from_lib:libopenblas
+race:blas_thread_server
+race:openblas
