@@ -725,6 +725,7 @@ else()
 
   # We get false positives all over the place with this.
   if(CMAKE_COMPILER_IS_GNUCXX)
+    einsums_add_compile_flag_if_available(-Wno-interference-size)
     einsums_add_compile_flag_if_available(-Wno-unused-but-set-parameter)
     einsums_add_compile_flag_if_available(-Wno-unused-but-set-variable)
     # Uninitialized variables are bad, earlier compilers issue spurious warnings
