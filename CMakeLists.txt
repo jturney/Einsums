@@ -959,12 +959,57 @@ if(EINSUMS_BUILD_PYTHON)
   if(DEFINED ENV{CONDA_PREFIX} AND EXISTS "$ENV{CONDA_PREFIX}/include")
     set(EINSUMS_PYBIND_EXTRA_ISYSTEM "$ENV{CONDA_PREFIX}/include")
   endif()
+
+  # The clang resource-dir only carries Clang's *builtin* headers
+  # (``stddef.h``, ``stdarg.h``, ...) — NOT the C++ standard library. On
+  # Linux the C++ library is libstdc++ shipped with gcc, whose ``<complex>``,
+  # ``<string>``, etc. live under ``${gcc}/include/c++/<ver>`` (and, in a
+  # conda env, the non-standard ``x86_64-conda-linux-gnu`` triple) — a path
+  # the bare conda ``clang++`` cannot auto-detect when CMAKE_CXX_COMPILER is
+  # gcc. Rather than guess the layout, ask the actual project compiler for
+  # its real ``#include <...>`` search list and forward every directory as
+  # ``-isystem`` to the codegen. This is compiler/platform-agnostic: it
+  # yields libstdc++ dirs under gcc, libc++ + SDK dirs under clang, and the
+  # right set under icpx.
+  set(EINSUMS_PYBIND_CXX_INCLUDE_DIRS "")
+  execute_process(
+    COMMAND "${CMAKE_CXX_COMPILER}" -std=c++${EINSUMS_WITH_CXX_STANDARD} -E -x c++ -v /dev/null
+    OUTPUT_QUIET
+    ERROR_VARIABLE _pyb_cxx_verbose
+    RESULT_VARIABLE _pyb_cxx_probe_rc
+  )
+  if(_pyb_cxx_probe_rc EQUAL 0 AND _pyb_cxx_verbose)
+    string(REGEX REPLACE "\r?\n" ";" _pyb_cxx_lines "${_pyb_cxx_verbose}")
+    set(_pyb_in_search FALSE)
+    foreach(_line IN LISTS _pyb_cxx_lines)
+      if(_line MATCHES "#include <\\.\\.\\.> search starts here:")
+        set(_pyb_in_search TRUE)
+      elseif(_line MATCHES "End of search list\\.")
+        set(_pyb_in_search FALSE)
+      elseif(_pyb_in_search)
+        # Trim leading whitespace and a trailing " (framework directory)"
+        # annotation that Apple clang appends to framework search paths.
+        string(STRIP "${_line}" _dir)
+        string(REGEX REPLACE " \\(framework directory\\)$" "" _dir "${_dir}")
+        if(_dir AND EXISTS "${_dir}")
+          list(APPEND EINSUMS_PYBIND_CXX_INCLUDE_DIRS "${_dir}")
+        endif()
+      endif()
+    endforeach()
+  endif()
+
   message(STATUS "einsums-pybind resource-dir: ${EINSUMS_PYBIND_CLANG_RESOURCE_DIR}")
   if(EINSUMS_PYBIND_SYSROOT)
     message(STATUS "einsums-pybind sysroot: ${EINSUMS_PYBIND_SYSROOT}")
   endif()
   if(EINSUMS_PYBIND_EXTRA_ISYSTEM)
     message(STATUS "einsums-pybind extra -isystem: ${EINSUMS_PYBIND_EXTRA_ISYSTEM}")
+  endif()
+  if(EINSUMS_PYBIND_CXX_INCLUDE_DIRS)
+    message(STATUS "einsums-pybind C++ include dirs: ${EINSUMS_PYBIND_CXX_INCLUDE_DIRS}")
+  else()
+    message(WARNING "einsums-pybind: could not probe ${CMAKE_CXX_COMPILER} for C++ "
+                    "header search paths — codegen may fail to find <complex> etc.")
   endif()
 endif()
 if(EINSUMS_BUILD_PYTHON)

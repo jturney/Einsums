@@ -135,6 +135,13 @@ function(einsums_finalize_pybind)
     if(EINSUMS_PYBIND_EXTRA_ISYSTEM)
         list(APPEND _pyb_system_flags "-isystem" "${EINSUMS_PYBIND_EXTRA_ISYSTEM}")
     endif()
+    # The actual project compiler's C++ standard-library / system header
+    # search dirs (probed at configure time). Without these the libtooling
+    # parse can't find ``<complex>`` and friends when the build compiler is
+    # gcc (libstdc++) rather than the clang that backs einsums-pybind.
+    foreach(_cxx_dir IN LISTS EINSUMS_PYBIND_CXX_INCLUDE_DIRS)
+        list(APPEND _pyb_system_flags "-isystem" "${_cxx_dir}")
+    endforeach()
 
     # Configure-time-generated Defines.hpp files. Adding them to every
     # codegen edge's DEPENDS makes the codegen re-fire when configure
