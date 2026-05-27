@@ -252,7 +252,9 @@ EINSUMS_FORCEINLINE CVec<double> complex_mul(CVec<double> a, CVec<double> b) {
     auto t2     = _mm256_mul_pd(a_ii, b_swap);
     return _mm256_addsub_pd(t1, t2);
 }
-#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#elif defined(__SSE3__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+// SSE3+ path: moveldup/movehdup/movedup and addsub are SSE3 intrinsics. MSVC always exposes
+// these regardless of the target feature level, so the MSVC checks stay here.
 template <>
 EINSUMS_FORCEINLINE CVec<float> complex_mul(CVec<float> a, CVec<float> b) {
     auto a_rr   = _mm_moveldup_ps(a.reg);
@@ -270,6 +272,30 @@ EINSUMS_FORCEINLINE CVec<double> complex_mul(CVec<double> a, CVec<double> b) {
     auto t1     = _mm_mul_pd(a_rr, b.reg);
     auto t2     = _mm_mul_pd(a_ii, b_swap);
     return _mm_addsub_pd(t1, t2);
+}
+#elif defined(__SSE2__)
+// SSE2-only fallback (e.g. the generic x86-64 baseline used by the conda toolchain): no
+// moveldup/movehdup/movedup or addsub. Duplicate the real/imag lanes with plain shuffles and
+// emulate addsub by multiplying the second product by an alternating [-1,+1,...] mask.
+template <>
+EINSUMS_FORCEINLINE CVec<float> complex_mul(CVec<float> a, CVec<float> b) {
+    auto a_rr   = _mm_shuffle_ps(a.reg, a.reg, 0xA0); // [r0,r0,r1,r1]
+    auto a_ii   = _mm_shuffle_ps(a.reg, a.reg, 0xF5); // [i0,i0,i1,i1]
+    auto b_swap = _mm_shuffle_ps(b.reg, b.reg, 0xB1); // [i,r,i,r]
+    auto t1     = _mm_mul_ps(a_rr, b.reg);
+    auto t2     = _mm_mul_ps(a_ii, b_swap);
+    auto neg    = _mm_set_ps(1.f, -1.f, 1.f, -1.f); // lanes [-1,+1,-1,+1]
+    return _mm_add_ps(t1, _mm_mul_ps(t2, neg));     // even: t1-t2, odd: t1+t2
+}
+template <>
+EINSUMS_FORCEINLINE CVec<double> complex_mul(CVec<double> a, CVec<double> b) {
+    auto a_rr   = _mm_shuffle_pd(a.reg, a.reg, 0x0); // [r0,r0]
+    auto a_ii   = _mm_shuffle_pd(a.reg, a.reg, 0x3); // [i0,i0]
+    auto b_swap = _mm_shuffle_pd(b.reg, b.reg, 0x1); // [i0,r0]
+    auto t1     = _mm_mul_pd(a_rr, b.reg);
+    auto t2     = _mm_mul_pd(a_ii, b_swap);
+    auto neg    = _mm_set_pd(1.0, -1.0); // lanes [-1,+1]
+    return _mm_add_pd(t1, _mm_mul_pd(t2, neg));
 }
 #elif defined(__aarch64__) || defined(_M_ARM64)
 template <>

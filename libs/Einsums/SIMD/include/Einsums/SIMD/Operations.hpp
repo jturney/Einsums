@@ -1115,6 +1115,24 @@ template <>
 EINSUMS_FORCEINLINE Vec<uint32_t> mul(Vec<uint32_t> a, Vec<uint32_t> b) {
     return _mm_mullo_epi32(a.reg, b.reg);
 }
+#    else
+// SSE2 fallback (e.g. -march=nocona): no PMULLD. Emulate via two _mm_mul_epu32
+// (32×32→64 on even lanes) and repack the low 32 bits of each product. The low half is
+// identical for signed and unsigned, so the same sequence serves both.
+EINSUMS_FORCEINLINE __m128i einsums_sse2_mullo_epi32(__m128i a, __m128i b) {
+    __m128i e02 = _mm_mul_epu32(a, b);                                          // products of lanes 0,2
+    __m128i e13 = _mm_mul_epu32(_mm_srli_si128(a, 4), _mm_srli_si128(b, 4));    // products of lanes 1,3
+    return _mm_unpacklo_epi32(_mm_shuffle_epi32(e02, _MM_SHUFFLE(0, 0, 2, 0)),  // low 32 bits of 0,2
+                              _mm_shuffle_epi32(e13, _MM_SHUFFLE(0, 0, 2, 0))); // low 32 bits of 1,3
+}
+template <>
+EINSUMS_FORCEINLINE Vec<int32_t> mul(Vec<int32_t> a, Vec<int32_t> b) {
+    return einsums_sse2_mullo_epi32(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<uint32_t> mul(Vec<uint32_t> a, Vec<uint32_t> b) {
+    return einsums_sse2_mullo_epi32(a.reg, b.reg);
+}
 #    endif
 // i64/u64 mul not implemented — needs AVX-512DQ.
 #elif defined(__aarch64__) || defined(_M_ARM64)
@@ -1569,6 +1587,21 @@ EINSUMS_FORCEINLINE Vec<int64_t> cmp_eq(Vec<int64_t> a, Vec<int64_t> b) {
 template <>
 EINSUMS_FORCEINLINE Vec<uint64_t> cmp_eq(Vec<uint64_t> a, Vec<uint64_t> b) {
     return _mm_cmpeq_epi64(a.reg, b.reg);
+}
+#    else
+// SSE2 fallback (e.g. -march=nocona): no PCMPEQQ. Compare the 32-bit halves, then AND each
+// 64-bit lane with its half-swapped self so a lane is all-ones only when both halves matched.
+EINSUMS_FORCEINLINE __m128i einsums_sse2_cmpeq_epi64(__m128i a, __m128i b) {
+    __m128i t = _mm_cmpeq_epi32(a, b);
+    return _mm_and_si128(t, _mm_shuffle_epi32(t, _MM_SHUFFLE(2, 3, 0, 1)));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<int64_t> cmp_eq(Vec<int64_t> a, Vec<int64_t> b) {
+    return einsums_sse2_cmpeq_epi64(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<uint64_t> cmp_eq(Vec<uint64_t> a, Vec<uint64_t> b) {
+    return einsums_sse2_cmpeq_epi64(a.reg, b.reg);
 }
 #    endif
 #elif defined(__aarch64__) || defined(_M_ARM64)
