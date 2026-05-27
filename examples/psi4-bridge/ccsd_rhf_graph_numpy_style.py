@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""Closed-shell RHF-CCSD as a ComputeGraph LOOP (graph-numpy-style).
+"""Closed-shell hybrid DF-CCSD as a ComputeGraph LOOP (graph-numpy-style).
 
 The CCSD iteration is a graph add_loop: body captured ONCE, re-executed by the
 loop executor. Unlike the eager numpy-style version, a captured loop body must
@@ -11,7 +11,13 @@ use PRE-ALLOCATED scratch + in-place ops (operator-created temporaries get GC'd
 -> pointer reuse -> graph aliasing). So intermediates/residuals are graph-owned
 scratch recomputed in place each iteration, amplitudes t1/t2 update in place,
 and a convergence predicate reads the energy tensor. Integrals (bridge) + Fock +
-denominators are one-time eager setup. Validate vs psi4 conv CCSD.
+denominators are one-time eager setup.
+
+HYBRID DF: the v⁴ particle-ladder integral <ab|ef> = (ae|bf) is the only block
+taken from density fitting, <ab|ef> = Σ_Q B^Q_ae B^Q_bf with B = J^{-1/2}(Q|vv)
+from psi4's DFTensor. The v⁴ tensor is NEVER formed — the ladder contraction
+splits into two o²v³ steps through a DF intermediate. Every other block stays
+EXACT via the half-transform bridge. Validate the DF shift vs psi4 conv CCSD.
 """
 import numpy as np
 import psi4
@@ -34,6 +40,13 @@ Co_np = np.ascontiguousarray(C[:, :nocc]); Cv_np = np.ascontiguousarray(C[:, noc
 mints = psi4.core.MintsHelper(wfn.basisset())
 Co = psi4.core.Matrix.from_array(Co_np); Cv = psi4.core.Matrix.from_array(Cv_np)
 
+# ── DF 3-index for the v⁴ particle-ladder (true DF-CCSD: <ab|ef>=(ae|bf) from B,
+#    the v⁴ tensor is NEVER formed). Everything else stays EXACT via the bridge. ─
+aux = psi4.core.BasisSet.build(mol, "DF_BASIS_MP2", "", "RIFIT", wfn.basisset().name())
+naux = aux.nbf()
+dft = psi4.core.DFTensor(wfn.basisset(), aux, wfn.Ca(), nocc, nv)
+Bvv = dft.Qvv_einsums()   # B^Q_{ab} = J^{-1/2}(Q|ab), einsums RuntimeTensor (naux, nv, nv)
+
 def to_t(name, a): return einsums.asarray(np.ascontiguousarray(a), name=name)
 def zt(name, shape): return einsums.create_zero_tensor(name, list(shape), dtype="float64")
 
@@ -52,11 +65,20 @@ def phys(P, Q, R, S, name):
     chem = E("a,b,q,s <- sig,s ; a,b,q,sig", Ct[S], tmp, (nP, nR, nQ, nS), name=name + "_c")
     out = zt(name, (nP, nQ, nR, nS)); einsums.permute("a,q,b,s <- a,b,q,s", out, chem); return out
 
-specs = {"oovv": ("o", "o", "v", "v"), "oooo": ("o", "o", "o", "o"), "vvvv": ("v", "v", "v", "v"),
+specs = {"oovv": ("o", "o", "v", "v"), "oooo": ("o", "o", "o", "o"),
          "ovvo": ("o", "v", "v", "o"), "ovov": ("o", "v", "o", "v"), "ooov": ("o", "o", "o", "v"),
          "oovo": ("o", "o", "v", "o"), "ovvv": ("o", "v", "v", "v"), "vvvo": ("v", "v", "v", "o"),
-         "ovoo": ("o", "v", "o", "o")}
+         "ovoo": ("o", "v", "o", "o")}  # no "vvvv": the v⁴ block is DF, never formed
 G = {nm: phys(*pqrs, nm) for nm, pqrs in specs.items()}
+
+# diagnostic only: how well does the DF B reconstruct the exact v⁴ block? (both
+# tensors formed here are discarded — the iteration never touches them). This Δ is
+# the only new approximation the DF swap introduces vs the exact-v⁴ run (1.26e-11).
+# Reconstruction is einsums-native; numpy is used only to read the scalar error.
+_vvvv_exact = phys("v", "v", "v", "v", "vvvv_diag")
+_vvvv_df = E("a,b,e,f <- Q,a,e ; Q,b,f", Bvv, Bvv, (nv, nv, nv, nv), name="vvvv_df_diag")
+print(f"DF v⁴ reconstruction error  max|<ab|ef>_exact - <ab|ef>_DF| = "
+      f"{np.abs(np.asarray(_vvvv_exact) - np.asarray(_vvvv_df)).max():.3e}")
 Fvv = to_t("Fvv", np.diag(ev)); Foo = to_t("Foo", np.diag(eo))
 Dia = to_t("Dia", eo[:, None] - ev[None, :])
 Dijab = to_t("Dijab", eo[:, None, None, None] + eo[None, :, None, None]
@@ -65,7 +87,7 @@ oovv_ba = zt("oovv_ba", (nocc, nocc, nv, nv)); einsums.permute("i,j,b,a <- i,j,a
 
 NV2 = (nocc, nv); SH2 = (nocc, nocc, nv, nv); VV = (nv, nv); OO = (nocc, nocc)
 OOOO = (nocc, nocc, nocc, nocc); OVVO = (nocc, nv, nv, nocc); OVOV = (nocc, nv, nocc, nv)
-OVOO = (nocc, nv, nocc, nocc)
+OVOO = (nocc, nv, nocc, nocc); HVVDF = (naux, nv, nocc, nocc, nv)  # DF ladder intermediate
 t1 = einsums.zeros((nocc, nv), name="t1")
 t2 = E("i,j,a,b <- i,j,a,b ; i,j,a,b", G["oovv"], Dijab, SH2, 1.0, "t2init")  # placeholder, overwrite next
 # MP2 guess t2 = oovv / Dijab (eager)
@@ -82,7 +104,7 @@ S = {}
 for nm, sh in [("Tau", SH2), ("Taut", SH2), ("Fae", VV), ("Fmi", OO), ("Fme", NV2),
                ("Wmnij", OOOO), ("Wmbej", OVVO), ("Wmbje", OVOV), ("Zmbij", OVOO), ("jnfb", SH2),
                ("r1", NV2), ("r2", SH2), ("be", VV), ("jm", OO), ("imea", SH2), ("imeb", SH2),
-               ("tmp", SH2), ("tmpP", SH2), ("rd1", NV2), ("rd2", SH2)]:
+               ("tmp", SH2), ("tmpP", SH2), ("rd1", NV2), ("rd2", SH2), ("Hvvdf", HVVDF)]:
     S[nm] = dz(nm, sh)
 # scalars stay eager: cg.dot validates its result size at capture, and the
 # predicate reads Ecorr between iterations — both need a live 1-element tensor.
@@ -164,7 +186,11 @@ with cg.capture(body):
     ein("jm <- je ; me", t1, Fme, S["jm"], 1.0, False)
     symacc("ijab <- imab ; jm", t2, S["jm"], 0.5, -1.0)
     ein("ijab <- mnab ; mnij", Tau, Wmnij, r2, 1.0, True)
-    ein("ijab <- ijef ; abef", Tau, G["vvvv"], r2, 1.0, True)
+    # DF particle-ladder (replaces ein("ijab <- ijef ; abef", Tau, G["vvvv"], ...)):
+    #   r2_ijab += Σ_ef Tau_ijef <ab|ef>,  <ab|ef> = (ae|bf) = Σ_Q Bvv_ae Bvv_bf
+    # two o²v³ steps via a DF intermediate H — never forms the v⁴ tensor.
+    ein("Q,a,i,j,f <- Q,a,e ; i,j,e,f", Bvv, Tau, S["Hvvdf"], 1.0, False)
+    ein("i,j,a,b <- Q,a,i,j,f ; Q,b,f", S["Hvvdf"], Bvv, r2, 1.0, True)
     symacc("ijab <- ma ; mbij", t1, Zmbij, 1.0, -1.0)
     # ring 1: sym((t_imae - t_imea)·Wmbej)
     ein("ijab <- imae ; mbej", t2, Wmbej, S["tmp"], 1.0, False)
@@ -204,9 +230,13 @@ print(f"optimized: modified={mod}, parent {g.num_nodes()} nodes (Materialize hoi
 
 g.execute()
 e_new = float(np.asarray(Ecorr)[0])
-print(f"closed-shell einsums GRAPH-LOOP CCSD corr = {e_new:.10f}")
-print(f"psi4 conv CCSD corr                       = {ref:.10f}")
-print(f"difference                                = {abs(e_new - ref):.2e}")
-
-assert abs(e_new - ref) < 1e-7
-print("closed-shell RHF-CCSD as a ComputeGraph loop (graph-numpy-style) MATCHES psi4")
+print(f"hybrid DF-CCSD corr (DF v⁴, exact rest)    = {e_new:.10f}")
+print(f"psi4 conv CCSD corr (exact v⁴)             = {ref:.10f}")
+# The exact-v⁴ version of this graph matches conv CCSD to 1.26e-11; the ONLY change
+# here is the v⁴ block -> its DF reconstruction (B⊗B), so the energy shifts by the
+# DF v⁴ error. That shift must be small (good fit) yet nonzero (genuinely DF, not
+# accidentally exact); the two-step factorization itself is exact to ~1e-13.
+df_shift = abs(e_new - ref)
+print(f"DF v⁴ shift vs conv CCSD                   = {df_shift:.2e}  (the v⁴-block DF approximation)")
+assert 1e-6 < df_shift < 1e-3, df_shift
+print("hybrid DF-CCSD (graph loop, DF v⁴ via B, exact bridge integrals elsewhere) OK")
