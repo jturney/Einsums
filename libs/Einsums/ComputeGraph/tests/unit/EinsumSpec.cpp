@@ -51,6 +51,35 @@ TEST_CASE("parse_einsum_spec - arrow notation, numbered indices", "[ComputeGraph
     REQUIRE(spec.b_indices == std::vector<std::string>{"i3", "i2"});
 }
 
+// Mixed delimiters: a comma-less operand alongside comma'd operands must be
+// char-split per operand, not mis-read as one multi-char index (bug-1026).
+TEST_CASE("parse_einsum_spec - mixed comma/no-comma operands", "[ComputeGraph][EinsumSpec]") {
+    SECTION("comma-less output, comma'd inputs") {
+        auto result = parse_einsum_spec("ijab <- Q,a,i,j,f ; Q,b,f");
+        REQUIRE(result.has_value());
+        auto &spec = result.value();
+        REQUIRE(spec.c_indices == std::vector<std::string>{"i", "j", "a", "b"});
+        REQUIRE(spec.a_indices == std::vector<std::string>{"Q", "a", "i", "j", "f"});
+        REQUIRE(spec.b_indices == std::vector<std::string>{"Q", "b", "f"});
+    }
+    SECTION("comma'd output, comma-less input") {
+        auto result = parse_einsum_spec("i,j,a,b <- ijef ; abef");
+        REQUIRE(result.has_value());
+        auto &spec = result.value();
+        REQUIRE(spec.c_indices == std::vector<std::string>{"i", "j", "a", "b"});
+        REQUIRE(spec.a_indices == std::vector<std::string>{"i", "j", "e", "f"});
+        REQUIRE(spec.b_indices == std::vector<std::string>{"a", "b", "e", "f"});
+    }
+}
+
+TEST_CASE("parse_permute_spec - mixed comma/no-comma operands", "[ComputeGraph][EinsumSpec]") {
+    auto result = parse_permute_spec("jiba <- i,j,a,b");
+    REQUIRE(result.has_value());
+    auto &spec = result.value();
+    REQUIRE(spec.c_indices == std::vector<std::string>{"j", "i", "b", "a"});
+    REQUIRE(spec.a_indices == std::vector<std::string>{"i", "j", "a", "b"});
+}
+
 // ─── NumPy notation tests ───────────────────────────────────────────────────
 
 TEST_CASE("parse_einsum_spec - numpy notation, single-char", "[ComputeGraph][EinsumSpec]") {

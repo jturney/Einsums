@@ -89,13 +89,17 @@ expected<ParsedEinsumSpec, GraphError> parse_einsum_spec(std::string_view spec) 
     std::string_view const a_part = inputs_part.substr(0, semi_pos);
     std::string_view const b_part = inputs_part.substr(semi_pos + 1);
 
-    bool const multi_char = has_commas(output_part) || has_commas(a_part) || has_commas(b_part);
-
+    // Char-vs-comma is decided PER OPERAND: an operand containing ',' is comma-split
+    // (so multi-char index names like "sig"/"lam" work); a comma-less operand is
+    // char-split, one index per character. Deciding this globally silently
+    // mis-tokenized a comma-less operand as a single multi-char index whenever a
+    // sibling operand used commas — e.g. "ijab <- Q,a,i,j,f ; Q,b,f" parsed the
+    // output as one index "ijab" instead of [i,j,a,b], giving wrong results (bug-1026).
     ParsedEinsumSpec result;
     result.raw       = std::string(spec);
-    result.c_indices = parse_index_group(output_part, multi_char);
-    result.a_indices = parse_index_group(a_part, multi_char);
-    result.b_indices = parse_index_group(b_part, multi_char);
+    result.c_indices = parse_index_group(output_part, has_commas(output_part));
+    result.a_indices = parse_index_group(a_part, has_commas(a_part));
+    result.b_indices = parse_index_group(b_part, has_commas(b_part));
 
     if (result.a_indices.empty()) {
         return unexpected(GraphError::parse(fmt::format("einsum spec '{}': first operand has no indices", spec)));
@@ -157,12 +161,11 @@ expected<ParsedPermuteSpec, GraphError> parse_permute_spec(std::string_view spec
         output_part = std::string_view(stripped).substr(right_pos + 2);
     }
 
-    bool const multi_char = has_commas(output_part) || has_commas(input_part);
-
+    // Per-operand char-vs-comma split (see parse_einsum_spec for the rationale).
     ParsedPermuteSpec result;
     result.raw       = std::string(spec);
-    result.c_indices = parse_index_group(output_part, multi_char);
-    result.a_indices = parse_index_group(input_part, multi_char);
+    result.c_indices = parse_index_group(output_part, has_commas(output_part));
+    result.a_indices = parse_index_group(input_part, has_commas(input_part));
 
     if (result.a_indices.empty()) {
         return unexpected(GraphError::parse(fmt::format("permute spec '{}': input has no indices", spec)));

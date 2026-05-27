@@ -173,7 +173,6 @@ for it in range(100):
     # DF particle-ladder: r2 += Σ_ef Tau_ijef <ab|ef>, <ab|ef> = Σ_Q Bvv_ae Bvv_bf.
     # Two o²v³ steps through a DF intermediate H — never forms the v⁴ tensor.
     Hdf = E("Q,a,i,j,f <- Q,a,e ; i,j,e,f", Bvv, Tau, (naux, nv, nocc, nocc, nv), 1.0, "Hdf")
-    # NB: comma-consistent indices — a no-comma output mixed with comma inputs misparses.
     r2 = r2 + E("i,j,a,b <- Q,a,i,j,f ; Q,b,f", Hdf, Bvv, SH2, 1.0, "t2f")
     r2 = r2 - sym(E("ijab <- ma ; mbij", t1, Zmbij, SH2, 1.0, "t2g"))      # Zmbij uses v3 (ovvv)
     r2 = r2 + sym(E("ijab <- imae ; mbej", t2, Wmbej, SH2, 1.0, "rng1")
