@@ -1187,6 +1187,40 @@ std::function<void()> Graph::make_copy_executor(TensorId src_id, TensorId dst_id
     };
 }
 
+expected<std::pair<TensorId, void *>, GraphError> Graph::create_zero_runtime_tensor_dynamic(std::string name, packed_gemm::ScalarType dtype,
+                                                                                            std::vector<size_t> const &dims) {
+    if (dims.empty()) {
+        return unexpected(GraphError::type_error("create_zero_runtime_tensor_dynamic: dims must not be empty"));
+    }
+
+    auto find_id = [&](void *ptr) -> TensorId {
+        for (auto const &[id, h] : _tensors) {
+            if (h.tensor_ptr == ptr) {
+                return id;
+            }
+        }
+        return 0;
+    };
+
+    auto make = [&]<typename T>(T /*tag*/) -> std::pair<TensorId, void *> {
+        auto &t = create_zero_runtime_tensor<T, std::allocator<T>>(std::move(name), dims, /*intermediate=*/true);
+        return {find_id(&t), static_cast<void *>(&t)};
+    };
+
+    switch (dtype) {
+    case packed_gemm::ScalarType::Float32:
+        return make(float{});
+    case packed_gemm::ScalarType::Float64:
+        return make(double{});
+    case packed_gemm::ScalarType::Complex64:
+        return make(std::complex<float>{});
+    case packed_gemm::ScalarType::Complex128:
+        return make(std::complex<double>{});
+    default:
+        return unexpected(GraphError::type_error("create_zero_runtime_tensor_dynamic: unknown ScalarType"));
+    }
+}
+
 std::function<void()> Graph::make_gemm_executor(TensorId a_id, TensorId b_id, TensorId c_id, double alpha, double beta) {
     return [this, a_id, b_id, c_id, alpha, beta]() {
         auto const &a_h = tensor(a_id);

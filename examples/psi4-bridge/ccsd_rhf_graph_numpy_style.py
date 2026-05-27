@@ -218,6 +218,17 @@ with cg.capture(body):
 
 print(f"captured loop body: {body.num_nodes()} nodes; parent {g.num_nodes()} nodes")
 
+# LinearCombinationContractionFolding (opt-in): the spin-adaptation pairs above
+# (2*g_X - g_Y where g_X,g_Y are the SAME integral read with transposed indices)
+# fold into a single contraction r += A·(2*g - gᵀ). Recurses into the loop body.
+import json as _json
+def _contractions(gr):
+    return sum(1 for n in _json.loads(gr.to_json()).get("nodes", []) if n.get("kind") in ("Einsum", "Gemm", "BatchedGemm"))
+_before = _contractions(body)
+_lccf = cg.PassManager(); _lccf.add(cg.LinearCombinationContractionFolding())
+g.apply(_lccf)
+print(f"LinearCombinationContractionFolding: body contractions {_before} -> {_contractions(body)}")
+
 # The big scratch is graph-owned DEFERRED (g.declare_zero_tensor), so the memory
 # passes now have work: MaterializationPass turns each deferred handle into a
 # Materialize+Initialize pair HOISTED to the parent (allocated/zeroed once before

@@ -9,6 +9,7 @@
 #include <Einsums/Comm/Collectives.hpp>
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
 #include <Einsums/ComputeGraph/DeviceShadowMap.hpp>
+#include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/Executor.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -932,6 +933,24 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @return A callable that performs the copy.
      */
     std::function<void()> make_copy_executor(TensorId src_id, TensorId dst_id);
+
+    /**
+     * @brief Create a zero-initialized **runtime** tensor (GeneralRuntimeTensor)
+     *        of a dtype/shape known only at run time, returning its id + pointer.
+     *
+     * The runtime analog of @ref create_tensor_dynamic: where that produces a
+     * statically-ranked Tensor<T,K> (consumed via static_cast in some passes),
+     * this produces a GeneralRuntimeTensor<T> — matching the tensors that the
+     * Python/capture surface uses, so passes that combine such operands can cast
+     * uniformly to GeneralRuntimeTensor<T>. Supports any rank.
+     *
+     * @param[in] name  Human-readable name.
+     * @param[in] dtype Element type (Float32, Float64, Complex64, Complex128).
+     * @param[in] dims  Size of each dimension.
+     * @return TensorId and void* of the new runtime tensor; error if dtype is Unknown.
+     */
+    [[nodiscard]] expected<std::pair<TensorId, void *>, GraphError>
+    create_zero_runtime_tensor_dynamic(std::string name, packed_gemm::ScalarType dtype, std::vector<size_t> const &dims);
 
     /**
      * @brief Create an executor lambda that performs C = alpha * A * B + beta * C.

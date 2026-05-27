@@ -31,6 +31,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/FreeInsertion.hpp
     Einsums/ComputeGraph/Passes/GEMMBatching.hpp
     Einsums/ComputeGraph/Passes/InplaceOptimization.hpp
+    Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp
     Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp
     Einsums/ComputeGraph/Passes/MemoryPlanning.hpp
     Einsums/ComputeGraph/Passes/InputSlicing.hpp
@@ -78,6 +79,7 @@ set(ComputeGraphSources
     Passes/FreeInsertion.cpp
     Passes/GEMMBatching.cpp
     Passes/InplaceOptimization.cpp
+    Passes/LinearCombinationContractionFolding.cpp
     Passes/LoopInvariantHoisting.cpp
     Passes/MemoryPlanning.cpp
     Passes/InputSlicing.cpp

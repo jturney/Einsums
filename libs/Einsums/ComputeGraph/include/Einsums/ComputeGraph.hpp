@@ -105,6 +105,7 @@
 #include <Einsums/ComputeGraph/Passes/GPUPlacement.hpp>
 #include <Einsums/ComputeGraph/Passes/IOPrefetch.hpp>
 #include <Einsums/ComputeGraph/Passes/InplaceOptimization.hpp>
+#include <Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/Passes/MemoryPlanning.hpp>
