@@ -114,6 +114,8 @@ bool ScaleAbsorption::run(Graph &graph) {
                 _num_absorbed++;
 
                 EINSUMS_LOG_INFO("ScaleAbsorption: absorbed scale({}) into {} node {}", scale_factor, op_kind_name(target.kind), target.id);
+                report(2, fmt::format("absorb scale({}) into {} node {} (drops the standalone Scale)", scale_factor,
+                                      op_kind_name(target.kind), target.id));
             }
             break;
         }
@@ -121,6 +123,7 @@ bool ScaleAbsorption::run(Graph &graph) {
 
     if (_num_absorbed == 0)
         return false;
+    report(1, fmt::format("absorbed {} scale(s) into a following op", _num_absorbed));
 
     std::vector<Node> filtered;
     filtered.reserve(nodes.size());

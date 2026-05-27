@@ -224,6 +224,7 @@ bool FreeInsertion::run(Graph &graph) {
         };
         free_node.estimated_bytes = bytes;
 
+        report(2, fmt::format("insert Free for '{}' ({} bytes) after its last consumer at position {}", handle.name, bytes, plan.position));
         nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(plan.position + 1), std::move(free_node));
         _num_freed++;
     }
@@ -231,6 +232,7 @@ bool FreeInsertion::run(Graph &graph) {
     if (_num_freed > 0) {
         graph.mark_sorted();
         EINSUMS_LOG_INFO("FreeInsertion: inserted {} Free nodes", _num_freed);
+        report(1, fmt::format("inserted {} Free node(s) to cap peak memory", _num_freed));
     }
 
     return _num_freed > 0;

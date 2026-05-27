@@ -266,8 +266,12 @@ bool process(Graph &graph, size_t &num_prefetched) {
 } // namespace
 
 bool IOPrefetch::run(Graph &graph) {
-    _num_prefetched = 0;
-    return process(graph, _num_prefetched);
+    _num_prefetched   = 0;
+    bool const result = process(graph, _num_prefetched);
+    if (_num_prefetched > 0) {
+        report(1, fmt::format("prefetched {} DiskRead(s) earlier to overlap I/O with compute", _num_prefetched));
+    }
+    return result;
 }
 
 } // namespace einsums::compute_graph::passes

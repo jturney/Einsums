@@ -337,6 +337,7 @@ bool DistributionPlanning::run(Graph &graph) {
         }
         EINSUMS_LOG_INFO("DistributionPlanning: '{}' ({} bytes) → [{}] on {}x{} grid", handle.name, total_bytes, axis_str, grid.rows(),
                          grid.cols());
+        report(2, fmt::format("distribute '{}' as [{}] on {}x{} grid", handle.name, axis_str, grid.rows(), grid.cols()));
     }
 
     if (_num_distributed > 0 || _num_replicated > 0) {

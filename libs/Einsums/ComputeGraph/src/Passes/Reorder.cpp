@@ -172,6 +172,16 @@ bool Reorder::run(Graph &graph) {
         }
         nodes = std::move(sorted);
         graph.mark_sorted();
+
+        if (_verbosity >= 1) {
+            size_t moved = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (order[i] != i) {
+                    ++moved;
+                }
+            }
+            report(1, fmt::format("memory-aware reschedule moved {} of {} node(s)", moved, n));
+        }
     }
 
     return changed;

@@ -208,6 +208,9 @@ bool TransferInsertion::run(Graph &graph) {
     graph.mark_sorted();
 
     EINSUMS_LOG_INFO("TransferInsertion: inserted {} transfer nodes", _num_transfers);
+    if (_num_transfers > 0) {
+        report(1, fmt::format("inserted {} host/device transfer node(s)", _num_transfers));
+    }
     return true;
 }
 

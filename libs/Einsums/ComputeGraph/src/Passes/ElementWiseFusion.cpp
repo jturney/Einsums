@@ -71,11 +71,13 @@ bool ElementWiseFusion::run(Graph &graph) {
             _num_fused++;
 
             EINSUMS_LOG_INFO("ElementWiseFusion: merged scale({}) into scale({})", desc_j->factor, desc_i->factor);
+            report(2, fmt::format("merge scale({}) into scale({}) on the same tensor", desc_j->factor, desc_i->factor));
         }
     }
 
     if (_num_fused == 0)
         return false;
+    report(1, fmt::format("fused {} element-wise op chain(s)", _num_fused));
 
     std::vector<Node> filtered;
     filtered.reserve(nodes.size());

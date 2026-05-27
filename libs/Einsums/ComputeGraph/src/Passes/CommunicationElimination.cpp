@@ -34,6 +34,7 @@ bool CommunicationElimination::run(Graph &graph) {
                 remove[idx] = true;
                 _num_eliminated++;
                 EINSUMS_LOG_INFO("CommunicationElimination: removed redundant Allreduce for tensor id={}", desc->tensor_id);
+                report(2, fmt::format("remove redundant Allreduce for tensor id={} (already reduced, unmodified since)", desc->tensor_id));
                 continue;
             }
             if (desc) {

@@ -222,6 +222,11 @@ bool ChainParenthesization::run(Graph &graph) {
     _optimal_flops  = 0;
     accumulate(graph, _original_flops, _optimal_flops);
 
+    if (_optimal_flops > 0 && _optimal_flops < _original_flops) {
+        report(1, fmt::format("GEMM-chain FLOPs {} -> {} achievable ({:.1f}% saving) by reparenthesizing", _original_flops, _optimal_flops,
+                              100.0 * (1.0 - static_cast<double>(_optimal_flops) / static_cast<double>(_original_flops))));
+    }
+
     // This pass is analysis/reporting only — restructuring the graph would
     // require creating new intermediate tensors with type information we
     // don't have in type-erased form. The user can use the recommendations

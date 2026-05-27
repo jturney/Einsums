@@ -280,6 +280,8 @@ bool DistributiveFactoring::run(Graph &graph) {
             auto nit = tensors.find(c.non_shared_input);
             fg.summed_tensors.push_back(nit != tensors.end() ? nit->second.name : "?");
         }
+        report(2, fmt::format("factor {} contractions into '{}' sharing operand '{}' (sum operands, contract once)", available.size(),
+                              out_it != tensors.end() ? out_it->second.name : "?", sh_it != tensors.end() ? sh_it->second.name : "?"));
         _groups.push_back(std::move(fg));
         _num_groups++;
         modified = true;
@@ -302,6 +304,7 @@ bool DistributiveFactoring::run(Graph &graph) {
     graph.topological_sort();
 
     EINSUMS_LOG_INFO("DistributiveFactoring: rewrote {} groups, eliminated {} nodes", _num_groups, _num_eliminated);
+    report(1, fmt::format("factored {} group(s), eliminated {} contraction node(s)", _num_groups, _num_eliminated));
     return true;
 }
 

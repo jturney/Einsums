@@ -294,6 +294,7 @@ bool LoopInvariantHoisting::run(Graph &graph) {
                 for (auto &tid : h.outputs)
                     tid = remap_or_register(tid);
                 EINSUMS_LOG_INFO("LoopInvariantHoisting: hoisting '{}' out of loop '{}'", h.label, nodes[loop_idx].label);
+                report(2, fmt::format("hoist '{}' out of loop '{}' — inputs invariant across iterations", h.label, nodes[loop_idx].label));
                 hoisted.push_back(std::move(h));
                 _num_hoisted++;
             } else {

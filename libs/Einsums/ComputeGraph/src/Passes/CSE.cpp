@@ -254,6 +254,7 @@ bool CSE::run(Graph &graph) {
             modified  = true;
 
             EINSUMS_LOG_INFO("CSE: eliminated node {} (duplicate of node {})", nodes[j].id, nodes[i].id);
+            report(2, fmt::format("eliminate node {} '{}' — duplicate of node {}", nodes[j].id, nodes[j].label, nodes[i].id));
         }
     }
 

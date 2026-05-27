@@ -278,6 +278,7 @@ bool TransferElimination::run(Graph &graph) {
     if (_num_eliminated > 0 || !insertions.empty()) {
         EINSUMS_LOG_INFO("TransferElimination: eliminated {} redundant transfers, inserted {} evictions", _num_eliminated,
                          insertions.size());
+        report(1, fmt::format("eliminated {} redundant transfer(s), inserted {} eviction(s)", _num_eliminated, insertions.size()));
     }
 
     return true;

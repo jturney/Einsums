@@ -208,10 +208,13 @@ bool GPUPlacement::run(Graph &graph) {
 
         EINSUMS_LOG_INFO("GPUPlacement: placed {} node {} ({}) on GPU (bytes={}, budget_used={}/{})", op_kind_name(placed_node.kind),
                          placed_node.id, placed_node.label, cand.eff_bytes, used, budget);
+        report(2, fmt::format("place {} node {} ({}) on GPU (cost model favored it; {} bytes)", op_kind_name(placed_node.kind),
+                              placed_node.id, placed_node.label, cand.eff_bytes));
     }
 
     if (_num_placed > 0) {
         EINSUMS_LOG_INFO("GPUPlacement: placed {} nodes on GPU ({} / {} bytes used)", _num_placed, used, budget);
+        report(1, fmt::format("placed {} node(s) on GPU ({} / {} bytes used)", _num_placed, used, budget));
     }
 
     return _num_placed > 0;

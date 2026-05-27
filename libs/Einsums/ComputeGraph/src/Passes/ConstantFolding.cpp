@@ -109,6 +109,7 @@ bool ConstantFolding::run(Graph &graph) {
 
         // This node's inputs are all constant — execute it now and replace with no-op
         EINSUMS_LOG_INFO("ConstantFolding: folding node {} ({})", node.id, node.label);
+        report(2, fmt::format("fold node {} ({}) — all inputs constant, evaluated at compile time", node.id, node.label));
         node.execute();
 
         // Replace executor with no-op
@@ -125,6 +126,7 @@ bool ConstantFolding::run(Graph &graph) {
 
     if (_num_folded > 0) {
         graph.mark_sorted();
+        report(1, fmt::format("folded {} constant node(s)", _num_folded));
     }
 
     return _num_folded > 0;

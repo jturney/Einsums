@@ -28,6 +28,7 @@ bool StreamAssignment::run(Graph &graph) {
 
     if (_num_assigned > 0) {
         EINSUMS_LOG_INFO("StreamAssignment: assigned {} nodes to transfer stream", _num_assigned);
+        report(1, fmt::format("assigned {} node(s) to the transfer stream for overlap", _num_assigned));
     }
 
     return _num_assigned > 0;

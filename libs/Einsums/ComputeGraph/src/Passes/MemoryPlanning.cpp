@@ -151,6 +151,9 @@ bool MemoryPlanning::run(Graph &graph) {
     _device_total_memory = acc.device_total;
     _device_peak_memory  = acc.device_peak;
 
+    report(1, fmt::format("peak host memory {} bytes (of {} total allocated){}", _peak_memory, _total_memory,
+                          _device_peak_memory > 0 ? fmt::format(", device peak {} bytes", _device_peak_memory) : std::string{}));
+
     return false;
 }
 

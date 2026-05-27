@@ -237,6 +237,8 @@ bool SUMMAExpansion::run(Graph &graph) {
         _num_expanded++;
         EINSUMS_LOG_INFO("SUMMAExpansion: replaced einsum '{}' with SUMMA loop ({} panels on {}x{} grid)", node.label, panels, grid.rows(),
                          grid.cols());
+        report(2, fmt::format("expand einsum '{}' into a SUMMA broadcast+GEMM loop ({} panels, {}x{} grid)", node.label, panels,
+                              grid.rows(), grid.cols()));
     }
 
     return _num_expanded > 0;

@@ -89,6 +89,8 @@ bool GPUDiagnostics::run(Graph &graph) {
 
     EINSUMS_LOG_INFO("GPUDiagnostics: {} GPU nodes, {} CPU nodes, {} H2D + {} D2H transfers ({} bytes total), peak device memory {} bytes",
                      _gpu_nodes, _cpu_nodes, _h2d_transfers, _d2h_transfers, _total_transfer_bytes, _peak_device_bytes);
+    report(1, fmt::format("{} GPU / {} CPU node(s), {} H2D + {} D2H transfer(s), device peak {} bytes", _gpu_nodes, _cpu_nodes,
+                          _h2d_transfers, _d2h_transfers, _peak_device_bytes));
 
     // Non-mutating — always returns false.
     return false;

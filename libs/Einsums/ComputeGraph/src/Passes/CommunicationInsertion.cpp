@@ -98,6 +98,8 @@ bool CommunicationInsertion::run(Graph &graph) {
 
                 EINSUMS_LOG_INFO("CommunicationInsertion: inserting allreduce({}) after node '{}' ({} bytes)", handle.name, node.label,
                                  handle.total_bytes());
+                report(2, fmt::format("insert Allreduce for '{}' after '{}' (replicated output of distributed inputs)", handle.name,
+                                      node.label));
             }
         }
     }

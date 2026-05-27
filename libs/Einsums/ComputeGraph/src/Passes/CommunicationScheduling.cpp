@@ -73,6 +73,7 @@ bool CommunicationScheduling::run(Graph &graph) {
         modified = true;
 
         EINSUMS_LOG_INFO("CommunicationScheduling: converted allreduce({}) to async (iallreduce + wait)", handle.name);
+        report(2, fmt::format("split Allreduce('{}') into async iallreduce + wait for compute overlap", handle.name));
     }
 
     return modified;

@@ -215,8 +215,10 @@ bool SymmetryPropagation::run(Graph &graph) {
             ++_num_inferred;
     }
 
-    if (_num_inferred > 0)
+    if (_num_inferred > 0) {
         EINSUMS_LOG_INFO("SymmetryPropagation: inferred symmetry on {} tensor(s)", _num_inferred);
+        report(1, fmt::format("inferred symmetry on {} intermediate tensor(s) (enables rank-2 BLAS dispatch)", _num_inferred));
+    }
 
     // Analysis pass — never changes the node list.
     return false;

@@ -117,6 +117,8 @@ bool InputSlicing::run(Graph &graph) {
 
                             EINSUMS_LOG_INFO("InputSlicing: slicing '{}' dim {} [{}, {}) for index '{}' (rank {})", inp_handle.name, d,
                                              start, end, dist_index, rank);
+                            report(2, fmt::format("slice '{}' dim {} -> [{}, {}) for distributed index '{}' (rank {})", inp_handle.name, d,
+                                                  start, end, dist_index, rank));
                             break;
                         }
                     }

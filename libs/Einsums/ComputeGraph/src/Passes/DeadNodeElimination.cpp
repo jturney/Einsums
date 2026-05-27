@@ -100,12 +100,14 @@ bool DeadNodeElimination::run(Graph &graph) {
             dead[idx] = true;
             _num_eliminated++;
             EINSUMS_LOG_INFO("DeadNodeElimination: removing dead node {} ({})", node.id, node.label);
+            report(2, fmt::format("remove dead node {} ({}) — outputs never consumed", node.id, node.label));
         }
     }
 
     if (_num_eliminated == 0) {
         return false;
     }
+    report(1, fmt::format("eliminated {} dead node(s)", _num_eliminated));
 
     // Remove dead nodes
     std::vector<Node> filtered;

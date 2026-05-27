@@ -275,6 +275,8 @@ bool Materialization::run(Graph &graph) {
             _num_initialized++;
         }
         EINSUMS_LOG_INFO("Materialization: materialize({}) at position {} (owns_tid={})", handle.name, r.position, r.owns_tid);
+        report(2, fmt::format("materialize deferred tensor '{}' at position {}{}", handle.name, r.position,
+                              handle.init_kind != InitKind::None ? " (+initialize)" : ""));
         insertions.push_back({.position = r.position, .new_nodes = std::move(new_nodes)});
     }
 
@@ -288,6 +290,7 @@ bool Materialization::run(Graph &graph) {
 
     graph.mark_sorted();
 
+    report(1, fmt::format("materialized {} deferred tensor(s) ({} initialized)", _num_materialized, _num_initialized));
     return true;
 }
 

@@ -178,12 +178,15 @@ bool PermuteFusion::run(Graph &graph) {
             if (consumer_count[input_tid] != 1) {
                 EINSUMS_LOG_INFO("PermuteFusion: skip {} (node {}) — {} consumers, need exactly 1", nodes[prod_idx].label,
                                  nodes[prod_idx].id, consumer_count[input_tid]);
+                report(3,
+                       fmt::format("skip permute node {} — {} consumers, need exactly 1", nodes[prod_idx].id, consumer_count[input_tid]));
                 continue;
             }
 
             if (!try_fuse(graph, nodes, prod_idx, nd, slot)) {
                 EINSUMS_LOG_INFO("PermuteFusion: skip {} (node {}) — non-pure permute (alpha/beta/dup indices)", nodes[prod_idx].label,
                                  nodes[prod_idx].id);
+                report(3, fmt::format("skip permute node {} — non-pure permute (alpha/beta/dup indices)", nodes[prod_idx].id));
                 continue;
             }
 
@@ -191,11 +194,14 @@ bool PermuteFusion::run(Graph &graph) {
             _num_rewrites++;
             EINSUMS_LOG_INFO("PermuteFusion: fused {} (node {}) into {} (node {})", nodes[prod_idx].label, nodes[prod_idx].id,
                              nodes[nd].label, nodes[nd].id);
+            report(2, fmt::format("absorb permute node {} ({}) into einsum node {} ({})", nodes[prod_idx].id, nodes[prod_idx].label,
+                                  nodes[nd].id, nodes[nd].label));
         }
     }
 
     if (_num_rewrites == 0)
         return false;
+    report(1, fmt::format("absorbed {} permute(s) into einsum subscripts ({} candidate(s) examined)", _num_rewrites, _num_candidates));
 
     // Compact: drop marked-for-removal nodes. Same idiom as
     // ScaleAbsorption — cheap single-pass filter, preserves order.

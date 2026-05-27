@@ -501,6 +501,7 @@ bool ContractionPlanning::run(Graph &graph) {
 
                 EINSUMS_LOG_INFO("ContractionPlanning: restructured chain — {} new GEMM nodes, {} intermediates created", new_nodes.size(),
                                  inter_count);
+                this->report(2, fmt::format("restructure GEMM chain into {} node(s), {} intermediate(s)", new_nodes.size(), inter_count));
             }
         }
 
@@ -510,6 +511,7 @@ bool ContractionPlanning::run(Graph &graph) {
     if (!_reports.empty()) {
         EINSUMS_LOG_INFO("ContractionPlanning: analyzed {} chains using CPU='{}' GPU='{}', restructured {}", _reports.size(),
                          _profile.cpu.name, _profile.gpu.name, _chains_restructured);
+        this->report(1, fmt::format("analyzed {} GEMM chain(s), restructured {}", _reports.size(), _chains_restructured));
     }
 
     return modified;

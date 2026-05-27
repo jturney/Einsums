@@ -172,6 +172,8 @@ bool GEMMBatching::run(Graph &graph) {
         if (!uniform) {
             EINSUMS_LOG_INFO("GEMMBatching: group of {} einsums at level {} ({}×{}×{}) has mismatched strides — not batching", group.size(),
                              lvl, key.m, key.k, key.n);
+            report(3, fmt::format("skip group of {} einsums at level {} ({}x{}x{}) — mismatched strides", group.size(), lvl, key.m, key.k,
+                                  key.n));
             continue;
         }
 
@@ -260,10 +262,12 @@ bool GEMMBatching::run(Graph &graph) {
         _num_batches++;
         _total_batched += group.size();
         EINSUMS_LOG_INFO("GEMMBatching: batched {} einsums at level {} ({}×{}×{}) into gemm_batch", group.size(), lvl, key.m, key.k, key.n);
+        report(2, fmt::format("batch {} independent einsums ({}x{}x{}) into one gemm_batch", group.size(), key.m, key.k, key.n));
     }
 
     if (_num_batches == 0)
         return false;
+    report(1, fmt::format("batched {} GEMM(s) into {} gemm_batch node(s)", _total_batched, _num_batches));
 
     // Compact: drop originals in place, then hand the new BatchedGemm
     // nodes to Graph::add_node() so it assigns ids and invalidates the
