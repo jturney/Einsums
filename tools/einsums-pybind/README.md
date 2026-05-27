@@ -12,7 +12,7 @@ artifacts per annotated module:
    per-submodule stubs (`einsums/_core.pyi`, `einsums/linalg.pyi`,
    `einsums/graph.pyi`, …) that pyright / mypy consume.
 
-The tool is gated on the `EINSUMS_PYBIND_AUTOGEN` CMake option (default
+The tool is gated on the `EINSUMS_BUILD_PYTHON` CMake option (default
 `OFF`). When the option is `ON`, modules opt in by passing `PYBIND` to
 `einsums_add_module()`, and the rest — bindings + stubs — happens
 automatically.
@@ -55,10 +55,10 @@ einsums_add_module(
 )
 ```
 
-Configure with autogen, build, import:
+Configure with Python enabled, build, import:
 
 ```bash
-cmake -S . -B build -DEINSUMS_BUILD_PYTHON=ON -DEINSUMS_PYBIND_AUTOGEN=ON
+cmake -S . -B build -DEINSUMS_BUILD_PYTHON=ON
 cmake --build build --target PyEinsums
 
 PYTHONPATH=build/lib python3 -c "

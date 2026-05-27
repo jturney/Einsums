@@ -924,11 +924,11 @@ set(EINSUMS_DEBUG_POSTFIX "d")
 # targets exist by the time individual modules' einsums_add_module(...)
 # hooks try to attach to them.
 # ##################################################################################################
-einsums_option(
-  EINSUMS_PYBIND_AUTOGEN BOOL "Build the einsums-pybind codegen tool and auto-generate Python bindings" OFF CATEGORY
-  "Advanced" ADVANCED
-)
-if(EINSUMS_PYBIND_AUTOGEN)
+# EINSUMS_BUILD_PYTHON drives the whole Python story: it builds the
+# einsums-pybind codegen tool, auto-generates the per-module pybind11 bindings,
+# and builds the aggregated ``einsums`` extension. There is no separate
+# autogen switch — the codegen IS the Python build.
+if(EINSUMS_BUILD_PYTHON)
   add_subdirectory(tools/einsums-pybind)
 
   # Detect Clang's resource-dir and (on macOS) the SDK path so libtooling
@@ -967,7 +967,7 @@ if(EINSUMS_PYBIND_AUTOGEN)
     message(STATUS "einsums-pybind extra -isystem: ${EINSUMS_PYBIND_EXTRA_ISYSTEM}")
   endif()
 endif()
-if(EINSUMS_BUILD_PYTHON AND EINSUMS_PYBIND_AUTOGEN)
+if(EINSUMS_BUILD_PYTHON)
   add_subdirectory(libs/Einsums/Python)
 endif()
 
@@ -981,7 +981,7 @@ add_subdirectory(libs)
 # Must run AFTER add_subdirectory(libs) so every annotated module has
 # already appended to the global PYBIND properties.
 # ##################################################################################################
-if(EINSUMS_BUILD_PYTHON AND EINSUMS_PYBIND_AUTOGEN)
+if(EINSUMS_BUILD_PYTHON)
   include(Einsums_FinalizePybind)
   einsums_finalize_pybind()
 endif()

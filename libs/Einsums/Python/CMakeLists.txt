@@ -19,14 +19,10 @@
 #   - The annotations header is always available — its macros expand to
 #     nothing on non-Clang compilers, so the include is a free no-op.
 #   - The autogen pipeline (per-module Python extensions named
-#     ``PyEinsums_<modulename>``) is only built when EINSUMS_PYBIND_AUTOGEN=ON
-#     and EINSUMS_BUILD_PYTHON is set, since it depends on pybind11 and
-#     on the einsums-pybind code generator.
+#     ``PyEinsums_<modulename>``) is built when EINSUMS_BUILD_PYTHON is set,
+#     since it depends on pybind11 and on the einsums-pybind code generator.
 
 if(NOT EINSUMS_BUILD_PYTHON)
-    return()
-endif()
-if(NOT EINSUMS_PYBIND_AUTOGEN)
     return()
 endif()
 
@@ -35,13 +31,13 @@ endif()
 # by the time we reach here. Bail with a clear message if it doesn't.
 if(NOT TARGET einsums-pybind)
     message(FATAL_ERROR
-        "EINSUMS_PYBIND_AUTOGEN=ON but the einsums-pybind target is not defined. "
+        "EINSUMS_BUILD_PYTHON=ON but the einsums-pybind target is not defined. "
         "Make sure tools/einsums-pybind is added before libs/."
     )
 endif()
 
 if(NOT TARGET pybind11::module)
-    message(FATAL_ERROR "EINSUMS_PYBIND_AUTOGEN=ON requires pybind11.")
+    message(FATAL_ERROR "EINSUMS_BUILD_PYTHON=ON requires pybind11.")
 endif()
 
 # Phase 5 ships per-module Python extensions: each einsums_add_module that

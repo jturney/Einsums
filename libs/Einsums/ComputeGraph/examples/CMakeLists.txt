@@ -67,7 +67,6 @@ endforeach()
 # ``einsums_finalize_pybind()`` wires the PyEinsums build dependency once
 # that target exists — mirrors how ``einsums_add_python_unit_test`` does it.
 if(EINSUMS_BUILD_PYTHON
-   AND EINSUMS_PYBIND_AUTOGEN
    AND EINSUMS_WITH_TESTS
    AND EINSUMS_WITH_TESTS_EXAMPLES
 )

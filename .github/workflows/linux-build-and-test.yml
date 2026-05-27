@@ -109,35 +109,24 @@ jobs:
         run: |
           cmake --build "${{ github.workspace }}/build" --config Release --target install
 
-      - name: Linked dependencies, ldd (L)
-        if: runner.os == 'Linux'
-        run: |
-          ldd -v ${{ github.workspace }}/installed/lib/einsums/core.*.so
-          nm -u ${{ github.workspace }}/installed/lib/einsums/core.*.so
-          ls -l ${CONDA_PREFIX}/lib | grep atomic
-
-      # - name: Linked dependencies, otool (M)
-      #   if: runner.os == 'macOS'
-      #   run: otool -L objdir/stage/lib/psi4/core.*.so
-
-      # - name: Linked dependencies, objdump (W)
-      #   if: runner.os == 'Windows'
-      #   shell: cmd /C CALL {0}
-      #   run: objdump.exe -p objdir\stage\lib\psi4\core.*.pyd | grep dll
-
+      # The Python test suite is registered as ctest entries (labelled PYTHON)
+      # by einsums_add_python_unit_test, so this single ctest run exercises both
+      # the C++ and the Python bindings — no separate pytest step is needed.
       - name: Test (CTest) - Unit Tests
         working-directory: "${{ github.workspace }}/build"
         run: ctest --rerun-failed --output-on-failure -j4
 
-      - name: Test (pytest) - unit tests
-        working-directory: "${{github.workspace}}/installed"
-        run: |
-          if [[ "${{runner.os}}" == "Windows" ]]; then
-            export PYTHONPATH="$PYTHONPATH;${{github.workspace}}/installed/lib;$CONDA_PREFIX/lib"
-          else
-            export PYTHONPATH=$PYTHONPATH:${{github.workspace}}/installed/lib:$CONDA_PREFIX/lib
-          fi
-          pytest "${{github.workspace}}/installed" -m "not slow" --cov="${{github.workspace}}/installed/lib" --cov="${{github.workspace}}/src" --cov-report=xml
+      - name: Generate Python coverage
+        if: ${{ contains(matrix.compiler, 'default') }}
+        # The ctest Python runs accumulate coverage data under
+        # build/python-coverage/ (enabled by EINSUMS_WITH_COVERAGE). Render it
+        # to XML; run from the repo root so the rcfile [paths] remap resolves
+        # the canonical source dir for Codecov annotation.
+        working-directory: "${{ github.workspace }}/src"
+        env:
+          COVERAGE_FILE: "${{ github.workspace }}/build/python-coverage/.coverage"
+          COVERAGE_RCFILE: "${{ github.workspace }}/build/python-coverage/.coveragerc"
+        run: coverage xml -o "${{ github.workspace }}/build/python-coverage/coverage.xml"
 
       - name: Generate coverage information
         if: ${{ contains(matrix.compiler, 'default') }}
@@ -165,11 +154,11 @@ jobs:
         if: ${{ contains(matrix.compiler, 'default') }}
         uses: codecov/codecov-action@v5
         with:
-          directory: "${{github.workspace}}/installed"
-          working-directory: "${{github.workspace}}/installed"
+          directory: "${{github.workspace}}/src"
+          working-directory: "${{github.workspace}}/src"
           disable_search: true
           flags: python,linux
-          files: ${{github.workspace}}/installed/coverage.xml
+          files: ${{github.workspace}}/build/python-coverage/coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Test (find_package) - consume installation

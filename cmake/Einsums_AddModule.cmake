@@ -467,7 +467,7 @@ function(einsums_add_module libname modulename)
   # ----------------------------------------------------------------------
   # Python autogen hook (Phase 5).
   #
-  # When the module opts in via ``PYBIND`` and EINSUMS_PYBIND_AUTOGEN is
+  # When the module opts in via ``PYBIND`` and EINSUMS_BUILD_PYTHON is
   # set, run einsums-pybind on the module's HEADERS to emit a pybind11
   # binding TU into ``${BIN}/generated/pybind/<libname>_<modulename>_pybind.cpp``,
   # then build that into a Python extension named
@@ -475,7 +475,7 @@ function(einsums_add_module libname modulename)
   # bound symbols resolve. This runs at build time (not configure time)
   # so editing a header retriggers regeneration on the next build.
   # ----------------------------------------------------------------------
-  if(${modulename}_PYBIND AND EINSUMS_BUILD_PYTHON AND EINSUMS_PYBIND_AUTOGEN)
+  if(${modulename}_PYBIND AND EINSUMS_BUILD_PYTHON)
     if(NOT TARGET einsums-pybind)
       message(WARNING
           "Module ${modulename} requested PYBIND but einsums-pybind target is missing — skipping autogen."

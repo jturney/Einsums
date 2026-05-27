@@ -109,6 +109,19 @@ def merge_environment(output_file, system, compiler, blas, docs):
     # Inject the platform-aware toolchain.
     merged["dependencies"].extend(compiler_packages(compiler, system))
 
+    # einsums-pybind — the libtooling-based code generator for the Python
+    # bindings — is built whenever EINSUMS_BUILD_PYTHON=ON, regardless of which
+    # compiler builds the rest of einsums. It does find_package(Clang/LLVM CONFIG)
+    # and links clangTooling/clangFormat/.../LLVMSupport, so the env always needs
+    # the LLVM/Clang *development* packages. clangdev pulls clang, clangxx,
+    # clang-tools and llvmdev transitively, so it satisfies both the configure-time
+    # find_package() calls and the runtime resource headers (lib/clang/<ver>/include).
+    # Pinned to the clang toolchain version for ABI consistency on the clang legs.
+    # Windows already injects ``clangdev`` as its compiler, so skip the duplicate.
+    if system != "Windows":
+        merged["dependencies"].append(f"clangdev={CLANG_VERSION}.*")
+        merged["dependencies"].append(f"llvmdev={CLANG_VERSION}.*")
+
     # cpptrace has no Windows package.
     if system == "Windows" and "cpptrace" in merged["dependencies"]:
         merged["dependencies"].remove("cpptrace")

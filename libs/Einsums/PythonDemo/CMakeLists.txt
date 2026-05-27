@@ -35,7 +35,7 @@ einsums_add_module(
 # End-to-end Python smoke test: import the aggregated `einsums` extension
 # (built by einsums_finalize_pybind at the end of root configure) and
 # exercise the PythonDemo bindings through it.
-if(EINSUMS_PYBIND_AUTOGEN AND EINSUMS_WITH_TESTS)
+if(EINSUMS_BUILD_PYTHON AND EINSUMS_WITH_TESTS)
   add_test(NAME einsums_pybind_python_smoke
       COMMAND ${Python_EXECUTABLE} -c "
 import einsums as m

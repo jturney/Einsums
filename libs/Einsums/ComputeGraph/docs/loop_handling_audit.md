@@ -598,9 +598,9 @@ fuzzer** are both ASan-clean.
 ### Build (separate dir; no MLIR — it's removed)
 
 `EINSUMS_WITH_SANITIZERS` is a STRING passed straight to `-fsanitize=`, so use
-`=address`, **not** `=ON`. The Python bindings need BOTH `EINSUMS_BUILD_PYTHON=ON`
-*and* `EINSUMS_PYBIND_AUTOGEN=ON` (the latter builds the codegen tool and creates
-the `PyEinsums` target). pybind11's FindPython may grab the *base* conda python —
+`=address`, **not** `=ON`. The Python bindings need `EINSUMS_BUILD_PYTHON=ON`
+(which builds the einsums-pybind codegen tool and creates the `PyEinsums`
+target). pybind11's FindPython may grab the *base* conda python —
 pin the env interpreter explicitly, or the `_core.so` is built for the wrong ABI.
 
 ```
@@ -610,7 +610,7 @@ cmake -S . -B build-asan -GNinja \
   -DCMAKE_C_COMPILER=$CONDA/bin/clang -DCMAKE_CXX_COMPILER=$CONDA/bin/clang++ \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DEINSUMS_WITH_SANITIZERS=address \
-  -DEINSUMS_BUILD_PYTHON=ON -DEINSUMS_PYBIND_AUTOGEN=ON \
+  -DEINSUMS_BUILD_PYTHON=ON \
   -DPython_EXECUTABLE=$CONDA/bin/python3.14 \
   -DEINSUMS_WITH_TESTS=ON -DEINSUMS_WITH_TESTS_UNIT=ON \
   -DEINSUMS_WITH_TESTS_BENCHMARKS=OFF -DEINSUMS_WITH_TESTS_EXAMPLES=OFF \

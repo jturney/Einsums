@@ -76,20 +76,24 @@ jobs:
         run: |
           cmake --build "${{ github.workspace }}/build" --config Release --target install
 
+      # The Python test suite is registered as ctest entries (labelled PYTHON)
+      # by einsums_add_python_unit_test, so this single ctest run exercises both
+      # the C++ and the Python bindings — no separate pytest step is needed.
       - name: Test (CTest) - Unit Tests
         working-directory: "${{ github.workspace }}/build"
         run: ctest --rerun-failed --output-on-failure -j3
 
-      - name: Test (Pytest) - unit tests
-        working-directory: "${{github.workspace}}/installed"
-        run: |
-          if [[ "${{runner.os}}" == "Windows" ]]; then
-            export PYTHONPATH="$PYTHONPATH;${{github.workspace}}/installed/lib;$CONDA_PREFIX/lib"
-          else
-            export PYTHONPATH="$PYTHONPATH:${{github.workspace}}/installed/lib:$CONDA_PREFIX/lib"
-          fi
-          pytest "${{github.workspace}}/installed" --cov="${{github.workspace}}/installed/lib" --cov="${{github.workspace}}/src" --cov-report=xml
-          
+      - name: Generate Python coverage
+        # The ctest Python runs accumulate coverage data under
+        # build/python-coverage/ (enabled by EINSUMS_WITH_COVERAGE). Render it
+        # to XML; run from the repo root so the rcfile [paths] remap resolves
+        # the canonical source dir for Codecov annotation.
+        working-directory: "${{ github.workspace }}/src"
+        env:
+          COVERAGE_FILE: "${{ github.workspace }}/build/python-coverage/.coverage"
+          COVERAGE_RCFILE: "${{ github.workspace }}/build/python-coverage/.coveragerc"
+        run: coverage xml -o "${{ github.workspace }}/build/python-coverage/coverage.xml"
+
       - name: Generate coverage information
         working-directory: "${{github.workspace}}/build"
         run: |
@@ -113,11 +117,11 @@ jobs:
       - name: Upload Python coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
-          directory: "${{github.workspace}}/installed"
-          working-directory: "${{github.workspace}}/installed"
+          directory: "${{github.workspace}}/src"
+          working-directory: "${{github.workspace}}/src"
           disable_search: true
           flags: python,mac
-          files: ${{github.workspace}}/installed/coverage.xml
+          files: ${{github.workspace}}/build/python-coverage/coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Test (find_package) - consume installation

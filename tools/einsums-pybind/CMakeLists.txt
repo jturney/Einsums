@@ -11,7 +11,7 @@
 # einsums_add_module() so that adding a new C++ feature requires no manual
 # binding work — just annotate the declaration and rebuild.
 #
-# This directory is gated by EINSUMS_PYBIND_AUTOGEN at the project root;
+# This directory is gated by EINSUMS_BUILD_PYTHON at the project root;
 # the parent CMakeLists.txt only descends here when that option is ON.
 #
 # The tool links against libtooling (clangTooling, clangFrontend, clangAST,

@@ -111,7 +111,7 @@ function(_einsums_pybind_collect_transitive_includes target inc_out_var def_out_
 endfunction()
 
 function(einsums_finalize_pybind)
-    if(NOT (EINSUMS_BUILD_PYTHON AND EINSUMS_PYBIND_AUTOGEN))
+    if(NOT EINSUMS_BUILD_PYTHON)
         return()
     endif()
 
@@ -242,7 +242,7 @@ function(einsums_finalize_pybind)
 "// Per-module register function declarations and the inline aggregator\n"
 "// called from PyEinsumsMain.cpp's PYBIND11_MODULE body. The list of\n"
 "// modules tracks which Einsums libraries opted in via\n"
-"// einsums_add_module(... PYBIND_AUTOGEN ON).\n"
+"// einsums_add_module(... PYBIND ON).\n"
 "\n"
 "#pragma once\n"
 "\n"

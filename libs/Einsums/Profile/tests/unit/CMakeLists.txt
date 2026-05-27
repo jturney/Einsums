@@ -38,7 +38,7 @@ foreach(test ${profile_tests})
     # Python tests only build when Python bindings are enabled. The
     # finalize step links the per-test pseudo-targets into the package
     # so ctest sees a complete einsums._core to import.
-    if(NOT EINSUMS_BUILD_PYTHON OR NOT EINSUMS_PYBIND_AUTOGEN)
+    if(NOT EINSUMS_BUILD_PYTHON)
       continue()
     endif()
     # Naming convention: ``test_<snake>_python.py`` -> ``<Camel>Python``,

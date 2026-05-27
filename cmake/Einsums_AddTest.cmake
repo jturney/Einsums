@@ -267,8 +267,8 @@ endfunction(einsums_add_unit_test)
 #:
 #:    Runs ``Python_EXECUTABLE -m pytest <script>`` with ``PYTHONPATH`` set to
 #:    the directory containing the built ``einsums`` extension. The test is
-#:    skipped silently when ``EINSUMS_BUILD_PYTHON`` / ``EINSUMS_PYBIND_AUTOGEN``
-#:    are off or the ``PyEinsums`` target is not present.
+#:    skipped silently when ``EINSUMS_BUILD_PYTHON`` is off or the
+#:    ``PyEinsums`` target is not present.
 #:
 #:    **Signature**
 #:    ``einsums_add_python_unit_test(<subcategory> <name> SCRIPT <python-file>)``
@@ -279,7 +279,7 @@ endfunction(einsums_add_unit_test)
 #:       einsums_add_python_unit_test(Modules.Tensor RuntimeTensorPython
 #:                                    SCRIPT test_runtime_tensor_python.py)
 function(einsums_add_python_unit_test subcategory name)
-  if(NOT EINSUMS_BUILD_PYTHON OR NOT EINSUMS_PYBIND_AUTOGEN)
+  if(NOT EINSUMS_BUILD_PYTHON)
     return()
   endif()
 
@@ -292,13 +292,40 @@ function(einsums_add_python_unit_test subcategory name)
   # PyEinsums lives in ``${CMAKE_BINARY_DIR}/lib/einsums/_core.*.so`` as
   # part of the einsums Python package. PYTHONPATH points at the *parent*
   # directory so ``import einsums`` resolves the package.
+  set(_pyt_args -m pytest -q --tb=short)
+  set(_pyt_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib")
+
+  if(EINSUMS_WITH_COVERAGE)
+    # Measure the pure-Python ``einsums`` package through these ctest-driven
+    # pytest runs (the C extension is covered separately by gcov/llvm-cov).
+    # Each test is its own pytest process, so ``--cov-append`` accumulates into
+    # one shared data file (ctest in CI runs serially). CI then runs
+    # ``coverage xml``; the ``[paths]`` remap in the generated rcfile rewrites
+    # the build-tree copy (``*/lib/einsums``) back onto the repo source so
+    # Codecov annotates the real files. The rcfile is shared by every Python
+    # test, so write it once.
+    set(_cov_dir "${CMAKE_BINARY_DIR}/python-coverage")
+    set(_cov_data "${_cov_dir}/.coverage")
+    set(_cov_rc "${_cov_dir}/.coveragerc")
+    get_property(_cov_rc_written GLOBAL PROPERTY EINSUMS_PYTHON_COVERAGERC_WRITTEN)
+    if(NOT _cov_rc_written)
+      file(
+        WRITE "${_cov_rc}"
+        "[run]\nsource =\n    einsums\n\n[paths]\nsource =\n    libs/Einsums/Python/python/einsums\n    */lib/einsums\n"
+      )
+      set_property(GLOBAL PROPERTY EINSUMS_PYTHON_COVERAGERC_WRITTEN TRUE)
+    endif()
+    list(APPEND _pyt_args --cov=einsums --cov-append --cov-report=)
+    list(APPEND _pyt_env "COVERAGE_FILE=${_cov_data}" "COVERAGE_RCFILE=${_cov_rc}")
+  endif()
+
   add_test(
     NAME "${_test_name}"
-    COMMAND "${Python_EXECUTABLE}" -m pytest -q --tb=short "${CMAKE_CURRENT_SOURCE_DIR}/${_pyt_SCRIPT}"
+    COMMAND "${Python_EXECUTABLE}" ${_pyt_args} "${CMAKE_CURRENT_SOURCE_DIR}/${_pyt_SCRIPT}"
   )
   set_tests_properties(
     "${_test_name}" PROPERTIES
-    ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/lib"
+    ENVIRONMENT "${_pyt_env}"
     LABELS "UNIT_ONLY;PYTHON"
   )
   einsums_add_pseudo_target("${_test_name}")
