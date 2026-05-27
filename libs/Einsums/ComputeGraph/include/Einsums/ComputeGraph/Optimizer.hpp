@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace einsums::compute_graph {
@@ -83,6 +84,35 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
      * the per-pass plan.
      */
     [[nodiscard]] virtual bool recurse_into_subgraphs() const { return false; }
+
+    /**
+     * @brief Set the pass's introspection verbosity.
+     *
+     * Levels: 0 = silent (default), 1 = summary (aggregate effect),
+     * 2 = detail (each modification applied), 3 = trace (each candidate
+     * examined, including why it was rejected). Output goes to stderr,
+     * prefixed with the pass name. Usually set in bulk via
+     * ``PassManager::set_verbosity`` rather than per pass.
+     */
+    EINSUMS_PYBIND_EXPOSE void set_verbosity(int level) { _verbosity = level; }
+
+    /// @brief Current verbosity level (see set_verbosity).
+    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("verbosity") [[nodiscard]] int verbosity() const { return _verbosity; }
+
+  protected:
+    /**
+     * @brief Emit ``[PassName] message`` to stderr when ``_verbosity >= level``.
+     *
+     * Passes call this to narrate what they see and the rewrites they make:
+     * @code
+     * report(3, fmt::format("examining node {} ({})", i, node.label)); // trace
+     * report(2, fmt::format("folded {} contractions into {}", n, name)); // detail
+     * report(1, fmt::format("folded {} groups", _num_groups));          // summary
+     * @endcode
+     */
+    EINSUMS_EXPORT void report(int level, std::string_view message) const;
+
+    int _verbosity{0};
 };
 
 /**
@@ -143,7 +173,11 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      */
     template <typename PassType, typename... Args>
     PassManager &add(Args &&...args) {
-        _passes.push_back(std::make_shared<PassType>(std::forward<Args>(args)...));
+        auto pass = std::make_shared<PassType>(std::forward<Args>(args)...);
+        if (_verbosity != 0) {
+            pass->set_verbosity(_verbosity);
+        }
+        _passes.push_back(std::move(pass));
         return *this;
     }
 
@@ -163,8 +197,32 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     // a method signature whose argument name collides with Python's
     // ``pass`` keyword — pyright can't parse it.
     EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RVP(reference_internal) PassManager &add(std::shared_ptr<OptimizerPass> optimizer_pass) {
+        if (_verbosity != 0) {
+            optimizer_pass->set_verbosity(_verbosity);
+        }
         _passes.push_back(std::move(optimizer_pass));
         return *this;
+    }
+
+    /**
+     * @brief Set introspection verbosity for every pass in the pipeline.
+     *
+     * Propagates @p level to all currently-registered passes and to any added
+     * afterward, and makes ``run()`` print a per-pass summary line
+     * (``name: MODIFIED N -> M nodes (T ms)``) to stderr. See
+     * ``OptimizerPass::set_verbosity`` for the level meanings.
+     *
+     * @code
+     * pm = cg.default_pass_manager()
+     * pm.set_verbosity(2)   # narrate each modification
+     * g.apply(pm)
+     * @endcode
+     */
+    EINSUMS_PYBIND_EXPOSE void set_verbosity(int level) {
+        _verbosity = level;
+        for (auto &pass : _passes) {
+            pass->set_verbosity(level);
+        }
     }
 
     /**
@@ -250,6 +308,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
 
   private:
     std::vector<std::shared_ptr<OptimizerPass>> _passes;
+    int                                         _verbosity{0};
 };
 
 } // namespace einsums::compute_graph

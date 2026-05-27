@@ -246,6 +246,11 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
             }
         }
         if (interference) {
+            if (_verbosity >= 3) {
+                auto on = tensors.find(vg.key.output_id);
+                report(3, fmt::format("skip fold into '{}': an intervening node reads/writes the output or an operand",
+                                      on != tensors.end() ? on->second.name : "?"));
+            }
             continue;
         }
 
@@ -321,6 +326,9 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         bool const     shared_first = vg.key.shared_is_first;
         Graph         *graph_ptr    = &graph;
 
+        // Captured for the verbosity report below, before einspec is moved into the lambda.
+        std::string const fold_out_indices = fmt::format("{}", fmt::join(einspec.c_indices, ","));
+
         auto combined = [contribs = std::move(contribs), einspec = std::move(einspec), c_pf0, ab0, shared_first, graph_ptr, nonshared_id,
                          shared_id, out_id, l_id, t_id, dtype]() {
             auto build = [&]<typename T>(T /*tag*/) {
@@ -389,6 +397,17 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         }
         _num_groups++;
         modified = true;
+
+        if (_verbosity >= 2) {
+            auto        on = tensors.find(out_id);
+            std::string member_desc;
+            for (auto const &m : members) {
+                member_desc +=
+                    fmt::format("{}node {}=[{}]", member_desc.empty() ? "" : ", ", m.node_index, fmt::join(m.non_shared_indices, ","));
+            }
+            report(2, fmt::format("fold {} contractions into '{}' [{}] via L=Σ(ab/{})·perm(operand); members {}", members.size(),
+                                  on != tensors.end() ? on->second.name : "?", fold_out_indices, ab0, member_desc));
+        }
     }
 
     if (!modified) {
@@ -407,6 +426,8 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
     graph.topological_sort();
 
     EINSUMS_LOG_INFO("LinearCombinationContractionFolding: folded {} groups, eliminated {} nodes", _num_groups, _num_eliminated);
+    report(1, fmt::format("folded {} group(s), replacing {} contractions with {} fused node(s)", _num_groups, _num_eliminated + _num_groups,
+                          _num_groups));
     return true;
 }
 

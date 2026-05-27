@@ -46,6 +46,12 @@
 
 namespace einsums::compute_graph {
 
+void OptimizerPass::report(int level, std::string_view message) const {
+    if (_verbosity >= level) {
+        fmt::print(stderr, "[{}] {}\n", name(), message);
+    }
+}
+
 namespace {
 
 /// Parse a comma-separated list of pass names into a set.
@@ -156,6 +162,12 @@ bool PassManager::run(Graph &graph) {
             if (verbose || modified) {
                 EINSUMS_LOG_INFO("PassManager: pass '{}' {} ({} -> {} nodes, {:.2f} ms)", pass->name(), modified ? "MODIFIED" : "no change",
                                  nodes_before, graph.num_nodes(), ms);
+            }
+            // Per-pass summary to stderr when verbosity is enabled (independent of
+            // the logger's level so `pm.set_verbosity(1)` always shows it).
+            if (_verbosity >= 1) {
+                fmt::print(stderr, "[PassManager] {}: {} ({} -> {} nodes, {:.2f} ms)\n", pass->name(), modified ? "MODIFIED" : "no change",
+                           nodes_before, graph.num_nodes(), ms);
             }
         }
 

@@ -128,6 +128,32 @@ def test_fold_three_terms():
     assert_close(out, ref)
 
 
+def test_verbosity_setting():
+    # set_verbosity propagates from PassManager to passes and narrates folds to
+    # stderr without affecting correctness.
+    A = einsums.create_random_tensor("A", [4])
+    B = einsums.create_random_tensor("B", [4, 3, 3])
+    out = einsums.create_zero_tensor("out", [3, 3])
+    a = np.asarray(A); b = np.asarray(B)
+    ref = 2.0 * np.einsum("k,kij->ij", a, b) - np.einsum("k,kji->ij", a, b)
+
+    g = cg.Graph("verbose_fold")
+    with cg.capture(g):
+        einsums.einsum("i,j <- k ; k,i,j", out, A, B, c_pf=0.0, ab_pf=2.0)
+        einsums.einsum("i,j <- k ; k,j,i", out, A, B, c_pf=1.0, ab_pf=-1.0)
+
+    p = cg.LinearCombinationContractionFolding()
+    assert p.verbosity == 0  # silent by default
+    pm = cg.PassManager()
+    pm.add(p)
+    pm.set_verbosity(2)  # propagates to p
+    assert p.verbosity == 2
+    assert pm.run(g)
+
+    g.execute()
+    assert_close(out, ref)
+
+
 def test_fold_inside_loop_body():
     A = einsums.create_random_tensor("A", [4])
     B = einsums.create_random_tensor("B", [4, 3, 3])
