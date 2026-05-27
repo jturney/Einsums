@@ -18,7 +18,7 @@ jobs:
       filters: ${{ steps.result.outputs.result }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -49,12 +49,6 @@ jobs:
               - '**/*.hpp'
               - '**/*.h'
               - '.clang-format'
-            studio:
-              # Einsums Studio (the IDE) lives entirely under devtools/EinsumsStudio.
-              # Future studio-only CI gates on this filter; library workflows
-              # (linux/macos build-and-test) keep gating on `src`/`ci` so a
-              # studio-only edit no longer triggers a full library rebuild.
-              - 'devtools/EinsumsStudio/**'
 
       - name: Set output
         id: result

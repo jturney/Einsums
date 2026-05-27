@@ -6,10 +6,18 @@ dependencies:
   # Development
   - cmake
   - ccache
-  - cxx-compiler
+  # NOTE: the C++ compiler is intentionally NOT listed here. The unpinned
+  # `cxx-compiler` metapackage lags several major versions behind conda-forge's
+  # latest toolchain, which is too old for the C++23 baseline (see
+  # cmake/Einsums_CheckCXXStandard.cmake). merge_yml.py injects the pinned,
+  # platform-aware toolchain (gcc / clang / intel) instead.
   - ninja
   - lcov
   - pre-commit
+  # pkg-config is used by cmake/FindFFTW.cmake (pkg_check_modules fftw3) to
+  # locate the FFT backend reliably; without it FFTW discovery falls back to
+  # a bare find_library search.
+  - pkg-config
   # Prebuilts to save einsums the work
   - catch2
   - fftw

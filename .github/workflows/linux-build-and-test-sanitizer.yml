@@ -57,51 +57,12 @@ jobs:
           key: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-${{ github.sha }}
           restore-keys: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-
 
-      # From https://github.com/conda-incubator/setup-miniconda?tab=readme-ov-file#caching-environments
-      - name: Setup Miniforge
-        uses: conda-incubator/setup-miniconda@v3
+      - name: Set up conda environment
+        uses: ./src/.github/actions/setup-conda-env
         with:
-          miniforge-version: latest
-          activate-environment: einsums-env
-          conda-remove-defaults: "true"
-
-      - name: Install ruamel.yaml
-        run: |
-          conda install -c conda-forge ruamel.yaml
-
-      - name: Merge Conda YAML files
-        working-directory: src/devtools/conda-envs
-        run: |
-          pwd
-          python merge_yml.py ${{ matrix.compiler }} ${{ matrix.blas }}
-
-      - name: Get Week
-        id: get-date
-        run: echo "week=$(/bin/date -u '+%W')" >> $GITHUB_OUTPUT
-        shell: bash
-
-      - name: Cache Conda env
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CONDA }}/envs
-          key:
-            conda-${{ runner.os }}-${{ runner.arch }}-${{ steps.get-date.outputs.week }}-${{ hashFiles('src/devtools/conda-envs/conda.yml') }}-${{ env.CACHE_NUMBER }}
-        env:
-          # Increase this value to reset cache if etc/example-environment.yml has not changed
-          CACHE_NUMBER: 0
-        id: cache
-
-      - name: Update environment
-        run: |
-          pwd
-          conda env update -n einsums-env -f src/devtools/conda-envs/conda.yml
-          conda activate einsums-env
-        if: steps.cache.outputs.cache-hit != 'true'
-
-      - name: Conda Environment
-        run: |
-          conda info
-          conda list
+          compiler: ${{ matrix.compiler }}
+          blas: ${{ matrix.blas }}
+          source-dir: src
 
       - name: Configure CMake
         # Build the Python bindings on the ThreadSanitizer leg so the Python
@@ -127,7 +88,7 @@ jobs:
             -D EINSUMS_SHOW_WARNING=OFF \
             -D CMAKE_INSTALL_PREFIX="${{ github.workspace }}/installed" \
             -D CMAKE_PREFIX_PATH="${CONDA_PREFIX}" \
-            ${{ matrix.cmake_extra }} ${{ inputs.build_configure_extra_args }}
+            ${{ inputs.build_configure_extra_args }}
 
       - name: Build and Install
         run: |

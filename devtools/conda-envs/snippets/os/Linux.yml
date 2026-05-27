@@ -2,3 +2,6 @@ name: einsums-dev
 channels:
   - conda-forge
   - nodefaults
+# Linux-specific, compiler-agnostic packages go here. The toolchain (gcc /
+# clang / intel) is injected by merge_yml.py, not pinned in this snippet.
+dependencies: []

@@ -11,16 +11,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Einsums is a C++20 tensor algebra library that provides compile-time contraction pattern analysis to select optimal operations (BLAS calls, generic algorithms, or MLIR JIT). It uses a modular CMake build system with optional GPU (CUDA/HIP) and MLIR JIT backends.
+Einsums is a C++23 tensor algebra library that provides compile-time contraction pattern analysis to select optimal operations (BLAS calls, a packed-GEMM backend, or generic algorithms). It uses a modular CMake build system with an optional GPU (CUDA/HIP) backend.
 
 ## Build Commands
 
 ```bash
 # Configure (from build directory, out-of-source required)
 cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-
-# With MLIR backend (requires MLIR >= 19 from conda-forge)
-cmake -S . -B build -GNinja -DEINSUMS_WITH_MLIR=ON -DMLIR_DIR=$CONDA_PREFIX/lib/cmake/mlir
 
 # With MPI distributed computing (requires Open MPI or MPICH)
 cmake -S . -B build -GNinja -DEINSUMS_WITH_MPI=ON
@@ -81,7 +78,7 @@ Module registration uses `einsums_add_module(Einsums <Name> SOURCES ... HEADERS 
 
 `TensorAlgebra` -> `LinearAlgebra` -> `BLAS` -> `BLASBase` -> `BLASVendor`
 
-`TensorAlgebra` is the main entry point. Its `einsum()` function dispatches through `Backends/Dispatch.hpp` which selects: BLAS specializations > MLIR JIT (if enabled) > generic algorithm.
+`TensorAlgebra` is the main entry point. Its `einsum()` function dispatches through `Backends/Dispatch.hpp` which selects: BLAS specializations > packed-GEMM backend (`try_packed_gemm`) > generic algorithm.
 
 ### Tensor Types
 
