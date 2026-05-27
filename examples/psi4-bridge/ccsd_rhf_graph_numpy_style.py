@@ -18,6 +18,11 @@ taken from density fitting, <ab|ef> = Σ_Q B^Q_ae B^Q_bf with B = J^{-1/2}(Q|vv)
 from psi4's DFTensor. The v⁴ tensor is NEVER formed — the ladder contraction
 splits into two o²v³ steps through a DF intermediate. Every other block stays
 EXACT via the half-transform bridge. Validate the DF shift vs psi4 conv CCSD.
+
+    PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
+        /Users/jturney/miniconda3/envs/einsums-dev/bin/python \
+        examples/psi4-bridge/ccsd_rhf_graph_numpy_style.py
+
 """
 import numpy as np
 import psi4
@@ -226,6 +231,7 @@ def _contractions(gr):
     return sum(1 for n in _json.loads(gr.to_json()).get("nodes", []) if n.get("kind") in ("Einsum", "Gemm", "BatchedGemm"))
 _before = _contractions(body)
 _lccf = cg.PassManager(); _lccf.add(cg.LinearCombinationContractionFolding())
+# _lccf.set_verbosity(3)
 g.apply(_lccf)
 print(f"LinearCombinationContractionFolding: body contractions {_before} -> {_contractions(body)}")
 
