@@ -48,7 +48,7 @@ class NoopCounterBackend : public CounterBackend {
     void read(std::array<uint64_t, kNumCounterSlots> &values) override { values.fill(0); }
 
     [[nodiscard]] auto slot_name(int slot) const -> std::string override {
-        static std::array<std::string, kNumCounterSlots> const names = {"cycles", "instructions", "cache-misses", "branch-misses"};
+        static std::array<std::string, kNumCounterSlots> const names = {{"cycles", "instructions", "cache-misses", "branch-misses"}};
         return names[slot];
     }
 

@@ -8,10 +8,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
   detect_changes:
     name: "Detect Changes"
@@ -22,6 +18,12 @@ jobs:
     needs: [ detect_changes ]
     if: ${{ contains(needs.detect_changes.outputs.filters, 'cmake') || contains(needs.detect_changes.outputs.filters, 'cpp') }}
     runs-on: ubuntu-latest
+    # Scoped to this job (not workflow-level): a workflow-wide permissions block
+    # would restrict the reusable detect-changes.yml call (which requests
+    # read-all) and cause a startup_failure.
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v4

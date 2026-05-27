@@ -105,7 +105,7 @@ void PerfCounterBackend::read(std::array<uint64_t, kNumCounterSlots> &values) {
 }
 
 auto PerfCounterBackend::slot_name(int slot) const -> std::string {
-    static const std::array<std::string, kNumCounterSlots> names = {"cycles", "instructions", "cache-misses", "branch-misses"};
+    static const std::array<std::string, kNumCounterSlots> names = {{"cycles", "instructions", "cache-misses", "branch-misses"}};
     return names[slot];
 }
 

@@ -33,7 +33,7 @@ struct StringLiteral {
      *
      * @versionadded{1.0.0}
      */
-    constexpr StringLiteral(auto const... chars) : _arr{chars..., '\0'} {}
+    constexpr StringLiteral(auto const... chars) : _arr{{chars..., '\0'}} {}
 
     /**
      * @brief Constructs a new string literal out of the list of characters.
