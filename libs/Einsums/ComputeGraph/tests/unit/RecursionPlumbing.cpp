@@ -264,6 +264,12 @@ TEST_CASE("Recursion policy - safe local-rewrite passes opt in", "[ComputeGraph]
     // ContractionPlanning opts in: chain restructuring is associativity-
     // equivalent and its intermediates are eager (no Materialization dep).
     CHECK(cg::passes::ContractionPlanning{}.recurse_into_subgraphs());
+    // Reorder opts in as of 2026-05-26: run() now encodes all three hazard
+    // classes (RAW/WAW/WAR) with view-alias resolution + effective_io, so the
+    // memory-aware sort no longer drops the WAR edges that broke the SCF
+    // body's snapshot+recompute sequence. Guarded by the fuzzer's loop-body
+    // "Reorder bait" patterns. See Reorder.hpp / docs/loop_handling_audit.md.
+    CHECK(cg::passes::Reorder{}.recurse_into_subgraphs());
 }
 
 TEST_CASE("Recursion policy - hoisting / aggregation passes stay opt-out", "[ComputeGraph][Recursion][Policy]") {
@@ -279,13 +285,10 @@ TEST_CASE("Recursion policy - hoisting / aggregation passes stay opt-out", "[Com
     CHECK_FALSE(cg::passes::InplaceOptimization{}.recurse_into_subgraphs());
     CHECK_FALSE(cg::passes::ChainParenthesization{}.recurse_into_subgraphs());
     CHECK_FALSE(cg::passes::GPUDiagnostics{}.recurse_into_subgraphs());
-    // CSE and Reorder stay opt-out: both have soundness gaps on the
-    // mutable-tensor reuse a loop body exhibits — CSE merges nodes writing
-    // distinct, later-mutated outputs; Reorder doesn't fully preserve the
-    // anti-dependencies of in-place reuse. Recursing either broke the SCF
-    // example. See CSE.hpp / Reorder.hpp.
+    // CSE stays opt-out: it has a soundness gap on the mutable-tensor reuse a
+    // loop body exhibits — it merges nodes writing distinct, later-mutated
+    // outputs. Recursing it broke the SCF example. See CSE.hpp.
     CHECK_FALSE(cg::passes::CSE{}.recurse_into_subgraphs());
-    CHECK_FALSE(cg::passes::Reorder{}.recurse_into_subgraphs());
 }
 
 TEST_CASE("DeadNodeElimination transforms a loop body via PassManager recursion", "[ComputeGraph][Recursion]") {
