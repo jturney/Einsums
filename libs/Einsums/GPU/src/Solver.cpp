@@ -170,7 +170,7 @@ int getrf<float>(int64_t m, int64_t n, float *A, int64_t lda, int64_t *ipiv) {
     (void)ipiv;
     return -1;
 #else
-    std::vector<int> ipiv32(std::min(m, n));
+    std::vector<int_t> ipiv32(std::min(m, n));
     int info = ::einsums::blas::vendor::sgetrf(static_cast<int>(m), static_cast<int>(n), A, static_cast<int>(lda), ipiv32.data());
     for (int64_t i = 0; i < static_cast<int64_t>(ipiv32.size()); ++i)
         ipiv[i] = ipiv32[i];
@@ -188,7 +188,7 @@ int getrf<double>(int64_t m, int64_t n, double *A, int64_t lda, int64_t *ipiv) {
     (void)ipiv;
     return -1;
 #else
-    std::vector<int> ipiv32(std::min(m, n));
+    std::vector<int_t> ipiv32(std::min(m, n));
     int info = ::einsums::blas::vendor::dgetrf(static_cast<int>(m), static_cast<int>(n), A, static_cast<int>(lda), ipiv32.data());
     for (int64_t i = 0; i < static_cast<int64_t>(ipiv32.size()); ++i)
         ipiv[i] = ipiv32[i];
