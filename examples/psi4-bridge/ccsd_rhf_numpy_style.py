@@ -3,23 +3,26 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""Closed-shell spin-adapted RHF-CCSD in einsums (eager, numpy-style).
+"""Closed-shell spin-adapted hybrid DF-CCSD in einsums (eager, numpy-style).
 
 Equations: D. Crawford's ccenergy form (psi4numpy helper_ccenergy.py), validated
 in ccsd_rhf_oracle.py. This is the einsums realization, honoring two goals:
-  * INTEGRALS FROM THE BRIDGE — all 10 physicist blocks <pq|rs>=(pr|qs) are built
-    from MintsHelper.mo_bra_half_transform_einsums (3 half-transforms: oo/ov/vv)
+  * INTEGRALS FROM THE BRIDGE — the 9 exact physicist blocks <pq|rs>=(pr|qs) are
+    built from MintsHelper.mo_bra_half_transform_einsums (3 half-transforms: oo/ov/vv)
     + a ket-finish IN EINSUMS + a chemist->physicist permute. No ao_eri.
   * EINSUMS, NOT NUMPY — every contraction/transform is einsums (einsum specs +
     operators + the '/' denominator + permute for the closed-shell symmetrizer);
     numpy ONLY ingests psi4 C/eps and reads the scalar energy.
 
-This builds v4 EXPLICITLY (vvvv via the vv|vv half-transform) as a stepping
-stone — the DF-CCSD production version swaps the v4-bearing terms (the τ·vvvv
-term + Zmbij = <mb|ef>·τ) for direct B_vv contractions, never forming vvvv.
+HYBRID DF: the v⁴ particle-ladder integral <ab|ef> = (ae|bf) is the only block
+from density fitting, <ab|ef> = Σ_Q B^Q_ae B^Q_bf with B = J^{-1/2}(Q|vv) from
+psi4 DFTensor. The v⁴ tensor is NEVER formed — the ladder contraction splits into
+two o²v³ steps through a DF intermediate H. Zmbij = <mb|ef>·τ keeps the EXACT ov³
+ovvv block (DF that only under memory pressure). All other blocks stay exact.
 
-Validated: cc-pVDZ water, conventional SCF/CCSD. Matches psi4 to ~1e-11:
-    closed-shell einsums CCSD corr = -0.2134804971
+Validated: cc-pVDZ water. The two-step factorization is exact to ~1e-13; the DF
+fit of the v⁴ block shifts the corr energy ~1.4e-4 from psi4 conv CCSD:
+    hybrid DF-CCSD corr ≈ -0.2136210814   (conv -0.2134804971)
 
 Run (Einsums build + psi4 stage on PYTHONPATH, conda-env Python)::
 
@@ -46,6 +49,13 @@ eo, ev = eps[:nocc], eps[nocc:]
 Co_np = np.ascontiguousarray(C[:, :nocc]); Cv_np = np.ascontiguousarray(C[:, nocc:])
 mints = psi4.core.MintsHelper(wfn.basisset())
 Co = psi4.core.Matrix.from_array(Co_np); Cv = psi4.core.Matrix.from_array(Cv_np)
+
+# DF 3-index for the v⁴ particle-ladder (true DF-CCSD: <ab|ef>=(ae|bf) from B,
+# the v⁴ tensor is never formed). Everything else stays exact via the bridge.
+aux = psi4.core.BasisSet.build(mol, "DF_BASIS_MP2", "", "RIFIT", wfn.basisset().name())
+naux = aux.nbf()
+dft = psi4.core.DFTensor(wfn.basisset(), aux, wfn.Ca(), nocc, nv)
+Bvv = dft.Qvv_einsums()   # B^Q_{ab} = J^{-1/2}(Q|ab), einsums RuntimeTensor (naux, nv, nv)
 
 def E(spec, A, B, shape, pf=1.0, name="x"):
     out = einsums.create_zero_tensor(name, list(shape), dtype="float64")
@@ -75,11 +85,18 @@ def phys(P, Q, R, S, name):
     chem = E("a,b,q,s <- sig,s ; a,b,q,sig", Ct[S], tmp, (nP, nR, nQ, nS), name=name + "_c")
     return perm("a,q,b,s <- a,b,q,s", chem, (nP, nQ, nR, nS), name)
 
-specs = {"oovv": ("o", "o", "v", "v"), "oooo": ("o", "o", "o", "o"), "vvvv": ("v", "v", "v", "v"),
+specs = {"oovv": ("o", "o", "v", "v"), "oooo": ("o", "o", "o", "o"),
          "ovvo": ("o", "v", "v", "o"), "ovov": ("o", "v", "o", "v"), "ooov": ("o", "o", "o", "v"),
          "oovo": ("o", "o", "v", "o"), "ovvv": ("o", "v", "v", "v"), "vvvo": ("v", "v", "v", "o"),
-         "ovoo": ("o", "v", "o", "o")}
+         "ovoo": ("o", "v", "o", "o")}  # no "vvvv": the v⁴ block is DF, never formed
 g = {nm: phys(*pqrs, nm) for nm, pqrs in specs.items()}
+
+# diagnostic only: DF reconstruction error of the v⁴ block (both tensors discarded;
+# the iteration never touches them). einsums-native; numpy reads the scalar error.
+_vvvv_exact = phys("v", "v", "v", "v", "vvvv_diag")
+_vvvv_df = E("a,b,e,f <- Q,a,e ; Q,b,f", Bvv, Bvv, (nv, nv, nv, nv), 1.0, "vvvv_df_diag")
+print(f"DF v⁴ reconstruction error  max|<ab|ef>_exact - <ab|ef>_DF| = "
+      f"{np.abs(np.asarray(_vvvv_exact) - np.asarray(_vvvv_df)).max():.3e}")
 
 # ── bare Fock (canonical RHF: Fov=0) + denominators (numpy ingest) ───────────
 Fvv = to_t("Fvv", np.diag(ev)); Foo = to_t("Foo", np.diag(eo))
@@ -153,7 +170,11 @@ for it in range(100):
     jm = E("jm <- je ; me", t1, Fme, (nocc, nocc), 1.0, "jm")
     r2 = r2 - sym(E("ijab <- imab ; jm", t2, jm, SH2, 0.5, "t2d"))
     r2 = r2 + E("ijab <- mnab ; mnij", Tau, Wmnij, SH2, 1.0, "t2e")
-    r2 = r2 + E("ijab <- ijef ; abef", Tau, g["vvvv"], SH2, 1.0, "t2f")    # explicit v4
+    # DF particle-ladder: r2 += Σ_ef Tau_ijef <ab|ef>, <ab|ef> = Σ_Q Bvv_ae Bvv_bf.
+    # Two o²v³ steps through a DF intermediate H — never forms the v⁴ tensor.
+    Hdf = E("Q,a,i,j,f <- Q,a,e ; i,j,e,f", Bvv, Tau, (naux, nv, nocc, nocc, nv), 1.0, "Hdf")
+    # NB: comma-consistent indices — a no-comma output mixed with comma inputs misparses.
+    r2 = r2 + E("i,j,a,b <- Q,a,i,j,f ; Q,b,f", Hdf, Bvv, SH2, 1.0, "t2f")
     r2 = r2 - sym(E("ijab <- ma ; mbij", t1, Zmbij, SH2, 1.0, "t2g"))      # Zmbij uses v3 (ovvv)
     r2 = r2 + sym(E("ijab <- imae ; mbej", t2, Wmbej, SH2, 1.0, "rng1")
                   + E("ijab <- imea ; mbej", t2, Wmbej, SH2, -1.0, "rng2"))
@@ -174,8 +195,11 @@ for it in range(100):
         print(f"converged in {it+1} iters"); break
     e_old = e_new
 
-print(f"closed-shell einsums CCSD corr = {e_new:.10f}")
-print(f"psi4 conv CCSD corr            = {ref:.10f}")
-print(f"difference                     = {abs(e_new - ref):.2e}")
-assert abs(e_new - ref) < 1e-7
-print("closed-shell spin-adapted RHF-CCSD (eager einsums, bridge integrals, explicit v4) MATCHES psi4")
+print(f"hybrid DF-CCSD corr (DF v⁴, exact rest) = {e_new:.10f}")
+print(f"psi4 conv CCSD corr (exact v⁴)          = {ref:.10f}")
+# Only the v⁴ block is DF (B⊗B); the two-step factorization is exact to ~1e-13, so
+# the gap from conv CCSD is the DF v⁴ approximation — small (good fit) yet nonzero.
+df_shift = abs(e_new - ref)
+print(f"DF v⁴ shift vs conv CCSD                = {df_shift:.2e}  (the v⁴-block DF approximation)")
+assert 1e-6 < df_shift < 1e-3, df_shift
+print("closed-shell hybrid DF-CCSD (eager einsums, DF v⁴ via B, exact bridge integrals elsewhere) OK")
