@@ -115,7 +115,7 @@ jobs:
 
       - name: Test (CTest) - Unit Tests
         working-directory: "${{ github.workspace }}/build"
-        run: ctest --rerun-failed --output-on-failure
+        run: ctest --rerun-failed --output-on-failure -j3
 
       - name: Test (Pytest) - unit tests
         working-directory: "${{github.workspace}}/installed"
@@ -125,9 +125,7 @@ jobs:
           else
             export PYTHONPATH="$PYTHONPATH:${{github.workspace}}/installed/lib:$CONDA_PREFIX/lib"
           fi
-          mkdir "${{github.workspace}}/backup" 
-          mv "${{github.workspace}}/src/einsums" "${{github.workspace}}/backup/einsums"
-          pytest "${{github.workspace}}/src/tests" --cov="${{github.workspace}}/installed/lib" --cov="${{github.workspace}}/src" --cov-report=xml
+          pytest "${{github.workspace}}/installed" --cov="${{github.workspace}}/installed/lib" --cov="${{github.workspace}}/src" --cov-report=xml
           
       - name: Generate coverage information
         working-directory: "${{github.workspace}}/build"

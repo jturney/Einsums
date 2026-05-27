@@ -752,6 +752,28 @@ if(EINSUMS_BUILD_PYTHON OR EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
   include(Einsums_SetupPybind11)
 
   find_package(pybind11)
+
+  einsums_option(
+    EINSUMS_INSTALL_PYMODDIR STRING
+    "Location within CMAKE_INSTALL_PREFIX to which the Python module is installed. 'naive' places in CMAKE_INSTALL_LIBDIR. 'prefix' queries the Python interpreter (still w/i PREFIX). Anything else is used directly (untested) (default: naive)." "naive"
+    CATEGORY "Build Targets"
+  )
+
+  if(${EINSUMS_INSTALL_PYMODDIR} STREQUAL "naive")
+    set(EINSUMS_INSTALL_PYMODDIR ${CMAKE_INSTALL_LIBDIR})
+  elseif(${EINSUMS_INSTALL_PYMODDIR} STREQUAL "prefix")
+    # Note that this block is *Linux-style* install to `CMAKE_INSTALL_PREFIX` not *Python-style* install to `Python_EXECUTABLE`'s site-packages.
+    execute_process(
+      COMMAND ${Python_EXECUTABLE} -c
+        "import os, sys, sysconfig as s; spdir = s.get_path('platlib'); print(spdir.replace(os.path.commonpath([sys.prefix, spdir]), '').lstrip(os.path.sep));"
+      OUTPUT_VARIABLE EINSUMS_INSTALL_PYMODDIR
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+  else()
+    # use as-is
+  endif()
+  message(STATUS "Showing option EINSUMS_INSTALL_PYMODDIR: ${EINSUMS_INSTALL_PYMODDIR}")
+  message(STATUS "Test EinsumsPy: PYTHONPATH=${CMAKE_INSTALL_PREFIX}/${EINSUMS_INSTALL_PYMODDIR} pytest ${CMAKE_INSTALL_PREFIX}")
 endif()
 
 if(EINSUMS_WITH_SANITIZERS AND NOT MSVC)
@@ -828,9 +850,6 @@ set(EINSUMS_DEBUG_POSTFIX "d")
 # Add libraries
 # ##################################################################################################
 add_subdirectory(libs)
-if(EINSUMS_BUILD_PYTHON)
-  add_subdirectory(einsums)
-endif()
 
 # ##################################################################################################
 # Documentation toolchain (Sphinx, Doxygen, Breathe)

@@ -128,6 +128,12 @@ set(PYTHON_LIBS
 )
 
 if(EINSUMS_BUILD_PYTHON OR EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
+
+  set(_old_default_comp "${CMAKE_INSTALL_DEFAULT_COMPONENT_NAME}")
+  set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME EinsumsPy)
+
+  file(RELATIVE_PATH _ein_pymod_relDir ${CMAKE_INSTALL_PREFIX}/${EINSUMS_INSTALL_PYMODDIR}/einsums
+                                       ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR})
   include(Einsums_ExtendWithPython)
 
   foreach(lib ${PYTHON_LIBS})
@@ -139,17 +145,42 @@ if(EINSUMS_BUILD_PYTHON OR EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
     # adds some RPATH and link flags
     einsums_extend_with_python(${lib})
 
+    if(${BLA_VENDOR} MATCHES "[mM][kK][lL]")
+      target_link_libraries(${lib} $<$<CXX_COMPILER_ID:GNU>:atomic>)
+    endif()
+
     install(
       TARGETS ${lib}
       EXPORT einsums_targets
-      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/einsums
-      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/einsums
-      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/einsums COMPONENT ${lib}
+      LIBRARY DESTINATION ${EINSUMS_INSTALL_PYMODDIR}/einsums
+      ARCHIVE DESTINATION ${EINSUMS_INSTALL_PYMODDIR}/einsums
+      RUNTIME DESTINATION ${EINSUMS_INSTALL_PYMODDIR}/einsums
+      COMPONENT ${lib}
     )
     einsums_export_targets(${lib})
 
     add_subdirectory(${lib})
   endforeach()
+
+  install(
+    DIRECTORY
+      ../tests
+    DESTINATION
+      ${EINSUMS_INSTALL_PYMODDIR}/einsums
+    USE_SOURCE_PERMISSIONS
+    COMPONENT EinsumsPy
+    FILES_MATCHING
+      PATTERN "test_*.py"
+  )
+  install(
+    FILES
+      ../pyeinsums/__init__.py
+      ../pyeinsums/utils.py
+    DESTINATION
+      ${EINSUMS_INSTALL_PYMODDIR}/einsums
+    COMPONENT EinsumsPy
+  )
+  set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "${_old_default_comp}")
 endif()
 
 # einsums_add_module populates EINSUMS_ENABLED_MODULES
