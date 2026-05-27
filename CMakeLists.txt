@@ -961,41 +961,54 @@ if(EINSUMS_BUILD_PYTHON)
   endif()
 
   # The clang resource-dir only carries Clang's *builtin* headers
-  # (``stddef.h``, ``stdarg.h``, ...) — NOT the C++ standard library. On
-  # Linux the C++ library is libstdc++ shipped with gcc, whose ``<complex>``,
-  # ``<string>``, etc. live under ``${gcc}/include/c++/<ver>`` (and, in a
-  # conda env, the non-standard ``x86_64-conda-linux-gnu`` triple) — a path
-  # the bare conda ``clang++`` cannot auto-detect when CMAKE_CXX_COMPILER is
-  # gcc. Rather than guess the layout, ask the actual project compiler for
-  # its real ``#include <...>`` search list and forward every directory as
-  # ``-isystem`` to the codegen. This is compiler/platform-agnostic: it
-  # yields libstdc++ dirs under gcc, libc++ + SDK dirs under clang, and the
-  # right set under icpx.
+  # (``stddef.h``, ``stdarg.h``, the x86 intrinsics like ``immintrin.h``,
+  # ...) — NOT the C++ standard library. On Linux the C++ library is
+  # libstdc++ shipped with gcc, whose ``<complex>``, ``<string>``, etc. live
+  # under ``${gcc}/include/c++/<ver>`` (and, in a conda env, the non-standard
+  # ``x86_64-conda-linux-gnu`` triple) — a path the bare conda ``clang++``
+  # cannot auto-detect when CMAKE_CXX_COMPILER is gcc. Ask the actual project
+  # compiler for its real ``#include <...>`` search list and forward the
+  # C++ standard-library dirs as ``-isystem`` to the codegen.
+  #
+  # CRITICAL: forward ONLY the C++ library dirs (the ``.../c++/...`` ones),
+  # never gcc's compiler-builtin dir (``.../lib/gcc/<triple>/<ver>/include``).
+  # That dir holds gcc's own ``immintrin.h`` / ``ia32intrin.h``, which
+  # reference gcc-only ``__builtin_ia32_*`` functions Clang does not have —
+  # feeding it to the Clang-based codegen breaks every header that pulls in
+  # SIMD intrinsics (HPTT -> SIMD/Vec.hpp). Clang's own intrinsics come from
+  # its ``-resource-dir``; system C headers come from the (conda) sysroot.
+  # This filter keeps libstdc++ dirs under gcc and the right set under icpx.
+  #
+  # Skipped on APPLE: there the macOS SDK ``-isysroot`` already supplies a
+  # libc++ whose headers are version-matched to the SDK's C headers. Adding
+  # the conda ``include/c++/v1`` dir as ``-isystem`` reorders include
+  # resolution and pulls in a mismatched ``<math.h>`` (``FP_ZERO`` undeclared,
+  # etc.), so we leave macOS to the sysroot it already had working.
   set(EINSUMS_PYBIND_CXX_INCLUDE_DIRS "")
-  execute_process(
-    COMMAND "${CMAKE_CXX_COMPILER}" -std=c++${EINSUMS_WITH_CXX_STANDARD} -E -x c++ -v /dev/null
-    OUTPUT_QUIET
-    ERROR_VARIABLE _pyb_cxx_verbose
-    RESULT_VARIABLE _pyb_cxx_probe_rc
-  )
-  if(_pyb_cxx_probe_rc EQUAL 0 AND _pyb_cxx_verbose)
-    string(REGEX REPLACE "\r?\n" ";" _pyb_cxx_lines "${_pyb_cxx_verbose}")
-    set(_pyb_in_search FALSE)
-    foreach(_line IN LISTS _pyb_cxx_lines)
-      if(_line MATCHES "#include <\\.\\.\\.> search starts here:")
-        set(_pyb_in_search TRUE)
-      elseif(_line MATCHES "End of search list\\.")
-        set(_pyb_in_search FALSE)
-      elseif(_pyb_in_search)
-        # Trim leading whitespace and a trailing " (framework directory)"
-        # annotation that Apple clang appends to framework search paths.
-        string(STRIP "${_line}" _dir)
-        string(REGEX REPLACE " \\(framework directory\\)$" "" _dir "${_dir}")
-        if(_dir AND EXISTS "${_dir}")
-          list(APPEND EINSUMS_PYBIND_CXX_INCLUDE_DIRS "${_dir}")
+  if(NOT APPLE)
+    execute_process(
+      COMMAND "${CMAKE_CXX_COMPILER}" -std=c++${EINSUMS_WITH_CXX_STANDARD} -E -x c++ -v /dev/null
+      OUTPUT_QUIET
+      ERROR_VARIABLE _pyb_cxx_verbose
+      RESULT_VARIABLE _pyb_cxx_probe_rc
+    )
+    if(_pyb_cxx_probe_rc EQUAL 0 AND _pyb_cxx_verbose)
+      string(REGEX REPLACE "\r?\n" ";" _pyb_cxx_lines "${_pyb_cxx_verbose}")
+      set(_pyb_in_search FALSE)
+      foreach(_line IN LISTS _pyb_cxx_lines)
+        if(_line MATCHES "#include <\\.\\.\\.> search starts here:")
+          set(_pyb_in_search TRUE)
+        elseif(_line MATCHES "End of search list\\.")
+          set(_pyb_in_search FALSE)
+        elseif(_pyb_in_search)
+          string(STRIP "${_line}" _dir)
+          # Keep only the C++ standard-library include dirs; see note above.
+          if(_dir AND EXISTS "${_dir}" AND _dir MATCHES "/c\\+\\+")
+            list(APPEND EINSUMS_PYBIND_CXX_INCLUDE_DIRS "${_dir}")
+          endif()
         endif()
-      endif()
-    endforeach()
+      endforeach()
+    endif()
   endif()
 
   message(STATUS "einsums-pybind resource-dir: ${EINSUMS_PYBIND_CLANG_RESOURCE_DIR}")
@@ -1007,7 +1020,9 @@ if(EINSUMS_BUILD_PYTHON)
   endif()
   if(EINSUMS_PYBIND_CXX_INCLUDE_DIRS)
     message(STATUS "einsums-pybind C++ include dirs: ${EINSUMS_PYBIND_CXX_INCLUDE_DIRS}")
-  else()
+  elseif(NOT APPLE)
+    # APPLE deliberately skips the probe (the SDK sysroot supplies libc++);
+    # an empty list anywhere else means the probe failed.
     message(WARNING "einsums-pybind: could not probe ${CMAKE_CXX_COMPILER} for C++ "
                     "header search paths — codegen may fail to find <complex> etc.")
   endif()
