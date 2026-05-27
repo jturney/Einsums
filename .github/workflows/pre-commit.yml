@@ -28,9 +28,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Check out the PR branch itself (not the detached merge ref) so an
-          # auto-formatting commit can be pushed back. Empty on workflow_dispatch.
-          ref: ${{ github.head_ref }}
+          # For same-repo PRs, check out the PR branch itself so an auto-format
+          # commit can be pushed back. For fork PRs github.head_ref does not
+          # exist in this repo (and the token is read-only anyway), so fall back
+          # to the default checkout (the merge ref); those paths never push.
+          ref: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.head_ref || '' }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
