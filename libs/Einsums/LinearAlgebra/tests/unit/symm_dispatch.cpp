@@ -45,7 +45,7 @@ TEMPLATE_TEST_CASE("symm dispatch - symmetric A matches general gemm", "[linear-
 
     for (int i = 0; i < N; ++i)
         for (int j = 0; j < K; ++j)
-            REQUIRE(C_sym(i, j) == Catch::Approx(C_ref(i, j)).margin(1e-10));
+            REQUIRE(C_sym(i, j) == Catch::Approx(C_ref(i, j)).margin(::einsums::tolerance<T>()));
 }
 
 TEMPLATE_TEST_CASE("symm dispatch - symmetric B on the right matches general gemm", "[linear-algebra][symmetry]", float, double) {
@@ -70,7 +70,7 @@ TEMPLATE_TEST_CASE("symm dispatch - symmetric B on the right matches general gem
 
     for (int i = 0; i < M; ++i)
         for (int j = 0; j < N; ++j)
-            REQUIRE(C_sym(i, j) == Catch::Approx(C_ref(i, j)).margin(1e-10));
+            REQUIRE(C_sym(i, j) == Catch::Approx(C_ref(i, j)).margin(::einsums::tolerance<T>()));
 }
 
 TEMPLATE_TEST_CASE("symm dispatch - beta != 0 adds correctly", "[linear-algebra][symmetry]", float, double) {
@@ -98,7 +98,7 @@ TEMPLATE_TEST_CASE("symm dispatch - beta != 0 adds correctly", "[linear-algebra]
 
     for (int i = 0; i < N; ++i)
         for (int j = 0; j < N; ++j)
-            REQUIRE(C_sym(i, j) == Catch::Approx(C_ref(i, j)).margin(1e-10));
+            REQUIRE(C_sym(i, j) == Catch::Approx(C_ref(i, j)).margin(::einsums::tolerance<T>()));
 }
 
 TEMPLATE_TEST_CASE("hemm dispatch - Hermitian A matches general gemm", "[linear-algebra][symmetry]", std::complex<float>,
@@ -125,7 +125,7 @@ TEMPLATE_TEST_CASE("hemm dispatch - Hermitian A matches general gemm", "[linear-
     for (int i = 0; i < N; ++i) {
         for (int j = 0; j < K; ++j) {
             auto diff = C_her(i, j) - C_ref(i, j);
-            REQUIRE(std::abs(diff) < 1e-10);
+            REQUIRE(std::abs(diff) < ::einsums::tolerance<T>());
         }
     }
 }
@@ -156,7 +156,7 @@ TEMPLATE_TEST_CASE("symm dispatch - trans='T' on symmetric A still dispatches", 
 
     for (int i = 0; i < N; ++i)
         for (int j = 0; j < N; ++j)
-            REQUIRE(C_trans(i, j) == Catch::Approx(C_ref(i, j)).margin(1e-10));
+            REQUIRE(C_trans(i, j) == Catch::Approx(C_ref(i, j)).margin(::einsums::tolerance<T>()));
 }
 
 TEMPLATE_TEST_CASE("hemm dispatch - trans='C' on Hermitian A still dispatches", "[linear-algebra][symmetry]", std::complex<float>,
@@ -183,7 +183,7 @@ TEMPLATE_TEST_CASE("hemm dispatch - trans='C' on Hermitian A still dispatches", 
 
     for (int i = 0; i < N; ++i)
         for (int j = 0; j < N; ++j)
-            REQUIRE(std::abs(C_conj(i, j) - C_ref(i, j)) < 1e-10);
+            REQUIRE(std::abs(C_conj(i, j) - C_ref(i, j)) < ::einsums::tolerance<T>());
 }
 
 TEMPLATE_TEST_CASE("symm dispatch - no descriptor falls through to gemm", "[linear-algebra][symmetry]", float, double) {
@@ -201,5 +201,5 @@ TEMPLATE_TEST_CASE("symm dispatch - no descriptor falls through to gemm", "[line
 
     for (int i = 0; i < N; ++i)
         for (int j = 0; j < N; ++j)
-            REQUIRE(C_auto(i, j) == Catch::Approx(C_ref(i, j)).margin(1e-14));
+            REQUIRE(C_auto(i, j) == Catch::Approx(C_ref(i, j)).margin(::einsums::tolerance<T>()));
 }
