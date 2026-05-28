@@ -354,20 +354,10 @@ expected<Request, CommError> iallgather(std::span<T const> send, std::span<T> re
     template expected<Request, CommError> ibroadcast<T>(std::span<T>, int, Communicator const &);                                          \
     template expected<Request, CommError> iallgather<T>(std::span<T const>, std::span<T>, Communicator const &);
 
-// Force default visibility on the explicit instantiations themselves.
-//
-// With EINSUMS_WITH_HIDDEN_VISIBILITY=ON, the EINSUMS_EXPORT on the template's *declaration* in
-// Collectives.hpp does not propagate to the instantiated specializations on Linux (both GCC and
-// the conda Clang) — the symbols come out hidden and disappear from libEinsums.so, breaking
-// TensorFileBasic_test on every Linux leg with `undefined reference to einsums::comm::broadcast<double>`
-// and friends. Attribute syntax between `template` and the return type lands on the return type,
-// not the function, so it doesn't help. The visibility pragma is the portable mechanism for
-// "everything between push and pop is default-visible" and both GCC and Clang honor it. Apple
-// Clang already exported these via the header attribute; the pragma is a no-op there.
-#if defined(__GNUC__) || defined(__clang__)
-#    pragma GCC visibility push(default)
-#endif
-
+// These definitions match the ``extern template EINSUMS_EXPORT ...`` declarations
+// in Collectives.hpp, which carry the visibility attribute (needed because GCC
+// and Linux Clang don't propagate visibility from the primary template to its
+// explicit instantiations under EINSUMS_WITH_HIDDEN_VISIBILITY=ON).
 INSTANTIATE_COLLECTIVES(float)
 INSTANTIATE_COLLECTIVES(double)
 INSTANTIATE_COLLECTIVES(int)
@@ -375,10 +365,6 @@ INSTANTIATE_COLLECTIVES(long)
 INSTANTIATE_COLLECTIVES(long long)
 INSTANTIATE_COLLECTIVES(std::complex<float>)
 INSTANTIATE_COLLECTIVES(std::complex<double>)
-
-#if defined(__GNUC__) || defined(__clang__)
-#    pragma GCC visibility pop
-#endif
 
 #undef INSTANTIATE_COLLECTIVES
 

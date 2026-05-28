@@ -12,6 +12,7 @@
 #include <Einsums/Comm/Error.hpp>
 #include <Einsums/Comm/Platform.hpp>
 
+#include <complex>
 #include <cstddef>
 #include <span>
 
@@ -143,5 +144,45 @@ template <Communicable T>
 template <Communicable T>
 [[nodiscard]] EINSUMS_EXPORT expected<Request, CommError> iallgather(std::span<T const> send, std::span<T> recv,
                                                                      Communicator const &comm = Communicator::world());
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Explicit instantiation declarations (export-control on every specialization).
+//
+// On Linux (both GCC and conda Clang) with EINSUMS_WITH_HIDDEN_VISIBILITY=ON,
+// the EINSUMS_EXPORT on the primary templates above does NOT propagate to the
+// specializations produced by the explicit instantiations in Collectives.cpp —
+// the symbols come out hidden and disappear from libEinsums.so, breaking every
+// downstream consumer (e.g. TensorFileBasic_test). Declaring each specialization
+// here with ``extern template EINSUMS_EXPORT`` is the canonical libstdc++-style
+// fix: the visibility attribute lives on a real declaration, and the matching
+// ``template ... <T>(...)`` definitions in Collectives.cpp pick up the
+// visibility from this declaration. Apple Clang propagates the primary template
+// attribute on its own, so the macOS build doesn't need this — but the
+// declarations are harmless there.
+// ═══════════════════════════════════════════════════════════════════════════════
+#define EINSUMS_COMM_EXTERN_INSTANTIATE(T)                                                                                                 \
+    extern template EINSUMS_EXPORT expected<void, CommError> allreduce<T>(std::span<T const>, std::span<T>, ReduceOp,                      \
+                                                                          Communicator const &);                                           \
+    extern template EINSUMS_EXPORT expected<void, CommError> allreduce_inplace<T>(std::span<T>, ReduceOp, Communicator const &);           \
+    extern template EINSUMS_EXPORT expected<void, CommError> broadcast<T>(std::span<T>, int, Communicator const &);                        \
+    extern template EINSUMS_EXPORT expected<void, CommError> allgather<T>(std::span<T const>, std::span<T>, Communicator const &);         \
+    extern template EINSUMS_EXPORT expected<void, CommError> scatter<T>(std::span<T const>, std::span<T>, int, Communicator const &);      \
+    extern template EINSUMS_EXPORT expected<void, CommError> send<T>(std::span<T const>, int, int, Communicator const &);                  \
+    extern template EINSUMS_EXPORT expected<void, CommError> recv<T>(std::span<T>, int, int, Communicator const &);                        \
+    extern template EINSUMS_EXPORT expected<Request, CommError> iallreduce<T>(std::span<T const>, std::span<T>, ReduceOp,                  \
+                                                                              Communicator const &);                                       \
+    extern template EINSUMS_EXPORT expected<Request, CommError> iallreduce_inplace<T>(std::span<T>, ReduceOp, Communicator const &);       \
+    extern template EINSUMS_EXPORT expected<Request, CommError> ibroadcast<T>(std::span<T>, int, Communicator const &);                    \
+    extern template EINSUMS_EXPORT expected<Request, CommError> iallgather<T>(std::span<T const>, std::span<T>, Communicator const &);
+
+EINSUMS_COMM_EXTERN_INSTANTIATE(float)
+EINSUMS_COMM_EXTERN_INSTANTIATE(double)
+EINSUMS_COMM_EXTERN_INSTANTIATE(int)
+EINSUMS_COMM_EXTERN_INSTANTIATE(long)
+EINSUMS_COMM_EXTERN_INSTANTIATE(long long)
+EINSUMS_COMM_EXTERN_INSTANTIATE(std::complex<float>)
+EINSUMS_COMM_EXTERN_INSTANTIATE(std::complex<double>)
+
+#undef EINSUMS_COMM_EXTERN_INSTANTIATE
 
 } // namespace einsums::comm
