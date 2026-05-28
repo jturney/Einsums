@@ -16,11 +16,21 @@ on:
       build_configure_extra_args:
         type: string
         required: false
+      run_intel:
+        # The intel/icpx matrix entries are gated: icpx's per-TU memory
+        # peaks (~16GB even at -O0 -j1) OOM-kill the default ubuntu-latest
+        # runner before the build finishes, so we don't run them on every
+        # push/PR. cmake.yml flips this true on workflow_dispatch so you
+        # can still validate icpx on demand from the Actions UI.
+        type: boolean
+        required: false
+        default: false
 
 permissions: read-all
 
 jobs:
   build:
+    if: ${{ inputs.run_intel || matrix.compiler != 'intel' }}
     strategy:
       fail-fast: false
       matrix:
