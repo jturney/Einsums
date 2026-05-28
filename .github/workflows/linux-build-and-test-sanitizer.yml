@@ -92,7 +92,12 @@ jobs:
 
       - name: Build and Install
         run: |
-          cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install
+          # -j2 caps ninja parallelism: GitHub Linux runners have 16GB RAM and
+          # sanitizer-instrumented compiles are even heavier than -O2 (TSan/ASan
+          # add ~2-3x peak per TU). Ninja's default (nproc+2 = 6) puts us over
+          # the line and the runner OOM-kills the build. -j2 keeps two workers
+          # in flight, well under budget.
+          cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install -j2
 
       - name: Test (CTest) - C++ unit tests
         working-directory: "${{ github.workspace }}/build"

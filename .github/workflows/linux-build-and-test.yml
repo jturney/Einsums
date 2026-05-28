@@ -107,7 +107,12 @@ jobs:
 
       - name: Build and Install
         run: |
-          cmake --build "${{ github.workspace }}/build" --config Release --target install
+          # -j2 caps ninja parallelism: GitHub Linux runners have 16GB RAM, and
+          # Einsums's heavy template instantiations (ComputeGraph + TensorAlgebra)
+          # can peak at ~3-4GB per TU. Ninja's default (nproc+2 = 6) puts us over
+          # the line and the runner OOM-kills the build mid-link. -j2 keeps two
+          # workers in flight, well under budget.
+          cmake --build "${{ github.workspace }}/build" --config Release --target install -j2
 
       # The Python test suite is registered as ctest entries (labelled PYTHON)
       # by einsums_add_python_unit_test, so this single ctest run exercises both
