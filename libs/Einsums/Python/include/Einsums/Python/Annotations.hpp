@@ -8,11 +8,15 @@
 // EINSUMS_PYBIND_* — Python binding annotation macros.
 //
 // These macros tag C++ declarations with metadata for the einsums-pybind
-// codegen tool (see tools/einsums-pybind). Under Clang, they expand to
+// codegen tool (see tools/einsums-pybind). Under Clang (and Clang-based
+// drivers like ``icpx`` that define ``__clang__``), they expand to
 // ``[[clang::annotate("einsums_pybind:...")]]`` which the tool reads from
-// the AST. Under GCC, MSVC, and any other compiler the C++11 attribute
-// lives in an unknown namespace and is silently ignored per the standard,
-// so production builds carry no overhead.
+// the AST. Under GCC the same C++11 attribute would emit a noisy
+// ``-Wattributes`` for every site ("scoped attribute directive ignored"),
+// so the macro collapses to nothing there. The codegen still sees the
+// attribute because the libtooling driver behind ``einsums-pybind`` is
+// libclang and always defines ``__clang__``; production GCC builds carry
+// no overhead and no warnings.
 //
 // Placement: each macro is a C++11 attribute and goes between the
 // class-key and the class name (or before the function return type).
@@ -35,7 +39,11 @@
 // Implementation detail
 // ---------------------------------------------------------------------------
 
-#define EINSUMS_PYBIND_DETAIL_ANNOTATE(payload) [[clang::annotate("einsums_pybind:" payload)]]
+#if defined(__clang__)
+#    define EINSUMS_PYBIND_DETAIL_ANNOTATE(payload) [[clang::annotate("einsums_pybind:" payload)]]
+#else
+#    define EINSUMS_PYBIND_DETAIL_ANNOTATE(payload) /* no-op on non-Clang compilers */
+#endif
 
 // ---------------------------------------------------------------------------
 // Exposure
