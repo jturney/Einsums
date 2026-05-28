@@ -142,3 +142,14 @@ TEST_CASE("BF16 loadu / storeu round-trip preserves bit pattern", "[simd][bf16]"
 }
 
 #endif // BF16
+
+// Fallback so the test binary always has at least one registered TEST_CASE.
+// Without this, building on a target that provides neither FP16 nor BF16
+// SIMD (e.g. CI's -march=nocona) produces a Catch2 binary that reports
+// "No tests ran", which ctest treats as a hard failure.
+#if !(defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__) || defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) ||         \
+      defined(__AVX512BF16__))
+TEST_CASE("Half-precision SIMD unavailable on this build target", "[simd][half][skip]") {
+    SUCCEED("FP16/BF16 SIMD intrinsics not enabled by this build's target arch; tests skipped.");
+}
+#endif
