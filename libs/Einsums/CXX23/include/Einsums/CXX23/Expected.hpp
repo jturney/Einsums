@@ -17,6 +17,14 @@
 
 #include <Einsums/Config.hpp>
 
+// Force the feature-test macro determination to be consistent across TUs:
+// without including <version> here, whether `__cpp_lib_expected` is defined when
+// we reach the check depends on whoever-else-included-what-first, which produces
+// different einsums::expected definitions (own class vs std::expected alias) in
+// different TUs. That ODR violation surfaces as undefined-reference link errors
+// against differently-mangled comm::broadcast<T>, allreduce_inplace<T>, etc.
+#include <version>
+
 #if defined(__cpp_lib_expected) && __cpp_lib_expected >= 202211L
 #    include <expected>
 #endif

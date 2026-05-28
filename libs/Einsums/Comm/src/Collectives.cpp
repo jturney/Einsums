@@ -354,10 +354,6 @@ expected<Request, CommError> iallgather(std::span<T const> send, std::span<T> re
     template expected<Request, CommError> ibroadcast<T>(std::span<T>, int, Communicator const &);                                          \
     template expected<Request, CommError> iallgather<T>(std::span<T const>, std::span<T>, Communicator const &);
 
-// These definitions match the ``extern template EINSUMS_EXPORT ...`` declarations
-// in Collectives.hpp, which carry the visibility attribute (needed because GCC
-// and Linux Clang don't propagate visibility from the primary template to its
-// explicit instantiations under EINSUMS_WITH_HIDDEN_VISIBILITY=ON).
 INSTANTIATE_COLLECTIVES(float)
 INSTANTIATE_COLLECTIVES(double)
 INSTANTIATE_COLLECTIVES(int)
