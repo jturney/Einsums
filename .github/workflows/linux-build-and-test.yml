@@ -25,8 +25,13 @@ jobs:
       fail-fast: false
       matrix:
         # compiler = default implies the default compiler for the platform; for linux this is gcc/g++.
-        # clang and intel (icx/icpx) are also available; merge_yml.py injects the matching conda toolchain.
-        compiler: [ default, clang, intel ]
+        # clang is also available; merge_yml.py injects the matching conda toolchain.
+        # intel (icx/icpx) is listed only via include below because all its variants
+        # share build_type=Debug — icpx's template-instantiation memory peaks tipped
+        # the 16GB GitHub runner over the line at -O2 / RelWithDebInfo even at -j2,
+        # so we drop optimization to keep it compiling. The default/clang legs still
+        # exercise RelWithDebInfo coverage.
+        compiler: [ default, clang ]
         blas: [ openblas, mkl ]
         build_type: [ RelWithDebInfo ]
         variant: [ default ]
@@ -36,7 +41,16 @@ jobs:
               -DEINSUMS_WITH_COVERAGE=ON
           - compiler: intel
             blas: mkl
-            build_type: RelWithDebInfo
+            build_type: Debug
+            variant: default
+            cmake_extra: >
+              -DCMAKE_C_COMPILER=icx
+              -DCMAKE_CXX_COMPILER=icpx
+              -DCMAKE_CXX_FLAGS="--gcc-toolchain=${CONDA_PREFIX} --sysroot=${CONDA_PREFIX}/${HOST}/sysroot -target ${HOST}"
+              -DOpenMP_CXX_INCLUDE_DIR="${CONDA_PREFIX}/include"
+          - compiler: intel
+            blas: mkl
+            build_type: Debug
             variant: lp64
             cmake_extra: >
               -DCMAKE_C_COMPILER=icx
@@ -46,7 +60,7 @@ jobs:
               -DOpenMP_CXX_INCLUDE_DIR="${CONDA_PREFIX}/include"
           - compiler: intel
             blas: mkl
-            build_type: RelWithDebInfo
+            build_type: Debug
             variant: ilp64
             cmake_extra: >
               -DCMAKE_C_COMPILER=icx
@@ -55,8 +69,6 @@ jobs:
               -DCMAKE_CXX_FLAGS="--gcc-toolchain=${CONDA_PREFIX} --sysroot=${CONDA_PREFIX}/${HOST}/sysroot -target ${HOST}"
               -DENABLE_EXTENDED_PRECISION=ON
         exclude:
-          - compiler: intel
-            blas: openblas
           # clang leg is openblas-only (mkl pairs with the intel toolchain).
           - compiler: clang
             blas: mkl
