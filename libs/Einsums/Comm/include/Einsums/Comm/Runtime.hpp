@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/Comm/InitModule.hpp>
 #include <Einsums/Comm/Platform.hpp>
 
 namespace einsums::comm {

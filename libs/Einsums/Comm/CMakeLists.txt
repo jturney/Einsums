@@ -11,6 +11,7 @@ set(CommHeaders
     Einsums/Comm/Collectives.hpp
     Einsums/Comm/DistributionDescriptor.hpp
     Einsums/Comm/DistributionMap.hpp
+    Einsums/Comm/InitModule.hpp
     Einsums/Comm/ProcessGrid.hpp
 )
 
