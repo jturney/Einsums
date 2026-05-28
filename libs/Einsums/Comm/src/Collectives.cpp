@@ -341,26 +341,32 @@ expected<Request, CommError> iallgather(std::span<T const> send, std::span<T> re
 // Explicit template instantiations
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// EINSUMS_EXPORT on each instantiation is required on Linux (GCC and Clang both) when
-// EINSUMS_WITH_HIDDEN_VISIBILITY=ON: neither compiler propagates the visibility attribute from
-// the template declaration in the header to the explicit instantiation, so without this the
-// symbols come out with default-hidden visibility and disappear from libEinsums.so — observed
-// breaking TensorFileBasic_test on every Linux leg (default, clang, thread-sanitizer) with
-// `undefined reference to einsums::comm::broadcast<double>` etc. Apple Clang propagates it
-// implicitly so the macOS build already exports these, but adding it explicitly is harmless
-// and makes the linkage portable.
 #define INSTANTIATE_COLLECTIVES(T)                                                                                                         \
-    template EINSUMS_EXPORT expected<void, CommError> allreduce<T>(std::span<T const>, std::span<T>, ReduceOp, Communicator const &);      \
-    template EINSUMS_EXPORT expected<void, CommError> allreduce_inplace<T>(std::span<T>, ReduceOp, Communicator const &);                  \
-    template EINSUMS_EXPORT expected<void, CommError> broadcast<T>(std::span<T>, int, Communicator const &);                               \
-    template EINSUMS_EXPORT expected<void, CommError> allgather<T>(std::span<T const>, std::span<T>, Communicator const &);                \
-    template EINSUMS_EXPORT expected<void, CommError> scatter<T>(std::span<T const>, std::span<T>, int, Communicator const &);             \
-    template EINSUMS_EXPORT expected<void, CommError> send<T>(std::span<T const>, int, int, Communicator const &);                         \
-    template EINSUMS_EXPORT expected<void, CommError> recv<T>(std::span<T>, int, int, Communicator const &);                               \
-    template EINSUMS_EXPORT expected<Request, CommError> iallreduce<T>(std::span<T const>, std::span<T>, ReduceOp, Communicator const &);  \
-    template EINSUMS_EXPORT expected<Request, CommError> iallreduce_inplace<T>(std::span<T>, ReduceOp, Communicator const &);              \
-    template EINSUMS_EXPORT expected<Request, CommError> ibroadcast<T>(std::span<T>, int, Communicator const &);                           \
-    template EINSUMS_EXPORT expected<Request, CommError> iallgather<T>(std::span<T const>, std::span<T>, Communicator const &);
+    template expected<void, CommError>    allreduce<T>(std::span<T const>, std::span<T>, ReduceOp, Communicator const &);                  \
+    template expected<void, CommError>    allreduce_inplace<T>(std::span<T>, ReduceOp, Communicator const &);                              \
+    template expected<void, CommError>    broadcast<T>(std::span<T>, int, Communicator const &);                                           \
+    template expected<void, CommError>    allgather<T>(std::span<T const>, std::span<T>, Communicator const &);                            \
+    template expected<void, CommError>    scatter<T>(std::span<T const>, std::span<T>, int, Communicator const &);                         \
+    template expected<void, CommError>    send<T>(std::span<T const>, int, int, Communicator const &);                                     \
+    template expected<void, CommError>    recv<T>(std::span<T>, int, int, Communicator const &);                                           \
+    template expected<Request, CommError> iallreduce<T>(std::span<T const>, std::span<T>, ReduceOp, Communicator const &);                 \
+    template expected<Request, CommError> iallreduce_inplace<T>(std::span<T>, ReduceOp, Communicator const &);                             \
+    template expected<Request, CommError> ibroadcast<T>(std::span<T>, int, Communicator const &);                                          \
+    template expected<Request, CommError> iallgather<T>(std::span<T const>, std::span<T>, Communicator const &);
+
+// Force default visibility on the explicit instantiations themselves.
+//
+// With EINSUMS_WITH_HIDDEN_VISIBILITY=ON, the EINSUMS_EXPORT on the template's *declaration* in
+// Collectives.hpp does not propagate to the instantiated specializations on Linux (both GCC and
+// the conda Clang) — the symbols come out hidden and disappear from libEinsums.so, breaking
+// TensorFileBasic_test on every Linux leg with `undefined reference to einsums::comm::broadcast<double>`
+// and friends. Attribute syntax between `template` and the return type lands on the return type,
+// not the function, so it doesn't help. The visibility pragma is the portable mechanism for
+// "everything between push and pop is default-visible" and both GCC and Clang honor it. Apple
+// Clang already exported these via the header attribute; the pragma is a no-op there.
+#if defined(__GNUC__) || defined(__clang__)
+#    pragma GCC visibility push(default)
+#endif
 
 INSTANTIATE_COLLECTIVES(float)
 INSTANTIATE_COLLECTIVES(double)
@@ -369,6 +375,10 @@ INSTANTIATE_COLLECTIVES(long)
 INSTANTIATE_COLLECTIVES(long long)
 INSTANTIATE_COLLECTIVES(std::complex<float>)
 INSTANTIATE_COLLECTIVES(std::complex<double>)
+
+#if defined(__GNUC__) || defined(__clang__)
+#    pragma GCC visibility pop
+#endif
 
 #undef INSTANTIATE_COLLECTIVES
 
