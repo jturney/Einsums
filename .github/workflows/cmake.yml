@@ -22,12 +22,16 @@ jobs:
     needs: [ detect_changes ]
     if: ${{ contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src') }}
     uses: ./.github/workflows/linux-build-and-test.yml
-    with:
-      # Auto-runs (push/PR) skip the intel/icpx matrix entries — icpx's
-      # per-TU memory exceeds ubuntu-latest's 16GB even at -O0 -j1, so it
-      # always OOM-kills the runner. Flip on by running the CMake workflow
-      # manually from the Actions tab when you actively want icpx validation.
-      run_intel: ${{ github.event_name == 'workflow_dispatch' }}
+
+  # intel/icpx is gated to manual runs only: icpx's per-TU memory exceeds
+  # ubuntu-latest's 16GB even at -O0 -j1 and OOM-kills the runner. Trigger
+  # from the Actions UI (workflow_dispatch) when you actively want icpx
+  # validation.
+  linux_intel:
+    name: Linux (intel)
+    needs: [ detect_changes ]
+    if: ${{ github.event_name == 'workflow_dispatch' && (contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src')) }}
+    uses: ./.github/workflows/linux-intel-build.yml
 
   macos_default:
     name: macOS

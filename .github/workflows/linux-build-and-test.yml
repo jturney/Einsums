@@ -16,31 +16,19 @@ on:
       build_configure_extra_args:
         type: string
         required: false
-      run_intel:
-        # The intel/icpx matrix entries are gated: icpx's per-TU memory
-        # peaks (~16GB even at -O0 -j1) OOM-kill the default ubuntu-latest
-        # runner before the build finishes, so we don't run them on every
-        # push/PR. cmake.yml flips this true on workflow_dispatch so you
-        # can still validate icpx on demand from the Actions UI.
-        type: boolean
-        required: false
-        default: false
 
 permissions: read-all
 
 jobs:
   build:
-    if: ${{ inputs.run_intel || matrix.compiler != 'intel' }}
     strategy:
       fail-fast: false
       matrix:
         # compiler = default implies the default compiler for the platform; for linux this is gcc/g++.
         # clang is also available; merge_yml.py injects the matching conda toolchain.
-        # intel (icx/icpx) is listed only via include below because all its variants
-        # share build_type=Debug — icpx's template-instantiation memory peaks tipped
-        # the 16GB GitHub runner over the line at -O2 / RelWithDebInfo even at -j2,
-        # so we drop optimization to keep it compiling. The default/clang legs still
-        # exercise RelWithDebInfo coverage.
+        # intel (icx/icpx) lives in linux-intel-build.yml — it's gated to manual
+        # runs because icpx's per-TU memory blows past the 16GB ubuntu-latest
+        # runner even at -O0 -j1.
         compiler: [ default, clang ]
         blas: [ openblas, mkl ]
         build_type: [ RelWithDebInfo ]
@@ -49,35 +37,6 @@ jobs:
           - compiler: default
             cmake_extra: >
               -DEINSUMS_WITH_COVERAGE=ON
-          - compiler: intel
-            blas: mkl
-            build_type: Debug
-            variant: default
-            cmake_extra: >
-              -DCMAKE_C_COMPILER=icx
-              -DCMAKE_CXX_COMPILER=icpx
-              -DCMAKE_CXX_FLAGS="--gcc-toolchain=${CONDA_PREFIX} --sysroot=${CONDA_PREFIX}/${HOST}/sysroot -target ${HOST}"
-              -DOpenMP_CXX_INCLUDE_DIR="${CONDA_PREFIX}/include"
-          - compiler: intel
-            blas: mkl
-            build_type: Debug
-            variant: lp64
-            cmake_extra: >
-              -DCMAKE_C_COMPILER=icx
-              -DCMAKE_CXX_COMPILER=icpx
-              -DMKL_INTERFACE=lp64
-              -DCMAKE_CXX_FLAGS="--gcc-toolchain=${CONDA_PREFIX} --sysroot=${CONDA_PREFIX}/${HOST}/sysroot -target ${HOST}"
-              -DOpenMP_CXX_INCLUDE_DIR="${CONDA_PREFIX}/include"
-          - compiler: intel
-            blas: mkl
-            build_type: Debug
-            variant: ilp64
-            cmake_extra: >
-              -DCMAKE_C_COMPILER=icx
-              -DCMAKE_CXX_COMPILER=icpx
-              -DMKL_INTERFACE=ilp64
-              -DCMAKE_CXX_FLAGS="--gcc-toolchain=${CONDA_PREFIX} --sysroot=${CONDA_PREFIX}/${HOST}/sysroot -target ${HOST}"
-              -DENABLE_EXTENDED_PRECISION=ON
         exclude:
           # clang leg is openblas-only (mkl pairs with the intel toolchain).
           - compiler: clang
@@ -129,12 +88,11 @@ jobs:
 
       - name: Build and Install
         run: |
-          # Cap ninja parallelism to fit the 16GB GitHub Linux runner. The heavy
-          # template instantiations (ComputeGraph + TensorAlgebra) peak at ~3-4GB
-          # per TU under -O2, more under icpx — ninja's default (nproc+2 = 6)
-          # OOM-kills the runner mid-link, and even -j2 still tips intel/icpx
-          # over (heavier IR than g++). Intel goes to -j1; the rest stay at -j2.
-          cmake --build "${{ github.workspace }}/build" --config Release --target install -j${{ matrix.compiler == 'intel' && '1' || '2' }}
+          # Cap ninja parallelism to fit the 16GB GitHub Linux runner: heavy
+          # template instantiations (ComputeGraph + TensorAlgebra) peak at
+          # ~3-4GB per TU under -O2 and ninja's default (nproc+2 = 6) OOM-kills
+          # the runner mid-link. -j2 leaves comfortable headroom on default/clang.
+          cmake --build "${{ github.workspace }}/build" --config Release --target install -j2
 
       # The Python test suite is registered as ctest entries (labelled PYTHON)
       # by einsums_add_python_unit_test, so this single ctest run exercises both

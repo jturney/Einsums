@@ -1,0 +1,116 @@
+name: Linux intel build and test workflow
+
+# Intel/icpx is gated to manual runs only (called from cmake.yml when the
+# workflow is triggered via workflow_dispatch). icpx's per-TU memory peaks
+# blow past ubuntu-latest's 16GB ceiling even at Debug + -j1, so we don't
+# run it on every push/PR — it always OOM-kills the runner. Trigger from
+# the Actions UI when you actively want icpx validation.
+
+on:
+  workflow_call:
+    inputs:
+      build_ref:
+        type: string
+        required: false
+      build_cache_suffix:
+        type: string
+        required: false
+        default: "default"
+      build_cache_size:
+        type: string
+        required: false
+        default: 2G
+      build_configure_extra_args:
+        type: string
+        required: false
+
+permissions: read-all
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # All intel variants share build_type=Debug — -O0 skips the template
+        # instantiation optimizer passes that drive peak memory. Variant is the
+        # MKL integer interface (default = unset, lp64, ilp64 + extended prec).
+        compiler: [ intel ]
+        blas: [ mkl ]
+        build_type: [ Debug ]
+        variant: [ default, lp64, ilp64 ]
+        include:
+          - variant: default
+            cmake_extra: >
+              -DCMAKE_C_COMPILER=icx
+              -DCMAKE_CXX_COMPILER=icpx
+              -DCMAKE_CXX_FLAGS="--gcc-toolchain=${CONDA_PREFIX} --sysroot=${CONDA_PREFIX}/${HOST}/sysroot -target ${HOST}"
+              -DOpenMP_CXX_INCLUDE_DIR="${CONDA_PREFIX}/include"
+          - variant: lp64
+            cmake_extra: >
+              -DCMAKE_C_COMPILER=icx
+              -DCMAKE_CXX_COMPILER=icpx
+              -DMKL_INTERFACE=lp64
+              -DCMAKE_CXX_FLAGS="--gcc-toolchain=${CONDA_PREFIX} --sysroot=${CONDA_PREFIX}/${HOST}/sysroot -target ${HOST}"
+              -DOpenMP_CXX_INCLUDE_DIR="${CONDA_PREFIX}/include"
+          - variant: ilp64
+            cmake_extra: >
+              -DCMAKE_C_COMPILER=icx
+              -DCMAKE_CXX_COMPILER=icpx
+              -DMKL_INTERFACE=ilp64
+              -DCMAKE_CXX_FLAGS="--gcc-toolchain=${CONDA_PREFIX} --sysroot=${CONDA_PREFIX}/${HOST}/sysroot -target ${HOST}"
+              -DENABLE_EXTENDED_PRECISION=ON
+
+    name: "${{ matrix.compiler }} • ${{ matrix.blas }} • ${{ matrix.build_type }} • ${{ matrix.variant }}"
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_DIR: $GITHUB_WORKSPACE/build_cache_${{ inputs.build_cache_suffix }}
+      CCACHE_MAXSIZE: ${{ inputs.build_cache_size }}
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.build_ref }}
+          path: src
+
+      - name: Cache Build Cache
+        uses: actions/cache@v4
+        with:
+          path: build_cache_${{ inputs.build_cache_suffix }}
+          key: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-${{ github.sha }}
+          restore-keys: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-
+
+      - name: Set up conda environment
+        uses: ./src/.github/actions/setup-conda-env
+        with:
+          compiler: ${{ matrix.compiler }}
+          blas: ${{ matrix.blas }}
+          source-dir: src
+
+      - name: Configure CMake
+        run: |
+          cmake \
+            -G Ninja \
+            -S "$GITHUB_WORKSPACE/src" \
+            -B "$GITHUB_WORKSPACE/build" \
+            -D EINSUMS_BUILD_PYTHON=ON \
+            -D CMAKE_C_COMPILER_LAUNCHER=ccache \
+            -D CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -D EINSUMS_SHOW_WARNING=OFF \
+            -D CMAKE_INSTALL_PREFIX="${{ github.workspace }}/installed" \
+            -D CMAKE_PREFIX_PATH="${CONDA_PREFIX}" \
+            ${{ matrix.cmake_extra }} ${{ inputs.build_configure_extra_args }}
+
+      - name: Build and Install
+        run: |
+          # -j1: even at Debug, single-TU icpx peaks tip the 16GB runner over.
+          # If a future runner change (more RAM, or a memory-friendlier icpx)
+          # makes -j2 viable, bump it.
+          cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install -j1
+
+      - name: Test (CTest) - Unit Tests
+        working-directory: "${{ github.workspace }}/build"
+        run: ctest --rerun-failed --output-on-failure -j2
