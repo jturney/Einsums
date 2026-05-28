@@ -325,6 +325,17 @@ function(einsums_finalize_pybind)
     # visibility and exports everything; if hidden visibility is turned on, the
     # bindings' referenced symbols must carry EINSUMS_EXPORT.
     target_link_libraries(PyEinsums PRIVATE Einsums)
+    # ``einsums_private_flags`` carries project-wide compile-time switches the
+    # per-module targets pick up via einsums_add_module. pybind11_add_module
+    # creates a fresh target that does NOT link against it transitively, so
+    # without this PyEinsums compiles with raw conda flags and trips warnings
+    # our private-flags target was set up to silence — most visibly the GCC
+    # ``-Winterference-size`` from Profile/RingBuffer.hpp's use of
+    # ``std::hardware_destructive_interference_size``. Adding it here mirrors
+    # what einsums_add_executable does for ordinary in-tree targets.
+    if(TARGET einsums_private_flags)
+        target_link_libraries(PyEinsums PRIVATE einsums_private_flags)
+    endif()
 
     list(LENGTH _modules _count)
     message(STATUS "einsums-pybind: PyEinsums aggregates ${_count} module(s): ${_modules}")
