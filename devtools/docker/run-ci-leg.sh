@@ -127,6 +127,10 @@ cmd_start() {
         -w /work \
         "${IMAGE}" \
         sleep infinity
+    # rsync isn't in the miniforge3 base image; install it now so the
+    # per-leg source-sync (host edits → container) works.
+    docker exec "${CONTAINER_NAME}" bash -lc \
+        "apt-get update -qq >/dev/null && apt-get install -y -qq rsync >/dev/null"
     echo "Container ready. Run a leg, e.g. ./devtools/docker/run-ci-leg.sh gcc-openblas"
 }
 
