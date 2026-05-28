@@ -45,8 +45,14 @@ inline constexpr bool is_mock = !has_gpu;
 // ---------------------------------------------------------------------------
 
 /// True if host and device share physical memory (no PCIe copies needed).
-/// Apple Silicon has unified memory. Discrete GPUs (CUDA/HIP) do not.
-inline constexpr bool has_unified_memory = has_mps;
+/// Apple Silicon (MPS) has unified memory; discrete GPUs (CUDA/HIP) do not.
+/// The mock backend has no separate device at all — host *is* the device —
+/// so it is unified by definition. The Graph executor uses this flag to
+/// skip device-shadow allocation and pointer swaps; without is_mock here,
+/// the mock path swaps tensor data pointers to uninitialized "shadow"
+/// memory and then computes on garbage (e.g. the StridedBatchedGemm
+/// GPU-forced test case).
+inline constexpr bool has_unified_memory = has_mps || is_mock;
 
 /// FP16 GEMM: available on CUDA tensor-core GPUs (Volta+) and MPS (Apple Silicon).
 inline constexpr bool has_fp16_gemm = has_cuda || has_mps;
