@@ -267,6 +267,10 @@ fi
 # 2. Create the per-leg conda env on first use; reuse otherwise.
 if ! conda env list | awk '{print \$1}' | grep -qx '${ENV_NAME}'; then
     echo '⤷ creating conda env ${ENV_NAME} (first time, slow)'
+    # cp -r src dst (when dst exists) silently nests as dst/src; that makes
+    # subsequent runs use a stale merge_yml.py at the top level even when
+    # the source has been updated. Wipe and recopy contents to /tmp/merge.
+    rm -rf /tmp/merge
     cp -r '${SRC_DIR}/devtools/conda-envs' /tmp/merge
     python /tmp/merge/merge_yml.py '${COMPILER}' '${BLAS}' --output /tmp/env-${LEG}.yml
     mamba env create -f /tmp/env-${LEG}.yml -n '${ENV_NAME}' -y >/dev/null

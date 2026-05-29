@@ -35,6 +35,42 @@ PLATFORM_DEFAULT_COMPILER = {
 }
 
 
+def conda_arch_suffix(system, machine=None):
+    """Return the conda platform suffix (e.g. ``linux-64``, ``linux-aarch64``).
+
+    conda packages name their per-platform builds with a ``<os>-<arch>`` suffix
+    (``gcc_linux-64``, ``clang_osx-arm64`` ...). Hardcoding ``linux-64`` breaks
+    when this script runs inside an arm64 Linux container — the env then asks
+    for x86_64 compiler binaries that aren't on PATH inside the arm64 image,
+    and CMake's BLAS/LAPACK probes link-fail because there's no compiler to
+    drive them. Detect the running architecture and emit the right suffix.
+
+    ``machine`` defaults to ``platform.machine()``; pass an override for tests.
+    """
+    if machine is None:
+        machine = platform.machine()
+    machine = machine.lower()
+
+    if system == "Linux":
+        if machine in ("x86_64", "amd64"):
+            return "linux-64"
+        if machine in ("aarch64", "arm64"):
+            return "linux-aarch64"
+        if machine in ("ppc64le",):
+            return "linux-ppc64le"
+        raise SystemExit(f"Unsupported Linux arch: {machine!r}.")
+    if system == "Darwin":
+        if machine in ("x86_64", "amd64"):
+            return "osx-64"
+        if machine in ("arm64", "aarch64"):
+            return "osx-arm64"
+        raise SystemExit(f"Unsupported macOS arch: {machine!r}.")
+    if system == "Windows":
+        # Windows arm64 isn't supported by our toolchains today.
+        return "win-64"
+    raise SystemExit(f"Unsupported system: {system!r}.")
+
+
 def compiler_packages(compiler, system):
     """Return the conda packages providing the requested C/C++ toolchain.
 
@@ -45,27 +81,32 @@ def compiler_packages(compiler, system):
         double-load abort. einsums requires OpenMP (find_package(OpenMP REQUIRED)).
       * Intel icx/icpx use ``--gcc-toolchain=$CONDA_PREFIX`` for libstdc++, so
         the intel leg also pulls the pinned GCC for a modern standard library.
+      * The conda arch suffix (``linux-64`` / ``linux-aarch64`` / ...) is
+        resolved at runtime via ``conda_arch_suffix`` so this script does the
+        right thing inside an arm64 container.
     """
     if compiler == "default":
         compiler = PLATFORM_DEFAULT_COMPILER[system]
 
+    arch = conda_arch_suffix(system)
+
     if compiler == "gcc":
         if system != "Linux":
             raise SystemExit(f"gcc is only supported on Linux (requested on {system}).")
-        return [f"gcc_linux-64={GCC_VERSION}.*", f"gxx_linux-64={GCC_VERSION}.*"]
+        return [f"gcc_{arch}={GCC_VERSION}.*", f"gxx_{arch}={GCC_VERSION}.*"]
 
     if compiler == "clang":
         if system == "Linux":
             return [
-                f"clang_linux-64>={CLANG_VERSION}",
-                f"clangxx_linux-64>={CLANG_VERSION}",
+                f"clang_{arch}>={CLANG_VERSION}",
+                f"clangxx_{arch}>={CLANG_VERSION}",
                 "clang-tools",
                 "llvm-openmp",
             ]
         if system == "Darwin":
             return [
-                f"clang_osx-arm64>={CLANG_VERSION}",
-                f"clangxx_osx-arm64>={CLANG_VERSION}",
+                f"clang_{arch}>={CLANG_VERSION}",
+                f"clangxx_{arch}>={CLANG_VERSION}",
                 "clang-tools",
                 "llvm-openmp",
             ]
@@ -74,8 +115,12 @@ def compiler_packages(compiler, system):
         raise SystemExit(f"Unknown platform for clang: {system}.")
 
     if compiler == "intel":
-        if system != "Linux":
-            raise SystemExit(f"intel (dpcpp) is only supported on Linux (requested on {system}).")
+        # dpcpp is x86_64-only.
+        if system != "Linux" or arch != "linux-64":
+            raise SystemExit(
+                f"intel (dpcpp) is only supported on Linux x86_64 "
+                f"(requested on {system} / {arch})."
+            )
         return [
             f"dpcpp_linux-64={DPCPP_VERSION}",
             f"gcc_linux-64={GCC_VERSION}.*",
