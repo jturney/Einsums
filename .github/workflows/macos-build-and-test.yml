@@ -83,27 +83,6 @@ jobs:
         working-directory: "${{ github.workspace }}/build"
         run: ctest --rerun-failed --output-on-failure -j3
 
-      - name: Generate Python coverage
-        # The ctest Python runs accumulate coverage data under
-        # build/python-coverage/ (enabled by EINSUMS_WITH_COVERAGE). Render it
-        # to XML; run from the repo root so the rcfile [paths] remap resolves
-        # the canonical source dir for Codecov annotation.
-        working-directory: "${{ github.workspace }}/src"
-        env:
-          COVERAGE_FILE: "${{ github.workspace }}/build/python-coverage/.coverage"
-          COVERAGE_RCFILE: "${{ github.workspace }}/build/python-coverage/.coveragerc"
-        # `parallel = True` in the rcfile produces one `.coverage.<host>.<pid>`
-        # file per pytest worker (alongside COVERAGE_FILE's path); combine them
-        # before rendering XML. `coverage combine` without an argument only
-        # looks in CWD, but CWD here is `src/` (set so the rcfile's [paths]
-        # remap resolves the source dir for Codecov annotation), and the
-        # per-process data files live in `build/python-coverage/`. Pass the
-        # data directory as a positional argument so combine actually finds
-        # them; without it the step fails with "No data to combine".
-        run: |
-          coverage combine "${{ github.workspace }}/build/python-coverage"
-          coverage xml -o "${{ github.workspace }}/build/python-coverage/coverage.xml"
-
       - name: Generate coverage information
         working-directory: "${{github.workspace}}/build"
         run: |
@@ -122,16 +101,6 @@ jobs:
           disable_search: true
           files: ${{github.workspace}}/build/coverage.info
           flags: cpp,mac
-          token: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: Upload Python coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          directory: "${{github.workspace}}/src"
-          working-directory: "${{github.workspace}}/src"
-          disable_search: true
-          flags: python,mac
-          files: ${{github.workspace}}/build/python-coverage/coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Test (find_package) - consume installation

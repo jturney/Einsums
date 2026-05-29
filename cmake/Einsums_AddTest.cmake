@@ -306,41 +306,11 @@ function(einsums_add_python_unit_test subcategory name)
     "EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1"
   )
 
-  if(EINSUMS_WITH_COVERAGE)
-    # Measure the pure-Python ``einsums`` package through these ctest-driven
-    # pytest runs (the C extension is covered separately by gcov/llvm-cov).
-    # Each test is its own pytest process, so ``--cov-append`` accumulates into
-    # one shared data file (ctest in CI runs serially). CI then runs
-    # ``coverage xml``; the ``[paths]`` remap in the generated rcfile rewrites
-    # the build-tree copy (``*/lib/einsums``) back onto the repo source so
-    # Codecov annotates the real files. The rcfile is shared by every Python
-    # test, so write it once.
-    set(_cov_dir "${CMAKE_BINARY_DIR}/python-coverage")
-    set(_cov_data "${_cov_dir}/.coverage")
-    set(_cov_rc "${_cov_dir}/.coveragerc")
-    get_property(_cov_rc_written GLOBAL PROPERTY EINSUMS_PYTHON_COVERAGERC_WRITTEN)
-    if(NOT _cov_rc_written)
-      # parallel = True makes each pytest worker write its OWN
-      # ``.coverage.<host>.<pid>.<rand>`` data file; without it ctest's -jN
-      # invocation lets multiple Python tests clobber one shared SQLite DB
-      # ("sqlite3.OperationalError: no such table: other_db.file"). The
-      # workflow's "Generate Python coverage" step then runs ``coverage
-      # combine`` to merge the per-process files before producing XML.
-      file(
-        WRITE "${_cov_rc}"
-        "[run]\nsource =\n    einsums\nparallel = True\n\n[paths]\nsource =\n    libs/Einsums/Python/python/einsums\n    */lib/einsums\n"
-      )
-      set_property(GLOBAL PROPERTY EINSUMS_PYTHON_COVERAGERC_WRITTEN TRUE)
-    endif()
-    # Don't pass --cov-append: with `parallel = True` each pytest worker
-    # already writes its own ``.coverage.<host>.<pid>.<rand>`` data file, so
-    # there's nothing to append to. With --cov-append on top, pytest-cov tries
-    # to ATTACH any pre-existing .coverage* (e.g. a stale file restored from
-    # the build cache) and trips
-    # ``sqlite3.OperationalError: no such table: other_db.file`` mid-test.
-    list(APPEND _pyt_args --cov=einsums --cov-report=)
-    list(APPEND _pyt_env "COVERAGE_FILE=${_cov_data}" "COVERAGE_RCFILE=${_cov_rc}")
-  endif()
+  # Python-side coverage gathering was removed: the pytest-cov + parallel-
+  # SQLite combine path proved more fragile (lock races, stale-file ingest,
+  # combine-CWD bugs) than the metric was worth. C++ coverage on the binding
+  # paths is still gathered via gcov / llvm-cov on the C extension; the pure-
+  # Python wrapper layer is small and tested by these Python tests already.
 
   add_test(
     NAME "${_test_name}"
