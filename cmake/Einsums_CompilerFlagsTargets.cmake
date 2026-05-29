@@ -15,6 +15,9 @@ target_compile_features(einsums_public_flags INTERFACE cxx_std_${EINSUMS_WITH_CX
 # ``#include "Einsums/Python/Annotations.hpp"``. The macros expand to
 # ``[[clang::annotate(...)]]`` under Clang and to nothing on every other
 # compiler, so the include is harmless when the autogen tool isn't running.
+# The Einsums/Python public headers themselves are installed by the regular
+# einsums_add_module() call in libs/Einsums/Python/CMakeLists.txt, which
+# runs unconditionally so the install tree always contains them.
 target_include_directories(einsums_public_flags
     INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/libs/Einsums/Python/include>
               $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>

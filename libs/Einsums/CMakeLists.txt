@@ -32,6 +32,7 @@ set(_Einsums_modules
   Preprocessor
   Print
   Profile
+  Python
   PythonDemo
   Runtime
   RuntimeConfiguration

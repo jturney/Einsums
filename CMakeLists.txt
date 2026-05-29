@@ -1036,9 +1036,11 @@ if(EINSUMS_BUILD_PYTHON)
                     "header search paths — codegen may fail to find <complex> etc.")
   endif()
 endif()
-if(EINSUMS_BUILD_PYTHON)
-  add_subdirectory(libs/Einsums/Python)
-endif()
+# libs/Einsums/Python is now in the regular _Einsums_modules list in
+# libs/Einsums/CMakeLists.txt — it's a header-only module that must be
+# installed unconditionally (its Annotations.hpp is transitively included
+# from Logging.hpp and other public headers), and the einsums-pybind /
+# pybind11 sanity checks inside it remain gated on EINSUMS_BUILD_PYTHON.
 
 # ##################################################################################################
 # Add libraries
