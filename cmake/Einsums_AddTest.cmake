@@ -332,7 +332,13 @@ function(einsums_add_python_unit_test subcategory name)
       )
       set_property(GLOBAL PROPERTY EINSUMS_PYTHON_COVERAGERC_WRITTEN TRUE)
     endif()
-    list(APPEND _pyt_args --cov=einsums --cov-append --cov-report=)
+    # Don't pass --cov-append: with `parallel = True` each pytest worker
+    # already writes its own ``.coverage.<host>.<pid>.<rand>`` data file, so
+    # there's nothing to append to. With --cov-append on top, pytest-cov tries
+    # to ATTACH any pre-existing .coverage* (e.g. a stale file restored from
+    # the build cache) and trips
+    # ``sqlite3.OperationalError: no such table: other_db.file`` mid-test.
+    list(APPEND _pyt_args --cov=einsums --cov-report=)
     list(APPEND _pyt_env "COVERAGE_FILE=${_cov_data}" "COVERAGE_RCFILE=${_cov_rc}")
   endif()
 

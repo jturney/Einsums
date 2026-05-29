@@ -194,7 +194,14 @@ def test_invert_eager(dtype):
     """A * A^-1 = I after invert(A)."""
     n = 4
     A = einsums.create_random_tensor("A", [n, n], dtype=dtype)
-    A_orig = np.asarray(A).copy()
+    # create_random_tensor draws from a uniform distribution, so the
+    # resulting matrix can land arbitrarily close to singular by chance
+    # — observed on Linux clang where getrf hit a zero pivot at (3, 3)
+    # for a specific seed. Make A diagonally dominant by adding n*I so
+    # invert always succeeds.
+    A_np = np.asarray(A)
+    A_np[:] = A_np + n * np.eye(n, dtype=A_np.dtype)
+    A_orig = A_np.copy()
     einsums.linalg.invert(A)
     product = A_orig @ np.asarray(A)
     np.testing.assert_allclose(product, np.eye(n), atol=1e-3)
@@ -204,7 +211,11 @@ def test_invert_eager(dtype):
 def test_invert_in_graph_capture(dtype):
     n = 3
     A = einsums.create_random_tensor("A", [n, n], dtype=dtype)
-    A_orig = np.asarray(A).copy()
+    # Same diagonal-dominant shim as test_invert_eager — uniform-random
+    # 3×3 matrices are even more likely to be ill-conditioned.
+    A_np = np.asarray(A)
+    A_np[:] = A_np + n * np.eye(n, dtype=A_np.dtype)
+    A_orig = A_np.copy()
 
     g = cg.Graph("invert")
     with cg.capture(g):
