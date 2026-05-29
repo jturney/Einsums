@@ -16,11 +16,21 @@
 #     ./devtools/docker/run-ci-leg.sh tsan                 # Sanitizers/thread (Debug, BUILD_PYTHON=ON)
 #     ./devtools/docker/run-ci-leg.sh asan                 # Sanitizers/address,leak,undefined (Debug)
 #
+#     # Append `-arm64` to any leg name to run on native arm64 instead of
+#     # x86_64-via-Rosetta. Faster (~2x for instrumented builds), and arm64's
+#     # weaker memory model surfaces races more reliably. NOT a CI reproducer
+#     # — CI runs x86_64 only, and our SIMD/vector code has arch-specific
+#     # kernels. Use arm64 for fast sanitizer/race triage; use the default
+#     # amd64 variant when chasing a specific CI failure.
+#     ./devtools/docker/run-ci-leg.sh asan-arm64           # native arm64 ASan
+#     ./devtools/docker/run-ci-leg.sh tsan-nopy-arm64      # native arm64 TSan, no Python
+#
 #     # Pass extra flags through to ctest (everything after `--`):
 #     ./devtools/docker/run-ci-leg.sh gcc-openblas -- -R "CommBasic" --output-on-failure
 #
-#     # Tear down when done:
-#     ./devtools/docker/run-ci-leg.sh stop
+#     # Tear down when done (each arch has its own container):
+#     ./devtools/docker/run-ci-leg.sh stop                 # amd64 container
+#     ./devtools/docker/run-ci-leg.sh stop arm64           # arm64 container
 #
 # Each leg gets its own:
 #   - conda env  : einsums-env-${LEG}    (persisted in named volume)
@@ -33,9 +43,35 @@
 
 set -euo pipefail
 
-CONTAINER_NAME="einsums-ci-local"
 IMAGE="condaforge/miniforge3:latest"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Per-arch container + volume namespacing. amd64 keeps the legacy unsuffixed
+# names so existing volumes/containers don't need migration; arm64 gets its
+# own parallel namespace so the two archs never share ccache or conda envs
+# (object files are arch-specific; conda packages are linux-x86_64 vs
+# linux-aarch64).
+arch_container_name() {
+    if [[ "$1" == "amd64" ]]; then
+        echo "einsums-ci-local"
+    else
+        echo "einsums-ci-local-$1"
+    fi
+}
+arch_pkg_volume() {
+    if [[ "$1" == "amd64" ]]; then
+        echo "einsums-ci-conda-pkgs"
+    else
+        echo "einsums-ci-conda-pkgs-$1"
+    fi
+}
+arch_work_volume() {
+    if [[ "$1" == "amd64" ]]; then
+        echo "einsums-ci-work"
+    else
+        echo "einsums-ci-work-$1"
+    fi
+}
 
 # ──────────────────────────────────────────────────────────────────────────
 # Leg → (compiler, blas, build_type, cmake_extra) mapping
@@ -109,6 +145,7 @@ leg_settings() {
         *)
             echo "Unknown leg: $1" >&2
             echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], tsan, tsan-nopy, asan" >&2
+            echo "       (append -arm64 to any of the above for native arm64)" >&2
             exit 1
             ;;
     esac
@@ -118,6 +155,9 @@ leg_settings() {
 # Container lifecycle
 # ──────────────────────────────────────────────────────────────────────────
 cmd_start() {
+    local ARCH="${1:-amd64}"
+    local CONTAINER_NAME
+    CONTAINER_NAME="$(arch_container_name "${ARCH}")"
     if docker ps --filter "name=${CONTAINER_NAME}" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
         echo "Container ${CONTAINER_NAME} already running."
         return
@@ -127,14 +167,14 @@ cmd_start() {
         docker start "${CONTAINER_NAME}"
         return
     fi
-    echo "Pulling ${IMAGE}…"
-    docker pull --platform linux/amd64 "${IMAGE}"
-    echo "Creating container ${CONTAINER_NAME} (volume-mounted)…"
-    docker run -d --platform linux/amd64 \
+    echo "Pulling ${IMAGE} (linux/${ARCH})…"
+    docker pull --platform "linux/${ARCH}" "${IMAGE}"
+    echo "Creating container ${CONTAINER_NAME} (linux/${ARCH}, volume-mounted)…"
+    docker run -d --platform "linux/${ARCH}" \
         --name "${CONTAINER_NAME}" \
         -v "${REPO_ROOT}:/src:ro" \
-        -v einsums-ci-conda-pkgs:/opt/conda/pkgs \
-        -v einsums-ci-work:/work \
+        -v "$(arch_pkg_volume "${ARCH}"):/opt/conda/pkgs" \
+        -v "$(arch_work_volume "${ARCH}"):/work" \
         -w /work \
         "${IMAGE}" \
         sleep infinity
@@ -146,17 +186,23 @@ cmd_start() {
 }
 
 cmd_stop() {
+    local ARCH="${1:-amd64}"
+    local CONTAINER_NAME
+    CONTAINER_NAME="$(arch_container_name "${ARCH}")"
     docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
     echo "Container ${CONTAINER_NAME} removed."
-    echo "Tip: 'docker volume rm einsums-ci-conda-pkgs einsums-ci-work' to also drop the cached envs and builds."
+    echo "Tip: 'docker volume rm $(arch_pkg_volume "${ARCH}") $(arch_work_volume "${ARCH}")' to also drop its cached envs and builds."
 }
 
 # ──────────────────────────────────────────────────────────────────────────
 # Leg run
 # ──────────────────────────────────────────────────────────────────────────
 ensure_container_up() {
+    local ARCH="$1"
+    local CONTAINER_NAME
+    CONTAINER_NAME="$(arch_container_name "${ARCH}")"
     if ! docker ps --filter "name=${CONTAINER_NAME}" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        cmd_start
+        cmd_start "${ARCH}"
     fi
 }
 
@@ -170,8 +216,19 @@ run_leg() {
         CTEST_EXTRA=("$@")
     fi
 
+    # `-arm64` suffix on the leg name selects the arm64 container/volume
+    # namespace. Strip it before resolving leg_settings so each leg has one
+    # canonical (compiler, blas, build_type) tuple regardless of arch.
+    local ARCH=amd64
+    if [[ "${LEG}" == *-arm64 ]]; then
+        ARCH=arm64
+        LEG="${LEG%-arm64}"
+    fi
+    local CONTAINER_NAME
+    CONTAINER_NAME="$(arch_container_name "${ARCH}")"
+
     leg_settings "${LEG}"
-    ensure_container_up
+    ensure_container_up "${ARCH}"
 
     # Conda env is determined by (compiler, blas) — all legs with the
     # same toolchain combo share one env so we don't pay the ~10-minute
@@ -256,7 +313,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 case "$1" in
-    start) cmd_start ;;
-    stop)  cmd_stop ;;
+    start) shift; cmd_start "${1:-amd64}" ;;
+    stop)  shift; cmd_stop  "${1:-amd64}" ;;
     *)     run_leg "$@" ;;
 esac
