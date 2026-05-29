@@ -57,7 +57,17 @@ auto create_random_tensor(bool row_major, std::string const &name, Distribution 
     EINSUMS_LOG_TRACE("creating random tensor {}, {}", name, std::forward_as_tuple(index...));
 
     Tensor<T, sizeof...(MultiIndex)> A(row_major, name, std::forward<MultiIndex>(index)...);
-    EINSUMS_OMP_PARALLEL_FOR
+    // Serial fill: einsums::random_engine is a shared global LCG and
+    // std::uniform_real_distribution carries mutable internal state. Wrapping
+    // this loop in #pragma omp parallel for races on both — TSan reported
+    // 1647 hits at this line on arm64 (1305 on amd64), top of the report
+    // list and the source of every downstream SIMD-load race when the
+    // generated buffer is read by consumers. The parallel form is also not
+    // deterministic across OMP schedules, which test consumers rely on.
+    // Per-thread engines + counter-based seed splitting would restore
+    // parallelism while keeping determinism, but for test/utility tensor
+    // sizes the serial cost (sub-ms for typical sizes; ~100ms for 100MB on
+    // commodity hardware) is well below noise.
     for (size_t i = 0; i < A.size(); i++) {
         A.data()[i] = distribution(einsums::random_engine);
     }
@@ -183,7 +193,9 @@ auto create_random_tensor(bool row_major, std::string const &name, Distribution 
 
     RuntimeTensor<T> A(name, dims, row_major);
 
-    EINSUMS_OMP_PARALLEL_FOR
+    // Serial fill — same rationale as the templated overload above:
+    // einsums::random_engine + distribution share state and racing them from
+    // an OMP region produces 1600+ TSan reports plus non-deterministic data.
     for (size_t i = 0; i < A.size(); i++) {
         A.data()[i] = dist(einsums::random_engine);
     }

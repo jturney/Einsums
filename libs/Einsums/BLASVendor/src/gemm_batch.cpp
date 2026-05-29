@@ -37,6 +37,16 @@ extern void FC_GLOBAL(zgemm, ZGEMM)(char *, char *, int_t *, int_t *, int_t *, s
                                     int_t *);
 }
 
+// LAPACK's gemm takes its scalar arguments by pointer (Fortran ABI), so we pass
+// addresses of the function-locals. Without ``firstprivate``, every OMP worker
+// reads those addresses out of the *caller's* stack frame — fine while the
+// parallel region is live (workers only read; gemm never writes its inputs)
+// but TSan can't see libgomp's barrier and so reports a race against any
+// later write to the same stack region (e.g. the next fmt formatting in the
+// caller). ``firstprivate`` gives each worker its own private copies and
+// unique addresses, eliminating both the (real but harmless) shared-stack
+// read pattern and the (libgomp-invisibility) TSan false positive.
+
 void sgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, float alpha, float const **a_array, int_t lda, float const **b_array,
                  int_t ldb, float beta, float **c_array, int_t ldc, int_t batch_count) {
     LabeledSection0();
@@ -44,7 +54,7 @@ void sgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, float alph
         return;
 
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(dynamic)
+#    pragma omp parallel for schedule(dynamic) firstprivate(transa, transb, m, n, k, alpha, lda, ldb, beta, ldc)
 #endif
     for (int_t i = 0; i < batch_count; i++) {
         FC_GLOBAL(sgemm, SGEMM)
@@ -59,7 +69,7 @@ void dgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, double alp
         return;
 
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(dynamic)
+#    pragma omp parallel for schedule(dynamic) firstprivate(transa, transb, m, n, k, alpha, lda, ldb, beta, ldc)
 #endif
     for (int_t i = 0; i < batch_count; i++) {
         FC_GLOBAL(dgemm, DGEMM)
@@ -75,7 +85,7 @@ void cgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, std::compl
         return;
 
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(dynamic)
+#    pragma omp parallel for schedule(dynamic) firstprivate(transa, transb, m, n, k, alpha, lda, ldb, beta, ldc)
 #endif
     for (int_t i = 0; i < batch_count; i++) {
         FC_GLOBAL(cgemm, CGEMM)
@@ -91,7 +101,7 @@ void zgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, std::compl
         return;
 
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(dynamic)
+#    pragma omp parallel for schedule(dynamic) firstprivate(transa, transb, m, n, k, alpha, lda, ldb, beta, ldc)
 #endif
     for (int_t i = 0; i < batch_count; i++) {
         FC_GLOBAL(zgemm, ZGEMM)
