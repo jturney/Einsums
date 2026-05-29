@@ -294,6 +294,17 @@ function(einsums_add_python_unit_test subcategory name)
   # directory so ``import einsums`` resolves the package.
   set(_pyt_args -m pytest -q --tb=short)
   set(_pyt_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib")
+  # The C++ test executables disable the runtime's signal handler and
+  # debugger-attach prompt via ``--einsums:debug:no-{install-signal-handlers,
+  # attach-debugger}`` (see einsums_add_unit_test). The Python tests have no
+  # such command line — pytest's argv stops at the test file — so a
+  # crashing test would hang ctest with "ready for attaching debugger".
+  # Use the env-var hooks added to einsums.rc instead, which the binding's
+  # argv_from_rc translates into the same flags before einsums::initialize.
+  list(APPEND _pyt_env
+    "EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1"
+    "EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1"
+  )
 
   if(EINSUMS_WITH_COVERAGE)
     # Measure the pure-Python ``einsums`` package through these ctest-driven

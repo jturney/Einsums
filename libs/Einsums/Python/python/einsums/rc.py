@@ -19,7 +19,25 @@ Usage::
     einsums.gemm(...)   # initialize() fires here using the rc settings
 """
 
+import os as _os
 from enum import Enum
+
+
+def _bool_env(name: str) -> bool | None:
+    """Read a boolean override from the environment.
+
+    Returns ``True`` / ``False`` for recognized truthy / falsy strings,
+    ``None`` when the variable is unset. Lets pytest harnesses (and any
+    other launcher) flip the corresponding rc field without monkey-patching
+    this module before ``import einsums``; in particular the test launcher
+    in cmake/Einsums_AddTest.cmake sets EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS
+    and EINSUMS_DEBUG_NO_ATTACH_DEBUGGER so a failing pytest doesn't hang on
+    the runtime's "waiting for debugger" prompt.
+    """
+    v = _os.environ.get(name)
+    if v is None:
+        return None
+    return v.strip().lower() in ("1", "true", "yes", "on")
 
 # Buffer Allocator:
 #   --einsums:buffer-size <value>                        Total size of buffers allocated for tensor contractions
@@ -79,9 +97,9 @@ pass_analyze: bool | None = None
 pass_verbose: bool | None = None
 
 # Debug
-debug_no_install_signal_handlers: bool | None = None
-debug_no_attach_debugger: bool | None = None
-debug_no_diagnostics_on_terminate: bool | None = None
+debug_no_install_signal_handlers: bool | None = _bool_env("EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS")
+debug_no_attach_debugger: bool | None = _bool_env("EINSUMS_DEBUG_NO_ATTACH_DEBUGGER")
+debug_no_diagnostics_on_terminate: bool | None = _bool_env("EINSUMS_DEBUG_NO_DIAGNOSTICS_ON_TERMINATE")
 
 # HPTT
 hptt_selection_method: str | None = None  # "estimate" / "measure" / "patient" / "crazy"
