@@ -31,3 +31,23 @@ race:GOMP_
 called_from_lib:libopenblas
 race:blas_thread_server
 race:openblas
+
+# --- testing/testing/src/main.cpp einsums_main `int result = 0;` ---
+# The test main wraps the Catch2 session in
+#   #pragma omp parallel { #pragma omp single { result = session.run(); } }
+# OMP's implicit barriers at the end of `single` and `parallel` ensure
+# the main thread's later read of `result` happens-after the assignment
+# inside the single block, but TSan can't see those barriers (libgomp
+# is uninstrumented) and flags the post-region read as racing with the
+# pre-region zero-init at main.cpp:32. Real bug? No — the OMP semantics
+# guarantee correctness. Hits every test binary in the suite.
+race:einsums_main
+
+# --- Profile/CounterBackend.hpp static-string destruction at exit ---
+# The Catch2 binary's atexit chain destroys a static std::string that
+# was last assigned by a worker thread inside an OMP single. TSan again
+# sees the worker write and the main-thread destructor read without
+# the OMP barrier in between. Same OMP-invisibility false positive,
+# pattern reaches every test binary that links libEinsums.
+race:CounterBackend.hpp
+race:cxa_at_exit_callback_installed_at
