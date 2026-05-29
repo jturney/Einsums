@@ -22,7 +22,7 @@ if (NOT EINSUMS_BUILD_PYTHON)
   einsums_error("Building documentation requires Python to be enabled")
 endif()
 
-set(SPHINX_PYTHON_DEPENDS EinsumsPy)
+set(SPHINX_PYTHON_DEPENDS PyEinsums)
 
 foreach(doxygen_predef ${doxygen_definition_list})
   set(doxygen_definitions "${doxygen_definitions} \"${doxygen_predef}\"")
