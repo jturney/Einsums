@@ -122,7 +122,12 @@ jobs:
           echo "NOTES=$NOTES"
           echo "SOURCES=$SOURCES"
           gcov -r $SOURCES || echo "returned $?"
-          lcov --capture --directory . --output-file coverage.info --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\*
+          # Force lcov to use the conda env's gcov: the build is gcc 15 (.gcda
+          # format "B52*"), but lcov can pick up the runner's system gcov 13.3
+          # ("B33*") by default and bail with "geninfo: ERROR: GCOV failed ...
+          # prefer version 'B33*'". Pinning --gcov-tool keeps the toolchain
+          # consistent.
+          lcov --gcov-tool "${CONDA_PREFIX}/bin/gcov" --capture --directory . --output-file coverage.info --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\*
 
       - name: Upload C++ coverage to Codecov
         if: ${{ contains(matrix.compiler, 'default') }}
