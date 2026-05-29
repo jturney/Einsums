@@ -112,9 +112,15 @@ jobs:
           COVERAGE_FILE: "${{ github.workspace }}/build/python-coverage/.coverage"
           COVERAGE_RCFILE: "${{ github.workspace }}/build/python-coverage/.coveragerc"
         # `parallel = True` in the rcfile produces one `.coverage.<host>.<pid>`
-        # file per pytest worker; combine them before rendering XML.
+        # file per pytest worker (alongside COVERAGE_FILE's path); combine them
+        # before rendering XML. `coverage combine` without an argument only
+        # looks in CWD, but CWD here is `src/` (set so the rcfile's [paths]
+        # remap resolves the source dir for Codecov annotation), and the
+        # per-process data files live in `build/python-coverage/`. Pass the
+        # data directory as a positional argument so combine actually finds
+        # them; without it the step fails with "No data to combine".
         run: |
-          coverage combine
+          coverage combine "${{ github.workspace }}/build/python-coverage"
           coverage xml -o "${{ github.workspace }}/build/python-coverage/coverage.xml"
 
       - name: Generate coverage information
