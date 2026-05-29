@@ -62,7 +62,10 @@ void impl_hessenberg_reduce(einsums::detail::TensorImpl<T> *A, T *vec1, T *vec2,
         }
 
         // The first k + 1 elements of vec1 are all zero. This also means we can ignore the first k rows of A.
-        EINSUMS_OMP_PRAGMA(parallel for collapse(2))
+        // NOTE: parallelize only the outer i loop. The accumulator is vec2[i]; with
+        // `collapse(2)` multiple threads can land on the same i (different j) and race
+        // on vec2[i]. Outer-only parallelism gives each thread a unique i.
+        EINSUMS_OMP_PARALLEL_FOR
         for (size_t i = 0; i < dim; i++) {
             for (size_t j = k + 1; j < dim; j++) {
                 vec2[i] = std::fma(A_data[i * row_stride + j * col_stride], vec1[j], vec2[i]);
@@ -72,7 +75,8 @@ void impl_hessenberg_reduce(einsums::detail::TensorImpl<T> *A, T *vec1, T *vec2,
         // Scale by 2.
         blas::scal(dim, T{2.0}, vec2, 1);
 
-        // Next, update A to be A - 2Avv^T.
+        // Next, update A to be A - 2Avv^T. A[i,j] is uniquely indexed by (i,j) so
+        // collapse(2) is race-free here.
         EINSUMS_OMP_PRAGMA(parallel for collapse(2))
         for (size_t i = 0; i < dim; i++) {
             for (size_t j = k + 1; j < dim; j++) {
@@ -88,9 +92,12 @@ void impl_hessenberg_reduce(einsums::detail::TensorImpl<T> *A, T *vec1, T *vec2,
 
         // In this case, the first k columns of A - Avv^T should be zero when vec1 is non-zero.
         // This means that the first k entries of vec2 will be zero.
-        EINSUMS_OMP_PRAGMA(parallel for collapse(2))
-        for (size_t j = k + 1; j < dim; j++) {
-            for (size_t i = k; i < dim; i++) {
+        // Loops swapped from (j outer, i inner) to (i outer, j inner) so the outer-only
+        // parallelism owns vec2[i] per thread — see the comment above the first
+        // matvec for why collapse(2) is unsafe here.
+        EINSUMS_OMP_PARALLEL_FOR
+        for (size_t i = k; i < dim; i++) {
+            for (size_t j = k + 1; j < dim; j++) {
                 vec2[i] = std::fma(A_data[j * row_stride + i * col_stride], vec1[j], vec2[i]);
             }
         }
@@ -204,7 +211,9 @@ void impl_hessenberg_reduce(einsums::detail::TensorImpl<T> *A, T *vec1, T *vec2,
         }
 
         // The first k + 1 elements of vec1 are all zero. This also means we can ignore the first k rows of A.
-        EINSUMS_OMP_PRAGMA(parallel for collapse(2))
+        // Outer-only parallelism — vec2[i] would race under collapse(2). See the real
+        // impl_hessenberg_reduce above for the same rationale.
+        EINSUMS_OMP_PARALLEL_FOR
         for (size_t i = 0; i < dim; i++) {
             for (size_t j = k + 1; j < dim; j++) {
                 vec2[i] += A_data[i * row_stride + j * col_stride] * vec1[j];
@@ -230,7 +239,8 @@ void impl_hessenberg_reduce(einsums::detail::TensorImpl<T> *A, T *vec1, T *vec2,
 
         // In this case, the first k columns of A - tau^* Avv^H should be zero when vec1 is non-zero.
         // This means that the first k entries of vec2 will be zero.
-        EINSUMS_OMP_PRAGMA(parallel for collapse(2))
+        // Outer-only parallelism — vec2[i] would race under collapse(2).
+        EINSUMS_OMP_PARALLEL_FOR
         for (size_t i = k; i < dim; i++) {
             for (size_t j = k + 1; j < dim; j++) {
                 vec2[i] += A_data[j * row_stride + i * col_stride] * std::conj(vec1[j]);
@@ -318,12 +328,14 @@ void impl_compute_q(einsums::detail::TensorImpl<T> *Q, T *vec1, T *vec2, T *tau)
         // Next, find Q - Qvv^H.
         if constexpr (IsComplexV<T>) {
 
-            EINSUMS_OMP_PRAGMA(parallel for collapse(2))
+            // Accumulator vec2[i] would race under collapse(2); restrict to outer-only.
+            EINSUMS_OMP_PARALLEL_FOR
             for (int i = n; i < dim; i++) {
                 for (int j = n; j < dim; j++) {
                     vec2[i] += Q_data[i * row_stride + j * col_stride] * std::conj(vec1[j]);
                 }
             }
+            // Q[i,j] is uniquely indexed by (i,j); collapse(2) is race-free.
             EINSUMS_OMP_PRAGMA(parallel for collapse(2))
             for (int i = n; i < dim; i++) {
                 for (int j = n; j < dim; j++) {
@@ -332,7 +344,8 @@ void impl_compute_q(einsums::detail::TensorImpl<T> *Q, T *vec1, T *vec2, T *tau)
                 }
             }
         } else {
-            EINSUMS_OMP_PRAGMA(parallel for collapse(2))
+            // See complex branch above for the collapse(2) race rationale.
+            EINSUMS_OMP_PARALLEL_FOR
             for (int i = n; i < dim; i++) {
                 for (int j = n; j < dim; j++) {
                     vec2[i] += Q_data[i * row_stride + j * col_stride] * vec1[j];
