@@ -309,9 +309,15 @@ function(einsums_add_python_unit_test subcategory name)
     set(_cov_rc "${_cov_dir}/.coveragerc")
     get_property(_cov_rc_written GLOBAL PROPERTY EINSUMS_PYTHON_COVERAGERC_WRITTEN)
     if(NOT _cov_rc_written)
+      # parallel = True makes each pytest worker write its OWN
+      # ``.coverage.<host>.<pid>.<rand>`` data file; without it ctest's -jN
+      # invocation lets multiple Python tests clobber one shared SQLite DB
+      # ("sqlite3.OperationalError: no such table: other_db.file"). The
+      # workflow's "Generate Python coverage" step then runs ``coverage
+      # combine`` to merge the per-process files before producing XML.
       file(
         WRITE "${_cov_rc}"
-        "[run]\nsource =\n    einsums\n\n[paths]\nsource =\n    libs/Einsums/Python/python/einsums\n    */lib/einsums\n"
+        "[run]\nsource =\n    einsums\nparallel = True\n\n[paths]\nsource =\n    libs/Einsums/Python/python/einsums\n    */lib/einsums\n"
       )
       set_property(GLOBAL PROPERTY EINSUMS_PYTHON_COVERAGERC_WRITTEN TRUE)
     endif()

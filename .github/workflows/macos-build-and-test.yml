@@ -92,7 +92,11 @@ jobs:
         env:
           COVERAGE_FILE: "${{ github.workspace }}/build/python-coverage/.coverage"
           COVERAGE_RCFILE: "${{ github.workspace }}/build/python-coverage/.coveragerc"
-        run: coverage xml -o "${{ github.workspace }}/build/python-coverage/coverage.xml"
+        # `parallel = True` in the rcfile produces one `.coverage.<host>.<pid>`
+        # file per pytest worker; combine them before rendering XML.
+        run: |
+          coverage combine
+          coverage xml -o "${{ github.workspace }}/build/python-coverage/coverage.xml"
 
       - name: Generate coverage information
         working-directory: "${{github.workspace}}/build"

@@ -140,7 +140,11 @@ def test_pow_square_recovers_matmul(dtype):
 
     got = einsums.linalg.pow(Araw, np_dtype.type(2.0))
     expected = A_spd @ A_spd
-    assert_close(got, expected)
+    # Mac Accelerate's float32 SGEMM accumulates wider rounding than Linux
+    # OpenBLAS / MKL — observed ~2.5e-5 relative on macOS CI vs <1e-6 on Linux.
+    # Default c32/f32 rtol is 1e-5; loosen to 1e-4 for this matmul-of-matmul
+    # shape (still tight enough to catch real bugs).
+    assert_close(got, expected, rtol=1e-4 if dtype.endswith("32") else 1e-12)
 
 
 @pytest.mark.parametrize("dtype", REAL_DTYPES)
