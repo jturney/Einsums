@@ -64,7 +64,11 @@ def test_norm_frobenius_matrix(dtype):
     A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
     got = einsums.linalg.norm(einsums.linalg.Norm.FROBENIUS, A)
     expected = np.linalg.norm(np.asarray(A), "fro")
-    assert_close(got, expected)
+    # Mac Accelerate's complex128 dznrm2 path accumulates wider rounding than
+    # Linux OpenBLAS / MKL — observed ~1.3e-9 relative on macOS CI vs <1e-15
+    # on Linux. Match the spectral-norm test's pattern: 1e-5 for f32/c64,
+    # 1e-8 for f64/c128 (still tight enough to catch real bugs).
+    assert_close(got, expected, rtol=1e-5 if dtype.endswith("32") else 1e-8)
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)

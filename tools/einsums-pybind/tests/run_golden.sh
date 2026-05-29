@@ -53,6 +53,18 @@ tmp_actual="$(mktemp)"
 tmp_diff="$(mktemp)"
 trap 'rm -f "${tmp_actual}" "${tmp_diff}"' EXIT
 
+# The emitter calls clang::format::getStyle("file", path_hint, "LLVM", ...) to
+# locate a `.clang-format`. The tool's default path_hint is "generated.cpp"
+# resolved against CWD. ctest's default working dir is the build tree; in
+# out-of-source builds (the CI default) the build tree is a sibling of the
+# source tree, so the upward search never reaches the project root's
+# `.clang-format` and the emitter silently falls back to LLVM style (2-space).
+# That produces a stable mismatch against goldens generated under the project
+# style (4-space). Run from this script's directory — inside the source tree —
+# so the upward search hits the project's `.clang-format` regardless of where
+# the build tree lives.
+cd "${SCRIPT_DIR}"
+
 failures=0
 for case in "${CASES[@]}"; do
     IFS='|' read -r module fixture golden <<<"${case}"
