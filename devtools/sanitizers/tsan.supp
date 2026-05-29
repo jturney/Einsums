@@ -51,3 +51,22 @@ race:einsums_main
 # pattern reaches every test binary that links libEinsums.
 race:CounterBackend.hpp
 race:cxa_at_exit_callback_installed_at
+
+# --- HPTT (vendored High-Performance Tensor Transpose) parallel kernels ---
+# HPTT's Transpose<T>::execute_expert and Transpose<T>::create_plans wrap
+# their hot loop in `#pragma omp parallel for`. The body reads class members
+# (this->_A, this->_B, this->_innerStrideA, this->_perm, this->_sizeA, ...)
+# which live on the *caller's* stack frame, and writes to disjoint regions
+# of the output buffer (one taskId per worker). The reads are immutable for
+# the duration of the parallel region and the writes do not alias, so there
+# is no real race. TSan can't see libgomp's barrier, so it flags 1500+
+# reports (the bulk of v5's non-RNG total) across execute_expert (line
+# 1165), create_plans (lines 2065-2098), axpy_1D (1054), and
+# macro_kernel_scalar (429). The same libgomp-invisibility pattern as
+# einsums_main / CounterBackend above. Scope to the HPTT source tree so
+# we don't suppress hypothetical races elsewhere.
+race:HPTT/src/Transpose.cpp
+race:hptt::Transpose
+race:hptt::axpy_1D
+race:hptt::transpose_int
+race:hptt::macro_kernel_scalar
