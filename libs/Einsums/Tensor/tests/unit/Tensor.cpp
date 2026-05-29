@@ -9,6 +9,8 @@
 #include <Einsums/TensorUtilities/ARange.hpp>
 #include <Einsums/TensorUtilities/CreateIncrementedTensor.hpp>
 
+#include <atomic>
+
 #include <Einsums/Testing.hpp>
 
 TEST_CASE("Tensor creation", "[tensor]") {
@@ -435,33 +437,45 @@ void test_tensor_from_tensorview() {
     auto   vA = TensorView(A, Dim{2, 2}, Offset{4, 4});
     Tensor B  = vA;
 
+    // vA owns an independent mutex from A (both inherit Lockable<recursive_mutex>
+    // separately). The point of these blocks is to prove the view's lock isn't
+    // hijacked by the parent's lock — try_lock on vA must succeed even while A
+    // is held, from at least one thread. The original code did `locked++` (not
+    // atomic) inside an `omp parallel` and asserted == 1, which only held by
+    // accident: the test binary used to wrap session.run() in
+    // `#pragma omp parallel { #pragma omp single { ... } }`, so this nested
+    // parallel ran with one thread (max_active_levels=1). With the wrap dropped
+    // (for TSan cleanliness) the inner team is real, every thread races the
+    // counter, and the literal "==1" no longer means anything. Make the counter
+    // atomic and assert "at least one thread acquired the view's lock", which
+    // is what the test was actually trying to prove.
     A.lock();
 
-    int locked = 0;
+    std::atomic<int> locked = 0;
 
 #pragma omp parallel shared(locked)
     {
         if (vA.try_lock()) {
-            locked++;
+            locked.fetch_add(1, std::memory_order_relaxed);
             vA.unlock();
         }
     }
-    REQUIRE(locked == 1);
+    REQUIRE(locked.load() >= 1);
 
     A.unlock();
 
     vA.lock();
 
-    locked = 0;
+    locked.store(0);
 
 #pragma omp parallel shared(locked)
     {
         if (A.try_lock()) {
-            locked++;
+            locked.fetch_add(1, std::memory_order_relaxed);
             A.unlock();
         }
     }
-    REQUIRE(locked == 1);
+    REQUIRE(locked.load() >= 1);
 
     vA.unlock();
 

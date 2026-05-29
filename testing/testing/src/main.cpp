@@ -28,39 +28,43 @@
 
 namespace {
 int einsums_main(int /*argc*/, char *const *const argv) {
-    int result = 0;
-#pragma omp parallel
-    {
-#pragma omp single
-        {
-            auto const               &config = einsums::runtime_config();
-            Catch::Session            session;
-            std::vector<char const *> args;
-            args.reserve(config.unknown_arguments().size() + 1);
-            args.push_back(argv[0]);
-            for (auto const &s : config.unknown_arguments())
-                args.push_back(s.c_str());
-            session.applyCommandLine(static_cast<int>(args.size()), args.data());
+    // Catch2's session runs on a single thread — every test that needs OMP
+    // parallelism spawns its own region from within its body. The earlier
+    // shape of this function wrapped session.run() in
+    //   #pragma omp parallel { #pragma omp single { result = session.run(); } }
+    // which spawned an OMP team just to run the test session on the master.
+    // That wrapping doesn't add anything functionally, but it does create a
+    // TSan false-positive on every test binary: the `int result = 0;`
+    // initialization happens-before the in-single assignment via OMP's
+    // barrier, but libgomp is uninstrumented so TSan flags it as a race.
+    // Drop the OMP layer; tests that need it still get OMP via their own
+    // bodies.
+    auto const               &config = einsums::runtime_config();
+    Catch::Session            session;
+    std::vector<char const *> args;
+    args.reserve(config.unknown_arguments().size() + 1);
+    args.push_back(argv[0]);
+    for (auto const &s : config.unknown_arguments())
+        args.push_back(s.c_str());
+    session.applyCommandLine(static_cast<int>(args.size()), args.data());
 
 #if defined(EINSUMS_HAVE_MPI)
-            // For MPI: broadcast rank 0's random seed so all ranks run tests in the same order.
-            // All ranks must execute the same collective at the same time.
-            {
-                auto seed = session.configData().rngSeed;
-                MPI_Bcast(&seed, sizeof(seed), MPI_BYTE, 0, MPI_COMM_WORLD);
-                session.configData().rngSeed = seed;
-            }
+    // For MPI: broadcast rank 0's random seed so all ranks run tests in the same order.
+    // All ranks must execute the same collective at the same time.
+    {
+        auto seed = session.configData().rngSeed;
+        MPI_Bcast(&seed, sizeof(seed), MPI_BYTE, 0, MPI_COMM_WORLD);
+        session.configData().rngSeed = seed;
+    }
 #endif
 
-            Catch::StringMaker<float>::precision  = std::numeric_limits<float>::digits10;
-            Catch::StringMaker<double>::precision = std::numeric_limits<double>::digits10;
-            auto seed                             = session.config().rngSeed();
+    Catch::StringMaker<float>::precision  = std::numeric_limits<float>::digits10;
+    Catch::StringMaker<double>::precision = std::numeric_limits<double>::digits10;
+    auto seed                             = session.config().rngSeed();
 
-            einsums::seed_random(seed);
+    einsums::seed_random(seed);
 
-            { result = session.run(); }
-        }
-    }
+    int const result = session.run();
 
     einsums::finalize();
 
