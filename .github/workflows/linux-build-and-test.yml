@@ -105,17 +105,34 @@ jobs:
         if: ${{ contains(matrix.compiler, 'default') }}
         working-directory: "${{github.workspace}}/build"
         run: |
+          # Conda's gcc installs gcov as <arch>-conda-linux-gnu-gcov
+          # (e.g. x86_64-conda-linux-gnu-gcov), NOT bare 'gcov'.
+          # Hardcoding ${CONDA_PREFIX}/bin/gcov broke the step with
+          # "geninfo: ERROR: need tool .../bin/gcov!" — that path doesn't
+          # exist. Discover the arch-prefixed binary instead.
+          GCOV=$(ls "${CONDA_PREFIX}"/bin/*-conda-linux-gnu-gcov 2>/dev/null | head -1)
+          if [[ -z "$GCOV" ]]; then
+              echo "::error::Could not find conda's gcov under ${CONDA_PREFIX}/bin/" >&2
+              ls "${CONDA_PREFIX}/bin/" | grep -i gcov >&2 || true
+              exit 1
+          fi
+          echo "Using gcov: $GCOV"
+
           export NOTES=$(find . -name "*.gcno")
           export SOURCES=$(for i in ${NOTES//.gcno/}; do echo "../src/$i"; done)
           echo "NOTES=$NOTES"
           echo "SOURCES=$SOURCES"
-          gcov -r $SOURCES || echo "returned $?"
+          # Use the conda gcov here too. The runner's system gcov 13.3
+          # would produce .gcov files in the wrong format ("B33*") for our
+          # gcc-15-built .gcda files ("B52*") even though the || swallows
+          # the exit code.
+          "$GCOV" -r $SOURCES || echo "returned $?"
           # Force lcov to use the conda env's gcov: the build is gcc 15 (.gcda
           # format "B52*"), but lcov can pick up the runner's system gcov 13.3
           # ("B33*") by default and bail with "geninfo: ERROR: GCOV failed ...
           # prefer version 'B33*'". Pinning --gcov-tool keeps the toolchain
           # consistent.
-          lcov --gcov-tool "${CONDA_PREFIX}/bin/gcov" --capture --directory . --output-file coverage.info --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\*
+          lcov --gcov-tool "$GCOV" --capture --directory . --output-file coverage.info --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\*
 
       - name: Upload C++ coverage to Codecov
         if: ${{ contains(matrix.compiler, 'default') }}
