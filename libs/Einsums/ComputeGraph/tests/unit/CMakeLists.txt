@@ -141,5 +141,31 @@ foreach(test ${ComputeGraphTests})
       "Modules.ComputeGraph" "${_camel}Python"
       SCRIPT ${test}
     )
+
+    # FuzzDifferentialPython runs ~6340 pytest sub-cases in a single
+    # process. Under TSan instrumentation, the lock-order graph
+    # accumulates per-mutex / per-cross-edge state for every test case
+    # — by end-of-process the graph traversal in libtsan's exit-time
+    # bookkeeping overruns the worker thread's stack. The deadly signal
+    # fires AFTER our finalize() has completed cleanly, and TSan
+    # reports it as "nested bug in the same thread, aborting" because
+    # the crash happens inside its own reporting machinery (CI run
+    # 26692242448). The test logic itself passes (6340 passed, 244
+    # skipped in 771s). Disable deadlock detection just for this test
+    # so the exit-time stack overflow doesn't kill the process; race
+    # detection (the part that found the real bugs in d235b490 /
+    # 7b288ea9 / 4d496cd2) stays enabled. Other Python tests are
+    # tiny by comparison and keep full TSan settings.
+    if(EINSUMS_BUILD_PYTHON
+       AND EINSUMS_WITH_SANITIZERS
+       AND "${EINSUMS_WITH_SANITIZERS}" MATCHES "thread"
+       AND "${_camel}Python" STREQUAL "FuzzDifferentialPython"
+    )
+      set_property(
+        TEST "Tests.Unit.Modules.ComputeGraph.FuzzDifferentialPython"
+        APPEND PROPERTY ENVIRONMENT
+        "TSAN_OPTIONS=ignore_noninstrumented_modules=1:detect_deadlocks=0:suppressions=${PROJECT_SOURCE_DIR}/devtools/sanitizers/tsan.supp"
+      )
+    endif()
   endif ()
 endforeach()
