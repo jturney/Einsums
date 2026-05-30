@@ -753,6 +753,16 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * @brief Zeroes out the tensor data.
      */
     void zero() {
+        // _data.data() is allowed to be nullptr when _data.size() == 0
+        // (e.g. zero-sized tensors used during construction or as views).
+        // memset / device_memset are declared [[gnu::nonnull(1)]] in the
+        // glibc/CUDA headers, so passing nullptr trips UBSan even though
+        // the count is also 0 (which is otherwise defined). Skip the call
+        // when there's nothing to write. Caught on the ASan/UBSan leg by
+        // Tests.Unit.Modules.LinearAlgebra.pow + .TensorUtilities.BlockViews.
+        if (_data.empty()) {
+            return;
+        }
         if constexpr (IsDeviceTensor) {
             gpu::device_memset(_data.data(), 0, sizeof(T) * _data.size());
         } else if constexpr (std::is_trivially_copyable_v<T>) {

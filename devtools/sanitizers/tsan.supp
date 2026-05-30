@@ -28,7 +28,16 @@ race:libgomp
 race:GOMP_
 
 # --- OpenBLAS: its own thread pool, uninstrumented ---
-called_from_lib:libopenblas
+# Note: do NOT use `called_from_lib:libopenblas` here. conda's openblas
+# install presents the library at the same realpath twice (likely via
+# symlink + LD_LIBRARY_PATH double-mapping), and TSan reports the
+# ambiguity at process startup as
+#   "called_from_lib suppression 'libopenblas' is matched against 2 libraries"
+# That warning bumps the exit code, which ctest interprets as failure —
+# every test process that initializes libopenblas died with this on the
+# CI Sanitizers/thread leg. The name-based race: suppressions below catch
+# OpenBLAS-internal races (blas_thread_server is the worker routine) by
+# symbol, without the library-matching ambiguity.
 race:blas_thread_server
 race:openblas
 
