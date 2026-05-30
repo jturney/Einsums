@@ -152,6 +152,10 @@ void GlobalConfigMap::lock() {
 }
 
 bool GlobalConfigMap::try_lock() {
+    // Roll-back paths use unlock(false): no value was modified, so there's
+    // nothing observer-worthy to fire. Avoiding notify here also keeps
+    // try_lock free of the lock-order risk that bit GlobalConfigMap::unlock
+    // (see the comment there for the full pattern).
     bool res = _str_map->try_lock();
 
     if (!res) {
@@ -161,24 +165,24 @@ bool GlobalConfigMap::try_lock() {
     res = _int_map->try_lock();
 
     if (!res) {
-        _str_map->unlock();
+        _str_map->unlock(false);
         return false;
     }
 
     res = _double_map->try_lock();
 
     if (!res) {
-        _str_map->unlock();
-        _int_map->unlock();
+        _str_map->unlock(false);
+        _int_map->unlock(false);
         return false;
     }
 
     res = _bool_map->try_lock();
 
     if (!res) {
-        _str_map->unlock();
-        _int_map->unlock();
-        _double_map->unlock();
+        _str_map->unlock(false);
+        _int_map->unlock(false);
+        _double_map->unlock(false);
         return false;
     }
 
@@ -186,10 +190,27 @@ bool GlobalConfigMap::try_lock() {
 }
 
 void GlobalConfigMap::unlock(bool notify) {
-    _str_map->unlock(notify);
-    _int_map->unlock(notify);
-    _double_map->unlock(notify);
-    _bool_map->unlock(notify);
+    // Release all four sub-mutexes FIRST, then fire observers, so any
+    // observer callback's implicit conversion-to-T (which re-acquires the
+    // sub-Observable's mutex via get_value()) doesn't run while *sibling*
+    // sub-Observables are still locked. The previous implementation
+    // sequentially called _str_map->unlock(true), which fired the str_map's
+    // observers immediately while _int/_double/_bool were still held — TSan
+    // caught the resulting M0 <-> M1 cycle (CI run 26690424069, third
+    // lock-order finding in this complex). The Observable API was extended
+    // with a public notify() to allow this split. See task #20 for the
+    // long-term plan to replace this whole aggregate with a single
+    // mutex-protected struct.
+    _str_map->unlock(false);
+    _int_map->unlock(false);
+    _double_map->unlock(false);
+    _bool_map->unlock(false);
+    if (notify) {
+        _str_map->notify();
+        _int_map->notify();
+        _double_map->notify();
+        _bool_map->notify();
+    }
 }
 
 } // namespace einsums

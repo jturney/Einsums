@@ -175,6 +175,20 @@ struct Observable {
      */
     bool changed() const { return _value_changed; }
 
+    /**
+     * @brief Public alias for ``notify_observers()``.
+     *
+     * Allows wrapper types that aggregate several Observables (e.g.
+     * ``GlobalConfigMap``) to drive notification *after* releasing every
+     * sub-mutex, so an observer's implicit conversion-to-T doesn't
+     * re-acquire a mutex while sibling locks are still held. Without this
+     * decoupling, the unlock-then-notify-each pattern hits a TSan
+     * lock-order inversion as the observer callback's
+     * ``operator T() const`` calls ``get_value()`` and re-locks ``_mutex``
+     * while sibling Observables in the same aggregate are still locked.
+     */
+    void notify() { notify_observers(); }
+
   protected:
     /**
      * @brief Notify all of the observers that observe this observable.
