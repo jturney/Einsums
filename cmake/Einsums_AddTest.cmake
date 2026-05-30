@@ -230,13 +230,20 @@ endfunction(einsums_add_test_and_deps_test)
 #:
 #:       einsums_set_test_properties(Tests.Unit.TensorOps "UNIT_ONLY")
 function(einsums_set_test_properties name labels)
+  # ENVIRONMENT clobbers the parent shell's env vars for the test, so we have
+  # to bake every per-test sanitizer option into this single string. The CI
+  # workflow's job-level TSAN_OPTIONS=...:suppressions=tsan.supp gets erased
+  # without the explicit suppressions= here. Include both the
+  # ignore_noninstrumented_modules=1 hint (libgomp/openblas etc.) AND the
+  # path to our suppression file so HPTT / einsums_main / CounterBackend
+  # false positives stay suppressed at every test invocation.
   set_tests_properties(
     ${name}
     PROPERTIES
       LABELS
       ${labels}
       ENVIRONMENT
-      "LLVM_PROFILE_FILE=${name}.profraw;TSAN_OPTIONS=ignore_noninstrumented_modules=1;LSAN_OPTIONS=suppression=${PROJECT_SOURCE_DIR}/devtools/lsan.supp"
+      "LLVM_PROFILE_FILE=${name}.profraw;TSAN_OPTIONS=ignore_noninstrumented_modules=1:suppressions=${PROJECT_SOURCE_DIR}/devtools/sanitizers/tsan.supp;LSAN_OPTIONS=suppression=${PROJECT_SOURCE_DIR}/devtools/lsan.supp"
   )
 endfunction()
 
