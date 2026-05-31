@@ -231,92 +231,121 @@ void Profiler::write_node_json(std::ostream &ofs, AggNode const &n, int indent) 
 
 // NOLINTNEXTLINE
 void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double thread_total_ms, int depth, bool detailed) {
-    std::string const indent(static_cast<size_t>(2) * static_cast<size_t>(depth), ' ');
-    double const      excl_ms = ns_to_ms(n->total_exclusive);
+    // The name is misleading \u2014 this prints `n` and its descendants but does
+    // it ITERATIVELY with an explicit stack. The original recursive
+    // implementation overflowed the 8 MB Linux stack under TSan
+    // instrumentation when ~6340 fuzz-test cases produced a deeply-nested
+    // profile tree (CI run 26696948385: SIGSEGV inside fmt::format'ing a
+    // double, with 30+ identical print_node_recursive frames above it).
+    // Each frame here holds several std::string locals and TSan multiplies
+    // frame size, so deep recursion exhausts stack even at modest tree
+    // depth. Switching to an explicit work stack puts the per-node
+    // bookkeeping on the heap and keeps a constant call-stack budget.
+    auto variance = [](uint64_t cnt, int64_t M2) -> double {
+        return (cnt > 1) ? static_cast<double>(M2) / static_cast<double>(cnt - 1) : 0.0;
+    };
+    auto stddev = [variance](uint64_t cnt, int64_t M2) -> double { return sqrt(variance(cnt, M2)); };
 
-    std::string name = indent + n->name;
-    if (name.size() > 60)
-        name = name.substr(0, 57) + "...";
+    struct Frame {
+        AggNode const *node;
+        int            depth;
+    };
+    std::vector<Frame> work;
+    work.push_back({n, depth});
 
-    auto variance = [](uint64_t n, int64_t M2) -> double { return (n > 1) ? static_cast<double>(M2) / static_cast<double>(n - 1) : 0.0; };
-    auto stddev   = [variance](uint64_t n, int64_t M2) -> double { return sqrt(variance(n, M2)); };
+    while (!work.empty()) {
+        Frame const f = work.back();
+        work.pop_back();
+        AggNode const *node = f.node;
 
-    std::string const mean_str = fmt::format("{:7.3f}\u00B1{:3.3f}", static_cast<double>(n->total_exclusive_mean) / 1'000'000.0,
-                                             stddev(n->call_count, n->total_exclusive_M2) / 1'000'000.0);
+        std::string const indent(static_cast<size_t>(2) * static_cast<size_t>(f.depth), ' ');
+        double const      excl_ms = ns_to_ms(node->total_exclusive);
 
-    // Build file:line field
-    std::string file_field;
-    if (!n->file.empty()) {
-        std::string shortname;
-        try {
-            shortname = std::filesystem::path(n->file).filename().string();
-        } catch (...) {
-            shortname = n->file;
-        }
-        std::string const file_display = fmt::format("{}:{}", shortname, n->line);
-        if (detail::is_terminal(os)) {
-            std::string const clickable = make_clickable_file_line(n->file, n->line, file_display);
-            // Pad based on visible width (excludes ANSI escape sequences)
-            size_t const vlen = visible_width(clickable);
-            file_field        = clickable;
-            if (vlen < 30)
-                file_field += std::string(30 - vlen, ' ');
+        std::string name = indent + node->name;
+        if (name.size() > 60)
+            name = name.substr(0, 57) + "...";
+
+        std::string const mean_str = fmt::format("{:7.3f}\u00B1{:3.3f}", static_cast<double>(node->total_exclusive_mean) / 1'000'000.0,
+                                                 stddev(node->call_count, node->total_exclusive_M2) / 1'000'000.0);
+
+        // Build file:line field
+        std::string file_field;
+        if (!node->file.empty()) {
+            std::string shortname;
+            try {
+                shortname = std::filesystem::path(node->file).filename().string();
+            } catch (...) {
+                shortname = node->file;
+            }
+            std::string const file_display = fmt::format("{}:{}", shortname, node->line);
+            if (detail::is_terminal(os)) {
+                std::string const clickable = make_clickable_file_line(node->file, node->line, file_display);
+                // Pad based on visible width (excludes ANSI escape sequences)
+                size_t const vlen = visible_width(clickable);
+                file_field        = clickable;
+                if (vlen < 30)
+                    file_field += std::string(30 - vlen, ' ');
+            } else {
+                file_field = fmt::format("{:<30}", file_display);
+            }
         } else {
-            file_field = fmt::format("{:<30}", file_display);
+            file_field = fmt::format("{:<30}", "");
         }
-    } else {
-        file_field = fmt::format("{:<30}", "");
-    }
 
-    // Build annotations string
-    std::string annotations_str;
-    if (!n->annotations.empty()) {
-        annotations_str = "  ";
-        bool first      = true;
-        for (auto const &a : n->annotations) {
-            if (!first)
-                annotations_str += " ";
-            first = false;
-            annotations_str += fmt::format("{}={}", a.first, a.second);
-        }
-    }
-
-    fprintln(os, " {:10.3f}  {:10}  {:13}  {:<60}  {}  {:<}{}", excl_ms, n->call_count, mean_str, name, file_field, n->function,
-             annotations_str);
-
-    if (detailed) {
-        double const min_ms = ns_to_ms(n->exclusive_min);
-        double const max_ms = ns_to_ms(n->exclusive_max);
-        double const avg_ms = (n->call_count > 0) ? (ns_to_ms(n->total_exclusive) / static_cast<double>(n->call_count)) : 0.0;
-        fprintln(os, "{:6}   {:>10.3f}  (min {:>6.3f}  max {:>6.3f}  avg {:>6.3f})", "", excl_ms, min_ms, max_ms, avg_ms);
-        if (!n->counters_total.empty()) {
-            std::string counters = fmt::format("{:6}   Counters:", "");
-            for (auto const &c : n->counters_total) {
-                uint64_t tot = c.second;
-                uint64_t mn  = n->counters_min.at(c.first);
-                uint64_t mx  = n->counters_max.at(c.first);
-                double   avg = (n->call_count > 0) ? static_cast<double>(tot) / static_cast<double>(n->call_count) : 0.0;
-                counters += fmt::format(" {}(tot={},min={},max={},avg={:.1f})", c.first, tot, mn, mx, avg);
+        // Build annotations string
+        std::string annotations_str;
+        if (!node->annotations.empty()) {
+            annotations_str = "  ";
+            bool first      = true;
+            for (auto const &a : node->annotations) {
+                if (!first)
+                    annotations_str += " ";
+                first = false;
+                annotations_str += fmt::format("{}={}", a.first, a.second);
             }
-            fprintln(os, counters);
         }
-        // Show numeric annotation stats in detailed mode
-        if (!n->numeric_annotations.empty()) {
-            std::string annot_stats = fmt::format("{:6}   Annotations:", "");
-            for (auto const &na : n->numeric_annotations) {
-                double avg = (na.second.count > 0) ? na.second.total / static_cast<double>(na.second.count) : 0.0;
-                annot_stats += fmt::format(" {}(avg={:.1f},min={:.1f},max={:.1f})", na.first, avg, na.second.min_val, na.second.max_val);
+
+        fprintln(os, " {:10.3f}  {:10}  {:13}  {:<60}  {}  {:<}{}", excl_ms, node->call_count, mean_str, name, file_field, node->function,
+                 annotations_str);
+
+        if (detailed) {
+            double const min_ms = ns_to_ms(node->exclusive_min);
+            double const max_ms = ns_to_ms(node->exclusive_max);
+            double const avg_ms = (node->call_count > 0) ? (ns_to_ms(node->total_exclusive) / static_cast<double>(node->call_count)) : 0.0;
+            fprintln(os, "{:6}   {:>10.3f}  (min {:>6.3f}  max {:>6.3f}  avg {:>6.3f})", "", excl_ms, min_ms, max_ms, avg_ms);
+            if (!node->counters_total.empty()) {
+                std::string counters = fmt::format("{:6}   Counters:", "");
+                for (auto const &c : node->counters_total) {
+                    uint64_t tot = c.second;
+                    uint64_t mn  = node->counters_min.at(c.first);
+                    uint64_t mx  = node->counters_max.at(c.first);
+                    double   avg = (node->call_count > 0) ? static_cast<double>(tot) / static_cast<double>(node->call_count) : 0.0;
+                    counters += fmt::format(" {}(tot={},min={},max={},avg={:.1f})", c.first, tot, mn, mx, avg);
+                }
+                fprintln(os, counters);
             }
-            fprintln(os, annot_stats);
+            // Show numeric annotation stats in detailed mode
+            if (!node->numeric_annotations.empty()) {
+                std::string annot_stats = fmt::format("{:6}   Annotations:", "");
+                for (auto const &na : node->numeric_annotations) {
+                    double avg = (na.second.count > 0) ? na.second.total / static_cast<double>(na.second.count) : 0.0;
+                    annot_stats +=
+                        fmt::format(" {}(avg={:.1f},min={:.1f},max={:.1f})", na.first, avg, na.second.min_val, na.second.max_val);
+                }
+                fprintln(os, annot_stats);
+            }
         }
-    }
 
-    std::vector<AggNode const *> children;
-    for (auto const &c : n->children)
-        children.push_back(c.second.get());
-
-    for (auto const *ch : children) {
-        print_node_recursive(os, ch, thread_total_ms, depth + 1, detailed);
+        // Push children in REVERSE order so they pop in declaration order \u2014
+        // preserves the depth-first preorder output of the original
+        // recursive implementation.
+        std::vector<AggNode const *> children;
+        children.reserve(node->children.size());
+        for (auto const &c : node->children)
+            children.push_back(c.second.get());
+        for (auto it = children.rbegin(); it != children.rend(); ++it) {
+            work.push_back({*it, f.depth + 1});
+        }
     }
 }
 
