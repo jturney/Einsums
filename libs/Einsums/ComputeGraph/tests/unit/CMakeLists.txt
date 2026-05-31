@@ -166,6 +166,16 @@ foreach(test ${ComputeGraphTests})
         APPEND PROPERTY ENVIRONMENT
         "TSAN_OPTIONS=ignore_noninstrumented_modules=1:detect_deadlocks=0:suppressions=${PROJECT_SOURCE_DIR}/devtools/sanitizers/tsan.supp"
       )
+      # Bump the per-test timeout from ctest's 1500 sec default to one hour
+      # for the TSan leg. With 6340 fuzz sub-cases × TSan's 5-15x
+      # instrumentation slowdown, this test legitimately needs more than
+      # 25 minutes (CI run 26710235787: 1500.17 sec timeout while still
+      # making forward progress, 0 TSan warnings — the test would have
+      # finished cleanly given a few more minutes).
+      set_property(
+        TEST "Tests.Unit.Modules.ComputeGraph.FuzzDifferentialPython"
+        PROPERTY TIMEOUT 3600
+      )
     endif()
   endif ()
 endforeach()
