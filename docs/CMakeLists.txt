@@ -16,13 +16,12 @@ set(doxygen_definition_list
     "EINSUMS_HOSTDEV="
 )
 
-set(SPHINX_PYTHON_DEPENDS)
-
+# EINSUMS_BUILD_PYTHON wires up the per-module einsums-pybind codegen commands
+# that produce the API-reference JSON the docs are generated from, so it is
+# required even though the docs never build/import the compiled extension.
 if (NOT EINSUMS_BUILD_PYTHON)
   einsums_error("Building documentation requires Python to be enabled")
 endif()
-
-set(SPHINX_PYTHON_DEPENDS PyEinsums)
 
 foreach(doxygen_predef ${doxygen_definition_list})
   set(doxygen_definitions "${doxygen_definitions} \"${doxygen_predef}\"")
@@ -330,9 +329,14 @@ foreach(output_format ${EINSUMS_WITH_DOCUMENTATION_OUTPUT_FORMATS})
     )
   endif()
 
+  # The reference is generated statically from headers by einsums-pybind, so the
+  # docs depend on the codegen stamps in ``sphinx_source_files_build`` (which pull
+  # in the einsums-pybind tool and PyEinsumsDocs) — NOT on the compiled Einsums
+  # library or the PyEinsums (_core) extension. Depending on those would force a
+  # full library + extension build for no reason.
   add_custom_command(
     OUTPUT "${SPHINX_DOCS_OUTPUT_FILE}"
-    DEPENDS "${sphinx_source_files_build}" Einsums ${SPHINX_PYTHON_DEPENDS}
+    DEPENDS "${sphinx_source_files_build}"
     COMMAND ${SPHINX_DOCS_BUILD_COMMAND}
   )
 

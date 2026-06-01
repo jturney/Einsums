@@ -70,9 +70,11 @@ jobs:
             ${{ inputs.build_configure_extra_args }}
 
       - name: Build Documentation
+        # The docs are generated statically from the headers by the einsums-pybind
+        # libclang tool; the `docs` target pulls in that tool and the codegen, so
+        # there is no need to compile/link the Einsums library or the PyEinsums
+        # (_core) extension first.
         run: |
-          cmake --build "${{ github.workspace }}/build" --config Debug --target PyEinsums -j4
-          export PYTHONPATH=$PYTHONPATH:${{github.workspace}}/build/lib:${{github.workspace}}:$CONDA_PREFIX/lib
           cmake --build "${{ github.workspace }}/build" --config Debug --target docs -j4
 
       - name: Copy Documentation

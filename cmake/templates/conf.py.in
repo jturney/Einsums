@@ -30,13 +30,11 @@ from datetime import datetime
 # Make our custom EINSUMS extension visible.
 sys.path.insert(0, os.path.abspath('.') + '/extensions')
 
-# Make the einsums Python module visible.
-sys.path.insert(-1, "@EINSUMS_SOURCE_DIR@")
-
-# Make the einsums C++ module visible.
-sys.path.insert(-1, "@EINSUMS_BINARY_DIR@/lib")
-
-import einsums as ein
+# NOTE: the docs do NOT import the einsums runtime module. The entire C++ and
+# Python API reference is generated statically from the headers by the
+# einsums-pybind libclang tool (--emit-cpp-docs-json / --emit-docs-json), so the
+# build needs only that tool, not a compiled ``_core`` extension. (There is no
+# autodoc here either.)
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
