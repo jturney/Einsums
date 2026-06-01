@@ -22,8 +22,6 @@ at the moment.
 .. toctree::
     :caption: Modules
     :maxdepth: 2
-    
+
     /libs/Einsums/index
-    /libs/EinsumsPy/index
-    /libs/EinsumsExperimental/index
 

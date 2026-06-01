@@ -151,7 +151,7 @@ with cg.capture(body):
     ein("me <- nf ; mnfe", t1, G["oovv"], Fme, -1.0, True)
 
     Wmnij = S["Wmnij"]; la.axpby(1.0, G["oooo"], 0.0, Wmnij)
-    ein("mnij <- je ; mnie", t1, G["ooov"], Wmnij, 1.0, True)
+    ein("je ; mnie -> mnij", t1, G["ooov"], Wmnij, 1.0, True)
     ein("mnij <- ie ; mnej", t1, G["oovo"], Wmnij, 1.0, True)
     ein("mnij <- ijef ; mnef", Tau, G["oovv"], Wmnij, 1.0, True)
     jnfb = S["jnfb"]
@@ -231,7 +231,7 @@ def _contractions(gr):
     return sum(1 for n in _json.loads(gr.to_json()).get("nodes", []) if n.get("kind") in ("Einsum", "Gemm", "BatchedGemm"))
 _before = _contractions(body)
 _lccf = cg.PassManager(); _lccf.add(cg.LinearCombinationContractionFolding())
-# _lccf.set_verbosity(3)
+_lccf.set_verbosity(3)
 g.apply(_lccf)
 print(f"LinearCombinationContractionFolding: body contractions {_before} -> {_contractions(body)}")
 

@@ -59,7 +59,7 @@ namespace einsums::compute_graph {
 // scale
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Graph-aware scale: A *= factor.
+/// Graph-aware scale: multiplies @p A in place by the scalar @p factor.
 template <TensorConcept AType>
 // clang-format off
 EINSUMS_PYBIND_EXPOSE

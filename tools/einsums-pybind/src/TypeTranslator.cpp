@@ -232,6 +232,25 @@ std::string translate_canonical(std::string_view canonical) {
         return py;
     }
 
+    // `std::`-prefixed cstdint typedefs that clang didn't canonicalize to a
+    // builtin (e.g. `std::int64_t`, `std::size_t`). map_fundamental keys on
+    // the unprefixed spelling, so retry once with `std::` removed.
+    if (sv_starts_with(canonical, "std::")) {
+        if (auto const py = map_fundamental(canonical.substr(5)); !py.empty()) {
+            return py;
+        }
+    }
+
+    // Standard exception types map onto Python's exception hierarchy — this
+    // is an accurate translation (pybind surfaces them as Python exceptions),
+    // not a fall-through to `Any`.
+    if (sv_starts_with(canonical, "std::") && s_ends_with(std::string{canonical}, "_error")) {
+        return "Exception";
+    }
+    if (canonical == "std::exception" || canonical == "std::bad_alloc" || canonical == "std::bad_cast") {
+        return "Exception";
+    }
+
     // String-likes.
     if (canonical == "std::string" || canonical == "std::string_view" || canonical == "std::wstring" || canonical == "std::wstring_view" ||
         canonical == "char *" || canonical == "const char *" || canonical == "std::filesystem::path") {

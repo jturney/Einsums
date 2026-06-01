@@ -1,9 +1,9 @@
 .. Copyright (c) The Einsums Developers. All rights reserved.
    Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
-====================
+=========================
 Graph Update / Rebind
-====================
+=========================
 
 The rebind feature lets you change which tensors a graph operates on and
 update scalar prefactors — all without re-capturing the graph.

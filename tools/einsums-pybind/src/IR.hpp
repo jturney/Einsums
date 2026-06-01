@@ -85,17 +85,19 @@ struct BoundMethod : BoundEntityCommon {
     /// as ``BoundFunction::return_type_canonical``: the .pyi emitter
     /// substitutes member-template bindings on this and re-resolves so
     /// per-directive overloads emit concrete return types.
-    std::string             return_type_canonical;
-    std::string             return_py_type;
-    std::vector<BoundParam> params;
-    bool                    is_const        = false;
-    bool                    is_static       = false;
-    bool                    is_virtual      = false;
-    bool                    is_pure_virtual = false;
-    bool                    is_constructor  = false;
-    bool                    is_destructor   = false;
-    bool                    is_operator     = false;
-    bool                    is_deleted      = false;
+    std::string              return_type_canonical;
+    std::string              return_py_type;
+    std::vector<BoundParam>  params;
+    bool                     is_const    = false;
+    bool                     is_static   = false;
+    bool                     is_virtual  = false;
+    bool                     is_template = false;  // member function template
+    std::vector<std::string> template_param_names; // its template parameters (docs mode)
+    bool                     is_pure_virtual = false;
+    bool                     is_constructor  = false;
+    bool                     is_destructor   = false;
+    bool                     is_operator     = false;
+    bool                     is_deleted      = false;
 
     // Set by EINSUMS_PYBIND_VARIADIC_FROM: the last parameter is a pack
     // expansion whose arity comes from the named template parameter, and
@@ -248,10 +250,27 @@ struct BoundFunction : BoundEntityCommon {
     std::vector<PythonOverload> python_overloads;
 };
 
+// A typedef / using-alias. Captured in docs mode so the C++ reference can
+// emit a ``cpp:type`` declaration — which makes references to the alias
+// (e.g. ``einsums::blas::int_t`` in a function signature) resolve instead of
+// dangling. `underlying_type` is the aliased type as written.
+struct BoundTypedef : BoundEntityCommon {
+    std::string              underlying_type;
+    bool                     is_template = false; // alias template
+    std::vector<std::string> template_param_names;
+};
+
+// A C++20 concept. Captured in docs mode for ``cpp:concept`` declarations.
+struct BoundConcept : BoundEntityCommon {
+    std::vector<std::string> template_param_names;
+};
+
 struct Module {
     std::vector<BoundClass>    classes;
     std::vector<BoundFunction> functions;
     std::vector<BoundEnum>     enums;
+    std::vector<BoundTypedef>  typedefs; // docs mode only
+    std::vector<BoundConcept>  concepts; // docs mode only
 };
 
 // Deterministic textual dump of the IR for golden-output testing and

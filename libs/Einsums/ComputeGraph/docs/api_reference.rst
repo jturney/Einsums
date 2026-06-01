@@ -14,26 +14,22 @@ Core Classes
 Graph
 -----
 
-.. doxygenclass:: einsums::compute_graph::Graph
-   :members:
+:cpp:class:`einsums::compute_graph::Graph`
 
 Pipeline
 --------
 
-.. doxygenclass:: einsums::compute_graph::Pipeline
-   :members:
+:cpp:class:`einsums::compute_graph::Pipeline`
 
 CaptureGuard
 -------------
 
-.. doxygenstruct:: einsums::compute_graph::CaptureGuard
-   :members:
+:cpp:class:`einsums::compute_graph::CaptureGuard`
 
 CaptureContext
 --------------
 
-.. doxygenclass:: einsums::compute_graph::CaptureContext
-   :members:
+:cpp:class:`einsums::compute_graph::CaptureContext`
 
 Execution
 =========
@@ -41,26 +37,22 @@ Execution
 Executor
 --------
 
-.. doxygenclass:: einsums::compute_graph::Executor
-   :members:
+:cpp:class:`einsums::compute_graph::Executor`
 
 SequentialExecutor
 -------------------
 
-.. doxygenclass:: einsums::compute_graph::SequentialExecutor
-   :members:
+:cpp:class:`einsums::compute_graph::SequentialExecutor`
 
 OpenMPExecutor
 --------------
 
-.. doxygenclass:: einsums::compute_graph::OpenMPExecutor
-   :members:
+:cpp:class:`einsums::compute_graph::OpenMPExecutor`
 
 DependencyInfo
 --------------
 
-.. doxygenstruct:: einsums::compute_graph::DependencyInfo
-   :members:
+:cpp:class:`einsums::compute_graph::DependencyInfo`
 
 Data Types
 ==========
@@ -68,73 +60,62 @@ Data Types
 TensorHandle
 -------------
 
-.. doxygenstruct:: einsums::compute_graph::TensorHandle
-   :members:
+:cpp:class:`einsums::compute_graph::TensorHandle`
 
 TensorSlot
 ----------
 
-.. doxygenstruct:: einsums::compute_graph::TensorSlot
-   :members:
+:cpp:class:`einsums::compute_graph::TensorSlot`
 
 EinsumParams
 ------------
 
-.. doxygenstruct:: einsums::compute_graph::EinsumParams
-   :members:
+:cpp:class:`einsums::compute_graph::EinsumParams`
 
 Node
 ----
 
-.. doxygenstruct:: einsums::compute_graph::Node
-   :members:
+:cpp:class:`einsums::compute_graph::Node`
 
 OpKind
 ------
 
-.. doxygenenum:: einsums::compute_graph::OpKind
+:cpp:enum:`einsums::compute_graph::OpKind`
 
 EinsumDescriptor
 -----------------
 
-.. doxygenstruct:: einsums::compute_graph::EinsumDescriptor
-   :members:
+:cpp:class:`einsums::compute_graph::EinsumDescriptor`
 
 ScaleDescriptor
 ----------------
 
-.. doxygenstruct:: einsums::compute_graph::ScaleDescriptor
-   :members:
+:cpp:class:`einsums::compute_graph::ScaleDescriptor`
 
 PermuteDescriptor
 ------------------
 
-.. doxygenstruct:: einsums::compute_graph::PermuteDescriptor
-   :members:
+:cpp:class:`einsums::compute_graph::PermuteDescriptor`
 
 ConditionalDescriptor
 ----------------------
 
-.. doxygenstruct:: einsums::compute_graph::ConditionalDescriptor
-   :members:
+:cpp:class:`einsums::compute_graph::ConditionalDescriptor`
 
 LoopDescriptor
 --------------
 
-.. doxygenstruct:: einsums::compute_graph::LoopDescriptor
-   :members:
+:cpp:class:`einsums::compute_graph::LoopDescriptor`
 
 AllocDescriptor
 ----------------
 
-.. doxygenstruct:: einsums::compute_graph::AllocDescriptor
-   :members:
+:cpp:class:`einsums::compute_graph::AllocDescriptor`
 
 LoopNode (Pipeline)
 -------------------
 
-.. doxygenstruct:: einsums::compute_graph::LoopNode
-   :members:
+:cpp:class:`einsums::compute_graph::LoopNode`
 
 String Einsum
 =============
@@ -142,22 +123,20 @@ String Einsum
 ParsedEinsumSpec
 -----------------
 
-.. doxygenstruct:: einsums::compute_graph::ParsedEinsumSpec
-   :members:
+:cpp:class:`einsums::compute_graph::ParsedEinsumSpec`
 
 EinsumFormatString
 -------------------
 
-.. doxygenstruct:: einsums::compute_graph::EinsumFormatString
-   :members:
+:cpp:class:`einsums::compute_graph::EinsumFormatString`
 
 Type Aliases
 ============
 
-.. doxygentypedef:: einsums::compute_graph::TensorId
-.. doxygentypedef:: einsums::compute_graph::NodeId
-.. doxygentypedef:: einsums::compute_graph::LoopCondition
-.. doxygentypedef:: einsums::compute_graph::OpData
+:cpp:type:`einsums::compute_graph::TensorId`
+:cpp:type:`einsums::compute_graph::NodeId`
+:cpp:type:`einsums::compute_graph::LoopCondition`
+:cpp:type:`einsums::compute_graph::OpData`
 
 Optimization Passes
 ===================
@@ -165,87 +144,74 @@ Optimization Passes
 OptimizerPass (base class)
 ---------------------------
 
-.. doxygenclass:: einsums::compute_graph::OptimizerPass
-   :members:
+:cpp:class:`einsums::compute_graph::OptimizerPass`
 
 CSE
 ---
 
-.. doxygenclass:: einsums::compute_graph::passes::CSE
-   :members:
+:cpp:class:`einsums::compute_graph::passes::CSE`
 
 Reorder
 -------
 
-.. doxygenclass:: einsums::compute_graph::passes::Reorder
-   :members:
+:cpp:class:`einsums::compute_graph::passes::Reorder`
 
 MemoryPlanning
 --------------
 
-.. doxygenclass:: einsums::compute_graph::passes::MemoryPlanning
-   :members:
+:cpp:class:`einsums::compute_graph::passes::MemoryPlanning`
 
 ChainParenthesization
 ----------------------
 
-.. doxygenclass:: einsums::compute_graph::passes::ChainParenthesization
-   :members:
+:cpp:class:`einsums::compute_graph::passes::ChainParenthesization`
 
 ConstantFolding
 ----------------
 
-.. doxygenclass:: einsums::compute_graph::passes::ConstantFolding
-   :members:
+:cpp:class:`einsums::compute_graph::passes::ConstantFolding`
 
 DeadNodeElimination
 --------------------
 
-.. doxygenclass:: einsums::compute_graph::passes::DeadNodeElimination
-   :members:
+:cpp:class:`einsums::compute_graph::passes::DeadNodeElimination`
 
 ScaleAbsorption
 ----------------
 
-.. doxygenclass:: einsums::compute_graph::passes::ScaleAbsorption
-   :members:
+:cpp:class:`einsums::compute_graph::passes::ScaleAbsorption`
 
 LoopInvariantHoisting
 ----------------------
 
-.. doxygenclass:: einsums::compute_graph::passes::LoopInvariantHoisting
-   :members:
+:cpp:class:`einsums::compute_graph::passes::LoopInvariantHoisting`
 
 InplaceOptimization
 --------------------
 
-.. doxygenclass:: einsums::compute_graph::passes::InplaceOptimization
-   :members:
+:cpp:class:`einsums::compute_graph::passes::InplaceOptimization`
 
 GEMMBatching
 -------------
 
-.. doxygenclass:: einsums::compute_graph::passes::GEMMBatching
-   :members:
+:cpp:class:`einsums::compute_graph::passes::GEMMBatching`
 
 PermuteFusion
 --------------
 
-.. doxygenclass:: einsums::compute_graph::passes::PermuteFusion
-   :members:
+:cpp:class:`einsums::compute_graph::passes::PermuteFusion`
 
 SymmetryPropagation
 --------------------
 
-.. doxygenclass:: einsums::compute_graph::passes::SymmetryPropagation
-   :members:
+:cpp:class:`einsums::compute_graph::passes::SymmetryPropagation`
 
 See :doc:`symmetry` for the user-facing guide.
 
 Free Functions
 ==============
 
-.. doxygenfunction:: einsums::compute_graph::make_handle
-.. doxygenfunction:: einsums::compute_graph::make_scalar_handle
-.. doxygenfunction:: einsums::compute_graph::op_kind_name
-.. doxygenfunction:: einsums::compute_graph::parse_einsum_spec
+:cpp:func:`einsums::compute_graph::make_handle`
+:cpp:func:`einsums::compute_graph::make_scalar_handle`
+:cpp:func:`einsums::compute_graph::op_kind_name`
+:cpp:func:`einsums::compute_graph::parse_einsum_spec`

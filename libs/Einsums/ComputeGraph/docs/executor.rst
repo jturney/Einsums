@@ -194,6 +194,9 @@ enabling the graph's topological sort to order these nodes correctly.
 You can also call TaskPool directly from within a graph node's lambda. In this
 case there is no automatic dependency tracking — the ``parallel_for`` blocks
 before returning, so the next node sees the completed results:
+
+.. code-block:: cpp
+
    auto &pool = tp::TaskPool::get_singleton();
    pool.parallel_for("integral_batches", 0, num_pairs, [&](size_t pair) {
        compute_integrals(pair);

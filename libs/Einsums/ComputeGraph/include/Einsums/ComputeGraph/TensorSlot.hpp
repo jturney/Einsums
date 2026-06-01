@@ -63,7 +63,7 @@ struct TensorSlot {
  *
  * Both prefactors are @ref PrefactorScalar variants — they hold one of
  * float/double/complex<float>/complex<double>. The executor extracts the
- * concrete scalar via @ref as<T> when dispatching to typed BLAS.
+ * concrete scalar via ``as<T>`` when dispatching to typed BLAS.
  */
 struct EinsumParams {
     PrefactorScalar c_pf{double{0}};  ///< C prefactor

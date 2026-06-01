@@ -364,7 +364,7 @@ TaskPool
    .. cpp:function:: template<typename F> auto submit(std::string name, F&& callable) -> TaskHandle<R>
    .. cpp:function:: TaskGroup submit_group(std::string name, std::vector<std::function<void()>> tasks)
    .. cpp:function:: template<typename F> void parallel_for(std::string name, size_t begin, size_t end, F&& body)
-   .. cpp:function:: template<typename Acc, ...> Acc parallel_reduce(std::string name, size_t begin, size_t end, ...)
+   .. cpp:function:: template<typename Acc, typename Body, typename Combine> Acc parallel_reduce(std::string name, size_t begin, size_t end, Acc init, Body body, Combine combine)
    .. cpp:function:: template<typename F, typename... Ts> auto dataflow(std::string name, F&& callable, TaskHandle<Ts>... inputs)
    .. cpp:function:: Metrics snapshot_metrics() const
    .. cpp:function:: void shutdown()

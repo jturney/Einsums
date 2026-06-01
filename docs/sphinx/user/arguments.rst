@@ -63,14 +63,14 @@ Basic Arguments
 .. option:: --einsums:buffer-size
 
     The amount of memory Einsums is allowed to use. It takes a string containing a number and units.
-    The units are either bytes or words. See :cpp:func:`memory_string` for more information.
+    The units are either bytes or words. See :cpp:func:`einsums::string_util::memory_string` for more information.
 
     .. versionadded:: 1.0.0
 
 .. option:: --einsums:gpu-buffer-size
 
     The amount of memory Einsums is allowed to use on the GPU. It takes a string containing a number and units.
-    The units are either bytes or words. See :cpp:func:`memory_string` for more information.
+    The units are either bytes or words. See :cpp:func:`einsums::string_util::memory_string` for more information.
 
     .. versionadded:: 1.0.0
 

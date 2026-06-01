@@ -8,20 +8,20 @@
    This file has been automatically generated using the CMake tool.
    Do not edit manually.
 
+:orphan:
+
 .. _cmake_variables:
 
 |cmake| options
 ===============
 
 When configuring |einsums|, you can set a variety of options to allow CMake to
-generate your specific makefiles/project files. A list of the most important
-|cmake| options can be found in :ref:`important_cmake_options`, while this section
-includes the comprehensive list.
+generate your specific makefiles/project files. This section includes the comprehensive list of |cmake| options.
 
 .. _configure:
 
 Variables that influence how |einsums| is built
--------------------------------------------
+------------------------------------------------
 
 The options are split into these categories:
 
@@ -30,7 +30,7 @@ The options are split into these categories:
 .. _cmake_additional_tools:
 
 Additional tools and libraries used by |einsums|
---------------------------------------------
+------------------------------------------------
 
 Here is a list of additional libraries and tools that are either optionally
 supported by the build system or are optionally required for certain examples or

@@ -31,6 +31,16 @@ class Visitor : public clang::RecursiveASTVisitor<Visitor> {
     /// duplicate bindings (the owning module's codegen run handles them).
     void set_module_header_filter(std::vector<std::string> const &headers) { _module_headers = headers; }
 
+    /// Enable "docs mode": instead of binding only EINSUMS_PYBIND_*-annotated
+    /// declarations, capture the full *public, documented* surface of the
+    /// module headers for C++ API documentation (Option 2 — replacing
+    /// Doxygen+Breathe with our own libclang extraction). The filter is
+    /// applied by ``passes_docs_filter``: in a module header, not in a
+    /// ``detail``/``impl``/anonymous namespace, not ``@internal``, and
+    /// (for class members) public access. Documents only entities carrying
+    /// a doc comment.
+    void set_docs_mode(bool on) { _docs_mode = on; }
+
     Module take() && { return std::move(_module); }
 
     [[nodiscard]] int error_count() const { return _error_count; }
@@ -57,6 +67,11 @@ class Visitor : public clang::RecursiveASTVisitor<Visitor> {
     bool VisitFieldDecl(clang::FieldDecl *decl);
     // NOLINTNEXTLINE(bugprone-derived-method-shadowing-base-method)
     bool VisitEnumDecl(clang::EnumDecl *decl);
+    // Docs-mode only: typedefs/using-aliases and C++20 concepts.
+    // NOLINTNEXTLINE(bugprone-derived-method-shadowing-base-method)
+    bool VisitTypedefNameDecl(clang::TypedefNameDecl *decl);
+    // NOLINTNEXTLINE(bugprone-derived-method-shadowing-base-method)
+    bool VisitConceptDecl(clang::ConceptDecl *decl);
 
   private:
     clang::ASTContext        &_context;
@@ -69,6 +84,17 @@ class Visitor : public clang::RecursiveASTVisitor<Visitor> {
     // Returns false if the decl carries no einsums_pybind annotation, in
     // which case visitors should leave it alone.
     [[nodiscard]] bool has_any_pybind_annotation(clang::Decl const *decl) const;
+
+    // Docs-mode gate for top-level entities (free functions, classes,
+    // typedefs, enums): in a module header, not internal, has a doc comment.
+    [[nodiscard]] bool passes_docs_filter(clang::NamedDecl const *decl) const;
+
+    // Docs-mode gate for class members: public access + in a module header +
+    // not @internal. No per-member doc requirement — a documented class's
+    // public members are documented even when individually undocumented.
+    [[nodiscard]] bool passes_member_filter(clang::NamedDecl const *decl) const;
+
+    bool _docs_mode = false;
 
     // Returns true if the decl's source location is in one of the module's
     // own headers (per ``--source-include`` flags). When the filter is

@@ -8,7 +8,7 @@
             "generator": "Ninja",
             "name": "Build",
             "pythonExtraPaths": [
-                "build/lib"
+                "/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib"
             ]
         }
     ]

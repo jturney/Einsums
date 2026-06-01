@@ -1,4 +1,4 @@
-.. 
+..
     ----------------------------------------------------------------------------------------------
      Copyright (c) The Einsums Developers. All rights reserved.
      Licensed under the MIT License. See LICENSE.txt in the project root for license information.
@@ -10,7 +10,7 @@
 Einsums's Documentation
 #######################
 
-.. toctree::  
+.. toctree::
    :maxdepth: 3
    :hidden:
 
@@ -27,25 +27,37 @@ Einsums's Documentation
 `Discord <https://discord.gg/8GvtkyWZUv>`_
 
 
-Einsums provides compile-time contraction pattern analysis to determine the optimal tensor
-operation to perform. Einsums is a package for scientific computing in C++. It is a C++
-library that provides a multidimensional tensor object and an assortment of functions
-for fast operations on tensors, including mathematical functions, shape manipulation, tensor permutations,
-I/O, discrete Fourier transforms, basic linear algebra, and tensor algebra. It also provides
-an interface to Python.
+Einsums is a C++23 tensor algebra library for scientific computing. It provides:
 
-As a short example, the following call to :code:`einsum` will optimize at compile-time to a BLAS
-dgemm call:
+* A multidimensional :code:`Tensor` type with the usual algebraic operations,
+  block-sparse and tiled variants, and a disk-backed tensor for out-of-core
+  workloads.
+* **Compile-time contraction pattern analysis**. An :code:`einsum` expression
+  is statically routed to vendor BLAS, an in-tree BLIS-style packed
+  contraction backend (:ref:`PackedGemm <modules_Einsums_PackedGemm>`), or
+  a generic loop nest — chosen once at instantiation, with no runtime
+  dispatch overhead.
+* A deferred-execution :ref:`ComputeGraph <modules_Einsums_ComputeGraph>`
+  with multi-pass optimization (common-subexpression elimination,
+  linear-combination contraction folding, distribution planning,
+  communication scheduling, and more) for whole-algorithm rewrites.
+* :ref:`Python bindings <modules_Einsums_Python>` auto-generated from the
+  C++ headers by an in-tree libclang tool, so the Python surface tracks the
+  C++ surface without hand-written glue.
+
+As a short example, the following :code:`einsum` call routes to a single
+:code:`dgemm` because the contraction pattern matches a pure GEMM at
+compile time:
 
 .. code-block:: C++
 
-   using einsums;                        // Provides Tensor, create_tensor, and create_random_tensor
-   using einsums::tensor_algebra;        // Provides einsum
-   using einsums::index;                 // Provides i, j, k, Indices
+   using namespace einsums;                 // Tensor, create_tensor, create_random_tensor
+   using namespace einsums::tensor_algebra; // einsum
+   using namespace einsums::index;          // i, j, k, Indices
 
-   Tensor A = create_random_tensor("A", 7, 7);
-   Tensor B = create_random_tensor("B", 7, 7);
-   Tensor C = create_tensor("C", 7, 7);
+   auto A = create_random_tensor("A", 7, 7);
+   auto B = create_random_tensor("B", 7, 7);
+   auto C = create_tensor("C", 7, 7);
 
    einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B);
 
@@ -98,12 +110,12 @@ dgemm call:
       Developer's Guide
       ^^^^^^^^^^^^^^^^^
 
-      The reference guide contains a detailed description of the functions,
-      modules, and objects included in Einsums. The reference describes how the
-      methods work and how to use the parameters. It assumes you have an
-      understanding of key concepts.
+      Per-module documentation and the auto-generated API reference for the
+      Einsums C++ surface. Start here when you need to know what a particular
+      module does, how the dispatch layers fit together, or what symbols a
+      header exposes.
 
-      .. image:: https://codecov.io/github/Einsums/Einsums/graph/badge.svg?token=Z8WA6CEGQA 
+      .. image:: https://codecov.io/github/Einsums/Einsums/graph/badge.svg?token=Z8WA6CEGQA
          :target: https://codecov.io/github/Einsums/Einsums
          :class: dark-light
       +++
@@ -113,7 +125,7 @@ dgemm call:
          :color: primary
          :click-parent:
 
-         To the developer's guide 
+         To the developer's guide
 
    .. grid-item-card::
       :img-top: _static/index-images/contributor.svg

@@ -158,6 +158,7 @@ function(einsums_finalize_pybind)
     # Emit one add_custom_command per opted-in module producing its
     # generated TU.
     set(_generated_tus "")
+    set(_docs_jsons "")
     foreach(_mod IN LISTS _modules)
         get_property(_headers      GLOBAL PROPERTY EINSUMS_PYBIND_HEADERS_${_mod})
         get_property(_relheaders   GLOBAL PROPERTY EINSUMS_PYBIND_RELHEADERS_${_mod})
@@ -227,6 +228,32 @@ function(einsums_finalize_pybind)
         )
         list(APPEND _generated_tus   "${_out}")
         list(APPEND _generated_stubs "${_stub_out}")
+
+        # Documentation JSON: the same parse, emitted as a tool-agnostic
+        # description of the Python-facing surface (see DocsJson.hpp). The
+        # render step (PyEinsumsDocs below) turns these into reST. Same
+        # flags as the binding command minus the binding-only options.
+        set(_docs_json "${CMAKE_BINARY_DIR}/generated/pybind/${_libname}_${_mod}.docs.json")
+        add_custom_command(
+            OUTPUT ${_docs_json}
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${CMAKE_BINARY_DIR}/generated/pybind"
+            COMMAND $<TARGET_FILE:einsums-pybind>
+                    --emit-docs-json
+                    --module einsums
+                    --output ${_docs_json}
+                    ${_source_includes}
+                    ${_headers}
+                    --
+                    -std=c++${EINSUMS_WITH_CXX_STANDARD}
+                    ${_pyb_system_flags}
+                    ${_def_flags}
+                    ${_inc_flags}
+            DEPENDS ${_headers} einsums-pybind ${_all_defines_headers}
+            VERBATIM
+            COMMENT "einsums-pybind: emitting docs JSON for ${_libname}_${_mod}"
+        )
+        list(APPEND _docs_jsons "${_docs_json}")
     endforeach()
 
     # Generate the tiny per-module list header consumed by the static
@@ -316,6 +343,26 @@ function(einsums_finalize_pybind)
     )
     add_custom_target(PyEinsumsStubs ALL DEPENDS ${_stubs_stamp})
     add_dependencies(PyEinsumsStubs PyEinsums)
+
+    # Render the per-module docs JSON into a Sphinx Python API reference,
+    # grouped by submodule. Deliberately NOT part of ALL — it is built on
+    # demand (``cmake --build . --target PyEinsumsDocs``) and is wired as a
+    # dependency of the documentation build when EINSUMS_WITH_DOCUMENTATION
+    # is on. Pages land in ${_docs_out_dir}; the docs tree pulls them in.
+    set(_docs_out_dir  "${CMAKE_BINARY_DIR}/generated/pybind/docs")
+    set(_docs_stamp    "${CMAKE_BINARY_DIR}/generated/pybind/.docs.stamp")
+    set(_docs_renderer "${CMAKE_SOURCE_DIR}/tools/einsums-pybind/scripts/render_docs_rst.py")
+    add_custom_command(
+        OUTPUT ${_docs_stamp}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_docs_out_dir}"
+        COMMAND ${Python_EXECUTABLE} ${_docs_renderer}
+                --outdir "${_docs_out_dir}" ${_docs_jsons}
+        COMMAND ${CMAKE_COMMAND} -E touch ${_docs_stamp}
+        DEPENDS ${_docs_renderer} ${_docs_jsons}
+        COMMENT "einsums-pybind: rendering Python API reference (.rst) into ${_docs_out_dir}"
+        VERBATIM
+    )
+    add_custom_target(PyEinsumsDocs DEPENDS ${_docs_stamp})
     # Link ONLY the umbrella ``Einsums`` shared library. Linking the per-module
     # targets (${_targets}) as well baked each module's object files into _core.so
     # on top of libEinsums.dylib, duplicating code/RTTI. Everything _core needs is

@@ -313,7 +313,7 @@ Reference
      the result (rank-reducing). Honored by the runtime-rank ``view_runtime``;
      the typed ``cg::view`` throws on it.
 
-.. cpp:function:: template<typename T, size_t Rank, ...> \
+.. cpp:function:: template<typename T, size_t Rank, typename ParentT, typename ...Axes> \
                   TensorView<T, Rank>& cg::view(ParentT &parent, Axes &&...axes)
 
    Record a ``View`` node and return a graph-owned slice ``TensorView`` that
@@ -321,8 +321,8 @@ Reference
    axis spec per parent axis; ``Rank`` is the result rank (``parent.rank()``
    minus the number of ``Drop`` axes).
 
-.. cpp:function:: template<CoreBasicTensorConcept ParentT, size_t Rank> \
-                  TensorView<..., Rank>& cg::permute_view(ParentT &parent, std::array<size_t, Rank> const &perm)
+.. cpp:function:: template<typename ParentT, size_t Rank> \
+                  auto cg::permute_view(ParentT &parent, std::array<size_t, Rank> const &perm)
 
    Record a transpose / axis-permutation View: result axis ``k`` aliases
    parent axis ``perm[k]`` (``perm`` a permutation of ``[0, Rank)``).

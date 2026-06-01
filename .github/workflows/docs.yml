@@ -71,7 +71,7 @@ jobs:
 
       - name: Build Documentation
         run: |
-          cmake --build "${{ github.workspace }}/build" --config Debug --target EinsumsPy -j4
+          cmake --build "${{ github.workspace }}/build" --config Debug --target PyEinsums -j4
           export PYTHONPATH=$PYTHONPATH:${{github.workspace}}/build/lib:${{github.workspace}}:$CONDA_PREFIX/lib
           cmake --build "${{ github.workspace }}/build" --config Debug --target docs -j4
 

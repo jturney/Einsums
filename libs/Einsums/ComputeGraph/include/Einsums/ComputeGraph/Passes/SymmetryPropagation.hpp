@@ -20,15 +20,11 @@ namespace einsums::compute_graph::passes {
  * dispatch added in Phase 2).
  *
  * @par Current rules
- * - **Scale**: ``C = α·A`` inherits A's descriptor (scaling preserves
- *   symmetry).
- * - **Axpy / Axpby / sum of same-descriptor inputs**: ``C = α·A + β·B``
- *   where A and B share a descriptor inherits that descriptor.
- * - **Permute / Transpose** of a rank-2 symmetric tensor with the natural
- *   swap-permutation remains symmetric.
- * - **Einsum ``ki,kj->ij`` (pattern ``AᵀA``)**: the product of A with its
- *   own transpose is always symmetric (for real) / Hermitian (for complex)
- *   regardless of A.
+ * - **Scale**: ``C = α·A`` inherits A's descriptor (scaling preserves symmetry).
+ * - **Axpy / Axpby / sum of same-descriptor inputs**: ``C = α·A + β·B`` where A and B share a descriptor inherits that descriptor.
+ * - **Permute / Transpose** of a rank-2 symmetric tensor with the natural swap-permutation remains symmetric.
+ * - **Einsum ``ki,kj->ij`` (pattern ``AᵀA``)**: the product of A with its own transpose is always symmetric (for real) / Hermitian (for
+ * complex) regardless of A.
  *
  * Rules are deliberately conservative — only cases that hold unconditionally
  * get tagged. Everything else is left untagged, which is the safe default.

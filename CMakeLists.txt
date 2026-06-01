@@ -1064,7 +1064,7 @@ endif()
 # endif()
 
 # ##################################################################################################
-# Documentation toolchain (Sphinx, Doxygen, Breathe)
+# Documentation toolchain (Sphinx; C++ API via the in-tree libclang tool)
 # ##################################################################################################
 include(Einsums_Documentation)
 

@@ -12,6 +12,7 @@
 #include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/PrettyPrinter.h"
 #include "clang/Basic/SourceLocation.h"
@@ -349,6 +350,39 @@ bool Visitor::has_any_pybind_annotation(clang::Decl const *decl) const {
     return false;
 }
 
+bool Visitor::passes_docs_filter(clang::NamedDecl const *decl) const {
+    if (!decl_in_module_headers(decl)) {
+        return false;
+    }
+    // Skip internal/implementation and anonymous namespaces.
+    std::string const qn = decl->getQualifiedNameAsString();
+    if (qn.find("detail::") != std::string::npos || qn.find("impl::") != std::string::npos ||
+        qn.find("(anonymous namespace)") != std::string::npos) {
+        return false;
+    }
+    // Document only entities that carry a doc comment, and never ones marked
+    // @internal. (The filter can be relaxed to EXTRACT_ALL-style later.)
+    std::string const doc = extract_doc(decl, _context);
+    if (doc.empty()) {
+        return false;
+    }
+    if (doc.find("@internal") != std::string::npos || doc.find("\\internal") != std::string::npos) {
+        return false;
+    }
+    return true;
+}
+
+bool Visitor::passes_member_filter(clang::NamedDecl const *decl) const {
+    if (decl->getAccess() != clang::AS_public) {
+        return false;
+    }
+    if (!decl_in_module_headers(decl)) {
+        return false;
+    }
+    std::string const doc = extract_doc(decl, _context);
+    return doc.find("@internal") == std::string::npos && doc.find("\\internal") == std::string::npos;
+}
+
 bool Visitor::decl_in_module_headers(clang::Decl const *decl) const {
     if (_module_headers.empty()) {
         return true; // no filter → bind everything (legacy behaviour)
@@ -445,7 +479,8 @@ bool Visitor::TraverseCXXRecordDecl(clang::CXXRecordDecl *decl) {
     if (!decl->hasDefinition() || decl->getDeclName().isEmpty()) {
         return clang::RecursiveASTVisitor<Visitor>::TraverseCXXRecordDecl(decl);
     }
-    if (!has_any_pybind_annotation(decl)) {
+    bool const wanted = _docs_mode ? passes_docs_filter(decl) : has_any_pybind_annotation(decl);
+    if (!wanted) {
         return clang::RecursiveASTVisitor<Visitor>::TraverseCXXRecordDecl(decl);
     }
 
@@ -511,7 +546,7 @@ bool Visitor::VisitCXXMethodDecl(clang::CXXMethodDecl *decl) {
     if (cls == nullptr) {
         return true; // method outside an exposed class — nothing to attach to
     }
-    if (!has_any_pybind_annotation(decl) || !decl_in_module_headers(decl)) {
+    if (_docs_mode ? !passes_member_filter(decl) : (!has_any_pybind_annotation(decl) || !decl_in_module_headers(decl))) {
         return true;
     }
 
@@ -529,6 +564,18 @@ bool Visitor::VisitCXXMethodDecl(clang::CXXMethodDecl *decl) {
     method.is_destructor         = clang::isa<clang::CXXDestructorDecl>(decl);
     method.is_operator           = decl->isOverloadedOperator();
     method.is_deleted            = decl->isDeleted();
+    // Member function templates: capture their template parameters so the
+    // renderer can emit a ``template <...>`` clause (and so docs collects the
+    // param names for nitpick suppression — they are never xref targets).
+    if (auto const *ftpl = decl->getDescribedFunctionTemplate()) {
+        method.is_template = true;
+        if (auto const *plist = ftpl->getTemplateParameters()) {
+            method.template_param_names.reserve(plist->size());
+            for (clang::NamedDecl const *p : *plist) {
+                method.template_param_names.push_back(p->getNameAsString());
+            }
+        }
+    }
 
     // Honor EINSUMS_PYBIND_VARIADIC_FROM: record the named template
     // parameter and the per-element type so the emitter can expand the
@@ -560,7 +607,7 @@ bool Visitor::VisitFunctionDecl(clang::FunctionDecl *decl) {
     if (decl->isImplicit() || decl->isTemplateInstantiation()) {
         return true;
     }
-    if (!has_any_pybind_annotation(decl) || !decl_in_module_headers(decl)) {
+    if (_docs_mode ? !passes_docs_filter(decl) : (!has_any_pybind_annotation(decl) || !decl_in_module_headers(decl))) {
         return true;
     }
 
@@ -660,7 +707,10 @@ bool Visitor::VisitFieldDecl(clang::FieldDecl *decl) {
     if (cls == nullptr) {
         return true;
     }
-    if (decl->isImplicit() || !has_any_pybind_annotation(decl) || !decl_in_module_headers(decl)) {
+    if (decl->isImplicit()) {
+        return true;
+    }
+    if (_docs_mode ? !passes_member_filter(decl) : (!has_any_pybind_annotation(decl) || !decl_in_module_headers(decl))) {
         return true;
     }
 
@@ -677,7 +727,9 @@ bool Visitor::VisitEnumDecl(clang::EnumDecl *decl) {
     if (decl->isImplicit() || !decl->isComplete()) {
         return true;
     }
-    if (!has_any_pybind_annotation(decl) || !decl_in_module_headers(decl)) {
+    bool const member = current_class() != nullptr;
+    if (_docs_mode ? !(member ? passes_member_filter(decl) : passes_docs_filter(decl))
+                   : (!has_any_pybind_annotation(decl) || !decl_in_module_headers(decl))) {
         return true;
     }
 
@@ -699,6 +751,88 @@ bool Visitor::VisitEnumDecl(clang::EnumDecl *decl) {
     } else {
         _module.enums.push_back(std::move(e));
     }
+    return true;
+}
+
+bool Visitor::VisitTypedefNameDecl(clang::TypedefNameDecl *decl) {
+    // Typedefs/using-aliases are captured only in docs mode, primarily so a
+    // ``cpp:type`` declaration exists for them — otherwise references to the
+    // alias in function signatures (e.g. ``int_t``) dangle. We don't require
+    // a doc comment (an undocumented public alias is still a real ref target),
+    // but we keep the namespace/internal hygiene of the docs filter.
+    if (!_docs_mode || decl->isImplicit()) {
+        return true;
+    }
+    if (!decl_in_module_headers(decl)) {
+        return true;
+    }
+    std::string const qn = decl->getQualifiedNameAsString();
+    if (qn.find("detail::") != std::string::npos || qn.find("impl::") != std::string::npos ||
+        qn.find("(anonymous namespace)") != std::string::npos) {
+        return true;
+    }
+    // Skip member aliases of a template specialization (qualified name like
+    // ``Trait<type-parameter-0-0>::type``) — partial specializations bypass
+    // the class-stack scope tracking, and their template-instantiation scope
+    // confuses the cpp domain.
+    if (qn.find('<') != std::string::npos) {
+        return true;
+    }
+    // Only document namespace-scope aliases. Member type aliases
+    // (``struct Trait { using type = ...; }``) are implementation detail and
+    // their template-instantiation scope (``Trait<type-parameter-0-0>``)
+    // confuses the cpp domain.
+    if (current_class() != nullptr) {
+        return true;
+    }
+    std::string const doc = extract_doc(decl, _context);
+    if (doc.find("@internal") != std::string::npos || doc.find("\\internal") != std::string::npos) {
+        return true;
+    }
+
+    BoundTypedef td;
+    fill_common(td, decl);
+    td.underlying_type = translate_type(decl->getUnderlyingType(), _context);
+    // Alias templates (``template <...> using X = ...``): capture the
+    // template parameters so the renderer emits a correct ``template <...>``
+    // prefix on the cpp:type directive.
+    if (auto const *at = clang::dyn_cast<clang::TypeAliasDecl>(decl)) {
+        if (auto const *tat = at->getDescribedAliasTemplate()) {
+            td.is_template = true;
+            if (auto const *plist = tat->getTemplateParameters()) {
+                td.template_param_names.reserve(plist->size());
+                for (clang::NamedDecl const *p : *plist) {
+                    td.template_param_names.push_back(p->getNameAsString());
+                }
+            }
+        }
+    }
+    _module.typedefs.push_back(std::move(td));
+    return true;
+}
+
+bool Visitor::VisitConceptDecl(clang::ConceptDecl *decl) {
+    if (!_docs_mode || decl->isImplicit() || !decl_in_module_headers(decl)) {
+        return true;
+    }
+    std::string const qn = decl->getQualifiedNameAsString();
+    if (qn.find("detail::") != std::string::npos || qn.find("impl::") != std::string::npos) {
+        return true;
+    }
+    std::string const doc = extract_doc(decl, _context);
+    if (doc.find("@internal") != std::string::npos || doc.find("\\internal") != std::string::npos) {
+        return true;
+    }
+
+    BoundConcept c;
+    fill_common(c, decl);
+    if (auto const *plist = decl->getTemplateParameters()) {
+        c.template_param_names.reserve(plist->size());
+        for (clang::NamedDecl const *p : *plist) {
+            c.template_param_names.push_back(p->getNameAsString());
+        }
+    }
+    _module.concepts.push_back(std::move(c));
     return true;
 }
 

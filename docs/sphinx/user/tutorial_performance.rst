@@ -185,14 +185,18 @@ pattern on each call:
 In the profile viewer, each ``einsum`` node shows an ``algorithm`` annotation
 (visible in the tree view or flame graph tooltip).  At runtime, any contraction
 that falls back to the ``GENERIC`` nested-loop algorithm emits a one-time
-warning to the log, for example::
+warning to the log, for example:
+
+.. code-block:: text
 
     [warning] einsum dispatch: GENERIC fallback for "C"("i") = "A"("i", "j") * "B"("j", "i")
               (ranks 1/2/2).  This contraction is not accelerated by BLAS.
 
-If ``try_packed_gemm`` rejects a contraction, an INFO-level log explains why::
+If ``try_packed_gemm`` rejects a contraction, an INFO-level log explains why:
 
-    [info] PackedGemm: skipping — no N-dims (all C indices come from A).
+.. code-block:: text
+
+    [info] PackedGemm: skipping -- no N-dims (all C indices come from A).
            Consider rewriting as GEMV or transposing.
 
 Set ``--einsums:log-level 2`` (INFO) to see the PackedGemm reasons, or

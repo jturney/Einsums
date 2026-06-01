@@ -19,7 +19,7 @@ Public Symbols
 
 There are some useful symbols that this module provides. They are the logging symbols.
 
-.. cpp:macro:: EINSUMS_LOG_TRACE(...)
+.. c:macro:: EINSUMS_LOG_TRACE(...)
 
     Logs a trace message. These are for intensive debugging. They are disabled at compile time by configuring in the Release
     configuration.
@@ -28,7 +28,7 @@ There are some useful symbols that this module provides. They are the logging sy
 
     .. versionadded:: 1.0.0
 
-.. cpp:macro:: EINSUMS_LOG_DEBUG(...)
+.. c:macro:: EINSUMS_LOG_DEBUG(...)
 
     Logs a debug message. They are disabled at compile time by configuring in the Release
     configuration.
@@ -37,7 +37,7 @@ There are some useful symbols that this module provides. They are the logging sy
 
     .. versionadded:: 1.0.0
 
-.. cpp:macro:: EINSUMS_LOG_INFO(...)
+.. c:macro:: EINSUMS_LOG_INFO(...)
 
     Logs an informational message. These messages give information about the program, such as environment and configuration variables.
 
@@ -45,7 +45,7 @@ There are some useful symbols that this module provides. They are the logging sy
 
     .. versionadded:: 1.0.0
 
-.. cpp:macro:: EINSUMS_LOG_WARN(...)
+.. c:macro:: EINSUMS_LOG_WARN(...)
 
     Logs a warning message. These messages indicate that a recoverable issue occurred.
 
@@ -53,7 +53,7 @@ There are some useful symbols that this module provides. They are the logging sy
 
     .. versionadded:: 1.0.0
 
-.. cpp:macro:: EINSUMS_LOG_ERROR(...)
+.. c:macro:: EINSUMS_LOG_ERROR(...)
 
     Logs an error message. These messages indicate that an issue occurred that left the program in an unstable state. These are often accompanied by
     an exception.
@@ -62,7 +62,7 @@ There are some useful symbols that this module provides. They are the logging sy
 
     .. versionadded:: 1.0.0
 
-.. cpp:macro:: EINSUMS_LOG_CRITICAL(...)
+.. c:macro:: EINSUMS_LOG_CRITICAL(...)
 
     Logs a critical error message. These messages indicate that an unrecoverable issue occurred. Usually, the program will abort after logging this.
 

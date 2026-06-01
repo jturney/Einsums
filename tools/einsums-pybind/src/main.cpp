@@ -20,6 +20,7 @@
 #include <string>
 #include <unordered_set>
 
+#include "DocsJson.hpp"
 #include "Emitter.hpp"
 #include "IR.hpp"
 #include "Properties.hpp"
@@ -59,6 +60,21 @@ llvm::cl::opt<std::string> g_stub_output("stub-output",
 llvm::cl::opt<bool> g_dump_ir("dump-ir", llvm::cl::desc("Dump the parsed IR instead of emitting pybind11 (Phase 2 mode)"),
                               llvm::cl::cat(g_tool_category), llvm::cl::init(false));
 
+llvm::cl::opt<bool> g_emit_cpp_docs_json("emit-cpp-docs-json",
+                                         llvm::cl::desc("Emit a documentation JSON of the full PUBLIC C++ API of the "
+                                                        "module headers (Option 2 — replaces Doxygen/Breathe). Walks all "
+                                                        "documented public declarations, not just annotated ones. Same "
+                                                        "JSON shape as --emit-docs-json; the C++ renderer uses the C++ "
+                                                        "types (return_type/params) and emits cpp-domain directives."),
+                                         llvm::cl::cat(g_tool_category), llvm::cl::init(false));
+
+llvm::cl::opt<bool> g_emit_docs_json("emit-docs-json",
+                                     llvm::cl::desc("Emit a documentation-oriented JSON description of the Python-facing "
+                                                    "surface instead of pybind11. Consumed by the docs generator; see "
+                                                    "DocsJson.hpp for the schema. Honors --module for the recorded import "
+                                                    "name and --output for the destination (default: stdout)."),
+                                     llvm::cl::cat(g_tool_category), llvm::cl::init(false));
+
 llvm::cl::list<std::string> g_source_includes("source-include",
                                               llvm::cl::desc("Header path to emit as `#include \"...\"` in the generated TU. "
                                                              "Repeat for multiple headers. Required so generated bindings can "
@@ -90,6 +106,8 @@ einsums::pybind::Module         g_module;
 std::unordered_set<std::string> g_seen_classes;
 std::unordered_set<std::string> g_seen_functions;
 std::unordered_set<std::string> g_seen_enums;
+std::unordered_set<std::string> g_seen_typedefs;
+std::unordered_set<std::string> g_seen_concepts;
 int                             g_error_count = 0;
 
 class IrConsumer : public ASTConsumer {
@@ -106,6 +124,7 @@ class IrConsumer : public ASTConsumer {
             filter.push_back(p);
         }
         visitor.set_module_header_filter(filter);
+        visitor.set_docs_mode(g_emit_cpp_docs_json);
         visitor.TraverseDecl(ctx.getTranslationUnitDecl());
         einsums::pybind::Module local = std::move(visitor).take();
         g_error_count += visitor.error_count();
@@ -135,6 +154,18 @@ class IrConsumer : public ASTConsumer {
         for (auto &e : local.enums) {
             if (g_seen_enums.insert(e.qualified_name).second) {
                 g_module.enums.push_back(std::move(e));
+            }
+        }
+        // Docs-mode entities (typedefs/concepts). Dedupe by qualified name
+        // across TUs the same way as the others.
+        for (auto &t : local.typedefs) {
+            if (g_seen_typedefs.insert(t.qualified_name).second) {
+                g_module.typedefs.push_back(std::move(t));
+            }
+        }
+        for (auto &c : local.concepts) {
+            if (g_seen_concepts.insert(c.qualified_name).second) {
+                g_module.concepts.push_back(std::move(c));
             }
         }
     }
@@ -185,6 +216,10 @@ int main(int argc, char const **argv) {
 
     if (g_dump_ir) {
         return write_output(einsums::pybind::dump(g_module));
+    }
+
+    if (g_emit_docs_json || g_emit_cpp_docs_json) {
+        return write_output(einsums::pybind::emit_docs_json(g_module, g_module_name));
     }
 
     einsums::pybind::EmitOptions opts;

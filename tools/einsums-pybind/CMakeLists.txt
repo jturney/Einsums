@@ -41,7 +41,9 @@ add_executable(einsums-pybind
     src/main.cpp
     src/IR.cpp
     src/AnnotationParser.cpp
+    src/DocComment.cpp
     src/DocExtractor.cpp
+    src/DocsJson.cpp
     src/Emitter.cpp
     src/InstantiateParser.cpp
     src/Properties.cpp

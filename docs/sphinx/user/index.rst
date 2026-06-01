@@ -22,6 +22,12 @@ details are found in the reference. Follow the links below to find more informat
     arguments
 
 .. toctree::
+    :caption: How Einsums is built
+    :maxdepth: 1
+
+    architecture
+
+.. toctree::
     :caption: Tutorials
     :maxdepth: 1
 
@@ -36,7 +42,6 @@ details are found in the reference. Follow the links below to find more informat
     :caption: User's Reference
     :maxdepth: 1
 
-    index
     /libs/overview
     ../reference/python_module
 
@@ -217,12 +222,12 @@ As of right now, Einsums is capable of the following:
 
 The following is not supported, but may be supported in the future.
 
-* When calling :cpp:func:`einsum`, there is no transposing of the indices. If a call can not be optimized without transpositions,
+* When calling :cpp:func:`~einsums::einsum`, there is no transposing of the indices. If a call can not be optimized without transpositions,
   it will use the generic algorithm rather than transpose indices until it can optimize the call.
-* Most simple arithmetic does not work on :cpp:class:`BlockTensor`, :cpp:class:`TiledTensor`, :cpp:class:`FunctionTensor`,
-  or any tensor for the GPU.
+* Most simple arithmetic does not work on :cpp:class:`einsums::BlockTensor`, :cpp:class:`einsums::TiledTensor`,
+  :cpp:class:`einsums::tensor_base::FunctionTensor`, or any tensor for the GPU.
 * The Python module only supports contiguous tensors. It does not support block-sparse tensors, function tensors, or others.
 * The Python module interacts with Einsums in a completely different way than C++. Be careful of pitfalls when working with
   interoperable code.
-* Multi-node acceleration using MPI or similar.
+* Multi-node acceleration using MPI is in development through the :ref:`Comm <modules_Einsums_Comm>` module.
 * Tensors stored on disk are not fully fleshed out yet, and the interface is not yet stable.

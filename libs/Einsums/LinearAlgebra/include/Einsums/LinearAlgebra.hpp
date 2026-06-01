@@ -1243,9 +1243,8 @@ enum class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("linalg") Norm : char{
  * @throws enum_error If an invalid enum value is passed.
  *
  * @versionaddeddesc{1.0.0}
- *      .. note::
- *          There is a bug in this version where, due to a difference in memory layout,
- *          the 1-norm and infinity-norm are switched.
+ *      There is a bug in this version where, due to a difference in memory layout,
+ *      the 1-norm and infinity-norm are switched.
  * @endversion
  * @versionchangeddesc{2.0.0}
  *      Renamed the members to be all caps to follow the recommended style.

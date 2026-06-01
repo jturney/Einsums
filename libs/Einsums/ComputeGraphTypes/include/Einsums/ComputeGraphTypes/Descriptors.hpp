@@ -17,7 +17,7 @@ namespace einsums::compute_graph {
 /**
  * @brief Metadata for Scale nodes.
  *
- * Stores the scalar factor applied to the tensor: A *= factor.
+ * Stores the scalar factor applied to the tensor: ``A *= factor``.
  * Used by ScaleAbsorption to fold scale(alpha) into a following op's prefactor.
  */
 struct ScaleDescriptor {
@@ -95,7 +95,7 @@ struct BatchedGemmDescriptor {
  *
  * Marks the lifetime boundaries of a tensor in the graph. Used by
  * the MemoryPlanning pass to identify buffer reuse opportunities.
- * The actual allocation is managed by the graph (via owned_tensors_).
+ * The actual allocation is managed by the graph (via ``owned_tensors_``).
  */
 struct AllocDescriptor {
     TensorId    tensor_id{0};  ///< Which tensor this alloc/free refers to

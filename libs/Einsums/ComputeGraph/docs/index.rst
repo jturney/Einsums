@@ -1,6 +1,8 @@
 .. Copyright (c) The Einsums Developers. All rights reserved.
    Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
+.. _modules_Einsums_ComputeGraph:
+
 ===================
 ComputeGraph Module
 ===================
@@ -22,6 +24,7 @@ sequences of tensor operations with transparent GPU offloading and distributed c
    distributed
    hardware_profiles
    optimization_passes
+   performance_tuning
    gemm_batching
    symmetry
    tensor_lifetime

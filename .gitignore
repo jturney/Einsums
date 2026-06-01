@@ -67,7 +67,6 @@ CMakeSettings.json
 
 # Documentation
 __pycache__
-docs/_doxygen
 docs/api
 docs/build
 

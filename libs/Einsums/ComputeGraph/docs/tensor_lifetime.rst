@@ -1,9 +1,9 @@
 .. Copyright (c) The Einsums Developers. All rights reserved.
    Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
-=========================
+==============================
 Tensor Lifetime Management
-=========================
+==============================
 
 The ComputeGraph captures operations as type-erased lambdas that reference tensors
 through TensorSlot indirection. All tensors used in the graph must outlive the graph

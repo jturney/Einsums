@@ -571,7 +571,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     /**
      * @brief Create a tensor owned by the graph.
      *
-     * The tensor is heap-allocated and stored in the graph's owned_tensors_ list.
+     * The tensor is heap-allocated and stored in the graph's ``owned_tensors_`` list.
      * It is destroyed when the graph is destroyed. This ensures the tensor outlives
      * all captured lambdas, preventing dangling reference bugs.
      *
