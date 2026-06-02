@@ -925,16 +925,16 @@ set(EINSUMS_DEBUG_POSTFIX "d")
 # hooks try to attach to them.
 # ##################################################################################################
 # EINSUMS_BUILD_PYTHON drives the whole Python story: it builds the
-# einsums-pybind codegen tool, auto-generates the per-module pybind11 bindings,
+# apiary codegen tool, auto-generates the per-module pybind11 bindings,
 # and builds the aggregated ``einsums`` extension. There is no separate
 # autogen switch — the codegen IS the Python build.
 if(EINSUMS_BUILD_PYTHON)
-  add_subdirectory(tools/einsums-pybind)
+  add_subdirectory(external/apiary)
 
   # Detect Clang's resource-dir and (on macOS) the SDK path so libtooling
   # invocations can find system headers (``stdarg.h``, libc++ headers,
   # macOS-specific includes). Without these, even a ``#include <string>``
-  # fails when running einsums-pybind standalone.
+  # fails when running apiary standalone.
   set(_pyb_clang_candidate "")
   if(CMAKE_CXX_COMPILER MATCHES "clang")
     set(_pyb_clang_candidate "${CMAKE_CXX_COMPILER}")
@@ -1025,21 +1025,21 @@ if(EINSUMS_BUILD_PYTHON)
   # libc++ search-path collision described above). Linux has no sysroot
   # variable to begin with.
 
-  message(STATUS "einsums-pybind resource-dir: ${EINSUMS_PYBIND_CLANG_RESOURCE_DIR}")
+  message(STATUS "apiary resource-dir: ${EINSUMS_PYBIND_CLANG_RESOURCE_DIR}")
   if(EINSUMS_PYBIND_EXTRA_ISYSTEM)
-    message(STATUS "einsums-pybind extra -isystem: ${EINSUMS_PYBIND_EXTRA_ISYSTEM}")
+    message(STATUS "apiary extra -isystem: ${EINSUMS_PYBIND_EXTRA_ISYSTEM}")
   endif()
   if(EINSUMS_PYBIND_CXX_INCLUDE_DIRS)
-    message(STATUS "einsums-pybind C++ include dirs: ${EINSUMS_PYBIND_CXX_INCLUDE_DIRS}")
+    message(STATUS "apiary C++ include dirs: ${EINSUMS_PYBIND_CXX_INCLUDE_DIRS}")
   else()
-    message(WARNING "einsums-pybind: could not probe ${CMAKE_CXX_COMPILER} for C++ "
+    message(WARNING "apiary: could not probe ${CMAKE_CXX_COMPILER} for C++ "
                     "header search paths — codegen may fail to find <complex> etc.")
   endif()
 endif()
 # libs/Einsums/Python is now in the regular _Einsums_modules list in
 # libs/Einsums/CMakeLists.txt — it's a header-only module that must be
 # installed unconditionally (its Annotations.hpp is transitively included
-# from Logging.hpp and other public headers), and the einsums-pybind /
+# from Logging.hpp and other public headers), and the apiary /
 # pybind11 sanity checks inside it remain gated on EINSUMS_BUILD_PYTHON.
 
 # ##################################################################################################
@@ -1048,7 +1048,7 @@ endif()
 add_subdirectory(libs)
 
 # ##################################################################################################
-# Finalize the einsums-pybind aggregator (single ``import einsums``).
+# Finalize the apiary aggregator (single ``import einsums``).
 # Must run AFTER add_subdirectory(libs) so every annotated module has
 # already appended to the global PYBIND properties.
 # ##################################################################################################
@@ -1056,7 +1056,7 @@ if(EINSUMS_BUILD_PYTHON)
   include(Einsums_FinalizePybind)
   einsums_finalize_pybind()
 endif()
-# Top-level einsums/ Python package was removed in favor of the einsums-pybind
+# Top-level einsums/ Python package was removed in favor of the apiary
 # codegen output. The codegen-driven extension is registered via
 # einsums_finalize_pybind() above.
 # if(EINSUMS_BUILD_PYTHON)

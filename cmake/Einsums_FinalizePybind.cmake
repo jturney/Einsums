@@ -119,7 +119,7 @@ function(einsums_finalize_pybind)
     get_property(_targets GLOBAL PROPERTY EINSUMS_PYBIND_LINK_TARGETS)
 
     if(NOT _modules)
-        message(STATUS "einsums-pybind: no modules opted in via PYBIND — skipping aggregator.")
+        message(STATUS "apiary: no modules opted in via PYBIND — skipping aggregator.")
         return()
     endif()
 
@@ -138,7 +138,7 @@ function(einsums_finalize_pybind)
     # The actual project compiler's C++ standard-library / system header
     # search dirs (probed at configure time). Without these the libtooling
     # parse can't find ``<complex>`` and friends when the build compiler is
-    # gcc (libstdc++) rather than the clang that backs einsums-pybind.
+    # gcc (libstdc++) rather than the clang that backs apiary.
     foreach(_cxx_dir IN LISTS EINSUMS_PYBIND_CXX_INCLUDE_DIRS)
         list(APPEND _pyb_system_flags "-isystem" "${_cxx_dir}")
     endforeach()
@@ -172,6 +172,7 @@ function(einsums_finalize_pybind)
             "-I${_bin_inc}"
             "-I${CMAKE_BINARY_DIR}"
             "-I${CMAKE_SOURCE_DIR}/libs/Einsums/Python/include"
+            "-I${CMAKE_SOURCE_DIR}/external/apiary/include"
         )
         # Walk MODULE_DEPENDENCIES TRANSITIVELY at finalize time. Every
         # Einsums module target exists by now, including ones declared
@@ -211,7 +212,7 @@ function(einsums_finalize_pybind)
             OUTPUT ${_out} ${_stub_out}
             COMMAND ${CMAKE_COMMAND} -E make_directory
                     "${CMAKE_BINARY_DIR}/generated/pybind"
-            COMMAND $<TARGET_FILE:einsums-pybind>
+            COMMAND $<TARGET_FILE:apiary>
                     --register-function einsums_pybind_register_${_mod}
                     --output ${_out}
                     --stub-output ${_stub_out}
@@ -222,9 +223,9 @@ function(einsums_finalize_pybind)
                     ${_pyb_system_flags}
                     ${_def_flags}
                     ${_inc_flags}
-            DEPENDS ${_headers} einsums-pybind ${_all_defines_headers}
+            DEPENDS ${_headers} apiary ${_all_defines_headers}
             VERBATIM
-            COMMENT "einsums-pybind: generating ${_libname}_${_mod}_pybind.cpp + .pyi"
+            COMMENT "apiary: generating ${_libname}_${_mod}_pybind.cpp + .pyi"
         )
         list(APPEND _generated_tus   "${_out}")
         list(APPEND _generated_stubs "${_stub_out}")
@@ -238,7 +239,7 @@ function(einsums_finalize_pybind)
             OUTPUT ${_docs_json}
             COMMAND ${CMAKE_COMMAND} -E make_directory
                     "${CMAKE_BINARY_DIR}/generated/pybind"
-            COMMAND $<TARGET_FILE:einsums-pybind>
+            COMMAND $<TARGET_FILE:apiary>
                     --emit-docs-json
                     --module einsums
                     --output ${_docs_json}
@@ -249,9 +250,9 @@ function(einsums_finalize_pybind)
                     ${_pyb_system_flags}
                     ${_def_flags}
                     ${_inc_flags}
-            DEPENDS ${_headers} einsums-pybind ${_all_defines_headers}
+            DEPENDS ${_headers} apiary ${_all_defines_headers}
             VERBATIM
-            COMMENT "einsums-pybind: emitting docs JSON for ${_libname}_${_mod}"
+            COMMENT "apiary: emitting docs JSON for ${_libname}_${_mod}"
         )
         list(APPEND _docs_jsons "${_docs_json}")
     endforeach()
@@ -322,7 +323,7 @@ function(einsums_finalize_pybind)
     # marker. The stamp file is what the custom target depends on; touch
     # it whenever any fragment changes.
     set(_stubs_stamp "${CMAKE_BINARY_DIR}/generated/pybind/.stubs.stamp")
-    set(_aggregator  "${CMAKE_SOURCE_DIR}/tools/einsums-pybind/scripts/aggregate_stubs.py")
+    set(_aggregator  "${CMAKE_SOURCE_DIR}/external/apiary/scripts/aggregate_stubs.py")
     # Collect the hand-written .py helpers so editing them re-runs the
     # aggregator (which merges their public surface into the matching
     # <sub>.pyi for pyright). Both top-level files (graph.py, rc.py) and
@@ -338,7 +339,7 @@ function(einsums_finalize_pybind)
                 --py-helpers-dir "${_pkg_src}"
         COMMAND ${CMAKE_COMMAND} -E touch ${_stubs_stamp}
         DEPENDS ${_aggregator} ${_generated_stubs} ${_py_helpers} ${_py_helper_pkgs}
-        COMMENT "einsums-pybind: aggregating .pyi stubs into ${_pkg_dir}"
+        COMMENT "apiary: aggregating .pyi stubs into ${_pkg_dir}"
         VERBATIM
     )
     add_custom_target(PyEinsumsStubs ALL DEPENDS ${_stubs_stamp})
@@ -351,7 +352,7 @@ function(einsums_finalize_pybind)
     # is on. Pages land in ${_docs_out_dir}; the docs tree pulls them in.
     set(_docs_out_dir  "${CMAKE_BINARY_DIR}/generated/pybind/docs")
     set(_docs_stamp    "${CMAKE_BINARY_DIR}/generated/pybind/.docs.stamp")
-    set(_docs_renderer "${CMAKE_SOURCE_DIR}/tools/einsums-pybind/scripts/render_docs_rst.py")
+    set(_docs_renderer "${CMAKE_SOURCE_DIR}/external/apiary/scripts/render_docs_rst.py")
     add_custom_command(
         OUTPUT ${_docs_stamp}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_docs_out_dir}"
@@ -359,7 +360,7 @@ function(einsums_finalize_pybind)
                 --outdir "${_docs_out_dir}" ${_docs_jsons}
         COMMAND ${CMAKE_COMMAND} -E touch ${_docs_stamp}
         DEPENDS ${_docs_renderer} ${_docs_jsons}
-        COMMENT "einsums-pybind: rendering Python API reference (.rst) into ${_docs_out_dir}"
+        COMMENT "apiary: rendering Python API reference (.rst) into ${_docs_out_dir}"
         VERBATIM
     )
     add_custom_target(PyEinsumsDocs DEPENDS ${_docs_stamp})
@@ -385,7 +386,7 @@ function(einsums_finalize_pybind)
     endif()
 
     list(LENGTH _modules _count)
-    message(STATUS "einsums-pybind: PyEinsums aggregates ${_count} module(s): ${_modules}")
+    message(STATUS "apiary: PyEinsums aggregates ${_count} module(s): ${_modules}")
 
     # Wire pseudo-targets registered by einsums_add_python_unit_test() to
     # depend on PyEinsums. The function can't do this itself because it runs

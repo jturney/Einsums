@@ -15,7 +15,7 @@
 #
 # The autogen pipeline (per-module Python extensions named ``PyEinsums_<modulename>``)
 # is wired up by cmake/Einsums_FinalizePybind.cmake when EINSUMS_BUILD_PYTHON
-# is set; the einsums-pybind / pybind11 sanity checks below also only fire
+# is set; the apiary / pybind11 sanity checks below also only fire
 # under that flag.
 
 set(PythonHeaders
@@ -35,13 +35,13 @@ einsums_add_module(
 )
 
 if(EINSUMS_BUILD_PYTHON)
-    # einsums-pybind is built under tools/einsums-pybind. The root CMakeLists
+    # apiary is built under external/apiary. The root CMakeLists
     # guards add_subdirectory on the same option, so the target should exist
     # by the time we reach here. Bail with a clear message if it doesn't.
-    if(NOT TARGET einsums-pybind)
+    if(NOT TARGET apiary)
         message(FATAL_ERROR
-            "EINSUMS_BUILD_PYTHON=ON but the einsums-pybind target is not defined. "
-            "Make sure tools/einsums-pybind is added before libs/."
+            "EINSUMS_BUILD_PYTHON=ON but the apiary target is not defined. "
+            "Make sure external/apiary is added before libs/."
         )
     endif()
 

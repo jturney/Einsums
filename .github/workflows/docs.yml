@@ -36,6 +36,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.build_ref }}
+          submodules: recursive
 
       - name: Cache Build Cache
         uses: actions/cache@v4

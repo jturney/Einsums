@@ -20,6 +20,7 @@ target_compile_features(einsums_public_flags INTERFACE cxx_std_${EINSUMS_WITH_CX
 # runs unconditionally so the install tree always contains them.
 target_include_directories(einsums_public_flags
     INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/libs/Einsums/Python/include>
+              $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/external/apiary/include>
               $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
