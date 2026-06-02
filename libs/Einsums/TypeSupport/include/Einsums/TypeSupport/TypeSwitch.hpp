@@ -62,7 +62,6 @@ struct Switch final {
     using type = void; // NOLINT(readability-identifier-naming)
 };
 
-#ifndef DOXYGEN
 // First possibility: We meet a case, but the switch does not match the first condition.
 // In this case, we get what happens when we check the next condition.
 template <typename SwitchType, typename Result, typename FirstCond, typename... Rest, typename... Cases>
@@ -98,7 +97,6 @@ template <typename SwitchType, typename Result>
 struct Switch<SwitchType, Default<Result>> final {
     using type = Result; // NOLINT(readability-identifier-naming)
 };
-#endif
 
 /**
  * @typedef SwitchT

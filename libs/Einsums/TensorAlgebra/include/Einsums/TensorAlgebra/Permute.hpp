@@ -467,7 +467,6 @@ void permute(std::tuple<CIndices...> const &C_indices, ObjectC *C, std::tuple<AI
     permute<ConjA>(0, C_indices, C, 1, A_indices, A);
 }
 
-#ifndef DOXYGEN
 // Sort with default values, two smart pointers
 template <bool ConjA = false, SmartPointer SmartPointerA, SmartPointer SmartPointerC, typename... CIndices, typename... AIndices>
 void permute(std::tuple<CIndices...> const &C_indices, SmartPointerC *C, std::tuple<AIndices...> const &A_indices, SmartPointerA const &A) {
@@ -518,7 +517,6 @@ std::shared_ptr<hptt::Transpose<typename AType::ValueType>> compile_permute(std:
                                                                             hptt::SelectionMethod method = hptt::ESTIMATE) {
     return compile_permute(0.0, C_indices, C, 1.0, A_indices, A, method);
 }
-#endif
 
 /**
  * @brief Finds the tile grid dimensions for the requested indices.
@@ -537,7 +535,6 @@ inline auto get_grid_ranges_for_many(CType const &C, std::tuple<CIndices...> con
     return std::array{get_grid_ranges_for_many_a<AllUniqueIndices, 0>(C, C_indices, A, A_indices)...};
 }
 
-#ifndef DOXYGEN
 template <bool ConjA = false, TiledTensorConcept AType, TiledTensorConcept CType, typename... CIndices, typename... AIndices, typename U>
     requires requires {
         requires sizeof...(CIndices) == sizeof...(AIndices);
@@ -596,7 +593,6 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
         C_tile.unlock();
     }
 }
-#endif
 
 template <bool ConjA = false, MatrixConcept CType, MatrixConcept AType>
 void transpose(CType *C, AType const &A) {

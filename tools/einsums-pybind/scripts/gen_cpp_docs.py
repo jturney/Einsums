@@ -99,13 +99,24 @@ def collect_template_params(doc: dict, out: set[str]) -> None:
         out.update(c.get("template_params", []) or [])
 
 
-def gen_header(tool: str, flags: list[str], header: Path, relheader: str, out_dir: Path, tparams: set[str]) -> bool:
+def gen_header(tool: str, flags: list[str], header: Path, relheader: str, out_dir: Path,
+               tparams: set[str], undoc: set[str] | None = None) -> bool:
     title = relheader
     json_out = out_dir / (sanitized(relheader) + ".json")
     rst_out = out_dir / (sanitized(relheader) + ".rst")
     cmd = [tool, "--emit-cpp-docs-json", "--module", "einsums",
            "--source-include", relheader, str(header), *flags]
+    if undoc is not None:
+        cmd.insert(2, "--report-undocumented")
     res = subprocess.run(cmd, capture_output=True, text=True)
+    if undoc is not None:
+        # The tool prints "file:line:col: undocumented <kind> <name>" to stderr
+        # (mixed with clang include-trace noise, which we drop). Collect into a
+        # shared set so the same entity reported by transitive includes across
+        # module runs is deduplicated.
+        for ln in res.stderr.splitlines():
+            if ": undocumented " in ln:
+                undoc.add(ln.strip())
     json_out.write_text(res.stdout)
     if not res.stdout.strip():
         return False
@@ -129,7 +140,14 @@ def main() -> int:
     ap.add_argument("--build-dir", required=True)
     ap.add_argument("--tool", required=True, help="einsums-pybind binary")
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--modules", nargs="+", required=True, help="lib/module pairs, e.g. Einsums/BLASVendor")
+    ap.add_argument("--modules", nargs="+", default=None,
+                    help="lib/module pairs, e.g. Einsums/BLASVendor. When omitted, every "
+                         "libs/<lib>/<module>/include directory is discovered automatically "
+                         "(handy for a full --report-undocumented sweep without pasting the list).")
+    ap.add_argument("--report-undocumented", action="store_true",
+                    help="Also collect a deduplicated punch-list of public C++ entities missing a "
+                         "doc comment. Prints the sorted list to stdout and writes it to "
+                         "<out-dir>/undocumented.txt. Does not change the generated pages.")
     args = ap.parse_args()
 
     source = Path(args.source_dir)
@@ -137,9 +155,17 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     flags = universal_flags(Path(args.build_dir), source)
 
+    modules = args.modules
+    if modules is None:
+        # Auto-discover: every libs/<lib>/<module>/include directory.
+        modules = sorted(f"{inc.parts[-3]}/{inc.parts[-2]}"
+                         for inc in (source / "libs").glob("*/*/include"))
+        log(f"auto-discovered {len(modules)} modules under {source / 'libs'}")
+
     total = 0
     tparams: set[str] = set()
-    for mod in args.modules:
+    undoc: set[str] | None = set() if args.report_undocumented else None
+    for mod in modules:
         lib, module = mod.split("/", 1)
         inc = source / "libs" / lib / module / "include"
         if not inc.is_dir():
@@ -149,13 +175,20 @@ def main() -> int:
             rel = header_relpath(header)
             if rel is None:
                 continue
-            if gen_header(args.tool, flags, header, rel, out_dir, tparams):
+            if gen_header(args.tool, flags, header, rel, out_dir, tparams, undoc):
                 total += 1
         log(f"{mod}: generated pages")
     # The collected template-parameter names — the docs build adds these to
     # nitpick_ignore (they are never cpp cross-reference targets).
     (out_dir / "template_params.txt").write_text("\n".join(sorted(tparams)) + "\n")
     log(f"wrote {total} header pages + {len(tparams)} template-param names into {out_dir}")
+    if undoc is not None:
+        report = "\n".join(sorted(undoc))
+        (out_dir / "undocumented.txt").write_text(report + ("\n" if report else ""))
+        if report:
+            print(report)
+        log(f"{len(undoc)} undocumented public entit{'y' if len(undoc) == 1 else 'ies'} "
+            f"(written to {out_dir / 'undocumented.txt'})")
     return 0
 
 

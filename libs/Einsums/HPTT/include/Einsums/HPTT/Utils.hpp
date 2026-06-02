@@ -163,7 +163,6 @@ void print_vector(std::list<t> const &vec, char const *label) {
 template <typename T>
 void get_prime_factors(T n, std::list<T> &primeFactors);
 
-#ifndef DOXYGEN
 template <>
 void get_prime_factors(std::uint8_t n, std::list<std::uint8_t> &primeFactors);
 template <>
@@ -177,7 +176,6 @@ template <>
 void get_prime_factors(std::int16_t n, std::list<std::int16_t> &primeFactors);
 template <>
 void get_prime_factors(std::int32_t n, std::list<std::int32_t> &primeFactors);
-#endif
 
 /**
  * Find where a value is in an array.

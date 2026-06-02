@@ -38,9 +38,7 @@ EINSUMS_EXPORT void initialize_Einsums_BLAS(); // NOLINT(readability-identifier-
 EINSUMS_EXPORT void finalize_Einsums_BLAS(); // NOLINT(readability-identifier-naming)
 
 namespace detail {
-#ifndef DOXYGEN
 static int initialize_module_Einsums_BLAS = setup_Einsums_BLAS(); // NOLINT(bugprone-throwing-static-initialization)
-#endif
 
 } // namespace detail
 

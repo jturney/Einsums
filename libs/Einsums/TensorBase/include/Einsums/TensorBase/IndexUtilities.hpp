@@ -19,7 +19,6 @@
 
 namespace einsums {
 
-#ifndef DOXYGEN
 template <typename UniqueIndex, int BDim, typename BType>
 inline size_t get_dim_ranges_for_many_b(BType const & /*B*/, std::tuple<> const & /*B_indices*/) {
     return 1;
@@ -102,8 +101,6 @@ inline auto get_dim_ranges_for_many_c(CType const &C, std::tuple<CHead, CIndices
     }
 }
 
-#endif
-
 /**
  * @brief Finds the dimensions for the requested indices.
  *
@@ -182,14 +179,13 @@ EINSUMS_HOSTDEV inline void sentinel_to_indices(size_t sentinel, size_t const *u
     }
 }
 
-#ifndef DOXYGEN
 template <size_t num_unique_inds, typename stride_int1, typename stride_int2>
 void sentinel_to_indices(size_t sentinel, std::array<stride_int1, num_unique_inds> const &unique_strides,
                          std::array<stride_int2, num_unique_inds> &out_inds) {
     size_t hold = sentinel;
 
     if (unique_strides[0] < unique_strides[num_unique_inds - 1]) {
-#    pragma unroll
+#pragma unroll
         for (ptrdiff_t i = num_unique_inds - 1; i >= 0; i--) {
             if (unique_strides[i] != 0) {
                 out_inds[i] = hold / unique_strides[i];
@@ -199,7 +195,7 @@ void sentinel_to_indices(size_t sentinel, std::array<stride_int1, num_unique_ind
             }
         }
     } else {
-#    pragma unroll
+#pragma unroll
         for (ptrdiff_t i = 0; i < num_unique_inds; i++) {
             if (unique_strides[i] != 0) {
                 out_inds[i] = hold / unique_strides[i];
@@ -252,7 +248,6 @@ EINSUMS_HOSTDEV void sentinel_to_indices_mult_imp(size_t ordinal, size_t index, 
 
     sentinel_to_indices_mult_imp(ordinal, index, std::forward<Rest>(rest)...);
 }
-#endif
 
 /**
  * @brief Implementation details for the sentinel_to_indices function with multiple output lists.
@@ -305,14 +300,13 @@ EINSUMS_HOSTDEV inline void sentinel_to_indices(size_t sentinel, size_t const *i
     }
 }
 
-#ifndef DOXYGEN
 template <size_t num_indices, typename StorageType, typename... StridesInds>
     requires(sizeof...(StridesInds) % 2 == 0)
 void sentinel_to_indices(size_t sentinel, std::array<size_t, num_indices> const &index_strides, StridesInds &&...strides_inds) {
     size_t hold = sentinel;
 
     if (index_strides[0] < index_strides[num_indices - 1]) {
-#    pragma unroll
+#pragma unroll
         for (ptrdiff_t i = num_indices - 1; i >= 0; i--) {
             size_t ordinal;
             if (index_strides[i] != 0) {
@@ -325,7 +319,7 @@ void sentinel_to_indices(size_t sentinel, std::array<size_t, num_indices> const 
             sentinel_to_indices_mult_imp(ordinal, i, std::forward<StridesInds>(strides_inds)...);
         }
     } else {
-#    pragma unroll
+#pragma unroll
         for (ptrdiff_t i = 0; i < num_indices; i++) {
             size_t ordinal;
             if (index_strides[i] != 0) {
@@ -385,7 +379,6 @@ EINSUMS_HOSTDEV void sentinel_to_sentinels_mult_imp(size_t ordinal, size_t index
 
     sentinel_to_sentinels_mult_imp(ordinal, index, std::forward<Rest>(rest)...);
 }
-#endif
 
 /**
  * @brief Implementation details for the sentinel_to_sentinels function.
@@ -397,13 +390,11 @@ void sentinel_to_sentinels_mult_imp(size_t ordinal, size_t index, Stride const &
     sentinel_to_sentinels_mult_imp(ordinal, index, std::forward<Rest>(rest)...);
 }
 
-#ifndef DOXYGEN
 EINSUMS_HOSTDEV inline void sentinel_to_sentinels_zero_imp() {
 }
 
 template <typename Extra>
 EINSUMS_HOSTDEV void sentinel_to_sentinels_zero_imp(Extra &&extra) = delete;
-#endif
 
 /**
  * @brief Implementation details for the sentinel_to_sentinels function. This clears the outputs.
@@ -448,7 +439,6 @@ EINSUMS_HOSTDEV inline void sentinel_to_sentinels(size_t sentinel, size_t const 
     }
 }
 
-#ifndef DOXYGEN
 template <size_t num_indices, typename StorageType, typename... StridesInds>
     requires(sizeof...(StridesInds) % 2 == 0)
 void sentinel_to_sentinels(size_t sentinel, std::array<int64_t, num_indices> const &index_strides, StridesInds &&...strides_inds) {
@@ -457,7 +447,7 @@ void sentinel_to_sentinels(size_t sentinel, std::array<int64_t, num_indices> con
     sentinel_to_sentinels_zero_imp(std::forward<StridesInds>(strides_inds)...);
 
     if (index_strides[0] < index_strides[num_indices - 1]) {
-#    pragma unroll
+#pragma unroll
         for (ptrdiff_t i = num_indices - 1; i >= 0; i--) {
             size_t ordinal = hold / index_strides[i];
             hold %= index_strides[i];
@@ -465,7 +455,7 @@ void sentinel_to_sentinels(size_t sentinel, std::array<int64_t, num_indices> con
             sentinel_to_sentinels_mult_imp(ordinal, i, std::forward<StridesInds>(strides_inds)...);
         }
     } else {
-#    pragma unroll
+#pragma unroll
         for (ptrdiff_t i = 0; i < num_indices; i++) {
             size_t ordinal = hold / index_strides[i];
             hold %= index_strides[i];
@@ -498,7 +488,6 @@ void sentinel_to_sentinels(size_t sentinel, StorageType const &index_strides, St
         }
     }
 }
-#endif
 
 /**
  * @brief The opposite of sentinel_to_indices. Calculates a sentinel given indices and strides.
@@ -879,7 +868,6 @@ constexpr size_t dims_to_strides(std::tuple<TupleDims...> const &dims, std::arra
     }
 }
 
-#ifndef DOXYGEN
 template <int __I, typename Head, typename Index>
 int compile_index_table(std::tuple<Head> const &, Index const &, int &out) {
     if constexpr (std::is_same_v<Head, Index>) {
@@ -907,7 +895,6 @@ void compile_index_table(std::tuple<UniqueIndices...> const &from_inds, std::tup
                          std::index_sequence<__I...>) {
     std::array<int, sizeof...(Indices)> arr{compile_index_table<0>(from_inds, std::get<__I>(to_inds), out[__I])...};
 }
-#endif
 
 /**
  * @brief Turn a list of indices into a link table.
@@ -919,7 +906,6 @@ void compile_index_table(std::tuple<UniqueIndices...> const &from_inds, std::tup
     compile_index_table(from_inds, to_inds, out, std::make_index_sequence<sizeof...(Indices)>());
 }
 
-#ifndef DOXYGEN
 template <typename... UniqueIndices, typename... Indices, size_t... __I>
 void compile_index_table(std::tuple<UniqueIndices...> const &from_inds, std::tuple<Indices...> const &to_inds,
                          std::array<int, sizeof...(Indices)> &out, std::index_sequence<__I...>) {
@@ -932,5 +918,4 @@ void compile_index_table(std::tuple<UniqueIndices...> const &from_inds, std::tup
     compile_index_table(from_inds, to_inds, out, std::make_index_sequence<sizeof...(Indices)>());
 }
 
-#endif
 } // namespace einsums

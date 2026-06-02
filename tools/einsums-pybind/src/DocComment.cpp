@@ -69,10 +69,12 @@ std::string indent_block(std::string const &body, std::string const &pad) {
 
 std::string convert_inline(std::string s) {
     // Each pattern matches an `@cmd word` / `\cmd word` and wraps the word.
-    // `@c`/`@p` also absorb a trailing subscript (`@p extents[k]` →
-    // ``extents[k]``) so the closing ``-literal isn't immediately followed by
-    // `[`, which reST rejects.
-    static std::regex const re_code(R"([@\\][cp]\s+([A-Za-z_][A-Za-z0-9_:.]*(?:\(\))?(?:\[[^\]]*\])?))");
+    // `@c`/`@p` also absorb a trailing template-argument list (`@c
+    // std::complex<double>` → ``std::complex<double>``) and subscript (`@p
+    // extents[k]` → ``extents[k]``) so the closing ``-literal isn't
+    // immediately followed by `<` or `[`, which reST rejects as a dangling
+    // inline-literal start-string.
+    static std::regex const re_code(R"([@\\][cp]\s+([A-Za-z_][A-Za-z0-9_:.]*(?:<[^>]*>)?(?:\(\))?(?:\[[^\]]*\])?))");
     static std::regex const re_ref(R"([@\\]ref\s+([A-Za-z_][A-Za-z0-9_:.]*(?:\(\))?))");
     // Absorb a trailing ``()`` into the emphasised span (like @c/@p/@ref above)
     // so the closing ``*`` isn't immediately followed by ``(`` — which reST

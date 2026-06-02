@@ -216,7 +216,6 @@ struct Chunk : std ::array<std ::int64_t, Rank> {
     constexpr explicit Chunk(Args... args) : std ::array<std ::int64_t, Rank>{static_cast<std ::int64_t>(args)...} {}
 };
 
-#ifndef DOXYGEN
 template <typename... Args>
 Dim(Args... args) -> Dim<sizeof...(Args)>;
 
@@ -231,7 +230,6 @@ Count(Args... args) -> Count<sizeof...(Args)>;
 
 template <typename... Args>
 Chunk(Args... args) -> Chunk<sizeof...(Args)>;
-#endif
 
 /**
  * @struct Range
@@ -362,8 +360,6 @@ struct formatter<einsums::Dim<Rank>> {
     }
 };
 
-#if !defined(DOXYGEN)
-
 template <size_t Rank>
 struct formatter<einsums::Stride<Rank>> {
     constexpr auto parse(format_parse_context &ctx) -> format_parse_context::iterator {
@@ -468,4 +464,3 @@ struct formatter<einsums::Range> {
     }
 };
 } // namespace fmt
-#endif

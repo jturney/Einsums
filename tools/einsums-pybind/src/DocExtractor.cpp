@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "clang/AST/ASTContext.h"
+#include "clang/AST/DeclTemplate.h"
 #include "clang/AST/RawCommentList.h"
 #include "llvm/ADT/StringRef.h"
 
@@ -60,9 +62,21 @@ bool is_banner_line(llvm::StringRef line) {
 std::string extract_doc(clang::Decl const *decl, clang::ASTContext &ctx) {
     clang::RawComment const *raw = ctx.getRawCommentForDeclNoCache(decl);
     if (raw == nullptr) {
+        // For templated entities the doc comment is attached to the describing
+        // TemplateDecl, not the inner pattern decl — e.g. a member function
+        // template's comment lives on its FunctionTemplateDecl, not the
+        // CXXMethodDecl the visitor walks. Retry through the describing template.
+        if (clang::TemplateDecl const *td = decl->getDescribedTemplate()) {
+            raw = ctx.getRawCommentForDeclNoCache(td);
+        }
+    }
+    if (raw == nullptr) {
         return "";
     }
-    llvm::StringRef const    text = raw->getRawText(ctx.getSourceManager());
+    return clean_raw_comment(raw->getRawText(ctx.getSourceManager()));
+}
+
+std::string clean_raw_comment(llvm::StringRef text) {
     std::vector<std::string> lines;
     llvm::StringRef          remaining = text;
     while (!remaining.empty()) {

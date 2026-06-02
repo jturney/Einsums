@@ -13,28 +13,11 @@ This module contains several macros for handling assertions.
 See the :ref:`API reference <modules_Einsums_Assertion_api>` of this module for more
 details.
 
-Here is a list of public utilities defined in this module.
+Here is a list of public utilities defined in this module. See the
+:ref:`API reference <modules_Einsums_Assertion_api>` for full signatures and details.
 
-
-.. c:macro:: EINSUMS_ASSERT(expr)
-
-    Asserts that the expression is true. Does not print a custom message on failure.
-    If the expression evaluates to false, this will also abort the program.
-    This will only evaluate when the program is set to debug. Otherwise it will have no effect.
-
-    :param expr: The expression to test.
-
-    .. versionadded:: 1.0.0
-
-.. c:macro:: EINSUMS_ASSERT_MSG(expr, msg)
-
-    Asserts that the expression is true. If it is false, then this prints a custom message and aborts the execution.
-    This will only evaluate when the program is set to debug. Otherwise it will have no effect.
-
-    :param expr: The expression to check.
-    :param msg: The message to print on failure.
-
-    .. versionadded:: 1.0.0
+- :c:macro:`EINSUMS_ASSERT` — assert an expression in debug builds (no custom message).
+- :c:macro:`EINSUMS_ASSERT_MSG` — assert an expression with a custom failure message.
 
 -------------
 Example Usage

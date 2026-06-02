@@ -26,20 +26,7 @@ class EINSUMS_EXPORT Einsums_BufferAllocator_vars final : public design_pats::Lo
     EINSUMS_SINGLETON_DEF(Einsums_BufferAllocator_vars)
 
   public:
-// Put module-global variables here.
-
-/**
- * @fn get_singleton()
- *
- * Get the single unique instance of this class.
- *
- * @return The single unique instance of the class.
- *
- * @versionadded{1.1.0}
- */
-#ifdef DOXYGEN
-    static Einsums_BufferAllocator_vars &get_singleton();
-#endif
+    // Put module-global variables here.
 
     /**
      * @brief Requests a number of bytes from the counter.

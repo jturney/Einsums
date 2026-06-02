@@ -1972,7 +1972,6 @@ struct EINSUMS_PYBIND_EXPOSE
     detail::TensorImpl<T> _impl{};
 };
 
-#ifndef DOXYGEN
 template <einsums::FileOrOStream Output, einsums::TensorConcept AType>
     requires requires {
         requires einsums::BasicTensorConcept<AType> || !einsums::AlgebraTensorConcept<AType>;
@@ -2004,9 +2003,7 @@ void println(AType const &A, einsums::TensorPrintOptions options = {}) {
     fprintln(std::cout, A, options);
 }
 
-#endif
-
-#if !defined(EINSUMS_WINDOWS) && !defined(DOXYGEN)
+#if !defined(EINSUMS_WINDOWS)
 extern template class EINSUMS_EXPORT GeneralRuntimeTensor<float, std::allocator<float>>;
 extern template class EINSUMS_EXPORT GeneralRuntimeTensor<double, std::allocator<double>>;
 extern template class EINSUMS_EXPORT GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>;

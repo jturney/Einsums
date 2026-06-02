@@ -37,9 +37,7 @@ EINSUMS_EXPORT void initialize_Einsums_Comm(); // NOLINT(readability-identifier-
 EINSUMS_EXPORT void finalize_Einsums_Comm(); // NOLINT(readability-identifier-naming)
 
 namespace detail {
-#ifndef DOXYGEN
 static int initialize_module_Einsums_Comm = setup_Einsums_Comm(); // NOLINT(bugprone-throwing-static-initialization)
-#endif
 
 } // namespace detail
 

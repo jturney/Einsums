@@ -65,7 +65,6 @@ struct LabelBase {};
         }                                                                                                                                  \
     };
 
-#if !defined(DOXYGEN)
 MAKE_INDEX(A); // NOLINT
 MAKE_INDEX(a); // NOLINT
 MAKE_INDEX(B); // NOLINT
@@ -171,7 +170,6 @@ MAKE_INDEX(Phi)
 MAKE_INDEX(Chi)
 MAKE_INDEX(Psi)
 MAKE_INDEX(Omega)
-#endif
 
 #undef MAKE_INDEX
 
@@ -179,9 +177,7 @@ namespace einsums {
 
 namespace index {
 
-#if !defined(DOXYGEN)
 constexpr auto list = std::make_tuple(i, j, k, l, m, n, a, b, c, d, e, f, p, q, r, s);
-#endif
 
 } // namespace index
 

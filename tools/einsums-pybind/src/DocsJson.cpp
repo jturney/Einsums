@@ -467,6 +467,18 @@ std::string emit_docs_json(Module const &module_, std::string const &module_name
             {"template_params", json_string_list(c.template_param_names)},
         });
     }
+    Array macros;
+    for (auto const &m : module_.macros) {
+        macros.push_back(Object{
+            {"name", m.name},
+            {"qualified_name", m.qualified_name},
+            {"doc", m.doc},
+            {"doc_structured", json_doc_structured(m.doc)},
+            {"location", json_location(m.location)},
+            {"is_function_like", m.is_function_like},
+            {"params", json_string_list(m.params)},
+        });
+    }
 
     Value root = Object{
         {"schema_version", k_docs_json_schema_version},
@@ -476,6 +488,7 @@ std::string emit_docs_json(Module const &module_, std::string const &module_name
         {"enums", std::move(enums)},
         {"typedefs", std::move(typedefs)},
         {"concepts", std::move(concepts)},
+        {"macros", std::move(macros)},
     };
 
     std::string              buffer;

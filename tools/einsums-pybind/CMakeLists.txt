@@ -46,6 +46,7 @@ add_executable(einsums-pybind
     src/DocsJson.cpp
     src/Emitter.cpp
     src/InstantiateParser.cpp
+    src/MacroScanner.cpp
     src/Properties.cpp
     src/PyiEmitter.cpp
     src/PythonOverloads.cpp

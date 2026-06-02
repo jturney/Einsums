@@ -70,7 +70,6 @@ struct InsensitiveHash {
     }
 };
 
-#ifndef DOXYGEN
 template <>
 struct EINSUMS_EXPORT InsensitiveHash<std::string> {
   public:
@@ -86,7 +85,6 @@ struct EINSUMS_EXPORT InsensitiveHash<char *> {
 
     size_t operator()(char const *str) const noexcept;
 };
-#endif
 
 } // namespace hashes
 
@@ -262,17 +260,6 @@ using SharedConfigMap = std::shared_ptr<ConfigMap<Value>>;
 class EINSUMS_EXPORT GlobalConfigMap {
     EINSUMS_SINGLETON_DEF(GlobalConfigMap)
   public:
-/**
- * @fn get_singleton()
- *
- * Get the single unique instance for this class.
- *
- * @versionadded{1.0.0}
- */
-#ifdef DOXYGEN
-    static GlobalConfigMap &get_singleton();
-#endif
-
     /**
      * @brief Checks to see if the map is empty.
      *
@@ -431,7 +418,6 @@ class EINSUMS_EXPORT GlobalConfigMap {
      */
     std::shared_ptr<ConfigMap<bool>> get_bool_map() noexcept;
 
-#ifdef DOXYGEN
     /**
      * @brief Attach an observer to the global configuration map.
      *
@@ -445,19 +431,6 @@ class EINSUMS_EXPORT GlobalConfigMap {
      *
      * @versionadded{1.0.0}
      */
-    template <typename T>
-    void attach(T &obs);
-
-    /**
-     * @brief Detach an observer from the global configuration map.
-     *
-     * @param[in] obs The observer to remove.
-     *
-     * @versionadded{1.0.0}
-     */
-    template <typename T>
-    void detach(T &obs);
-#else
     template <typename T, bool string_requirement = requires(T obs, ConfigMappingType<std::string> map) { obs(map); },
               bool int_requirement    = requires(T obs, ConfigMappingType<std::int64_t> map) { obs(map); },
               bool double_requirement = requires(T obs, ConfigMappingType<double> map) { obs(map); },
@@ -481,6 +454,13 @@ class EINSUMS_EXPORT GlobalConfigMap {
         }
     }
 
+    /**
+     * @brief Detach an observer from the global configuration map.
+     *
+     * @param[in] obs The observer to remove.
+     *
+     * @versionadded{1.0.0}
+     */
     template <typename T, bool string_requirement = requires(T obs, ConfigMappingType<std::string> map) { obs(map); },
               bool int_requirement    = requires(T obs, ConfigMappingType<std::int64_t> map) { obs(map); },
               bool double_requirement = requires(T obs, ConfigMappingType<double> map) { obs(map); },
@@ -502,7 +482,6 @@ class EINSUMS_EXPORT GlobalConfigMap {
             _bool_map->detach(obs);
         }
     }
-#endif
 
     /**
      * @brief Lock all of the maps contained in this object.

@@ -36,7 +36,6 @@ enum AlgorithmChoice {
 };
 } // namespace detail
 
-#if !defined(DOXYGEN)
 namespace detail {
 
 template <size_t Rank, typename... Args, std::size_t... __I>
@@ -45,7 +44,6 @@ auto order_indices(std::tuple<Args...> const &combination, std::array<size_t, Ra
 }
 
 } // namespace detail
-#endif
 
 /**
  * Swap around the indices to the desired order. For instance, if we have a list of indices
@@ -63,7 +61,6 @@ auto order_indices(std::tuple<Args...> const &combination, std::array<size_t, Ra
 
 namespace detail {
 
-#if !defined(DOXYGEN)
 template <typename T, int Position>
 constexpr auto _find_type_with_position() {
     return std::make_tuple();
@@ -117,8 +114,6 @@ constexpr auto find_position() {
     return find_position<AIndex, 0, Args...>();
 }
 
-#endif
-
 /**
  * Find the position of an index within a tuple of indices.
  *
@@ -132,12 +127,10 @@ constexpr auto find_position(std::tuple<TargetCombination...> const & /*indices*
     return detail::find_position<AIndex, TargetCombination...>();
 }
 
-#ifndef DOXYGEN
 template <typename S1, typename... S2, std::size_t... Is>
 constexpr auto _find_type_with_position(std::index_sequence<Is...> /*seq*/) {
     return std::tuple_cat(detail::_find_type_with_position<std::tuple_element_t<Is, S1>, 0, S2...>()...);
 }
-#endif
 
 /**
  * Find the positions of several types in a tuple. The type will be in the even elements of the output
@@ -153,12 +146,10 @@ constexpr auto find_type_with_position(std::tuple<Ts...> const & /*unused*/, std
     return _find_type_with_position<std::tuple<Ts...>, Us...>(std::make_index_sequence<sizeof...(Ts)>{});
 }
 
-#ifndef DOXYGEN
 template <typename S1, typename... S2, std::size_t... Is>
 constexpr auto _unique_find_type_with_position(std::index_sequence<Is...> /*seq*/) {
     return std::tuple_cat(detail::_unique_find_type_with_position<std::tuple_element_t<Is, S1>, 0, S2...>()...);
 }
-#endif
 
 template <typename... Ts, typename... Us>
 constexpr auto unique_find_type_with_position(std::tuple<Ts...> const & /*unused*/, std::tuple<Us...> const & /*unused*/) {
@@ -189,7 +180,6 @@ auto get_dim_for(TensorType const &tensor, std::tuple<Args...> const &args) {
     return detail::get_dim_for(tensor, args, std::make_index_sequence<sizeof...(Args) / 2>{});
 }
 
-#ifndef DOXYGEN
 // template <typename ScalarType>
 //     requires(!TensorConcept<ScalarType>)
 // auto get_dim_ranges_for(ScalarType const &tensor, std::tuple<> const &args) {
@@ -200,7 +190,6 @@ template <typename ScalarType>
 auto get_dim_for(ScalarType const &tensor, std::tuple<> const &args) {
     return std::tuple{};
 }
-#endif
 
 template <typename AIndex, typename TargetCombination, typename LinkCombination, typename... TargetPositionInC,
           typename... LinkPositionInLink>
@@ -288,12 +277,10 @@ constexpr auto construct_indices(std::tuple<AIndices...> const & /*unused*/, Tar
         construct_index<AIndices>(target_combination, target_position_in_C, link_combination, link_position_in_link)...};
 }
 
-#if !defined(DOXYGEN)
 template <typename... PositionsInX, std::size_t... __I>
 constexpr auto _contiguous_positions(std::tuple<PositionsInX...> const &x, std::index_sequence<__I...> /*unused*/) -> bool {
     return ((std::get<2 * __I + 1>(x) == std::get<2 * __I + 3>(x) - 1) && ... && true);
 }
-#endif
 
 /**
  * @brief Determines in the indices are contiguous.
@@ -680,7 +667,6 @@ using DifferenceT = typename Difference<S1, S2>::type;
 template <class Haystack, class Needle>
 struct Contains;
 
-#ifndef DOXYGEN
 template <class Car, class... Cdr, class Needle>
 struct Contains<std::tuple<Car, Cdr...>, Needle> : Contains<std::tuple<Cdr...>, Needle> {};
 
@@ -689,7 +675,6 @@ struct Contains<std::tuple<Needle, Cdr...>, Needle> : std::true_type {};
 
 template <class Needle>
 struct Contains<std::tuple<>, Needle> : std::false_type {};
-#endif
 
 /**
  * @struct Filter
@@ -702,7 +687,6 @@ struct Contains<std::tuple<>, Needle> : std::false_type {};
 template <class Out, class In>
 struct Filter;
 
-#ifndef DOXYGEN
 template <class... Out, class InCar, class... InCdr>
 struct Filter<std::tuple<Out...>, std::tuple<InCar, InCdr...>> {
     using type =
@@ -714,7 +698,6 @@ template <class Out>
 struct Filter<Out, std::tuple<>> {
     using type = Out;
 };
-#endif
 
 template <class T>
 using UniqueT = typename Filter<std::tuple<>, T>::type;
@@ -778,12 +761,10 @@ struct Reverse {
     using type = decltype(std::tuple_cat(std::declval<typename Reverse<Args...>::type>(), std::declval<std::tuple<First>>()));
 };
 
-#ifndef DOXYGEN
 template <typename First>
 struct Reverse<First> {
     using type = std::tuple<First>;
 };
-#endif
 
 /**
  * @typedef ReverseT

@@ -265,12 +265,22 @@ struct BoundConcept : BoundEntityCommon {
     std::vector<std::string> template_param_names;
 };
 
+// A documented preprocessor macro. Macros are not AST declarations, so these
+// are gathered by a raw-text scan of the module header for a doc comment
+// immediately preceding a ``#define`` (docs mode only). Rendered as
+// ``c:macro`` in the C++ reference.
+struct BoundMacro : BoundEntityCommon {
+    bool                     is_function_like = false;
+    std::vector<std::string> params; // parameter names for function-like macros
+};
+
 struct Module {
     std::vector<BoundClass>    classes;
     std::vector<BoundFunction> functions;
     std::vector<BoundEnum>     enums;
     std::vector<BoundTypedef>  typedefs; // docs mode only
     std::vector<BoundConcept>  concepts; // docs mode only
+    std::vector<BoundMacro>    macros;   // docs mode only
 };
 
 // Deterministic textual dump of the IR for golden-output testing and

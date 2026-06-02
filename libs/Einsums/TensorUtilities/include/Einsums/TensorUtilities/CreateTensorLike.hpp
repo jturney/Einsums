@@ -36,7 +36,6 @@ auto create_tensor_like(TensorType const &t) -> Tensor<typename TensorType::Valu
     // return Tensor<DataType, Rank>{t.name(), t.dims()};
 }
 
-#if !defined(DOXYGEN)
 /**
  * @brief Creates a new tensor with the same rank, dimensions, and block sizes of the provided tensor.
  *
@@ -56,7 +55,6 @@ template <template <typename, size_t> typename TensorType, typename DataType, si
 auto create_tensor_like(TensorType<DataType, Rank> const &tensor) -> BlockTensor<DataType, Rank> {
     return BlockTensor<DataType, Rank>{"(unnamed)", tensor.vector_dims()};
 }
-#endif
 
 /**
  * @brief Creates a new tensor with the same rank and dimensions of the provided tensor.
@@ -82,7 +80,6 @@ auto create_tensor_like(std::string const name, TensorType const &t) -> Tensor<t
     return result;
 }
 
-#if !defined(DOXYGEN)
 /**
  * @brief Creates a new tensor with the same, rank, dimensions, and block parameters of the provided tensor.
  *
@@ -100,6 +97,5 @@ template <template <typename, size_t> typename TensorType, typename DataType, si
 auto create_tensor_like(std::string const name, TensorType<DataType, Rank> const &tensor) -> BlockTensor<DataType, Rank> {
     return BlockTensor<DataType, Rank>{name, tensor.vector_dims()};
 }
-#endif
 
 } // namespace einsums

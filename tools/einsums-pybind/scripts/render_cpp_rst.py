@@ -209,6 +209,17 @@ def render_concept(out: list[str], c: dict) -> None:
     out.append("")
 
 
+def render_macro(out: list[str], m: dict) -> None:
+    # Macros live in the C domain (``c:macro``); they are not namespaced, so
+    # they are emitted outside the per-namespace ``cpp:namespace`` blocks.
+    if m.get("is_function_like"):
+        out.append(f".. c:macro:: {m['name']}({', '.join(m.get('params', []))})")
+    else:
+        out.append(f".. c:macro:: {m['name']}")
+    emit_doc(out, m, IND)
+    out.append("")
+
+
 def render_enum(out: list[str], en: dict, base: str = "") -> None:
     directive = "cpp:enum-class" if en.get("is_scoped") else "cpp:enum"
     out.append(f"{base}.. {directive}:: {en['name']}")
@@ -291,6 +302,13 @@ def render_page(title: str, doc: dict, embed: bool = False) -> str:
     out.append(".. note::")
     out.append(f"{IND}Generated from the C++ headers by ``einsums-pybind --emit-cpp-docs-json``.")
     out.append("")
+
+    # Macros are not namespaced — emit them first, before any
+    # ``cpp:namespace`` directive scopes the page.
+    macros = doc.get("macros", [])
+    if macros:
+        for m in sorted(macros, key=lambda x: x["name"]):
+            render_macro(out, m)
 
     # Group every entity by its enclosing namespace so each block sets
     # ``.. cpp:namespace::`` and type references resolve in-scope (relative).

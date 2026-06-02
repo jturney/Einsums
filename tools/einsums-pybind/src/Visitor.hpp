@@ -5,6 +5,9 @@
 
 #pragma once
 
+#include <set>
+#include <string>
+
 #include "IR.hpp"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -41,9 +44,23 @@ class Visitor : public clang::RecursiveASTVisitor<Visitor> {
     /// a doc comment.
     void set_docs_mode(bool on) { _docs_mode = on; }
 
+    /// Enable "report undocumented" mode (docs mode only). When on, every
+    /// declaration that ``passes_docs_filter`` rejects *solely* because it
+    /// lacks a doc comment — i.e. a public, in-module-header, non-``detail``/
+    /// ``impl``/anonymous, non-``@internal`` entity that SHOULD be documented —
+    /// is printed to stderr as ``file:line:col: undocumented <kind> <name>``.
+    /// What gets emitted to the JSON is unchanged; this only surfaces a
+    /// punch-list of missing Doxygen blocks. Each entity is reported once
+    /// per process (deduplicated by location+name).
+    void set_report_undocumented(bool on) { _report_undocumented = on; }
+
     Module take() && { return std::move(_module); }
 
     [[nodiscard]] int error_count() const { return _error_count; }
+
+    /// Number of distinct undocumented public entities seen this run (only
+    /// meaningful when ``set_report_undocumented(true)``).
+    [[nodiscard]] int undocumented_count() const { return static_cast<int>(_undocumented_seen.size()); }
 
     // Override the *Traverse* hooks for class-like records so we can push
     // and pop the scope stack around the recursive descent into members.
@@ -95,6 +112,14 @@ class Visitor : public clang::RecursiveASTVisitor<Visitor> {
     [[nodiscard]] bool passes_member_filter(clang::NamedDecl const *decl) const;
 
     bool _docs_mode = false;
+
+    // ``--report-undocumented``: print public-but-undocumented entities to
+    // stderr from ``passes_docs_filter``. ``_undocumented_seen`` deduplicates
+    // (a class template can hit the gate via both its template and inner
+    // record decl) and backs ``undocumented_count()``. ``mutable`` because
+    // the reporting happens inside the ``const`` filter.
+    bool                          _report_undocumented = false;
+    mutable std::set<std::string> _undocumented_seen;
 
     // Returns true if the decl's source location is in one of the module's
     // own headers (per ``--source-include`` flags). When the filter is

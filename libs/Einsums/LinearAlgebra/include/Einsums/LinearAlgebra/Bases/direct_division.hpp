@@ -156,7 +156,6 @@ void impl_direct_division(CType alpha, einsums::detail::TensorImpl<AType> const 
     }
 }
 
-#ifndef DOXYGEN
 extern template EINSUMS_EXPORT void impl_direct_division<float, float, float>(float alpha, einsums::detail::TensorImpl<float> const &A,
                                                                               einsums::detail::TensorImpl<float> const &B, float beta,
                                                                               einsums::detail::TensorImpl<float> *C);
@@ -171,7 +170,6 @@ extern template EINSUMS_EXPORT void impl_direct_division<std::complex<double>, s
     std::complex<double> alpha, einsums::detail::TensorImpl<std::complex<double>> const &A,
     einsums::detail::TensorImpl<std::complex<double>> const &B, std::complex<double> beta,
     einsums::detail::TensorImpl<std::complex<double>> *C);
-#endif
 
 } // namespace detail
 } // namespace linear_algebra

@@ -360,10 +360,38 @@ bool Visitor::passes_docs_filter(clang::NamedDecl const *decl) const {
         qn.find("(anonymous namespace)") != std::string::npos) {
         return false;
     }
+    // Explicit template specializations (e.g. ``template <> void axpby<float>(...)``
+    // or ``template <> struct IsBlasable<float>``) are implementation details:
+    // the primary template is the single documentation surface. Skip them
+    // outright — neither documented nor reported as "undocumented" — so a
+    // documented primary template is not drowned out by its (intentionally
+    // undocumented) specialization family.
+    if (auto const *fd = llvm::dyn_cast<clang::FunctionDecl>(decl)) {
+        if (fd->getTemplateSpecializationKind() == clang::TSK_ExplicitSpecialization) {
+            return false;
+        }
+    }
+    if (llvm::isa<clang::ClassTemplateSpecializationDecl>(decl)) {
+        // Covers both explicit full and partial class-template specializations.
+        return false;
+    }
     // Document only entities that carry a doc comment, and never ones marked
     // @internal. (The filter can be relaxed to EXTRACT_ALL-style later.)
     std::string const doc = extract_doc(decl, _context);
     if (doc.empty()) {
+        // This is a public, in-module-header, non-detail/impl/anonymous entity
+        // that SHOULD carry a doc comment but doesn't. In --report-undocumented
+        // mode, surface it as a punch-list line (deduplicated per process).
+        if (_report_undocumented) {
+            clang::SourceManager const &sm  = _context.getSourceManager();
+            clang::SourceLocation const loc = sm.getFileLoc(decl->getLocation());
+            std::string const           key =
+                (loc.isValid() ? loc.printToString(sm) : std::string("<invalid>")) + " " + decl->getQualifiedNameAsString();
+            if (_undocumented_seen.insert(key).second) {
+                llvm::errs() << sm.getFilename(loc) << ":" << sm.getSpellingLineNumber(loc) << ":" << sm.getSpellingColumnNumber(loc)
+                             << ": undocumented " << decl->getDeclKindName() << " '" << decl->getQualifiedNameAsString() << "'\n";
+            }
+        }
         return false;
     }
     if (doc.find("@internal") != std::string::npos || doc.find("\\internal") != std::string::npos) {

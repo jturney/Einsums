@@ -30,14 +30,12 @@ template <typename T, typename TOther>
 void copy_to(TensorImpl<TOther> const &in, TensorImpl<T> &out);
 } // namespace detail
 
-#ifndef DOXYGEN
 // Forward declaration of the Tensor printing function.
 template <typename T>
 void println(detail::TensorImpl<T> const &A, TensorPrintOptions options = {});
 
 template <FileOrOStream Output, typename T>
 void fprintln(Output &fp, detail::TensorImpl<T> const &A, TensorPrintOptions options = {});
-#endif
 namespace detail {
 
 /**
@@ -1785,7 +1783,6 @@ auto ndigits(T number) -> int {
 }
 } // namespace detail
 
-#ifndef DOXYGEN
 template <FileOrOStream Output, typename T>
 void fprintln(Output &fp, detail::TensorImpl<T> const &A, TensorPrintOptions options) {
     size_t Rank = A.rank();
@@ -1927,7 +1924,6 @@ template <typename T>
 void println(detail::TensorImpl<T> const &A, TensorPrintOptions options) {
     fprintln(std::cout, A, options);
 }
-#endif
 
 } // namespace einsums
 

@@ -261,8 +261,6 @@ void impl_gemm(char transA, char transB, AlphaType alpha, einsums::detail::Tenso
     }
 }
 
-#ifndef DOXYGEN
-
 extern template EINSUMS_EXPORT void impl_gemm<float, float, float, float, float>(char transA, char transB, float alpha,
                                                                                  einsums::detail::TensorImpl<float> const &A,
                                                                                  einsums::detail::TensorImpl<float> const &B, float beta,
@@ -281,7 +279,6 @@ impl_gemm<std::complex<double>, std::complex<double>, std::complex<double>, std:
     char transA, char transB, std::complex<double> alpha, einsums::detail::TensorImpl<std::complex<double>> const &A,
     einsums::detail::TensorImpl<std::complex<double>> const &B, std::complex<double> beta,
     einsums::detail::TensorImpl<std::complex<double>> *C);
-#endif
 } // namespace detail
 } // namespace linear_algebra
 } // namespace einsums

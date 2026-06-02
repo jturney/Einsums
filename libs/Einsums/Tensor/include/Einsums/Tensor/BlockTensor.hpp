@@ -461,7 +461,6 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
             requires NoneOfType<Range, MultiIndex...>;
         }
     [[nodiscard]] auto data(MultiIndex... index) -> T * {
-#if !defined(DOXYGEN)
         EINSUMS_ASSERT(sizeof...(MultiIndex) <= Rank);
 
         auto index_list = std::array{static_cast<std::int64_t>(index)...};
@@ -492,7 +491,6 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
 
         size_t ordinal = std::inner_product(index_list.begin(), index_list.end(), _blocks[block].strides().begin(), size_t{0});
         return &(_blocks[block].data()[ordinal]);
-#endif
     }
 
     /**
@@ -797,46 +795,42 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
         return *this;
     }
 
-#ifndef DOXYGEN
-#    define OPERATOR(OP)                                                                                                                   \
-        auto operator OP(const T &b)->BlockTensor<T, Rank, TensorType> & {                                                                 \
-            for (int i = 0; i < _blocks.size(); i++) {                                                                                     \
-                if (block_dim(i) == 0) {                                                                                                   \
-                    continue;                                                                                                              \
-                }                                                                                                                          \
-                _blocks[i] OP b;                                                                                                           \
+#define OPERATOR(OP)                                                                                                                       \
+    auto operator OP(const T &b)->BlockTensor<T, Rank, TensorType> & {                                                                     \
+        for (int i = 0; i < _blocks.size(); i++) {                                                                                         \
+            if (block_dim(i) == 0) {                                                                                                       \
+                continue;                                                                                                                  \
             }                                                                                                                              \
-            return *this;                                                                                                                  \
+            _blocks[i] OP b;                                                                                                               \
         }                                                                                                                                  \
+        return *this;                                                                                                                      \
+    }                                                                                                                                      \
                                                                                                                                            \
-        auto operator OP(const BlockTensor<T, Rank, TensorType> &b)->BlockTensor<T, Rank, TensorType> & {                                  \
-            if (_blocks.size() != b._blocks.size()) {                                                                                      \
-                EINSUMS_THROW_EXCEPTION(tensor_compat_error, "tensors differ in number of blocks : {} {}", _blocks.size(),                 \
-                                        b._blocks.size());                                                                                 \
+    auto operator OP(const BlockTensor<T, Rank, TensorType> &b)->BlockTensor<T, Rank, TensorType> & {                                      \
+        if (_blocks.size() != b._blocks.size()) {                                                                                          \
+            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "tensors differ in number of blocks : {} {}", _blocks.size(), b._blocks.size());  \
+        }                                                                                                                                  \
+        for (int i = 0; i < _blocks.size(); i++) {                                                                                         \
+            if (_blocks[i].size() != b._blocks[i].size()) {                                                                                \
+                EINSUMS_THROW_EXCEPTION(dimension_error, "tensor blocks differ in size : {} {}", _blocks[i].size(), b._blocks[i].size());  \
             }                                                                                                                              \
-            for (int i = 0; i < _blocks.size(); i++) {                                                                                     \
-                if (_blocks[i].size() != b._blocks[i].size()) {                                                                            \
-                    EINSUMS_THROW_EXCEPTION(dimension_error, "tensor blocks differ in size : {} {}", _blocks[i].size(),                    \
-                                            b._blocks[i].size());                                                                          \
-                }                                                                                                                          \
+        }                                                                                                                                  \
+        EINSUMS_OMP_PARALLEL_FOR                                                                                                           \
+        for (int i = 0; i < _blocks.size(); i++) {                                                                                         \
+            if (block_dim(i) == 0) {                                                                                                       \
+                continue;                                                                                                                  \
             }                                                                                                                              \
-            EINSUMS_OMP_PARALLEL_FOR                                                                                                       \
-            for (int i = 0; i < _blocks.size(); i++) {                                                                                     \
-                if (block_dim(i) == 0) {                                                                                                   \
-                    continue;                                                                                                              \
-                }                                                                                                                          \
-                _blocks[i] OP b._blocks[i];                                                                                                \
-            }                                                                                                                              \
-            return *this;                                                                                                                  \
-        }
+            _blocks[i] OP b._blocks[i];                                                                                                    \
+        }                                                                                                                                  \
+        return *this;                                                                                                                      \
+    }
 
     OPERATOR(*=)
     OPERATOR(/=)
     OPERATOR(+=)
     OPERATOR(-=)
 
-#    undef OPERATOR
-#endif
+#undef OPERATOR
 
     /**
      * @brief Convert block tensor into a normal tensor.
@@ -1299,7 +1293,6 @@ struct BlockTensor : public tensor_base::BlockTensor<T, Rank, Tensor<T, Rank>>, 
     }
 };
 
-#ifndef DOXYGEN
 template <einsums::BlockTensorConcept AType>
 void println(AType const &A, TensorPrintOptions options = {}) {
     println("Name: {}", A.name());
@@ -1345,7 +1338,5 @@ void fprintln(std::ostream &os, AType const &A, TensorPrintOptions options = {})
 TENSOR_EXPORT_RANK(BlockTensor, 2)
 TENSOR_EXPORT_RANK(BlockTensor, 3)
 TENSOR_EXPORT_RANK(BlockTensor, 4)
-
-#endif
 
 } // namespace einsums

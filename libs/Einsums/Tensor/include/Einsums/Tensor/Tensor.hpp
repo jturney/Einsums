@@ -50,7 +50,6 @@
 #include <vector>
 
 namespace einsums {
-#ifndef DOXYGEN
 // Forward declaration of the Tensor printing function.
 template <RankTensorConcept AType>
     requires(BasicTensorConcept<AType> || !AlgebraTensorConcept<AType>)
@@ -59,7 +58,6 @@ void println(AType const &A, TensorPrintOptions options = {});
 template <FileOrOStream Output, RankTensorConcept AType>
     requires(BasicTensorConcept<AType> || !AlgebraTensorConcept<AType>)
 void fprintln(Output &fp, AType const &A, TensorPrintOptions options = {});
-#endif
 
 /**
  * @brief Represents a general tensor
@@ -833,11 +831,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     template <typename... MultiIndex>
         requires(std::is_integral_v<std::remove_cvref_t<MultiIndex>> && ...)
     [[nodiscard]] auto data(MultiIndex &&...index) -> Pointer {
-#if !defined(DOXYGEN)
         EINSUMS_ASSERT(sizeof...(MultiIndex) <= Rank);
 
         return _impl.data(std::forward<MultiIndex>(index)...);
-#endif
     }
 
     /**
@@ -1556,23 +1552,21 @@ struct GeneralTensor<T, 0, Alloc> final : tensor_base::CoreTensor,
         return *this;
     }
 
-#ifndef DOXYGEN
-#    if defined(OPERATOR)
-#        undef OPERATOR
-#    endif
-#    define OPERATOR(OP)                                                                                                                   \
-        auto operator OP(const T &other)->GeneralTensor & {                                                                                \
-            _data OP other;                                                                                                                \
-            return *this;                                                                                                                  \
-        }
+#if defined(OPERATOR)
+#    undef OPERATOR
+#endif
+#define OPERATOR(OP)                                                                                                                       \
+    auto operator OP(const T &other)->GeneralTensor & {                                                                                    \
+        _data OP other;                                                                                                                    \
+        return *this;                                                                                                                      \
+    }
 
     OPERATOR(*=)
     OPERATOR(/=)
     OPERATOR(+=)
     OPERATOR(-=)
 
-#    undef OPERATOR
-#endif
+#undef OPERATOR
 
     /**
      * Cast the tensor to a scalar.
@@ -2618,8 +2612,7 @@ void zero(TensorType &A) {
     A.zero();
 }
 
-#ifndef DOXYGEN
-#    ifdef __cpp_deduction_guides
+#ifdef __cpp_deduction_guides
 template <typename... Args>
 GeneralTensor(std::string const &, Args...) -> GeneralTensor<double, sizeof...(Args), std::allocator<double>>;
 
@@ -2659,7 +2652,6 @@ TensorView(std::string, GeneralTensor<T, OtherRank, Alloc> &, Dim<Rank> const &,
 
 // Supposedly C++20 will allow template deduction guides for template aliases. i.e. Dim, Stride, Offset, Count, Range.
 // Clang has no support for class template argument deduction for alias templates. P1814R0
-#    endif
 #endif
 
 // Useful factories
@@ -2752,7 +2744,6 @@ auto create_tensor(Args... args) {
     return Tensor<Type, sizeof...(Args)>{"Temporary", args...};
 }
 
-#ifndef DOXYGEN
 template <FileOrOStream Output, RankTensorConcept AType>
     requires(einsums::BasicTensorConcept<AType> || !einsums::AlgebraTensorConcept<AType>)
 void fprintln(Output &fp, AType const &A, TensorPrintOptions options) {
@@ -2810,6 +2801,5 @@ TENSOR_ALLOC_EXPORT(GeneralTensor, std::allocator)
 TENSOR_ALLOC_EXPORT(GeneralTensor, BufferAllocator)
 
 TENSOR_EXPORT(TensorView)
-#endif
 
 } // namespace einsums

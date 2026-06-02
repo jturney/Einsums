@@ -23,6 +23,7 @@
 #include "DocsJson.hpp"
 #include "Emitter.hpp"
 #include "IR.hpp"
+#include "MacroScanner.hpp"
 #include "Properties.hpp"
 #include "PyiEmitter.hpp"
 #include "PythonOverloads.hpp"
@@ -68,6 +69,16 @@ llvm::cl::opt<bool> g_emit_cpp_docs_json("emit-cpp-docs-json",
                                                         "types (return_type/params) and emits cpp-domain directives."),
                                          llvm::cl::cat(g_tool_category), llvm::cl::init(false));
 
+llvm::cl::opt<bool> g_report_undocumented("report-undocumented",
+                                          llvm::cl::desc("With --emit-cpp-docs-json, print to stderr every public, "
+                                                         "in-module-header entity (free function, class, enum, concept) "
+                                                         "that is missing a doc comment, as "
+                                                         "'file:line:col: undocumented <kind> <name>'. Produces a "
+                                                         "punch-list of C++ API lacking Doxygen blocks; does not change "
+                                                         "what is emitted. Pipe through 'sort -u' to dedupe across "
+                                                         "per-module runs."),
+                                          llvm::cl::cat(g_tool_category), llvm::cl::init(false));
+
 llvm::cl::opt<bool> g_emit_docs_json("emit-docs-json",
                                      llvm::cl::desc("Emit a documentation-oriented JSON description of the Python-facing "
                                                     "surface instead of pybind11. Consumed by the docs generator; see "
@@ -108,7 +119,9 @@ std::unordered_set<std::string> g_seen_functions;
 std::unordered_set<std::string> g_seen_enums;
 std::unordered_set<std::string> g_seen_typedefs;
 std::unordered_set<std::string> g_seen_concepts;
-int                             g_error_count = 0;
+std::unordered_set<std::string> g_seen_macros;
+int                             g_error_count        = 0;
+int                             g_undocumented_count = 0;
 
 class IrConsumer : public ASTConsumer {
   public:
@@ -125,9 +138,11 @@ class IrConsumer : public ASTConsumer {
         }
         visitor.set_module_header_filter(filter);
         visitor.set_docs_mode(g_emit_cpp_docs_json);
+        visitor.set_report_undocumented(g_report_undocumented);
         visitor.TraverseDecl(ctx.getTranslationUnitDecl());
         einsums::pybind::Module local = std::move(visitor).take();
         g_error_count += visitor.error_count();
+        g_undocumented_count += visitor.undocumented_count();
         for (auto &c : local.classes) {
             if (g_seen_classes.insert(c.qualified_name).second) {
                 g_module.classes.push_back(std::move(c));
@@ -166,6 +181,19 @@ class IrConsumer : public ASTConsumer {
         for (auto &c : local.concepts) {
             if (g_seen_concepts.insert(c.qualified_name).second) {
                 g_module.concepts.push_back(std::move(c));
+            }
+        }
+        // Documented macros are not AST decls — scan the main header's raw
+        // source text (docs mode only). Reading raw text covers all #if
+        // branches, so a macro documented inside a compiler-specific branch
+        // is still captured.
+        if (g_emit_cpp_docs_json) {
+            clang::SourceManager const &sm  = ctx.getSourceManager();
+            llvm::StringRef const       buf = sm.getBufferData(sm.getMainFileID());
+            for (auto &m : einsums::pybind::scan_macros(buf)) {
+                if (g_seen_macros.insert(m.qualified_name).second) {
+                    g_module.macros.push_back(std::move(m));
+                }
             }
         }
     }
@@ -248,6 +276,11 @@ int main(int argc, char const **argv) {
             return 1;
         }
         out << stub;
+    }
+
+    if (g_report_undocumented) {
+        llvm::errs() << "einsums-pybind: " << g_undocumented_count << " undocumented public entit"
+                     << (g_undocumented_count == 1 ? "y" : "ies") << ".\n";
     }
 
     if (g_error_count > 0) {

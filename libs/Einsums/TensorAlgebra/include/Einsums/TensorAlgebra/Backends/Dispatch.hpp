@@ -4,42 +4,41 @@
 //----------------------------------------------------------------------------------------------
 
 #pragma once
-#ifndef DOXYGEN
 
-#    include <Einsums/Config.hpp>
+#include <Einsums/Config.hpp>
 
-#    include <Einsums/Concepts/SubscriptChooser.hpp>
-#    include <Einsums/Concepts/TensorConcepts.hpp>
-#    include <Einsums/Errors/Error.hpp>
-#    include <Einsums/LinearAlgebra.hpp>
-#    include <Einsums/Logging.hpp>
-#    include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
-#    include <Einsums/Print.hpp>
-#    include <Einsums/Profile.hpp>
-#    include <Einsums/Tensor/BlockTensor.hpp>
-#    include <Einsums/Tensor/Tensor.hpp>
-#    include <Einsums/TensorAlgebra/Backends/BaseAlgebra.hpp>
-#    include <Einsums/TensorAlgebra/Backends/BlockAlgebra.hpp>
-#    include <Einsums/TensorAlgebra/Backends/BlockTileAlgebra.hpp>
-#    include <Einsums/TensorAlgebra/Backends/GenericAlgorithm.hpp>
-#    include <Einsums/TensorAlgebra/Backends/TileAlgebra.hpp>
-#    include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
-#    include <Einsums/TensorAlgebra/Permute.hpp> // Required for einsum_do_sort_gemm
-#    include <Einsums/TensorBase/Common.hpp>
+#include <Einsums/Concepts/SubscriptChooser.hpp>
+#include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Errors/Error.hpp>
+#include <Einsums/LinearAlgebra.hpp>
+#include <Einsums/Logging.hpp>
+#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/Print.hpp>
+#include <Einsums/Profile.hpp>
+#include <Einsums/Tensor/BlockTensor.hpp>
+#include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorAlgebra/Backends/BaseAlgebra.hpp>
+#include <Einsums/TensorAlgebra/Backends/BlockAlgebra.hpp>
+#include <Einsums/TensorAlgebra/Backends/BlockTileAlgebra.hpp>
+#include <Einsums/TensorAlgebra/Backends/GenericAlgorithm.hpp>
+#include <Einsums/TensorAlgebra/Backends/TileAlgebra.hpp>
+#include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
+#include <Einsums/TensorAlgebra/Permute.hpp> // Required for einsum_do_sort_gemm
+#include <Einsums/TensorBase/Common.hpp>
 
-#    include <algorithm>
-#    include <cmath>
-#    include <cstddef>
-#    include <memory>
-#    include <stdexcept>
-#    include <string>
-#    include <tuple>
-#    include <type_traits>
-#    include <utility>
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <tuple>
+#include <type_traits>
+#include <utility>
 
-#    if defined(EINSUMS_USE_CATCH2)
-#        include <catch2/catch_all.hpp>
-#    endif
+#if defined(EINSUMS_USE_CATCH2)
+#    include <catch2/catch_all.hpp>
+#endif
 
 namespace einsums::tensor_algebra {
 namespace detail {
@@ -74,10 +73,10 @@ void einsum_runtime_check(ValueTypeT<CType> const C_prefactor, std::tuple<CIndic
             size_t dimB = B.dim(b);
             if (std::get<a>(A_indices).letter == std::get<b>(B_indices).letter) {
                 if (dimA != dimB) {
-#    if !defined(EINSUMS_IS_TESTING)
+#if !defined(EINSUMS_IS_TESTING)
                     EINSUMS_LOG_ERROR("{:f} {}({:}) += {:f} {}({:}) * {}({:})", C_prefactor, C->name(), print_tuple_no_type(C_indices),
                                       AB_prefactor, A.name(), print_tuple_no_type(A_indices), B.name(), print_tuple_no_type(B_indices));
-#    endif
+#endif
                     runtime_indices_abort = true;
                 }
             }
@@ -91,10 +90,10 @@ void einsum_runtime_check(ValueTypeT<CType> const C_prefactor, std::tuple<CIndic
             }
             if (std::get<a>(A_indices).letter == std::get<c>(C_indices).letter) {
                 if (dimA != dimC) {
-#    if !defined(EINSUMS_IS_TESTING)
+#if !defined(EINSUMS_IS_TESTING)
                     EINSUMS_LOG_ERROR("{:f} {}({:}) += {:f} {}({:}) * {}({:})", C_prefactor, C->name(), print_tuple_no_type(C_indices),
                                       AB_prefactor, A.name(), print_tuple_no_type(A_indices), B.name(), print_tuple_no_type(B_indices));
-#    endif
+#endif
                     runtime_indices_abort = true;
                 }
             }
@@ -111,10 +110,10 @@ void einsum_runtime_check(ValueTypeT<CType> const C_prefactor, std::tuple<CIndic
             }
             if (std::get<b>(B_indices).letter == std::get<c>(C_indices).letter) {
                 if (dimB != dimC) {
-#    if !defined(EINSUMS_IS_TESTING)
+#if !defined(EINSUMS_IS_TESTING)
                     EINSUMS_LOG_ERROR("{:f} {}({:}) += {:f} {}({:}) * {}({:})", C_prefactor, C->name(), print_tuple_no_type(C_indices),
                                       AB_prefactor, A.name(), print_tuple_no_type(A_indices), B.name(), print_tuple_no_type(B_indices));
-#    endif
+#endif
                     runtime_indices_abort = true;
                 }
             }
@@ -380,25 +379,25 @@ bool einsum_do_outer_product(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
             }
         }
     } catch (std::runtime_error &e) {
-#    if defined(EINSUMS_SHOW_WARNING)
+#if defined(EINSUMS_SHOW_WARNING)
         EINSUMS_LOG_WARN("Optimized outer product failed. Likely from a non-contiguous "
                          "TensorView. Attempting to perform generic algorithm.");
-#    endif
+#endif
         if constexpr (IsComplexV<CDataType>) {
             if (C_prefactor == CDataType{0.0, 0.0}) {
-#    if defined(EINSUMS_SHOW_WARNING)
+#if defined(EINSUMS_SHOW_WARNING)
                 EINSUMS_LOG_WARN("WARNING!! Unable to undo C_prefactor ({}) on C ({}) tensor. Check your results!!!", C_prefactor,
                                  C->name());
-#    endif
+#endif
             } else {
                 linear_algebra::scale(CDataType{1.0, 0.0} / C_prefactor, C);
             }
         } else {
             if (C_prefactor == CDataType{0.0}) {
-#    if defined(EINSUMS_SHOW_WARNING)
+#if defined(EINSUMS_SHOW_WARNING)
                 EINSUMS_LOG_WARN("WARNING!! Unable to undo C_prefactor ({}) on C ({}) tensor. Check your results!!!", C_prefactor,
                                  C->name());
-#    endif
+#endif
             } else {
                 linear_algebra::scale(CDataType{1.0} / C_prefactor, C);
             }
@@ -1258,11 +1257,11 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
     static_assert(sizeof...(BIndices) == BRank, "Rank of B does not match Indices given for B.");
 
     // Runtime check of sizes
-#    if defined(EINSUMS_RUNTIME_INDICES_CHECK)
+#if defined(EINSUMS_RUNTIME_INDICES_CHECK)
     if constexpr (!DryRun) {
         einsum_runtime_check(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices, B);
     }
-#    endif
+#endif
 
     bool            has_performed_contraction = false;
     AlgorithmChoice retval                    = INDETERMINATE;
@@ -1364,9 +1363,9 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
     using ABDataType = std::conditional_t<(sizeof(ADataType) > sizeof(BDataType)), ADataType, BDataType>;
 
     EINSUMS_LOG_TRACE("BEGIN: einsum");
-#    if defined(EINSUMS_HAVE_PROFILER)
+#if defined(EINSUMS_HAVE_PROFILER)
     std::unique_ptr<profile::ScopedZone> _section;
-#    endif
+#endif
     if constexpr (IsTensorV<CType>) {
         EINSUMS_LOG_DEBUG(
             std::abs(UC_prefactor) > EINSUMS_ZERO
@@ -1375,7 +1374,7 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
                               (ConjB) ? ")" : "", UC_prefactor, C->name(), C_indices)
                 : fmt::format(R"(einsum: "{}"{} = {} {}"{}"{}{} * {}"{}"{}{})", C->name(), C_indices, UAB_prefactor, (ConjA) ? "conj(" : "",
                               A.name(), A_indices, (ConjA) ? ")" : "", (ConjB) ? "conj(" : "", B.name(), B_indices, (ConjB) ? ")" : ""));
-#    if defined(EINSUMS_HAVE_PROFILER)
+#if defined(EINSUMS_HAVE_PROFILER)
         _section = std::make_unique<profile::ScopedZone>(std::abs(UC_prefactor) > EINSUMS_ZERO
                                                              ? fmt::format(R"(einsum: "{}"{} = {} "{}"{} * "{}"{} + {} "{}"{})", C->name(),
                                                                            C_indices, UAB_prefactor, A.name(), A_indices, B.name(),
@@ -1383,7 +1382,7 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
                                                              : fmt::format(R"(einsums: "{}"{} = {} "{}"{} * "{}"{})", C->name(), C_indices,
                                                                            UAB_prefactor, A.name(), A_indices, B.name(), B_indices),
                                                          __FILE__, __LINE__, __func__);
-#    endif
+#endif
     } else {
         EINSUMS_LOG_DEBUG(std::abs(UC_prefactor) > EINSUMS_ZERO
                               ? fmt::format(R"(einsum: "C"{} = {} {}"{}"{}{} * {}"{}"{}{} + {} "C"{})", C_indices, UAB_prefactor,
@@ -1392,20 +1391,20 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
                               : fmt::format(R"(einsum: "C"{} = {} {}"{}"{}{} * {}"{}"{}{})", C_indices, UAB_prefactor,
                                             (ConjA) ? "conj(" : "", A.name(), A_indices, (ConjA) ? ")" : "", (ConjB) ? "conj(" : "",
                                             B.name(), B_indices, (ConjB) ? ")" : ""));
-#    if defined(EINSUMS_HAVE_PROFILER)
+#if defined(EINSUMS_HAVE_PROFILER)
         _section = std::make_unique<profile::ScopedZone>(
             std::abs(UC_prefactor) > EINSUMS_ZERO
                 ? fmt::format(R"(einsum: "C"{} = {} "{}"{} * "{}"{} + {} "C"{})", C_indices, UAB_prefactor, A.name(), A_indices, B.name(),
                               B_indices, UC_prefactor, C_indices)
                 : fmt::format(R"(einsum: "C"{} = {} "{}"{} * "{}"{})", C_indices, UAB_prefactor, A.name(), A_indices, B.name(), B_indices),
             __FILE__, __LINE__, __func__);
-#    endif
+#endif
     }
 
     CDataType const  C_prefactor  = UC_prefactor;
     ABDataType const AB_prefactor = UAB_prefactor;
 
-#    if defined(EINSUMS_CONTINUOUSLY_TEST_EINSUM)
+#if defined(EINSUMS_CONTINUOUSLY_TEST_EINSUM)
     // Clone C into a new tensor
     auto testC = Tensor<CDataType, CRank>(*C);
     {
@@ -1427,13 +1426,13 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
             // #pragma omp taskwait depend(in: testC)
         }
     }
-#    endif
+#endif
 
     // Default einsums.
     detail::AlgorithmChoice retval =
         detail::einsum<false, false, ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices, B);
 
-#    if defined(EINSUMS_TEST_NANS)
+#if defined(EINSUMS_TEST_NANS)
     // The tests need a wait.
     // #pragma omp taskwait depend(in: *C, testC)
     if constexpr (CRank != 0) {
@@ -1486,9 +1485,9 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
             }
         }
     }
-#    endif
+#endif
 
-#    if defined(EINSUMS_CONTINUOUSLY_TEST_EINSUM)
+#if defined(EINSUMS_CONTINUOUSLY_TEST_EINSUM)
     if constexpr (CRank != 0) {
         // Need to walk through the entire C and testC comparing values and reporting differences.
         bool print_info_and_abort{false};
@@ -1526,13 +1525,13 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
                 }
             }
 
-#        if defined(EINSUMS_USE_CATCH2)
+#    if defined(EINSUMS_USE_CATCH2)
             if constexpr (!IsComplexV<CDataType>) {
                 REQUIRE_THAT(Cvalue,
                              Catch::Matchers::WithinRel(Ctest, static_cast<CDataType>(0.001)) || Catch::Matchers::WithinAbs(0, 0.0001));
                 CHECK(print_info_and_abort == false);
             }
-#        endif
+#    endif
 
             if (std::abs(Cvalue - Ctest) > 1.0E-6) {
                 print_info_and_abort = true;
@@ -1569,9 +1568,9 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
                 println(*C);
                 println(A);
                 println(B);
-#        if defined(EINSUMS_TEST_EINSUM_ABORT)
+#    if defined(EINSUMS_TEST_EINSUM_ABORT)
                 EINSUMS_THROW_EXCEPTION(std::runtime_error, "Continuous test failed!");
-#        endif
+#    endif
             }
         }
     } else {
@@ -1612,24 +1611,24 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
             println(A);
             println(B);
 
-#        if defined(EINSUMS_TEST_EINSUM_ABORT)
+#    if defined(EINSUMS_TEST_EINSUM_ABORT)
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "Continuous test failed!");
-#        endif
+#    endif
         }
     }
-#    endif
+#endif
     // Annotate the profiling zone with the algorithm choice and tensor ranks.
     {
         static constexpr char const *algo_names[] = {"GENERIC", "DOT",         "DIRECT",    "GER",          "GEMV",
                                                      "GEMM",    "PACKED_GEMM", "SORT_GEMM", "INDETERMINATE"};
-#    if defined(EINSUMS_HAVE_PROFILER)
+#if defined(EINSUMS_HAVE_PROFILER)
         if (retval >= 0 && retval < static_cast<detail::AlgorithmChoice>(sizeof(algo_names) / sizeof(algo_names[0]))) {
             ProfileAnnotate("algorithm", algo_names[retval]);
         }
         ProfileAnnotate("C_rank", static_cast<int64_t>(CRank));
         ProfileAnnotate("A_rank", static_cast<int64_t>(ARank));
         ProfileAnnotate("B_rank", static_cast<int64_t>(BRank));
-#    endif
+#endif
         // Warn once per unique contraction pattern when falling back to the
         // generic nested-loop algorithm.  The `static bool` ensures each
         // template instantiation (= unique index pattern) warns only once.
@@ -1682,5 +1681,3 @@ void einsum(CPrefactorType const C_prefactor, std::tuple<CIndices...> const &C_i
 }
 
 } // namespace einsums::tensor_algebra
-
-#endif

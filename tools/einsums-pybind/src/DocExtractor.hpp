@@ -9,8 +9,14 @@
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
+#include "llvm/ADT/StringRef.h"
 
 namespace einsums::pybind {
+
+// Cleans a raw comment block (``/** ... */`` or ``/// ...``) into doxygen
+// body text: strips comment markers, leading ``*``, and banner lines. Shared
+// by ``extract_doc`` (AST decls) and the macro scanner (raw ``#define`` text).
+std::string clean_raw_comment(llvm::StringRef text);
 
 // Returns the cleaned doxygen comment associated with `decl`, or an empty
 // string if the declaration has no doc-comment. Cleaning strips ``///``,

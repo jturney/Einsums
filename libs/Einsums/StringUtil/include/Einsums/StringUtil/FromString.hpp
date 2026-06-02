@@ -90,7 +90,6 @@ void check_only_whitespace(std::basic_string<Char> const &s, std::size_t pos) {
     }
 }
 
-#ifndef DOXYGEN
 template <typename T>
 struct FromStringImpl<T, std::enable_if_t<std::is_integral_v<T>>> {
     template <typename Char>
@@ -170,7 +169,6 @@ struct FromStringImpl<T, std::enable_if_t<std::is_floating_point_v<T>>> {
         check_only_whitespace(value, pos);
     }
 };
-#endif
 
 /**
  * @brief Converts a string to a value.
@@ -219,7 +217,6 @@ T from_string(std::basic_string<Char> const &v, U &&default_value) {
     }
 }
 
-#ifndef DOXYGEN
 template <typename T>
 T from_string(std::string const &v) {
     T target;
@@ -241,6 +238,5 @@ T from_string(std::string const &v, U &&default_value) {
         return std::forward<U>(default_value);
     }
 }
-#endif
 
 } // namespace einsums

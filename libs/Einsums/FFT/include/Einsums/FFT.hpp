@@ -10,7 +10,6 @@
 #include <Einsums/Tensor/Tensor.hpp>
 
 namespace einsums::fft {
-#ifndef DOXYGEN
 
 namespace detail {
 
@@ -67,6 +66,5 @@ inline void ifft(Tensor<std::complex<float>, 1> const &a, Tensor<std::complex<fl
 inline void ifft(Tensor<std::complex<double>, 1> const &a, Tensor<std::complex<double>, 1> *result) {
     detail::zzifft(a, result);
 }
-#endif
 
 } // namespace einsums::fft

@@ -1052,7 +1052,6 @@ void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType
  *      sections of the pivots.
  * @endversion
  */
-#ifndef DOXYGEN
 template <MatrixConcept TensorType, typename Pivots,
           bool          resizable = requires(Pivots a, typename Pivots::size_type size) { a.resize(size); }>
     requires requires(Pivots a, size_t ind) {
@@ -1065,19 +1064,6 @@ template <MatrixConcept TensorType, typename Pivots,
         requires std::same_as<blas::int_t, typename Pivots::value_type>;
         requires(CoreTensorConcept<TensorType>);
     }
-#else
-template <MatrixConcept TensorType, typename Pivots>
-    requires requires(Pivots a, size_t ind) {
-        typename Pivots::value_type;
-        typename Pivots::size_type;
-
-        { a.size() } -> std::same_as<typename Pivots::size_type>;
-        { a.data() } -> std::same_as<typename Pivots::value_type *>;
-        a[ind];
-        requires std::same_as<blas::int_t, typename Pivots::value_type>;
-        requires(CoreTensorConcept<TensorType>);
-    }
-#endif
 [[nodiscard]] auto getrf(TensorType *A, Pivots *pivot) -> int {
     auto pivot_size = std::min(A->dim(0), A->dim(1));
     if constexpr (resizable) {
@@ -1195,14 +1181,12 @@ void invert(TensorType *A) {
     detail::invert(&A->impl());
 }
 
-#if !defined(DOXYGEN)
 template <SmartPointer SmartPtr>
 void invert(SmartPtr *A) {
     LabeledSection0();
 
     invert(A->get());
 }
-#endif
 
 /**
  * @brief Indicates the type of norm to compute.

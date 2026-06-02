@@ -206,7 +206,7 @@
 #define EINSUMS_ALWAYS_INLINE __attribute__((always_inline)) inline
 
 // clang-format off
-#ifdef DOXYGEN
+#if defined(_MSC_VER)
 /**
  * @def EINSUMS_DISABLE_WARNING_PUSH
  *
@@ -214,8 +214,7 @@
  *
  * @versionadded{1.0.0}
  */
-#    define EINSUMS_DISABLE_WARNING_PUSH
-
+#    define EINSUMS_DISABLE_WARNING_PUSH           __pragma(warning(push))
 /**
  * @def EINSUMS_DISABLE_WARNING_POP
  *
@@ -223,8 +222,7 @@
  *
  * @versionadded{1.0.0}
  */
-#    define EINSUMS_DISABLE_WARNING_POP
-
+#    define EINSUMS_DISABLE_WARNING_POP            __pragma(warning(pop))
 /**
  * @def EINSUMS_DISABLE_WARNING
  *
@@ -232,7 +230,7 @@
  *
  * @versionadded{1.0.0}
  */
-#    define EINSUMS_DISABLE_WARNING(warning)
+#    define EINSUMS_DISABLE_WARNING(warningNumber) __pragma(warning(disable : warningNumber))
 
 /**
  * @def EINSUMS_DISABLE_WARNING_RETURN_TYPE_C_LINKAGE
@@ -243,7 +241,6 @@
  * @versionadded{1.0.0}
  */
 #    define EINSUMS_DISABLE_WARNING_RETURN_TYPE_C_LINKAGE
-
 /**
  * @def EINSUMS_DISABLE_WARNING_DEPRECATED_DECLARATIONS
  *
@@ -251,13 +248,6 @@
  *
  * @versionadded{1.0.0}
  */
-#    define EINSUMS_DISABLE_WARNING_DEPRECATED_DECLARATIONS
-#elif defined(_MSC_VER)
-#    define EINSUMS_DISABLE_WARNING_PUSH           __pragma(warning(push))
-#    define EINSUMS_DISABLE_WARNING_POP            __pragma(warning(pop))
-#    define EINSUMS_DISABLE_WARNING(warningNumber) __pragma(warning(disable : warningNumber))
-
-#    define EINSUMS_DISABLE_WARNING_RETURN_TYPE_C_LINKAGE
 #    define EINSUMS_DISABLE_WARNING_DEPRECATED_DECLARATIONS
 // other warnings you want to deactivate...
 
@@ -282,33 +272,12 @@
 #endif
 // clang-format on
 
-#if defined(DOXYGEN)
-/// Returns the GCC version einsums is compiled with. Only set if compiled with GCC.
-/// @versionadded{1.0.0}
-#    define EINSUMS_GCC_VERSION
-/// Returns the Clang version einsums is compiled with. Only set if compiled with
-/// Clang.
-/// @versionadded{1.0.0}
-#    define EINSUMS_CLANG_VERSION
-/// Returns the Intel Compiler version einsums is compiled with. Only set if
-/// compiled with the Intel Compiler.
-/// @versionadded{1.0.0}
-#    define EINSUMS_INTEL_VERSION
-/// This macro is set if the compilation is with MSVC.
-/// @versionadded{1.0.0}
-#    define EINSUMS_MSVC
-/// This macro is set if the compilation is with Mingw.
-/// @versionadded{1.0.0}
-#    define EINSUMS_MINGW
-/// This macro is set if the compilation is for Windows.
-/// @versionadded{1.0.0}
-#    define EINSUMS_WINDOWS
-#else
-
 // clang-format off
 #if defined(__GNUC__)
 
 // macros to facilitate handling of compiler-specific issues
+/// Returns the GCC version einsums is compiled with. Only set if compiled with GCC.
+/// @versionadded{1.0.0}
 #  define EINSUMS_GCC_VERSION (__GNUC__*10000 + __GNUC_MINOR__*100 + __GNUC_PATCHLEVEL__)
 
 #  define EINSUMS_GCC_DIAGNOSTIC_PRAGMA_CONTEXTS 1
@@ -324,6 +293,9 @@
 
 #if defined(__clang__)
 
+/// Returns the Clang version einsums is compiled with. Only set if compiled with
+/// Clang.
+/// @versionadded{1.0.0}
 #  define EINSUMS_CLANG_VERSION \
  (__clang_major__*10000 + __clang_minor__*100 + __clang_patchlevel__)
 
@@ -336,6 +308,9 @@
 #endif
 
 #if defined(__INTEL_COMPILER)
+/// Returns the Intel Compiler version einsums is compiled with. Only set if
+/// compiled with the Intel Compiler.
+/// @versionadded{1.0.0}
 # define EINSUMS_INTEL_VERSION __INTEL_COMPILER
 # if defined(_WIN32) || (_WIN64)
 #  define EINSUMS_INTEL_WIN EINSUMS_INTEL_VERSION
@@ -355,7 +330,11 @@
 #endif
 
 #if defined(_MSC_VER)
+/// This macro is set if the compilation is for Windows.
+/// @versionadded{1.0.0}
 #  define EINSUMS_WINDOWS
+/// This macro is set if the compilation is with MSVC.
+/// @versionadded{1.0.0}
 #  define EINSUMS_MSVC _MSC_VER
 #  define EINSUMS_MSVC_WARNING_PRAGMA
 #  if defined(__NVCC__)
@@ -366,6 +345,8 @@
 
 #if defined(__MINGW32__)
 #   define EINSUMS_WINDOWS
+/// This macro is set if the compilation is with Mingw.
+/// @versionadded{1.0.0}
 #   define EINSUMS_MINGW
 #endif
 
@@ -373,7 +354,7 @@
 // Detecting nvhpc
 // The CUDA version will also be defined, so we end this block with #endif,
 // not #elif
-#if defined(__NVCOMPILER) || defined(DOXYGEN)
+#if defined(__NVCOMPILER)
 /**
  * @def EINSUMS_NVHPC_VERSION
  *
@@ -385,7 +366,9 @@
 #endif
 
 // Detecting NVCC/CUDA
-#ifdef DOXYGEN
+#if defined(__NVCC__) || defined(__CUDACC__)
+// NVCC build version numbers can be high (without limit?) so we leave it out
+// from the version definition
 /**
  * @def EINSUMS_CUDA_VERSION
  *
@@ -393,17 +376,7 @@
  *
  * @versionadded{1.0.0}
  */
-#  define EINSUMS_CUDA_VERSION
-
-/**
- * @def EINSUMS_HIP_VERSION
- *
- * The version of HIP used to compile Einsums.
- *
- * @versionadded{1.0.0}
- */
-#  define EINSUMS_HIP_VERSION
-
+#  define EINSUMS_CUDA_VERSION (__CUDACC_VER_MAJOR__*100 + __CUDACC_VER_MINOR__)
 /**
  * @def EINSUMS_COMPUTE_CODE
  *
@@ -412,7 +385,8 @@
  * @versionadded{1.0.0}
  */
 #  define EINSUMS_COMPUTE_CODE
-
+#  if defined(__CUDA_ARCH__) && __CUDA_ARCH__ != 0
+     // nvcc compiling CUDA code, device mode.
 /**
  * @def EINSUMS_COMPUTE_DEVICE_CODE
  *
@@ -420,71 +394,6 @@
  *
  * @versionadded{1.0.0}
  */
-#    define EINSUMS_COMPUTE_DEVICE_CODE
-
-/**
- * @def EINSUMS_COMPUTE_HOST_CODE
- *
- * Available whenever Einsums is not being compiled for the device. This means that it is defined when GPU capabilities
- * are turned off and when they are turned on during compilation for the host.
- *
- * @versionadded{1.0.0}
- */
-#define EINSUMS_COMPUTE_HOST_CODE
-
-/**
- * @def EINSUMS_DEVICE
- *
- * When compiled with GPU capabilities, this expands to @c __device__ . Otherwise, it expands to nothing.
- *
- * @versionadded{1.0.0}
- */
-#define EINSUMS_DEVICE
-
-/**
- * @def EINSUMS_HOST
- *
- * When compiled with GPU capabilities, this expands to @c __host__ . Otherwise, it expands to nothing.
- *
- * @versionadded{1.0.0}
- */
-#define EINSUMS_HOST
-
-/**
- * @def EINSUMS_CONSTANT
- *
- * When compiled with GPU capabilities, this expands to @c __constant__ . Otherwise, it expands to nothing.
- *
- * @versionadded{1.0.0}
- */
-#define EINSUMS_CONSTANT
-
-/**
- * @def EINSUMS_HOSTDEV
- *
- * When compiled with GPU capabilities, this expands to @c __host__ @c __device__ . Otherwise, it expands to nothing.
- *
- * @versionadded{1.0.0}
- */
-#define EINSUMS_HOSTDEV
-
-/**
- * @def EINSUMS_NVCC_PRAGMA_HD_WARNING_DISABLE
- *
- * Silences warnings about calling a host function from a device function, which is common when not using host/device specifiers.
- *
- * @versionadded{1.0.0}
- */
-#define EINSUMS_NVCC_PRAGMA_HD_WARNING_DISABLE
-
-#endif
-#if defined(__NVCC__) || defined(__CUDACC__)
-// NVCC build version numbers can be high (without limit?) so we leave it out
-// from the version definition
-#  define EINSUMS_CUDA_VERSION (__CUDACC_VER_MAJOR__*100 + __CUDACC_VER_MINOR__)
-#  define EINSUMS_COMPUTE_CODE
-#  if defined(__CUDA_ARCH__) && __CUDA_ARCH__ != 0
-     // nvcc compiling CUDA code, device mode.
 #    define EINSUMS_COMPUTE_DEVICE_CODE
 #  endif
 // Detecting Clang CUDA
@@ -497,6 +406,13 @@
 // Detecting HIPCC
 #elif defined(__HIPCC__)
 #  include <hip/hip_version.h>
+/**
+ * @def EINSUMS_HIP_VERSION
+ *
+ * The version of HIP used to compile Einsums.
+ *
+ * @versionadded{1.0.0}
+ */
 #  define EINSUMS_HIP_VERSION HIP_VERSION
 #  if defined(__clang__)
 #    pragma clang diagnostic push
@@ -517,13 +433,49 @@
 #endif
 
 #if !defined(EINSUMS_COMPUTE_DEVICE_CODE)
+/**
+ * @def EINSUMS_COMPUTE_HOST_CODE
+ *
+ * Available whenever Einsums is not being compiled for the device. This means that it is defined when GPU capabilities
+ * are turned off and when they are turned on during compilation for the host.
+ *
+ * @versionadded{1.0.0}
+ */
 #  define EINSUMS_COMPUTE_HOST_CODE
 #endif
 
 #if defined(EINSUMS_COMPUTE_CODE)
+/**
+ * @def EINSUMS_DEVICE
+ *
+ * When compiled with GPU capabilities, this expands to @c __device__ . Otherwise, it expands to nothing.
+ *
+ * @versionadded{1.0.0}
+ */
 #define EINSUMS_DEVICE __device__
+/**
+ * @def EINSUMS_HOST
+ *
+ * When compiled with GPU capabilities, this expands to @c __host__ . Otherwise, it expands to nothing.
+ *
+ * @versionadded{1.0.0}
+ */
 #define EINSUMS_HOST __host__
+/**
+ * @def EINSUMS_CONSTANT
+ *
+ * When compiled with GPU capabilities, this expands to @c __constant__ . Otherwise, it expands to nothing.
+ *
+ * @versionadded{1.0.0}
+ */
 #define EINSUMS_CONSTANT __constant__
+/**
+ * @def EINSUMS_HOSTDEV
+ *
+ * When compiled with GPU capabilities, this expands to @c __host__ @c __device__ . Otherwise, it expands to nothing.
+ *
+ * @versionadded{1.0.0}
+ */
 #define EINSUMS_HOSTDEV __host__ __device__
 #else
 #define EINSUMS_DEVICE
@@ -538,12 +490,19 @@
 #define EINSUMS_HOST_DEVICE EINSUMS_HOST EINSUMS_DEVICE
 
 #if defined(__NVCC__)
+/**
+ * @def EINSUMS_NVCC_PRAGMA_HD_WARNING_DISABLE
+ *
+ * Silences warnings about calling a host function from a device function, which is common when not using host/device specifiers.
+ *
+ * @versionadded{1.0.0}
+ */
 #define EINSUMS_NVCC_PRAGMA_HD_WARNING_DISABLE #pragma hd_warning_disable
 #else
 #define EINSUMS_NVCC_PRAGMA_HD_WARNING_DISABLE
 #endif
 
-#if !defined(EINSUMS_CDECL) || defined(DOXYGEN)
+#if !defined(EINSUMS_CDECL)
 /**
  * @def EINSUMS_CDECL
  *
@@ -554,7 +513,10 @@
 #define EINSUMS_CDECL
 #endif
 
-#ifdef DOXYGEN
+// clang-format on
+#if defined(EINSUMS_HAVE_SANITIZERS)
+#    if defined(__has_feature)
+#        if __has_feature(address_sanitizer)
 /**
  * @def EINSUMS_HAVE_ADDRESS_SANITIZER
  *
@@ -562,8 +524,8 @@
  *
  * @versionadded{1.0.0}
  */
-#define EINSUMS_HAVE_ADDRESS_SANITIZER
-
+#            define EINSUMS_HAVE_ADDRESS_SANITIZER
+#            if defined(EINSUMS_GCC_VERSION) || defined(EINSUMS_CLANG_VERSION)
 /**
  * @def EINSUMS_NO_SANITIZE_ADDRESS
  *
@@ -571,8 +533,10 @@
  *
  * @versionadded{1.0.0}
  */
-#define EINSUMS_NO_ADDRESS_SANITIZE
-
+#                define EINSUMS_NO_SANITIZE_ADDRESS __attribute__((no_sanitize("address")))
+#            endif
+#        endif
+#        if __has_feature(thread_sanitizer)
 /**
  * @def EINSUMS_HAVE_THREAD_SANITIZER
  *
@@ -580,24 +544,10 @@
  *
  * @versionadded{1.0.0}
  */
-#define EINSUMS_HAVE_THREAD_SANITIZER
-#endif
-
-// clang-format on
-#    if defined(EINSUMS_HAVE_SANITIZERS)
-#        if defined(__has_feature)
-#            if __has_feature(address_sanitizer)
-#                define EINSUMS_HAVE_ADDRESS_SANITIZER
-#                if defined(EINSUMS_GCC_VERSION) || defined(EINSUMS_CLANG_VERSION)
-#                    define EINSUMS_NO_SANITIZE_ADDRESS __attribute__((no_sanitize("address")))
-#                endif
-#            endif
-#            if __has_feature(thread_sanitizer)
-#                define EINSUMS_HAVE_THREAD_SANITIZER
-#            endif
-#        elif defined(__SANITIZE_ADDRESS__) // MSVC defines this
-#            define EINSUMS_HAVE_ADDRESS_SANITIZER
+#            define EINSUMS_HAVE_THREAD_SANITIZER
 #        endif
+#    elif defined(__SANITIZE_ADDRESS__) // MSVC defines this
+#        define EINSUMS_HAVE_ADDRESS_SANITIZER
 #    endif
 #endif
 

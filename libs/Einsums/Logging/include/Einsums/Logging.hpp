@@ -92,12 +92,6 @@ namespace einsums::detail {
 #define EINSUMS_LOG_ENABLED(loglevel) EINSUMS_DETAIL_SPDLOG_ENABLED(einsums, loglevel)
 
 // Only EINSUMS_LOG_TRACE and EINSUMS_LOG_DEBUG can be disabled during compile time.
-#if EINSUMS_ACTIVE_LOG_LEVEL <= 0
-#    define EINSUMS_LOG_TRACE(...) EINSUMS_LOG(SPDLOG_LEVEL_TRACE, __VA_ARGS__)
-#else
-#    define EINSUMS_LOG_TRACE(...)
-#endif
-
 /**
  * @def EINSUMS_LOG_TRACE
  *
@@ -108,11 +102,10 @@ namespace einsums::detail {
  *
  * @versionadded{1.0.0}
  */
-
-#if EINSUMS_ACTIVE_LOG_LEVEL <= 1
-#    define EINSUMS_LOG_DEBUG(...) EINSUMS_LOG(SPDLOG_LEVEL_DEBUG, __VA_ARGS__)
+#if EINSUMS_ACTIVE_LOG_LEVEL <= 0
+#    define EINSUMS_LOG_TRACE(...) EINSUMS_LOG(SPDLOG_LEVEL_TRACE, __VA_ARGS__)
 #else
-#    define EINSUMS_LOG_DEBUG(...)
+#    define EINSUMS_LOG_TRACE(...)
 #endif
 
 /**
@@ -125,6 +118,11 @@ namespace einsums::detail {
  *
  * @versionadded{1.0.0}
  */
+#if EINSUMS_ACTIVE_LOG_LEVEL <= 1
+#    define EINSUMS_LOG_DEBUG(...) EINSUMS_LOG(SPDLOG_LEVEL_DEBUG, __VA_ARGS__)
+#else
+#    define EINSUMS_LOG_DEBUG(...)
+#endif
 
 // These logging macros cannot be disabled at compile-time, but they can be disabled at runtime
 /**
@@ -197,9 +195,7 @@ EINSUMS_EXPORT spdlog::level::level_enum get_spdlog_level(std::string const &env
  */
 EINSUMS_EXPORT std::shared_ptr<spdlog::sinks::sink> get_spdlog_sink(std::string const &env);
 
-#ifndef DOXYGEN
 EINSUMS_EXPORT EINSUMS_DETAIL_DECLARE_SPDLOG(einsums)
-#endif
 
 } // namespace einsums::detail
 

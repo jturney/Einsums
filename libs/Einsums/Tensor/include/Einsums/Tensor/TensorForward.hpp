@@ -36,7 +36,6 @@ struct TensorPrintOptions {
     bool full_output{true};
 };
 
-#ifndef DOXYGEN
 // Forward declarations of tensors.
 template <typename T, size_t Rank, typename Alloc>
 struct GeneralTensor;
@@ -95,7 +94,6 @@ struct RuntimeTensorView;
 
 template <typename T>
 using VectorData = BufferVector<T>;
-#endif
 
 } // namespace einsums
 

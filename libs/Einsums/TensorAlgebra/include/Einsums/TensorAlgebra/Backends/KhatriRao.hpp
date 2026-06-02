@@ -5,17 +5,15 @@
 
 #pragma once
 
-#ifndef DOXYGEN
+#include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Profile.hpp>
+#include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
 
-#    include <Einsums/Concepts/TensorConcepts.hpp>
-#    include <Einsums/Profile.hpp>
-#    include <Einsums/Tensor/Tensor.hpp>
-#    include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
-
-#    include <algorithm>
-#    include <cstddef>
-#    include <tuple>
-#    include <utility>
+#include <algorithm>
+#include <cstddef>
+#include <tuple>
+#include <utility>
 
 namespace einsums::tensor_algebra {
 template <bool ConjA, bool ConjB, TensorConcept AType, TensorConcept BType, typename... AIndices, typename... BIndices>
@@ -71,5 +69,3 @@ auto khatri_rao(std::tuple<AIndices...> const &, AType const &A, std::tuple<BInd
     return OutType{std::move(result), "KR product", -1, detail::product_dims(A_common_position, A)};
 }
 } // namespace einsums::tensor_algebra
-
-#endif

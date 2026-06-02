@@ -25,9 +25,7 @@ EINSUMS_EXPORT void initialize_Einsums_PackedGemm();
 EINSUMS_EXPORT void finalize_Einsums_PackedGemm();
 
 namespace detail {
-#ifndef DOXYGEN
 static int initialize_module_Einsums_PackedGemm = setup_Einsums_PackedGemm();
-#endif
 
 } // namespace detail
 

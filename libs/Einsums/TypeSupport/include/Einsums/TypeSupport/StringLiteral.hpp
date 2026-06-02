@@ -108,7 +108,6 @@ constexpr bool operator!=(StringLiteral<N1> const &_first, StringLiteral<N2> con
 
 } // namespace einsums
 
-#ifndef DOXYGEN
 template <size_t N>
 struct fmt::formatter<einsums::StringLiteral<N>> {
     // Parse the format specification, if needed.
@@ -124,4 +123,3 @@ struct fmt::formatter<einsums::StringLiteral<N>> {
         return fmt::format_to(ctx.out(), "{}", sl.string_view());
     }
 };
-#endif

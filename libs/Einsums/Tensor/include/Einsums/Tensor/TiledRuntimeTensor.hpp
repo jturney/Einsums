@@ -475,7 +475,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
 // default visibility via EINSUMS_EXPORT). The pybind codegen TU is compiled
 // with hidden visibility, so it must NOT re-instantiate these — extern template
 // makes it link against libEinsums's copies instead.
-#if !defined(EINSUMS_WINDOWS) && !defined(DOXYGEN)
+#if !defined(EINSUMS_WINDOWS)
 extern template class EINSUMS_EXPORT TiledRuntimeTensor<float>;
 extern template class EINSUMS_EXPORT TiledRuntimeTensor<double>;
 extern template class EINSUMS_EXPORT TiledRuntimeTensor<std::complex<float>>;
@@ -602,7 +602,7 @@ TiledRuntimeTensorView<T> TiledRuntimeTensor<T>::view(std::vector<IndexSpace> co
     return TiledRuntimeTensorView<T>(*this, spaces, _name + " (view)");
 }
 
-#if !defined(EINSUMS_WINDOWS) && !defined(DOXYGEN)
+#if !defined(EINSUMS_WINDOWS)
 extern template class EINSUMS_EXPORT TiledRuntimeTensorView<float>;
 extern template class EINSUMS_EXPORT TiledRuntimeTensorView<double>;
 extern template class EINSUMS_EXPORT TiledRuntimeTensorView<std::complex<float>>;
