@@ -275,7 +275,12 @@ if(TARGET PyEinsumsDocs)
   # Depend on the render's *output stamp file* (not the PyEinsumsDocs target):
   # a target dependency only enforces ordering, so the copy would not re-run
   # when the rendered pages change. The file's mtime is what ninja tracks.
-  set(_render_stamp       "${CMAKE_BINARY_DIR}/generated/pybind/.docs.stamp")
+  # apiary_aggregate_extension writes the stamp inside DOCS_OUTDIR (which we
+  # pass as ${_gen_dir}/docs), so it lives next to the rendered pages — not in
+  # the parent generated/pybind dir. Pointing one level too high left the
+  # dependency with no producing rule, which a fresh (uncached) build tree
+  # surfaced as "missing and no known rule to make it".
+  set(_render_stamp       "${_gen_py_docs_src}/.docs.stamp")
   add_custom_command(
     OUTPUT "${_gen_py_docs_stamp}"
     DEPENDS PyEinsumsDocs "${_render_stamp}"
