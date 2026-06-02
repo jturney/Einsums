@@ -38,16 +38,16 @@
 #include <vector>
 
 namespace einsums {
-namespace EINSUMS_PYBIND_MODULE("io") tensor_io {
+namespace APIARY_MODULE("io") tensor_io {
 
-class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_NOMOVE TensorFile {
+class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
   public:
-    enum class EINSUMS_PYBIND_EXPOSE Mode : std::uint8_t { Read, Write, ReadWrite };
+    enum class APIARY_EXPOSE Mode : std::uint8_t { Read, Write, ReadWrite };
 
     /// Open or create a tensor file.
     /// @param path File path (creates parent directories if needed).
     /// @param mode Read, Write, or ReadWrite.
-    EINSUMS_PYBIND_EXPOSE explicit TensorFile(std::string path, Mode mode = Mode::ReadWrite);
+    APIARY_EXPOSE explicit TensorFile(std::string path, Mode mode = Mode::ReadWrite);
 
     /// Flushes pending writes and closes the file.
     ~TensorFile();
@@ -106,30 +106,27 @@ class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_
 
     /// Read a full tensor into a RuntimeTensor. Resizes the tensor.
     template <typename T, typename Alloc>
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("read", T = float, Alloc = std::allocator<float>)
-        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("read", T = double, Alloc = std::allocator<double>)
-            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("read", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS(
-                    "read", T = std::complex<double>,
-                    Alloc = std::allocator<std::complex<double>>) void read(std::string_view name, GeneralRuntimeTensor<T, Alloc> &tensor);
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("read", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("read", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("read", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS("read", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>) void read(
+                    std::string_view name, GeneralRuntimeTensor<T, Alloc> &tensor);
 
     /// Write a full RuntimeTensor as a new entry.
     template <typename T, typename Alloc>
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("write", T = float, Alloc = std::allocator<float>)
-        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("write", T = double, Alloc = std::allocator<double>)
-            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("write", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS(
-                    "write", T = std::complex<double>,
-                    Alloc = std::allocator<std::complex<double>>) void write(std::string_view                      name,
-                                                                             GeneralRuntimeTensor<T, Alloc> const &tensor);
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("write", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("write", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("write", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS("write", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>) void write(
+                    std::string_view name, GeneralRuntimeTensor<T, Alloc> const &tensor);
 
     /// Read a slice into a pre-sized RuntimeTensor. The tensor's dims
     /// must equal the slab (ranges[d].second - ranges[d].first).
     template <typename T, typename Alloc>
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("read_slice", T = float, Alloc = std::allocator<float>)
-        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("read_slice", T = double, Alloc = std::allocator<double>)
-            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("read_slice", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS(
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("read_slice", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("read_slice", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("read_slice", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS(
                     "read_slice", T = std::complex<double>,
                     Alloc = std::allocator<std::complex<double>>) void read_slice(std::string_view                              name,
                                                                                   GeneralRuntimeTensor<T, Alloc>               &tensor,
@@ -137,10 +134,10 @@ class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_
 
     /// Write a slice (hyperslab) of an existing entry from a RuntimeTensor.
     template <typename T, typename Alloc>
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("write_slice", T = float, Alloc = std::allocator<float>)
-        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("write_slice", T = double, Alloc = std::allocator<double>)
-            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("write_slice", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS(
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("write_slice", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("write_slice", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("write_slice", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS(
                     "write_slice", T = std::complex<double>,
                     Alloc = std::allocator<std::complex<double>>) void write_slice(std::string_view                              name,
                                                                                    GeneralRuntimeTensor<T, Alloc> const         &tensor,
@@ -149,10 +146,10 @@ class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_
     // ── Query ────────────────────────────────────────────────────────────
 
     /// Check if a tensor exists in the file.
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] bool contains(std::string_view name) const;
+    APIARY_EXPOSE [[nodiscard]] bool contains(std::string_view name) const;
 
     /// Get the stored dimensions of a tensor.
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] std::vector<size_t> dims(std::string_view name) const;
+    APIARY_EXPOSE [[nodiscard]] std::vector<size_t> dims(std::string_view name) const;
 
     /// Get the stored dtype of a tensor (currently not exposed to Python:
     /// DType enum lives in Format.hpp and isn't bound). Use ``dims`` and
@@ -161,16 +158,16 @@ class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_
     [[nodiscard]] DType dtype(std::string_view name) const;
 
     /// List all tensor names in the file.
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] std::vector<std::string> tensor_names() const;
+    APIARY_EXPOSE [[nodiscard]] std::vector<std::string> tensor_names() const;
 
     /// Number of tensors in the file.
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] size_t num_tensors() const { return _entries.size(); }
+    APIARY_EXPOSE [[nodiscard]] size_t num_tensors() const { return _entries.size(); }
 
     /// Flush pending writes to disk.
-    EINSUMS_PYBIND_EXPOSE void flush();
+    APIARY_EXPOSE void flush();
 
     /// Get the file path.
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] std::string const &path() const { return _path; }
+    APIARY_EXPOSE [[nodiscard]] std::string const &path() const { return _path; }
 
   private:
     std::string                             _path;
@@ -513,5 +510,5 @@ void TensorFile::read_local(std::string_view name, Tensor<T, Rank> &tensor, int 
     throw std::runtime_error(fmt::format("TensorFile: no entry for '{}' with rank {}", name, rank));
 }
 
-} // namespace EINSUMS_PYBIND_MODULE("io")tensor_io
+} // namespace APIARY_MODULE("io")tensor_io
 } // namespace einsums

@@ -80,13 +80,13 @@ struct ParsedEinsumSpec;
  * @see Pipeline for multi-stage workflows with loops
  * @see OptimizerPass for graph optimization
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_NOMOVE EINSUMS_EXPORT Graph {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT Graph {
   public:
     /**
      * @brief Construct an empty graph.
      * @param[in] name Human-readable name for profiling and debugging output.
      */
-    EINSUMS_PYBIND_EXPOSE explicit Graph(std::string name = "graph");
+    APIARY_EXPOSE explicit Graph(std::string name = "graph");
     ~Graph();
 
     Graph(Graph &&other) noexcept;
@@ -137,7 +137,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @throws std::runtime_error If a tensor appears to have been destroyed (use-after-free detected).
      * @throws std::runtime_error If a cycle is detected during topological sort.
      */
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RELEASE_GIL void execute();
+    APIARY_EXPOSE APIARY_RELEASE_GIL void execute();
 
     /**
      * @brief Execute using a custom executor.
@@ -153,7 +153,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      *       its worker. Holding the GIL here would deadlock that re-acquire
      *       against the waiting main thread.
      */
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RELEASE_GIL void execute(Executor &executor);
+    APIARY_EXPOSE APIARY_RELEASE_GIL void execute(Executor &executor);
 
     // Note: execute() always instruments with the profiler (no separate execute_profiled variant).
 
@@ -170,7 +170,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * graph.apply(pm);
      * @endcode
      */
-    EINSUMS_PYBIND_EXPOSE bool apply(PassManager &pm);
+    APIARY_EXPOSE bool apply(PassManager &pm);
 
     /**
      * @brief Apply a single pass by type (convenience).
@@ -298,9 +298,9 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      *
      * @return JSON string representation of the graph structure.
      */
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] std::string to_json() const;
+    APIARY_EXPOSE [[nodiscard]] std::string to_json() const;
 
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("name") [[nodiscard]] std::string const &name() const { return _name; } ///< Graph name.
+    APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string const &name() const { return _name; } ///< Graph name.
 
     // Parent context for profiler hierarchy (Workspace > Pipeline > Graph)
     void set_pipeline_name(std::string const &n) { _pipeline_name = n; }
@@ -329,8 +329,8 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     [[nodiscard]] std::string const                 &stage_type() const { return _stage_type; }
     [[nodiscard]] std::vector<Node> const           &nodes() const { return _nodes; } ///< Read-only access to nodes.
     [[nodiscard]] std::vector<Node>                 &nodes() { return _nodes; }       ///< Mutable access (for optimization passes).
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] size_t       num_nodes() const { return _nodes.size(); }     ///< Number of operation nodes.
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] size_t       num_tensors() const { return _tensors.size(); } ///< Number of registered tensors.
+    APIARY_EXPOSE [[nodiscard]] size_t               num_nodes() const { return _nodes.size(); }     ///< Number of operation nodes.
+    APIARY_EXPOSE [[nodiscard]] size_t               num_tensors() const { return _tensors.size(); } ///< Number of registered tensors.
 
     /// Read-only access to the tensor registry (TensorId → TensorHandle map).
     [[nodiscard]] std::unordered_map<TensorId, TensorHandle> const &tensors_map() const { return _tensors; }
@@ -466,8 +466,8 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * { CaptureGuard g(else_g); cg::einsum(...); }
      * @endcode
      */
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RVP(reference_internal) std::tuple<Graph &, Graph &> add_conditional(
-        std::string label, std::function<bool()> predicate);
+    APIARY_EXPOSE APIARY_RVP(reference_internal) std::tuple<Graph &, Graph &> add_conditional(std::string           label,
+                                                                                              std::function<bool()> predicate);
 
     /**
      * @brief Add a conditional node with lambda-captured branches.
@@ -503,8 +503,8 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @param[in] condition Called after each iteration with the iteration number.
      * @return Reference to the loop body Graph.
      */
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RVP(reference_internal) Graph &add_loop(std::string label, size_t max_iterations,
-                                                                                 std::function<bool(size_t)> condition);
+    APIARY_EXPOSE APIARY_RVP(reference_internal) Graph &add_loop(std::string label, size_t max_iterations,
+                                                                 std::function<bool(size_t)> condition);
 
     /**
      * @brief Add a loop node with lambda-captured body.
@@ -536,8 +536,8 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * without rvalue-reference deduction issues. C++ callers can keep
      * using either form.
      */
-    EINSUMS_PYBIND_EXPOSE void add_loop(std::string label, size_t max_iterations, std::function<bool(size_t)> condition,
-                                        std::function<void()> body_fn);
+    APIARY_EXPOSE void add_loop(std::string label, size_t max_iterations, std::function<bool(size_t)> condition,
+                                std::function<void()> body_fn);
 
     /**
      * @brief Mark a tensor's lifetime end with a Free node.
@@ -652,11 +652,10 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @endcode
      */
     template <typename T, typename Alloc = std::allocator<T>>
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("create_tensor", T = float, Alloc = std::allocator<float>)
-        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("create_tensor", T = double, Alloc = std::allocator<double>)
-            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("create_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("create_tensor", T = std::complex<double>,
-                                                     Alloc = std::allocator<std::complex<double>>)
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
                     GeneralRuntimeTensor<T, Alloc> &create_runtime_tensor(std::string name, std::vector<size_t> dims,
                                                                           bool intermediate = true) {
         using TensorType = GeneralRuntimeTensor<T, Alloc>;
@@ -692,11 +691,10 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
 
     /// Runtime-rank analog of create_zero_tensor().
     template <typename T, typename Alloc = std::allocator<T>>
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = float, Alloc = std::allocator<float>)
-        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = double, Alloc = std::allocator<double>)
-            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = std::complex<double>,
-                                                     Alloc = std::allocator<std::complex<double>>)
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
                     GeneralRuntimeTensor<T, Alloc> &create_zero_runtime_tensor(std::string name, std::vector<size_t> dims,
                                                                                bool intermediate = true) {
         auto &t = create_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), intermediate);
@@ -717,11 +715,10 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * passes to manage.
      */
     template <typename T, typename Alloc = std::allocator<T>>
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_tensor", T = float, Alloc = std::allocator<float>)
-        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_tensor", T = double, Alloc = std::allocator<double>)
-            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<double>,
-                                                     Alloc = std::allocator<std::complex<double>>)
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
                     GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::vector<size_t> dims,
                                                                            bool intermediate = false) {
         using TensorType = GeneralRuntimeTensor<T, Alloc>;
@@ -753,12 +750,10 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     /// Runtime-rank analog of declare_zero_tensor() (graph-owned, deferred, zeroed
     /// at materialize time).
     template <typename T, typename Alloc = std::allocator<T>>
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = float, Alloc = std::allocator<float>)
-        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = double, Alloc = std::allocator<double>)
-            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<float>,
-                                                 Alloc = std::allocator<std::complex<float>>)
-                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<double>,
-                                                     Alloc = std::allocator<std::complex<double>>)
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
                     GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::vector<size_t> dims,
                                                                                 bool intermediate = false) {
         auto &t = declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), intermediate);

@@ -57,10 +57,10 @@ auto create_zero_tensor(bool row_major, std::string const &name, MultiIndex... i
  * across the four bound dtypes).
  */
 template <typename T = double>
-EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_AS("create_zero_tensor", double) EINSUMS_PYBIND_INSTANTIATE_AS("create_zero_tensor", float)
-    EINSUMS_PYBIND_INSTANTIATE_AS("create_zero_tensor", std::complex<double>)
-        EINSUMS_PYBIND_INSTANTIATE_AS("create_zero_tensor", std::complex<float>) auto create_zero_tensor(std::string const         &name,
-                                                                                                         std::vector<size_t> const &dims)
+APIARY_EXPOSE APIARY_INSTANTIATE_AS("create_zero_tensor", double) APIARY_INSTANTIATE_AS("create_zero_tensor", float)
+    APIARY_INSTANTIATE_AS("create_zero_tensor", std::complex<double>)
+        APIARY_INSTANTIATE_AS("create_zero_tensor", std::complex<float>) auto create_zero_tensor(std::string const         &name,
+                                                                                                 std::vector<size_t> const &dims)
             -> RuntimeTensor<T> {
     EINSUMS_LOG_TRACE("creating zero runtime tensor {} (rank {})", name, dims.size());
     RuntimeTensor<T> A(name, dims);

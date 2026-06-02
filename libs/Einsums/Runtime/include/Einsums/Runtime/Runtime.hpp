@@ -39,7 +39,7 @@ struct EINSUMS_EXPORT InvalidRuntimeState : std::runtime_error {
  *
  * @versionadded{1.0.0}
  */
-enum class EINSUMS_PYBIND_EXPOSE RuntimeState : std::int8_t {
+enum class APIARY_EXPOSE RuntimeState : std::int8_t {
     Invalid        = -1,      /**< The state is invalid. */
     Initialized    = 0,       /**< The runtime has been initialized. */
     PreStartup     = 1,       /**< The runtime is running the pre-startup functions. */
@@ -193,7 +193,7 @@ EINSUMS_EXPORT RuntimeConfiguration &runtime_config();
 /// \note   This function needs to be executed on an einsums-thread. It will
 ///         return false otherwise.
 /// @versionadded{1.0.0}
-EINSUMS_PYBIND_EXPOSE EINSUMS_EXPORT bool is_running();
+APIARY_EXPOSE EINSUMS_EXPORT bool is_running();
 
 } // namespace einsums
 

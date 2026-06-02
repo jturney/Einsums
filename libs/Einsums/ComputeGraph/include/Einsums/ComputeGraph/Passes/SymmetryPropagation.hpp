@@ -33,10 +33,9 @@ namespace einsums::compute_graph::passes {
  * Only tags graph-owned intermediates (``is_intermediate == true``).
  * User-owned tensors are never mutated by this pass.
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) EINSUMS_EXPORT SymmetryPropagation
-    : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT SymmetryPropagation : public OptimizerPass {
   public:
-    EINSUMS_PYBIND_EXPOSE SymmetryPropagation() = default;
+    APIARY_EXPOSE SymmetryPropagation() = default;
 
     [[nodiscard]] std::string name() const override { return "SymmetryPropagation"; }
     bool                      run(Graph &graph) override;
@@ -51,7 +50,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of tensor handles this pass tagged with an inferred descriptor.
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("num_inferred") [[nodiscard]] std::size_t num_inferred() const { return _num_inferred; }
+    APIARY_EXPOSE APIARY_GETTER("num_inferred") [[nodiscard]] std::size_t num_inferred() const { return _num_inferred; }
 
   private:
     std::size_t _num_inferred{0};

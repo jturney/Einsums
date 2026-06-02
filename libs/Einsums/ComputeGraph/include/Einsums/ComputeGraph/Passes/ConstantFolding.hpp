@@ -37,10 +37,9 @@ namespace einsums::compute_graph::passes {
  * @note The pass executes folded nodes during the pass itself (not during
  *       graph.execute()). This means the pass has side effects on tensor data.
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) EINSUMS_EXPORT ConstantFolding
-    : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT ConstantFolding : public OptimizerPass {
   public:
-    EINSUMS_PYBIND_EXPOSE ConstantFolding() = default;
+    APIARY_EXPOSE ConstantFolding() = default;
 
     [[nodiscard]] std::string name() const override { return "ConstantFolding"; }
     bool                      run(Graph &graph) override;
@@ -54,7 +53,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of nodes folded in the last run.
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("num_folded") [[nodiscard]] size_t num_folded() const { return _num_folded; }
+    APIARY_EXPOSE APIARY_GETTER("num_folded") [[nodiscard]] size_t num_folded() const { return _num_folded; }
 
   private:
     size_t _num_folded{0};

@@ -56,10 +56,10 @@ namespace einsums::compute_graph::passes {
  * The fold's @f$L@f$ build is loop-invariant when @f$B@f$ is a constant integral,
  * so a subsequent LoopInvariantHoisting can lift it out of an iteration loop.
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph")
-    EINSUMS_PYBIND_HOLDER(std::shared_ptr) EINSUMS_EXPORT LinearCombinationContractionFolding : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT LinearCombinationContractionFolding
+    : public OptimizerPass {
   public:
-    EINSUMS_PYBIND_EXPOSE LinearCombinationContractionFolding() = default;
+    APIARY_EXPOSE LinearCombinationContractionFolding() = default;
 
     [[nodiscard]] std::string name() const override { return "LinearCombinationContractionFolding"; }
 

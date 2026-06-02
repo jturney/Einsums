@@ -36,10 +36,9 @@ namespace einsums::compute_graph::passes {
  * @note Tensor ID redirections are propagated through all remaining nodes'
  *       input lists, so multi-level CSE works in a single pass.
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) EINSUMS_EXPORT CSE
-    : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT CSE : public OptimizerPass {
   public:
-    EINSUMS_PYBIND_EXPOSE CSE() = default;
+    APIARY_EXPOSE CSE() = default;
 
     [[nodiscard]] std::string name() const override { return "CSE"; }
 

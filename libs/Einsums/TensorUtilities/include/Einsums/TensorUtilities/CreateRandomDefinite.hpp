@@ -99,12 +99,10 @@ auto create_random_definite(std::string const &name, int rows, int cols, RemoveC
  * RuntimeTensor. Adapter over the typed Tensor<T, 2> entry point.
  */
 template <typename T = double>
-EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_AS("create_random_definite", double)
-    EINSUMS_PYBIND_INSTANTIATE_AS("create_random_definite", float)
-        EINSUMS_PYBIND_INSTANTIATE_AS("create_random_definite", std::complex<double>)
-            EINSUMS_PYBIND_INSTANTIATE_AS("create_random_definite",
-                                          std::complex<float>) auto create_random_definite(std::string const &name, int n)
-                -> RuntimeTensor<T> {
+APIARY_EXPOSE APIARY_INSTANTIATE_AS("create_random_definite", double) APIARY_INSTANTIATE_AS("create_random_definite", float)
+    APIARY_INSTANTIATE_AS("create_random_definite", std::complex<double>)
+        APIARY_INSTANTIATE_AS("create_random_definite", std::complex<float>) auto create_random_definite(std::string const &name, int n)
+            -> RuntimeTensor<T> {
     return RuntimeTensor<T>(create_random_definite<T>(name, n, n));
 }
 

@@ -44,7 +44,7 @@ struct TiledRuntimeTensorView;
  *
  * @versionadded{2.0.0}
  */
-struct EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("IndexSpace") IndexSpace {
+struct APIARY_EXPOSE APIARY_RENAME("IndexSpace") IndexSpace {
     /// Per-irrep half-open ``[start, stop)`` ranges; one entry per irrep on the
     /// axis this space applies to.
     std::vector<std::pair<int, int>> ranges;
@@ -52,19 +52,19 @@ struct EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("IndexSpace") IndexSpace {
     IndexSpace() = default;
 
     /// Build from explicit per-irrep ``(start, stop)`` ranges.
-    EINSUMS_PYBIND_EXPOSE explicit IndexSpace(std::vector<std::pair<int, int>> r) : ranges(std::move(r)) {}
+    APIARY_EXPOSE explicit IndexSpace(std::vector<std::pair<int, int>> r) : ranges(std::move(r)) {}
 
     /// Number of irreps this space covers.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE int nirrep() const { return static_cast<int>(ranges.size()); }
+    [[nodiscard]] APIARY_EXPOSE int nirrep() const { return static_cast<int>(ranges.size()); }
 
     /// First index selected in irrep @p h.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE int start(int h) const { return ranges.at(static_cast<size_t>(h)).first; }
+    [[nodiscard]] APIARY_EXPOSE int start(int h) const { return ranges.at(static_cast<size_t>(h)).first; }
 
     /// One past the last index selected in irrep @p h.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE int stop(int h) const { return ranges.at(static_cast<size_t>(h)).second; }
+    [[nodiscard]] APIARY_EXPOSE int stop(int h) const { return ranges.at(static_cast<size_t>(h)).second; }
 
     /// Number of indices selected in irrep @p h.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE int length(int h) const {
+    [[nodiscard]] APIARY_EXPOSE int length(int h) const {
         auto const &p = ranges.at(static_cast<size_t>(h));
         return p.second - p.first;
     }
@@ -105,14 +105,14 @@ struct EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RENAME("IndexSpace") IndexSpace {
 template <typename T>
 struct
     // clang-format off
-EINSUMS_PYBIND_EXPOSE
+APIARY_EXPOSE
 // No buffer protocol: a multi-tile tensor has no single contiguous buffer.
 // Python fills/reads it per tile via tile_view(), which yields a numpy-backed
 // RuntimeTensorView over one tile.
-EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorF", TiledRuntimeTensor<float>)
-EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorD", TiledRuntimeTensor<double>)
-EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorC", TiledRuntimeTensor<std::complex<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<double>>)
+APIARY_INSTANTIATE_AS("TiledRuntimeTensorF", TiledRuntimeTensor<float>)
+APIARY_INSTANTIATE_AS("TiledRuntimeTensorD", TiledRuntimeTensor<double>)
+APIARY_INSTANTIATE_AS("TiledRuntimeTensorC", TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     TiledRuntimeTensor : public tensor_base::CoreTensor,
                          public tensor_base::TiledTensorNoExtra,
@@ -152,7 +152,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
         rebuild_grid();
     }
 
-    EINSUMS_PYBIND_EXPOSE TiledRuntimeTensor(std::string name, std::vector<std::vector<int>> tile_sizes)
+    APIARY_EXPOSE TiledRuntimeTensor(std::string name, std::vector<std::vector<int>> tile_sizes)
         : TiledRuntimeTensor(std::move(name), std::move(tile_sizes), GlobalConfigMap::get_singleton().get_bool("row-major")) {}
 
     TiledRuntimeTensor(TiledRuntimeTensor const &)            = default;
@@ -164,11 +164,11 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
     // ── Shape / metadata ─────────────────────────────────────────────
 
     /// Runtime rank (number of grid axes).
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE size_t rank() const noexcept { return _dims.size(); }
+    [[nodiscard]] APIARY_EXPOSE size_t rank() const noexcept { return _dims.size(); }
 
     /// Global extent along axis @p d (sum of that axis's tile sizes). Supports
     /// Python-style negative indexing.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE size_t dim(int d) const {
+    [[nodiscard]] APIARY_EXPOSE size_t dim(int d) const {
         int const r = static_cast<int>(_dims.size());
         if (d < 0) {
             d += r;
@@ -180,7 +180,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
     }
 
     /// Global shape (one extent per axis).
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::vector<size_t> dims() const { return _dims; }
+    [[nodiscard]] APIARY_EXPOSE std::vector<size_t> dims() const { return _dims; }
 
     /// Row/column-major stride of the *global* bounding shape along axis @p d.
     /// Advisory only — a tiled tensor has no single contiguous buffer; these
@@ -205,8 +205,8 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
     /// A tiled tensor is always considered a full view of itself.
     [[nodiscard]] bool full_view_of_underlying() const noexcept { return true; }
 
-    [[nodiscard]] EINSUMS_PYBIND_GETTER("name") std::string const &name() const noexcept { return _name; }
-    EINSUMS_PYBIND_SETTER("name") void set_name(std::string const &new_name) { _name = new_name; }
+    [[nodiscard]] APIARY_GETTER("name") std::string const &name() const noexcept { return _name; }
+    APIARY_SETTER("name") void set_name(std::string const &new_name) { _name = new_name; }
 
     [[nodiscard]] bool is_row_major() const noexcept { return _row_major; }
 
@@ -239,7 +239,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
 
     /// Number of grid cells (product of the per-axis tile counts). This is the
     /// number of *possible* tiles, not the number populated.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE size_t grid_size() const noexcept {
+    [[nodiscard]] APIARY_EXPOSE size_t grid_size() const noexcept {
         size_t g = 1;
         for (auto const &axis : _tile_sizes) {
             g *= axis.size();
@@ -248,13 +248,13 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
     }
 
     /// Number of populated (non-zero) tiles.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE size_t num_filled_tiles() const noexcept { return _tiles.size(); }
+    [[nodiscard]] APIARY_EXPOSE size_t num_filled_tiles() const noexcept { return _tiles.size(); }
 
     /// The per-axis tile sizes (the grid).
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::vector<std::vector<int>> const &tile_sizes() const noexcept { return _tile_sizes; }
+    [[nodiscard]] APIARY_EXPOSE std::vector<std::vector<int>> const &tile_sizes() const noexcept { return _tile_sizes; }
 
     /// The per-axis tile offsets (running sums of the tile sizes).
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::vector<std::vector<int>> const &tile_offsets() const noexcept { return _tile_offsets; }
+    [[nodiscard]] APIARY_EXPOSE std::vector<std::vector<int>> const &tile_offsets() const noexcept { return _tile_offsets; }
 
     /// Read-only access to the populated tiles.
     [[nodiscard]] map_type const &tiles() const noexcept { return _tiles; }
@@ -263,9 +263,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
     [[nodiscard]] map_type &tiles() noexcept { return _tiles; }
 
     /// True if a tile exists at the given grid coordinate.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE bool has_tile(std::vector<int> const &coord) const {
-        return _tiles.find(normalize(coord)) != _tiles.end();
-    }
+    [[nodiscard]] APIARY_EXPOSE bool has_tile(std::vector<int> const &coord) const { return _tiles.find(normalize(coord)) != _tiles.end(); }
 
     /**
      * @brief Declare a tile at @p coord (deferred — no storage allocated).
@@ -277,7 +275,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
      *
      * @param coord The grid coordinate, one index per axis.
      */
-    EINSUMS_PYBIND_EXPOSE void add_tile(std::vector<int> const &coord) {
+    APIARY_EXPOSE void add_tile(std::vector<int> const &coord) {
         std::vector<int> key = normalize(coord);
         if (_tiles.find(key) != _tiles.end()) {
             return;
@@ -335,7 +333,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
     /// it if absent) and return a numpy-backed view of it. KEEP_ALIVE(0,1) ties
     /// this tensor's lifetime to the returned view, so the tile's storage
     /// outlives any numpy array Python builds from it.
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) RuntimeTensorView<T> tile_view(std::vector<int> const &coord) {
+    APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> tile_view(std::vector<int> const &coord) {
         auto &t = tile(coord);
         t.materialize();
         return RuntimeTensorView<T>(t);
@@ -344,7 +342,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
     /// Create a non-owning @ref TiledRuntimeTensorView restricted to one
     /// @ref IndexSpace per axis (e.g. ``A.view({o, v, o, v})``). The view keeps
     /// this tensor alive; defined out-of-line below TiledRuntimeTensorView.
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) TiledRuntimeTensorView<T> view(std::vector<IndexSpace> const &spaces);
+    APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) TiledRuntimeTensorView<T> view(std::vector<IndexSpace> const &spaces);
 
     // ── Deferred-allocation lifecycle ────────────────────────────────
     //
@@ -352,7 +350,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
     // pick up the same capabilities. These operate tile-by-tile.
 
     /// Allocate backing storage for every populated tile. Idempotent.
-    EINSUMS_PYBIND_EXPOSE void materialize() {
+    APIARY_EXPOSE void materialize() {
         for (auto &[coord, t] : _tiles) {
             t.materialize();
         }
@@ -371,21 +369,21 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::com
 
     /// Release backing storage for every populated tile, returning to the
     /// deferred state. The sparsity pattern (which tiles exist) is preserved.
-    EINSUMS_PYBIND_EXPOSE void release() {
+    APIARY_EXPOSE void release() {
         for (auto &[coord, t] : _tiles) {
             t.release();
         }
     }
 
     /// Zero every populated tile.
-    EINSUMS_PYBIND_EXPOSE void zero() {
+    APIARY_EXPOSE void zero() {
         for (auto &[coord, t] : _tiles) {
             t.zero();
         }
     }
 
     /// Set every element of every populated tile to @p val.
-    EINSUMS_PYBIND_EXPOSE void set_all(T val) {
+    APIARY_EXPOSE void set_all(T val) {
         for (auto &[coord, t] : _tiles) {
             t.set_all(val);
         }
@@ -501,11 +499,11 @@ extern template class EINSUMS_EXPORT TiledRuntimeTensor<std::complex<double>>;
 template <typename T>
 struct
     // clang-format off
-EINSUMS_PYBIND_EXPOSE
-EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorViewF", TiledRuntimeTensorView<float>)
-EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorViewD", TiledRuntimeTensorView<double>)
-EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorViewC", TiledRuntimeTensorView<std::complex<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorViewZ", TiledRuntimeTensorView<std::complex<double>>)
+APIARY_EXPOSE
+APIARY_INSTANTIATE_AS("TiledRuntimeTensorViewF", TiledRuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("TiledRuntimeTensorViewD", TiledRuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("TiledRuntimeTensorViewC", TiledRuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("TiledRuntimeTensorViewZ", TiledRuntimeTensorView<std::complex<double>>)
     // clang-format on
     TiledRuntimeTensorView : public tensor_base::CoreTensor,
                              public tensor_base::TiledTensorNoExtra {
@@ -553,11 +551,11 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorViewZ", TiledRuntimeTensorView<
         }
     }
 
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::size_t rank() const noexcept { return _spaces.size(); }
+    [[nodiscard]] APIARY_EXPOSE std::size_t rank() const noexcept { return _spaces.size(); }
 
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::vector<std::size_t> dims() const { return _dims; }
+    [[nodiscard]] APIARY_EXPOSE std::vector<std::size_t> dims() const { return _dims; }
 
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::size_t dim(int d) const {
+    [[nodiscard]] APIARY_EXPOSE std::size_t dim(int d) const {
         int const r = static_cast<int>(_dims.size());
         if (d < 0) {
             d += r;
@@ -566,19 +564,19 @@ EINSUMS_PYBIND_INSTANTIATE_AS("TiledRuntimeTensorViewZ", TiledRuntimeTensorView<
     }
 
     /// Per-axis, per-irrep sizes of the selected sub-blocks.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::vector<std::vector<int>> const &tile_sizes() const noexcept { return _tile_sizes; }
+    [[nodiscard]] APIARY_EXPOSE std::vector<std::vector<int>> const &tile_sizes() const noexcept { return _tile_sizes; }
 
     /// The view shares the parent's sparsity pattern (same populated coords).
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE bool has_tile(std::vector<int> const &coord) const { return _parent->has_tile(coord); }
+    [[nodiscard]] APIARY_EXPOSE bool has_tile(std::vector<int> const &coord) const { return _parent->has_tile(coord); }
 
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE std::size_t num_filled_tiles() const noexcept { return _parent->num_filled_tiles(); }
+    [[nodiscard]] APIARY_EXPOSE std::size_t num_filled_tiles() const noexcept { return _parent->num_filled_tiles(); }
 
-    [[nodiscard]] EINSUMS_PYBIND_GETTER("name") std::string const &name() const noexcept { return _name; }
+    [[nodiscard]] APIARY_GETTER("name") std::string const &name() const noexcept { return _name; }
 
     /// Sub-view of the parent's tile at @p coord, restricted to this view's
     /// per-axis ranges for that tile's irreps. The result is a live
     /// @ref RuntimeTensorView onto the parent tile's storage.
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) RuntimeTensorView<T> tile_view(std::vector<int> const &coord) {
+    APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> tile_view(std::vector<int> const &coord) {
         auto &t = _parent->tile(coord);
         t.materialize();
         std::vector<SliceSpec> specs(_spaces.size());

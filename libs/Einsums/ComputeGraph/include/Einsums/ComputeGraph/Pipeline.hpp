@@ -114,13 +114,13 @@ struct LoopNode {
  * @see Graph for individual stage graphs
  * @see LoopNode for iterative stage configuration
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_NOMOVE EINSUMS_EXPORT Pipeline {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT Pipeline {
   public:
     /**
      * @brief Construct a pipeline with the given name.
      * @param[in] name Human-readable name for profiling and debugging.
      */
-    EINSUMS_PYBIND_EXPOSE explicit Pipeline(std::string name);
+    APIARY_EXPOSE explicit Pipeline(std::string name);
 
     /**
      * @brief Add a one-shot (non-looping) stage to the pipeline.
@@ -131,7 +131,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @param[in] name Human-readable name for the stage.
      * @return Reference to the stage's Graph.
      */
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RVP(reference_internal) Graph &add_stage(std::string const &name);
+    APIARY_EXPOSE APIARY_RVP(reference_internal) Graph &add_stage(std::string const &name);
 
     /**
      * @brief Add an iterative loop stage to the pipeline.
@@ -145,8 +145,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @param[in] condition Predicate called after each iteration. Return false to stop.
      * @return Reference to the loop body's Graph.
      */
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RVP(reference_internal) Graph &add_loop(std::string name, size_t max_iterations,
-                                                                                 LoopCondition condition);
+    APIARY_EXPOSE APIARY_RVP(reference_internal) Graph &add_loop(std::string name, size_t max_iterations, LoopCondition condition);
 
     /**
      * @brief Add a one-shot stage with lambda-captured body.
@@ -208,7 +207,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * pipeline.apply(pm);
      * @endcode
      */
-    EINSUMS_PYBIND_EXPOSE bool apply(PassManager &pm);
+    APIARY_EXPOSE bool apply(PassManager &pm);
 
     /**
      * @brief Execute all stages in order.
@@ -216,7 +215,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * One-shot stages execute once. Loop stages repeat until their condition
      * returns false or max_iterations is reached.
      */
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RELEASE_GIL void execute();
+    APIARY_EXPOSE APIARY_RELEASE_GIL void execute();
 
     /**
      * @brief Execute all stages using a custom executor.

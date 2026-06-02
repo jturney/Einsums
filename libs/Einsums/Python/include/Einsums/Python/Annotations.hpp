@@ -5,7 +5,7 @@
 
 #pragma once
 
-// The binding-annotation contract (the EINSUMS_PYBIND_* macros) is owned by
+// The binding-annotation contract (the APIARY_* macros) is owned by
 // Apiary — the standalone libclang codegen tool, vendored at
 // external/apiary. This thin shim is kept at the historical
 // ``Einsums/Python/Annotations.hpp`` path so existing includes across the

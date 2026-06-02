@@ -1191,7 +1191,7 @@ void invert(SmartPtr *A) {
 /**
  * @brief Indicates the type of norm to compute.
  */
-enum class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("linalg") Norm : char{
+enum class APIARY_EXPOSE APIARY_MODULE("linalg") Norm : char{
     MAXABS    = 'M', /**< \f$val = max(abs(Aij))\f$, largest absolute value of the matrix A. */
     ONE       = '1', /**< \f$val = norm1(A)\f$, 1-norm of the matrix A (maximum column sum) */
     INFTY     = 'I', /**< \f$val = normI(A)\f$, infinity norm of the matrix A (maximum row sum) */
@@ -1289,7 +1289,7 @@ template <TensorConcept AType>
  *      input should be const and should not be overwritten.
  * @endversion
  */
-enum class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("linalg") Vectors : char{
+enum class APIARY_EXPOSE APIARY_MODULE("linalg") Vectors : char{
     ALL  = 'A' /**< Compute all vectors. */,
     SOME = 'S' /**< Compute some of the vectors. The number is the smaller of the number of rows and columns. */,
     // Unused since the A tensor should be const.

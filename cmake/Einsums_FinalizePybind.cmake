@@ -213,7 +213,7 @@ function(einsums_finalize_pybind)
             COMMAND ${CMAKE_COMMAND} -E make_directory
                     "${CMAKE_BINARY_DIR}/generated/pybind"
             COMMAND $<TARGET_FILE:apiary>
-                    --register-function einsums_pybind_register_${_mod}
+                    --register-function apiary_register_${_mod}
                     --output ${_out}
                     --stub-output ${_stub_out}
                     ${_source_includes}
@@ -264,8 +264,8 @@ function(einsums_finalize_pybind)
     set(_prototypes "")
     set(_calls "")
     foreach(_mod IN LISTS _modules)
-        set(_prototypes "${_prototypes}void einsums_pybind_register_${_mod}(::pybind11::module_ &m);\n")
-        set(_calls      "${_calls}    einsums_pybind_register_${_mod}(m);\n")
+        set(_prototypes "${_prototypes}void apiary_register_${_mod}(::pybind11::module_ &m);\n")
+        set(_calls      "${_calls}    apiary_register_${_mod}(m);\n")
     endforeach()
 
     set(_modules_hdr_dir "${CMAKE_BINARY_DIR}/generated/pybind/include/Einsums/Python/Detail")
@@ -285,7 +285,7 @@ function(einsums_finalize_pybind)
 "\n"
 "${_prototypes}"
 "\n"
-"inline void einsums_pybind_register_all(::pybind11::module_ &m) {\n"
+"inline void apiary_register_all(::pybind11::module_ &m) {\n"
 "${_calls}"
 "}\n"
     )

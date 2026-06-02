@@ -32,7 +32,7 @@
 #include <string>
 
 namespace einsums {
-namespace EINSUMS_PYBIND_MODULE("io") tensor_io {
+namespace APIARY_MODULE("io") tensor_io {
 
 /**
  * @brief Read a tensor from a .etn file (graph-aware).
@@ -42,11 +42,11 @@ namespace EINSUMS_PYBIND_MODULE("io") tensor_io {
  */
 // clang-format off
 template <CoreBasicTensorConcept TensorType>
-EINSUMS_PYBIND_EXPOSE
-EINSUMS_PYBIND_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_EXPOSE
+APIARY_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
     // clang-format on
     void read_etn(std::string file_path, std::string tensor_name, TensorType *output) {
     auto executor = [file_path, tensor_name, output]() {
@@ -70,11 +70,11 @@ EINSUMS_PYBIND_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<std::complex
  */
 // clang-format off
 template <CoreBasicTensorConcept TensorType>
-EINSUMS_PYBIND_EXPOSE
-EINSUMS_PYBIND_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_EXPOSE
+APIARY_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
     // clang-format on
     void write_etn(std::string file_path, std::string tensor_name, TensorType const *input) {
     auto executor = [file_path, tensor_name, input]() {
@@ -100,11 +100,11 @@ EINSUMS_PYBIND_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<std::comple
  * mutating `ranges` between executor invocations — useful for
  * read-transform-write-back patterns over batches of an ERI.
  */
-struct EINSUMS_PYBIND_EXPOSE Slab {
-    EINSUMS_PYBIND_EXPOSE Slab() = default;
-    EINSUMS_PYBIND_EXPOSE explicit Slab(std::vector<std::pair<size_t, size_t>> ranges) : ranges(std::move(ranges)) {}
+struct APIARY_EXPOSE Slab {
+    APIARY_EXPOSE Slab() = default;
+    APIARY_EXPOSE explicit Slab(std::vector<std::pair<size_t, size_t>> ranges) : ranges(std::move(ranges)) {}
 
-    EINSUMS_PYBIND_EXPOSE std::vector<std::pair<size_t, size_t>> ranges;
+    APIARY_EXPOSE std::vector<std::pair<size_t, size_t>> ranges;
 };
 
 namespace detail {
@@ -160,11 +160,11 @@ void file_write_slice_dispatch(TensorFile &file, std::string_view name, TensorTy
  */
 // clang-format off
 template <CoreBasicTensorConcept TensorType>
-EINSUMS_PYBIND_EXPOSE
-EINSUMS_PYBIND_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_EXPOSE
+APIARY_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
     // clang-format on
     void read_slice_etn(std::string file_path, std::string tensor_name, Slab const &slab, TensorType *output) {
     auto executor = [file_path, tensor_name, slab_ptr = &slab, output]() {
@@ -197,11 +197,11 @@ EINSUMS_PYBIND_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<std::c
  */
 // clang-format off
 template <CoreBasicTensorConcept TensorType>
-EINSUMS_PYBIND_EXPOSE
-EINSUMS_PYBIND_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_EXPOSE
+APIARY_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
     // clang-format on
     void write_slice_etn(std::string file_path, std::string tensor_name, Slab const &slab, TensorType const *input) {
     auto executor = [file_path, tensor_name, slab_ptr = &slab, input]() {
@@ -235,5 +235,5 @@ inline void checkpoint_etn(std::string file_path, compute_graph::Graph &graph) {
     ctx.record(compute_graph::OpKind::DiskWrite, fmt::format("checkpoint_etn({})", file_path), {}, {}, std::move(executor));
 }
 
-} // namespace EINSUMS_PYBIND_MODULE("io")tensor_io
+} // namespace APIARY_MODULE("io")tensor_io
 } // namespace einsums

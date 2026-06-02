@@ -56,9 +56,9 @@ namespace einsums::compute_graph {
  * // eri and C survive — reuse in MP2, CCSD, etc.
  * @endcode
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_NOMOVE Workspace {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace {
   public:
-    EINSUMS_PYBIND_EXPOSE explicit Workspace(std::string name) : _name(std::move(name)) {}
+    APIARY_EXPOSE explicit Workspace(std::string name) : _name(std::move(name)) {}
 
     ~Workspace() = default;
 
@@ -68,7 +68,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     Workspace(Workspace &&)                 = default;
     Workspace &operator=(Workspace &&)      = default;
 
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("name") [[nodiscard]] std::string const &name() const { return _name; }
+    APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string const &name() const { return _name; }
 
     /**
      * @brief Declare a tensor with deferred allocation. No initialization.
@@ -149,11 +149,10 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * surface across ranks.
      */
     template <typename T, typename Alloc = std::allocator<T>>
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_tensor", T = float, Alloc = std::allocator<float>)
-        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_tensor", T = double, Alloc = std::allocator<double>)
-            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<double>,
-                                                     Alloc = std::allocator<std::complex<double>>)
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
                     GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string tensor_name, std::vector<size_t> dims) {
         using TensorType = GeneralRuntimeTensor<T, Alloc>;
         auto *ptr        = new TensorType(typename TensorType::DeferredAlloc{}, std::move(tensor_name), std::move(dims));
@@ -182,12 +181,10 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
 
     /// Runtime-rank analog of declare_zero_tensor().
     template <typename T, typename Alloc = std::allocator<T>>
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = float, Alloc = std::allocator<float>)
-        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = double, Alloc = std::allocator<double>)
-            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<float>,
-                                                 Alloc = std::allocator<std::complex<float>>)
-                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<double>,
-                                                     Alloc = std::allocator<std::complex<double>>)
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
                     GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string tensor_name, std::vector<size_t> dims) {
         auto &t                   = declare_runtime_tensor<T, Alloc>(std::move(tensor_name), std::move(dims));
         _handles.back().init_kind = InitKind::Zero;
@@ -197,12 +194,11 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
 
     /// Runtime-rank analog of declare_random_tensor().
     template <typename T, typename Alloc = std::allocator<T>>
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = float, Alloc = std::allocator<float>)
-        EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = double, Alloc = std::allocator<double>)
-            EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = std::complex<float>,
-                                                 Alloc = std::allocator<std::complex<float>>)
-                EINSUMS_PYBIND_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = std::complex<double>,
-                                                     Alloc = std::allocator<std::complex<double>>)
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = std::complex<double>,
+                                             Alloc = std::allocator<std::complex<double>>)
                     GeneralRuntimeTensor<T, Alloc> &declare_random_runtime_tensor(std::string tensor_name, std::vector<size_t> dims) {
         auto &t                   = declare_runtime_tensor<T, Alloc>(std::move(tensor_name), std::move(dims));
         _handles.back().init_kind = InitKind::Random;
@@ -217,10 +213,10 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     [[nodiscard]] std::vector<TensorHandle> &tensor_handles() { return _handles; }
 
     /// Number of declared tensors.
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("size") [[nodiscard]] size_t size() const { return _handles.size(); }
+    APIARY_EXPOSE APIARY_GETTER("size") [[nodiscard]] size_t size() const { return _handles.size(); }
 
     /// Materialize and initialize all deferred tensors.
-    EINSUMS_PYBIND_EXPOSE void materialize_all() {
+    APIARY_EXPOSE void materialize_all() {
         for (auto &h : _handles) {
             if (h.alloc_state == AllocState::Deferred) {
                 switch (h.init_kind) {

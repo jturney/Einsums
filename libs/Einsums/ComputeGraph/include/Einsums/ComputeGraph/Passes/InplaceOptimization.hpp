@@ -26,15 +26,14 @@ namespace einsums::compute_graph::passes {
  * - Exactly one node reads from it (consumer)
  * - Tensor dimensions match between producer output and consumer input
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) EINSUMS_EXPORT InplaceOptimization
-    : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT InplaceOptimization : public OptimizerPass {
   public:
-    EINSUMS_PYBIND_EXPOSE InplaceOptimization() = default;
+    APIARY_EXPOSE InplaceOptimization() = default;
 
     [[nodiscard]] std::string name() const override { return "InplaceOptimization"; }
     bool                      run(Graph &graph) override;
 
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
+    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
 
   private:
     size_t _num_candidates{0};

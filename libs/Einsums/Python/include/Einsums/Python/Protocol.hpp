@@ -9,7 +9,7 @@
 // pybind11/nanobind binding lambdas (Plan C protocol synthesis).
 //
 // The einsums-pybind codegen tool emits Python protocol bindings (buffer,
-// iterator, subscript) from EINSUMS_PYBIND_*_PROTOCOL_STD directives. The
+// iterator, subscript) from APIARY_*_PROTOCOL_STD directives. The
 // emitted lambdas live in the codegen TU (where pybind11 is available) and
 // translate Python types (py::tuple, py::slice, py::buffer, ...) into the
 // neutral types declared here, then call user-provided pure-C++ helpers.
@@ -36,7 +36,7 @@ namespace einsums {
 /// Codegen-emitted ``__getitem__`` / ``__setitem__`` lambdas convert each
 /// slot of the incoming Python tuple/slice/int into one ``SliceSpec`` and
 /// pass the resulting vector to the user-side helper named in
-/// ``EINSUMS_PYBIND_INDEX_PROTOCOL_STD``. Negative indices are normalized
+/// ``APIARY_INDEX_PROTOCOL_STD``. Negative indices are normalized
 /// against the parent's dim before this struct is built — user helpers
 /// never see negative values.
 struct SliceSpec {
@@ -62,7 +62,7 @@ struct SliceSpec {
 ///
 /// Used in both directions:
 /// - **Outgoing** (RuntimeTensor → NumPy): the ``data_fn`` named in
-///   ``EINSUMS_PYBIND_BUFFER_PROTOCOL_STD`` returns one of these; the
+///   ``APIARY_BUFFER_PROTOCOL_STD`` returns one of these; the
 ///   codegen lambda converts to ``pybind11::buffer_info`` /
 ///   ``nb::ndarray`` per backend.
 /// - **Incoming** (NumPy → RuntimeTensor for bulk-assign): the codegen

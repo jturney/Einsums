@@ -54,20 +54,20 @@ namespace einsums {
 template <typename T, typename Alloc>
 struct
     // clang-format off
-EINSUMS_PYBIND_EXPOSE
+APIARY_EXPOSE
 // GeneralRuntimeTensor's allocator depends on T, so we pin each
 // (T, std::allocator<T>) tuple individually rather than using a flat
 // INSTANTIATE_TEMPLATE cross-product. BUFFER_PROTOCOL_STD lets the
 // codegen synthesize the buffer-info builder from the named pure-C++
 // accessors — Tensor.hpp has zero pybind11 references.
-EINSUMS_PYBIND_BUFFER_PROTOCOL
-EINSUMS_PYBIND_BUFFER_PROTOCOL_STD(data = data, rank = rank, dim = dim, stride = stride, element_type = T)
-EINSUMS_PYBIND_ITERATOR_STD(begin = begin, end = end)
-EINSUMS_PYBIND_INDEX_PROTOCOL_STD(element_type = T, rank = rank, dim = dim, at_element = at_element, set_element = set_element, at_view = at_view, view_type = einsums::RuntimeTensorView<T>)
-EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorF", GeneralRuntimeTensor<float, std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorD", GeneralRuntimeTensor<double, std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorC", GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_BUFFER_PROTOCOL
+APIARY_BUFFER_PROTOCOL_STD(data = data, rank = rank, dim = dim, stride = stride, element_type = T)
+APIARY_ITERATOR_STD(begin = begin, end = end)
+APIARY_INDEX_PROTOCOL_STD(element_type = T, rank = rank, dim = dim, at_element = at_element, set_element = set_element, at_view = at_view, view_type = einsums::RuntimeTensorView<T>)
+APIARY_INSTANTIATE_AS("RuntimeTensorF", GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("RuntimeTensorD", GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("RuntimeTensorC", GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
     // clang-format on
     GeneralRuntimeTensor : public tensor_base::CoreTensor,
                            tensor_base::RuntimeTensorNoType,
@@ -135,7 +135,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
      */
     using ConstReference = typename detail::TensorImpl<T>::const_reference;
 
-    EINSUMS_PYBIND_EXPOSE GeneralRuntimeTensor() noexcept = default;
+    APIARY_EXPOSE GeneralRuntimeTensor() noexcept = default;
 
     /**
      * @brief Tag type for deferred allocation.
@@ -254,8 +254,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
      * @param dims The dimensions of the tensor.
      */
     template <Container Dim>
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_MEMBER(Dim = std::vector<size_t>)
-        GeneralRuntimeTensor(std::string name, Dim const &dims)
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER(Dim = std::vector<size_t>) GeneralRuntimeTensor(std::string name, Dim const &dims)
         : _name{std::move(name)}, _impl(nullptr, dims, GlobalConfigMap::get_singleton().get_bool("row-major")) {
         _data.resize(_impl.size());
 
@@ -366,7 +365,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     /**
      * @brief Set all of the data in the tensor to zero.
      */
-    EINSUMS_PYBIND_EXPOSE virtual void zero() {
+    APIARY_EXPOSE virtual void zero() {
         if constexpr (IsDeviceTensor) {
             gpu::device_memset(_data.data(), 0, _data.size() * sizeof(T));
         } else {
@@ -384,7 +383,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
      * even if never called; we branch with if constexpr instead of
      * static_assert to keep the device variant compilable.)
      */
-    EINSUMS_PYBIND_EXPOSE virtual void set_all(T val) {
+    APIARY_EXPOSE virtual void set_all(T val) {
         if constexpr (IsDeviceTensor) {
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "set_all() is not supported for device runtime tensors. Use a GPU kernel instead.");
         } else {
@@ -396,7 +395,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
      * @brief Flat-element iterators (LegacyForwardIterator).
      *
      * Iterate over the storage in linear memory order. Used by Python's
-     * iteration protocol via EINSUMS_PYBIND_ITERATOR_STD; for C++ callers,
+     * iteration protocol via APIARY_ITERATOR_STD; for C++ callers,
      * also enables range-for and STL algorithms over the tensor's elements.
      * This iterates *elements*, not rows — for row-iteration, take
      * sub-views first.
@@ -501,7 +500,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     /**
      * @brief Read a single element by full integer index.
      *
-     * Pure-C++ entry point used by EINSUMS_PYBIND_INDEX_PROTOCOL_STD.
+     * Pure-C++ entry point used by APIARY_INDEX_PROTOCOL_STD.
      * The index vector must have one entry per axis (length == rank()),
      * each in [0, dim(i)). Negative-index normalization happens at the
      * Python layer before this is called; the C++ entry point assumes
@@ -516,7 +515,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     /**
      * @brief Write a single element by full integer index.
      *
-     * Pure-C++ entry point used by EINSUMS_PYBIND_INDEX_PROTOCOL_STD.
+     * Pure-C++ entry point used by APIARY_INDEX_PROTOCOL_STD.
      * Same preconditions as at_element.
      */
     void set_element(std::vector<std::int64_t> const &idx, T value) {
@@ -527,7 +526,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     /**
      * @brief Build a sub-view from a per-axis SliceSpec vector.
      *
-     * Pure-C++ entry point used by EINSUMS_PYBIND_INDEX_PROTOCOL_STD's
+     * Pure-C++ entry point used by APIARY_INDEX_PROTOCOL_STD's
      * view-returning paths. The spec vector must have one entry per axis
      * (length == rank()). Each axis's contribution to the resulting
      * view depends on its kind:
@@ -975,7 +974,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
      *
      * @param d The axis to query. Negative values will wrap around.
      */
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE virtual size_t dim(int d) const { return _impl.dim(d); }
+    [[nodiscard]] APIARY_EXPOSE virtual size_t dim(int d) const { return _impl.dim(d); }
 
     /**
      * @brief Get the dimensions of the tensor.
@@ -997,7 +996,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
      *
      * @param d The axis to query. Negative values will wrap around.
      */
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE virtual size_t stride(int d) const { return _impl.stride(d); }
+    [[nodiscard]] APIARY_EXPOSE virtual size_t stride(int d) const { return _impl.stride(d); }
 
     /**
      * @brief Return the strides of the tensor.
@@ -1016,7 +1015,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     /**
      * @brief Returns the linear size of the tensor.
      */
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("size") virtual auto size() const -> size_t { return _data.size(); }
+    [[nodiscard]] APIARY_EXPOSE APIARY_GETTER("size") virtual auto size() const -> size_t { return _data.size(); }
 
     /**
      * @brief Returns whether the tensor sees all of the underlying data.
@@ -1028,19 +1027,19 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     /**
      * @brief Get the rank of the tensor.
      */
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE virtual size_t rank() const noexcept { return _impl.rank(); }
+    [[nodiscard]] APIARY_EXPOSE virtual size_t rank() const noexcept { return _impl.rank(); }
 
     /**
      * @brief Set the name of the tensor.
      *
      * @param new_name The new name of the tensor.
      */
-    EINSUMS_PYBIND_SETTER("name") virtual void set_name(std::string const &new_name) { this->_name = new_name; }
+    APIARY_SETTER("name") virtual void set_name(std::string const &new_name) { this->_name = new_name; }
 
     /**
      * @brief Get the name of the tensor.
      */
-    [[nodiscard]] EINSUMS_PYBIND_GETTER("name") virtual std::string const &name() const noexcept { return this->_name; }
+    [[nodiscard]] APIARY_GETTER("name") virtual std::string const &name() const noexcept { return this->_name; }
 
     [[nodiscard]] virtual detail::TensorImpl<T> &impl() noexcept { return _impl; }
 
@@ -1054,7 +1053,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     // ``.T`` property (see einsums/__init__.py); KEEP_ALIVE(0,1) ties this
     // tensor's storage to the returned view so numpy arrays built from it
     // stay valid.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) RuntimeTensorView<T> transpose_view() {
+    [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> transpose_view() {
         return RuntimeTensorView<T>(_impl.transpose_view());
     }
 
@@ -1063,7 +1062,7 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
     // Zero-copy axis-permuted view (result axis i takes parent axis perm[i]).
     // Backs the eager ``.transpose(axes)`` / ``.swapaxes`` (see einsums/__init__.py);
     // the capture path uses cg.permute_view instead. KEEP_ALIVE(0,1) ties storage.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) RuntimeTensorView<T> permute_view(std::vector<size_t> const &perm) {
+    [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> permute_view(std::vector<size_t> const &perm) {
         return RuntimeTensorView<T>(_impl.permute_view(perm));
     }
 
@@ -1275,19 +1274,19 @@ EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::comple
  * @brief Represents a view of a tensor whose properties can be determined at runtime but not compile time.
  */
 template <typename T>
-struct EINSUMS_PYBIND_EXPOSE
+struct APIARY_EXPOSE
     // Same Plan C protocol surface as GeneralRuntimeTensor: zero-copy numpy
     // interop via buffer protocol, Python iter, scalar subscript, AND
     // slice/partial-tuple subscript — at_view returns a nested
     // RuntimeTensorView, so a view slices just like a full tensor.
-    EINSUMS_PYBIND_BUFFER_PROTOCOL EINSUMS_PYBIND_BUFFER_PROTOCOL_STD(data = data, rank = rank, dim = dim, stride = stride,
-                                                                      element_type = T)
-        EINSUMS_PYBIND_INDEX_PROTOCOL_STD(element_type = T, rank = rank, dim = dim, at_element = at_element, set_element = set_element,
-                                          at_view = at_view, view_type = einsums::RuntimeTensorView<T>)
-            EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorViewF", RuntimeTensorView<float>)
-                EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorViewD", RuntimeTensorView<double>)
-                    EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorViewC", RuntimeTensorView<std::complex<float>>)
-                        EINSUMS_PYBIND_INSTANTIATE_AS("RuntimeTensorViewZ", RuntimeTensorView<std::complex<double>>) RuntimeTensorView
+    APIARY_BUFFER_PROTOCOL
+    APIARY_BUFFER_PROTOCOL_STD(data = data, rank = rank, dim = dim, stride = stride, element_type = T)
+        APIARY_INDEX_PROTOCOL_STD(element_type = T, rank = rank, dim = dim, at_element = at_element, set_element = set_element,
+                                  at_view = at_view, view_type = einsums::RuntimeTensorView<T>)
+            APIARY_INSTANTIATE_AS("RuntimeTensorViewF", RuntimeTensorView<float>)
+                APIARY_INSTANTIATE_AS("RuntimeTensorViewD", RuntimeTensorView<double>)
+                    APIARY_INSTANTIATE_AS("RuntimeTensorViewC", RuntimeTensorView<std::complex<float>>)
+                        APIARY_INSTANTIATE_AS("RuntimeTensorViewZ", RuntimeTensorView<std::complex<double>>) RuntimeTensorView
     : public tensor_base::CoreTensor,
       public tensor_base::RuntimeTensorNoType,
       public tensor_base::RuntimeTensorViewNoType,
@@ -1801,7 +1800,7 @@ struct EINSUMS_PYBIND_EXPOSE
      *
      * @param d The axis to query. Negative indices will be wrapped around.
      */
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE virtual auto dim(int d) const -> size_t { return _impl.dim(d); }
+    [[nodiscard]] APIARY_EXPOSE virtual auto dim(int d) const -> size_t { return _impl.dim(d); }
 
     /**
      * @brief Gets the dimensions of the tensor.
@@ -1813,7 +1812,7 @@ struct EINSUMS_PYBIND_EXPOSE
      *
      * @param d The axis to query. Negative indices will be wrapped around.
      */
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE virtual auto stride(int d) const -> size_t { return _impl.stride(d); }
+    [[nodiscard]] APIARY_EXPOSE virtual auto stride(int d) const -> size_t { return _impl.stride(d); }
 
     /**
      * @brief Gets the strides of the tensor.
@@ -1834,7 +1833,7 @@ struct EINSUMS_PYBIND_EXPOSE
     /**
      * @brief Returns the linear size of the tensor.
      */
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("size") virtual auto size() const noexcept -> size_t { return _impl.size(); }
+    [[nodiscard]] APIARY_EXPOSE APIARY_GETTER("size") virtual auto size() const noexcept -> size_t { return _impl.size(); }
 
     /**
      * @brief Checks whether the tensor sees all of the underlying data.
@@ -1856,7 +1855,7 @@ struct EINSUMS_PYBIND_EXPOSE
     /**
      * @brief Gets the rank of the tensor.
      */
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE virtual size_t rank() const noexcept { return _impl.rank(); }
+    [[nodiscard]] APIARY_EXPOSE virtual size_t rank() const noexcept { return _impl.rank(); }
 
     /**
      * @brief Read a single element by full integer index.
@@ -1930,7 +1929,7 @@ struct EINSUMS_PYBIND_EXPOSE
     // ``.T`` property (see einsums/__init__.py); KEEP_ALIVE(0,1) ties this
     // tensor's storage to the returned view so numpy arrays built from it
     // stay valid.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) RuntimeTensorView<T> transpose_view() {
+    [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> transpose_view() {
         return RuntimeTensorView<T>(_impl.transpose_view());
     }
 
@@ -1939,7 +1938,7 @@ struct EINSUMS_PYBIND_EXPOSE
     // Zero-copy axis-permuted view (result axis i takes parent axis perm[i]).
     // Backs the eager ``.transpose(axes)`` / ``.swapaxes`` (see einsums/__init__.py);
     // the capture path uses cg.permute_view instead. KEEP_ALIVE(0,1) ties storage.
-    [[nodiscard]] EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_KEEP_ALIVE(0, 1) RuntimeTensorView<T> permute_view(std::vector<size_t> const &perm) {
+    [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> permute_view(std::vector<size_t> const &perm) {
         return RuntimeTensorView<T>(_impl.permute_view(perm));
     }
 

@@ -40,13 +40,13 @@ class Graph;
  * @note Passes that modify the graph should call graph.mark_sorted() if they
  *       produce a valid topological ordering, to prevent unnecessary re-sorting.
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) OptimizerPass {
   public:
     virtual ~OptimizerPass() = default;
 
     /// @brief Human-readable pass name — exposed so Python tests can
     ///        assert which pass they're invoking.
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("name") [[nodiscard]] virtual std::string name() const = 0;
+    APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] virtual std::string name() const = 0;
 
     /**
      * @brief Run the optimization pass on the given graph.
@@ -94,10 +94,10 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
      * prefixed with the pass name. Usually set in bulk via
      * ``PassManager::set_verbosity`` rather than per pass.
      */
-    EINSUMS_PYBIND_EXPOSE void set_verbosity(int level) { _verbosity = level; }
+    APIARY_EXPOSE void set_verbosity(int level) { _verbosity = level; }
 
     /// @brief Current verbosity level (see set_verbosity).
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("verbosity") [[nodiscard]] int verbosity() const { return _verbosity; }
+    APIARY_EXPOSE APIARY_GETTER("verbosity") [[nodiscard]] int verbosity() const { return _verbosity; }
 
   protected:
     /**
@@ -143,12 +143,12 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
  * @see Graph::apply(PassManager&)
  * @see Pipeline::apply(PassManager&)
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_NOMOVE EINSUMS_EXPORT PassManager {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT PassManager {
   public:
     /// Default-construct an empty PassManager. Explicit (rather than
     /// implicit) so the binding codegen has a constructor declaration to
-    /// annotate with EINSUMS_PYBIND_EXPOSE.
-    EINSUMS_PYBIND_EXPOSE PassManager() = default;
+    /// annotate with APIARY_EXPOSE.
+    APIARY_EXPOSE PassManager() = default;
 
     // The vector-of-shared_ptr storage makes PassManager copyable; we
     // don't promise that to C++ callers (NOCOPY/NOMOVE controls the
@@ -196,7 +196,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     // pyi codegen (which copies parameter names verbatim) doesn't emit
     // a method signature whose argument name collides with Python's
     // ``pass`` keyword — pyright can't parse it.
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RVP(reference_internal) PassManager &add(std::shared_ptr<OptimizerPass> optimizer_pass) {
+    APIARY_EXPOSE APIARY_RVP(reference_internal) PassManager &add(std::shared_ptr<OptimizerPass> optimizer_pass) {
         if (_verbosity != 0) {
             optimizer_pass->set_verbosity(_verbosity);
         }
@@ -218,7 +218,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * g.apply(pm)
      * @endcode
      */
-    EINSUMS_PYBIND_EXPOSE void set_verbosity(int level) {
+    APIARY_EXPOSE void set_verbosity(int level) {
         _verbosity = level;
         for (auto &pass : _passes) {
             pass->set_verbosity(level);
@@ -231,7 +231,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * @param[in,out] graph The graph to optimize.
      * @return True if any pass modified the graph.
      */
-    EINSUMS_PYBIND_EXPOSE bool run(Graph &graph);
+    APIARY_EXPOSE bool run(Graph &graph);
 
     /**
      * @brief Get the list of passes for inspection.
@@ -242,7 +242,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
     /**
      * @brief Number of passes in the pipeline.
      */
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("size") [[nodiscard]] size_t size() const { return _passes.size(); }
+    APIARY_EXPOSE APIARY_GETTER("size") [[nodiscard]] size_t size() const { return _passes.size(); }
 
     /**
      * @brief Create a PassManager with all built-in passes in recommended order.
@@ -304,7 +304,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      * can't bind ``add<PassType>()`` (templated) and so needs an
      * instance method to put the canonical pass list together.
      */
-    EINSUMS_PYBIND_EXPOSE void populate_default();
+    APIARY_EXPOSE void populate_default();
 
   private:
     std::vector<std::shared_ptr<OptimizerPass>> _passes;

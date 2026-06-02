@@ -32,10 +32,9 @@ namespace einsums::compute_graph::passes {
  * // Nodes are now ordered to minimize peak memory
  * @endcode
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) EINSUMS_EXPORT Reorder
-    : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT Reorder : public OptimizerPass {
   public:
-    EINSUMS_PYBIND_EXPOSE Reorder() = default;
+    APIARY_EXPOSE Reorder() = default;
 
     [[nodiscard]] std::string name() const override { return "Reorder"; }
 

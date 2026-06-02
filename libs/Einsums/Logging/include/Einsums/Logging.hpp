@@ -206,9 +206,9 @@ namespace einsums {
 /// Out-of-range values are clamped by spdlog. Compile-time disablement
 /// (``EINSUMS_ACTIVE_LOG_LEVEL``) takes precedence — runtime
 /// ``set_log_level(0)`` cannot re-enable TRACE in a Release build.
-EINSUMS_PYBIND_EXPOSE EINSUMS_EXPORT void set_log_level(int level);
+APIARY_EXPOSE EINSUMS_EXPORT void set_log_level(int level);
 
 /// Return the current runtime log level on the einsums logger.
-EINSUMS_PYBIND_EXPOSE EINSUMS_EXPORT int get_log_level();
+APIARY_EXPOSE EINSUMS_EXPORT int get_log_level();
 
 } // namespace einsums

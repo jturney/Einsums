@@ -45,10 +45,9 @@ namespace einsums::compute_graph::passes {
  *     double(chain.original_flops()) / double(chain.optimal_flops()));
  * @endcode
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) EINSUMS_EXPORT ChainParenthesization
-    : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT ChainParenthesization : public OptimizerPass {
   public:
-    EINSUMS_PYBIND_EXPOSE ChainParenthesization() = default;
+    APIARY_EXPOSE ChainParenthesization() = default;
 
     [[nodiscard]] std::string name() const override { return "ChainParenthesization"; }
 
@@ -63,13 +62,13 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
      * @brief Total FLOPs with the original (left-to-right) evaluation order.
      * @return FLOP count, or 0 if no chains were detected.
      */
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("original_flops") [[nodiscard]] size_t original_flops() const { return _original_flops; }
+    APIARY_EXPOSE APIARY_GETTER("original_flops") [[nodiscard]] size_t original_flops() const { return _original_flops; }
 
     /**
      * @brief Total FLOPs with the optimal parenthesization.
      * @return FLOP count, or 0 if no chains were detected.
      */
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("optimal_flops") [[nodiscard]] size_t optimal_flops() const { return _optimal_flops; }
+    APIARY_EXPOSE APIARY_GETTER("optimal_flops") [[nodiscard]] size_t optimal_flops() const { return _optimal_flops; }
 
   private:
     size_t _original_flops{0};

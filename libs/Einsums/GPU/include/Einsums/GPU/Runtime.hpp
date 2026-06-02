@@ -57,23 +57,23 @@ EINSUMS_EXPORT void device_memset(void *ptr, int value, size_t bytes);
 
 /// Synchronize the entire device. Blocks until all queued GPU work
 /// completes — wrap GPU calls in this when timing from Python.
-EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("gpu") EINSUMS_EXPORT void device_synchronize();
+APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT void device_synchronize();
 
 /// Query available (free) device memory in bytes.
 /// CUDA/HIP: queries the actual device.
 /// Mock: returns a configurable limit (default: system RAM / 2).
-EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("gpu") EINSUMS_EXPORT size_t available_device_memory();
+APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT size_t available_device_memory();
 
 /// Set the mock device memory limit (only effective on mock backend).
 /// Has no effect when a real GPU is present — useful for tests that want
 /// to simulate an OOM under the mock.
-EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("gpu") EINSUMS_EXPORT void set_mock_device_memory_limit(size_t bytes);
+APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT void set_mock_device_memory_limit(size_t bytes);
 
 /// Query the device name string.
 /// CUDA: cudaGetDeviceProperties().name
 /// HIP:  hipGetDeviceProperties().name
 /// MPS:  MTLDevice.name
 /// Mock: returns ""
-EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("gpu") [[nodiscard]] EINSUMS_EXPORT std::string device_name();
+APIARY_EXPOSE APIARY_MODULE("gpu") [[nodiscard]] EINSUMS_EXPORT std::string device_name();
 
 } // namespace einsums::gpu

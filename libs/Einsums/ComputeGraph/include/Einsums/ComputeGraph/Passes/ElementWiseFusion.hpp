@@ -29,10 +29,9 @@ namespace einsums::compute_graph::passes {
  * Currently fuses consecutive Scale operations on the same tensor
  * by multiplying their factors.
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) EINSUMS_EXPORT ElementWiseFusion
-    : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT ElementWiseFusion : public OptimizerPass {
   public:
-    EINSUMS_PYBIND_EXPOSE ElementWiseFusion() = default;
+    APIARY_EXPOSE ElementWiseFusion() = default;
 
     [[nodiscard]] std::string name() const override { return "ElementWiseFusion"; }
     bool                      run(Graph &graph) override;
@@ -42,7 +41,7 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER
     /// See docs/loop_handling_audit.md.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("num_fused") [[nodiscard]] size_t num_fused() const { return _num_fused; }
+    APIARY_EXPOSE APIARY_GETTER("num_fused") [[nodiscard]] size_t num_fused() const { return _num_fused; }
 
   private:
     size_t _num_fused{0};

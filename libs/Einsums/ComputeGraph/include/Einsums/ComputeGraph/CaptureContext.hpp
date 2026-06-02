@@ -36,14 +36,14 @@ namespace einsums::compute_graph {
  * @see CaptureGuard for the RAII wrapper
  * @see Graph for the container that receives captured nodes
  */
-class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_NOMOVE CaptureContext {
+class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE CaptureContext {
 
   public:
     /**
      * @brief Access the thread-local CaptureContext singleton.
      * @return Reference to this thread's CaptureContext.
      */
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_RVP(reference) static CaptureContext &current();
+    APIARY_EXPOSE APIARY_RVP(reference) static CaptureContext &current();
 
     /**
      * @brief Start capturing operations into the given graph.
@@ -54,7 +54,7 @@ class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUM
      * @param[in,out] graph The graph to capture into.
      * @throws std::logic_error If already capturing (nested captures not supported).
      */
-    EINSUMS_PYBIND_EXPOSE void begin_capture(Graph &graph);
+    APIARY_EXPOSE void begin_capture(Graph &graph);
 
     /**
      * @brief Stop capturing and finalize the graph.
@@ -64,13 +64,13 @@ class EINSUMS_EXPORT EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUM
      *
      * @throws std::logic_error If not currently capturing.
      */
-    EINSUMS_PYBIND_EXPOSE void end_capture();
+    APIARY_EXPOSE void end_capture();
 
     /**
      * @brief Check if this thread is currently in capture mode.
      * @return True if between begin_capture() and end_capture().
      */
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] bool is_capturing() const { return _capturing; }
+    APIARY_EXPOSE [[nodiscard]] bool is_capturing() const { return _capturing; }
 
     /// Access the graph being captured into.
     [[nodiscard]] Graph *graph() const { return _graph; }

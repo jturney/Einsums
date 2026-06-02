@@ -54,11 +54,11 @@ struct DependencyInfo {
  * in parallel via threads, on GPU streams, etc. The graph structure,
  * optimization passes, and capture mechanism are executor-agnostic.
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_NOMOVE Executor {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Executor {
   public:
     virtual ~Executor() = default;
 
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] virtual std::string name() const = 0;
+    APIARY_EXPOSE [[nodiscard]] virtual std::string name() const = 0;
 
     /**
      * @brief Execute all nodes of the graph.
@@ -77,10 +77,9 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
  * This is the default execution strategy. Nodes run one at a time
  * in dependency order. Zero overhead, no thread safety concerns.
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_NOMOVE EINSUMS_EXPORT SequentialExecutor
-    : public Executor {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT SequentialExecutor : public Executor {
   public:
-    EINSUMS_PYBIND_EXPOSE SequentialExecutor() = default;
+    APIARY_EXPOSE SequentialExecutor() = default;
 
     [[nodiscard]] std::string name() const override { return "Sequential"; }
     void                      execute(Graph &graph) override;
@@ -97,10 +96,9 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
  *       For small graphs, the sequential executor may be faster due
  *       to reduced thread management overhead.
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_NOMOVE EINSUMS_EXPORT OpenMPExecutor
-    : public Executor {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT OpenMPExecutor : public Executor {
   public:
-    EINSUMS_PYBIND_EXPOSE OpenMPExecutor() = default;
+    APIARY_EXPOSE OpenMPExecutor() = default;
 
     [[nodiscard]] std::string name() const override { return "OpenMP"; }
     void                      execute(Graph &graph) override;
@@ -125,10 +123,9 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
  * graph.execute(df_exec);  // Maximum overlap via TaskPool
  * @endcode
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY EINSUMS_PYBIND_NOMOVE EINSUMS_EXPORT DataflowExecutor
-    : public Executor {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT DataflowExecutor : public Executor {
   public:
-    EINSUMS_PYBIND_EXPOSE DataflowExecutor() = default;
+    APIARY_EXPOSE DataflowExecutor() = default;
 
     [[nodiscard]] std::string name() const override { return "Dataflow"; }
     void                      execute(Graph &graph) override;
@@ -142,10 +139,10 @@ class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_NOCOPY
      *
      * @param bytes Maximum bytes of simultaneously live tensor data. 0 = unlimited (default).
      */
-    EINSUMS_PYBIND_EXPOSE void set_memory_budget(size_t bytes) { _memory_budget = bytes; }
+    APIARY_EXPOSE void set_memory_budget(size_t bytes) { _memory_budget = bytes; }
 
     /// Get the current memory budget (0 = unlimited).
-    EINSUMS_PYBIND_EXPOSE [[nodiscard]] size_t memory_budget() const { return _memory_budget; }
+    APIARY_EXPOSE [[nodiscard]] size_t memory_budget() const { return _memory_budget; }
 
   private:
     size_t _memory_budget{0};

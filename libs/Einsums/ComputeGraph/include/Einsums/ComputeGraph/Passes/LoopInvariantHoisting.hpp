@@ -34,15 +34,14 @@ namespace einsums::compute_graph::passes {
  * }
  * @endcode
  */
-class EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_MODULE("graph") EINSUMS_PYBIND_HOLDER(std::shared_ptr) EINSUMS_EXPORT LoopInvariantHoisting
-    : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT LoopInvariantHoisting : public OptimizerPass {
   public:
-    EINSUMS_PYBIND_EXPOSE LoopInvariantHoisting() = default;
+    APIARY_EXPOSE LoopInvariantHoisting() = default;
 
     [[nodiscard]] std::string name() const override { return "LoopInvariantHoisting"; }
     bool                      run(Graph &graph) override;
 
-    EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_GETTER("num_hoisted") [[nodiscard]] size_t num_hoisted() const { return _num_hoisted; }
+    APIARY_EXPOSE APIARY_GETTER("num_hoisted") [[nodiscard]] size_t num_hoisted() const { return _num_hoisted; }
 
   private:
     size_t _num_hoisted{0};

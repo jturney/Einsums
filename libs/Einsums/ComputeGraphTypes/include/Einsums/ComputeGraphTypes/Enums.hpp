@@ -11,7 +11,7 @@
 #include <string_view>
 
 namespace einsums {
-namespace EINSUMS_PYBIND_MODULE("graph") compute_graph {
+namespace APIARY_MODULE("graph") compute_graph {
 
 /**
  * @brief Identifies the kind of operation a node represents.
@@ -25,7 +25,7 @@ namespace EINSUMS_PYBIND_MODULE("graph") compute_graph {
  * - **LAPACK-level**: SVD, QR, Syev, Heev, Geev, Gesv, Invert, Det, Pow, etc.
  * - **Other**: HPTTPermute, Custom
  */
-enum class EINSUMS_PYBIND_EXPOSE OpKind : std::uint8_t {
+enum class APIARY_EXPOSE OpKind : std::uint8_t {
     // TensorAlgebra operations
     Einsum,           ///< Tensor contraction via tensor_algebra::einsum()
     Permute,          ///< Index reordering via tensor_algebra::permute()
@@ -273,5 +273,5 @@ inline std::string_view op_kind_name(OpKind kind) {
     return "Unknown";
 }
 
-} // namespace EINSUMS_PYBIND_MODULE("graph")compute_graph
+} // namespace APIARY_MODULE("graph")compute_graph
 } // namespace einsums

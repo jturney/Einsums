@@ -100,12 +100,10 @@ auto create_random_semidefinite(std::string const &name, int rows, int cols, Rem
  * as a RuntimeTensor. Adapter over the typed Tensor<T, 2> entry point.
  */
 template <typename T = double>
-EINSUMS_PYBIND_EXPOSE EINSUMS_PYBIND_INSTANTIATE_AS("create_random_semidefinite", double)
-    EINSUMS_PYBIND_INSTANTIATE_AS("create_random_semidefinite", float)
-        EINSUMS_PYBIND_INSTANTIATE_AS("create_random_semidefinite", std::complex<double>)
-            EINSUMS_PYBIND_INSTANTIATE_AS("create_random_semidefinite",
-                                          std::complex<float>) auto create_random_semidefinite(std::string const &name, int n)
-                -> RuntimeTensor<T> {
+APIARY_EXPOSE APIARY_INSTANTIATE_AS("create_random_semidefinite", double) APIARY_INSTANTIATE_AS("create_random_semidefinite", float)
+    APIARY_INSTANTIATE_AS("create_random_semidefinite", std::complex<double>)
+        APIARY_INSTANTIATE_AS("create_random_semidefinite",
+                              std::complex<float>) auto create_random_semidefinite(std::string const &name, int n) -> RuntimeTensor<T> {
     return RuntimeTensor<T>(create_random_semidefinite<T>(name, n, n));
 }
 

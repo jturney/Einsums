@@ -475,22 +475,22 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
 /// @endcode
 template <RuntimeRankTensorConcept ParentT>
 // clang-format off
-EINSUMS_PYBIND_EXPOSE
-EINSUMS_PYBIND_MODULE("graph")
-EINSUMS_PYBIND_RVP(reference)
-EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_EXPOSE
+APIARY_MODULE("graph")
+APIARY_RVP(reference)
+APIARY_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+APIARY_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+APIARY_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 // A view of a view (e.g. (A.T)[1:]) must also stay graph-registered and
 // parent-aliasing, or the slice falls back to a raw eager view with
 // aliases == 0 — invisible to the scheduler's alias resolution, so a
 // reduction over it can be reordered ahead of an in-place write to the
 // owning tensor (bug-optimizer-scale-view-alias).
-EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::RuntimeTensorView<float>)
-EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::RuntimeTensorView<double>)
-EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::RuntimeTensorView<std::complex<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_python(
         ParentT &parent, std::vector<std::pair<std::int64_t, std::int64_t>> const &ranges) {
@@ -521,18 +521,18 @@ EINSUMS_PYBIND_INSTANTIATE_AS("view", einsums::RuntimeTensorView<std::complex<do
 /// ``view`` above only does full/range, i.e. rank-preserving slices).
 template <RuntimeRankTensorConcept ParentT>
 // clang-format off
-EINSUMS_PYBIND_EXPOSE
-EINSUMS_PYBIND_MODULE("graph")
-EINSUMS_PYBIND_RVP(reference)
-EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_EXPOSE
+APIARY_MODULE("graph")
+APIARY_RVP(reference)
+APIARY_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+APIARY_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+APIARY_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 // Rank-reducing index of a view (e.g. (A.T)[0]) — same rationale as ``view``.
-EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<float>)
-EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<double>)
-EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<std::complex<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_indexed_python(
         ParentT &parent, std::vector<std::tuple<int, std::int64_t, std::int64_t>> const &specs) {
@@ -577,17 +577,17 @@ EINSUMS_PYBIND_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<std::co
 /// @endcode
 template <RuntimeRankTensorConcept ParentT>
 // clang-format off
-EINSUMS_PYBIND_EXPOSE
-EINSUMS_PYBIND_MODULE("graph")
-EINSUMS_PYBIND_RVP(reference)
-EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<float>)
-EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<double>)
-EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<std::complex<float>>)
-EINSUMS_PYBIND_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_EXPOSE
+APIARY_MODULE("graph")
+APIARY_RVP(reference)
+APIARY_INSTANTIATE_AS("permute_view", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+APIARY_INSTANTIATE_AS("permute_view", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+APIARY_INSTANTIATE_AS("permute_view", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("permute_view", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &permute_view_python(ParentT                   &parent,
                                                                                              std::vector<size_t> const &perm) {
