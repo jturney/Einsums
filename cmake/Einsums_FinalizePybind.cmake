@@ -125,23 +125,9 @@ function(einsums_finalize_pybind)
 
     # System / SDK paths required for libtooling to find ``<string>``,
     # ``<stdarg.h>``, etc. Same set for every per-module invocation.
-    set(_pyb_system_flags "")
-    if(EINSUMS_PYBIND_CLANG_RESOURCE_DIR)
-        list(APPEND _pyb_system_flags "-resource-dir" "${EINSUMS_PYBIND_CLANG_RESOURCE_DIR}")
-    endif()
-    if(EINSUMS_PYBIND_SYSROOT)
-        list(APPEND _pyb_system_flags "-isysroot" "${EINSUMS_PYBIND_SYSROOT}")
-    endif()
-    if(EINSUMS_PYBIND_EXTRA_ISYSTEM)
-        list(APPEND _pyb_system_flags "-isystem" "${EINSUMS_PYBIND_EXTRA_ISYSTEM}")
-    endif()
-    # The actual project compiler's C++ standard-library / system header
-    # search dirs (probed at configure time). Without these the libtooling
-    # parse can't find ``<complex>`` and friends when the build compiler is
-    # gcc (libstdc++) rather than the clang that backs apiary.
-    foreach(_cxx_dir IN LISTS EINSUMS_PYBIND_CXX_INCLUDE_DIRS)
-        list(APPEND _pyb_system_flags "-isystem" "${_cxx_dir}")
-    endforeach()
+    # System / SDK / stdlib header search paths libtooling needs, assembled
+    # by apiary_detect_toolchain() (called from the root CMakeLists).
+    set(_pyb_system_flags "${APIARY_SYSTEM_FLAGS}")
 
     # Configure-time-generated Defines.hpp files. Adding them to every
     # codegen edge's DEPENDS makes the codegen re-fire when configure

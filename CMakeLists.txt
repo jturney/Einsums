@@ -931,110 +931,12 @@ set(EINSUMS_DEBUG_POSTFIX "d")
 if(EINSUMS_BUILD_PYTHON)
   add_subdirectory(external/apiary)
 
-  # Detect Clang's resource-dir and (on macOS) the SDK path so libtooling
-  # invocations can find system headers (``stdarg.h``, libc++ headers,
-  # macOS-specific includes). Without these, even a ``#include <string>``
-  # fails when running apiary standalone.
-  set(_pyb_clang_candidate "")
-  if(CMAKE_CXX_COMPILER MATCHES "clang")
-    set(_pyb_clang_candidate "${CMAKE_CXX_COMPILER}")
-  elseif(EXISTS "$ENV{CONDA_PREFIX}/bin/clang++")
-    set(_pyb_clang_candidate "$ENV{CONDA_PREFIX}/bin/clang++")
-  endif()
-  if(_pyb_clang_candidate)
-    execute_process(
-      COMMAND "${_pyb_clang_candidate}" -print-resource-dir
-      OUTPUT_VARIABLE EINSUMS_PYBIND_CLANG_RESOURCE_DIR
-      OUTPUT_STRIP_TRAILING_WHITESPACE
-      ERROR_QUIET
-    )
-  endif()
-  # Third-party headers (fmt, spdlog, hdf5, ...) live in the active conda
-  # env's include dir. Project compile lines use ``-isystem ${CONDA}/include``;
-  # mirror that for codegen so transitive includes (e.g. Config.hpp ->
-  # fmt/format.h) resolve.
-  if(DEFINED ENV{CONDA_PREFIX} AND EXISTS "$ENV{CONDA_PREFIX}/include")
-    set(EINSUMS_PYBIND_EXTRA_ISYSTEM "$ENV{CONDA_PREFIX}/include")
-  endif()
-
-  # The clang resource-dir only carries Clang's *builtin* headers
-  # (``stddef.h``, ``stdarg.h``, the x86 intrinsics like ``immintrin.h``,
-  # ...) — NOT the C++ standard library. Ask the actual project compiler for
-  # its real ``#include <...>`` search list and forward what we need as
-  # ``-isystem`` to the codegen.
-  #
-  # Linux (gcc/icpx as CMAKE_CXX_COMPILER): forward ONLY the C++ library dirs
-  # (``.../c++/...``). NEVER gcc's compiler-builtin dir
-  # (``.../lib/gcc/<triple>/<ver>/include``) — that holds gcc's own
-  # ``immintrin.h`` / ``ia32intrin.h``, which reference gcc-only
-  # ``__builtin_ia32_*`` functions Clang does not have. SIMD headers
-  # (HPTT -> SIMD/Vec.hpp) would otherwise blow up. Clang's own intrinsics
-  # come from its ``-resource-dir``; system C headers come from the (conda)
-  # sysroot.
-  #
-  # macOS: forward the WHOLE list AND drop ``-isysroot``. Reason: the macOS
-  # SDK that ships with the conda env is older than conda's libc++ and lacks
-  # C++23 additions like ``std::ranges::iota``. If we also pass ``-isysroot``
-  # we get TWO libc++ in the search (conda + SDK), and conda's libc++
-  # ``<math.h>``'s ``#include_next <math.h>`` resolves to the OLDER SDK
-  # libc++ ``<math.h>`` — mismatched, undefined ``FP_ZERO`` etc. Letting the
-  # probed conda paths replace ``-isysroot`` mirrors exactly what the
-  # library build sees (one libc++, one set of system headers), so the
-  # codegen and the compiler agree on the standard library.
-  set(EINSUMS_PYBIND_CXX_INCLUDE_DIRS "")
-  execute_process(
-    COMMAND "${CMAKE_CXX_COMPILER}" -std=c++${EINSUMS_WITH_CXX_STANDARD} -E -x c++ -v /dev/null
-    OUTPUT_QUIET
-    ERROR_VARIABLE _pyb_cxx_verbose
-    RESULT_VARIABLE _pyb_cxx_probe_rc
-  )
-  if(_pyb_cxx_probe_rc EQUAL 0 AND _pyb_cxx_verbose)
-    string(REGEX REPLACE "\r?\n" ";" _pyb_cxx_lines "${_pyb_cxx_verbose}")
-    set(_pyb_in_search FALSE)
-    foreach(_line IN LISTS _pyb_cxx_lines)
-      if(_line MATCHES "#include <\\.\\.\\.> search starts here:")
-        set(_pyb_in_search TRUE)
-      elseif(_line MATCHES "End of search list\\.")
-        set(_pyb_in_search FALSE)
-      elseif(_pyb_in_search)
-        string(STRIP "${_line}" _dir)
-        # Drop Apple's " (framework directory)" annotation; we don't use
-        # frameworks from the codegen path (no Einsums header pulls Cocoa
-        # /AppKit) and -isystem isn't the right knob for frameworks anyway.
-        if(_dir MATCHES " \\(framework directory\\)$")
-          continue()
-        endif()
-        if(NOT _dir OR NOT EXISTS "${_dir}")
-          continue()
-        endif()
-        if(APPLE)
-          # Forward everything except framework dirs — see note above.
-          list(APPEND EINSUMS_PYBIND_CXX_INCLUDE_DIRS "${_dir}")
-        else()
-          # Linux: keep only the C++ standard-library dirs.
-          if(_dir MATCHES "/c\\+\\+")
-            list(APPEND EINSUMS_PYBIND_CXX_INCLUDE_DIRS "${_dir}")
-          endif()
-        endif()
-      endif()
-    endforeach()
-  endif()
-
-  # The macOS SDK sysroot is folded into the probed include list above; do
-  # not also pass it as ``-isysroot`` (that would re-introduce the dual
-  # libc++ search-path collision described above). Linux has no sysroot
-  # variable to begin with.
-
-  message(STATUS "apiary resource-dir: ${EINSUMS_PYBIND_CLANG_RESOURCE_DIR}")
-  if(EINSUMS_PYBIND_EXTRA_ISYSTEM)
-    message(STATUS "apiary extra -isystem: ${EINSUMS_PYBIND_EXTRA_ISYSTEM}")
-  endif()
-  if(EINSUMS_PYBIND_CXX_INCLUDE_DIRS)
-    message(STATUS "apiary C++ include dirs: ${EINSUMS_PYBIND_CXX_INCLUDE_DIRS}")
-  else()
-    message(WARNING "apiary: could not probe ${CMAKE_CXX_COMPILER} for C++ "
-                    "header search paths — codegen may fail to find <complex> etc.")
-  endif()
+  # Probe the build compiler for the system/stdlib include paths libtooling
+  # needs (resource-dir, conda isystem, C++ stdlib dirs). Provided by the
+  # apiary submodule's ApiaryHelpers (included via add_subdirectory above);
+  # results land in APIARY_SYSTEM_FLAGS / APIARY_* and are consumed by
+  # einsums_finalize_pybind().
+  apiary_detect_toolchain(CXX_STANDARD ${EINSUMS_WITH_CXX_STANDARD})
 endif()
 # libs/Einsums/Python is now in the regular _Einsums_modules list in
 # libs/Einsums/CMakeLists.txt — it's a header-only module that must be
