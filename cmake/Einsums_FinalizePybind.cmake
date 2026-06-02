@@ -23,92 +23,6 @@
 # stays in the same directory — CMake silently drops cross-scope
 # custom-command outputs from a target's source list otherwise.
 
-# Recursively collect BUILD_INTERFACE include dirs AND
-# INTERFACE_COMPILE_DEFINITIONS reachable from `target` via
-# INTERFACE_LINK_LIBRARIES. CMake has no built-in for this; walking by
-# hand is reliable since INTERFACE_LINK_LIBRARIES is set explicitly by
-# einsums_add_module via target_link_libraries.
-#
-# Defines flow through to the codegen as ``-D<def>`` flags so headers
-# can use ``#if defined(EINSUMS_HAVE_GPU)`` etc. to conditionally include
-# different EINSUMS_PYBIND_INSTANTIATE lines. The set is dominated by
-# definitions added via einsums_add_config_define, but anything set on a
-# target via target_compile_definitions also rides along.
-function(_einsums_pybind_collect_transitive_includes target inc_out_var def_out_var visited_var)
-    if(NOT TARGET ${target})
-        return()
-    endif()
-    # CMake function scope quirk: when we ``set(${out_var} ... PARENT_SCOPE)``
-    # the parent's variable updates but our LOCAL copy of that variable
-    # (inherited at function-entry time) does NOT. Recursive callees
-    # inherit OUR local copy, not the parent's, so we must keep the two
-    # in sync — local set() for visibility to recursive children, then
-    # PARENT_SCOPE set() at exit for propagation back up.
-    set(_local_inc     "${${inc_out_var}}")
-    set(_local_def     "${${def_out_var}}")
-    set(_local_visited "${${visited_var}}")
-
-    if("${target}" IN_LIST _local_visited)
-        return()
-    endif()
-    list(APPEND _local_visited "${target}")
-
-    get_target_property(_inc ${target} INTERFACE_INCLUDE_DIRECTORIES)
-    if(_inc)
-        foreach(_dir IN LISTS _inc)
-            set(_path "")
-            string(REGEX REPLACE "^\\$<BUILD_INTERFACE:(.+)>$" "\\1" _path "${_dir}")
-            if(NOT _path STREQUAL "${_dir}")
-                list(APPEND _local_inc "${_path}")
-            elseif(_dir MATCHES "^\\$<")
-                # skip other genex
-            else()
-                list(APPEND _local_inc "${_dir}")
-            endif()
-        endforeach()
-    endif()
-
-    get_target_property(_def ${target} INTERFACE_COMPILE_DEFINITIONS)
-    if(_def)
-        foreach(_d IN LISTS _def)
-            set(_clean "")
-            string(REGEX REPLACE "^\\$<BUILD_INTERFACE:(.+)>$" "\\1" _clean "${_d}")
-            if(NOT _clean STREQUAL "${_d}")
-                list(APPEND _local_def "${_clean}")
-            elseif(_d MATCHES "^\\$<")
-                # skip other genex (e.g. config-conditional defines we
-                # can't evaluate at configure time)
-            else()
-                list(APPEND _local_def "${_d}")
-            endif()
-        endforeach()
-    endif()
-
-    # Make the local accumulators visible to recursive children via the
-    # function's own scope (their inherited copy will see these values).
-    set(${inc_out_var}     "${_local_inc}")
-    set(${def_out_var}     "${_local_def}")
-    set(${visited_var}     "${_local_visited}")
-
-    get_target_property(_link ${target} INTERFACE_LINK_LIBRARIES)
-    if(_link)
-        foreach(_dep IN LISTS _link)
-            if(TARGET ${_dep})
-                _einsums_pybind_collect_transitive_includes("${_dep}" ${inc_out_var} ${def_out_var} ${visited_var})
-                # Recursive callee writes via PARENT_SCOPE which updates
-                # THIS function's scope — re-read into our locals so
-                # the next iteration sees its progress.
-                set(_local_inc     "${${inc_out_var}}")
-                set(_local_def     "${${def_out_var}}")
-                set(_local_visited "${${visited_var}}")
-            endif()
-        endforeach()
-    endif()
-
-    set(${inc_out_var} "${_local_inc}"     PARENT_SCOPE)
-    set(${def_out_var} "${_local_def}"     PARENT_SCOPE)
-    set(${visited_var} "${_local_visited}" PARENT_SCOPE)
-endfunction()
 
 function(einsums_finalize_pybind)
     if(NOT EINSUMS_BUILD_PYTHON)
@@ -123,11 +37,6 @@ function(einsums_finalize_pybind)
         return()
     endif()
 
-    # System / SDK paths required for libtooling to find ``<string>``,
-    # ``<stdarg.h>``, etc. Same set for every per-module invocation.
-    # System / SDK / stdlib header search paths libtooling needs, assembled
-    # by apiary_detect_toolchain() (called from the root CMakeLists).
-    set(_pyb_system_flags "${APIARY_SYSTEM_FLAGS}")
 
     # Configure-time-generated Defines.hpp files. Adding them to every
     # codegen edge's DEPENDS makes the codegen re-fire when configure
@@ -153,94 +62,37 @@ function(einsums_finalize_pybind)
         get_property(_bin_inc      GLOBAL PROPERTY EINSUMS_PYBIND_BIN_INC_${_mod})
         get_property(_libname      GLOBAL PROPERTY EINSUMS_PYBIND_LIBNAME_${_mod})
 
-        set(_inc_flags
-            "-I${_header_root}"
-            "-I${_bin_inc}"
-            "-I${CMAKE_BINARY_DIR}"
-            "-I${CMAKE_SOURCE_DIR}/libs/Einsums/Python/include"
-            "-I${CMAKE_SOURCE_DIR}/external/apiary/include"
-        )
-        # Walk MODULE_DEPENDENCIES TRANSITIVELY at finalize time. Every
-        # Einsums module target exists by now, including ones declared
-        # later in libs/Einsums/CMakeLists.txt than the caller. Recursing
-        # via INTERFACE_LINK_LIBRARIES catches indirect dependencies
-        # (e.g. Tensor's Config -> Preprocessor) that aren't in the
-        # caller's MODULE_DEPENDENCIES list. Walks both include dirs and
-        # compile definitions in one pass.
-        set(_collected_dirs "")
-        set(_collected_defs "")
-        set(_visited "")
-        foreach(_dep IN LISTS _deps)
-            _einsums_pybind_collect_transitive_includes("${_dep}" _collected_dirs _collected_defs _visited)
-        endforeach()
-        list(REMOVE_DUPLICATES _collected_dirs)
-        list(REMOVE_DUPLICATES _collected_defs)
-        foreach(_dir IN LISTS _collected_dirs)
-            list(APPEND _inc_flags "-I${_dir}")
-        endforeach()
-        # Forward compile definitions as ``-D`` flags so headers can use
-        # ``#if defined(EINSUMS_HAVE_GPU)`` to gate INSTANTIATE choices
-        # on configure-time options.
-        set(_def_flags "")
-        foreach(_d IN LISTS _collected_defs)
-            list(APPEND _def_flags "-D${_d}")
-        endforeach()
-
-        set(_out      "${CMAKE_BINARY_DIR}/generated/pybind/${_libname}_${_mod}_pybind.cpp")
-        set(_stub_out "${CMAKE_BINARY_DIR}/generated/pybind/${_libname}_${_mod}.pyi")
-
-        set(_source_includes "")
-        foreach(_h IN LISTS _relheaders)
-            list(APPEND _source_includes --source-include "${_h}")
-        endforeach()
-
-        add_custom_command(
-            OUTPUT ${_out} ${_stub_out}
-            COMMAND ${CMAKE_COMMAND} -E make_directory
-                    "${CMAKE_BINARY_DIR}/generated/pybind"
-            COMMAND $<TARGET_FILE:apiary>
-                    --register-function apiary_register_${_mod}
-                    --output ${_out}
-                    --stub-output ${_stub_out}
-                    ${_source_includes}
-                    ${_headers}
-                    --
-                    -std=c++${EINSUMS_WITH_CXX_STANDARD}
-                    ${_pyb_system_flags}
-                    ${_def_flags}
-                    ${_inc_flags}
-            DEPENDS ${_headers} apiary ${_all_defines_headers}
-            VERBATIM
-            COMMENT "apiary: generating ${_libname}_${_mod}_pybind.cpp + .pyi"
+        # apiary_add_bindings populates these via OUT_* (PARENT_SCOPE);
+        # pre-declare so the static cmake-audit check sees them defined.
+        set(_out "")
+        set(_stub_out "")
+        set(_docs_json "")
+        apiary_add_bindings(
+            BINDING DOCS_JSON
+            HEADERS ${_headers}
+            SOURCE_INCLUDES ${_relheaders}
+            REGISTER_FUNCTION apiary_register_${_mod}
+            MODULE einsums
+            DEPENDS_TARGETS ${_deps}
+            OUTPUT_DIR "${CMAKE_BINARY_DIR}/generated/pybind"
+            OUTPUT_NAME "${_libname}_${_mod}"
+            CXX_STANDARD ${EINSUMS_WITH_CXX_STANDARD}
+            # Module-local include roots not carried by the dependency targets'
+            # usage requirements: the module's own source + build include dirs,
+            # the build root (Config.hpp), the annotations shim, and apiary's
+            # own headers.
+            EXTRA_FLAGS
+                "-I${_header_root}"
+                "-I${_bin_inc}"
+                "-I${CMAKE_BINARY_DIR}"
+                "-I${CMAKE_SOURCE_DIR}/libs/Einsums/Python/include"
+                "-I${CMAKE_SOURCE_DIR}/external/apiary/include"
+            EXTRA_DEPENDS ${_all_defines_headers}
+            OUT_BINDING _out OUT_STUB _stub_out OUT_DOCS_JSON _docs_json
         )
         list(APPEND _generated_tus   "${_out}")
         list(APPEND _generated_stubs "${_stub_out}")
-
-        # Documentation JSON: the same parse, emitted as a tool-agnostic
-        # description of the Python-facing surface (see DocsJson.hpp). The
-        # render step (PyEinsumsDocs below) turns these into reST. Same
-        # flags as the binding command minus the binding-only options.
-        set(_docs_json "${CMAKE_BINARY_DIR}/generated/pybind/${_libname}_${_mod}.docs.json")
-        add_custom_command(
-            OUTPUT ${_docs_json}
-            COMMAND ${CMAKE_COMMAND} -E make_directory
-                    "${CMAKE_BINARY_DIR}/generated/pybind"
-            COMMAND $<TARGET_FILE:apiary>
-                    --emit-docs-json
-                    --module einsums
-                    --output ${_docs_json}
-                    ${_source_includes}
-                    ${_headers}
-                    --
-                    -std=c++${EINSUMS_WITH_CXX_STANDARD}
-                    ${_pyb_system_flags}
-                    ${_def_flags}
-                    ${_inc_flags}
-            DEPENDS ${_headers} apiary ${_all_defines_headers}
-            VERBATIM
-            COMMENT "apiary: emitting docs JSON for ${_libname}_${_mod}"
-        )
-        list(APPEND _docs_jsons "${_docs_json}")
+        list(APPEND _docs_jsons      "${_docs_json}")
     endforeach()
 
     # Generate the tiny per-module list header consumed by the static
