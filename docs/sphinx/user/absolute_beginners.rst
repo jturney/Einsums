@@ -4,6 +4,8 @@
      Licensed under the MIT License. See LICENSE.txt in the project root for license information.
     ----------------------------------------------------------------------------------------------
 
+.. _absolute_beginners:
+
 ******************************************
 Einsums: The Absolute Basics for Beginners
 ******************************************
@@ -65,7 +67,7 @@ Then in your main.cpp you can have something like
     }
 
 Einsums is also compatible with Python through Pybind 11. To use it, simply use :code:`import einsums`. Much of
-the C++ code is exported under the :py:mod:`einsums.core` module, with some extra utilities in other modules. 
+the C++ code is exported under the ``einsums._core`` module, with some extra utilities in other modules.
 
 Reading the example code
 ========================
@@ -93,7 +95,8 @@ Setting up a program
 To create a program using Einsums, you must initialize the library before you do anything with Einsums,
 and finalize it after you finish using Einsums.
 
-.. code:: C++
+.. code-block:: cpp
+
     #include <Einsums/Runtime.hpp>
 
     namespace einsums {
@@ -348,7 +351,7 @@ transpositions, element mapping, and more. Here are some useful things we can do
 Permuting elements
 ------------------
 
-To permute the axes of a tensor, you can use the :cpp:func:`permute` function. This takes an input tensor and an output tensor,
+To permute the axes of a tensor, you can use the :cpp:func:`~einsums::permute` function. This takes an input tensor and an output tensor,
 and it permutes the input tensor, scales it, scales the output tensor, then adds them together.
 
 .. code:: C++

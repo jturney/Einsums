@@ -21,4 +21,4 @@ Bug Fixes
 ---------
 
 * GPU tensor contractions now compile properly.
-* :cpp:class:`BlockTensor`s with a block of zero size will no longer cause segfaults with an ``einsum`` call.
+* :cpp:class:`BlockTensor`\ s with a block of zero size will no longer cause segfaults with an ``einsum`` call.

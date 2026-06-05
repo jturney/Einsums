@@ -4,4 +4,4 @@
      Licensed under the MIT License. See LICENSE.txt in the project root for license information.
     ----------------------------------------------------------------------------------------------
 
-.. include:: v2.0.0.rst
+.. include:: /changelogs/v2/v2.0.0.rst
