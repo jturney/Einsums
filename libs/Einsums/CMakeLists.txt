@@ -30,6 +30,7 @@ set(_Einsums_modules
   Preprocessor
   Print
   Profile
+  Python
   Runtime
   RuntimeConfiguration
   StringUtil
