@@ -42,6 +42,7 @@ set(_Einsums_modules
   TensorAlgebra
   ComputeGraphTypes
   ComputeGraph
+  TensorIO
   TensorBase
   TensorImpl
   TensorUtilities
