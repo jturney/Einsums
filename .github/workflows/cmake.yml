@@ -23,11 +23,27 @@ jobs:
     if: ${{ contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src') }}
     uses: ./.github/workflows/linux-build-and-test.yml
 
+  # intel/icpx is gated to manual runs only: icpx's per-TU memory exceeds
+  # ubuntu-latest's 16GB even at -O0 -j1 and OOM-kills the runner. Trigger
+  # from the Actions UI (workflow_dispatch) when you actively want icpx
+  # validation.
+  linux_intel:
+    name: Linux (intel)
+    needs: [ detect_changes ]
+    if: ${{ github.event_name == 'workflow_dispatch' && (contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src')) }}
+    uses: ./.github/workflows/linux-intel-build.yml
+
   macos_default:
     name: macOS
     needs: [ detect_changes ]
     if: ${{ contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src') }}
     uses: ./.github/workflows/macos-build-and-test.yml
+
+  sanitizers:
+    name: Sanitizers
+    needs: [ detect_changes ]
+    if: ${{ contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src') }}
+    uses: ./.github/workflows/linux-build-and-test-sanitizer.yml
 
   documentation:
     name: Documentation

@@ -1,0 +1,79 @@
+name: "Set up Einsums conda environment"
+description: >
+  Installs Miniforge, generates a conda environment file with merge_yml.py for
+  the requested compiler/BLAS combination, restores it from cache (or creates
+  it on a miss), and leaves it activated for subsequent build steps.
+
+inputs:
+  compiler:
+    description: "Toolchain to inject (default | gcc | clang | intel)."
+    required: false
+    default: "default"
+  blas:
+    description: "BLAS library (openblas | mkl | accelerate). Note: macOS always forces accelerate."
+    required: false
+    default: "openblas"
+  docs:
+    description: "Set to 'true' to add the documentation build dependencies."
+    required: false
+    default: "false"
+  source-dir:
+    description: "Path to the checked-out repository root, relative to the workspace."
+    required: false
+    default: "."
+  environment-name:
+    description: "Name of the conda environment to create/activate."
+    required: false
+    default: "einsums-env"
+
+runs:
+  using: "composite"
+  steps:
+    # From https://github.com/conda-incubator/setup-miniconda#caching-environments
+    - name: Setup Miniforge
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        miniforge-version: latest
+        activate-environment: ${{ inputs.environment-name }}
+        conda-remove-defaults: "true"
+
+    - name: Install ruamel.yaml
+      shell: bash -el {0}
+      run: conda install -c conda-forge ruamel.yaml
+
+    - name: Merge Conda YAML files
+      shell: bash -el {0}
+      working-directory: ${{ inputs.source-dir }}/devtools/conda-envs
+      run: |
+        docs_flag=""
+        if [ "${{ inputs.docs }}" = "true" ]; then docs_flag="--docs"; fi
+        python merge_yml.py ${docs_flag} ${{ inputs.compiler }} ${{ inputs.blas }}
+
+    - name: Get Week
+      id: get-date
+      shell: bash
+      run: echo "week=$(/bin/date -u '+%W')" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Conda env
+      uses: actions/cache@v4
+      id: cache
+      with:
+        path: ${{ env.CONDA }}/envs
+        key:
+          conda-${{ runner.os }}-${{ runner.arch }}-${{ steps.get-date.outputs.week }}-${{ inputs.compiler }}-${{ inputs.blas }}-${{ hashFiles(format('{0}/devtools/conda-envs/conda.yml', inputs.source-dir)) }}-${{ env.CACHE_NUMBER }}
+      env:
+        # Bump to force a fresh environment even when conda.yml is unchanged.
+        CACHE_NUMBER: 0
+
+    - name: Update environment
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash -el {0}
+      run: |
+        conda env update -n ${{ inputs.environment-name }} -f ${{ inputs.source-dir }}/devtools/conda-envs/conda.yml
+        conda activate ${{ inputs.environment-name }}
+
+    - name: Conda Environment
+      shell: bash -el {0}
+      run: |
+        conda info
+        conda list

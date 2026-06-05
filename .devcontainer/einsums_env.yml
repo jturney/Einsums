@@ -43,7 +43,5 @@ dependencies:
  - numpy
  - scipy
  # Coverage and Testing
- - pytest-cov
- - coverage
  - lcov
  - pre-commit
