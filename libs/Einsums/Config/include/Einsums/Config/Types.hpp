@@ -12,11 +12,9 @@
 #include <fmt/format.h>
 
 #include <cstdint>
-#include <list>
 #include <memory>
 #include <string>
 #include <unordered_map>
-#include <variant>
 
 namespace einsums {
 
@@ -33,9 +31,9 @@ namespace hashes {
  * @versionadded{1.0.1}
  */
 template <typename str_type>
-struct insensitive_hash {
+struct InsensitiveHash {
   public:
-    constexpr insensitive_hash() = default;
+    constexpr InsensitiveHash() = default;
 
     /**
      * @brief Perform the hashing operation.
@@ -48,17 +46,15 @@ struct insensitive_hash {
     size_t operator()(str_type const &str) const {
         size_t hash = 0;
 
-        // Calculate the mask. If size_t is N bytes, mask for the top N bits.
-        // The first part creates a Mersenne value with the appropriate number of bits.
-        // The second shifts it to the top.
-        constexpr size_t mask = (((size_t)1 << sizeof(size_t)) - 1) << (7 * sizeof(size_t));
+        // Calculate the mask for the top byte of size_t.
+        constexpr size_t mask = static_cast<size_t>(0xFF) << (8 * (sizeof(size_t) - 1));
 
         for (auto ch : str) {
             decltype(ch) upper = std::toupper(ch);
             if (upper == '-') { // Convert dashes to underscores.
                 upper = '_';
             }
-            uint8_t const *bytes = reinterpret_cast<uint8_t const *>(std::addressof(upper));
+            auto const *bytes = reinterpret_cast<uint8_t const *>(std::addressof(upper));
 
             for (int i = 0; i < sizeof(std::decay_t<decltype(ch)>); i++) {
                 hash <<= sizeof(size_t); // Shift left a number of bits equal to the number of bytes in size_t.
@@ -74,23 +70,21 @@ struct insensitive_hash {
     }
 };
 
-#ifndef DOXYGEN
 template <>
-struct insensitive_hash<std::string> {
+struct EINSUMS_EXPORT InsensitiveHash<std::string> {
   public:
-    constexpr insensitive_hash() = default;
+    constexpr InsensitiveHash() = default;
 
     size_t operator()(std::string const &str) const noexcept;
 };
 
 template <>
-struct insensitive_hash<char *> {
+struct EINSUMS_EXPORT InsensitiveHash<char *> {
   public:
-    constexpr insensitive_hash() = default;
+    constexpr InsensitiveHash() = default;
 
     size_t operator()(char const *str) const noexcept;
 };
-#endif
 
 } // namespace hashes
 
@@ -107,8 +101,8 @@ namespace detail {
  * @versionadded{1.0.1}
  */
 template <typename str_type>
-struct insensitive_equals {
-    constexpr insensitive_equals() = default;
+struct InsensitiveEquals {
+    constexpr InsensitiveEquals() = default;
 
     /**
      * @brief Compare two strings using the rules stated before.
@@ -156,8 +150,7 @@ struct insensitive_equals {
  * @versionadded{1.1.0}
  */
 template <typename T>
-using config_mapping_type =
-    std::unordered_map<std::string, T, hashes::insensitive_hash<std::string>, detail::insensitive_equals<std::string>>;
+using ConfigMappingType = std::unordered_map<std::string, T, hashes::InsensitiveHash<std::string>, detail::InsensitiveEquals<std::string>>;
 
 /**
  * @class ConfigMap
@@ -179,7 +172,7 @@ template <typename Value>
 class ConfigMap
     : public std::enable_shared_from_this<ConfigMap<Value>>,
       public design_pats::Observable<
-          std::unordered_map<std::string, Value, hashes::insensitive_hash<std::string>, detail::insensitive_equals<std::string>>> {
+          std::unordered_map<std::string, Value, hashes::InsensitiveHash<std::string>, detail::InsensitiveEquals<std::string>>> {
   private:
     /**
      * @class PrivateType
@@ -207,7 +200,7 @@ class ConfigMap
      * @endversion
      */
     using MappingType =
-        std::unordered_map<std::string, Value, hashes::insensitive_hash<std::string>, detail::insensitive_equals<std::string>>;
+        std::unordered_map<std::string, Value, hashes::InsensitiveHash<std::string>, detail::InsensitiveEquals<std::string>>;
 
     /**
      * Public constructor that can only be accessed in private contexts. Used to make shared pointers
@@ -217,7 +210,7 @@ class ConfigMap
      */
     ConfigMap(PrivateType)
         : design_pats::Observable<
-              std::unordered_map<std::string, Value, hashes::insensitive_hash<std::string>, detail::insensitive_equals<std::string>>>() {}
+              std::unordered_map<std::string, Value, hashes::InsensitiveHash<std::string>, detail::InsensitiveEquals<std::string>>>() {}
 
     /**
      * @brief Create a shared pointer from this class.
@@ -267,37 +260,26 @@ using SharedConfigMap = std::shared_ptr<ConfigMap<Value>>;
 class EINSUMS_EXPORT GlobalConfigMap {
     EINSUMS_SINGLETON_DEF(GlobalConfigMap)
   public:
-/**
- * @fn get_singleton()
- *
- * Get the single unique instance for this class.
- *
- * @versionadded{1.0.0}
- */
-#ifdef DOXYGEN
-    static GlobalConfigMap &get_singleton();
-#endif
-
     /**
      * @brief Checks to see if the map is empty.
      *
      * @versionadded{1.0.0}
      */
-    bool empty() const noexcept;
+    [[nodiscard]] bool empty() const noexcept;
 
     /**
      * @brief Gets the size of the map.
      *
      * @versionadded{1.0.0}
      */
-    size_t size() const noexcept;
+    [[nodiscard]] size_t size() const noexcept;
 
     /**
      * @brief Gets the maximum number of buckets in the map.
      *
      * @versionadded{1.0.0}
      */
-    size_t max_size() const noexcept;
+    [[nodiscard]] size_t max_size() const noexcept;
 
     /**
      * @brief Get the string value stored at the given key.
@@ -311,7 +293,7 @@ class EINSUMS_EXPORT GlobalConfigMap {
      *      Returns a new string instead of a const reference to an underlying string.
      * @endversion
      */
-    std::string get_string(std::string const &key) const noexcept;
+    [[nodiscard]] std::string get_string(std::string const &key) const noexcept;
 
     /**
      * @brief Get the string value stored at the given key.
@@ -319,14 +301,14 @@ class EINSUMS_EXPORT GlobalConfigMap {
      * Returns an optional default value if the key is not in the map.
      *
      * @param[in] key The key to query.
-     * @param[in] dephault The default value. If the key is not in the map, this is what will be returned.
+     * @param[in] default_value The default value. If the key is not in the map, this is what will be returned.
      *
      * @versionadded{1.0.1}
      * @versionchangeddesc{2.0.0}
      *      Returns a new string instead of a const reference to an underlying string.
      * @endversion
      */
-    std::string get_string(std::string const &key, std::string const &dephault) const noexcept;
+    [[nodiscard]] std::string get_string(std::string const &key, std::string const &default_value) const noexcept;
 
     /**
      * @brief Get the integer value stored at the given key.
@@ -334,14 +316,14 @@ class EINSUMS_EXPORT GlobalConfigMap {
      * Returns an optional default value if the key is not in the map.
      *
      * @param[in] key The key to query.
-     * @param[in] dephault The default value. If the key is not in the map, this is what will be returned.
+     * @param[in] default_value The default value. If the key is not in the map, this is what will be returned.
      *
      * @versionadded{1.0.0}
      * @versionchangeddesc{1.0.1}
      *      Added the ability to set a default return value.
      * @endversion
      */
-    std::int64_t get_int(std::string const &key, std::int64_t dephault = 0) const noexcept;
+    [[nodiscard]] std::int64_t get_int(std::string const &key, std::int64_t default_value = 0) const noexcept;
 
     /**
      * @brief Get the floating point value stored at the given key.
@@ -349,14 +331,14 @@ class EINSUMS_EXPORT GlobalConfigMap {
      * Returns an optional default value if the key is not in the map.
      *
      * @param[in] key The key to query.
-     * @param[in] dephault The default value. If the key is not in the map, this is what will be returned.
+     * @param[in] default_value The default value. If the key is not in the map, this is what will be returned.
      *
      * @versionadded{1.0.0}
      * @versionchangeddesc{1.0.1}
      *      Added the ability to set a default return value.
      * @endversion
      */
-    double get_double(std::string const &key, double dephault = 0) const noexcept;
+    [[nodiscard]] double get_double(std::string const &key, double default_value = 0) const noexcept;
 
     /**
      * @brief Get the boolean flag stored at the given key.
@@ -364,11 +346,11 @@ class EINSUMS_EXPORT GlobalConfigMap {
      * Returns an optional default value if the key is not in the map.
      *
      * @param[in] key The key to query.
-     * @param[in] dephault The default value. If the key is not in the map, this is what will be returned.
+     * @param[in] default_value The default value. If the key is not in the map, this is what will be returned.
      *
      * @versionadded{1.0.1}
      */
-    bool get_bool(std::string const &key, bool dephault = false) const noexcept;
+    [[nodiscard]] bool get_bool(std::string const &key, bool default_value = false) const noexcept;
 
     /**
      * @brief Set the string value stored at the given key.
@@ -436,7 +418,6 @@ class EINSUMS_EXPORT GlobalConfigMap {
      */
     std::shared_ptr<ConfigMap<bool>> get_bool_map() noexcept;
 
-#ifdef DOXYGEN
     /**
      * @brief Attach an observer to the global configuration map.
      *
@@ -450,8 +431,28 @@ class EINSUMS_EXPORT GlobalConfigMap {
      *
      * @versionadded{1.0.0}
      */
-    template <typename T>
-    void attach(T &obs);
+    template <typename T, bool string_requirement = requires(T obs, ConfigMappingType<std::string> map) { obs(map); },
+              bool int_requirement    = requires(T obs, ConfigMappingType<std::int64_t> map) { obs(map); },
+              bool double_requirement = requires(T obs, ConfigMappingType<double> map) { obs(map); },
+              bool bool_requirement   = requires(T obs, ConfigMappingType<bool> map) { obs(map); }>
+    void attach(T &obs) {
+
+        if constexpr (string_requirement) {
+            _str_map->attach(obs);
+        }
+
+        if constexpr (int_requirement) {
+            _int_map->attach(obs);
+        }
+
+        if constexpr (double_requirement) {
+            _double_map->attach(obs);
+        }
+
+        if constexpr (bool_requirement) {
+            _bool_map->attach(obs);
+        }
+    }
 
     /**
      * @brief Detach an observer from the global configuration map.
@@ -460,54 +461,27 @@ class EINSUMS_EXPORT GlobalConfigMap {
      *
      * @versionadded{1.0.0}
      */
-    template <typename T>
-    void detach(T &obs);
-#else
-    template <typename T, bool string_requirement = requires(T obs, config_mapping_type<std::string> map) { obs(map); },
-              bool int_requirement    = requires(T obs, config_mapping_type<std::int64_t> map) { obs(map); },
-              bool double_requirement = requires(T obs, config_mapping_type<double> map) { obs(map); },
-              bool bool_requirement   = requires(T obs, config_mapping_type<bool> map) { obs(map); }>
-    void attach(T &obs) {
-
-        if constexpr (string_requirement) {
-            str_map_->attach(obs);
-        }
-
-        if constexpr (int_requirement) {
-            int_map_->attach(obs);
-        }
-
-        if constexpr (double_requirement) {
-            double_map_->attach(obs);
-        }
-
-        if constexpr (bool_requirement) {
-            bool_map_->attach(obs);
-        }
-    }
-
-    template <typename T, bool string_requirement = requires(T obs, config_mapping_type<std::string> map) { obs(map); },
-              bool int_requirement    = requires(T obs, config_mapping_type<std::int64_t> map) { obs(map); },
-              bool double_requirement = requires(T obs, config_mapping_type<double> map) { obs(map); },
-              bool bool_requirement   = requires(T obs, config_mapping_type<bool> map) { obs(map); }>
+    template <typename T, bool string_requirement = requires(T obs, ConfigMappingType<std::string> map) { obs(map); },
+              bool int_requirement    = requires(T obs, ConfigMappingType<std::int64_t> map) { obs(map); },
+              bool double_requirement = requires(T obs, ConfigMappingType<double> map) { obs(map); },
+              bool bool_requirement   = requires(T obs, ConfigMappingType<bool> map) { obs(map); }>
     void detach(T &obs) {
         if constexpr (string_requirement) {
-            str_map_->detach(obs);
+            _str_map->detach(obs);
         }
 
         if constexpr (int_requirement) {
-            int_map_->detach(obs);
+            _int_map->detach(obs);
         }
 
         if constexpr (double_requirement) {
-            double_map_->detach(obs);
+            _double_map->detach(obs);
         }
 
         if constexpr (bool_requirement) {
-            bool_map_->detach(obs);
+            _bool_map->detach(obs);
         }
     }
-#endif
 
     /**
      * @brief Lock all of the maps contained in this object.
@@ -544,7 +518,7 @@ class EINSUMS_EXPORT GlobalConfigMap {
      *
      * @versionadded{1.0.0}
      */
-    std::shared_ptr<ConfigMap<std::string>> str_map_;
+    std::shared_ptr<ConfigMap<std::string>> _str_map;
 
     /**
      * @property int_map_
@@ -553,7 +527,7 @@ class EINSUMS_EXPORT GlobalConfigMap {
      *
      * @versionadded{1.0.0}
      */
-    std::shared_ptr<ConfigMap<std::int64_t>> int_map_;
+    std::shared_ptr<ConfigMap<std::int64_t>> _int_map;
 
     /**
      * @property double_map_
@@ -562,7 +536,7 @@ class EINSUMS_EXPORT GlobalConfigMap {
      *
      * @versionadded{1.0.0}
      */
-    std::shared_ptr<ConfigMap<double>> double_map_;
+    std::shared_ptr<ConfigMap<double>> _double_map;
 
     /**
      * @property bool_map_
@@ -571,7 +545,7 @@ class EINSUMS_EXPORT GlobalConfigMap {
      *
      * @versionadded{1.0.1}
      */
-    std::shared_ptr<ConfigMap<bool>> bool_map_;
+    std::shared_ptr<ConfigMap<bool>> _bool_map;
 };
 
 struct GlobalConfigMapLockScope {
@@ -591,9 +565,9 @@ struct GlobalConfigMapLockScope {
  * @versionadded{1.0.0}
  */
 template <class Value>
-bool operator==(std::unordered_map<std::string, Value, einsums::hashes::insensitive_hash<std::string>,
-                                   einsums::detail::insensitive_equals<std::string>> const &lhs,
-                einsums::ConfigMap<Value> const                                            &rhs) {
+bool operator==(std::unordered_map<std::string, Value, einsums::hashes::InsensitiveHash<std::string>,
+                                   einsums::detail::InsensitiveEquals<std::string>> const &lhs,
+                einsums::ConfigMap<Value> const                                           &rhs) {
     return lhs == rhs.get_value();
 }
 
@@ -603,8 +577,8 @@ bool operator==(std::unordered_map<std::string, Value, einsums::hashes::insensit
  * @versionadded{1.0.0}
  */
 template <class Value>
-bool operator==(einsums::ConfigMap<Value> const &lhs, std::unordered_map<std::string, Value, einsums::hashes::insensitive_hash<std::string>,
-                                                                         einsums::detail::insensitive_equals<std::string>> const &rhs) {
+bool operator==(einsums::ConfigMap<Value> const &lhs, std::unordered_map<std::string, Value, einsums::hashes::InsensitiveHash<std::string>,
+                                                                         einsums::detail::InsensitiveEquals<std::string>> const &rhs) {
     return lhs.get_value() == rhs;
 }
 

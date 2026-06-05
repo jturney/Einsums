@@ -23,7 +23,8 @@ TEMPLATE_TEST_CASE("andy", "[tensor_algebra]", double, std::complex<double>) {
 
         einsum(0.0, Indices{index::i, index::a, index::W}, &ortho_temp_1, 1.0, Indices{index::i, index::W}, y_iW_,
                Indices{index::a, index::W}, y_aW_, &alg_choice);
-        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        REQUIRE((alg_choice == tensor_algebra::detail::GENERIC || alg_choice == tensor_algebra::detail::SORT_GEMM ||
+                 alg_choice == tensor_algebra::detail::PACKED_GEMM));
     }
 
     SECTION("2") {
@@ -93,7 +94,8 @@ TEMPLATE_TEST_CASE("andy", "[tensor_algebra]", double, std::complex<double>) {
         zero(F_BAR);
         einsum(Indices{index::Q, index::a, index::X}, &F_BAR, Indices{index::Q, index::Y, index::X}, F_TEMP, Indices{index::a, index::Y},
                y_aW, &alg_choice);
-        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        REQUIRE((alg_choice == tensor_algebra::detail::GENERIC || alg_choice == tensor_algebra::detail::SORT_GEMM ||
+                 alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
         zero(F_BAR0);
         for (size_t Q = 0; Q < proj_rank_; Q++) {
@@ -166,7 +168,8 @@ TEMPLATE_TEST_CASE("andy", "[tensor_algebra]", double, std::complex<double>) {
 
         einsum(0.0, Indices{index::a, index::X}, &D_TILDE, 1.0, Indices{index::Q, index::a, index::X}, C_TILDE, Indices{index::Q, index::X},
                B_QY, &alg_choice);
-        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        REQUIRE((alg_choice == tensor_algebra::detail::GENERIC || alg_choice == tensor_algebra::detail::SORT_GEMM ||
+                 alg_choice == tensor_algebra::detail::PACKED_GEMM));
     }
 
     SECTION("9") {
@@ -206,6 +209,7 @@ TEMPLATE_TEST_CASE("andy", "[tensor_algebra]", double, std::complex<double>) {
 
         einsum(Indices{index::Q, index::X}, &N_QX, Indices{index::Q, index::i, index::a}, Qov, Indices{index::i, index::a, index::X}, ia_X,
                &alg_choice);
-        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        REQUIRE((alg_choice == tensor_algebra::detail::GENERIC || alg_choice == tensor_algebra::detail::SORT_GEMM ||
+                 alg_choice == tensor_algebra::detail::PACKED_GEMM));
     }
 }

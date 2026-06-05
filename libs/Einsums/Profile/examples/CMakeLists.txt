@@ -38,4 +38,13 @@ if(EINSUMS_WITH_PROFILER)
       )
     endif()
   endforeach()
+
+  # Long-running example for live TUI viewer testing (not registered as a ctest)
+  einsums_add_executable(
+    PROF_profile_live INTERNAL_FLAGS
+    SOURCES profile_live.cpp
+    FOLDER "Examples/Modules/Profile"
+    NOINSTALL
+  )
+  einsums_add_example_target_dependencies("Modules.Einsums.Profile" PROF_profile_live)
 endif()

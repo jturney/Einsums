@@ -20,6 +20,7 @@ set(RuntimeSources Finalize.cpp InitLogging.cpp InitRuntime.cpp Runtime.cpp)
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums Runtime
+  PYBIND
   SOURCES ${RuntimeSources}
   HEADERS ${RuntimeHeaders}
   DEPENDENCIES tgt::hdf5 ZLIB::ZLIB

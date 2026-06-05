@@ -19,15 +19,12 @@
 #include <Einsums/Profile.hpp>
 #include <Einsums/StringUtil/StringOps.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorAlgebra/Detail/HpttPlanCache.hpp>
 #include <Einsums/TensorAlgebra/Detail/Index.hpp>
 #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 
 #include <memory>
-
-#ifdef EINSUMS_COMPUTE_CODE
-#    include <Einsums/TensorAlgebra/Backends/DevicePermute.hpp>
-#endif
 
 namespace einsums::tensor_algebra {
 
@@ -87,10 +84,10 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::tuple<CIndices.
             outerSizeC[i0] = C->stride(i0 - 1) / (C->stride(i0) * innerStrideC);
             offsetC[i0]    = 0;
         }
-        auto plan =
-            hptt::create_plan(perms.data(), ARank, alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(), innerStrideA, beta,
-                              C->data(), outerSizeC.data(), offsetC.data(), innerStrideC, method, omp_get_max_threads(), nullptr, true);
-        plan->setConjA(ConjA);
+        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), ARank, alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(),
+                                                       innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(), innerStrideC, true,
+                                                       method);
+        plan->set_conj_a(ConjA);
 
         return plan;
     } else if (A.is_row_major() && C->is_column_major()) {
@@ -112,10 +109,10 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::tuple<CIndices.
             outerSizeC[i0] = C_swap.stride(i0 - 1) / (C_swap.stride(i0) * innerStrideC);
             offsetC[i0]    = 0;
         }
-        auto plan =
-            hptt::create_plan(perms.data(), ARank, alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(), innerStrideA, beta,
-                              C->data(), outerSizeC.data(), offsetC.data(), innerStrideC, method, omp_get_max_threads(), nullptr, true);
-        plan->setConjA(ConjA);
+        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), ARank, alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(),
+                                                       innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(), innerStrideC, true,
+                                                       method);
+        plan->set_conj_a(ConjA);
 
         return plan;
     } else if (A.is_column_major() && C->is_column_major()) {
@@ -136,10 +133,10 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::tuple<CIndices.
             outerSizeC[i0] = C->stride(i0 + 1) / (C->stride(i0) * innerStrideC);
             offsetC[i0]    = 0;
         }
-        auto plan =
-            hptt::create_plan(perms.data(), ARank, alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(), innerStrideA, beta,
-                              C->data(), outerSizeC.data(), offsetC.data(), innerStrideC, method, omp_get_max_threads(), nullptr, false);
-        plan->setConjA(ConjA);
+        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), ARank, alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(),
+                                                       innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(), innerStrideC,
+                                                       false, method);
+        plan->set_conj_a(ConjA);
 
         return plan;
     } else {
@@ -161,10 +158,10 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::tuple<CIndices.
             outerSizeC[i0] = C_swap.stride(i0 + 1) / (C_swap.stride(i0) * innerStrideC);
             offsetC[i0]    = 0;
         }
-        auto plan =
-            hptt::create_plan(perms.data(), ARank, alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(), innerStrideA, beta,
-                              C->data(), outerSizeC.data(), offsetC.data(), innerStrideC, method, omp_get_max_threads(), nullptr, false);
-        plan->setConjA(ConjA);
+        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), ARank, alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(),
+                                                       innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(), innerStrideC,
+                                                       false, method);
+        plan->set_conj_a(ConjA);
 
         return plan;
     }
@@ -210,10 +207,10 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
         }
 
         find_char_with_position(A_indices, C_indices, &perms);
-        auto plan =
-            hptt::create_plan(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(), innerStrideA, beta,
-                              C->data(), outerSizeC.data(), offsetC.data(), innerStrideC, method, omp_get_max_threads(), nullptr, true);
-        plan->setConjA(ConjA);
+        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(),
+                                                       offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
+                                                       innerStrideC, true, method);
+        plan->set_conj_a(ConjA);
 
         return plan;
     } else if (A.is_row_major() && C->is_column_major()) {
@@ -233,10 +230,10 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
             offsetC[i0]    = 0;
         }
         find_char_with_position(A_indices, reverse(C_indices), &perms);
-        auto plan =
-            hptt::create_plan(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(), innerStrideA, beta,
-                              C->data(), outerSizeC.data(), offsetC.data(), innerStrideC, method, omp_get_max_threads(), nullptr, true);
-        plan->setConjA(ConjA);
+        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(),
+                                                       offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
+                                                       innerStrideC, true, method);
+        plan->set_conj_a(ConjA);
 
         return plan;
     } else if (A.is_column_major() && C->is_column_major()) {
@@ -256,10 +253,10 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
         }
 
         find_char_with_position(A_indices, C_indices, &perms);
-        auto plan =
-            hptt::create_plan(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(), innerStrideA, beta,
-                              C->data(), outerSizeC.data(), offsetC.data(), innerStrideC, method, omp_get_max_threads(), nullptr, false);
-        plan->setConjA(ConjA);
+        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(),
+                                                       offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
+                                                       innerStrideC, false, method);
+        plan->set_conj_a(ConjA);
 
         return plan;
     } else {
@@ -279,10 +276,10 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
             offsetC[i0]    = 0;
         }
         find_char_with_position(A_indices, C_indices, &perms);
-        auto plan =
-            hptt::create_plan(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(), innerStrideA, beta,
-                              C->data(), outerSizeC.data(), offsetC.data(), innerStrideC, method, omp_get_max_threads(), nullptr, false);
-        plan->setConjA(ConjA);
+        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(),
+                                                       offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
+                                                       innerStrideC, false, method);
+        plan->set_conj_a(ConjA);
 
         return plan;
     }
@@ -290,8 +287,8 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
 
 template <typename T>
 void permute(einsums::detail::TensorImpl<T> *C, einsums::detail::TensorImpl<T> const &A, std::shared_ptr<hptt::Transpose<T>> plan) {
-    plan->setInputPtr(A.data());
-    plan->setOutputPtr(C->data());
+    plan->set_input_ptr(A.data());
+    plan->set_output_ptr(C->data());
 
     plan->execute();
 }
@@ -470,7 +467,6 @@ void permute(std::tuple<CIndices...> const &C_indices, ObjectC *C, std::tuple<AI
     permute<ConjA>(0, C_indices, C, 1, A_indices, A);
 }
 
-#ifndef DOXYGEN
 // Sort with default values, two smart pointers
 template <bool ConjA = false, SmartPointer SmartPointerA, SmartPointer SmartPointerC, typename... CIndices, typename... AIndices>
 void permute(std::tuple<CIndices...> const &C_indices, SmartPointerC *C, std::tuple<AIndices...> const &A_indices, SmartPointerA const &A) {
@@ -521,7 +517,6 @@ std::shared_ptr<hptt::Transpose<typename AType::ValueType>> compile_permute(std:
                                                                             hptt::SelectionMethod method = hptt::ESTIMATE) {
     return compile_permute(0.0, C_indices, C, 1.0, A_indices, A, method);
 }
-#endif
 
 /**
  * @brief Finds the tile grid dimensions for the requested indices.
@@ -535,11 +530,11 @@ std::shared_ptr<hptt::Transpose<typename AType::ValueType>> compile_permute(std:
 template <typename CType, TensorConcept AType, TensorConcept BType, typename... CIndices, typename... AIndices, typename... BIndices,
           typename... AllUniqueIndices>
 inline auto get_grid_ranges_for_many(CType const &C, std::tuple<CIndices...> const &C_indices, AType const &A,
-                                     std::tuple<AIndices...> const &A_indices, std::tuple<AllUniqueIndices...> const &All_unique_indices) {
+                                     std::tuple<AIndices...> const &A_indices,
+                                     std::tuple<AllUniqueIndices...> const & /*All_unique_indices*/) {
     return std::array{get_grid_ranges_for_many_a<AllUniqueIndices, 0>(C, C_indices, A, A_indices)...};
 }
 
-#ifndef DOXYGEN
 template <bool ConjA = false, TiledTensorConcept AType, TiledTensorConcept CType, typename... CIndices, typename... AIndices, typename U>
     requires requires {
         requires sizeof...(CIndices) == sizeof...(AIndices);
@@ -560,7 +555,7 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
     constexpr auto unique_indices = UniqueT<std::tuple<CIndices..., AIndices...>>();
     auto           unique_grid    = get_grid_ranges_for_many(*C, C_indices, A, A_indices, unique_indices);
 
-    auto unique_strides = std::array<size_t, std::tuple_size<decltype(unique_indices)>::value>();
+    auto unique_strides = std::array<size_t, std::tuple_size_v<decltype(unique_indices)>>();
 
     dims_to_strides(unique_grid, unique_strides);
 
@@ -572,7 +567,7 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
 
     EINSUMS_OMP_PARALLEL_FOR
     for (size_t sentinel = 0; sentinel < unique_grid[0] * unique_strides[0]; sentinel++) {
-        thread_local std::array<size_t, std::tuple_size<decltype(unique_indices)>::value> unique_index_table;
+        thread_local std::array<size_t, std::tuple_size_v<decltype(unique_indices)>> unique_index_table;
 
         sentinel_to_indices(sentinel, unique_strides, unique_index_table);
         thread_local std::array<int, ARank> A_tile_index;
@@ -598,7 +593,6 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
         C_tile.unlock();
     }
 }
-#endif
 
 template <bool ConjA = false, MatrixConcept CType, MatrixConcept AType>
 void transpose(CType *C, AType const &A) {

@@ -27,26 +27,6 @@
 
 #pragma once
 
-/**
- * @def HPTT_ERROR_INFO
- *
- * If we build this project with the DEBUG flag, this will print info messages onto standard out, then exit.
- * Otherwise, this will do nothing.
- */
-#ifdef DEBUG
-#    define HPTT_ERROR_INFO(str)                                                                                                           \
-        fprintf(stdout, "[INFO] %s:%d : %s\n", __FILE__, __LINE__, str);                                                                   \
-        exit(-1);
-#else
-#    define HPTT_ERROR_INFO(str)
-#endif
-
-#if defined(__ICC) || defined(__INTEL_COMPILER)
-#    define INLINE __forceinline
-#elif defined(__GNUC__) || defined(__GNUG__)
-#    define INLINE __attribute__((always_inline)) inline
-#endif
-
 #ifdef _OPENMP
 
 #    define HPTT_DUPLICATE_2(condition, ...)                                                                                               \

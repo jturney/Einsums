@@ -13,15 +13,14 @@
 
 #include <type_traits>
 
-namespace einsums {
-namespace detail {
+namespace einsums::detail {
 
 template <typename From, typename To>
 constexpr To convert(From from) noexcept {
     if constexpr (IsComplexV<To> && IsComplexV<From>) {
-        return To{(RemoveComplexT<To>)std::real(from), (RemoveComplexT<To>)std::imag(from)};
+        return To{static_cast<RemoveComplexT<To>>(std::real(from)), static_cast<RemoveComplexT<To>>(std::imag(from))};
     } else if constexpr (IsComplexV<To> && !IsComplexV<From>) {
-        return To{(RemoveComplexT<To>)from};
+        return To{static_cast<RemoveComplexT<To>>(from)};
     } else {
         return from;
     }
@@ -1508,5 +1507,4 @@ void copy_abs(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     }
 }
 
-} // namespace detail
-} // namespace einsums
+} // namespace einsums::detail

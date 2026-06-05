@@ -18,6 +18,7 @@ set(TensorAlgebraHeaders
     Einsums/TensorAlgebra/Backends/KhatriRao.hpp
     Einsums/TensorAlgebra/Backends/TileAlgebra.hpp
     Einsums/TensorAlgebra/Backends/Unfold.hpp
+    Einsums/TensorAlgebra/Detail/HpttPlanCache.hpp
     Einsums/TensorAlgebra/Detail/Index.hpp
     Einsums/TensorAlgebra/Detail/Utilities.hpp
 )
@@ -27,27 +28,13 @@ if(NOT WIN32)
   set(EXTRA_TENSOR_ALGEBRA_DEPENDENCIES Einsums_HPTT)
 endif()
 
-if(EINSUMS_WITH_GPU_SUPPORT)
-  list(APPEND TensorAlgebraHeaders Einsums/TensorAlgebra/Backends/GPUTensorAlgebra.hpp
-       Einsums/TensorAlgebra/Backends/DevicePermute.hpp
-  )
-  set(TensorAlgebraGPUDeps hip::host hip::device roc::hipblas roc::hipsolver)
-  list(APPEND EXTRA_TENSOR_ALGEBA_DEPENDENCIES Einsums_GPUMemory Einsums_GPUStreams)
-
-  if(EINSUMS_USE_LIBRETT)
-    list(APPEND TensorAlgebraSources DevicePermute.hip)
-    list(APPEND TensorAlgebraGPUDeps librett)
-  endif()
-
-endif()
-
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums TensorAlgebra
   SOURCES ${TensorAlgebraSources}
   HEADERS ${TensorAlgebraHeaders}
-  DEPENDENCIES ${TensorAlgebraGPUDeps}
   MODULE_DEPENDENCIES
+    Einsums_Comm
     Einsums_Config
     Einsums_LinearAlgebra
     Einsums_BufferAllocator
@@ -58,6 +45,7 @@ einsums_add_module(
     Einsums_Profile
     Einsums_Tensor
     Einsums_TensorUtilities
+    Einsums_PackedGemm
     ${EXTRA_TENSOR_ALGEBRA_DEPENDENCIES}
   CMAKE_SUBDIRS examples tests
 )

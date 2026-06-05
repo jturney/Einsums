@@ -9,7 +9,7 @@
 int main() {
     using namespace einsums;
 
-    println(complete_version());
+    einsums::println(complete_version());
 
     return EXIT_SUCCESS;
 }

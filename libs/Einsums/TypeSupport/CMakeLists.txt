@@ -16,6 +16,7 @@ set(TypeSupportHeaders
     Einsums/TypeSupport/Singleton.hpp
     Einsums/TypeSupport/TypeSwitch.hpp
         Einsums/TypeSupport/InsertionOrderedMap.hpp
+    Einsums/TypeSupport/JsonEscape.hpp
 )
 
 set(TypeSupportSources)

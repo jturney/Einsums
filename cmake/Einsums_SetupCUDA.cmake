@@ -79,9 +79,6 @@ if(EINSUMS_WITH_CUDA AND NOT TARGET cuda)
 
   include(Einsums_ExportTargets)
 
-  set(CURSES_NEED_NCURSES True)
-  find_package(Curses)
-
   if(NOT EINSUMS_FIND_PACKAGE)
     einsums_add_config_define(EINSUMS_HAVE_CUDA)
   endif()

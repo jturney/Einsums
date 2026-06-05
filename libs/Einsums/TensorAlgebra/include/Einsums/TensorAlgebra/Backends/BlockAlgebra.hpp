@@ -7,16 +7,11 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
-
-#include <stdexcept>
-#ifdef EINSUMS_COMPUTE_CODE
-#    include <Einsums/GPUStreams/GPUStreams.hpp>
-#endif
-
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 
+#include <stdexcept>
 #include <tuple>
 namespace einsums::tensor_algebra::detail {
 
@@ -125,58 +120,25 @@ auto einsum_special_dispatch(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
         }
     }
 
-#ifdef EINSUMS_COMPUTE_CODE
-    if constexpr (IsDeviceTensorV<AType>) {
-
-        size_t                 elems = omp_get_max_threads();
-        std::vector<CDataType> temp(elems);
-
-        for (int i = 0; i < elems; i++) {
-            temp[i] = CDataType{0.0};
-        }
-
-        EINSUMS_OMP_PARALLEL_FOR
-        for (int i = 0; i < A.num_blocks(); i++) {
-            if (A.block_dim(i) == 0) {
-                continue;
-            }
-            CDataType tempC;
-            einsum<OnlyUseGenericAlgorithm, false, ConjA, ConjB>(CDataType{0.0}, C_indices, &tempC, AB_prefactor, A_indices, A[i],
-                                                                 B_indices, B[i]);
-            temp[omp_get_thread_num()] += (CDataType)tempC;
-        }
-
-        if (C_prefactor == CDataType{0.0}) {
-            *C = CDataType{0.0};
-        } else {
-            *C *= C_prefactor;
-        }
-
-        *C = std::accumulate(temp.cbegin(), temp.cend(), (CDataType)*C);
+    if (C_prefactor == CDataType{0.0}) {
+        *C = CDataType{0.0};
     } else {
-#endif
-        if (C_prefactor == CDataType{0.0}) {
-            *C = CDataType{0.0};
-        } else {
-            *C *= C_prefactor;
-        }
-        CDataType temp = *C;
-
-        // Loop through and perform einsums.
-#pragma omp parallel for reduction(+ : temp)
-        for (int i = 0; i < A.num_blocks(); i++) {
-            if (A.block_dim(i) == 0 || B.block_dim(i) == 0) {
-                continue;
-            }
-            CType temp_c = *C;
-            einsum<OnlyUseGenericAlgorithm, false, ConjA, ConjB>(CDataType(0.0), C_indices, &temp_c, AB_prefactor, A_indices, A[i],
-                                                                 B_indices, B[i]);
-            temp += (CDataType)temp_c;
-        }
-        *C += temp;
-#ifdef EINSUMS_COMPUTE_CODE
+        *C *= C_prefactor;
     }
-#endif
+    CDataType temp = *C;
+
+    // Loop through and perform einsums.
+#pragma omp parallel for reduction(+ : temp)
+    for (int i = 0; i < A.num_blocks(); i++) {
+        if (A.block_dim(i) == 0 || B.block_dim(i) == 0) {
+            continue;
+        }
+        CType temp_c = *C;
+        einsum<OnlyUseGenericAlgorithm, false, ConjA, ConjB>(CDataType(0.0), C_indices, &temp_c, AB_prefactor, A_indices, A[i], B_indices,
+                                                             B[i]);
+        temp += (CDataType)temp_c;
+    }
+    *C += temp;
 }
 
 template <bool OnlyUseGenericAlgorithm, bool ConjA, bool ConjB, BasicTensorConcept AType, BlockTensorConcept BType,
@@ -247,60 +209,27 @@ auto einsum_special_dispatch(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
 
     using CDataType = ValueTypeT<CType>;
 
-#ifdef EINSUMS_COMPUTE_CODE
-    if constexpr (IsDeviceTensorV<AType>) {
-        CDataType *temp;
-
-        size_t elems = omp_get_max_threads();
-        hip_catch(hipMalloc(temp, elems * sizeof(CDataType)));
-        std::vector<CDataType> host_temp(elems);
-        EINSUMS_OMP_PARALLEL_FOR
-        for (int i = 0; i < B.num_blocks(); i++) {
-            if (B.block_dim(i) == 0) {
-                continue;
-            }
-            std::array<Range, AType::Rank> view_index;
-            view_index.fill(B.block_range(i));
-            einsum<OnlyUseGenericAlgorithm, false, ConjA, ConjB>(CDataType(0.0), C_indices, temp + omp_get_thread_num(), AB_prefactor,
-                                                                 A_indices, std::apply(A, view_index), B_indices, B[i]);
-        }
-
-        if (C_prefactor == CDataType{0.0}) {
-            *C = CDataType{0.0};
-        } else {
-            *C *= C_prefactor;
-        }
-
-        hip_catch(hipMemcpy(host_temp.data(), temp, elems * sizeof(CDataType), hipMemcpyDeviceToHost));
-        *C = std::accumulate(host_temp.cbegin(), host_temp.cend(), (CDataType)*C);
-
-        hip_catch(hipFree(temp));
+    if (C_prefactor == CDataType{0.0}) {
+        *C = CDataType{0.0};
     } else {
-#endif
-        if (C_prefactor == CDataType{0.0}) {
-            *C = CDataType{0.0};
-        } else {
-            *C *= C_prefactor;
-        }
-        CDataType temp = *C;
-
-        // Loop through and perform einsums.
-#pragma omp parallel for reduction(+ : temp)
-        for (int i = 0; i < B.num_blocks(); i++) {
-            if (B.block_dim(i) == 0) {
-                continue;
-            }
-            CType                          temp_c = *C;
-            std::array<Range, AType::Rank> view_index;
-            view_index.fill(B.block_range(i));
-            einsum<OnlyUseGenericAlgorithm, false, ConjA, ConjB>(CDataType(0.0), C_indices, &temp_c, AB_prefactor, A_indices,
-                                                                 std::apply(A, view_index), B_indices, B[i]);
-            temp += (CDataType)temp_c;
-        }
-        *C += temp;
-#ifdef EINSUMS_COMPUTE_CODE
+        *C *= C_prefactor;
     }
-#endif
+    CDataType temp = *C;
+
+    // Loop through and perform einsums.
+#pragma omp parallel for reduction(+ : temp)
+    for (int i = 0; i < B.num_blocks(); i++) {
+        if (B.block_dim(i) == 0) {
+            continue;
+        }
+        CType                          temp_c = *C;
+        std::array<Range, AType::Rank> view_index;
+        view_index.fill(B.block_range(i));
+        einsum<OnlyUseGenericAlgorithm, false, ConjA, ConjB>(CDataType(0.0), C_indices, &temp_c, AB_prefactor, A_indices,
+                                                             std::apply(A, view_index), B_indices, B[i]);
+        temp += (CDataType)temp_c;
+    }
+    *C += temp;
 }
 
 template <bool OnlyUseGenericAlgorithm, bool ConjA, bool ConjB, BlockTensorConcept AType, BasicTensorConcept BType,
@@ -370,61 +299,27 @@ auto einsum_special_dispatch(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
                              BType const &B) -> void {
     using CDataType = ValueTypeT<CType>;
 
-#ifdef EINSUMS_COMPUTE_CODE
-    if constexpr (IsDeviceTensorV<AType>) {
-        CDataType *temp;
-
-        size_t elems = omp_get_max_threads();
-
-        hip_catch(hipMalloc(temp, elems * sizeof(CDataType)));
-        std::vector<CDataType> host_temp(elems);
-        EINSUMS_OMP_PARALLEL_FOR
-        for (int i = 0; i < A.num_blocks(); i++) {
-            if (A.block_dim(i) == 0) {
-                continue;
-            }
-            std::array<Range, BType::Rank> view_index;
-            view_index.fill(A.block_range(i));
-            einsum<OnlyUseGenericAlgorithm, false, ConjA, ConjB>(CDataType(0.0), C_indices, temp + omp_get_thread_num(), AB_prefactor,
-                                                                 A_indices, A[i], B_indices, std::apply(B, view_index));
-        }
-
-        if (C_prefactor == CDataType{0.0}) {
-            *C = CDataType{0.0};
-        } else {
-            *C *= C_prefactor;
-        }
-
-        hip_catch(hipMemcpy(host_temp.data(), temp, elems * sizeof(CDataType), hipMemcpyDeviceToHost));
-        *C = std::accumulate(host_temp.cbegin(), host_temp.cend(), (CDataType)*C);
-
-        hip_catch(hipFree(temp));
+    if (C_prefactor == CDataType{0.0}) {
+        *C = CDataType{0.0};
     } else {
-#endif
-        if (C_prefactor == CDataType{0.0}) {
-            *C = CDataType{0.0};
-        } else {
-            *C *= C_prefactor;
-        }
-        CDataType temp = *C;
-
-        // Loop through and perform einsums.
-#pragma omp parallel for reduction(+ : temp)
-        for (int i = 0; i < A.num_blocks(); i++) {
-            if (A.block_dim(i) == 0) {
-                continue;
-            }
-            CType                          temp_c = *C;
-            std::array<Range, BType::Rank> view_index;
-            view_index.fill(A.block_range(i));
-            einsum<OnlyUseGenericAlgorithm, false, ConjA, ConjB>(CDataType(0.0), C_indices, &temp_c, AB_prefactor, A_indices, A[i],
-                                                                 B_indices, std::apply(B, view_index));
-            temp += temp_c;
-        }
-        *C += temp;
-#ifdef EINSUMS_COMPUTE_CODE
+        *C *= C_prefactor;
     }
-#endif
+    CDataType temp = *C;
+
+    // Loop through and perform einsums.
+#pragma omp parallel for reduction(+ : temp)
+    for (int i = 0; i < A.num_blocks(); i++) {
+        if (A.block_dim(i) == 0) {
+            continue;
+        }
+        CType                          temp_c = *C;
+        std::array<Range, BType::Rank> view_index;
+        view_index.fill(A.block_range(i));
+        einsum<OnlyUseGenericAlgorithm, false, ConjA, ConjB>(CDataType(0.0), C_indices, &temp_c, AB_prefactor, A_indices, A[i], B_indices,
+                                                             std::apply(B, view_index));
+        temp += temp_c;
+    }
+    *C += temp;
 }
 
 } // namespace einsums::tensor_algebra::detail

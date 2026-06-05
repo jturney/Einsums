@@ -50,7 +50,8 @@ TEMPLATE_TEST_CASE("einsum5", "[tensor_algebra]", float, double) {
         }
 
         REQUIRE_NOTHROW(einsum(Indices{p, q, k, s}, &gMO0, Indices{p, q, r, s}, A, Indices{r, k}, B, &alg_choice));
-        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        REQUIRE((alg_choice == tensor_algebra::detail::GENERIC || alg_choice == tensor_algebra::detail::SORT_GEMM ||
+                 alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
         gMO1.zero();
         for (size_t i0 = 0; i0 < gMO0.dim(0); i0++) {

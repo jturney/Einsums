@@ -15,6 +15,8 @@ will be listed here, in case a user wants to create their own Einsums-compatible
 See the :ref:`API reference <modules_Einsums_Concepts_api>` of this module for more
 details.
 
+.. cpp:namespace:: einsums
+
 
 Named Requirements
 ------------------

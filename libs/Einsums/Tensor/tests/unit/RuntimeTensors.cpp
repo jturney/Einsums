@@ -416,3 +416,180 @@ TEST_CASE("Runtime Tensor View Assignment") {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Phase A — RuntimeTensor lifecycle methods
+//
+// Mirrors the deferred-allocation API on GeneralTensor so ComputeGraph's
+// Materialization / FreeInsertion / GPU-shadow passes work uniformly on
+// runtime-rank operands. Each test exercises one of the SFINAE probes
+// in libs/Einsums/ComputeGraph/include/Einsums/ComputeGraph/TensorHandle.hpp.
+// ─────────────────────────────────────────────────────────────────────
+
+TEMPLATE_TEST_CASE("RuntimeTensor lifecycle: materialize/release/is_materialized", "[tensor][runtime][lifecycle]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using namespace einsums;
+
+    SECTION("default-constructed tensor is materialized (rank-0)") {
+        RuntimeTensor<TestType> t;
+        REQUIRE(t.is_materialized());
+    }
+
+    SECTION("named-with-dims tensor allocates eagerly and is materialized") {
+        auto t = create_random_tensor<TestType>("eager", 3, 4);
+        REQUIRE(t.is_materialized());
+        REQUIRE(t.data() != nullptr);
+        REQUIRE(t.size() == 12);
+    }
+
+    SECTION("release returns to deferred state, materialize re-allocates") {
+        auto t = create_random_tensor<TestType>("cycle", 5, 5);
+        REQUIRE(t.is_materialized());
+        TestType const original_value = t(2, 2);
+
+        t.release();
+        REQUIRE_FALSE(t.is_materialized());
+        // Dims preserved across release (FreeInsertion contract).
+        REQUIRE(t.dim(0) == 5);
+        REQUIRE(t.dim(1) == 5);
+
+        t.materialize();
+        REQUIRE(t.is_materialized());
+        REQUIRE(t.data() != nullptr);
+        REQUIRE(t.size() == 25);
+        // Buffer is fresh, but writable — verify by writing then reading.
+        t(2, 2) = original_value;
+        REQUIRE(t(2, 2) == original_value);
+    }
+
+    SECTION("materialize is idempotent") {
+        auto t = create_random_tensor<TestType>("idem", 3, 3);
+        REQUIRE(t.is_materialized());
+        auto *ptr_before = t.data();
+        t.materialize();
+        REQUIRE(t.is_materialized());
+        REQUIRE(t.data() == ptr_before);
+    }
+
+    SECTION("release is idempotent") {
+        auto t = create_random_tensor<TestType>("idem-release", 4);
+        t.release();
+        REQUIRE_FALSE(t.is_materialized());
+        t.release();
+        REQUIRE_FALSE(t.is_materialized());
+    }
+}
+
+TEMPLATE_TEST_CASE("RuntimeTensor::set_data — swap-pointer support for GPU shadows", "[tensor][runtime][lifecycle]", float, double) {
+    using namespace einsums;
+    auto t = create_random_tensor<TestType>("swap-test", 4, 4);
+    REQUIRE(t.is_materialized());
+
+    auto *original = t.data();
+
+    // Parallel buffer of the same shape; swap the tensor's internal
+    // pointer to it. Simulates what TensorHandle::swap_data does when
+    // redirecting a tensor to a GPU shadow allocation.
+    std::vector<TestType> shadow(t.size(), TestType{});
+    t.set_data(shadow.data());
+    REQUIRE(t.data() == shadow.data());
+
+    t.set_data(original);
+    REQUIRE(t.data() == original);
+}
+
+TEMPLATE_TEST_CASE("RuntimeTensor::resize — runtime shape change", "[tensor][runtime][lifecycle]", float, double) {
+    using namespace einsums;
+
+    SECTION("resize to a different shape allocates and updates dims") {
+        RuntimeTensor<TestType> t = create_random_tensor<TestType>("rs", 3, 4);
+        REQUIRE(t.size() == 12);
+
+        t.resize(std::vector<size_t>{2, 5, 3});
+        REQUIRE(t.rank() == 3);
+        REQUIRE(t.dim(0) == 2);
+        REQUIRE(t.dim(1) == 5);
+        REQUIRE(t.dim(2) == 3);
+        REQUIRE(t.size() == 30);
+        REQUIRE(t.is_materialized());
+    }
+
+    SECTION("resize to the same shape is a no-op (preserves buffer)") {
+        RuntimeTensor<TestType> t          = create_random_tensor<TestType>("nop", 4, 4);
+        auto                   *ptr_before = t.data();
+        t.resize(std::vector<size_t>{4, 4});
+        REQUIRE(t.data() == ptr_before);
+    }
+
+    SECTION("variadic resize") {
+        RuntimeTensor<TestType> t{std::vector<size_t>{1}};
+        t.resize(2, 3, 4);
+        REQUIRE(t.rank() == 3);
+        REQUIRE(t.size() == 24);
+    }
+
+    SECTION("initializer-list resize") {
+        RuntimeTensor<TestType> t{std::vector<size_t>{1}};
+        t.resize({5, 6});
+        REQUIRE(t.rank() == 2);
+        REQUIRE(t.size() == 30);
+    }
+}
+
+TEMPLATE_TEST_CASE("RuntimeTensor::resize_deferred — shape change without allocation", "[tensor][runtime][lifecycle]", float, double) {
+    using namespace einsums;
+
+    SECTION("resize_deferred on a released tensor changes dims without allocating") {
+        RuntimeTensor<TestType> t = create_random_tensor<TestType>("def", 5, 5);
+        t.release();
+        REQUIRE_FALSE(t.is_materialized());
+
+        t.resize_deferred(std::vector<size_t>{3, 7});
+        REQUIRE_FALSE(t.is_materialized());
+        REQUIRE(t.rank() == 2);
+        REQUIRE(t.dim(0) == 3);
+        REQUIRE(t.dim(1) == 7);
+
+        // After materialize, the new shape is honored.
+        t.materialize();
+        REQUIRE(t.is_materialized());
+        REQUIRE(t.size() == 21);
+    }
+
+    SECTION("variadic and initializer-list overloads work") {
+        RuntimeTensor<TestType> a{std::vector<size_t>{4, 4}};
+        a.release();
+        a.resize_deferred(2, 3, 4);
+        REQUIRE(a.rank() == 3);
+
+        RuntimeTensor<TestType> b{std::vector<size_t>{4, 4}};
+        b.release();
+        b.resize_deferred({6, 7});
+        REQUIRE(b.rank() == 2);
+        REQUIRE(b.dim(0) == 6);
+        REQUIRE(b.dim(1) == 7);
+    }
+}
+
+TEST_CASE("RuntimeTensor liveness token tracks destruction", "[tensor][runtime][lifecycle]") {
+    using namespace einsums;
+
+    SECTION("token from a live tensor is not expired") {
+        RuntimeTensor<double> const t;
+        std::weak_ptr<void> const   w = t.liveness_token();
+        REQUIRE_FALSE(w.expired());
+    }
+
+    SECTION("token expires once the tensor is destroyed") {
+        // The graph's runtime validator holds exactly this weak_ptr to detect a
+        // destroyed (dangling) captured tensor without ever touching its memory
+        // — unlike the old canary, this is definitive and free of UB.
+        std::weak_ptr<void> w;
+        {
+            RuntimeTensor<double> const t;
+            w = t.liveness_token();
+            REQUIRE_FALSE(w.expired());
+        }
+        REQUIRE(w.expired());
+    }
+}

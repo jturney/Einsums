@@ -25,7 +25,7 @@ auto fftfreq(int n, double d) -> Tensor<double, 1> {
     auto p1              = arange<double>(0, N);
     results(Range(0, N)) = p1;
 
-    auto p2              = arange<double>(-(n / 2), 0);
+    auto p2              = arange<double>(-(n / 2), 0); // NOLINT
     results(Range(N, n)) = p2;
 
     linear_algebra::scale(value, &results);

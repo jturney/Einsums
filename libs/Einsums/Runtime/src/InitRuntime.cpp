@@ -10,6 +10,7 @@
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
+#include <Einsums/Profile/Server.hpp>
 #include <Einsums/Runtime/Detail/InitLogging.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
@@ -62,7 +63,7 @@ auto bind_back(F &&func, BoundArgs &&...bound_args) {
 
 namespace detail {
 
-void add_startup_functions(Runtime &rt, RuntimeConfiguration const &cfg, StartupFunctionType startup, ShutdownFunctionType shutdown) {
+void add_startup_functions(Runtime &rt, RuntimeConfiguration const & /*cfg*/, StartupFunctionType startup, ShutdownFunctionType shutdown) {
     if (!!startup) {
         rt.add_startup_function(std::move(startup));
     }
@@ -75,13 +76,35 @@ void add_startup_functions(Runtime &rt, RuntimeConfiguration const &cfg, Startup
 int run(std::function<int()> const &f, Runtime &rt, InitParams const &params) {
     add_startup_functions(rt, rt.config(), std::move(params.startup), std::move(params.shutdown));
 
+    int result = 0;
+
     // Run this runtime instance using the given function f
     if (f) {
-        return rt.run(f);
+        result = rt.run(f);
+    } else {
+        // Run this runtime instance without an einsums_main
+        result = rt.run();
     }
 
-    // Run this runtime instance without an einsums_main
-    return rt.run();
+    // Auto-save profiler session if configured.
+    // This runs before full finalize() to capture profiling data while the runtime is still alive.
+#if defined(EINSUMS_HAVE_PROFILER)
+    try {
+        auto &gc        = GlobalConfigMap::get_singleton();
+        auto  save_path = gc.get_string("profiler-save");
+        if (!save_path.empty()) {
+            profile::Profiler::instance().flush();
+            auto *server = profile::Profiler::instance().server();
+            if (server) {
+                server->export_session(save_path);
+            }
+        }
+    } catch (...) {
+        // profiler-save not configured or unavailable — skip
+    }
+#endif
+
+    return result;
 }
 
 int run(std::function<int()> const &f, std::vector<std::string> const &argv, InitParams const &params, bool blocking) {
@@ -217,7 +240,7 @@ int start(std::function<int(int, char const *const *)> f, std::vector<std::strin
         copy_argv[i] = argv[i].c_str();
     }
 
-    std::function<int()> main_f = std::bind(f, (int)copy_argv.size(), copy_argv.data());
+    std::function<int()> main_f = [f, capture0 = (int)copy_argv.size(), capture1 = copy_argv.data()] { return f(capture0, capture1); };
 
     return detail::run_impl(main_f, argv, params, true);
 }

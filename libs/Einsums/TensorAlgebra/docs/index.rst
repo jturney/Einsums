@@ -13,6 +13,8 @@ Contains tensor contractions.
 See the :ref:`API reference <modules_Einsums_TensorAlgebra_api>` of this module for more
 details.
 
+.. cpp:namespace:: einsums
+
 ----------
 Public API
 ----------
@@ -24,8 +26,8 @@ Public API
     time, as well as the ranks of the tensors. The :code:`C` tensor may also be a scalar if the index tuple is empty.
     The tensor parameters may be any combination of smart pointers. Also, the prefactors may be left off. If the first
     prefactor is left off, it will default to zero. If the second is left off, it will default to one. Most combinations
-    of kinds of tensors are accepted. However, for best results, avoid using :cpp:class:`FunctionTensor`,
-    :cpp:class:`RuntimeTensor`, or :cpp:class:`ArithmeticTensor`, as these can't be used with LAPACK or BLAS calls.
+    of kinds of tensors are accepted. However, for best results, avoid using :cpp:type:`~einsums::tensor_base::FunctionTensor`,
+    :cpp:type:`RuntimeTensor`, or :cpp:type:`ArithmeticTensor`, as these can't be used with LAPACK or BLAS calls.
 
     This function will analyze the indices that it is given to determine if it can be turned into a BLAS call.
     As of the current version, it will not perform any major transpositions to force it into a BLAS call. The
@@ -46,17 +48,17 @@ Public API
 
     .. note::
 
-        This function uses HPTT to perform the tensor transpositions. However, HPTT does not work with :cpp:class:`TensorView`s.
-        You may see slowdowns if you use this with :cpp:class:`TensorView`s, though we are trying to improve this. The best bet
-        will probably be to copy the tensor view to a :cpp:class:`Tensor` first, then permute the elements.
+        This function uses HPTT to perform the tensor transpositions. However, HPTT does not work with :cpp:class:`TensorView`\ s.
+        You may see slowdowns if you use this with :cpp:class:`TensorView`\ s, though we are trying to improve this. The best bet
+        will probably be to copy the tensor view to a :cpp:type:`Tensor` first, then permute the elements.
     
     .. versionchanged:: 1.0.3
 
-        This function now works with :cpp:class:`TensorView`s.
+        This function now works with :cpp:class:`TensorView`\ s.
 
 .. cpp:function:: template<typename... Args> sort(Args &&... args)
 
-    This is the old version of :cpp:func:`permute`. It may be used for something completely different in the future.
+    This is the old version of :cpp:func:`~einsums::permute`. It may be used for something completely different in the future.
 
     .. deprecated:: 1.0.0
 

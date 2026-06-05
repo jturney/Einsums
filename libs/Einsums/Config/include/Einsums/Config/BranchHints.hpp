@@ -5,8 +5,7 @@
 
 #pragma once
 
-#if defined(DOXYGEN)
-
+#if defined(__GNUC__)
 /**
  * Hint at the compiler that \c expr is likely to be true.
  *
@@ -14,7 +13,7 @@
  *
  * @versionadded{1.0.0}
  */
-#    define EINSUMS_LIKEY(expr)
+#    define EINSUMS_LIKELY(expr) __builtin_expect(static_cast<bool>(expr), true)
 /**
  * Hint at the compiler that \c expr is likely to be false.
  *
@@ -22,15 +21,8 @@
  *
  * @versionadded{1.0.0}
  */
-#    define EINSUMS_UNLIKELY(expr)
-
+#    define EINSUMS_UNLIKELY(expr) __builtin_expect(static_cast<bool>(expr), false)
 #else
-
-#    if defined(__GNUC__)
-#        define EINSUMS_LIKELY(expr)   __builtin_expect(static_cast<bool>(expr), true)
-#        define EINSUMS_UNLIKELY(expr) __builtin_expect(static_cast<bool>(expr), false)
-#    else
-#        define EINSUMS_LIKELY(expr)   expr
-#        define EINSUMS_UNLIKELY(expr) expr
-#    endif
+#    define EINSUMS_LIKELY(expr)   expr
+#    define EINSUMS_UNLIKELY(expr) expr
 #endif

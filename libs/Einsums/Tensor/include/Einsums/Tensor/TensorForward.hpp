@@ -9,6 +9,7 @@
 
 #include <Einsums/BufferAllocator.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/GPU/DeviceVector.hpp>
 
 #include <cstddef>
 #include <vector>
@@ -35,18 +36,6 @@ struct TensorPrintOptions {
     bool full_output{true};
 };
 
-namespace detail {
-
-/**
- * @enum HostToDeviceMode
- *
- * @brief Enum that specifies how device tensors store data and make it available to the GPU.
- */
-enum HostToDeviceMode { UNKNOWN, DEV_ONLY, MAPPED, PINNED };
-
-} // namespace detail
-
-#ifndef DOXYGEN
 // Forward declarations of tensors.
 template <typename T, size_t Rank, typename Alloc>
 struct GeneralTensor;
@@ -57,28 +46,16 @@ using Tensor = GeneralTensor<T, Rank, std::allocator<T>>;
 template <typename T, size_t Rank>
 using BufferTensor = GeneralTensor<T, Rank, BufferAllocator<T>>;
 
+/// GPU-resident tensor using the gpu:: abstraction layer.
+/// On mock backend (no GPU), uses std::malloc — same behavior, testable anywhere.
+template <typename T, size_t Rank>
+using GPUTensor = GeneralTensor<T, Rank, gpu::DeviceAllocator<T>>;
+
 template <typename T, size_t Rank>
 struct BlockTensor;
 
 template <typename T, size_t Rank>
 struct TiledTensor;
-
-#    if defined(EINSUMS_COMPUTE_CODE)
-template <typename T, size_t Rank>
-struct DeviceTensor;
-
-template <typename T, size_t Rank>
-struct DeviceTensorView;
-
-template <typename T, size_t Rank>
-struct BlockDeviceTensor;
-
-template <typename T, size_t Rank>
-struct TiledDeviceTensor;
-
-template <typename T, size_t Rank>
-struct TiledDeviceTensorView;
-#    endif
 
 template <typename T, size_t Rank>
 struct TensorView;
@@ -102,11 +79,21 @@ template <typename T>
 using BufferRuntimeTensor = GeneralRuntimeTensor<T, BufferAllocator<T>>;
 
 template <typename T>
+struct TiledRuntimeTensor;
+
+/// GPU-resident runtime-rank tensor using the gpu:: abstraction layer.
+/// Mirrors GPUTensor but with rank known only at runtime. Not exposed to
+/// Python — ComputeGraph optimization passes (GPUPlacement, etc.) own
+/// the host↔device decision; users program in Python as if everything
+/// runs on a single host. On mock backend (no GPU), uses std::malloc.
+template <typename T>
+using RuntimeGPUTensor = GeneralRuntimeTensor<T, gpu::DeviceAllocator<T>>;
+
+template <typename T>
 struct RuntimeTensorView;
 
 template <typename T>
 using VectorData = BufferVector<T>;
-#endif
 
 } // namespace einsums
 

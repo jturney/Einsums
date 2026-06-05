@@ -38,9 +38,6 @@ extern void FC_GLOBAL(zgees, ZGEES)(char *, char *, int_t (*)(double *, double *
                                                                                                                                            \
         Type work_query;                                                                                                                   \
                                                                                                                                            \
-        int_t lda_t  = std::max(int_t{1}, n);                                                                                              \
-        int_t ldvs_t = std::max(int_t{1}, n);                                                                                              \
-                                                                                                                                           \
         /* Check leading dimensions */                                                                                                     \
         if (lda < n) {                                                                                                                     \
             EINSUMS_LOG_WARN("gees warning: lda < n, lda = {}, n = {}", lda, n);                                                           \

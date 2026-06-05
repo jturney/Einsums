@@ -7,7 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-
 #include <Einsums/Tensor/InitModule.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
 #include <Einsums/TypeSupport/Singleton.hpp>
@@ -15,11 +14,11 @@
 #include <H5Ipublic.h>
 #include <atomic>
 
-namespace einsums {
-namespace detail {
+namespace einsums::detail {
 
 /// @todo This class can be freely changed. It is provided as a starting point for your convenience. If not needed, it may be removed.
 
+// NOLINTNEXTLINE(readability-identifier-naming)
 class EINSUMS_EXPORT Einsums_Tensor_vars final : public design_pats::Lockable<std::recursive_mutex> {
     EINSUMS_SINGLETON_DEF(Einsums_Tensor_vars)
 
@@ -38,5 +37,4 @@ class EINSUMS_EXPORT Einsums_Tensor_vars final : public design_pats::Lockable<st
     explicit Einsums_Tensor_vars() = default;
 };
 
-} // namespace detail
-} // namespace einsums
+} // namespace einsums::detail

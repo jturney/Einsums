@@ -12,6 +12,7 @@
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/CompilerSpecific.hpp>
 #include <Einsums/Errors/Error.hpp>
+#include <Einsums/LinearAlgebra/Bases/direct_division.hpp>
 #include <Einsums/LinearAlgebra/Bases/direct_product.hpp>
 #include <Einsums/LinearAlgebra/Bases/dot.hpp>
 #include <Einsums/LinearAlgebra/Bases/gemm.hpp>
@@ -21,6 +22,7 @@
 #include <Einsums/LinearAlgebra/Bases/sum_square.hpp>
 #include <Einsums/LinearAlgebra/Bases/syev.hpp>
 #include <Einsums/LinearAlgebra/Bases/triangular.hpp>
+#include <Einsums/LinearAlgebra/SymmetryDispatch.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
@@ -138,6 +140,18 @@ template <typename U, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType
         requires(std::convertible_to<U, typename AType::ValueType>);
     }
 void gemm(char transA, char transB, U const alpha, AType const &A, BType const &B, U const beta, CType *C) {
+    using T = typename AType::ValueType;
+    // Symmetry-aware fast path: if either operand declared a rank-2
+    // symmetric or Hermitian descriptor, dispatch to ``symm`` / ``hemm``
+    // instead of the general gemm. Falls through when no match.
+    auto const *desc_a = A.symmetry();
+    auto const *desc_b = B.symmetry();
+    if (desc_a || desc_b) {
+        if (try_symmetric_gemm<T>(transA, transB, static_cast<T>(alpha), A.impl(), desc_a, B.impl(), desc_b, static_cast<T>(beta),
+                                  &C->impl())) {
+            return;
+        }
+    }
     gemm(transA, transB, alpha, A.impl(), B.impl(), beta, &C->impl());
 }
 
@@ -666,7 +680,7 @@ void heev(AType *A, WType *W) {
 }
 
 template <typename T>
-auto gesv(einsums::detail::TensorImpl<T> *A, einsums::detail::TensorImpl<T> *B) -> int {
+[[nodiscard]] auto gesv(einsums::detail::TensorImpl<T> *A, einsums::detail::TensorImpl<T> *B) -> int {
     if (A->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(rank_error, "The coefficient matrix needs to be rank-2!");
     }
@@ -714,13 +728,33 @@ auto gesv(einsums::detail::TensorImpl<T> *A, einsums::detail::TensorImpl<T> *B) 
         BufferVector<blas::int_t> ipiv(lwork);
 
         int info = blas::gesv(n, nrhs, A->data(), lda, ipiv.data(), B->data(), ldb);
+
+        if (info < 0) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "gesv: argument {} has an invalid value! n: {}, nrhs: {}, lda: {}, ldb: {}.",
+                                    print::ordinal(-info), n, nrhs, lda, ldb);
+        } else if (info > 0) {
+            EINSUMS_THROW_EXCEPTION(std::runtime_error, "gesv: factor U({0},{0}) is exactly zero. The solution could not be computed.",
+                                    info - 1);
+        }
+
         return info;
     } else {
         BufferVector<blas::int_t> ipiv(A->dim(0));
+        int                       info;
         if (B->rank() == 2 && B->dim(1) == 0) {
-            return impl_lu_decomp(*A, ipiv);
+            info = impl_lu_decomp(*A, ipiv);
+        } else {
+            info = impl_solve(*A, *B, ipiv);
         }
-        return impl_solve(*A, *B, ipiv);
+
+        if (info < 0) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "gesv: argument {} has an invalid value!", print::ordinal(-info));
+        } else if (info > 0) {
+            EINSUMS_THROW_EXCEPTION(std::runtime_error, "gesv: factor U({0},{0}) is exactly zero. The solution could not be computed.",
+                                    info - 1);
+        }
+
+        return info;
     }
 }
 
@@ -730,7 +764,7 @@ template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
         requires MatrixConcept<AType>;
         requires MatrixConcept<BType> || VectorConcept<BType>;
     }
-auto gesv(AType *A, BType *B) -> int {
+[[nodiscard]] auto gesv(AType *A, BType *B) -> int {
     return gesv(&A->impl(), &B->impl());
 }
 
@@ -786,7 +820,7 @@ BiggestTypeT<T, TOther> dot(einsums::detail::TensorImpl<T> const &A, einsums::de
 
 template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
     requires requires { requires SameRank<AType, BType>; }
-auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
+[[nodiscard]] auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
     return dot(A.impl(), B.impl());
 }
 
@@ -805,19 +839,19 @@ T true_dot(einsums::detail::TensorImpl<T> const &A, einsums::detail::TensorImpl<
 
 template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
     requires requires { requires SameRank<AType, BType>; }
-auto true_dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
+[[nodiscard]] auto true_dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
     return true_dot(A.impl(), B.impl());
 }
 
 template <typename AType, typename BType, typename CType>
-auto dot(einsums::detail::TensorImpl<AType> const &A, einsums::detail::TensorImpl<BType> const &B,
-         einsums::detail::TensorImpl<CType> const &C) -> BiggestTypeT<AType, BType, CType> {
+[[nodiscard]] auto dot(einsums::detail::TensorImpl<AType> const &A, einsums::detail::TensorImpl<BType> const &B,
+                       einsums::detail::TensorImpl<CType> const &C) -> BiggestTypeT<AType, BType, CType> {
     return impl_dot(A, B, C);
 }
 
 template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicTensorConcept CType>
     requires SameRank<AType, BType, CType>
-auto dot(AType const &A, BType const &B, CType const &C)
+[[nodiscard]] auto dot(AType const &A, BType const &B, CType const &C)
     -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType, typename CType::ValueType> {
 
     return dot(A.impl(), B.impl(), C.impl());
@@ -930,12 +964,24 @@ void direct_product(typename AType::ValueType alpha, AType const &A, BType const
     direct_product(alpha, A.impl(), B.impl(), beta, &C->impl());
 }
 
+template <typename AType, typename BType, typename CType>
+void direct_division(CType alpha, einsums::detail::TensorImpl<AType> const &A, einsums::detail::TensorImpl<BType> const &B, CType beta,
+                     einsums::detail::TensorImpl<CType> *C) {
+    impl_direct_division(alpha, A, B, beta, C);
+}
+
+template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicTensorConcept CType>
+    requires SameUnderlyingAndRank<AType, BType, CType>
+void direct_division(typename AType::ValueType alpha, AType const &A, BType const &B, typename CType::ValueType beta, CType *C) {
+    direct_division(alpha, A.impl(), B.impl(), beta, &C->impl());
+}
+
 template <CoreBasicTensorConcept AType>
     requires MatrixConcept<AType>
-auto pow(AType const &a, typename AType::ValueType alpha,
-         typename AType::ValueType cutoff = std::numeric_limits<typename AType::ValueType>::epsilon())
+[[nodiscard]] auto pow(AType const &a, typename AType::ValueType alpha,
+                       typename AType::ValueType cutoff = std::numeric_limits<typename AType::ValueType>::epsilon())
     -> Tensor<typename AType::ValueType, 2> {
-    assert(a.dim(0) == a.dim(1));
+    EINSUMS_ASSERT(a.dim(0) == a.dim(1));
 
     if (a.dim(0) == 0) {
         return Tensor<typename AType::ValueType, 2>{"pow result", 0, 0};
@@ -1215,7 +1261,7 @@ void invert(TensorType *A) {
 }
 
 template <typename T>
-auto svd(einsums::detail::TensorImpl<T> const &_A, char jobu, char jobvt)
+[[nodiscard]] auto svd(einsums::detail::TensorImpl<T> const &_A, char jobu, char jobvt)
     -> std::tuple<std::optional<Tensor<T, 2>>, Tensor<RemoveComplexT<T>, 1>, std::optional<Tensor<T, 2>>> {
     LabeledSection0();
 
@@ -1291,14 +1337,14 @@ auto svd(einsums::detail::TensorImpl<T> const &_A, char jobu, char jobvt)
 
 template <MatrixConcept AType>
     requires(CoreTensorConcept<AType>)
-auto svd(AType const &A, char jobu, char jobvt)
+[[nodiscard]] auto svd(AType const &A, char jobu, char jobvt)
     -> std::tuple<std::optional<Tensor<typename AType::ValueType, 2>>, Tensor<RemoveComplexT<typename AType::ValueType>, 1>,
                   std::optional<Tensor<typename AType::ValueType, 2>>> {
     return svd(A.impl(), jobu, jobvt);
 }
 
 template <typename T>
-auto norm(char norm_type, einsums::detail::TensorImpl<T> const &a) -> RemoveComplexT<T> {
+[[nodiscard]] auto norm(char norm_type, einsums::detail::TensorImpl<T> const &a) -> RemoveComplexT<T> {
     LabeledSection0();
 
     if (a.rank() > 2) {
@@ -1388,12 +1434,12 @@ auto norm(char norm_type, einsums::detail::TensorImpl<T> const &a) -> RemoveComp
 
 template <MatrixConcept AType>
     requires(CoreTensorConcept<AType>)
-auto norm(char norm_type, AType const &a) -> RemoveComplexT<typename AType::ValueType> {
+[[nodiscard]] auto norm(char norm_type, AType const &a) -> RemoveComplexT<typename AType::ValueType> {
     return norm(norm_type, a.impl());
 }
 
 template <typename T>
-auto vec_norm(einsums::detail::TensorImpl<T> const &a) -> RemoveComplexT<T> {
+[[nodiscard]] auto vec_norm(einsums::detail::TensorImpl<T> const &a) -> RemoveComplexT<T> {
     RemoveComplexT<T> norm = 0.0, scale = 1.0;
 
     sum_square(a, &scale, &norm);
@@ -1402,12 +1448,12 @@ auto vec_norm(einsums::detail::TensorImpl<T> const &a) -> RemoveComplexT<T> {
 }
 
 template <TensorConcept AType>
-auto vec_norm(AType const &a) -> RemoveComplexT<typename AType::ValueType> {
+[[nodiscard]] auto vec_norm(AType const &a) -> RemoveComplexT<typename AType::ValueType> {
     return vec_norm(a.impl());
 }
 
 template <typename T>
-auto svd_dd(einsums::detail::TensorImpl<T> const &_A, char job)
+[[nodiscard]] auto svd_dd(einsums::detail::TensorImpl<T> const &_A, char job)
     -> std::tuple<std::optional<Tensor<T, 2>>, Tensor<RemoveComplexT<T>, 1>, std::optional<Tensor<T, 2>>> {
     LabeledSection0();
 
@@ -1482,7 +1528,7 @@ auto svd_dd(einsums::detail::TensorImpl<T> const &_A, char job)
 
 template <MatrixConcept AType>
     requires(CoreTensorConcept<AType>)
-auto svd_dd(AType const &A, char job)
+[[nodiscard]] auto svd_dd(AType const &A, char job)
     -> std::tuple<std::optional<Tensor<typename AType::ValueType, 2>>, Tensor<RemoveComplexT<typename AType::ValueType>, 1>,
                   std::optional<Tensor<typename AType::ValueType, 2>>> {
     return svd_dd(A.impl(), job);

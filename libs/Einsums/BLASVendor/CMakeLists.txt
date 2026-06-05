@@ -21,6 +21,7 @@ set(BLASVendorSources
     geev.cpp
     gelqf.cpp
     gemm.cpp
+    gemm_batch.cpp
     gemv.cpp
     geqrf.cpp
     ger.cpp
@@ -35,9 +36,24 @@ set(BLASVendorSources
     lassq.cpp
     orglq.cpp
     orgqr.cpp
+    ormqr.cpp
+    potrf.cpp
     scal.cpp
+    swap.cpp
+    iamax.cpp
+    symm.cpp
+    syrk.cpp
+    syr2k.cpp
     syev.cpp
+    syevd.cpp
+    sygv.cpp
+    getrs.cpp
+    gels.cpp
+    trsm.cpp
+    trsv.cpp
     trsyl.cpp
+    trtrs.cpp
+    trtri.cpp
     direct_prod.c
     direct_prod.cpp
 )
@@ -58,3 +74,9 @@ einsums_add_module(
                             Einsums_BLASBase Einsums_HPTT Einsums_Errors Einsums_Logging Einsums_BufferAllocator
   CMAKE_SUBDIRS examples tests
 )
+
+# BLASVendor has C sources (.c) and assembly (.S) which are incompatible with
+# the C++ precompiled header. Disable PCH for this module.
+if(EINSUMS_WITH_PRECOMPILED_HEADERS)
+  set_target_properties(Einsums_BLASVendor PROPERTIES DISABLE_PRECOMPILE_HEADERS ON)
+endif()

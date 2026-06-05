@@ -10,8 +10,7 @@
 #include <memory>
 #include <type_traits>
 
-namespace einsums {
-namespace hashes {
+namespace einsums::hashes {
 
 /**
  * @struct container_hash
@@ -27,10 +26,10 @@ namespace hashes {
  * @versionadded{1.0.0}
  */
 template <typename ContainerType>
-struct container_hash {
+struct ContainerHash {
   public:
-    container_hash() {}
-    virtual ~container_hash() = default;
+    ContainerHash()          = default;
+    virtual ~ContainerHash() = default;
 
     /**
      * Hashes the contents of a container.
@@ -49,7 +48,7 @@ struct container_hash {
         constexpr size_t mask = (((size_t)1 << sizeof(size_t)) - 1) << (7 * sizeof(size_t));
 
         for (auto const &val : cont) {
-            uint8_t const *bytes = reinterpret_cast<uint8_t const *>(std::addressof(val));
+            auto const *bytes = reinterpret_cast<uint8_t const *>(std::addressof(val));
 
             for (int i = 0; i < sizeof(std::decay_t<decltype(val)>); i++) {
                 hash <<= sizeof(size_t); // Shift left a number of bits equal to the number of bytes in size_t.
@@ -65,5 +64,4 @@ struct container_hash {
     }
 };
 
-} // namespace hashes
-} // namespace einsums
+} // namespace einsums::hashes

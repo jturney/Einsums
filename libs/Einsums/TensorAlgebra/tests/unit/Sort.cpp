@@ -293,9 +293,9 @@ TEST_CASE("Saving and loading permutes") {
 
     auto fp = std::fopen("saved_plan.hptt", "w+");
 
-    hptt::setupFile(fp);
+    hptt::setup_file(fp);
 
-    plan->writeToFile(fp);
+    plan->write_to_file(fp);
 
     std::fclose(fp);
 

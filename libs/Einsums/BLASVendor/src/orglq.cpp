@@ -30,7 +30,7 @@ extern void FC_GLOBAL(zunglq, ZUNGLQ)(int_t *, int_t *, int_t *, std::complex<do
                                                                                                                                            \
         int_t info{0};                                                                                                                     \
         int_t lwork{-1};                                                                                                                   \
-        Type  work_query;                                                                                                                  \
+        Type  work_query{};                                                                                                                \
                                                                                                                                            \
         /* Check leading dimensions */                                                                                                     \
         if (lda < m) {                                                                                                                     \
@@ -62,7 +62,7 @@ ORGLQ(float, s, S);
                                                                                                                                            \
         int_t info{0};                                                                                                                     \
         int_t lwork{-1};                                                                                                                   \
-        Type  work_query;                                                                                                                  \
+        Type  work_query{};                                                                                                                \
                                                                                                                                            \
         /* Check leading dimensions */                                                                                                     \
         if (lda < m) {                                                                                                                     \

@@ -41,7 +41,7 @@ TEMPLATE_TEST_CASE("geev", "[linear-algebra]", float, double) {
     auto vr2 = create_tensor<AddComplexT<T>>("vr2", 5, 5);
 
     auto temp = std::vector<T>{-1.01f, 0.86f,  -4.60f, 3.31f, -4.81f, 3.98f,  0.53f, -7.04f, 5.29f,  3.55f,  3.30f, 8.26f, -3.89f,
-                              8.20f,  -1.51f, 4.43f,  4.96f, -7.66f, -7.33f, 6.18f, 7.31f,  -6.43f, -6.16f, 2.47f, 5.58f};
+                               8.20f,  -1.51f, 4.43f,  4.96f, -7.66f, -7.33f, 6.18f, 7.31f,  -6.43f, -6.16f, 2.47f, 5.58f};
 
     a.vector_data() = temp;
     a2              = a;
@@ -92,8 +92,8 @@ TEMPLATE_TEST_CASE("geev complex", "[linear-algebra]", std::complex<float>, std:
     auto vr2 = create_tensor<T>("vr2", 4, 4);
 
     auto temp = std::vector<T>{{-3.84f, 2.25f},  {-8.94f, -4.75f}, {8.95f, -6.53f},  {-9.87f, 4.82f},  {-0.66f, 0.83f},  {-4.40f, -3.82f},
-                              {-3.50f, -4.26f}, {-3.15f, 7.36f},  {-3.99f, -4.73f}, {-5.88f, -6.60f}, {-3.36f, -0.40f}, {-0.75f, 5.23f},
-                              {7.74f, 4.18f},   {3.66f, -7.53f},  {2.58f, 3.60f},   {4.59f, 5.41f}};
+                               {-3.50f, -4.26f}, {-3.15f, 7.36f},  {-3.99f, -4.73f}, {-5.88f, -6.60f}, {-3.36f, -0.40f}, {-0.75f, 5.23f},
+                               {7.74f, 4.18f},   {3.66f, -7.53f},  {2.58f, 3.60f},   {4.59f, 5.41f}};
 
     a.vector_data() = temp;
     a2              = a;

@@ -29,7 +29,6 @@
 
 #include <Einsums/HPTT/ComputeNode.hpp>
 
-#include <memory>
 #include <vector>
 
 namespace hptt {
@@ -43,7 +42,7 @@ namespace hptt {
  */
 class Plan {
   public:
-    Plan() : rootNodes_(), numTasks_(0) {}
+    Plan() : _rootNodes(), _numTasks(0) {}
 
     /**
      * Construct a plan. Initialize the loop order and the number of threads for each level of loop.
@@ -60,24 +59,24 @@ class Plan {
     /**
      * Get the root node, but get a const pointer to it.
      */
-    ComputeNode const *getRootNode(int threadId) const;
+    [[nodiscard]] ComputeNode const *get_root_node(int threadId) const;
 
     /**
      * Get the root node, but get a non-const pointer to it.
      */
-    ComputeNode *getRootNode(int threadId);
+    ComputeNode *get_root_node(int threadId);
 
     /**
      * Get the number of tasks for the plan.
      */
-    int getNumTasks() const;
+    [[nodiscard]] int get_num_tasks() const;
 
     /**
      * Print the loop order and number of threads for each level of loop.
      */
     void print() const;
 
-    void writeToFile(std::FILE *fp) const;
+    void write_to_file(std::FILE *fp) const;
 
   private:
     /**
@@ -85,7 +84,7 @@ class Plan {
      *
      * The number of tasks to spawn for the calculation.
      */
-    int numTasks_;
+    int _numTasks;
 
     /**
      * @var loopOrder_
@@ -95,21 +94,21 @@ class Plan {
      * For example, if \f$ B_{1,0,2} \gets A_{0,1,2}\f$. loopOrder_ = {1,0,2} denotes that B is
      * traversed in a linear fashion.
      */
-    std::vector<int> loopOrder_;
+    std::vector<int> _loopOrder;
 
     /**
      * @var numThreadsAtLoop_
      *
      * Holds the number of threads for each level of the loop.
      */
-    std::vector<int> numThreadsAtLoop_;
+    std::vector<int> _numThreadsAtLoop;
 
     /**
      * @var rootNodes_
      *
      * Holds the nodes used to compute the transposition.
      */
-    std::vector<ComputeNode> rootNodes_;
+    std::vector<ComputeNode> _rootNodes;
 };
 
 } // namespace hptt

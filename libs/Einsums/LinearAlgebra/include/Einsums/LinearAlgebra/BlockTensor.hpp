@@ -18,14 +18,6 @@
 #include <span>
 #include <stdexcept>
 
-#ifdef EINSUMS_COMPUTE_CODE
-#    include <Einsums/LinearAlgebra/GPULinearAlgebra.hpp>
-
-#    include <hip/hip_common.h>
-#    include <hip/hip_runtime.h>
-#    include <hip/hip_runtime_api.h>
-#endif
-
 namespace einsums::linear_algebra::detail {
 
 template <BlockTensorConcept AType, typename T = RemoveComplexT<typename AType::ValueType>>

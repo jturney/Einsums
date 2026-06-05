@@ -25,105 +25,109 @@
   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/HPTT/ComputeNode.hpp>
 #include <Einsums/HPTT/Plan.hpp>
 #include <Einsums/HPTT/Utils.hpp>
+#include <Einsums/Logging.hpp>
 
-#include <stdexcept>
+#include <cerrno>
+#include <cstring>
+#include <utility>
 
 #include "Einsums/HPTT/Files.hpp"
 
 namespace hptt {
 
 Plan::Plan(std::vector<int> loopOrder, std::vector<int> numThreadsAtLoop)
-    : rootNodes_(), loopOrder_(loopOrder), numThreadsAtLoop_(numThreadsAtLoop) {
-    numTasks_ = 1;
+    : _rootNodes(), _loopOrder(std::move(loopOrder)), _numThreadsAtLoop(numThreadsAtLoop) {
+    _numTasks = 1;
     for (auto nt : numThreadsAtLoop)
-        numTasks_ *= nt;
-    rootNodes_.resize(numTasks_);
+        _numTasks *= nt;
+    _rootNodes.resize(_numTasks);
 }
 
-ComputeNode const *Plan::getRootNode(int threadId) const {
-    return &rootNodes_.at(threadId);
+ComputeNode const *Plan::get_root_node(int threadId) const {
+    return &_rootNodes.at(threadId);
 }
-ComputeNode *Plan::getRootNode(int threadId) {
-    return &rootNodes_.at(threadId);
+ComputeNode *Plan::get_root_node(int threadId) {
+    return &_rootNodes.at(threadId);
 }
 
 void Plan::print() const {
-    printVector(loopOrder_, "LoopOrder");
-    printVector(numThreadsAtLoop_, "Parallelization");
+    print_vector(_loopOrder, "LoopOrder");
+    print_vector(_numThreadsAtLoop, "Parallelization");
 }
 
-int Plan::getNumTasks() const {
-    return rootNodes_.size();
+int Plan::get_num_tasks() const {
+    return _rootNodes.size();
 }
 
-void Plan::writeToFile(std::FILE *fp) const {
-    size_t error = fwrite(&numTasks_, sizeof(int), 1, fp);
+void Plan::write_to_file(std::FILE *fp) const {
+    size_t error = fwrite(&_numTasks, sizeof(int), 1, fp);
 
     if (error < 1) {
-        perror("Error writing to file!");
-        throw std::runtime_error("IO error.");
+        EINSUMS_LOG_ERROR("HPTT: error writing to file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 
     std::fflush(fp);
 
-    size_t size = loopOrder_.size();
+    size_t size = _loopOrder.size();
 
     error = fwrite(&size, sizeof(size_t), 1, fp);
 
     if (error < 1) {
-        perror("Error writing to file!");
-        throw std::runtime_error("IO error.");
+        EINSUMS_LOG_ERROR("HPTT: error writing to file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 
     std::fflush(fp);
 
-    error = fwrite(loopOrder_.data(), sizeof(int), size, fp);
+    error = fwrite(_loopOrder.data(), sizeof(int), size, fp);
 
     if (error < size) {
-        perror("Error writing to file!");
-        throw std::runtime_error("IO error.");
+        EINSUMS_LOG_ERROR("HPTT: error writing to file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 
     std::fflush(fp);
 
-    size = numThreadsAtLoop_.size();
+    size = _numThreadsAtLoop.size();
 
     error = fwrite(&size, sizeof(size_t), 1, fp);
 
     if (error < 1) {
-        perror("Error writing to file!");
-        throw std::runtime_error("IO error.");
+        EINSUMS_LOG_ERROR("HPTT: error writing to file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 
     std::fflush(fp);
 
-    error = fwrite(numThreadsAtLoop_.data(), sizeof(int), size, fp);
+    error = fwrite(_numThreadsAtLoop.data(), sizeof(int), size, fp);
 
     if (error < size) {
-        perror("Error writing to file!");
-        throw std::runtime_error("IO error.");
+        EINSUMS_LOG_ERROR("HPTT: error writing to file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 
     std::fflush(fp);
 
     // Offsets for the root nodes.
-    std::vector<uint32_t> offsets(numTasks_);
+    std::vector<uint32_t> offsets(_numTasks);
 
     long offset_table_pos = ftell(fp);
 
-    int error2 = fseek(fp, (long)numTasks_ * sizeof(uint32_t), SEEK_CUR);
+    int error2 = fseek(fp, (long)_numTasks * sizeof(uint32_t), SEEK_CUR);
 
     if (error2 != 0) {
-        perror("Error seeking in file!");
-        throw std::runtime_error("IO error.");
+        EINSUMS_LOG_ERROR("HPTT: error seeking in file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 
     // Write the root nodes.
-    for (int i = 0; i < numTasks_; i++) {
-        auto *curr_node = &rootNodes_[i];
+    for (int i = 0; i < _numTasks; i++) {
+        auto *curr_node = &_rootNodes[i];
         // Get the offset of the root node.
         offsets[i] = ftell(fp);
 
@@ -141,43 +145,43 @@ void Plan::writeToFile(std::FILE *fp) const {
             error = fwrite(&constants, sizeof(NodeConstants), 1, fp);
 
             if (error < 1) {
-                perror("Error writing to file!");
-                throw std::runtime_error("IO error");
+                EINSUMS_LOG_ERROR("HPTT: error writing to file: {}", std::strerror(errno));
+                EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error");
             }
 
             std::fflush(fp);
 
-            curr_node = curr_node->next;
+            curr_node = curr_node->next.get();
         }
     }
 
     error2 = fseek(fp, offset_table_pos, SEEK_SET);
 
     if (error2 != 0) {
-        perror("Error seeking in file!");
-        throw std::runtime_error("IO error.");
+        EINSUMS_LOG_ERROR("HPTT: error seeking in file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 
-    error = fwrite(offsets.data(), sizeof(uint32_t), numTasks_, fp);
+    error = fwrite(offsets.data(), sizeof(uint32_t), _numTasks, fp);
 
     std::fflush(fp);
 
-    if (error < numTasks_) {
-        perror("Error writing to file!");
-        throw std::runtime_error("IO error.");
+    if (error < _numTasks) {
+        EINSUMS_LOG_ERROR("HPTT: error writing to file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 }
 
 Plan::Plan(std::FILE *fp, bool swap_endian) {
-    size_t error = fread(&numTasks_, sizeof(int), 1, fp);
+    size_t error = fread(&_numTasks, sizeof(int), 1, fp);
 
     if (error < 1) {
-        perror("Error reading from file!");
-        throw std::runtime_error("IO error.");
+        EINSUMS_LOG_ERROR("HPTT: error reading from file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 
     if (swap_endian) {
-        numTasks_ = byteswap(numTasks_);
+        _numTasks = byteswap(_numTasks);
     }
 
     size_t size;
@@ -185,92 +189,92 @@ Plan::Plan(std::FILE *fp, bool swap_endian) {
     error = fread(&size, sizeof(size_t), 1, fp);
 
     if (error < 1) {
-        perror("Error reading from file!");
-        throw std::runtime_error("IO error.");
+        EINSUMS_LOG_ERROR("HPTT: error reading from file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 
     if (swap_endian) {
         size = byteswap(size);
     }
 
-    loopOrder_.resize(size);
+    _loopOrder.resize(size);
 
-    error = fread(loopOrder_.data(), sizeof(int), size, fp);
+    error = fread(_loopOrder.data(), sizeof(int), size, fp);
 
     if (error < size) {
-        perror("Error reading from file!");
-        throw std::runtime_error("IO error.");
+        EINSUMS_LOG_ERROR("HPTT: error reading from file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 
     if (swap_endian) {
-        for (int i = 0; i < loopOrder_.size(); i++) {
-            loopOrder_[i] = byteswap(loopOrder_[i]);
+        for (int &i : _loopOrder) {
+            i = byteswap(i);
         }
     }
 
     error = fread(&size, sizeof(size_t), 1, fp);
 
     if (error < 1) {
-        perror("Error reading from file!");
-        throw std::runtime_error("IO error.");
+        EINSUMS_LOG_ERROR("HPTT: error reading from file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 
     if (swap_endian) {
         size = byteswap(size);
     }
 
-    numThreadsAtLoop_.resize(size);
+    _numThreadsAtLoop.resize(size);
 
-    error = fread(numThreadsAtLoop_.data(), sizeof(int), size, fp);
+    error = fread(_numThreadsAtLoop.data(), sizeof(int), size, fp);
 
     if (error < size) {
-        perror("Error reading from file!");
-        throw std::runtime_error("IO error.");
+        EINSUMS_LOG_ERROR("HPTT: error reading from file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error.");
     }
 
     if (swap_endian) {
-        for (int i = 0; i < numThreadsAtLoop_.size(); i++) {
-            numThreadsAtLoop_[i] = byteswap(numThreadsAtLoop_[i]);
+        for (int &i : _numThreadsAtLoop) {
+            i = byteswap(i);
         }
     }
 
     // Get the offsets for each root node.
     std::vector<uint32_t> offsets;
-    offsets.resize(numTasks_);
+    offsets.resize(_numTasks);
 
-    error = fread(offsets.data(), sizeof(uint32_t), numTasks_, fp);
+    error = fread(offsets.data(), sizeof(uint32_t), _numTasks, fp);
 
-    if (error < numTasks_) {
-        perror("Error reading from file!");
-        throw std::runtime_error("IO error");
+    if (error < _numTasks) {
+        EINSUMS_LOG_ERROR("HPTT: error reading from file: {}", std::strerror(errno));
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error");
     }
 
     if (swap_endian) {
-        for (int i = 0; i < numTasks_; i++) {
+        for (int i = 0; i < _numTasks; i++) {
             offsets[i] = byteswap(offsets[i]);
         }
     }
 
-    rootNodes_.resize(numTasks_);
+    _rootNodes.resize(_numTasks);
 
     if (swap_endian) {
-        for (int i = 0; i < numTasks_; i++) {
+        for (int i = 0; i < _numTasks; i++) {
             NodeConstants constants;
-            auto         *curr_node = &rootNodes_[i];
+            auto         *curr_node = &_rootNodes[i];
 
             int error2 = fseek(fp, offsets[i], SEEK_SET);
 
             if (error2 < 0) {
-                perror("Error while seeking!");
-                throw std::runtime_error("IO error");
+                EINSUMS_LOG_ERROR("HPTT: error while seeking: {}", std::strerror(errno));
+                EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error");
             }
 
             do {
                 error = fread(&constants, sizeof(NodeConstants), 1, fp);
 
                 if (error < 1) {
-                    perror("Error reading from file!");
-                    throw std::runtime_error("IO error");
+                    EINSUMS_LOG_ERROR("HPTT: error reading from file: {}", std::strerror(errno));
+                    EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error");
                 }
 
                 curr_node->start     = byteswap(constants.start);
@@ -283,31 +287,31 @@ Plan::Plan(std::FILE *fp, bool swap_endian) {
                 curr_node->offDiffAB = byteswap(constants.offDiffAB);
 
                 if (constants.has_next) {
-                    curr_node->next = new ComputeNode;
+                    curr_node->next = std::make_unique<ComputeNode>();
                 } else {
-                    curr_node->next = nullptr;
+                    curr_node->next.reset();
                 }
-                curr_node = curr_node->next;
+                curr_node = curr_node->next.get();
             } while (constants.has_next);
         }
     } else {
-        for (int i = 0; i < numTasks_; i++) {
+        for (int i = 0; i < _numTasks; i++) {
             NodeConstants constants;
-            auto         *curr_node = &rootNodes_[i];
+            auto         *curr_node = &_rootNodes[i];
 
             int error2 = fseek(fp, offsets[i], SEEK_SET);
 
             if (error2 < 0) {
-                perror("Error while seeking!");
-                throw std::runtime_error("IO error");
+                EINSUMS_LOG_ERROR("HPTT: error while seeking: {}", std::strerror(errno));
+                EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error");
             }
 
             do {
                 error = fread(&constants, sizeof(NodeConstants), 1, fp);
 
                 if (error < 1) {
-                    perror("Error reading from file!");
-                    throw std::runtime_error("IO error");
+                    EINSUMS_LOG_ERROR("HPTT: error reading from file: {}", std::strerror(errno));
+                    EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error");
                 }
 
                 curr_node->start     = constants.start;
@@ -320,11 +324,11 @@ Plan::Plan(std::FILE *fp, bool swap_endian) {
                 curr_node->offDiffAB = constants.offDiffAB;
 
                 if (constants.has_next) {
-                    curr_node->next = new ComputeNode;
+                    curr_node->next = std::make_unique<ComputeNode>();
                 } else {
-                    curr_node->next = nullptr;
+                    curr_node->next.reset();
                 }
-                curr_node = curr_node->next;
+                curr_node = curr_node->next.get();
             } while (constants.has_next);
         }
     }

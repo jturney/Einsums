@@ -5,10 +5,9 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Errors/ThrowException.hpp>
 
-namespace einsums::blas {
-
-namespace detail {
+namespace einsums::blas::detail {
 void sgemm(char transa, char transb, int_t m, int_t n, int_t k, float alpha, float const *a, int_t lda, float const *b, int_t ldb,
            float beta, float *c, int_t ldc) {
     vendor::sgemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
@@ -26,6 +25,25 @@ void cgemm(char transa, char transb, int_t m, int_t n, int_t k, std::complex<flo
 void zgemm(char transa, char transb, int_t m, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
            std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc) {
     vendor::zgemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void sgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, float alpha, float const **a_array, int_t lda, float const **b_array,
+                 int_t ldb, float beta, float **c_array, int_t ldc, int_t batch_count) {
+    vendor::sgemm_batch(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
+}
+void dgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, double alpha, double const **a_array, int_t lda,
+                 double const **b_array, int_t ldb, double beta, double **c_array, int_t ldc, int_t batch_count) {
+    vendor::dgemm_batch(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
+}
+void cgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const **a_array,
+                 int_t lda, std::complex<float> const **b_array, int_t ldb, std::complex<float> beta, std::complex<float> **c_array,
+                 int_t ldc, int_t batch_count) {
+    vendor::cgemm_batch(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
+}
+void zgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const **a_array,
+                 int_t lda, std::complex<double> const **b_array, int_t ldb, std::complex<double> beta, std::complex<double> **c_array,
+                 int_t ldc, int_t batch_count) {
+    vendor::zgemm_batch(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
 }
 
 void sgemv(char transa, int_t m, int_t n, float alpha, float const *a, int_t lda, float const *x, int_t incx, float beta, float *y,
@@ -389,7 +407,19 @@ auto ctrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, std::complex<f
 #elif defined(EINSUMS_HAVE_LAPACKE)
     return ::einsums::backend::linear_algebra::cblas::ctrsyl(trana, tranb, isgn, m, n, a, lda, b, ldb, c, ldc, scale);
 #else
-    throw std::runtime_error("ctrsyl not implemented.");
+    (void)trana;
+    (void)tranb;
+    (void)isgn;
+    (void)m;
+    (void)n;
+    (void)a;
+    (void)lda;
+    (void)b;
+    (void)ldb;
+    (void)c;
+    (void)ldc;
+    (void)scale;
+    EINSUMS_THROW_EXCEPTION(std::runtime_error, "ctrsyl not implemented.");
 #endif
 }
 
@@ -400,7 +430,19 @@ auto ztrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, std::complex<d
 #elif defined(EINSUMS_HAVE_LAPACKE)
     return ::einsums::backend::linear_algebra::cblas::ztrsyl(trana, tranb, isgn, m, n, a, lda, b, ldb, c, ldc, scale);
 #else
-    throw std::runtime_error("ztrsyl not implemented.");
+    (void)trana;
+    (void)tranb;
+    (void)isgn;
+    (void)m;
+    (void)n;
+    (void)a;
+    (void)lda;
+    (void)b;
+    (void)ldb;
+    (void)c;
+    (void)ldc;
+    (void)scale;
+    EINSUMS_THROW_EXCEPTION(std::runtime_error, "ztrsyl not implemented.");
 #endif
 }
 
@@ -434,6 +476,25 @@ auto cungqr(int_t m, int_t n, int_t k, std::complex<float> *a, int_t lda, std::c
 
 auto zungqr(int_t m, int_t n, int_t k, std::complex<double> *a, int_t lda, std::complex<double> const *tau) -> int_t {
     return vendor::zungqr(m, n, k, a, lda, tau);
+}
+
+auto sormqr(char side, char trans, int_t m, int_t n, int_t k, float const *a, int_t lda, float const *tau, float *c, int_t ldc) -> int_t {
+    return vendor::sormqr(side, trans, m, n, k, a, lda, tau, c, ldc);
+}
+
+auto dormqr(char side, char trans, int_t m, int_t n, int_t k, double const *a, int_t lda, double const *tau, double *c, int_t ldc)
+    -> int_t {
+    return vendor::dormqr(side, trans, m, n, k, a, lda, tau, c, ldc);
+}
+
+auto cunmqr(char side, char trans, int_t m, int_t n, int_t k, std::complex<float> const *a, int_t lda, std::complex<float> const *tau,
+            std::complex<float> *c, int_t ldc) -> int_t {
+    return vendor::cunmqr(side, trans, m, n, k, a, lda, tau, c, ldc);
+}
+
+auto zunmqr(char side, char trans, int_t m, int_t n, int_t k, std::complex<double> const *a, int_t lda, std::complex<double> const *tau,
+            std::complex<double> *c, int_t ldc) -> int_t {
+    return vendor::zunmqr(side, trans, m, n, k, a, lda, tau, c, ldc);
 }
 
 auto sgelqf(int_t m, int_t n, float *a, int_t lda, float *tau) -> int_t {
@@ -539,5 +600,329 @@ void zlacgv(int_t n, std::complex<double> *x, int_t incx) {
     vendor::zlacgv(n, x, incx);
 }
 
-} // namespace detail
-} // namespace einsums::blas
+// --- trsm ---
+void strsm(char side, char uplo, char transa, char diag, int_t m, int_t n, float alpha, float const *a, int_t lda, float *b, int_t ldb) {
+    vendor::strsm(side, uplo, transa, diag, m, n, alpha, a, lda, b, ldb);
+}
+
+void dtrsm(char side, char uplo, char transa, char diag, int_t m, int_t n, double alpha, double const *a, int_t lda, double *b, int_t ldb) {
+    vendor::dtrsm(side, uplo, transa, diag, m, n, alpha, a, lda, b, ldb);
+}
+
+void ctrsm(char side, char uplo, char transa, char diag, int_t m, int_t n, std::complex<float> alpha, std::complex<float> const *a,
+           int_t lda, std::complex<float> *b, int_t ldb) {
+    vendor::ctrsm(side, uplo, transa, diag, m, n, alpha, a, lda, b, ldb);
+}
+
+void ztrsm(char side, char uplo, char transa, char diag, int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *a,
+           int_t lda, std::complex<double> *b, int_t ldb) {
+    vendor::ztrsm(side, uplo, transa, diag, m, n, alpha, a, lda, b, ldb);
+}
+
+// --- potrf ---
+auto spotrf(char uplo, int_t n, float *a, int_t lda) -> int_t {
+    return vendor::spotrf(uplo, n, a, lda);
+}
+
+auto dpotrf(char uplo, int_t n, double *a, int_t lda) -> int_t {
+    return vendor::dpotrf(uplo, n, a, lda);
+}
+
+auto cpotrf(char uplo, int_t n, std::complex<float> *a, int_t lda) -> int_t {
+    return vendor::cpotrf(uplo, n, a, lda);
+}
+
+auto zpotrf(char uplo, int_t n, std::complex<double> *a, int_t lda) -> int_t {
+    return vendor::zpotrf(uplo, n, a, lda);
+}
+
+// --- potrs ---
+auto spotrs(char uplo, int_t n, int_t nrhs, float const *a, int_t lda, float *b, int_t ldb) -> int_t {
+    return vendor::spotrs(uplo, n, nrhs, a, lda, b, ldb);
+}
+
+auto dpotrs(char uplo, int_t n, int_t nrhs, double const *a, int_t lda, double *b, int_t ldb) -> int_t {
+    return vendor::dpotrs(uplo, n, nrhs, a, lda, b, ldb);
+}
+
+auto cpotrs(char uplo, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, std::complex<float> *b, int_t ldb) -> int_t {
+    return vendor::cpotrs(uplo, n, nrhs, a, lda, b, ldb);
+}
+
+auto zpotrs(char uplo, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, std::complex<double> *b, int_t ldb) -> int_t {
+    return vendor::zpotrs(uplo, n, nrhs, a, lda, b, ldb);
+}
+
+// --- potri ---
+auto spotri(char uplo, int_t n, float *a, int_t lda) -> int_t {
+    return vendor::spotri(uplo, n, a, lda);
+}
+
+auto dpotri(char uplo, int_t n, double *a, int_t lda) -> int_t {
+    return vendor::dpotri(uplo, n, a, lda);
+}
+
+auto cpotri(char uplo, int_t n, std::complex<float> *a, int_t lda) -> int_t {
+    return vendor::cpotri(uplo, n, a, lda);
+}
+
+auto zpotri(char uplo, int_t n, std::complex<double> *a, int_t lda) -> int_t {
+    return vendor::zpotri(uplo, n, a, lda);
+}
+
+// --- syrk ---
+void ssyrk(char uplo, char trans, int_t n, int_t k, float alpha, float const *a, int_t lda, float beta, float *c, int_t ldc) {
+    vendor::ssyrk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc);
+}
+
+void dsyrk(char uplo, char trans, int_t n, int_t k, double alpha, double const *a, int_t lda, double beta, double *c, int_t ldc) {
+    vendor::dsyrk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc);
+}
+
+void csyrk(char uplo, char trans, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
+           std::complex<float> beta, std::complex<float> *c, int_t ldc) {
+    vendor::csyrk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc);
+}
+
+void zsyrk(char uplo, char trans, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
+           std::complex<double> beta, std::complex<double> *c, int_t ldc) {
+    vendor::zsyrk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc);
+}
+
+// --- herk ---
+void cherk(char uplo, char trans, int_t n, int_t k, float alpha, std::complex<float> const *a, int_t lda, float beta,
+           std::complex<float> *c, int_t ldc) {
+    vendor::cherk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc);
+}
+
+void zherk(char uplo, char trans, int_t n, int_t k, double alpha, std::complex<double> const *a, int_t lda, double beta,
+           std::complex<double> *c, int_t ldc) {
+    vendor::zherk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc);
+}
+
+// --- symm ---
+void ssymm(char side, char uplo, int_t m, int_t n, float alpha, float const *a, int_t lda, float const *b, int_t ldb, float beta, float *c,
+           int_t ldc) {
+    vendor::ssymm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void dsymm(char side, char uplo, int_t m, int_t n, double alpha, double const *a, int_t lda, double const *b, int_t ldb, double beta,
+           double *c, int_t ldc) {
+    vendor::dsymm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void csymm(char side, char uplo, int_t m, int_t n, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
+           std::complex<float> const *b, int_t ldb, std::complex<float> beta, std::complex<float> *c, int_t ldc) {
+    vendor::csymm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void zsymm(char side, char uplo, int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
+           std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc) {
+    vendor::zsymm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+// --- hemm ---
+void chemm(char side, char uplo, int_t m, int_t n, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
+           std::complex<float> const *b, int_t ldb, std::complex<float> beta, std::complex<float> *c, int_t ldc) {
+    vendor::chemm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void zhemm(char side, char uplo, int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
+           std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc) {
+    vendor::zhemm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+// --- sygv ---
+auto ssygv(int_t itype, char jobz, char uplo, int_t n, float *a, int_t lda, float *b, int_t ldb, float *w) -> int_t {
+    return vendor::ssygv(itype, jobz, uplo, n, a, lda, b, ldb, w);
+}
+
+auto dsygv(int_t itype, char jobz, char uplo, int_t n, double *a, int_t lda, double *b, int_t ldb, double *w) -> int_t {
+    return vendor::dsygv(itype, jobz, uplo, n, a, lda, b, ldb, w);
+}
+
+// --- hegv ---
+auto chegv(int_t itype, char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *b, int_t ldb, float *w)
+    -> int_t {
+    return vendor::chegv(itype, jobz, uplo, n, a, lda, b, ldb, w);
+}
+
+auto zhegv(int_t itype, char jobz, char uplo, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *b, int_t ldb, double *w)
+    -> int_t {
+    return vendor::zhegv(itype, jobz, uplo, n, a, lda, b, ldb, w);
+}
+
+// --- syevd ---
+auto ssyevd(char jobz, char uplo, int_t n, float *a, int_t lda, float *w) -> int_t {
+    return vendor::ssyevd(jobz, uplo, n, a, lda, w);
+}
+
+auto dsyevd(char jobz, char uplo, int_t n, double *a, int_t lda, double *w) -> int_t {
+    return vendor::dsyevd(jobz, uplo, n, a, lda, w);
+}
+
+// --- heevd ---
+auto cheevd(char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, float *w) -> int_t {
+    return vendor::cheevd(jobz, uplo, n, a, lda, w);
+}
+
+auto zheevd(char jobz, char uplo, int_t n, std::complex<double> *a, int_t lda, double *w) -> int_t {
+    return vendor::zheevd(jobz, uplo, n, a, lda, w);
+}
+
+// --- getrs ---
+auto sgetrs(char trans, int_t n, int_t nrhs, float const *a, int_t lda, int_t const *ipiv, float *b, int_t ldb) -> int_t {
+    return vendor::sgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb);
+}
+
+auto dgetrs(char trans, int_t n, int_t nrhs, double const *a, int_t lda, int_t const *ipiv, double *b, int_t ldb) -> int_t {
+    return vendor::dgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb);
+}
+
+auto cgetrs(char trans, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, int_t const *ipiv, std::complex<float> *b, int_t ldb)
+    -> int_t {
+    return vendor::cgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb);
+}
+
+auto zgetrs(char trans, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, int_t const *ipiv, std::complex<double> *b,
+            int_t ldb) -> int_t {
+    return vendor::zgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb);
+}
+
+// --- gels ---
+auto sgels(char trans, int_t m, int_t n, int_t nrhs, float *a, int_t lda, float *b, int_t ldb) -> int_t {
+    return vendor::sgels(trans, m, n, nrhs, a, lda, b, ldb);
+}
+
+auto dgels(char trans, int_t m, int_t n, int_t nrhs, double *a, int_t lda, double *b, int_t ldb) -> int_t {
+    return vendor::dgels(trans, m, n, nrhs, a, lda, b, ldb);
+}
+
+auto cgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<float> *a, int_t lda, std::complex<float> *b, int_t ldb) -> int_t {
+    return vendor::cgels(trans, m, n, nrhs, a, lda, b, ldb);
+}
+
+auto zgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<double> *a, int_t lda, std::complex<double> *b, int_t ldb) -> int_t {
+    return vendor::zgels(trans, m, n, nrhs, a, lda, b, ldb);
+}
+
+// --- swap ---
+void sswap(int_t n, float *x, int_t incx, float *y, int_t incy) {
+    vendor::sswap(n, x, incx, y, incy);
+}
+
+void dswap(int_t n, double *x, int_t incx, double *y, int_t incy) {
+    vendor::dswap(n, x, incx, y, incy);
+}
+
+void cswap(int_t n, std::complex<float> *x, int_t incx, std::complex<float> *y, int_t incy) {
+    vendor::cswap(n, x, incx, y, incy);
+}
+
+void zswap(int_t n, std::complex<double> *x, int_t incx, std::complex<double> *y, int_t incy) {
+    vendor::zswap(n, x, incx, y, incy);
+}
+
+// --- iamax ---
+auto isamax(int_t n, float const *x, int_t incx) -> int_t {
+    return vendor::isamax(n, x, incx);
+}
+
+auto idamax(int_t n, double const *x, int_t incx) -> int_t {
+    return vendor::idamax(n, x, incx);
+}
+
+auto icamax(int_t n, std::complex<float> const *x, int_t incx) -> int_t {
+    return vendor::icamax(n, x, incx);
+}
+
+auto izamax(int_t n, std::complex<double> const *x, int_t incx) -> int_t {
+    return vendor::izamax(n, x, incx);
+}
+
+// --- trsv ---
+void strsv(char uplo, char trans, char diag, int_t n, float const *a, int_t lda, float *x, int_t incx) {
+    vendor::strsv(uplo, trans, diag, n, a, lda, x, incx);
+}
+
+void dtrsv(char uplo, char trans, char diag, int_t n, double const *a, int_t lda, double *x, int_t incx) {
+    vendor::dtrsv(uplo, trans, diag, n, a, lda, x, incx);
+}
+
+void ctrsv(char uplo, char trans, char diag, int_t n, std::complex<float> const *a, int_t lda, std::complex<float> *x, int_t incx) {
+    vendor::ctrsv(uplo, trans, diag, n, a, lda, x, incx);
+}
+
+void ztrsv(char uplo, char trans, char diag, int_t n, std::complex<double> const *a, int_t lda, std::complex<double> *x, int_t incx) {
+    vendor::ztrsv(uplo, trans, diag, n, a, lda, x, incx);
+}
+
+// --- syr2k ---
+void ssyr2k(char uplo, char trans, int_t n, int_t k, float alpha, float const *a, int_t lda, float const *b, int_t ldb, float beta,
+            float *c, int_t ldc) {
+    vendor::ssyr2k(uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void dsyr2k(char uplo, char trans, int_t n, int_t k, double alpha, double const *a, int_t lda, double const *b, int_t ldb, double beta,
+            double *c, int_t ldc) {
+    vendor::dsyr2k(uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void csyr2k(char uplo, char trans, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
+            std::complex<float> const *b, int_t ldb, std::complex<float> beta, std::complex<float> *c, int_t ldc) {
+    vendor::csyr2k(uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void zsyr2k(char uplo, char trans, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
+            std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc) {
+    vendor::zsyr2k(uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+// --- her2k ---
+void cher2k(char uplo, char trans, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
+            std::complex<float> const *b, int_t ldb, float beta, std::complex<float> *c, int_t ldc) {
+    vendor::cher2k(uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void zher2k(char uplo, char trans, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
+            std::complex<double> const *b, int_t ldb, double beta, std::complex<double> *c, int_t ldc) {
+    vendor::zher2k(uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+// --- trtrs ---
+auto strtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, float const *a, int_t lda, float *b, int_t ldb) -> int_t {
+    return vendor::strtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb);
+}
+
+auto dtrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, double const *a, int_t lda, double *b, int_t ldb) -> int_t {
+    return vendor::dtrtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb);
+}
+
+auto ctrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, std::complex<float> *b,
+            int_t ldb) -> int_t {
+    return vendor::ctrtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb);
+}
+
+auto ztrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, std::complex<double> *b,
+            int_t ldb) -> int_t {
+    return vendor::ztrtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb);
+}
+
+// --- trtri ---
+auto strtri(char uplo, char diag, int_t n, float *a, int_t lda) -> int_t {
+    return vendor::strtri(uplo, diag, n, a, lda);
+}
+
+auto dtrtri(char uplo, char diag, int_t n, double *a, int_t lda) -> int_t {
+    return vendor::dtrtri(uplo, diag, n, a, lda);
+}
+
+auto ctrtri(char uplo, char diag, int_t n, std::complex<float> *a, int_t lda) -> int_t {
+    return vendor::ctrtri(uplo, diag, n, a, lda);
+}
+
+auto ztrtri(char uplo, char diag, int_t n, std::complex<double> *a, int_t lda) -> int_t {
+    return vendor::ztrtri(uplo, diag, n, a, lda);
+}
+
+} // namespace einsums::blas::detail

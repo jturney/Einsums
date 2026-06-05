@@ -4,14 +4,20 @@
 #----------------------------------------------------------------------------------------------
 
 set(linear_algebra_tests
+    direct_div.cpp
     direct_prod.cpp
     dot.cpp
     geev.cpp
     gemm.cpp
+    gemm_runtime.cpp
     GEMMTensorView.cpp
     gesv.cpp
+    gesv_runtime.cpp
     gesvd.cpp
     gemv.cpp
+    gemv_runtime.cpp
+    ger_runtime.cpp
+    blas1_runtime.cpp
     gesdd.cpp
     getrf_getri.cpp
     invert.cpp
@@ -22,7 +28,21 @@ set(linear_algebra_tests
     syev.cpp
     Scale.cpp
     Decomposition.cpp
-    GPULinearAlgebra.hip
+    trsm.cpp
+    potrf.cpp
+    syrk.cpp
+    symm.cpp
+    symm_dispatch.cpp
+    sygv.cpp
+    syevd.cpp
+    getrs.cpp
+    gels.cpp
+    swap.cpp
+    iamax.cpp
+    trsv.cpp
+    syr2k.cpp
+    trtrs.cpp
+    trtri.cpp
 )
 
 foreach(test ${linear_algebra_tests})
