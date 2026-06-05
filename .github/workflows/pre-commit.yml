@@ -1,5 +1,6 @@
 name: Pre-Commit Checks
 on:
+  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -17,98 +18,80 @@ jobs:
     needs: [ detect_changes ]
     if: ${{ contains(needs.detect_changes.outputs.filters, 'cmake') || contains(needs.detect_changes.outputs.filters, 'cpp') }}
     runs-on: ubuntu-latest
+    # Scoped to this job (not workflow-level): a workflow-wide permissions block
+    # would restrict the reusable detect-changes.yml call (which requests
+    # read-all) and cause a startup_failure.
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.build_ref }}
+          # For same-repo PRs, check out the PR branch itself so an auto-format
+          # commit can be pushed back. For fork PRs github.head_ref does not
+          # exist in this repo (and the token is read-only anyway), so fall back
+          # to the default checkout (the merge ref); those paths never push.
+          ref: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.head_ref || '' }}
 
-      - name: Setup Miniforge
-        uses: conda-incubator/setup-miniconda@v3
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          miniforge-version: latest
-          activate-environment: einsums-env
-          conda-remove-defaults: "true"
+          python-version: "3.12"
 
-      - name: Install ruamel.yaml
-        run: |
-          conda install -c conda-forge ruamel.yaml
-
-      - name: Merge Conda YAML files
-        working-directory: src/devtools/conda-envs
-        run: |
-          pwd
-          python merge_yml.py
-
-      - name: Get Week
-        id: get-date
-        run: echo "week=$(/bin/date -u '+%W')" >> $GITHUB_OUTPUT
-        shell: bash
-
-      - name: Cache Conda env
+      - name: Cache pre-commit hooks
         uses: actions/cache@v4
         with:
-          path: ${{ env.CONDA }}/envs
-          key:
-            conda-${{ runner.os }}-${{ runner.arch }}-${{ steps.get-date.outputs.week }}-${{ hashFiles('src/devtools/conda-envs/conda.yml') }}-${{ env.CACHE_NUMBER }}
-        env:
-          # Increase this value to reset cache if etc/example-environment.yml has not changed
-          CACHE_NUMBER: 0
-        id: cache
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
-      - name: Update environment
-        run: |
-          pwd
-          conda env update -n einsums-env -f src/devtools/conda-envs/conda.yml
-          conda activate einsums-env
-        if: steps.cache.outputs.cache-hit != 'true'
+      - name: Install pre-commit
+        run: pip install pre-commit
 
       - name: Run pre-commit hooks
         id: format
         run: |
           set +e
-          NEEDS_FORMATTING=0
-          FORMATTED_FILES=""
-          
-          # First check if any formatting is needed
-          if ! pre-commit run --all-files --show-diff-on-failure; then
-            NEEDS_FORMATTING=1
-            echo "Running pre-commit to auto-fix formatting issues"
-          
-            # Run all hooks and capture the names of modified files
-            pre-commit run --all-files | tee pre-commit-output.txt
-          
-            # Extract information about which files were modified for the PR comment
-            if grep -q "Fixing cmake-format" pre-commit-output.txt; then
-              FORMATTED_FILES="${FORMATTED_FILES}CMake files, "
-            fi
-            if grep -q "Fixing clang-format" pre-commit-output.txt; then
-              FORMATTED_FILES="${FORMATTED_FILES}C++ files, "
-            fi
-            if grep -q "Fixing insert-license" pre-commit-output.txt; then
-              FORMATTED_FILES="${FORMATTED_FILES}license headers, "
-            fi
-          
-            # Remove trailing comma and space
-            FORMATTED_FILES=$(echo $FORMATTED_FILES | sed 's/, $//')
-            echo "formatted_files=$FORMATTED_FILES" >> $GITHUB_OUTPUT
+          # pre-commit hooks (clang-format, cmake-format, insert-license) rewrite
+          # files in place and exit non-zero when they change anything.
+          pre-commit run --all-files --show-diff-on-failure | tee pre-commit-output.txt
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$status" -eq 0 ]; then
+            echo "needs_formatting=0" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          
-          echo "needs_formatting=$NEEDS_FORMATTING" >> $GITHUB_OUTPUT
+
+          echo "needs_formatting=1" >> "$GITHUB_OUTPUT"
+
+          FORMATTED_FILES=""
+          grep -q "Fixing .*cmake-format" pre-commit-output.txt && FORMATTED_FILES="${FORMATTED_FILES}CMake files, "
+          grep -q "Fixing .*clang-format" pre-commit-output.txt && FORMATTED_FILES="${FORMATTED_FILES}C++ files, "
+          grep -q "Fixing .*insert-license" pre-commit-output.txt && FORMATTED_FILES="${FORMATTED_FILES}license headers, "
+          FORMATTED_FILES="${FORMATTED_FILES%, }"
+          echo "formatted_files=$FORMATTED_FILES" >> "$GITHUB_OUTPUT"
 
       - name: Commit changes
-        if: steps.format.outputs.needs_formatting == 1
+        # Auto-commit only works for same-repo PRs (fork PRs get a read-only token).
+        if: >-
+          steps.format.outputs.needs_formatting == '1'
+          && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add -A
           git commit -m "Apply code formatting and license headers
-          
+
           Co-authored-by: ${{ github.event.pull_request.user.login }} <${{ github.event.pull_request.user.login }}@users.noreply.github.com>"
           git push
 
       - name: Add PR comment
-        if: steps.format.outputs.needs_formatting == 1 && github.event_name == 'pull_request'
+        if: >-
+          steps.format.outputs.needs_formatting == '1'
+          && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         with:
           script: |
@@ -117,5 +100,14 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-                body: `👋 I have formatted the ${formattedFiles} in this PR using pre-commit hooks. The changes have been committed automatically.`
-              })
+              body: `👋 I have formatted the ${formattedFiles} in this PR using pre-commit hooks. The changes have been committed automatically.`
+            })
+
+      - name: Fail if a fork PR needs formatting
+        # Fork PRs cannot be auto-committed; surface the failure with guidance.
+        if: >-
+          steps.format.outputs.needs_formatting == '1'
+          && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::Formatting required. Run 'pre-commit run --all-files' locally and commit the result." >&2
+          exit 1

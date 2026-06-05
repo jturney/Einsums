@@ -2,5 +2,6 @@ name: einsums-dev
 channels:
   - conda-forge
   - nodefaults
-dependencies:
-  - clang-tools
+# macOS-specific, compiler-agnostic packages go here. The clang toolchain
+# (incl. clang-tools + llvm-openmp) is injected by merge_yml.py.
+dependencies: []

@@ -24,8 +24,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # compiler = default, implies the default compiler for the platform. for linux, this is gcc/g++
-        compiler: [ default, intel ]
+        # compiler = default implies the default compiler for the platform; for linux this is gcc/g++.
+        # clang is also available; merge_yml.py injects the matching conda toolchain.
+        # intel (icx/icpx) lives in linux-intel-build.yml — it's gated to manual
+        # runs because icpx's per-TU memory blows past the 16GB ubuntu-latest
+        # runner even at -O0 -j1.
+        compiler: [ default, clang ]
         blas: [ openblas, mkl ]
         build_type: [ RelWithDebInfo ]
         variant: [ default ]
@@ -33,29 +37,10 @@ jobs:
           - compiler: default
             cmake_extra: >
               -DEINSUMS_WITH_COVERAGE=ON
-          - compiler: intel
-            blas: mkl
-            build_type: RelWithDebInfo
-            variant: lp64
-            cmake_extra: >
-              -DCMAKE_C_COMPILER=icx
-              -DCMAKE_CXX_COMPILER=icpx
-              -DMKL_INTERFACE=lp64
-              -DCMAKE_CXX_FLAGS="--gcc-toolchain=${CONDA_PREFIX} --sysroot=${CONDA_PREFIX}/${HOST}/sysroot -target ${HOST}"
-              -DOpenMP_CXX_INCLUDE_DIR="${CONDA_PREFIX}/include"
-          - compiler: intel
-            blas: mkl
-            build_type: RelWithDebInfo
-            variant: ilp64
-            cmake_extra: >
-              -DCMAKE_C_COMPILER=icx
-              -DCMAKE_CXX_COMPILER=icpx
-              -DMKL_INTERFACE=ilp64
-              -DCMAKE_CXX_FLAGS="--gcc-toolchain=${CONDA_PREFIX} --sysroot=${CONDA_PREFIX}/${HOST}/sysroot -target ${HOST}"
-              -DENABLE_EXTENDED_PRECISION=ON
         exclude:
-          - compiler: intel
-            blas: openblas
+          # clang leg is openblas-only (mkl pairs with the intel toolchain).
+          - compiler: clang
+            blas: mkl
 
     name: "${{ matrix.compiler }} • ${{ matrix.blas }} • ${{ matrix.build_type }} • ${{ matrix.variant }}"
     runs-on: ubuntu-latest
@@ -71,6 +56,7 @@ jobs:
         with:
           ref: ${{ inputs.build_ref }}
           path: src
+          submodules: recursive
 
       - name: Cache Build Cache
         uses: actions/cache@v4
@@ -79,51 +65,12 @@ jobs:
           key: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-${{ github.sha }}
           restore-keys: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-
 
-      # From https://github.com/conda-incubator/setup-miniconda?tab=readme-ov-file#caching-environments
-      - name: Setup Miniforge
-        uses: conda-incubator/setup-miniconda@v3
+      - name: Set up conda environment
+        uses: ./src/.github/actions/setup-conda-env
         with:
-          miniforge-version: latest
-          activate-environment: einsums-env
-          conda-remove-defaults: "true"
-
-      - name: Install ruamel.yaml
-        run: |
-          conda install -c conda-forge ruamel.yaml
-
-      - name: Merge Conda YAML files
-        working-directory: src/devtools/conda-envs
-        run: |
-          pwd
-          python merge_yml.py ${{ matrix.compiler }} ${{ matrix.blas }}
-
-      - name: Get Week
-        id: get-date
-        run: echo "week=$(/bin/date -u '+%W')" >> $GITHUB_OUTPUT
-        shell: bash
-
-      - name: Cache Conda env
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CONDA }}/envs
-          key:
-            conda-${{ runner.os }}-${{ runner.arch }}-${{ steps.get-date.outputs.week }}-${{ hashFiles('src/devtools/conda-envs/conda.yml') }}-${{ env.CACHE_NUMBER }}
-        env:
-          # Increase this value to reset cache if etc/example-environment.yml has not changed
-          CACHE_NUMBER: 0
-        id: cache
-
-      - name: Update environment
-        run: |
-          pwd
-          conda env update -n einsums-env -f src/devtools/conda-envs/conda.yml
-          conda activate einsums-env
-        if: steps.cache.outputs.cache-hit != 'true'
-
-      - name: Conda Environment
-        run: |
-          conda info
-          conda list
+          compiler: ${{ matrix.compiler }}
+          blas: ${{ matrix.blas }}
+          source-dir: src
 
       - name: Configure CMake
         run: |
@@ -142,34 +89,51 @@ jobs:
 
       - name: Build and Install
         run: |
-          cmake --build "${{ github.workspace }}/build" --config Release --target install
+          # Cap ninja parallelism to fit the 16GB GitHub Linux runner: heavy
+          # template instantiations (ComputeGraph + TensorAlgebra) peak at
+          # ~3-4GB per TU under -O2 and ninja's default (nproc+2 = 6) OOM-kills
+          # the runner mid-link. -j2 leaves comfortable headroom on default/clang.
+          cmake --build "${{ github.workspace }}/build" --config Release --target install -j2
 
+      # The Python test suite is registered as ctest entries (labelled PYTHON)
+      # by einsums_add_python_unit_test, so this single ctest run exercises both
+      # the C++ and the Python bindings — no separate pytest step is needed.
       - name: Test (CTest) - Unit Tests
         working-directory: "${{ github.workspace }}/build"
-        run: ctest --rerun-failed --output-on-failure
-
-      - name: Test (pytest) - unit tests
-        working-directory: "${{github.workspace}}/installed"
-        run: |
-          if [[ "${{runner.os}}" == "Windows" ]]; then
-            export PYTHONPATH="$PYTHONPATH;${{github.workspace}}/installed/lib;$CONDA_PREFIX/lib"
-          else
-            export PYTHONPATH=$PYTHONPATH:${{github.workspace}}/installed/lib:$CONDA_PREFIX/lib
-          fi
-          mkdir "${{github.workspace}}/backup"
-          mv "${{github.workspace}}/src/einsums" "${{github.workspace}}/backup/einsums"
-          pytest "${{github.workspace}}/src/tests" --cov="${{github.workspace}}/installed/lib" --cov="${{github.workspace}}/src" --cov-report=xml
+        run: ctest --rerun-failed --output-on-failure -j4
 
       - name: Generate coverage information
         if: ${{ contains(matrix.compiler, 'default') }}
         working-directory: "${{github.workspace}}/build"
         run: |
+          # Conda's gcc installs gcov as <arch>-conda-linux-gnu-gcov
+          # (e.g. x86_64-conda-linux-gnu-gcov), NOT bare 'gcov'.
+          # Hardcoding ${CONDA_PREFIX}/bin/gcov broke the step with
+          # "geninfo: ERROR: need tool .../bin/gcov!" — that path doesn't
+          # exist. Discover the arch-prefixed binary instead.
+          GCOV=$(ls "${CONDA_PREFIX}"/bin/*-conda-linux-gnu-gcov 2>/dev/null | head -1)
+          if [[ -z "$GCOV" ]]; then
+              echo "::error::Could not find conda's gcov under ${CONDA_PREFIX}/bin/" >&2
+              ls "${CONDA_PREFIX}/bin/" | grep -i gcov >&2 || true
+              exit 1
+          fi
+          echo "Using gcov: $GCOV"
+
           export NOTES=$(find . -name "*.gcno")
           export SOURCES=$(for i in ${NOTES//.gcno/}; do echo "../src/$i"; done)
           echo "NOTES=$NOTES"
           echo "SOURCES=$SOURCES"
-          gcov -r $SOURCES || echo "returned $?"
-          lcov --capture --directory . --output-file coverage.info --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\*
+          # Use the conda gcov here too. The runner's system gcov 13.3
+          # would produce .gcov files in the wrong format ("B33*") for our
+          # gcc-15-built .gcda files ("B52*") even though the || swallows
+          # the exit code.
+          "$GCOV" -r $SOURCES || echo "returned $?"
+          # Force lcov to use the conda env's gcov: the build is gcc 15 (.gcda
+          # format "B52*"), but lcov can pick up the runner's system gcov 13.3
+          # ("B33*") by default and bail with "geninfo: ERROR: GCOV failed ...
+          # prefer version 'B33*'". Pinning --gcov-tool keeps the toolchain
+          # consistent.
+          lcov --gcov-tool "$GCOV" --capture --directory . --output-file coverage.info --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\*
 
       - name: Upload C++ coverage to Codecov
         if: ${{ contains(matrix.compiler, 'default') }}
@@ -180,17 +144,6 @@ jobs:
           disable_search: true
           files: ${{github.workspace}}/build/coverage.info
           flags: cpp,linux
-          token: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: Upload Python coverage to Codecov
-        if: ${{ contains(matrix.compiler, 'default') }}
-        uses: codecov/codecov-action@v5
-        with:
-          directory: "${{github.workspace}}/installed"
-          working-directory: "${{github.workspace}}/installed"
-          disable_search: true
-          flags: python,linux
-          files: ${{github.workspace}}/installed/coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Test (find_package) - consume installation
