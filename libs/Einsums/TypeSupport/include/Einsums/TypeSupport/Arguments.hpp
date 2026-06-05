@@ -25,6 +25,7 @@ struct tuple_position<S, P, C, false, not_used, std::tuple<Head, Tail...>>
 // match case
 template <class S, int P, int C, class Type, class... Tail>
 struct tuple_position<S, P, C, true, Type, std::tuple<Tail...>> : std::integral_constant<int, P> {
+    // NOLINTNEXTLINE(readability-identifier-naming)
     using type                    = Type;
     static constexpr bool present = true;
 };
@@ -37,6 +38,7 @@ struct tuple_position<S, P, C, false, H, std::tuple<>> : std::integral_constant<
 /// \endcond NOINTERNAL
 
 template <typename SearchPattern, typename... Args>
+// NOLINTNEXTLINE(readability-identifier-naming)
 struct tuple_position : detail::tuple_position<SearchPattern const &, -1, 0, false, void, std::tuple<Args...>> {};
 
 template <typename SearchPattern, typename... Args,
@@ -53,7 +55,7 @@ auto get(Args &&...args) -> SearchPattern & {
 }
 
 template <int Idx, typename... Args>
-auto getn(Args &&...args) -> typename std::tuple_element<Idx, std::tuple<Args...>>::type & {
+auto getn(Args &&...args) -> std::tuple_element_t<Idx, std::tuple<Args...>> & {
     auto tuple = std::forward_as_tuple(args...);
     return std::get<Idx>(tuple);
 }
@@ -95,7 +97,7 @@ constexpr auto for_each_impl(Tuple &&t, F &&f, std::index_sequence<__I...>) -> F
 template <class Tuple, class F>
 constexpr auto for_each(Tuple &&t, F &&f) -> F {
     return for_each_impl(std::forward<Tuple>(t), std::forward<F>(f),
-                         std::make_index_sequence<std::tuple_size<std::remove_reference_t<Tuple>>::value>{});
+                         std::make_index_sequence<std::tuple_size_v<std::remove_reference_t<Tuple>>>{});
 }
 
 template <typename ReturnType, typename Tuple>

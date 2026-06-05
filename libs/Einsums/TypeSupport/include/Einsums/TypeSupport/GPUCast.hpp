@@ -43,7 +43,6 @@ struct HipCast {
     __host__ __device__ static inline To cast(From from) { return To(from); }
 };
 
-#ifndef DOXYGEN
 template <>
 struct HipCast<float, float> {
     /**
@@ -238,6 +237,5 @@ template <>
 struct HipCast<hipDoubleComplex, hipDoubleComplex> {
     __host__ __device__ static inline hipDoubleComplex cast(hipDoubleComplex from) { return from; }
 };
-#endif
 
 } // namespace einsums

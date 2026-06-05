@@ -29,16 +29,20 @@ TEMPLATE_TEST_CASE("gemm", "[linear-algebra]", float, double) {
     B.vector_data() = temp;
 
     einsums::linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C);
-    CHECK_THAT(C.vector_data(), Catch::Matchers::Equals(std::vector<TestType>{330.0, 396.0, 462.0, 726.0, 891.0, 1056.0, 1122.0, 1386.0, 1650.0}));
+    CHECK_THAT(C.vector_data(),
+               Catch::Matchers::Equals(std::vector<TestType>{330.0, 396.0, 462.0, 726.0, 891.0, 1056.0, 1122.0, 1386.0, 1650.0}));
 
     einsums::linear_algebra::gemm<true, false>(1.0, A, B, 0.0, &C);
-    CHECK_THAT(C.vector_data(), Catch::Matchers::Equals(std::vector<TestType>{726.0, 858.0, 990.0, 858.0, 1023.0, 1188.0, 990.0, 1188.0, 1386.0}));
+    CHECK_THAT(C.vector_data(),
+               Catch::Matchers::Equals(std::vector<TestType>{726.0, 858.0, 990.0, 858.0, 1023.0, 1188.0, 990.0, 1188.0, 1386.0}));
 
     einsums::linear_algebra::gemm<false, true>(1.0, A, B, 0.0, &C);
-    CHECK_THAT(C.vector_data(), Catch::Matchers::Equals(std::vector<TestType>{154.0, 352.0, 550.0, 352.0, 847.0, 1342.0, 550.0, 1342.0, 2134.0}));
+    CHECK_THAT(C.vector_data(),
+               Catch::Matchers::Equals(std::vector<TestType>{154.0, 352.0, 550.0, 352.0, 847.0, 1342.0, 550.0, 1342.0, 2134.0}));
 
     einsums::linear_algebra::gemm<true, true>(1.0, A, B, 0.0, &C);
-    CHECK_THAT(C.vector_data(), Catch::Matchers::Equals(std::vector<TestType>{330.0, 726.0, 1122.0, 396.0, 891.0, 1386.0, 462.0, 1056.0, 1650.0}));
+    CHECK_THAT(C.vector_data(),
+               Catch::Matchers::Equals(std::vector<TestType>{330.0, 726.0, 1122.0, 396.0, 891.0, 1386.0, 462.0, 1056.0, 1650.0}));
 }
 
 template <typename T>
@@ -210,106 +214,6 @@ TEST_CASE("gemm_2") {
         gemm_test_2<std::complex<double>>();
     }
 }
-
-#ifdef EINSUMS_COMPUTE_CODE
-TEMPLATE_TEST_CASE("GPU gemm", "[linear-algebra]", double, std::complex<double>) {
-    using namespace einsums;
-    using namespace einsums::linear_algebra;
-
-    constexpr int size = 600;
-
-    auto A = einsums::create_random_tensor<TestType>("A", size, size);
-    auto B = einsums::create_random_tensor<TestType>("B", size, size);
-    auto C = einsums::create_tensor<TestType>("C", size, size);
-
-    auto A_copy = A;
-    auto B_copy = B;
-    auto C_copy = einsums::create_tensor<TestType>("C", size, size);
-
-    {
-        auto &singleton = einsums::GlobalConfigMap::get_singleton();
-
-        auto lock = std::lock_guard(singleton);
-
-        singleton.set_string("buffer-size", "4GB");
-        singleton.set_string("gpu-buffers-size", "1GB");
-    }
-
-    SECTION("nn") {
-        gemm('n', 'n', TestType{1.0}, A, B, TestType{0.0}, &C);
-
-        {
-            auto &singleton = einsums::GlobalConfigMap::get_singleton();
-
-            auto lock = std::lock_guard(singleton);
-
-            singleton.set_string("gpu-buffers-size", "1");
-        }
-
-        gemm('n', 'n', TestType{1.0}, A_copy, B_copy, TestType{0.0}, &C_copy);
-
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                REQUIRE_THAT(C_copy(i, j), einsums::CheckWithinRel(C(i, j)));
-            }
-        }
-    }
-
-    SECTION("nt") {
-        gemm('n', 't', TestType{1.0}, A, B, TestType{0.0}, &C);
-        {
-            auto &singleton = einsums::GlobalConfigMap::get_singleton();
-
-            auto lock = std::lock_guard(singleton);
-
-            singleton.set_string("gpu-buffers-size", "1");
-        }
-        gemm('n', 't', TestType{1.0}, A_copy, B_copy, TestType{0.0}, &C_copy);
-
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                REQUIRE_THAT(C_copy(i, j), einsums::CheckWithinRel(C(i, j)));
-            }
-        }
-    }
-
-    SECTION("tn") {
-        gemm('t', 'n', TestType{1.0}, A, B, TestType{0.0}, &C);
-        {
-            auto &singleton = einsums::GlobalConfigMap::get_singleton();
-
-            auto lock = std::lock_guard(singleton);
-
-            singleton.set_string("gpu-buffers-size", "1");
-        }
-        gemm('t', 'n', TestType{1.0}, A_copy, B_copy, TestType{0.0}, &C_copy);
-
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                REQUIRE_THAT(C_copy(i, j), einsums::CheckWithinRel(C(i, j)));
-            }
-        }
-    }
-
-    SECTION("tt") {
-        gemm('t', 't', TestType{1.0}, A, B, TestType{0.0}, &C);
-        {
-            auto &singleton = einsums::GlobalConfigMap::get_singleton();
-
-            auto lock = std::lock_guard(singleton);
-
-            singleton.set_string("gpu-buffers-size", "1");
-        }
-        gemm('t', 't', TestType{1.0}, A_copy, B_copy, TestType{0.0}, &C_copy);
-
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                REQUIRE_THAT(C_copy(i, j), einsums::CheckWithinRel(C(i, j)));
-            }
-        }
-    }
-}
-#endif
 
 TEMPLATE_TEST_CASE("Disk gemm", "[linear-algebra]", double, std::complex<double>) {
     using namespace einsums;

@@ -122,35 +122,35 @@ foreach(lib ${EINSUMS_LIBS})
   add_subdirectory(${lib})
 endforeach()
 
-set(PYTHON_LIBS
-    EinsumsPy
-    CACHE INTERNAL "List of Python libraries for Einsums" FORCE
-)
+# set(PYTHON_LIBS
+#     EinsumsPy
+#     CACHE INTERNAL "List of Python libraries for Einsums" FORCE
+# )
 
-if(EINSUMS_BUILD_PYTHON OR EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
-  include(Einsums_ExtendWithPython)
+# if(EINSUMS_BUILD_PYTHON OR EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
+#   include(Einsums_ExtendWithPython)
 
-  foreach(lib ${PYTHON_LIBS})
-    set(EINSUMS_PYTHON_LIB_NAME ${lib})
-    pybind11_add_module(${lib} MODULE src/dummy.cpp)
+#   foreach(lib ${PYTHON_LIBS})
+#     set(EINSUMS_PYTHON_LIB_NAME ${lib})
+#     pybind11_add_module(${lib} MODULE src/dummy.cpp)
 
-    set_target_properties(${lib} PROPERTIES OUTPUT_NAME ${lib} EXPORT_NAME ${lib} FOLDER "Core")
+#     set_target_properties(${lib} PROPERTIES OUTPUT_NAME ${lib} EXPORT_NAME ${lib} FOLDER "Core")
 
-    # adds some RPATH and link flags
-    einsums_extend_with_python(${lib})
+#     # adds some RPATH and link flags
+#     einsums_extend_with_python(${lib})
 
-    install(
-      TARGETS ${lib}
-      EXPORT einsums_targets
-      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/einsums
-      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/einsums
-      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/einsums COMPONENT ${lib}
-    )
-    einsums_export_targets(${lib})
+#     install(
+#       TARGETS ${lib}
+#       EXPORT einsums_targets
+#       LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/einsums
+#       ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/einsums
+#       RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/einsums COMPONENT ${lib}
+#     )
+#     einsums_export_targets(${lib})
 
-    add_subdirectory(${lib})
-  endforeach()
-endif()
+#     add_subdirectory(${lib})
+#   endforeach()
+# endif()
 
 # einsums_add_module populates EINSUMS_ENABLED_MODULES
 foreach(module ${EINSUMS_ENABLED_MODULES})

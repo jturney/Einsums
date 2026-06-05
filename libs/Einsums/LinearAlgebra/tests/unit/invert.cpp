@@ -25,7 +25,7 @@ TEMPLATE_TEST_CASE("invert", "[linear-algebra]", float, double) {
         linear_algebra::invert(&A);
 
         CHECK_THAT(A.vector_data(), Catch::Matchers::Approx(std::vector<TestType>{-5.0 / 12, 0.25, 1.0 / 3.0, 7.0 / 12.0, 0.25, -2.0 / 3.0,
-                                                                                 1.0 / 12.0, -0.25, 1.0 / 3.0})
+                                                                                  1.0 / 12.0, -0.25, 1.0 / 3.0})
                                         .margin(0.00001));
     }
     SECTION("Strided") {

@@ -5,17 +5,13 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <functional>
-#include <iostream>
 #include <list>
 #include <mutex>
-#include <thread>
-#include <vector>
 
-namespace einsums {
-
-namespace design_pats {
+namespace einsums::design_pats {
 
 /**
  * @struct Observable
@@ -97,7 +93,7 @@ struct Observable {
      * @versionadded{1.0.0}
      */
     T const &get_value() const {
-        std::lock_guard<std::mutex> lock(_mutex);
+        std::scoped_lock lock(_mutex);
         return _state;
     }
 
@@ -157,7 +153,7 @@ struct Observable {
      * @versionadded{1.0.0}
      */
     void attach(std::function<void(T const &)> observer) {
-        std::lock_guard<std::mutex> lock(_observer_mutex);
+        std::scoped_lock lock(_observer_mutex);
         _observers.push_back(std::move(observer));
     }
 
@@ -167,7 +163,7 @@ struct Observable {
      * @versionadded{1.0.0}
      */
     void detach(std::function<void(T const &)> const &observer) {
-        std::lock_guard<std::mutex> lock(_observer_mutex);
+        std::scoped_lock lock(_observer_mutex);
 
         _observers.remove_if([&observer](auto const &elem) { return observer.target() == elem.target(); });
     }
@@ -179,6 +175,20 @@ struct Observable {
      */
     bool changed() const { return _value_changed; }
 
+    /**
+     * @brief Public alias for ``notify_observers()``.
+     *
+     * Allows wrapper types that aggregate several Observables (e.g.
+     * ``GlobalConfigMap``) to drive notification *after* releasing every
+     * sub-mutex, so an observer's implicit conversion-to-T doesn't
+     * re-acquire a mutex while sibling locks are still held. Without this
+     * decoupling, the unlock-then-notify-each pattern hits a TSan
+     * lock-order inversion as the observer callback's
+     * ``operator T() const`` calls ``get_value()`` and re-locks ``_mutex``
+     * while sibling Observables in the same aggregate are still locked.
+     */
+    void notify() { notify_observers(); }
+
   protected:
     /**
      * @brief Notify all of the observers that observe this observable.
@@ -186,12 +196,21 @@ struct Observable {
      * @versionadded{1.0.0}
      */
     void notify_observers() {
-        // Notify things that are waiting for changes.
-        _mutex.lock();
-        _value_changed++;
-        _mutex.unlock();
+        // Bump the change counter without re-acquiring _mutex. The earlier
+        // version of this method locked _mutex around the increment, but
+        // notify_observers is called from unlock(bool) AFTER _mutex was just
+        // released — re-acquiring it there created a lock-order risk when the
+        // Observable was one element of a `std::scoped_lock` over several
+        // Observables (the other siblings' mutexes are still held during the
+        // destructor walk, so re-locking this one builds an acquisition order
+        // that conflicts with the order `std::lock` used during construction
+        // for deadlock avoidance). TSan caught this as a lock-order inversion
+        // in RuntimeConfiguration::pre_initialize, which scoped-locks four
+        // ConfigMaps at once. Making _value_changed atomic removes the need
+        // for the re-acquire entirely.
+        _value_changed.fetch_add(1, std::memory_order_release);
 
-        std::lock_guard<std::mutex> lock(_observer_mutex);
+        std::scoped_lock lock(_observer_mutex);
         for (auto const &observer : _observers) {
             observer(*this); // Call each registered observer with the new values
         }
@@ -205,12 +224,16 @@ struct Observable {
      * @versionadded{1.0.0}
      */
     T                       _state;
-    mutable std::mutex      _mutex{};           ///< For thread-safe value access
-    std::condition_variable _cv{};              ///< For thread synchronization
-    size_t                  _value_changed = 0; ///< Counter indicating how many times the value has changed.
+    mutable std::mutex      _mutex{}; ///< For thread-safe value access
+    std::condition_variable _cv{};    ///< For thread synchronization
+    /// Counter indicating how many times the value has changed. Atomic so
+    /// ``notify_observers`` can bump it without re-acquiring ``_mutex`` — the
+    /// re-acquire previously created a lock-order risk when the Observable
+    /// participated in a multi-mutex ``std::scoped_lock`` (see the comment in
+    /// ``notify_observers``).
+    std::atomic<size_t> _value_changed{0};
 
     std::list<std::function<void(T const &)>> _observers{};      ///< List of observers
     std::mutex                                _observer_mutex{}; ///< Protects the observer list
 };
-} // namespace design_pats
-} // namespace einsums
+} // namespace einsums::design_pats

@@ -19,7 +19,7 @@ TEMPLATE_TEST_CASE("TensorImlp Creation", "[tensor]", float, double, std::comple
     }
 
     SECTION("Row major constructor and copy constructor.") {
-        std::vector<std::remove_cv_t<TestType>> test_data{(TestType)1.0, (TestType)2.0, (TestType)3.0, (TestType)4.0};
+        std::vector<std::remove_cv_t<TestType>> test_data{TestType{1.0}, TestType{2.0}, TestType{3.0}, TestType{4.0}};
         detail::TensorImpl<TestType>            impl(test_data.data(), {2, 2}, true);
 
         REQUIRE(impl.data() == test_data.data());
@@ -50,29 +50,10 @@ TEMPLATE_TEST_CASE("TensorImlp Creation", "[tensor]", float, double, std::comple
         REQUIRE_THROWS(impl_copy.dim(2));
         REQUIRE(impl_copy.stride(0) == 2);
         REQUIRE(impl_copy.stride(1) == 1);
-
-#ifdef EINSUMS_COMPUTE_CODE
-        auto lock = impl.gpu_cache_tensor();
-        impl.tensor_to_gpu();
-        impl.subscript(0, 0) = TestType{2.0};
-        impl.tensor_from_gpu();
-        REQUIRE(impl.rank() == 2);
-        REQUIRE(impl.size() == 4);
-        REQUIRE(impl.dim(0) == 2);
-        REQUIRE(impl.dim(1) == 2);
-        REQUIRE_THROWS(impl.dim(2));
-        REQUIRE(impl.stride(0) == 2);
-        REQUIRE(impl.stride(1) == 1);
-
-        REQUIRE(impl.subscript(0, 0) == TestType{1.0});
-        REQUIRE(impl.subscript(0, 1) == TestType{2.0});
-        REQUIRE(impl.subscript(1, 0) == TestType{3.0});
-        REQUIRE(impl.subscript(1, 1) == TestType{4.0});
-#endif
     }
 
     SECTION("Column major constructor and move constructor.") {
-        std::vector<std::remove_cv_t<TestType>> test_data{(TestType)1.0, (TestType)2.0, (TestType)3.0, (TestType)4.0};
+        std::vector<std::remove_cv_t<TestType>> test_data{TestType{1.0}, TestType{2.0}, TestType{3.0}, TestType{4.0}};
         detail::TensorImpl<TestType>            impl(test_data.data(), {2, 2}, false);
 
         REQUIRE(impl.data() == test_data.data());
@@ -100,29 +81,10 @@ TEMPLATE_TEST_CASE("TensorImlp Creation", "[tensor]", float, double, std::comple
         REQUIRE_THROWS(impl_copy.dim(2));
         REQUIRE(impl_copy.stride(0) == 1);
         REQUIRE(impl_copy.stride(1) == 2);
-
-#ifdef EINSUMS_COMPUTE_CODE
-        auto lock = impl_copy.gpu_cache_tensor();
-        impl_copy.tensor_to_gpu();
-        impl_copy.subscript(0, 0) = TestType{2.0};
-        impl_copy.tensor_from_gpu();
-        REQUIRE(impl_copy.rank() == 2);
-        REQUIRE(impl_copy.size() == 4);
-        REQUIRE(impl_copy.dim(0) == 2);
-        REQUIRE(impl_copy.dim(1) == 2);
-        REQUIRE_THROWS(impl_copy.dim(2));
-        REQUIRE(impl_copy.stride(0) == 1);
-        REQUIRE(impl_copy.stride(1) == 2);
-
-        REQUIRE(impl_copy.subscript(0, 0) == TestType{1.0});
-        REQUIRE(impl_copy.subscript(0, 1) == TestType{3.0});
-        REQUIRE(impl_copy.subscript(1, 0) == TestType{2.0});
-        REQUIRE(impl_copy.subscript(1, 1) == TestType{4.0});
-#endif
     }
 
     SECTION("Strides specified and assignments.") {
-        std::vector<std::remove_cv_t<TestType>> test_data{(TestType)1.0, (TestType)2.0, (TestType)3.0, (TestType)4.0};
+        std::vector<std::remove_cv_t<TestType>> test_data{TestType{1.0}, TestType{2.0}, TestType{3.0}, TestType{4.0}};
         detail::TensorImpl<TestType>            impl(test_data.data(), {2, 2}, {2, 1});
 
         REQUIRE(impl.data() == test_data.data());

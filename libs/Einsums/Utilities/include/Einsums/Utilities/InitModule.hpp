@@ -16,18 +16,18 @@
 
 namespace einsums {
 
-EINSUMS_EXPORT int init_Einsums_Utilities();
+EINSUMS_EXPORT int init_Einsums_Utilities(); // NOLINT(readability-identifier-naming)
 
 /**
  * @brief Initializes the random number generator.
  *
  * @versionadded{1.0.0}
  */
-EINSUMS_EXPORT void initialize_Einsums_Utilities();
+EINSUMS_EXPORT void initialize_Einsums_Utilities(); // NOLINT(readability-identifier-naming)
 
 namespace detail {
 
-static int initialize_module_Einsums_Utilities = init_Einsums_Utilities();
+static int initialize_module_Einsums_Utilities = init_Einsums_Utilities(); // NOLINT(bugprone-throwing-static-initialization)
 
 }
 

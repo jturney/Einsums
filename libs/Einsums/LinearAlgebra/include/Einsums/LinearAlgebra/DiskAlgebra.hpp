@@ -9,7 +9,7 @@
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra/Base.hpp>
-#include <Einsums/LinearAlgebra/Bases/high_precision.hpp>
+#include <Einsums/LinearAlgebra/Bases/compensated_sum.hpp>
 #include <Einsums/Tensor/DiskTensor.hpp>
 #include <Einsums/Utilities/Random.hpp>
 

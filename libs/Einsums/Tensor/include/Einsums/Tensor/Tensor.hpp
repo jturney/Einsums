@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Assert.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Concepts/File.hpp>
@@ -18,8 +19,11 @@
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
+#include <Einsums/Python/Annotations.hpp>
+#include <Einsums/Tensor/PendingInit.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
+#include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 #include <Einsums/TensorBase/TensorBase.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
@@ -32,45 +36,28 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <chrono>
-#include <complex>
 #include <concepts>
 #include <cstdint>
-#include <exception>
 #include <functional>
-#include <limits>
 #include <memory>
-#include <new>
 #include <numeric>
 #include <omp.h>
-#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-#if defined(EINSUMS_COMPUTE_CODE)
-#    include <Einsums/Tensor/DeviceTensor.hpp>
-
-#    include <hip/hip_common.h>
-#    include <hip/hip_runtime.h>
-#    include <hip/hip_runtime_api.h>
-#endif
-
 namespace einsums {
-#ifndef DOXYGEN
 // Forward declaration of the Tensor printing function.
 template <RankTensorConcept AType>
     requires(BasicTensorConcept<AType> || !AlgebraTensorConcept<AType>)
 void println(AType const &A, TensorPrintOptions options = {});
 
 template <FileOrOStream Output, RankTensorConcept AType>
-    requires((BasicTensorConcept<AType> || !AlgebraTensorConcept<AType>) && !DeviceTensorConcept<AType>)
+    requires(BasicTensorConcept<AType> || !AlgebraTensorConcept<AType>)
 void fprintln(Output &fp, AType const &A, TensorPrintOptions options = {});
-#endif
 
 /**
  * @brief Represents a general tensor
@@ -126,10 +113,14 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * @typedef Vector
      *
      * This represents the internal storage method of the tensor.
+     * For device allocators, DeviceVector is used instead of std::vector.
      */
-    using Vector = std::vector<T, Alloc>;
+    using Vector = std::conditional_t<gpu::IsDeviceAllocatorV<Alloc>, gpu::DeviceVector<T>, std::vector<T, Alloc>>;
 
     using Allocator = Alloc;
+
+    /// True if this tensor uses device (GPU) memory.
+    static constexpr bool IsDeviceTensor = gpu::IsDeviceAllocatorV<Alloc>;
 
     /**
      * @brief Construct a new Tensor object. Default constructor.
@@ -141,35 +132,63 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      */
     GeneralTensor(GeneralTensor const &other) : _name(other.name()), _data(other._data), _impl(other._impl) {
         _impl.set_data(_data.data());
-        for (int i = 0; i < Rank; i++) {
+        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
+        if (other._symmetry)
+            _symmetry = std::make_unique<SymmetryDescriptor>(*other._symmetry);
     }
 
     /**
      * @brief Construct a new Tensor object from one with a different allocator.
+     *
+     * Handles host↔device transfers automatically when copying between
+     * host tensors and GPU tensors.
      */
     template <typename Alloc2>
-    GeneralTensor(GeneralTensor<T, Rank, Alloc2> const &other) : _name(other.name()), _data(other._data), _impl(other._impl) {
+    GeneralTensor(GeneralTensor<T, Rank, Alloc2> const &other) : _name(other.name()), _impl(other._impl) {
+        constexpr bool other_is_device = gpu::IsDeviceAllocatorV<Alloc2>;
+        constexpr bool this_is_device  = IsDeviceTensor;
+
+        _data.resize(_impl.size());
         _impl.set_data(_data.data());
-        for (int i = 0; i < Rank; i++) {
+
+        if constexpr (this_is_device && !other_is_device) {
+            // Host → Device
+            gpu::memcpy_host_to_device(_data.data(), other.data(), _impl.size() * sizeof(T));
+        } else if constexpr (!this_is_device && other_is_device) {
+            // Device → Host
+            gpu::memcpy_device_to_host(_data.data(), other.data(), _impl.size() * sizeof(T));
+        } else if constexpr (this_is_device && other_is_device) {
+            // Device → Device
+            gpu::memcpy_device_to_device(_data.data(), other.data(), _impl.size() * sizeof(T));
+        } else {
+            // Host → Host (same as before)
+            std::memcpy(_data.data(), other.data(), _impl.size() * sizeof(T));
+        }
+
+        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
+        if (other._symmetry)
+            _symmetry = std::make_unique<SymmetryDescriptor>(*other._symmetry);
     }
 
     /**
      * @brief Destroy the Tensor object.
      */
-    ~GeneralTensor() = default;
+    ~GeneralTensor() { ProfileMemFree(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T))); }
 
     /**
      * @brief Default move constructor.
      */
     GeneralTensor(GeneralTensor &&other) noexcept
         : _name{std::move(other._name)}, _data{std::move(other._data)}, _dim_array{std::move(other._dim_array)},
-          _stride_array{std::move(other._stride_array)}, _impl{std::move(other._impl)} {}
+          _stride_array{std::move(other._stride_array)}, _impl{std::move(other._impl)}, _symmetry{std::move(other._symmetry)} {}
 
     /**
      * @brief Default move assignment.
@@ -179,6 +198,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         _data         = std::move(other._data);
         _dim_array    = std::move(other._dim_array);
         _stride_array = std::move(other._stride_array);
+        _symmetry     = std::move(other._symmetry);
         _impl         = std::move(other._impl);
 
         return *this;
@@ -203,15 +223,17 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     template <std::integral... Dims>
         requires(sizeof...(Dims) == Rank)
     GeneralTensor(std::string name, Dims... dims)
-        : _name{std::move(name)}, _impl(nullptr, std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...}, GlobalConfigMap::get_singleton().get_bool("row-major")) {
+        : _name{std::move(name)}, _impl(nullptr, std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...},
+                                        GlobalConfigMap::get_singleton().get_bool("row-major")) {
         static_assert(Rank == sizeof...(dims), "Declared Rank does not match provided dims");
 
         // Resize the data structure
         _data.resize(_impl.size());
+        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
 
         _impl.set_data(_data.data());
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -241,10 +263,11 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
         // Resize the data structure
         _data.resize(_impl.size());
+        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
 
         _impl.set_data(_data.data());
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -283,7 +306,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         // Check to see if the user provided a dim of "-1" in one place. If found then the user requests that we
         // compute this dimensionality of this "0" index for them.
 
-        auto _dims = std::array<ptrdiff_t, sizeof...(Dims)>{(ptrdiff_t)dims...};
+        auto _dims = std::array<ptrdiff_t, sizeof...(Dims)>{static_cast<ptrdiff_t>(dims)...};
 
         int nfound{0};
         int location{-1};
@@ -313,7 +336,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
         _impl = detail::TensorImpl<T>(_data.data(), _dims, existingTensor.impl().is_row_major());
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -332,10 +355,11 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     explicit GeneralTensor(Dim<Rank> dims) : _impl(nullptr, dims) {
         // Resize the data structure
         _data.resize(_impl.size());
+        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
 
         _impl.set_data(_data.data());
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -349,10 +373,11 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     explicit GeneralTensor(bool row_major, Dim<Rank> dims) : _impl(nullptr, dims, row_major) {
         // Resize the data structure
         _data.resize(_impl.size());
+        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
 
         _impl.set_data(_data.data());
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -365,15 +390,17 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      *
      * @param other The tensor view to copy.
      */
-    GeneralTensor(TensorView<T, rank> const &other) : _name{other.name()}, _impl(nullptr, other.dims(), GlobalConfigMap::get_singleton().get_bool("row-major")) {
+    GeneralTensor(TensorView<T, rank> const &other)
+        : _name{other.name()}, _impl(nullptr, other.dims(), GlobalConfigMap::get_singleton().get_bool("row-major")) {
         // Resize the data structure
         _data.resize(_impl.size());
+        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
 
         _impl.set_data(_data.data());
 
         detail::copy_to(other.impl(), _impl);
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -384,15 +411,304 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      */
     GeneralTensor(detail::TensorImpl<T> const &other) : _impl(nullptr, other.dims()) {
         _data.resize(_impl.size());
+        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
 
         _impl.set_data(_data.data());
         detail::copy_to(other, _impl);
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
     }
+
+    // ── Deferred allocation (shell tensor) ───────────────────────────────
+
+    /**
+     * @brief Tag type for deferred allocation.
+     *
+     * A shell tensor has valid metadata (name, dims, strides, rank) but no
+     * backing data storage. Call materialize() to allocate data after
+     * optimization passes have decided placement and distribution.
+     */
+    struct DeferredAlloc {};
+
+    /// Tag value for deferred allocation constructors.
+    static constexpr DeferredAlloc deferred_alloc{};
+
+    /**
+     * @brief Construct a shell tensor with deferred allocation.
+     *
+     * Creates a tensor object with valid dimensions and strides but NO
+     * data allocation. The tensor address is valid for registration with
+     * CaptureContext. Call materialize() to allocate storage.
+     *
+     * @param tag   The DeferredAlloc tag.
+     * @param name  Name of the tensor.
+     * @param dims  Dimensions of each rank.
+     */
+    template <std::integral... Dims>
+        requires(sizeof...(Dims) == Rank)
+    GeneralTensor(DeferredAlloc, std::string name, Dims... dims)
+        : _name{std::move(name)},
+          // Use a sentinel non-null pointer so TensorImpl stores dims/strides correctly.
+          // The pointer is never dereferenced — it just prevents TensorImpl::dim() from
+          // returning 0 (which it does when _ptr == nullptr).
+          _impl(reinterpret_cast<T *>(0x1), std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...},
+                GlobalConfigMap::get_singleton().get_bool("row-major")) {
+        static_assert(Rank == sizeof...(dims), "Declared Rank does not match provided dims");
+        // DO NOT resize _data — storage is deferred until materialize()
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
+            _dim_array[i]    = _impl.dim(i);
+            _stride_array[i] = _impl.stride(i);
+        }
+    }
+
+    /**
+     * @brief Allocate the backing data storage for a deferred tensor.
+     *
+     * After this call, data() returns a valid pointer and the tensor
+     * can be used in computations. Idempotent — safe to call multiple times.
+     */
+    void materialize() {
+        if (is_materialized())
+            return;
+        _data.resize(_impl.size());
+        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
+        _impl.set_data(_data.data());
+    }
+
+    /**
+     * @brief Check if this tensor has allocated backing storage.
+     * @return true if data() returns a valid pointer.
+     */
+    [[nodiscard]] bool is_materialized() const { return !_data.empty() || _impl.size() == 0; }
+
+    /**
+     * @brief Release the backing data storage, returning to deferred state.
+     *
+     * Frees memory immediately. The tensor retains its dimensions and strides
+     * but data() returns a sentinel pointer. Call materialize() to re-allocate.
+     * Used by FreeInsertion pass to release intermediates after their last consumer.
+     */
+    void release() {
+        if (_data.empty())
+            return;
+        ProfileMemFree(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
+        _data.clear();
+        _data.shrink_to_fit();
+        _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel — dims/strides preserved
+    }
+
+    /**
+     * @brief Change the dimensions of a deferred tensor before allocation.
+     *
+     * Used by DistributionPlanning/Materialization to shrink a globally-declared
+     * tensor to a local partition before allocating storage. Must only be called
+     * on deferred (not yet materialized) tensors.
+     *
+     * @param dims New dimensions for the tensor.
+     */
+    void resize_deferred(Dim<Rank> dims) {
+        assert(!is_materialized() && "resize_deferred() must be called before materialize()");
+
+        detail::TensorImpl<T> new_impl(reinterpret_cast<T *>(0x1), dims, _impl.is_row_major());
+        _impl = std::move(new_impl);
+
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
+            _dim_array[i]    = _impl.dim(i);
+            _stride_array[i] = _impl.stride(i);
+        }
+    }
+
+    /// @overload
+    template <std::integral... Dims>
+        requires(sizeof...(Dims) == Rank)
+    void resize_deferred(Dims... dims) {
+        resize_deferred(Dim<Rank>{static_cast<size_t>(dims)...});
+    }
+
+    // ── End deferred allocation ───────────────────────────────────────────
+
+    // ── Distributed indexing ─────────────────────────────────────────────
+
+    /**
+     * @brief Set the global-to-local mapping for distributed tensors.
+     *
+     * Called by MaterializationPass after resize_deferred. Stores the global
+     * dimensions and the starting offset for this rank's partition along each
+     * dimension. Enables range() and global() methods.
+     *
+     * @param global_dims Global tensor dimensions (before partitioning).
+     * @param offsets     Starting global index for this rank along each dimension.
+     */
+    void set_distribution(std::array<size_t, Rank> global_dims, std::array<size_t, Rank> offsets) {
+        _global_dims           = global_dims;
+        _local_offset          = offsets;
+        _is_distributed_tensor = true;
+    }
+
+    /**
+     * @brief Get the global index range [start, end) for this rank along dimension @p dim.
+     *
+     * For non-distributed tensors, returns {0, dim(dim)} (full range).
+     * For distributed tensors, returns the partition assigned to this rank.
+     *
+     * Use this in fill lambdas to iterate only over local elements:
+     * @code
+     * auto [p_start, p_end] = T.range(0);
+     * for (size_t p = p_start; p < p_end; p++) { ... }
+     * @endcode
+     */
+    [[nodiscard]] std::pair<size_t, size_t> range(size_t dim) const {
+        if (!_is_distributed_tensor) {
+            return {0, this->dim(dim)};
+        }
+        return {_local_offset[dim], _local_offset[dim] + this->dim(dim)};
+    }
+
+    /**
+     * @brief Access an element using GLOBAL indices.
+     *
+     * Subtracts the local offset before accessing the underlying data.
+     * For non-distributed tensors, equivalent to operator().
+     *
+     * @code
+     * auto [p_start, p_end] = T.range(0);
+     * for (size_t p = p_start; p < p_end; p++)
+     *     T.global(p, q) = value;  // p is a global index
+     * @endcode
+     */
+    template <std::integral... Indices>
+        requires(sizeof...(Indices) == Rank)
+    T &global(Indices... indices) {
+        if (!_is_distributed_tensor) {
+            return (*this)(indices...);
+        }
+        std::array<size_t, Rank> idx{static_cast<size_t>(indices)...};
+        for (size_t d = 0; d < Rank; d++) {
+            idx[d] -= _local_offset[d];
+        }
+        return _apply_global(idx, std::make_index_sequence<Rank>{});
+    }
+
+    template <std::integral... Indices>
+        requires(sizeof...(Indices) == Rank)
+    T const &global(Indices... indices) const {
+        if (!_is_distributed_tensor) {
+            return (*this)(indices...);
+        }
+        std::array<size_t, Rank> idx{static_cast<size_t>(indices)...};
+        for (size_t d = 0; d < Rank; d++) {
+            idx[d] -= _local_offset[d];
+        }
+        return _apply_global(idx, std::make_index_sequence<Rank>{});
+    }
+
+    /// Check if this tensor has distribution metadata set.
+    [[nodiscard]] bool is_distributed_tensor() const { return _is_distributed_tensor; }
+
+    /// Global dimension along axis @p d (before partitioning).
+    [[nodiscard]] size_t global_dim(size_t d) const { return _is_distributed_tensor ? _global_dims[d] : this->dim(d); }
+
+  private:
+    template <size_t... Is>
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    T &_apply_global(std::array<size_t, Rank> const &idx, std::index_sequence<Is...>) {
+        return (*this)(idx[Is]...);
+    }
+    template <size_t... Is>
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    T const &_apply_global(std::array<size_t, Rank> const &idx, std::index_sequence<Is...>) const {
+        return (*this)(idx[Is]...);
+    }
+
+    std::array<size_t, Rank> _global_dims{};
+    std::array<size_t, Rank> _local_offset{};
+    bool                     _is_distributed_tensor{false};
+
+  public:
+    // ── Local view (temporary slice for distributed computing) ───────────
+
+    /**
+     * @brief Saved state for restoring a tensor after a local view.
+     */
+    struct LocalViewState {
+        T                       *saved_data{nullptr};
+        std::array<size_t, Rank> saved_dims{};
+        std::array<size_t, Rank> saved_strides{};
+        bool                     active{false};
+    };
+
+    /**
+     * @brief Temporarily restrict this tensor to a contiguous slice along one dimension.
+     *
+     * Modifies the data pointer and dims so that operations see only the local
+     * partition. Call end_local_view() to restore the original state.
+     *
+     * Used by InputSlicing pass for distributed computation: each rank "views"
+     * its portion of a pre-allocated tensor without copying.
+     *
+     * @param dim   Which dimension to slice along.
+     * @param start First element index along that dimension.
+     * @param count Number of elements in the slice.
+     * @return Saved state to pass to end_local_view().
+     */
+    LocalViewState begin_local_view(size_t dim, size_t start, size_t count) {
+        LocalViewState state;
+        state.saved_data = _impl.data();
+        for (size_t d = 0; d < Rank; d++) {
+            state.saved_dims[d]    = _impl.dim(d);
+            state.saved_strides[d] = _impl.stride(d);
+        }
+        state.active = true;
+
+        // Offset the data pointer: move by start * stride[dim] elements
+        T *new_data = _impl.data() + start * _impl.stride(dim);
+
+        // Build new dims with the sliced dimension
+        std::array<size_t, Rank> new_dims;
+        std::array<size_t, Rank> old_strides;
+        for (size_t d = 0; d < Rank; d++) {
+            new_dims[d]    = _impl.dim(d);
+            old_strides[d] = _impl.stride(d);
+        }
+        new_dims[dim] = count;
+
+        // Rebuild impl with new data and dims, then OVERRIDE strides.
+        // The strides must stay the same as the original tensor because the
+        // underlying memory layout hasn't changed — we're just viewing a subset.
+        bool                  row_major = _impl.is_row_major();
+        detail::TensorImpl<T> new_impl(new_data, new_dims, row_major);
+        // Override the computed strides with the original ones
+        new_impl.set_strides(old_strides);
+        _impl = std::move(new_impl);
+
+        for (size_t d = 0; d < Rank; d++) {
+            _dim_array[d]    = new_dims[d];
+            _stride_array[d] = old_strides[d];
+        }
+
+        return state;
+    }
+
+    /**
+     * @brief Restore a tensor to its original state after a local view.
+     */
+    void end_local_view(LocalViewState const &state) {
+        if (!state.active)
+            return;
+
+        detail::TensorImpl<T> restored(state.saved_data, state.saved_dims, _impl.is_row_major());
+        _impl = std::move(restored);
+
+        for (size_t d = 0; d < Rank; d++) {
+            _dim_array[d]    = _impl.dim(d);
+            _stride_array[d] = _impl.stride(d);
+        }
+    }
+
+    // ── End local view ───────────────────────────────────────────────────
 
     /**
      * @brief Resize a tensor.
@@ -404,14 +720,17 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
             return;
         }
 
-        _impl = detail::TensorImpl<T>(nullptr, dims, _impl.is_row_major());
+        // Build new impl to compute the required size, but don't commit yet.
+        detail::TensorImpl<T> new_impl(nullptr, dims, _impl.is_row_major());
 
-        // Resize the data structure
-        _data.resize(_impl.size());
+        // Resize data first — if this throws, _impl and _data remain consistent.
+        _data.resize(new_impl.size());
 
+        // Data resize succeeded — now commit the new impl.
+        _impl = std::move(new_impl);
         _impl.set_data(_data.data());
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -431,14 +750,35 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     /**
      * @brief Zeroes out the tensor data.
      */
-    void zero() { memset(_data.data(), 0, sizeof(T) * _data.size()); }
+    void zero() {
+        // _data.data() is allowed to be nullptr when _data.size() == 0
+        // (e.g. zero-sized tensors used during construction or as views).
+        // memset / device_memset are declared [[gnu::nonnull(1)]] in the
+        // glibc/CUDA headers, so passing nullptr trips UBSan even though
+        // the count is also 0 (which is otherwise defined). Skip the call
+        // when there's nothing to write. Caught on the ASan/UBSan leg by
+        // Tests.Unit.Modules.LinearAlgebra.pow + .TensorUtilities.BlockViews.
+        if (_data.empty()) {
+            return;
+        }
+        if constexpr (IsDeviceTensor) {
+            gpu::device_memset(_data.data(), 0, sizeof(T) * _data.size());
+        } else if constexpr (std::is_trivially_copyable_v<T>) {
+            memset(_data.data(), 0, sizeof(T) * _data.size());
+        } else {
+            std::fill(_data.begin(), _data.end(), T{0.0});
+        }
+    }
 
     /**
      * @brief Set the all entries to the given value.
      *
      * @param value Value to set the elements to.
      */
-    void set_all(T value) { std::fill(_data.begin(), _data.end(), value); }
+    void set_all(T value) {
+        static_assert(!IsDeviceTensor, "set_all() is not supported for device tensors. Use a GPU kernel instead.");
+        std::fill(_data.begin(), _data.end(), value);
+    }
 
     /**
      * @brief Returns a pointer to the data.
@@ -461,6 +801,20 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     [[nodiscard]] ConstPointer data() const { return _impl.data(); }
 
     /**
+     * @brief Redirect the tensor's internal data pointer.
+     *
+     * Used by the ComputeGraph GPU executor to temporarily swap the tensor's
+     * data buffer to a device shadow allocation. The caller is responsible for
+     * restoring the original pointer after use.
+     *
+     * @warning This does NOT change ownership or lifetime of the underlying buffer.
+     *          The original buffer must remain valid until the pointer is restored.
+     *
+     * @param[in] ptr New data pointer. Must point to a buffer of at least size() elements.
+     */
+    void set_data(Pointer ptr) { _impl.set_data(ptr); }
+
+    /**
      * Returns a pointer into the tensor at the given location.
      *
      * @code
@@ -477,11 +831,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     template <typename... MultiIndex>
         requires(std::is_integral_v<std::remove_cvref_t<MultiIndex>> && ...)
     [[nodiscard]] auto data(MultiIndex &&...index) -> Pointer {
-#if !defined(DOXYGEN)
-        assert(sizeof...(MultiIndex) <= Rank);
+        EINSUMS_ASSERT(sizeof...(MultiIndex) <= Rank);
 
         return _impl.data(std::forward<MultiIndex>(index)...);
-#endif
     }
 
     /**
@@ -663,9 +1015,12 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * @param other The tensor to copy.
      */
     auto operator=(GeneralTensor const &other) -> GeneralTensor & {
+        if (&other == this)
+            return *this;
+
         LabeledSection("operator=");
         bool realloc{false};
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (dim(i) == 0 || (dim(i) != other.dim(i))) {
                 realloc = true;
             }
@@ -679,12 +1034,18 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
             _impl.set_data(_data.data());
         }
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
 
-        detail::copy_to(other.impl(), _impl);
+        if constexpr (IsDeviceTensor) {
+            gpu::memcpy_device_to_device(_data.data(), other.data(), _impl.size() * sizeof(T));
+        } else {
+            detail::copy_to(other.impl(), _impl);
+        }
+
+        _symmetry = other._symmetry ? std::make_unique<SymmetryDescriptor>(*other._symmetry) : nullptr;
 
         return *this;
     }
@@ -693,7 +1054,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     auto operator=(GeneralTensor<T, Rank, Alloc2> const &other) -> GeneralTensor & {
         LabeledSection("operator=");
         bool realloc{false};
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (dim(i) == 0 || (dim(i) != other.dim(i))) {
                 realloc = true;
             }
@@ -707,12 +1068,21 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
             _impl.set_data(_data.data());
         }
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
 
-        detail::copy_to(other.impl(), _impl);
+        constexpr bool other_is_device = gpu::IsDeviceAllocatorV<Alloc2>;
+        if constexpr (IsDeviceTensor && !other_is_device) {
+            gpu::memcpy_host_to_device(_data.data(), other.data(), _impl.size() * sizeof(T));
+        } else if constexpr (!IsDeviceTensor && other_is_device) {
+            gpu::memcpy_device_to_host(_data.data(), other.data(), _impl.size() * sizeof(T));
+        } else if constexpr (IsDeviceTensor && other_is_device) {
+            gpu::memcpy_device_to_device(_data.data(), other.data(), _impl.size() * sizeof(T));
+        } else {
+            detail::copy_to(other.impl(), _impl);
+        }
 
         return *this;
     }
@@ -727,7 +1097,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     auto operator=(GeneralTensor<TOther, Rank, Alloc2> const &other) -> GeneralTensor & {
         LabeledSection("operator=");
         bool realloc{false};
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (dim(i) == 0 || (dim(i) != other.dim(i))) {
                 realloc = true;
             }
@@ -743,7 +1113,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
         detail::copy_to(other.impl(), _impl);
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -769,6 +1139,8 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
             requires CoreTensorConcept<OtherTensor>;
         }
     auto operator=(OtherTensor const &other) -> GeneralTensor & {
+        static_assert(!IsDeviceTensor, "Element-wise assignment from a non-basic tensor is not supported for device tensors. "
+                                       "Use bulk operations (memcpy, BLAS) or the ComputeGraph instead.");
         LabeledSection("operator=");
         size_t size = this->size();
 
@@ -793,38 +1165,6 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
         return *this;
     }
-
-#ifdef EINSUMS_COMPUTE_CODE
-    /**
-     * Copy the data from the device into this tensor.
-     */
-    auto operator=(DeviceTensor<T, Rank> const &other) -> GeneralTensor<T, Rank, Alloc> & {
-        bool realloc{false};
-        for (int i = 0; i < Rank; i++) {
-            if (dim(i) == 0 || (dim(i) != other.dim(i))) {
-                realloc = true;
-            }
-        }
-
-        if (realloc) {
-            _impl = detail::TensorImpl<T>(nullptr, other.dims());
-
-            // Resize the data structure
-            _data.resize(size());
-
-            _impl.set_data(_data.data());
-        }
-
-        hip_catch(hipMemcpy(_data.data(), other.gpu_data(), _impl.size() * sizeof(T), hipMemcpyDeviceToHost));
-
-        for (int i = 0; i < Rank; i++) {
-            _dim_array[i]    = _impl.dim(i);
-            _stride_array[i] = _impl.stride(i);
-        }
-
-        return *this;
-    }
-#endif
 
     /**
      * Fill this tensor with a value.
@@ -1018,6 +1358,36 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
     [[nodiscard]] bool is_column_major() const { return _impl.is_column_major(); }
 
+    // ── Symmetry metadata ──────────────────────────────────────────────────
+    //
+    // A tensor optionally carries a SymmetryDescriptor describing invariants
+    // the caller guarantees hold for its data (e.g. ``T(i,j) = T(j,i)``).
+    // The descriptor is metadata; storage remains dense. BLAS dispatch and
+    // ComputeGraph passes read it to pick specialized kernels
+    // (``syev`` over ``geev``, ``symm`` over ``gemm``, etc.).
+    //
+    // The descriptor is shared-owned so copies preserve the declared
+    // symmetry without copying the (small) descriptor payload.
+
+    /// Attach or replace the symmetry descriptor. Pass an empty descriptor
+    /// to clear.
+    void set_symmetry(SymmetryDescriptor desc) {
+        if (desc.empty())
+            _symmetry.reset();
+        else
+            _symmetry = std::make_unique<SymmetryDescriptor>(std::move(desc));
+    }
+
+    /// Current symmetry descriptor, or ``nullptr`` if none declared. The
+    /// returned pointer is valid for the tensor's lifetime.
+    [[nodiscard]] SymmetryDescriptor const *symmetry() const noexcept { return _symmetry.get(); }
+
+    /// Clear any declared symmetry.
+    void clear_symmetry() { _symmetry.reset(); }
+
+    /// True iff a non-empty symmetry descriptor is attached.
+    [[nodiscard]] bool has_symmetry() const { return _symmetry && !_symmetry->empty(); }
+
     [[nodiscard]] TensorView<T, Rank> transpose_view() { return TensorView<T, Rank>(_impl.transpose_view()); }
 
     [[nodiscard]] TensorView<T, Rank> const transpose_view() const { return TensorView<T, Rank>(_impl.transpose_view()); }
@@ -1044,27 +1414,22 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         return TensorView<T, Rank - sizeof...(MultiIndex) + 1>(_impl.tie_indices(std::forward<MultiIndex>(index)...));
     }
 
-    void tensor_to_gpu() const { _impl.tensor_to_gpu(); }
-
-    void tensor_from_gpu() { _impl.tensor_from_gpu(); }
-
-    [[nodiscard]] auto gpu_cache_tensor() { return _impl.gpu_cache_tensor(); }
-
-    [[nodiscard]] auto gpu_cache_tensor_nowrite() { return _impl.gpu_cache_tensor_nowrite(); }
-
-    [[nodiscard]] auto gpu_cache_tensor() const { return _impl.gpu_cache_tensor(); }
-
-    [[nodiscard]] auto gpu_cache_tensor_nowrite() const { return _impl.gpu_cache_tensor_nowrite(); }
-
-    [[nodiscard]] auto get_gpu_pointer() { return _impl.get_gpu_pointer(); }
-
-    [[nodiscard]] auto get_gpu_pointer() const { return _impl.get_gpu_pointer(); }
-
-    [[nodiscard]] auto get_gpu_memory() const { return _impl.get_gpu_memory(); }
-
-    [[nodiscard]] bool gpu_is_expired() const { return _impl.gpu_is_expired(); }
+    /// Lazily-created token whose lifetime tracks this object. The graph's
+    /// validator (see make_handle) holds a std::weak_ptr to it to detect
+    /// destruction WITHOUT dereferencing a possibly-freed tensor — reading a
+    /// destroyed object's memory (the old canary approach) is UB and unreliable.
+    /// Created on first request, so tensors never captured into a graph pay
+    /// nothing.
+    [[nodiscard]] std::weak_ptr<void> liveness_token() const {
+        if (!_life_token) {
+            _life_token = std::make_shared<char>();
+        }
+        return _life_token;
+    }
 
   private:
+    mutable std::shared_ptr<void> _life_token;
+
     std::string _name{"(unnamed)"};
 
     Vector _data{};
@@ -1074,11 +1439,34 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     Dim<Rank>    _dim_array;
     Stride<Rank> _stride_array;
 
+    /// Optional declared symmetry — null when the tensor is treated as general.
+    /// unique_ptr keeps copies independent (no accidental aliasing via refcount)
+    /// and avoids atomic overhead. Null pays 8 bytes per tensor. Copy
+    /// constructors / copy-assign operators on GeneralTensor deep-clone the
+    /// descriptor so the symmetry survives across copies.
+    std::unique_ptr<SymmetryDescriptor> _symmetry{};
+
+    /// Post-materialize init policy. Set at declaration time (e.g. by
+    /// ``Workspace::declare_zero_tensor``) and consumed by ``make_handle``
+    /// so the init metadata reaches a Graph that captures this tensor
+    /// later. POD-ish so it's safe across copies / moves; see
+    /// ``Einsums/Tensor/PendingInit.hpp``.
+    PendingInit _pending_init{PendingInit::None};
+
     template <typename T_, size_t Rank_>
     friend struct TensorView;
 
     template <typename T_, size_t OtherRank, typename Alloc2>
     friend struct GeneralTensor;
+
+  public:
+    /// Pending post-materialize init kind. Defaults to ``None``.
+    [[nodiscard]] PendingInit pending_init() const { return _pending_init; }
+
+    /// Tag this tensor with a post-materialize init policy. Used by
+    /// declaration helpers (Workspace / Graph) so capture-time handles
+    /// created via ``make_handle`` pick up the same init behavior.
+    void set_pending_init(PendingInit k) { _pending_init = k; }
 };
 
 /**
@@ -1164,23 +1552,21 @@ struct GeneralTensor<T, 0, Alloc> final : tensor_base::CoreTensor,
         return *this;
     }
 
-#ifndef DOXYGEN
-#    if defined(OPERATOR)
-#        undef OPERATOR
-#    endif
-#    define OPERATOR(OP)                                                                                                                   \
-        auto operator OP(const T &other)->GeneralTensor & {                                                                                \
-            _data OP other;                                                                                                                \
-            return *this;                                                                                                                  \
-        }
+#if defined(OPERATOR)
+#    undef OPERATOR
+#endif
+#define OPERATOR(OP)                                                                                                                       \
+    auto operator OP(const T &other)->GeneralTensor & {                                                                                    \
+        _data OP other;                                                                                                                    \
+        return *this;                                                                                                                      \
+    }
 
     OPERATOR(*=)
     OPERATOR(/=)
     OPERATOR(+=)
     OPERATOR(-=)
 
-#    undef OPERATOR
-#endif
+#undef OPERATOR
 
     /**
      * Cast the tensor to a scalar.
@@ -1220,14 +1606,29 @@ struct GeneralTensor<T, 0, Alloc> final : tensor_base::CoreTensor,
     /**
      * Get the stride of the tensor. Always returns 1.
      */
-    [[nodiscard]] size_t stride(int d) const { return 0; }
+    [[nodiscard]] size_t stride(int /*d*/) const { return 0; }
 
     /**
      * Get the strides of the tensor. The result is empty.
      */
     [[nodiscard]] Stride<0> strides() const { return Stride{}; }
 
+    /// Lazily-created token whose lifetime tracks this object. The graph's
+    /// validator (see make_handle) holds a std::weak_ptr to it to detect
+    /// destruction WITHOUT dereferencing a possibly-freed tensor — reading a
+    /// destroyed object's memory (the old canary approach) is UB and unreliable.
+    /// Created on first request, so tensors never captured into a graph pay
+    /// nothing.
+    [[nodiscard]] std::weak_ptr<void> liveness_token() const {
+        if (!_life_token) {
+            _life_token = std::make_shared<char>();
+        }
+        return _life_token;
+    }
+
   private:
+    mutable std::shared_ptr<void> _life_token;
+
     /**
      * @var _name
      *
@@ -1298,6 +1699,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
      *
      * @brief The type of tensor this view views.
      */
+    // NOLINTNEXTLINE(readability-identifier-naming)
     using underlying_type = Tensor<T, Rank>;
 
     TensorView() = delete;
@@ -1366,7 +1768,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
         : _impl(const_cast<T *>(data), dims, row_major), _parent{const_cast<T *>(data)} {
         _offsets.fill(0);
         _source_dims = dims;
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -1382,7 +1784,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
         : _impl(const_cast<T *>(data), dims, row_major), _parent{const_cast<T *>(data)} {
         _offsets.fill(0);
         _source_dims = dims;
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -1398,7 +1800,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
         : _impl(const_cast<T *>(data), dims, GlobalConfigMap::get_singleton().get_bool("row-major")), _parent{const_cast<T *>(data)} {
         _offsets.fill(0);
         _source_dims = dims;
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -1414,7 +1816,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
         : _impl(const_cast<T *>(data), dims, GlobalConfigMap::get_singleton().get_bool("row-major")), _parent{const_cast<T *>(data)} {
         _offsets.fill(0);
         _source_dims = dims;
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -1431,7 +1833,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
         : _impl(const_cast<T *>(data), dims, strides), _parent{const_cast<T *>(data)} {
         _offsets.fill(0);
         _source_dims = dims;
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -1448,7 +1850,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
         : _impl(const_cast<T *>(data), dims, strides), _parent{const_cast<T *>(data)} {
         _offsets.fill(0);
         _source_dims = dims;
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -1457,7 +1859,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
     explicit TensorView(detail::TensorImpl<T> const &impl) : _impl(impl), _parent{const_cast<T *>(impl.data())} {
         _offsets.fill(0);
         _source_dims = Dim<Rank>(impl.dims().begin(), impl.dims().end());
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -1465,7 +1867,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
     explicit TensorView(detail::TensorImpl<T> const &impl, T *parent) : _impl(impl), _parent{parent} {
         _offsets.fill(0);
         _source_dims = Dim<Rank>(impl.dims().begin(), impl.dims().end());
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -1474,7 +1876,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
     explicit TensorView(detail::TensorImpl<T> const &impl, T const *parent) : _impl(impl), _parent{const_cast<T *>(parent)} {
         _offsets.fill(0);
         _source_dims = Dim<Rank>(impl.dims().begin(), impl.dims().end());
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -1694,7 +2096,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
     template <typename... MultiIndex>
         requires(AtLeastOneOfType<AllT, std::remove_cvref_t<MultiIndex>...> || AtLeastOneOfType<Range, std::remove_cvref_t<MultiIndex>...>)
     [[nodiscard]] auto operator()(MultiIndex &&...index) -> TensorView<T, count_of_type<AllT, std::remove_cvref_t<MultiIndex>...>() +
-                                                                count_of_type<Range, std::remove_cvref_t<MultiIndex>...>()> {
+                                                                              count_of_type<Range, std::remove_cvref_t<MultiIndex>...>()> {
         static_assert(sizeof...(MultiIndex) == Rank);
 
         return TensorView<T, count_of_type<AllT, std::remove_cvref_t<MultiIndex>...>() +
@@ -1715,7 +2117,8 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
 
     template <typename... MultiIndex>
         requires(AtLeastOneOfType<AllT, MultiIndex...> || AtLeastOneOfType<Range, MultiIndex...>)
-    [[nodiscard]] auto subscript(MultiIndex &&...index) -> TensorView<T, count_of_type<AllT, MultiIndex...>() + count_of_type<Range, MultiIndex...>()> {
+    [[nodiscard]] auto subscript(MultiIndex &&...index)
+        -> TensorView<T, count_of_type<AllT, MultiIndex...>() + count_of_type<Range, MultiIndex...>()> {
         static_assert(sizeof...(MultiIndex) == Rank);
 
         return TensorView<T, count_of_type<AllT, std::remove_cvref_t<MultiIndex>...>() +
@@ -1843,7 +2246,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
             temp += Rank;
         }
 
-        if (temp < 0 || temp >= Rank) {
+        if (temp < 0 || std::cmp_greater_equal(temp, Rank)) {
             EINSUMS_THROW_EXCEPTION(std::out_of_range, "Index to the source dims was out of range! Expected between {} and {}, got {}.",
                                     -(ptrdiff_t)Rank, Rank - 1, d);
         }
@@ -1894,7 +2297,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
             temp += Rank;
         }
 
-        if (temp < 0 || temp >= Rank) {
+        if (temp < 0 || std::cmp_greater_equal(temp, Rank)) {
             EINSUMS_THROW_EXCEPTION(std::out_of_range, "Index to the offsets was out of range! Expected between {} and {}, got {}.",
                                     -(ptrdiff_t)Rank, Rank - 1, d);
         }
@@ -1954,6 +2357,13 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
 
     [[nodiscard]] bool is_column_major() const { return _impl.is_column_major(); }
 
+    // Views don't inherit symmetry yet (would need reasoning about which
+    // slice preserves the parent's invariants). Return null so the
+    // dispatch fast-path falls through to the general kernel. Phase 2+
+    // can populate a descriptor when the view is provably symmetric.
+    [[nodiscard]] SymmetryDescriptor const *symmetry() const noexcept { return nullptr; }
+    [[nodiscard]] bool                      has_symmetry() const noexcept { return false; }
+
     [[nodiscard]] TensorView<T, Rank> transpose_view() { return TensorView<T, Rank>(_impl.transpose_view()); }
 
     [[nodiscard]] TensorView<T, Rank> const transpose_view() const { return TensorView<T, Rank>(_impl.transpose_view()); }
@@ -1979,26 +2389,6 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
     [[nodiscard]] TensorView<T, Rank - sizeof...(MultiIndex) + 1> const tie_indices(MultiIndex &&...index) const {
         return TensorView<T, Rank - sizeof...(MultiIndex) + 1>(_impl.tie_indices(std::forward<MultiIndex>(index)...));
     }
-
-    void tensor_to_gpu() const { _impl.tensor_to_gpu(); }
-
-    void tensor_from_gpu() { _impl.tensor_from_gpu(); }
-
-    [[nodiscard]] auto gpu_cache_tensor() { return _impl.gpu_cache_tensor(); }
-
-    [[nodiscard]] auto gpu_cache_tensor_nowrite() { return _impl.gpu_cache_tensor_nowrite(); }
-
-    [[nodiscard]] auto gpu_cache_tensor() const { return _impl.gpu_cache_tensor(); }
-
-    [[nodiscard]] auto gpu_cache_tensor_nowrite() const { return _impl.gpu_cache_tensor_nowrite(); }
-
-    [[nodiscard]] auto get_gpu_pointer() { return _impl.get_gpu_pointer(); }
-
-    [[nodiscard]] auto get_gpu_pointer() const { return _impl.get_gpu_pointer(); }
-
-    [[nodiscard]] auto get_gpu_memory() const { return _impl.get_gpu_memory(); }
-
-    [[nodiscard]] bool gpu_is_expired() const { return _impl.gpu_is_expired(); }
 
   private:
     /**
@@ -2104,7 +2494,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
                 size_t current_stride    = 1;
                 size_t tensor_index      = 0;
                 size_t cumulative_stride = 1;
-                for (int i = 0; i < Rank; i++) {
+                for (int i = 0; std::cmp_less(i, Rank); i++) {
                     _source_dims[i]   = 0;
                     cumulative_stride = 1;
                     current_stride    = _strides[i];
@@ -2125,7 +2515,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
                 size_t current_stride    = 1;
                 size_t tensor_index      = 0;
                 size_t cumulative_stride = 1;
-                for (int i = 0; i < Rank; i++) {
+                for (int i = 0; std::cmp_less(i, Rank); i++) {
                     _source_dims[i]   = 0;
                     cumulative_stride = 1;
                     current_stride    = _strides[i];
@@ -2152,7 +2542,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
             _strides[Rank - 1] = 1;
         }
 
-        for (ptrdiff_t i = (ptrdiff_t)Rank - 2; i >= 0; i--) {
+        for (ptrdiff_t i = static_cast<ptrdiff_t>(Rank) - 2; i >= 0; i--) {
             if (_strides[i] == 0) {
                 _strides[i] = _strides[i + 1];
             }
@@ -2163,7 +2553,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
 
         _impl = detail::TensorImpl<T>(_data, _dims, _strides);
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
         }
@@ -2222,8 +2612,7 @@ void zero(TensorType &A) {
     A.zero();
 }
 
-#ifndef DOXYGEN
-#    ifdef __cpp_deduction_guides
+#ifdef __cpp_deduction_guides
 template <typename... Args>
 GeneralTensor(std::string const &, Args...) -> GeneralTensor<double, sizeof...(Args), std::allocator<double>>;
 
@@ -2263,7 +2652,6 @@ TensorView(std::string, GeneralTensor<T, OtherRank, Alloc> &, Dim<Rank> const &,
 
 // Supposedly C++20 will allow template deduction guides for template aliases. i.e. Dim, Stride, Offset, Count, Range.
 // Clang has no support for class template argument deduction for alias templates. P1814R0
-#    endif
 #endif
 
 // Useful factories
@@ -2356,13 +2744,12 @@ auto create_tensor(Args... args) {
     return Tensor<Type, sizeof...(Args)>{"Temporary", args...};
 }
 
-#ifndef DOXYGEN
 template <FileOrOStream Output, RankTensorConcept AType>
-    requires((einsums::BasicTensorConcept<AType> || !einsums::AlgebraTensorConcept<AType>) && !einsums::DeviceTensorConcept<AType>)
+    requires(einsums::BasicTensorConcept<AType> || !einsums::AlgebraTensorConcept<AType>)
 void fprintln(Output &fp, AType const &A, TensorPrintOptions options) {
     fprintln(fp, "Name: {}", A.name());
     {
-        print::Indent indent;
+        print::Indent const indent;
         if constexpr (!TensorViewConcept<AType>)
             fprintln(fp, "Type: In Core Tensor");
         else
@@ -2414,6 +2801,5 @@ TENSOR_ALLOC_EXPORT(GeneralTensor, std::allocator)
 TENSOR_ALLOC_EXPORT(GeneralTensor, BufferAllocator)
 
 TENSOR_EXPORT(TensorView)
-#endif
 
 } // namespace einsums

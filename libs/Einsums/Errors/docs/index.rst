@@ -62,7 +62,7 @@ this is still a work in progress.
 
     Indicates that the dimensions of some tensor arguments are not compatible with the given operation.
     For instance, you can only take the determinant of a square matrix, so passing in a matrix that is not
-    square to :cpp:func:`det` will result in this error.
+    square to :cpp:func:`~einsums::compute_graph::det` will result in this error.
 
 .. cpp:class:: tensor_compat_error
 
@@ -71,7 +71,7 @@ this is still a work in progress.
     natural numbers :math:`n, m, k`, the only allowed contraction is of the form 
     :math:`n\times k, k\times m \rightarrow n\times m`. If you were to pass a 3-by-2 matrix as the first
     matrix argument, a 1-by-4 matrix as the second matrix argument, and a 3-by-5 matrix as the third matrix
-    argument to :cpp:func:`gemm`, this error will be thrown because the inner dimensions of the input arguments
+    argument to :cpp:func:`~einsums::gemm`, this error will be thrown because the inner dimensions of the input arguments
     don't match (:math:`2 \ne 1`), and the outer dimensions of the input matrices and the dimensions of the output
     matrix don't match either (:math:`3 = 3`, but :math:`4 \ne 5`).
 

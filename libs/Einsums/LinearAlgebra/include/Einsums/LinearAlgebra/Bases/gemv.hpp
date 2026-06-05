@@ -5,16 +5,11 @@
 
 #pragma once
 #include <Einsums/BLAS.hpp>
+#include <Einsums/Errors/Error.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
 
 #include <stdexcept>
-
-#include <Einsums/Errors/Error.hpp>
-
-#ifdef EINSUMS_COMPUTE_CODE
-#include <Einsums/hipBLAS.hpp>
-#endif
 
 namespace einsums {
 namespace linear_algebra {
@@ -41,29 +36,42 @@ void impl_gemv_noncontiguous(char transA, YType alpha, einsums::detail::TensorIm
     blas::scal(Y->dim(0), beta, Y_data, incy);
 
     // Do the matrix multiplication.
+    //
+    // Parallelize over the *output* index (target) only — each Y element is
+    // owned by exactly one thread, which sums its contributions over all
+    // links into a local accumulator and writes the result once. A previous
+    // ``collapse(2)`` parallelized the link loop too, so multiple threads did
+    // an unsynchronized read-modify-write (``Y_data[target] += ...``) on the
+    // same Y element for different links — a data race that intermittently
+    // dropped contributions, leaving one output element wrong run-to-run.
     if constexpr (IsComplexV<YType>) {
         if (tA == 'c') {
-            EINSUMS_OMP_PRAGMA(parallel for collapse(2))
-            for (size_t link = 0; link < link_dim; link++) {
-                for (size_t target = 0; target < target_dim; target++) {
-                    Y_data[target * incy] +=
-                        alpha * std::conj(A_data[a_target_stride * target + a_link_stride * link]) * X_data[incx * link];
+            EINSUMS_OMP_PRAGMA(parallel for)
+            for (size_t target = 0; target < target_dim; target++) {
+                YType acc = zero;
+                for (size_t link = 0; link < link_dim; link++) {
+                    acc += std::conj(A_data[a_target_stride * target + a_link_stride * link]) * X_data[incx * link];
                 }
+                Y_data[target * incy] += alpha * acc;
             }
         } else {
-            EINSUMS_OMP_PRAGMA(parallel for collapse(2))
-            for (size_t link = 0; link < link_dim; link++) {
-                for (size_t target = 0; target < target_dim; target++) {
-                    Y_data[target * incy] += alpha * A_data[a_target_stride * target + a_link_stride * link] * X_data[incx * link];
+            EINSUMS_OMP_PRAGMA(parallel for)
+            for (size_t target = 0; target < target_dim; target++) {
+                YType acc = zero;
+                for (size_t link = 0; link < link_dim; link++) {
+                    acc += A_data[a_target_stride * target + a_link_stride * link] * X_data[incx * link];
                 }
+                Y_data[target * incy] += alpha * acc;
             }
         }
     } else {
-        EINSUMS_OMP_PRAGMA(parallel for collapse(2))
-        for (size_t link = 0; link < link_dim; link++) {
-            for (size_t target = 0; target < target_dim; target++) {
-                Y_data[target * incy] += alpha * A_data[a_target_stride * target + a_link_stride * link] * X_data[incx * link];
+        EINSUMS_OMP_PRAGMA(parallel for)
+        for (size_t target = 0; target < target_dim; target++) {
+            YType acc = zero;
+            for (size_t link = 0; link < link_dim; link++) {
+                acc += A_data[a_target_stride * target + a_link_stride * link] * X_data[incx * link];
             }
+            Y_data[target * incy] += alpha * acc;
         }
     }
 }
@@ -117,31 +125,6 @@ void impl_gemv(char transA, AlphaType alpha, einsums::detail::TensorImpl<AType> 
                                 "size: {}. Based on transA, X size should be {} and Y size should be {}.",
                                 transA, A.dim(0), A.dim(1), X.dim(0), Y->dim(0), A_n, A_m);
     }
-#ifdef EINSUMS_COMPUTE_CODE
-    if constexpr (std::is_same_v<AType, XType> && std::is_same_v<AType, YType> && blas::IsBlasableV<AType>) {
-        using T = AType;
-
-        // If A is on the GPU, then do the GPU algorithm. Otherwise, it's faster to just do the CPU algorithm.
-        if (A.get_gpu_pointer()) {
-            try {
-                auto A_lock = A.gpu_cache_tensor();
-                auto X_lock = X.gpu_cache_tensor();
-                auto Y_lock = Y->gpu_cache_tensor();
-
-                if (A.get_gpu_pointer() && X.get_gpu_pointer() && Y->get_gpu_pointer()) {
-                    blas::gpu::gemv(transA, A_m, A_n, (AType)alpha, A.get_gpu_pointer().get(), A.dim(0), X.get_gpu_pointer().get(), 1,
-                                    (AType)beta, Y->get_gpu_pointer().get(), 1);
-                    return;
-                }
-            } catch (std::exception &e) {
-                // Something failed. Fall back to the CPU algorithm.
-            }
-        }
-
-        // If Y is on GPU, then copy into CPU.
-        Y->tensor_from_gpu();
-    }
-#endif
     if constexpr (!std::is_same_v<AType, XType> || !std::is_same_v<AType, YType>) {
         impl_gemv_noncontiguous(transA, einsums::detail::convert<AlphaType, YType>(alpha), A, X,
                                 einsums::detail::convert<AlphaType, YType>(beta), Y);

@@ -15,8 +15,8 @@
 #include <Einsums/TypeSupport/CountOfType.hpp>
 #include <Einsums/TypeSupport/TypeName.hpp>
 
-#include <source_location>
 #include <type_traits>
+#include <utility>
 
 namespace einsums {
 
@@ -72,7 +72,7 @@ struct FunctionTensor : public CoreTensor {
      * @brief Checks for negative indices and makes them positive, then performs range checking.
      */
     virtual void fix_indices(std::array<ptrdiff_t, rank> *inds) const {
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             int orig = inds->at(i);
             if (inds->at(i) < 0) {
                 inds->at(i) += _dims[i];
@@ -115,10 +115,10 @@ struct FunctionTensor : public CoreTensor {
             requires(!std::is_same_v<Args, Dim<Rank>> || ...);
             requires sizeof...(Args) == Rank;
         }
-    FunctionTensor(std::string name, Args... dims) : _dims{dims...}, _name{name} {
+    FunctionTensor(std::string name, Args... dims) : _dims{dims...}, _name{std::move(name)} {
         _size = 1;
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _size *= _dims[i];
         }
     }
@@ -129,10 +129,10 @@ struct FunctionTensor : public CoreTensor {
      * @param name The name of the tensor.
      * @param dims The dimensions of the tensor.
      */
-    FunctionTensor(std::string name, Dim<Rank> dims) : _dims(dims), _name{name} {
+    FunctionTensor(std::string name, Dim<Rank> dims) : _dims(dims), _name{std::move(name)} {
         _size = 1;
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _size *= _dims[i];
         }
     }
@@ -145,7 +145,7 @@ struct FunctionTensor : public CoreTensor {
     FunctionTensor(Dim<Rank> dims) : _dims(dims) {
         _size = 1;
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             _size *= _dims[i];
         }
     }
@@ -229,8 +229,8 @@ struct FunctionTensor : public CoreTensor {
     T operator()(Storage const &inds) const {
         auto new_inds = std::array<ptrdiff_t, Rank>();
 
-        for (int i = 0; i < Rank; i++) {
-            new_inds[i] = (ptrdiff_t)inds.at(i);
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
+            new_inds[i] = static_cast<ptrdiff_t>(inds.at(i));
         }
 
         fix_indices(&new_inds);
@@ -307,7 +307,7 @@ struct FunctionTensor : public CoreTensor {
 
         auto ranges = arguments::get_array_from_tuple<std::array<Range, Rank>>(std::forward_as_tuple(index...));
 
-        for (int r = 0; r < Rank; r++) {
+        for (int r = 0; std::cmp_less(r, Rank); r++) {
             auto range = ranges[r];
             offset[r]  = range[0];
             if (range[1] < 0) {
@@ -331,12 +331,12 @@ struct FunctionTensor : public CoreTensor {
      *
      * @param d The axis to query.
      */
-    virtual auto dim(int d) const -> size_t { return _dims[d]; }
+    [[nodiscard]] virtual auto dim(int d) const -> size_t { return _dims[d]; }
 
     /**
      * @brief Get the name of the tensor.
      */
-    virtual std::string const &name() const { return _name; }
+    [[nodiscard]] virtual std::string const &name() const { return _name; }
 
     /**
      * @brief Set the name of the tensor.
@@ -367,16 +367,14 @@ struct FunctionTensor : public CoreTensor {
         return out;
     }
 
-    operator BufferTensor<T, Rank>() const {
-        return get();
-    }
+    operator BufferTensor<T, Rank>() const { return get(); }
 
     /**
      * Returns whether the tensor contains all elements or only some subset of a whole.
      *
      * @return False if the tensor is a view of a larger tensor. True if this is the entire tensor.
      */
-    virtual bool full_view_of_underlying() const { return true; }
+    [[nodiscard]] virtual bool full_view_of_underlying() const { return true; }
 };
 
 } // namespace tensor_base
@@ -426,7 +424,7 @@ struct FuncPointerTensor : public tensor_base::FunctionTensor<T, Rank> {
     /**
      * @brief Call the function with the given indices.
      */
-    virtual T call(std::array<ptrdiff_t, Rank> const &inds) const override { return _func_ptr(inds); }
+    T call(std::array<ptrdiff_t, Rank> const &inds) const override { return _func_ptr(inds); }
 };
 
 /**
@@ -479,7 +477,7 @@ struct FunctionTensorView : public tensor_base::FunctionTensor<T, rank> {
     virtual std::array<ptrdiff_t, UnderlyingRank> apply_view(std::array<ptrdiff_t, rank> const &inds) const {
         std::array<ptrdiff_t, UnderlyingRank> out;
         int                                   curr_rank = 0;
-        for (int i = 0; i < Rank && curr_rank < UnderlyingRank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank) && curr_rank < UnderlyingRank; i++) {
             while (_index_template.at(curr_rank) >= 0) {
                 out[curr_rank] = _index_template[curr_rank];
                 curr_rank++;
@@ -575,7 +573,7 @@ struct FunctionTensorView : public tensor_base::FunctionTensor<T, rank> {
     /**
      * @brief Call the underlying function of the function tensor.
      */
-    virtual T call(std::array<ptrdiff_t, Rank> const &inds) const override {
+    T call(std::array<ptrdiff_t, Rank> const &inds) const override {
         auto fixed_inds = apply_view(inds);
         return _func_tensor->call(fixed_inds);
     }
@@ -583,7 +581,7 @@ struct FunctionTensorView : public tensor_base::FunctionTensor<T, rank> {
     /**
      * @brief Returns whether the view sees all of the data of the underlying tensor.
      */
-    bool full_view_of_underlying() const override { return _full_view; }
+    [[nodiscard]] bool full_view_of_underlying() const override { return _full_view; }
 };
 
 /**
@@ -613,14 +611,14 @@ struct KroneckerDelta {
     /**
      * Default constructs the tensor to have dimensions of zero.
      */
-    constexpr KroneckerDelta() : dim_{0} {}
+    constexpr KroneckerDelta() : _dim{0} {}
 
     /**
      * @brief Construct a new Kronecker delta tensor with the specified dimension.
      *
      * @param dim The length of one side of the tensor. The Kronecker delta tensor is square, so this will be the same for both dimensions.
      */
-    constexpr KroneckerDelta(size_t dim) : dim_{dim} {}
+    constexpr KroneckerDelta(size_t dim) : _dim{dim} {}
 
     constexpr ~KroneckerDelta() = default;
 
@@ -701,26 +699,26 @@ struct KroneckerDelta {
      *
      * @param i The axis to query. Ignored because the tensor is square.
      */
-    constexpr size_t dim(int i) const { return dim_; }
+    [[nodiscard]] constexpr size_t dim(int /*i*/) const { return _dim; }
 
     /**
      * @brief Get the dimensions of the tensor.
      */
-    constexpr Dim<2> dims() const { return Dim{dim_, dim_}; }
+    [[nodiscard]] constexpr Dim<2> dims() const { return Dim{_dim, _dim}; }
 
     /**
      * @brief Get the name of the tensor.
      *
      * The name of the tensor is always <tt>"Kronecker delta"</tt>.
      */
-    constexpr std::string name() const { return "Kronecker delta"; }
+    [[nodiscard]] constexpr std::string name() const { return "Kronecker delta"; }
 
     /**
      * @brief Checks to see if the tensor sees all of its data.
      *
      * Because this is the full tensor, this will always return true.
      */
-    constexpr bool full_view_of_underlying() const { return true; }
+    [[nodiscard]] constexpr bool full_view_of_underlying() const { return true; }
 
   private:
     /**
@@ -728,7 +726,7 @@ struct KroneckerDelta {
      *
      * @brief This is the length of one side of the tensor.
      */
-    size_t dim_;
+    size_t _dim;
 };
 
 } // namespace einsums

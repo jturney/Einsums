@@ -22,7 +22,6 @@ namespace details {
 template <typename T>
 struct IsSmartPointerHelper : public std::false_type {};
 
-#ifndef DOXYGEN
 template <typename T>
 struct IsSmartPointerHelper<std::shared_ptr<T>> : public std::true_type {};
 
@@ -31,7 +30,6 @@ struct IsSmartPointerHelper<std::unique_ptr<T>> : public std::true_type {};
 
 template <typename T>
 struct IsSmartPointerHelper<std::weak_ptr<T>> : public std::true_type {};
-#endif
 } // namespace details
 
 /**

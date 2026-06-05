@@ -3,17 +3,17 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-# We require at least C++20. However, if a higher standard is set by the user in CMAKE_CXX_STANDARD
+# We require at least C++23. However, if a higher standard is set by the user in CMAKE_CXX_STANDARD
 # that requirement has to be propagated to users of einsums as well. Ideally, users should not set
 # CMAKE_CXX_STANDARD when building einsums.
 einsums_option(
-  EINSUMS_WITH_CXX_STANDARD STRING "C++ standard to use for compiling einsums (default: 20)" "20"
+  EINSUMS_WITH_CXX_STANDARD STRING "C++ standard to use for compiling einsums (default: 23)" "23"
   ADVANCED CATEGORY "Generic"
 )
 
-if(EINSUMS_WITH_CXX_STANDARD LESS 20)
+if(EINSUMS_WITH_CXX_STANDARD LESS 23)
   einsums_error(
-    "You've set EINSUMS_WITH_CXX_STANDARD to ${EINSUMS_WITH_CXX_STANDARD}, which is less than 20 which is the minimum required by einsums"
+    "You've set EINSUMS_WITH_CXX_STANDARD to ${EINSUMS_WITH_CXX_STANDARD}, which is less than 23 which is the minimum required by einsums"
   )
 endif()
 

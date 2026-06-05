@@ -14,6 +14,7 @@ namespace detail {
 template <bool...>
 struct bool_pack;
 template <bool... bs>
+// NOLINTNEXTLINE(readability-identifier-naming)
 using all_true = std::is_same<bool_pack<bs..., true>, bool_pack<true, bs...>>;
 } // namespace detail
 
@@ -28,6 +29,7 @@ using all_true = std::is_same<bool_pack<bs..., true>, bool_pack<true, bs...>>;
  * @versionadded{1.0.0}
  */
 template <class R, class... Ts>
+// NOLINTNEXTLINE(readability-identifier-naming)
 using are_all_convertible = detail::all_true<std::is_convertible_v<Ts, R>...>;
 
 /**

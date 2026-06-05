@@ -26,9 +26,9 @@
 #include <H5Tpublic.h>
 #include <cstdio>
 #include <mutex>
-#include <source_location>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace einsums {
 
@@ -89,20 +89,8 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
 
         if (_name.size() == 0) {
             // Create temporary names.
-            char temp_name1[L_tmpnam + 1], temp_name2[L_tmpnam + 1];
-
-            std::memset(temp_name1, 0, L_tmpnam + 1);
-            std::memset(temp_name2, 0, L_tmpnam + 1);
-
-            std::tmpnam(temp_name1);
-            std::tmpnam(temp_name2);
-
-            auto temp_name1_str = std::string(temp_name1);
-            auto temp_name2_str = std::string(temp_name2);
-
-            std::filesystem::path temp_path1(std::move(temp_name1_str)), temp_path2(std::move(temp_name2_str));
-
-            auto new_temp1 = fmt::format("/tmp/{}", temp_path1.filename()), new_temp2 = fmt::format("/tmp/{}", temp_path2.filename());
+            auto new_temp1 = make_temp_path();
+            auto new_temp2 = make_temp_path();
 
             // Link the temporary dataset into a temporary location.
             auto err = H5Olink(other._dataset, _file, new_temp1.c_str(), detail::Einsums_Tensor_vars::get_singleton().link_property_list,
@@ -129,17 +117,7 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
             H5Ldelete(_file, new_temp2.c_str(), H5P_DEFAULT);
         } else {
             // Create temporary name.
-            char temp_name[L_tmpnam + 1];
-
-            std::memset(temp_name, 0, L_tmpnam + 1);
-
-            std::tmpnam(temp_name);
-
-            auto temp_name_str = std::string(temp_name);
-
-            std::filesystem::path temp_path(std::move(temp_name_str));
-
-            auto new_temp = fmt::format("/tmp/{}", temp_path.filename());
+            auto new_temp = make_temp_path();
 
             H5Dflush(other._dataset);
 
@@ -159,7 +137,7 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
     /**
      * Default move constructor.
      */
-    DiskTensor(DiskTensor &&other)
+    DiskTensor(DiskTensor &&other) noexcept
         : _tensor(std::move(other._tensor)), _constructed(other._constructed), _creation_props(other._creation_props),
           _data_type(other._data_type), _dataset(other._dataset), _dataspace(other._dataspace), _dims(std::move(other._dims)),
           _existed(other._existed), _file(other._file), _size(other._size), _strides(std::move(other._strides)) {
@@ -175,7 +153,7 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
     /**
      * Default destructor.
      */
-    ~DiskTensor() {
+    ~DiskTensor() { // NOLINT(bugprone-exception-escape)
         if (_dataset != H5I_INVALID_HID) {
             put();
             H5Dclose(_dataset);
@@ -328,7 +306,7 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
         put();
         _constructed = false;
         H5Dflush(_dataset);
-        auto err = H5Dset_extent(_dataset, (hsize_t *)new_dims.data());
+        auto err = H5Dset_extent(_dataset, reinterpret_cast<hsize_t const *>(new_dims.data()));
         if (err < 0) {
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "Could not extend the disk tensor!");
         }
@@ -346,13 +324,14 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
 
         Dim<Rank> test_dims, max_dims;
 
-        auto test_rank = H5Sget_simple_extent_dims(_dataspace, (hsize_t *)test_dims.data(), (hsize_t *)max_dims.data());
+        auto test_rank = H5Sget_simple_extent_dims(_dataspace, reinterpret_cast<hsize_t *>(test_dims.data()),
+                                                   reinterpret_cast<hsize_t *>(max_dims.data()));
 
-        if (test_rank != Rank) {
+        if (std::cmp_not_equal(test_rank, Rank)) {
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "Something went wrong when creating the resized data space!");
         }
 
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (test_dims[i] != _dims[i]) {
                 EINSUMS_THROW_EXCEPTION(std::runtime_error, "The new dimensions did not get set properly during resize!");
             }
@@ -384,20 +363,8 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
 
         if (_name.size() == 0) {
             // Create temporary names.
-            char temp_name1[L_tmpnam + 1], temp_name2[L_tmpnam + 1];
-
-            std::memset(temp_name1, 0, L_tmpnam + 1);
-            std::memset(temp_name2, 0, L_tmpnam + 1);
-
-            std::tmpnam(temp_name1);
-            std::tmpnam(temp_name2);
-
-            auto temp_name1_str = std::string(temp_name1);
-            auto temp_name2_str = std::string(temp_name2);
-
-            std::filesystem::path temp_path1(std::move(temp_name1_str)), temp_path2(std::move(temp_name2_str));
-
-            auto new_temp1 = fmt::format("/tmp/{}", temp_path1.filename()), new_temp2 = fmt::format("/tmp/{}", temp_path2.filename());
+            auto new_temp1 = make_temp_path();
+            auto new_temp2 = make_temp_path();
 
             // Link the temporary dataset into a temporary location.
             auto err = H5Olink(other._dataset, _file, new_temp1.c_str(), detail::Einsums_Tensor_vars::get_singleton().link_property_list,
@@ -424,17 +391,7 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
             H5Ldelete(_file, new_temp2.c_str(), H5P_DEFAULT);
         } else {
             // Create temporary name.
-            char temp_name[L_tmpnam + 1];
-
-            std::memset(temp_name, 0, L_tmpnam + 1);
-
-            std::tmpnam(temp_name);
-
-            auto temp_name_str = std::string(temp_name);
-
-            std::filesystem::path temp_path(std::move(temp_name_str));
-
-            auto new_temp = fmt::format("/tmp/{}", temp_path.filename());
+            auto new_temp = make_temp_path();
 
             H5Dflush(other._dataset);
 
@@ -578,7 +535,7 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
 
         // Go through counts and anything that isn't equal to 1 is copied to the dims_all
         int dims_index = 0;
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (!is_in(i, index_positions)) {
                 dims_all[dims_index] = block[i];
                 dims_index++;
@@ -591,7 +548,7 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "Could not create a copy of the data space for view creation!");
         }
 
-        auto err = H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, reinterpret_cast<hsize_t const *>(offsets.data()), NULL,
+        auto err = H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, reinterpret_cast<hsize_t const *>(offsets.data()), nullptr,
                                        reinterpret_cast<hsize_t const *>(counts.data()), reinterpret_cast<hsize_t const *>(block.data()));
 
         if (err < 0) {
@@ -644,7 +601,7 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
 
         // Go through counts and anything that isn't equal to 1 is copied to the dims_all
         int dims_index = 0;
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (!is_in(i, index_positions)) {
                 dims_all[dims_index] = block[i];
                 dims_index++;
@@ -657,7 +614,7 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "Could not create a copy of the data space for view creation!");
         }
 
-        auto err = H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, reinterpret_cast<hsize_t const *>(offsets.data()), NULL,
+        auto err = H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, reinterpret_cast<hsize_t const *>(offsets.data()), nullptr,
                                        reinterpret_cast<hsize_t const *>(counts.data()), reinterpret_cast<hsize_t const *>(block.data()));
 
         if (err < 0) {
@@ -849,7 +806,6 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
      */
     void put() {
         if (_constructed) {
-            _tensor.tensor_from_gpu();
             std::array<size_t, rank> counts;
 
             counts.fill(1);
@@ -940,7 +896,7 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
      *
      * @brief Holds the tensor type that this object views. It will be a DiskTensor in this case.
      */
-    using underlying_type = einsums::DiskTensor<T, rank>;
+    using underlying_type = einsums::DiskTensor<T, rank>; // NOLINT(readability-identifier-naming)
 
     /**
      * Construct a view of a tensor with the given dimensions and with the given dataset and dataspace.
@@ -1154,7 +1110,7 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
             EINSUMS_THROW_EXCEPTION(access_denied, "Attempting to write data to a read only disk view.");
         }
 
-        get();
+        (void)get();
 
         std::memcpy(_tensor.data(), other, _tensor.size() * sizeof(T));
 
@@ -1281,7 +1237,6 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
      */
     void put() {
         if (!_readOnly && _constructed) {
-            _tensor.tensor_from_gpu();
             H5Dwrite(_dataset, _data_type, _mem_dataspace, _dataspace, H5P_DEFAULT, _tensor.data());
         }
     }
@@ -1343,7 +1298,7 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
 
         // Go through counts and anything that isn't equal to 1 is copied to the dims_all
         int dims_index = 0;
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (!is_in(i, index_positions)) {
                 dims_all[dims_index] = block[i];
                 dims_index++;
@@ -1364,7 +1319,7 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
 
         std::vector<hsize_t> start_vec(parent_rank), count_vec(parent_rank), block_vec(parent_rank);
 
-        auto err = H5Sget_regular_hyperslab(dataspace, start_vec.data(), NULL, count_vec.data(), block_vec.data());
+        auto err = H5Sget_regular_hyperslab(dataspace, start_vec.data(), nullptr, count_vec.data(), block_vec.data());
 
         if (err < 0) {
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "Could not query properties of the dataspace!");
@@ -1381,7 +1336,7 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
             }
         }
 
-        err = H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, reinterpret_cast<hsize_t const *>(offsets.data()), NULL,
+        err = H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, reinterpret_cast<hsize_t const *>(offsets.data()), nullptr,
                                   reinterpret_cast<hsize_t const *>(counts.data()), reinterpret_cast<hsize_t const *>(block.data()));
 
         if (err < 0) {
@@ -1435,7 +1390,7 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
 
         // Go through counts and anything that isn't equal to 1 is copied to the dims_all
         int dims_index = 0;
-        for (int i = 0; i < Rank; i++) {
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (!is_in(i, index_positions)) {
                 dims_all[dims_index] = block[i];
                 dims_index++;
@@ -1456,7 +1411,7 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
 
         std::vector<hsize_t> start_vec(parent_rank), count_vec(parent_rank), block_vec(parent_rank);
 
-        auto err = H5Sget_regular_hyperslab(dataspace, start_vec.data(), NULL, count_vec.data(), block_vec.data());
+        auto err = H5Sget_regular_hyperslab(dataspace, start_vec.data(), nullptr, count_vec.data(), block_vec.data());
 
         if (err < 0) {
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "Could not query properties of the dataspace!");
@@ -1473,7 +1428,7 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
             }
         }
 
-        err = H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, reinterpret_cast<hsize_t const *>(offsets.data()), NULL,
+        err = H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, reinterpret_cast<hsize_t const *>(offsets.data()), nullptr,
                                   reinterpret_cast<hsize_t const *>(counts.data()), reinterpret_cast<hsize_t const *>(block.data()));
 
         if (err < 0) {
@@ -1680,12 +1635,8 @@ auto create_disk_tensor_like(Tensor<T, Rank> const &tensor) -> DiskTensor<T, Ran
     return DiskTensor(detail::Einsums_Tensor_vars::get_singleton().hdf5_file, tensor.name(), tensor.dims());
 }
 
-#ifndef DOXYGEN
-
 TENSOR_EXPORT(DiskTensor)
 
 TENSOR_EXPORT(DiskView)
-
-#endif
 
 } // namespace einsums

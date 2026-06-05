@@ -12,7 +12,6 @@
 
 #include <cstdarg>
 #include <cstddef>
-#include <source_location>
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
@@ -20,20 +19,20 @@
 
 namespace einsums {
 
-#ifndef DOXYGEN
 template <typename UniqueIndex, int BDim, typename BType>
-inline size_t get_dim_ranges_for_many_b(BType const &B, std::tuple<> const &B_indices) {
+inline size_t get_dim_ranges_for_many_b(BType const & /*B*/, std::tuple<> const & /*B_indices*/) {
     return 1;
 }
 
 template <typename UniqueIndex, int BDim, typename BType, typename BHead>
-inline auto get_dim_ranges_for_many_b(BType const &B, std::tuple<BHead> const &B_indices)
-    -> std::enable_if<std::is_same_v<BHead, UniqueIndex>, size_t> {
+inline auto get_dim_ranges_for_many_b(BType const &B, std::tuple<BHead> const & /*B_indices*/) -> size_t
+    requires std::is_same_v<BHead, UniqueIndex>
+{
     return B.dim(BDim);
 }
 
 template <typename UniqueIndex, int BDim, typename BType, typename BHead, typename... BIndices>
-inline size_t get_dim_ranges_for_many_b(BType const &B, std::tuple<BHead, BIndices...> const &B_indices) {
+inline size_t get_dim_ranges_for_many_b(BType const &B, std::tuple<BHead, BIndices...> const & /*B_indices*/) {
     if constexpr (std::is_same_v<BHead, UniqueIndex>) {
         return B.dim(BDim);
     } else {
@@ -42,13 +41,13 @@ inline size_t get_dim_ranges_for_many_b(BType const &B, std::tuple<BHead, BIndic
 }
 
 template <typename UniqueIndex, int ADim, typename AType, typename BType, typename... BIndices>
-inline size_t get_dim_ranges_for_many_a(AType const &A, std::tuple<> const &A_indices, BType const &B,
+inline size_t get_dim_ranges_for_many_a(AType const & /*A*/, std::tuple<> const & /*A_indices*/, BType const &B,
                                         std::tuple<BIndices...> const &B_indices) {
     return get_dim_ranges_for_many_b<UniqueIndex, 0>(B, B_indices);
 }
 
 template <typename UniqueIndex, int ADim, typename AType, typename BType, typename AHead, typename... BIndices>
-inline size_t get_dim_ranges_for_many_a(AType const &A, std::tuple<AHead> const &A_indices, BType const &B,
+inline size_t get_dim_ranges_for_many_a(AType const &A, std::tuple<AHead> const & /*A_indices*/, BType const &B,
                                         std::tuple<BIndices...> const &B_indices) {
     if constexpr (std::is_same_v<AHead, UniqueIndex>) {
         return A.dim(ADim);
@@ -58,8 +57,10 @@ inline size_t get_dim_ranges_for_many_a(AType const &A, std::tuple<AHead> const 
 }
 
 template <typename UniqueIndex, int ADim, typename AType, typename BType, typename AHead, typename... AIndices, typename... BIndices>
-inline auto get_dim_ranges_for_many_a(AType const &A, std::tuple<AHead, AIndices...> const &A_indices, BType const &B,
-                                      std::tuple<BIndices...> const &B_indices) -> std::enable_if_t<sizeof...(AIndices) != 0, size_t> {
+inline auto get_dim_ranges_for_many_a(AType const &A, std::tuple<AHead, AIndices...> const & /*A_indices*/, BType const &B,
+                                      std::tuple<BIndices...> const &B_indices) -> size_t
+    requires(sizeof...(AIndices) != 0)
+{
     if constexpr (std::is_same_v<AHead, UniqueIndex>) {
         return A.dim(ADim);
     } else {
@@ -68,7 +69,7 @@ inline auto get_dim_ranges_for_many_a(AType const &A, std::tuple<AHead, AIndices
 }
 
 template <typename UniqueIndex, int CDim, typename CType, typename AType, typename BType, typename... AIndices, typename... BIndices>
-inline size_t get_dim_ranges_for_many_c(CType const &C, std::tuple<> const &C_indices, AType const &A,
+inline size_t get_dim_ranges_for_many_c(CType const & /*C*/, std::tuple<> const & /*C_indices*/, AType const &A,
                                         std::tuple<AIndices...> const &A_indices, BType const &B,
                                         std::tuple<BIndices...> const &B_indices) {
     return get_dim_ranges_for_many_a<UniqueIndex, 0>(A, A_indices, B, B_indices);
@@ -76,7 +77,7 @@ inline size_t get_dim_ranges_for_many_c(CType const &C, std::tuple<> const &C_in
 
 template <typename UniqueIndex, int CDim, typename CType, typename AType, typename BType, typename CHead, typename... AIndices,
           typename... BIndices>
-inline size_t get_dim_ranges_for_many_c(CType const &C, std::tuple<CHead> const &C_indices, AType const &A,
+inline size_t get_dim_ranges_for_many_c(CType const &C, std::tuple<CHead> const & /*C_indices*/, AType const &A,
                                         std::tuple<AIndices...> const &A_indices, BType const &B,
                                         std::tuple<BIndices...> const &B_indices) {
     if constexpr (std::is_same_v<CHead, UniqueIndex>) {
@@ -88,17 +89,17 @@ inline size_t get_dim_ranges_for_many_c(CType const &C, std::tuple<CHead> const 
 
 template <typename UniqueIndex, int CDim, typename CType, typename AType, typename BType, typename CHead, typename... CIndices,
           typename... AIndices, typename... BIndices>
-inline auto get_dim_ranges_for_many_c(CType const &C, std::tuple<CHead, CIndices...> const &C_indices, AType const &A,
+inline auto get_dim_ranges_for_many_c(CType const &C, std::tuple<CHead, CIndices...> const & /*C_indices*/, AType const &A,
                                       std::tuple<AIndices...> const &A_indices, BType const &B, std::tuple<BIndices...> const &B_indices)
-    -> std::enable_if_t<sizeof...(CIndices) != 0, size_t> {
+    -> size_t
+    requires(sizeof...(CIndices) != 0)
+{
     if constexpr (std::is_same_v<CHead, UniqueIndex>) {
         return C.dim(CDim);
     } else {
         return get_dim_ranges_for_many_c<UniqueIndex, CDim + 1>(C, std::tuple<CIndices...>(), A, A_indices, B, B_indices);
     }
 }
-
-#endif
 
 /**
  * @brief Finds the dimensions for the requested indices.
@@ -115,7 +116,7 @@ template <typename CType, typename AType, typename BType, typename... CIndices, 
           typename... AllUniqueIndices>
 inline auto get_dim_ranges_for_many(CType const &C, std::tuple<CIndices...> const &C_indices, AType const &A,
                                     std::tuple<AIndices...> const &A_indices, BType const &B, std::tuple<BIndices...> const &B_indices,
-                                    std::tuple<AllUniqueIndices...> const &All_unique_indices) {
+                                    std::tuple<AllUniqueIndices...> const & /*All_unique_indices*/) {
     return std::array{get_dim_ranges_for_many_c<AllUniqueIndices, 0>(C, C_indices, A, A_indices, B, B_indices)...};
 }
 
@@ -178,14 +179,13 @@ EINSUMS_HOSTDEV inline void sentinel_to_indices(size_t sentinel, size_t const *u
     }
 }
 
-#ifndef DOXYGEN
 template <size_t num_unique_inds, typename stride_int1, typename stride_int2>
 void sentinel_to_indices(size_t sentinel, std::array<stride_int1, num_unique_inds> const &unique_strides,
                          std::array<stride_int2, num_unique_inds> &out_inds) {
     size_t hold = sentinel;
 
     if (unique_strides[0] < unique_strides[num_unique_inds - 1]) {
-#    pragma unroll
+#pragma unroll
         for (ptrdiff_t i = num_unique_inds - 1; i >= 0; i--) {
             if (unique_strides[i] != 0) {
                 out_inds[i] = hold / unique_strides[i];
@@ -195,7 +195,7 @@ void sentinel_to_indices(size_t sentinel, std::array<stride_int1, num_unique_ind
             }
         }
     } else {
-#    pragma unroll
+#pragma unroll
         for (ptrdiff_t i = 0; i < num_unique_inds; i++) {
             if (unique_strides[i] != 0) {
                 out_inds[i] = hold / unique_strides[i];
@@ -248,7 +248,6 @@ EINSUMS_HOSTDEV void sentinel_to_indices_mult_imp(size_t ordinal, size_t index, 
 
     sentinel_to_indices_mult_imp(ordinal, index, std::forward<Rest>(rest)...);
 }
-#endif
 
 /**
  * @brief Implementation details for the sentinel_to_indices function with multiple output lists.
@@ -301,14 +300,13 @@ EINSUMS_HOSTDEV inline void sentinel_to_indices(size_t sentinel, size_t const *i
     }
 }
 
-#ifndef DOXYGEN
 template <size_t num_indices, typename StorageType, typename... StridesInds>
     requires(sizeof...(StridesInds) % 2 == 0)
 void sentinel_to_indices(size_t sentinel, std::array<size_t, num_indices> const &index_strides, StridesInds &&...strides_inds) {
     size_t hold = sentinel;
 
     if (index_strides[0] < index_strides[num_indices - 1]) {
-#    pragma unroll
+#pragma unroll
         for (ptrdiff_t i = num_indices - 1; i >= 0; i--) {
             size_t ordinal;
             if (index_strides[i] != 0) {
@@ -321,7 +319,7 @@ void sentinel_to_indices(size_t sentinel, std::array<size_t, num_indices> const 
             sentinel_to_indices_mult_imp(ordinal, i, std::forward<StridesInds>(strides_inds)...);
         }
     } else {
-#    pragma unroll
+#pragma unroll
         for (ptrdiff_t i = 0; i < num_indices; i++) {
             size_t ordinal;
             if (index_strides[i] != 0) {
@@ -381,7 +379,6 @@ EINSUMS_HOSTDEV void sentinel_to_sentinels_mult_imp(size_t ordinal, size_t index
 
     sentinel_to_sentinels_mult_imp(ordinal, index, std::forward<Rest>(rest)...);
 }
-#endif
 
 /**
  * @brief Implementation details for the sentinel_to_sentinels function.
@@ -393,19 +390,17 @@ void sentinel_to_sentinels_mult_imp(size_t ordinal, size_t index, Stride const &
     sentinel_to_sentinels_mult_imp(ordinal, index, std::forward<Rest>(rest)...);
 }
 
-#ifndef DOXYGEN
 EINSUMS_HOSTDEV inline void sentinel_to_sentinels_zero_imp() {
 }
 
 template <typename Extra>
 EINSUMS_HOSTDEV void sentinel_to_sentinels_zero_imp(Extra &&extra) = delete;
-#endif
 
 /**
  * @brief Implementation details for the sentinel_to_sentinels function. This clears the outputs.
  */
 template <typename Stride, typename Sentinel, typename... Rest>
-EINSUMS_HOSTDEV void sentinel_to_sentinels_zero_imp(Stride &&strides, Sentinel &sentinel, Rest &&...rest) {
+EINSUMS_HOSTDEV void sentinel_to_sentinels_zero_imp(Stride && /*strides*/, Sentinel &sentinel, Rest &&...rest) {
     sentinel = 0;
 
     sentinel_to_sentinels_zero_imp(std::forward<Rest>(rest)...);
@@ -444,7 +439,6 @@ EINSUMS_HOSTDEV inline void sentinel_to_sentinels(size_t sentinel, size_t const 
     }
 }
 
-#ifndef DOXYGEN
 template <size_t num_indices, typename StorageType, typename... StridesInds>
     requires(sizeof...(StridesInds) % 2 == 0)
 void sentinel_to_sentinels(size_t sentinel, std::array<int64_t, num_indices> const &index_strides, StridesInds &&...strides_inds) {
@@ -453,7 +447,7 @@ void sentinel_to_sentinels(size_t sentinel, std::array<int64_t, num_indices> con
     sentinel_to_sentinels_zero_imp(std::forward<StridesInds>(strides_inds)...);
 
     if (index_strides[0] < index_strides[num_indices - 1]) {
-#    pragma unroll
+#pragma unroll
         for (ptrdiff_t i = num_indices - 1; i >= 0; i--) {
             size_t ordinal = hold / index_strides[i];
             hold %= index_strides[i];
@@ -461,7 +455,7 @@ void sentinel_to_sentinels(size_t sentinel, std::array<int64_t, num_indices> con
             sentinel_to_sentinels_mult_imp(ordinal, i, std::forward<StridesInds>(strides_inds)...);
         }
     } else {
-#    pragma unroll
+#pragma unroll
         for (ptrdiff_t i = 0; i < num_indices; i++) {
             size_t ordinal = hold / index_strides[i];
             hold %= index_strides[i];
@@ -494,7 +488,6 @@ void sentinel_to_sentinels(size_t sentinel, StorageType const &index_strides, St
         }
     }
 }
-#endif
 
 /**
  * @brief The opposite of sentinel_to_indices. Calculates a sentinel given indices and strides.
@@ -726,8 +719,7 @@ size_t dims_to_strides(std::vector<size_t, Alloc1> const &dims, std::vector<size
  */
 template <typename arr_type1, typename arr_type2, size_t Dims>
     requires(std::is_integral_v<arr_type1> && std::is_integral_v<arr_type2>)
-constexpr size_t dims_to_strides(std::array<arr_type1, Dims> const &dims, std::array<arr_type2, Dims> &out,
-                                 bool row_major) {
+constexpr size_t dims_to_strides(std::array<arr_type1, Dims> const &dims, std::array<arr_type2, Dims> &out, bool row_major) {
     size_t stride = 1;
 
     if (row_major) {
@@ -845,8 +837,7 @@ template <typename arr_type2, size_t Dims, typename... TupleDims>
         requires sizeof...(TupleDims) == Dims;
         requires std::is_integral_v<arr_type2>;
     }
-constexpr size_t dims_to_strides(std::tuple<TupleDims...> const &dims, std::array<arr_type2, Dims> &out,
-                                 bool row_major) {
+constexpr size_t dims_to_strides(std::tuple<TupleDims...> const &dims, std::array<arr_type2, Dims> &out, bool row_major) {
 
     if (row_major) {
         return detail::dims_to_strides<0, true>(dims, out);
@@ -877,7 +868,6 @@ constexpr size_t dims_to_strides(std::tuple<TupleDims...> const &dims, std::arra
     }
 }
 
-#ifndef DOXYGEN
 template <int __I, typename Head, typename Index>
 int compile_index_table(std::tuple<Head> const &, Index const &, int &out) {
     if constexpr (std::is_same_v<Head, Index>) {
@@ -889,8 +879,9 @@ int compile_index_table(std::tuple<Head> const &, Index const &, int &out) {
 }
 
 template <int __I, typename Head, typename... UniqueIndices, typename Index>
-auto compile_index_table(std::tuple<Head, UniqueIndices...> const &, Index const &index, int &out)
-    -> std::enable_if_t<sizeof...(UniqueIndices) != 0, int> {
+auto compile_index_table(std::tuple<Head, UniqueIndices...> const &, Index const &index, int &out) -> int
+    requires(sizeof...(UniqueIndices) != 0)
+{
     if constexpr (std::is_same_v<Head, Index>) {
         out = __I;
     } else {
@@ -904,7 +895,6 @@ void compile_index_table(std::tuple<UniqueIndices...> const &from_inds, std::tup
                          std::index_sequence<__I...>) {
     std::array<int, sizeof...(Indices)> arr{compile_index_table<0>(from_inds, std::get<__I>(to_inds), out[__I])...};
 }
-#endif
 
 /**
  * @brief Turn a list of indices into a link table.
@@ -916,7 +906,6 @@ void compile_index_table(std::tuple<UniqueIndices...> const &from_inds, std::tup
     compile_index_table(from_inds, to_inds, out, std::make_index_sequence<sizeof...(Indices)>());
 }
 
-#ifndef DOXYGEN
 template <typename... UniqueIndices, typename... Indices, size_t... __I>
 void compile_index_table(std::tuple<UniqueIndices...> const &from_inds, std::tuple<Indices...> const &to_inds,
                          std::array<int, sizeof...(Indices)> &out, std::index_sequence<__I...>) {
@@ -929,5 +918,4 @@ void compile_index_table(std::tuple<UniqueIndices...> const &from_inds, std::tup
     compile_index_table(from_inds, to_inds, out, std::make_index_sequence<sizeof...(Indices)>());
 }
 
-#endif
 } // namespace einsums

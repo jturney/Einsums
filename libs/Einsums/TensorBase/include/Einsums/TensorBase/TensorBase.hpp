@@ -13,45 +13,7 @@
 #include <memory>
 #include <mutex>
 
-#if defined(EINSUMS_COMPUTE_CODE)
-#    include <hip/hip_complex.h>
-#endif
-
 namespace einsums::tensor_base {
-
-#if defined(EINSUMS_COMPUTE_CODE)
-/**
- * @struct DeviceTypedTensor
- *
- * Represents a tensor that stores different data types on the host and the device.
- * By default, if the host stores complex<float> or complex<double>, then it converts
- * it to hipFloatComplex or hipDoubleComplex. The two types should have the same storage size.
- * @tparam HostT The host data type.
- * @tparam DevT The device type.
- */
-template <typename HostT, typename DevT = void>
-    requires(std::is_void_v<DevT> || sizeof(HostT) == sizeof(DevT))
-struct DeviceTypedTensor {
-  public:
-    /**
-     * @typedef dev_datatype
-     *
-     * @brief The data type stored on the device. This is only different if T is complex.
-     */
-    using dev_datatype =
-        std::conditional_t<std::is_void_v<DevT>,
-                           std::conditional_t<std::is_same_v<HostT, std::complex<float>>, hipFloatComplex,
-                                              std::conditional_t<std::is_same_v<HostT, std::complex<double>>, hipDoubleComplex, HostT>>,
-                           DevT>;
-
-    /**
-     * @typedef host_datatype
-     *
-     * @brief The datatype that the host sees.
-     */
-    using host_datatype = HostT;
-};
-#endif
 
 /*==================
  * Location-based.
@@ -63,15 +25,6 @@ struct DeviceTypedTensor {
  * @brief Represents a tensor only available to the core.
  */
 struct EINSUMS_EXPORT CoreTensor {};
-
-#if defined(EINSUMS_COMPUTE_CODE)
-/**
- * @struct DeviceTensor
- *
- * @brief Represents a tensor available to graphics hardware.
- */
-struct EINSUMS_EXPORT DeviceTensorBase {};
-#endif
 
 /**
  * @struct DiskTensor
@@ -93,11 +46,9 @@ struct EINSUMS_EXPORT DiskTensor {};
  */
 struct TiledTensorNoExtra {};
 
-#ifndef DOXYGEN
 // Large class. See TiledTensor.hpp for code.
 template <typename T, size_t Rank, typename TensorType>
 struct TiledTensor;
-#endif
 
 /**
  * @struct BlockTensorNoExtra

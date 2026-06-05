@@ -9,6 +9,8 @@
 #include <Einsums/TensorUtilities/ARange.hpp>
 #include <Einsums/TensorUtilities/CreateIncrementedTensor.hpp>
 
+#include <atomic>
+
 #include <Einsums/Testing.hpp>
 
 TEST_CASE("Tensor creation", "[tensor]") {
@@ -172,8 +174,8 @@ TEST_CASE("TensorView creation", "[tensor]") {
     einsums::TensorView viewA(A, einsums::Dim{3, 9});
 
     // Since we are changing the underlying datatype to float the deduction guides will not work.
-    einsums::Tensor     fA("A", 3, 3, 3);
-    einsums::TensorView fviewA(fA, einsums::Dim{3, 9});
+    einsums::Tensor           fA("A", 3, 3, 3);
+    einsums::TensorView const fviewA(fA, einsums::Dim{3, 9});
 
     for (int i = 0, ijk = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
@@ -193,7 +195,7 @@ TEST_CASE("TensorView creation", "[tensor]") {
                 REQUIRE(viewA(i, j) == A(i, j % 3, j / 3));
     }
 
-    double *array = new double[100];
+    auto *array = new double[100];
 
     for (int i = 0; i < 100; i++) {
         array[i] = i;
@@ -202,8 +204,8 @@ TEST_CASE("TensorView creation", "[tensor]") {
     // Drop down in scope to make sure the view is deleted before the array it is viewing.
     {
         TensorView<double, 2>       view1{array, Dim<2>{10, 10}}, view2{array, Dim{10, 10}, Stride{10, 1}};
-        TensorView<double, 2> const const_view1{(double const *)array, Dim<2>{10, 10}},
-            const_view2{(double const *)array, Dim{10, 10}, Stride{10, 1}};
+        TensorView<double, 2> const const_view1{static_cast<double const *>(array), Dim<2>{10, 10}},
+            const_view2{static_cast<double const *>(array), Dim{10, 10}, Stride{10, 1}};
 
         for (int i = 0; i < 10; i++) {
             for (int j = 0; j < 10; j++) {
@@ -374,13 +376,13 @@ TEST_CASE("TensorView Ranges") {
 TEST_CASE("reshape") {
     SECTION("1") {
         auto C = einsums::create_incremented_tensor("C", 10, 10, 10);
-        REQUIRE_NOTHROW(einsums::Tensor{std::move(C), "D", 10, -1});
+        REQUIRE_NOTHROW(einsums::Tensor<double, 2>(std::move(C), "D", 10, -1));
         // NOTE: At this point tensor C is no longer valid.
     }
 
     SECTION("2") {
         auto C = einsums::create_incremented_tensor("C", 10, 10, 10);
-        auto D = einsums::Tensor{std::move(C), "D", 100, 10};
+        auto D = einsums::Tensor<double, 2>(std::move(C), "D", 100, 10);
         // NOTE: At this point tensor C is no longer valid.
 
         // println(C); // <- This will cause a segfault when println tries to print the tensor elements
@@ -389,17 +391,18 @@ TEST_CASE("reshape") {
 
     SECTION("3") {
         auto C = einsums::create_incremented_tensor("C", 10, 10, 10);
-        REQUIRE_THROWS(einsums::Tensor{std::move(C), "D", -1, -1});
+        REQUIRE_THROWS(einsums::Tensor<double, 2>(std::move(C), "D", -1, -1));
         // NOTE: At this point tensor C is no longer valid.
     }
 
     SECTION("4") {
         auto C = einsums::create_incremented_tensor("C", 10, 10, 10);
-        REQUIRE_THROWS(einsums::Tensor{std::move(C), "D", 9, 9});
+        REQUIRE_THROWS(einsums::Tensor<double, 2>(std::move(C), "D", 9, 9));
         // NOTE: At this point tensor C is no longer valid.
     }
 }
 
+namespace {
 template <typename Destination, typename Source>
 void types_test() {
     using namespace einsums;
@@ -409,6 +412,7 @@ void types_test() {
 
     B = A;
 }
+} // namespace
 
 TEST_CASE("types") {
     SECTION("float->double") {
@@ -424,6 +428,7 @@ TEST_CASE("types") {
     }
 }
 
+namespace {
 template <typename T>
 void test_tensor_from_tensorview() {
     using namespace einsums;
@@ -432,33 +437,45 @@ void test_tensor_from_tensorview() {
     auto   vA = TensorView(A, Dim{2, 2}, Offset{4, 4});
     Tensor B  = vA;
 
+    // vA owns an independent mutex from A (both inherit Lockable<recursive_mutex>
+    // separately). The point of these blocks is to prove the view's lock isn't
+    // hijacked by the parent's lock — try_lock on vA must succeed even while A
+    // is held, from at least one thread. The original code did `locked++` (not
+    // atomic) inside an `omp parallel` and asserted == 1, which only held by
+    // accident: the test binary used to wrap session.run() in
+    // `#pragma omp parallel { #pragma omp single { ... } }`, so this nested
+    // parallel ran with one thread (max_active_levels=1). With the wrap dropped
+    // (for TSan cleanliness) the inner team is real, every thread races the
+    // counter, and the literal "==1" no longer means anything. Make the counter
+    // atomic and assert "at least one thread acquired the view's lock", which
+    // is what the test was actually trying to prove.
     A.lock();
 
-    int locked = 0;
+    std::atomic<int> locked = 0;
 
 #pragma omp parallel shared(locked)
     {
         if (vA.try_lock()) {
-            locked++;
+            locked.fetch_add(1, std::memory_order_relaxed);
             vA.unlock();
         }
     }
-    REQUIRE(locked == 1);
+    REQUIRE(locked.load() >= 1);
 
     A.unlock();
 
     vA.lock();
 
-    locked = 0;
+    locked.store(0);
 
 #pragma omp parallel shared(locked)
     {
         if (A.try_lock()) {
-            locked++;
+            locked.fetch_add(1, std::memory_order_relaxed);
             A.unlock();
         }
     }
-    REQUIRE(locked == 1);
+    REQUIRE(locked.load() >= 1);
 
     vA.unlock();
 
@@ -467,6 +484,7 @@ void test_tensor_from_tensorview() {
     REQUIRE(B(1, 0) == A(5, 4));
     REQUIRE(B(1, 1) == A(5, 5));
 }
+} // namespace
 
 TEST_CASE("tensor_tensorview") {
     test_tensor_from_tensorview<float>();
@@ -475,6 +493,7 @@ TEST_CASE("tensor_tensorview") {
     test_tensor_from_tensorview<std::complex<double>>();
 }
 
+namespace {
 void test_tensorview() {
     using namespace einsums;
 
@@ -488,6 +507,7 @@ void arange_test() {
 
     CHECK_THAT(A.vector_data(), Catch::Matchers::Equals(std::vector<T>{0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0}));
 }
+} // namespace
 
 TEST_CASE("arange") {
     arange_test<double>();

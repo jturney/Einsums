@@ -5,14 +5,13 @@
 
 #pragma once
 
+#include <Einsums/Config/CompilerSpecific.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
 
 #include <complex>
 #include <string>
-
-#include <Einsums/Config/CompilerSpecific.hpp>
 
 namespace einsums {
 

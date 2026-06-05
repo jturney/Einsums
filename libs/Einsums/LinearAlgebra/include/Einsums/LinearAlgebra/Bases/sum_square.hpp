@@ -8,10 +8,6 @@
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
-#ifdef EINSUMS_COMPUTE_CODE
-#include <Einsums/hipBLAS.hpp>
-#endif
-
 namespace einsums {
 namespace linear_algebra {
 namespace detail {
@@ -64,17 +60,6 @@ void impl_sum_square(einsums::detail::TensorImpl<T> const &in, RemoveComplexT<T>
     if (in.size() == 0) {
         return;
     }
-
-#ifdef EINSUMS_COMPUTE_CODE
-    if constexpr (blas::IsBlasableV<T>) {
-        if (in.get_gpu_pointer()) {
-            auto in_lock = in.gpu_cache_tensor();
-
-            blas::gpu::lassq(in.size(), in.get_gpu_pointer().get(), 1, scale, sumsq);
-            return;
-        }
-    }
-#endif
 
     if (in.is_totally_vectorable()) {
         EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using lassq.");

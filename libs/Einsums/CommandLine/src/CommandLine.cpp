@@ -1,6 +1,17 @@
+//----------------------------------------------------------------------------------------------
+// Copyright (c) The Einsums Developers. All rights reserved.
+// Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+//----------------------------------------------------------------------------------------------
+
 #include <Einsums/CommandLine/CommandLine.hpp>
 
 namespace einsums::cl {
+
+Registry &Registry::instance() {
+    static Registry R;
+    return R;
+}
+
 std::shared_ptr<ExclusiveCategory> make_yes_no(Flag &yes_flag, Flag &no_flag, bool default_value) {
     auto out = std::make_shared<ExclusiveCategory>();
 

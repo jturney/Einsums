@@ -31,6 +31,7 @@ endif()
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums Logging
+  PYBIND
   SOURCES ${LoggingSources}
   HEADERS ${LoggingHeaders}
   DEPENDENCIES ${LoggingDeps}

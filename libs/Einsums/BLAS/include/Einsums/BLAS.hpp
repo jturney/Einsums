@@ -10,11 +10,8 @@
 #include <Einsums/BLAS/Types.hpp>
 #include <Einsums/Concepts/Complex.hpp>
 
-#include <type_traits>
-
 namespace einsums::blas {
 
-#ifdef DOXYGEN
 /**
  * @class IsBlasable
  *
@@ -31,35 +28,28 @@ class IsBlasable {
   public:
     constexpr static bool value = false;
 };
-#else
-template <typename T>
-class IsBlasable {
-  public:
-    constexpr static bool value = false;
-};
 // Base instantiation.
-template<>
+template <>
 struct IsBlasable<float> {
-    public:
+  public:
     constexpr static bool value = true;
 };
 
-template<>
+template <>
 struct IsBlasable<double> {
     constexpr static bool value = true;
 };
 
 // Complex instantiation.
-template<>
+template <>
 struct IsBlasable<std::complex<float>> {
     constexpr static bool value = true;
 };
 
-template<>
+template <>
 struct IsBlasable<std::complex<double>> {
     constexpr static bool value = true;
 };
-#endif
 
 /**
  * @property IsBlasable<T>::value
@@ -91,7 +81,6 @@ constexpr bool IsBlasableV = IsBlasable<T>::value;
 template <typename T>
 concept Blasable = IsBlasableV<T>;
 
-#ifndef DOXYGEN
 namespace detail {
 // These routines take care of actually making the call to the BLAS equivalent.
 void EINSUMS_EXPORT sgemm(char transa, char transb, int_t m, int_t n, int_t k, float alpha, float const *a, int_t lda, float const *b,
@@ -105,7 +94,6 @@ void EINSUMS_EXPORT zgemm(char transa, char transb, int_t m, int_t n, int_t k, s
                           int_t lda, std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c,
                           int_t ldc);
 } // namespace detail
-#endif
 
 /**
  * @brief Perform a General Matrix Multiply (GEMM) operation.
@@ -156,7 +144,6 @@ template <typename T>
 void gemm(char transa, char transb, int_t m, int_t n, int_t k, T alpha, T const *a, int_t lda, T const *b, int_t ldb, T beta, T *c,
           int_t ldc);
 
-#if !defined(DOXYGEN)
 // These are the template specialization for the data types we support. If an unsupported data type
 // is attempted a compiler error will occur.
 template <>
@@ -184,9 +171,56 @@ inline void gemm<std::complex<double>>(char transa, char transb, int_t m, int_t 
                                        std::complex<double> beta, std::complex<double> *c, int_t ldc) {
     detail::zgemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
 }
-#endif
 
-#if !defined(DOXYGEN)
+/**
+ * @brief Perform a batch of independent GEMMs with uniform parameters.
+ *
+ * All batches share transa, transb, m, n, k, alpha, beta, lda, ldb, ldc.
+ * The data pointers are passed as arrays.
+ *
+ * @tparam T Element type (float, double, complex<float>, complex<double>).
+ */
+template <typename T>
+void gemm_batch(char transa, char transb, int_t m, int_t n, int_t k, T alpha, T const **a_array, int_t lda, T const **b_array, int_t ldb,
+                T beta, T **c_array, int_t ldc, int_t batch_count);
+
+namespace detail {
+void EINSUMS_EXPORT sgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, float alpha, float const **a_array, int_t lda,
+                                float const **b_array, int_t ldb, float beta, float **c_array, int_t ldc, int_t batch_count);
+void EINSUMS_EXPORT dgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, double alpha, double const **a_array, int_t lda,
+                                double const **b_array, int_t ldb, double beta, double **c_array, int_t ldc, int_t batch_count);
+void EINSUMS_EXPORT cgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, std::complex<float> alpha,
+                                std::complex<float> const **a_array, int_t lda, std::complex<float> const **b_array, int_t ldb,
+                                std::complex<float> beta, std::complex<float> **c_array, int_t ldc, int_t batch_count);
+void EINSUMS_EXPORT zgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, std::complex<double> alpha,
+                                std::complex<double> const **a_array, int_t lda, std::complex<double> const **b_array, int_t ldb,
+                                std::complex<double> beta, std::complex<double> **c_array, int_t ldc, int_t batch_count);
+} // namespace detail
+
+template <>
+inline void gemm_batch<float>(char transa, char transb, int_t m, int_t n, int_t k, float alpha, float const **a_array, int_t lda,
+                              float const **b_array, int_t ldb, float beta, float **c_array, int_t ldc, int_t batch_count) {
+    detail::sgemm_batch(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
+}
+template <>
+inline void gemm_batch<double>(char transa, char transb, int_t m, int_t n, int_t k, double alpha, double const **a_array, int_t lda,
+                               double const **b_array, int_t ldb, double beta, double **c_array, int_t ldc, int_t batch_count) {
+    detail::dgemm_batch(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
+}
+template <>
+inline void gemm_batch<std::complex<float>>(char transa, char transb, int_t m, int_t n, int_t k, std::complex<float> alpha,
+                                            std::complex<float> const **a_array, int_t lda, std::complex<float> const **b_array, int_t ldb,
+                                            std::complex<float> beta, std::complex<float> **c_array, int_t ldc, int_t batch_count) {
+    detail::cgemm_batch(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
+}
+template <>
+inline void gemm_batch<std::complex<double>>(char transa, char transb, int_t m, int_t n, int_t k, std::complex<double> alpha,
+                                             std::complex<double> const **a_array, int_t lda, std::complex<double> const **b_array,
+                                             int_t ldb, std::complex<double> beta, std::complex<double> **c_array, int_t ldc,
+                                             int_t batch_count) {
+    detail::zgemm_batch(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
+}
+
 namespace detail {
 void EINSUMS_EXPORT sgemv(char transa, int_t m, int_t n, float alpha, float const *a, int_t lda, float const *x, int_t incx, float beta,
                           float *y, int_t incy);
@@ -197,7 +231,6 @@ void EINSUMS_EXPORT cgemv(char transa, int_t m, int_t n, std::complex<float> alp
 void EINSUMS_EXPORT zgemv(char transa, int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
                           std::complex<double> const *x, int_t incx, std::complex<double> beta, std::complex<double> *y, int_t incy);
 } // namespace detail
-#endif
 
 /**
  * @brief Computes a matrix-vector product using a general matrix.
@@ -237,7 +270,6 @@ void EINSUMS_EXPORT zgemv(char transa, int_t m, int_t n, std::complex<double> al
 template <typename T>
 void gemv(char transa, int_t m, int_t n, T alpha, T const *a, int_t lda, T const *x, int_t incx, T beta, T *y, int_t incy);
 
-#if !defined(DOXYGEN)
 template <>
 inline void gemv<float>(char transa, int_t m, int_t n, float alpha, float const *a, int_t lda, float const *x, int_t incx, float beta,
                         float *y, int_t incy) {
@@ -263,14 +295,11 @@ inline void gemv<std::complex<double>>(char transa, int_t m, int_t n, std::compl
                                        int_t incy) {
     detail::zgemv(transa, m, n, alpha, a, lda, x, incx, beta, y, incy);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT ssyev(char job, char uplo, int_t n, float *a, int_t lda, float *w, float *work, int_t lwork) -> int_t;
 auto EINSUMS_EXPORT dsyev(char job, char uplo, int_t n, double *a, int_t lda, double *w, double *work, int_t lwork) -> int_t;
 } // namespace detail
-#endif
 
 /**
  * @brief Performs diagonalization of a symmetrix matrix.
@@ -305,7 +334,6 @@ auto EINSUMS_EXPORT dsyev(char job, char uplo, int_t n, double *a, int_t lda, do
 template <typename T>
 auto syev(char job, char uplo, int_t n, T *a, int_t lda, T *w, T *work, int_t lwork) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto syev<float>(char job, char uplo, int_t n, float *a, int_t lda, float *w, float *work, int_t lwork) -> int_t {
     return detail::ssyev(job, uplo, n, a, lda, w, work, lwork);
@@ -315,14 +343,11 @@ template <>
 inline auto syev<double>(char job, char uplo, int_t n, double *a, int_t lda, double *w, double *work, int_t lwork) -> int_t {
     return detail::dsyev(job, uplo, n, a, lda, w, work, lwork);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT ssterf(int_t n, float *d, float *e) -> int_t;
 auto EINSUMS_EXPORT dsterf(int_t n, double *d, double *e) -> int_t;
 } // namespace detail
-#endif
 
 /**
  * @brief Computes the eigenvalues of a symmetric tridiagonal matrix.
@@ -348,7 +373,6 @@ auto EINSUMS_EXPORT dsterf(int_t n, double *d, double *e) -> int_t;
 template <typename T>
 auto sterf(int_t n, T *d, T *e) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto sterf<float>(int_t n, float *d, float *e) -> int_t {
     return detail::ssterf(n, d, e);
@@ -358,9 +382,7 @@ template <>
 inline auto sterf<double>(int_t n, double *d, double *e) -> int_t {
     return detail::dsterf(n, d, e);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT sgeev(char jobvl, char jobvr, int_t n, float *a, int_t lda, std::complex<float> *w, float *vl, int_t ldvl, float *vr,
                           int_t ldvr) -> int_t;
@@ -371,7 +393,6 @@ auto EINSUMS_EXPORT cgeev(char jobvl, char jobvr, int_t n, std::complex<float> *
 auto EINSUMS_EXPORT zgeev(char jobvl, char jobvr, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *w,
                           std::complex<double> *vl, int_t ldvl, std::complex<double> *vr, int_t ldvr) -> int_t;
 } // namespace detail
-#endif
 
 // Complex version
 /**
@@ -409,7 +430,6 @@ auto EINSUMS_EXPORT zgeev(char jobvl, char jobvr, int_t n, std::complex<double> 
 template <typename T>
 auto geev(char jobvl, char jobvr, int_t n, T *a, int_t lda, AddComplexT<T> *w, T *vl, int_t ldvl, T *vr, int_t ldvr) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto geev<float>(char jobvl, char jobvr, int_t n, float *a, int_t lda, std::complex<float> *w, float *vl, int_t ldvl, float *vr,
                         int_t ldvr) -> int_t {
@@ -433,7 +453,6 @@ inline auto geev<std::complex<double>>(char jobvl, char jobvr, int_t n, std::com
                                        std::complex<double> *vl, int_t ldvl, std::complex<double> *vr, int_t ldvr) -> int_t {
     return detail::zgeev(jobvl, jobvr, n, a, lda, w, vl, ldvl, vr, ldvr);
 }
-#endif
 
 #ifndef DOXGYEN
 namespace detail {
@@ -478,7 +497,6 @@ auto EINSUMS_EXPORT zheev(char job, char uplo, int_t n, std::complex<double> *a,
 template <typename T>
 auto heev(char job, char uplo, int_t n, std::complex<T> *a, int_t lda, T *w, std::complex<T> *work, int_t lwork, T *rwork) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto heev<float>(char job, char uplo, int_t n, std::complex<float> *a, int_t lda, float *w, std::complex<float> *work, int_t lwork,
                         float *rwork) -> int_t {
@@ -490,9 +508,7 @@ inline auto heev<double>(char job, char uplo, int_t n, std::complex<double> *a, 
                          int_t lwork, double *rwork) -> int_t {
     return detail::zheev(job, uplo, n, a, lda, w, work, lwork, rwork);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT sgesv(int_t n, int_t nrhs, float *a, int_t lda, int_t *ipiv, float *b, int_t ldb) -> int_t;
 auto EINSUMS_EXPORT dgesv(int_t n, int_t nrhs, double *a, int_t lda, int_t *ipiv, double *b, int_t ldb) -> int_t;
@@ -500,7 +516,6 @@ auto EINSUMS_EXPORT cgesv(int_t n, int_t nrhs, std::complex<float> *a, int_t lda
 auto EINSUMS_EXPORT zgesv(int_t n, int_t nrhs, std::complex<double> *a, int_t lda, int_t *ipiv, std::complex<double> *b, int_t ldb)
     -> int_t;
 } // namespace detail
-#endif
 
 /**
  * @brief Solve a system of linear equations.
@@ -528,7 +543,6 @@ auto EINSUMS_EXPORT zgesv(int_t n, int_t nrhs, std::complex<double> *a, int_t ld
 template <typename T>
 auto gesv(int_t n, int_t nrhs, T *a, int_t lda, int_t *ipiv, T *b, int_t ldb) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto gesv<float>(int_t n, int_t nrhs, float *a, int_t lda, int_t *ipiv, float *b, int_t ldb) -> int_t {
     return detail::sgesv(n, nrhs, a, lda, ipiv, b, ldb);
@@ -550,9 +564,7 @@ inline auto gesv<std::complex<double>>(int_t n, int_t nrhs, std::complex<double>
                                        int_t ldb) -> int_t {
     return detail::zgesv(n, nrhs, a, lda, ipiv, b, ldb);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 void EINSUMS_EXPORT sscal(int_t n, float alpha, float *vec, int_t inc);
 void EINSUMS_EXPORT dscal(int_t n, double alpha, double *vec, int_t inc);
@@ -566,7 +578,6 @@ void EINSUMS_EXPORT drscl(int_t n, double alpha, double *vec, int_t inc);
 void EINSUMS_EXPORT csrscl(int_t n, float alpha, std::complex<float> *vec, int_t inc);
 void EINSUMS_EXPORT zdrscl(int_t n, double alpha, std::complex<double> *vec, int_t inc);
 } // namespace detail
-#endif
 
 /**
  * @brief Scales a vector by a value.
@@ -595,7 +606,6 @@ void scal(int_t n, T const alpha, T *vec, int_t inc);
 template <Complex T>
 void scal(int_t n, RemoveComplexT<T> const alpha, T *vec, int_t inc);
 
-#ifndef DOXYGEN
 template <>
 inline void scal<float>(int_t n, float const alpha, float *vec, int_t inc) {
     detail::sscal(n, alpha, vec, inc);
@@ -625,7 +635,6 @@ template <>
 inline void scal<std::complex<double>>(int_t n, double const alpha, std::complex<double> *vec, int_t inc) {
     detail::zdscal(n, alpha, vec, inc);
 }
-#endif
 
 /**
  * @brief Scales a vector by the reciprocal of a value.
@@ -655,7 +664,6 @@ void rscl(int_t n, T const alpha, T *vec, int_t inc);
 template <Complex T>
 void rscl(int_t n, RemoveComplexT<T> const alpha, T *vec, int_t inc);
 
-#ifndef DOXYGEN
 template <>
 inline void rscl<float>(int_t n, float const alpha, float *vec, int_t inc) {
     detail::srscl(n, alpha, vec, inc);
@@ -685,9 +693,7 @@ template <>
 inline void rscl<std::complex<double>>(int_t n, double const alpha, std::complex<double> *vec, int_t inc) {
     detail::zdrscl(n, alpha, vec, inc);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT sdot(int_t n, float const *x, int_t incx, float const *y, int_t incy) -> float;
 auto EINSUMS_EXPORT ddot(int_t n, double const *x, int_t incx, double const *y, int_t incy) -> double;
@@ -700,7 +706,6 @@ auto EINSUMS_EXPORT cdotc(int_t n, std::complex<float> const *x, int_t incx, std
 auto EINSUMS_EXPORT zdotc(int_t n, std::complex<double> const *x, int_t incx, std::complex<double> const *y, int_t incy)
     -> std::complex<double>;
 } // namespace detail
-#endif
 
 /**
  * Computes the dot product of two vectors. For complex vectors it is the non-conjugated dot product;
@@ -719,7 +724,6 @@ auto EINSUMS_EXPORT zdotc(int_t n, std::complex<double> const *x, int_t incx, st
 template <typename T>
 auto dot(int_t n, T const *x, int_t incx, T const *y, int_t incy) -> T;
 
-#ifndef DOXYGEN
 template <>
 inline auto dot<float>(int_t n, float const *x, int_t incx, float const *y, int_t incy) -> float {
     return detail::sdot(n, x, incx, y, incy);
@@ -741,7 +745,6 @@ inline auto dot<std::complex<double>>(int_t n, std::complex<double> const *x, in
     -> std::complex<double> {
     return detail::zdot(n, x, incx, y, incy);
 }
-#endif
 
 /**
  * Computes the dot product of two vectors. For complex vector it is the conjugated dot product;
@@ -760,7 +763,6 @@ inline auto dot<std::complex<double>>(int_t n, std::complex<double> const *x, in
 template <typename T>
 auto dotc(int_t n, T const *x, int_t incx, T const *y, int_t incy) -> T;
 
-#ifndef DOXYGEN
 template <>
 inline auto dotc<std::complex<float>>(int_t n, std::complex<float> const *x, int_t incx, std::complex<float> const *y, int_t incy)
     -> std::complex<float> {
@@ -772,9 +774,7 @@ inline auto dotc<std::complex<double>>(int_t n, std::complex<double> const *x, i
     -> std::complex<double> {
     return detail::zdotc(n, x, incx, y, incy);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 void EINSUMS_EXPORT saxpy(int_t n, float alpha_x, float const *x, int_t inc_x, float *y, int_t inc_y);
 void EINSUMS_EXPORT daxpy(int_t n, double alpha_x, double const *x, int_t inc_x, double *y, int_t inc_y);
@@ -783,7 +783,6 @@ void EINSUMS_EXPORT caxpy(int_t n, std::complex<float> alpha_x, std::complex<flo
 void EINSUMS_EXPORT zaxpy(int_t n, std::complex<double> alpha_x, std::complex<double> const *x, int_t inc_x, std::complex<double> *y,
                           int_t inc_y);
 } // namespace detail
-#endif
 
 /**
  * @brief Adds two vectors together with a scale factor.
@@ -797,7 +796,7 @@ void EINSUMS_EXPORT zaxpy(int_t n, std::complex<double> alpha_x, std::complex<do
  * @param[in] n The number of elements in the vectors.
  * @param[in] alpha_x The scale factor for the input vector.
  * @param[in] x The input vector.
- * @param[in] inc_x The skip value for the output vector. It can be negative to go in reverse, or zero to broadcast values to @p y.
+ * @param[in] inc_x The skip value for the input vector. It can be negative to go in reverse, or zero to broadcast values to @p y.
  * @param[inout] y The output vector.
  * @param[in] inc_y The skip value for the output vector. It can be negative to go in reverse, or zero to sum over the elements of @p x .
  *
@@ -806,7 +805,6 @@ void EINSUMS_EXPORT zaxpy(int_t n, std::complex<double> alpha_x, std::complex<do
 template <typename T>
 void axpy(int_t n, T alpha_x, T const *x, int_t inc_x, T *y, int_t inc_y);
 
-#ifndef DOXYGEN
 template <>
 inline void axpy<float>(int_t n, float alpha_x, float const *x, int_t inc_x, float *y, int_t inc_y) {
     detail::saxpy(n, alpha_x, x, inc_x, y, inc_y);
@@ -828,9 +826,7 @@ inline void axpy<std::complex<double>>(int_t n, std::complex<double> alpha_x, st
                                        std::complex<double> *y, int_t inc_y) {
     detail::zaxpy(n, alpha_x, x, inc_x, y, inc_y);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 void EINSUMS_EXPORT saxpby(int_t n, float alpha_x, float const *x, int_t inc_x, float b, float *y, int_t inc_y);
 void EINSUMS_EXPORT daxpby(int_t n, double alpha_x, double const *x, int_t inc_x, double b, double *y, int_t inc_y);
@@ -839,7 +835,6 @@ void EINSUMS_EXPORT caxpby(int_t n, std::complex<float> alpha_x, std::complex<fl
 void EINSUMS_EXPORT zaxpby(int_t n, std::complex<double> alpha_x, std::complex<double> const *x, int_t inc_x, std::complex<double> b,
                            std::complex<double> *y, int_t inc_y);
 } // namespace detail
-#endif
 
 /**
  * @brief Adds two vectors together with a scale factor.
@@ -853,7 +848,7 @@ void EINSUMS_EXPORT zaxpby(int_t n, std::complex<double> alpha_x, std::complex<d
  * @param[in] n The number of elements in the vectors.
  * @param[in] alpha_x The scale factor for the input vector.
  * @param[in] x The input vector.
- * @param[in] inc_x The skip value for the output vector. It can be negative to go in reverse, or zero to broadcast values to @p y.
+ * @param[in] inc_x The skip value for the input vector. It can be negative to go in reverse, or zero to broadcast values to @p y.
  * @param[in] b The scale factor for the output vector.
  * @param[inout] y The output vector.
  * @param[in] inc_y The skip value for the output vector. It can be negative to go in reverse, or zero to sum over the elements of @p x .
@@ -863,7 +858,6 @@ void EINSUMS_EXPORT zaxpby(int_t n, std::complex<double> alpha_x, std::complex<d
 template <typename T>
 void axpby(int_t n, T alpha_x, T const *x, int_t inc_x, T b, T *y, int_t inc_y);
 
-#ifndef DOXYGEN
 template <>
 inline void axpby<float>(int_t n, float alpha_x, float const *x, int_t inc_x, float b, float *y, int_t inc_y) {
     detail::saxpby(n, alpha_x, x, inc_x, b, y, inc_y);
@@ -885,9 +879,7 @@ inline void axpby<std::complex<double>>(int_t n, std::complex<double> alpha_x, s
                                         std::complex<double> b, std::complex<double> *y, int_t inc_y) {
     detail::zaxpby(n, alpha_x, x, inc_x, b, y, inc_y);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 void EINSUMS_EXPORT sger(int_t m, int_t n, float alpha, float const *x, int_t inc_x, float const *y, int_t inc_y, float *a, int_t lda);
 void EINSUMS_EXPORT dger(int_t m, int_t n, double alpha, double const *x, int_t inc_x, double const *y, int_t inc_y, double *a, int_t lda);
@@ -900,7 +892,6 @@ void EINSUMS_EXPORT cgerc(int_t m, int_t n, std::complex<float> alpha, std::comp
 void EINSUMS_EXPORT zgerc(int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *x, int_t inc_x,
                           std::complex<double> const *y, int_t inc_y, std::complex<double> *a, int_t lda);
 } // namespace detail
-#endif
 
 /**
  * Performs a rank-1 update of a general matrix.
@@ -958,7 +949,6 @@ void ger(int_t m, int_t n, T alpha, T const *x, int_t inc_x, T const *y, int_t i
 template <typename T>
 void gerc(int_t m, int_t n, T alpha, T const *x, int_t inc_x, T const *y, int_t inc_y, T *a, int_t lda);
 
-#ifndef DOXYGEN
 template <>
 inline void ger<float>(int_t m, int_t n, float alpha, float const *x, int_t inc_x, float const *y, int_t inc_y, float *a, int_t lda) {
     detail::sger(m, n, alpha, x, inc_x, y, inc_y, a, lda);
@@ -1002,16 +992,13 @@ inline void gerc<std::complex<double>>(int_t m, int_t n, std::complex<double> al
                                        std::complex<double> const *y, int_t inc_y, std::complex<double> *a, int_t lda) {
     detail::zgerc(m, n, alpha, x, inc_x, y, inc_y, a, lda);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT sgetrf(int_t, int_t, float *, int_t, int_t *) -> int_t;
 auto EINSUMS_EXPORT dgetrf(int_t, int_t, double *, int_t, int_t *) -> int_t;
 auto EINSUMS_EXPORT cgetrf(int_t, int_t, std::complex<float> *, int_t, int_t *) -> int_t;
 auto EINSUMS_EXPORT zgetrf(int_t, int_t, std::complex<double> *, int_t, int_t *) -> int_t;
 } // namespace detail
-#endif
 
 /*!
  * Computes the LU factorization of a general M-by-N matrix A
@@ -1042,7 +1029,6 @@ auto EINSUMS_EXPORT zgetrf(int_t, int_t, std::complex<double> *, int_t, int_t *)
 template <typename T>
 auto getrf(int_t m, int_t n, T *a, int_t lda, int_t *ipiv) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto getrf<float>(int_t m, int_t n, float *a, int_t lda, int_t *ipiv) -> int_t {
     return detail::sgetrf(m, n, a, lda, ipiv);
@@ -1062,16 +1048,13 @@ template <>
 inline auto getrf<std::complex<double>>(int_t m, int_t n, std::complex<double> *a, int_t lda, int_t *ipiv) -> int_t {
     return detail::zgetrf(m, n, a, lda, ipiv);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT sgetri(int_t n, float *a, int_t lda, int_t const *ipiv) -> int_t;
 auto EINSUMS_EXPORT dgetri(int_t n, double *a, int_t lda, int_t const *ipiv) -> int_t;
 auto EINSUMS_EXPORT cgetri(int_t n, std::complex<float> *a, int_t lda, int_t const *ipiv) -> int_t;
 auto EINSUMS_EXPORT zgetri(int_t n, std::complex<double> *a, int_t lda, int_t const *ipiv) -> int_t;
 } // namespace detail
-#endif
 
 /*!
  * Computes the inverse of a matrix using the LU factorization computed
@@ -1091,7 +1074,6 @@ auto EINSUMS_EXPORT zgetri(int_t n, std::complex<double> *a, int_t lda, int_t co
 template <typename T>
 auto getri(int_t n, T *a, int_t lda, int_t const *ipiv) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto getri<float>(int_t n, float *a, int_t lda, int_t const *ipiv) -> int_t {
     return detail::sgetri(n, a, lda, ipiv);
@@ -1111,16 +1093,13 @@ template <>
 inline auto getri<std::complex<double>>(int_t n, std::complex<double> *a, int_t lda, int_t const *ipiv) -> int_t {
     return detail::zgetri(n, a, lda, ipiv);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT slange(char norm_type, int_t m, int_t n, float const *A, int_t lda, float *work) -> float;
 auto EINSUMS_EXPORT dlange(char norm_type, int_t m, int_t n, double const *A, int_t lda, double *work) -> double;
 auto EINSUMS_EXPORT clange(char norm_type, int_t m, int_t n, std::complex<float> const *A, int_t lda, float *work) -> float;
 auto EINSUMS_EXPORT zlange(char norm_type, int_t m, int_t n, std::complex<double> const *A, int_t lda, double *work) -> double;
 } // namespace detail
-#endif
 
 /**
  * Computes various matrix norms. The available norms are the 1-norm, Frobenius norm, Max-abs norm, and the infinity norm.
@@ -1139,7 +1118,6 @@ auto EINSUMS_EXPORT zlange(char norm_type, int_t m, int_t n, std::complex<double
 template <typename T>
 auto lange(char norm_type, int_t m, int_t n, T const *A, int_t lda, RemoveComplexT<T> *work) -> RemoveComplexT<T>;
 
-#ifndef DOXYGEN
 template <>
 inline auto lange<float>(char norm_type, int_t m, int_t n, float const *A, int_t lda, float *work) -> float {
     return detail::slange(norm_type, m, n, A, lda, work);
@@ -1160,9 +1138,7 @@ inline auto lange<std::complex<double>>(char norm_type, int_t m, int_t n, std::c
     -> double {
     return detail::zlange(norm_type, m, n, A, lda, work);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 void EINSUMS_EXPORT   slassq(int_t n, float const *x, int_t incx, float *scale, float *sumsq);
 void EINSUMS_EXPORT   dlassq(int_t n, double const *x, int_t incx, double *scale, double *sumsq);
@@ -1173,7 +1149,6 @@ double EINSUMS_EXPORT dnrm2(int_t n, double const *x, int_t incx);
 float EINSUMS_EXPORT  scnrm2(int_t n, std::complex<float> const *x, int_t incx);
 double EINSUMS_EXPORT dznrm2(int_t n, std::complex<double> const *x, int_t incx);
 } // namespace detail
-#endif
 
 /**
  * Compute the sum of the squares of the input vector without roundoff error.
@@ -1194,7 +1169,6 @@ double EINSUMS_EXPORT dznrm2(int_t n, std::complex<double> const *x, int_t incx)
 template <typename T>
 void lassq(int_t n, T const *x, int_t incx, RemoveComplexT<T> *scale, RemoveComplexT<T> *sumsq);
 
-#ifndef DOXYGEN
 template <>
 inline void lassq<float>(int_t n, float const *x, int_t incx, float *scale, float *sumsq) {
     detail::slassq(n, x, incx, scale, sumsq);
@@ -1214,7 +1188,6 @@ template <>
 inline void lassq<std::complex<double>>(int_t n, std::complex<double> const *x, int_t incx, double *scale, double *sumsq) {
     detail::zlassq(n, x, incx, scale, sumsq);
 }
-#endif
 
 /**
  * Compute the Euclidean norm of a vector.
@@ -1231,7 +1204,6 @@ inline void lassq<std::complex<double>>(int_t n, std::complex<double> const *x, 
 template <typename T>
 RemoveComplexT<T> nrm2(int_t n, T const *x, int_t incx);
 
-#ifndef DOXYGEN
 template <>
 inline float nrm2<float>(int_t n, float const *x, int_t incx) {
     return detail::snrm2(n, x, incx);
@@ -1251,9 +1223,7 @@ template <>
 inline double nrm2<std::complex<double>>(int_t n, std::complex<double> const *x, int_t incx) {
     return detail::dznrm2(n, x, incx);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT sgesdd(char jobz, int_t m, int_t n, float *a, int_t lda, float *s, float *u, int_t ldu, float *vt, int_t ldvt) -> int_t;
 auto EINSUMS_EXPORT dgesdd(char jobz, int_t m, int_t n, double *a, int_t lda, double *s, double *u, int_t ldu, double *vt, int_t ldvt)
@@ -1263,7 +1233,6 @@ auto EINSUMS_EXPORT cgesdd(char jobz, int_t m, int_t n, std::complex<float> *a, 
 auto EINSUMS_EXPORT zgesdd(char jobz, int_t m, int_t n, std::complex<double> *a, int_t lda, double *s, std::complex<double> *u, int_t ldu,
                            std::complex<double> *vt, int_t ldvt) -> int_t;
 } // namespace detail
-#endif
 
 /**
  * Performs singular value decomposition for a matrix using the divide and conquer algorithm.
@@ -1292,7 +1261,6 @@ auto EINSUMS_EXPORT zgesdd(char jobz, int_t m, int_t n, std::complex<double> *a,
 template <typename T>
 auto gesdd(char jobz, int_t m, int_t n, T *a, int_t lda, RemoveComplexT<T> *s, T *u, int_t ldu, T *vt, int_t ldvt) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto gesdd<float>(char jobz, int_t m, int_t n, float *a, int_t lda, float *s, float *u, int_t ldu, float *vt, int_t ldvt) -> int_t {
     return detail::sgesdd(jobz, m, n, a, lda, s, u, ldu, vt, ldvt);
@@ -1315,9 +1283,7 @@ inline auto gesdd<std::complex<double>>(char jobz, int_t m, int_t n, std::comple
                                         int_t ldu, std::complex<double> *vt, int_t ldvt) -> int_t {
     return detail::zgesdd(jobz, m, n, a, lda, s, u, ldu, vt, ldvt);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT sgesvd(char jobu, char jobvt, int_t m, int_t n, float *a, int_t lda, float *s, float *u, int_t ldu, float *vt,
                            int_t ldvt, float *superb) -> int_t;
@@ -1328,7 +1294,6 @@ auto EINSUMS_EXPORT cgesvd(char jobu, char jobvt, int_t m, int_t n, std::complex
 auto EINSUMS_EXPORT zgesvd(char jobu, char jobvt, int_t m, int_t n, std::complex<double> *a, int_t lda, double *s, std::complex<double> *u,
                            int_t ldu, std::complex<double> *vt, int_t ldvt, std::complex<double> *superb) -> int_t;
 } // namespace detail
-#endif
 
 /**
  * Performs singular value decomposition for a matrix using the QR algorithm.
@@ -1359,7 +1324,6 @@ auto EINSUMS_EXPORT zgesvd(char jobu, char jobvt, int_t m, int_t n, std::complex
 template <typename T>
 auto gesvd(char jobu, char jobvt, int_t m, int_t n, T *a, int_t lda, RemoveComplexT<T> *s, T *u, int_t ldu, T *vt, int_t ldvt, T *superb);
 
-#ifndef DOXYGEN
 template <>
 inline auto gesvd<float>(char jobu, char jobvt, int_t m, int_t n, float *a, int_t lda, float *s, float *u, int_t ldu, float *vt, int_t ldvt,
                          float *superb) {
@@ -1385,7 +1349,6 @@ inline auto gesvd<std::complex<double>>(char jobu, char jobvt, int_t m, int_t n,
                                         std::complex<double> *superb) {
     return detail::zgesvd(jobu, jobvt, m, n, a, lda, s, u, ldu, vt, ldvt, superb);
 }
-#endif
 
 namespace detail {
 auto EINSUMS_EXPORT sgees(char jobvs, int_t n, float *a, int_t lda, int_t *sdim, float *wr, float *wi, float *vs, int_t ldvs) -> int_t;
@@ -1420,7 +1383,6 @@ auto EINSUMS_EXPORT zgees(char jobvs, int_t n, std::complex<double> *a, int_t ld
 template <typename T>
 auto gees(char jobvs, int_t n, T *a, int_t lda, int_t *sdim, T *wr, T *wi, T *vs, int_t ldvs) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto gees<float>(char jobvs, int_t n, float *a, int_t lda, int_t *sdim, float *wr, float *wi, float *vs, int_t ldvs) -> int_t {
     return detail::sgees(jobvs, n, a, lda, sdim, wr, wi, vs, ldvs);
@@ -1430,7 +1392,6 @@ template <>
 inline auto gees<double>(char jobvs, int_t n, double *a, int_t lda, int_t *sdim, double *wr, double *wi, double *vs, int_t ldvs) -> int_t {
     return detail::dgees(jobvs, n, a, lda, sdim, wr, wi, vs, ldvs);
 }
-#endif
 
 /**
  * Computes the Schur decomposition of a matrix.
@@ -1455,7 +1416,6 @@ inline auto gees<double>(char jobvs, int_t n, double *a, int_t lda, int_t *sdim,
 template <typename T>
 auto gees(char jobvs, int_t n, T *a, int_t lda, int_t *sdim, T *w, T *vs, int_t ldvs) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto gees<std::complex<float>>(char jobvs, int_t n, std::complex<float> *a, int_t lda, int_t *sdim, std::complex<float> *w,
                                       std::complex<float> *vs, int_t ldvs) -> int_t {
@@ -1467,9 +1427,7 @@ inline auto gees<std::complex<double>>(char jobvs, int_t n, std::complex<double>
                                        std::complex<double> *vs, int_t ldvs) -> int_t {
     return detail::zgees(jobvs, n, a, lda, sdim, w, vs, ldvs);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT strsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, float const *a, int_t lda, float const *b, int_t ldb,
                            float *c, int_t ldc, float *scale) -> int_t;
@@ -1480,7 +1438,6 @@ auto EINSUMS_EXPORT ctrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n,
 auto EINSUMS_EXPORT ztrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, std::complex<double> const *a, int_t lda,
                            std::complex<double> const *b, int_t ldb, std::complex<double> *c, int_t ldc, double *scale) -> int_t;
 } // namespace detail
-#endif
 
 /**
  * Solves a Sylvester equation. These equations look like the following.
@@ -1511,7 +1468,6 @@ template <typename T>
 auto trsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, T const *a, int_t lda, T const *b, int_t ldb, T *c, int_t ldc,
            RemoveComplexT<T> *scale) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto trsyl<float>(char trana, char tranb, int_t isgn, int_t m, int_t n, float const *a, int_t lda, float const *b, int_t ldb,
                          float *c, int_t ldc, float *scale) -> int_t {
@@ -1536,16 +1492,13 @@ inline auto trsyl<std::complex<double>>(char trana, char tranb, int_t isgn, int_
     -> int_t {
     return detail::ztrsyl(trana, tranb, isgn, m, n, a, lda, b, ldb, c, ldc, scale);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT sgeqrf(int_t m, int_t n, float *a, int_t lda, float *tau) -> int_t;
 auto EINSUMS_EXPORT dgeqrf(int_t m, int_t n, double *a, int_t lda, double *tau) -> int_t;
 auto EINSUMS_EXPORT cgeqrf(int_t m, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *tau) -> int_t;
 auto EINSUMS_EXPORT zgeqrf(int_t m, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *tau) -> int_t;
 } // namespace detail
-#endif
 
 /**
  * Set up for computing the QR decomposition of a matrix.
@@ -1572,7 +1525,6 @@ auto EINSUMS_EXPORT zgeqrf(int_t m, int_t n, std::complex<double> *a, int_t lda,
 template <typename T>
 auto geqrf(int_t m, int_t n, T *a, int_t lda, T *tau) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto geqrf<float>(int_t m, int_t n, float *a, int_t lda, float *tau) -> int_t {
     return detail::sgeqrf(m, n, a, lda, tau);
@@ -1592,16 +1544,22 @@ template <>
 inline auto geqrf<std::complex<double>>(int_t m, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *tau) -> int_t {
     return detail::zgeqrf(m, n, a, lda, tau);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT sorgqr(int_t m, int_t n, int_t k, float *a, int_t lda, float const *tau) -> int_t;
 auto EINSUMS_EXPORT dorgqr(int_t m, int_t n, int_t k, double *a, int_t lda, double const *tau) -> int_t;
 auto EINSUMS_EXPORT cungqr(int_t m, int_t n, int_t k, std::complex<float> *a, int_t lda, std::complex<float> const *tau) -> int_t;
 auto EINSUMS_EXPORT zungqr(int_t m, int_t n, int_t k, std::complex<double> *a, int_t lda, std::complex<double> const *tau) -> int_t;
+
+auto EINSUMS_EXPORT sormqr(char side, char trans, int_t m, int_t n, int_t k, float const *a, int_t lda, float const *tau, float *c,
+                           int_t ldc) -> int_t;
+auto EINSUMS_EXPORT dormqr(char side, char trans, int_t m, int_t n, int_t k, double const *a, int_t lda, double const *tau, double *c,
+                           int_t ldc) -> int_t;
+auto EINSUMS_EXPORT cunmqr(char side, char trans, int_t m, int_t n, int_t k, std::complex<float> const *a, int_t lda,
+                           std::complex<float> const *tau, std::complex<float> *c, int_t ldc) -> int_t;
+auto EINSUMS_EXPORT zunmqr(char side, char trans, int_t m, int_t n, int_t k, std::complex<double> const *a, int_t lda,
+                           std::complex<double> const *tau, std::complex<double> *c, int_t ldc) -> int_t;
 } // namespace detail
-#endif
 
 /**
  * Extract the Q matrix after a call to geqrf.
@@ -1622,7 +1580,6 @@ auto EINSUMS_EXPORT zungqr(int_t m, int_t n, int_t k, std::complex<double> *a, i
 template <typename T>
 auto orgqr(int_t m, int_t n, int_t k, T *a, int_t lda, T const *tau) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto orgqr<float>(int_t m, int_t n, int_t k, float *a, int_t lda, float const *tau) -> int_t {
     return detail::sorgqr(m, n, k, a, lda, tau);
@@ -1647,16 +1604,61 @@ inline auto ungqr<std::complex<double>>(int_t m, int_t n, int_t k, std::complex<
     -> int_t {
     return detail::zungqr(m, n, k, a, lda, tau);
 }
-#endif
 
-#ifndef DOXYGEN
+/**
+ * @brief Multiply a matrix by the orthogonal/unitary Q from geqrf without forming Q explicitly.
+ *
+ * Computes C := op(Q) * C (side='L') or C := C * op(Q) (side='R').
+ * For real types: op(Q) = Q ('N') or Q^T ('T').
+ * For complex types: op(Q) = Q ('N') or Q^H ('C').
+ *
+ * @param side 'L' or 'R'.
+ * @param trans 'N', 'T' (real), or 'C' (complex).
+ * @param m Rows of C.
+ * @param n Columns of C.
+ * @param k Number of reflectors from geqrf.
+ * @param a Householder vectors from geqrf.
+ * @param lda Leading dimension of a.
+ * @param tau Scalar factors from geqrf.
+ * @param c The m×n matrix C, overwritten on exit.
+ * @param ldc Leading dimension of c.
+ */
+template <typename T>
+auto ormqr(char side, char trans, int_t m, int_t n, int_t k, T const *a, int_t lda, T const *tau, T *c, int_t ldc) -> int_t;
+
+template <>
+inline auto ormqr<float>(char side, char trans, int_t m, int_t n, int_t k, float const *a, int_t lda, float const *tau, float *c, int_t ldc)
+    -> int_t {
+    return detail::sormqr(side, trans, m, n, k, a, lda, tau, c, ldc);
+}
+
+template <>
+inline auto ormqr<double>(char side, char trans, int_t m, int_t n, int_t k, double const *a, int_t lda, double const *tau, double *c,
+                          int_t ldc) -> int_t {
+    return detail::dormqr(side, trans, m, n, k, a, lda, tau, c, ldc);
+}
+
+template <typename T>
+auto unmqr(char side, char trans, int_t m, int_t n, int_t k, T const *a, int_t lda, T const *tau, T *c, int_t ldc) -> int_t;
+
+template <>
+inline auto unmqr<std::complex<float>>(char side, char trans, int_t m, int_t n, int_t k, std::complex<float> const *a, int_t lda,
+                                       std::complex<float> const *tau, std::complex<float> *c, int_t ldc) -> int_t {
+    return detail::cunmqr(side, trans, m, n, k, a, lda, tau, c, ldc);
+}
+
+template <>
+inline auto unmqr<std::complex<double>>(char side, char trans, int_t m, int_t n, int_t k, std::complex<double> const *a, int_t lda,
+                                        std::complex<double> const *tau, std::complex<double> *c, int_t ldc) -> int_t {
+    return detail::zunmqr(side, trans, m, n, k, a, lda, tau, c, ldc);
+}
+
 namespace detail {
 auto EINSUMS_EXPORT sgelqf(int_t m, int_t n, float *a, int_t lda, float *tau) -> int_t;
 auto EINSUMS_EXPORT dgelqf(int_t m, int_t n, double *a, int_t lda, double *tau) -> int_t;
 auto EINSUMS_EXPORT cgelqf(int_t m, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *tau) -> int_t;
 auto EINSUMS_EXPORT zgelqf(int_t m, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *tau) -> int_t;
 } // namespace detail
-#endif
 
 /**
  * Set up for computing the LQ decomposition of a matrix.
@@ -1683,7 +1685,6 @@ auto EINSUMS_EXPORT zgelqf(int_t m, int_t n, std::complex<double> *a, int_t lda,
 template <typename T>
 auto gelqf(int_t m, int_t n, T *a, int_t lda, T *tau) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto gelqf<float>(int_t m, int_t n, float *a, int_t lda, float *tau) -> int_t {
     return detail::sgelqf(m, n, a, lda, tau);
@@ -1703,16 +1704,13 @@ template <>
 inline auto gelqf<std::complex<double>>(int_t m, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *tau) -> int_t {
     return detail::zgelqf(m, n, a, lda, tau);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 auto EINSUMS_EXPORT sorglq(int_t m, int_t n, int_t k, float *a, int_t lda, float const *tau) -> int_t;
 auto EINSUMS_EXPORT dorglq(int_t m, int_t n, int_t k, double *a, int_t lda, double const *tau) -> int_t;
 auto EINSUMS_EXPORT cunglq(int_t m, int_t n, int_t k, std::complex<float> *a, int_t lda, std::complex<float> const *tau) -> int_t;
 auto EINSUMS_EXPORT zunglq(int_t m, int_t n, int_t k, std::complex<double> *a, int_t lda, std::complex<double> const *tau) -> int_t;
 } // namespace detail
-#endif
 
 /**
  * Extract the Q matrix after a call to gelqf.
@@ -1733,7 +1731,6 @@ auto EINSUMS_EXPORT zunglq(int_t m, int_t n, int_t k, std::complex<double> *a, i
 template <typename T>
 auto orglq(int_t m, int_t n, int_t k, T *a, int_t lda, T const *tau) -> int_t;
 
-#ifndef DOXYGEN
 template <>
 inline auto orglq<float>(int_t m, int_t n, int_t k, float *a, int_t lda, float const *tau) -> int_t {
     return detail::sorglq(m, n, k, a, lda, tau);
@@ -1758,16 +1755,13 @@ inline auto unglq<std::complex<double>>(int_t m, int_t n, int_t k, std::complex<
     -> int_t {
     return detail::zunglq(m, n, k, a, lda, tau);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 void EINSUMS_EXPORT scopy(int_t n, float const *x, int_t inc_x, float *y, int_t inc_y);
 void EINSUMS_EXPORT dcopy(int_t n, double const *x, int_t inc_x, double *y, int_t inc_y);
 void EINSUMS_EXPORT ccopy(int_t n, std::complex<float> const *x, int_t inc_x, std::complex<float> *y, int_t inc_y);
 void EINSUMS_EXPORT zcopy(int_t n, std::complex<double> const *x, int_t inc_x, std::complex<double> *y, int_t inc_y);
 } // namespace detail
-#endif
 
 /**
  * Copy data from one vector to another.
@@ -1785,7 +1779,6 @@ void EINSUMS_EXPORT zcopy(int_t n, std::complex<double> const *x, int_t inc_x, s
 template <typename T>
 void copy(int_t n, T const *x, int_t inc_x, T *y, int_t inc_y);
 
-#ifndef DOXYGEN
 template <>
 inline void copy<float>(int_t n, float const *x, int_t inc_x, float *y, int_t inc_y) {
     detail::scopy(n, x, inc_x, y, inc_y);
@@ -1805,14 +1798,11 @@ template <>
 inline void copy<std::complex<double>>(int_t n, std::complex<double> const *x, int_t inc_x, std::complex<double> *y, int_t inc_y) {
     detail::zcopy(n, x, inc_x, y, inc_y);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 int_t EINSUMS_EXPORT slascl(char type, int_t kl, int_t ku, float cfrom, float cto, int_t m, int_t n, float *vec, int_t lda);
 int_t EINSUMS_EXPORT dlascl(char type, int_t kl, int_t ku, double cfrom, double cto, int_t m, int_t n, double *vec, int_t lda);
 } // namespace detail
-#endif
 
 /**
  * Scales a general matrix. The scale factor is <tt> cto / cfrom </tt>, but the scale is performed without overflow/underflow.
@@ -1839,7 +1829,6 @@ int_t EINSUMS_EXPORT dlascl(char type, int_t kl, int_t ku, double cfrom, double 
 template <typename T>
 int_t lascl(char type, int_t kl, int_t ku, T cfrom, T cto, int_t m, int_t n, T *A, int_t lda);
 
-#ifndef DOXYGEN
 template <>
 inline int_t lascl<float>(char type, int_t kl, int_t ku, float cfrom, float cto, int_t m, int_t n, float *vec, int_t lda) {
     return detail::slascl(type, kl, ku, cfrom, cto, m, n, vec, lda);
@@ -1849,9 +1838,7 @@ template <>
 inline int_t lascl<double>(char type, int_t kl, int_t ku, double cfrom, double cto, int_t m, int_t n, double *vec, int_t lda) {
     return detail::dlascl(type, kl, ku, cfrom, cto, m, n, vec, lda);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 void EINSUMS_EXPORT sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, int_t incy, float *z, int_t incz);
 void EINSUMS_EXPORT ddirprod(int_t n, double alpha, double const *x, int_t incx, double const *y, int_t incy, double *z, int_t incz);
@@ -1860,7 +1847,6 @@ void EINSUMS_EXPORT cdirprod(int_t n, std::complex<float> alpha, std::complex<fl
 void EINSUMS_EXPORT zdirprod(int_t n, std::complex<double> alpha, std::complex<double> const *x, int_t incx, std::complex<double> const *y,
                              int_t incy, std::complex<double> *z, int_t incz);
 } // namespace detail
-#endif
 
 /**
  * Computes the direct product between two vectors.
@@ -1884,7 +1870,6 @@ void EINSUMS_EXPORT zdirprod(int_t n, std::complex<double> alpha, std::complex<d
 template <typename T>
 void dirprod(int_t n, T alpha, T const *x, int_t incx, T const *y, int_t incy, T *z, int_t incz);
 
-#ifndef DOXYGEN
 template <>
 inline void dirprod<float>(int_t n, float alpha, float const *x, int_t incx, float const *y, int_t incy, float *z, int_t incz) {
     detail::sdirprod(n, alpha, x, incx, y, incy, z, incz);
@@ -1906,9 +1891,7 @@ inline void dirprod<std::complex<double>>(int_t n, std::complex<double> alpha, s
                                           std::complex<double> const *y, int_t incy, std::complex<double> *z, int_t incz) {
     detail::zdirprod(n, alpha, x, incx, y, incy, z, incz);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 float EINSUMS_EXPORT  sasum(int_t n, float const *x, int_t incx);
 double EINSUMS_EXPORT dasum(int_t n, double const *x, int_t incx);
@@ -1917,7 +1900,6 @@ double EINSUMS_EXPORT dzasum(int_t n, std::complex<double> const *x, int_t incx)
 float EINSUMS_EXPORT  scsum1(int_t n, std::complex<float> const *x, int_t incx);
 double EINSUMS_EXPORT dzsum1(int_t n, std::complex<double> const *x, int_t incx);
 } // namespace detail
-#endif
 
 /**
  * Computes the sum of the absolute values of the input vector. If the vector is complex,
@@ -1935,7 +1917,6 @@ double EINSUMS_EXPORT dzsum1(int_t n, std::complex<double> const *x, int_t incx)
 template <typename T>
 RemoveComplexT<T> asum(int_t n, T const *x, int_t incx);
 
-#ifndef DOXYGEN
 template <>
 inline float asum(int_t n, float const *x, int_t incx) {
     return detail::sasum(n, x, incx);
@@ -1955,7 +1936,6 @@ template <>
 inline double asum(int_t n, std::complex<double> const *x, int_t incx) {
     return detail::dzasum(n, x, incx);
 }
-#endif
 
 /**
  * Computes the sum of the absolute values of the input vector. If the vector is complex,
@@ -1973,7 +1953,6 @@ inline double asum(int_t n, std::complex<double> const *x, int_t incx) {
 template <typename T>
 RemoveComplexT<T> sum1(int_t n, T const *x, int_t incx);
 
-#ifndef DOXYGEN
 template <>
 inline float sum1(int_t n, float const *x, int_t incx) {
     return detail::sasum(n, x, incx);
@@ -1993,14 +1972,11 @@ template <>
 inline double sum1(int_t n, std::complex<double> const *x, int_t incx) {
     return detail::dzsum1(n, x, incx);
 }
-#endif
 
-#ifndef DOXYGEN
 namespace detail {
 void EINSUMS_EXPORT clacgv(int_t n, std::complex<float> *x, int_t incx);
 void EINSUMS_EXPORT zlacgv(int_t n, std::complex<double> *x, int_t incx);
 } // namespace detail
-#endif
 
 /**
  * Take the conjugate of a vector. Does nothing if the vector is real.
@@ -2015,7 +1991,6 @@ void EINSUMS_EXPORT zlacgv(int_t n, std::complex<double> *x, int_t incx);
 template <typename T>
 void lacgv(int_t n, T *x, int_t incx);
 
-#ifndef DOXYGEN
 template <>
 inline void lacgv<float>(int_t n, float *x, int_t incx) {
     // Conjugating real values does nothing.
@@ -2035,6 +2010,690 @@ template <>
 inline void lacgv<std::complex<double>>(int_t n, std::complex<double> *x, int_t incx) {
     detail::zlacgv(n, x, incx);
 }
-#endif
+
+// ---------------------------------------------------------------------------
+// trsm
+// ---------------------------------------------------------------------------
+namespace detail {
+void EINSUMS_EXPORT strsm(char side, char uplo, char transa, char diag, int_t m, int_t n, float alpha, float const *a, int_t lda, float *b,
+                          int_t ldb);
+void EINSUMS_EXPORT dtrsm(char side, char uplo, char transa, char diag, int_t m, int_t n, double alpha, double const *a, int_t lda,
+                          double *b, int_t ldb);
+void EINSUMS_EXPORT ctrsm(char side, char uplo, char transa, char diag, int_t m, int_t n, std::complex<float> alpha,
+                          std::complex<float> const *a, int_t lda, std::complex<float> *b, int_t ldb);
+void EINSUMS_EXPORT ztrsm(char side, char uplo, char transa, char diag, int_t m, int_t n, std::complex<double> alpha,
+                          std::complex<double> const *a, int_t lda, std::complex<double> *b, int_t ldb);
+} // namespace detail
+
+template <typename T>
+void trsm(char side, char uplo, char transa, char diag, int_t m, int_t n, T alpha, T const *a, int_t lda, T *b, int_t ldb);
+
+template <>
+inline void trsm<float>(char side, char uplo, char transa, char diag, int_t m, int_t n, float alpha, float const *a, int_t lda, float *b,
+                        int_t ldb) {
+    detail::strsm(side, uplo, transa, diag, m, n, alpha, a, lda, b, ldb);
+}
+
+template <>
+inline void trsm<double>(char side, char uplo, char transa, char diag, int_t m, int_t n, double alpha, double const *a, int_t lda,
+                         double *b, int_t ldb) {
+    detail::dtrsm(side, uplo, transa, diag, m, n, alpha, a, lda, b, ldb);
+}
+
+template <>
+inline void trsm<std::complex<float>>(char side, char uplo, char transa, char diag, int_t m, int_t n, std::complex<float> alpha,
+                                      std::complex<float> const *a, int_t lda, std::complex<float> *b, int_t ldb) {
+    detail::ctrsm(side, uplo, transa, diag, m, n, alpha, a, lda, b, ldb);
+}
+
+template <>
+inline void trsm<std::complex<double>>(char side, char uplo, char transa, char diag, int_t m, int_t n, std::complex<double> alpha,
+                                       std::complex<double> const *a, int_t lda, std::complex<double> *b, int_t ldb) {
+    detail::ztrsm(side, uplo, transa, diag, m, n, alpha, a, lda, b, ldb);
+}
+
+// ---------------------------------------------------------------------------
+// potrf
+// ---------------------------------------------------------------------------
+namespace detail {
+auto EINSUMS_EXPORT spotrf(char uplo, int_t n, float *a, int_t lda) -> int_t;
+auto EINSUMS_EXPORT dpotrf(char uplo, int_t n, double *a, int_t lda) -> int_t;
+auto EINSUMS_EXPORT cpotrf(char uplo, int_t n, std::complex<float> *a, int_t lda) -> int_t;
+auto EINSUMS_EXPORT zpotrf(char uplo, int_t n, std::complex<double> *a, int_t lda) -> int_t;
+} // namespace detail
+
+template <typename T>
+auto potrf(char uplo, int_t n, T *a, int_t lda) -> int_t;
+
+template <>
+inline auto potrf<float>(char uplo, int_t n, float *a, int_t lda) -> int_t {
+    return detail::spotrf(uplo, n, a, lda);
+}
+
+template <>
+inline auto potrf<double>(char uplo, int_t n, double *a, int_t lda) -> int_t {
+    return detail::dpotrf(uplo, n, a, lda);
+}
+
+template <>
+inline auto potrf<std::complex<float>>(char uplo, int_t n, std::complex<float> *a, int_t lda) -> int_t {
+    return detail::cpotrf(uplo, n, a, lda);
+}
+
+template <>
+inline auto potrf<std::complex<double>>(char uplo, int_t n, std::complex<double> *a, int_t lda) -> int_t {
+    return detail::zpotrf(uplo, n, a, lda);
+}
+
+// ---------------------------------------------------------------------------
+// potrs
+// ---------------------------------------------------------------------------
+namespace detail {
+auto EINSUMS_EXPORT spotrs(char uplo, int_t n, int_t nrhs, float const *a, int_t lda, float *b, int_t ldb) -> int_t;
+auto EINSUMS_EXPORT dpotrs(char uplo, int_t n, int_t nrhs, double const *a, int_t lda, double *b, int_t ldb) -> int_t;
+auto EINSUMS_EXPORT cpotrs(char uplo, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, std::complex<float> *b, int_t ldb)
+    -> int_t;
+auto EINSUMS_EXPORT zpotrs(char uplo, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, std::complex<double> *b, int_t ldb)
+    -> int_t;
+} // namespace detail
+
+template <typename T>
+auto potrs(char uplo, int_t n, int_t nrhs, T const *a, int_t lda, T *b, int_t ldb) -> int_t;
+
+template <>
+inline auto potrs<float>(char uplo, int_t n, int_t nrhs, float const *a, int_t lda, float *b, int_t ldb) -> int_t {
+    return detail::spotrs(uplo, n, nrhs, a, lda, b, ldb);
+}
+
+template <>
+inline auto potrs<double>(char uplo, int_t n, int_t nrhs, double const *a, int_t lda, double *b, int_t ldb) -> int_t {
+    return detail::dpotrs(uplo, n, nrhs, a, lda, b, ldb);
+}
+
+template <>
+inline auto potrs<std::complex<float>>(char uplo, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, std::complex<float> *b,
+                                       int_t ldb) -> int_t {
+    return detail::cpotrs(uplo, n, nrhs, a, lda, b, ldb);
+}
+
+template <>
+inline auto potrs<std::complex<double>>(char uplo, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, std::complex<double> *b,
+                                        int_t ldb) -> int_t {
+    return detail::zpotrs(uplo, n, nrhs, a, lda, b, ldb);
+}
+
+// ---------------------------------------------------------------------------
+// potri
+// ---------------------------------------------------------------------------
+namespace detail {
+auto EINSUMS_EXPORT spotri(char uplo, int_t n, float *a, int_t lda) -> int_t;
+auto EINSUMS_EXPORT dpotri(char uplo, int_t n, double *a, int_t lda) -> int_t;
+auto EINSUMS_EXPORT cpotri(char uplo, int_t n, std::complex<float> *a, int_t lda) -> int_t;
+auto EINSUMS_EXPORT zpotri(char uplo, int_t n, std::complex<double> *a, int_t lda) -> int_t;
+} // namespace detail
+
+template <typename T>
+auto potri(char uplo, int_t n, T *a, int_t lda) -> int_t;
+
+template <>
+inline auto potri<float>(char uplo, int_t n, float *a, int_t lda) -> int_t {
+    return detail::spotri(uplo, n, a, lda);
+}
+
+template <>
+inline auto potri<double>(char uplo, int_t n, double *a, int_t lda) -> int_t {
+    return detail::dpotri(uplo, n, a, lda);
+}
+
+template <>
+inline auto potri<std::complex<float>>(char uplo, int_t n, std::complex<float> *a, int_t lda) -> int_t {
+    return detail::cpotri(uplo, n, a, lda);
+}
+
+template <>
+inline auto potri<std::complex<double>>(char uplo, int_t n, std::complex<double> *a, int_t lda) -> int_t {
+    return detail::zpotri(uplo, n, a, lda);
+}
+
+// ---------------------------------------------------------------------------
+// syrk
+// ---------------------------------------------------------------------------
+namespace detail {
+void EINSUMS_EXPORT ssyrk(char uplo, char trans, int_t n, int_t k, float alpha, float const *a, int_t lda, float beta, float *c, int_t ldc);
+void EINSUMS_EXPORT dsyrk(char uplo, char trans, int_t n, int_t k, double alpha, double const *a, int_t lda, double beta, double *c,
+                          int_t ldc);
+void EINSUMS_EXPORT csyrk(char uplo, char trans, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
+                          std::complex<float> beta, std::complex<float> *c, int_t ldc);
+void EINSUMS_EXPORT zsyrk(char uplo, char trans, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
+                          std::complex<double> beta, std::complex<double> *c, int_t ldc);
+} // namespace detail
+
+template <typename T>
+void syrk(char uplo, char trans, int_t n, int_t k, T alpha, T const *a, int_t lda, T beta, T *c, int_t ldc);
+
+template <>
+inline void syrk<float>(char uplo, char trans, int_t n, int_t k, float alpha, float const *a, int_t lda, float beta, float *c, int_t ldc) {
+    detail::ssyrk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc);
+}
+
+template <>
+inline void syrk<double>(char uplo, char trans, int_t n, int_t k, double alpha, double const *a, int_t lda, double beta, double *c,
+                         int_t ldc) {
+    detail::dsyrk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc);
+}
+
+template <>
+inline void syrk<std::complex<float>>(char uplo, char trans, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a,
+                                      int_t lda, std::complex<float> beta, std::complex<float> *c, int_t ldc) {
+    detail::csyrk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc);
+}
+
+template <>
+inline void syrk<std::complex<double>>(char uplo, char trans, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a,
+                                       int_t lda, std::complex<double> beta, std::complex<double> *c, int_t ldc) {
+    detail::zsyrk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc);
+}
+
+// ---------------------------------------------------------------------------
+// herk
+// ---------------------------------------------------------------------------
+namespace detail {
+void EINSUMS_EXPORT cherk(char uplo, char trans, int_t n, int_t k, float alpha, std::complex<float> const *a, int_t lda, float beta,
+                          std::complex<float> *c, int_t ldc);
+void EINSUMS_EXPORT zherk(char uplo, char trans, int_t n, int_t k, double alpha, std::complex<double> const *a, int_t lda, double beta,
+                          std::complex<double> *c, int_t ldc);
+} // namespace detail
+
+template <typename T>
+void herk(char uplo, char trans, int_t n, int_t k, RemoveComplexT<T> alpha, T const *a, int_t lda, RemoveComplexT<T> beta, T *c, int_t ldc);
+
+template <>
+inline void herk<std::complex<float>>(char uplo, char trans, int_t n, int_t k, float alpha, std::complex<float> const *a, int_t lda,
+                                      float beta, std::complex<float> *c, int_t ldc) {
+    detail::cherk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc);
+}
+
+template <>
+inline void herk<std::complex<double>>(char uplo, char trans, int_t n, int_t k, double alpha, std::complex<double> const *a, int_t lda,
+                                       double beta, std::complex<double> *c, int_t ldc) {
+    detail::zherk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc);
+}
+
+// ---------------------------------------------------------------------------
+// symm
+// ---------------------------------------------------------------------------
+namespace detail {
+void EINSUMS_EXPORT ssymm(char side, char uplo, int_t m, int_t n, float alpha, float const *a, int_t lda, float const *b, int_t ldb,
+                          float beta, float *c, int_t ldc);
+void EINSUMS_EXPORT dsymm(char side, char uplo, int_t m, int_t n, double alpha, double const *a, int_t lda, double const *b, int_t ldb,
+                          double beta, double *c, int_t ldc);
+void EINSUMS_EXPORT csymm(char side, char uplo, int_t m, int_t n, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
+                          std::complex<float> const *b, int_t ldb, std::complex<float> beta, std::complex<float> *c, int_t ldc);
+void EINSUMS_EXPORT zsymm(char side, char uplo, int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
+                          std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc);
+} // namespace detail
+
+template <typename T>
+void symm(char side, char uplo, int_t m, int_t n, T alpha, T const *a, int_t lda, T const *b, int_t ldb, T beta, T *c, int_t ldc);
+
+template <>
+inline void symm<float>(char side, char uplo, int_t m, int_t n, float alpha, float const *a, int_t lda, float const *b, int_t ldb,
+                        float beta, float *c, int_t ldc) {
+    detail::ssymm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+template <>
+inline void symm<double>(char side, char uplo, int_t m, int_t n, double alpha, double const *a, int_t lda, double const *b, int_t ldb,
+                         double beta, double *c, int_t ldc) {
+    detail::dsymm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+template <>
+inline void symm<std::complex<float>>(char side, char uplo, int_t m, int_t n, std::complex<float> alpha, std::complex<float> const *a,
+                                      int_t lda, std::complex<float> const *b, int_t ldb, std::complex<float> beta, std::complex<float> *c,
+                                      int_t ldc) {
+    detail::csymm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+template <>
+inline void symm<std::complex<double>>(char side, char uplo, int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *a,
+                                       int_t lda, std::complex<double> const *b, int_t ldb, std::complex<double> beta,
+                                       std::complex<double> *c, int_t ldc) {
+    detail::zsymm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+// ---------------------------------------------------------------------------
+// hemm
+// ---------------------------------------------------------------------------
+namespace detail {
+void EINSUMS_EXPORT chemm(char side, char uplo, int_t m, int_t n, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
+                          std::complex<float> const *b, int_t ldb, std::complex<float> beta, std::complex<float> *c, int_t ldc);
+void EINSUMS_EXPORT zhemm(char side, char uplo, int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
+                          std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc);
+} // namespace detail
+
+template <typename T>
+void hemm(char side, char uplo, int_t m, int_t n, T alpha, T const *a, int_t lda, T const *b, int_t ldb, T beta, T *c, int_t ldc);
+
+template <>
+inline void hemm<std::complex<float>>(char side, char uplo, int_t m, int_t n, std::complex<float> alpha, std::complex<float> const *a,
+                                      int_t lda, std::complex<float> const *b, int_t ldb, std::complex<float> beta, std::complex<float> *c,
+                                      int_t ldc) {
+    detail::chemm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+template <>
+inline void hemm<std::complex<double>>(char side, char uplo, int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *a,
+                                       int_t lda, std::complex<double> const *b, int_t ldb, std::complex<double> beta,
+                                       std::complex<double> *c, int_t ldc) {
+    detail::zhemm(side, uplo, m, n, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+// ---------------------------------------------------------------------------
+// sygv
+// ---------------------------------------------------------------------------
+namespace detail {
+auto EINSUMS_EXPORT ssygv(int_t itype, char jobz, char uplo, int_t n, float *a, int_t lda, float *b, int_t ldb, float *w) -> int_t;
+auto EINSUMS_EXPORT dsygv(int_t itype, char jobz, char uplo, int_t n, double *a, int_t lda, double *b, int_t ldb, double *w) -> int_t;
+} // namespace detail
+
+template <typename T>
+auto sygv(int_t itype, char jobz, char uplo, int_t n, T *a, int_t lda, T *b, int_t ldb, T *w) -> int_t;
+
+template <>
+inline auto sygv<float>(int_t itype, char jobz, char uplo, int_t n, float *a, int_t lda, float *b, int_t ldb, float *w) -> int_t {
+    return detail::ssygv(itype, jobz, uplo, n, a, lda, b, ldb, w);
+}
+
+template <>
+inline auto sygv<double>(int_t itype, char jobz, char uplo, int_t n, double *a, int_t lda, double *b, int_t ldb, double *w) -> int_t {
+    return detail::dsygv(itype, jobz, uplo, n, a, lda, b, ldb, w);
+}
+
+// ---------------------------------------------------------------------------
+// hegv
+// ---------------------------------------------------------------------------
+namespace detail {
+auto EINSUMS_EXPORT chegv(int_t itype, char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *b, int_t ldb,
+                          float *w) -> int_t;
+auto EINSUMS_EXPORT zhegv(int_t itype, char jobz, char uplo, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *b,
+                          int_t ldb, double *w) -> int_t;
+} // namespace detail
+
+template <typename T>
+auto hegv(int_t itype, char jobz, char uplo, int_t n, std::complex<T> *a, int_t lda, std::complex<T> *b, int_t ldb, T *w) -> int_t;
+
+template <>
+inline auto hegv<float>(int_t itype, char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *b, int_t ldb,
+                        float *w) -> int_t {
+    return detail::chegv(itype, jobz, uplo, n, a, lda, b, ldb, w);
+}
+
+template <>
+inline auto hegv<double>(int_t itype, char jobz, char uplo, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *b, int_t ldb,
+                         double *w) -> int_t {
+    return detail::zhegv(itype, jobz, uplo, n, a, lda, b, ldb, w);
+}
+
+// ---------------------------------------------------------------------------
+// syevd
+// ---------------------------------------------------------------------------
+namespace detail {
+auto EINSUMS_EXPORT ssyevd(char jobz, char uplo, int_t n, float *a, int_t lda, float *w) -> int_t;
+auto EINSUMS_EXPORT dsyevd(char jobz, char uplo, int_t n, double *a, int_t lda, double *w) -> int_t;
+} // namespace detail
+
+template <typename T>
+auto syevd(char jobz, char uplo, int_t n, T *a, int_t lda, T *w) -> int_t;
+
+template <>
+inline auto syevd<float>(char jobz, char uplo, int_t n, float *a, int_t lda, float *w) -> int_t {
+    return detail::ssyevd(jobz, uplo, n, a, lda, w);
+}
+
+template <>
+inline auto syevd<double>(char jobz, char uplo, int_t n, double *a, int_t lda, double *w) -> int_t {
+    return detail::dsyevd(jobz, uplo, n, a, lda, w);
+}
+
+// ---------------------------------------------------------------------------
+// heevd
+// ---------------------------------------------------------------------------
+namespace detail {
+auto EINSUMS_EXPORT cheevd(char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, float *w) -> int_t;
+auto EINSUMS_EXPORT zheevd(char jobz, char uplo, int_t n, std::complex<double> *a, int_t lda, double *w) -> int_t;
+} // namespace detail
+
+template <typename T>
+auto heevd(char jobz, char uplo, int_t n, std::complex<T> *a, int_t lda, T *w) -> int_t;
+
+template <>
+inline auto heevd<float>(char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, float *w) -> int_t {
+    return detail::cheevd(jobz, uplo, n, a, lda, w);
+}
+
+template <>
+inline auto heevd<double>(char jobz, char uplo, int_t n, std::complex<double> *a, int_t lda, double *w) -> int_t {
+    return detail::zheevd(jobz, uplo, n, a, lda, w);
+}
+
+// ---------------------------------------------------------------------------
+// getrs
+// ---------------------------------------------------------------------------
+namespace detail {
+auto EINSUMS_EXPORT sgetrs(char trans, int_t n, int_t nrhs, float const *a, int_t lda, int_t const *ipiv, float *b, int_t ldb) -> int_t;
+auto EINSUMS_EXPORT dgetrs(char trans, int_t n, int_t nrhs, double const *a, int_t lda, int_t const *ipiv, double *b, int_t ldb) -> int_t;
+auto EINSUMS_EXPORT cgetrs(char trans, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, int_t const *ipiv,
+                           std::complex<float> *b, int_t ldb) -> int_t;
+auto EINSUMS_EXPORT zgetrs(char trans, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, int_t const *ipiv,
+                           std::complex<double> *b, int_t ldb) -> int_t;
+} // namespace detail
+
+template <typename T>
+auto getrs(char trans, int_t n, int_t nrhs, T const *a, int_t lda, int_t const *ipiv, T *b, int_t ldb) -> int_t;
+
+template <>
+inline auto getrs<float>(char trans, int_t n, int_t nrhs, float const *a, int_t lda, int_t const *ipiv, float *b, int_t ldb) -> int_t {
+    return detail::sgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb);
+}
+
+template <>
+inline auto getrs<double>(char trans, int_t n, int_t nrhs, double const *a, int_t lda, int_t const *ipiv, double *b, int_t ldb) -> int_t {
+    return detail::dgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb);
+}
+
+template <>
+inline auto getrs<std::complex<float>>(char trans, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, int_t const *ipiv,
+                                       std::complex<float> *b, int_t ldb) -> int_t {
+    return detail::cgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb);
+}
+
+template <>
+inline auto getrs<std::complex<double>>(char trans, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, int_t const *ipiv,
+                                        std::complex<double> *b, int_t ldb) -> int_t {
+    return detail::zgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb);
+}
+
+// ---------------------------------------------------------------------------
+// gels
+// ---------------------------------------------------------------------------
+namespace detail {
+auto EINSUMS_EXPORT sgels(char trans, int_t m, int_t n, int_t nrhs, float *a, int_t lda, float *b, int_t ldb) -> int_t;
+auto EINSUMS_EXPORT dgels(char trans, int_t m, int_t n, int_t nrhs, double *a, int_t lda, double *b, int_t ldb) -> int_t;
+auto EINSUMS_EXPORT cgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<float> *a, int_t lda, std::complex<float> *b, int_t ldb)
+    -> int_t;
+auto EINSUMS_EXPORT zgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<double> *a, int_t lda, std::complex<double> *b, int_t ldb)
+    -> int_t;
+} // namespace detail
+
+template <typename T>
+auto gels(char trans, int_t m, int_t n, int_t nrhs, T *a, int_t lda, T *b, int_t ldb) -> int_t;
+
+template <>
+inline auto gels<float>(char trans, int_t m, int_t n, int_t nrhs, float *a, int_t lda, float *b, int_t ldb) -> int_t {
+    return detail::sgels(trans, m, n, nrhs, a, lda, b, ldb);
+}
+
+template <>
+inline auto gels<double>(char trans, int_t m, int_t n, int_t nrhs, double *a, int_t lda, double *b, int_t ldb) -> int_t {
+    return detail::dgels(trans, m, n, nrhs, a, lda, b, ldb);
+}
+
+template <>
+inline auto gels<std::complex<float>>(char trans, int_t m, int_t n, int_t nrhs, std::complex<float> *a, int_t lda, std::complex<float> *b,
+                                      int_t ldb) -> int_t {
+    return detail::cgels(trans, m, n, nrhs, a, lda, b, ldb);
+}
+
+template <>
+inline auto gels<std::complex<double>>(char trans, int_t m, int_t n, int_t nrhs, std::complex<double> *a, int_t lda,
+                                       std::complex<double> *b, int_t ldb) -> int_t {
+    return detail::zgels(trans, m, n, nrhs, a, lda, b, ldb);
+}
+
+// ---------------------------------------------------------------------------
+// swap
+// ---------------------------------------------------------------------------
+namespace detail {
+void EINSUMS_EXPORT sswap(int_t n, float *x, int_t incx, float *y, int_t incy);
+void EINSUMS_EXPORT dswap(int_t n, double *x, int_t incx, double *y, int_t incy);
+void EINSUMS_EXPORT cswap(int_t n, std::complex<float> *x, int_t incx, std::complex<float> *y, int_t incy);
+void EINSUMS_EXPORT zswap(int_t n, std::complex<double> *x, int_t incx, std::complex<double> *y, int_t incy);
+} // namespace detail
+
+template <typename T>
+void swap(int_t n, T *x, int_t incx, T *y, int_t incy);
+
+template <>
+inline void swap<float>(int_t n, float *x, int_t incx, float *y, int_t incy) {
+    detail::sswap(n, x, incx, y, incy);
+}
+
+template <>
+inline void swap<double>(int_t n, double *x, int_t incx, double *y, int_t incy) {
+    detail::dswap(n, x, incx, y, incy);
+}
+
+template <>
+inline void swap<std::complex<float>>(int_t n, std::complex<float> *x, int_t incx, std::complex<float> *y, int_t incy) {
+    detail::cswap(n, x, incx, y, incy);
+}
+
+template <>
+inline void swap<std::complex<double>>(int_t n, std::complex<double> *x, int_t incx, std::complex<double> *y, int_t incy) {
+    detail::zswap(n, x, incx, y, incy);
+}
+
+// ---------------------------------------------------------------------------
+// iamax
+// ---------------------------------------------------------------------------
+namespace detail {
+auto EINSUMS_EXPORT isamax(int_t n, float const *x, int_t incx) -> int_t;
+auto EINSUMS_EXPORT idamax(int_t n, double const *x, int_t incx) -> int_t;
+auto EINSUMS_EXPORT icamax(int_t n, std::complex<float> const *x, int_t incx) -> int_t;
+auto EINSUMS_EXPORT izamax(int_t n, std::complex<double> const *x, int_t incx) -> int_t;
+} // namespace detail
+
+template <typename T>
+auto iamax(int_t n, T const *x, int_t incx) -> int_t;
+
+template <>
+inline auto iamax<float>(int_t n, float const *x, int_t incx) -> int_t {
+    return detail::isamax(n, x, incx);
+}
+
+template <>
+inline auto iamax<double>(int_t n, double const *x, int_t incx) -> int_t {
+    return detail::idamax(n, x, incx);
+}
+
+template <>
+inline auto iamax<std::complex<float>>(int_t n, std::complex<float> const *x, int_t incx) -> int_t {
+    return detail::icamax(n, x, incx);
+}
+
+template <>
+inline auto iamax<std::complex<double>>(int_t n, std::complex<double> const *x, int_t incx) -> int_t {
+    return detail::izamax(n, x, incx);
+}
+
+// ---------------------------------------------------------------------------
+// trsv
+// ---------------------------------------------------------------------------
+namespace detail {
+void EINSUMS_EXPORT strsv(char uplo, char trans, char diag, int_t n, float const *a, int_t lda, float *x, int_t incx);
+void EINSUMS_EXPORT dtrsv(char uplo, char trans, char diag, int_t n, double const *a, int_t lda, double *x, int_t incx);
+void EINSUMS_EXPORT ctrsv(char uplo, char trans, char diag, int_t n, std::complex<float> const *a, int_t lda, std::complex<float> *x,
+                          int_t incx);
+void EINSUMS_EXPORT ztrsv(char uplo, char trans, char diag, int_t n, std::complex<double> const *a, int_t lda, std::complex<double> *x,
+                          int_t incx);
+} // namespace detail
+
+template <typename T>
+void trsv(char uplo, char trans, char diag, int_t n, T const *a, int_t lda, T *x, int_t incx);
+
+template <>
+inline void trsv<float>(char uplo, char trans, char diag, int_t n, float const *a, int_t lda, float *x, int_t incx) {
+    detail::strsv(uplo, trans, diag, n, a, lda, x, incx);
+}
+
+template <>
+inline void trsv<double>(char uplo, char trans, char diag, int_t n, double const *a, int_t lda, double *x, int_t incx) {
+    detail::dtrsv(uplo, trans, diag, n, a, lda, x, incx);
+}
+
+template <>
+inline void trsv<std::complex<float>>(char uplo, char trans, char diag, int_t n, std::complex<float> const *a, int_t lda,
+                                      std::complex<float> *x, int_t incx) {
+    detail::ctrsv(uplo, trans, diag, n, a, lda, x, incx);
+}
+
+template <>
+inline void trsv<std::complex<double>>(char uplo, char trans, char diag, int_t n, std::complex<double> const *a, int_t lda,
+                                       std::complex<double> *x, int_t incx) {
+    detail::ztrsv(uplo, trans, diag, n, a, lda, x, incx);
+}
+
+// ---------------------------------------------------------------------------
+// syr2k
+// ---------------------------------------------------------------------------
+namespace detail {
+void EINSUMS_EXPORT ssyr2k(char uplo, char trans, int_t n, int_t k, float alpha, float const *a, int_t lda, float const *b, int_t ldb,
+                           float beta, float *c, int_t ldc);
+void EINSUMS_EXPORT dsyr2k(char uplo, char trans, int_t n, int_t k, double alpha, double const *a, int_t lda, double const *b, int_t ldb,
+                           double beta, double *c, int_t ldc);
+void EINSUMS_EXPORT csyr2k(char uplo, char trans, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
+                           std::complex<float> const *b, int_t ldb, std::complex<float> beta, std::complex<float> *c, int_t ldc);
+void EINSUMS_EXPORT zsyr2k(char uplo, char trans, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
+                           std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc);
+} // namespace detail
+
+template <typename T>
+void syr2k(char uplo, char trans, int_t n, int_t k, T alpha, T const *a, int_t lda, T const *b, int_t ldb, T beta, T *c, int_t ldc);
+
+template <>
+inline void syr2k<float>(char uplo, char trans, int_t n, int_t k, float alpha, float const *a, int_t lda, float const *b, int_t ldb,
+                         float beta, float *c, int_t ldc) {
+    detail::ssyr2k(uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+template <>
+inline void syr2k<double>(char uplo, char trans, int_t n, int_t k, double alpha, double const *a, int_t lda, double const *b, int_t ldb,
+                          double beta, double *c, int_t ldc) {
+    detail::dsyr2k(uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+template <>
+inline void syr2k<std::complex<float>>(char uplo, char trans, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a,
+                                       int_t lda, std::complex<float> const *b, int_t ldb, std::complex<float> beta, std::complex<float> *c,
+                                       int_t ldc) {
+    detail::csyr2k(uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+template <>
+inline void syr2k<std::complex<double>>(char uplo, char trans, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a,
+                                        int_t lda, std::complex<double> const *b, int_t ldb, std::complex<double> beta,
+                                        std::complex<double> *c, int_t ldc) {
+    detail::zsyr2k(uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+// ---------------------------------------------------------------------------
+// her2k
+// ---------------------------------------------------------------------------
+namespace detail {
+void EINSUMS_EXPORT cher2k(char uplo, char trans, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
+                           std::complex<float> const *b, int_t ldb, float beta, std::complex<float> *c, int_t ldc);
+void EINSUMS_EXPORT zher2k(char uplo, char trans, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
+                           std::complex<double> const *b, int_t ldb, double beta, std::complex<double> *c, int_t ldc);
+} // namespace detail
+
+template <typename T>
+void her2k(char uplo, char trans, int_t n, int_t k, T alpha, T const *a, int_t lda, T const *b, int_t ldb, RemoveComplexT<T> beta, T *c,
+           int_t ldc);
+
+template <>
+inline void her2k<std::complex<float>>(char uplo, char trans, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a,
+                                       int_t lda, std::complex<float> const *b, int_t ldb, float beta, std::complex<float> *c, int_t ldc) {
+    detail::cher2k(uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+template <>
+inline void her2k<std::complex<double>>(char uplo, char trans, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a,
+                                        int_t lda, std::complex<double> const *b, int_t ldb, double beta, std::complex<double> *c,
+                                        int_t ldc) {
+    detail::zher2k(uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+// ---------------------------------------------------------------------------
+// trtrs
+// ---------------------------------------------------------------------------
+namespace detail {
+auto EINSUMS_EXPORT strtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, float const *a, int_t lda, float *b, int_t ldb) -> int_t;
+auto EINSUMS_EXPORT dtrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, double const *a, int_t lda, double *b, int_t ldb)
+    -> int_t;
+auto EINSUMS_EXPORT ctrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda,
+                           std::complex<float> *b, int_t ldb) -> int_t;
+auto EINSUMS_EXPORT ztrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda,
+                           std::complex<double> *b, int_t ldb) -> int_t;
+} // namespace detail
+
+template <typename T>
+auto trtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, T const *a, int_t lda, T *b, int_t ldb) -> int_t;
+
+template <>
+inline auto trtrs<float>(char uplo, char trans, char diag, int_t n, int_t nrhs, float const *a, int_t lda, float *b, int_t ldb) -> int_t {
+    return detail::strtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb);
+}
+
+template <>
+inline auto trtrs<double>(char uplo, char trans, char diag, int_t n, int_t nrhs, double const *a, int_t lda, double *b, int_t ldb)
+    -> int_t {
+    return detail::dtrtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb);
+}
+
+template <>
+inline auto trtrs<std::complex<float>>(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda,
+                                       std::complex<float> *b, int_t ldb) -> int_t {
+    return detail::ctrtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb);
+}
+
+template <>
+inline auto trtrs<std::complex<double>>(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda,
+                                        std::complex<double> *b, int_t ldb) -> int_t {
+    return detail::ztrtrs(uplo, trans, diag, n, nrhs, a, lda, b, ldb);
+}
+
+// ---------------------------------------------------------------------------
+// trtri
+// ---------------------------------------------------------------------------
+namespace detail {
+auto EINSUMS_EXPORT strtri(char uplo, char diag, int_t n, float *a, int_t lda) -> int_t;
+auto EINSUMS_EXPORT dtrtri(char uplo, char diag, int_t n, double *a, int_t lda) -> int_t;
+auto EINSUMS_EXPORT ctrtri(char uplo, char diag, int_t n, std::complex<float> *a, int_t lda) -> int_t;
+auto EINSUMS_EXPORT ztrtri(char uplo, char diag, int_t n, std::complex<double> *a, int_t lda) -> int_t;
+} // namespace detail
+
+template <typename T>
+auto trtri(char uplo, char diag, int_t n, T *a, int_t lda) -> int_t;
+
+template <>
+inline auto trtri<float>(char uplo, char diag, int_t n, float *a, int_t lda) -> int_t {
+    return detail::strtri(uplo, diag, n, a, lda);
+}
+
+template <>
+inline auto trtri<double>(char uplo, char diag, int_t n, double *a, int_t lda) -> int_t {
+    return detail::dtrtri(uplo, diag, n, a, lda);
+}
+
+template <>
+inline auto trtri<std::complex<float>>(char uplo, char diag, int_t n, std::complex<float> *a, int_t lda) -> int_t {
+    return detail::ctrtri(uplo, diag, n, a, lda);
+}
+
+template <>
+inline auto trtri<std::complex<double>>(char uplo, char diag, int_t n, std::complex<double> *a, int_t lda) -> int_t {
+    return detail::ztrtri(uplo, diag, n, a, lda);
+}
 
 } // namespace einsums::blas

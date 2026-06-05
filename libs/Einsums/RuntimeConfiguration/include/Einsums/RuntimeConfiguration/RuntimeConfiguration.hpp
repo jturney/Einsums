@@ -28,8 +28,9 @@ namespace einsums {
  * @brief Add a function to the list of startup functions to add module-specific command line arguments.
  *
  * @versionadded{1.0.0}
+ * @versionchanged{2.0.0} parameter changed to const&
  */
-EINSUMS_EXPORT void register_arguments(std::function<void()>);
+EINSUMS_EXPORT void register_arguments(std::function<void()> const &);
 
 /**
  * @struct RuntimeConfiguration
@@ -78,6 +79,8 @@ struct EINSUMS_EXPORT RuntimeConfiguration {
 
     RuntimeConfiguration() = delete;
 
+    [[nodiscard]] std::vector<std::string> const &unknown_arguments() const { return _unknown_arguments; }
+
   private:
     /**
      * Currently sets reasonable defaults for the development of Einsums.
@@ -93,7 +96,9 @@ struct EINSUMS_EXPORT RuntimeConfiguration {
      *
      * @versionadded{1.0.0}
      */
-    std::vector<std::string> parse_command_line(std::function<void()> const &user_command_line = {});
+    void parse_command_line(std::function<void()> const &user_command_line = {});
+
+    std::vector<std::string> _unknown_arguments;
 };
 
 } // namespace einsums

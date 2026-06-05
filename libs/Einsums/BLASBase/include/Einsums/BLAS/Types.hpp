@@ -36,9 +36,9 @@ using int_t   = long long int;
 using euint_t = unsigned long long int;
 using elong   = long long int;
 #elif defined(EINSUMS_BLAS_INTERFACE_LP64)
-using int_t   = int;
-using euint_t = unsigned int;
-using elong   = long int;
+using int_t   = int;          // NOLINT(readability-identifier-naming)
+using euint_t = unsigned int; // NOLINT(readability-identifier-naming)
+using elong   = long int;     // NOLINT(readability-identifier-naming)
 #else
 #    warning Unknown BLAS interface type. Defaulting to LP64.
 using int_t   = int;

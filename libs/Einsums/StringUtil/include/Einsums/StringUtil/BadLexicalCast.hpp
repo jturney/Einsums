@@ -7,7 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
-#include <stdexcept>
+#include <typeinfo>
 
 namespace einsums {
 

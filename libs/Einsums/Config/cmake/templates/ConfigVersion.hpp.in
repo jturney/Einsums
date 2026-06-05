@@ -34,8 +34,22 @@
 /// development branch, ``-rcX`` on a release candidate.
 #define EINSUMS_VERSION_TAG "@EINSUMS_VERSION_TAG@"
 
+// EINSUMS_BUILD_TIMESTAMP was previously set at CMake configure time and
+// baked into this header. That caused the header to change content on every
+// regen, cascading a recompile of every Einsums translation unit.
+// build_date_time() now reads __DATE__ __TIME__ directly from Version.cpp,
+// so the timestamp only updates when that one TU is compiled.
+
 #if !defined(EINSUMS_HAVE_GIT_COMMIT)
 #    define EINSUMS_HAVE_GIT_COMMIT "unknown"
+#endif
+
+#if !defined(EINSUMS_HAVE_GIT_BRANCH)
+#    define EINSUMS_HAVE_GIT_BRANCH "unknown"
+#endif
+
+#if !defined(EINSUMS_HAVE_GIT_DIRTY)
+#    define EINSUMS_HAVE_GIT_DIRTY 0
 #endif
 
 ///////////////////////////////////////////////////////////////////////////////

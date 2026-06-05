@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <Einsums/Config/ExportDefinitions.hpp>
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -41,7 +43,7 @@ template <>
 constexpr uint16_t byteswap<uint16_t>(uint16_t value) noexcept {
     union {
         uint16_t whole;
-        uint8_t  bytes[2];
+        uint8_t  bytes[2]; // NOLINT
     } convert;
 
     convert.whole = value;
@@ -53,7 +55,7 @@ template <>
 constexpr uint32_t byteswap<uint32_t>(uint32_t value) noexcept {
     union {
         uint32_t whole;
-        uint8_t  bytes[4];
+        uint8_t  bytes[4]; // NOLINT
     } convert;
 
     convert.whole = value;
@@ -66,7 +68,7 @@ template <>
 constexpr int32_t byteswap<int32_t>(int32_t value) noexcept {
     union {
         int32_t whole;
-        uint8_t bytes[4];
+        uint8_t bytes[4]; // NOLINT
     } convert;
 
     convert.whole = value;
@@ -75,14 +77,14 @@ constexpr int32_t byteswap<int32_t>(int32_t value) noexcept {
     return convert.whole;
 }
 
-typedef struct NodeConstants {
+struct NodeConstants {
     ptrdiff_t start, end, inc, offDiffAB;
     size_t    lda, ldb;
     uint16_t  indexA, indexB, has_next;
     uint16_t  pad;
-} NodeConstants;
+};
 
-typedef struct TransposeConstants {
+struct TransposeConstants {
     int32_t dim;
     int32_t numThreads;
     size_t  innerStrideA;
@@ -91,22 +93,22 @@ typedef struct TransposeConstants {
     int32_t selectedLoopOrderId;
     int32_t conjA;
     int32_t pad;
-} TransposeConstants;
+};
 
 /**
  * File header specification for transpose files.
  */
-typedef struct FileHeader {
-    char magic[4];
-    char version[4];
+struct FileHeader {
+    char magic[4];   // NOLINT
+    char version[4]; // NOLINT
 
     uint32_t checksum;
-} FileHeader;
+};
 
-void setupFile(std::FILE *fp);
+EINSUMS_EXPORT void setup_file(std::FILE *fp);
 
-uint32_t computeChecksum(std::FILE *fp);
+EINSUMS_EXPORT uint32_t compute_checksum(std::FILE *fp);
 
-int verifyFile(std::FILE *fp);
+EINSUMS_EXPORT int verify_file(std::FILE *fp);
 
 } // namespace hptt

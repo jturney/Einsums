@@ -12,7 +12,6 @@
 
 namespace einsums {
 
-#ifndef DOXYGEN
 // Forward declarations
 template <typename T, size_t Rank, typename Alloc>
 struct GeneralTensor;
@@ -21,12 +20,6 @@ namespace disk {
 template <typename T, size_t Rank>
 struct Tensor;
 }
-
-#    if defined(EINSUMS_COMPUTE_CODE)
-template <typename T, size_t Rank>
-struct DeviceTensor;
-#    endif
-#endif
 
 /********************************
  *      Inline definitions      *
@@ -81,6 +74,10 @@ constexpr inline bool IsTypedTensorV = requires {
 template <typename D, ptrdiff_t Rank = -1>
 constexpr inline bool IsRankTensorV = requires {
     std::remove_cvref_t<D>::Rank;
+    // Tensors with a dynamic-rank sentinel (RuntimeTensor / RuntimeTensorView)
+    // have a ``Rank`` member but it does not represent a compile-time rank.
+    // Exclude them from the static rank concept.
+    requires std::remove_cvref_t<D>::Rank != dynamic_rank;
     requires(Rank == -1) || (Rank == std::remove_cvref_t<D>::Rank);
 };
 
@@ -168,24 +165,32 @@ constexpr inline bool IsTRLTensorV = IsTypedTensorV<D, T> && IsRankTensorV<D, Ra
 template <typename D>
 constexpr inline bool IsIncoreTensorV = std::is_base_of_v<einsums::tensor_base::CoreTensor, D>;
 
-#if defined(EINSUMS_COMPUTE_CODE)
+namespace detail {
+
+/// Detect if a type has a static constexpr bool IsDeviceTensor member (GeneralTensor with DeviceAllocator).
+template <typename T, typename = void>
+struct has_device_tensor_flag : std::false_type {};
+
+template <typename T>
+struct has_device_tensor_flag<T, std::void_t<decltype(T::IsDeviceTensor)>> : std::bool_constant<T::IsDeviceTensor> {};
+
+} // namespace detail
+
 /**
  * @property IsDeviceTensorV
  *
  * @brief Checks to see if the tensor is available to graphics hardware.
  *
- * Checks the tensor against tensor_base::DeviceTensor.
+ * Detects via the ``IsDeviceTensor`` static member that GeneralTensor /
+ * GeneralRuntimeTensor expose when instantiated with
+ * ``gpu::DeviceAllocator<T>``.
  *
  * @tparam D The tensor to check.
  *
  * @versionadded{1.0.0}
  */
 template <typename D>
-constexpr inline bool IsDeviceTensorV = std::is_base_of_v<einsums::tensor_base::DeviceTensorBase, D>;
-#elif !defined(DOXYGEN)
-template <typename D>
-constexpr inline bool IsDeviceTensorV = false;
-#endif
+constexpr inline bool IsDeviceTensorV = detail::has_device_tensor_flag<std::remove_cvref_t<D>>::value;
 
 /**
  * @property IsDiskTensorV
@@ -241,11 +246,19 @@ constexpr inline bool IsViewOfV = requires {
  * @versionadded{1.0.0}
  */
 template <typename D>
-constexpr inline bool IsBasicTensorV = requires(D tensor) {
-    tensor.data();
-    tensor.stride(0);
-    tensor.strides();
-};
+constexpr inline bool IsBasicTensorV =
+    // A structured (tiled) tensor is NOT a basic (single-buffer) tensor, even if
+    // it exposes data()/stride()/strides() for graph capture (TiledRuntimeTensor
+    // returns null/advisory values). Excluding it here keeps a tiled tensor from
+    // matching basic-tensor overloads that would dereference its absent whole-
+    // tensor buffer, and resolves the basic-vs-tiled overload ambiguity in
+    // linear_algebra. Plain TiledTensor never satisfied this (no flat data()),
+    // so existing types are unaffected.
+    !std::is_base_of_v<einsums::tensor_base::TiledTensorNoExtra, std::remove_cvref_t<D>> && requires(D tensor) {
+        tensor.data();
+        tensor.stride(0);
+        tensor.strides();
+    };
 
 /**
  * @property IsCollectedTensorV
@@ -321,7 +334,6 @@ constexpr inline bool IsBufferableTensorV = requires(D &d, D const &cd) {
     { cd.get() };
 };
 
-#ifndef DOXYGEN
 namespace detail {
 
 template <size_t index>
@@ -358,7 +370,6 @@ constexpr bool test_fastsubscript(std::index_sequence<ints...> const &) {
 }
 
 } // namespace detail
-#endif
 
 /**
  * @property IsFunctionTensorV
@@ -743,13 +754,17 @@ constexpr inline bool IsSameUnderlyingV = (std::is_same_v<typename First::ValueT
  *
  * @brief Checks to see if the tensors have the same rank.
  *
+ * Treats any operand whose @c Rank equals @ref einsums::dynamic_rank as a
+ * compile-time wildcard (no compile-time mismatch can be inferred against
+ * it). Runtime-rank checks remain the caller's responsibility.
+ *
  * @tparam First The first tensor.
  * @tparam Rest The rest of the tensors
  *
  * @versionadded{1.0.0}
  */
 template <typename First, typename... Rest>
-constexpr inline bool IsSameRankV = ((First::Rank == Rest::Rank) && ...);
+constexpr inline bool IsSameRankV = ((First::Rank == dynamic_rank || Rest::Rank == dynamic_rank || First::Rank == Rest::Rank) && ...);
 
 /**
  * @property IsSameUnderlyingAndRankV
@@ -1415,12 +1430,10 @@ struct RemoveView {
     using base_type = D;
 };
 
-#ifndef DOXYGEN
 template <TensorViewConcept D>
 struct RemoveView<D> {
     using base_type = typename D::underlying_type;
 };
-#endif
 
 /**
  * @typedef RemoveViewT
@@ -1466,19 +1479,10 @@ GeneralTensor<NewT, NewRank, std::allocator<NewT>> create_basic_tensor_like(Tens
     return GeneralTensor<NewT, NewRank, std::allocator<NewT>>();
 }
 
-#ifndef DOXYGEN
-#    if defined(EINSUMS_COMPUTE_CODE)
-template <typename NewT, size_t NewRank, DeviceTensorConcept TensorType>
-DeviceTensor<NewT, NewRank> create_basic_tensor_like(TensorType const &tensor) {
-    return DeviceTensor<NewT, NewRank>();
-}
-#    endif
-
 template <typename NewT, size_t NewRank, DiskTensorConcept TensorType>
 disk::Tensor<NewT, NewRank> create_basic_tensor_like(TensorType const &) {
     return disk::Tensor<NewT, NewRank>();
 }
-#endif
 
 } // namespace detail
 
@@ -1528,12 +1532,10 @@ struct ValueType {
     using type = D;
 };
 
-#ifndef DOXYGEN
 template <TensorConcept D>
 struct ValueType<D> {
     using type = typename D::ValueType;
 };
-#endif
 
 /**
  * @typedef ValueTypeT
@@ -1561,10 +1563,8 @@ using ValueTypeT = typename ValueType<D>::type;
 template <typename D>
 constexpr size_t TensorRank = 0;
 
-#ifndef DOXYGEN
 template <TensorConcept D>
 constexpr size_t TensorRank<D> = D::Rank;
-#endif
 
 /**
  * @struct BiggestType
@@ -1586,12 +1586,10 @@ struct BiggestType {
         std::conditional_t<(sizeof(First) > sizeof(typename BiggestType<Rest...>::type)), First, typename BiggestType<Rest...>::type>;
 };
 
-#ifndef DOXYGEN
 template <typename First>
 struct BiggestType<First> {
     using type = First;
 };
-#endif
 
 /**
  * @typedef BiggestTypeT
@@ -1615,7 +1613,6 @@ using BiggestTypeT = typename BiggestType<Args...>::type;
 template <typename D>
 struct LocationTensorBaseOf {};
 
-#ifndef DOXYGEN
 template <CoreTensorConcept D>
 struct LocationTensorBaseOf<D> {
     using type = tensor_base::CoreTensor;
@@ -1625,14 +1622,6 @@ template <DiskTensorConcept D>
 struct LocationTensorBaseOf<D> {
     using type = tensor_base::DiskTensor;
 };
-
-#    if defined(EINSUMS_COMPUTE_CODE)
-template <DeviceTensorConcept D>
-struct LocationTensorBaseOf<D> {
-    using type = tensor_base::DeviceTensorBase;
-};
-#    endif
-#endif
 
 /**
  * @typedef LocationTensorBaseOfT
@@ -1649,7 +1638,6 @@ template <typename D>
 using LocationTensorBaseOfT = typename LocationTensorBaseOf<D>::type;
 
 namespace detail {
-#ifndef DOXYGEN
 template <typename T>
 constexpr size_t count_of_type() {
     return 0;
@@ -1663,7 +1651,6 @@ constexpr size_t count_of_type(/*Args... args*/) {
         return count_of_type<T, Args...>();
     }
 }
-#endif
 } // namespace detail
 
 /**
@@ -1718,21 +1705,5 @@ concept NumOfType = detail::count_of_type<T, std::remove_cvref_t<Args>...>() == 
  */
 template <typename T, typename... Args>
 concept AllOfType = (std::is_same_v<T, std::remove_cvref_t<Args>> && ... && true);
-
-#ifdef EINSUMS_COMPUTE_CODE
-/**
- * @typedef DevDatatype
- *
- * Complex types on the GPU are not the same as the standard C++ complex types. This type
- * converts between them. If a real type is passed, nothing happens. If a complex type is
- * passed, this resolves to the HIP equivalent.
- *
- * @tparam T The type to convert.
- *
- * @versionadded{1.0.0}
- */
-template <typename T>
-using DevDatatype = typename tensor_base::DeviceTypedTensor<T>::dev_datatype;
-#endif
 
 } // namespace einsums

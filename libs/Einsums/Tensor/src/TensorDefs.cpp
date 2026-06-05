@@ -5,24 +5,19 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/GPU/DeviceVector.hpp>
 #include <Einsums/Tensor/BlockTensor.hpp>
 #include <Einsums/Tensor/DiskTensor.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
+#include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 #include <Einsums/Tensor/TiledTensor.hpp>
-
-#ifdef EINSUMS_COMPUTE_CODE
-#    include <hip/hip_common.h>
-#    include <hip/hip_runtime.h>
-#    include <hip/hip_runtime_api.h>
-#endif
 
 #include <H5Lpublic.h>
 #include <complex>
 #include <memory>
 #include <string>
-#include <vector>
 
 namespace einsums {
 
@@ -52,13 +47,30 @@ template class GeneralRuntimeTensor<double, BufferAllocator<double>>;
 template class GeneralRuntimeTensor<std::complex<float>, BufferAllocator<std::complex<float>>>;
 template class GeneralRuntimeTensor<std::complex<double>, BufferAllocator<std::complex<double>>>;
 
+// NB: no explicit instantiations for gpu::DeviceAllocator — the device
+// runtime variant has host-only members gated with static_assert /
+// requires, so explicit class instantiation would force-instantiate
+// those bodies and fail. Code that uses RuntimeGPUTensor<T> picks it
+// up via implicit instantiation, mirroring GeneralTensor's pattern.
+
 template class RuntimeTensorView<float>;
 template class RuntimeTensorView<double>;
 template class RuntimeTensorView<std::complex<float>>;
 template class RuntimeTensorView<std::complex<double>>;
+
+template class TiledRuntimeTensor<float>;
+template class TiledRuntimeTensor<double>;
+template class TiledRuntimeTensor<std::complex<float>>;
+template class TiledRuntimeTensor<std::complex<double>>;
+
+template class TiledRuntimeTensorView<float>;
+template class TiledRuntimeTensorView<double>;
+template class TiledRuntimeTensorView<std::complex<float>>;
+template class TiledRuntimeTensorView<std::complex<double>>;
 #endif
 
-static bool verify_path(std::string const &path) {
+namespace {
+bool verify_path(std::string const &path) {
     if (path.size() == 0) {
         return true;
     }
@@ -70,6 +82,7 @@ static bool verify_path(std::string const &path) {
 
     return true;
 }
+} // namespace
 
 namespace detail {
 

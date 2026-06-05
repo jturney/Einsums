@@ -5,9 +5,7 @@
 
 #pragma once
 
-namespace einsums {
-
-namespace design_pats {
+namespace einsums::design_pats {
 
 /**
  * @class Lockable
@@ -36,26 +34,26 @@ class Lockable {
      *
      * @versionadded{1.0.0}
      */
-    Lockable(Lockable<Mutex> const &) : lock_{} {};
+    Lockable(Lockable<Mutex> const &) : lock_{} {} // NOLINT(modernize-use-default-member-init)
 
     /**
      * @brief Lock the object.
      *
      * @versionadded{1.0.0}
      */
-    void lock() const { this->lock_.lock(); }
+    void lock() const { lock_.lock(); }
 
     /**
      * @brief Try to lock the object. Returns true if successful.
      *
      * @versionadded{1.0.0}
      */
-    bool try_lock() const { return this->lock_.try_lock(); }
+    bool try_lock() const { return lock_.try_lock(); }
 
     /**
      * @brief Unlock the object.
      */
-    void unlock() const { this->lock_.unlock(); }
+    void unlock() const { lock_.unlock(); }
 
     /**
      * @brief Get the underlying mutex.
@@ -72,9 +70,7 @@ class Lockable {
      *
      * @versionadded{1.0.0}
      */
-    mutable Mutex lock_;
+    mutable Mutex lock_{};
 };
 
-} // namespace design_pats
-
-} // namespace einsums
+} // namespace einsums::design_pats

@@ -100,39 +100,29 @@ template <typename T>
 
 // Smart-pointer dispatcher with prefactors.
 // Fires when at least one of A, B, or C is a SmartPointer.
-template <bool ConjA = false, bool ConjB = false,
-          typename AType, typename BType, typename CType, typename U,
-          typename... CIndices, typename... AIndices, typename... BIndices>
-    requires(
-        (SmartPointer<AType> || SmartPointer<BType> || SmartPointer<CType>) &&
-        TensorConcept<detail::deref_type_t<AType>> &&
-        TensorConcept<detail::deref_type_t<BType>> &&
-        requires {
-            requires InSamePlace<detail::deref_type_t<AType>, detail::deref_type_t<BType>>;
-            requires InSamePlace<detail::deref_type_t<AType>, detail::deref_type_t<CType>>
-                      || !TensorConcept<detail::deref_type_t<CType>>;
-        }
-    )
-void einsum(U const C_prefactor, std::tuple<CIndices...> const &C_indices, CType *C,
-            U const AB_prefactor,
-            std::tuple<AIndices...> const &A_indices, AType const &A,
-            std::tuple<BIndices...> const &B_indices, BType const &B,
+template <bool ConjA = false, bool ConjB = false, typename AType, typename BType, typename CType, typename U, typename... CIndices,
+          typename... AIndices, typename... BIndices>
+    requires((SmartPointer<AType> || SmartPointer<BType> || SmartPointer<CType>) && TensorConcept<detail::deref_type_t<AType>> &&
+             TensorConcept<detail::deref_type_t<BType>> &&
+             requires {
+                 requires InSamePlace<detail::deref_type_t<AType>, detail::deref_type_t<BType>>;
+                 requires InSamePlace<detail::deref_type_t<AType>, detail::deref_type_t<CType>> ||
+                              !TensorConcept<detail::deref_type_t<CType>>;
+             })
+void einsum(U const C_prefactor, std::tuple<CIndices...> const &C_indices, CType *C, U const AB_prefactor,
+            std::tuple<AIndices...> const &A_indices, AType const &A, std::tuple<BIndices...> const &B_indices, BType const &B,
             detail::AlgorithmChoice *algorithm_choice = nullptr) {
-    einsum<ConjA, ConjB>(C_prefactor, C_indices, detail::auto_deref_c(C),
-                         AB_prefactor, A_indices, detail::auto_deref(A),
-                         B_indices, detail::auto_deref(B), algorithm_choice);
+    einsum<ConjA, ConjB>(C_prefactor, C_indices, detail::auto_deref_c(C), AB_prefactor, A_indices, detail::auto_deref(A), B_indices,
+                         detail::auto_deref(B), algorithm_choice);
 }
 
 // Default-prefactor dispatcher: handles all pointer/non-pointer combinations,
 // including containers (batched einsum). No TensorConcept constraint here —
 // the forwarded with-prefactors call is responsible for type checking.
-template <bool ConjA = false, bool ConjB = false,
-          typename AType, typename BType, typename CType,
-          typename... CIndices, typename... AIndices, typename... BIndices>
-void einsum(std::tuple<CIndices...> const &C_indices, CType *C,
-            std::tuple<AIndices...> const &A_indices, AType const &A,
-            std::tuple<BIndices...> const &B_indices, BType const &B,
-            detail::AlgorithmChoice *algorithm_choice = nullptr) {
+template <bool ConjA = false, bool ConjB = false, typename AType, typename BType, typename CType, typename... CIndices,
+          typename... AIndices, typename... BIndices>
+void einsum(std::tuple<CIndices...> const &C_indices, CType *C, std::tuple<AIndices...> const &A_indices, AType const &A,
+            std::tuple<BIndices...> const &B_indices, BType const &B, detail::AlgorithmChoice *algorithm_choice = nullptr) {
     einsum<ConjA, ConjB>(0, C_indices, C, 1, A_indices, A, B_indices, B, algorithm_choice);
 }
 

@@ -25,6 +25,7 @@ set(TensorUtilitiesSources)
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums TensorUtilities
+  PYBIND
   SOURCES ${TensorUtilitiesSources}
   HEADERS ${TensorUtilitiesHeaders}
   DEPENDENCIES

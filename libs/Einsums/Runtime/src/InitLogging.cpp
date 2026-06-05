@@ -9,8 +9,15 @@
 #include <Einsums/Runtime/Detail/InitLogging.hpp>
 #include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
 
+#if defined(EINSUMS_HAVE_PROFILER)
+#    include <Einsums/Profile/LogSink.hpp>
+#    include <Einsums/Profile/Profile.hpp>
+#endif
+
 #include <fmt/format.h>
 
+#include <chrono>
+#include <ctime>
 #include <spdlog/pattern_formatter.h>
 #include <spdlog/spdlog.h>
 #include <string>
@@ -34,7 +41,9 @@ struct ThreadIdFormatterFlag : spdlog::custom_flag_formatter {
         spdlog_format_thread_id(getpid(), msg, tm_time, dest);
     }
 
-    std::unique_ptr<custom_flag_formatter> clone() const override { return spdlog::details::make_unique<ThreadIdFormatterFlag>(); }
+    [[nodiscard]] std::unique_ptr<custom_flag_formatter> clone() const override {
+        return spdlog::details::make_unique<ThreadIdFormatterFlag>();
+    }
 };
 
 struct ParentThreadIdFormatterFlag : spdlog::custom_flag_formatter {
@@ -47,7 +56,9 @@ struct ParentThreadIdFormatterFlag : spdlog::custom_flag_formatter {
 #endif
     }
 
-    std::unique_ptr<custom_flag_formatter> clone() const override { return spdlog::details::make_unique<ParentThreadIdFormatterFlag>(); }
+    [[nodiscard]] std::unique_ptr<custom_flag_formatter> clone() const override {
+        return spdlog::details::make_unique<ParentThreadIdFormatterFlag>();
+    }
 };
 
 /*
@@ -59,7 +70,9 @@ struct HostnameFormatterFlag : spdlog::custom_flag_formatter {
         dest.append(std::string("localhost"));
     }
 
-    std::unique_ptr<custom_flag_formatter> clone() const override { return spdlog::details::make_unique<HostnameFormatterFlag>(); }
+    [[nodiscard]] std::unique_ptr<custom_flag_formatter> clone() const override {
+        return spdlog::details::make_unique<HostnameFormatterFlag>();
+    }
 };
 
 void init_logging(RuntimeConfiguration &config) {
@@ -83,6 +96,43 @@ void init_logging(RuntimeConfiguration &config) {
     // Set log level
     get_einsums_logger().set_level(static_cast<spdlog::level::level_enum>(global_config.get_int("log-level")));
     // global_config.attach(handle_loglevel_changes);
+
+#if defined(EINSUMS_HAVE_PROFILER)
+    {
+        auto *srv = profile::Profiler::instance().server();
+        if (srv) {
+            auto profiler_sink_ptr = std::make_shared<profile::ProfilerSinkMt>(&srv->log_queue());
+            profiler_sink_ptr->set_level(spdlog::level::trace);
+            sinks.push_back(profiler_sink_ptr);
+
+            // Wire println output to the profiler TCP server
+            auto *output_q = &srv->output_queue();
+            einsums::print::set_output_sink([output_q](std::string const &msg) {
+                profile::LogEntry entry;
+                entry.level = 2; // INFO-equivalent
+
+                // Format timestamp as ISO 8601 with milliseconds
+                auto    now        = std::chrono::system_clock::now();
+                auto    time_t_val = std::chrono::system_clock::to_time_t(now);
+                auto    ms         = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+                std::tm tm{};
+#    ifdef _WIN32
+                localtime_s(&tm, &time_t_val);
+#    else
+                localtime_r(&time_t_val, &tm);
+#    endif
+                char ts_buf[32];
+                std::strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%dT%H:%M:%S", &tm);
+                char ms_buf[8];
+                std::snprintf(ms_buf, sizeof(ms_buf), ".%03d", static_cast<int>(ms.count()));
+                entry.timestamp = std::string(ts_buf) + ms_buf;
+
+                entry.message = msg;
+                output_q->push(std::move(entry));
+            });
+        }
+    }
+#endif
 
     EINSUMS_LOG_INFO("logging submodule has been initialized");
     EINSUMS_LOG_INFO("log level: {} (0=TRACE,1=DEBUG,2=INFO,3=WARN,4=ERROR,5=CRITICAL)", global_config.get_int("log-level"));
