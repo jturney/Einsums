@@ -14,6 +14,7 @@ What's New
 ----------
 * Tensor storage order can now be selected by users. The default is still row-major, but this can be changed when you
   configure Einsums or can be passed as a command line option.
+
     * As of 2.0.0, we recommend sticking to row major, as the generic tensor contraction routine has not been optimized
       for column major.
 * Tensors are now based on a common implementation class to reduce the amount of code that needs to be maintained.
@@ -22,6 +23,7 @@ What's New
 * General eigendecomposition also only accepts complex tensors as outputs now.
 * HPTT plans can be saved and loaded in files. You no longer have to worry about wasting a bunch of time waiting for
   the better search methods. You can compile the transpose once and then load it in for subsequent program executions.
+
     * To support this, a new `compile_permute` function has been created, as well as overloads for the `permute` function
       that take plans as inputs.
     * The files are raw binary files to hopefully reduce the file size.

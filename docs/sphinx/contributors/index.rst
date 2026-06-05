@@ -1,3 +1,5 @@
+:orphan:
+
 ..
     ----------------------------------------------------------------------------------------------
      Copyright (c) The Einsums Developers. All rights reserved.
@@ -16,4 +18,5 @@ some of our more useful tools.
     :maxdepth: 2
 
     Coding Style <style>
+    Documenting the Code <documenting>
     Creating Module Skeletons <create_module_skeleton>

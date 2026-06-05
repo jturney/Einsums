@@ -14,4 +14,3 @@ This is the main part of the Einsums project. It contains all of the core functi
     :maxdepth: 2
 
     /libs/Einsums/modules
-    /libs/Einsums/todo
