@@ -1,4 +1,4 @@
-name: docs-env
+name: einsums-dev
 channels:
   - conda-forge
   - nodefaults
@@ -7,6 +7,7 @@ dependencies:
   - sphinx-design
   - sphinx-copybutton
   - sphinxcontrib-bibtex
+  - sphinxcontrib-qthelp
   - six
   - pydata-sphinx-theme
   - doxygen

@@ -58,59 +58,30 @@ jobs:
           key: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-${{ github.sha }}
           restore-keys: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-
 
-      # From https://github.com/conda-incubator/setup-miniconda?tab=readme-ov-file#caching-environments
-      - name: Setup Miniforge
-        uses: conda-incubator/setup-miniconda@v3
+      - name: Set up conda environment
+        uses: ./src/.github/actions/setup-conda-env
         with:
-          miniforge-version: latest
-          activate-environment: einsums-env
-          conda-remove-defaults: "true"
-
-      - name: Install ruamel.yaml
-        run: |
-          conda install -c conda-forge ruamel.yaml
-
-      - name: Merge Conda YAML files
-        working-directory: src/devtools/conda-envs
-        run: |
-          pwd
-          python merge_yml.py ${{ matrix.compiler }} ${{ matrix.blas }}
-
-      - name: Get Week
-        id: get-date
-        run: echo "week=$(/bin/date -u '+%W')" >> $GITHUB_OUTPUT
-        shell: bash
-
-      - name: Cache Conda env
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CONDA }}/envs
-          key:
-            conda-${{ runner.os }}-${{ runner.arch }}-${{ steps.get-date.outputs.week }}-${{ hashFiles('src/devtools/conda-envs/conda.yml') }}-${{ env.CACHE_NUMBER }}
-        env:
-          # Increase this value to reset cache if etc/example-environment.yml has not changed
-          CACHE_NUMBER: 0
-        id: cache
-
-      - name: Update environment
-        run: |
-          pwd
-          conda env update -n einsums-env -f src/devtools/conda-envs/conda.yml
-          conda activate einsums-env
-        if: steps.cache.outputs.cache-hit != 'true'
-
-      - name: Conda Environment
-        run: |
-          conda info
-          conda list
+          compiler: ${{ matrix.compiler }}
+          blas: ${{ matrix.blas }}
+          source-dir: src
 
       - name: Configure CMake
+        # Build the Python bindings on the ThreadSanitizer leg so the Python
+        # test suite (registered as ctest "*Python" entries) runs under TSan.
+        # This is the path that exercises kernels multithreaded: a single-node
+        # capture graph executes its op on the MAIN thread (omp = ncores),
+        # whereas the C++ unit-test TUs frequently instantiate the same
+        # templates in a context that runs serially. A data race in e.g.
+        # impl_gemv_noncontiguous is therefore only reachable through Python
+        # — see bug-dropped-view-gemv-flaky-element. Kept OFF on the
+        # address/leak/undefined leg: ASan+Python needs its own libasan
+        # preload dance and would not have caught a *race* anyway.
         run: |
           cmake \
             -G Ninja \
             -S "$GITHUB_WORKSPACE/src" \
             -B "$GITHUB_WORKSPACE/build" \
-            -D EINSUMS_BUILD_PYTHON=OFF \
+            -D EINSUMS_BUILD_PYTHON=${{ matrix.sanitizer == 'thread' && 'ON' || 'OFF' }} \
             -D CMAKE_C_COMPILER_LAUNCHER=ccache \
             -D CMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} \
@@ -118,24 +89,47 @@ jobs:
             -D EINSUMS_SHOW_WARNING=OFF \
             -D CMAKE_INSTALL_PREFIX="${{ github.workspace }}/installed" \
             -D CMAKE_PREFIX_PATH="${CONDA_PREFIX}" \
-            ${{ matrix.cmake_extra }} ${{ inputs.build_configure_extra_args }}
+            ${{ inputs.build_configure_extra_args }}
 
       - name: Build and Install
         run: |
-          cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install
+          # -j2 caps ninja parallelism: GitHub Linux runners have 16GB RAM and
+          # sanitizer-instrumented compiles are even heavier than -O2 (TSan/ASan
+          # add ~2-3x peak per TU). Ninja's default (nproc+2 = 6) puts us over
+          # the line and the runner OOM-kills the build. -j2 keeps two workers
+          # in flight, well under budget.
+          cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install -j2
 
-      - name: Test (CTest) - Unit Tests
+      - name: Test (CTest) - C++ unit tests
         working-directory: "${{ github.workspace }}/build"
-        run: ctest --rerun-failed --output-on-failure
+        # UBSan is recoverable by default: it prints "runtime error:" and continues
+        # with exit 0, so a finding would NOT fail ctest. halt_on_error=1 turns every
+        # UB report into an abort -> non-zero exit -> red CI. ASan/LSan already abort.
+        #
+        # Exclude the Python-binding tests here: they load the instrumented
+        # _core.so into a non-instrumented interpreter and need a runtime
+        # preload (handled in the dedicated step below). The filter is a no-op
+        # on the address/leak/undefined leg, where Python isn't built.
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1:report_error_type=1
+          ASAN_OPTIONS: abort_on_error=1:print_stacktrace=1
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:suppressions=${{ github.workspace }}/src/devtools/sanitizers/tsan.supp
+        run: ctest --output-on-failure -E '[Pp]ython'
 
-#      - name: Test (pytest) - unit tests
-#        working-directory: "${{github.workspace}}/installed"
-#        run: |
-#          if [[ "${{runner.os}}" == "Windows" ]]; then
-#            export PYTHONPATH="$PYTHONPATH;${{github.workspace}}/installed/lib;$CONDA_PREFIX/lib"
-#          else
-#            export PYTHONPATH=$PYTHONPATH:${{github.workspace}}/installed/lib:$CONDA_PREFIX/lib
-#          fi
-#          mkdir "${{github.workspace}}/backup"
-#          mv "${{github.workspace}}/src/einsums" "${{github.workspace}}/backup/einsums"
-#          pytest "${{github.workspace}}/src/tests" --cov="${{github.workspace}}/installed/lib" --cov="${{github.workspace}}/src" --cov-report=xml
+      - name: Test (CTest) - Python unit tests under ThreadSanitizer
+        if: ${{ matrix.sanitizer == 'thread' }}
+        working-directory: "${{ github.workspace }}/build"
+        # The Python interpreter is not TSan-instrumented but dlopen's an
+        # instrumented _core.so, so the TSan runtime must be preloaded into the
+        # interpreter (otherwise it aborts with "interceptors not installed").
+        # GCC's OpenMP runtime (libgomp) is also uninstrumented and TSan does
+        # not model its barriers/reductions, so some OpenMP-internal reports are
+        # false positives — quiet known ones via the committed suppressions
+        # file; a genuine race in our own kernels (the target of this leg) still
+        # fails because halt_on_error=1.
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:report_thread_leaks=0:suppressions=${{ github.workspace }}/src/devtools/sanitizers/tsan.supp
+        run: |
+          libtsan="$(gcc -print-file-name=libtsan.so)"
+          echo "Preloading TSan runtime: ${libtsan}"
+          LD_PRELOAD="${libtsan}" ctest --output-on-failure -R '[Pp]ython'

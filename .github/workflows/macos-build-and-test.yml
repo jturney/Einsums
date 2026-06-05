@@ -26,7 +26,7 @@ jobs:
       matrix:
         build_type: [ Debug, RelWithDebInfo ]
 
-    name: "default • openblas • ${{ matrix.build_type }}"
+    name: "default • accelerate • ${{ matrix.build_type }}"
     runs-on: macos-latest
     env:
       CCACHE_DIR: $GITHUB_WORKSPACE/build_cache_${{ inputs.build_cache_suffix }}
@@ -49,49 +49,12 @@ jobs:
           key: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ github.sha }}
           restore-keys: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-
 
-      # From https://github.com/conda-incubator/setup-miniconda?tab=readme-ov-file#caching-environments
-      - name: Setup Miniforge
-        uses: conda-incubator/setup-miniconda@v3
+      - name: Set up conda environment
+        uses: ./src/.github/actions/setup-conda-env
         with:
-          miniforge-version: latest
-          activate-environment: einsums-env
-          conda-remove-defaults: "true"
-
-      - name: Install ruamel.yaml
-        run: |
-          conda install -c conda-forge ruamel.yaml
-
-      - name: Merge Conda YAML files
-        working-directory: src/devtools/conda-envs
-        run: |
-          pwd
-          python merge_yml.py default openblas
-
-      - name: Get Week
-        id: get-date
-        run: echo "week=$(/bin/date -u '+%W')" >> $GITHUB_OUTPUT
-        shell: bash
-
-      - name: Cache Conda env
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CONDA }}/envs
-          key:
-            conda-${{ runner.os }}-${{ runner.arch }}-${{ steps.get-date.outputs.week }}-${{ hashFiles('src/devtools/conda-envs/conda.yml') }}-${{ env.CACHE_NUMBER }}
-        env:
-          # Increase this value to reset cache if etc/example-environment.yml has not changed
-          CACHE_NUMBER: 0
-        id: cache
-
-      - name: Update environment
-        run:
-          conda env update -n einsums-env -f src/devtools/conda-envs/conda.yml
-        if: steps.cache.outputs.cache-hit != 'true'
-
-      - name: Conda Environment
-        run: |
-          conda info
-          conda list
+          compiler: default
+          blas: accelerate
+          source-dir: src
 
       - name: Configure CMake
         run: |
@@ -114,20 +77,13 @@ jobs:
         run: |
           cmake --build "${{ github.workspace }}/build" --config Release --target install
 
+      # The Python test suite is registered as ctest entries (labelled PYTHON)
+      # by einsums_add_python_unit_test, so this single ctest run exercises both
+      # the C++ and the Python bindings — no separate pytest step is needed.
       - name: Test (CTest) - Unit Tests
         working-directory: "${{ github.workspace }}/build"
         run: ctest --rerun-failed --output-on-failure -j3
 
-      - name: Test (Pytest) - unit tests
-        working-directory: "${{github.workspace}}/installed"
-        run: |
-          if [[ "${{runner.os}}" == "Windows" ]]; then
-            export PYTHONPATH="$PYTHONPATH;${{github.workspace}}/installed/lib;$CONDA_PREFIX/lib"
-          else
-            export PYTHONPATH="$PYTHONPATH:${{github.workspace}}/installed/lib:$CONDA_PREFIX/lib"
-          fi
-          pytest "${{github.workspace}}/installed" --cov="${{github.workspace}}/installed/lib" --cov="${{github.workspace}}/src" --cov-report=xml
-          
       - name: Generate coverage information
         working-directory: "${{github.workspace}}/build"
         run: |
@@ -146,16 +102,6 @@ jobs:
           disable_search: true
           files: ${{github.workspace}}/build/coverage.info
           flags: cpp,mac
-          token: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: Upload Python coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          directory: "${{github.workspace}}/installed"
-          working-directory: "${{github.workspace}}/installed"
-          disable_search: true
-          flags: python,mac
-          files: ${{github.workspace}}/installed/coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Test (find_package) - consume installation

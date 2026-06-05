@@ -1,0 +1,19 @@
+CompileFlags:
+  CompilationDatabase: build/
+
+# Enable Einsums-specific clang-tidy checks. They live under the
+# ``einsums-*`` prefix and are registered by the EinsumsTidyModule that's
+# statically linked into the custom clangd built via
+# ``devtools/EinsumsStudio/clangd-build/`` (or loadable as a plugin via
+# ``devtools/EinsumsStudio/clang-tidy/``). Stock clangd ignores them with no
+# warning — the harm of leaving the ``Add:`` line in the project config when
+# the custom clangd isn't installed is zero, so we ship it unconditionally.
+#
+# ``FastCheckFilter: None`` is necessary because clangd 19+ silently skips
+# any tidy check it doesn't recognize as part of its built-in fast-path
+# allowlist, regardless of whether the user enabled it. Disabling that
+# filter is the only reliable way to make custom checks fire.
+Diagnostics:
+  ClangTidy:
+    Add: 'einsums-*'
+    FastCheckFilter: None

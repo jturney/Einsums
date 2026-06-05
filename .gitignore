@@ -37,6 +37,7 @@ CMakePresets.json
 *.app
 
 # CMake gitignore
+CMakeUserPresets.json
 CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles
@@ -66,7 +67,6 @@ CMakeSettings.json
 
 # Documentation
 __pycache__
-docs/_doxygen
 docs/api
 docs/build
 
@@ -83,3 +83,15 @@ conda.yml
 
 # Profiling files.
 *profile.txt*
+
+# Benchmark database and reports
+devtools/benchmarks/*.db
+benchmark_report.html
+
+# Einsums Studio per-user state (committed configs stay tracked above).
+.einsums-studio
+.mcp.json
+.wolf
+
+# Claude Code per-user memory
+.claude/
