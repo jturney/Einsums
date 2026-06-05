@@ -16,13 +16,22 @@
 
 #include <algorithm>
 #include <cassert>
-#include <complex>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <string_view>
 
 namespace einsums {
 namespace print {
+
+/// Callback type for forwarding println output to an external sink (e.g. profiler TCP server).
+using OutputSinkCallback = std::function<void(std::string const &)>;
+
+/// Register a callback that receives every println/fprintln(stdout/stderr) line (ANSI-stripped).
+void EINSUMS_EXPORT set_output_sink(OutputSinkCallback cb);
+
+/// Remove the output sink callback.
+void EINSUMS_EXPORT clear_output_sink();
 
 /**
  * Add spaces to the global indentation counter.
@@ -96,7 +105,7 @@ struct ordinal {
      *
      * @versionadded{1.0.0}
      */
-    constexpr ordinal(ordinal<IntType> const &other) : val_{other.val_} {}
+    constexpr ordinal(ordinal<IntType> const &other) = default;
 
     /**
      * Move constructor.
@@ -105,7 +114,7 @@ struct ordinal {
      *
      * @versionadded{1.0.0}
      */
-    constexpr ordinal(ordinal<IntType> &&other) : val_{std::move(other.val_)} {}
+    constexpr ordinal(ordinal<IntType> &&other) noexcept : val_{std::move(other.val_)} {}
 
     /**
      * Cast constructor.
@@ -130,10 +139,7 @@ struct ordinal {
      *
      * @versionadded{1.0.0}
      */
-    constexpr ordinal<IntType> &operator=(ordinal<IntType> const &other) {
-        val_ = other.val_;
-        return *this;
-    }
+    constexpr ordinal<IntType> &operator=(ordinal<IntType> const &other) = default;
 
     /**
      * Move assignment.
@@ -142,7 +148,7 @@ struct ordinal {
      *
      * @versionadded{1.0.0}
      */
-    constexpr ordinal<IntType> &operator=(ordinal<IntType> &&other) {
+    constexpr ordinal<IntType> &operator=(ordinal<IntType> &&other) noexcept {
         val_ = std::move(other.val_);
         return *this;
     }
@@ -171,18 +177,17 @@ struct ordinal {
         return T(val_);
     }
 
-#ifndef DOXYGEN
-#    define OPERATOR(OP)                                                                                                                   \
-        template <std::integral OtherType>                                                                                                 \
-        constexpr ordinal<IntType> &operator OP##=(const ordinal<OtherType> &other) {                                                      \
-            val_ OP## = other.val_;                                                                                                        \
-            return *this;                                                                                                                  \
-        }                                                                                                                                  \
-        template <std::integral OtherType>                                                                                                 \
-        constexpr ordinal<IntType> &operator OP##=(const OtherType & other) {                                                              \
-            val_ OP## = other;                                                                                                             \
-            return *this;                                                                                                                  \
-        }
+#define OPERATOR(OP)                                                                                                                       \
+    template <std::integral OtherType>                                                                                                     \
+    constexpr ordinal<IntType> &operator OP##=(const ordinal<OtherType> &other) {                                                          \
+        val_ OP## = other.val_;                                                                                                            \
+        return *this;                                                                                                                      \
+    }                                                                                                                                      \
+    template <std::integral OtherType>                                                                                                     \
+    constexpr ordinal<IntType> &operator OP##=(const OtherType &other) {                                                                   \
+        val_ OP## = other;                                                                                                                 \
+        return *this;                                                                                                                      \
+    }
 
     OPERATOR(+)
     OPERATOR(-)
@@ -194,7 +199,7 @@ struct ordinal {
     OPERATOR(^)
     OPERATOR(&)
     OPERATOR(|)
-#    undef OPERATOR
+#undef OPERATOR
 
     template <std::integral OtherType>
     constexpr auto operator<=>(ordinal<OtherType> const &other) const {
@@ -215,7 +220,6 @@ struct ordinal {
     constexpr bool operator==(OtherType const &other) const {
         return val_ == other;
     }
-#endif
 
   private:
     /**
@@ -236,7 +240,7 @@ struct ordinal {
  * @versionadded{2.0.0}
  */
 constexpr ordinal<unsigned long long int> operator""_th(unsigned long long int value) {
-    return ordinal(value);
+    return {value};
 }
 
 } // namespace print
@@ -257,34 +261,6 @@ using fmt::color;
 using fmt::emphasis;
 using fmt::fg;
 
-#ifdef DOXYGEN
-/**
- * Prints something to standard output. A new line is emmitted after the print is done.
- *
- * @param[in] args The arguments passed to the printer.
- *
- * @versionadded{1.0.0}
- */
-template <typename... Ts>
-void println(Ts... args) {
-    ;
-}
-
-/**
- * Prints something to a file pointer or output stream. A new line is emmitted after the print is done.
- *
- * @param[inout] out The output stream or file.
- * @param[in] args The arguments passed to the printer.
- *
- * @versionadded{1.0.0}
- */
-template <typename OutType, typename... Ts>
-void fprintln(OutType out, Ts... args) {
-    ;
-}
-#endif
-
-#ifndef DOXYGEN
 template <typename... Ts>
 void println(std::string_view const &f, Ts const... ts) {
     std::string const s = fmt::format(fmt::runtime(f), ts...);
@@ -316,9 +292,9 @@ template <typename... Ts>
 void fprintln(std::FILE *fp, fmt::text_style const &style, std::string_view const &format, Ts const... ts) {
     std::string s;
     if (detail::is_terminal(fp)) {
-        s = fmt::format(style, format, ts...);
+        s = fmt::format(style, fmt::runtime(format), ts...);
     } else {
-        s = fmt::format(format, ts...);
+        s = fmt::format(fmt::runtime(format), ts...);
     }
     detail::fprintln(fp, s);
 }
@@ -349,7 +325,7 @@ void fprintln(std::ostream &fp, std::string_view const &f, Ts const... ts) {
 
 template <typename... Ts>
 void fprintln(std::ostream &fp, fmt::text_style const &style, std::string_view const &format, Ts const... ts) {
-    std::string const s = fmt::format(style, format, ts...);
+    std::string const s = fmt::format(style, fmt::runtime(format), ts...);
     detail::fprintln(fp, s);
 }
 
@@ -365,7 +341,6 @@ inline void fprintln(std::ostream &fp, fmt::text_style const &style, std::string
 inline void fprintln(std::ostream &fp) {
     detail::fprintln(fp, "\n");
 }
-#endif
 
 /**
  * Calls println to generate an error message, then aborts.
@@ -424,7 +399,6 @@ void fprintln_warn(std::FILE *fp, std::string_view const &format, Ts const... ts
     fprintln(fp, message, ts...);
 }
 
-#ifndef DOXYGEN
 template <typename... Ts>
 void fprintln_abort(std::ostream &os, std::string_view const &format, Ts const... ts) {
     std::string message = std::string("ERROR: ") + format.data();
@@ -438,22 +412,19 @@ void fprintln_warn(std::ostream &os, std::string_view const &format, Ts const...
     std::string message = std::string("WARNING: ") + format.data();
     fprintln(os, bg(color::yellow) | fg(color::black), message, ts...);
 }
-#endif
 
 } // namespace einsums
-
-#if !defined(DOXYGEN)
 
 template <std::integral IntType>
 struct fmt::formatter<einsums::print::ordinal<IntType>> {
     template <typename ParseContext>
     constexpr auto parse(ParseContext &ctx) {
-        return fmt_.parse(ctx);
+        return _fmt.parse(ctx);
     }
 
     template <typename FormatContext>
     auto format(einsums::print::ordinal<IntType> const &value, FormatContext &ctx) const {
-        ctx.advance_to(fmt_.format((IntType)value, ctx));
+        ctx.advance_to(_fmt.format((IntType)value, ctx));
         auto suffix = get_suffix(value);
         return fmt::format_to(ctx.out(), "{}", suffix);
     }
@@ -479,7 +450,5 @@ struct fmt::formatter<einsums::print::ordinal<IntType>> {
     }
 
   private:
-    fmt::formatter<IntType> fmt_;
+    fmt::formatter<IntType> _fmt;
 };
-
-#endif

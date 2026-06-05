@@ -14,6 +14,8 @@ The allocator is controlled by global configuration options.
 See the :ref:`API reference <modules_Einsums_BufferAllocator_api>` of this module for more
 details.
 
+.. cpp:namespace:: einsums
+
 Interacting with the Allocator
 ------------------------------
 

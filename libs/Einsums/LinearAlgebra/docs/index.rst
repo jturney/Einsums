@@ -12,6 +12,8 @@ This module contains the user-facing definitions of various linear algebra routi
 See the :ref:`API reference <modules_Einsums_LinearAlgebra_api>` of this module for more
 details.
 
+.. cpp:namespace:: einsums
+
 Public API
 ----------
 
@@ -28,7 +30,7 @@ Here are some of the public symbols that are available to use. More can be found
     On exit, the value of :code:`scale` will normally be 1. However, it may be different if the 
     result of the sum would have caused either an overflow or an underflow.
 
-    Currently only supports :code:`BasicTensor`s of rank 1.
+    Currently only supports :code:`BasicTensor`\ s of rank 1.
 
     :param A[in]: The tensor to evaluate.
     :param scale[inout]: The scale factor. It is both an input and output parameter.
@@ -215,7 +217,7 @@ Here are some of the public symbols that are available to use. More can be found
     :throws dimension_error: If the matrix input is not square.
     :throws tensor_compat_error: If the length of the eigenvalue vector does not have the same size as the number of rows in the matrix.
     :throws std::invalid_argument: If values passed to internal functions were invalid. This is often due to passing uninitialized or
-    zero-size tensors.
+        zero-size tensors.
     :throws std::runtime_error: If the eigenvalue algorithm fails to converge.
 
     .. versionadded:: 1.0.0
@@ -245,7 +247,7 @@ Here are some of the public symbols that are available to use. More can be found
     :throws dimension_error: If the matrix input is not square.
     :throws tensor_compat_error: If the length of the eigenvalue vector does not have the same size as the number of rows in the matrix.
     :throws std::invalid_argument: If values passed to internal functions were invalid. This is often due to passing uninitialized or
-    zero-size tensors.
+        zero-size tensors.
     :throws std::runtime_error: If the eigenvalue algorithm fails to converge.
 
     .. versionadded:: 1.0.0
@@ -281,12 +283,12 @@ Here are some of the public symbols that are available to use. More can be found
     :tparam AType: The type of the matrix and the vector outputs.
     :tparam WType: The type of the value output.
 
-    ::throws rank_error: If the inputs have the wrong ranks. The A tensor needs to be rank-2 and the W tensor needs to be rank-1.
+    :throws rank_error: If the inputs have the wrong ranks. The A tensor needs to be rank-2 and the W tensor needs to be rank-1.
     :throws dimension_error: If the matrix input is not square.
     :throws tensor_compat_error: If the length of the eigenvalue vector does not have the same size as the number of rows in the matrix,
-    or the eigenvector outputs, if not null, do not have the same dimensions as the input.
+        or the eigenvector outputs, if not null, do not have the same dimensions as the input.
     :throws std::invalid_argument: If values passed to internal functions were invalid. This is often due to passing uninitialized or
-    zero-size tensors.
+        zero-size tensors.
     :throws std::runtime_error: If the eigenvalue algorithm fails to converge.
 
     .. versionadded:: 1.0.0
@@ -300,14 +302,14 @@ Here are some of the public symbols that are available to use. More can be found
     Solves a system of linear equations.
 
     :param A[inout[]]: The coefficient matrix. On exit, it contains the upper and lower triangular factors, even if the return value is greater than zero. The
-    elements of the lower triangular factor are all 1, so they are not stored.
+        elements of the lower triangular factor are all 1, so they are not stored.
     :param B[inout]: The constant matrix. If this function returns 0, then on exit, this will contain the solutions.
     :return: If the return value is greater than 0, then the input matrix is singular. If it is less than zero,
-    then the input contains an invalid value, such as infinity. If it is zero, then the system could be solved.
+        then the input contains an invalid value, such as infinity. If it is zero, then the system could be solved.
 
     :throws rank_error: If the coefficient matrix is not rank-2 or the result matrix is not rank-1 or rank-2.
     :throws dimension_error: If the coefficient matrix is not square, or the number of rows of the result matrix is not the same as the number
-    of rows of the coefficient matrix.
+        of rows of the coefficient matrix.
 
     .. versionadded:: 1.0.0
 
@@ -351,7 +353,7 @@ Here are some of the public symbols that are available to use. More can be found
     :throws rank_error: If the inputs have the wrong ranks. The A tensor needs to be rank-2.
     :throws dimension_error: If the matrix input is not square.
     :throws std::invalid_argument: If values passed to internal functions were invalid. This is often due to passing uninitialized or
-    zero-size tensors.
+        zero-size tensors.
     :throws std::runtime_error: If the eigenvalue algorithm fails to converge.
 
     .. versionadded:: 1.0.0
@@ -434,7 +436,7 @@ Here are some of the public symbols that are available to use. More can be found
 
     :throws rank_error: If the X and Y tensors are not rank-1 or the A tensor is not rank-2.
     :throws tensor_compat_error: If the number of elements in the X vector is not the same as the number of rows in A, or the number of
-    elements in the Y vector is not the same as the number of columns of A.
+        elements in the Y vector is not the same as the number of columns of A.
 
     .. versionadded:: 1.0.0
         Added :cpp:func:`ger`.
@@ -444,7 +446,7 @@ Here are some of the public symbols that are available to use. More can be found
 
 .. cpp:function:: template<MatrixConcept TensorType> void invert(TensorType *A)
 
-    Combines :cpp:func:`getrf` and :cpp:func:`getri` into one function call, calculating the inverse of the matrix.
+    Combines :cpp:func:`~einsums::blas::getrf` and :cpp:func:`~einsums::blas::getri` into one function call, calculating the inverse of the matrix.
 
     :param A[inout]: The matrix to invert. On exit, it contains the inverse.
 

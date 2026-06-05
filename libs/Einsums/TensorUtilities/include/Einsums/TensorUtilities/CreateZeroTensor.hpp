@@ -6,11 +6,13 @@
 #pragma once
 
 #include <Einsums/Concepts/Complex.hpp>
+#include <Einsums/Python/Annotations.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 
-#include <complex>
 #include <string>
+#include <vector>
 
 namespace einsums {
 
@@ -42,6 +44,27 @@ auto create_zero_tensor(bool row_major, std::string const &name, MultiIndex... i
     Tensor<T, sizeof...(MultiIndex)> A(row_major, name, std::forward<MultiIndex>(index)...);
     A.zero();
 
+    return A;
+}
+
+/**
+ * @brief Create a runtime-rank zero tensor from a runtime shape vector.
+ *
+ * RuntimeTensor-returning overload mirroring the typed family above.
+ * Lets Python callers (and any C++ caller with a runtime shape) avoid
+ * the typed-rank cross-product. Annotated for the einsums-pybind
+ * codegen — exposed to Python as ``create_zero_tensor`` (overloaded
+ * across the four bound dtypes).
+ */
+template <typename T = double>
+APIARY_EXPOSE APIARY_INSTANTIATE_AS("create_zero_tensor", double) APIARY_INSTANTIATE_AS("create_zero_tensor", float)
+    APIARY_INSTANTIATE_AS("create_zero_tensor", std::complex<double>)
+        APIARY_INSTANTIATE_AS("create_zero_tensor", std::complex<float>) auto create_zero_tensor(std::string const         &name,
+                                                                                                 std::vector<size_t> const &dims)
+            -> RuntimeTensor<T> {
+    EINSUMS_LOG_TRACE("creating zero runtime tensor {} (rank {})", name, dims.size());
+    RuntimeTensor<T> A(name, dims);
+    A.zero();
     return A;
 }
 

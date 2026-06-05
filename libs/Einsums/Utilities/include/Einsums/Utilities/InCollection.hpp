@@ -7,7 +7,6 @@
 
 #include <Einsums/Concepts/NamedRequirements.hpp>
 
-#include <concepts>
 #include <cstddef>
 #include <initializer_list>
 #include <tuple>
@@ -39,8 +38,7 @@ concept IsTupleOrArray = requires {
  */
 template <typename T, detail::IsTupleOrArray Haystack>
 constexpr bool is_in(T &&needle, Haystack const &haystack) {
-    return detail::is_in(std::forward<T>(needle), haystack,
-                         std::make_index_sequence<std::tuple_size_v<Haystack>>());
+    return detail::is_in(std::forward<T>(needle), haystack, std::make_index_sequence<std::tuple_size_v<Haystack>>());
 }
 
 /**

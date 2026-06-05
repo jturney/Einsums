@@ -20,6 +20,37 @@
 
 namespace einsums::tensor_algebra::detail {
 
+// Helper: In a flat (IndexType, Position, IndexType, Position, ...) tuple from find_type_with_position,
+// extract the index type at pair N (element 2*N).
+template <size_t N, typename PairTuple>
+using pair_index_t = std::remove_cvref_t<std::tuple_element_t<2 * N, std::remove_cvref_t<PairTuple>>>;
+
+// Helper: In a flat (IndexType, Position, ...) tuple, get the position value at pair N (element 2*N+1).
+template <size_t N, typename PairTuple>
+constexpr auto pair_position(PairTuple const &pairs) {
+    return std::get<2 * N + 1>(pairs);
+}
+
+// Helper: The number of (IndexType, Position) pairs in a flat tuple.
+template <typename... Ts>
+constexpr size_t num_pairs_v = sizeof...(Ts) / 2;
+
+// Helper: Check if the index type at pair N in PairTuple matches the unique index at position I in UniqueTuple.
+template <size_t N, size_t I, typename PairTuple, typename UniqueTuple>
+constexpr bool pair_matches_unique_v =
+    std::is_same_v<pair_index_t<N, PairTuple>, std::remove_cvref_t<std::tuple_element_t<I, std::remove_cvref_t<UniqueTuple>>>>;
+
+// Helper: For each (IndexType, Position) pair in `positions` that matches the unique index at position I
+// in `unique`, set `indices[position]` to the loop variable `i`.
+template <size_t I, typename UniqueTuple, typename PairTuple, typename IndexArray>
+void scatter_index(UniqueTuple const &unique, PairTuple const &positions, IndexArray &indices, size_t i) {
+    for_sequence<std::tuple_size_v<std::remove_cvref_t<PairTuple>> / 2>([&](auto n) {
+        if constexpr (pair_matches_unique_v<decltype(n)::value, I, PairTuple, UniqueTuple>) {
+            indices[pair_position<decltype(n)::value>(positions)] = i;
+        }
+    });
+}
+
 template <size_t __I, typename T, bool ConjA, bool ConjB, typename... LinkDims, typename... LinkUnique, typename... LinkPositionInA,
           typename... LinkPositionInB, CoreTensorConcept AType, CoreTensorConcept BType>
     requires(!BasicTensorConcept<AType> || !BasicTensorConcept<BType>)
@@ -45,25 +76,17 @@ std::remove_cvref_t<T> einsums_generic_link_loop(std::tuple<LinkDims...> const &
 
         T sum{0.0};
 
-        EINSUMS_OMP_PARALLEL_FOR
+        // No OMP here — the link loop is always nested inside the parallel target loop.
         for (size_t i = 0; i < curr_dim; i++) {
-            for_sequence<sizeof...(LinkPositionInA) / 2>([&](auto n) {
-                if constexpr (std::is_same_v<std::remove_cvref_t<std::tuple_element_t<2 * decltype(n)::value,
-                                                                                      std::remove_cvref_t<decltype(link_position_in_A)>>>,
-                                             std::remove_cvref_t<std::tuple_element_t<__I, std::remove_cvref_t<decltype(link_unique)>>>>) {
-                    A_indices[std::get<2 * decltype(n)::value + 1>(link_position_in_A)] = i;
-                }
-            });
-            for_sequence<sizeof...(LinkPositionInB) / 2>([&](auto n) {
-                if constexpr (std::is_same_v<std::remove_cvref_t<std::tuple_element_t<2 * decltype(n)::value,
-                                                                                      std::remove_cvref_t<decltype(link_position_in_B)>>>,
-                                             std::remove_cvref_t<std::tuple_element_t<__I, std::remove_cvref_t<decltype(link_unique)>>>>) {
-                    B_indices[std::get<2 * decltype(n)::value + 1>(link_position_in_B)] = i;
-                }
-            });
+            auto A_indices_local = A_indices;
+            auto B_indices_local = B_indices;
+            scatter_index<__I>(link_unique, link_position_in_A, A_indices_local, i);
+            scatter_index<__I>(link_unique, link_position_in_B, B_indices_local, i);
             sum += einsums_generic_link_loop<__I + 1, T, ConjA, ConjB>(link_dims, link_unique, link_position_in_A, link_position_in_B,
-                                                                     A_indices, B_indices, A, B);
+                                                                       A_indices_local, B_indices_local, A, B);
         }
+
+        return sum;
     }
 }
 
@@ -87,34 +110,36 @@ void einsums_generic_target_loop(std::tuple<TargetDims...> const &target_dims, s
     } else {
         size_t const curr_dim = std::get<__I>(target_dims);
 
-        EINSUMS_OMP_PARALLEL_FOR
-        for (size_t i = 0; i < curr_dim; i++) {
-            for_sequence<sizeof...(TargetPositionInC) / 2>([&](auto n) {
-                if constexpr (std::is_same_v<std::remove_cvref_t<std::tuple_element_t<2 * decltype(n)::value,
-                                                                                      std::remove_cvref_t<decltype(target_position_in_C)>>>,
-                                             std::remove_cvref_t<std::tuple_element_t<__I, std::remove_cvref_t<decltype(C_unique)>>>>) {
-                    C_indices[std::get<2 * decltype(n)::value + 1>(target_position_in_C)] = i;
-                }
-            });
-            for_sequence<sizeof...(TargetPositionInA) / 2>([&](auto n) {
-                if constexpr (std::is_same_v<std::remove_cvref_t<std::tuple_element_t<2 * decltype(n)::value,
-                                                                                      std::remove_cvref_t<decltype(target_position_in_A)>>>,
-                                             std::remove_cvref_t<std::tuple_element_t<__I, std::remove_cvref_t<decltype(C_unique)>>>>) {
-                    A_indices[std::get<2 * decltype(n)::value + 1>(target_position_in_A)] = i;
-                }
-            });
-            for_sequence<sizeof...(TargetPositionInB) / 2>([&](auto n) {
-                if constexpr (std::is_same_v<std::remove_cvref_t<std::tuple_element_t<2 * decltype(n)::value,
-                                                                                      std::remove_cvref_t<decltype(target_position_in_B)>>>,
-                                             std::remove_cvref_t<std::tuple_element_t<__I, std::remove_cvref_t<decltype(C_unique)>>>>) {
-                    B_indices[std::get<2 * decltype(n)::value + 1>(target_position_in_B)] = i;
-                }
-            });
+        // Only parallelize the outermost target dimension to avoid nested OMP overhead and stack overflow.
+        if constexpr (__I == 0) {
+            EINSUMS_OMP_PARALLEL_FOR
+            for (size_t i = 0; i < curr_dim; i++) {
+                auto C_indices_local = C_indices;
+                auto A_indices_local = A_indices;
+                auto B_indices_local = B_indices;
+                scatter_index<__I>(C_unique, target_position_in_C, C_indices_local, i);
+                scatter_index<__I>(C_unique, target_position_in_A, A_indices_local, i);
+                scatter_index<__I>(C_unique, target_position_in_B, B_indices_local, i);
 
-            einsums_generic_target_loop<__I + 1, ConjA, ConjB>(target_dims, link_dims, C_unique, link_unique, target_position_in_C,
-                                                             target_position_in_A, target_position_in_B, link_position_in_A,
-                                                             link_position_in_B, C_indices, A_indices, B_indices,
-                                                             std::forward<T>(C_prefactor), C, std::forward<T>(AB_prefactor), A, B);
+                einsums_generic_target_loop<__I + 1, ConjA, ConjB>(target_dims, link_dims, C_unique, link_unique, target_position_in_C,
+                                                                   target_position_in_A, target_position_in_B, link_position_in_A,
+                                                                   link_position_in_B, C_indices_local, A_indices_local, B_indices_local,
+                                                                   std::forward<T>(C_prefactor), C, std::forward<T>(AB_prefactor), A, B);
+            }
+        } else {
+            for (size_t i = 0; i < curr_dim; i++) {
+                auto C_indices_local = C_indices;
+                auto A_indices_local = A_indices;
+                auto B_indices_local = B_indices;
+                scatter_index<__I>(C_unique, target_position_in_C, C_indices_local, i);
+                scatter_index<__I>(C_unique, target_position_in_A, A_indices_local, i);
+                scatter_index<__I>(C_unique, target_position_in_B, B_indices_local, i);
+
+                einsums_generic_target_loop<__I + 1, ConjA, ConjB>(target_dims, link_dims, C_unique, link_unique, target_position_in_C,
+                                                                   target_position_in_A, target_position_in_B, link_position_in_A,
+                                                                   link_position_in_B, C_indices_local, A_indices_local, B_indices_local,
+                                                                   std::forward<T>(C_prefactor), C, std::forward<T>(AB_prefactor), A, B);
+            }
         }
     }
 }

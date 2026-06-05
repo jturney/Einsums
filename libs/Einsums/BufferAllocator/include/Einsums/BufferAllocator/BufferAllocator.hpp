@@ -20,7 +20,6 @@
 #include <forward_list>
 #include <map>
 #include <set>
-#include <source_location>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -68,7 +67,7 @@ struct BufferAllocator {
      *
      * @versionadded{1.1.0}
      */
-    using pointer = T *;
+    using pointer = T *; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef const_pointer
@@ -77,7 +76,7 @@ struct BufferAllocator {
      *
      * @versionadded{1.1.0}
      */
-    using const_pointer = T const *;
+    using const_pointer = T const *; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef void_pointer
@@ -86,7 +85,7 @@ struct BufferAllocator {
      *
      * @versionadded{1.1.0}
      */
-    using void_pointer = void *;
+    using void_pointer = void *; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef const_void_pointer
@@ -95,7 +94,7 @@ struct BufferAllocator {
      *
      * @versionadded{1.1.0}
      */
-    using const_void_pointer = void const *;
+    using const_void_pointer = void const *; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef value_type
@@ -104,7 +103,7 @@ struct BufferAllocator {
      *
      * @versionadded{1.1.0}
      */
-    using value_type = T;
+    using value_type = T; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef size_type
@@ -113,7 +112,7 @@ struct BufferAllocator {
      *
      * @versionadded{1.1.0}
      */
-    using size_type = size_t;
+    using size_type = size_t; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef difference_type
@@ -122,7 +121,7 @@ struct BufferAllocator {
      *
      * @versionadded{1.1.0}
      */
-    using difference_type = ptrdiff_t;
+    using difference_type = ptrdiff_t; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef is_always_equal
@@ -131,7 +130,7 @@ struct BufferAllocator {
      *
      * @versionadded{1.1.0}
      */
-    using is_always_equal = std::true_type;
+    using is_always_equal = std::true_type; // NOLINT(readability-identifier-naming)
 
     /**
      * @property type_size
@@ -342,7 +341,7 @@ struct BufferAllocator {
      *
      * @versionadded{1.1.0}
      */
-    constexpr bool operator==(BufferAllocator<T> const &other) const { return true; }
+    constexpr bool operator==(BufferAllocator<T> const & /*other*/) const { return true; }
 
     /**
      * @brief Test whether two buffer allocators are not the same.
@@ -354,7 +353,7 @@ struct BufferAllocator {
      *
      * @versionadded{1.1.0}
      */
-    constexpr bool operator!=(BufferAllocator<T> const &other) const { return false; }
+    constexpr bool operator!=(BufferAllocator<T> const & /*other*/) const { return false; }
 };
 
 #ifndef EINSUMS_WINDOWS

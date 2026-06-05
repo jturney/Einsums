@@ -10,9 +10,14 @@
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
+#include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
 
+#include <chrono>
 #include <csignal>
+#include <cstdio>
+#include <fstream>
+#include <thread>
 
 #if defined(EINSUMS_WINDOWS)
 #    include <Windows.h>
@@ -172,6 +177,38 @@ void Runtime::init() {
     }
 }
 
+Runtime::~Runtime() {
+    // Guard against double-finalize (if finalize() was called explicitly before destruction).
+    if (runtime_ptr() != this) {
+        return; // Already finalized.
+    }
+
+    // Run shutdown functions (module cleanup, user-registered shutdown hooks).
+    call_shutdown_functions(true); // pre-shutdown
+    EINSUMS_LOG_INFO("ran pre-shutdown functions");
+    call_shutdown_functions(false); // shutdown
+    EINSUMS_LOG_INFO("ran shutdown functions");
+
+#if defined(EINSUMS_HAVE_PROFILER)
+    // Shutdown profiler: drain all events, stop consumer thread, stop server.
+    profile::Profiler::instance().shutdown();
+
+    try {
+        auto &gc = GlobalConfigMap::get_singleton();
+        if (gc.get_bool("profiler-report")) {
+            std::ofstream out(gc.get_string("profiler-filename"), gc.get_bool("profiler-append") ? std::ios::ate : std::ios::trunc);
+            profile::Profiler::instance().print(gc.get_bool("profiler-detailed"), out);
+        }
+    } catch (...) {
+    }
+#endif
+
+    // Clear the global runtime pointer.
+    deinit_global_data();
+
+    EINSUMS_LOG_INFO("einsums shutdown completed");
+}
+
 void Runtime::init_global_data() {
     LabeledSectionInternal("Runtime::init_global_data");
     Runtime *&runtime_ = runtime_ptr();
@@ -253,6 +290,28 @@ int Runtime::run(std::function<EinsumsMainFunctionType> const &func) {
 
     // Set the state to running.
     state(RuntimeState::Running);
+
+    // Wait for profiler viewer to connect if requested
+    {
+        auto &gc          = GlobalConfigMap::get_singleton();
+        bool  wait_viewer = gc.get_bool("profiler-wait-for-viewer", false);
+        if (wait_viewer) {
+            auto *server = profile::Profiler::instance().server();
+            if (server && server->is_running()) {
+                EINSUMS_LOG_INFO("Waiting for profiler viewer to connect (--einsums:profile:wait-for-viewer)...");
+                std::fprintf(stderr, "\n*** Waiting for profiler viewer to connect on port %d ***\n",
+                             static_cast<int>(gc.get_int("profiler-port", 19216)));
+                std::fprintf(stderr, "*** Launch the viewer and connect, then execution will begin ***\n\n");
+                while (!server->has_client()) {
+                    server->tick();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+                EINSUMS_LOG_INFO("Viewer connected, proceeding with execution");
+                std::fprintf(stderr, "*** Viewer connected, starting execution ***\n\n");
+            }
+        }
+    }
+
     // Once we start using a thread pool / threading manager we can
     // pass the function to the pool and have the manager handle it.
     EINSUMS_LOG_INFO("running user provided function");
@@ -298,7 +357,7 @@ void register_pre_startup_function(StartupFunctionType f) {
     auto *runtime = runtime_ptr();
     if (runtime != nullptr) {
         if (runtime->state() > RuntimeState::PreStartup) {
-            EINSUMS_THROW_EXCEPTION(invalid_runtime_state, "Too late to register a pre-startup function");
+            EINSUMS_THROW_EXCEPTION(InvalidRuntimeState, "Too late to register a pre-startup function");
             return;
         }
         runtime->add_pre_startup_function(std::move(f));
@@ -313,7 +372,7 @@ void register_startup_function(StartupFunctionType f) {
     auto *runtime = runtime_ptr();
     if (runtime != nullptr) {
         if (runtime->state() > RuntimeState::Startup) {
-            EINSUMS_THROW_EXCEPTION(invalid_runtime_state, "Too late to register a startup function");
+            EINSUMS_THROW_EXCEPTION(InvalidRuntimeState, "Too late to register a startup function");
             return;
         }
         runtime->add_startup_function(std::move(f));
@@ -328,7 +387,7 @@ void register_pre_shutdown_function(ShutdownFunctionType f) {
     auto *runtime = runtime_ptr();
     if (runtime != nullptr) {
         if (runtime->state() > RuntimeState::PreShutdown) {
-            EINSUMS_THROW_EXCEPTION(invalid_runtime_state, "Too late to register a pre-shutdown function");
+            EINSUMS_THROW_EXCEPTION(InvalidRuntimeState, "Too late to register a pre-shutdown function");
             return;
         }
         runtime->add_pre_shutdown_function(std::move(f));
@@ -343,7 +402,7 @@ void register_shutdown_function(ShutdownFunctionType f) {
     auto *runtime = runtime_ptr();
     if (runtime != nullptr) {
         if (runtime->state() > RuntimeState::Shutdown) {
-            EINSUMS_THROW_EXCEPTION(invalid_runtime_state, "Too late to register a shutdown function");
+            EINSUMS_THROW_EXCEPTION(InvalidRuntimeState, "Too late to register a shutdown function");
             return;
         }
         runtime->add_pre_shutdown_function(std::move(f));

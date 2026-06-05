@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Print.hpp>
+#include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Runtime/ShutdownFunction.hpp>
 #include <Einsums/Runtime/StartupFunction.hpp>
@@ -21,13 +22,13 @@
 namespace einsums {
 
 /**
- * @struct invalid_runtime_state
+ * @struct InvalidRuntimeState
  *
  * Indicates that the code is handling data that is uninitialized.
  *
  * @versionadded{1.0.0}
  */
-struct EINSUMS_EXPORT invalid_runtime_state : std::runtime_error {
+struct EINSUMS_EXPORT InvalidRuntimeState : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
@@ -38,7 +39,7 @@ struct EINSUMS_EXPORT invalid_runtime_state : std::runtime_error {
  *
  * @versionadded{1.0.0}
  */
-enum class RuntimeState : std::int8_t {
+enum class APIARY_EXPOSE RuntimeState : std::int8_t {
     Invalid        = -1,      /**< The state is invalid. */
     Initialized    = 0,       /**< The runtime has been initialized. */
     PreStartup     = 1,       /**< The runtime is running the pre-startup functions. */
@@ -70,7 +71,7 @@ class EINSUMS_EXPORT RuntimeVars : public design_pats::Lockable<std::recursive_m
 };
 
 struct EINSUMS_EXPORT Runtime : public design_pats::Lockable<std::recursive_mutex> {
-    virtual ~Runtime() = default;
+    virtual ~Runtime();
 
     /// The \a EinsumsMainFunctionType is the default function type used as
     /// the main Einsums function.
@@ -183,21 +184,19 @@ EINSUMS_EXPORT detail::Runtime *&runtime_ptr();
  */
 EINSUMS_EXPORT RuntimeConfiguration &runtime_config();
 
-///////////////////////////////////////////////////////////////////////////
 /// \brief Test whether the runtime system is currently running.
 ///
 /// This function returns whether the runtime system is currently running
 /// or not, e.g.  whether the current state of the runtime system is
 /// \a einsums::RuntimeState::Running
 ///
-/// \note   This function needs to be executed on a pika-thread. It will
+/// \note   This function needs to be executed on an einsums-thread. It will
 ///         return false otherwise.
 /// @versionadded{1.0.0}
-EINSUMS_EXPORT bool is_running();
+APIARY_EXPOSE EINSUMS_EXPORT bool is_running();
 
 } // namespace einsums
 
-#ifndef DOXYGEN
 template <>
 struct fmt::formatter<einsums::RuntimeState> : formatter<string_view> {
     template <typename FormatContext>
@@ -246,4 +245,3 @@ struct fmt::formatter<einsums::RuntimeState> : formatter<string_view> {
         return formatter<string_view>::format(name, ctx);
     }
 };
-#endif

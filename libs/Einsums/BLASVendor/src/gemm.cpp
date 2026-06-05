@@ -28,8 +28,8 @@ extern void FC_GLOBAL(zgemm, ZGEMM)(char *, char *, int_t *, int_t *, int_t *, s
 }
 
 #define GEMM_CHECK(transa, transb, m, n, k, lda, ldb, ldc)                                                                                 \
-    bool  notA = (std::tolower(transa) == 'n'), notB = (std::tolower(transb) == 'n');                                                      \
-    int_t nrowa, nrowb;                                                                                                                    \
+    const bool notA = (std::tolower(transa) == 'n'), notB = (std::tolower(transb) == 'n');                                                 \
+    int_t      nrowa, nrowb;                                                                                                               \
                                                                                                                                            \
     if (notA) {                                                                                                                            \
         nrowa = m;                                                                                                                         \

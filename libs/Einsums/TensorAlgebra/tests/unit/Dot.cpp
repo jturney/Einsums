@@ -9,7 +9,7 @@
 
 #include <Einsums/Testing.hpp>
 
-TEMPLATE_TEST_CASE("Einsum Dot Product", "[tensor-algebra]", float, double, std::complex<float>, std::complex<double>) {
+EINSUMS_TEMPLATE_TEST_CASE("Einsum Dot Product", "[tensor-algebra]", float, double, std::complex<float>, std::complex<double>) {
     using namespace einsums;
     using namespace einsums::tensor_algebra;
     using namespace einsums::index;

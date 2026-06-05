@@ -5,6 +5,8 @@
 
 #include <Einsums/LinearAlgebra.hpp>
 
+#include <tuple>
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -90,7 +92,7 @@ TEMPLATE_TEST_CASE("gesv", "[linear-algebra]", float, double) {
     a_swap = a;
     b_swap = b;
 
-    linear_algebra::gesv(&a, &b);
+    std::ignore = linear_algebra::gesv(&a, &b);
 
     CHECK_THAT(a.vector_data(), Catch::Matchers::Approx(std::vector<T>{8.23000000,  0.82624544,  0.68772783,   0.72539490,   -0.25637910,
                                                                        1.08000000,  -6.94234508, -0.66508563,  0.75240087,   0.43545957,
@@ -103,7 +105,7 @@ TEMPLATE_TEST_CASE("gesv", "[linear-algebra]", float, double) {
                                                                        0.95546491, 0.22065963, 1.90063673, 5.35766149, 4.04060266})
                                     .margin(0.00001));
 
-    linear_algebra::gesv(&a_swap, &b_swap);
+    std::ignore = linear_algebra::gesv(&a_swap, &b_swap);
 
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {

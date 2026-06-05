@@ -12,44 +12,31 @@ set(TensorHeaders
     Einsums/Tensor/TensorForward.hpp
     Einsums/Tensor/ArithmeticTensor.hpp
     Einsums/Tensor/FunctionTensor.hpp
+    Einsums/Tensor/PendingInit.hpp
     Einsums/Tensor/RuntimeTensor.hpp
+    Einsums/Tensor/SymmetryOps.hpp
     Einsums/Tensor/TiledTensor.hpp
+    Einsums/Tensor/TiledRuntimeTensor.hpp
     Einsums/Tensor/InitModule.hpp
     Einsums/Tensor/ModuleVars.hpp
 )
 
 set(TensorSources TensorDefs.cpp Requirements.cpp InitModule.cpp ModuleVars.cpp)
 
-if(EINSUMS_WITH_GPU_SUPPORT)
-  set_source_files_properties(TensorDefs.cpp PROPERTIES LANGUAGE CXX)
-
-  list(APPEND TensorHeaders Einsums/Tensor/DeviceTensor.hpp)
-  list(APPEND TensorSources TensorDefs.hip)
-
-  set(TensorGPUModules Einsums_GPUStreams)
-  set(TensorGPUDeps hip::host hip::device)
-
-  if(EINSUMS_WITH_CUDA)
-    foreach(f IN LISTS TensorSources)
-      if(f MATCHES ".*\.hip")
-        set_source_files_properties("src/${f}" PROPERTIES LANGUAGE CUDA)
-      endif()
-    endforeach()
-  endif()
-endif()
-
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums Tensor
+  PYBIND
   SOURCES ${TensorSources}
   HEADERS ${TensorHeaders}
-  DEPENDENCIES tgt::hdf5 ZLIB::ZLIB ${TensorGPUDeps}
+  DEPENDENCIES tgt::hdf5 ZLIB::ZLIB
   MODULE_DEPENDENCIES
     Einsums_BLAS
     Einsums_BufferAllocator
     Einsums_Concepts
     Einsums_Config
     Einsums_Errors
+    Einsums_GPU
     Einsums_Iterator
     Einsums_Logging
     Einsums_TensorBase
@@ -59,6 +46,5 @@ einsums_add_module(
     Einsums_Print
     Einsums_Runtime
     Einsums_Utilities
-    ${TensorGPUModules}
   CMAKE_SUBDIRS examples tests
 )

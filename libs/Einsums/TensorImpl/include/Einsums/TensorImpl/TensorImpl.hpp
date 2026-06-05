@@ -30,14 +30,12 @@ template <typename T, typename TOther>
 void copy_to(TensorImpl<TOther> const &in, TensorImpl<T> &out);
 } // namespace detail
 
-#ifndef DOXYGEN
 // Forward declaration of the Tensor printing function.
 template <typename T>
 void println(detail::TensorImpl<T> const &A, TensorPrintOptions options = {});
 
 template <FileOrOStream Output, typename T>
 void fprintln(Output &fp, detail::TensorImpl<T> const &A, TensorPrintOptions options = {});
-#endif
 namespace detail {
 
 /**
@@ -53,66 +51,56 @@ struct TensorImpl final {
      *
      * @brief The type for pointers returned by this class.
      */
-    using pointer = T *;
+    using pointer = T *; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef const_pointer
      *
      * @brief The type for const pointers returned by this class.
      */
-    using const_pointer = T const *;
+    using const_pointer = T const *; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef void_pointer
      *
      * @brief The type for void pointers returned by this class.
      */
-    using void_pointer = void *;
+    using void_pointer = void *; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef const_void_pointer
      *
      * @brief The type for const void pointers returned by this class.
      */
-    using const_void_pointer = void const *;
+    using const_void_pointer = void const *; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef value_type
      *
      * @brief The type of data stored by this class.
      */
-    using value_type = T;
+    using value_type = T; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef reference
      *
      * @brief The reference type returned by this class.
      */
-    using reference = T &;
+    using reference = T &; // NOLINT(readability-identifier-naming)
 
     /**
      * @typedef const_reference
      *
      * @brief The const reference type returned by this class.
      */
-    using const_reference = T const &;
-
-#ifdef EINSUMS_COMPUTE_CODE
-    using GPULock    = std::shared_ptr<GPUBlock>;
-    using GPUPromise = std::weak_ptr<GPUBlock>;
-    using GPUPointer = gpu::GPUPointer<T>;
-#else
-    using GPULock    = int;
-    using GPUPromise = int;
-    using GPUPointer = int;
-#endif
+    using const_reference = T const &; // NOLINT(readability-identifier-naming)
 
     // Rule of five methods.
 
     /**
      * @brief Default constructor.
      */
-    constexpr TensorImpl() noexcept : _ptr{nullptr}, _dims(), _strides(), _rank{0}, _size{0}, _row_major{false} {};
+    constexpr TensorImpl() noexcept : _dims(), _strides(), _rank{0}, _size{0}, _row_major{false} {};
 
     /**
      * @brief Copy constructor.
@@ -180,21 +168,7 @@ struct TensorImpl final {
     template <Container Dims>
     constexpr TensorImpl(pointer ptr, Dims const &dims, bool row_major)
         : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()), _row_major{row_major} {
-        _strides.resize(_rank);
-
-        _size = 1;
-
-        if (row_major) {
-            for (int i = _rank - 1; i >= 0; i--) {
-                _strides[i] = _size;
-                _size *= _dims[i];
-            }
-        } else {
-            for (int i = 0; i < _rank; i++) {
-                _strides[i] = _size;
-                _size *= _dims[i];
-            }
-        }
+        compute_strides();
     }
 
     /**
@@ -204,27 +178,12 @@ struct TensorImpl final {
      *
      * @param ptr The pointer to wrap.
      * @param dims The dimensions of the tensor.
-     * @param row_major Whether to compute the strides in row-major or column-major ordering.
      */
     template <Container Dims>
     constexpr TensorImpl(pointer ptr, Dims const &dims)
         : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()),
           _row_major{GlobalConfigMap::get_singleton().get_bool("row-major")} {
-        _strides.resize(_rank);
-
-        _size = 1;
-
-        if (_row_major) {
-            for (int i = _rank - 1; i >= 0; i--) {
-                _strides[i] = _size;
-                _size *= _dims[i];
-            }
-        } else {
-            for (int i = 0; i < _rank; i++) {
-                _strides[i] = _size;
-                _size *= _dims[i];
-            }
-        }
+        compute_strides();
     }
 
     /**
@@ -237,16 +196,8 @@ struct TensorImpl final {
     template <Container Dims, Container Strides>
     constexpr TensorImpl(pointer ptr, Dims const &dims, Strides const &strides)
         : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()), _strides(strides.begin(), strides.end()),
-          _size{std::accumulate(dims.begin(), dims.end(), static_cast<size_t>(1), std::multiplies<size_t>())} {
-        if (_rank < 2) {
-            _row_major = true;
-        } else if (stride(0) > stride(-1)) {
-            _row_major = true;
-        } else if (stride(0) == stride(-1)) {
-            _row_major = (dim(0) > dim(-1));
-        } else {
-            _row_major = false;
-        }
+          _size{std::accumulate(dims.begin(), dims.end(), static_cast<size_t>(1), std::multiplies<>())} {
+        infer_row_major();
     }
 
     /**
@@ -260,21 +211,7 @@ struct TensorImpl final {
      */
     constexpr TensorImpl(pointer ptr, std::initializer_list<size_t> const &dims, bool row_major)
         : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()), _row_major{row_major} {
-        _strides.resize(_rank);
-
-        _size = 1;
-
-        if (row_major) {
-            for (int i = _rank - 1; i >= 0; i--) {
-                _strides[i] = _size;
-                _size *= _dims[i];
-            }
-        } else {
-            for (int i = 0; i < _rank; i++) {
-                _strides[i] = _size;
-                _size *= _dims[i];
-            }
-        }
+        compute_strides();
     }
 
     /**
@@ -284,26 +221,11 @@ struct TensorImpl final {
      *
      * @param ptr The pointer to wrap.
      * @param dims The dimensions of the tensor.
-     * @param row_major Whether to compute the strides in row-major or column-major ordering.
      */
     constexpr TensorImpl(pointer ptr, std::initializer_list<size_t> const &dims)
         : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()),
           _row_major{GlobalConfigMap::get_singleton().get_bool("row-major")} {
-        _strides.resize(_rank);
-
-        _size = 1;
-
-        if (_row_major) {
-            for (int i = _rank - 1; i >= 0; i--) {
-                _strides[i] = _size;
-                _size *= _dims[i];
-            }
-        } else {
-            for (int i = 0; i < _rank; i++) {
-                _strides[i] = _size;
-                _size *= _dims[i];
-            }
-        }
+        compute_strides();
     }
 
     /**
@@ -316,16 +238,8 @@ struct TensorImpl final {
     template <Container Strides>
     constexpr TensorImpl(pointer ptr, std::initializer_list<size_t> const &dims, Strides const &strides)
         : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()), _strides(strides.begin(), strides.end()),
-          _size{std::accumulate(dims.begin(), dims.end(), static_cast<size_t>(1), std::multiplies<size_t>())} {
-        if (_rank < 2) {
-            _row_major = true;
-        } else if (stride(0) > stride(-1)) {
-            _row_major = true;
-        } else if (stride(0) == stride(-1)) {
-            _row_major = (dim(0) > dim(-1));
-        } else {
-            _row_major = false;
-        }
+          _size{std::accumulate(dims.begin(), dims.end(), static_cast<size_t>(1), std::multiplies<>())} {
+        infer_row_major();
     }
 
     /**
@@ -338,16 +252,8 @@ struct TensorImpl final {
     template <Container Dims>
     constexpr TensorImpl(pointer ptr, Dims const &dims, std::initializer_list<size_t> const &strides)
         : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()), _strides(strides.begin(), strides.end()),
-          _size{std::accumulate(dims.begin(), dims.end(), static_cast<size_t>(1), std::multiplies<size_t>())} {
-        if (_rank < 2) {
-            _row_major = true;
-        } else if (stride(0) > stride(-1)) {
-            _row_major = true;
-        } else if (stride(0) == stride(-1)) {
-            _row_major = (dim(0) > dim(-1));
-        } else {
-            _row_major = false;
-        }
+          _size{std::accumulate(dims.begin(), dims.end(), static_cast<size_t>(1), std::multiplies<>())} {
+        infer_row_major();
     }
 
     /**
@@ -359,25 +265,11 @@ struct TensorImpl final {
      */
     constexpr TensorImpl(pointer ptr, std::initializer_list<size_t> const &dims, std::initializer_list<size_t> const &strides)
         : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()), _strides(strides.begin(), strides.end()),
-          _size{std::accumulate(dims.begin(), dims.end(), static_cast<size_t>(1), std::multiplies<size_t>())} {
-        if (_rank < 2) {
-            _row_major = true;
-        } else if (stride(0) > stride(-1)) {
-            _row_major = true;
-        } else if (stride(0) == stride(-1)) {
-            _row_major = (dim(0) > dim(-1));
-        } else {
-            _row_major = false;
-        }
+          _size{std::accumulate(dims.begin(), dims.end(), static_cast<size_t>(1), std::multiplies<>())} {
+        infer_row_major();
     }
 
-    ~TensorImpl() {
-#ifdef EINSUMS_COMPUTE_CODE
-        if (this->_ptr != nullptr && (size_t)_core_modify_count < (size_t)_gpu_modify_count) {
-            this->tensor_from_gpu();
-        }
-#endif
-    }
+    ~TensorImpl() = default;
 
     // Getters and setters.
 
@@ -415,6 +307,12 @@ struct TensorImpl final {
      * @brief Change the pointer being wrapped by the tensor.
      */
     constexpr void set_data(pointer ptr) noexcept { _ptr = ptr; }
+
+    /// @brief Override the strides (used by local view to preserve original memory layout).
+    template <size_t N>
+    constexpr void set_strides(std::array<size_t, N> const &new_strides) noexcept {
+        _strides.assign(new_strides.begin(), new_strides.end());
+    }
 
     // Indexed getters and setters.
 
@@ -787,11 +685,7 @@ struct TensorImpl final {
      * @param[out] lda The leading dimension which can be passed into gemm and similar calls.
      */
     [[nodiscard]] bool is_gemmable(size_t *lda = nullptr) const {
-        if (_rank != 2) {
-            return false;
-        } else if (_strides[0] != 1 && _strides[1] != 1) {
-            return false;
-        } else if (_strides[0] == _strides[1]) {
+        if (_rank != 2 || (_strides[0] != 1 && _strides[1] != 1) || (_strides[0] == _strides[1])) {
             return false;
         } else {
             if (lda != nullptr) {
@@ -869,6 +763,17 @@ struct TensorImpl final {
     }
 
     /**
+     * @brief Returns the raw row-major flag as stored, without the rank-1 collapse.
+     *
+     * Use this when you need to *preserve* the originally-requested layout
+     * across operations like resize, where the user may grow a rank-≤1
+     * tensor into something higher-rank and expects the same layout
+     * (column-major by default in einsums) to carry over. ``is_row_major()``
+     * collapses rank-≤1 to ``true`` and would silently flip the layout.
+     */
+    constexpr bool stored_row_major() const noexcept { return _row_major; }
+
+    /**
      * @brief Calculate the parameters for looping over a BLAS call.
      *
      * A quick overview of how this might be used is something like this.
@@ -905,8 +810,8 @@ struct TensorImpl final {
             *easy_rank = 0;
 
             if (is_row_major()) {
-                *incx       = stride(-1);
-                size_t size = 1;
+                *incx             = stride(-1);
+                size_t const size = 1;
                 for (int i = _rank - 1; i >= 0; i--) {
 
                     if (size * *incx == _strides[i]) {
@@ -917,9 +822,9 @@ struct TensorImpl final {
                     }
                 }
             } else {
-                *incx       = stride(0);
-                size_t size = 1;
-                for (int i = 0; i < _rank; i++) {
+                *incx             = stride(0);
+                size_t const size = 1;
+                for (int i = 0; std::cmp_less(i, _rank); i++) {
 
                     if (size * *incx == _strides[i]) {
                         *easy_rank += 1;
@@ -1421,6 +1326,36 @@ struct TensorImpl final {
     }
 
     /**
+     * @brief Create an axis-permuted view: result axis i takes parent axis ``perm[i]``.
+     *
+     * Like @ref transpose_view but for an arbitrary permutation of the axes
+     * (``transpose_view`` is the full-reversal special case). Does not move data;
+     * only the dims/strides are reordered. @p perm must be a permutation of
+     * ``[0, rank)`` (unchecked here — callers validate).
+     */
+    [[nodiscard]] constexpr TensorImpl<T> permute_view(std::vector<size_t> const &perm) {
+        BufferVector<size_t> new_dims, new_strides;
+        new_dims.reserve(perm.size());
+        new_strides.reserve(perm.size());
+        for (size_t const ax : perm) {
+            new_dims.push_back(_dims[ax]);
+            new_strides.push_back(_strides[ax]);
+        }
+        return TensorImpl<T>(_ptr, std::move(new_dims), std::move(new_strides));
+    }
+
+    [[nodiscard]] constexpr TensorImpl<T> const permute_view(std::vector<size_t> const &perm) const {
+        BufferVector<size_t> new_dims, new_strides;
+        new_dims.reserve(perm.size());
+        new_strides.reserve(perm.size());
+        for (size_t const ax : perm) {
+            new_dims.push_back(_dims[ax]);
+            new_strides.push_back(_strides[ax]);
+        }
+        return TensorImpl<T>(_ptr, std::move(new_dims), std::move(new_strides));
+    }
+
+    /**
      * @brief Create a row-major view.
      *
      * This does not permute the data. It only reverses the dimensions and strides,
@@ -1555,7 +1490,7 @@ struct TensorImpl final {
             temp_strides.reserve(_rank);
             temp_dims.reserve(_rank);
 
-            for (int i = 0; i < _rank; i++) {
+            for (int i = 0; std::cmp_less(i, _rank); i++) {
                 if (new_strides[i] != 0) {
                     temp_strides.push_back(new_strides[i]);
                     temp_dims.push_back(new_dims[i]);
@@ -1646,7 +1581,7 @@ struct TensorImpl final {
             temp_strides.reserve(_rank);
             temp_dims.reserve(_rank);
 
-            for (int i = 0; i < _rank; i++) {
+            for (int i = 0; std::cmp_less(i, _rank); i++) {
                 if (new_strides[i] != 0) {
                     temp_strides.push_back(new_strides[i]);
                     temp_dims.push_back(new_dims[i]);
@@ -1663,188 +1598,35 @@ struct TensorImpl final {
 
     [[nodiscard]] bool try_lock() const { return _mutex.try_lock(); }
 
-#ifdef EINSUMS_COMPUTE_CODE
-    void lock() { _mutex.lock(); }
-
-    void unlock() {
-        _mutex.unlock();
-        _core_modify_count++;
-    }
-
-    [[nodiscard]] bool try_lock() { return _mutex.try_lock(); }
-
-    void tensor_to_gpu() const {
-        if (_gpu_memory.expired()) {
-            return;
-        }
-
-        auto out = gpu::GPUPointer<T>(_gpu_memory.lock()->gpu_pointer);
-
-        if (get_incx() == 1 && is_totally_vectorable() && is_column_major()) {
-            std::memcpy(out, _ptr, _size * sizeof(T));
-        } else {
-            BufferVector<T> temp_buffer(_size);
-
-            // Force the use of column major since hipBLAS, hipSolver, and hipTensor all use column major.
-            TensorImpl<T> temp(temp_buffer.data(), _dims, false);
-
-            copy_to(*this, temp);
-
-            std::memcpy(out, temp.data(), _size * sizeof(T));
-        }
-        _gpu_modify_count = (size_t)_core_modify_count;
-    }
-
-    void tensor_from_gpu() {
-        if (!_gpu_memory.expired()) {
-            auto gpu_ptr = gpu::GPUPointer<T>(_gpu_memory.lock()->gpu_pointer);
-
-            if (get_incx() == 1 && is_totally_vectorable() && is_column_major()) {
-                std::memcpy(_ptr, gpu_ptr, _size * sizeof(T));
-            } else {
-                BufferVector<T> temp_buffer(_size);
-
-                // Force the use of column major since hipBLAS, hipSolver, and hipTensor all use column major.
-                TensorImpl<T> temp(temp_buffer.data(), _dims, false);
-
-                std::memcpy(temp.data(), gpu_ptr, _size * sizeof(T));
-
-                copy_to(temp, *this);
-            }
-            _core_modify_count = (size_t)_gpu_modify_count;
-        }
-    }
-
-    [[nodiscard]] GPULock gpu_cache_tensor() {
-        if (_gpu_memory.expired()) {
-            _gpu_memory       = BlockManager::get_singleton().request_gpu_block(_size * sizeof(T));
-            _gpu_modify_count = (size_t)_core_modify_count;
-            tensor_to_gpu();
-        }
-        auto cached_gpu_memory = _gpu_memory.lock();
-
-        if (cached_gpu_memory->size < _size * sizeof(T)) {
-            cached_gpu_memory.reset();
-            _gpu_memory.reset();
-            _gpu_memory       = BlockManager::get_singleton().request_gpu_block(_size * sizeof(T));
-            cached_gpu_memory = _gpu_memory.lock();
-            tensor_to_gpu();
-        }
-
-        if ((size_t)_gpu_modify_count < (size_t)_core_modify_count) {
-            tensor_to_gpu();
-        }
-
-        return cached_gpu_memory;
-    }
-
-    [[nodiscard]] GPULock gpu_cache_tensor_nowrite() {
-        if (_gpu_memory.expired()) {
-            _gpu_memory = BlockManager::get_singleton().request_gpu_block(_size * sizeof(T));
-        }
-        auto cached_gpu_memory = _gpu_memory.lock();
-
-        if (cached_gpu_memory->size < _size * sizeof(T)) {
-            cached_gpu_memory.reset();
-            _gpu_memory.reset();
-            _gpu_memory       = BlockManager::get_singleton().request_gpu_block(_size * sizeof(T));
-            cached_gpu_memory = _gpu_memory.lock();
-        }
-
-        return cached_gpu_memory;
-    }
-
-    [[nodiscard]] GPULock gpu_cache_tensor() const {
-        if (_gpu_memory.expired()) {
-            _gpu_memory = BlockManager::get_singleton().request_gpu_block(_size * sizeof(T));
-            tensor_to_gpu();
-        }
-        auto cached_gpu_memory = _gpu_memory.lock();
-
-        if (cached_gpu_memory->size < _size * sizeof(T)) {
-            cached_gpu_memory.reset();
-            _gpu_memory.reset();
-            _gpu_memory       = BlockManager::get_singleton().request_gpu_block(_size * sizeof(T));
-            cached_gpu_memory = _gpu_memory.lock();
-            tensor_to_gpu();
-        }
-
-        if ((size_t)_gpu_modify_count < (size_t)_core_modify_count) {
-            tensor_to_gpu();
-        }
-
-        return cached_gpu_memory;
-    }
-
-    [[nodiscard]] GPULock gpu_cache_tensor_nowrite() const {
-        if (_gpu_memory.expired()) {
-            _gpu_memory = BlockManager::get_singleton().request_gpu_block(_size * sizeof(T));
-        }
-
-        auto cached_gpu_memory = _gpu_memory.lock();
-
-        if (cached_gpu_memory->size < _size * sizeof(T)) {
-            cached_gpu_memory.reset();
-            _gpu_memory.reset();
-            _gpu_memory       = BlockManager::get_singleton().request_gpu_block(_size * sizeof(T));
-            cached_gpu_memory = _gpu_memory.lock();
-        }
-
-        return cached_gpu_memory;
-    }
-
-    [[nodiscard]] gpu::GPUPointer<T> get_gpu_pointer() {
-        if (_gpu_memory.expired()) {
-            return nullptr;
-        } else {
-            _gpu_modify_count++;
-            return _gpu_memory.lock()->gpu_pointer;
-        }
-    }
-
-    [[nodiscard]] gpu::GPUPointer<T const> get_gpu_pointer() const {
-        if (_gpu_memory.expired()) {
-            return nullptr;
-        } else {
-            return _gpu_memory.lock()->gpu_pointer;
-        }
-    }
-
-    [[nodiscard]] GPUPromise get_gpu_memory() const { return _gpu_memory; }
-
-    [[nodiscard]] bool gpu_is_expired() const { return _gpu_memory.expired(); }
-
-    void set_gpu_memory(GPULock const &other) const { _gpu_memory = other; }
-
-    void increment_core_modify() { _core_modify_count++; }
-
-    void increment_gpu_modify() { _gpu_modify_count++; }
-
-    void increment_core_modify() const { _core_modify_count++; }
-
-    void increment_gpu_modify() const { _gpu_modify_count++; }
-
-#else
-    constexpr void                  tensor_to_gpu() const {}
-    constexpr void                  tensor_from_gpu() const {}
-    [[nodiscard]] constexpr GPULock gpu_cache_tensor() const { return 0; }
-    [[nodiscard]] constexpr GPULock gpu_cache_tensor_nowrite() const { return 0; }
-    [[nodiscard]] constexpr GPULock    get_gpu_pointer() const { return 0; }
-    [[nodiscard]] constexpr GPUPromise get_gpu_memory() const { return 0; }
-    [[nodiscard]] constexpr bool       gpu_is_expired() const { return true; }
-    template <typename Ignore>
-    constexpr void set_gpu_memory(Ignore const &) const {}
-
-    constexpr void increment_core_modify() {}
-
-    constexpr void increment_gpu_modify() {}
-
-    constexpr void increment_core_modify() const {}
-
-    constexpr void increment_gpu_modify() const {}
-#endif
-
   private:
+    /// Compute strides from _dims and _row_major. Sets _strides and _size.
+    constexpr void compute_strides() {
+        _strides.resize(_rank);
+        _size = 1;
+        if (_row_major) {
+            for (int i = static_cast<int>(_rank) - 1; i >= 0; i--) {
+                _strides[i] = _size;
+                _size *= _dims[i];
+            }
+        } else {
+            for (size_t i = 0; i < _rank; i++) {
+                _strides[i] = _size;
+                _size *= _dims[i];
+            }
+        }
+    }
+
+    /// Infer _row_major from existing _strides and _dims.
+    constexpr void infer_row_major() {
+        if (_rank < 2 || (stride(0) > stride(-1))) {
+            _row_major = true;
+        } else if (stride(0) == stride(-1)) {
+            _row_major = (dim(0) > dim(-1));
+        } else {
+            _row_major = false;
+        }
+    }
+
     template <size_t __I, typename... MultiIndex>
     constexpr void adjust_ranges(std::tuple<MultiIndex...> &indices) const {
         if constexpr (__I >= sizeof...(MultiIndex)) {
@@ -1979,11 +1761,6 @@ struct TensorImpl final {
     BufferVector<size_t> _dims, _strides;
     bool                 _row_major;
     std::mutex mutable _mutex;
-
-#ifdef EINSUMS_COMPUTE_CODE
-    std::weak_ptr<GPUBlock> mutable _gpu_memory;
-    std::atomic<size_t> mutable _core_modify_count{0}, _gpu_modify_count{0};
-#endif
 };
 
 } // namespace detail
@@ -2006,7 +1783,6 @@ auto ndigits(T number) -> int {
 }
 } // namespace detail
 
-#ifndef DOXYGEN
 template <FileOrOStream Output, typename T>
 void fprintln(Output &fp, detail::TensorImpl<T> const &A, TensorPrintOptions options) {
     size_t Rank = A.rank();
@@ -2148,7 +1924,6 @@ template <typename T>
 void println(detail::TensorImpl<T> const &A, TensorPrintOptions options) {
     fprintln(std::cout, A, options);
 }
-#endif
 
 } // namespace einsums
 

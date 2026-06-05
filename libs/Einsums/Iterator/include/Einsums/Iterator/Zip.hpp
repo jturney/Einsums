@@ -291,7 +291,7 @@ struct Zip final {
      *
      * @versionadded{1.1.0}
      */
-    constexpr Zip(Containers &...containers) : containers_(std::tie(containers...)) {};
+    constexpr Zip(Containers &...containers) : containers_(std::tie(containers...)){};
 
     /**
      * @brief Copy assignment.

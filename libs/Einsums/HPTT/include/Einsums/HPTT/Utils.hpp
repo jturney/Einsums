@@ -31,8 +31,12 @@
 
 #pragma once
 
+#include <Einsums/Logging.hpp>
+
+#include <fmt/format.h>
+#include <fmt/ranges.h>
+
 #include <cstdint>
-#include <iostream>
 #include <list>
 #include <vector>
 
@@ -60,69 +64,93 @@ double conj(double x) {
     return x;
 }
 
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
+/// @copydoc conj<floatType>(floatType)
+template <>
+einsums::simd::half_t conj(einsums::simd::half_t x) {
+    return x;
+}
+#endif
+
+#if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
+/// @copydoc conj<floatType>(floatType)
+template <>
+einsums::simd::bfloat16_t conj(einsums::simd::bfloat16_t x) {
+    return x;
+}
+#endif
+
 /**
  * Get the value that we consider to be zero.
  */
 template <typename floatType>
-static double getZeroThreshold();
+static double get_zero_threshold();
 
 /// @copydoc getZeroThreshold<floatType>()
 template <>
-constexpr inline double getZeroThreshold<double>() {
+constexpr inline double get_zero_threshold<double>() {
     return 1e-16;
 }
 
 /// @copydoc getZeroThreshold<floatType>()
 template <>
-constexpr inline double getZeroThreshold<DoubleComplex>() {
+constexpr inline double get_zero_threshold<DoubleComplex>() {
     return 1e-16;
 }
 
 /// @copydoc getZeroThreshold<floatType>()
 template <>
-constexpr inline double getZeroThreshold<float>() {
+constexpr inline double get_zero_threshold<float>() {
     return 1e-6;
 }
 
 /// @copydoc getZeroThreshold<floatType>()
 template <>
-constexpr inline double getZeroThreshold<FloatComplex>() {
+constexpr inline double get_zero_threshold<FloatComplex>() {
     return 1e-6;
 }
+
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
+/// @copydoc getZeroThreshold<floatType>()
+template <>
+constexpr inline double get_zero_threshold<einsums::simd::half_t>() {
+    // FP16 has ~3 decimal digits; 1e-3 captures "effectively zero".
+    return 1e-3;
+}
+#endif
+
+#if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
+/// @copydoc getZeroThreshold<floatType>()
+template <>
+constexpr inline double get_zero_threshold<einsums::simd::bfloat16_t>() {
+    // BF16 has ~2 decimal digits; loose threshold matches the format's resolution.
+    return 1e-2;
+}
+#endif
 
 /**
  * @todo Figure this out.
  */
-void trashCache(double *A, double *B, size_t n);
+void trash_cache(double *A, double *B, size_t n);
 
 /**
  * Check whether a vector contains an item.
  */
 template <typename t>
-int hasItem(std::vector<t> const &vec, t value) {
+int has_item(std::vector<t> const &vec, t value) {
     return (std::find(vec.begin(), vec.end(), value) != vec.end());
 }
 
-/**
- * Print a vector to stdout.
- */
+/// Log the contents of a vector.
 template <typename t>
-void printVector(std::vector<t> const &vec, char const *label) {
-    std::cout << label << ": ";
-    for (auto a : vec)
-        std::cout << a << ", ";
-    std::cout << "\n";
+void print_vector(std::vector<t> const &vec, char const *label) {
+    EINSUMS_LOG_DEBUG("HPTT: {}: [{}]", label, fmt::join(vec, ", "));
 }
 
-/**
- * Print a list to stdout.
- */
+/// Log the contents of a list.
 template <typename t>
-void printVector(std::list<t> const &vec, char const *label) {
-    std::cout << label << ": ";
-    for (auto a : vec)
-        std::cout << a << ", ";
-    std::cout << "\n";
+void print_vector(std::list<t> const &vec, char const *label) {
+    EINSUMS_LOG_DEBUG("HPTT: {}: [{}]", label, fmt::join(vec, ", "));
 }
 
 /**
@@ -133,29 +161,27 @@ void printVector(std::list<t> const &vec, char const *label) {
  * @param primeFactors The list of factors.
  */
 template <typename T>
-void getPrimeFactors(T n, std::list<T> &primeFactors);
-
-#ifndef DOXYGEN
-template <>
-void getPrimeFactors(std::uint8_t n, std::list<std::uint8_t> &primeFactors);
-template <>
-void getPrimeFactors(std::uint16_t n, std::list<std::uint16_t> &primeFactors);
-template <>
-void getPrimeFactors(std::uint32_t n, std::list<std::uint32_t> &primeFactors);
+void get_prime_factors(T n, std::list<T> &primeFactors);
 
 template <>
-void getPrimeFactors(std::int8_t n, std::list<std::int8_t> &primeFactors);
+void get_prime_factors(std::uint8_t n, std::list<std::uint8_t> &primeFactors);
 template <>
-void getPrimeFactors(std::int16_t n, std::list<std::int16_t> &primeFactors);
+void get_prime_factors(std::uint16_t n, std::list<std::uint16_t> &primeFactors);
 template <>
-void getPrimeFactors(std::int32_t n, std::list<std::int32_t> &primeFactors);
-#endif
+void get_prime_factors(std::uint32_t n, std::list<std::uint32_t> &primeFactors);
+
+template <>
+void get_prime_factors(std::int8_t n, std::list<std::int8_t> &primeFactors);
+template <>
+void get_prime_factors(std::int16_t n, std::list<std::int16_t> &primeFactors);
+template <>
+void get_prime_factors(std::int32_t n, std::list<std::int32_t> &primeFactors);
 
 /**
  * Find where a value is in an array.
  */
 template <typename t>
-int findPos(t value, std::vector<t> const &array) {
+int find_pos(t value, std::vector<t> const &array) {
     for (int i = 0; i < array.size(); ++i)
         if (array[i] == value)
             return i;
@@ -171,7 +197,7 @@ int findPos(t value, std::vector<t> const &array) {
  *
  * @return The position of the value, or -1 if not found.
  */
-int findPos(int value, int const *array, int n);
+int find_pos(int value, int const *array, int n);
 
 /**
  * Calculate the factorial of a number. Can only take factorials of numbers up to but not
@@ -188,7 +214,7 @@ std::uint64_t factorial(std::uint8_t n);
 /**
  * Reorders parameters to swap between row-major and column-major forms.
  */
-void accountForRowMajor(size_t const *sizeA, size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA,
-                        size_t const *offsetB, int const *perm, size_t *tmpSizeA, size_t *tmpOuterSizeA, size_t *tmpouterSizeB,
-                        size_t *tmpOffsetA, size_t *tmpOffsetB, int *tmpPerm, int const dim, bool const useRowMajor);
+void account_for_row_major(size_t const *sizeA, size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA,
+                           size_t const *offsetB, int const *perm, size_t *tmpSizeA, size_t *tmpOuterSizeA, size_t *tmpouterSizeB,
+                           size_t *tmpOffsetA, size_t *tmpOffsetB, int *tmpPerm, int const dim, bool const useRowMajor);
 } // namespace hptt

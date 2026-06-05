@@ -134,9 +134,7 @@ TEMPLATE_TEST_CASE("shared_ptr", "[tensor_algebra]", float, double) { //, std::c
         zero(C0);
         zero(C1);
 
-        REQUIRE_NOTHROW(einsum(TestType{2.0}, Indices{i, j}, &C0,
-                               TestType{0.5}, Indices{i, k}, A,
-                               Indices{k, j}, B));
+        REQUIRE_NOTHROW(einsum(TestType{2.0}, Indices{i, j}, &C0, TestType{0.5}, Indices{i, k}, A, Indices{k, j}, B));
         // C1 = 0.5 * (*A) * (*B)  (C1 was zero, so 2.0 * 0 + 0.5 * A * B)
         linear_algebra::gemm<false, false>(0.5, *A, *B, 0.0, &C1);
 

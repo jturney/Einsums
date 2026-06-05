@@ -17,6 +17,18 @@
 namespace einsums {
 
 /**
+ * @brief Sentinel value for ``Tensor::Rank`` on tensor types whose rank is
+ *        not known at compile time (e.g. ``GeneralRuntimeTensor``).
+ *
+ * Concepts that compare ``Rank`` across tensor types (``IsSameRankV``,
+ * ``SameRank``, ``SameUnderlyingAndRank``) treat any operand whose
+ * ``Rank == dynamic_rank`` as a wildcard — no compile-time mismatch can
+ * be inferred against it. Runtime-rank checks remain the caller's
+ * responsibility.
+ */
+inline constexpr int dynamic_rank = -1;
+
+/**
  * @def DEFINE_STRUCT
  *
  * @brief Convenience macro for creating a type derived from a std::array.
@@ -204,7 +216,6 @@ struct Chunk : std ::array<std ::int64_t, Rank> {
     constexpr explicit Chunk(Args... args) : std ::array<std ::int64_t, Rank>{static_cast<std ::int64_t>(args)...} {}
 };
 
-#ifndef DOXYGEN
 template <typename... Args>
 Dim(Args... args) -> Dim<sizeof...(Args)>;
 
@@ -219,7 +230,6 @@ Count(Args... args) -> Count<sizeof...(Args)>;
 
 template <typename... Args>
 Chunk(Args... args) -> Chunk<sizeof...(Args)>;
-#endif
 
 /**
  * @struct Range
@@ -350,8 +360,6 @@ struct formatter<einsums::Dim<Rank>> {
     }
 };
 
-#if !defined(DOXYGEN)
-
 template <size_t Rank>
 struct formatter<einsums::Stride<Rank>> {
     constexpr auto parse(format_parse_context &ctx) -> format_parse_context::iterator {
@@ -456,4 +464,3 @@ struct formatter<einsums::Range> {
     }
 };
 } // namespace fmt
-#endif

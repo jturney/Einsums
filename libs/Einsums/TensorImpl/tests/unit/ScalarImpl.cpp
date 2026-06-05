@@ -39,7 +39,7 @@ TEMPLATE_TEST_CASE("Scalars", "[tensor]", float, double, std::complex<float>, st
         }
 
         SECTION("Operations") {
-            std::remove_cv_t<TestType> value2 = 2.0;
+            std::remove_cv_t<TestType> const value2 = 2.0;
 
             SECTION("Add") {
                 detail::add_assign(value2, tensor);

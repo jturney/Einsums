@@ -16,7 +16,7 @@ namespace einsums {
  *
  * @brief Tests if the given type is a file pointer.
  *
- * Only returns true if the type is FILE *.
+ * Only returns true if the type is ``FILE *``.
  *
  * @tparam T The type to test.
  *

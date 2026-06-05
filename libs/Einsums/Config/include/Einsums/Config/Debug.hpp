@@ -5,18 +5,10 @@
 
 #pragma once
 
-#if defined(DOXYGEN)
-/// Defined if Einsums is compiled in debug mode.
-/// @versionadded{1.0.1}
-#    define EINSUMS_DEBUG
+#if defined(EINSUMS_DEBUG)
 /// Evaluates to ``debug`` if compiled in debug mode, ``release`` otherwise.
 /// @versionadded{1.0.1}
-#    define EINSUMS_BUILD_TYPE
+#    define EINSUMS_BUILD_TYPE debug
 #else
-
-#    if defined(EINSUMS_DEBUG)
-#        define EINSUMS_BUILD_TYPE debug
-#    else
-#        define EINSUMS_BUILD_TYPE release
-#    endif
+#    define EINSUMS_BUILD_TYPE release
 #endif

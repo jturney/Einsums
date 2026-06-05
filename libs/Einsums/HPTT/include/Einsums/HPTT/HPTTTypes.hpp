@@ -27,14 +27,10 @@
 
 #pragma once
 
-#include <complex.h>
-#include <complex>
+#include <Einsums/SIMD/Platform.hpp>
+#include <Einsums/SIMD/Vec.hpp>
 
-#define REGISTER_BITS 256 // AVX
-#ifdef __aarch64__
-#    undef REGISTER_BITS
-#    define REGISTER_BITS 128 // ARM
-#endif
+#include <complex>
 
 namespace hptt {
 
@@ -46,7 +42,7 @@ namespace hptt {
  * * PATIENT: 60 seconds
  * * CRAZY : 3600 seconds
  */
-enum SelectionMethod { ESTIMATE, MEASURE, PATIENT, CRAZY };
+enum SelectionMethod : std::uint8_t { ESTIMATE, MEASURE, PATIENT, CRAZY };
 
 /**
  * @typedef FloatComplex

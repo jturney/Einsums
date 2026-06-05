@@ -41,8 +41,9 @@ void set_assertion_handler(assertion_handler_type handler) {
 void handle_assert(std::source_location const &loc, char const *expr, std::string const &msg) {
     if (get_handler() == nullptr) {
         default_assertion_handler(loc, expr, msg);
+    } else {
+        get_handler()(loc, expr, msg);
     }
-    get_handler()(loc, expr, msg);
 }
 
 } // namespace einsums::detail

@@ -24,9 +24,7 @@ TEST_CASE("File opening and closing") {
 
     auto &singleton = detail::Einsums_Tensor_vars::get_singleton();
 
-    {
-        DiskTensor<double, 2> A("/open-test", 3, 3);
-    }
+    { DiskTensor<double, 2> A("/open-test", 3, 3); }
 
     H5Fclose(singleton.hdf5_file);
 
@@ -75,9 +73,7 @@ TEMPLATE_TEST_CASE("Write/Read", "[disktensor]", float, double, std::complex<flo
     // Data must exist on disk before it can be read in.
     Tensor Ad = create_random_tensor<TestType>("A", 3, 3);
 
-    {
-        A(All, All) = Ad;
-    }
+    { A(All, All) = Ad; }
 
     auto suba = A(0, All);
     // println(suba);
@@ -126,9 +122,7 @@ TEMPLATE_TEST_CASE("Write/Read compressed", "[disktensor]", float, double, std::
     // Data must exist on disk before it can be read in.
     Tensor Ad = create_random_tensor<TestType>("A", 3, 3);
 
-    {
-        A(All, All) = Ad;
-    }
+    { A(All, All) = Ad; }
 
     auto suba = A(0, All);
     // println(suba);

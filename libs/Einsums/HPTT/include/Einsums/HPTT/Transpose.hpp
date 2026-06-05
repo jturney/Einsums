@@ -26,13 +26,16 @@
 */
 #pragma once
 
+#include <Einsums/Logging.hpp>
+
+#include <fmt/format.h>
+#include <fmt/ranges.h>
+
 #include <algorithm>
 #include <list>
 #include <memory>
-#include <stdio.h>
 #include <vector>
 
-#include "Einsums/HPTT/Files.hpp"
 #include "HPTTTypes.hpp"
 #ifdef _OPENMP
 #    include <omp.h>
@@ -64,7 +67,7 @@ class Plan;
  * @tparam floatType The type of data this class can handle.
  */
 template <typename floatType>
-class Transpose {
+class EINSUMS_EXPORT Transpose {
 
   public:
     /***************************************************
@@ -130,74 +133,74 @@ class Transpose {
     /**
      * Indicates whether to conjugate the input tensor.
      */
-    bool getConjA() noexcept { return conjA_; }
+    bool get_conj_a() noexcept { return _conjA; }
 
     /**
      * Change whether to conjugate the input tensor.
      */
-    void setConjA(bool conjA) noexcept { conjA_ = conjA; }
+    void set_conj_a(bool conjA) noexcept { _conjA = conjA; }
 
     /**
      * Get the number of threads to use in this operation.
      */
-    int getNumThreads() const noexcept { return numThreads_; }
+    [[nodiscard]] int get_num_threads() const noexcept { return _numThreads; }
 
     /**
      * Set the number of threads to use in this operation.
      */
-    void setNumThreads(int numThreads) noexcept { numThreads_ = numThreads; }
+    void set_num_threads(int numThreads) noexcept { _numThreads = numThreads; }
 
     /**
      * Get the scaling factor for A.
      */
-    floatType getAlpha() const noexcept { return alpha_; }
+    [[nodiscard]] floatType get_alpha() const noexcept { return _alpha; }
 
     /**
      * Get the scaling factor for B.
      */
-    floatType getBeta() const noexcept { return beta_; }
+    [[nodiscard]] floatType get_beta() const noexcept { return _beta; }
     /**
      * \brief set the scaling factor for A.
      */
-    void setAlpha(floatType alpha) noexcept { alpha_ = alpha; }
+    void set_alpha(floatType alpha) noexcept { _alpha = alpha; }
     /**
      * \brief set the scaling factor for B.
      */
-    void setBeta(floatType beta) noexcept { beta_ = beta; }
+    void set_beta(floatType beta) noexcept { _beta = beta; }
     /**
      * \brief Set the pointer for A
      *
      * This features is especially useful if one wants to reuse the
      * transposition over multiple invocations.
      */
-    void setInputPtr(floatType const *A) noexcept { A_ = A; }
+    void set_input_ptr(floatType const *A) noexcept { _A = A; }
     /**
      * \brief Set the pointer for B
      *
      * This features is especially useful if one wants to reuse the
      * transposition over multiple invocations.
      */
-    void setOutputPtr(floatType *B) noexcept { B_ = B; }
+    void set_output_ptr(floatType *B) noexcept { _B = B; }
     /**
      * \brief Get raw-data pointer to A
      */
-    floatType const *getInputPtr() const noexcept { return A_; }
+    [[nodiscard]] floatType const *get_input_ptr() const noexcept { return _A; }
     /**
      * \brief Get raw-data pointer to B
      */
-    floatType *getOutputPtr() const noexcept { return B_; }
+    [[nodiscard]] floatType *get_output_ptr() const noexcept { return _B; }
 
     /**
      * \brief Clears the array that stores the OpenMP threadIds. This function
      *        should only be used in conjuction with addThreadId().
      */
-    void resetThreadIds() noexcept { threadIds_.clear(); }
+    void reset_thread_ids() noexcept { _threadIds.clear(); }
 
     /**
      * setMaxAutotuningCandidates() enables users to specify the number of
      * candidates that should be tested during the autotuning phase
      */
-    void setMaxAutotuningCandidates(int num) { maxAutotuningCandidates_ = num; }
+    void set_max_autotuning_candidates(int num) { _maxAutotuningCandidates = num; }
 
     /**
      * This thread-safe function adds an OpenMP threadId to the set of threads
@@ -209,28 +212,24 @@ class Transpose {
      *
      * \param[in] threadId An OpenMP threadId
      */
-    void addThreadId(int threadId) noexcept {
+    void add_thread_id(int threadId) noexcept {
 #ifdef _OPENMP
-        omp_set_lock(&writelock);
-        threadIds_.push_back(threadId);
-        std::sort(threadIds_.begin(), threadIds_.end());
-        omp_unset_lock(&writelock);
+        omp_set_lock(&_writelock);
+        _threadIds.push_back(threadId);
+        std::ranges::sort(_threadIds);
+        omp_unset_lock(&_writelock);
 #endif
     }
 
     /**
      * Prints the thread ID's used in this operation.
      */
-    void printThreadIds() const noexcept {
-        for (auto id : threadIds_)
-            printf("%d, ", id);
-        printf("\n");
-    }
+    void print_thread_ids() const noexcept { EINSUMS_LOG_DEBUG("HPTT: thread IDs: [{}]", fmt::join(_threadIds, ", ")); }
 
     /**
      * Gets the ID of the master thread for the operation.
      */
-    int getMasterThreadId() const noexcept { return threadIds_[0]; }
+    [[nodiscard]] int get_master_thread_id() const noexcept { return _threadIds[0]; }
 
     /***************************************************
      * Public Methods
@@ -238,7 +237,7 @@ class Transpose {
     /**
      * \brief Creates the plan that encodes the execution of the tensor transposition.
      */
-    void createPlan();
+    void create_plan();
 
     /**
      * Executes the transposition. This functions requires that the plan has
@@ -274,78 +273,78 @@ class Transpose {
      */
     void print() noexcept;
 
-    void writeToFile(std::FILE *fp) const;
+    void write_to_file(std::FILE *fp) const;
     Transpose(std::FILE *fp, floatType alpha, floatType const *A, floatType beta, floatType *B);
 
   private:
     /***************************************************
      * Private Methods
      ***************************************************/
-    void                  createPlans(std::vector<std::shared_ptr<Plan>> &plans) const;
-    std::shared_ptr<Plan> selectPlan(std::vector<std::shared_ptr<Plan>> const &plans);
-    void                  fuseIndices();
-    void   skipIndices(size_t const *_sizeA, int const *_perm, size_t const *_outerSizeA, size_t const *_outerSizeB, size_t const *_offsetA,
-                       size_t const *_offsetB, int const dim);
-    void   computeLeadingDimensions();
-    double loopCostHeuristic(std::vector<int> const &loopOrder) const;
-    double parallelismCostHeuristic(std::vector<int> const &loopOrder) const;
-    int    getLocalThreadId(int myThreadId) const;
+    void                  create_plans(std::vector<std::shared_ptr<Plan>> &plans) const;
+    std::shared_ptr<Plan> select_plan(std::vector<std::shared_ptr<Plan>> const &plans);
+    void                  fuse_indices();
+    void skip_indices(size_t const *_sizeA, int const *_perm, size_t const *_outerSizeA, size_t const *_outerSizeB, size_t const *_offsetA,
+                      size_t const *_offsetB, int const dim);
+    void compute_leading_dimensions();
+    [[nodiscard]] double loop_cost_heuristic(std::vector<int> const &loopOrder) const;
+    [[nodiscard]] double parallelism_cost_heuristic(std::vector<int> const &loopOrder) const;
+    [[nodiscard]] int    get_local_thread_id(int myThreadId) const;
     template <bool spawnThreads>
-    void getStartEnd(size_t n, size_t &myStart, size_t &myEnd) const;
-    void setParallelStrategy(int id) noexcept { selectedParallelStrategyId_ = id; }
-    void setLoopOrder(int id) noexcept { selectedLoopOrderId_ = id; }
+    void get_start_end(size_t n, size_t &myStart, size_t &myEnd) const;
+    void set_parallel_strategy(int id) noexcept { _selectedParallelStrategyId = id; }
+    void set_loop_order(int id) noexcept { _selectedLoopOrderId = id; }
 
     /***************************************************
      * Helper Methods
      ***************************************************/
     // parallelizes the loops by changing the value of parallelismStrategy
-    void   parallelize(std::vector<int> &parallelismStrategy, std::vector<int> &availableParallelismAtLoop, int &totalTasks,
-                       std::list<int> &primeFactors, float const minBalancing, std::vector<int> const &loopsAllowed) const;
-    float  getLoadBalance(std::vector<int> const &parallelismStrategy) const;
-    float  estimateExecutionTime(std::shared_ptr<Plan> const plan); // execute just a few iterations and extrapolate the result
-    void   verifyParameter(size_t const *size, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA,
+    void                parallelize(std::vector<int> &parallelismStrategy, std::vector<int> &availableParallelismAtLoop, int &totalTasks,
+                                    std::list<int> &primeFactors, float const minBalancing, std::vector<int> const &loopsAllowed) const;
+    [[nodiscard]] float get_load_balance(std::vector<int> const &parallelismStrategy) const;
+    float estimate_execution_time(std::shared_ptr<Plan> const plan); // execute just a few iterations and extrapolate the result
+    void  verify_parameter(size_t const *size, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA,
                            size_t const *offsetB, size_t const innerStrideA, size_t const innerStrideB, int const dim) const;
-    void   getBestParallelismStrategy(std::vector<int> &bestParallelismStrategy) const;
-    void   getBestLoopOrder(std::vector<int> &loopOrder) const; // innermost loop idx is stored at dim_-1
-    void   getLoopOrders(std::vector<std::vector<int>> &loopOrders) const;
-    void   getParallelismStrategies(std::vector<std::vector<int>> &parallelismStrategies) const;
-    void   getAllParallelismStrategies(std::list<int> &primeFactorsToMatch, std::vector<int> &availableParallelismAtLoop,
-                                       std::vector<int>              &achievedParallelismAtLoop,
-                                       std::vector<std::vector<int>> &parallelismStrategies) const;
-    void   getAvailableParallelism(std::vector<int> &numTasksPerLoop) const;
-    size_t getIncrement(int loopIdx) const;
+    void  get_best_parallelism_strategy(std::vector<int> &bestParallelismStrategy) const;
+    void  get_best_loop_order(std::vector<int> &loopOrder) const; // innermost loop idx is stored at dim_-1
+    void  get_loop_orders(std::vector<std::vector<int>> &loopOrders) const;
+    void  get_parallelism_strategies(std::vector<std::vector<int>> &parallelismStrategies) const;
+    void  get_all_parallelism_strategies(std::list<int> &primeFactorsToMatch, std::vector<int> &availableParallelismAtLoop,
+                                         std::vector<int>              &achievedParallelismAtLoop,
+                                         std::vector<std::vector<int>> &parallelismStrategies) const;
+    void  get_available_parallelism(std::vector<int> &numTasksPerLoop) const;
+    [[nodiscard]] size_t get_increment(int loopIdx) const;
     void
-    executeEstimate(Plan const *plan) noexcept; // almost identical to execute, but it just executes few iterations and then extrapolates
-    double getTimeLimit() const;
+    execute_estimate(Plan const *plan) noexcept; // almost identical to execute, but it just executes few iterations and then extrapolates
+    [[nodiscard]] double get_time_limit() const;
 
-    floatType const    *A_;            //!< rawdata pointer for A
-    floatType          *B_;            //!< rawdata pointer for B
-    floatType           alpha_;        //!< scaling factor for A
-    floatType           beta_;         //!< scaling factor for B
-    int                 dim_;          //!< dimension of the tensor
-    std::vector<size_t> sizeA_;        //!< size of A
-    std::vector<int>    perm_;         //!< permutation
-    std::vector<size_t> outerSizeA_;   //!< outer sizes of A
-    std::vector<size_t> outerSizeB_;   //!< outer sizes of B
-    std::vector<size_t> offsetA_;      //!< offsets of A
-    std::vector<size_t> offsetB_;      //!< offsets of B
-    size_t              innerStrideA_; //!< innerStride of A
-    size_t              innerStrideB_; //!< innerStride of B
-    std::vector<size_t> lda_;          //!< strides for all dimensions of A (first dimension has a stride of 1)
-    std::vector<size_t> ldb_;          //!< strides for all dimensions of B (first dimension has a stride of 1)
-    std::vector<int>    threadIds_;    //!< OpenMP threadIds of the threads involed in the transposition
-    int                 numThreads_;
-    int                 selectedParallelStrategyId_;
-    int                 selectedLoopOrderId_;
-    bool                conjA_;
+    floatType const    *_A;            //!< rawdata pointer for A
+    floatType          *_B;            //!< rawdata pointer for B
+    floatType           _alpha;        //!< scaling factor for A
+    floatType           _beta;         //!< scaling factor for B
+    int                 _dim;          //!< dimension of the tensor
+    std::vector<size_t> _sizeA;        //!< size of A
+    std::vector<int>    _perm;         //!< permutation
+    std::vector<size_t> _outerSizeA;   //!< outer sizes of A
+    std::vector<size_t> _outerSizeB;   //!< outer sizes of B
+    std::vector<size_t> _offsetA;      //!< offsets of A
+    std::vector<size_t> _offsetB;      //!< offsets of B
+    size_t              _innerStrideA; //!< innerStride of A
+    size_t              _innerStrideB; //!< innerStride of B
+    std::vector<size_t> _lda;          //!< strides for all dimensions of A (first dimension has a stride of 1)
+    std::vector<size_t> _ldb;          //!< strides for all dimensions of B (first dimension has a stride of 1)
+    std::vector<int>    _threadIds;    //!< OpenMP threadIds of the threads involed in the transposition
+    int                 _numThreads;
+    int                 _selectedParallelStrategyId;
+    int                 _selectedLoopOrderId;
+    bool                _conjA;
 #ifdef _OPENMP
-    omp_lock_t writelock;
+    omp_lock_t _writelock;
 #endif
 
-    std::shared_ptr<Plan> masterPlan_;
-    SelectionMethod       selectionMethod_;
-    int                   maxAutotuningCandidates_;
-    static constexpr int  blocking_micro_ = REGISTER_BITS / 8 / sizeof(floatType);
+    std::shared_ptr<Plan> _masterPlan;
+    SelectionMethod       _selectionMethod;
+    int                   _maxAutotuningCandidates;
+    static constexpr int  blocking_micro_ = einsums::simd::native_bits / 8 / sizeof(floatType);
     static constexpr int  blocking_       = blocking_micro_ * 4;
 
     static constexpr int infoLevel_ = 0; // determines which auxiliary messages should be printed
@@ -355,5 +354,13 @@ extern template class Transpose<float>;
 extern template class Transpose<double>;
 extern template class Transpose<FloatComplex>;
 extern template class Transpose<DoubleComplex>;
+
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
+extern template class Transpose<einsums::simd::half_t>;
+#endif
+
+#if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
+extern template class Transpose<einsums::simd::bfloat16_t>;
+#endif
 
 } // namespace hptt

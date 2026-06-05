@@ -19,3 +19,8 @@ foreach(test ${TensorUtilitiesTests})
 
   einsums_add_unit_test("Modules.TensorUtilities" ${test})
 endforeach()
+
+einsums_add_python_unit_test(
+  "Modules.TensorUtilities" CreatePython
+  SCRIPT test_create_python.py
+)
