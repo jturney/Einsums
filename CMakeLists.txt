@@ -825,6 +825,40 @@ set(CMAKE_DEBUG_POSTFIX "d")
 set(EINSUMS_DEBUG_POSTFIX "d")
 
 # ##################################################################################################
+# apiary — annotation contract + binding/docs codegen (external/apiary submodule)
+# Must precede libs/ so that the apiary target and PyEinsums-related targets
+# exist by the time individual modules' einsums_add_module(...) hooks attach.
+# ##################################################################################################
+# The submodule provides two independent pieces (see external/apiary/CMakeLists.txt):
+#   * apiary::annotations — header-only APIARY_* macros. Included transitively
+#     from Logging.hpp, so EVERY translation unit needs them; the header must be
+#     vendored and INSTALLED unconditionally or a downstream find_package(Einsums)
+#     of a pure-C++ (EINSUMS_BUILD_PYTHON=OFF) install fails to compile.
+#   * apiary             — the libtooling codegen executable. It drives the
+#     per-module pybind11 bindings (EINSUMS_BUILD_PYTHON) and the C++ API
+#     reference (EINSUMS_WITH_DOCUMENTATION). It pulls in the Clang/LLVM dev
+#     stack, so it is built only when one of those consumers is enabled.
+#
+# add_subdirectory is therefore UNCONDITIONAL; only the executable is gated, via
+# APIARY_BUILD_TOOL. Our 3.25 floor means CMP0077 is NEW, so this normal variable
+# drives the submodule's option() directly.
+if(EINSUMS_BUILD_PYTHON OR EINSUMS_WITH_DOCUMENTATION)
+  set(APIARY_BUILD_TOOL ON)
+else()
+  set(APIARY_BUILD_TOOL OFF)
+endif()
+add_subdirectory(external/apiary)
+
+# Probe the build compiler for the system/stdlib include paths libtooling needs
+# (resource-dir, conda isystem, C++ stdlib dirs). Provided by the apiary
+# submodule's ApiaryHelpers; results land in APIARY_SYSTEM_FLAGS / APIARY_* and
+# are consumed by einsums_finalize_pybind(). Only meaningful when the codegen
+# executable was actually built.
+if(TARGET apiary)
+  apiary_detect_toolchain(CXX_STANDARD ${EINSUMS_WITH_CXX_STANDARD})
+endif()
+
+# ##################################################################################################
 # Add libraries
 # ##################################################################################################
 add_subdirectory(libs)
