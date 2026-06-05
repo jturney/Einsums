@@ -40,6 +40,8 @@ set(_Einsums_modules
   Tensor
   PackedGemm
   TensorAlgebra
+  ComputeGraphTypes
+  ComputeGraph
   TensorBase
   TensorImpl
   TensorUtilities
