@@ -63,14 +63,14 @@ Basic Arguments
 .. option:: --einsums:buffer-size
 
     The amount of memory Einsums is allowed to use. It takes a string containing a number and units.
-    The units are either bytes or words. See :cpp:func:`memory_string` for more information.
+    The units are either bytes or words. See :cpp:func:`einsums::string_util::memory_string` for more information.
 
     .. versionadded:: 1.0.0
 
 .. option:: --einsums:gpu-buffer-size
 
     The amount of memory Einsums is allowed to use on the GPU. It takes a string containing a number and units.
-    The units are either bytes or words. See :cpp:func:`memory_string` for more information.
+    The units are either bytes or words. See :cpp:func:`einsums::string_util::memory_string` for more information.
 
     .. versionadded:: 1.0.0
 
@@ -119,3 +119,31 @@ Advanced Arguments
     .. versionadded:: 1.0.0
     .. versionchanged:: 2.0.0
         This option's name has been changed.
+
+==========================
+ComputeGraph Pass Options
+==========================
+
+.. option:: --einsums:pass:disable <PASSES>
+
+    Comma-separated list of optimization pass names to skip when ``PassManager::run()``
+    is called. Use this to A/B test whether a specific pass helps or hurts performance.
+
+    Example: ``--einsums:pass:disable CSE,Reorder``
+
+    .. versionadded:: 2.0.0
+
+.. option:: --einsums:pass:analyze
+
+    Run all passes in analysis-only mode. Each pass executes normally and reports what
+    it found, but the graph is restored to its original state afterward. No modifications
+    persist.
+
+    .. versionadded:: 2.0.0
+
+.. option:: --einsums:pass:verbose
+
+    Log node count and wall-clock time before and after each optimization pass, even for
+    passes that don't modify the graph.
+
+    .. versionadded:: 2.0.0

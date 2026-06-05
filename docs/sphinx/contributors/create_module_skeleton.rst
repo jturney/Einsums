@@ -32,8 +32,8 @@ Options
 ``--gpu``: If included, the new package will be set up as a GPU-enabled module.
 
 ``--python-name PYTHON_NAME``: If included, the name of the library as seen by Python. This
-may be different from the name of the library. For instance, the ``EinsumsPy`` module is given
-the Python name of ``core``.
+may be different from the name of the library. For instance, the ``Python`` module is given
+the Python name of ``_core``.
 
 ``--reindex``: Goes through and updates the CMake files and auto-generated documentation to
 see the modules that are currently present. If no libraries are given, it will reindex all

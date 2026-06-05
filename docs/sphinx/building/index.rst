@@ -34,22 +34,26 @@ other system-level dependencies to build it on your system.
 
   If you are using Conda, you can skip the steps in this section - with the
   exception of installing the Apple Developer Tools for macOS. All other
-  dependencies will be installed automatically by the following command:
+  dependencies will be installed automatically. Generate an environment file
+  with the merge script and create the environment from it:
 
   .. code:: bash
 
-    conda env create -f devtools/conda-envs/basic_einsums.yml
-    conda activate einsums
+    python3 devtools/conda-envs/merge_yml.py --output=einsums.yml
+    conda env create -f einsums.yml
+    conda activate einsums-dev
 
-  For a more personalized conda environment, we suggest using the merge script. The options for the 
-  compiler are ``default``, ``intel``, and ``windows``. The options for the BLAS library are ``openblas`` and ``mkl``.
-  If you plan on building the docs, then you can add the ``--docs`` flag as shown. If not, then this can be omitted.
+  The merge script picks a sensible toolchain and BLAS for your platform, but
+  both can be overridden. The compiler options are ``default`` (gcc on Linux,
+  clang on macOS/Windows), ``gcc``, ``clang``, and ``intel``. The BLAS options
+  are ``openblas``, ``mkl``, and ``accelerate`` (macOS). If you plan on building
+  the docs, add the ``--docs`` flag. For example:
 
   .. code:: bash
 
     python3 devtools/conda-envs/merge_yml.py --output=einsums.yml [--docs] <compiler> <blas>
     conda env create -f einsums.yml
-    conda activate einsums
+    conda activate einsums-dev
 
   If you don't have a conda installation yet, we recommend using
   Condaforge_; any conda flavor will work though.

@@ -14,20 +14,20 @@ What's New
 ----------
 
 * Views of block and tiled tensors has been made easier.
-* :cpp:class:`TensorView`s can be made from :cpp:class:`RuntimeTensor`s and :cpp:class:`RuntimeTensorView`s
+* :cpp:class:`TensorView`\ s can be made from :cpp:class:`RuntimeTensor`\ s and :cpp:class:`RuntimeTensorView`\ s
   so that compile-time rank can be assigned to them.
 * Buffer allocators for future projects. These allow users to limit the amount of memory used by Einsums.
 * Tensor permutations where the smallest stride is not 1.
 * The in-core generic algorithm is now much more performant.
-* The dispatching function for :cpp:func:`einsum` is now more modular, so it is hopefully easier to maintain.
-* Einsum calls can now be batched over containers, such as ``vector``s and ``array``s of tensors.
+* The dispatching function for :cpp:func:`~einsums::einsum` is now more modular, so it is hopefully easier to maintain.
+* Einsum calls can now be batched over containers, such as ``vector``\ s and ``array``\ s of tensors.
 * Linear algebra functions are now available in Python.
 * Complex implementations for several linear algebra functions that were previously missing, such as gees.
 
 What's Removed
 --------------
 
-* ``sort`` is no longer a valid alias for :cpp:func:`permute`.
+* ``sort`` is no longer a valid alias for :cpp:func:`~einsums::permute`.
 
 Bug Fixes
 ---------
