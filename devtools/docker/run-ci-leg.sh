@@ -4,6 +4,12 @@
 # per-leg conda envs), so the first invocation pays the conda env creation
 # cost (~10 min) and every subsequent rebuild/test cycle is incremental.
 #
+# PREREQUISITE: the external/apiary submodule must be checked out on the host
+# before running. This script copies the host working tree into the container
+# (it does NOT run `git submodule update`), so an uninitialized submodule yields
+# a confusing CMake error ("external/apiary does not contain a CMakeLists.txt").
+# Run once:  git submodule update --init --recursive external/apiary
+#
 # Usage (run from repo root):
 #
 #     # First-time setup — start the persistent container:
