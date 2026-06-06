@@ -196,7 +196,7 @@ inline void sort_k_dims_for_packing(PackingPlan &plan) {
 
     // Build index permutation sorted descending by max(stride_A, stride_B).
     std::vector<size_t> perm(n);
-    std::ranges::iota(perm, size_t{0});
+    std::iota(perm.begin(), perm.end(), size_t{0});
     std::ranges::sort(perm, [&](size_t a, size_t b) {
         int64_t const max_a = std::max(plan.k_dims_in_a[a].tensor_stride, plan.k_dims_in_b[a].tensor_stride);
         int64_t const max_b = std::max(plan.k_dims_in_a[b].tensor_stride, plan.k_dims_in_b[b].tensor_stride);
