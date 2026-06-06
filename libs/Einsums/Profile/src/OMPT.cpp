@@ -9,6 +9,8 @@
 #include <Einsums/Print.hpp>
 #include <Einsums/StringUtil/FromString.hpp>
 
+#include <fmt/format.h>
+
 #include <cstdlib>
 
 // The CMake file should prevent this entire file from being compiled.
@@ -85,7 +87,7 @@ ompt_start_tool_result_t *ompt_start_tool(unsigned int omp_version, char const *
     // section. Unfortunately, within this function OpenMP is still initializing and that function
     // may hang.
     if (use_ompt)
-        std::println(stdout, "ompt_start_tool: running on omp_version {}, runtime_version {}", omp_version, runtime_version);
+        fmt::println(stdout, "ompt_start_tool: running on omp_version {}, runtime_version {}", omp_version, runtime_version);
 
     static ompt_start_tool_result_t result;
     result.initialize      = &ompt_initialize;

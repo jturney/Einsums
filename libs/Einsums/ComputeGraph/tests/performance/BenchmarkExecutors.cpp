@@ -14,8 +14,9 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <fmt/format.h>
+
 #include <cstdio>
-#include <print>
 
 #include <Einsums/Testing.hpp>
 
@@ -74,7 +75,7 @@ EINSUMS_TEST_CASE("Bench Executor: linear chain 4 nodes N=50", "[ComputeGraph][E
         },
         20);
 
-    std::println("[Executor linear N=50] seq: {:.2f} us  omp: {:.2f} us  df: {:.2f} us", t_seq.avg, t_omp.avg, t_df.avg);
+    fmt::println("[Executor linear N=50] seq: {:.2f} us  omp: {:.2f} us  df: {:.2f} us", t_seq.avg, t_omp.avg, t_df.avg);
 
     // Publish structured results to profiler server
     ProfileAnnotate("topology", "linear_chain");
@@ -143,8 +144,8 @@ EINSUMS_TEST_CASE("Bench Executor: 8 independent nodes N=30", "[ComputeGraph][Ex
         },
         20);
 
-    std::println("[Executor fanout-8 N=30] seq: {:.2f} us  omp: {:.2f} us  df: {:.2f} us", t_seq.avg, t_omp.avg, t_df.avg);
-    std::println("  seq/omp: {:.2f}x  seq/df: {:.2f}x", t_seq.avg / t_omp.avg, t_seq.avg / t_df.avg);
+    fmt::println("[Executor fanout-8 N=30] seq: {:.2f} us  omp: {:.2f} us  df: {:.2f} us", t_seq.avg, t_omp.avg, t_df.avg);
+    fmt::println("  seq/omp: {:.2f}x  seq/df: {:.2f}x", t_seq.avg / t_omp.avg, t_seq.avg / t_df.avg);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -204,8 +205,8 @@ EINSUMS_TEST_CASE("Bench Executor: diamond DAG N=50", "[ComputeGraph][Executor][
         },
         20);
 
-    std::println("[Executor diamond N=50] seq: {:.2f} us  omp: {:.2f} us  df: {:.2f} us", t_seq.avg, t_omp.avg, t_df.avg);
-    std::println("  seq/omp: {:.2f}x  seq/df: {:.2f}x", t_seq.avg / t_omp.avg, t_seq.avg / t_df.avg);
+    fmt::println("[Executor diamond N=50] seq: {:.2f} us  omp: {:.2f} us  df: {:.2f} us", t_seq.avg, t_omp.avg, t_df.avg);
+    fmt::println("  seq/omp: {:.2f}x  seq/df: {:.2f}x", t_seq.avg / t_omp.avg, t_seq.avg / t_df.avg);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -245,7 +246,7 @@ EINSUMS_TEST_CASE("Bench Executor: replay overhead 100 iterations N=20", "[Compu
         100);
 
     double const overhead_pct = ((t_graph.avg - t_bare.avg) / t_bare.avg) * 100.0;
-    std::println("[Replay N=20] bare: {:.2f} us  graph: {:.2f} us  overhead: {:.1f}%", t_bare.avg, t_graph.avg, overhead_pct);
+    fmt::println("[Replay N=20] bare: {:.2f} us  graph: {:.2f} us  overhead: {:.1f}%", t_bare.avg, t_graph.avg, overhead_pct);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -279,5 +280,5 @@ EINSUMS_TEST_CASE("Bench PassManager: create_default on 10-node graph", "[Comput
         },
         50);
 
-    std::println("[PassManager 10-node] {:.2f} us avg  ({} nodes after)", t.avg, graph.num_nodes());
+    fmt::println("[PassManager 10-node] {:.2f} us avg  ({} nodes after)", t.avg, graph.num_nodes());
 }
