@@ -91,7 +91,11 @@ jobs:
           export BINARIES="$(find . -name "*_test")"
           echo "PROFILES=$PROFILES"
           echo "BINARIES=$BINARIES"
-          llvm-profdata merge $PROFILES -o default.profdata
+          # --failure-mode=warn: a stray/truncated default.profraw (an instrumented
+          # binary that ran without LLVM_PROFILE_FILE set) is occasionally malformed
+          # ("symbol name is empty") and would otherwise fail the whole merge. Warn
+          # and skip the bad file instead of erroring; valid coverage is kept.
+          llvm-profdata merge --failure-mode=warn $PROFILES -o default.profdata
           llvm-cov export -format=lcov -ignore-filename-regex="_deps|einsums-env" -instr-profile=default.profdata $BINARIES > coverage.info
 
       - name: Upload C++ coverage to Codecov
