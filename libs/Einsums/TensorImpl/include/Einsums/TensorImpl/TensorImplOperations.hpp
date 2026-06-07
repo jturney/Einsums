@@ -117,7 +117,7 @@ void impl_real(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         hard_dims.resize(in.rank() - easy_rank);
 
-        if (in.stride(0) < in.stride(-1)) {
+        if (in.is_column_major()) {
             in_strides.resize(in.rank() - easy_rank);
             out_strides.resize(in.rank() - easy_rank);
 
@@ -233,7 +233,7 @@ void impl_imag(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         hard_dims.resize(in.rank() - easy_rank);
 
-        if (in.stride(0) < in.stride(-1)) {
+        if (in.is_column_major()) {
             in_strides.resize(in.rank() - easy_rank);
             out_strides.resize(in.rank() - easy_rank);
 
@@ -339,7 +339,7 @@ void impl_abs(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         hard_dims.resize(in.rank() - easy_rank);
 
-        if (in.stride(0) < in.stride(-1)) {
+        if (in.is_column_major()) {
             in_strides.resize(in.rank() - easy_rank);
             out_strides.resize(in.rank() - easy_rank);
 
@@ -419,7 +419,7 @@ void impl_conj(TensorImpl<T> &x) {
 
             hard_dims.resize(x.rank() - easy_rank);
 
-            if (x.stride(0) < x.stride(-1)) {
+            if (x.is_column_major()) {
                 x_strides.resize(x.rank() - easy_rank);
 
                 for (int i = 0; i < x.rank() - easy_rank; i++) {
@@ -539,7 +539,7 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         hard_dims.resize(in.rank() - easy_rank);
 
-        if (in.stride(0) < in.stride(-1)) {
+        if (in.is_column_major()) {
             in_strides.resize(in.rank() - easy_rank);
             out_strides.resize(in.rank() - easy_rank);
 
@@ -559,6 +559,17 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
             }
         }
 
+        // NOTE: the easy/hard dim split above keys off the layout flag via
+        // is_column_major() rather than `stride(0) < stride(-1)` (the same idiom,
+        // and the same fix, recurs throughout this file: impl_scal, impl_mult,
+        // impl_copy, impl_real, ...). The stride comparison was a proxy for
+        // column-major-ness, but a degenerate extent ties the two strides (a
+        // contiguous 1xN operand has equal row and column strides), so the proxy
+        // picked the wrong branch and extracted an operand's row stride where its
+        // column stride was needed — the hard loop then wrote contiguously and
+        // only the first column landed correctly. The flag is what
+        // query_vectorable_params folds against, keeping split and extraction
+        // consistent for degenerate (size-1) extents.
         impl_axpy_noncontiguous_vectorable(0, in.rank() - easy_rank, easy_size, static_cast<T>(alpha), hard_dims, in.data(), in_strides,
                                            in_incx, out.data(), out_strides, out_incx);
     }
@@ -625,7 +636,7 @@ void impl_scal(U alpha, TensorImpl<T> &out) {
 
         hard_dims.resize(out.rank() - easy_rank);
 
-        if (out.stride(0) < out.stride(-1)) {
+        if (out.is_column_major()) {
             out_strides.resize(out.rank() - easy_rank);
 
             for (int i = 0; i < out.rank() - easy_rank; i++) {
@@ -707,7 +718,7 @@ void impl_div_scalar(U alpha, TensorImpl<T> &out) {
 
         hard_dims.resize(out.rank() - easy_rank);
 
-        if (out.stride(0) < out.stride(-1)) {
+        if (out.is_column_major()) {
             out_strides.resize(out.rank() - easy_rank);
 
             for (int i = 0; i < out.rank() - easy_rank; i++) {
@@ -823,7 +834,7 @@ void impl_mult(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         hard_dims.resize(in.rank() - easy_rank);
 
-        if (in.stride(0) < in.stride(-1)) {
+        if (in.is_column_major()) {
             in_strides.resize(in.rank() - easy_rank);
             out_strides.resize(in.rank() - easy_rank);
 
@@ -943,7 +954,7 @@ void impl_div(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         hard_dims.resize(in.rank() - easy_rank);
 
-        if (in.stride(0) < in.stride(-1)) {
+        if (in.is_column_major()) {
             in_strides.resize(in.rank() - easy_rank);
             out_strides.resize(in.rank() - easy_rank);
 
@@ -1067,7 +1078,7 @@ void impl_copy(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         hard_dims.resize(in.rank() - easy_rank);
 
-        if (in.stride(0) < in.stride(-1)) {
+        if (in.is_column_major()) {
             in_strides.resize(in.rank() - easy_rank);
             out_strides.resize(in.rank() - easy_rank);
 
@@ -1151,7 +1162,7 @@ void impl_scalar_add(U alpha, TensorImpl<T> &out) {
 
             hard_dims.resize(out.rank() - easy_rank);
 
-            if (out.stride(0) < out.stride(-1)) {
+            if (out.is_column_major()) {
                 out_strides.resize(out.rank() - easy_rank);
 
                 for (int i = 0; i < out.rank() - easy_rank; i++) {
@@ -1232,7 +1243,7 @@ void impl_scalar_copy(U alpha, TensorImpl<T> &out) {
 
             hard_dims.resize(out.rank() - easy_rank);
 
-            if (out.stride(0) < out.stride(-1)) {
+            if (out.is_column_major()) {
                 out_strides.resize(out.rank() - easy_rank);
 
                 for (int i = 0; i < out.rank() - easy_rank; i++) {

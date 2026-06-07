@@ -194,6 +194,18 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 c_ptrs[static_cast<size_t>(batch)] = C.data() + c_off;
             }
 
+            // BLAS validates the leading dimensions against the stored-operand
+            // row counts (lda >= rows of op-form: M for transA='N', K for 'T';
+            // ldb >= K for transB='N', N for 'T'; ldc >= M). When any of M/N/K
+            // is 1 the corresponding axis stride is meaningless and can collapse
+            // below that minimum (e.g. K=1 makes both m_stride and k_stride_a == 1,
+            // so lda_val=k_stride_a=1 < M). Clamp up to the BLAS minimum: a no-op
+            // for non-degenerate operands (the real stride already meets it), and
+            // safe for a size-1 axis since that stride is never used to index.
+            lda_val = std::max<blas_int>(lda_val, (transA == 'N') ? static_cast<blas_int>(M) : static_cast<blas_int>(K));
+            ldb_val = std::max<blas_int>(ldb_val, (transB == 'N') ? static_cast<blas_int>(K) : static_cast<blas_int>(N));
+            ldc_val = std::max<blas_int>(ldc_val, static_cast<blas_int>(M));
+
             einsums::blas::gemm_batch<ValueType>(transA, transB, static_cast<blas_int>(M), static_cast<blas_int>(N),
                                                  static_cast<blas_int>(K), alpha, a_ptrs.data(), lda_val, b_ptrs.data(), ldb_val, beta,
                                                  c_ptrs.data(), ldc_val, static_cast<blas_int>(bt));
