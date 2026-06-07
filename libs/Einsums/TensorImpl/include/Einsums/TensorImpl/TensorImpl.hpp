@@ -584,11 +584,20 @@ struct TensorImpl final {
      * @param i The axis to check.
      */
     [[nodiscard]] constexpr size_t dim(std::integral auto i) const {
-        if (_ptr == nullptr) {
-            return 0;
-        }
+        // Rank 0 is a default-constructed, moved-from, or allocated scalar: report
+        // 0 when there is no storage (dead tensor) and 1 for an allocated scalar.
+        // Handle it before touching _dims (which is empty here).
         if (_rank == 0) {
-            return 1;
+            return (_ptr == nullptr) ? 0 : 1;
+        }
+        // A null data pointer with non-zero size is an unmaterialized (deferred)
+        // tensor — report 0 so it reads as not-yet-allocated (and the buffer
+        // protocol exposes nothing to dereference). A null pointer with size 0 is
+        // a *legitimately empty* tensor: its storage holds no elements, so the
+        // backing std::vector's data() is null, but its extents are real and must
+        // be reported (e.g. a (0, N) tensor is not a (0, 0) tensor).
+        if (_ptr == nullptr && _size != 0) {
+            return 0;
         }
         auto temp = i;
         if (temp < 0) {
