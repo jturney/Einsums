@@ -155,12 +155,6 @@ def _einsum_problem(draw):
                {"b": 2, "i": 3, "k": 2, "j": 2}))
 def test_hyp_einsum_vs_numpy(prob):
     a_idx, b_idx, c_idx, extent = prob
-    # TODO(Job B): a batched contraction with >=2 contraction indices overflows
-    # HPTT's transpose in the packed-gemm path (heap-buffer-overflow, batch dim
-    # ignored when sizing the flat buffer). Skip until that's fixed.
-    _batch = set(a_idx) & set(b_idx) & set(c_idx)
-    _kidx = (set(a_idx) & set(b_idx)) - set(c_idx)
-    assume(not (_batch and len(_kidx) >= 2))
     rng = np.random.default_rng(0)
     A0 = rng.standard_normal([extent[x] for x in a_idx])
     B0 = rng.standard_normal([extent[x] for x in b_idx])
