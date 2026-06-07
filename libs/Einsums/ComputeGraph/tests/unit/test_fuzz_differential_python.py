@@ -66,8 +66,13 @@ from einsums.testing import ALL_DTYPES
 # Pool layout, fixed so the generator and the per-trial seed arrays agree.
 # ──────────────────────────────────────────────────────────────────────────
 
-DIMS = (2, 3, 4)
-R3_DIMS = (2, 3)
+# Dimension 1 is included on purpose: degenerate extents (K=1 rank-1-like
+# contractions, M=1 row / N=1 col gemms, length-1 vectors, 1×1 transpose/symm)
+# stress the stride / leading-dimension / packing logic that fixed dims ≥ 2
+# never reach. numpy oracles them cleanly, so any divergence — or any ASan/UBSan
+# trip on a zero-stride or single-element buffer — is a real finding.
+DIMS = (1, 2, 3, 4)
+R3_DIMS = (1, 2, 3)
 COPIES = 3  # copies of each matrix shape / vector length / rank-3 shape
 
 # Differential tolerances and a magnitude cap, per dtype. These are *looser*
@@ -667,6 +672,56 @@ def test_fuzz_cross_executor_deep_nesting(seed, dtype):
     rng = np.random.default_rng(90_000 + seed)
     prog = _gen_block(rng, depth=4, max_stmts=4)
     check_program_cross_executor(prog, *_seed_arrays(rng, dtype), f"xdeep{seed}", dtype=dtype)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Parallel-executor stress (ASan/UBSan bait)
+#
+# A use-after-free or heap-overflow in the OpenMP / Dataflow scheduler — a node
+# whose buffer is freed while a concurrent node still reads it, from a missing
+# dependency edge — is timing-dependent. A single execution rarely lands on the
+# offending interleaving, and under a *sanitizer* the corruption is only flagged
+# when the bad access actually fires. So we replay each program through the two
+# parallel executors many times to shuffle the thread schedule and give ASan
+# repeated chances at the bad window. This arm is pure sanitizer bait: float64
+# only (a scheduler UAF is dtype-independent), no Sequential executor (it can't
+# race), wider blocks (more independent nodes ⇒ more concurrency), and still
+# oracle-checked every rep so a dropped/misordered node shows as a divergence
+# too. Cheap without a sanitizer; the value is when run under the ASan build.
+# ──────────────────────────────────────────────────────────────────────────
+
+_STRESS_REPS = 30
+_PARALLEL_EXECUTORS = [("OpenMP", cg.OpenMPExecutor), ("Dataflow", cg.DataflowExecutor)]
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_fuzz_parallel_executor_stress(seed):
+    rng = np.random.default_rng(110_000 + seed)
+    prog = _gen_block(rng, depth=2, max_stmts=12)
+    m_arrays, v_arrays, t_arrays = _seed_arrays(rng, "float64")
+
+    om = [a.copy() for a in m_arrays]
+    ov = [a.copy() for a in v_arrays]
+    ot = [a.copy() for a in t_arrays]
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        interp_np(prog, om, ov, ot, np.dtype("float64"))
+    if not _usable(om, ov, ot, cap=_DTYPE_CAP["float64"]):
+        pytest.skip("oracle overflowed — numerically degenerate program")
+
+    rtol, atol = _DTYPE_TOL["float64"]
+    for ex_name, exec_cls in _PARALLEL_EXECUTORS:
+        for optimize in (False, True):
+            for rep in range(_STRESS_REPS):
+                tag = f"stress{seed}_{ex_name}_{'opt' if optimize else 'raw'}_{rep}"
+                gm, gv, gt = _run_program_exec(prog, m_arrays, v_arrays, t_arrays, tag, optimize, exec_cls)
+                for got, oracle, kind in ((gm, om, "m"), (gv, ov, "v"), (gt, ot, "t")):
+                    for idx in range(len(oracle)):
+                        if not np.allclose(got[idx], oracle[idx], rtol=rtol, atol=atol):
+                            raise AssertionError(
+                                f"{ex_name}/{'opt' if optimize else 'raw'} rep {rep} "
+                                f"diverged on {kind}{idx}\nprogram={prog!r}\n"
+                                f"got=\n{got[idx]}\noracle=\n{oracle[idx]}"
+                            )
 
 
 # ──────────────────────────────────────────────────────────────────────────
