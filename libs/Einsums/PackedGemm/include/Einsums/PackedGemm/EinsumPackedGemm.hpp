@@ -338,7 +338,17 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             int const rank_b_rt = rank_of(B);
 
             // Check contiguity for HPTT (only for sides that need copying).
-            bool use_hptt = true;
+            //
+            // Batched contractions (nb > 0) must NOT use the HPTT flatten path:
+            // it builds the transpose plan from the operand's *full* rank and
+            // sizes (including the batch dims) while A_flat/B_flat are sized for a
+            // single batch slice (M*K / K*N) and A_data/B_data are already offset
+            // to the current slice. HPTT then transposes the whole batched tensor
+            // into the inner-sized buffer -> heap-buffer-overflow. Fall through to
+            // the batch-aware scalar gather below, which honors the slice offset
+            // and the inner strides. (TODO: a proper per-slice batched HPTT path
+            // would recover the transpose perf for batched multi-K contractions.)
+            bool use_hptt = (nb == 0);
             if (!a_zero_copy) {
                 int64_t expected = 1;
                 for (int i = 0; i < rank_a_rt; ++i) {
