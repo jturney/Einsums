@@ -349,7 +349,15 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                 if (c_pf != T{1}) {
                     linear_algebra::scale(c_pf, C);
                 }
-                linear_algebra::ger(ab_pf, A, B, C);
+                // ger(x, y, C) computes C[i,j] = x[i]*y[j], so the operand whose
+                // index labels C's first axis must be x. Swap for a transposed
+                // output (spec like "ji <- i ; j", where C's axes are ordered
+                // opposite to the A-then-B operand order).
+                if (c_idx[0] == a_idx[0]) {
+                    linear_algebra::ger(ab_pf, A, B, C);
+                } else {
+                    linear_algebra::ger(ab_pf, B, A, C);
+                }
                 return;
             }
         }
@@ -443,7 +451,13 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                 if (c_pf != T{1}) {
                     linear_algebra::scale(c_pf, &cv);
                 }
-                linear_algebra::ger(ab_pf, av, bv, &cv);
+                // See the compile-time GER path: swap operands for a transposed
+                // output so the operand indexing C's first axis is x.
+                if (c_idx[0] == a_idx[0]) {
+                    linear_algebra::ger(ab_pf, av, bv, &cv);
+                } else {
+                    linear_algebra::ger(ab_pf, bv, av, &cv);
+                }
                 return;
             }
         }

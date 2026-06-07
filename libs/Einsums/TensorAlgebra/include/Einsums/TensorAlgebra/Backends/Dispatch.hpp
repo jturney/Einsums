@@ -378,7 +378,11 @@ bool einsum_do_outer_product(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
                 linear_algebra::ger(AB_prefactor, A.to_rank_1_view(), B.to_rank_1_view(), &tC);
             }
         }
-    } catch (std::runtime_error &e) {
+    } catch (std::exception &e) {
+        // Catch any std::exception (not just runtime_error): a failed BLAS path
+        // can throw logic_error/domain_error (e.g. a degenerate leading-dimension
+        // rejected by the vendor), and those must still fall back to the generic
+        // algorithm rather than escape as an uncaught exception.
 #if defined(EINSUMS_SHOW_WARNING)
         EINSUMS_LOG_WARN("Optimized outer product failed. Likely from a non-contiguous "
                          "TensorView. Attempting to perform generic algorithm.");
