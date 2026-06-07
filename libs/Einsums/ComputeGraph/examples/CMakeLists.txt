@@ -70,27 +70,14 @@ if(EINSUMS_BUILD_PYTHON
    AND EINSUMS_WITH_TESTS
    AND EINSUMS_WITH_TESTS_EXAMPLES
 )
-  # Under TSan, `python script.py` (as opposed to `python -m pytest script.py`,
-  # which the Python unit tests use) hits libtsan's static-TLS allocation
-  # limit when it dlopens our instrumented _core.so:
-  #   ImportError: libtsan.so.2: cannot allocate memory in static TLS block
-  # The fix is to LD_PRELOAD libtsan so its TLS slot is reserved at process
-  # start. Discover the conda env's libtsan once at configure time and only
-  # add the preload when the thread sanitizer is active. (Unit tests aren't
-  # affected; pytest's startup happens to allocate enough dynamic TLS that
-  # einsums._core slots in fine.)
-  set(_einsums_python_example_preload "")
-  if(EINSUMS_WITH_SANITIZERS AND "${EINSUMS_WITH_SANITIZERS}" MATCHES "thread"
-     AND DEFINED ENV{CONDA_PREFIX})
-    find_file(EINSUMS_LIBTSAN_PATH
-      NAMES libtsan.so.2 libtsan.so
-      PATHS "$ENV{CONDA_PREFIX}/lib"
-      NO_DEFAULT_PATH
-    )
-    if(EINSUMS_LIBTSAN_PATH)
-      set(_einsums_python_example_preload "LD_PRELOAD=${EINSUMS_LIBTSAN_PATH}")
-    endif()
-  endif()
+  # `python script.py` dlopens our instrumented _core.so, which under a
+  # sanitizer build needs the runtime preloaded — otherwise the interceptors
+  # install too late ("sanitizer loaded too late"; under TSan it manifests as
+  # the static-TLS allocation limit). The root CMakeLists discovers the runtime
+  # once into EINSUMS_PYTEST_SANITIZER_PRELOAD (DYLD_INSERT_LIBRARIES on macOS,
+  # LD_PRELOAD on Linux, for asan/tsan); reuse it here so the Python examples
+  # get the same treatment as the Python unit tests.
+  set(_einsums_python_example_preload "${EINSUMS_PYTEST_SANITIZER_PRELOAD}")
 
   set(python_example_scripts
       mp2_simulation.py
@@ -117,11 +104,14 @@ if(EINSUMS_BUILD_PYTHON
       NAME "${_test_name}"
       COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/${_script}"
     )
-    # Build the test ENVIRONMENT string. PYTHONPATH always; LD_PRELOAD only
-    # under TSan (see comment above).
+    # Build the test ENVIRONMENT string. PYTHONPATH always; the sanitizer
+    # runtime preload only under a sanitizer build (see comment above).
     set(_example_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib")
     if(_einsums_python_example_preload)
       set(_example_env "${_example_env};${_einsums_python_example_preload}")
+      if(EINSUMS_WITH_SANITIZERS MATCHES "address")
+        set(_example_env "${_example_env};ASAN_OPTIONS=detect_leaks=0:abort_on_error=1")
+      endif()
     endif()
     set_tests_properties(
       "${_test_name}" PROPERTIES

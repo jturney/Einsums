@@ -98,7 +98,17 @@ except m.demo.CounterError as e:
 print('OK')
 "
   )
+  # Under a sanitizer build, preload the runtime so the dlopened _core's
+  # interceptors install in time (see einsums_add_python_unit_test and the root
+  # CMakeLists for EINSUMS_PYTEST_SANITIZER_PRELOAD).
+  set(_smoke_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib")
+  if(EINSUMS_PYTEST_SANITIZER_PRELOAD)
+    set(_smoke_env "${_smoke_env};${EINSUMS_PYTEST_SANITIZER_PRELOAD}")
+    if(EINSUMS_WITH_SANITIZERS MATCHES "address")
+      set(_smoke_env "${_smoke_env};ASAN_OPTIONS=detect_leaks=0:abort_on_error=1")
+    endif()
+  endif()
   set_tests_properties(einsums_pybind_python_smoke PROPERTIES
-      ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/lib"
+      ENVIRONMENT "${_smoke_env}"
   )
 endif()

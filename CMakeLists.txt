@@ -852,6 +852,47 @@ if(EINSUMS_WITH_SANITIZERS AND NOT MSVC)
   target_compile_options(einsums_public_flags INTERFACE -fsanitize=${EINSUMS_WITH_SANITIZERS})
   target_link_options(einsums_public_flags INTERFACE -fsanitize=${EINSUMS_WITH_SANITIZERS})
   einsums_add_config_define(EINSUMS_HAVE_SANITIZERS)
+
+  # When EINSUMS_BUILD_PYTHON is on under a sanitizer build, the Python tests
+  # run as `python -m pytest` and dlopen the instrumented _core extension. The
+  # sanitizer runtime then loads too late for its interceptors to install
+  # ("AddressSanitizer loaded too late"), aborting every Python test. Preloading
+  # the runtime fixes it (LD_PRELOAD on Linux, DYLD_INSERT_LIBRARIES on macOS).
+  # This must be delivered on each test's child environment via ctest's
+  # ENVIRONMENT property (einsums_add_python_unit_test) — an exported variable is
+  # stripped from ctest's own (hardened) environment before it reaches the child.
+  # Discover the runtime path once; the compiler knows where its own copy lives.
+  if(EINSUMS_WITH_SANITIZERS MATCHES "thread")
+    if(APPLE)
+      set(_einsums_san_rt_query libclang_rt.tsan_osx_dynamic.dylib)
+    else()
+      set(_einsums_san_rt_query libtsan.so)
+    endif()
+  elseif(EINSUMS_WITH_SANITIZERS MATCHES "address")
+    if(APPLE)
+      set(_einsums_san_rt_query libclang_rt.asan_osx_dynamic.dylib)
+    else()
+      set(_einsums_san_rt_query libasan.so)
+    endif()
+  endif()
+  if(_einsums_san_rt_query)
+    execute_process(
+      COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=${_einsums_san_rt_query}
+      OUTPUT_VARIABLE _einsums_san_rt_path OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(EXISTS "${_einsums_san_rt_path}")
+      if(APPLE)
+        set(EINSUMS_PYTEST_SANITIZER_PRELOAD "DYLD_INSERT_LIBRARIES=${_einsums_san_rt_path}" CACHE INTERNAL
+            "Env entry preloading the sanitizer runtime into Python test subprocesses")
+      else()
+        set(EINSUMS_PYTEST_SANITIZER_PRELOAD "LD_PRELOAD=${_einsums_san_rt_path}" CACHE INTERNAL
+            "Env entry preloading the sanitizer runtime into Python test subprocesses")
+      endif()
+      einsums_info("Python tests will preload the sanitizer runtime: ${_einsums_san_rt_path}")
+    else()
+      einsums_warn("Could not locate sanitizer runtime '${_einsums_san_rt_query}'; "
+                   "Python tests may abort under ctest with 'sanitizer loaded too late'.")
+    endif()
+  endif()
 endif()
 
 # Note: on windows systems the ':' will be converted to a ';' at runtime

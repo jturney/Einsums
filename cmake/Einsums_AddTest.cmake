@@ -313,6 +313,20 @@ function(einsums_add_python_unit_test subcategory name)
     "EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1"
   )
 
+  # Under a sanitizer build the interpreter dlopens the instrumented _core too
+  # late for the runtime's interceptors. Preload the runtime on the child env
+  # (discovered once in the root CMakeLists). Delivering it here via ctest's
+  # ENVIRONMENT is the only thing that works: an exported var is stripped from
+  # ctest's own hardened environment before it can reach the test process.
+  if(EINSUMS_PYTEST_SANITIZER_PRELOAD)
+    list(APPEND _pyt_env "${EINSUMS_PYTEST_SANITIZER_PRELOAD}")
+    if(EINSUMS_WITH_SANITIZERS MATCHES "address")
+      # CPython intentionally leaks at shutdown; LeakSanitizer would drown real
+      # findings, so disable it for the Python test processes.
+      list(APPEND _pyt_env "ASAN_OPTIONS=detect_leaks=0:abort_on_error=1")
+    endif()
+  endif()
+
   # Python-side coverage gathering was removed: the pytest-cov + parallel-
   # SQLite combine path proved more fragile (lock races, stale-file ingest,
   # combine-CWD bugs) than the metric was worth. C++ coverage on the binding
