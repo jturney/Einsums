@@ -1447,7 +1447,13 @@ APIARY_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTe
                                        static_cast<CType *>(c_slot->ptr));
     };
 
-    ctx.record(OpKind::DirectProduct, "direct_product", {a_id, b_id}, {c_id}, std::move(executor));
+    // When beta != 0 the op reads its destination (C = alpha*A*B + beta*C), so C
+    // is an input as well as the output. List it -- otherwise dependency-based
+    // passes (LoopInvariantHoisting, Reorder, ...) don't see the read and may
+    // hoist the accumulation out of a loop or reorder it past another writer of C.
+    // (gemm already does this; matches the out-tensor-as-input convention.)
+    std::vector<TensorId> dp_inputs = (beta != T{0}) ? std::vector<TensorId>{a_id, b_id, c_id} : std::vector<TensorId>{a_id, b_id};
+    ctx.record(OpKind::DirectProduct, "direct_product", std::move(dp_inputs), {c_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1518,7 +1524,10 @@ APIARY_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::RuntimeT
                                         static_cast<CType *>(c_slot->ptr));
     };
 
-    ctx.record(OpKind::DirectDivision, "direct_division", {a_id, b_id}, {c_id}, std::move(executor));
+    // beta != 0 reads the destination (C = alpha*A/B + beta*C) -- list C as an
+    // input so dependency-based passes see the read (see direct_product).
+    std::vector<TensorId> dd_inputs = (beta != T{0}) ? std::vector<TensorId>{a_id, b_id, c_id} : std::vector<TensorId>{a_id, b_id};
+    ctx.record(OpKind::DirectDivision, "direct_division", std::move(dd_inputs), {c_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
