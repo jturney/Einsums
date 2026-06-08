@@ -96,6 +96,7 @@ set(ComputeGraphTests
     test_hyp_lapack_diff_python.py
     test_hyp_linalg_diff_python.py
     test_hyp_program_diff_python.py
+    test_hyp_tiled_diff_python.py
     test_lapack_python.py
     test_linalg_new_python.py
     test_loop_python.py
