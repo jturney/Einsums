@@ -33,6 +33,7 @@ dependencies:
   # Python stuff
   - pybind11
   - pytest
+  - hypothesis >=6
   - numpy
   - scipy
   - textual
