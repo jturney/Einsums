@@ -513,6 +513,67 @@ def _tensor_copy(self):
     return _copy_of(self, f"{getattr(self, 'name', 'A')}_copy")
 
 
+# Trailing class-name letter F/D -> real (no change); C/Z -> the matching real type.
+_REAL_DTYPE_SUFFIX = {"F": "float32", "D": "float64", "C": "float32", "Z": "float64"}
+
+
+def _is_complex_tensor(self):
+    return type(self).__name__[-1] in ("C", "Z")
+
+
+def _real_dtype_name(self):
+    """Real-valued dtype name matching this tensor's precision (Z->float64, C->float32)."""
+    return _REAL_DTYPE_SUFFIX[type(self).__name__[-1]]
+
+
+def _tensor_conj(self):
+    """``A.conj()`` -> a new tensor holding the complex conjugate of A.
+
+    Returns a fresh tensor (numpy.conj semantics); for real dtypes this is just
+    a copy. Graph-aware: inside ``cg.capture`` the copy and conjugation are
+    recorded as graph nodes."""
+    out = _copy_of(self, f"conj({getattr(self, 'name', 'A')})")
+    _core.linalg.conj(out)  # in-place on the copy; no-op for real dtypes
+    return out
+
+
+def _tensor_real(self):
+    """``A.real`` -> the real part as a new real-valued tensor (a copy if A is real)."""
+    if not _is_complex_tensor(self):
+        return _tensor_copy(self)
+    out = _alloc_output(f"real({getattr(self, 'name', 'A')})", list(self.shape), _real_dtype_name(self))
+    _core.linalg.real(out, self)
+    return out
+
+
+def _tensor_imag(self):
+    """``A.imag`` -> the imaginary part as a new real-valued tensor (zeros if A is real)."""
+    out = _alloc_output(f"imag({getattr(self, 'name', 'A')})", list(self.shape), _real_dtype_name(self))
+    if _is_complex_tensor(self):
+        _core.linalg.imag(out, self)
+    return out
+
+
+def _tensor_abs(self):
+    """``abs(A)`` -> the element-wise magnitude as a new real-valued tensor."""
+    out = _alloc_output(f"abs({getattr(self, 'name', 'A')})", list(self.shape), _real_dtype_name(self))
+    _core.linalg.abs(out, self)
+    return out
+
+
+def _tensor_H(self):
+    """``A.H`` -> conjugate-transpose (adjoint): reverse axes then conjugate.
+
+    Returns a fresh owning tensor (not a view): copy the transpose of ``self``
+    then conjugate in place, since conj(A^T) == A^H. Materializing avoids
+    handing back a view of a temporary (which dangles after graph execute), and
+    the only intermediate view is over ``self`` — always alive. Graph-aware: the
+    transpose-copy and the conjugation are recorded as nodes inside cg.capture."""
+    out = _tensor_copy(_tensor_T(self))
+    _core.linalg.conj(out)
+    return out
+
+
 def _is_capturing():
     """True when inside ``cg.capture`` (see _alloc_output for the import note)."""
     return _importlib.import_module("einsums.graph").current_graph() is not None
@@ -903,6 +964,12 @@ def _patch_numpy_ergonomics(core):
         cls.transpose = _tensor_transpose
         cls.swapaxes = _tensor_swapaxes
         cls.copy = _tensor_copy
+        cls.conj = _tensor_conj
+        cls.real = property(_tensor_real)
+        cls.imag = property(_tensor_imag)
+        cls.H = property(_tensor_H)
+        cls.adjoint = _tensor_H
+        cls.__abs__ = _tensor_abs
         cls.sum = _tensor_sum
         cls.mean = _tensor_mean
         cls.max = _tensor_max
