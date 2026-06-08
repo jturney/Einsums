@@ -29,9 +29,9 @@ constexpr To convert(From from) noexcept {
 template <typename T>
 void impl_real_contiguous(TensorImpl<std::complex<T>> const &in, TensorImpl<T> &out) {
     if constexpr (blas::IsBlasableV<T>) {
-        blas::copy(in.size(), static_cast<T const *>(in.data()), 2 * in.get_incx(), out.data(), out.get_incx());
+        blas::copy(in.size(), reinterpret_cast<T const *>(in.data()), 2 * in.get_incx(), out.data(), out.get_incx());
     } else {
-        T const     *in_data  = static_cast<T const *>(in.data());
+        T const     *in_data  = reinterpret_cast<T const *>(in.data());
         T           *out_data = out.data();
         size_t const incx = 2 * in.get_incx(), incy = out.get_incx(), size = in.size();
         EINSUMS_OMP_PARALLEL_FOR_SIMD
@@ -48,9 +48,9 @@ void impl_real_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
     // inc_in needs to be multiplied by 2 before entry.
     if (depth == hard_rank) {
         if constexpr (blas::IsBlasableV<T>) {
-            blas::copy(easy_size, static_cast<T const *>(in), twice_inc_in, out, inc_out);
+            blas::copy(easy_size, reinterpret_cast<T const *>(in), twice_inc_in, out, inc_out);
         } else {
-            T const *in_data = static_cast<T const *>(in);
+            T const *in_data = reinterpret_cast<T const *>(in);
             EINSUMS_OMP_PARALLEL_FOR_SIMD
             for (size_t i = 0; i < easy_size; i++) {
                 out[i * inc_out] = in_data[i * twice_inc_in];
@@ -148,9 +148,9 @@ void impl_real(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 template <typename T>
 void impl_imag_contiguous(TensorImpl<std::complex<T>> const &in, TensorImpl<T> &out) {
     if constexpr (blas::IsBlasableV<T>) {
-        blas::copy(in.size(), static_cast<T const *>(in.data()) + 1, 2 * in.get_incx(), out.data(), out.get_incx());
+        blas::copy(in.size(), reinterpret_cast<T const *>(in.data()) + 1, 2 * in.get_incx(), out.data(), out.get_incx());
     } else {
-        T const     *in_data  = static_cast<T const *>(in.data()) + 1;
+        T const     *in_data  = reinterpret_cast<T const *>(in.data()) + 1;
         T           *out_data = out.data();
         size_t const incx = 2 * in.get_incx(), incy = out.get_incx(), size = in.size();
         EINSUMS_OMP_PARALLEL_FOR_SIMD
@@ -167,9 +167,9 @@ void impl_imag_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
     // inc_in needs to be multiplied by 2 before entry.
     if (depth == hard_rank) {
         if constexpr (blas::IsBlasableV<T>) {
-            blas::copy(easy_size, static_cast<T const *>(in) + 1, twice_inc_in, out, inc_out);
+            blas::copy(easy_size, reinterpret_cast<T const *>(in) + 1, twice_inc_in, out, inc_out);
         } else {
-            T const *in_data = static_cast<T const *>(in) + 1;
+            T const *in_data = reinterpret_cast<T const *>(in) + 1;
             EINSUMS_OMP_PARALLEL_FOR_SIMD
             for (size_t i = 0; i < easy_size; i++) {
                 out[i * inc_out] = in_data[i * twice_inc_in];
@@ -275,9 +275,9 @@ void impl_abs_contiguous(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     }
 }
 
-template <typename T, typename TOther, Container HardDims, Container InStrides, Container OutStrides>
-void impl_abs_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, std::complex<T> const *in,
-                                       InStrides const &in_strides, size_t inc_in, TOther *out, OutStrides const &out_strides,
+template <typename TIn, typename TOut, Container HardDims, Container InStrides, Container OutStrides>
+void impl_abs_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, TIn const *in,
+                                       InStrides const &in_strides, size_t inc_in, TOut *out, OutStrides const &out_strides,
                                        size_t inc_out) {
     if (depth == hard_rank) {
         EINSUMS_OMP_PARALLEL_FOR_SIMD
