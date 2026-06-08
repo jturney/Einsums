@@ -116,6 +116,7 @@ set(ComputeGraphTests
     test_scale_python.py
     test_symm_gemm_views_python.py
     test_tiled_ops_python.py
+    test_view_lifetime_python.py
     test_view_python.py
 )
 
