@@ -130,7 +130,9 @@ BiggestTypeT<T, TOther> impl_dot(einsums::detail::TensorImpl<T> const &in, einsu
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not add two tensors with different sizes!");
     }
 
-    if (in.is_column_major() != out.is_column_major()) {
+    // Lock-step traversal needs identical memory layouts; the is_column_major()
+    // flag is too coarse for permuted views (see impl_axpy). Compare strides.
+    if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
         return impl_dot_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
@@ -158,7 +160,9 @@ BiggestTypeT<T, TOther> impl_dot(einsums::detail::TensorImpl<T> const &in, einsu
 
         hard_dims.resize(in.rank() - easy_rank);
 
-        if (in.stride(0) < in.stride(-1)) {
+        // Layout flag (not a stride(0)<stride(-1) proxy, which ties on size-1
+        // extents) to match query_vectorable_params' split direction.
+        if (in.is_column_major()) {
             in_strides.resize(in.rank() - easy_rank);
             out_strides.resize(in.rank() - easy_rank);
 
@@ -257,7 +261,9 @@ BiggestTypeT<T, TOther> impl_true_dot(einsums::detail::TensorImpl<T> const &in, 
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not add two tensors with different sizes!");
     }
 
-    if (in.is_column_major() != out.is_column_major()) {
+    // Lock-step traversal needs identical memory layouts; the is_column_major()
+    // flag is too coarse for permuted views (see impl_axpy). Compare strides.
+    if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
         if constexpr (IsComplexV<T>) {
@@ -293,7 +299,9 @@ BiggestTypeT<T, TOther> impl_true_dot(einsums::detail::TensorImpl<T> const &in, 
 
         hard_dims.resize(in.rank() - easy_rank);
 
-        if (in.stride(0) < in.stride(-1)) {
+        // Layout flag (not a stride(0)<stride(-1) proxy, which ties on size-1
+        // extents) to match query_vectorable_params' split direction.
+        if (in.is_column_major()) {
             in_strides.resize(in.rank() - easy_rank);
             out_strides.resize(in.rank() - easy_rank);
 
@@ -393,7 +401,9 @@ BiggestTypeT<A, B, C> impl_dot(einsums::detail::TensorImpl<A> const &a, einsums:
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not add three tensors with different sizes!");
     }
 
-    if (a.is_column_major() != b.is_column_major() || a.is_column_major() != c.is_column_major()) {
+    // Lock-step traversal needs identical memory layouts; flags are too coarse
+    // for permuted views (see impl_axpy). Compare actual strides.
+    if (a.strides() != b.strides() || a.strides() != c.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
         return impl_dot_noncontiguous(0, a.rank(), a.dims(), a.data(), a.strides(), b.data(), b.strides(), c.data(), c.strides());
@@ -432,7 +442,9 @@ BiggestTypeT<A, B, C> impl_dot(einsums::detail::TensorImpl<A> const &a, einsums:
 
         hard_dims.resize(a.rank() - easy_rank);
 
-        if (a.stride(0) < a.stride(-1)) {
+        // Layout flag (not a stride proxy that ties on size-1 extents) to match
+        // query_vectorable_params' split direction.
+        if (a.is_column_major()) {
             a_strides.resize(a.rank() - easy_rank);
             b_strides.resize(b.rank() - easy_rank);
             c_strides.resize(c.rank() - easy_rank);

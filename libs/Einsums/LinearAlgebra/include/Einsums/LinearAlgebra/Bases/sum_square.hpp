@@ -75,7 +75,9 @@ void impl_sum_square(einsums::detail::TensorImpl<T> const &in, RemoveComplexT<T>
 
         hard_dims.resize(in.rank() - easy_rank);
 
-        if (in.stride(0) < in.stride(-1)) {
+        // Layout flag (not a stride(0)<stride(-1) proxy, which ties on size-1
+        // extents) to match query_vectorable_params' split direction.
+        if (in.is_column_major()) {
             in_strides.resize(in.rank() - easy_rank);
 
             for (int i = 0; i < in.rank() - easy_rank; i++) {
