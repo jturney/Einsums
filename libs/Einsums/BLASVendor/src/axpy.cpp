@@ -47,6 +47,17 @@ void zaxpy(int_t n, std::complex<double> alpha_x, std::complex<double> const *x,
 
 void saxpby(int_t const n, float const a, float const *x, int_t const incx, float const b, float *y, int_t const incy) {
     LabeledSection0();
+    // If x aliases y, the scal-then-axpy split below would scale y (and hence x)
+    // before axpy reads it -- corrupting the result (e.g. b==0 zeroes x first).
+    // For that case y = a*x + b*y = (a + b)*y, a single scaling.
+    if (x == y && incx == incy) {
+        if (incy == 0) {
+            *y *= (a + b);
+        } else {
+            sscal(n, a + b, y, incy);
+        }
+        return;
+    }
     if (incy == 0) {
         *y *= b;
     } else {
@@ -57,6 +68,15 @@ void saxpby(int_t const n, float const a, float const *x, int_t const incx, floa
 
 void daxpby(int_t const n, double const a, double const *x, int_t const incx, double const b, double *y, int_t const incy) {
     LabeledSection0();
+    // See saxpby: alias-safe path when x == y.
+    if (x == y && incx == incy) {
+        if (incy == 0) {
+            *y *= (a + b);
+        } else {
+            dscal(n, a + b, y, incy);
+        }
+        return;
+    }
     if (incy == 0) {
         *y *= b;
     } else {
@@ -68,6 +88,15 @@ void daxpby(int_t const n, double const a, double const *x, int_t const incx, do
 void caxpby(int_t const n, std::complex<float> const a, std::complex<float> const *x, int_t const incx, std::complex<float> const b,
             std::complex<float> *y, int_t const incy) {
     LabeledSection0();
+    // See saxpby: alias-safe path when x == y.
+    if (x == y && incx == incy) {
+        if (incy == 0) {
+            *y *= (a + b);
+        } else {
+            cscal(n, a + b, y, incy);
+        }
+        return;
+    }
     if (incy == 0) {
         *y *= b;
     } else {
@@ -79,6 +108,15 @@ void caxpby(int_t const n, std::complex<float> const a, std::complex<float> cons
 void zaxpby(int_t const n, std::complex<double> const a, std::complex<double> const *x, int_t const incx, std::complex<double> const b,
             std::complex<double> *y, int_t const incy) {
     LabeledSection0();
+    // See saxpby: alias-safe path when x == y.
+    if (x == y && incx == incy) {
+        if (incy == 0) {
+            *y *= (a + b);
+        } else {
+            zscal(n, a + b, y, incy);
+        }
+        return;
+    }
     if (incy == 0) {
         *y *= b;
     } else {
