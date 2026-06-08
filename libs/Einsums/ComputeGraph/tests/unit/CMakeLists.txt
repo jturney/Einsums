@@ -94,6 +94,8 @@ set(ComputeGraphTests
     test_hyp_einsum_diff_python.py
     test_hyp_elementwise_diff_python.py
     test_hyp_lapack_diff_python.py
+    test_hyp_largedim_diff_python.py
+    test_hyp_largerank_diff_python.py
     test_hyp_linalg_diff_python.py
     test_hyp_program_diff_python.py
     test_hyp_tiled_diff_python.py
