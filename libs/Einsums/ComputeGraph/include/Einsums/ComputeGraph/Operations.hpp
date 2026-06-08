@@ -1100,6 +1100,22 @@ APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float,               
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+// View operands: match the 3-arg dot(result, A, B) form, which already accepts
+// non-contiguous views. Without these the scalar-returning dot(A, B) rejected a
+// view argument (no matching overload) even though its template handles any
+// TensorConcept.
+APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<float>,                                                       einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<float>,                                                       einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<double>,                                                      einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<double>,                                                      einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<float>>,                                          einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<float>>,                                          einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
     if (CaptureContext::current().is_capturing()) {

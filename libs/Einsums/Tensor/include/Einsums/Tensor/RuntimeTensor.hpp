@@ -1960,6 +1960,25 @@ struct APIARY_EXPOSE
         return RuntimeTensorView<T>(_impl.tie_indices(std::forward<MultiIndex>(index)...));
     }
 
+    /**
+     * @brief Liveness token for graph-capture safety.
+     *
+     * ``TensorHandle::make_handle`` captures a ``std::weak_ptr`` to this so the
+     * executor's validator can detect a destroyed view via ``.expired()`` WITHOUT
+     * dereferencing possibly-freed memory. Mirrors
+     * @ref GeneralRuntimeTensor::liveness_token. Without it, a view captured as a
+     * temporary (e.g. ``cg::dot(res, t.permute_view(...), b)``) and then
+     * garbage-collected before ``Graph::execute()`` would fall through to a
+     * ``name()`` read on freed storage -- a use-after-free; with it the executor
+     * instead reports the view cleanly as destroyed.
+     */
+    [[nodiscard]] std::weak_ptr<void> liveness_token() const {
+        if (!_life_token) {
+            _life_token = std::make_shared<char>();
+        }
+        return _life_token;
+    }
+
   protected:
     /**
      * @property _name
@@ -1969,6 +1988,10 @@ struct APIARY_EXPOSE
     std::string _name{"(unnamed view)"};
 
     detail::TensorImpl<T> _impl{};
+
+    /// @see liveness_token(). Lazily created; destroyed with the view so the
+    /// graph-capture validator's weak_ptr observes the destruction.
+    mutable std::shared_ptr<void> _life_token;
 };
 
 template <einsums::FileOrOStream Output, einsums::TensorConcept AType>
