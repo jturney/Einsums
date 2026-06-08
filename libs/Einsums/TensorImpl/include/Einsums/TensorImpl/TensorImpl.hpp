@@ -666,24 +666,42 @@ struct TensorImpl final {
                 *incx = 0;
             }
             return false;
-        } else if (_rank == 1) {
-            if (incx != nullptr) {
-                *incx = stride(0);
+        }
+        // Ignore size-1 dimensions (their stride is irrelevant — a permuted view
+        // can leave one at a boundary with an inflated stride). The tensor is
+        // totally vectorable iff the extent>1 dimensions tile memory with a
+        // single increment and no gaps, i.e. the span (largest dim * largest
+        // stride) equals element_count * smallest_stride.
+        size_t min_s = 0, max_s = 0, max_dim = 0;
+        bool   found = false;
+        for (size_t i = 0; i < _rank; ++i) {
+            if (_dims[i] <= 1) {
+                continue;
             }
-            return true;
-        } else {
-            if (stride(0) < stride(-1)) {
-                if (incx != nullptr) {
-                    *incx = stride(0);
-                }
-                return dim(-1) * stride(-1) == _size * stride(0);
+            if (!found) {
+                min_s = max_s = _strides[i];
+                max_dim       = _dims[i];
+                found         = true;
             } else {
-                if (incx != nullptr) {
-                    *incx = stride(-1);
+                if (_strides[i] < min_s) {
+                    min_s = _strides[i];
                 }
-                return dim(0) * stride(0) == _size * stride(-1);
+                if (_strides[i] > max_s) {
+                    max_s   = _strides[i];
+                    max_dim = _dims[i];
+                }
             }
         }
+        if (!found) { // at most one element
+            if (incx != nullptr) {
+                *incx = _strides[0];
+            }
+            return true;
+        }
+        if (incx != nullptr) {
+            *incx = min_s;
+        }
+        return max_dim * max_s == _size * min_s;
     }
 
     /**
@@ -710,11 +728,21 @@ struct TensorImpl final {
     [[nodiscard]] constexpr size_t get_incx() const {
         if (_rank == 0) {
             return 0;
-        } else if (_rank == 1) {
-            return _strides[0];
-        } else {
-            return std::min(stride(0), stride(-1));
         }
+        // The vectorization increment is the smallest stride among dimensions
+        // with extent > 1. A size-1 dimension is never traversed, so its stride
+        // is irrelevant and must be ignored: a permuted view can leave a size-1
+        // axis at a boundary with an inflated stride, which previously fooled the
+        // stride(0)/stride(-1) shortcut into returning the wrong increment.
+        size_t inc   = 0;
+        bool   found = false;
+        for (size_t i = 0; i < _rank; ++i) {
+            if (_dims[i] > 1 && (!found || _strides[i] < inc)) {
+                inc   = _strides[i];
+                found = true;
+            }
+        }
+        return found ? inc : _strides[0];
     }
 
     /**
@@ -818,27 +846,60 @@ struct TensorImpl final {
             *hard_size = 1;
             *easy_rank = 0;
 
-            if (is_row_major()) {
-                *incx             = stride(-1);
-                size_t const size = 1;
-                for (int i = _rank - 1; i >= 0; i--) {
+            // Vectorization increment = smallest stride among extent>1 dims
+            // (size-1 dims have an irrelevant stride; see get_incx). The walk
+            // grows the contiguous "easy" block from the innermost end (suffix
+            // for row-major, prefix for column-major, matching impl_axpy's hard-
+            // dim extraction) by accepting each dim whose stride equals the
+            // running product of the easy extents so far. A size-1 dim folds in
+            // for free while we are still inside the easy block; once a gap is
+            // hit, the remaining dims (including any size-1 ones) are "hard".
+            // (Previously `incx` came from stride(0)/stride(-1) and the running
+            // product was a never-updated `const size = 1`, both wrong for
+            // permuted/degenerate views.)
+            size_t inc   = 0;
+            bool   found = false;
+            for (size_t i = 0; i < _rank; ++i) {
+                if (_dims[i] > 1 && (!found || _strides[i] < inc)) {
+                    inc   = _strides[i];
+                    found = true;
+                }
+            }
+            *incx = found ? inc : _strides[0];
 
-                    if (size * *incx == _strides[i]) {
+            size_t expected   = *incx;
+            bool   still_easy = true;
+            if (is_row_major()) {
+                for (int i = static_cast<int>(_rank) - 1; i >= 0; i--) {
+                    if (_dims[i] == 1) {
+                        if (still_easy) {
+                            *easy_rank += 1;
+                        }
+                        continue;
+                    }
+                    if (still_easy && _strides[i] == expected) {
                         *easy_rank += 1;
                         *easy_size *= _dims[i];
+                        expected *= _dims[i];
                     } else {
+                        still_easy = false;
                         *hard_size *= _dims[i];
                     }
                 }
             } else {
-                *incx             = stride(0);
-                size_t const size = 1;
                 for (int i = 0; std::cmp_less(i, _rank); i++) {
-
-                    if (size * *incx == _strides[i]) {
+                    if (_dims[i] == 1) {
+                        if (still_easy) {
+                            *easy_rank += 1;
+                        }
+                        continue;
+                    }
+                    if (still_easy && _strides[i] == expected) {
                         *easy_rank += 1;
                         *easy_size *= _dims[i];
+                        expected *= _dims[i];
                     } else {
+                        still_easy = false;
                         *hard_size *= _dims[i];
                     }
                 }

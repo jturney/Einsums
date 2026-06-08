@@ -87,8 +87,12 @@ void impl_direct_division(CType alpha, einsums::detail::TensorImpl<AType> const 
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not combine tensors with different sizes!");
     }
 
-    if (A.is_column_major() != B.is_column_major() || A.is_column_major() != C->is_column_major()) {
-        EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
+    // Lock-step vectorized paths require all three operands to map logical
+    // indices to memory identically; equal is_column_major() flags don't
+    // guarantee that for permuted/transposed views (see the note in impl_axpy).
+    // Compare actual strides and use the fully-general strided loop on mismatch.
+    if (A.strides() != B.strides() || A.strides() != C->strides()) {
+        EINSUMS_LOG_DEBUG("Operands have different memory layouts. Using the fully-general strided fallback.");
 
         impl_direct_division_noncontiguous(0, A.rank(), A.dims(), alpha, A.data(), A.strides(), B.data(), B.strides(), beta, C->data(),
                                            C->strides());
@@ -127,7 +131,10 @@ void impl_direct_division(CType alpha, einsums::detail::TensorImpl<AType> const 
 
         hard_dims.resize(A.rank() - easy_rank);
 
-        if (A.stride(0) < A.stride(-1)) {
+        // Use the layout flag (not a stride(0)<stride(-1) proxy) to pick the
+        // easy/hard split direction so it matches query_vectorable_params; the
+        // proxy ties on degenerate (size-1) extents and picks the wrong end.
+        if (A.is_column_major()) {
             A_strides.resize(A.rank() - easy_rank);
             B_strides.resize(B.rank() - easy_rank);
             C_strides.resize(C->rank() - easy_rank);

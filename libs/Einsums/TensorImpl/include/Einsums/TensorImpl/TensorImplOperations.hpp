@@ -89,7 +89,10 @@ void impl_real(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not copy two tensors with different sizes!");
     }
 
-    if (in.is_column_major() != out.is_column_major()) {
+    // Lock-step vectorized paths require identical memory layouts; equal
+    // is_column_major() flags don't guarantee that for permuted views (see the
+    // detailed note in impl_axpy). Compare actual strides.
+    if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
         impl_real_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
@@ -205,7 +208,10 @@ void impl_imag(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not copy two tensors with different sizes!");
     }
 
-    if (in.is_column_major() != out.is_column_major()) {
+    // Lock-step vectorized paths require identical memory layouts; equal
+    // is_column_major() flags don't guarantee that for permuted views (see the
+    // detailed note in impl_axpy). Compare actual strides.
+    if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
         impl_imag_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
@@ -311,7 +317,10 @@ void impl_abs(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not copy two tensors with different sizes!");
     }
 
-    if (in.is_column_major() != out.is_column_major()) {
+    // Lock-step vectorized paths require identical memory layouts; equal
+    // is_column_major() flags don't guarantee that for permuted views (see the
+    // detailed note in impl_axpy). Compare actual strides.
+    if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
         impl_abs_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
@@ -511,8 +520,16 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not add two tensors with different sizes!");
     }
 
-    if (in.is_column_major() != out.is_column_major()) {
-        EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
+    if (in.strides() != out.strides()) {
+        // The vectorized paths below traverse `in` and `out` in lock-step by a
+        // single increment, which is only valid when the two operands map logical
+        // indices to memory identically. Equal is_column_major() flags do NOT
+        // guarantee that: a permuted/transposed view can share the flag yet have a
+        // different stride ordering (e.g. both internally contiguous but one
+        // stored (1,2,4) and the other (1,4,2)), so a flat axpy would pair up
+        // mismatched logical elements. Compare the actual strides and fall back to
+        // the fully-general strided loop whenever they differ.
+        EINSUMS_LOG_DEBUG("Operands have different memory layouts. Using the fully-general strided fallback.");
 
         impl_axpy_noncontiguous(0, in.rank(), static_cast<T>(alpha), in.dims(), in.data(), in.strides(), out.data(), out.strides());
     } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
@@ -806,7 +823,10 @@ void impl_mult(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not multiply two tensors with different sizes!");
     }
 
-    if (in.is_column_major() != out.is_column_major()) {
+    // Lock-step vectorized paths require identical memory layouts; equal
+    // is_column_major() flags don't guarantee that for permuted views (see the
+    // detailed note in impl_axpy). Compare actual strides.
+    if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
         impl_mult_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
@@ -926,7 +946,10 @@ void impl_div(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not divide two tensors with different sizes!");
     }
 
-    if (in.is_column_major() != out.is_column_major()) {
+    // Lock-step vectorized paths require identical memory layouts; equal
+    // is_column_major() flags don't guarantee that for permuted views (see the
+    // detailed note in impl_axpy). Compare actual strides.
+    if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
         impl_div_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
@@ -1050,7 +1073,10 @@ void impl_copy(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(dimension_error, "Can not copy two tensors with different sizes!");
     }
 
-    if (in.is_column_major() != out.is_column_major()) {
+    // Lock-step vectorized paths require identical memory layouts; equal
+    // is_column_major() flags don't guarantee that for permuted views (see the
+    // detailed note in impl_axpy). Compare actual strides.
+    if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
         impl_copy_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
