@@ -1360,7 +1360,12 @@ APIARY_INSTANTIATE_AS("max", einsums::GeneralRuntimeTensor<double, std::allocato
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::max: cannot reduce an empty tensor");
 
     auto compute = [](AType const &a) -> T {
-        return detail::reduce_elements(a, std::numeric_limits<T>::lowest(), [](T acc, T x) { return x > acc ? x : acc; });
+        // Propagate NaN like numpy.max: a plain ``x > acc`` comparison is false for
+        // a NaN x, so NaN would be silently dropped, and an all-NaN reduction would
+        // leak the ``lowest()`` seed. Test ``isnan(x)`` so a NaN poisons the
+        // accumulator (and ``acc`` stays NaN thereafter, since ``x > NaN`` is false).
+        return detail::reduce_elements(a, std::numeric_limits<T>::lowest(),
+                                       [](T acc, T x) { return (std::isnan(x) || x > acc) ? x : acc; });
     };
 
     auto &ctx = CaptureContext::current();

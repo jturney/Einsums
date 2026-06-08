@@ -117,6 +117,7 @@ set(ComputeGraphTests
     test_scalar_writers_python.py
     test_scf_python.py
     test_scale_python.py
+    test_special_values_python.py
     test_symm_gemm_views_python.py
     test_tiled_ops_python.py
     test_view_lifetime_python.py
