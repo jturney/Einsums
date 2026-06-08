@@ -871,6 +871,15 @@ void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
 
 template <typename T>
 void axpby(T alpha, einsums::detail::TensorImpl<T> const &X, T beta, einsums::detail::TensorImpl<T> *Y) {
+    // If X aliases Y with the same layout, the scal-then-axpy split below would
+    // scale Y (and hence X) before axpy reads it -- corrupting the result
+    // (beta==0 zeroes X first). For that case Y = alpha*X + beta*Y = (alpha+beta)*Y.
+    // (A transposed/strided self-alias is left to the general path; it needs a
+    // copy and is not produced by any current caller.)
+    if (static_cast<void const *>(X.data()) == static_cast<void const *>(Y->data()) && X.strides() == Y->strides()) {
+        einsums::detail::impl_scal(alpha + beta, *Y);
+        return;
+    }
     einsums::detail::impl_scal(beta, *Y);
     einsums::detail::impl_axpy(alpha, X, *Y);
 }

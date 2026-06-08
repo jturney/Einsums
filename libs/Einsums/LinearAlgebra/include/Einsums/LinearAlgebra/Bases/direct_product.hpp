@@ -19,9 +19,20 @@ template <typename AType, typename BType, typename CType>
 void impl_direct_product_contiguous(CType alpha, einsums::detail::TensorImpl<AType> const &a, einsums::detail::TensorImpl<BType> const &b,
                                     CType beta, einsums::detail::TensorImpl<CType> *c) {
     if constexpr (std::is_same_v<AType, BType> && std::is_same_v<AType, CType> && blas::IsBlasableV<AType>) {
-        blas::scal(c->size(), beta, c->data(), c->get_incx());
-        blas::dirprod(a.size(), alpha, a.data(), a.get_incx(), b.data(), b.get_incx(), c->data(), c->get_incx());
-    } else {
+        // The scal-then-dirprod fast path scales c by beta before reading a and b.
+        // If a or b aliases c (in-place Hadamard, e.g. C = alpha*C*B), that scaling
+        // corrupts the input (beta==0 zeroes it) -> wrong result. Use it only when
+        // no input aliases the output; the scalar single-pass below reads c before
+        // overwriting and is alias-safe.
+        bool const aliased = static_cast<void const *>(a.data()) == static_cast<void const *>(c->data()) ||
+                             static_cast<void const *>(b.data()) == static_cast<void const *>(c->data());
+        if (!aliased) {
+            blas::scal(c->size(), beta, c->data(), c->get_incx());
+            blas::dirprod(a.size(), alpha, a.data(), a.get_incx(), b.data(), b.get_incx(), c->data(), c->get_incx());
+            return;
+        }
+    }
+    {
         AType const *a_data = a.data();
         BType const *b_data = b.data();
         CType       *c_data = c->data();
