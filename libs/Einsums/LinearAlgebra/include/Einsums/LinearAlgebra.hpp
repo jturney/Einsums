@@ -1199,6 +1199,14 @@ enum class APIARY_EXPOSE APIARY_MODULE("linalg") Norm : char{
     TWO       = '2'  /**< @f$val = \sqrt{max(\lambda(A^H A))}@f$, norm induced by the 2-norm of a vector. Also called the spectral norm. */
 };
 
+/// Transpose mode for a matrix operand, mapping 1:1 onto the BLAS op flag.
+/// Enumerators are the BLAS letters (``None`` is avoided — it is a Python keyword).
+enum class APIARY_EXPOSE APIARY_MODULE("linalg") Transpose : char{
+    N = 'N', /**< op(A) = A (no transpose). */
+    T = 'T', /**< op(A) = A^T (transpose, no conjugation). */
+    C = 'C'  /**< op(A) = A^H = conj(A)^T (conjugate transpose). */
+};
+
 /**
  * @brief Computes the norm of a matrix.
  *
