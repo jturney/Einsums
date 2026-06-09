@@ -1381,6 +1381,83 @@ APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>,
     ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor));
 }
 
+/// Graph-aware Hermitian inner product: ``result := sum_i conj(A_i) * B_i``.
+///
+/// The conjugating counterpart of ``dot`` (which is the bilinear ``sum A_i B_i``).
+/// For real dtypes this coincides with ``dot``. Backed by ``true_dot`` (BLAS
+/// dotc on the contiguous complex path).
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
+    requires requires {
+        requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>;
+        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
+    }
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+// float — RRR/RRV/RVR/RVV/VRR/VRV/VVR/VVV
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::RuntimeTensorView<float>,                                                    einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::RuntimeTensorView<float>,                                                    einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<float>,                                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<float>,                                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<float>,                                          einsums::RuntimeTensorView<float>,                                                    einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<float>,                                          einsums::RuntimeTensorView<float>,                                                    einsums::RuntimeTensorView<float>)
+// double
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::RuntimeTensorView<double>,                                                  einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::RuntimeTensorView<double>,                                                  einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<double>,                                         einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<double>,                                         einsums::GeneralRuntimeTensor<double, std::allocator<double>>,              einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<double>,                                         einsums::RuntimeTensorView<double>,                                                  einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<double>,                                         einsums::RuntimeTensorView<double>,                                                  einsums::RuntimeTensorView<double>)
+// complex<float>
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,    einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void dotc_python(ResultType *result, AType const &A, BType const &B) {
+    using T = typename AType::ValueType;
+    if (result->size() < 1) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dotc: result tensor must have at least one element");
+    }
+    auto compute = [](AType const &a, BType const &b) -> T { return linear_algebra::true_dot(a, b); };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("dotc_python eager");
+        result->data()[0] = compute(A, B);
+        return;
+    }
+
+    LabeledSection("dotc_python capture");
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [b_id, b_slot] = ctx.get_slot(B);
+    auto [r_id, r_slot] = ctx.get_slot(*result);
+
+    auto executor = [a_slot, b_slot, r_slot, compute]() {
+        LabeledSection("dotc_python execute");
+        auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
+        r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
+    };
+    ctx.record(OpKind::Dot, "dotc", {a_id, b_id}, {r_id}, std::move(executor));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // reductions: sum / max  (write a scalar into result->data()[0])
 // ─────────────────────────────────────────────────────────────────────────────

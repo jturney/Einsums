@@ -92,6 +92,7 @@ set(ComputeGraphTests
     test_graph_python.py
     test_hyp_conjugation_python.py
     test_hyp_controlflow_diff_python.py
+    test_hyp_dotc_python.py
     test_hyp_einsum_diff_python.py
     test_hyp_elementwise_diff_python.py
     test_hyp_lapack_diff_python.py

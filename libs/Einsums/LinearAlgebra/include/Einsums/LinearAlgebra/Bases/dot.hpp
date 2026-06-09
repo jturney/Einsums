@@ -238,12 +238,12 @@ template <Complex T, typename TOther, Container Dims, Container InStrides, Conta
 BiggestTypeT<T, TOther> impl_true_dot_noncontiguous(int depth, int rank, Dims const &dims, T const *in, InStrides const &in_strides,
                                                     TOther const *out, OutStrides const &out_strides) {
     if (depth == rank) {
-        return *in * *out;
+        return std::conj(*in) * *out;
     } else {
         BiggestTypeT<T, TOther> sum{0.0};
         for (int i = 0; i < dims[depth]; i++) {
-            sum += impl_dot_noncontiguous(depth + 1, rank, dims, in + i * in_strides[depth], in_strides, out + i * out_strides[depth],
-                                          out_strides);
+            sum += impl_true_dot_noncontiguous(depth + 1, rank, dims, in + i * in_strides[depth], in_strides, out + i * out_strides[depth],
+                                               out_strides);
         }
         return sum;
     }
