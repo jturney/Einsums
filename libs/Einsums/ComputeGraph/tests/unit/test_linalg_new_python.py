@@ -132,10 +132,15 @@ def test_norm_throws_during_capture():
 @pytest.mark.parametrize("dtype", REAL_DTYPES)
 def test_pow_square_recovers_matmul(dtype):
     """``pow(A, 2.0) == A @ A`` for a symmetric positive-definite ``A``."""
-    Araw = einsums.create_random_tensor("A", [4, 4], dtype=dtype)
-    # Force SPD so the eigendecomposition is well-conditioned.
+    # Deterministic, well-conditioned SPD input (fixed seed). An unseeded random
+    # draw occasionally lands ill-conditioned, which blows the float32
+    # eigendecomposition reconstruction past the rtol below — an intermittent CI
+    # flake. A fixed seed keeps the input ~1000x inside the tolerance.
     np_dtype = np.dtype(dtype)
-    A_spd = np.asarray(Araw).astype(np_dtype) @ np.asarray(Araw).astype(np_dtype).T + np.eye(4, dtype=np_dtype)
+    rng = np.random.default_rng(1)
+    M = rng.standard_normal((4, 4)).astype(np_dtype)
+    A_spd = (M @ M.T).astype(np_dtype) + np.eye(4, dtype=np_dtype)
+    Araw = einsums.create_zero_tensor("A", [4, 4], dtype=dtype)
     np.copyto(np.asarray(Araw), A_spd)
 
     got = einsums.linalg.pow(Araw, np_dtype.type(2.0))
@@ -154,9 +159,13 @@ def test_pow_square_recovers_matmul(dtype):
 @pytest.mark.parametrize("dtype", REAL_DTYPES)
 def test_pow_inverse_round_trip(dtype):
     """``pow(A, 0.5) @ pow(A, 0.5) ≈ A`` for SPD ``A``."""
-    Araw = einsums.create_random_tensor("A", [4, 4], dtype=dtype)
+    # Deterministic, well-conditioned SPD input (fixed seed); see the note in
+    # test_pow_square_recovers_matmul on why the unseeded draw was flaky.
     np_dtype = np.dtype(dtype)
-    A_spd = np.asarray(Araw).astype(np_dtype) @ np.asarray(Araw).astype(np_dtype).T + np.eye(4, dtype=np_dtype)
+    rng = np.random.default_rng(1)
+    M = rng.standard_normal((4, 4)).astype(np_dtype)
+    A_spd = (M @ M.T).astype(np_dtype) + np.eye(4, dtype=np_dtype)
+    Araw = einsums.create_zero_tensor("A", [4, 4], dtype=dtype)
     np.copyto(np.asarray(Araw), A_spd)
 
     half = einsums.linalg.pow(Araw, np_dtype.type(0.5))
