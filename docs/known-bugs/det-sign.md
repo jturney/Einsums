@@ -54,7 +54,7 @@ typename AType::ValueType det(AType const &A) {
 }
 ```
 
-On its face, the parity counter appears correct: LAPACK's `getrf` returns `ipiv[i] = j+1`
+The parity counter *looks* correct: LAPACK's `getrf` returns `ipiv[i] = j+1`
 where `j` is the row swapped into position `i` at step `i`. `ipiv[i] == i+1`
 means no swap. Counting the number of swaps gives the permutation parity, and
 `(-1)^parity` is the sign correction.
@@ -62,8 +62,8 @@ means no swap. Counting the number of swaps gives the permutation parity, and
 So either:
 
 1. The counter has a subtle off-by-one I'm not seeing.
-2. The OpenMP reduction is somehow flipping a sign. This is unlikely, since a
-   `*` reduction on `double` doesn't flip signs.
+2. The OpenMP reduction is somehow flipping a sign (unlikely — `*` reduction
+   on `double` doesn't flip signs).
 3. The `temp(i, i)` access on certain layouts reads the wrong cell.
 4. MKL on Linux returns `ipiv` in a different convention than OpenBLAS /
    Accelerate (different base, different meaning).
@@ -94,8 +94,10 @@ So either:
 
 ## Status
 
-- **Patched**: `test_det_eager_matches_numpy` compares `np.abs` on both
-  sides, in commit `<pending>`.
+- **Patched**: `test_det_eager_matches_numpy` (test_lapack_python.py) and the
+  `det` branch of `test_hyp_lapack_diff` (test_hyp_lapack_diff_python.py) both
+  compare `np.abs` on both sides. Drop the `np.abs` in both when the sign
+  computation is fixed.
 - **Sign computation**: not fixed. This bug is still in
   `einsums.linalg.det` for any caller relying on the sign.
 - **Priority**: medium. Most chemistry workloads use `det` for sanity
