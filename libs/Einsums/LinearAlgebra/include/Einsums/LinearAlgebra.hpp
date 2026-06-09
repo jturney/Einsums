@@ -1018,6 +1018,19 @@ void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType
     detail::gerc(alpha, X, Y, A);
 }
 
+// Runtime-rank overload (mirrors the dynamic_rank ``ger`` above): accepts
+// RuntimeTensor / RuntimeTensorView and goes straight to the TensorImpl kernel.
+template <BasicTensorConcept AType, BasicTensorConcept XType, BasicTensorConcept YType>
+    requires requires {
+        requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank || std::remove_cvref_t<XType>::Rank == einsums::dynamic_rank ||
+                         std::remove_cvref_t<YType>::Rank == einsums::dynamic_rank;
+        requires SameUnderlying<AType, XType, YType>;
+    }
+void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
+    LabeledSection0();
+    detail::impl_gerc(alpha, X.impl(), Y.impl(), A->impl());
+}
+
 /**
  * @brief Computes the LU factorization of a general m-by-n matrix.
  *

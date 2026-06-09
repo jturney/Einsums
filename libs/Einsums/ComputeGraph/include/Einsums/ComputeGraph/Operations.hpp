@@ -1183,6 +1183,87 @@ APIARY_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<double>
     ctx.record(OpKind::Gemv, std::move(label), std::move(inputs), {y_id}, std::move(executor));
 }
 
+/// Graph-aware GEMV with a runtime ``Transpose`` op flag (N / T / C).
+///
+/// The companion of the bool ``trans_a`` overload above; adds conjugate-transpose
+/// (``Transpose::C``) for complex A via the runtime-char ``linear_algebra::gemv``.
+/// The bool overload still resolves ``trans_a=True/False``; pass
+/// ``trans_a=Transpose.C`` to reach this one. Default ``Transpose::N``.
+template <RuntimeRankTensorConcept AType, RuntimeRankTensorConcept XType, RuntimeRankTensorConcept YType, typename U>
+    requires(SameUnderlying<AType, XType, YType> && std::convertible_to<U, typename AType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+// float
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          float)
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          float)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          float)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          float)
+// double
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          double)
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          double)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                          double)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>, double)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>,                          double)
+// complex<float>
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            std::complex<float>)
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            std::complex<float>)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            std::complex<float>)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, std::complex<float>)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            std::complex<float>)
+// complex<double>
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+APIARY_INSTANTIATE_AS("gemv", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
+APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
+    // clang-format on
+    void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y,
+              linear_algebra::Transpose trans_a = linear_algebra::Transpose::N) {
+    if (A.rank() != 2 || z.rank() != 1 || y->rank() != 1) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::gemv requires A rank-2 and x/y rank-1; got {}, {}, {}.", A.rank(), z.rank(), y->rank());
+    }
+    char const ta = static_cast<char>(trans_a);
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("gemv eager");
+        linear_algebra::gemv(ta, alpha, A, z, beta, y);
+        return;
+    }
+
+    LabeledSection("gemv capture");
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [z_id, z_slot] = ctx.get_slot(z);
+    auto [y_id, y_slot] = ctx.get_slot(*y);
+
+    auto label    = fmt::format("gemv({})", static_cast<char>(trans_a));
+    auto executor = [alpha, a_slot, z_slot, beta, y_slot, ta]() {
+        LabeledSection("gemv execute");
+        linear_algebra::gemv(ta, alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<XType const *>(z_slot->ptr), beta,
+                             static_cast<YType *>(y_slot->ptr));
+    };
+
+    std::vector<TensorId> inputs = {a_id, z_id};
+    if (beta != U{}) {
+        inputs.push_back(y_id);
+    }
+    ctx.record(OpKind::Gemv, std::move(label), std::move(inputs), {y_id}, std::move(executor));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ger: A += alpha * X * Y^T
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1294,6 +1375,62 @@ APIARY_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,  
     // writing it, list A as an input so loop-invariance and scheduling see the
     // read-modify-write (see the gemm note above).
     ctx.record(OpKind::Ger, "ger", {x_id, y_id, a_id}, {a_id}, std::move(executor));
+}
+
+/// Graph-aware conjugating rank-1 update (GERC): ``A += alpha * X * Y^H``.
+///
+/// The Hermitian counterpart of ``ger`` (``A += alpha * X * Y^T``): the second
+/// vector is conjugated. Complex-only (for real operands use ``ger``). Backed by
+/// linear_algebra::gerc (BLAS cgerc/zgerc).
+template <RuntimeRankTensorConcept AType, RuntimeRankTensorConcept XType, RuntimeRankTensorConcept YType>
+    requires SameUnderlying<AType, XType, YType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+// complex<float>
+APIARY_INSTANTIATE_AS("gerc", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>,                                            einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+APIARY_INSTANTIATE_AS("gerc", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
+    if (X.rank() != 1 || Y.rank() != 1 || A->rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::gerc requires X/Y rank-1 and A rank-2; got {}, {}, {}.", X.rank(), Y.rank(), A->rank());
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("gerc eager");
+        linear_algebra::gerc(alpha, X, Y, A);
+        return;
+    }
+
+    LabeledSection("gerc capture");
+    auto [x_id, x_slot] = ctx.get_slot(X);
+    auto [y_id, y_slot] = ctx.get_slot(Y);
+    auto [a_id, a_slot] = ctx.get_slot(*A);
+
+    auto executor = [alpha, x_slot, y_slot, a_slot]() {
+        LabeledSection("gerc execute");
+        linear_algebra::gerc(alpha, *static_cast<XType const *>(x_slot->ptr), *static_cast<YType const *>(y_slot->ptr),
+                             static_cast<AType *>(a_slot->ptr));
+    };
+
+    // gerc accumulates into A (``A += α·X·Y^H``); list A as an input for the RMW.
+    ctx.record(OpKind::Ger, "gerc", {x_id, y_id, a_id}, {a_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
