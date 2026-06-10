@@ -112,6 +112,8 @@ void analyze_chain_flops(Graph &graph, size_t &orig_acc, size_t &opt_acc) {
         auto *desc = std::get_if<EinsumDescriptor>(&nodes[i].op_data);
         if (!desc)
             continue;
+        if (desc->conj_a || desc->conj_b)
+            continue; // conjugated GEMMs are excluded from chain reordering
 
         size_t M, K, N;
         if (!is_gemm_pattern(*desc, graph, nodes[i], M, K, N))
@@ -133,6 +135,8 @@ void analyze_chain_flops(Graph &graph, size_t &orig_acc, size_t &opt_acc) {
             auto *next_desc = std::get_if<EinsumDescriptor>(&nodes[j].op_data);
             if (!next_desc)
                 break;
+            if (next_desc->conj_a || next_desc->conj_b)
+                break; // conjugated GEMM ends the chain (not reordered)
 
             // Check if this node reads the previous output
             bool const reads_output = std::find(nodes[j].inputs.begin(), nodes[j].inputs.end(), output_tid) != nodes[j].inputs.end();

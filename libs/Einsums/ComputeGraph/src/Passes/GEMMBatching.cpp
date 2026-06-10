@@ -123,6 +123,8 @@ bool GEMMBatching::run(Graph &graph) {
         auto *desc = std::get_if<EinsumDescriptor>(&nodes[nd].op_data);
         if (!desc || !desc->gemm_hint)
             continue; // non-GEMM-pattern einsums skipped by capture
+        if (desc->conj_a || desc->conj_b)
+            continue; // conjugated einsums aren't batched (conj not threaded through the batch rewrite)
 
         BatchKey key;
         key.m       = desc->gemm_hint->m;

@@ -68,6 +68,8 @@ struct TensorSlot {
 struct EinsumParams {
     PrefactorScalar c_pf{double{0}};  ///< C prefactor
     PrefactorScalar ab_pf{double{1}}; ///< AB prefactor
+    bool            conj_a{false};    ///< Conjugate A (complex; no-op for real)
+    bool            conj_b{false};    ///< Conjugate B (complex; no-op for real)
 };
 
 /**

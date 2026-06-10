@@ -88,6 +88,12 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         if (desc == nullptr) {
             continue;
         }
+        // Conjugated contractions are left untouched: this fold doesn't track
+        // conj_a/conj_b through the rewrite, so skip them (they still execute
+        // correctly, just unfolded). TODO: make conj-aware if it shows up hot.
+        if (desc->conj_a || desc->conj_b) {
+            continue;
+        }
         // Unlike DistributiveFactoring we DON'T skip c_pf==0 nodes: in the 2J-K
         // idiom the first contraction is often an overwrite seed (c_pf=0) and the
         // rest accumulate (c_pf=1). Phase 2 requires every *non-first* member to

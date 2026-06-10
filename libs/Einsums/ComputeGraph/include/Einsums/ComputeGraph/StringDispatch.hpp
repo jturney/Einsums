@@ -106,7 +106,7 @@ template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept
         requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
     }
 void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::string> const &links, typename AType::ValueType c_pf, CType *C,
-                           typename AType::ValueType ab_pf, AType const &A, BType const &B) {
+                           typename AType::ValueType ab_pf, AType const &A, BType const &B, bool conj_a = false, bool conj_b = false) {
     using T = typename AType::ValueType;
 
     auto const &c_idx = parsed.c_indices;
@@ -261,7 +261,17 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
                 }
             }
 
-            sum += A.data()[a_offset] * B.data()[b_offset];
+            T a_val = A.data()[a_offset];
+            T b_val = B.data()[b_offset];
+            if constexpr (IsComplexV<T>) {
+                if (conj_a) {
+                    a_val = std::conj(a_val);
+                }
+                if (conj_b) {
+                    b_val = std::conj(b_val);
+                }
+            }
+            sum += a_val * b_val;
         }
 
         C->data()[c_offset] += ab_pf * sum;
@@ -276,7 +286,7 @@ template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept
         requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
     }
 void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf,
-                   AType const &A, BType const &B) {
+                   AType const &A, BType const &B, bool conj_a = false, bool conj_b = false) {
     using T = typename AType::ValueType;
 
     LabeledSection("cg::einsum: {} <- {} ; {}", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
@@ -307,181 +317,187 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // behind HasCompileTimeRank. PackedGemm (below) handles the rank-2+
     // GEMM-shaped cases and works uniformly for typed and runtime-rank
     // tensors via the runtime ContractionSpec entry point.
-    if constexpr (HasCompileTimeRank<AType> && HasCompileTimeRank<BType> && HasCompileTimeRank<CType>) {
-        constexpr size_t a_rank = std::remove_cvref_t<AType>::Rank;
-        constexpr size_t b_rank = std::remove_cvref_t<BType>::Rank;
-        constexpr size_t c_rank = std::remove_cvref_t<CType>::Rank;
+    // Conjugation skips the non-conj BLAS fast paths below: those helpers (dot,
+    // gemv, ger, string_gemm, direct_product) don't conjugate. Conjugated
+    // contractions go to PackedGemm (native via spec.conj_a/conj_b) for
+    // gemm-shaped cases, else the conj-aware generic loop.
+    if (!conj_a && !conj_b) {
+        if constexpr (HasCompileTimeRank<AType> && HasCompileTimeRank<BType> && HasCompileTimeRank<CType>) {
+            constexpr size_t a_rank = std::remove_cvref_t<AType>::Rank;
+            constexpr size_t b_rank = std::remove_cvref_t<BType>::Rank;
+            constexpr size_t c_rank = std::remove_cvref_t<CType>::Rank;
 
-        // ── DOT product: scalar output, all indices contracted ──────────
-        if constexpr (a_rank == 1 && b_rank == 1 && c_rank == 1) {
-            if (c_idx.empty() || (links.size() == a_idx.size())) {
-                ProfileAnnotate("dispatch", "dot");
-                T temp       = linear_algebra::dot(A, B);
-                C->data()[0] = c_pf * C->data()[0] + ab_pf * temp;
-                return;
-            }
-        }
-
-        // ── GEMV: matrix × vector → vector ──────────────────────────────
-        if constexpr (a_rank == 2 && b_rank == 1 && c_rank == 1) {
-            if (links.size() == 1) {
-                ProfileAnnotate("dispatch", "gemv_mat_vec");
-                string_gemv_mat_vec(parsed, c_pf, C, ab_pf, A, B, a_idx, links[0]);
-                return;
-            }
-        }
-
-        // ── GEMV: vector × matrix → vector ──────────────────────────────
-        if constexpr (a_rank == 1 && b_rank == 2 && c_rank == 1) {
-            if (links.size() == 1) {
-                ProfileAnnotate("dispatch", "gemv_vec_mat");
-                // Reinterpret as B^T * A or B * A depending on where the link is
-                char trans = (b_idx[1] == links[0]) ? 'n' : 't';
-                linear_algebra::gemv(trans, ab_pf, B, A, c_pf, C);
-                return;
-            }
-        }
-
-        // ── GER: vector × vector → matrix (outer product) ───────────────
-        if constexpr (a_rank == 1 && b_rank == 1 && c_rank == 2) {
-            if (links.empty()) {
-                ProfileAnnotate("dispatch", "ger");
-                if (c_pf != T{1}) {
-                    linear_algebra::scale(c_pf, C);
+            // ── DOT product: scalar output, all indices contracted ──────────
+            if constexpr (a_rank == 1 && b_rank == 1 && c_rank == 1) {
+                if (c_idx.empty() || (links.size() == a_idx.size())) {
+                    ProfileAnnotate("dispatch", "dot");
+                    T temp       = linear_algebra::dot(A, B);
+                    C->data()[0] = c_pf * C->data()[0] + ab_pf * temp;
+                    return;
                 }
-                // ger(x, y, C) computes C[i,j] = x[i]*y[j], so the operand whose
-                // index labels C's first axis must be x. Swap for a transposed
-                // output (spec like "ji <- i ; j", where C's axes are ordered
-                // opposite to the A-then-B operand order).
-                if (c_idx[0] == a_idx[0]) {
-                    linear_algebra::ger(ab_pf, A, B, C);
-                } else {
-                    linear_algebra::ger(ab_pf, B, A, C);
+            }
+
+            // ── GEMV: matrix × vector → vector ──────────────────────────────
+            if constexpr (a_rank == 2 && b_rank == 1 && c_rank == 1) {
+                if (links.size() == 1) {
+                    ProfileAnnotate("dispatch", "gemv_mat_vec");
+                    string_gemv_mat_vec(parsed, c_pf, C, ab_pf, A, B, a_idx, links[0]);
+                    return;
                 }
-                return;
             }
-        }
 
-        // ── GEMM: matrix × matrix → matrix ──────────────────────────────
-        if constexpr (a_rank == 2 && b_rank == 2 && c_rank == 2) {
-            if (links.size() == 1) {
-                ProfileAnnotate("dispatch", "gemm_direct");
-                string_gemm(parsed, c_pf, C, ab_pf, A, B);
-                return;
-            }
-            // Direct product: same indices on all tensors, no links
-            if (links.empty() && a_set == b_set && a_set == c_set && a_idx == b_idx && a_idx == c_idx) {
-                ProfileAnnotate("dispatch", "direct_product");
-                linear_algebra::direct_product(ab_pf, A, B, c_pf, C);
-                return;
-            }
-        }
-    }
-
-    // ── Runtime-rank BLAS fast paths ────────────────────────────────────────
-    // Mirror of the typed BLAS ladder above for runtime-rank operands. We
-    // build a zero-copy TensorView<T, K> over the RuntimeTensor's data
-    // (impl carries the same dims+strides), then call the same rank-
-    // specialized BLAS helpers. The upcast is just a pointer + small
-    // metadata array, no allocation, no copy. Only fires when ALL three
-    // operands are runtime-rank; mixed typed/runtime calls fall through
-    // to PackedGemm or the generic loop.
-    if constexpr (!HasCompileTimeRank<AType> && !HasCompileTimeRank<BType> && !HasCompileTimeRank<CType>) {
-        std::size_t const a_rank = detail::tensor_rank(A);
-        std::size_t const b_rank = detail::tensor_rank(B);
-        std::size_t const c_rank = detail::tensor_rank(*C);
-
-        auto upcast = [](auto const &t, auto rank_tag) {
-            constexpr std::size_t K = decltype(rank_tag)::value;
-            using ValueType         = typename std::remove_cvref_t<decltype(t)>::ValueType;
-            std::array<size_t, K> dims;
-            std::array<size_t, K> strides;
-            for (std::size_t i = 0; i < K; ++i) {
-                dims[i]    = t.dim(i);
-                strides[i] = t.stride(i);
-            }
-            ::einsums::detail::TensorImpl<ValueType> impl(const_cast<ValueType *>(t.data()), dims, strides);
-            return TensorView<ValueType, K>(impl);
-        };
-
-        // ── DOT product ──────────────────────────────────────────────
-        if (a_rank == 1 && b_rank == 1 && c_rank <= 1) {
-            if (c_idx.empty() || (links.size() == a_idx.size())) {
-                ProfileAnnotate("dispatch", "dot_runtime");
-                auto av      = upcast(A, std::integral_constant<std::size_t, 1>{});
-                auto bv      = upcast(B, std::integral_constant<std::size_t, 1>{});
-                T    temp    = linear_algebra::dot(av, bv);
-                C->data()[0] = c_pf * C->data()[0] + ab_pf * temp;
-                return;
-            }
-        }
-
-        // ── GEMV: matrix × vector → vector ───────────────────────────
-        if (a_rank == 2 && b_rank == 1 && c_rank == 1) {
-            if (links.size() == 1) {
-                ProfileAnnotate("dispatch", "gemv_mat_vec_runtime");
-                auto av = upcast(A, std::integral_constant<std::size_t, 2>{});
-                auto bv = upcast(B, std::integral_constant<std::size_t, 1>{});
-                auto cv = upcast(*C, std::integral_constant<std::size_t, 1>{});
-                string_gemv_mat_vec(parsed, c_pf, &cv, ab_pf, av, bv, a_idx, links[0]);
-                return;
-            }
-        }
-
-        // ── GEMV: vector × matrix → vector ───────────────────────────
-        if (a_rank == 1 && b_rank == 2 && c_rank == 1) {
-            if (links.size() == 1) {
-                ProfileAnnotate("dispatch", "gemv_vec_mat_runtime");
-                auto av    = upcast(A, std::integral_constant<std::size_t, 1>{});
-                auto bv    = upcast(B, std::integral_constant<std::size_t, 2>{});
-                auto cv    = upcast(*C, std::integral_constant<std::size_t, 1>{});
-                char trans = (b_idx[1] == links[0]) ? 'n' : 't';
-                linear_algebra::gemv(trans, ab_pf, bv, av, c_pf, &cv);
-                return;
-            }
-        }
-
-        // ── GER: vector × vector → matrix ────────────────────────────
-        if (a_rank == 1 && b_rank == 1 && c_rank == 2) {
-            if (links.empty()) {
-                ProfileAnnotate("dispatch", "ger_runtime");
-                auto av = upcast(A, std::integral_constant<std::size_t, 1>{});
-                auto bv = upcast(B, std::integral_constant<std::size_t, 1>{});
-                auto cv = upcast(*C, std::integral_constant<std::size_t, 2>{});
-                if (c_pf != T{1}) {
-                    linear_algebra::scale(c_pf, &cv);
+            // ── GEMV: vector × matrix → vector ──────────────────────────────
+            if constexpr (a_rank == 1 && b_rank == 2 && c_rank == 1) {
+                if (links.size() == 1) {
+                    ProfileAnnotate("dispatch", "gemv_vec_mat");
+                    // Reinterpret as B^T * A or B * A depending on where the link is
+                    char trans = (b_idx[1] == links[0]) ? 'n' : 't';
+                    linear_algebra::gemv(trans, ab_pf, B, A, c_pf, C);
+                    return;
                 }
-                // See the compile-time GER path: swap operands for a transposed
-                // output so the operand indexing C's first axis is x.
-                if (c_idx[0] == a_idx[0]) {
-                    linear_algebra::ger(ab_pf, av, bv, &cv);
-                } else {
-                    linear_algebra::ger(ab_pf, bv, av, &cv);
+            }
+
+            // ── GER: vector × vector → matrix (outer product) ───────────────
+            if constexpr (a_rank == 1 && b_rank == 1 && c_rank == 2) {
+                if (links.empty()) {
+                    ProfileAnnotate("dispatch", "ger");
+                    if (c_pf != T{1}) {
+                        linear_algebra::scale(c_pf, C);
+                    }
+                    // ger(x, y, C) computes C[i,j] = x[i]*y[j], so the operand whose
+                    // index labels C's first axis must be x. Swap for a transposed
+                    // output (spec like "ji <- i ; j", where C's axes are ordered
+                    // opposite to the A-then-B operand order).
+                    if (c_idx[0] == a_idx[0]) {
+                        linear_algebra::ger(ab_pf, A, B, C);
+                    } else {
+                        linear_algebra::ger(ab_pf, B, A, C);
+                    }
+                    return;
                 }
-                return;
+            }
+
+            // ── GEMM: matrix × matrix → matrix ──────────────────────────────
+            if constexpr (a_rank == 2 && b_rank == 2 && c_rank == 2) {
+                if (links.size() == 1) {
+                    ProfileAnnotate("dispatch", "gemm_direct");
+                    string_gemm(parsed, c_pf, C, ab_pf, A, B);
+                    return;
+                }
+                // Direct product: same indices on all tensors, no links
+                if (links.empty() && a_set == b_set && a_set == c_set && a_idx == b_idx && a_idx == c_idx) {
+                    ProfileAnnotate("dispatch", "direct_product");
+                    linear_algebra::direct_product(ab_pf, A, B, c_pf, C);
+                    return;
+                }
             }
         }
 
-        // ── GEMM: matrix × matrix → matrix ───────────────────────────
-        if (a_rank == 2 && b_rank == 2 && c_rank == 2) {
-            if (links.size() == 1) {
-                ProfileAnnotate("dispatch", "gemm_direct_runtime");
-                auto av = upcast(A, std::integral_constant<std::size_t, 2>{});
-                auto bv = upcast(B, std::integral_constant<std::size_t, 2>{});
-                auto cv = upcast(*C, std::integral_constant<std::size_t, 2>{});
-                string_gemm(parsed, c_pf, &cv, ab_pf, av, bv);
-                return;
+        // ── Runtime-rank BLAS fast paths ────────────────────────────────────────
+        // Mirror of the typed BLAS ladder above for runtime-rank operands. We
+        // build a zero-copy TensorView<T, K> over the RuntimeTensor's data
+        // (impl carries the same dims+strides), then call the same rank-
+        // specialized BLAS helpers. The upcast is just a pointer + small
+        // metadata array — no allocation, no copy. Only fires when ALL three
+        // operands are runtime-rank; mixed typed/runtime calls fall through
+        // to PackedGemm or the generic loop.
+        if constexpr (!HasCompileTimeRank<AType> && !HasCompileTimeRank<BType> && !HasCompileTimeRank<CType>) {
+            std::size_t const a_rank = detail::tensor_rank(A);
+            std::size_t const b_rank = detail::tensor_rank(B);
+            std::size_t const c_rank = detail::tensor_rank(*C);
+
+            auto upcast = [](auto const &t, auto rank_tag) {
+                constexpr std::size_t K = decltype(rank_tag)::value;
+                using ValueType         = typename std::remove_cvref_t<decltype(t)>::ValueType;
+                std::array<size_t, K> dims;
+                std::array<size_t, K> strides;
+                for (std::size_t i = 0; i < K; ++i) {
+                    dims[i]    = t.dim(i);
+                    strides[i] = t.stride(i);
+                }
+                ::einsums::detail::TensorImpl<ValueType> impl(const_cast<ValueType *>(t.data()), dims, strides);
+                return TensorView<ValueType, K>(impl);
+            };
+
+            // ── DOT product ──────────────────────────────────────────────
+            if (a_rank == 1 && b_rank == 1 && c_rank <= 1) {
+                if (c_idx.empty() || (links.size() == a_idx.size())) {
+                    ProfileAnnotate("dispatch", "dot_runtime");
+                    auto av      = upcast(A, std::integral_constant<std::size_t, 1>{});
+                    auto bv      = upcast(B, std::integral_constant<std::size_t, 1>{});
+                    T    temp    = linear_algebra::dot(av, bv);
+                    C->data()[0] = c_pf * C->data()[0] + ab_pf * temp;
+                    return;
+                }
             }
-            if (links.empty() && a_set == b_set && a_set == c_set && a_idx == b_idx && a_idx == c_idx) {
-                ProfileAnnotate("dispatch", "direct_product_runtime");
-                auto av = upcast(A, std::integral_constant<std::size_t, 2>{});
-                auto bv = upcast(B, std::integral_constant<std::size_t, 2>{});
-                auto cv = upcast(*C, std::integral_constant<std::size_t, 2>{});
-                linear_algebra::direct_product(ab_pf, av, bv, c_pf, &cv);
-                return;
+
+            // ── GEMV: matrix × vector → vector ───────────────────────────
+            if (a_rank == 2 && b_rank == 1 && c_rank == 1) {
+                if (links.size() == 1) {
+                    ProfileAnnotate("dispatch", "gemv_mat_vec_runtime");
+                    auto av = upcast(A, std::integral_constant<std::size_t, 2>{});
+                    auto bv = upcast(B, std::integral_constant<std::size_t, 1>{});
+                    auto cv = upcast(*C, std::integral_constant<std::size_t, 1>{});
+                    string_gemv_mat_vec(parsed, c_pf, &cv, ab_pf, av, bv, a_idx, links[0]);
+                    return;
+                }
+            }
+
+            // ── GEMV: vector × matrix → vector ───────────────────────────
+            if (a_rank == 1 && b_rank == 2 && c_rank == 1) {
+                if (links.size() == 1) {
+                    ProfileAnnotate("dispatch", "gemv_vec_mat_runtime");
+                    auto av    = upcast(A, std::integral_constant<std::size_t, 1>{});
+                    auto bv    = upcast(B, std::integral_constant<std::size_t, 2>{});
+                    auto cv    = upcast(*C, std::integral_constant<std::size_t, 1>{});
+                    char trans = (b_idx[1] == links[0]) ? 'n' : 't';
+                    linear_algebra::gemv(trans, ab_pf, bv, av, c_pf, &cv);
+                    return;
+                }
+            }
+
+            // ── GER: vector × vector → matrix ────────────────────────────
+            if (a_rank == 1 && b_rank == 1 && c_rank == 2) {
+                if (links.empty()) {
+                    ProfileAnnotate("dispatch", "ger_runtime");
+                    auto av = upcast(A, std::integral_constant<std::size_t, 1>{});
+                    auto bv = upcast(B, std::integral_constant<std::size_t, 1>{});
+                    auto cv = upcast(*C, std::integral_constant<std::size_t, 2>{});
+                    if (c_pf != T{1}) {
+                        linear_algebra::scale(c_pf, &cv);
+                    }
+                    // See the compile-time GER path: swap operands for a transposed
+                    // output so the operand indexing C's first axis is x.
+                    if (c_idx[0] == a_idx[0]) {
+                        linear_algebra::ger(ab_pf, av, bv, &cv);
+                    } else {
+                        linear_algebra::ger(ab_pf, bv, av, &cv);
+                    }
+                    return;
+                }
+            }
+
+            // ── GEMM: matrix × matrix → matrix ───────────────────────────
+            if (a_rank == 2 && b_rank == 2 && c_rank == 2) {
+                if (links.size() == 1) {
+                    ProfileAnnotate("dispatch", "gemm_direct_runtime");
+                    auto av = upcast(A, std::integral_constant<std::size_t, 2>{});
+                    auto bv = upcast(B, std::integral_constant<std::size_t, 2>{});
+                    auto cv = upcast(*C, std::integral_constant<std::size_t, 2>{});
+                    string_gemm(parsed, c_pf, &cv, ab_pf, av, bv);
+                    return;
+                }
+                if (links.empty() && a_set == b_set && a_set == c_set && a_idx == b_idx && a_idx == c_idx) {
+                    ProfileAnnotate("dispatch", "direct_product_runtime");
+                    auto av = upcast(A, std::integral_constant<std::size_t, 2>{});
+                    auto bv = upcast(B, std::integral_constant<std::size_t, 2>{});
+                    auto cv = upcast(*C, std::integral_constant<std::size_t, 2>{});
+                    linear_algebra::direct_product(ab_pf, av, bv, c_pf, &cv);
+                    return;
+                }
             }
         }
-    }
+    } // end of the !conj_a && !conj_b BLAS fast-path gate
 
     // ── PackedGemm path ─────────────────────────────────────────────────────
     // Handles arbitrary-rank GEMM-shaped contractions, including those with
@@ -507,6 +523,8 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         spec.all_indices = spec.target_indices;
         for (auto const &l : spec.link_indices)
             spec.all_indices.push_back(l);
+        spec.conj_a = conj_a; // PackedGemm conjugates during packing/transpose (native, no copy)
+        spec.conj_b = conj_b;
 
         if (packed_gemm::try_packed_gemm<AType, BType, CType>(spec, c_pf, C, ab_pf, A, B)) {
             ProfileAnnotate("dispatch", "packed_gemm");
@@ -515,11 +533,11 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     }
 
     // ── Generic fallback: runtime nested-loop contraction ──────────
-    // Reached when no fast path applies, pure outer products, mixed-dtype
+    // Reached when no fast path applies — pure outer products, mixed-dtype
     // edge cases, or contractions that even PackedGemm can't form into a
     // valid GEMM shape (no M-dims, no N-dims, no links).
     ProfileAnnotate("dispatch", "generic_loop");
-    generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B);
+    generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

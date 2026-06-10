@@ -74,6 +74,8 @@ bool DistributiveFactoring::run(Graph &graph) {
         auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
         if (!desc)
             continue;
+        if (desc->conj_a || desc->conj_b)
+            continue; // conjugated contractions aren't factored (conj not threaded through the rewrite)
         if (is_zero(desc->c_prefactor))
             continue;
         if (node.inputs.size() != 2 || node.outputs.size() != 1)

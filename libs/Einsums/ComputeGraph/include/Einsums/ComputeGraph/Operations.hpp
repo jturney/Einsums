@@ -3480,10 +3480,13 @@ APIARY_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<std::complex<double>,
 namespace detail {
 
 /// Build an EinsumDescriptor from a ParsedEinsumSpec.
-inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, PrefactorScalar c_pf, PrefactorScalar ab_pf) {
+inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, PrefactorScalar c_pf, PrefactorScalar ab_pf,
+                                                bool conj_a = false, bool conj_b = false) {
     EinsumDescriptor desc;
     desc.c_prefactor         = c_pf;
     desc.ab_prefactor        = ab_pf;
+    desc.conj_a              = conj_a;
+    desc.conj_b              = conj_b;
     desc.spec.c_indices      = parsed.c_indices;
     desc.spec.a_indices      = parsed.a_indices;
     desc.spec.b_indices      = parsed.b_indices;
@@ -3530,7 +3533,7 @@ template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept
         requires !detail::any_tiled_v<AType, BType, CType>;
     }
 void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
-            BType const &B) {
+            BType const &B, bool conj_a = false, bool conj_b = false) {
     using T = typename AType::ValueType;
 
     // Operand rank ↔ spec consistency check. When the spec is a literal,
@@ -3573,7 +3576,7 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("einsum eager");
-        dispatch::string_einsum(parsed, c_pf, C, ab_pf, A, B);
+        dispatch::string_einsum(parsed, c_pf, C, ab_pf, A, B, conj_a, conj_b);
         return;
     }
 
@@ -3583,8 +3586,10 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
-    auto params = ctx.graph()->create_params(c_pf, ab_pf);
-    auto desc   = detail::build_einsum_descriptor(parsed, params->c_pf, params->ab_pf);
+    auto params    = ctx.graph()->create_params(c_pf, ab_pf);
+    params->conj_a = conj_a;
+    params->conj_b = conj_b;
+    auto desc      = detail::build_einsum_descriptor(parsed, params->c_pf, params->ab_pf, params->conj_a, params->conj_b);
 
     // Runtime-mutable index state. Created once per einsum capture and
     // shared between the descriptor (for pass introspection / rewrite)
@@ -3904,7 +3909,8 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
         ProfileAnnotate("c_size", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->size()));
         ParsedEinsumSpec parsed_live{indices->c_indices, indices->a_indices, indices->b_indices, /*raw*/ std::string{}};
         dispatch::string_einsum(parsed_live, as<T>(params->c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params->ab_pf),
-                                *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
+                                *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), params->conj_a,
+                                params->conj_b);
     };
 
     ctx.record(OpKind::Einsum, std::move(label), {a_id, b_id}, {c_id}, std::move(executor), std::move(desc));
@@ -3925,8 +3931,11 @@ template <TiledTensorConcept AType, TiledTensorConcept BType, TiledTensorConcept
         requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
     }
 void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
-            BType const &B) {
+            BType const &B, bool conj_a = false, bool conj_b = false) {
     using T = typename AType::ValueType;
+    if (conj_a || conj_b) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: conjugation (conj_a/conj_b) is not yet supported for tiled operands");
+    }
     static_assert(IsTiledTensorV<std::remove_cvref_t<AType>> && IsTiledTensorV<std::remove_cvref_t<BType>> &&
                       IsTiledTensorV<std::remove_cvref_t<CType>>,
                   "cg::einsum with a tiled operand currently requires all of A, B, C to be TiledRuntimeTensor "
@@ -4019,6 +4028,12 @@ void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
 /// 4-argument form (no explicit prefactors); Graph::create_params still
 /// stores prefactors as doubles internally, which would narrow the
 /// imaginary part out of a complex ``c_pf``/``ab_pf``.
+///
+/// ``conj_a`` / ``conj_b`` conjugate A / B inside the contraction (for complex
+/// dtypes; a no-op for real). E.g. ``einsum("ij <- ki ; kj", C, A, B,
+/// conj_a=True)`` computes ``A^H @ B``. Native (no operand copy) for GEMM-shaped
+/// contractions via PackedGemm; the generic loop conjugates per element
+/// otherwise. Not supported for tiled operands.
 template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
     requires(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
              std::is_same_v<typename AType::ValueType, typename CType::ValueType>)
@@ -4073,8 +4088,8 @@ APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<double>
     // clang-format on
     void einsum_python(std::string const &spec, CType *C, AType const &A, BType const &B,
                        typename CType::ValueType c_pf  = typename CType::ValueType{0},
-                       typename AType::ValueType ab_pf = typename AType::ValueType{1}) {
-    einsum(EinsumFormatString(std::string_view{spec}), c_pf, C, ab_pf, A, B);
+                       typename AType::ValueType ab_pf = typename AType::ValueType{1}, bool conj_a = false, bool conj_b = false) {
+    einsum(EinsumFormatString(std::string_view{spec}), c_pf, C, ab_pf, A, B, conj_a, conj_b);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
