@@ -4030,10 +4030,18 @@ void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
 /// imaginary part out of a complex ``c_pf``/``ab_pf``.
 ///
 /// ``conj_a`` / ``conj_b`` conjugate A / B inside the contraction (for complex
-/// dtypes; a no-op for real). E.g. ``einsum("ij <- ki ; kj", C, A, B,
-/// conj_a=True)`` computes ``A^H @ B``. Native (no operand copy) for GEMM-shaped
-/// contractions via PackedGemm; the generic loop conjugates per element
-/// otherwise. Not supported for tiled operands.
+/// dtypes; a no-op for real). They only conjugate the *elements* — a conjugate-
+/// *transpose* is the conj flag together with transposed index placement in the
+/// spec (just like any transpose in einsum). To compute ``C = A^H @ B``, store A
+/// as ``(k, i)`` so its row index k is the one contracted:
+/// @code
+/// // (A^H @ B)[i,j] = sum_k conj(A[k,i]) * B[k,j]
+/// einsum("ij <- ki ; kj", C, A, B, conj_a=True);   // A^H @ B
+/// einsum("ij <- ik ; jk", C, A, B, conj_b=True);   // A @ B^H
+/// einsum("ij <- ik ; kj", C, A, B, conj_a=True);   // conj(A) @ B  (no transpose)
+/// @endcode
+/// Native (no operand copy) for GEMM-shaped contractions via PackedGemm; the
+/// generic loop conjugates per element otherwise. Not supported for tiled operands.
 template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
     requires(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
              std::is_same_v<typename AType::ValueType, typename CType::ValueType>)
