@@ -5,9 +5,10 @@
 
 einsum(..., conj_a=True) conjugates A's elements in the contraction (likewise
 conj_b for B); for real dtypes it's a no-op. The oracle is numpy.einsum with the
-operands conjugated. Exercises eager, graph-captured, and graph-with-optimization-
-passes execution (the last guards that the rewriting passes -- folding, batching,
-chain reorder, etc. -- don't drop or mis-handle the conjugation flags).
+operands conjugated. Sweeps all four dtypes (float32/64, complex64/128), dense and
+strided-view operands, the kwarg vs conj(...)-spec surfaces, and eager / graph /
+graph-with-optimization-passes execution (the last guards that the rewriting passes
+-- folding, batching, chain reorder, etc. -- don't drop or mis-handle the flags).
 """
 from __future__ import annotations
 
@@ -32,6 +33,8 @@ _SPECS = [
     ("ij <- i ; j", "i,j->ij"),          # outer / ger
 ]
 
+_DTYPES = ["float32", "float64", "complex64", "complex128"]
+
 
 def _mk(a, dt):
     a = np.asarray(a)
@@ -39,6 +42,16 @@ def _mk(a, dt):
     if a.size:
         np.asarray(t)[...] = a
     return t
+
+
+def _mkv(arr, use_view, dt, rng):
+    """A tensor holding ``arr``, optionally as a strided (permuted) view."""
+    if not use_view or arr.ndim < 2:
+        return _mk(arr, dt)
+    perm = list(rng.permutation(arr.ndim))
+    if perm == list(range(arr.ndim)):
+        perm = perm[::-1]
+    return _mk(np.ascontiguousarray(np.transpose(arr, perm)), dt).permute_view(list(np.argsort(perm)))
 
 
 def _rnd(shape, cplx, rng):
@@ -51,12 +64,17 @@ def _shape_for(idx, ext):
     return tuple(ext[c] for c in idx)
 
 
+def _tol(dt):
+    return (2e-3, 2e-4) if dt in ("float32", "complex64") else (1e-6, 1e-8)
+
+
 @given(spec_pair=st.sampled_from(_SPECS), conj_a=st.booleans(), conj_b=st.booleans(),
-       cplx=st.booleans(), mode=st.sampled_from(["eager", "graph", "graph_passes"]),
-       via=st.sampled_from(["kwarg", "spec"]), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=600, deadline=None,
+       dt=st.sampled_from(_DTYPES), mode=st.sampled_from(["eager", "graph", "graph_passes"]),
+       via=st.sampled_from(["kwarg", "spec"]), va=st.booleans(), vb=st.booleans(),
+       seed=st.integers(0, 2**31 - 1))
+@settings(max_examples=800, deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
-def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, cplx, mode, via, seed):
+def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, dt, mode, via, va, vb, seed):
     spec, np_spec = spec_pair
     a_idx, rest = spec.split(" <- ")[1].split(" ; ")[0], spec.split(" ; ")[1]
     c_idx = spec.split(" <- ")[0]
@@ -67,7 +85,7 @@ def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, cplx, mode, via, seed):
     if not c_idx and mode != "eager":
         return
     rng = np.random.default_rng(seed)
-    dt = "complex128" if cplx else "float64"
+    cplx = dt in ("complex64", "complex128")
     ext = {ch: rng.integers(1, 4) for ch in set(a_idx + b_idx + c_idx)}
     A0 = _rnd(_shape_for(a_idx, ext), cplx, rng)
     B0 = _rnd(_shape_for(b_idx, ext), cplx, rng)
@@ -76,7 +94,7 @@ def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, cplx, mode, via, seed):
     oracle = np.einsum(np_spec, An, Bn)
     c_shape = _shape_for(c_idx, ext) if c_idx else (1,)
 
-    At, Bt = _mk(A0, dt), _mk(B0, dt)
+    At, Bt = _mkv(A0, va, dt, rng), _mkv(B0, vb, dt, rng)
     C = _mk(np.zeros(c_shape), dt)
     # Express conjugation either as conj_a/conj_b kwargs or as conj(...) wrappers
     # in the spec string — both must agree with the oracle.
@@ -98,5 +116,6 @@ def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, cplx, mode, via, seed):
     got = np.asarray(C)
     if not c_idx:
         got = got.ravel()[0]
-    np.testing.assert_allclose(got, oracle, rtol=1e-6, atol=1e-8,
-        err_msg=f"spec={spec_used} conj_a={conj_a} conj_b={conj_b} cplx={cplx} mode={mode} via={via} seed={seed}")
+    rtol, atol = _tol(dt)
+    np.testing.assert_allclose(got, oracle, rtol=rtol, atol=atol,
+        err_msg=f"spec={spec_used} conj_a={conj_a} conj_b={conj_b} dt={dt} mode={mode} via={via} va={va} vb={vb} seed={seed}")
