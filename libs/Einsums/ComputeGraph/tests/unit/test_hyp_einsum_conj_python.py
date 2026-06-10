@@ -53,10 +53,10 @@ def _shape_for(idx, ext):
 
 @given(spec_pair=st.sampled_from(_SPECS), conj_a=st.booleans(), conj_b=st.booleans(),
        cplx=st.booleans(), mode=st.sampled_from(["eager", "graph", "graph_passes"]),
-       seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=500, deadline=None,
+       via=st.sampled_from(["kwarg", "spec"]), seed=st.integers(0, 2**31 - 1))
+@settings(max_examples=600, deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
-def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, cplx, mode, seed):
+def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, cplx, mode, via, seed):
     spec, np_spec = spec_pair
     a_idx, rest = spec.split(" <- ")[1].split(" ; ")[0], spec.split(" ; ")[1]
     c_idx = spec.split(" <- ")[0]
@@ -78,12 +78,20 @@ def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, cplx, mode, seed):
 
     At, Bt = _mk(A0, dt), _mk(B0, dt)
     C = _mk(np.zeros(c_shape), dt)
+    # Express conjugation either as conj_a/conj_b kwargs or as conj(...) wrappers
+    # in the spec string — both must agree with the oracle.
+    if via == "spec":
+        aw = f"conj({a_idx})" if conj_a else a_idx
+        bw = f"conj({b_idx})" if conj_b else b_idx
+        spec_used, kw = f"{c_idx} <- {aw} ; {bw}", {}
+    else:
+        spec_used, kw = spec, dict(conj_a=conj_a, conj_b=conj_b)
     if mode == "eager":
-        einsums.einsum(spec, C, At, Bt, conj_a=conj_a, conj_b=conj_b)
+        einsums.einsum(spec_used, C, At, Bt, **kw)
     else:
         g = cg.Graph(f"ec{next(_ctr)}")
         with cg.capture(g):
-            einsums.einsum(spec, C, At, Bt, conj_a=conj_a, conj_b=conj_b)
+            einsums.einsum(spec_used, C, At, Bt, **kw)
         if mode == "graph_passes":
             cg.default_pass_manager().run(g)
         g.execute()
@@ -91,4 +99,4 @@ def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, cplx, mode, seed):
     if not c_idx:
         got = got.ravel()[0]
     np.testing.assert_allclose(got, oracle, rtol=1e-6, atol=1e-8,
-        err_msg=f"spec={spec} conj_a={conj_a} conj_b={conj_b} cplx={cplx} mode={mode} seed={seed}")
+        err_msg=f"spec={spec_used} conj_a={conj_a} conj_b={conj_b} cplx={cplx} mode={mode} via={via} seed={seed}")

@@ -49,10 +49,12 @@ namespace einsums::compute_graph {
  * input tensors (A and B). Also stores the original string for error messages.
  */
 struct EINSUMS_EXPORT ParsedEinsumSpec {
-    std::vector<std::string> c_indices; ///< Output (C) indices
-    std::vector<std::string> a_indices; ///< First input (A) indices
-    std::vector<std::string> b_indices; ///< Second input (B) indices
-    std::string              raw;       ///< Original specification string
+    std::vector<std::string> c_indices;     ///< Output (C) indices
+    std::vector<std::string> a_indices;     ///< First input (A) indices
+    std::vector<std::string> b_indices;     ///< Second input (B) indices
+    std::string              raw;           ///< Original specification string
+    bool                     conj_a{false}; ///< A wrapped in conj(...) in the spec
+    bool                     conj_b{false}; ///< B wrapped in conj(...) in the spec
 
     /// Compute link indices (in both A and B, not in C).
     [[nodiscard]] std::vector<std::string> link_indices() const;
@@ -109,7 +111,7 @@ namespace detail {
 
 constexpr bool is_einsum_char(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ',' || c == ';' || c == '-' || c == '<' ||
-           c == '>' || c == ' ' || c == '\t';
+           c == '>' || c == ' ' || c == '\t' || c == '(' || c == ')'; // ( ) for the conj(...) operand wrapper
 }
 
 } // namespace detail
@@ -143,6 +145,10 @@ constexpr std::size_t count_operand_indices(std::string_view s) {
         s.remove_suffix(1);
     if (s.empty())
         return 0;
+
+    // A ``conj(...)`` wrapper counts as just the indices it encloses.
+    if (s.size() >= 6 && s.substr(0, 5) == "conj(" && s.back() == ')')
+        s = s.substr(5, s.size() - 6);
 
     bool has_comma = false;
     for (char const ch : s) {

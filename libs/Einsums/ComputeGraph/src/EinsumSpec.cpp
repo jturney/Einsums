@@ -52,6 +52,19 @@ std::vector<std::string> parse_index_group(std::string_view group, bool multi_ch
     return indices;
 }
 
+// Detect and strip a ``conj(...)`` wrapper around an operand's index block
+// (the input is already whitespace-stripped). Sets @p conj and returns the inner
+// index string; returns the input unchanged when not wrapped. The wrapper marks
+// the operand for conjugation in the contraction (no-op for real dtypes).
+std::string_view unwrap_conj(std::string_view part, bool &conj) {
+    conj = false;
+    if (part.size() >= 6 && part.substr(0, 5) == "conj(" && part.back() == ')') {
+        conj = true;
+        return part.substr(5, part.size() - 6);
+    }
+    return part;
+}
+
 } // namespace
 
 expected<ParsedEinsumSpec, GraphError> parse_einsum_spec(std::string_view spec) {
@@ -86,8 +99,16 @@ expected<ParsedEinsumSpec, GraphError> parse_einsum_spec(std::string_view spec) 
         return unexpected(GraphError::parse(fmt::format("einsum spec '{}': missing ';' between operands", spec)));
     }
 
-    std::string_view const a_part = inputs_part.substr(0, semi_pos);
-    std::string_view const b_part = inputs_part.substr(semi_pos + 1);
+    std::string_view a_part = inputs_part.substr(0, semi_pos);
+    std::string_view b_part = inputs_part.substr(semi_pos + 1);
+
+    // A ``conj(...)`` wrapper around an operand marks it for conjugation in the
+    // contraction (e.g. ``"ij <- conj(ki) ; kj"`` is A^H @ B). Strip it and record
+    // the flag; the einsum op ORs these with any conj_a/conj_b kwargs.
+    bool conj_a = false;
+    bool conj_b = false;
+    a_part      = unwrap_conj(a_part, conj_a);
+    b_part      = unwrap_conj(b_part, conj_b);
 
     // Char-vs-comma is decided PER OPERAND: an operand containing ',' is comma-split
     // (so multi-char index names like "sig"/"lam" work); a comma-less operand is
@@ -100,6 +121,8 @@ expected<ParsedEinsumSpec, GraphError> parse_einsum_spec(std::string_view spec) 
     result.c_indices = parse_index_group(output_part, has_commas(output_part));
     result.a_indices = parse_index_group(a_part, has_commas(a_part));
     result.b_indices = parse_index_group(b_part, has_commas(b_part));
+    result.conj_a    = conj_a;
+    result.conj_b    = conj_b;
 
     if (result.a_indices.empty()) {
         return unexpected(GraphError::parse(fmt::format("einsum spec '{}': first operand has no indices", spec)));

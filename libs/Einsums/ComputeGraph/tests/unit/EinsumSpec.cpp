@@ -21,6 +21,60 @@ TEST_CASE("parse_einsum_spec - arrow notation, single-char", "[ComputeGraph][Ein
     REQUIRE(spec.b_indices == std::vector<std::string>{"k", "j"});
 }
 
+TEST_CASE("parse_einsum_spec - conj(...) operand wrapper", "[ComputeGraph][EinsumSpec]") {
+    SECTION("no conjugation") {
+        auto r = parse_einsum_spec("ij <- ik ; kj");
+        REQUIRE(r.has_value());
+        REQUIRE_FALSE(r.value().conj_a);
+        REQUIRE_FALSE(r.value().conj_b);
+    }
+    SECTION("conj A only — wrapper stripped, indices intact") {
+        auto r = parse_einsum_spec("ij <- conj(ki) ; kj");
+        REQUIRE(r.has_value());
+        auto &s = r.value();
+        REQUIRE(s.conj_a);
+        REQUIRE_FALSE(s.conj_b);
+        REQUIRE(s.a_indices == std::vector<std::string>{"k", "i"});
+        REQUIRE(s.b_indices == std::vector<std::string>{"k", "j"});
+    }
+    SECTION("conj B only") {
+        auto r = parse_einsum_spec("ij <- ik ; conj(jk)");
+        REQUIRE(r.has_value());
+        REQUIRE_FALSE(r.value().conj_a);
+        REQUIRE(r.value().conj_b);
+        REQUIRE(r.value().b_indices == std::vector<std::string>{"j", "k"});
+    }
+    SECTION("conj both operands") {
+        auto r = parse_einsum_spec("ij <- conj(ki) ; conj(jk)");
+        REQUIRE(r.has_value());
+        REQUIRE(r.value().conj_a);
+        REQUIRE(r.value().conj_b);
+    }
+    SECTION("conj with multi-char comma indices") {
+        auto r = parse_einsum_spec("mu,nu <- conj(mu,rho) ; rho,nu");
+        REQUIRE(r.has_value());
+        auto &s = r.value();
+        REQUIRE(s.conj_a);
+        REQUIRE(s.a_indices == std::vector<std::string>{"mu", "rho"});
+    }
+    SECTION("conj in the -> arrow form") {
+        auto r = parse_einsum_spec("conj(ki) ; kj -> ij");
+        REQUIRE(r.has_value());
+        REQUIRE(r.value().conj_a);
+        REQUIRE(r.value().a_indices == std::vector<std::string>{"k", "i"});
+    }
+}
+
+// Compile-time path (EinsumFormatString literal ctor): the consteval validator
+// must accept the conj(...) parens, and the index counter must count the wrapped
+// indices only (so a C++ literal like cg::einsum("ij <- conj(ki) ; kj", ...) both
+// compiles and gets the right operand ranks).
+static_assert(validate_einsum_spec("ij <- conj(ki) ; kj"));
+static_assert(parse_index_counts("ij <- conj(ki) ; conj(kj)").a == 2);
+static_assert(parse_index_counts("ij <- conj(ki) ; conj(kj)").b == 2);
+static_assert(parse_index_counts("ij <- conj(ki) ; conj(kj)").c == 2);
+static_assert(parse_index_counts("mu,nu <- conj(mu,rho) ; rho,nu").a == 2);
+
 TEST_CASE("parse_einsum_spec - arrow notation, no whitespace", "[ComputeGraph][EinsumSpec]") {
     auto result = parse_einsum_spec("ij<-ik;kj");
     REQUIRE(result.has_value());

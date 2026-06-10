@@ -3572,6 +3572,9 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}", parse_result.error().message);
     }
     auto &parsed = parse_result.value();
+    // A ``conj(...)`` wrapper in the spec ORs with the conj_a / conj_b kwargs.
+    conj_a = conj_a || parsed.conj_a;
+    conj_b = conj_b || parsed.conj_b;
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
@@ -3946,6 +3949,10 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}", parse_result.error().message);
     }
     auto &parsed = parse_result.value();
+    if (parsed.conj_a || parsed.conj_b) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "cg::einsum: conjugation (conj(...) in the spec) is not yet supported for tiled operands");
+    }
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
@@ -4040,6 +4047,8 @@ void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
 /// einsum("ij <- ik ; jk", C, A, B, conj_b=True);   // A @ B^H
 /// einsum("ij <- ik ; kj", C, A, B, conj_a=True);   // conj(A) @ B  (no transpose)
 /// @endcode
+/// Equivalently, wrap an operand in ``conj(...)`` directly in the spec; it ORs
+/// with the kwargs, so ``einsum("ij <- conj(ki) ; kj", C, A, B)`` is also A^H @ B.
 /// Native (no operand copy) for GEMM-shaped contractions via PackedGemm; the
 /// generic loop conjugates per element otherwise. Not supported for tiled operands.
 template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
