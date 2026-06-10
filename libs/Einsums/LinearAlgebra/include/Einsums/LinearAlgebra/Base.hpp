@@ -962,6 +962,58 @@ void symm_gemm(AType const &A, BType const &B, CType *C) {
     gemm<!TransB, false>(typename AType::ValueType{1.0}, B, temp, typename CType::ValueType{0.0}, C);
 }
 
+// Hermitian congruence: C = op(B)^H op(A) op(B) (the conjugating counterpart of
+// symm_gemm's op(B)^T op(A) op(B)). For real types it coincides with symm_gemm.
+// The inner product op(A) op(B) is unchanged; only the outer factor is conjugated.
+template <bool TransA, bool TransB, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicTensorConcept CType>
+    requires requires {
+        requires SameUnderlyingAndRank<AType, BType, CType>;
+        requires MatrixConcept<AType>;
+    }
+void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
+    int  temp_rows, temp_cols;
+    bool shape_test = true;
+    if constexpr (TransA && TransB) {
+        shape_test = B.dim(0) == A.dim(0) && A.dim(1) == B.dim(0) && C->dim(0) == B.dim(1) && C->dim(1) == B.dim(1);
+    } else if constexpr (TransA && !TransB) {
+        shape_test = B.dim(1) == A.dim(0) && A.dim(1) == B.dim(1) && C->dim(0) == B.dim(0) && C->dim(1) == B.dim(0);
+    } else if constexpr (!TransA && TransB) {
+        shape_test = B.dim(0) == A.dim(1) && A.dim(0) == B.dim(0) && C->dim(0) == B.dim(1) && C->dim(1) == B.dim(1);
+    } else {
+        shape_test = B.dim(1) == A.dim(1) && A.dim(0) == B.dim(1) && C->dim(0) == B.dim(0) && C->dim(1) == B.dim(0);
+    }
+    if (!shape_test) {
+        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The shapes of the input and output tensors are incompatible!");
+    }
+
+    if constexpr (TransA) {
+        temp_rows = A.dim(1);
+    } else {
+        temp_rows = A.dim(0);
+    }
+    if constexpr (TransB) {
+        temp_cols = B.dim(0);
+    } else {
+        temp_cols = B.dim(1);
+    }
+
+    *C = typename CType::ValueType(0.0);
+    Tensor<typename AType::ValueType, 2> temp{"temp", temp_rows, temp_cols};
+
+    gemm<TransA, TransB>(typename AType::ValueType{1.0}, A, B, typename CType::ValueType{0.0}, &temp); // temp = op(A) op(B)
+
+    // C = op(B)^H @ temp. With op(B) = B (when !TransB), op(B)^H = B^H -> BLAS 'c'.
+    // With op(B) = B^T (when TransB), op(B)^H = conj(B), which has no BLAS op flag
+    // (conjugate without transpose), so materialize a conjugated copy.
+    if constexpr (!TransB) {
+        gemm('c', 'n', typename AType::ValueType{1.0}, B, temp, typename CType::ValueType{0.0}, C);
+    } else {
+        RemoveViewT<BType> Bc = B;
+        einsums::detail::impl_conj(Bc.impl());
+        gemm('n', 'n', typename AType::ValueType{1.0}, Bc, temp, typename CType::ValueType{0.0}, C);
+    }
+}
+
 template <typename AType, typename BType, typename CType>
 void direct_product(CType alpha, einsums::detail::TensorImpl<AType> const &A, einsums::detail::TensorImpl<BType> const &B, CType beta,
                     einsums::detail::TensorImpl<CType> *C) {

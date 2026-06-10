@@ -291,6 +291,55 @@ void symm_gemm(AType const &A, BType const &B, CType *C) {
     gemm<!TransB, false>(T{1.0}, B, temp, T{0.0}, C);
 }
 
+// Hermitian congruence C = op(B)^H op(A) op(B) (compile-time-rank); only the
+// outer factor differs from symm_gemm (conjugate-transpose instead of transpose).
+template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, MatrixConcept CType>
+    requires requires {
+        requires InSamePlace<AType, BType, CType>;
+        requires SameUnderlying<AType, BType, CType>;
+    }
+void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
+    LabeledSection0();
+
+    detail::hermitian_symm_gemm<TransA, TransB>(A, B, C);
+}
+
+// Runtime-rank Hermitian congruence C = op(B)^H op(A) op(B). Mirrors the
+// runtime-rank symm_gemm above; the outer factor is conjugate-transpose -- BLAS
+// 'c' when B is not transposed, else a materialized conj(B) (BLAS has no
+// conjugate-without-transpose). For real dtypes it coincides with symm_gemm.
+template <bool TransA, bool TransB, BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
+    requires requires {
+        requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank || std::remove_cvref_t<BType>::Rank == einsums::dynamic_rank ||
+                         std::remove_cvref_t<CType>::Rank == einsums::dynamic_rank;
+        requires InSamePlace<AType, BType, CType>;
+        requires SameUnderlying<AType, BType, CType>;
+    }
+void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
+    LabeledSection0();
+
+    if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "hermitian_symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(),
+                                C->rank());
+    }
+
+    size_t const temp_rows = TransA ? A.dim(1) : A.dim(0);
+    size_t const temp_cols = TransB ? B.dim(0) : B.dim(1);
+
+    using T = typename AType::ValueType;
+    *C      = typename CType::ValueType(0.0);
+
+    Tensor<T, 2> temp{"temp", temp_rows, temp_cols};
+    gemm<TransA, TransB>(T{1.0}, A, B, T{0.0}, &temp);
+    if constexpr (!TransB) {
+        gemm('c', 'n', T{1.0}, B, temp, T{0.0}, C);
+    } else {
+        RemoveViewT<BType> Bc = B;
+        einsums::detail::impl_conj(Bc.impl());
+        gemm('n', 'n', T{1.0}, Bc, temp, T{0.0}, C);
+    }
+}
+
 /**
  * @brief General matrix-vector multiplication.
  *

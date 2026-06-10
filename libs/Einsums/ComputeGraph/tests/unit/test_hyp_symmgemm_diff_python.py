@@ -51,21 +51,23 @@ _SZ = st.sampled_from([1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 24])
 _DT = st.sampled_from(["float64", "complex128"])
 
 
-@given(m=_SZ, q=_SZ, ta=st.booleans(), tb=st.booleans(), dt=_DT,
+@given(m=_SZ, q=_SZ, ta=st.booleans(), tb=st.booleans(), dt=_DT, conj=st.booleans(),
        va=st.booleans(), vb=st.booleans(), vc=st.booleans(), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=300, deadline=None,
+@settings(max_examples=350, deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
-def test_hyp_symmgemm_diff(m, q, ta, tb, dt, va, vb, vc, seed):
+def test_hyp_symmgemm_diff(m, q, ta, tb, dt, conj, va, vb, vc, seed):
     rng = np.random.default_rng(seed)
     cplx = (dt == "complex128")
     A0 = _rnd((m, m), cplx, rng)
     B0 = _rnd((q, m) if tb else (m, q), cplx, rng)  # op(B) is m x q
     opA = A0.T if ta else A0
     opB = B0.T if tb else B0
-    oracle = opB.T @ opA @ opB
+    # conjugate=True is the Hermitian congruence op(B)^H op(A) op(B); default is op(B)^T ...
+    outer = opB.conj().T if conj else opB.T
+    oracle = outer @ opA @ opB
     At = _mkv(A0, va, dt, rng)
     Bt = _mkv(B0, vb, dt, rng)
     Ct = _mkv(np.zeros((q, q)), vc, dt, rng)
-    einsums.linalg.symm_gemm(At, Bt, Ct, trans_a=ta, trans_b=tb)
+    einsums.linalg.symm_gemm(At, Bt, Ct, trans_a=ta, trans_b=tb, conjugate=conj)
     np.testing.assert_allclose(np.asarray(Ct), oracle, rtol=1e-6, atol=1e-7,
-        err_msg=f"m={m} q={q} ta={ta} tb={tb} dt={dt} va={va} vb={vb} vc={vc} s={seed}")
+        err_msg=f"m={m} q={q} ta={ta} tb={tb} dt={dt} conj={conj} va={va} vb={vb} vc={vc} s={seed}")

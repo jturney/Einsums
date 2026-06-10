@@ -2614,27 +2614,32 @@ APIARY_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<do
 APIARY_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
-    void symm_gemm(AType const &A, BType const &B, CType *C) {
+    void symm_gemm(AType const &A, BType const &B, CType *C, bool conjugate = false) {
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
     }
+    // conjugate=true computes the Hermitian congruence op(B)^H op(A) op(B); the
+    // default is the (bilinear) op(B)^T op(A) op(B). For real dtypes they coincide.
+    auto run = [conjugate](AType const &a, BType const &b, CType *c) {
+        if (conjugate) {
+            linear_algebra::hermitian_symm_gemm<TransA, TransB>(a, b, c);
+        } else {
+            linear_algebra::symm_gemm<TransA, TransB>(a, b, c);
+        }
+    };
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("symm_gemm eager");
-        linear_algebra::symm_gemm<TransA, TransB>(A, B, C);
+        run(A, B, C);
         return;
     }
     LabeledSection("symm_gemm capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
-    auto executor       = [a_slot, b_slot, c_slot]() {
+    auto executor       = [a_slot, b_slot, c_slot, run]() {
         LabeledSection("symm_gemm execute");
-        ProfileAnnotate("a_n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
-        ProfileAnnotate("b_m", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->dim(0)));
-        ProfileAnnotate("b_n", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->dim(1)));
-        linear_algebra::symm_gemm<TransA, TransB>(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr),
-                                                  static_cast<CType *>(c_slot->ptr));
+        run(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), static_cast<CType *>(c_slot->ptr));
     };
     ctx.record(OpKind::SymmGemm, "symm_gemm", {a_id, b_id}, {c_id}, std::move(executor));
 }
