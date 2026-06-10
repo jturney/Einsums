@@ -56,9 +56,8 @@ _SHAPE = st.lists(st.integers(1, 4), min_size=1, max_size=3)
 def test_hyp_conjugation(op, shape, cplx, view, graph, seed):
     rng = np.random.default_rng(seed)
     shape = tuple(shape)
-    # real/imag require a complex input; conj/abs accept either.
-    if op in ("real", "imag"):
-        cplx = True
+    # conj/real/imag/abs all accept real or complex input: real(real)==copy,
+    # imag(real)==0, conj(real)==copy, abs(real)==|x|.
     cdt = "complex128" if cplx else "float64"
     A0 = _rnd(shape, cplx, rng)
 

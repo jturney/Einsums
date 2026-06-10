@@ -60,6 +60,43 @@ void tiled_element_transform(TiledRuntimeTensor<T> *A, UnaryOp unary_op) {
     });
 }
 
+/// Tiled in-place complex conjugate `A := conj(A)` (per stored tile; no-op for
+/// real T). Absent tiles are zero and stay absent.
+template <typename T>
+void tiled_conj(TiledRuntimeTensor<T> *A) {
+    tiled_for_each_tile(A, [](RuntimeTensor<T> *tile) { einsums::detail::impl_conj(tile->impl()); });
+}
+
+/// Tiled complex->real elementwise extraction `Out[tile] = f(In[tile])` where f
+/// is one of the TensorImpl kernels real/imag/abs. ``In`` and ``Out`` must share
+/// a tile grid; only In's stored tiles are visited (absent -> zero, and the real
+/// part / imag part / magnitude of zero is zero). ``Out`` tiles are created on
+/// demand. Used by the cg conj/real/imag/abs ops for tiled operands.
+template <typename TOut, typename TIn, typename Kernel>
+void tiled_complex_to_real(TiledRuntimeTensor<TIn> const &In, TiledRuntimeTensor<TOut> *Out, Kernel &&kernel) {
+    if (In.tile_sizes() != Out->tile_sizes()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::real/imag/abs (tiled): In and Out must share the same tile grid");
+    }
+    for (auto const &kv : In.tiles()) {
+        auto &out_tile = Out->tile(kv.first); // infer-and-create (zeroed)
+        out_tile.materialize();
+        kernel(kv.second.impl(), out_tile.impl());
+    }
+}
+
+template <typename TOut, typename TIn>
+void tiled_real(TiledRuntimeTensor<TIn> const &In, TiledRuntimeTensor<TOut> *Out) {
+    tiled_complex_to_real(In, Out, [](auto const &i, auto &o) { einsums::detail::impl_real(i, o); });
+}
+template <typename TOut, typename TIn>
+void tiled_imag(TiledRuntimeTensor<TIn> const &In, TiledRuntimeTensor<TOut> *Out) {
+    tiled_complex_to_real(In, Out, [](auto const &i, auto &o) { einsums::detail::impl_imag(i, o); });
+}
+template <typename TOut, typename TIn>
+void tiled_abs(TiledRuntimeTensor<TIn> const &In, TiledRuntimeTensor<TOut> *Out) {
+    tiled_complex_to_real(In, Out, [](auto const &i, auto &o) { einsums::detail::impl_abs(i, o); });
+}
+
 /**
  * @brief Tiled `Y += alpha * X` (axpy), tile-by-tile.
  *

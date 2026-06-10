@@ -153,26 +153,53 @@ APIARY_INSTANTIATE_AS("conj", einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("conj", einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("conj", einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("conj", einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("conj", einsums::TiledRuntimeTensor<float>)
+APIARY_INSTANTIATE_AS("conj", einsums::TiledRuntimeTensor<double>)
+APIARY_INSTANTIATE_AS("conj", einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("conj", einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void conj(AType *A) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("conj eager");
-        einsums::detail::impl_conj(A->impl());
-        return;
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        using T   = typename AType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("conj eager");
+            detail::tiled_conj<T>(A);
+            return;
+        }
+        LabeledSection("conj capture");
+        auto [a_id, a_slot] = ctx.get_slot(*A);
+        auto label          = fmt::format("tiled conj({})", A->name());
+        auto executor       = [a_slot]() {
+            LabeledSection("conj execute");
+            detail::tiled_conj<T>(static_cast<AType *>(a_slot->ptr));
+        };
+        ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor));
+    } else {
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("conj eager");
+            einsums::detail::impl_conj(A->impl());
+            return;
+        }
+        LabeledSection("conj capture");
+        auto [a_id, a_slot] = ctx.get_slot(*A);
+        auto label          = fmt::format("conj({})", A->name());
+        auto executor       = [a_slot]() {
+            LabeledSection("conj execute");
+            einsums::detail::impl_conj(static_cast<AType *>(a_slot->ptr)->impl());
+        };
+        ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor));
     }
-    LabeledSection("conj capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-    auto label          = fmt::format("conj({})", A->name());
-    auto executor       = [a_slot]() {
-        LabeledSection("conj execute");
-        einsums::detail::impl_conj(static_cast<AType *>(a_slot->ptr)->impl());
-    };
-    ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor));
 }
 
-/// Graph-aware real part: ``out := Re(A)`` (complex ``A`` -> real ``out``).
-template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+/// Graph-aware real part: ``out := Re(A)``. Complex ``A`` -> real ``out``; for a
+/// real ``A`` it is a copy (Re(x) == x), matching numpy ``.real``. Dense or tiled.
+template <typename ResultType, typename AType>
+    requires requires {
+        requires(CoreBasicTensorConcept<ResultType> || IsTiledTensorV<std::remove_cvref_t<ResultType>>);
+        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
+    }
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -180,26 +207,59 @@ APIARY_INSTANTIATE_AS("real", einsums::GeneralRuntimeTensor<float, std::allocato
 APIARY_INSTANTIATE_AS("real", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,   einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("real", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("real", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("real", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,   einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("real", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,   einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("real", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("real", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("real", einsums::TiledRuntimeTensor<float>,  einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("real", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void real(ResultType *out, AType const &A) {
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("real eager");
-        einsums::detail::impl_real(A.impl(), out->impl());
-        return;
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        if (!ctx.is_capturing()) {
+            LabeledSection("real eager");
+            detail::tiled_real(A, out);
+            return;
+        }
+        LabeledSection("real capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [r_id, r_slot] = ctx.get_slot(*out);
+        auto executor       = [a_slot, r_slot]() {
+            detail::tiled_real(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
+        };
+        ctx.record(OpKind::Custom, "real", {a_id}, {r_id}, std::move(executor));
+    } else {
+        auto compute = [](AType const &a, ResultType *o) {
+            if constexpr (IsComplexV<typename AType::ValueType>) {
+                einsums::detail::impl_real(a.impl(), o->impl());
+            } else {
+                einsums::detail::impl_copy(a.impl(), o->impl()); // Re(x) == x for real x
+            }
+        };
+        if (!ctx.is_capturing()) {
+            LabeledSection("real eager");
+            compute(A, out);
+            return;
+        }
+        LabeledSection("real capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [r_id, r_slot] = ctx.get_slot(*out);
+        auto executor       = [a_slot, r_slot, compute]() {
+            LabeledSection("real execute");
+            compute(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
+        };
+        ctx.record(OpKind::Custom, "real", {a_id}, {r_id}, std::move(executor));
     }
-    LabeledSection("real capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [r_id, r_slot] = ctx.get_slot(*out);
-    auto executor       = [a_slot, r_slot]() {
-        LabeledSection("real execute");
-        einsums::detail::impl_real(static_cast<AType const *>(a_slot->ptr)->impl(), static_cast<ResultType *>(r_slot->ptr)->impl());
-    };
-    ctx.record(OpKind::Custom, "real", {a_id}, {r_id}, std::move(executor));
 }
 
-/// Graph-aware imaginary part: ``out := Im(A)`` (complex ``A`` -> real ``out``).
-template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+/// Graph-aware imaginary part: ``out := Im(A)``. Complex ``A`` -> real ``out``;
+/// for a real ``A`` it is zeros (Im(x) == 0), matching numpy ``.imag``. Dense or tiled.
+template <typename ResultType, typename AType>
+    requires requires {
+        requires(CoreBasicTensorConcept<ResultType> || IsTiledTensorV<std::remove_cvref_t<ResultType>>);
+        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
+    }
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -207,26 +267,62 @@ APIARY_INSTANTIATE_AS("imag", einsums::GeneralRuntimeTensor<float, std::allocato
 APIARY_INSTANTIATE_AS("imag", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,   einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("imag", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("imag", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("imag", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,   einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("imag", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,   einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("imag", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("imag", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("imag", einsums::TiledRuntimeTensor<float>,  einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("imag", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void imag(ResultType *out, AType const &A) {
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("imag eager");
-        einsums::detail::impl_imag(A.impl(), out->impl());
-        return;
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        if (!ctx.is_capturing()) {
+            LabeledSection("imag eager");
+            detail::tiled_imag(A, out);
+            return;
+        }
+        LabeledSection("imag capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [r_id, r_slot] = ctx.get_slot(*out);
+        auto executor       = [a_slot, r_slot]() {
+            detail::tiled_imag(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
+        };
+        ctx.record(OpKind::Custom, "imag", {a_id}, {r_id}, std::move(executor));
+    } else {
+        auto compute = [](AType const &a, ResultType *o) {
+            if constexpr (IsComplexV<typename AType::ValueType>) {
+                einsums::detail::impl_imag(a.impl(), o->impl());
+            } else {
+                // Im(x) == 0 for real x: copy then scale by zero (avoids reading
+                // uninitialized output the way a bare scal(0) would).
+                einsums::detail::impl_copy(a.impl(), o->impl());
+                einsums::detail::impl_scal(typename ResultType::ValueType{0}, o->impl());
+            }
+        };
+        if (!ctx.is_capturing()) {
+            LabeledSection("imag eager");
+            compute(A, out);
+            return;
+        }
+        LabeledSection("imag capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [r_id, r_slot] = ctx.get_slot(*out);
+        auto executor       = [a_slot, r_slot, compute]() {
+            LabeledSection("imag execute");
+            compute(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
+        };
+        ctx.record(OpKind::Custom, "imag", {a_id}, {r_id}, std::move(executor));
     }
-    LabeledSection("imag capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [r_id, r_slot] = ctx.get_slot(*out);
-    auto executor       = [a_slot, r_slot]() {
-        LabeledSection("imag execute");
-        einsums::detail::impl_imag(static_cast<AType const *>(a_slot->ptr)->impl(), static_cast<ResultType *>(r_slot->ptr)->impl());
-    };
-    ctx.record(OpKind::Custom, "imag", {a_id}, {r_id}, std::move(executor));
 }
 
 /// Graph-aware magnitude: ``out := |A|`` (real or complex ``A`` -> real ``out``).
-template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+/// Dense or tiled.
+template <typename ResultType, typename AType>
+    requires requires {
+        requires(CoreBasicTensorConcept<ResultType> || IsTiledTensorV<std::remove_cvref_t<ResultType>>);
+        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
+    }
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -238,22 +334,41 @@ APIARY_INSTANTIATE_AS("abs", einsums::GeneralRuntimeTensor<float, std::allocator
 APIARY_INSTANTIATE_AS("abs", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,   einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("abs", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("abs", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("abs", einsums::TiledRuntimeTensor<float>,  einsums::TiledRuntimeTensor<float>)
+APIARY_INSTANTIATE_AS("abs", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
+APIARY_INSTANTIATE_AS("abs", einsums::TiledRuntimeTensor<float>,  einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("abs", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void abs(ResultType *out, AType const &A) {
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("abs eager");
-        einsums::detail::impl_abs(A.impl(), out->impl());
-        return;
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        if (!ctx.is_capturing()) {
+            LabeledSection("abs eager");
+            detail::tiled_abs(A, out);
+            return;
+        }
+        LabeledSection("abs capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [r_id, r_slot] = ctx.get_slot(*out);
+        auto executor       = [a_slot, r_slot]() {
+            detail::tiled_abs(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
+        };
+        ctx.record(OpKind::Custom, "abs", {a_id}, {r_id}, std::move(executor));
+    } else {
+        if (!ctx.is_capturing()) {
+            LabeledSection("abs eager");
+            einsums::detail::impl_abs(A.impl(), out->impl());
+            return;
+        }
+        LabeledSection("abs capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [r_id, r_slot] = ctx.get_slot(*out);
+        auto executor       = [a_slot, r_slot]() {
+            LabeledSection("abs execute");
+            einsums::detail::impl_abs(static_cast<AType const *>(a_slot->ptr)->impl(), static_cast<ResultType *>(r_slot->ptr)->impl());
+        };
+        ctx.record(OpKind::Custom, "abs", {a_id}, {r_id}, std::move(executor));
     }
-    LabeledSection("abs capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [r_id, r_slot] = ctx.get_slot(*out);
-    auto executor       = [a_slot, r_slot]() {
-        LabeledSection("abs execute");
-        einsums::detail::impl_abs(static_cast<AType const *>(a_slot->ptr)->impl(), static_cast<ResultType *>(r_slot->ptr)->impl());
-    };
-    ctx.record(OpKind::Custom, "abs", {a_id}, {r_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
