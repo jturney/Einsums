@@ -141,6 +141,11 @@ function(einsums_finalize_pybind)
         PKG_DIR "${_pkg_dir}"
         PY_HELPERS_DIR "${_pkg_src}"
         PY_HELPER_DEPENDS ${_py_helpers} ${_py_helper_pkgs}
+        # Einsums-owned overlay for the runtime-patched NumPy-style ergonomics
+        # (conj/.real/.imag/.H/constructors/...) the C++ codegen can't see. Apiary
+        # supplies the merge mechanism; the content + class regex live here.
+        STUB_OVERLAY "${CMAKE_SOURCE_DIR}/libs/Einsums/Python/stub_overlay.pyi"
+        STUB_OVERLAY_CLASS_REGEX "^class (RuntimeTensor(View)?[FDCZ]): *$"
         DOCS_JSON ${_docs_jsons}
         DOCS_TARGET PyEinsumsDocs
         DOCS_OUTDIR "${_gen_dir}/docs"
