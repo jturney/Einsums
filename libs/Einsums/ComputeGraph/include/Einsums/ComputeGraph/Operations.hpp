@@ -3759,7 +3759,10 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
             bool const row_mode = positions_match && all_row_major && is_prefix_range(batch_positions, batch_names.size());
             bool const col_mode = positions_match && all_col_major && is_suffix_range(batch_positions, batch_names.size(), Rank);
 
-            if (shape_ok && positions_match && all_contig && (row_mode || col_mode)) {
+            // Conjugated batched einsums skip this gemm_batch fast path (it only
+            // emits 'N'/'T' trans, never conjugation) and fall through to the
+            // conj-aware generic string_einsum executor below.
+            if (shape_ok && positions_match && all_contig && (row_mode || col_mode) && !params->conj_a && !params->conj_b) {
                 // Non-batch indices in original order: strip the batch positions.
                 // For row_mode they're the LAST 2 positions; for col_mode the FIRST 2.
                 std::vector<std::string> a_rest, b_rest;

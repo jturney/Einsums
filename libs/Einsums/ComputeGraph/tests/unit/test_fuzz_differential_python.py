@@ -3,53 +3,56 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 # ----------------------------------------------------------------------------------------------
 
-"""Differential / fuzz harness for ComputeGraph and the optimization passes.
+"""Differential / fuzz harness for ComputeGraph + the optimization passes.
 
-The idea is simple and brutal: generate a random program over a pool of
+The idea is simple and brutal: generate a random *program* over a pool of
 tensors, then run it three ways and demand they all agree:
 
-  1. numpy oracle: a pure-numpy interpreter of the program.
-  2. raw graph: the program replayed into a ``cg.Graph`` and executed
-     with no optimization passes.
-  3. optimized graph: the same program, then ``default_pass_manager()``
-     applied before execution.
+  1. **numpy oracle** — a pure-numpy interpreter of the program.
+  2. **raw graph**     — the program replayed into a ``cg.Graph`` and executed
+                         with *no* optimization passes.
+  3. **optimized graph** — the same program, then ``default_pass_manager()``
+                         applied before execution.
 
 If (raw == oracle) but (optimized != oracle), a pass miscompiled the graph.
 If (raw != oracle), the executor itself disagrees with numpy. Either way the
 seed and the offending program are printed so the failure reproduces.
 
 The tensor pool is deliberately diverse:
-  * matrices over every (r, c) with r, c ∈ {2, 3, 4}, several copies each,
-  * vectors of each length,
-  * rank-3 tensors over {2, 3}^3 for batched contractions.
+  * **matrices** over every (r, c) with r, c ∈ {2, 3, 4} (several copies each),
+  * **vectors** of each length,
+  * **rank-3 tensors** over {2, 3}^3 for batched contractions.
 
 The generator picks shape-compatible operands for each op, so contractions
-exercise non-square M/N/K and batched rank-3 gemms.
+exercise non-square M/N/K and batched (rank-3) gemms.
 
 The op set stresses the read-modify-write hazards that have broken passes
 before, across the BLAS levels, the einsum/permute path, batched gemm, and
-views. Views are sub-block aliases that stress the scheduler's alias
-resolution, since a write through a view must be seen as a write to the parent:
+**views** (sub-block aliases — these stress the scheduler's alias resolution,
+since a write through a view must be seen as a write to the parent):
 
-  * ``scale`` / ``axpy`` / ``axpby``: level-1 in-place or accumulate.
-  * ``gemm``: ``C = a*A@B + b*C`` with mixed M/N/K, overwrite or accumulate.
-  * ``einsum``: three contraction patterns over mixed shapes.
-  * ``beinsum``: rank-3 batched einsum ``ijb<-ikb;kjb`` (BatchedGemm path).
-  * ``perm``: transpose ``C = a*A^T + c*C``.
-  * ``symm``: symmetric double multiply ``C = B^T A B``.
-  * ``gemv`` / ``ger``: matrix×vector and rank-1 update.
-  * ``vscale`` / ``vaxpy``: scale or axpy applied through a view of a
-                 matrix sub-block, mixed with full-matrix writes to the same
+  * ``scale`` / ``axpy`` / ``axpby`` — level-1 in-place / accumulate.
+  * ``gemm``   — ``C = a*A@B + b*C`` (mixed M/N/K, overwrite or accumulate).
+  * ``einsum`` — three contraction patterns over mixed shapes, with random
+                 conj_a/conj_b (native conjugation: a no-op on real dtypes, the
+                 real test on complex; also exercises the passes' conj guards).
+  * ``beinsum``— rank-3 batched einsum ``ijb<-ikb;kjb`` (BatchedGemm path), likewise
+                 with random conjugation flags.
+  * ``perm``   — transpose ``C = a*A^T + c*C``.
+  * ``symm``   — symmetric double multiply ``C = B^T A B``.
+  * ``gemv`` / ``ger`` — matrix×vector and rank-1 update.
+  * ``vscale`` / ``vaxpy`` — scale / axpy applied through a *view* of a
+                 matrix sub-block; mixed with full-matrix writes to the same
                  tensor to exercise alias-aware scheduling.
 
 plus control flow:
 
-  * ``loop``: run a body sub-program a fixed number of times.
-  * ``cond``: generation-time coin flip selecting then/else branch.
+  * ``loop``   — run a body sub-program a fixed number of times.
+  * ``cond``   — generation-time coin flip selecting then/else branch.
 
 Conditionals use a coin flip rather than a data-dependent predicate on purpose:
 a predicate near its threshold would flip differently under fp noise between the
-oracle and the executor, making the whole branch diverge and the test flaky.
+oracle and the executor, making the *whole branch* diverge and the test flaky.
 Data-dependent branching is covered by the dedicated SCF/MP2 tests.
 """
 
@@ -63,7 +66,7 @@ import einsums.graph as cg
 from einsums.testing import ALL_DTYPES
 
 # ──────────────────────────────────────────────────────────────────────────
-# Pool layout, fixed so the generator and the per-trial seed arrays agree.
+# Pool layout — fixed so the generator and the per-trial seed arrays agree.
 # ──────────────────────────────────────────────────────────────────────────
 
 # Dimension 1 is included on purpose: degenerate extents (K=1 rank-1-like
@@ -224,7 +227,7 @@ def _gen_primitive(rng):
         return ("etransform", int(rng.integers(0, len(ETRANSFORM_FNS))), int(rng.integers(0, len(MAT_SHAPES))))
     if op == 0:
         return ("scale", a, int(rng.integers(0, len(MAT_SHAPES))))
-    if op in (1, 2):  # axpy / axpby, same shape, distinct
+    if op in (1, 2):  # axpy / axpby — same shape, distinct
         sh = (_d(rng), _d(rng))
         x = _pick_mat(rng, sh)
         y = _pick_mat(rng, sh, (x,))
@@ -246,7 +249,12 @@ def _gen_primitive(rng):
         if A is None or B is None:
             return _fallback(rng)
         C = _pick_mat(rng, sc, (A, B))
-        return ("einsum", spec, a, A, B, float(rng.integers(0, 2)), C) if C is not None else _fallback(rng)
+        if C is None:
+            return _fallback(rng)
+        # conj_a/conj_b: meaningful for the complex dtypes, a no-op for the real
+        # ones — exercises the native conj dispatch + the passes' conj guards.
+        ca, cb = bool(rng.integers(0, 2)), bool(rng.integers(0, 2))
+        return ("einsum", spec, a, A, B, float(rng.integers(0, 2)), C, ca, cb)
     if op == 5:  # perm (transpose): A(i,j) -> C(j,i)
         i, j = _d(rng), _d(rng)
         A = _pick_mat(rng, (i, j))
@@ -279,7 +287,10 @@ def _gen_primitive(rng):
         if A is None or B is None:
             return _fallback(rng)
         C = _pick_r3(rng, sc, (A, B))
-        return ("beinsum", spec, a, A, B, float(rng.integers(0, 2)), C) if C is not None else _fallback(rng)
+        if C is None:
+            return _fallback(rng)
+        ca, cb = bool(rng.integers(0, 2)), bool(rng.integers(0, 2))
+        return ("beinsum", spec, a, A, B, float(rng.integers(0, 2)), C, ca, cb)
     if op == 10:  # vscale: scale a sub-block view of a matrix
         M = int(rng.integers(0, len(MAT_SHAPES)))
         R, C = MAT_SHAPES[M]
@@ -332,11 +343,17 @@ def interp_np(stmts, m, v, t, dt=None):
             _, a, A, B, b, C = s
             m[C] = cast(a * (m[A] @ m[B]) + b * m[C])
         elif k == "einsum":
-            _, spec, ab, A, B, cpf, C = s
-            m[C] = cast(ab * EINSUM_PATTERNS[spec][0](m[A], m[B]) + cpf * m[C])
+            spec, ab, A, B, cpf, C = s[1:7]
+            ca, cb = (s[7], s[8]) if len(s) > 7 else (False, False)
+            opA = np.conj(m[A]) if ca else m[A]
+            opB = np.conj(m[B]) if cb else m[B]
+            m[C] = cast(ab * EINSUM_PATTERNS[spec][0](opA, opB) + cpf * m[C])
         elif k == "beinsum":
-            _, spec, ab, A, B, cpf, C = s
-            t[C] = cast(ab * BEINSUM_PATTERNS[spec][0](t[A], t[B]) + cpf * t[C])
+            spec, ab, A, B, cpf, C = s[1:7]
+            ca, cb = (s[7], s[8]) if len(s) > 7 else (False, False)
+            opA = np.conj(t[A]) if ca else t[A]
+            opB = np.conj(t[B]) if cb else t[B]
+            t[C] = cast(ab * BEINSUM_PATTERNS[spec][0](opA, opB) + cpf * t[C])
         elif k == "perm":
             _, a, cpf, A, C = s
             m[C] = cast(a * m[A].T + cpf * m[C])
@@ -392,11 +409,13 @@ def _emit_primitive(s, m, v, t):
         _, a, A, B, b, C = s
         einsums.linalg.gemm(a, m[A], m[B], b, m[C])
     elif k == "einsum":
-        _, spec, ab, A, B, cpf, C = s
-        einsums.einsum(spec, m[C], m[A], m[B], c_pf=cpf, ab_pf=ab)
+        spec, ab, A, B, cpf, C = s[1:7]
+        ca, cb = (s[7], s[8]) if len(s) > 7 else (False, False)
+        einsums.einsum(spec, m[C], m[A], m[B], c_pf=cpf, ab_pf=ab, conj_a=ca, conj_b=cb)
     elif k == "beinsum":
-        _, spec, ab, A, B, cpf, C = s
-        einsums.einsum(spec, t[C], t[A], t[B], c_pf=cpf, ab_pf=ab)
+        spec, ab, A, B, cpf, C = s[1:7]
+        ca, cb = (s[7], s[8]) if len(s) > 7 else (False, False)
+        einsums.einsum(spec, t[C], t[A], t[B], c_pf=cpf, ab_pf=ab, conj_a=ca, conj_b=cb)
     elif k == "perm":
         _, a, cpf, A, C = s
         einsums.permute("ij <- ji", m[C], m[A], c_pf=cpf, a_pf=a)
@@ -529,8 +548,8 @@ def check_program(prog, m_arrays, v_arrays, t_arrays, label, dtype="float64"):
 # Cross-executor differential
 #
 # check_program uses the default (Sequential) executor, so it validates the
-# *passes*. The parallel executors, OpenMP (task-based) and Dataflow (TaskPool
-# continuations), instead schedule independent nodes *concurrently* from the
+# *passes*. The parallel executors — OpenMP (task-based) and Dataflow (TaskPool
+# continuations) — instead schedule independent nodes *concurrently* from the
 # graph's dependency edges (RAW/WAR/WAW, plus effective_io for control-flow
 # subtrees). A missing or wrong edge there does not show up under Sequential at
 # all; it surfaces as a divergent result here (and, run under a sanitizer, as a
@@ -604,7 +623,7 @@ def _seed_arrays(rng, dtype="float64"):
 
 def _square_seed_arrays(rng, n_mats=4, n_vecs=3, n=3, n_r3=2):
     """Square N×N matrices, length-N vectors, and a couple N×N×2 rank-3
-    tensors, for the hand-written regressions that index a small fixed pool."""
+    tensors — for the hand-written regressions that index a small fixed pool."""
     m = [rng.standard_normal((n, n)) for _ in range(n_mats)]
     v = [rng.standard_normal((n,)) for _ in range(n_vecs)]
     t = [rng.standard_normal((n, n, 2)) for _ in range(n_r3)]
@@ -726,7 +745,7 @@ def test_fuzz_parallel_executor_stress(seed):
 
 # ──────────────────────────────────────────────────────────────────────────
 # Exception propagation: a node that throws must make execute() *raise* on every
-# executor, never hang (TaskPool orphaning a continuation / OpenMP exception
+# executor — never hang (TaskPool orphaning a continuation / OpenMP exception
 # escaping its parallel region) and never silently complete (swallowed error).
 # We inject a throwing element_transform mid-graph with a dependent op, so the
 # failure has to travel through the dependency chain to the waited sink.
@@ -780,7 +799,7 @@ def test_fuzz_executor_propagates_exception(seed):
     reason="Single-executor control-flow + exception is fixed (worker BLAS is now "
     "single-threaded, so a control-flow body's BLAS no longer opens a libomp region "
     "from a worker thread). What remains is a separate, intermittent thread::join "
-    "EDEADLK that only triggers when this case cycles seq+omp+df in one process, a "
+    "EDEADLK that only triggers when this case cycles seq+omp+df in one process — a "
     "fuzz-only pattern; real callers pick one executor. Tracked in loop_handling_audit.md."
 )
 @pytest.mark.parametrize("seed", range(80))
@@ -863,7 +882,7 @@ def test_regression_gemv_ger_in_loop():
 
 def test_regression_batched_einsum_in_loop():
     """Accumulating batched einsum (rank-3) inside a loop reads its destination
-    each iteration, exercises the BatchedGemm path under LIH/scheduling."""
+    each iteration — exercises the BatchedGemm path under LIH/scheduling."""
     prog = [
         ("beinsum", "ijb <- ikb ; kjb", 1.0, 0, 1, 0.0, 2),   # t2 = t0@t1 (batched, overwrite)
         ("loop", 3, [("beinsum", "ijb <- ikb ; kjb", 0.5, 0, 1, 1.0, 2)]),  # t2 += 0.5*(t0@t1), must stay in loop
@@ -877,7 +896,7 @@ def test_regression_batched_einsum_in_loop():
 
 def test_regression_view_alias_ordering():
     """Mix full-matrix writes and view (sub-block) writes on the same matrix,
-    then read the whole matrix, stresses the scheduler's alias resolution
+    then read the whole matrix — stresses the scheduler's alias resolution
     (a write through a view must be seen as a write to the parent)."""
     prog = [
         ("scale", 0.5, 0),                 # whole m0 *= 0.5
@@ -896,7 +915,7 @@ def test_regression_view_alias_ordering():
 
 def test_regression_overlapping_views():
     """Two views of the same matrix with *overlapping* regions, written by
-    different ops, then the whole matrix read, the partial writes must keep
+    different ops, then the whole matrix read — the partial writes must keep
     their relative order (both resolve to the same owner)."""
     prog = [
         ("vscale", 2.0, 0, 0, 2, 0, 2),     # m0[0:2,0:2] *= 2
@@ -918,7 +937,7 @@ def test_regression_element_transform_in_loop():
 
 def test_regression_complex_einsum_prefactor():
     """Complex einsum/batched-einsum prefactors (phase factors) must not be
-    truncated to their real part, regression for BatchedGemmDescriptor carrying
+    truncated to their real part — regression for BatchedGemmDescriptor carrying
     only a real alpha/beta. Covers the direct batched path and accumulation."""
     rng = np.random.default_rng(4242)
 
@@ -978,7 +997,7 @@ def test_regression_mixed_shape_einsum_chain():
 # Redundant-subexpression (CSE) shapes.
 #
 # The random generator above reuses a fixed tensor pool, so nearly every buffer
-# has *multiple* writers, and CSE's single-writer guard rejects those, so CSE
+# has *multiple* writers — and CSE's single-writer guard rejects those, so CSE
 # almost never fires and its redirect path went unexercised (this is exactly how
 # the bug below escaped 7000+ fuzz cases). These programs deliberately build a
 # *write-once* duplicate computation whose result is consumed by a *surviving*
@@ -1001,13 +1020,13 @@ def _check_cse(prog, m, v, t, label, dead_m=(), dead_t=()):
     CSE's contract (matching the original C++ unit tests, which only assert the
     *survivor*): when it eliminates a duplicate producer, the survivor holds the
     value and consumers are redirected to it, but the eliminated duplicate's
-    *own* buffer is intentionally left unwritten, it is not preserved. So we:
+    *own* buffer is intentionally left unwritten — it is not preserved. So we:
 
-      * require RAW (no passes) to match the oracle on *every* buffer, proves
+      * require RAW (no passes) to match the oracle on *every* buffer — proves
         the program is well-formed and the duplicate really was computed; and
       * require OPTIMIZED to match on every buffer EXCEPT the eliminated
         duplicates (``dead_m``/``dead_t``). The consumer of the duplicate is the
-        real subject: it is NOT dead, so it must still match, which only holds
+        real subject: it is NOT dead, so it must still match — which only holds
         if the consumer reads the survivor's data via the slot redirect rather
         than the duplicate's stale buffer (the bug this guards against).
     """
@@ -1087,7 +1106,7 @@ def test_regression_cse_two_level_chain():
 def test_fuzz_cse_redundant(seed):
     """Randomized diamonds: a write-once duplicate (einsum/perm) plus a randomly
     chosen surviving consumer, over a square pool so all shapes are compatible.
-    Forces CSE to fire with a live consumer of the folded node, the path the
+    Forces CSE to fire with a live consumer of the folded node — the path the
     pool-reuse generator can't reach because its buffers are multi-writer. The
     consumer D must read the survivor C1 via the slot redirect, not the stale C2."""
     rng = np.random.default_rng(110_000 + seed)
@@ -1117,7 +1136,7 @@ def test_fuzz_cse_redundant(seed):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Harder attack modes, same program generator, meaner ways of running it.
+# Harder attack modes — same program generator, meaner ways of running it.
 # ══════════════════════════════════════════════════════════════════════════
 
 import einsums._core.graph as _G  # noqa: E402  (pass classes for random pipelines)
@@ -1237,7 +1256,7 @@ def test_fuzz_double_optimize(seed):
 @pytest.mark.parametrize("seed", range(300))
 def test_fuzz_random_pipeline_replay(seed):
     """The meanest combination: optimize with a *random* pass order, then
-    execute *twice*. A randomly-optimized graph must still replay correctly ,
+    execute *twice*. A randomly-optimized graph must still replay correctly —
     catches interaction bugs that only manifest on re-execution (e.g. a Free
     inserted by one pass ordering that a second run then needs)."""
     rng = np.random.default_rng(60_000 + seed)
@@ -1271,15 +1290,15 @@ def test_fuzz_random_pipeline_replay(seed):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Deferred (workspace) tensors, exercise the MaterializationPass / deferred
+# Deferred (workspace) tensors — exercise the MaterializationPass / deferred
 # allocation path differentially, which the all-eager suites above never touch.
 #
 # Half the matrices are declared deferred (workspace, zero-initialized at
 # materialize time); the rest stay eager with random data so nonzero values
 # still flow. Each program runs two ways and both must match an oracle in which
 # the deferred matrices start at zero:
-#   * RAW      , explicit ws.materialize_all() then execute (no passes).
-#   * OPTIMIZED, default manager (its MaterializationPass allocates/zeroes the
+#   * RAW       — explicit ws.materialize_all() then execute (no passes).
+#   * OPTIMIZED — default manager (its MaterializationPass allocates/zeroes the
 #                 deferred tensors) then execute.
 # This validates that MaterializationPass produces the same result as explicit
 # materialization, across the full op / control-flow / view / dtype surface.
@@ -1372,7 +1391,7 @@ def _deferred_skips(prog, masks):
 def _check_deferred(stage, prog, pools, oracle, skips):
     for arrs, oarr, skip, kind in zip(pools, oracle, skips, "mvt"):
         for i in range(len(oarr)):
-            if i in skip:  # unused deferred tensor, never materialized
+            if i in skip:  # unused deferred tensor — never materialized
                 continue
             got = np.asarray(arrs[i])
             if not np.allclose(got, oarr[i], rtol=RTOL, atol=ATOL):
@@ -1409,7 +1428,7 @@ def check_program_deferred_replay(prog, m_arrays, v_arrays, t_arrays, label):
     """Deferred tensors + re-execution. The optimized graph carries Initialize
     nodes that re-zero each deferred tensor at the start of every execute, so on
     replay the deferred (scratch) tensors reset to zero while eager tensors carry
-    over, verified empirically. Execute twice and compare to an oracle applied
+    over — verified empirically. Execute twice and compare to an oracle applied
     twice with the deferred tensors reset to zero before each application.
 
     Only the optimized path is meaningful: the explicit-materialize_all RAW path
@@ -1440,7 +1459,7 @@ def check_program_deferred_replay(prog, m_arrays, v_arrays, t_arrays, label):
 def test_regression_deferred_loop_accumulate_then_read():
     """A deferred tensor (m1) accumulated inside a loop and then read by a
     parent op. MaterializationPass must materialize+zero it ONCE before the
-    loop, emitting a second Initialize before the later read re-zeroes it and
+    loop — emitting a second Initialize before the later read re-zeroes it and
     wipes the loop's accumulation. (m1 is deferred under _deferred_mask.)"""
     prog = [
         ("loop", 3, [("axpby", 0.5, 0, 0.5, 1)]),  # m1 += accumulate from m0
@@ -1479,7 +1498,7 @@ def test_fuzz_deferred_replay_complex(seed):
 
 @pytest.mark.parametrize("seed", range(250))
 def test_fuzz_random_pipeline_complex(seed):
-    """Random pass-pipeline permutation over complex128 tensors, the strongest
+    """Random pass-pipeline permutation over complex128 tensors — the strongest
     interaction test on the complex paths through every pass."""
     rng = np.random.default_rng(110_000 + seed)
     prog = _gen_block(rng, depth=3, max_stmts=6)
@@ -1504,7 +1523,7 @@ def test_fuzz_random_pipeline_complex(seed):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# cg.Pipeline multi-stage graphs, stages execute in order over a *shared*
+# cg.Pipeline multi-stage graphs — stages execute in order over a *shared*
 # tensor pool (a later stage reads what an earlier one wrote). A pipeline
 # program is a list of stage sub-programs; the oracle is interp_np over their
 # concatenation. Each stage may itself contain loops / conditionals. Run both
@@ -1562,7 +1581,7 @@ def check_pipeline(stages, m_arrays, v_arrays, t_arrays, label, dtype="float64")
 
 def test_regression_pipeline_three_stage_chain():
     """Three stages sharing tensors: stage1 produces, stage2 transforms (with a
-    loop), stage3 accumulates, the classic produce/consume chain."""
+    loop), stage3 accumulates — the classic produce/consume chain."""
     stages = [
         [("gemm", 1.0, 0, 1, 0.0, 2)],                       # m2 = m0 @ m1
         [("loop", 3, [("scale", 0.9, 2)]), ("perm", 1.0, 0.0, 2, 3)],  # m2 *= 0.9^3; m3 = m2^T
