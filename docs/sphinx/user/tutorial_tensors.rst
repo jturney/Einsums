@@ -101,7 +101,7 @@ Querying Shape
 Raw Data Pointer
 ================
 
-For interop with C libraries or BLAS:
+For interoperability with C libraries or BLAS:
 
 .. code-block:: cpp
 
@@ -128,6 +128,8 @@ Einsums provides formatted output via ``println``:
     // Name: A
     //   Dims: 3x3
     //   [data...]
+
+You can print to a ``std::FILE *`` or a stream using ``fprintln``. To print to a string, use ``fprintln`` with a ``std::ostringstream``.
 
 Copying
 =======
