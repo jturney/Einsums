@@ -118,7 +118,7 @@ View Lifetime
 .. warning::
 
    A ``TensorView`` holds a pointer into the original tensor. The original
-   tensor **must outlive** all views into it. Using a view after the tensor
+   tensor must outlive all views into it. Using a view after the tensor
    is destroyed is undefined behavior.
 
 .. code-block:: cpp
