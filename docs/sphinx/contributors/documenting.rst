@@ -9,11 +9,11 @@
 Documenting the Code
 ====================
 
-Einsums does **not** use Doxygen or Breathe. The C++ API reference is produced
-by an in-tree libclang tool (``einsums-pybind``): it parses the public headers,
-reads the doc comments, and emits reStructuredText in Sphinx's C++ domain. The
+Einsums does not use Doxygen or Breathe. The C++ API reference is produced
+by an in-tree libclang tool, which parses the public headers,
+reads the documentation comments, and emits reStructuredText in Sphinx's C++ domain. The
 same comments become the docstrings of the Python
-bindings. You therefore write **one** doc comment per declaration and it feeds
+bindings. You therefore write one doc comment per declaration and it feeds
 both surfaces.
 
 This page covers two things:
@@ -30,24 +30,23 @@ Writing a doc comment
 ---------------------
 
 What gets documented
-~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^
 
-A declaration appears in the generated reference only when **all** of these hold:
+A declaration appears in the generated reference only when all of the following hold:
 
 * it lives in a module's public ``include/Einsums/<Module>/`` header (not under
   ``detail/``, not in an anonymous or ``detail`` namespace),
 * it is not marked ``@internal``, and
 * it carries a doc comment.
 
-A public symbol with *no* doc comment is silently skipped. If you reference such
+A public symbol with no doc comment is silently skipped. If you reference such
 a symbol from prose the link will dangle, so document the things you link to.
 
 Comment syntax
-~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^
 
 Use a ``///`` line block or a ``/** ... */`` block immediately above the
-declaration. A trailing ``///<`` documents the **preceding** member (handy for
-struct fields and enumerators):
+declaration. A trailing ``///<`` documents the preceding member:
 
 .. code-block:: cpp
 
@@ -65,7 +64,7 @@ struct fields and enumerators):
    };
 
 Structured fields
-~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^
 
 These become the field list of the generated declaration:
 
@@ -83,28 +82,28 @@ These become the field list of the generated declaration:
     An exception the function may raise.
 
 Inline markup
-~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^
 
 Doxygen inline commands are converted to reST inline markup:
 
 ``@c x`` / ``@p x``
-    Inline code — renders ``x`` as a literal.
+    Inline code. Renders ``x`` as a literal.
 ``@ref Thing``
-    A code-styled name (Einsums renders it as a literal, not an auto-link).
+    A code-styled name. Einsums renders it as a literal, not an auto-link.
 ``@a x`` / ``@e x``
     *Italic* emphasis.
 ``@b x``
     **Bold**.
 ``@f$ ... @f$``
-    Inline math (LaTeX between the markers).
+    Inline math using LaTeX.
 ``@f[ ... @f]``
-    Display math — a centred ``.. math::`` block.
+    Display math, which gives a centered ``.. math::`` block.
 
 ``@c``, ``@p`` and ``@ref`` automatically absorb a trailing ``()`` or ``[k]``
-so the closing backtick is not followed by a bracket (which reST rejects).
+so the closing backtick is not followed by a bracket, which reST rejects.
 
 Block callouts
-~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^
 
 These become reST admonitions. Everything until the next command or a blank line
 is the body:
@@ -125,7 +124,7 @@ is the body:
     A bold-titled paragraph.
 
 Version history
-~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^
 
 .. code-block:: cpp
 
@@ -143,9 +142,9 @@ For a multi-paragraph note, use the ``desc`` form and close it with
    /// @endversion
 
 Lists
-~~~~~
+^^^^^
 
-Bullet (``-``, ``+``, ``*``) and numbered (``1.``, ``2)``) lists are recognised,
+Bullet (``-``, ``+``, ``*``) and numbered (``1.``, ``2)``) lists are recognized,
 and a wrapped continuation line is joined back onto its item automatically:
 
 .. code-block:: cpp
@@ -157,25 +156,25 @@ and a wrapped continuation line is joined back onto its item automatically:
    ///    a generic loop nest when neither applies.
 
 Raw passthrough
-~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^
 
-When you need reST the normalizer will not touch (a table, a directive, a code
-block), wrap it:
+When you need reST markup that the normalizer will not touch, like a table, a directive, or a code
+block, wrap it in one of the following:
 
 * ``@rst ... @endrst`` — emit the body as raw reStructuredText.
 * ``@code ... @endcode`` / ``@verbatim ... @endverbatim`` — a literal block.
 
 Gotchas
-~~~~~~~~
+^^^^^^^
 
-* **Bare ``*`` or ``<`` in prose** read as the start of emphasis / a role.
+* Bare ``*`` or ``<`` in prose read as the start of emphasis or as a role.
   Write ``A *= b`` as ``` ``A *= b`` ``` and ``FILE *`` as ``` ``FILE *`` ```,
   or use ``@c``.
-* **Do not hand-write a nested ``.. note::`` inside a ``@versionaddeddesc``
-  block** — the indentation is flattened. Put the text directly in the block.
-* The normalizer implements the *common* Doxygen commands, not all of them.
-  An unknown ``@command`` is left as-is (its text is kept, the marker dropped),
-  so a typo shows up verbatim in the output — a useful tell.
+* Do not hand-write a nested ``.. note::`` inside a ``@versionaddeddesc``
+  block. The indentation will be flattened. Put the text directly in the block.
+* The normalizer only implements the common Doxygen commands, not all of them.
+  An unknown ``@command`` is left as-is,
+  so a typo shows up verbatim in the output.
 
 
 .. _cross_referencing:
@@ -184,22 +183,22 @@ Cross-referencing other items
 -----------------------------
 
 C++ entities
-~~~~~~~~~~~~~
+^^^^^^^^^^^^
 
 Reference a documented C++ symbol with the matching cpp-domain role. Use the
-role that matches the **kind** of the target:
+role that matches the kind of the target:
 
 ``:cpp:func:``
     Free functions and member functions.
 ``:cpp:class:`` / ``:cpp:struct:``
     ``class`` / ``struct`` declarations.
 ``:cpp:type:``
-    Type aliases (``using`` / ``typedef``). This is also the permissive choice:
+    Type aliases (``using`` / ``typedef``). This is also the permissive choice, as
     it resolves classes and structs too.
 ``:cpp:concept:``
     Concepts.
 ``:cpp:member:``
-    Data members.
+    Class, struct, and union members.
 ``:cpp:enum:`` / ``:cpp:enumerator:``
     Enums and their values.
 
@@ -209,13 +208,13 @@ role that matches the **kind** of the target:
    :cpp:class:`einsums::GeneralTensor` and the :cpp:concept:`einsums::TensorConcept`.
 
 Matching the namespace
-~~~~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^^
 
-A reference must resolve to the symbol's **fully-qualified** name. From a page
+A reference must resolve to the symbol's fully-qualified name. From a page
 that has not set a namespace, an unqualified ``:cpp:func:`einsum``` looks only in
 the global scope and dangles. Two ways to fix it:
 
-* **Qualify the reference.** Prefix it with ``~`` to keep the short display name
+* Qualify the reference. Prefix it with ``~`` to keep the short display name
   while linking the full path:
 
   .. code-block:: rst
@@ -223,18 +222,18 @@ the global scope and dangles. Two ways to fix it:
      :cpp:func:`~einsums::einsum`        renders as "einsum", links the full path
      :cpp:func:`~einsums::blas::getrf`   renders as "getrf"
 
-* **Set a page default.** Put this once near the top of a page so every later
+* Set a page default. Put this once near the top of a page so every later
   unqualified reference is resolved in that namespace:
 
   .. code-block:: rst
 
      .. cpp:namespace:: einsums
 
-References resolve across modules — every declaration registers in one global
-cpp-domain index — so you can link any documented symbol from anywhere.
+References resolve across modules. Every declaration registers in one global
+cpp-domain index so you can link any documented symbol from anywhere.
 
 Pages and sections
-~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^
 
 * ``:doc:`/user/absolute_beginners``` links another document by path.
 * ``:ref:`label``` links a labelled location. Define the label immediately above
@@ -250,9 +249,9 @@ Pages and sections
      ... referenced elsewhere as :ref:`my_section`.
 
 Gotchas
-~~~~~~~~
+^^^^^^^
 
-* **A letter immediately after inline markup** breaks it. To pluralise a
+* A letter immediately after inline markup breaks it. To pluralise a
   reference, escape the join with a backslash-space:
 
   .. code-block:: rst
@@ -260,11 +259,11 @@ Gotchas
      :cpp:class:`Tensor`\ s          (renders "Tensors", links "Tensor")
      ``vector``\ s                   (renders "vectors")
 
-* **Type aliases are not classes.** ``Tensor`` and ``RuntimeTensor`` are
+* Type aliases are not classes. ``Tensor`` and ``RuntimeTensor`` are
   ``using`` aliases, so reference them with ``:cpp:type:``, not ``:cpp:class:``.
-* **You cannot reference a template instantiation.** Link the bare template
-  name (``:cpp:class:`einsums::Tensor```), never ``Tensor<double, 2>``.
-* **Headings/decorations** must be at least as long as their title text, or the
+* You cannot reference a template instantiation. Link the bare template
+  name (``:cpp:class:`einsums::Tensor```, never ``Tensor<double, 2>``).
+* Headings/decorations must be at least as long as their title text, or the
   page emits an "underline too short" warning.
 
 Building and checking the docs
