@@ -41,7 +41,7 @@ and selects the fastest algorithm:
    Fallback for patterns that don't map to GEMM (e.g., Hadamard products
    with repeated indices like :math:`C_i = A_{ii} B_{ii}`).
 
-The dispatch is **automatic** -- you write the same ``einsum()`` call regardless.
+The dispatch is automatic. You would write the same ``einsum()`` call regardless.
 The profiler tells you which path was taken.
 
 Using the Profiler
@@ -149,7 +149,7 @@ Views avoid memory allocation and data copying:
 3. Mind index ordering for cache efficiency
 --------------------------------------------
 
-Einsums tensors are **row-major** by default (last index varies fastest).
+Einsums tensors are row-major by default (last index varies fastest).
 When the contraction pattern aligns with memory layout, PackedGemm can avoid
 expensive packing:
 
@@ -182,8 +182,8 @@ pattern on each call:
 5. Check the profiler annotation for dispatch path
 ---------------------------------------------------
 
-In the profile viewer, each ``einsum`` node shows an ``algorithm`` annotation
-(visible in the tree view or flame graph tooltip).  At runtime, any contraction
+In the profile viewer, each ``einsum`` node shows an ``algorithm`` annotation, 
+visible in the tree view or flame graph tooltip.  At runtime, any contraction
 that falls back to the ``GENERIC`` nested-loop algorithm emits a one-time
 warning to the log, for example:
 
@@ -208,10 +208,10 @@ Understanding PackedGemm
 PackedGemm is a BLIS-inspired backend that handles tensor contractions beyond
 simple GEMM. It works by:
 
-1. **Classifying** the contraction into M (output dims from A), N (output dims
+1. Classifying the contraction into M (output dims from A), N (output dims
    from B), K (link dims), and batch dims
-2. **Packing** A and B into cache-friendly contiguous buffers
-3. **Calling BLAS GEMM** on packed tiles
+2. Packing A and B into cache-friendly contiguous buffers
+3. Calling BLAS GEMM on packed tiles
 
 This is much faster than the generic nested-loop algorithm because:
 
@@ -329,7 +329,8 @@ Contractions NOT Accelerated (GENERIC Fallback)
 The following contraction patterns currently fall through to the generic
 nested-loop algorithm.  They are **correct** but not BLAS-accelerated:
 
-**1. Hadamard contractions with reduction**
+Hadamard contractions with reduction
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 An index appears in all three tensors AND there is a separate link index:
 
@@ -342,16 +343,18 @@ This is NOT the same as the batch case ``C(b,i,j) = A(b,i,k) * B(b,k,j)``
 which IS accelerated.  The difference: in the batch case, the remaining
 indices after removing batch dims still have a valid M/N/K decomposition.
 
-**2. Transposed trace (dot with permuted indices)**
+Transposed trace (dot with permuted indices)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: text
 
     scalar = A(i,j) * B(j,i)    # Like dot(A, B^T) but B's indices are reversed
 
-The DOT dispatch requires ``A_indices == B_indices`` (same order).  This could
+The ``DOT`` dispatch requires ``A_indices == B_indices`` (same order).  This could
 be accelerated by transposing B first, but is not currently implemented.
 
-**3. No M-dims or no N-dims**
+No M-dims or no N-dims
+^^^^^^^^^^^^^^^^^^^^^^
 
 All output (C) indices come from only one operand:
 
@@ -359,10 +362,11 @@ All output (C) indices come from only one operand:
 
     C(i,j) = A(i,j,k) * B(k)    # All C indices from A, none from B → no N-dims
 
-This is structurally a GEMV (matrix × vector → matrix), but with a higher-rank
-"matrix".  PackedGemm requires at least one M-dim and one N-dim.
+This is structurally a GEMV, or matrix-vector multiplication, but with a higher-rank
+tensor.  PackedGemm requires at least one M-dim and one N-dim.
 
-**4. Duplicate indices within one tensor (true Hadamard / trace)**
+Duplicate indices within one tensor (true Hadamard / trace)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: text
 
@@ -371,7 +375,8 @@ This is structurally a GEMV (matrix × vector → matrix), but with a higher-ran
 These are sent directly to the generic algorithm because the BLAS dispatch
 chain cannot handle duplicate indices within a single operand.
 
-**5. Mixed data types**
+Mixed data types
+^^^^^^^^^^^^^^^^
 
 .. code-block:: text
 
@@ -382,12 +387,13 @@ chain cannot handle duplicate indices within a single operand.
 
 Different value types across A, B, and C skip the BLAS specializations.
 
-**6. Non-BasicTensor types with no special dispatch**
+Non-BasicTensor types with no special dispatch
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``BlockTensor``, ``TiledTensor``, and other composite tensor types that
 don't provide a specialized ``einsum_special_dispatch`` override will
 recurse into their blocks/tiles and eventually call ``einsum`` on the
-underlying ``Tensor``/``TensorView`` pieces, which ARE accelerated.
+underlying ``Tensor``/``TensorView`` pieces, which are accelerated.
 
 How to Tell What Path Your Code Takes
 --------------------------------------
