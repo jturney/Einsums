@@ -12,7 +12,7 @@ Einsums Python Module
 
 Reference documentation for the Einsums Python package (``import einsums``).
 
-The bulk of the API reference is **generated** directly from the C++ binding
+The bulk of the API reference is generated directly from the C++ binding
 annotations, so it always tracks the bound surface. On top of that, a thin
 pure-Python NumPy-parity layer adds the array conveniences documented in the
 ergonomics page.
@@ -23,9 +23,8 @@ Generated API reference
 =======================
 
 The :ref:`generated Python API reference <api_python>` is produced by
-``einsums-pybind --emit-docs-json`` and grouped by submodule — ``einsums``
-(top level), ``einsums.linalg``, ``einsums.graph``, ``einsums.io``,
-``einsums.profile``, and more. It documents every bound class, function,
+``einsums-pybind --emit-docs-json`` and grouped by submodule.
+It documents every bound class, function,
 enum, property, and the codegen-synthesized subscript/iterator protocols.
 
 NumPy-parity ergonomics
@@ -33,10 +32,7 @@ NumPy-parity ergonomics
 
 The :ref:`tensor ergonomics page <einsums_tensor_ergonomics>` documents the
 pure-Python convenience layer installed on the runtime tensor and view
-classes: ``shape``/``ndim``/``dtype``/``T``, ``len()``, ``copy()``,
-``transpose``/``swapaxes``, reductions (``sum``/``mean``/``max``), the
-``@`` operator, and the arithmetic operators (which dispatch to
-:py:mod:`einsums.linalg`, graph-aware under capture).
+classes.
 
 .. toctree::
     :maxdepth: 3
