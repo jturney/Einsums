@@ -32,15 +32,13 @@ Einsums is a C++23 tensor algebra library for scientific computing. It provides:
 * A multidimensional :code:`Tensor` type with the usual algebraic operations,
   block-sparse and tiled variants, and a disk-backed tensor for out-of-core
   workloads.
-* **Compile-time contraction pattern analysis**. An :code:`einsum` expression
+* Compile-time contraction pattern analysis. An :code:`einsum` expression
   is statically routed to vendor BLAS, an in-tree BLIS-style packed
   contraction backend (:ref:`PackedGemm <modules_Einsums_PackedGemm>`), or
-  a generic loop nest — chosen once at instantiation, with no runtime
+  a generic loop nest, which is chosen once when compiling your code with no runtime
   dispatch overhead.
 * A deferred-execution :ref:`ComputeGraph <modules_Einsums_ComputeGraph>`
-  with multi-pass optimization (common-subexpression elimination,
-  linear-combination contraction folding, distribution planning,
-  communication scheduling, and more) for whole-algorithm rewrites.
+  with multi-pass optimization for whole-algorithm rewrites.
 * :ref:`Python bindings <modules_Einsums_Python>` auto-generated from the
   C++ headers by an in-tree libclang tool, so the Python surface tracks the
   C++ surface without hand-written glue.
