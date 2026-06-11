@@ -10,8 +10,8 @@
 Tutorial: Computation Graphs
 *****************************
 
-The ``ComputeGraph`` module lets you **capture** a sequence of tensor operations
-into a graph, then **execute** and **replay** them. This is useful for iterative
+The ``ComputeGraph`` module lets you capture a sequence of tensor operations
+into a graph, then execute and replay them. This is useful for iterative
 algorithms where the same operations run many times with changing data.
 
 Inspired by CUDA Graphs and PyTorch FX, the Einsums compute graph also supports
@@ -222,8 +222,7 @@ Pre-built operation sequences for common patterns:
     // Matrix exponential via Taylor series
     bp::matrix_exponential(&expA, A, 10);
 
-Blueprints work both inside capture (recorded into the graph) and outside
-(executed immediately).
+Blueprints work both inside and outside captured blocks.
 
 TaskPool Integration
 ====================
@@ -297,7 +296,8 @@ The ComputeGraph can automatically offload operations to the GPU. The user
 writes standard CPU code; the optimization passes handle placement, data
 transfers, and dispatch.
 
-**Requirements:**
+Requirements
+------------
 
 - Use ``float`` tensors (MPS only supports float32 GEMM; double stays on CPU)
 - Tensors must be large enough to overcome GPU overhead (default: >64 KB)
@@ -389,8 +389,7 @@ offloading. You can tune the parameters:
 Interaction with ConstantFolding
 --------------------------------
 
-The ``ConstantFolding`` pass detects tensors that are only ever read (never
-written by any graph operation) and pre-computes their results on CPU at
+The ``ConstantFolding`` pass detects tensors that are only ever read and pre-computes their results on CPU at
 optimization time. This can prevent GPU placement because the Einsum node gets
 replaced with a precomputed constant before ``GPUPlacement`` runs.
 
@@ -414,7 +413,7 @@ a custom ``PassManager`` that skips ``ConstantFolding``:
     pm.add<cg::passes::GPUDiagnostics>();
     graph.apply(pm);
 
-In real iterative code (SCF loops, geometry optimizations), this is not an issue
+In real iterative code, this is not an issue
 because the input tensors change between iterations and ConstantFolding cannot
 fold them.
 
@@ -426,8 +425,7 @@ detects this via ``gpu::has_unified_memory`` and skips the actual H2D/D2H
 ``memcpy`` calls at execution time. The GPU reads tensor data directly from
 host memory through zero-copy MTLBuffer wrappers.
 
-The transfer nodes still exist in the graph structure (for correctness on
-discrete GPUs and for diagnostics), but their execution is a no-op on unified
+The transfer nodes still exist in the graph structure, but their execution is a no-op on unified
 memory. This means the graph is portable across backends without code changes.
 
 Graph Visualization
@@ -526,7 +524,8 @@ to overlap disk I/O with independent computation. These accept three lambdas:
     cg::DataflowExecutor df;
     graph.execute(df);
 
-**How it works:**
+How it works
+------------
 
 1. ``IOPrefetch`` pass moves the ``DiskRead`` to the beginning of the schedule
 2. ``DataflowExecutor`` calls ``async_start`` immediately
@@ -535,7 +534,7 @@ to overlap disk I/O with independent computation. These accept three lambdas:
    which blocks until the read completes
 5. ``build_fock`` runs with the loaded data
 
-``SequentialExecutor`` and ``OpenMPExecutor`` call the ``sync_fn`` fallback —
+``SequentialExecutor`` and ``OpenMPExecutor`` call the ``sync_fn`` fallback so that
 no overlap occurs. Use ``DataflowExecutor`` for async I/O overlap.
 
 See ``examples/AsyncIO.cpp`` for a complete working example.
@@ -642,7 +641,7 @@ the ComputeGraph passes handle distribution and communication:
     scf.execute();
     // Each rank computes its portion. Communication handled automatically.
 
-Without MPI, the mock backend runs everything on a single rank —
+Without MPI, the mock backend runs everything on a single rank, meaning the
 same code works in both serial and distributed modes.
 
 See ``ComputeGraph/docs/distributed.rst`` for full details.
