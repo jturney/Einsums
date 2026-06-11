@@ -27,8 +27,8 @@ Setup
     using namespace einsums::tensor_algebra;
     using namespace einsums::index;
 
-The ``index`` namespace provides pre-defined index labels ``i``, ``j``, ``k``,
-``l``, ``m``, ``n``, ``o``, ``p``, ``q``, ``r``, ``s``, ``t``.
+The ``index`` namespace provides pre-defined index labels. Provided index labels include capital and lower case Latin letters and the names of Greek letters, starting
+with both captial and lower case letters. This also includes cases where the Greek and Latin letters are identical, so both ``A`` and ``Alpha`` are provided.
 
 Index Notation
 ==============
@@ -45,8 +45,8 @@ specify the contraction pattern:
            Indices{k, j},     // B indices
            B);                 // input tensor B
 
-The rule: **index ``k`` appears in A and B but not in C, so it is summed over**.
-This computes :math:`C_{ij} = \sum_k A_{ik} B_{kj}` (matrix multiplication).
+Based on the above contraction pattern, we can see that index ``k`` appears in A and B but not in C, so it is summed over.
+This computes :math:`C_{ij} = \sum_k A_{ik} B_{kj}`, which is matrix multiplication written using the Einstein summation convention.
 
 Matrix Multiplication (GEMM)
 ============================
@@ -126,7 +126,7 @@ When prefactors are omitted, the defaults are ``c_prefactor = 0`` and
 Higher-Rank Contractions
 ========================
 
-Einsum handles arbitrary tensor ranks:
+Einsums handles arbitrary tensor ranks:
 
 .. code-block:: cpp
 
@@ -155,7 +155,7 @@ Einsums automatically selects the best algorithm for each contraction:
 3. **Generic algorithm** (fallback): Nested loops for patterns that don't map to
    BLAS (e.g., Hadamard products with repeated indices)
 
-You don't need to think about dispatch -- Einsums chooses automatically. The
+You don't need to think about dispatch. Einsums will try to choose the appropriate backend automatically. The
 profiler will show you which algorithm was selected (see :ref:`tutorial-performance`).
 
 What's Next
