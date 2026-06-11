@@ -40,7 +40,7 @@ Multiply every element by a scalar:
 AXPY: ``axpy``
 ==============
 
-:math:`Y = Y + \alpha X` (BLAS Level 1):
+:math:`\mathbf{Y} = \mathbf{Y} + \alpha \mathbf{X}` (BLAS Level 1):
 
 .. code-block:: cpp
 
@@ -53,7 +53,7 @@ AXPY: ``axpy``
 Matrix Multiply: ``gemm``
 =========================
 
-:math:`C = \alpha A B + \beta C` (BLAS Level 3):
+:math:`\mathbf{C} = \alpha \mathbf{A B} + \beta \mathbf{C}` (BLAS Level 3):
 
 .. code-block:: cpp
 
@@ -73,7 +73,7 @@ The template parameters control transposition:
 Symmetric Eigendecomposition: ``syev``
 ======================================
 
-Diagonalize a symmetric matrix :math:`A = U \Lambda U^T`:
+Diagonalize a symmetric matrix :math:`\mathbf{AU} = \mathbf{U\Lambda}`, where :math:`\mathbf{A} = \mathbf{A}^T` and :math:`\mathbf{UU}^H = \mathbf{I}`:
 
 .. code-block:: cpp
 
@@ -82,15 +82,18 @@ Diagonalize a symmetric matrix :math:`A = U \Lambda U^T`:
     // ... (see tutorial_einsum for permute)
 
     auto [eigenvectors, eigenvalues] = syev(A);
+    // or syev(&A, &eivenvalues, &eigenvectors);
     // eigenvectors: 5x5 matrix (columns are eigenvectors)
     // eigenvalues: 5-element vector (ascending order)
 
     println("Eigenvalues: ", eigenvalues);
 
+Note that the input matrix is overwritten with data required to perform the eigendecomposition.
+
 Singular Value Decomposition: ``svd``
 =====================================
 
-:math:`A = U \Sigma V^T`:
+Perform singular value decomposition :math:`\mathbf{A} = \mathbf{U \Sigma V}^T`:
 
 .. code-block:: cpp
 
@@ -103,7 +106,9 @@ Singular Value Decomposition: ``svd``
 Linear Solve: ``gesv``
 ======================
 
-Solve :math:`AX = B` for X (overwrites both A and B):
+Solve :math:`\mathbf{AX} = \mathbf{B}` for :math:`\mathbf{X}`. On exit, :math:`\mathbf{A}` will be overwritten with its LU
+factorization, where the diagonal elements of the L factor are all 1, and the diagonal elements of :math:`\mathbf{A}` are the diagonal elements of the U factor,
+and :math:`\mathbf{B}` will be overwritten with the value of :math:`\mathbf{X}`:
 
 .. code-block:: cpp
 
@@ -124,11 +129,13 @@ Solve :math:`AX = B` for X (overwrites both A and B):
 
 .. warning::
 
-   ``gesv`` **destroys** both ``A`` and ``B``. Make copies if you need the
+   ``gesv`` destroys both ``A`` and ``B``. Make copies if you need the
    originals.
 
 Matrix Inverse: ``invert``
 ==========================
+
+Compute the matrix inverse. That is, find a matrix :math:`\mathbf{A}^{-1}` such that :math:`\mathbf{AA}^{-1} = \mathbf{A}^{-1}\mathbf{A} = \mathbf{I}`:
 
 .. code-block:: cpp
 
@@ -139,6 +146,8 @@ Matrix Inverse: ``invert``
 Determinant: ``det``
 ====================
 
+Compute the determinant of a matrix. This is done using the LU factorization method.
+
 .. code-block:: cpp
 
     auto A = create_random_tensor<double>("A", 3, 3);
@@ -148,6 +157,8 @@ Determinant: ``det``
 Norm: ``norm``
 ==============
 
+Compute an induced matrix norm.
+
 .. code-block:: cpp
 
     auto A = create_random_tensor<double>("A", 5, 5);
@@ -155,6 +166,10 @@ Norm: ``norm``
 
 Dot Product: ``dot``
 ====================
+
+Compute the programmer's dot product between two vectors. That is, compute :math:`\sum_i x_iy_i`.
+Use ``true_dot`` to compute the mathematician's dot product, :math:`sum_i x_i^*y_i`. For real numbers,
+the two definitions are the same. For complex numbers, the two definitions will differ.
 
 .. code-block:: cpp
 
@@ -165,7 +180,7 @@ Dot Product: ``dot``
 Rank-1 Update: ``ger``
 ======================
 
-:math:`A = A + \alpha x y^T`:
+:math:`\mathbf{A} = \mathbf{A} + \alpha \mathbf{x y}^T`:
 
 .. code-block:: cpp
 
@@ -175,8 +190,13 @@ Rank-1 Update: ``ger``
 
     ger(1.0, x, y, &A);  // A = x * y^T
 
+If you need :math:`\mathbf{A} = \mathbf{A} + \alpha \mathbf{x}\mathbf{y}^H`, use ``gerc``.
+
 QR Decomposition: ``qr``
 =========================
+
+Compute the QR decomposition of a matrix. That is, find the matrices :math:`\mathbf{Q}` and :math:`\mathbf{R}` that satisfy :math:`\mathbf{A} = \mathbf{QR}`,
+where :math:`\mathbf{Q}` is a unitary matrix and :math:`\mathbf{R}` is an upper-triangular matrix.
 
 .. code-block:: cpp
 
