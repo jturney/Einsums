@@ -11,8 +11,8 @@ Python
 ######
 
 The ``Python`` module exposes Einsums to Python via pybind11. The bindings
-are **automatically generated** at build time from the C++ headers by a
-purpose-built libclang tool (``einsums-pybind``), so the Python surface
+are automatically generated at build time from the C++ headers by a
+purpose-built libclang tool, ``einsums-pybind``, so the Python surface
 tracks the C++ surface without hand-written glue.
 
 What gets bound
@@ -20,17 +20,15 @@ What gets bound
 
 The generated Python package ``einsums`` mirrors the C++ namespace structure:
 
-- ``einsums`` — tensor types, factory functions (``create_random_tensor`` …),
-  configuration entry points (``initialize``, ``finalize``, ``rc``).
-- ``einsums.linalg`` — :ref:`LinearAlgebra <modules_Einsums_LinearAlgebra>`
-  bindings (``gemm``, ``invert``, ``syev``, ``det`` …).
-- ``einsums.graph`` — :ref:`ComputeGraph <modules_Einsums_ComputeGraph>`
+- ``einsums``: tensor types, factory functions,
+  configuration entry points.
+- ``einsums.linalg``: :ref:`LinearAlgebra <modules_Einsums_LinearAlgebra>`
+  bindings.
+- ``einsums.graph``: :ref:`ComputeGraph <modules_Einsums_ComputeGraph>`
   capture, executors, and the bound subset of optimization passes.
-- ``einsums.io`` — slab I/O wrappers (``read_slice``, ``write_slice``).
-- ``einsums.profile`` — profiling annotations
-  (``annotate``, ``mem_*``, ``section`` context manager).
-- ``einsums.testing`` — pytest helpers
-  (``ALL_DTYPES``, ``REAL_DTYPES``, ``assert_close``).
+- ``einsums.io`: slab I/O wrappers.
+- ``einsums.profile``: profiling annotations.
+- ``einsums.testing``: pytest helpers.
 
 A typical session looks like:
 
@@ -58,21 +56,21 @@ The Python bindings are gated on a single CMake option::
 
 Turning this on builds the codegen tool, runs it over every annotated
 C++ header, compiles the generated pybind translation units into
-``_core.cpython-*.so``, and emits ``.pyi`` stubs for editor / IDE
+``_core.cpython-*.so``, and emits ``.pyi`` stubs for editor and IDE
 integration.
 
 The generated module
 ====================
 
 The native extension lives at ``${CMAKE_BINARY_DIR}/lib/einsums/_core.*.so``.
-Pure-Python wrappers in ``libs/Einsums/Python/python/einsums/`` add an
-ergonomic surface on top — a configuration object (``einsums.rc``),
+Pure-Python wrappers in ``libs/Einsums/Python/python/einsums/`` add a 
+configuration object,
 pretty repr, and a few convenience helpers.
 
 einsums.rc
 ==========
 
-Pre-import configuration for the runtime. Set fields *before* the first
+Pre-import configuration for the runtime. Set fields before the first
 compute call and they flow into ``einsums::initialize()``:
 
 .. code-block:: python
@@ -85,11 +83,11 @@ compute call and they flow into ``einsums::initialize()``:
     einsums.gemm(...)
 
 Once the runtime is up the fields are read-only as far as Einsums is
-concerned (changing them post-init has no effect).
+concerned. Changing them post-init has no effect.
 
-The same fields can be set via environment variables — useful for test
+The same fields can be set via environment variables. This is useful for test
 harnesses that need to disable signal handlers and debugger prompts
-without monkey-patching::
+without hackey fixes::
 
     EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1
     EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1
