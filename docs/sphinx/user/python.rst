@@ -26,11 +26,11 @@ To use Einsums, import it:
     import einsums
 
 Einsums interoperates with anything that implements the Python buffer
-protocol — most importantly :code:`numpy.ndarray` — and provides its own
+protocol, most importantly :code:`numpy.ndarray`, and provides its own
 runtime tensor types for the C++ side of the library. The simplest way to
 multiply two matrices is the ``@`` operator, which dispatches to a BLAS
-``gemm`` (and is recorded into the active graph when used inside
-``cg.capture``):
+``gemm``, or is recorded into the active graph when used inside
+``cg.capture``:
 
 .. code-block:: python
 
@@ -81,7 +81,7 @@ constructors live at the package top level:
     C = einsums.create_zero_tensor("C", [3, 3], dtype="float64")
     M = einsums.array(np.eye(3))                            # copy a NumPy array in
 
-Slicing a tensor produces a zero-copy **view** rather than a copy:
+Slicing a tensor produces a zero-copy view rather than a copy:
 
 .. code-block:: python
 
@@ -93,9 +93,9 @@ NumPy ergonomics
 ----------------
 
 Runtime tensors and views carry the NumPy-style attributes array users
-expect — ``.shape``, ``.ndim``, ``.dtype``, ``.T``, ``len(t)``, ``t.copy()``,
+expect, including ``.shape``, ``.ndim``, ``.dtype``, ``.T``, ``len(t)``, ``t.copy()``,
 ``t.transpose(...)``, reductions (``sum``/``mean``/``max``), the ``@``
-operator, and the arithmetic operators — built on top of the buffer protocol
+operator, and the arithmetic operators, which are built on top of the buffer protocol
 so ``np.asarray(t)`` is zero-copy. These are documented on the
 :ref:`tensor ergonomics page <einsums_tensor_ergonomics>`.
 
