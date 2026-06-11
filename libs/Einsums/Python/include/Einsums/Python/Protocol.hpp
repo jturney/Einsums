@@ -14,8 +14,8 @@
 // translate Python types (py::tuple, py::slice, py::buffer, ...) into the
 // neutral types declared here, then call user-provided pure-C++ helpers.
 //
-// Goal: user-side helpers — the methods on RuntimeTensor, BlockTensor, etc.
-// that the directives point at — see only these neutral types in their
+// Goal: user-side helpers, which are the methods on RuntimeTensor, BlockTensor, etc.
+// that the directives point at, see only these neutral types in their
 // signatures. They never `#include <pybind11/...>`. Switching the codegen
 // target between pybind11 and nanobind requires no changes to user code.
 //
@@ -37,12 +37,12 @@ namespace einsums {
 /// slot of the incoming Python tuple/slice/int into one ``SliceSpec`` and
 /// pass the resulting vector to the user-side helper named in
 /// ``APIARY_INDEX_PROTOCOL_STD``. Negative indices are normalized
-/// against the parent's dim before this struct is built — user helpers
+/// against the parent's dim before this struct is built. User helpers
 /// never see negative values.
 struct SliceSpec {
     /// What kind of indexer this slot represents.
     enum class Kind {
-        Index, ///< Single integer index — collapses this dimension.
+        Index, ///< Single integer index. Collapses this dimension.
         Range, ///< Slice with [start, stop) and step. May or may not collapse.
         Full,  ///< Whole-dimension selection (``:`` or ``...`` expanding here).
     };
@@ -62,10 +62,10 @@ struct SliceSpec {
 ///
 /// Used in both directions:
 /// - **Outgoing** (RuntimeTensor → NumPy): the ``data_fn`` named in
-///   ``APIARY_BUFFER_PROTOCOL_STD`` returns one of these; the
+///   ``APIARY_BUFFER_PROTOCOL_STD`` returns one of these. The
 ///   codegen lambda converts to ``pybind11::buffer_info`` /
 ///   ``nb::ndarray`` per backend.
-/// - **Incoming** (NumPy → RuntimeTensor for bulk-assign): the codegen
+/// - **Incoming** (NumPy to RuntimeTensor for bulk-assign): the codegen
 ///   lambda receives ``py::buffer`` / ``nb::ndarray``, materializes a
 ///   ``BufferDescriptor``, and passes it to the user's ``set_buffer``
 ///   helper.
@@ -74,8 +74,8 @@ struct SliceSpec {
 /// convention). The backend adapter converts to byte units when building
 /// ``buffer_info``.
 struct BufferDescriptor {
-    /// Element type identifier — matches the format-string-style codes
-    /// pybind11 / nanobind use to describe scalar element types.
+    /// Element type identifier, which matches the format-string-style codes
+    /// pybind11/nanobind use to describe scalar element types.
     /// Codegen lambdas translate to/from the backend's native dtype enum.
     enum class ScalarType : std::uint8_t {
         Unknown = 0,
