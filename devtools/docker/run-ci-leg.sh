@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Run one CI leg locally inside a Linux container — avoids GitHub Actions
-# round-trip latency. The container is persistent (volume-mounted ccache and
-# per-leg conda envs), so the first invocation pays the conda env creation
-# cost (~10 min) and every subsequent rebuild/test cycle is incremental.
+# Run one CI leg locally inside a Linux container, avoiding GitHub Actions
+# round-trip latency. The container is persistent, with a volume-mounted
+# ccache and per-leg conda envs, so the first invocation pays the conda env
+# creation cost of roughly 10 minutes and every subsequent rebuild/test cycle
+# is incremental.
 #
 # Usage (run from repo root):
 #
-#     # First-time setup — start the persistent container:
+#     # First-time setup: start the persistent container.
 #     ./devtools/docker/run-ci-leg.sh start
 #
 #     # Build + test a CI leg:
@@ -17,11 +18,11 @@
 #     ./devtools/docker/run-ci-leg.sh asan                 # Sanitizers/address,leak,undefined (Debug)
 #
 #     # Append `-arm64` to any leg name to run on native arm64 instead of
-#     # x86_64-via-Rosetta. Faster (~2x for instrumented builds), and arm64's
-#     # weaker memory model surfaces races more reliably. NOT a CI reproducer
-#     # — CI runs x86_64 only, and our SIMD/vector code has arch-specific
-#     # kernels. Use arm64 for fast sanitizer/race triage; use the default
-#     # amd64 variant when chasing a specific CI failure.
+#     # x86_64-via-Rosetta. It is faster, roughly 2x for instrumented builds,
+#     # and arm64's weaker memory model surfaces races more reliably. It is
+#     # not a CI reproducer: CI runs x86_64 only, and our SIMD/vector code has
+#     # arch-specific kernels. Use arm64 for fast sanitizer/race triage; use the
+#     # default amd64 variant when chasing a specific CI failure.
 #     ./devtools/docker/run-ci-leg.sh asan-arm64           # native arm64 ASan
 #     ./devtools/docker/run-ci-leg.sh tsan-nopy-arm64      # native arm64 TSan, no Python
 #
@@ -126,7 +127,7 @@ leg_settings() {
             EXTRA=("-DEINSUMS_WITH_SANITIZERS=thread" "-DEINSUMS_BUILD_PYTHON=ON")
             ;;
         tsan-nopy)
-            # TSan triage without Python — CI's tsan leg has BUILD_PYTHON=ON
+            # TSan triage without Python. CI's tsan leg has BUILD_PYTHON=ON
             # but the codegen-generated ComputeGraph pybind TU under TSan
             # instrumentation OOMs Docker Desktop's default memory. Use this
             # variant locally to surface C++ race findings; once they're
@@ -230,11 +231,11 @@ run_leg() {
     leg_settings "${LEG}"
     ensure_container_up "${ARCH}"
 
-    # Conda env is determined by (compiler, blas) — all legs with the
-    # same toolchain combo share one env so we don't pay the ~10-minute
-    # `mamba env create` cost more than once per combo (e.g. asan + tsan
-    # both reuse the gcc-openblas env). Build dirs and ccache stay per-leg
-    # since cmake flags / sanitizer flags differ.
+    # Conda env is determined by the compiler and blas pair. All legs with the
+    # same toolchain combo share one env so we don't pay the roughly 10-minute
+    # `mamba env create` cost more than once per combo. For example, the asan
+    # and tsan legs both reuse the gcc-openblas env. Build dirs and ccache stay
+    # per-leg since cmake flags and sanitizer flags differ.
     local ENV_NAME="einsums-env-${COMPILER}-${BLAS}"
     local BUILD_DIR="/work/build-${LEG}"
     local CCACHE_DIR="/work/ccache-${LEG}"
@@ -292,10 +293,10 @@ cmake -S '${SRC_DIR}' -B '${BUILD_DIR}' -G Ninja \\
     -DEINSUMS_WITH_TESTS_UNIT=ON \\
     ${CMAKE_EXTRA_STR}
 
-# 4. Build. Cap parallelism: -j2 normally, -j1 for sanitizer legs (the
-#    instrumented Debug TUs — Transpose.cpp, the ComputeGraph pybind one —
-#    can peak past Docker Desktop's default 8GB allowance when two compile
-#    in parallel).
+# 4. Build. Cap parallelism: -j2 normally, -j1 for sanitizer legs. The
+#    instrumented Debug TUs, namely Transpose.cpp and the ComputeGraph pybind
+#    one, can peak past Docker Desktop's default 8GB allowance when two compile
+#    in parallel.
 if [[ '${LEG}' == 'asan' || '${LEG}' == 'tsan' || '${LEG}' == 'tsan-nopy' ]]; then
     cmake --build '${BUILD_DIR}' -j1
 else

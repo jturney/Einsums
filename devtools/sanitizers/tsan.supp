@@ -1,10 +1,10 @@
 # ThreadSanitizer suppressions for the Einsums CI "thread" sanitizer leg.
 #
-# Purpose: silence *false positives* that come from libraries TSan cannot
+# Purpose: silence false positives that come from libraries TSan cannot
 # reason about, so that a genuine race in Einsums' own code still fails CI.
-# Do NOT add entries for einsums:: functions here — those are the races we
-# want to catch (e.g. bug-dropped-view-gemv-flaky-element, a collapse(2)
-# accumulation race in impl_gemv_noncontiguous). If a finding points at our
+# Do NOT add entries for einsums:: functions here. Those are the races we
+# want to catch, such as bug-dropped-view-gemv-flaky-element, a collapse(2)
+# accumulation race in impl_gemv_noncontiguous. If a finding points at our
 # own kernel, fix the kernel; don't suppress it.
 #
 # Format: https://github.com/google/sanitizers/wiki/ThreadSanitizerSuppressions
@@ -15,11 +15,11 @@
 # Why these are needed: the default Linux toolchain here is GCC, whose OpenMP
 # runtime (libgomp) and the vendor BLAS (OpenBLAS) are NOT instrumented and use
 # their own thread pools / synchronization that TSan does not model. TSan then
-# misreports accesses separated by an OpenMP barrier (or inside OpenBLAS's
-# threads) as concurrent. These suppressions scope that noise out.
+# misreports accesses separated by an OpenMP barrier, or inside OpenBLAS's
+# threads, as concurrent. These suppressions scope that noise out.
 #
-# This list is a starting scaffold — expect to extend it after the first CI
-# run on the thread leg surfaces the actual (false-positive) stacks. Keep each
+# This list is a starting scaffold; expect to extend it after the first CI
+# run on the thread leg surfaces the actual false-positive stacks. Keep each
 # entry as specific as possible and comment why it is a false positive.
 
 # --- GCC OpenMP runtime (libgomp): barriers/reductions TSan can't see ---
@@ -33,7 +33,7 @@ race:GOMP_
 # symlink + LD_LIBRARY_PATH double-mapping), and TSan reports the
 # ambiguity at process startup as
 #   "called_from_lib suppression 'libopenblas' is matched against 2 libraries"
-# That warning bumps the exit code, which ctest interprets as failure —
+# That warning bumps the exit code, which ctest interprets as failure, so
 # every test process that initializes libopenblas died with this on the
 # CI Sanitizers/thread leg. The name-based race: suppressions below catch
 # OpenBLAS-internal races (blas_thread_server is the worker routine) by
@@ -48,8 +48,8 @@ race:openblas
 # the main thread's later read of `result` happens-after the assignment
 # inside the single block, but TSan can't see those barriers (libgomp
 # is uninstrumented) and flags the post-region read as racing with the
-# pre-region zero-init at main.cpp:32. Real bug? No — the OMP semantics
-# guarantee correctness. Hits every test binary in the suite.
+# pre-region zero-init at main.cpp:32. This is not a real bug; the OMP
+# semantics guarantee correctness. Hits every test binary in the suite.
 race:einsums_main
 
 # --- Profile/CounterBackend.hpp static-string destruction at exit ---
@@ -65,14 +65,14 @@ race:cxa_at_exit_callback_installed_at
 # HPTT's Transpose<T>::execute_expert and Transpose<T>::create_plans wrap
 # their hot loop in `#pragma omp parallel for`. The body reads class members
 # (this->_A, this->_B, this->_innerStrideA, this->_perm, this->_sizeA, ...)
-# which live on the *caller's* stack frame, and writes to disjoint regions
-# of the output buffer (one taskId per worker). The reads are immutable for
+# which live on the caller's stack frame, and writes to disjoint regions
+# of the output buffer, one taskId per worker. The reads are immutable for
 # the duration of the parallel region and the writes do not alias, so there
-# is no real race. TSan can't see libgomp's barrier, so it flags 1500+
-# reports (the bulk of v5's non-RNG total) across execute_expert (line
+# is no real race. TSan can't see libgomp's barrier, so it flags more than
+# 1500 reports, the bulk of v5's non-RNG total, across execute_expert (line
 # 1165), create_plans (lines 2065-2098), axpy_1D (1054), and
-# macro_kernel_scalar (429). The same libgomp-invisibility pattern as
-# einsums_main / CounterBackend above. Scope to the HPTT source tree so
+# macro_kernel_scalar (429). This is the same libgomp-invisibility pattern as
+# einsums_main and CounterBackend above. Scope to the HPTT source tree so
 # we don't suppress hypothetical races elsewhere.
 race:HPTT/src/Transpose.cpp
 race:hptt::Transpose

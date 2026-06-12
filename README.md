@@ -120,7 +120,7 @@ einsum(0.0,  Indices{}, &e_ccd,
 
 ## NumPy-style API
 
-The `einsums` Python package (built with `EINSUMS_BUILD_PYTHON=ON`) wraps the
+The `einsums` Python package, built with `EINSUMS_BUILD_PYTHON=ON`, wraps the
 same engine with a NumPy-shaped surface, so tensor code reads like NumPy while
 dispatching to Einsums' own kernels. Tensors implement the buffer protocol, so `np.asarray(t)` is a zero-copy
 view.
@@ -174,7 +174,8 @@ with cg.capture(g):
 g.execute()              # run the optimized graph
 ```
 
-See [`examples/psi4-bridge/df_mp2_numpy_style.py`](examples/psi4-bridge/df_mp2_numpy_style.py)
-(eager) and
-[`df_mp2_graph_numpy_style.py`](examples/psi4-bridge/df_mp2_graph_numpy_style.py)
-(captured) for a full density-fitted MP2 written this way, checked against Psi4.
+For a full density-fitted MP2 written this way and checked against Psi4, see
+the eager version in
+[`examples/psi4-bridge/df_mp2_numpy_style.py`](examples/psi4-bridge/df_mp2_numpy_style.py)
+and the captured version in
+[`df_mp2_graph_numpy_style.py`](examples/psi4-bridge/df_mp2_graph_numpy_style.py).

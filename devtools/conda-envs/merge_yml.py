@@ -40,8 +40,8 @@ def conda_arch_suffix(system, machine=None):
 
     conda packages name their per-platform builds with a ``<os>-<arch>`` suffix
     (``gcc_linux-64``, ``clang_osx-arm64`` ...). Hardcoding ``linux-64`` breaks
-    when this script runs inside an arm64 Linux container — the env then asks
-    for x86_64 compiler binaries that aren't on PATH inside the arm64 image,
+    when this script runs inside an arm64 Linux container, because the env then
+    asks for x86_64 compiler binaries that aren't on PATH inside the arm64 image,
     and CMake's BLAS/LAPACK probes link-fail because there's no compiler to
     drive them. Detect the running architecture and emit the right suffix.
 
@@ -154,11 +154,11 @@ def merge_environment(output_file, system, compiler, blas, docs):
     # Inject the platform-aware toolchain.
     merged["dependencies"].extend(compiler_packages(compiler, system))
 
-    # einsums-pybind — the libtooling-based code generator for the Python
-    # bindings — is built whenever EINSUMS_BUILD_PYTHON=ON, regardless of which
+    # einsums-pybind, the libtooling-based code generator for the Python
+    # bindings, is built whenever EINSUMS_BUILD_PYTHON=ON, regardless of which
     # compiler builds the rest of einsums. It does find_package(Clang/LLVM CONFIG)
     # and links clangTooling/clangFormat/.../LLVMSupport, so the env always needs
-    # the LLVM/Clang *development* packages. clangdev pulls clang, clangxx,
+    # the LLVM/Clang development packages. clangdev pulls clang, clangxx,
     # clang-tools and llvmdev transitively, so it satisfies both the configure-time
     # find_package() calls and the runtime resource headers (lib/clang/<ver>/include).
     # Pinned to the clang toolchain version for ABI consistency on the clang legs.

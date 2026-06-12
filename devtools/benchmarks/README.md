@@ -21,8 +21,8 @@ python -m devtools.benchmarks compare
 
 All commands are invoked via `python -m devtools.benchmarks <command>`.
 The `--db` flag is shared across all commands. The default database lives in
-the project tree at `<project>/.einsums-studio/benchmarks.db` (the same path
-the Einsums Studio benchmark bundle reads from), so each checkout carries
+the project tree at `<project>/.einsums-studio/benchmarks.db`, the same path
+the Einsums Studio benchmark bundle reads from, so each checkout carries
 its own history. Pass `--db <path>` to point at a different file.
 
 ### `run` -- Execute benchmarks
@@ -234,10 +234,10 @@ visualization. It connects to the same SQLite database.
 
 The Benchmarks panel has four tabs:
 
-- **Live Results**: Streaming table of benchmark events from a connected process
-- **Trends**: Interactive line chart of a metric over time (select label/metric/branch)
-- **Scaling**: Log-log plot of N vs time for a benchmark family
-- **Compare**: Regression table with color-coded verdicts
+- Live Results: streaming table of benchmark events from a connected process
+- Trends: interactive line chart of a metric over time, selectable by label, metric, and branch
+- Scaling: log-log plot of N vs time for a benchmark family
+- Compare: regression table with color-coded verdicts
 
 When a benchmark process is connected, results are automatically stored in the
 database. No manual "record" step is needed.
@@ -250,16 +250,16 @@ Studio read and write the same schema.
 
 ### Schema
 
-**`runs`** -- one row per benchmark execution:
+`runs` -- one row per benchmark execution:
 - `run_id`, `git_commit`, `git_branch`, `git_dirty`, `timestamp`
 - `hostname`, `build_type`, `compiler`, `blas_vendor`, `cpu_model`
 - `cpu_freq_mhz`, `power_source`, `hptt_method`, `cmake_options`, `notes`
 
-**`results`** -- one row per (benchmark, metric) measurement:
+`results` -- one row per (benchmark, metric) measurement:
 - `result_id`, `run_id`, `test_binary`, `benchmark_label`, `metric_name`
 - `value_us`, `unit`, `algorithm`, `extra_json`, `annotations`
 
-**`baselines`** -- named references to runs:
+`baselines` -- named references to runs:
 - `baseline_id`, `run_id`, `name`, `created_at`
 
 ### Migrations

@@ -249,7 +249,7 @@ def collect_top_level_defined(text: str) -> set[str]:
     """`set()` (incl. CACHE) calls outside any function body are visible
     from inside every function in the same file. Variables defined
     inside one function are NOT visible from another, so we must
-    actually remove function bodies — not just their open/close lines.
+    actually remove function bodies, not just their open/close lines.
     """
     names: set[str] = set()
     # Splice out each function/macro body (and its open/close lines),
@@ -264,7 +264,7 @@ def collect_top_level_defined(text: str) -> set[str]:
         pieces.append(text[pos:m.start()])
         m_close = FN_CLOSE.search(text, m.end())
         if not m_close:
-            break  # Malformed — bail.
+            break  # Malformed, bail.
         pos = m_close.end()
     cleaned = "".join(pieces)
     for m in SET_DEF.finditer(cleaned):
@@ -338,7 +338,7 @@ def main(argv=None) -> int:
     for f in files:
         try:
             findings = audit_file(f)
-        except Exception as e:  # noqa: BLE001 — never fail-open on parse errors
+        except Exception as e:  # noqa: BLE001 (never fail-open on parse errors)
             print(f"ERROR parsing {f}: {e}", file=sys.stderr)
             total_findings += 1
             files_with_findings += 1

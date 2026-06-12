@@ -82,7 +82,7 @@ Module registration uses `einsums_add_module(Einsums <Name> SOURCES ... HEADERS 
 
 ### Tensor Types
 
-- `Tensor<T, Rank>` - dense tensor (column-major; the `EINSUMS_ROW_MAJOR_DEFAULT` CMake option existed historically but never controlled the stride initializer — tensors are always column-major at construction)
+- `Tensor<T, Rank>` - dense tensor, column-major. The `EINSUMS_ROW_MAJOR_DEFAULT` CMake option existed historically but never controlled the stride initializer, so tensors are always column-major at construction.
 - `TensorView<T, Rank>` - non-owning view into a tensor
 - `BlockTensor`, `TiledTensor` - structured variants
 - `T.data()` for raw pointer, `T.dim(i)` for size, `T.stride(i)` for stride
@@ -128,7 +128,7 @@ The `Comm` module (`libs/Einsums/Comm/`) provides MPI communication with a mock 
 
 - **ProcessGrid** (`Comm/ProcessGrid.hpp`): 2D Pr×Pc process grid with row/col sub-communicators. Auto-computes near-square factorization.
 - **DistributionDescriptor** (`Comm/DistributionDescriptor.hpp`): Per-dimension grid axis assignment (None/Row/Col) with balanced blocking.
-- **Collectives** (`Comm/Collectives.hpp`): Allreduce, broadcast, scatter, allgather — blocking and non-blocking (iallreduce).
+- **Collectives** (`Comm/Collectives.hpp`): Allreduce, broadcast, scatter, allgather, both blocking and non-blocking via iallreduce.
 
 ComputeGraph passes for automatic distribution:
 - `DistributionPlanning`: Classifies einsum indices (target_a→Row, target_b→Col, shared→balanced, link→None). Detects chain conflicts.
@@ -146,4 +146,4 @@ mpirun -np 4 ./build/libs/Einsums/ComputeGraph/tests/unit/DistributedIntegration
 mpirun -np 6 ./build/libs/Einsums/ComputeGraph/tests/unit/DistributedIntegration_test
 ```
 
-**Important**: `einsums_add_executable` already links `libEinsums` — do NOT add extra `target_link_libraries` for Einsums modules in test CMakeLists (causes duplicate symbol issues with MPI).
+**Important**: `einsums_add_executable` already links `libEinsums`, so do NOT add extra `target_link_libraries` for Einsums modules in test CMakeLists. Doing so causes duplicate symbol issues with MPI.
