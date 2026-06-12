@@ -8,7 +8,7 @@
 Bad inputs should raise clean exceptions with informative messages rather
 than crash, hang, or produce silent garbage. Each test feeds a deliberately
 invalid input and asserts a Python-side exception was raised. We don't
-overspecify the exception type — pybind11 wraps C++ throws as Python
+overspecify the exception type, pybind11 wraps C++ throws as Python
 ``RuntimeError`` / ``ValueError`` / ``TypeError`` depending on the cast,
 and the bindings can evolve. The contract is: *something* raises.
 """

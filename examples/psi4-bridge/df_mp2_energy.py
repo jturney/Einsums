@@ -6,9 +6,10 @@
 """Density-fitted MP2 correlation energy computed entirely in einsums.
 
 End-to-end demonstration of the bridge feeding a real correlated method, done the
-way DF-MP2 is actually run *and* with every tensor operation expressed in einsums
-(no numpy in the compute loop). The compact 3-index B^Q_{ia} stays resident; we
-loop over occupied pairs and never form the O(o^2 v^2) four-index (ia|jb):
+way DF-MP2 is actually run, and with every tensor operation expressed in einsums
+rather than numpy in the compute loop. The compact 3-index B^Q_{ia} stays
+resident; we loop over occupied pairs and never form the O(o^2 v^2) four-index
+(ia|jb):
 
     per pair (i <= j):
         I_ab   = sum_Q B^Q_{ia} B^Q_{jb}                 einsums.einsum  (GEMM)
@@ -20,14 +21,14 @@ loop over occupied pairs and never form the O(o^2 v^2) four-index (ia|jb):
     E_corr = sum_{i<=j} (2 - d_ij) e_pair
 
 Checked against psi4's own DF-MP2. numpy appears only to ingest psi4 data into
-einsums tensors and to read scalar orbital energies — never for tensor math.
+einsums tensors and to read scalar orbital energies, never for tensor math.
 
-Pass ``--profile [FILE]`` to have einsums write a profile report at exit
-(default file: df_mp2_profile.txt). The report shows the per-pair einsum GEMM
-dominating, with axpby/direct_product/dot for the energy assembly.
+Pass ``--profile [FILE]`` to have einsums write a profile report at exit, with
+default file df_mp2_profile.txt. The report shows the per-pair einsum GEMM
+dominating, with axpby, direct_product, and dot for the energy assembly.
 
 Run with the in-tree Einsums build and the psi4 stage on PYTHONPATH, using the
-conda-env Python (which has numpy/psi4's deps)::
+conda-env Python, which has numpy and psi4's deps::
 
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \
@@ -38,8 +39,9 @@ conda-env Python (which has numpy/psi4's deps)::
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \
         /Users/jturney/Code/Einsums/Einsums/examples/psi4-bridge/df_mp2_energy.py --profile
 
-The two PYTHONPATH entries are the Einsums build's ``lib`` (provides ``einsums``)
-and psi4's ``stage/lib`` (provides ``psi4``); adjust if your trees live elsewhere.
+The two PYTHONPATH entries are the Einsums build's ``lib``, which provides
+``einsums``, and psi4's ``stage/lib``, which provides ``psi4``. Adjust if your
+trees live elsewhere.
 """
 import argparse
 import os
@@ -49,7 +51,7 @@ import einsums  # loads einsums._core (registers types); the runtime is NOT yet 
 
 # Profiling is configured through einsums.rc, which must be set BEFORE the
 # runtime initializes (that happens on the first compute use below). So parse
-# args and set rc here, while only the bindings — not the runtime — are loaded.
+# args and set rc here, while only the bindings, not the runtime, are loaded.
 _parser = argparse.ArgumentParser(description="DF-MP2 correlation energy in einsums.")
 _parser.add_argument(
     "--profile", nargs="?", const="df_mp2_profile.txt", default=None, metavar="FILE",

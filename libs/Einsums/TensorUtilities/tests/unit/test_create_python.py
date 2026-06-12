@@ -6,10 +6,10 @@
 """Python coverage for TensorUtilities tensor-creation factories.
 
 Verifies the four ``create_*`` free-function bindings:
-* ``create_zero_tensor`` — zeros of the requested shape and dtype
-* ``create_random_tensor`` — random values in [-1, 1] for reals
-* ``create_random_definite`` — symmetric/Hermitian, all eigenvalues > 0
-* ``create_random_semidefinite`` — symmetric/Hermitian, all eigenvalues >= 0
+* ``create_zero_tensor``: zeros of the requested shape and dtype
+* ``create_random_tensor``: random values in [-1, 1] for reals
+* ``create_random_definite``: symmetric/Hermitian, all eigenvalues > 0
+* ``create_random_semidefinite``: symmetric/Hermitian, all eigenvalues >= 0
 
 Each function is exposed via the codegen dtype-dispatcher (Phase C.5):
 the default dtype is float64 and an optional ``dtype="..."`` kwarg picks
@@ -64,7 +64,7 @@ def test_create_random_tensor_dtype_and_range(dtype):
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
 def test_create_random_definite_is_positive_definite(dtype):
     # Complex variants currently form ``P^T D P`` (transpose, not conj-transpose)
-    # so the result is symmetric rather than Hermitian — eigenvalues are not
+    # so the result is symmetric rather than Hermitian, eigenvalues are not
     # guaranteed positive. Tracked as a pre-existing CreateRandomDefinite issue;
     # tested here only for real dtypes.
     p = einsums.create_random_definite("P", 4, dtype=dtype)

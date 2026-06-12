@@ -4,8 +4,8 @@
 """Make ``import einsums`` work when running ``pytest`` from the repo root.
 
 The compiled Python module lives at ``<repo>/build/lib/einsums/_core.*.so``
-after a CMake build. The per-module ComputeGraph tests (and friends) are
-registered through ``einsums_add_python_unit_test`` which sets
+after a CMake build. The per-module ComputeGraph tests and their kin are
+registered through ``einsums_add_python_unit_test``, which sets
 ``PYTHONPATH=${CMAKE_BINARY_DIR}/lib`` for ctest, but tests under
 ``tests/`` are intended to be runnable directly via ``pytest`` from the
 repo root and need the same path injected.
@@ -13,12 +13,12 @@ repo root and need the same path injected.
 We probe a small list of likely build directories and prepend the first
 one that contains an ``einsums`` package. The honored cases are:
 
-  * ``EINSUMS_BUILD_DIR``  — explicit override (set by CI / dev configs).
-  * ``./build/lib``        — the conventional out-of-source build location.
-  * ``./cmake-build-*/lib``— common IDE-default build directories.
+  * ``EINSUMS_BUILD_DIR``: explicit override, set by CI or dev configs.
+  * ``./build/lib``: the conventional out-of-source build location.
+  * ``./cmake-build-*/lib``: common IDE-default build directories.
 
 If none of them exist we leave ``sys.path`` alone and let the import
-fail with the usual ``ModuleNotFoundError`` — that's a clearer signal
+fail with the usual ``ModuleNotFoundError``, which is a clearer signal
 than silently skipping the test.
 """
 

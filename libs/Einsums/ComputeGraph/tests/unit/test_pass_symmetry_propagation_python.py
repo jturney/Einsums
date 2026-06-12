@@ -102,7 +102,7 @@ def test_symprop_inferred_tag_survives_re_run():
     reason="SymmetryDescriptor / Tensor.set_symmetry / Tensor.symmetry are not bound to Python."
 )
 def test_symprop_permute_of_symmetric_stays_symmetric():
-    """C++ test calls A.set_symmetry(...) and symmetrize(A) — neither is exposed."""
+    """C++ test calls A.set_symmetry(...) and symmetrize(A), neither is exposed."""
 
 
 def test_symprop_permute_of_general_does_not_infer():

@@ -18,12 +18,14 @@ Validated: cc-pVDZ water, conventional SCF/CCSD. Matches psi4 to ~1e-11:
     spin-orbital einsums CCSD corr = -0.2134804971
     psi4 conv CCSD corr            = -0.2134804971   (== the oracle)
 
-NOTE: surfacing two einsum bugs fixed along the way (see buglog bug-1000/1001):
-PackedGemm's rank_of returned the runtime-rank sentinel for RuntimeTensors
-(aborted on rank4xrank4->rank2 contractions); and string_gemm ignored the
-requested output index order (transposed-output GEMMs like "ia <- ma ; mi").
+Note: this surfaced two einsum bugs fixed along the way (see buglog
+bug-1000/1001). PackedGemm's rank_of returned the runtime-rank sentinel for
+RuntimeTensors, aborting on rank4xrank4->rank2 contractions; and string_gemm
+ignored the requested output index order, mishandling transposed-output GEMMs
+like "ia <- ma ; mi".
 
-Run (Einsums build + psi4 stage on PYTHONPATH, conda-env Python)::
+Run with the Einsums build and psi4 stage on PYTHONPATH, using the conda-env
+Python::
 
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \

@@ -76,7 +76,7 @@ def test_loop_body_captured_via_with_converges():
 
 
 def test_loop_body_fn_variant_converges():
-    """The body-fn overload captures via the passed lambda — no explicit ``with``."""
+    """The body-fn overload captures via the passed lambda, no explicit ``with``."""
     g = cg.Graph("halve-fn")
     value = einsums.create_random_tensor("value", [1])
     np.asarray(value)[0] = 16.0

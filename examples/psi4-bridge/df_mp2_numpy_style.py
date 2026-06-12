@@ -5,10 +5,10 @@
 
 """DF-MP2 correlation energy written in numpy-style einsums.
 
-Same memory-optimal, pair-driven DF-MP2 as df_mp2_energy.py (never forms the
-O(o^2 v^2) four-index (ia|jb) — the point of density fitting), but the compute
+Same memory-optimal, pair-driven DF-MP2 as df_mp2_energy.py, which never forms
+the O(o^2 v^2) four-index (ia|jb), the point of density fitting. The compute
 is expressed with einsums' numpy-like surface instead of explicit linalg calls.
-Every operator still dispatches to einsums' own BLAS-level routines — NOT numpy —
+Every operator still dispatches to einsums' own BLAS-level routines, not numpy,
 so the math stays on einsums code paths and would compose inside cg.capture.
 
 Side-by-side with the explicit form (see df_mp2_energy.py):
@@ -31,17 +31,18 @@ The numpy-like abilities exercised here:
     * A.shape / A.ndim              numpy-parity attributes
 
 One op has no operator spelling and stays explicit: the full reduction
-(einsums.linalg.dot). The elementwise quotient now has the '/' operator
-(direct_division), so building the amplitude denominator needs no reciprocal callback.
+einsums.linalg.dot. The elementwise quotient now has the '/' operator backed by
+direct_division, so building the amplitude denominator needs no reciprocal
+callback.
 
-numpy itself appears only to ingest psi4 data and read scalar orbital energies —
+numpy itself appears only to ingest psi4 data and read scalar orbital energies,
 never for tensor math. Checked against psi4's own DF-MP2.
 
-Pass ``--profile [FILE]`` to have einsums write a profile report at exit
-(default file: df_mp2_numpy_style_profile.txt).
+Pass ``--profile [FILE]`` to have einsums write a profile report at exit, with
+default file df_mp2_numpy_style_profile.txt.
 
 Run with the in-tree Einsums build and the psi4 stage on PYTHONPATH, using the
-conda-env Python (which has numpy/psi4's deps)::
+conda-env Python, which has numpy and psi4's deps::
 
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \
@@ -58,7 +59,7 @@ import einsums  # loads einsums._core (registers types); the runtime is NOT yet 
 
 # Profiling is configured through einsums.rc, which must be set BEFORE the
 # runtime initializes (that happens on the first compute use below). So parse
-# args and set rc here, while only the bindings — not the runtime — are loaded.
+# args and set rc here, while only the bindings, not the runtime, are loaded.
 _parser = argparse.ArgumentParser(description="DF-MP2 correlation energy in numpy-style einsums.")
 _parser.add_argument(
     "--profile", nargs="?", const="df_mp2_numpy_style_profile.txt", default=None, metavar="FILE",

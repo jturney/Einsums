@@ -3,11 +3,11 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""Validate DFTensor's einsums accessors — the density-fitted 3-index integrals
+"""Validate DFTensor's einsums accessors: the density-fitted 3-index integrals
 (Q|pq) returned as dense rank-3 einsums::RuntimeTensor (naux, d2, d3).
 
-DF integrals carry no point-group symmetry, so a plain dense tensor (not a tiled
-one) is the natural representation. Two checks:
+DF integrals carry no point-group symmetry, so a plain dense tensor rather than a
+tiled one is the natural representation. Two checks:
   1. Bridge correctness: Qso_einsums / Qov_einsums / Qvv_einsums exactly equal the
      existing Qso() / Qov() / Qvv() matrices reshaped to rank 3.
   2. Physics: the fitted B = J^{-1/2}(Q|pq) reconstructs the AO ERIs within the

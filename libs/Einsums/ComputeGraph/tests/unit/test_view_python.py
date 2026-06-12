@@ -6,7 +6,7 @@
 """Python coverage for RuntimeTensorView as a first-class capture citizen.
 
 ``einsums.graph.view(parent, ranges)`` returns a non-owning slice that the
-graph treats as aliasing its parent — writes through the view are visible
+graph treats as aliasing its parent, writes through the view are visible
 on the parent, and the optimization passes know about the dependency via
 ``TensorHandle::aliases``.
 

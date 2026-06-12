@@ -6,12 +6,14 @@
 """Matrix.to_einsums_tiled(): a psi4 Matrix as a zero-copy einsums tensor.
 
 A symmetry-blocked psi4 Matrix is exposed as a rank-2 einsums TiledRuntimeTensor
-that ALIASES the irrep blocks (block h <-> tile (h, h^symmetry)) — no copy. The
-tensor and the Matrix share storage, so writes through either side are visible
-to both. This is the zero-copy bridge toward making an Einsums tensor the
-storage backend for Matrix/Vector (vs. the copy-based MintsHelper.so_*_tiled()).
+that aliases the irrep blocks with no copy, mapping block h to tile (h,
+h^symmetry). The tensor and the Matrix share storage, so writes through either
+side are visible to both. This is the zero-copy bridge toward making an Einsums
+tensor the storage backend for Matrix/Vector, in contrast to the copy-based
+MintsHelper.so_*_tiled() path.
 
-Run (Einsums build + psi4 stage on PYTHONPATH, conda-env Python)::
+Run with the Einsums build and psi4 stage on PYTHONPATH, using the conda-env
+Python::
 
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \

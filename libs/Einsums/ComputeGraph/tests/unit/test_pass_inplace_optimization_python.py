@@ -5,7 +5,7 @@
 
 """One-to-one Python mirror of Pass_InplaceOptimization.cpp.
 
-InplaceOptimization is analysis-only — it counts candidates but does
+InplaceOptimization is analysis-only, it counts candidates but does
 not modify the graph. ``modified=False`` is the expected result of
 ``pm.run(g)`` even when candidates are found.
 """

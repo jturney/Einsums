@@ -16,19 +16,19 @@ module is built and bound whenever ``EINSUMS_BUILD_PYTHON=ON`` and serves
 two purposes:
 
 - A reference for contributors wanting to see what annotations the codegen
-  expects to produce a working Python surface.
-- A smoke-test for the codegen itself — if the demo headers stop binding
-  cleanly, the codegen tool (``einsums-pybind``) has regressed.
+  expects in order to produce a working Python surface.
+- A smoke-test for the codegen itself. If the demo headers stop binding
+  cleanly, the codegen tool ``einsums-pybind`` has regressed.
 
 Contents
 ========
 
-- ``Counter.hpp`` — a trivial class with bound methods, demonstrating
+- ``Counter.hpp``: a trivial class with bound methods, demonstrating
   the standard codegen path for a stateful object.
-- ``Coverage.hpp`` — a broader spread of overloads, default arguments,
-  and template instantiation annotations, exercising the harder parts
-  of the binding generator (the dtype dispatcher, the ``.pyi`` emitter,
-  return-by-tuple handling).
+- ``Coverage.hpp``: a broader spread of overloads, default arguments,
+  and template instantiation annotations. It exercises the harder parts
+  of the binding generator, namely the dtype dispatcher, the ``.pyi``
+  emitter, and return-by-tuple handling.
 
 The bound Python surface lives in ``einsums.demo``.
 

@@ -7,7 +7,7 @@
 
 einsum dispatches contractions described by a string spec:
     "ij <- ik ; kj"      matrix multiply
-    "ij <- ji"           transpose  (single operand — but this is permute,
+    "ij <- ji"           transpose  (single operand, but this is permute,
                           not einsum; einsum is always 2-operand)
     "i <- ij ; j"        matrix-vector
     " <- i ; i"          dot (scalar result on rank-0 tensor)
@@ -163,7 +163,7 @@ def test_einsum_VVV_all_three_views():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Higher-rank einsum patterns with views — exercise spec parsing + view aliasing
+# Higher-rank einsum patterns with views, exercise spec parsing + view aliasing
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -228,7 +228,7 @@ def test_einsum_mp2_iajb_block_via_view():
     nocc, nvirt = 3, 4
     nbf = nocc + nvirt
     eri_mo = einsums.create_random_tensor("eri_mo", [nbf, nbf, nbf, nbf])
-    # MP2 energy contribution: sum_{ijab} (ia|jb)^2  — toy contraction with itself
+    # MP2 energy contribution: sum_{ijab} (ia|jb)^2 , toy contraction with itself
     e = einsums.create_zero_tensor("e", [])
 
     g = cg.Graph("mp2-iajb-view")

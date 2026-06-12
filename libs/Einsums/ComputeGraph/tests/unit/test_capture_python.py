@@ -188,7 +188,7 @@ def test_mixed_kinds_in_one_capture():
 
 
 def test_captured_result_matches_eager():
-    """Same operation, captured-then-executed vs eager — bit-for-bit (within tolerance)."""
+    """Same operation, captured-then-executed vs eager, bit-for-bit (within tolerance)."""
     A = einsums.create_random_tensor("A", [4, 4])
     B = einsums.create_random_tensor("B", [4, 4])
 

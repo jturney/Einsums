@@ -8,7 +8,7 @@
 Promotes ``examples/mp2_simulation.py`` to a real correctness test. Exercises
 the captured-graph SCF (a loop) followed by the captured-graph MP2 correction
 (a flat AO→MO transform + Δ build + contraction), asserting both the HF and
-MP2 total energies against reference values — a whole-pipeline guard against
+MP2 total energies against reference values, a whole-pipeline guard against
 optimization passes corrupting either graph.
 
 See libs/Einsums/ComputeGraph/docs/loop_handling_audit.md.

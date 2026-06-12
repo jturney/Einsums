@@ -55,7 +55,7 @@ def test_folds_transpose_pair():
 
 def test_no_fold_for_different_tensors():
     # Same index pattern but DIFFERENT operand tensors is DistributiveFactoring's
-    # job, not ours — we require the same tensor read with permuted indices.
+    # job, not ours, we require the same tensor read with permuted indices.
     A = einsums.create_random_tensor("A", [4])
     B = einsums.create_random_tensor("B", [4, 3, 3])
     C = einsums.create_random_tensor("C", [4, 3, 3])

@@ -6,20 +6,20 @@
 """Closed-shell spin-adapted RHF-CCSD reference oracle (pure numpy).
 
 A faithful reproduction of psi4numpy Coupled-Cluster/RHF/helper_ccenergy.py
-(D. Crawford's ccenergy formulation). NOT an einsums example — it is the
-equation reference the closed-shell einsums DF-CCSD (df_ccsd_*) is validated
-against, term-for-term. Exact v4 here; matches psi4 conventional CCSD to ~1e-11
-(cc-pVDZ water): closed-shell CCSD corr = -0.2134804971.
+(D. Crawford's ccenergy formulation). This is not an einsums example; it is the
+equation reference that the closed-shell einsums DF-CCSD (df_ccsd_*) is validated
+against, term-for-term. v4 is exact here, and it matches psi4 conventional CCSD
+to ~1e-11 for cc-pVDZ water: closed-shell CCSD corr = -0.2134804971.
 
-Conventions (match psi4numpy):
-  * MO physicist <pq|rs> = mo_eri.swapaxes(1,2)  (built here from ao_eri + C).
+Conventions, matching psi4numpy:
+  * MO physicist <pq|rs> = mo_eri.swapaxes(1,2), built here from ao_eri + C.
   * Bare Fock blocks kept: canonical RHF -> F_vv=diag(ev), F_oo=diag(eo), F_ov=0.
     The update t += r/D works because the diagonal Fock in Fae/Fmi contributes
     -t·D, which cancels t and leaves t_new = (off-diagonal terms)/D.
   * Closed-shell symmetrizer sym(r) = r_ijab + r_jiba (swapaxes(0,1).swapaxes(2,3)).
-  * Wabef is done via the Zmbij auxiliary + the explicit vvvv term.
+  * Wabef is done via the Zmbij auxiliary plus the explicit vvvv term.
 
-Run (psi4 stage on PYTHONPATH, conda-env Python)::
+Run with the psi4 stage on PYTHONPATH, using the conda-env Python::
 
     PYTHONPATH=/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \

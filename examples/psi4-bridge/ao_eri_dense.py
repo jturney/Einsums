@@ -3,13 +3,13 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""Validate MintsHelper.ao_eri_einsums() — AO two-electron integrals (pq|rs),
+"""Validate MintsHelper.ao_eri_einsums(): AO two-electron integrals (pq|rs) in
 chemists' notation, as a dense rank-4 einsums::RuntimeTensor built with the
 shell-batched TwoBodyAOInt::compute_shell primitive.
 
 AO integrals carry no point-group symmetry, so the natural representation is a
-dense rank-4 tensor (not a tiled one). It must reproduce psi4's own ao_eri()
-matrix reshaped to (nbf, nbf, nbf, nbf).
+dense rank-4 tensor rather than a tiled one. It must reproduce psi4's own
+ao_eri() matrix reshaped to (nbf, nbf, nbf, nbf).
 """
 import numpy as np
 import einsums  # registers the pybind types; runtime inits lazily

@@ -15,7 +15,7 @@ Supported keys (inside capture):
   - ``Ellipsis`` to fill remaining axes with full slices.
 
 Unsupported (raises IndexError with a clear message):
-  - Integer indices (rank-reducing — cg.view doesn't support Drop axis yet).
+  - Integer indices (rank-reducing, cg.view doesn't support Drop axis yet).
   - Strided slices (step != 1).
   - Index arity that doesn't match the parent's rank after Ellipsis expansion.
 """
@@ -84,7 +84,7 @@ def test_captured_slice_in_gemm_inputs():
 
 
 def test_captured_slice_in_gemm_output():
-    """C is sliced from a larger parent — gemm writes through the view."""
+    """C is sliced from a larger parent, gemm writes through the view."""
     A = einsums.create_random_tensor("A", [3, 4])
     B = einsums.create_random_tensor("B", [4, 3])
     big_C = einsums.create_zero_tensor("big_C", [5, 5])
@@ -100,7 +100,7 @@ def test_captured_slice_in_gemm_output():
 
 
 def test_captured_full_axis_via_colon():
-    """``t[:, :3]`` — the first axis is a bare colon (slice(None))."""
+    """``t[:, :3]``, the first axis is a bare colon (slice(None))."""
     big = einsums.create_random_tensor("big", [4, 6])
     out = einsums.create_zero_tensor("out", [4, 3])
 
@@ -157,7 +157,7 @@ def test_captured_slice_of_view_aliases_parent_chain():
     bug-optimizer-scale-view-alias: the slice used to take a raw eager path
     with ``aliases == 0``, so a reduction over it had no dependency on an
     in-place ``Scale`` of the owning tensor and the optimizer's Reorder pass
-    floated the read ahead of the write — reading unscaled data."""
+    floated the read ahead of the write, reading unscaled data."""
     A = einsums.create_random_tensor("A", [2, 3])
     ref = np.asarray(A).copy()
     factor = -1.84
@@ -166,7 +166,7 @@ def test_captured_slice_of_view_aliases_parent_chain():
     out = einsums.create_zero_tensor("out", [2, 2])
     with cg.capture(g):
         einsums.linalg.scale(factor, A)   # in-place scale of the owner
-        sub = A.T[1:]                      # (A.T)[1:] — a view of a view
+        sub = A.T[1:]                      # (A.T)[1:], a view of a view
         einsums.linalg.axpy(1.0, sub, out)
     # The full default pipeline (incl. Reorder) must preserve scale-before-read.
     g.apply(cg.default_pass_manager())
@@ -178,7 +178,7 @@ def test_captured_slice_of_view_aliases_parent_chain():
 
 def test_captured_slice_of_view_is_graph_registered():
     """The view-of-a-view is a graph-registered RuntimeTensorView, not the
-    raw eager kind — i.e. the capture-aware __getitem__ fires on view
+    raw eager kind, i.e. the capture-aware __getitem__ fires on view
     classes, mirroring how it already fires on owning tensors."""
     A = einsums.create_random_tensor("A", [4, 6])
     g = cg.Graph("slice-of-view-reg")
@@ -285,11 +285,11 @@ def test_captured_double_ellipsis_raises():
 # ──────────────────────────────────────────────────────────────────────────
 # Captured: scalar element access via [0] on rank-0 still works for
 # reading-the-result patterns (not view-producing, but it's not invoked
-# inside capture in practice — this just confirms we route correctly when
+# inside capture in practice, this just confirms we route correctly when
 # the user actually wants element access).
 #
 # Wait: __getitem__ inside capture with a single int on a rank-1 would
-# attempt to auto-slice and raise. That's the right behavior — element
+# attempt to auto-slice and raise. That's the right behavior, since element
 # access inside capture is unusual.
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -306,7 +306,7 @@ def test_eager_element_access_after_capture():
         einsums.linalg.dot(e, A, B)
     g.execute()
 
-    # Outside capture again — element read works.
+    # Outside capture again, element read works.
     val = e[0]
     expected = float(np.dot(np.asarray(A), np.asarray(B)))
     np.testing.assert_allclose(val, expected, rtol=1e-5)

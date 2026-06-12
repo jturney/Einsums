@@ -3,21 +3,23 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""Closed-shell hybrid DF-CCSD as a ComputeGraph LOOP (graph-numpy-style).
+"""Closed-shell hybrid DF-CCSD as a ComputeGraph loop (graph-numpy-style).
 
-The CCSD iteration is a graph add_loop: body captured ONCE, re-executed by the
-loop executor. Unlike the eager numpy-style version, a captured loop body must
-use PRE-ALLOCATED scratch + in-place ops (operator-created temporaries get GC'd
--> pointer reuse -> graph aliasing). So intermediates/residuals are graph-owned
-scratch recomputed in place each iteration, amplitudes t1/t2 update in place,
-and a convergence predicate reads the energy tensor. Integrals (bridge) + Fock +
+The CCSD iteration is a graph add_loop: the body is captured once and re-executed
+by the loop executor. Unlike the eager numpy-style version, a captured loop body
+must use pre-allocated scratch and in-place ops, because operator-created
+temporaries get GC'd, the pointer is reused, and the graph then aliases. So
+intermediates and residuals are graph-owned scratch recomputed in place each
+iteration, amplitudes t1/t2 update in place, and a convergence predicate reads
+the energy tensor. Integrals from the bridge, the Fock matrix, and the
 denominators are one-time eager setup.
 
-HYBRID DF: the v⁴ particle-ladder integral <ab|ef> = (ae|bf) is the only block
+Hybrid DF: the v⁴ particle-ladder integral <ab|ef> = (ae|bf) is the only block
 taken from density fitting, <ab|ef> = Σ_Q B^Q_ae B^Q_bf with B = J^{-1/2}(Q|vv)
-from psi4's DFTensor. The v⁴ tensor is NEVER formed — the ladder contraction
+from psi4's DFTensor. The v⁴ tensor is never formed; the ladder contraction
 splits into two o²v³ steps through a DF intermediate. Every other block stays
-EXACT via the half-transform bridge. Validate the DF shift vs psi4 conv CCSD.
+exact via the half-transform bridge. Validate the DF shift against psi4 conv
+CCSD.
 
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \
@@ -77,7 +79,7 @@ specs = {"oovv": ("o", "o", "v", "v"), "oooo": ("o", "o", "o", "o"),
 G = {nm: phys(*pqrs, nm) for nm, pqrs in specs.items()}
 
 # diagnostic only: how well does the DF B reconstruct the exact v⁴ block? (both
-# tensors formed here are discarded — the iteration never touches them). This Δ is
+# tensors formed here are discarded; the iteration never touches them). This Δ is
 # the only new approximation the DF swap introduces vs the exact-v⁴ run (1.26e-11).
 # Reconstruction is einsums-native; numpy is used only to read the scalar error.
 _vvvv_exact = phys("v", "v", "v", "v", "vvvv_diag")
@@ -112,7 +114,7 @@ for nm, sh in [("Tau", SH2), ("Taut", SH2), ("Fae", VV), ("Fmi", OO), ("Fme", NV
                ("tmp", SH2), ("tmpP", SH2), ("rd1", NV2), ("rd2", SH2), ("Hvvdf", HVVDF)]:
     S[nm] = dz(nm, sh)
 # scalars stay eager: cg.dot validates its result size at capture, and the
-# predicate reads Ecorr between iterations — both need a live 1-element tensor.
+# predicate reads Ecorr between iterations; both need a live 1-element tensor.
 e1 = zt("e1", (1,)); e2 = zt("e2", (1,)); Ecorr = zt("Ecorr", (1,))
 
 def ein(spec, A, B, out, pf=1.0, acc=False):
@@ -193,7 +195,7 @@ with cg.capture(body):
     ein("ijab <- mnab ; mnij", Tau, Wmnij, r2, 1.0, True)
     # DF particle-ladder (replaces ein("ijab <- ijef ; abef", Tau, G["vvvv"], ...)):
     #   r2_ijab += Σ_ef Tau_ijef <ab|ef>,  <ab|ef> = (ae|bf) = Σ_Q Bvv_ae Bvv_bf
-    # two o²v³ steps via a DF intermediate H — never forms the v⁴ tensor.
+    # two o²v³ steps via a DF intermediate H; never forms the v⁴ tensor.
     ein("Q,a,i,j,f <- Q,a,e ; i,j,e,f", Bvv, Tau, S["Hvvdf"], 1.0, False)
     ein("i,j,a,b <- Q,a,i,j,f ; Q,b,f", S["Hvvdf"], Bvv, r2, 1.0, True)
     symacc("ijab <- ma ; mbij", t1, Zmbij, 1.0, -1.0)
@@ -238,7 +240,7 @@ print(f"LinearCombinationContractionFolding: body contractions {_before} -> {_co
 # The big scratch is graph-owned DEFERRED (g.declare_zero_tensor), so the memory
 # passes now have work: MaterializationPass turns each deferred handle into a
 # Materialize+Initialize pair HOISTED to the parent (allocated/zeroed once before
-# the loop, not per iteration) — parent node count grows, body stays put. Passes
+# the loop, not per iteration): parent node count grows, body stays put. Passes
 # also recurse into the body (each opts in via recurse_into_subgraphs), where
 # Reorder reschedules; the scratch is reused in place so CSE/InplaceOptimization
 # have nothing to fold. Correctness holds (vs psi4 conv CCSD).

@@ -7,9 +7,9 @@
 
 Mirrors RuntimeTensorLAPACK.cpp + the LAPACK slices of MixedOps.cpp:
 
-  * In-place ops (syev, heev, gesv, invert) — tested in eager mode and
+  * In-place ops (syev, heev, gesv, invert), tested in eager mode and
     captured-then-executed mode.
-  * Returning-form ops (det, svd, qr, syev_eig, trace) — tested eager
+  * Returning-form ops (det, svd, qr, syev_eig, trace), tested eager
     AND verified to raise inside ``with cg.capture(g):`` since they
     return values by-construction and have no destination slot.
 
@@ -27,7 +27,7 @@ from einsums.testing import ALL_DTYPES, REAL_DTYPES
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# trace — returning scalar
+# trace, returning scalar
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -95,7 +95,7 @@ def test_syev_in_graph_capture(dtype):
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# syev_eig: returning form — must raise during capture
+# syev_eig: returning form, must raise during capture
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -196,7 +196,7 @@ def test_invert_eager(dtype):
     A = einsums.create_random_tensor("A", [n, n], dtype=dtype)
     # create_random_tensor draws from a uniform distribution, so the
     # resulting matrix can land arbitrarily close to singular by chance
-    # — observed on Linux clang where getrf hit a zero pivot at (3, 3)
+    #, observed on Linux clang where getrf hit a zero pivot at (3, 3)
     # for a specific seed. Make A diagonally dominant by adding n*I so
     # invert always succeeds.
     A_np = np.asarray(A)
@@ -211,7 +211,7 @@ def test_invert_eager(dtype):
 def test_invert_in_graph_capture(dtype):
     n = 3
     A = einsums.create_random_tensor("A", [n, n], dtype=dtype)
-    # Same diagonal-dominant shim as test_invert_eager — uniform-random
+    # Same diagonal-dominant shim as test_invert_eager, uniform-random
     # 3×3 matrices are even more likely to be ill-conditioned.
     A_np = np.asarray(A)
     A_np[:] = A_np + n * np.eye(n, dtype=A_np.dtype)
@@ -227,7 +227,7 @@ def test_invert_in_graph_capture(dtype):
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# det — returning scalar; must raise during capture
+# det: returning scalar; must raise during capture
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -256,7 +256,7 @@ def test_det_throws_during_capture():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# svd — returning tuple; must raise during capture
+# svd: returning tuple; must raise during capture
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -281,7 +281,7 @@ def test_svd_throws_during_capture():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# qr — returning tuple; must raise during capture
+# qr: returning tuple; must raise during capture
 # ──────────────────────────────────────────────────────────────────────────
 
 

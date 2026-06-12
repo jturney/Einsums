@@ -5,7 +5,7 @@
 
 """One-to-one Python mirror of Pass_ChainParenthesization.cpp.
 
-This pass reasons about matrix chain multiplication — analysis only, no
+This pass reasons about matrix chain multiplication, analysis only, no
 graph modification. The pass is not part of the default pipeline (per
 Optimizer.hpp's docstring); tests verify it's wired up correctly when
 explicitly added to a PassManager.

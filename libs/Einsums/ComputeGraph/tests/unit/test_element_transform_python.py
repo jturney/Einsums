@@ -94,7 +94,7 @@ def test_element_transform_captured_matches_eager(dtype):
     # Same starting data on both.
     np.asarray(capt)[...] = np.asarray(eager)
 
-    fn = lambda x: x * x - 0.25  # noqa: E731 — exercising an arbitrary nonlinear unary
+    fn = lambda x: x * x - 0.25  # noqa: E731, exercising an arbitrary nonlinear unary
 
     # Eager
     einsums.linalg.element_transform(eager, fn)
@@ -110,7 +110,7 @@ def test_element_transform_captured_matches_eager(dtype):
 
 @pytest.mark.parametrize("dtype", REAL_DTYPES)
 def test_element_transform_deferred_until_execute(dtype):
-    """Recording into a graph must NOT mutate the tensor — only execute() does."""
+    """Recording into a graph must NOT mutate the tensor, only execute() does."""
     A = einsums.create_random_tensor("A", [3, 3], dtype=dtype)
     before = np.asarray(A).copy()
 
@@ -118,7 +118,7 @@ def test_element_transform_deferred_until_execute(dtype):
     with cg.capture(g):
         einsums.linalg.element_transform(A, lambda x: 99.0)
 
-    # Tensor unchanged after capture exits — the lambda has not run yet.
+    # Tensor unchanged after capture exits, the lambda has not run yet.
     np.testing.assert_array_equal(np.asarray(A), before)
 
     g.execute()

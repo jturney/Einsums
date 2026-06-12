@@ -8,7 +8,7 @@
 Covers ``einsums.io.Slab`` plus ``read_slice`` / ``write_slice``
 recorded into a ComputeGraph. The motivating pattern is a
 read-transform-write-back loop where the same graph node fires multiple
-times against different slab ranges — i.e. the user keeps a single Slab
+times against different slab ranges, i.e. the user keeps a single Slab
 object, mutates ``slab.ranges`` between graph executions, and the captured
 executor lambda picks up the new ranges every time (it captures the Slab
 by reference C++-side).
@@ -46,7 +46,7 @@ def test_slab_constructed_with_ranges():
 
 
 def test_slab_ranges_are_mutable():
-    """The C++ executor captures Slab by reference — so mutating
+    """The C++ executor captures Slab by reference, so mutating
     ranges between graph runs must be visible to the next execute().
     Verify the Python-side mutation surface itself."""
     s = einsums.io.Slab([(0, 2)])
@@ -75,7 +75,7 @@ def test_graph_slab_round_trip_through_recorded_node():
             einsums.io.read_slice(path, "A", slab, block)
         g_read.execute()
 
-        # Slab [1:3, 1:3] of arange(16).reshape(4,4) — column-major
+        # Slab [1:3, 1:3] of arange(16).reshape(4,4), column-major
         # storage means the in-memory block layout differs, but the values
         # themselves should match the corresponding slab.
         # Read the same slab via the non-graph TensorFile API for a
@@ -96,7 +96,7 @@ def test_graph_driven_tile_loop_via_add_loop():
     callable as a graph node (``cg.custom``), and writes the slab back.
     The ``cond`` callback advances ``slab.ranges`` between iterations.
 
-    No host-language loop — the graph drives everything.
+    No host-language loop, the graph drives everything.
     """
     path = _temp_path("tiles_add_loop")
     try:
@@ -155,7 +155,7 @@ def test_slab_io_runs_immediately_outside_capture():
         block = einsums.RuntimeTensorD("blk", [2, 2])
         slab = einsums.io.Slab([(1, 3), (1, 3)])
 
-        # No cg.capture — runs immediately.
+        # No cg.capture, runs immediately.
         einsums.io.read_slice(path, "A", slab, block)
         truth = einsums.RuntimeTensorD("truth", [2, 2])
         f2 = einsums.io.TensorFile(path, einsums.io.Mode.Read)

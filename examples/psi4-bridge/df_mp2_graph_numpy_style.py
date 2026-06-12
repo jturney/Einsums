@@ -5,11 +5,11 @@
 
 """DF-MP2 as an einsums ComputeGraph, written in numpy-style einsums.
 
-The graph companion to df_mp2_numpy_style.py (and the numpy-style twin of
-df_mp2_graph.py): the same memory-optimal, pair-driven DF-MP2 — never forming
-the O(o^2 v^2) four-index (ia|jb) — recorded into a cg.Graph and run through the
-deferred path capture -> optimize -> execute, but with the per-pair tensor math
-expressed via einsums' numpy-like operators wherever they are capture-safe.
+The graph companion to df_mp2_numpy_style.py, and the numpy-style twin of
+df_mp2_graph.py. It is the same memory-optimal, pair-driven DF-MP2, which never
+forms the O(o^2 v^2) four-index (ia|jb), recorded into a cg.Graph and run through
+the deferred path capture -> optimize -> execute, but with the per-pair tensor
+math expressed via einsums' numpy-like operators wherever they are capture-safe.
 
 Per occupied pair i<=j, captured into one graph:
 
@@ -20,24 +20,24 @@ Per occupied pair i<=j, captured into one graph:
     e_pair = sum_ab K_ab T_ab                 einsums.linalg.dot        (reduction -> [1])
     E     += (2 - d_ij) * e_pair              scalar*, +=               (operators -> E[0])
 
-Every operator — including ``Bi.T @ Bj`` and ``2.0 * I - I.T`` — is recorded
+Every operator, including ``Bi.T @ Bj`` and ``2.0 * I - I.T``, is recorded
 into the graph. ``.T`` is capture-safe: inside ``cg.capture`` it routes through
 ``cg.permute_view``, which records a graph-registered, parent-aliasing transpose
-view (the raw ``transpose_view`` shares the parent's data pointer and is invisible
-to the graph, which is why a naive ``.T`` in capture used to fault). Operator
-outputs are allocated graph-owned, so they survive optimize/execute.
+view. The raw ``transpose_view`` shares the parent's data pointer and is
+invisible to the graph, which is why a naive ``.T`` in capture used to fault.
+Operator outputs are allocated graph-owned, so they survive optimize/execute.
 
-The denominator W is a *reused* scratch rather than a fresh per-pair tensor:
+The denominator W is reused scratch rather than a fresh per-pair tensor:
 graph-owned operator results live for the whole execution, so allocating one
 per pair would pin nocc^2 denominators in memory. Overwriting W from Dbase and
-shifting it in place with ``W += (e_i + e_j)`` (the in-place scalar form, which
-allocates nothing) keeps the denominator footprint at O(v^2).
+shifting it in place with ``W += (e_i + e_j)``, the in-place scalar form that
+allocates nothing, keeps the denominator footprint at O(v^2).
 
-Only one op has no operator spelling and stays explicit — same as the eager
-numpy-style file: the full reduction (dot, written into a 1-element tensor for
-in-graph accumulation). The amplitude denominator is now the '/' operator
-(direct_division), which records a graph DirectDivision node — no per-element
-reciprocal callback, so the whole per-pair body is operators + one dot.
+Only one op has no operator spelling and stays explicit, the same as the eager
+numpy-style file: the full reduction dot, written into a 1-element tensor for
+in-graph accumulation. The amplitude denominator is now the '/' operator backed
+by direct_division, which records a graph DirectDivision node with no per-element
+reciprocal callback, so the whole per-pair body is operators plus one dot.
 
 numpy itself appears only to ingest psi4 data and read scalar orbital energies.
 Checked against psi4's own DF-MP2.
@@ -45,7 +45,8 @@ Checked against psi4's own DF-MP2.
 Pass ``--show-passes`` to apply each optimization pass on its own and report
 which ones modify the graph, plus the node execution order before vs after.
 
-Run (Einsums build + psi4 stage on PYTHONPATH, conda-env Python)::
+Run with the Einsums build and psi4 stage on PYTHONPATH, using the conda-env
+Python::
 
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \
@@ -141,7 +142,7 @@ Dbase = einsums.asarray(-ev_np[:, None] - ev_np[None, :], name="-ea-eb")
 
 # e_pair / E accumulate across pairs. W is a reused denominator scratch:
 # unlike eager mode (where operator results are GC'd), every operator output in
-# a graph is a graph-owned tensor that lives for the whole execution — so a
+# a graph is a graph-owned tensor that lives for the whole execution, so a
 # per-pair ``Dbase + scalar`` would leave nocc^2 denominator tensors resident.
 # Reusing one W (overwrite it from Dbase, then shift in place with ``+=``) keeps
 # the denominator at O(v^2). I/K/T are still fresh per pair to stay readable.

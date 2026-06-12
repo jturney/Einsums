@@ -124,7 +124,7 @@ def test_lih_rank3_batched_gemm_hoists():
     body = g.add_loop("loop", 4, lambda it: it < 3)
     with cg.capture(body):
         einsums.einsum("ijb <- ikb ; kjb", C, A, B)  # invariant
-        einsums.linalg.scale(0.9, D)  # not invariant — writes D
+        einsums.linalg.scale(0.9, D)  # not invariant, writes D
 
     pass_inst = cg.LoopInvariantHoisting()
     assert _run(pass_inst, g)
@@ -132,7 +132,7 @@ def test_lih_rank3_batched_gemm_hoists():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Execution after LIH — verifies that the rewritten graph still runs and
+# Execution after LIH, verifies that the rewritten graph still runs and
 # produces correct values. The previous suite only checked num_hoisted;
 # without executing the graph the tensor-id rewrite and loop-input wiring
 # couldn't be exercised.
@@ -142,14 +142,14 @@ def test_lih_rank3_batched_gemm_hoists():
 def test_lih_does_not_corrupt_body_when_nothing_is_invariant():
     """Regression: an early bug moved every body node into a temporary
     ``remaining`` vector, then short-circuited on ``hoisted.empty()``
-    without putting them back — turning the loop body into a no-op."""
+    without putting them back, turning the loop body into a no-op."""
     value = einsums.create_zero_tensor("value", [1])
     np.asarray(value)[0] = 1.0
 
     g = cg.Graph("preserve-body")
     body = g.add_loop("loop", 5, lambda it: it < 2)
     with cg.capture(body):
-        einsums.linalg.scale(2.0, value)   # self-modifying — never invariant
+        einsums.linalg.scale(2.0, value)   # self-modifying, never invariant
 
     pass_inst = cg.LoopInvariantHoisting()
     _run(pass_inst, g)
@@ -173,8 +173,8 @@ def test_lih_executes_correctly_after_hoist():
     g = cg.Graph("hoist-exec")
     body = g.add_loop("loop", 3, lambda it: it < 2)
     with cg.capture(body):
-        einsums.einsum("ij <- ik ; kj", C, A, B)   # invariant — A, B never change
-        einsums.linalg.axpy(1.0, C, accum)         # self-modifying — stays in body
+        einsums.einsum("ij <- ik ; kj", C, A, B)   # invariant, A, B never change
+        einsums.linalg.axpy(1.0, C, accum)         # self-modifying, stays in body
 
     pass_inst = cg.LoopInvariantHoisting()
     assert _run(pass_inst, g)

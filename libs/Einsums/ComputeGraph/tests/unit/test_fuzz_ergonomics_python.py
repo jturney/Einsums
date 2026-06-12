@@ -5,54 +5,55 @@
 
 """Differential fuzzer for the numpy-style ergonomics layer.
 
-Generates a random program of numpy-style operations — operators (``@`` /
+Generates a random program of numpy-style operations, namely operators (``@`` /
 ``+`` / ``-`` / ``*`` / ``/`` / unary), in-place RMW (``+=`` / ``-=`` / ``*=``
 / ``/=``), ``.T`` / ``.transpose`` / ``.swapaxes``, slicing and rank-reducing
-indexing, and the ``.sum`` / ``.mean`` / ``.max`` reductions — over a pool of
-tensors, then runs the *same* program four ways and demands they all agree:
+indexing, and the ``.sum`` / ``.mean`` / ``.max`` reductions, over a pool of
+tensors, then runs the same program four ways and demands they all agree:
 
-  1. **numpy oracle** — the program applied to numpy arrays.
-  2. **einsums eager** — the same Python expressions on einsums tensors.
-  3. **einsums capture** — the same expressions recorded into a ``cg.Graph``,
+  1. numpy oracle: the program applied to numpy arrays.
+  2. einsums eager: the same Python expressions on einsums tensors.
+  3. einsums capture: the same expressions recorded into a ``cg.Graph``,
      then ``execute()``-d with no optimization passes.
-  4. **einsums optimized** — the captured graph after ``default_pass_manager()``,
+  4. einsums optimized: the captured graph after ``default_pass_manager()``,
      then executed. If #3 matches but #4 doesn't, a pass miscompiled the graph.
 
-In-place ops only target owning storage (not views) so the oracle stays simple;
-they stress the read-modify-write hazards under capture + the alias-aware
+In-place ops only target owning storage, not views, so the oracle stays simple.
+They stress the read-modify-write hazards under capture plus the alias-aware
 scheduler that the optimization passes rely on.
 
-Seed range note: the committed range (200 seeds) is green on all four arms.
-It used to be capped at 80 to dodge bug-optimizer-scale-view-alias — a
-view-of-a-view (e.g. ``(A.T)[1:]``) created inside capture took an eager
+Seed range note: the committed range of 200 seeds is green on all four arms.
+It used to be capped at 80 to dodge bug-optimizer-scale-view-alias. A
+view-of-a-view such as ``(A.T)[1:]`` created inside capture took an eager
 raw-slice path with ``aliases == 0``, so the scheduler (Reorder) couldn't see
 that a reduction over it depended on an in-place ``Scale`` of the owning
 tensor and floated the read ahead of the write. The fix wired slicing a view
-through ``cg.view``/``view_indexed`` (now instantiated for ``RuntimeTensorView``
-parents, with the capture-aware ``__getitem__`` installed on the view classes),
+through ``cg.view``/``view_indexed``, now instantiated for ``RuntimeTensorView``
+parents, with the capture-aware ``__getitem__`` installed on the view classes,
 so the slice aliases its parent chain. The cap is lifted; raise it further to
 widen coverage.
 
 Because numpy arrays and einsums tensors share the operator/method syntax, a
 single interpreter (:func:`_run_chain`) drives all three; only the operand
-pool (and, for #3, the surrounding ``cg.capture``) differ.
+pool, and for #3 the surrounding ``cg.capture``, differ.
 
-The point is the **eager-vs-capture** axis: it systematically catches the
+The point is the eager-vs-capture axis: it systematically catches the
 capture-only bugs that were previously found by hand. This harness already
 turned up two real ones:
 
   * range-slice views reported full-parent dims at capture time, so operators
-    that size their output / divisor from a captured view's dims (``@``,
+    that size their output or divisor from a captured view's dims (``@``,
     ``.mean``, the elementwise allocators) mis-sized them;
-  * a slice-of-a-slice collided in ``get_slot`` (the inner view's placeholder
-    shared the parent's data pointer), so the outer slice resolved the wrong
-    parent.
+  * a slice-of-a-slice collided in ``get_slot``, since the inner view's
+    placeholder shared the parent's data pointer, so the outer slice resolved
+    the wrong parent.
 
-Both are fixed in ``cg::view_runtime``'s placeholder (constant Range bounds now
-contribute their real extent and offset). The generator only emits valid
-shape-compatible programs (it tracks numpy shapes as it builds), and reductions
-are kept terminal so numpy's scalar broadcast can't diverge from einsums'
-no-broadcast semantics. Failures print the seed + program so they reproduce.
+Both are fixed in ``cg::view_runtime``'s placeholder, where constant Range
+bounds now contribute their real extent and offset. The generator only emits
+valid shape-compatible programs, tracking numpy shapes as it builds, and
+reductions are kept terminal so numpy's scalar broadcast can't diverge from
+einsums' no-broadcast semantics. Failures print the seed and program so they
+reproduce.
 """
 
 from __future__ import annotations
@@ -92,7 +93,7 @@ def _gen_program(rng, shapes, n_steps):
     Shapes are tracked so only valid operands are chosen; ``is_view`` tracks
     which slots are zero-copy views (transpose/slice/index) so in-place ops
     only target owning storage (mutating through a view would alias its
-    parent — sound but excluded here to keep the oracle simple)."""
+    parent, sound but excluded here to keep the oracle simple)."""
     shapes = list(shapes)
     is_view = [False] * len(shapes)
     alias_root = list(range(len(shapes)))  # ultimate owning tensor each slot aliases
@@ -119,7 +120,7 @@ def _gen_program(rng, shapes, n_steps):
                     for op in ("add", "sub", "had"):
                         cands.append((op, (i, j), si, False))
                     # In-place accumulate, but never when the source aliases the
-                    # target (e.g. A -= A.T) — that's an order-dependent
+                    # target (e.g. A -= A.T), that's an order-dependent
                     # read/write overlap that numpy resolves by copying and BLAS
                     # axpy does not, so the two legitimately disagree.
                     if owning_i and alias_root[j] != i:
@@ -143,7 +144,7 @@ def _gen_program(rng, shapes, n_steps):
 
 
 def _apply(step, pool):
-    """One step's expression — identical syntax for numpy arrays and einsums
+    """One step's expression, identical syntax for numpy arrays and einsums
     tensors, which is why it serves all three backends."""
     op, args, sc = step
     a = pool[args[0]]
@@ -168,7 +169,7 @@ def _run_chain(steps, pool):
         if op in _INPLACE:
             # Augmented assignment exercises __iadd__/__isub__/__imul__/__itruediv__
             # (in place for numpy and eager; an RMW node under capture). Reassigning
-            # the slot is fine — those dunders return the same (mutated) object.
+            # the slot is fine, those dunders return the same (mutated) object.
             if op == "iadd": pool[args[0]] += pool[args[1]]
             elif op == "isub": pool[args[0]] -= pool[args[1]]
             elif op == "iscale": pool[args[0]] *= sc
@@ -216,7 +217,7 @@ def test_fuzz_ergonomics(seed, dtype):
     if any(p.size and (not np.all(np.isfinite(p)) or np.max(np.abs(p)) > cap) for p in npool):
         pytest.skip("oracle overflowed — numerically degenerate program")
 
-    # Each einsums arm gets its OWN fresh inputs — in-place ops mutate them.
+    # Each einsums arm gets its OWN fresh inputs, in-place ops mutate them.
     def fresh(prefix):
         return [einsums.asarray(a, name=f"{prefix}{i}") for i, a in enumerate(inputs)]
 

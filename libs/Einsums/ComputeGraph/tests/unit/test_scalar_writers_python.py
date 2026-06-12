@@ -101,7 +101,7 @@ def test_dot_writer_zero_size_result_raises():
 
 
 def test_dot_both_inputs_are_views():
-    """dot(e, view(A), view(B)) — graph aliases both inputs to their parents."""
+    """dot(e, view(A), view(B)): graph aliases both inputs to their parents."""
     A = einsums.create_random_tensor("A", [5, 6])
     B = einsums.create_random_tensor("B", [5, 6])
     e = einsums.create_zero_tensor("e", [1])
@@ -118,7 +118,7 @@ def test_dot_both_inputs_are_views():
 
 
 def test_dot_view_input_owning_input_mixed():
-    """dot(e, view(C), D) — mixed view/owning input pair."""
+    """dot(e, view(C), D): mixed view/owning input pair."""
     C = einsums.create_random_tensor("C", [4, 6])
     D = einsums.create_random_tensor("D", [4, 3])  # already same shape as C[:, :3]
     e = einsums.create_zero_tensor("e", [1])
@@ -134,7 +134,7 @@ def test_dot_view_input_owning_input_mixed():
 
 
 def test_dot_result_is_view():
-    """dot(view_into_scalar_holder, A, B) — even the result tensor can be a view."""
+    """dot(view_into_scalar_holder, A, B): even the result tensor can be a view."""
     # Holder has two slots; we write into slot 1 via a view.
     holder = einsums.create_zero_tensor("holder", [2])
     A = einsums.create_random_tensor("A", [4])
@@ -142,7 +142,7 @@ def test_dot_result_is_view():
 
     g = cg.Graph("dot-rv")
     with cg.capture(g):
-        e_view = cg.view(holder, [(1, 2)])  # holder[1:2] — a 1-element view
+        e_view = cg.view(holder, [(1, 2)])  # holder[1:2]: a 1-element view
         einsums.linalg.dot(e_view, A, B)
     g.execute()
 
@@ -171,7 +171,7 @@ def test_dot_all_three_are_views():
 
 
 def test_dot_owning_result_owning_A_view_B():
-    """Cell RRV — owning result, owning A, view B."""
+    """Cell RRV: owning result, owning A, view B."""
     A = einsums.create_random_tensor("A", [4, 3])
     B = einsums.create_random_tensor("B", [4, 6])
     e = einsums.create_zero_tensor("e", [1])
@@ -187,7 +187,7 @@ def test_dot_owning_result_owning_A_view_B():
 
 
 def test_dot_view_result_owning_A_view_B():
-    """Cell VRV — view result, owning A, view B."""
+    """Cell VRV: view result, owning A, view B."""
     holder = einsums.create_zero_tensor("holder", [4])
     A = einsums.create_random_tensor("A", [4, 3])
     B = einsums.create_random_tensor("B", [4, 6])
@@ -204,7 +204,7 @@ def test_dot_view_result_owning_A_view_B():
 
 
 def test_dot_view_result_view_A_owning_B():
-    """Cell VVR — view result, view A, owning B."""
+    """Cell VVR: view result, view A, owning B."""
     holder = einsums.create_zero_tensor("holder", [4])
     A = einsums.create_random_tensor("A", [4, 6])
     B = einsums.create_random_tensor("B", [4, 3])
@@ -256,7 +256,7 @@ def test_norm_writer_captured_matches_eager(dtype):
 
 @pytest.mark.parametrize("dtype", COMPLEX_DTYPES)
 def test_norm_writer_complex_returns_real_dtype(dtype):
-    """For complex inputs, the norm is real-valued — result tensor must be real-dtype."""
+    """For complex inputs, the norm is real-valued: result tensor must be real-dtype."""
     A = einsums.create_random_tensor("A", [3, 3], dtype=dtype)
     r_dtype = _NORM_RESULT_DTYPE[dtype]
     r = einsums.create_zero_tensor("r", [1], dtype=r_dtype)
@@ -273,7 +273,7 @@ def test_norm_writer_complex_returns_real_dtype(dtype):
 
 
 def test_norm_owning_result_view_A():
-    """Cell RV — owning result, view A."""
+    """Cell RV: owning result, view A."""
     A = einsums.create_random_tensor("A", [4, 6])
     r = einsums.create_zero_tensor("r", [1])
 
@@ -288,7 +288,7 @@ def test_norm_owning_result_view_A():
 
 
 def test_norm_view_result_owning_A():
-    """Cell VR — view result, owning A."""
+    """Cell VR: view result, owning A."""
     holder = einsums.create_zero_tensor("holder", [3])
     A = einsums.create_random_tensor("A", [4, 5])
 
@@ -303,7 +303,7 @@ def test_norm_view_result_owning_A():
 
 
 def test_norm_view_result_view_A():
-    """Cell VV — view result, view A."""
+    """Cell VV: view result, view A."""
     holder = einsums.create_zero_tensor("holder", [3])
     A = einsums.create_random_tensor("A", [4, 6])
 
@@ -391,7 +391,7 @@ def test_trace_writer_rank3_raises():
 
 
 def test_trace_owning_result_view_A():
-    """Cell RV — owning result, view of a square sub-block."""
+    """Cell RV: owning result, view of a square sub-block."""
     big = einsums.create_random_tensor("big", [6, 6])
     r = einsums.create_zero_tensor("r", [1])
 
@@ -406,7 +406,7 @@ def test_trace_owning_result_view_A():
 
 
 def test_trace_view_result_owning_A():
-    """Cell VR — view result, owning A."""
+    """Cell VR: view result, owning A."""
     holder = einsums.create_zero_tensor("holder", [3])
     A = einsums.create_random_tensor("A", [4, 4])
 
@@ -421,7 +421,7 @@ def test_trace_view_result_owning_A():
 
 
 def test_trace_view_result_view_A():
-    """Cell VV — view result + view of a square sub-block."""
+    """Cell VV: view result + view of a square sub-block."""
     big = einsums.create_random_tensor("big", [6, 6])
     holder = einsums.create_zero_tensor("holder", [3])
 

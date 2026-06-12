@@ -13,7 +13,7 @@
 
 namespace einsums::pythondemo {
 
-/// A tiny counter — proof-of-life for the einsums-pybind autogen path.
+/// A tiny counter: proof-of-life for the einsums-pybind autogen path.
 ///
 /// This class exists purely so the autogen pipeline can be exercised
 /// end-to-end against a real Einsums module. It pulls in no other
@@ -47,7 +47,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_RENAME("Counter") Counter {
     std::string _label;
 };
 
-/// Free function — proof that m.def() emission works through the autogen
+/// Free function: proof that m.def() emission works through the autogen
 /// path, not just class methods.
 APIARY_EXPOSE EINSUMS_EXPORT long sum_of_squares(long n);
 

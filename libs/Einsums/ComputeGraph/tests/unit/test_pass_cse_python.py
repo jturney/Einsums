@@ -12,7 +12,7 @@ the same pre/post invariants.
 
 The C++ tests call ``graph.apply<cg::passes::CSE>()`` which returns a
 ``(modified, pass)`` pair. The Python equivalent is ``g.apply(pm)``
-returning just ``modified`` — we build a one-pass PassManager per test
+returning just ``modified``, we build a one-pass PassManager per test
 since composing passes via ``pm.add(cg.SomePass())`` is the natural
 Python idiom.
 """

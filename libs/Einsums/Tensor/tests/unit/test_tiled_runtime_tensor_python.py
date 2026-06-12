@@ -65,7 +65,7 @@ def test_tile_view_numpy_round_trip(np_dtype, TRT):
 
     seed = np.arange(10, dtype=np_dtype).reshape(2, 5)
     arr[...] = seed
-    # Re-fetching the view must see the write — tile_view exposes live storage.
+    # Re-fetching the view must see the write, tile_view exposes live storage.
     arr2 = np.asarray(t.tile_view([0, 1]))
     assert np.array_equal(arr2, seed)
 

@@ -5,8 +5,8 @@
 
 """End-to-end coverage for the einsums.graph Python bindings.
 
-Exercises the capture → optimize → execute workflow that Phases C.17–C.19
-opened up: graph construction via ``with cg.capture(g):``, optimization via
+Exercises the capture → optimize → execute workflow that Phases C.17 through
+C.19 opened up: graph construction via ``with cg.capture(g):``, optimization via
 ``cg.default_pass_manager()``, and execution against each of the bound
 backends (Sequential, OpenMP, Dataflow). Each test cross-checks numerical
 results against numpy as the source of truth.
@@ -308,7 +308,7 @@ def test_workspace_lifecycle():
     ],
 )
 def test_workspace_declare_tensor_dispatches_on_dtype(dtype, expected_class):
-    """Member-template dtype dispatcher (C.21) — same Python name, dtype kwarg."""
+    """Member-template dtype dispatcher (C.21), same Python name, dtype kwarg."""
     ws = cg.Workspace("scratch")
     t = ws.declare_tensor("t", [3, 4], dtype=dtype)
     assert type(t).__name__ == expected_class

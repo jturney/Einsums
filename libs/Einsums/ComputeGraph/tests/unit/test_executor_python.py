@@ -12,11 +12,11 @@ same numerical result. The cross-backend check is what catches
 threading/dependency bugs that a single-backend test would miss.
 
 Execution edge cases covered:
-  * Empty graph — all backends should accept and run cleanly.
-  * Single-node graph — minimal viable execution.
-  * Diamond DAG — two parallel branches feeding a common consumer.
-  * Wide fan-out — one input feeding many independent consumers.
-  * Replay — re-executing the same graph picks up updated tensor data.
+  * Empty graph: all backends should accept and run cleanly.
+  * Single-node graph: minimal viable execution.
+  * Diamond DAG: two parallel branches feeding a common consumer.
+  * Wide fan-out: one input feeding many independent consumers.
+  * Replay: re-executing the same graph picks up updated tensor data.
 """
 
 from __future__ import annotations
@@ -198,7 +198,7 @@ def test_three_backends_agree_on_chain():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Dataflow memory budget — Phase C.19 binding.
+# Dataflow memory budget, Phase C.19 binding.
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -212,7 +212,7 @@ def test_dataflow_memory_budget_setter_and_getter():
 
 
 def test_dataflow_with_budget_runs_successfully():
-    """The budget shouldn't cap correctness — only scheduling."""
+    """The budget shouldn't cap correctness, only scheduling."""
     A = einsums.create_random_tensor("A", [4, 4])
     B = einsums.create_random_tensor("B", [4, 4])
     C = einsums.create_zero_tensor("C", [4, 4])
@@ -230,7 +230,7 @@ def test_dataflow_with_budget_runs_successfully():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Python callbacks under parallel executors — GIL regression.
+# Python callbacks under parallel executors, GIL regression.
 #
 # element_transform invokes a Python callable per element. On a parallel
 # executor that callback runs on a worker thread and re-acquires the GIL. If
@@ -256,7 +256,7 @@ def test_python_callback_under_executor_does_not_deadlock(ExecCls):
 
 
 def test_python_callback_among_parallel_nodes():
-    """A Python-callback node sharing a dependency level with BLAS nodes — the
+    """A Python-callback node sharing a dependency level with BLAS nodes, the
     exact shape (independent element_transform + gemm) that wedged the parallel
     executors before the GIL release was added to execute()."""
     A = einsums.create_random_tensor("A", [4, 4])

@@ -4,13 +4,13 @@
 #----------------------------------------------------------------------------------------------
 
 """Runtime check: Matrix.to_einsums_tiled() exposes a symmetry-blocked psi4
-Matrix as an einsums TiledRuntimeTensor that ALIASES the irrep blocks (zero-copy
-— block h maps to tile (h, h^symmetry)).
+Matrix as an einsums TiledRuntimeTensor that aliases the irrep blocks zero-copy,
+mapping block h to tile (h, h^symmetry).
 
 Verifies two things for the SO overlap/kinetic/potential matrices:
   1. each tile equals the corresponding per-irrep block, and
-  2. the tile and the Matrix share storage — mutating the Matrix block shows
-     through the tile (no copy was made).
+  2. the tile and the Matrix share storage: mutating the Matrix block shows
+     through the tile, since no copy was made.
 
 Run with einsums + psi4 on PYTHONPATH. Importing einsums first registers the
 TiledRuntimeTensorD pybind type so psi4 can hand one back.

@@ -9,14 +9,14 @@ Covers the thin attribute layer installed by ``_patch_numpy_ergonomics``
 in ``einsums/__init__.py`` (the May 2026 "Tier 1 + capture-aware matmul"
 pass):
 
-  * ``.shape`` / ``.ndim`` / ``.dtype`` / ``len()`` — read-only,
+  * ``.shape`` / ``.ndim`` / ``.dtype`` / ``len()``: read-only,
     consistent across ranks and dtypes, and present on views too.
-  * ``.T`` — zero-copy reversed-axis view (the C++ ``transpose_view``),
+  * ``.T``: zero-copy reversed-axis view (the C++ ``transpose_view``),
     matching ``numpy``'s transpose.
-  * ``__array__`` — ``np.array(t)`` / ``np.asarray(t)`` honor dtype and
+  * ``__array__``: ``np.array(t)`` / ``np.asarray(t)`` honor dtype and
     copy semantics.
-  * ``__matmul__`` — ``A @ B`` dispatches to ``einsums.linalg.gemm``
-    (NOT numpy), both eager and recorded into a ``cg.capture`` graph,
+  * ``__matmul__``: ``A @ B`` dispatches to ``einsums.linalg.gemm``
+    rather than numpy, both eager and recorded into a ``cg.capture`` graph,
     with shape/dtype/rank guards that keep the op on Einsums.
 """
 
@@ -283,7 +283,7 @@ def test_matmul_eager_matches_numpy(dtype):
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
 def test_matmul_with_view_operand(dtype):
-    """A.T @ A uses a view on the left — gemm handles it eagerly."""
+    """A.T @ A uses a view on the left, gemm handles it eagerly."""
     A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
     C = A.T @ A
     assert C.shape == (4, 4)
@@ -469,7 +469,7 @@ def test_dropped_view_matvec_repeated():
     """Deterministic guard for the noncontiguous-gemv OpenMP data race.
 
     ``R[0]`` of a column-major (2,3,4) tensor is a (3,4) view with strides
-    {2,6} — neither unit — so gemv takes impl_gemv_noncontiguous, which runs
+    {2,6}, neither unit, so gemv takes impl_gemv_noncontiguous, which runs
     multithreaded on the main thread under capture execution. The old
     ``collapse(2)`` parallelized over (link, target) and raced on the shared
     ``Y[target] += ...`` accumulation, intermittently dropping a contribution
@@ -642,7 +642,7 @@ def test_add_rejects_numpy_rhs():
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
 def test_elementwise_div_matches_numpy(dtype):
     """``A / B`` (both tensors) is element-wise (Hadamard) division, like numpy
-    — backed by linalg.direct_division. Was previously unsupported."""
+   , backed by linalg.direct_division. Was previously unsupported."""
     A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
     B = einsums.create_random_tensor("B", [3, 4], dtype=dtype)
     np.asarray(B)[...] += 2.0  # keep the denominator away from zero
@@ -780,7 +780,7 @@ def test_constructor_inside_capture_is_graph_owned():
 
 # ──────────────────────────────────────────────────────────────────────────
 # Stub verification: the runtime-patched ergonomics layer is monkey-patched
-# onto the bound classes, so it can't be auto-stubbed from the C++ AST — it's
+# onto the bound classes, so it can't be auto-stubbed from the C++ AST, it's
 # injected by tools/einsums-pybind/scripts/aggregate_stubs.py. These tests
 # guard against that injection silently breaking (verified end-to-end with
 # pyright: 0 errors resolving t.shape / t @ t / t.sum() / einsums.zeros, ...).
@@ -799,7 +799,7 @@ _HAS_STUBS = (_stub_dir() / "_core.pyi").is_file()
 _skip_no_stubs = pytest.mark.skipif(not _HAS_STUBS, reason="stubs not generated (build PyEinsumsStubs)")
 
 # Ergonomics members (monkey-patched at runtime) that must appear in the
-# generated tensor-class stubs — keep in sync with _patch_numpy_ergonomics.
+# generated tensor-class stubs, keep in sync with _patch_numpy_ergonomics.
 _ERGONOMICS_METHODS = (
     "shape", "ndim", "dtype", "T", "__len__", "__repr__", "__array__",
     "__getitem__", "__setitem__", "transpose", "swapaxes", "copy",

@@ -6,9 +6,9 @@
 """Numpy ↔ RuntimeTensor interop coverage.
 
 Goes deeper than test_runtime_tensor_python.py's smoke checks:
-  * np.asarray returns a live view — mutations on the numpy side are
+  * np.asarray returns a live view, mutations on the numpy side are
     visible through the tensor object (and to subsequent C++ ops).
-  * np.array() makes a copy — mutations to that copy do NOT alter the
+  * np.array() makes a copy, mutations to that copy do NOT alter the
     original tensor.
   * Mutating a tensor through ``einsums.linalg.scale`` is visible to
     a previously-created np.asarray view.
@@ -146,7 +146,7 @@ def test_strides_match_column_major_for_2d():
     """Column-major: stride[0] = itemsize, stride[1] = itemsize * dim(0)."""
     t = einsums.RuntimeTensorD("s", [3, 4])
     arr = np.asarray(t)
-    # numpy strides are bytes — compare against the Einsums-side getter.
+    # numpy strides are bytes, compare against the Einsums-side getter.
     itemsize = arr.itemsize
     assert arr.strides[0] == itemsize
     assert arr.strides[1] == itemsize * 3

@@ -6,23 +6,23 @@
 """In-core conventional AO->MO transform of the exact CC integral blocks.
 
 Builds the four "exact" coupled-cluster integral classes that are kept as
-conventional (non-DF) integrals -- ``oooo``, ``ooov``, ``oovv``, ``ovov`` --
+conventional, non-DF integrals, namely ``oooo``, ``ooov``, ``oovv``, ``ovov``,
 as a single einsums ComputeGraph capture, starting from the dense AO ERIs
 ``MintsHelper.ao_eri_einsums()``.
 
 Integral strategy (see project memory project_native_cc_integral_strategy):
-DF introduces error in the final energy, so DF is reserved for ``vvvv`` (and
-``ovvv`` only under memory pressure); the cheap blocks here stay exact. All
+DF introduces error in the final energy, so DF is reserved for ``vvvv``, plus
+``ovvv`` only under memory pressure; the cheap blocks here stay exact. All
 four exact blocks have >=2 occupied indices, so contracting the large AO
-indices against occupied C-columns first collapses nbf->o early: peak
-intermediate is ``o.nbf^3`` (after the 1st quarter), ``o^2.nbf^2`` (after the
-2nd), and everything downstream is small. ``vvvv``/``ovvv`` are deliberately
-absent -- vvvv is a DF-direct sub-graph and ovvv is the exact-vs-DF toggle.
+indices against occupied C-columns first collapses nbf->o early. The peak
+intermediate is ``o.nbf^3`` after the 1st quarter and ``o^2.nbf^2`` after the
+2nd, and everything downstream is small. ``vvvv`` and ``ovvv`` are deliberately
+absent: vvvv is a DF-direct sub-graph and ovvv is the exact-vs-DF toggle.
 
-This is the *in-core* validation path: it forms the dense nbf^4 AO tensor and
-does all four quarter-transforms as graph einsums. Good to a few hundred basis
-functions -- use it to check native CC against psi4 before the scaling-path
-half-transform producer exists.
+This is the in-core validation path: it forms the dense nbf^4 AO tensor and
+does all four quarter-transforms as graph einsums. It is good to a few hundred
+basis functions, and is meant to check native CC against psi4 before the
+scaling-path half-transform producer exists.
 
 Transform tree (chemist (pq|rs); contract over the bracketed AO index):
 
@@ -35,17 +35,18 @@ Transform tree (chemist (pq|rs); contract over the bracketed AO index):
             +- l->j --> (iv|js) = H2    feeds ovov
                   +- v->a -> (ia|js) --- s->b -> (ia|jb)  ovov
 
-IMPORTANT -- intermediates are PRE-SHARED on purpose. ``(iv|ls)`` is built once
-and consumed by both H1 (v->j) and H2 (l->j); ``(ij|ks)`` feeds both oooo and
-ooov. We do *not* write each block as an independent chain and rely on the CSE
+Important: intermediates are pre-shared on purpose. ``(iv|ls)`` is built once
+and consumed by both H1 (v->j) and H2 (l->j), and ``(ij|ks)`` feeds both oooo
+and ooov. We do not write each block as an independent chain and rely on the CSE
 pass to dedup, because CSE is currently unsound when a surviving node consumes
-a folded duplicate's output: the executor runs a lambda that baked in the
+a folded duplicate's output. The executor runs a lambda that baked in the
 captured tensor refs (Node.hpp), so CSE's TensorId redirect is silently
-ignored at execution and the consumer reads a now-never-written (zero) buffer.
+ignored at execution and the consumer reads a now-never-written, zero buffer.
 See buglog bug-999. Pre-sharing sidesteps CSE entirely and is verified correct
 under all default passes.
 
-Run (Einsums build + psi4 stage on PYTHONPATH, conda-env Python)::
+Run with the Einsums build and psi4 stage on PYTHONPATH, using the conda-env
+Python::
 
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \

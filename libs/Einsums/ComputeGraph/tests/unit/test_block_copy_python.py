@@ -69,7 +69,7 @@ def test_block_copy_with_dst_offset_writes_into_subregion():
 
 @pytest.mark.parametrize("dtype", REAL_DTYPES)
 def test_block_copy_rank4_mp2_iajb_block(dtype):
-    """Extract eri_mo[:nocc, nocc:, :nocc, nocc:] — the MP2 (ia|jb) block."""
+    """Extract eri_mo[:nocc, nocc:, :nocc, nocc:], the MP2 (ia|jb) block."""
     nocc, nvirt = 3, 4
     nbf = nocc + nvirt
     eri_mo = einsums.create_random_tensor("eri_mo", [nbf, nbf, nbf, nbf], dtype=dtype)
@@ -111,7 +111,7 @@ def test_block_copy_captured_deferred_until_execute():
     with cg.capture(g):
         einsums.linalg.block_copy(C_occ, C, [0, 0], [0, 0], [4, 2])
 
-    # Recorded but not executed — destination still zero.
+    # Recorded but not executed, destination still zero.
     np.testing.assert_array_equal(np.asarray(C_occ), 0.0)
 
     g.execute()

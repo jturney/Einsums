@@ -104,7 +104,7 @@ def test_outer_sum_mp2_denominator_in_capture(dtype):
     assert g.num_tensors() == 3
     assert g.num_nodes() == 1
 
-    # Not executed yet — delta stays zero.
+    # Not executed yet, delta stays zero.
     np.testing.assert_array_equal(np.asarray(delta), 0.0)
 
     g.execute()
@@ -121,7 +121,7 @@ def test_outer_sum_mp2_denominator_in_capture(dtype):
 
 
 def test_outer_sum_and_element_transform_for_mp2():
-    """Δ then 1/Δ — the full MP2-weight pattern, graph-only."""
+    """Δ then 1/Δ, the full MP2-weight pattern, graph-only."""
     nocc, nvirt = 3, 4
     eps_o = einsums.create_random_tensor("eps_o", [nocc])
     eps_v = einsums.create_random_tensor("eps_v", [nvirt])
@@ -195,7 +195,7 @@ def test_outer_sum_no_vectors_raises():
 
 
 def test_outer_sum_OO_baseline():
-    """Cell OO — owning result, owning vectors. (Already covered by earlier tests
+    """Cell OO, owning result, owning vectors. (Already covered by earlier tests
     but listed here so the matrix is complete in one place.)"""
     a = einsums.create_random_tensor("a", [3])
     b = einsums.create_random_tensor("b", [4])
@@ -208,7 +208,7 @@ def test_outer_sum_OO_baseline():
 
 
 def test_outer_sum_OV_all_vectors_are_views():
-    """Cell OV — owning result, all vectors are views into larger tensors."""
+    """Cell OV, owning result, all vectors are views into larger tensors."""
     big_a = einsums.create_random_tensor("big_a", [10])
     big_b = einsums.create_random_tensor("big_b", [10])
     r = einsums.create_zero_tensor("r", [3, 4])
@@ -225,7 +225,7 @@ def test_outer_sum_OV_all_vectors_are_views():
 
 
 def test_outer_sum_VO_result_is_view_owning_vectors():
-    """Cell VO — view result (slab in a bigger tensor), owning vectors."""
+    """Cell VO, view result (slab in a bigger tensor), owning vectors."""
     a = einsums.create_random_tensor("a", [3])
     b = einsums.create_random_tensor("b", [4])
     big_r = einsums.create_zero_tensor("big_r", [6, 8])
@@ -242,7 +242,7 @@ def test_outer_sum_VO_result_is_view_owning_vectors():
 
 
 def test_outer_sum_VV_all_views():
-    """Cell VV — view result, all-view vectors. The MP2 denominator pattern when
+    """Cell VV, view result, all-view vectors. The MP2 denominator pattern when
     eigenvalues live in larger arrays (e.g. full eps split into occ/virt views)."""
     big_eps = einsums.create_random_tensor("big_eps", [10])
     # Make first 4 elements "occupied" (negative) and rest "virtual" (positive),

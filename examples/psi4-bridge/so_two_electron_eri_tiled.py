@@ -3,12 +3,12 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""Validate MintsHelper.so_eri_tiled() (einsums rank-4 TiledRuntimeTensor of SO
-ERIs) against psi4's own integrals.
+"""Validate MintsHelper.so_eri_tiled(), an einsums rank-4 TiledRuntimeTensor of
+SO ERIs, against psi4's own integrals.
 
 Two checks:
   1. C1 symmetry: SO basis == AO basis, so the single tile (0,0,0,0) must equal
-     ao_eri() reshaped to (nbf,nbf,nbf,nbf) — exact value/notation/index check.
+     ao_eri() reshaped to (nbf,nbf,nbf,nbf), an exact value/notation/index check.
   2. C2v (water): every materialized tile must be a symmetry-allowed irrep
      quadruple (hp^hq^hr^hs == 0), and the 8-fold permutational symmetry of
      (pq|rs) must hold within the totally-symmetric (0,0,0,0) block.

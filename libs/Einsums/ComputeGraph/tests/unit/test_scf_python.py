@@ -9,7 +9,7 @@ This promotes ``examples/scf_simulation.py`` from a runnable demo to a real
 correctness test. It's a whole-pipeline guard: a graph-optimization pass that
 silently corrupts a captured loop body (e.g. CSE merging two distinct
 mutable-output ops, or Reorder violating a loop-carried anti-dependency) makes
-the SCF diverge — which small synthetic per-pass tests can miss but these
+the SCF diverge, which small synthetic per-pass tests can miss but these
 physical reference energies catch immediately.
 
 See libs/Einsums/ComputeGraph/docs/loop_handling_audit.md.

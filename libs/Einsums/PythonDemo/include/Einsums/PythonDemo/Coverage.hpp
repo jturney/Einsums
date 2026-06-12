@@ -15,7 +15,7 @@
 
 namespace einsums::pythondemo {
 
-/// Vec3 — exercises operator binding and read-write fields.
+/// Vec3: exercises operator binding and read-write fields.
 class EINSUMS_EXPORT APIARY_EXPOSE APIARY_RENAME("Vec3") Vec3 {
   public:
     APIARY_EXPOSE Vec3();
@@ -36,9 +36,9 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_RENAME("Vec3") Vec3 {
     APIARY_EXPOSE APIARY_READONLY double z;
 };
 
-/// Resource — exercises HOLDER (shared_ptr) + RVP (reference_internal).
+/// Resource: exercises the shared_ptr HOLDER and the reference_internal RVP.
 /// The factory returns a pointer that pybind11 keeps alive via the
-/// shared_ptr holder; the borrow() method exposes the embedded child by
+/// shared_ptr holder, and the borrow() method exposes the embedded child by
 /// reference, with the parent kept alive for the borrow's lifetime.
 class EINSUMS_EXPORT APIARY_EXPOSE APIARY_RENAME("Resource") APIARY_HOLDER(std::shared_ptr) Resource {
   public:
@@ -67,7 +67,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_RENAME("Resource") APIARY_HOLDER(std::
     std::vector<Slot> _slots;
 };
 
-/// CounterError — exercises @exception. Lives in the ``demo`` submodule
+/// CounterError: exercises @exception. Lives in the ``demo`` submodule
 /// to also exercise @module.
 class EINSUMS_EXPORT APIARY_EXPOSE APIARY_EXCEPTION APIARY_MODULE("demo") CounterError : public std::runtime_error {
   public:
@@ -78,7 +78,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_EXCEPTION APIARY_MODULE("demo") Counte
 /// Lives in the ``demo`` submodule alongside its exception type.
 APIARY_EXPOSE APIARY_MODULE("demo") EINSUMS_EXPORT void raise_counter_error(std::string const &msg);
 
-/// Worker — exercises RELEASE_GIL on a long-running method.
+/// Worker: exercises RELEASE_GIL on a long-running method.
 class EINSUMS_EXPORT APIARY_EXPOSE APIARY_RENAME("Worker") Worker {
   public:
     APIARY_EXPOSE Worker();

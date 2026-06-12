@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 # ----------------------------------------------------------------------------------------------
 
-"""Coverage for cg::direct_division — element-wise (Hadamard) quotient.
+"""Coverage for cg::direct_division, element-wise (Hadamard) quotient.
 
 direct_division computes C = alpha * (A ./ B) + beta * C, the counterpart to
 direct_product. It is the fast path for amplitude denominators (1/Δ) that

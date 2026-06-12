@@ -5,9 +5,9 @@
 
 """DF-MP2 correlation energy built as an einsums ComputeGraph, then optimized.
 
-Companion to df_mp2_energy.py: same memory-optimal, pair-driven algorithm (never
-forms the O(o^2 v^2) four-index (ia|jb) — the whole point of density fitting),
-but recorded into a cg.Graph and run through the deferred path
+Companion to df_mp2_energy.py: same memory-optimal, pair-driven algorithm, which
+never forms the O(o^2 v^2) four-index (ia|jb), the whole point of density
+fitting. Here it is recorded into a cg.Graph and run through the deferred path
 capture -> optimize -> execute instead of eagerly.
 
 For each occupied pair i<=j the per-pair work is captured:
@@ -19,17 +19,18 @@ For each occupied pair i<=j the per-pair work is captured:
     e_pair = sum_ab K_ab T_ab                dot           -> 1-element tensor
     E     += (2 - d_ij) e_pair               axpby         -> accumulate into E[0]
 
-The slabs B[:, i, :] are sliced EAGERLY (integer-index slicing isn't capture-aware
-yet), then the captured ops reference those views. The default optimization passes
-run over the resulting graph (~10 nodes/pair), then it executes. Checked against
-psi4's own DF-MP2.
+The slabs B[:, i, :] are sliced eagerly, since integer-index slicing is not
+capture-aware yet, then the captured ops reference those views. The default
+optimization passes run over the resulting graph at roughly 10 nodes per pair,
+then it executes. Checked against psi4's own DF-MP2.
 
 Pass ``--show-passes`` to apply each optimization pass on its own and report
 which ones modify the graph, plus the node execution order before vs after
-optimization (for this graph the only mover is Reorder, which reschedules the
-nodes — there is no redundancy for CSE/DNE/fusion to exploit).
+optimization. For this graph the only mover is Reorder, which reschedules the
+nodes; there is no redundancy for CSE/DNE/fusion to exploit.
 
-Run (Einsums build + psi4 stage on PYTHONPATH, conda-env Python)::
+Run with the Einsums build and psi4 stage on PYTHONPATH, using the conda-env
+Python::
 
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \

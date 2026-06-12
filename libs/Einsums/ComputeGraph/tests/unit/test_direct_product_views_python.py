@@ -5,7 +5,7 @@
 
 """Exhaustive view/owning combination coverage for cg::direct_product.
 
-direct_product computes C = alpha * (A ⊙ B) + beta * C — element-wise
+direct_product computes C = alpha * (A ⊙ B) + beta * C, element-wise
 multiplication of A and B accumulated into C with prefactors. All three
 tensors must have the same shape and dtype.
 

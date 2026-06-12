@@ -5,7 +5,7 @@
 
 """Mixed-operation graph coverage on the Python side.
 
-Mirrors the C++ ``OperationsCoverage.cpp`` chain tests — multiple
+Mirrors the C++ ``OperationsCoverage.cpp`` chain tests, multiple
 operations recorded into one graph, executed once, and compared against
 a reference computed with the same ops applied eagerly. Verifies that
 data dependencies between captured nodes resolve correctly when
@@ -60,7 +60,7 @@ def test_chain_gemm_scale_axpy(ExecCls):
 
 
 def test_chain_ger_then_gemm():
-    """``C = (x outer y) @ B`` — rank-1 update feeding a gemm."""
+    """``C = (x outer y) @ B``, rank-1 update feeding a gemm."""
     x = einsums.create_random_tensor("x", [4])
     y = einsums.create_random_tensor("y", [4])
     A = einsums.create_zero_tensor("A", [4, 4])
@@ -79,7 +79,7 @@ def test_chain_ger_then_gemm():
 
 
 def test_chain_axpby_then_gemv():
-    """``y = (alpha*x + beta*y_old) doesn't apply — axpby into Y, then gemv reads Y``."""
+    """``y = (alpha*x + beta*y_old) doesn't apply, axpby into Y, then gemv reads Y``."""
     A = einsums.create_random_tensor("A", [3, 4])
     x = einsums.create_random_tensor("x", [4])
     y_init = einsums.create_random_tensor("y_init", [4])
@@ -143,7 +143,7 @@ def test_replay_chain_produces_same_result_each_run():
     g.execute()
     np.testing.assert_allclose(np.asarray(C), expected_one_run, rtol=1e-5)
 
-    # Reset C and re-execute the same graph — should land on the same result.
+    # Reset C and re-execute the same graph, should land on the same result.
     einsums.linalg.scale(0.0, C)
     assert np.all(np.asarray(C) == 0)
 

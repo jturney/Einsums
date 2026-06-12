@@ -11,8 +11,9 @@ two half-transforms that feed the exact CC blocks:
     HT_oo = bra_half(C_o, C_o)   (o, o, nbf, nbf)
     HT_ov = bra_half(C_o, C_v)   (o, v, nbf, nbf)   <- the bigger one
 
-Use --threads to compare serial vs parallel once OpenMP lands, and --basis /
---mol to scale the system. Reports wall time (best of --reps) per transform.
+Use --threads to compare serial vs parallel once OpenMP lands, and --basis or
+--mol to scale the system. Reports wall time per transform, taking the best of
+--reps runs.
 
 Run::
 
@@ -29,7 +30,7 @@ import einsums
 import einsums._core  # noqa: F401  force pybind type registration (bug-916)
 
 GEOMETRIES = {
-    # Benzene — spatially extended, so Schwarz screening has something to skip.
+    # Benzene: spatially extended, so Schwarz screening has something to skip.
     "benzene": """
         C  0.000  1.396  0.000
         C  1.209  0.698  0.000
@@ -46,7 +47,7 @@ GEOMETRIES = {
         symmetry c1
     """,
     "water": "O\nH 1 0.96\nH 1 0.96 2 104.5\nsymmetry c1\n",
-    # Four waters strung ~6 Å apart along x — spatially extended, so most
+    # Four waters strung ~6 Å apart along x: spatially extended, so most
     # cross-monomer shell-pairs are negligible and Schwarz screening bites.
     "wchain": """
         O  0.000  0.000  0.000

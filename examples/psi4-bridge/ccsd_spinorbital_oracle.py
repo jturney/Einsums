@@ -5,24 +5,26 @@
 
 """Spin-orbital CCSD reference oracle (pure numpy) for the native DF-CCSD build.
 
-This is NOT an einsums example — it is the *trusted reference* the einsums
+This is not an einsums example; it is the trusted reference that the einsums
 DF-CCSD versions (df_ccsd_numpy_style.py / df_ccsd_graph_numpy_style.py) are
 validated against. The spin-orbital Stanton-Gauss-Watts-Bartlett (1991) equations
-carry no spin-adaptation factors, so they are unambiguous to transcribe; the
-closed-shell *spin-adapted* einsums code targets the energy this produces.
+carry no spin-adaptation factors, so they are unambiguous to transcribe, and the
+closed-shell spin-adapted einsums code targets the energy this produces.
 
 Validated: cc-pVDZ water, conventional SCF, all-electron. Matches psi4
 conventional CCSD to ~1e-11:
     spin-orbital CCSD corr = -0.2134804971
     psi4 conv CCSD corr    = -0.2134804971   (MP2 = -0.2041547996, == psi4)
 
-GOTCHA baked into the equations below (cost a 2e-6 ghost while MP2 stayed exact):
-the permutation operators P(ij)/P(ab) act on DIFFERENT axes per intermediate.
-For the T2 residual T2[i,j,a,b], P(ij) is axes (0,1) and P(ab) is axes (2,3) —
-that is what P_ij/P_ab below do. But in Wmnij[m,n,i,j], P(ij) is axes (2,3); in
-Wabef[a,b,e,f], P(ab) is axes (0,1). Those two are spelled out inline.
+Gotcha baked into the equations below, which cost a 2e-6 ghost while MP2 stayed
+exact: the permutation operators P(ij)/P(ab) act on different axes per
+intermediate. For the T2 residual T2[i,j,a,b], P(ij) is axes (0,1) and P(ab) is
+axes (2,3), which is what P_ij/P_ab below do. But in Wmnij[m,n,i,j], P(ij) is
+axes (2,3); in Wabef[a,b,e,f], P(ab) is axes (0,1). Those two are spelled out
+inline.
 
-Run (psi4 stage on PYTHONPATH, conda-env Python — no einsums needed)::
+Run with the psi4 stage on PYTHONPATH, using the conda-env Python; no einsums
+needed::
 
     PYTHONPATH=/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \

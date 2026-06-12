@@ -7,24 +7,26 @@
 
 Equations: D. Crawford's ccenergy form (psi4numpy helper_ccenergy.py), validated
 in ccsd_rhf_oracle.py. This is the einsums realization, honoring two goals:
-  * INTEGRALS FROM THE BRIDGE — the 9 exact physicist blocks <pq|rs>=(pr|qs) are
+  * Integrals from the bridge. The 9 exact physicist blocks <pq|rs>=(pr|qs) are
     built from MintsHelper.mo_bra_half_transform_einsums (3 half-transforms: oo/ov/vv)
-    + a ket-finish IN EINSUMS + a chemist->physicist permute. No ao_eri.
-  * EINSUMS, NOT NUMPY — every contraction/transform is einsums (einsum specs +
-    operators + the '/' denominator + permute for the closed-shell symmetrizer);
-    numpy ONLY ingests psi4 C/eps and reads the scalar energy.
+    plus a ket-finish in einsums and a chemist->physicist permute. No ao_eri.
+  * einsums, not numpy. Every contraction and transform is einsums: einsum specs,
+    operators, the '/' denominator, and permute for the closed-shell symmetrizer.
+    numpy only ingests psi4 C/eps and reads the scalar energy.
 
-HYBRID DF: the v⁴ particle-ladder integral <ab|ef> = (ae|bf) is the only block
+Hybrid DF: the v⁴ particle-ladder integral <ab|ef> = (ae|bf) is the only block
 from density fitting, <ab|ef> = Σ_Q B^Q_ae B^Q_bf with B = J^{-1/2}(Q|vv) from
-psi4 DFTensor. The v⁴ tensor is NEVER formed — the ladder contraction splits into
-two o²v³ steps through a DF intermediate H. Zmbij = <mb|ef>·τ keeps the EXACT ov³
-ovvv block (DF that only under memory pressure). All other blocks stay exact.
+psi4 DFTensor. The v⁴ tensor is never formed; the ladder contraction splits into
+two o²v³ steps through a DF intermediate H. Zmbij = <mb|ef>·τ keeps the exact ov³
+ovvv block exact, going to DF only under memory pressure. All other blocks stay
+exact.
 
-Validated: cc-pVDZ water. The two-step factorization is exact to ~1e-13; the DF
-fit of the v⁴ block shifts the corr energy ~1.4e-4 from psi4 conv CCSD:
+Validated: cc-pVDZ water. The two-step factorization is exact to ~1e-13, and the
+DF fit of the v⁴ block shifts the corr energy ~1.4e-4 from psi4 conv CCSD:
     hybrid DF-CCSD corr ≈ -0.2136210814   (conv -0.2134804971)
 
-Run (Einsums build + psi4 stage on PYTHONPATH, conda-env Python)::
+Run with the Einsums build and psi4 stage on PYTHONPATH, using the conda-env
+Python::
 
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \
@@ -171,7 +173,7 @@ for it in range(100):
     r2 = r2 - sym(E("ijab <- imab ; jm", t2, jm, SH2, 0.5, "t2d"))
     r2 = r2 + E("ijab <- mnab ; mnij", Tau, Wmnij, SH2, 1.0, "t2e")
     # DF particle-ladder: r2 += Σ_ef Tau_ijef <ab|ef>, <ab|ef> = Σ_Q Bvv_ae Bvv_bf.
-    # Two o²v³ steps through a DF intermediate H — never forms the v⁴ tensor.
+    # Two o²v³ steps through a DF intermediate H; never forms the v⁴ tensor.
     Hdf = E("Q,a,i,j,f <- Q,a,e ; i,j,e,f", Bvv, Tau, (naux, nv, nocc, nocc, nv), 1.0, "Hdf")
     r2 = r2 + E("i,j,a,b <- Q,a,i,j,f ; Q,b,f", Hdf, Bvv, SH2, 1.0, "t2f")
     r2 = r2 - sym(E("ijab <- ma ; mbij", t1, Zmbij, SH2, 1.0, "t2g"))      # Zmbij uses v3 (ovvv)
@@ -197,7 +199,7 @@ for it in range(100):
 print(f"hybrid DF-CCSD corr (DF v⁴, exact rest) = {e_new:.10f}")
 print(f"psi4 conv CCSD corr (exact v⁴)          = {ref:.10f}")
 # Only the v⁴ block is DF (B⊗B); the two-step factorization is exact to ~1e-13, so
-# the gap from conv CCSD is the DF v⁴ approximation — small (good fit) yet nonzero.
+# the gap from conv CCSD is the DF v⁴ approximation: small from the good fit, yet nonzero.
 df_shift = abs(e_new - ref)
 print(f"DF v⁴ shift vs conv CCSD                = {df_shift:.2e}  (the v⁴-block DF approximation)")
 assert 1e-6 < df_shift < 1e-3, df_shift

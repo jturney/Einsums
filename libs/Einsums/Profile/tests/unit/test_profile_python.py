@@ -165,7 +165,7 @@ def test_export_json_round_trip(tmp_path):
     # either way it must parse.
     text = out.read_text()
     assert text
-    # The implementation writes a JSON document — accept either a list or
+    # The implementation writes a JSON document, accept either a list or
     # an object at the top level. We don't pin the schema, only that it
     # parses and mentions the recorded section name somewhere.
     assert "export" in text

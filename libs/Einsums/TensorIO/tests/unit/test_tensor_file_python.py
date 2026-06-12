@@ -6,7 +6,7 @@
 """Python unit tests for the TensorFile bindings exposed under einsums.io.
 
 The C++ tests in TensorFileBasic.cpp / TensorFileSliceWrite.cpp cover the
-wire format. These tests guard the Python surface — that the bindings
+wire format. These tests guard the Python surface, that the bindings
 load, dispatch on dtype, round-trip via numpy, and the slice overloads
 are wired up.
 """

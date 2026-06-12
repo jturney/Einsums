@@ -32,7 +32,7 @@ import einsums.graph as cg
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Cell OOO — baseline, all-owning
+# Cell OOO, baseline, all-owning
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -51,7 +51,7 @@ def test_gemm_OOO_baseline():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Cell OOV — owning A, owning B, view C (write into a sub-block of bigger C)
+# Cell OOV, owning A, owning B, view C (write into a sub-block of bigger C)
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -72,7 +72,7 @@ def test_gemm_OOV_C_is_view_into_parent():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Cell OVO — owning A, view B, owning C
+# Cell OVO, owning A, view B, owning C
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -92,7 +92,7 @@ def test_gemm_OVO_B_is_view():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Cell OVV — owning A, view B, view C
+# Cell OVV, owning A, view B, view C
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -114,7 +114,7 @@ def test_gemm_OVV_only_A_is_owning():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Cell VOO — view A, owning B, owning C
+# Cell VOO, view A, owning B, owning C
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -134,7 +134,7 @@ def test_gemm_VOO_A_is_view():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Cell VOV — view A, owning B, view C
+# Cell VOV, view A, owning B, view C
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -156,7 +156,7 @@ def test_gemm_VOV_A_and_C_are_views():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Cell VVO — view A, view B, owning C
+# Cell VVO, view A, view B, owning C
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -177,7 +177,7 @@ def test_gemm_VVO_A_and_B_are_views():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Cell VVV — all three are views
+# Cell VVV, all three are views
 # ──────────────────────────────────────────────────────────────────────────
 
 

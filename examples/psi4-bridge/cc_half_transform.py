@@ -6,21 +6,25 @@
 """Validate the integral-direct half-transform bridge against the in-core blocks.
 
 `MintsHelper.mo_bra_half_transform_einsums(C1, C2)` returns the first-half (bra)
-MO transform of the AO ERIs, integral-direct (the N^4 AO tensor is never formed):
+MO transform of the AO ERIs, computed integral-direct so the N^4 AO tensor is
+never formed:
 
     (pq|λσ) = Σ_{μν} C1[μ,p] C2[ν,q] (μν|λσ)        dense (n1, n2, nbf, nbf)
 
 Two calls produce half-transforms that feed all five exact CC blocks once the
-ComputeGraph finishes the ket (3rd/4th quarter) transform — the same back-half
-as cc_integrals_incore.py, just fed a half-transform instead of ao_eri:
+ComputeGraph finishes the ket (3rd/4th quarter) transform. This is the same
+back-half as cc_integrals_incore.py, just fed a half-transform instead of
+ao_eri:
 
     HT_oo = bra_half(C_o, C_o)  ->  oooo / ooov / oovv
     HT_ov = bra_half(C_o, C_v)  ->  ovov / ovvv
 
-This checks (1) the bridge half-transforms equal their numpy reference, and
-(2) the graph-finished blocks equal numpy (transitively, the in-core oracle).
+This checks two things: the bridge half-transforms equal their numpy reference,
+and the graph-finished blocks equal numpy, which transitively validates against
+the in-core oracle.
 
-Run (Einsums build + psi4 stage on PYTHONPATH, conda-env Python)::
+Run with the Einsums build and psi4 stage on PYTHONPATH, using the conda-env
+Python::
 
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \

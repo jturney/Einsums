@@ -180,7 +180,7 @@ def test_ger_in_graph_capture(dtype):
 
 
 def test_ger_accumulates_into_a():
-    """ger does ``A += alpha * X * Y^T`` — initial A is preserved."""
+    """ger does ``A += alpha * X * Y^T``, initial A is preserved."""
     X = einsums.create_random_tensor("X", [3])
     Y = einsums.create_random_tensor("Y", [3])
     A = einsums.create_random_tensor("A", [3, 3])

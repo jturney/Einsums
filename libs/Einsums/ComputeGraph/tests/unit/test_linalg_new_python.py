@@ -7,23 +7,23 @@
 
 Covers six C++ surfaces newly exposed under ``einsums.linalg``:
 
-  * ``norm``           — Norm enum routing (MAXABS / ONE / INFTY / FROBENIUS / TWO)
+  * ``norm``: Norm enum routing (MAXABS / ONE / INFTY / FROBENIUS / TWO)
                          against ``np.linalg.norm``.
-  * ``pow``            — symmetric positive-definite ``A^alpha`` against ``A @ A``.
-  * ``symm_gemm``      — ``B^T A B`` and the three transpose variants in both eager
-                         and captured-then-executed forms (it's the only op of the
-                         set that records into a graph).
-  * ``svd_dd``         — divide-and-conquer SVD reconstructing ``A`` from
+  * ``pow``: symmetric positive-definite ``A^alpha`` against ``A @ A``.
+  * ``symm_gemm``: ``B^T A B`` and the three transpose variants in both eager
+                         and captured-then-executed forms. It is the only op of
+                         the set that records into a graph.
+  * ``svd_dd``: divide-and-conquer SVD reconstructing ``A`` from
                          ``U * Sigma * Vt``.
-  * ``truncated_svd``  — top-k singular values vs ``np.linalg.svd`` plus the
+  * ``truncated_svd``: top-k singular values vs ``np.linalg.svd`` plus the
                          documented ``m >= k + 5`` precondition surfacing as
                          ``IndexError``.
-  * ``truncated_syev`` — randomized top-k eigvals against ``np.linalg.eigvalsh``
-                         (with a loose ballpark tolerance — the algorithm is
-                         approximate by design).
+  * ``truncated_syev``: randomized top-k eigvals against ``np.linalg.eigvalsh``,
+                         with a loose ballpark tolerance, since the algorithm is
+                         approximate by design.
 
 The Norm and Vectors enums get round-trip checks too so the LinearAlgebra
-side of the binding (PYBIND opt-in + EINSUMS_PYBIND_EXPOSE on the enums)
+side of the binding (PYBIND opt-in plus EINSUMS_PYBIND_EXPOSE on the enums)
 doesn't regress silently.
 """
 
@@ -65,7 +65,7 @@ def test_norm_frobenius_matrix(dtype):
     got = einsums.linalg.norm(einsums.linalg.Norm.FROBENIUS, A)
     expected = np.linalg.norm(np.asarray(A), "fro")
     # Mac Accelerate's complex128 dznrm2 path accumulates wider rounding than
-    # Linux OpenBLAS / MKL — observed ~1.3e-9 relative on macOS CI vs <1e-15
+    # Linux OpenBLAS / MKL, observed ~1.3e-9 relative on macOS CI vs <1e-15
     # on Linux. Match the spectral-norm test's pattern: 1e-5 for f32/c64,
     # 1e-8 for f64/c128 (still tight enough to catch real bugs).
     assert_close(got, expected, rtol=1e-5 if dtype.endswith("32") else 1e-8)
@@ -99,11 +99,11 @@ def test_norm_maxabs_matrix(dtype):
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
 def test_norm_two_matrix(dtype):
-    """Spectral norm — largest singular value."""
+    """Spectral norm, largest singular value."""
     A = einsums.create_random_tensor("A", [4, 4], dtype=dtype)
     got = einsums.linalg.norm(einsums.linalg.Norm.TWO, A)
     expected = np.linalg.norm(np.asarray(A), 2)
-    # Spectral norm goes through SVD — loosen the f32 tolerance a touch.
+    # Spectral norm goes through SVD, loosen the f32 tolerance a touch.
     assert_close(got, expected, rtol=1e-5 if dtype.endswith("32") else 1e-12)
 
 
@@ -141,7 +141,7 @@ def test_pow_square_recovers_matmul(dtype):
     got = einsums.linalg.pow(Araw, np_dtype.type(2.0))
     expected = A_spd @ A_spd
     # Mac Accelerate's float32 SGEMM accumulates wider rounding than Linux
-    # OpenBLAS / MKL — observed ~2.5e-5 relative on macOS CI vs <1e-6 on Linux.
+    # OpenBLAS / MKL, observed ~2.5e-5 relative on macOS CI vs <1e-6 on Linux.
     # Default c32/f32 rtol is 1e-5; loosen to 1e-4 for this matmul-of-matmul
     # shape (still tight enough to catch real bugs).
     assert_close(got, expected, rtol=1e-4 if dtype.endswith("32") else 1e-12)
@@ -188,7 +188,7 @@ def _symm_gemm_expected(A: np.ndarray, B: np.ndarray, trans_a: bool, trans_b: bo
     opA = A.T if trans_a else A
     opB = B.T if trans_b else B
     temp = opA @ opB
-    # The C++ kernel uses gemm<!TransB, false>(B, temp, ...) — i.e. it transposes
+    # The C++ kernel uses gemm<!TransB, false>(B, temp, ...), i.e. it transposes
     # B again when TransB is False, leaving it as-is when TransB is True. That's
     # B^T * temp when TransB=False, and B * temp when TransB=True.
     left = B.T if not trans_b else B
@@ -288,7 +288,7 @@ def test_svd_dd_throws_on_rank_mismatch():
 def test_truncated_svd_top_k_matches_numpy(dtype):
     """Top-k singular values are in the right ballpark vs a full numpy SVD.
 
-    Randomized algorithm with over-sampling factor 5 — accuracy scales with
+    Randomized algorithm with over-sampling factor 5, accuracy scales with
     ``(m / (k + 5))``, so the larger the matrix relative to ``k``, the
     tighter the bound. Even at ``m / (k+5) = 4`` (our setup) the worst-case
     relative error is a few percent. We assert order-of-magnitude agreement
@@ -300,7 +300,7 @@ def test_truncated_svd_top_k_matches_numpy(dtype):
     got = sorted(np.asarray(S), reverse=True)[:k]
     expected = sorted(np.linalg.svd(np.asarray(A), compute_uv=False), reverse=True)[:k]
     # 25% is loose for f64 but accommodates f32 + the randomized algorithm's
-    # spread — the goal here is a sanity check that the binding produces
+    # spread, the goal here is a sanity check that the binding produces
     # values in the right neighborhood, not a numerical accuracy gate.
     for g, e in zip(got, expected):
         assert abs(g - e) / max(abs(e), 1e-6) < 0.25, f"top-k singular value {g} too far from {e}"
@@ -332,7 +332,7 @@ def test_truncated_syev_runs_and_returns_finite(dtype):
     """The randomized algorithm completes and returns finite real values.
 
     Matches the C++ ``truncated_svd_test`` precedent in
-    ``LinearAlgebra/tests/unit/Decomposition.cpp`` — that test only asserts
+    ``LinearAlgebra/tests/unit/Decomposition.cpp``, that test only asserts
     the call doesn't crash. Numerical accuracy of the randomized
     projection is not guaranteed strongly enough to gate on here; we just
     sanity-check the output isn't NaN/Inf and isn't grossly out of scale
@@ -347,7 +347,7 @@ def test_truncated_syev_runs_and_returns_finite(dtype):
     got = np.asarray(W)
     assert np.all(np.isfinite(got)), "truncated_syev returned non-finite eigenvalues"
     spectral_radius = np.max(np.abs(np.linalg.eigvalsh(A_sym)))
-    assert np.max(np.abs(got)) <= 2.0 * spectral_radius, "returned eigvals exceed twice the spectral radius — likely garbage"
+    assert np.max(np.abs(got)) <= 2.0 * spectral_radius, "returned eigvals exceed twice the spectral radius, likely garbage"
 
 
 def test_truncated_syev_undersized_input_raises():
