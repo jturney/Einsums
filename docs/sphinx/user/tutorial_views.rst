@@ -98,8 +98,8 @@ Views work seamlessly with ``einsum``:
 Strides
 =======
 
-Views track strides automatically. A contiguous matrix has ``stride(1) == 1``
-(column-major innermost), but a view may have larger strides:
+Views track strides automatically. A contiguous matrix has ``stride(1) == 1``,
+since the last dimension is innermost, but a view may have larger strides:
 
 .. code-block:: cpp
 

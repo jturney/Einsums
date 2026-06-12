@@ -93,7 +93,7 @@ Names should follow these conventions.
 Order of Things
 ^^^^^^^^^^^^^^^
 
-* *cv* keywords should never come before the pointer or reference type they modify. As an example,
+* ``cv`` keywords should never come before the pointer or reference type they modify. As an example,
   
   * :code:`std::string const &name`, not :code:`const std::string &name`.
   * However, :code:`const size_t size` is allowed, but :code:`size_t const size` is preferred.
@@ -217,30 +217,30 @@ Hook Summary
 
 The following hooks are configured in ``.pre-commit-config.yaml``:
 
-**C++ formatting**
+C++ formatting
+^^^^^^^^^^^^^^
 
-- **Hook**: ``clang-format`` (`v16.0.6 <https://github.com/pre-commit/mirrors-clang-format>`_)
-- **Files checked**: ``.cpp``, ``.hpp``
-- **Config**: Uses project’s ``.clang-format`` style
-- **Purpose**: Ensures consistent formatting of C++ source and header files.
+:Hook: ``clang-format`` (`v16.0.6 <https://github.com/pre-commit/mirrors-clang-format>`_)
+:Files checked: ``.cpp``, ``.hpp``
+:Config: Uses the project's ``.clang-format`` style.
+:Purpose: Ensures consistent formatting of C++ source and header files.
 
-**CMake formatting**
+CMake formatting
+^^^^^^^^^^^^^^^^
 
-- **Hook**: ``cmake-format`` (`v0.6.10 <https://github.com/cheshirekow/cmake-format-precommit>`_)
-- **Files checked**: ``CMakeLists.txt``, ``*.cmake``
-- **Purpose**: Applies consistent formatting to all CMake files.
+:Hook: ``cmake-format`` (`v0.6.10 <https://github.com/cheshirekow/cmake-format-precommit>`_)
+:Files checked: ``CMakeLists.txt``, ``*.cmake``
+:Purpose: Applies consistent formatting to all CMake files.
 
-**License header checks**
+License header checks
+^^^^^^^^^^^^^^^^^^^^^
 
-- **Hook**: ``insert-license`` (`v1.5.4 <https://github.com/Lucas-C/pre-commit-hooks>`_)
-- **Files checked**:
-  - C++: ``.cpp``, ``.hpp`` (C++-style comments)
-  - CMake: ``CMakeLists.txt``, ``*.cmake`` (hash comments)
-  - Python: ``.py`` (hash comments)
-- **License template**: ``devtools/LicenseHeader.txt``
-- **Purpose**: Verifies that all relevant files begin with a consistent license header.
+:Hook: ``insert-license`` (`v1.5.4 <https://github.com/Lucas-C/pre-commit-hooks>`_)
+:Files checked: C++ ``.cpp`` and ``.hpp`` with C++-style comments, CMake ``CMakeLists.txt`` and ``*.cmake`` with hash comments, and Python ``.py`` with hash comments.
+:License template: ``devtools/LicenseHeader.txt``
+:Purpose: Verifies that all relevant files begin with a consistent license header.
 
-All hooks are configured to **exclude build directories** such as ``build/`` and ``cmake-build-*`` automatically.
+All hooks automatically exclude build directories such as ``build/`` and ``cmake-build-*``.
 
 Updating Hooks
 --------------
@@ -266,7 +266,7 @@ If you encounter caching or hook resolution issues, you can clear the cache:
 Troubleshooting
 ---------------
 
-**Common tasks**:
+Common tasks:
 
 - Run a specific hook manually:
 
@@ -274,7 +274,7 @@ Troubleshooting
 
      pre-commit run clang-format --all-files
 
-- Temporarily skip hooks (not recommended unless necessary):
+- Temporarily skip hooks, which is not recommended unless necessary:
 
   .. code-block:: bash
 

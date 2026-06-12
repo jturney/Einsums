@@ -83,9 +83,9 @@ like this
     B.dims();  // --> Dims{1, 6 }
 
 If you are not familiar with this style, it's very easy to understand.
-If you see do not see ``-->``, you're looking at the **input**, or the code that
-you would type. Everything that is comment and has ``-->`` in front of it is potential
-**output** or a representation of what you should expect.  The lines with
+If you do not see ``-->``, you're looking at the input, the code that
+you would type. Everything that is a comment and has ``-->`` in front of it is potential
+output, or a representation of what you should expect.  The lines with
 ``-->`` should not be copied into your code and will cause a compile error
 if types or pasted into your code.
 

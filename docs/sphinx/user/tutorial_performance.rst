@@ -19,16 +19,15 @@ How Einsum Dispatch Works
 When you call ``einsum()``, Einsums analyzes the index pattern at compile time
 and selects the fastest algorithm:
 
-1. **BLAS specialization** (direct hardware-optimized calls):
+1. BLAS specialization makes direct hardware-optimized calls:
 
-   - ``DOT``: :math:`c = \sum_i A_i B_i` (rank-0 output)
-   - ``GER``: :math:`C_{ij} = \alpha x_i y_j` (outer product)
-   - ``GEMV``: :math:`y_i = \sum_j A_{ij} x_j` (matrix-vector)
-   - ``GEMM``: :math:`C_{ij} = \sum_k A_{ik} B_{kj}` (matrix-matrix)
+   - ``DOT`` for the rank-0 output :math:`c = \sum_i A_i B_i`
+   - ``GER`` for the outer product :math:`C_{ij} = \alpha x_i y_j`
+   - ``GEMV`` for the matrix-vector product :math:`y_i = \sum_j A_{ij} x_j`
+   - ``GEMM`` for the matrix-matrix product :math:`C_{ij} = \sum_k A_{ik} B_{kj}`
 
-2. **PackedGemm** (BLIS-style cache-blocked packing):
-
-   Used for higher-rank contractions that can be flattened to GEMM:
+2. PackedGemm applies BLIS-style cache-blocked packing. It handles higher-rank
+   contractions that can be flattened to GEMM:
 
    - Multi-K: :math:`C_{il} = \sum_{jk} A_{ijk} B_{jkl}`
    - Multi-M: :math:`C_{ijl} = \sum_k A_{ijk} B_{kl}`
@@ -36,10 +35,9 @@ and selects the fastest algorithm:
    - Batch: :math:`C_{bij} = \sum_k A_{bik} B_{bkj}`
    - Combinations of the above
 
-3. **Generic algorithm** (nested loops):
-
-   Fallback for patterns that don't map to GEMM (e.g., Hadamard products
-   with repeated indices like :math:`C_i = A_{ii} B_{ii}`).
+3. The generic algorithm uses nested loops. It is the fallback for patterns that
+   don't map to GEMM, such as Hadamard products with repeated indices like
+   :math:`C_i = A_{ii} B_{ii}`.
 
 The dispatch is automatic. You would write the same ``einsum()`` call regardless.
 The profiler tells you which path was taken.
@@ -86,11 +84,11 @@ Connect the imgui profile viewer for real-time visualization:
 
 The viewer provides:
 
-- **Tree view**: Hierarchical timing breakdown
-- **Flame graph**: Visual call-stack proportions
-- **Hotspots**: Flat list sorted by exclusive time
-- **Gantt chart**: Timeline of events
-- **Compute Graph**: Interactive DAG of captured graph nodes (View > Compute Graph)
+- Tree view: hierarchical timing breakdown.
+- Flame graph: visual call-stack proportions.
+- Hotspots: flat list sorted by exclusive time.
+- Gantt chart: timeline of events.
+- Compute Graph: interactive DAG of captured graph nodes, under View > Compute Graph.
 
 Custom Profiling Regions
 ------------------------
@@ -215,18 +213,18 @@ simple GEMM. It works by:
 
 This is much faster than the generic nested-loop algorithm because:
 
-- Data is laid out for optimal cache reuse (L1/L2/L3 blocking)
-- BLAS GEMM is heavily optimized by the vendor (SIMD, unrolling)
-- Packing cost is amortized over the GEMM computation
+- Data is laid out for optimal cache reuse through L1/L2/L3 blocking.
+- BLAS GEMM is heavily optimized by the vendor with SIMD and loop unrolling.
+- Packing cost is amortized over the GEMM computation.
 
 PackedGemm handles:
 
-- **Single M/N/K**: Standard GEMM (often dispatched to direct BLAS instead)
-- **Multi-K**: :math:`C_{il} = \sum_{jk} A_{ijk} B_{jkl}` -- flattens K dims
-- **Multi-M**: :math:`C_{ijl} = \sum_k A_{ijk} B_{kl}` -- flattens M dims
-- **Multi-N**: :math:`C_{ijl} = \sum_k A_{ik} B_{kjl}` -- flattens N dims
-- **Batch**: :math:`C_{bij} = \sum_k A_{bik} B_{bkj}` -- batch GEMM (parallel)
-- **Any combination** of the above
+- Single M/N/K: standard GEMM, often dispatched to direct BLAS instead.
+- Multi-K: :math:`C_{il} = \sum_{jk} A_{ijk} B_{jkl}`, flattening the K dims.
+- Multi-M: :math:`C_{ijl} = \sum_k A_{ijk} B_{kl}`, flattening the M dims.
+- Multi-N: :math:`C_{ijl} = \sum_k A_{ik} B_{kjl}`, flattening the N dims.
+- Batch: :math:`C_{bij} = \sum_k A_{bik} B_{bkj}`, a parallel batch GEMM.
+- Any combination of the above.
 
 For batch contractions, PackedGemm uses ``gemm_batch`` which runs all
 batch slices in parallel via OpenMP. This is much faster than the serial
@@ -279,55 +277,55 @@ match wins.
      - Handles
      - Skips to next when
    * - 1
-     - **DOT** (``sdot``/``ddot``)
-     - :math:`c = \sum_i A_i B_i` — scalar result, A and B have identical
+     - ``DOT`` (``sdot``/``ddot``)
+     - :math:`c = \sum_i A_i B_i`: scalar result, A and B have identical
        index packs
      - Output is not scalar, or indices differ
    * - 2
-     - **DIRECT** (element-wise)
-     - :math:`C_{ij} = A_{ij} B_{ij}` — all three index packs identical,
+     - ``DIRECT`` (element-wise)
+     - :math:`C_{ij} = A_{ij} B_{ij}`: all three index packs identical,
        no conjugation
      - Index packs don't all match
    * - 3
-     - **GER** (outer product)
-     - :math:`C_{ij} = \alpha x_i y_j` — no link indices, indices in A and B
+     - ``GER`` (outer product)
+     - :math:`C_{ij} = \alpha x_i y_j`: no link indices, indices in A and B
        are contiguous subsets of C's indices
      - Link indices exist, or A/B indices are not contiguous in C
    * - 4
-     - **GEMV** (matrix-vector)
-     - :math:`y_i = \sum_j A_{ij} x_j` — one rank-2 operand, one rank-1
+     - ``GEMV`` (matrix-vector)
+     - :math:`y_i = \sum_j A_{ij} x_j`: one rank-2 operand, one rank-1
        operand, one link index, result is rank-1
      - Ranks don't match the GEMV pattern
    * - 5
-     - **GEMM** (direct BLAS)
-     - :math:`C_{ij} = \sum_k A_{ik} B_{kj}` — all rank-2, single M/N/K,
+     - ``GEMM`` (direct BLAS)
+     - :math:`C_{ij} = \sum_k A_{ik} B_{kj}`: all rank-2, single M/N/K,
        contiguous stride-1 layout
      - Ranks > 2, or non-contiguous layout, or multi-M/N/K
    * - 6
-     - **SORT_GEMM** (permute + BLAS)
-     - Same structural requirements as GEMM (clean M/N/K decomposition) but
-       indices are scrambled.  Transposes tensors via HPTT, then dispatches to
+     - ``SORT_GEMM`` (permute + BLAS)
+     - Same structural requirements as GEMM, namely a clean M/N/K decomposition,
+       but the indices are scrambled.  Transposes tensors via HPTT, then dispatches to
        GEMM.
      - No clean M/N/K decomposition exists, or Hadamard indices present
    * - 7
-     - **PACKED_GEMM** (BLIS-style)
+     - ``PACKED_GEMM`` (BLIS-style)
      - Higher-rank contractions with a valid M/N/K decomposition: multi-M,
        multi-N, multi-K, batch dims, and any combination.  Handles arbitrary
-       rank as long as every C index classifies as M-only (from A), N-only
-       (from B), or batch (from both).
-     - m_count=0 or n_count=0 (no M or N dims), no link indices, or
+       rank as long as every C index classifies as M-only from A, N-only
+       from B, or batch from both.
+     - m_count=0 or n_count=0, meaning no M or N dims, no link indices, or
        single-M/N with non-stride-1 C layout
    * - 8
-     - **GENERIC** (nested loops)
-     - Everything else.  Correct but slow — O(product of all dim sizes) with
+     - ``GENERIC`` (nested loops)
+     - Everything else.  Correct but slow: O(product of all dim sizes) with
        no BLAS acceleration.
-     - *(final fallback)*
+     - Final fallback.
 
 Contractions NOT Accelerated (GENERIC Fallback)
 -----------------------------------------------
 
 The following contraction patterns currently fall through to the generic
-nested-loop algorithm.  They are **correct** but not BLAS-accelerated:
+nested-loop algorithm.  They are correct but not BLAS-accelerated:
 
 Hadamard contractions with reduction
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -337,7 +335,7 @@ An index appears in all three tensors AND there is a separate link index:
 .. code-block:: text
 
     C(i) = A(i,j) * B(j,i)    # i is Hadamard, j is link
-                                # No clean M/N split — i is in both A and B
+                                # No clean M/N split: i is in both A and B
 
 This is NOT the same as the batch case ``C(b,i,j) = A(b,i,k) * B(b,k,j)``
 which IS accelerated.  The difference: in the batch case, the remaining
@@ -400,14 +398,14 @@ How to Tell What Path Your Code Takes
 
 Three ways to identify the dispatch path:
 
-1. **Log warnings** (easiest): Run with default log level.  Any GENERIC
+1. Log warnings are the easiest. Run with the default log level, and any GENERIC
    fallback emits a one-time warning per unique contraction pattern.
 
-2. **Profiler annotations**: In the profiler tree/flame view, each ``einsum``
+2. Profiler annotations: in the profiler tree/flame view, each ``einsum``
    zone has an ``algorithm`` annotation showing ``DOT``, ``GEMM``,
    ``PACKED_GEMM``, ``SORT_GEMM``, or ``GENERIC``.
 
-3. **Algorithm choice output parameter**: For programmatic checking:
+3. The algorithm-choice output parameter lets you check programmatically:
 
    .. code-block:: cpp
 

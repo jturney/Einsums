@@ -84,9 +84,9 @@ following at instantiation time:
 
 1. Extracts the index letters from each operand (``i, j`` on ``C``,
    ``i, k`` on ``A``, ``k, j`` on ``B``).
-2. Classifies them into groups: target-only-in-``A`` (the **M** axes),
-   target-only-in-``B`` (the **N** axes), shared link (the **K** axes),
-   and shared target (**batch** axes).
+2. Classifies them into groups: the ``M`` axes appear only in the target and
+   ``A``, the ``N`` axes appear only in the target and ``B``, the ``K`` axes
+   are shared links, and the batch axes are shared targets.
 3. Tries each available backend in order of specialization:
 
    * Vendor BLAS if the pattern matches a pure ``gemm``,
@@ -104,8 +104,8 @@ For the example above the dispatcher sees ``ij = ik * kj`` and matches a
 pure ``dgemm``. The emitted code is one ``cblas_dgemm`` call plus the
 strided-data setup with no extra abstraction overhead.
 
-When the dispatcher can't match a stock BLAS shape — say,
-``ijl = ik * kjl`` — it falls back to PackedGemm. PackedGemm's
+When the dispatcher can't match a stock BLAS shape, for example
+``ijl = ik * kjl``, it falls back to PackedGemm. PackedGemm's
 :code:`PackingPlan` records the strides of each ``M / N / K / batch``
 group, packs the inputs into contiguous ``MC × KC`` and ``KC × NC``
 tiles tuned to the local cache hierarchy, and calls vendor ``gemm`` per
@@ -129,17 +129,17 @@ but the passes are tensor-algebra aware and integrate with the
 
 Two execution modes coexist:
 
-* **Eager**: every call dispatches and runs immediately. Simple, perfect
-  for ad-hoc work and tutorials. This is what every example in the
+* In eager mode, every call dispatches and runs immediately. It is simple and
+  well suited to ad-hoc work and tutorials, and it is what every example in the
   beginner's guide uses.
 
-* **Deferred (graph)**: calls inside a ``capture`` block become graph
+* In deferred mode, calls inside a ``capture`` block become graph
   nodes instead of running. After capture, pass managers can rewrite the
   graph. This includes fusing adjacent operations, eliminating dead nodes, creating shared common
   intermediates, planning memory reuse, folding linear combinations of
   contractions, creating partitions for distributed execution, and scheduling
   communication. Then :code:`g.execute()` walks the optimized DAG with
-  whichever executor (sequential, OMP, dataflow / TaskPool) you pick.
+  whichever executor you pick: sequential, OMP, dataflow, or TaskPool.
 
 The passes that ship today include common-subexpression elimination,
 dead-node elimination, reordering for register reuse, memory planning,
@@ -161,7 +161,7 @@ flexibility and compile-time information.
 
 * :cpp:type:`einsums::Tensor` is the workhorse: rank fixed at compile
   time, scalar type fixed at compile time, owns its data, dense and
-  contiguous (column-major by default). When you write
+  contiguous, and column-major by default. When you write
   ``Tensor<double, 2> A("A", 100, 100)`` the compiler knows the rank
   and data type, so all the dispatch decisions above resolve statically.
 
@@ -257,7 +257,7 @@ A handful of CMake options gate the optional layers:
 * ``EINSUMS_WITH_MPI`` replaces ``Comm``'s mock backend with a real
   Open MPI or MPICH integration.
 * ``EINSUMS_WITH_CUDA`` / ``EINSUMS_WITH_HIP`` enable the GPU
-  backends (pending validation work).
+  backends, which are pending validation work.
 * ``EINSUMS_WITH_PROFILER`` enables the
   :ref:`Profile <modules_Einsums_Profile>` instrumentation hooks.
 * ``EINSUMS_WITH_SANITIZERS=address,leak,undefined`` /

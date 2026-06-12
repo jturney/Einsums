@@ -66,10 +66,10 @@ Creating tensors
 Einsums exposes one runtime tensor class per scalar type, named by the
 BLAS-style letter:
 
-* ``RuntimeTensorF`` — 32-bit real (``numpy.single`` / ``float32``)
-* ``RuntimeTensorD`` — 64-bit real (Python ``float`` / ``numpy.double``)
-* ``RuntimeTensorC`` — 64-bit complex (``numpy.complex64``)
-* ``RuntimeTensorZ`` — 128-bit complex (Python ``complex`` / ``numpy.complex128``)
+* ``RuntimeTensorF``: 32-bit real, matching ``numpy.single`` / ``float32``
+* ``RuntimeTensorD``: 64-bit real, matching Python ``float`` / ``numpy.double``
+* ``RuntimeTensorC``: 64-bit complex, matching ``numpy.complex64``
+* ``RuntimeTensorZ``: 128-bit complex, matching Python ``complex`` / ``numpy.complex128``
 
 plus the matching ``RuntimeTensorView{F,D,C,Z}`` view types and tiled
 variants. Extended and half precision are not provided. The usual
@@ -107,7 +107,7 @@ so ``np.asarray(t)`` is zero-copy. These are documented on the
 
 .. note::
 
-   ``@`` and the arithmetic operators stay on Einsums code paths
-   (dispatching to :py:mod:`einsums.linalg`) rather than falling through to
+   ``@`` and the arithmetic operators stay on Einsums code paths and dispatch
+   to :py:mod:`einsums.linalg` rather than falling through to
    NumPy, so they compose inside a captured :ref:`ComputeGraph
    <modules_Einsums_ComputeGraph>` workflow.

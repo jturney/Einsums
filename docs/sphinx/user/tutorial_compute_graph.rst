@@ -81,12 +81,12 @@ Available Operations
 
 All common tensor operations have graph-aware wrappers in the ``cg::`` namespace:
 
-- **Tensor algebra**: ``einsum``, ``permute``, ``transpose``, ``element_transform``
-- **BLAS**: ``gemm``, ``gemv``, ``ger``, ``dot``, ``scale``, ``axpy``, ``axpby``, ``direct_product``
-- **LAPACK**: ``syev``, ``svd``, ``qr``, ``gesv``, ``invert``, ``det``, ``pow``
+- Tensor algebra: ``einsum``, ``permute``, ``transpose``, ``element_transform``
+- BLAS: ``gemm``, ``gemv``, ``ger``, ``dot``, ``scale``, ``axpy``, ``axpby``, ``direct_product``
+- LAPACK: ``syev``, ``svd``, ``qr``, ``gesv``, ``invert``, ``det``, ``pow``
 
-Some returning-form operations (``dot``, ``det``, ``norm``, ``svd``) cannot be
-captured because they return new objects. Use them outside capture or use
+Some returning-form operations such as ``dot``, ``det``, ``norm``, and ``svd``
+cannot be captured because they return new objects. Use them outside capture or use
 alternative in-place forms.
 
 Optimization Passes
@@ -103,17 +103,28 @@ The graph can be optimized before execution:
 
 The default pipeline includes 11 passes:
 
-- **ConstantFolding** -- Pre-compute constant subexpressions
-- **ScaleAbsorption** -- Absorb ``scale`` into adjacent ``einsum`` prefactors
-- **CSE** -- Common subexpression elimination
-- **DeadNodeElimination** -- Remove unused computations
-- **LoopInvariantHoisting** -- Hoist invariant ops out of loops
-- **Reorder** -- Minimize peak memory via node reordering
-- **MemoryPlanning** -- Analyze tensor lifetime intervals
-- **ChainParenthesization** -- Optimal GEMM chain ordering
-- **InplaceOptimization** -- Reuse buffers for in-place operations
-- **GEMMBatching** -- Batch independent GEMM calls
-- **PermuteFusion** -- Fuse adjacent permute operations
+``ConstantFolding``
+    Pre-compute constant subexpressions.
+``ScaleAbsorption``
+    Absorb ``scale`` into adjacent ``einsum`` prefactors.
+``CSE``
+    Common subexpression elimination.
+``DeadNodeElimination``
+    Remove unused computations.
+``LoopInvariantHoisting``
+    Hoist invariant ops out of loops.
+``Reorder``
+    Minimize peak memory via node reordering.
+``MemoryPlanning``
+    Analyze tensor lifetime intervals.
+``ChainParenthesization``
+    Optimal GEMM chain ordering.
+``InplaceOptimization``
+    Reuse buffers for in-place operations.
+``GEMMBatching``
+    Batch independent GEMM calls.
+``PermuteFusion``
+    Fuse adjacent permute operations.
 
 You can also apply a single pass:
 
@@ -325,21 +336,21 @@ Requirements
 
 The default pass manager includes these GPU-related passes:
 
-1. **GPUPlacement** --- decides which nodes run on GPU based on a cost model
-   comparing estimated CPU time vs. GPU time + transfer overhead.
+1. ``GPUPlacement`` decides which nodes run on GPU based on a cost model
+   comparing estimated CPU time against GPU time plus transfer overhead.
 
-2. **TransferInsertion** --- adds HostToDevice / DeviceToHost nodes around GPU
-   operations. Skips H2D for "dead" inputs (e.g., ``C`` in ``C = A*B`` when
-   ``c_prefactor == 0``). Inserts final D2H for user-visible tensors left on
+2. ``TransferInsertion`` adds HostToDevice / DeviceToHost nodes around GPU
+   operations. It skips H2D for dead inputs, such as ``C`` in ``C = A*B`` when
+   ``c_prefactor == 0``, and inserts a final D2H for user-visible tensors left on
    device so the graph is self-contained.
 
-3. **TransferElimination** --- removes redundant transfers when consecutive GPU
-   nodes share a tensor. Uses Belady's optimal eviction under memory pressure.
+3. ``TransferElimination`` removes redundant transfers when consecutive GPU
+   nodes share a tensor. It uses Belady's optimal eviction under memory pressure.
 
-4. **GPUDiagnostics** --- logs GPU vs. CPU node counts, transfer bytes, and
+4. ``GPUDiagnostics`` logs GPU vs. CPU node counts, transfer bytes, and
    peak device memory.
 
-5. **StreamAssignment** --- tags transfer nodes with stream IDs for future async
+5. ``StreamAssignment`` tags transfer nodes with stream IDs for future async
    overlap.
 
 GPU Pass Control
@@ -403,7 +414,7 @@ a custom ``PassManager`` that skips ``ConstantFolding``:
 .. code-block:: cpp
 
     cg::PassManager pm;
-    // Skip ConstantFolding — let GPU handle the computation
+    // Skip ConstantFolding so the GPU handles the computation
     pm.add<cg::passes::ScaleAbsorption>();
     pm.add<cg::passes::CSE>();
     pm.add<cg::passes::DeadNodeElimination>();
@@ -433,9 +444,9 @@ Graph Visualization
 
 After applying GPU passes, ``print_dot()`` colors nodes by execution target:
 
-- **Blue** nodes run on GPU
-- **Orange** nodes are H2D/D2H transfers
-- **White** nodes run on CPU
+- Blue nodes run on GPU.
+- Orange nodes are H2D/D2H transfers.
+- White nodes run on CPU.
 
 .. code-block:: cpp
 
@@ -483,8 +494,8 @@ The graph tracks dependencies automatically: ``build_fock`` waits for
 waits for the einsum. GPU passes will keep ``DiskRead``/``DiskWrite``
 on CPU and insert appropriate transfers around GPU-placed operations.
 
-Async I/O — Overlapping Reads with Compute
-============================================
+Async I/O: Overlapping Reads with Compute
+=========================================
 
 For I/O-bound workflows, use ``cg::read_async()`` / ``cg::write_async()``
 to overlap disk I/O with independent computation. These accept three lambdas:
@@ -507,11 +518,11 @@ to overlap disk I/O with independent computation. These accept three lambdas:
             /*sync*/   [&]() { einsums::read(ERI, h5file); }
         );
 
-        // Independent computation — runs concurrently with the read
+        // Independent computation, runs concurrently with the read
         cg::einsum(0.0, Indices{i,j}, &C, 1.0,
                    Indices{i,k}, A, Indices{k,j}, B);
 
-        // Depends on ERI — waits for async read to finish
+        // Depends on ERI, waits for async read to finish
         cg::custom("build_fock", std::tie(ERI, D), std::tie(F),
             [&]() { build_fock_matrix(ERI, D, F); });
     }
@@ -554,7 +565,7 @@ append to the same file, creating a multi-session comparison:
 
 .. code-block:: bash
 
-    # Run multiple times — sessions accumulate
+    # Run multiple times; sessions accumulate
     ./program --einsums:profile:save=runs.json
     ./program --einsums:profile:save=runs.json
 
@@ -574,10 +585,10 @@ Runtime Lifecycle
 The Einsums runtime automatically calls ``finalize()`` when ``einsums::start()``
 returns. The shutdown sequence is:
 
-1. **Profiler session save** --- if ``--einsums:profile:save`` is set
-2. **Runtime destructor** --- runs pre-shutdown and shutdown functions
-3. **Profiler shutdown** --- drains all events, writes text report if enabled
-4. **Module cleanup** --- each module's finalize function runs
+1. Profiler session save, if ``--einsums:profile:save`` is set.
+2. Runtime destructor, which runs the pre-shutdown and shutdown functions.
+3. Profiler shutdown, which drains all events and writes the text report if enabled.
+4. Module cleanup, where each module's finalize function runs.
 
 No explicit ``finalize()`` call is needed. The ``Runtime`` destructor handles
 everything when the ``unique_ptr<Runtime>`` goes out of scope. Calling
@@ -595,7 +606,7 @@ Tensors are declared with their shape but no data is allocated until the
 
     cg::Workspace ws("calculation");
 
-    // No data allocated — just shape + metadata
+    // No data allocated, just shape + metadata
     auto &eri = ws.declare_tensor<double, 4>("ERI", nao, nao, nao, nao);
     auto &C   = ws.declare_zero_tensor<double, 2>("C", nao, nmo);
 
@@ -616,9 +627,9 @@ Tensors are declared with their shape but no data is allocated until the
 
 Three scoping levels:
 
-- **Workspace** — tensors shared across Pipelines (ERI, MO coefficients)
-- **Pipeline** — tensors shared across stages (Fock, density)
-- **Graph** — single-computation intermediates
+- ``Workspace`` holds tensors shared across Pipelines, such as the ERI and MO coefficients.
+- ``Pipeline`` holds tensors shared across stages, such as the Fock and density matrices.
+- ``Graph`` holds single-computation intermediates.
 
 See ``ComputeGraph/docs/workspace.rst`` for full details.
 

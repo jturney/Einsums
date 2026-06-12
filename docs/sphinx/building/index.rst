@@ -15,9 +15,9 @@ Building from source
    See :ref:`Installation Instructions <installing>` for details on that.
 
 Building Einsums from source requires setting up system-level dependencies
-(compilers, BLAS/LAPACK libraries, etc.) first, and then invoking a build. The
+such as compilers and BLAS/LAPACK libraries first, and then invoking a build. The
 build may be done in order to install Einsums for local usage, develop Einsums
-itself, or build redistributable binary packages. Any it may be desired to
+itself, or build redistributable binary packages. You may also want to
 customize aspects of how the build is done. This guide will cover all these
 aspects. In addition, it provides background information on how the Einsums build
 works.
@@ -145,9 +145,9 @@ the Einsums repository.::
 
 Then you will want to do the following:
 
-1. Create a dedicated development environment (conda environment),
-2. Install all needed dependencies (*build*, and also *test*, and *doc*
-   dependencies).
+1. Create a dedicated conda development environment.
+2. Install all needed dependencies, meaning the build, test, and doc
+   dependencies.
 3. Build Einsums.
 
 To create an ``einsums-dev`` development environment with every required and

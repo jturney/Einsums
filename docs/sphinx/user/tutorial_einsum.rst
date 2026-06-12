@@ -149,11 +149,11 @@ Dispatch and Performance
 
 Einsums automatically selects the best algorithm for each contraction:
 
-1. **BLAS specialization** (fastest): DOT, GER, GEMV, GEMM for simple patterns
-2. **PackedGemm** (fast): BLIS-style cache-blocked packing for complex patterns
-   including multi-M, multi-N, multi-K, and batch dimensions
-3. **Generic algorithm** (fallback): Nested loops for patterns that don't map to
-   BLAS (e.g., Hadamard products with repeated indices)
+1. BLAS specialization is the fastest path: DOT, GER, GEMV, and GEMM for simple patterns.
+2. PackedGemm is the next-fastest: BLIS-style cache-blocked packing for complex patterns,
+   including multi-M, multi-N, multi-K, and batch dimensions.
+3. The generic algorithm is the fallback: nested loops for patterns that don't map to
+   BLAS, such as Hadamard products with repeated indices.
 
 You don't need to think about dispatch. Einsums will try to choose the appropriate backend automatically. The
 profiler will show you which algorithm was selected (see :ref:`tutorial-performance`).

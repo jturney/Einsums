@@ -161,8 +161,8 @@ Raw passthrough
 When you need reST markup that the normalizer will not touch, like a table, a directive, or a code
 block, wrap it in one of the following:
 
-* ``@rst ... @endrst`` — emit the body as raw reStructuredText.
-* ``@code ... @endcode`` / ``@verbatim ... @endverbatim`` — a literal block.
+* ``@rst ... @endrst``: emit the body as raw reStructuredText.
+* ``@code ... @endcode`` / ``@verbatim ... @endverbatim``: a literal block.
 
 Gotchas
 ^^^^^^^
@@ -275,7 +275,7 @@ Building and checking the docs
    cmake -S . -B build -DEINSUMS_WITH_DOCUMENTATION=ON
    cmake --build build --target docs-html
 
-   # nitpicky check — every dangling reference becomes a warning
+   # nitpicky check: every dangling reference becomes a warning
    sphinx-build -b html -n build/docs/sphinx build/docs/html
 
 The ``-n`` (nitpicky) flag turns every unresolved cross-reference into a
