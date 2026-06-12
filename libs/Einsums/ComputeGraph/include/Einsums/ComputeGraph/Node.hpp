@@ -76,8 +76,8 @@ struct EinsumDescriptor {
     /// Optimization passes (PermuteFusion, future index rewriters) mutate
     /// this in place; the executor dereferences it on every call, so
     /// rewrites take effect on the next `graph.execute()`. The
-    /// `spec` field above is the at-capture snapshot — analysis passes
-    /// can read either, but rewriters must update BOTH to keep
+    /// `spec` field above is the at-capture snapshot. Analysis passes
+    /// can read either, but rewriters must update both to keep
     /// downstream analysis consistent.
     std::shared_ptr<EinsumIndices> indices;
 
@@ -129,10 +129,10 @@ struct LoopDescriptor {
  * @brief Per-axis specification for a @c View op.
  *
  * Each axis of the parent tensor maps to one of:
- * - **Full**  — keep the entire axis (the result preserves this dimension).
- * - **Range** — half-open ``[lo, hi)`` slice; the result keeps this dimension
+ * - Full: keep the entire axis (the result preserves this dimension).
+ * - Range: half-open ``[lo, hi)`` slice; the result keeps this dimension
  *               with extent ``hi - lo``.
- * - **Drop**  — pick a single index; the result loses this dimension.
+ * - Drop: pick a single index; the result loses this dimension.
  *
  * Bounds are @ref BoundExpr values, so they may be compile-time constants
  * (``0``, ``5``), references to a Pipeline parameter (``"n_occ"``), or
@@ -150,7 +150,7 @@ struct ViewAxis {
 };
 
 /**
- * @brief Metadata for @c View nodes — non-owning slice/alias of another tensor.
+ * @brief Metadata for @c View nodes, non-owning slice/alias of another tensor.
  *
  * The output tensor's ``TensorHandle::aliases`` is set to ``parent_id``.
  * Each iteration the executor resolves the per-axis @ref BoundExpr values
@@ -169,7 +169,7 @@ struct ViewDescriptor {
 };
 
 /**
- * @brief Metadata for @c WriteParam nodes — explicit dataflow write into a Pipeline parameter.
+ * @brief Metadata for @c WriteParam nodes, explicit dataflow write into a Pipeline parameter.
  *
  * Reads a scalar tensor's value (or evaluates a callback) and stores the
  * result into ``params[name]``. Makes the parameter dependency visible to
@@ -219,7 +219,7 @@ struct Node {
      *
      * This lambda captures the fully-resolved template call at capture time.
      * All template parameters (types, ranks, indices) are baked into the lambda.
-     * On execution, it simply calls the captured function — no re-dispatch needed.
+     * On execution, it simply calls the captured function, no re-dispatch needed.
      *
      * @warning The lambda captures tensor references. All referenced tensors must
      *          outlive the graph. Use Graph::create_tensor() for intermediates.

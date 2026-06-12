@@ -425,7 +425,7 @@ TEST_CASE("Distributed - embarrassingly parallel GEMM", "[ComputeGraph][Distribu
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Test 10: Allreduce case — distribute along link index K
+// Test 10: Allreduce case, distribute along link index K
 // Each rank computes a partial sum C_partial = A_local * B_local,
 // then allreduce sums partial Cs to get the correct full result.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -562,7 +562,7 @@ TEST_CASE("Distributed - automatic input slicing", "[ComputeGraph][Distributed]"
     auto C_ref = create_zero_tensor<double>("C_ref", M, N);
     tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
 
-    // Only C is deferred — A and B are pre-allocated
+    // Only C is deferred. A and B are pre-allocated
     cg::Graph graph("dist_autoslice");
     auto     &C = graph.declare_zero_tensor<double, 2>(std::string("C"), M, N);
 
@@ -623,7 +623,7 @@ TEST_CASE("Distributed - automatic input slicing", "[ComputeGraph][Distributed]"
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test 12: Higher-rank tensor contraction on 2D grid
-// C[p,q,s] = A[p,q,r] * B[r,s] — rank-3 output, rank-3 and rank-2 inputs
+// C[p,q,s] = A[p,q,r] * B[r,s], rank-3 output, rank-3 and rank-2 inputs
 // target_a = {p,q} → Row, target_b = {s} → Col, link = {r} → None
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -700,7 +700,7 @@ TEST_CASE("Distributed - rank-3 contraction on 2D grid", "[ComputeGraph][Distrib
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test 13: Batched GEMM distributes batch dimension
-// C[b,i,j] = A[b,i,k] * B[b,k,j] — batch index b is "shared" and should
+// C[b,i,j] = A[b,i,k] * B[b,k,j], batch index b is "shared" and should
 // be distributed along one grid axis.
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -808,7 +808,7 @@ TEST_CASE("Distributed - scale on distributed tensor", "[ComputeGraph][Distribut
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test 15: Chain of deferred einsums propagates distribution
-// T = A*B; C = T*D — both T and C deferred, distributions should be compatible.
+// T = A*B; C = T*D, both T and C deferred, distributions should be compatible.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TEST_CASE("Distributed - deferred chain propagates distribution", "[ComputeGraph][Distributed]") {
@@ -834,7 +834,7 @@ TEST_CASE("Distributed - deferred chain propagates distribution", "[ComputeGraph
     auto     &C = graph.declare_zero_tensor<double, 2>(std::string("C"), M, N);
 
     // Custom init for T: fill from B (T is intermediate, but we need its input data)
-    // Actually T is computed FROM A and B_full, so we don't init T — it's the output.
+    // Actually T is computed FROM A and B_full, so we don't init T, it's the output.
     // But we need B as a pre-allocated input.
 
     {
@@ -943,7 +943,7 @@ TEST_CASE("Distributed - permute with cross-axis redistribution", "[ComputeGraph
         int   pc   = grid.cols();
 
         // C[j,i] is distributed: j→Row (target for C), i→Col
-        // But wait — permute has no "target_a/target_b" classification.
+        // But wait, permute has no "target_a/target_b" classification.
         // DistributionPlanning sees C as the output of a permute node.
         // Since permute is not OpKind::Einsum, it won't be in tensor_usage.
         // C gets distributed based on its dims only (largest dim → Row).
@@ -1043,7 +1043,7 @@ TEST_CASE("Distributed - declare_tensor_filled with range/global", "[ComputeGrap
         for (size_t jj = 0; jj < N; jj++)
             ref(ii, jj) = static_cast<double>(ii * 100 + jj);
 
-    // Graph: declare_tensor_filled — the fill lambda uses range() and global()
+    // Graph: declare_tensor_filled, the fill lambda uses range() and global()
     cg::Graph graph("dist_fill");
     auto     &T = graph.declare_tensor_filled<double, 2>(std::string("T"), Dim<2>{N, N}, [](Tensor<double, 2> &t) {
         auto [i0, i1] = t.range(0);
@@ -1128,7 +1128,7 @@ TEST_CASE("Distributed - batch ERI fill + contraction", "[ComputeGraph][Distribu
     cg::Graph graph("dist_eri");
     auto     &eri = graph.declare_tensor_filled<double, 4>(
         std::string("ERI"), Dim<4>{nao, nao, nao, nao}, [nao, nshell, shell_size](Tensor<double, 4> &T) {
-            // Get local ranges — only fill shells that overlap
+            // Get local ranges, only fill shells that overlap
             auto [p0, p1] = T.range(0);
             auto [q0, q1] = T.range(1);
             auto [r0, r1] = T.range(2);
@@ -1159,7 +1159,7 @@ TEST_CASE("Distributed - batch ERI fill + contraction", "[ComputeGraph][Distribu
                             if (sl <= s0 || sf >= s1)
                                 continue;
 
-                            // "Compute" this shell quartet — only store local elements
+                            // "Compute" this shell quartet, only store local elements
                             for (size_t pp = std::max(pf, p0); pp < std::min(pl, p1); pp++)
                                 for (size_t qq = std::max(qf, q0); qq < std::min(ql, q1); qq++)
                                     for (size_t rr = std::max(rf, r0); rr < std::min(rl, r1); rr++)

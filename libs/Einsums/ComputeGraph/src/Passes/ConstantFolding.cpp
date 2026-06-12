@@ -47,7 +47,7 @@ bool ConstantFolding::run(Graph &graph) {
     }
 
     // A node may only be folded if every tensor it touches has real backing
-    // data *right now* — folding executes the node at pass time and bakes
+    // data *right now*, folding executes the node at pass time and bakes
     // the result. ConstantFolding runs before the MaterializationPass, and
     // Materialize nodes only allocate at graph-execution time, so a deferred
     // (shell) tensor has no storage during this pass. This matters
@@ -107,7 +107,7 @@ bool ConstantFolding::run(Graph &graph) {
             continue;
         }
 
-        // This node's inputs are all constant — execute it now and replace with no-op
+        // This node's inputs are all constant, execute it now and replace with no-op
         EINSUMS_LOG_INFO("ConstantFolding: folding node {} ({})", node.id, node.label);
         report(2, fmt::format("fold node {} ({}) — all inputs constant, evaluated at compile time", node.id, node.label));
         node.execute();

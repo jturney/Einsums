@@ -4,7 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 /// @file GraphRebind.cpp
-/// @brief Demonstrates graph rebind — updating tensor bindings and prefactors
+/// @brief Demonstrates graph rebind, updating tensor bindings and prefactors
 ///        without re-capturing the graph.
 ///
 /// Shows:
@@ -46,7 +46,7 @@ int einsums_main() {
         graph.execute();
         println("With A1: C[0,0] = {:.4f}", C(0, 0));
 
-        // Rebind to A2 — one line, no ID lookup needed!
+        // Rebind to A2, one line, no ID lookup needed!
         graph.rebind(A1, A2);
         C.zero();
         graph.execute();
@@ -103,7 +103,7 @@ int einsums_main() {
             cg::einsum("ik;kj->ij", &C, inputs[0], B);
         }
 
-        // Process each input by rebinding — just pass old and new tensor
+        // Process each input by rebinding, just pass old and new tensor
         for (size_t idx = 1; idx < inputs.size(); idx++) {
             graph.rebind(inputs[idx - 1], inputs[idx]);
             C.zero();

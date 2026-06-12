@@ -70,7 +70,7 @@ int einsums_main() {
     auto epsilon = create_zero_tensor<double>("epsilon", nbf);
 
     // ═════════════════════════════════════════════════════════════════════════
-    // Stage 1: Setup — Build X = S^{-1/2}
+    // Stage 1: Setup. Build X = S^{-1/2}
     // ═════════════════════════════════════════════════════════════════════════
     {
         auto [U, s] = linear_algebra::syev(S);

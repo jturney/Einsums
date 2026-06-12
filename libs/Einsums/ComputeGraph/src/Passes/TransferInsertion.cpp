@@ -17,7 +17,7 @@ namespace einsums::compute_graph::passes {
 
 namespace {
 
-/// Check if a tensor's input value is dead — it appears in both inputs and outputs
+/// Check if a tensor's input value is dead, it appears in both inputs and outputs
 /// of the node, but the operation semantics overwrite it completely.
 /// Currently recognized: Einsum with c_prefactor == 0.0, Scale with factor == 0.0.
 bool is_dead_input(Node const &node, TensorId tid) {
@@ -101,7 +101,7 @@ Node make_d2h_node(TensorHandle const &handle) {
 
     n.estimated_bytes = desc.size_bytes;
 
-    // See make_h2d_node comment — same applies for D2H direction.
+    // See make_h2d_node comment, same applies for D2H direction.
     n.execute = []() { gpu::device_synchronize(); };
 
     return n;
@@ -131,7 +131,7 @@ bool TransferInsertion::run(Graph &graph) {
         if (node.target == Target::GPU) {
             // Insert H2D for each input not yet on device.
             for (auto tid : node.inputs) {
-                // Skip H2D for dead inputs — the operation will overwrite this tensor
+                // Skip H2D for dead inputs, the operation will overwrite this tensor
                 // completely (e.g., einsum with c_prefactor=0), so the initial value
                 // doesn't need to be on device.
                 if (is_dead_input(node, tid))
@@ -170,7 +170,7 @@ bool TransferInsertion::run(Graph &graph) {
                 }
             }
         } else {
-            // CPU node — just pass through.
+            // CPU node, just pass through.
             new_nodes.push_back(std::move(node));
         }
     }
@@ -193,7 +193,7 @@ bool TransferInsertion::run(Graph &graph) {
         }
     }
 
-    // Always assign new_nodes back — we moved all nodes into it during the loop.
+    // Always assign new_nodes back, we moved all nodes into it during the loop.
     nodes = std::move(new_nodes);
 
     if (_num_transfers == 0)

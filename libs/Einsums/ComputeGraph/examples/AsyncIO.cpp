@@ -13,8 +13,8 @@
 ///   - Compare sync vs async execution timing
 ///
 /// The key idea: DiskRead nodes created with read_async() have two phases:
-///   1. async_start  — begins the I/O (returns quickly)
-///   2. async_finish — waits for completion (called before consumers)
+///   1. async_start: begins the I/O (returns quickly)
+///   2. async_finish: waits for completion (called before consumers)
 ///
 /// Between start and finish, the DataflowExecutor runs independent compute
 /// nodes, hiding I/O latency behind useful work.
@@ -53,7 +53,7 @@ int einsums_main() {
 
     einsums::println("=== ComputeGraph Async I/O Example ===\n");
 
-    // 1. Synchronous I/O — no overlap
+    // 1. Synchronous I/O, no overlap
     // ═══════════════════════════════════════════════════════════════════════
     einsums::println("--- 1. Synchronous I/O (baseline) ---\n");
     {
@@ -90,7 +90,7 @@ int einsums_main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 2. Async I/O with DataflowExecutor — I/O overlaps with compute
+    // 2. Async I/O with DataflowExecutor, I/O overlaps with compute
     // ═══════════════════════════════════════════════════════════════════════
     einsums::println("\n--- 2. Async I/O with DataflowExecutor ---\n");
     {
@@ -123,10 +123,10 @@ int einsums_main() {
                 /*sync fallback (for Sequential/OpenMP executors)*/
                 [&]() { simulate_disk_read(data.data(), N * N, 1.0, IO_DELAY); });
 
-            // Independent compute — this OVERLAPS with the async read!
+            // Independent compute, this OVERLAPS with the async read!
             cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
 
-            // Consumer of data — waits for async read to finish
+            // Consumer of data, waits for async read to finish
             cg::axpy(1.0, data, &result);
         }
 
@@ -151,7 +151,7 @@ int einsums_main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 3. Multiple async reads — all overlap with compute
+    // 3. Multiple async reads, all overlap with compute
     // ═══════════════════════════════════════════════════════════════════════
     einsums::println("\n--- 3. Multiple Async Reads ---\n");
     {
@@ -207,7 +207,7 @@ int einsums_main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 4. Async write — checkpoint without blocking
+    // 4. Async write, checkpoint without blocking
     // ═══════════════════════════════════════════════════════════════════════
     einsums::println("\n--- 4. Async Write (checkpoint) ---\n");
     {
@@ -225,7 +225,7 @@ int einsums_main() {
             // Compute C
             cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
 
-            // Async checkpoint write — starts in background
+            // Async checkpoint write, starts in background
             cg::write_async(
                 "checkpoint C", "checkpoint.h5", "/C", &C,
                 [&]() {
@@ -236,7 +236,7 @@ int einsums_main() {
                 },
                 [&]() { write_future.get(); }, [&]() { std::this_thread::sleep_for(std::chrono::milliseconds(IO_DELAY)); });
 
-            // Independent computation — overlaps with the write
+            // Independent computation, overlaps with the write
             cg::einsum("ik;kj->ij", 0.0, &D, 1.0, B, A);
         }
 

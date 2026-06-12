@@ -75,7 +75,7 @@ Declare tensors in a scope that outlives the graph:
    }
    graph.execute();   // Works
 
-This is the approach for Pipeline intermediates — since Pipeline doesn't own
+This is the approach for Pipeline intermediates. Because a Pipeline does not own
 tensors, declare shared intermediates in the outer scope:
 
 .. code-block:: cpp

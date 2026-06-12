@@ -38,7 +38,7 @@ bool SUMMAExpansion::run(Graph &graph) {
         return false; // Need true 2D grid for SUMMA
 
     for (auto &node : nodes) {
-        // Only Einsum nodes. BatchedGemm is intentionally ignored —
+        // Only Einsum nodes. BatchedGemm is intentionally ignored,
         // distributed batched contractions aren't supported today (see
         // libs/Einsums/ComputeGraph/docs/gemm_batching.rst).
         if (node.kind != OpKind::Einsum)
@@ -87,7 +87,7 @@ bool SUMMAExpansion::run(Graph &graph) {
         // A_local = (M/Pr, K/Pc), B_local = (K/Pr, N/Pc), C_local = (M/Pr, N/Pc)
         // SUMMA iterates over Pc panels (for A broadcast) or Pr panels (for B broadcast).
         // Since A: k→Col and B: k→Row, the panels iterate over the same K dimension.
-        // Number of panels = max(Pc, Pr) — but for a consistent SUMMA, we iterate over
+        // Number of panels = max(Pc, Pr), but for a consistent SUMMA, we iterate over
         // the grid dimension that splits K in A (which is Pc) for A-broadcasts,
         // and the grid dimension that splits K in B (which is Pr) for B-broadcasts.
         //

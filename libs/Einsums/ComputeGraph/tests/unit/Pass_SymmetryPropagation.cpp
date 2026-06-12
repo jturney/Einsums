@@ -171,7 +171,7 @@ TEST_CASE("SymmetryPropagation - inferred C executes correctly via gemm dispatch
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ki;kj->ij", &C, A, A); // C is AᵀA → symmetric
-        cg::einsum("ij;jk->ik", &D, C, B); // D = C·B — hits symm dispatch once C is tagged
+        cg::einsum("ij;jk->ik", &D, C, B); // D = C·B, hits symm dispatch once C is tagged
     }
 
     auto [_m, pass] = graph.apply<cg::passes::SymmetryPropagation>();
@@ -226,7 +226,7 @@ TEST_CASE("SymmetryPropagation - does NOT tag a multi-writer body tensor", "[Com
     {
         cg::CaptureGuard const guard(body);
         cg::einsum("ik;jk->ij", &S, A, A); // S = A·Aᵀ (symmetric)
-        cg::axpy(1.0, B, &S);              // S += B (destroys symmetry) — 2nd writer
+        cg::axpy(1.0, B, &S);              // S += B (destroys symmetry), 2nd writer
     }
 
     cg::PassManager pm;

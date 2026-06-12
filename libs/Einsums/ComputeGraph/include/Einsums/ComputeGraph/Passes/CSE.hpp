@@ -12,7 +12,7 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief Common Subexpression Elimination (CSE) pass.
  *
- * Detects pairs of nodes that compute the same expression — identical OpKind,
+ * Detects pairs of nodes that compute the same expression, identical OpKind,
  * identical input TensorIds, and identical operation metadata (EinsumDescriptor,
  * ScaleDescriptor, etc.). The duplicate node is eliminated and all downstream
  * consumers of its outputs are redirected to the original node's outputs.
@@ -44,8 +44,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// NOTE: stays opt-out. CSE has a latent soundness gap with
     /// mutable-tensor reuse: it merges two nodes that compute the same
-    /// value into *different* output tensors and redirects readers of the
-    /// duplicate's output to the original's — which is wrong when that
+    /// value into different output tensors and redirects readers of the
+    /// duplicate's output to the original's, which is wrong when that
     /// output is subsequently written independently (e.g. the SCF body's
     /// ``axpby(1,H,0,F)`` and ``axpby(1,H,0,sum_HF)``, where F and sum_HF
     /// then diverge). Recursing exposed this on the SCF example. Until CSE

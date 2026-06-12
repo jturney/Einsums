@@ -6,7 +6,7 @@ Graph Update / Rebind
 =========================
 
 The rebind feature lets you change which tensors a graph operates on and
-update scalar prefactors — all without re-capturing the graph.
+update scalar prefactors, all without re-capturing the graph.
 
 Tensor Rebind
 =============
@@ -32,7 +32,7 @@ Capture a graph once, then rebind tensors to process different data:
 
 **Constraints:**
 
-- New tensor must have the **same rank and dimensions** as the original
+- New tensor must have the same rank and dimensions as the original
 - Type must match (checked at compile time via template)
 - Throws ``std::invalid_argument`` if dimensions don't match
 

@@ -45,7 +45,7 @@ TEST_CASE("Rebind - basic tensor rebind", "[ComputeGraph][Rebind]") {
     // Rebind A1 → A2 (one line!)
     graph.rebind(A1, A2);
 
-    // Execute again — should now use A2
+    // Execute again, should now use A2
     C.zero();
     graph.execute();
 
@@ -148,7 +148,7 @@ TEST_CASE("update_prefactors - changes computation", "[ComputeGraph][Rebind]") {
     // Update prefactors to c_pf=1, ab_pf=2
     graph.update_prefactors(einsum_id, 1.0, 2.0);
 
-    // Execute again — should compute C = 1*C + 2*A*B
+    // Execute again, should compute C = 1*C + 2*A*B
     graph.execute();
 
     // Verify: C_new = C_v1 + 2*A*B

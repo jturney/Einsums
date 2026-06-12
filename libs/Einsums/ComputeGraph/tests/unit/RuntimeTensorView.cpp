@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Phase B view_runtime tests — runtime-rank counterpart to cg::view.
+// Phase B view_runtime tests, runtime-rank counterpart to cg::view.
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/View.hpp>

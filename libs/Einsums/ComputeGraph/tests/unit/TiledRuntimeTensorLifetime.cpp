@@ -34,7 +34,7 @@ TEST_CASE("TiledRuntimeTensor - grid shape and general tiles", "[ComputeGraph][T
     REQUIRE(t.grid_size() == 4);
     REQUIRE(t.num_filled_tiles() == 0);
 
-    // A diagonal tile (square) and an off-diagonal tile (rectangular) — the
+    // A diagonal tile (square) and an off-diagonal tile (rectangular), the
     // latter is exactly the non-symmetric case BlockTensor cannot represent.
     t.add_tile({0, 0}); // 2 x 4
     t.add_tile({0, 1}); // 2 x 5  (off-diagonal, rectangular)

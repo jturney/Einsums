@@ -71,7 +71,7 @@ int einsums_main() {
     // Step 1: AB = A * B (async)
     auto step1 = pool.submit("A*B", [&]() { tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B); });
 
-    // Step 2: ABC = AB * C (continuation — runs after step1 completes)
+    // Step 2: ABC = AB * C (continuation, runs after step1 completes)
     auto step2 = step1.then("AB*C", [&]() { tensor_algebra::einsum(Indices{i, j}, &ABC, Indices{i, k}, AB, Indices{k, j}, C); });
 
     // Step 3: compute trace (continuation)

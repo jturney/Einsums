@@ -36,13 +36,13 @@ int einsums_main() {
     println("=== Deferred Allocation Example ===\n");
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 1. Workspace — cross-computation tensors
+    // 1. Workspace: cross-computation tensors
     // ═══════════════════════════════════════════════════════════════════════
     println("--- 1. Workspace Scoping ---\n");
     {
         cg::Workspace ws("calculation");
 
-        // Declare tensors — NO memory allocated yet
+        // Declare tensors, NO memory allocated yet
         auto &H = ws.declare_tensor<double, 2>(std::string("H"), N, N);
         auto &S = ws.declare_tensor<double, 2>(std::string("S"), N, N);
 
@@ -69,19 +69,19 @@ int einsums_main() {
             cg::axpy(1.0, H, &C);
         }
 
-        // Materialize C manually (demo — normally done by MaterializationPass)
+        // Materialize C manually (demo, normally done by MaterializationPass)
         C.materialize();
         C.zero();
 
         p1.execute();
         println("  C[0,0] after pipeline_1: {:.4f}", C(0, 0));
 
-        // H and S survive — Workspace owns them
+        // H and S survive, Workspace owns them
         println("  Workspace tensors still alive: {} declared", ws.size());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 2. Pipeline — cross-stage tensors with create_default()
+    // 2. Pipeline: cross-stage tensors with create_default()
     // ═══════════════════════════════════════════════════════════════════════
     println("\n--- 2. Pipeline + create_default() ---\n");
     {
@@ -91,7 +91,7 @@ int einsums_main() {
 
         cg::Pipeline pipeline("deferred_demo");
 
-        // Declare a pipeline-scoped tensor — deferred allocation
+        // Declare a pipeline-scoped tensor, deferred allocation
         auto &C = pipeline.declare_tensor<double, 2>(std::string("C"), N, N);
 
         println("  Before apply: C materialized={}", C.is_materialized());
@@ -110,11 +110,11 @@ int einsums_main() {
             cg::scale(2.0, &C);
         }
 
-        // Apply default passes — MaterializationPass inserts allocation nodes
+        // Apply default passes, MaterializationPass inserts allocation nodes
         auto pm = cg::PassManager::create_default();
         pipeline.apply(pm);
 
-        // Execute — Materialize node runs first, then compute, then scale
+        // Execute: Materialize node runs first, then compute, then scale
         pipeline.execute();
 
         println("  After execute: C materialized={}", C.is_materialized());
@@ -122,7 +122,7 @@ int einsums_main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 3. Graph — single-computation intermediates
+    // 3. Graph: single-computation intermediates
     // ═══════════════════════════════════════════════════════════════════════
     println("\n--- 3. Graph Intermediates ---\n");
     {

@@ -217,7 +217,7 @@ void accumulate(Graph &graph, size_t &orig_acc, size_t &opt_acc) {
 bool ChainParenthesization::run(Graph &graph) {
     // Aggregate over the whole graph tree: a GEMM chain that lives entirely
     // inside a loop body is counted too. recurse_into_subgraphs() stays
-    // false — we aggregate here rather than being re-run per sub-graph.
+    // false: we aggregate here rather than being re-run per sub-graph.
     _original_flops = 0;
     _optimal_flops  = 0;
     accumulate(graph, _original_flops, _optimal_flops);
@@ -227,7 +227,7 @@ bool ChainParenthesization::run(Graph &graph) {
                               100.0 * (1.0 - static_cast<double>(_optimal_flops) / static_cast<double>(_original_flops))));
     }
 
-    // This pass is analysis/reporting only — restructuring the graph would
+    // This pass is analysis/reporting only, restructuring the graph would
     // require creating new intermediate tensors with type information we
     // don't have in type-erased form. The user can use the recommendations
     // to restructure their code.

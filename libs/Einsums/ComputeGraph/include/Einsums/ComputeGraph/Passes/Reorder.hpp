@@ -24,7 +24,7 @@ namespace einsums::compute_graph::passes {
  * 3. Use a max-heap priority queue: among ready nodes, pick the one that
  *    frees the most memory
  *
- * Only reorders independent nodes — data dependencies are always respected.
+ * Only reorders independent nodes, data dependencies are always respected.
  *
  * @par Example
  * @code
@@ -42,7 +42,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// three hazard classes (RAW/WAW/WAR) with view-alias resolution + effective_io.
     /// The original opt-out was because the memory-aware sort dropped WAR and
     /// reordered the SCF body's E_elec/D/F snapshot+recompute sequence, breaking
-    /// HeH+ convergence — that WAR gap is now fixed. Guarded by the differential
+    /// HeH+ convergence. That WAR gap is now fixed. Guarded by the differential
     /// fuzzer's loop-body "Reorder bait" patterns. See docs/loop_handling_audit.md.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 

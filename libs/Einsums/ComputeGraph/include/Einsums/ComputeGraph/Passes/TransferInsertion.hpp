@@ -41,8 +41,8 @@ class EINSUMS_EXPORT TransferInsertion : public OptimizerPass {
     /// Recurse into loop bodies / conditional branches. TransferInsertion
     /// is a per-graph transform: run on a body it inserts that body's H2D
     /// before each GPU op and D2H after, making the body self-contained.
-    /// (Re-transfers loop-invariant inputs each iteration — hoisting those
-    /// before the loop is a later optimization.) See
+    /// It re-transfers loop-invariant inputs each iteration; hoisting those
+    /// before the loop is a later optimization. See
     /// docs/loop_handling_audit.md.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 

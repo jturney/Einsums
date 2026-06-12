@@ -377,7 +377,7 @@ bool try_gpu_axpy(Node const &node, std::unordered_map<TensorId, TensorHandle> c
 }
 
 /// Try strided-batched GEMM dispatch for OpKind::BatchedGemm nodes.
-/// Only the strided mode is handled here — that's what the 3D-batch
+/// Only the strided mode is handled here, that's what the 3D-batch
 /// capture path produces. The pointer-array mode (output of the
 /// GEMMBatching pass over N independent 2D einsums) is CPU-only
 /// today; extending it to GPU would require either copying each 2D
@@ -667,7 +667,7 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node
             auto note = [&](TensorId tid, std::set<void const *> &dst) {
                 // Resolve view aliases to the owning buffer so a read/write
                 // through a view inside the subtree is attributed to the parent
-                // tensor — otherwise an op outside the control-flow node that
+                // tensor: otherwise an op outside the control-flow node that
                 // touches the owner sees no dependency and can be misordered.
                 auto it = sub._tensors.find(sub.resolve_alias(tid));
                 if (it != sub._tensors.end() && it->second.tensor_ptr != nullptr) {
@@ -761,7 +761,7 @@ void Graph::topological_sort() {
     // Resolve any chain of aliases (View outputs) to the underlying owner so
     // reads/writes through a slice register as reads/writes of the parent.
     // Without this, the scheduler would treat ``GEMM(C_occ, …)`` and
-    // ``Syev(C, …)`` as independent — they're not, since C_occ aliases C.
+    // ``Syev(C, …)`` as independent, they're not, since C_occ aliases C.
     auto resolve_owner = [&](TensorId id) {
         for (int hops = 0; hops < 32; ++hops) {
             auto it = _tensors.find(id);
@@ -773,7 +773,7 @@ void Graph::topological_sort() {
     };
 
     // Track dependencies: read-after-write, write-after-write, write-after-read.
-    // Keyed by *owner* TensorId (after alias resolution) — see above.
+    // Keyed by *owner* TensorId (after alias resolution), see above.
     std::unordered_map<TensorId, size_t>              last_writer;
     std::unordered_map<TensorId, std::vector<size_t>> last_readers;
     std::vector<std::vector<size_t>>                  adj(n);
@@ -964,7 +964,7 @@ void Graph::update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorSca
             for (auto &params : _params_store) {
                 // We need to find the params associated with this node.
                 // Since we don't have a direct node→params mapping, update
-                // all params (this is a simplification — in practice there's
+                // all params (this is a simplification, in practice there's
                 // typically one params per einsum node).
                 // TODO: Add node_id → params mapping for precise updates.
             }
@@ -1390,7 +1390,7 @@ std::function<void()> Graph::make_zero_executor(TensorId tensor_id) {
 
 expected<void, GraphError> Graph::validate_tensors() const {
     for (auto const &[id, handle] : _tensors) {
-        // Skip validation for deferred tensors — they haven't been materialized yet.
+        // Skip validation for deferred tensors, they haven't been materialized yet.
         if (handle.alloc_state == AllocState::Deferred)
             continue;
         if (handle.validator && !handle.validator()) {
@@ -1567,7 +1567,7 @@ void Graph::execute() {
                     void *shadow = _device_shadows.ensure(tdesc->tensor_id, tdesc->size_bytes);
                     gpu::memcpy_host_to_device(shadow, handle.data_ptr, tdesc->size_bytes);
                 }
-                // Unified memory: no copy needed — GPU reads host memory directly.
+                // Unified memory: no copy needed, GPU reads host memory directly.
             }
         } else if (node.kind == OpKind::DeviceToHost) {
             // D2H transfer.
@@ -1581,7 +1581,7 @@ void Graph::execute() {
                         gpu::memcpy_device_to_host(handle.data_ptr, shadow, tdesc->size_bytes);
                     }
                 }
-                // Unified memory: no copy needed — result is already in host-accessible memory.
+                // Unified memory: no copy needed, result is already in host-accessible memory.
             }
         } else if (node.target == Target::GPU) {
             // GPU node execution.
@@ -1606,7 +1606,7 @@ void Graph::execute() {
                 for (auto tid : node.outputs)
                     swap_to_shadow(tid);
             }
-            // Unified memory: no swap needed — GPU reads tensor.data() directly.
+            // Unified memory: no swap needed, GPU reads tensor.data() directly.
             // MPS wrap_or_copy will create a zero-copy MTLBuffer wrapper.
 
             // Execute via GPU BLAS dispatch if possible, otherwise CPU fallback.
@@ -1672,7 +1672,7 @@ void Graph::execute() {
     }
 
     // Final D2H flush (discrete GPU only).
-    // On unified memory, GPU wrote directly to host-accessible tensor data — no copy needed.
+    // On unified memory, GPU wrote directly to host-accessible tensor data, no copy needed.
     if constexpr (!gpu::has_unified_memory) {
         // Copy shadows for tensors whose last writer was a GPU node.
         std::unordered_set<TensorId> cpu_written;
@@ -1892,7 +1892,7 @@ std::string Graph::to_json() const {
     for (auto const &t : _timing_report)
         timing_map[t.id] = t.duration_ms;
 
-    // Nodes — use array index as ID
+    // Nodes: use array index as ID
     for (size_t ni = 0; ni < _nodes.size(); ni++) {
         auto const   &node = _nodes[ni];
         GraphNodeData nd;
@@ -1975,7 +1975,7 @@ std::string Graph::to_json() const {
         }
     }
 
-    // Serialize to JSON manually (structured — no Glaze dependency in library)
+    // Serialize to JSON manually (structured, no Glaze dependency in library)
     std::string j;
     j.reserve(4096);
 

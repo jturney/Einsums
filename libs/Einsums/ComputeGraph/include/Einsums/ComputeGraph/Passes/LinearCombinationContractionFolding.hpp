@@ -30,7 +30,7 @@ namespace einsums::compute_graph::passes {
  *    = \mathrm{einsum}(\text{spec}_0, A,\; \sum_k \alpha_k\,P_k(B))@f$,
  * where @f$P_k@f$ permutes @f$B@f$ into operand-0's (canonical) layout. The
  * rewrite builds @f$L = \sum_k \alpha_k P_k(B)@f$ once and runs a single
- * contraction — trading @f$N@f$ flop-bound contractions for one contraction
+ * contraction: trading @f$N@f$ flop-bound contractions for one contraction
  * plus @f$N-1@f$ cheap memory-bound permute/axpy steps.
  *
  * @par Example (CCSD spin-adaptation)
@@ -46,7 +46,7 @@ namespace einsums::compute_graph::passes {
  * @endcode
  *
  * @par Opt-in
- * Not registered in @ref PassManager::create_default — like DistributiveFactoring
+ * Not registered in @ref PassManager::create_default, like DistributiveFactoring
  * and ChainParenthesization it is a workload-dependent rewrite. Apply it
  * explicitly:
  * @code

@@ -109,7 +109,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @brief Register a tensor handle with the graph.
      *
      * Assigns a unique TensorId and stores the handle's metadata. The tensor itself
-     * is NOT copied — only a pointer and metadata are stored.
+     * is NOT copied, only a pointer and metadata are stored.
      *
      * @param[in] handle The tensor handle to register (moved into the graph).
      * @return The assigned TensorId.
@@ -254,7 +254,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /**
      * @brief Check that all registered tensors still have their capture-time dimensions.
-     * @return True if all shapes match. (Currently a placeholder — always returns true.)
+     * @return True if all shapes match. (Currently a placeholder, always returns true.)
      */
     [[nodiscard]] bool validate_shapes() const;
 
@@ -293,7 +293,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * - "edges": array of {from_node, to_node, tensor_id} (data dependency edges)
      *
      * Used by the profile viewer to render an interactive node graph.
-     * Can be called at any point — edges are computed on-the-fly from node
+     * Can be called at any point, edges are computed on-the-fly from node
      * inputs/outputs, so this works both before and after execute().
      *
      * @return JSON string representation of the graph structure.
@@ -346,7 +346,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *   - ``OpKind::Conditional``  → ``ConditionalDescriptor::then_branch`` and
      *                                ``else_branch`` (when non-null)
      *
-     * Does **not** recurse into nested control flow — visitor must do its own
+     * Does not recurse into nested control flow, visitor must do its own
      * descent if it wants the whole sub-tree. The order of visits is the node
      * order in the parent graph (with then-branch visited before else-branch
      * for conditional nodes).
@@ -366,7 +366,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * Walks every loop body / conditional branch (recursively) and inserts
      * each referenced tensor's ``TensorHandle::tensor_ptr`` into @p out.
-     * Does **not** include this graph's own node references — only its
+     * Does not include this graph's own node references, only its
      * descendants'.
      *
      * Why pointers, not TensorIds: each Graph assigns its own TensorIds, so
@@ -375,7 +375,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * across graphs.
      *
      * Used by passes that must treat a tensor consumed only by a nested
-     * control-flow body as live — e.g. DeadNodeElimination, which would
+     * control-flow body as live, e.g. DeadNodeElimination, which would
      * otherwise eliminate the producer of a tensor that only a nested loop
      * reads (a Loop node does not list its body's tensor reads as inputs).
      */
@@ -385,8 +385,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @brief Effective (scheduling) inputs/outputs of a node.
      *
      * For ordinary nodes this is just ``{node.inputs, node.outputs}``. For a
-     * Loop or Conditional node — whose declared input/output lists are empty
-     * because the body/branches are captured after the node is created — this
+     * Loop or Conditional node, whose declared input/output lists are empty
+     * because the body/branches are captured after the node is created, this
      * augments them with the tensors the *subtree* reads (→ inputs) and writes
      * (→ outputs), mapped from the subtree's buffer pointers back to this
      * graph's TensorIds.
@@ -394,7 +394,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Schedulers (``topological_sort`` and the Reorder pass) must use this
      * instead of the raw node lists, or a control-flow node has no dependency
      * edges and can be floated past a producer/consumer of a tensor its body
-     * touches — silently reordering it relative to surrounding ops. The node's
+     * touches: silently reordering it relative to surrounding ops. The node's
      * own lists are left untouched so structural passes (e.g. DeadNodeElimination)
      * still see control-flow nodes as having no SSA outputs.
      *
@@ -403,7 +403,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * control-flow nodes touching the same such buffer would get no edge between
      * them. To give those buffers a stable shared id this registers a handle for
      * them in the parent on first sight (idempotent; the orphan handle is
-     * harmless — no parent node references it).
+     * harmless: no parent node references it).
      */
     std::pair<std::vector<TensorId>, std::vector<TensorId>> effective_io(Node const &node);
 
@@ -413,8 +413,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * A view's ``TensorHandle::aliases`` points at its parent; this follows that
      * chain (bounded) and returns the underlying owner's id (or @p id unchanged
      * if it isn't a view). Any analysis that reasons about *which buffer* a node
-     * reads/writes — scheduling (topological_sort, Reorder), liveness
-     * (DeadNodeElimination) — must resolve through this, or a write through a
+     * reads/writes, scheduling (topological_sort, Reorder), liveness
+     * (DeadNodeElimination), must resolve through this, or a write through a
      * view looks unrelated to a read of its parent.
      */
     [[nodiscard]] TensorId resolve_alias(TensorId id) const {
@@ -453,7 +453,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] predicate Function returning true for then-branch, false for else-branch.
      *                      Can inspect tensor values and external state.
      * @return Tuple of references: (then_branch_graph, else_branch_graph).
-     *         A tuple (not a pair) so the method can be bound to Python —
+     *         A tuple (not a pair) so the method can be bound to Python,
      *         pybind11 can't cast a pair/tuple of *references* to a
      *         non-copyable type cleanly, but a reference-tuple return casts
      *         each branch with ``reference_internal``. Structured bindings
@@ -474,7 +474,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * The then_fn and else_fn lambdas are called during graph construction
      * to capture operations into the respective branches. This is the
-     * preferred API — more concise than the Graph-returning variant.
+     * preferred API, more concise than the Graph-returning variant.
      *
      * @param[in] label Human-readable label.
      * @param[in] predicate Runtime predicate: true → then, false → else.
@@ -529,7 +529,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
                   BodyFn &&body_fn); // Defined in CaptureContext.hpp
 
     /**
-     * @brief Add a loop node — std::function-typed body for Python-friendly binding.
+     * @brief Add a loop node, std::function-typed body for Python-friendly binding.
      *
      * Identical semantics to the template-bodied @ref add_loop above; the
      * concrete std::function signature is what pybind11 can bind directly
@@ -543,7 +543,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @brief Mark a tensor's lifetime end with a Free node.
      *
      * Inserts a Free node into the graph marking where the tensor is no longer needed.
-     * The tensor is NOT actually deallocated (the graph still owns it) — this is a
+     * The tensor is NOT actually deallocated (the graph still owns it), this is a
      * marker for the MemoryPlanning pass to identify buffer reuse opportunities.
      *
      * @param[in] id The TensorId (from create_tensor's Alloc node).
@@ -642,7 +642,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @brief Create a graph-owned runtime-rank tensor.
      *
      * Runtime-rank analog of create_tensor(). Allocates a RuntimeTensor<T, Alloc>
-     * with rank determined by `dims.size()` — no rank-4 cap, no compile-time
+     * with rank determined by `dims.size()`, no rank-4 cap, no compile-time
      * rank in the type. Adds an Alloc node and marks the handle as intermediate.
      * Lives for the lifetime of the graph.
      *
@@ -665,7 +665,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         // ``intermediate`` controls DeadNodeElimination: a graph-owned
         // intermediate with no in-graph consumer is prunable, but a
         // user-visible result (one a caller holds a Python handle to and reads
-        // after execute — e.g. the numpy-ergonomics operators' outputs) must
+        // after execute, e.g. the numpy-ergonomics operators' outputs) must
         // be kept even when nothing downstream in the graph reads it.
         auto handle            = make_handle(*ptr, 0);
         handle.is_intermediate = intermediate;
@@ -707,7 +707,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * The runtime-rank, pybind-exposed analog of declare_tensor(): a shell tensor
      * (valid metadata, no data) registered in THIS graph's tensor map with
-     * AllocState::Deferred. No Alloc node is inserted — the MaterializationPass
+     * AllocState::Deferred. No Alloc node is inserted, the MaterializationPass
      * inserts Materialize+Initialize at the right position, and MemoryPlanning /
      * FreeInsertion / InplaceOptimization can then plan, reuse, and free its
      * buffer (unlike create_*_tensor, which is allocated eagerly and so is opaque
@@ -743,7 +743,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
             }
         };
         register_tensor(std::move(handle));
-        // No Alloc node — MaterializationPass inserts Materialize + Initialize.
+        // No Alloc node, MaterializationPass inserts Materialize + Initialize.
         return *ptr;
     }
 
@@ -826,7 +826,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         };
         register_tensor(std::move(handle));
 
-        // No Alloc node inserted — MaterializationPass will insert
+        // No Alloc node inserted, MaterializationPass will insert
         // Materialize + Initialize nodes at the right position.
 
         return *ptr;
@@ -935,7 +935,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * The runtime analog of @ref create_tensor_dynamic: where that produces a
      * statically-ranked Tensor<T,K> (consumed via static_cast in some passes),
-     * this produces a GeneralRuntimeTensor<T> — matching the tensors that the
+     * this produces a GeneralRuntimeTensor<T>, matching the tensors that the
      * Python/capture surface uses, so passes that combine such operands can cast
      * uniformly to GeneralRuntimeTensor<T>. Supports any rank.
      *
@@ -1015,14 +1015,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * redirect-based passes (e.g. CSE) perform on Node::inputs.
      *
      * The distinction matters because executor lambdas resolve their operands
-     * through the captured TensorSlot pointer — *not* through Node::inputs.
+     * through the captured TensorSlot pointer, *not* through Node::inputs.
      * Rewriting Node::inputs alone keeps liveness analysis correct for
      * downstream passes (MemoryPlanning, FreeInsertion) but is invisible to a
      * lambda baked at capture time; without this slot redirect a consumer of
      * an eliminated duplicate would keep reading the duplicate's (now
      * never-written) buffer. See CSE.
      *
-     * No-op if either slot is absent — a tensor never captured through a slot
+     * No-op if either slot is absent, a tensor never captured through a slot
      * has no baked lambda to fix. The caller guarantees @p from and @p to have
      * identical type and dimensions (CSE only merges nodes with equal op_data
      * and output shapes), so no validation is performed.
@@ -1093,7 +1093,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }
         auto *slot = it->second.get();
 
-        // Validate rank — read from the type when it carries ::Rank,
+        // Validate rank, read from the type when it carries ::Rank,
         // otherwise from the live runtime-rank tensor.
         std::size_t const new_rank = detail::tensor_rank(new_tensor);
         if (new_rank != slot->rank) {
@@ -1248,7 +1248,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Each entry uses a typed deleter captured at creation time.
     std::vector<std::unique_ptr<void, void (*)(void *)>> _owned_tensors;
 
-    /// Captured cleanup callbacks from ``adopt()`` — invoked in
+    /// Captured cleanup callbacks from ``adopt()``, invoked in
     /// reverse-insertion order at graph destruction. Used by capture-time
     /// helpers (``cg::view``) that allocate auxiliary state on the heap.
     std::vector<std::function<void()>> _adopted_cleanups;
@@ -1283,7 +1283,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
  * structure via the "get_compute_graphs" server handler.
  *
  * Graphs are stored by name; re-registering with the same name replaces
- * the old entry. Normally not needed by user code — graphs auto-register.
+ * the old entry. Normally not needed by user code, graphs auto-register.
  *
  * @param[in] graph Pointer to the graph. Must remain valid until unregistered.
  */

@@ -51,7 +51,7 @@ TEST_CASE("Graph::create_tensor - survives capture block scope", "[ComputeGraph]
     auto &tmp    = graph.create_zero_tensor<double, 2>("tmp", 5, 5);
     auto &result = graph.create_zero_tensor<double, 2>("result", 5, 5);
 
-    // Capture in a nested block — tmp and result survive because graph owns them
+    // Capture in a nested block, tmp and result survive because graph owns them
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &tmp, A, B);
@@ -59,7 +59,7 @@ TEST_CASE("Graph::create_tensor - survives capture block scope", "[ComputeGraph]
         cg::permute("ij <- ij", 0.0, &result, 1.0, tmp);
     }
 
-    // Execute outside the capture block — no dangling references
+    // Execute outside the capture block, no dangling references
     graph.execute();
 
     // Reference
@@ -139,7 +139,7 @@ TEST_CASE("Graph validation - catches destroyed tensor", "[ComputeGraph][Lifetim
         cg::CaptureGuard const guard(graph);
         cg::scale(2.0, &temp);
     }
-    // temp is destroyed here — the graph has a dangling reference
+    // temp is destroyed here, the graph has a dangling reference
 
     // execute() should detect the destroyed tensor and throw instead of segfaulting
     REQUIRE_THROWS_AS(graph.execute(), std::runtime_error);
@@ -154,6 +154,6 @@ TEST_CASE("Graph validation - passes for valid tensors", "[ComputeGraph][Lifetim
         cg::scale(2.0, &A);
     }
 
-    // Should not throw — tensor is still alive
+    // Should not throw, tensor is still alive
     REQUIRE_NOTHROW(graph.execute());
 }

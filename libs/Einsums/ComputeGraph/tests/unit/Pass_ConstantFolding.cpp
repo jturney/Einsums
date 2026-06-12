@@ -132,7 +132,7 @@ TEST_CASE("ConstantFolding - safe no-op on a loop body with deferred tensors", "
     // CF runs before Materialization, and a loop body's workspace tensors
     // are deferred (no data at pass time). With CF now recursing, the
     // materialization guard must prevent it from executing body nodes
-    // against unallocated storage — it should fold nothing and not crash,
+    // against unallocated storage, it should fold nothing and not crash,
     // and the graph must still compute the right answer.
     constexpr size_t N = 3;
     auto             A = create_random_tensor<double>("A", 4, 4);

@@ -25,7 +25,7 @@ bool is_lifecycle(OpKind kind) {
 /// descendant sub-graph, keyed by the tensor's underlying pointer (stable
 /// across graphs, unlike per-graph TensorIds). A DiskRead is hoistable only
 /// when its destination has exactly one such writer anywhere in the loop's
-/// subtree (the read itself) — that proves nothing, at any nesting depth,
+/// subtree (the read itself), that proves nothing, at any nesting depth,
 /// overwrites the loaded data. Reads of the destination don't count, so a
 /// nested loop merely *reading* the loaded tensor doesn't block hoisting.
 void count_subtree_writers_by_ptr(Graph const &g, std::unordered_map<void const *, int> &writers) {
@@ -45,7 +45,7 @@ void count_subtree_writers_by_ptr(Graph const &g, std::unordered_map<void const 
 
 /// Move each DiskRead in @p graph as early as legally possible. "Legal"
 /// means after (a) every producer of the read's inputs and (b) every prior
-/// node that reads or writes the read's *output* tensor — moving a load
+/// node that reads or writes the read's *output* tensor, moving a load
 /// before a node that touches its destination would change what that node
 /// sees (a WAR/WAW violation). The original pass only checked (a); since a
 /// DiskRead has no inputs it always slid to position 0, even past a writer
@@ -135,7 +135,7 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
 /// tensor pointer is stable, so we re-register the destination in the
 /// target graph and give the moved read a valid id there. (A fresh id is
 /// unused by other target nodes, so no spurious dependency arises; keeping
-/// a valid id — rather than clearing it — is what lets a deeply nested read
+/// a valid id, rather than clearing it, is what lets a deeply nested read
 /// be recognized and re-hoisted level by level.)
 TensorId find_or_register_by_ptr(Graph &g, TensorHandle const &src_handle) {
     for (auto const &[id, h] : g.tensors_map()) {
@@ -155,7 +155,7 @@ TensorId find_or_register_by_ptr(Graph &g, TensorHandle const &src_handle) {
 ///     overwrites the loaded data;
 ///   - isn't referenced by any nested sub-graph of the body (a nested loop
 ///     could write it without the body's node list showing it); and
-///   - is already materialized (eager) — IOPrefetch runs before the
+///   - is already materialized (eager), IOPrefetch runs before the
 ///     MaterializationPass, so hoisting a read whose destination is a
 ///     deferred shell would load into not-yet-allocated storage. Deferred
 ///     destinations keep their per-iteration read.
@@ -194,7 +194,7 @@ bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t 
         if (dest_ptr == nullptr)
             continue;
         if (auto it = writers.find(dest_ptr); it == writers.end() || it->second != 1)
-            continue; // overwritten somewhere in the subtree — re-read each iteration matters.
+            continue; // overwritten somewhere in the subtree, re-read each iteration matters.
 
         // Only hoist when the destination is already materialized (eager).
         // IOPrefetch runs before the MaterializationPass, so hoisting a read

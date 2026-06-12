@@ -27,7 +27,7 @@ bool DeadNodeElimination::run(Graph &graph) {
     // Build the set of tensors that are READ by at least one node. Resolve
     // through view aliases to the owning buffer: reading a view of T (or T
     // itself) keeps T live, and conversely a *write* through a view of T must
-    // be judged against whether T is read — see the output check below.
+    // be judged against whether T is read, see the output check below.
     std::unordered_set<TensorId> consumed_tensors;
     for (auto const &node : nodes) {
         for (auto tid : node.inputs) {
@@ -37,7 +37,7 @@ bool DeadNodeElimination::run(Graph &graph) {
 
     // Tensors referenced anywhere in a child sub-graph (a nested loop body
     // or conditional branch) are live, even if no node in THIS graph reads
-    // them — a Loop node doesn't list its body's tensor reads as inputs, so
+    // them: a Loop node doesn't list its body's tensor reads as inputs, so
     // without this a producer feeding only a nested loop would look dead.
     // Compared by underlying pointer because the nested body uses different
     // TensorIds for the same tensor (see Graph::collect_subtree_referenced_ptrs).
@@ -69,7 +69,7 @@ bool DeadNodeElimination::run(Graph &graph) {
             continue;
         }
 
-        // Node with no outputs is side-effect only (e.g., scale) — keep it
+        // Node with no outputs is side-effect only (e.g., scale), keep it
         if (node.outputs.empty()) {
             continue;
         }
@@ -77,7 +77,7 @@ bool DeadNodeElimination::run(Graph &graph) {
         // Check if all outputs are dead (intermediate + not consumed here + not
         // used by a child body). Resolve each output through view aliases to its
         // owning buffer: a write through a view of T is dead only if T itself is
-        // — otherwise removing it would drop a partial update to a live tensor
+        // otherwise removing it would drop a partial update to a live tensor
         // (the view tid is an unread intermediate, but the owner is what counts).
         bool all_outputs_dead = true;
         for (auto raw_tid : node.outputs) {

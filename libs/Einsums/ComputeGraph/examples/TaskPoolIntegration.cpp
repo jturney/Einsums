@@ -52,7 +52,7 @@ int einsums_main() {
         cg::axpy(1.0, C, &E);              // Node 3 (depends on 1 & 2)
     }
 
-    // Execute with DataflowExecutor — nodes 1 and 2 run concurrently
+    // Execute with DataflowExecutor, nodes 1 and 2 run concurrently
     auto t0 = std::chrono::high_resolution_clock::now();
     {
         cg::DataflowExecutor df_exec;

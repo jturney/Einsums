@@ -46,7 +46,7 @@ int einsums_main() {
     // MO coefficient matrix (nao x nmo)
     auto C_mo = create_random_tensor<double>("C", nao, nmo);
 
-    // AO integrals: (mu,nu|lam,sig) — simplified as a rank-4 tensor
+    // AO integrals: (mu,nu|lam,sig), simplified as a rank-4 tensor
     auto eri_ao = create_random_tensor<double>("eri_ao", nao, nao, nao, nao);
 
     // Intermediate buffers for half-transformations
@@ -138,7 +138,7 @@ int einsums_main() {
     cg::Graph transform_graph("integral_transform");
     {
         cg::CaptureGuard guard(transform_graph);
-        // These are rank-5 contractions — each reduces one AO index to MO
+        // These are rank-5 contractions, each reduces one AO index to MO
         // Using multi-M/multi-N PackedGemm for the higher-rank contractions
         cg::einsum("ijkl;ls->ijks", &half1_cg, eri_ao, C_mo);
         cg::einsum("ijks;kr->ijrs", &half2_cg, half1_cg, C_mo);

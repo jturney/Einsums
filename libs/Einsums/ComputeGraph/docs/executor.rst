@@ -40,15 +40,15 @@ Using an Executor
 How OpenMPExecutor Works
 ========================
 
-The OpenMP executor uses **wavefront parallelism**:
+The OpenMP executor uses wavefront parallelism:
 
-1. Assigns each node a **level** based on its dependencies:
+1. Assigns each node a level based on its dependencies:
    - Level 0: nodes with no predecessors (independent)
    - Level N: nodes whose latest predecessor is at level N-1
-2. Executes levels sequentially, but **nodes within a level run in parallel**
+2. Executes levels sequentially, while nodes within a level run in parallel
 
-The parallelism is detected automatically from data dependencies — the user
-doesn't need to restructure their code.
+The parallelism is detected automatically from data dependencies, so the user
+does not need to restructure their code.
 
 .. code-block:: cpp
 
@@ -149,7 +149,7 @@ To set up async I/O:
    graph.execute(df);
 
 **Note**: ``SequentialExecutor`` and ``OpenMPExecutor`` call the synchronous
-fallback lambda — no overlap occurs. Use ``DataflowExecutor`` for async
+fallback lambda, so no overlap occurs. Use ``DataflowExecutor`` for async
 I/O overlap.
 
 **Graph-capturable parallel_for and parallel_reduce:**
@@ -192,7 +192,7 @@ enabling the graph's topological sort to order these nodes correctly.
 **Manual TaskPool usage inside nodes:**
 
 You can also call TaskPool directly from within a graph node's lambda. In this
-case there is no automatic dependency tracking — the ``parallel_for`` blocks
+case there is no automatic dependency tracking. The ``parallel_for`` blocks
 before returning, so the next node sees the completed results:
 
 .. code-block:: cpp

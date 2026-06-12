@@ -22,7 +22,7 @@ bool try_absorb(double scale_factor, Node &target) {
     case OpKind::Einsum: {
         auto *desc = std::get_if<EinsumDescriptor>(&target.op_data);
         if (desc && is_zero(desc->c_prefactor)) {
-            // Preserve the descriptor's existing dtype alternative — the
+            // Preserve the descriptor's existing dtype alternative, the
             // executor lambda extracts via as<T> and a type mismatch here
             // would surface as a runtime conversion at execute time.
             desc->c_prefactor = std::visit(

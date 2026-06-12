@@ -141,7 +141,7 @@ void accumulate(Graph &graph, MemStats &acc) {
 bool MemoryPlanning::run(Graph &graph) {
     // Walk the whole graph tree so loop bodies / conditional branches
     // contribute to the reported footprint. recurse_into_subgraphs() stays
-    // false — this pass aggregates here rather than being re-run per
+    // false: this pass aggregates here rather than being re-run per
     // sub-graph (which would clobber the counters with the last subgraph).
     MemStats acc;
     accumulate(graph, acc);

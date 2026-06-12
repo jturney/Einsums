@@ -65,7 +65,7 @@ bool CommunicationScheduling::run(Graph &graph) {
             EINSUMS_LOG_DEBUG("CommunicationScheduling: async allreduce({}) completed", name);
         };
 
-        // Clear the synchronous execute — the DataflowExecutor uses
+        // Clear the synchronous execute, the DataflowExecutor uses
         // async_start/async_finish instead when both are set.
         node.execute = nullptr;
 

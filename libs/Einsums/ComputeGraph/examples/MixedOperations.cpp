@@ -7,9 +7,9 @@
 /// @brief Demonstrates capturing diverse operation types using Workspace and Pipeline.
 ///
 /// Shows graph-aware wrappers for:
-///   - einsum (tensor contraction) — string-based notation
+///   - einsum (tensor contraction), string-based notation
 ///   - scale (scalar multiply)
-///   - permute (index reordering / transpose) — string-based notation
+///   - permute (index reordering / transpose), string-based notation
 ///   - gemm (direct BLAS matrix multiply)
 ///   - axpy (vector add)
 ///   - element_transform (element-wise unary operation)
@@ -62,7 +62,7 @@ int einsums_main() {
         // 3. Transpose A into At  (string-based permute)
         cg::permute("ji <- ij", &At, A);
 
-        // 4. D = At * C  (gemm — direct BLAS call)
+        // 4. D = At * C  (gemm, direct BLAS call)
         cg::gemm<false, false>(1.0, At, C, 0.0, &D);
 
         // 5. D += 0.1 * C  (axpy)
@@ -100,7 +100,7 @@ int einsums_main() {
     println("\nEigenvalues of S (computed via pipeline execution):");
     println(W);
 
-    // ── Custom operations (raw Graph — custom ops don't need Pipeline) ────
+    // ── Custom operations (raw Graph, custom ops don't need Pipeline) ────
     println("\n--- Custom Operations ---");
     {
         auto M = create_random_tensor<double>("M", N, N);

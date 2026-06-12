@@ -47,7 +47,7 @@ void orthogonalize(MatType *X, MatType const &S) {
     using T        = typename MatType::ValueType;
     size_t const n = S.dim(0);
 
-    // Always execute eagerly — syev is a return-value operation
+    // Always execute eagerly, syev is a return-value operation
     auto [U, s] = linear_algebra::syev(S);
 
     // s^{-1/2}

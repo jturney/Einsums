@@ -46,7 +46,7 @@ constexpr std::size_t tensor_rank(T const &t) noexcept {
     using Clean = std::remove_cvref_t<T>;
     if constexpr (requires { Clean::Rank; }) {
         if constexpr (Clean::Rank == einsums::dynamic_rank) {
-            return t.rank(); // dynamic-rank sentinel — defer to runtime
+            return t.rank(); // dynamic-rank sentinel, defer to runtime
         } else {
             return Clean::Rank;
         }

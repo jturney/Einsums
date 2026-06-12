@@ -74,7 +74,7 @@ TEST_CASE("Workspace::declare_runtime_tensor — deferred allocation lifecycle",
     REQUIRE(ws.tensor_handles().size() == 1);
     REQUIRE(ws.tensor_handles()[0].alloc_state == cg::AllocState::Deferred);
 
-    // The handle's materialize_fn invokes the tensor's materialize() —
+    // The handle's materialize_fn invokes the tensor's materialize(),
     // afterwards data() returns a valid pointer.
     ws.tensor_handles()[0].materialize_fn();
     REQUIRE(t.is_materialized());

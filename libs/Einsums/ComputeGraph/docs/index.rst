@@ -8,8 +8,9 @@ ComputeGraph Module
 ===================
 
 The ComputeGraph module provides a deferred-execution computation graph for Einsums,
-inspired by CUDA Graphs and PyTorch FX. It enables capturing, optimizing, and replaying
-sequences of tensor operations with transparent GPU offloading and distributed computing.
+inspired by CUDA Graphs and PyTorch FX. It captures, optimizes, and replays
+sequences of tensor operations, with transparent GPU offloading and distributed
+computing.
 
 .. toctree::
    :maxdepth: 2

@@ -26,7 +26,7 @@ namespace einsums::compute_graph::passes {
  * - **Einsum ``ki,kj->ij`` (pattern ``AᵀA``)**: the product of A with its own transpose is always symmetric (for real) / Hermitian (for
  * complex) regardless of A.
  *
- * Rules are deliberately conservative — only cases that hold unconditionally
+ * Rules are deliberately conservative, only cases that hold unconditionally
  * get tagged. Everything else is left untagged, which is the safe default.
  *
  * @par Scope
@@ -42,7 +42,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Recurse into loop bodies / conditional branches. Safe: the pass only
     /// reads op structure (no execution, no node changes) and tags a tensor
-    /// only when its symmetry is *guaranteed* — single-writer in this graph
+    /// only when its symmetry is guaranteed: single-writer in this graph
     /// and not written by a child sub-graph (see the InferGuard in run()).
     /// So a body intermediate proven symmetric by a self-contraction gets
     /// tagged per iteration; anything that could be invalidated is left

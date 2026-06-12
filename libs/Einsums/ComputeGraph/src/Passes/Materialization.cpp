@@ -114,7 +114,7 @@ std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, bool owns_tid) {
 // every sub-graph nested inside them, in post-order. For each deferred
 // tensor it finds, appends the (graph-that-owns-handle, tensor-id) pair
 // to @p out so the caller can build hoisted lifecycle nodes for it. Does
-// NOT collect @p graph's own deferred tensors — that's the caller's job.
+// NOT collect @p graph's own deferred tensors, that's the caller's job.
 struct DeferredEntry {
     Graph   *handle_owner;
     TensorId tid;
@@ -152,7 +152,7 @@ bool Materialization::run(Graph &graph) {
     //      branch entry.
     //
     //      We walk parent.nodes() directly (not for_each_subgraph) so we
-    //      know which node index owns each sub-graph — that's where the
+    //      know which node index owns each sub-graph, that's where the
     //      hoisted Materialize / Initialize node goes.
     struct Hoist {
         size_t   owning_node_index;
@@ -222,7 +222,7 @@ bool Materialization::run(Graph &graph) {
     // A deferred tensor used both in the parent and inside a sub-graph (or in
     // more than one sub-graph) is ONE underlying buffer but shows up once in
     // own_deferred and again in hoists. It must be materialized + initialized
-    // exactly ONCE, before its earliest use — emitting a lifecycle pair per
+    // exactly ONCE, before its earliest use, emitting a lifecycle pair per
     // use-site re-runs Initialize (e.g. re-zeroes the buffer) and clobbers a
     // value an earlier use already produced (e.g. a loop's accumulation read by
     // a later parent op). Dedup by the underlying tensor_ptr, preferring a
@@ -237,7 +237,7 @@ bool Materialization::run(Graph &graph) {
     std::vector<Req>                         reqs;
     std::unordered_map<void const *, size_t> req_of_ptr;
     auto                                     add_req = [&](void const *ptr, size_t position, bool owns_tid, Graph *owner, TensorId tid) {
-        // A null ptr can't be deduped reliably — keep it as its own request.
+        // A null ptr can't be deduped reliably, keep it as its own request.
         if (ptr != nullptr) {
             if (auto it = req_of_ptr.find(ptr); it != req_of_ptr.end()) {
                 Req &b     = reqs[it->second];

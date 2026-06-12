@@ -26,7 +26,7 @@ namespace {
 ///     could destroy the inferred structure), and
 ///   - the tensor isn't referenced by a child sub-graph (a nested loop /
 ///     conditional body could write it without this graph's node list
-///     showing it — a Loop node doesn't list its body's writes).
+///     showing it, a Loop node doesn't list its body's writes).
 /// Without these guards a stale tag could claim symmetry the data no longer
 /// has. They make the pass strictly conservative and therefore safe to
 /// recurse into loop bodies.
@@ -54,8 +54,8 @@ bool apply_inferred(Graph &graph, TensorId out_tid, SymmetryDescriptor desc, Inf
     if (!handle.is_intermediate)
         return false; // Never mutate user-owned tensor state.
     if (!guard.safe(graph, out_tid))
-        return false; // Could be overwritten later / by a child body — don't tag.
-    // Skip if the tensor already has an equivalent descriptor — avoids
+        return false; // Could be overwritten later / by a child body, don't tag.
+    // Skip if the tensor already has an equivalent descriptor, avoids
     // redundant work and spurious "new inference" reports on re-runs.
     if (handle.symmetry_hint && *handle.symmetry_hint == desc)
         return false;
@@ -66,7 +66,7 @@ bool apply_inferred(Graph &graph, TensorId out_tid, SymmetryDescriptor desc, Inf
     return true;
 }
 
-/// Rule: ``C = α·A`` — Scale preserves its input's symmetry. Detects
+/// Rule: ``C = α·A``, Scale preserves its input's symmetry. Detects
 /// ``OpKind::Scale`` nodes and copies the descriptor from input to output.
 bool propagate_scale(Graph &graph, Node const &node, InferGuard const &guard) {
     if (node.kind != OpKind::Scale)
@@ -80,7 +80,7 @@ bool propagate_scale(Graph &graph, Node const &node, InferGuard const &guard) {
     return apply_inferred(graph, node.outputs[0], *in.symmetry_hint, guard);
 }
 
-/// Rule: ``C = α·A + β·B`` (or simple sum) — if A and B carry identical
+/// Rule: ``C = α·A + β·B`` (or simple sum), if A and B carry identical
 /// descriptors, C inherits them. Applies to OpKind::Axpy and
 /// OpKind::Axpby when the descriptors match exactly.
 bool propagate_linear_combination(Graph &graph, Node const &node, InferGuard const &guard) {
@@ -99,7 +99,7 @@ bool propagate_linear_combination(Graph &graph, Node const &node, InferGuard con
     return apply_inferred(graph, node.outputs[0], *a.symmetry_hint, guard);
 }
 
-/// Rule: ``C = AᵀA`` / ``AAᵀ`` / ``AᴴA`` via einsum — when the same tensor
+/// Rule: ``C = AᵀA`` / ``AAᵀ`` / ``AᴴA`` via einsum, when the same tensor
 /// feeds both operand slots of a rank-2 contraction with exactly one link
 /// index, the output has structure that depends on the element type and
 /// conjugation flags:
@@ -135,7 +135,7 @@ bool propagate_self_contraction(Graph &graph, Node const &node, InferGuard const
     auto const &in = graph.tensor(node.inputs[0]);
 
     bool const is_complex = in.dtype == packed_gemm::ScalarType::Complex64 || in.dtype == packed_gemm::ScalarType::Complex128;
-    bool const one_conj   = desc->conj_a ^ desc->conj_b; // XOR — exactly one side conjugated
+    bool const one_conj   = desc->conj_a ^ desc->conj_b; // XOR: exactly one side conjugated
 
     if (is_complex && one_conj)
         return apply_inferred(graph, node.outputs[0], SymmetryDescriptor::hermitian_pair(0, 1), guard);
@@ -144,7 +144,7 @@ bool propagate_self_contraction(Graph &graph, Node const &node, InferGuard const
 
 /// Rule: permute of a rank-2 symmetric/Hermitian tensor stays
 /// symmetric/Hermitian. Covers both the identity permute (trivially
-/// preserving) and the swap permute (``{j,i}`` — for a symmetric tensor the
+/// preserving) and the swap permute (``{j,i}``, for a symmetric tensor the
 /// output equals the input). Beta must be zero (pure overwrite); otherwise
 /// we can't reason about what C was before the add.
 bool propagate_permute(Graph &graph, Node const &node, InferGuard const &guard) {
@@ -192,7 +192,7 @@ bool SymmetryPropagation::run(Graph &graph) {
     for (auto const &node : nodes) {
         // Lifecycle nodes (Alloc/Free/Materialize/Initialize) list the tensor
         // as an output but don't write a *value* that could invalidate an
-        // inferred symmetry — a freshly created/zeroed tensor is then filled
+        // inferred symmetry, a freshly created/zeroed tensor is then filled
         // by exactly one real op. Count only value-producing nodes.
         if (node.kind == OpKind::Alloc || node.kind == OpKind::Free || node.kind == OpKind::Materialize ||
             node.kind == OpKind::Initialize) {
@@ -220,7 +220,7 @@ bool SymmetryPropagation::run(Graph &graph) {
         report(1, fmt::format("inferred symmetry on {} intermediate tensor(s) (enables rank-2 BLAS dispatch)", _num_inferred));
     }
 
-    // Analysis pass — never changes the node list.
+    // Analysis pass, never changes the node list.
     return false;
 }
 

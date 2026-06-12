@@ -46,12 +46,12 @@ namespace einsums::compute_graph {
 /// passes (Alloc, Free, lifetime, in-place fusion, scheduling) can treat
 /// reads/writes through the slice as touching the parent.
 ///
-/// **v1 limitations** (intentional, documented for follow-up):
+/// v1 limitations, intentional and documented for follow-up:
 ///   - Only @ref ViewAxis::Kind::Full and @ref ViewAxis::Kind::Range are
 ///     supported. ``Drop`` (rank-reducing index) will be added later;
 ///     calling ``cg::view`` with a Drop axis throws at capture.
 ///   - Only rank-preserving slices: ``ResultRank == parent.rank()``.
-///   - Constant strides — the slice inherits the parent's strides. No
+///   - Constant strides: the slice inherits the parent's strides, with no
 ///     stride remapping or transpose-via-view.
 ///   - Single-node assumption: distributed-tensor parents work only if
 ///     the slice doesn't straddle a partition boundary; otherwise the
@@ -96,7 +96,7 @@ namespace detail {
 /// Shared body for the typed @ref cg::view and @ref cg::permute_view.
 ///
 /// @p axis_vec has one @ref ViewAxis per parent rank (the slice/full of
-/// result axis i). @p perm is the axis permutation — result axis i aliases
+/// result axis i). @p perm is the axis permutation: result axis i aliases
 /// parent axis ``perm[i]`` (empty == identity). Records an
 /// @ref OpKind::View node and returns a reference to the graph-owned,
 /// parent-aliasing slice. (Runtime-rank counterpart: @ref view_runtime.)
@@ -133,7 +133,7 @@ TensorView<T, Rank> &record_typed_view(ParentT &parent, std::vector<ViewAxis> co
 
     // At capture time we don't yet have a ParamTable to resolve Param
     // bounds against. Emplace a "full parent" view (permuted, if requested)
-    // as a placeholder so the holder's view has a valid object — its address
+    // as a placeholder so the holder's view has a valid object, its address
     // is what downstream ops will capture, and the handle registered below
     // sees the correct post-permute dims. The first execute() re-emplaces
     // with the actual computed bounds.
@@ -252,7 +252,7 @@ TensorView<T, Rank> &view(ParentT &parent, Axes &&...axes) {
     return detail::record_typed_view<T, Rank, ParentT>(parent, std::vector<ViewAxis>{ViewAxis(std::forward<Axes>(axes))...}, {});
 }
 
-/// Type-deducing overload — infers @c T and @c Rank from @p parent. The
+/// Type-deducing overload that infers @c T and @c Rank from @p parent. The
 /// codegen path emits this form so it doesn't have to spell out
 /// ``view<typename T::ValueType, T::Rank>(...)`` boilerplate.
 template <CoreBasicTensorConcept ParentT, typename... Axes>
@@ -269,7 +269,7 @@ TensorView<typename std::remove_cvref_t<ParentT>::ValueType, std::remove_cvref_t
 /// permutation of ``[0, Rank)``. Compile-time-rank counterpart to the
 /// runtime ``cg::permute_view`` that backs Python's capture-aware ``.T``.
 /// Records a graph-registered, parent-aliasing view that downstream typed
-/// ``cg::*`` ops (einsum, gemm, …) can consume — unlike a raw
+/// ``cg::*`` ops (einsum, gemm, …) can consume, unlike a raw
 /// ``transpose_view``, whose shared data pointer is invisible to the graph.
 /// @p Rank is deduced from the @p perm array (and asserted to equal the
 /// parent's rank).
@@ -346,7 +346,7 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     // execute() runs and the registered handle below sees the correct
     // post-permute / post-drop rank and dims (ranges resolve at execute).
     // A Range axis with constant bounds gets its real sliced extent (hi - lo)
-    // in the placeholder, not the full parent dim — downstream operators read
+    // in the placeholder, not the full parent dim, downstream operators read
     // the captured view's dims/size at *capture* time (matmul's output alloc,
     // mean's divisor, elementwise same-shape checks), so a full-parent
     // placeholder would mis-size them. Param-bounded ranges aren't known until
@@ -360,7 +360,7 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     // Also apply the constant slice/drop offset to the placeholder data
     // pointer. Beyond matching the resolved view for const bounds, this gives
     // a view a data pointer distinct from its parent's, so get_slot doesn't
-    // collide them — required for chained views (a slice of a slice) to
+    // collide them, required for chained views (a slice of a slice) to
     // resolve the correct parent at execute.
     std::ptrdiff_t      ph_offset = 0;
     std::vector<size_t> parent_dims, parent_strides;
@@ -465,7 +465,7 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
 /// any other pair becomes a ``[lo, hi)`` range slice.
 ///
 /// Must be called inside a capture context. The returned view is owned by the
-/// active graph and aliases the parent — writes through it land in the parent,
+/// active graph and aliases the parent: writes through it land in the parent,
 /// and the graph's optimization passes treat it as a dependency on the parent.
 ///
 /// @code
@@ -484,7 +484,7 @@ APIARY_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<std::complex<float>,
 APIARY_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 // A view of a view (e.g. (A.T)[1:]) must also stay graph-registered and
 // parent-aliasing, or the slice falls back to a raw eager view with
-// aliases == 0 — invisible to the scheduler's alias resolution, so a
+// aliases == 0, invisible to the scheduler's alias resolution, so a
 // reduction over it can be reordered ahead of an in-place write to the
 // owning tensor (bug-optimizer-scale-view-alias).
 APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<float>)
@@ -513,9 +513,9 @@ APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<std::complex<double>>)
 /// @brief Python-friendly indexed view supporting rank-reducing integer indices.
 ///
 /// One ``(kind, a, b)`` triple per parent axis:
-///   * ``kind == 0`` — full axis (``a``/``b`` ignored)
-///   * ``kind == 1`` — range ``[a, b)``
-///   * ``kind == 2`` — drop: index the axis at ``a`` (removes it from the result)
+///   * ``kind == 0``: full axis (``a``/``b`` ignored)
+///   * ``kind == 1``: range ``[a, b)``
+///   * ``kind == 2``: drop, indexing the axis at ``a`` and removing it from the result
 /// Result rank = parent rank − (number of drop axes). This is what backs
 /// capture-mode rank-reducing reads like ``A[i]`` / ``A[:, j]`` (the plain
 /// ``view`` above only does full/range, i.e. rank-preserving slices).
@@ -528,7 +528,7 @@ APIARY_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<float,      
 APIARY_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("view_indexed", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-// Rank-reducing index of a view (e.g. (A.T)[0]) — same rationale as ``view``.
+// Rank-reducing index of a view (e.g. (A.T)[0]), same rationale as ``view``.
 APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<std::complex<float>>)
@@ -565,9 +565,9 @@ APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<std::complex<do
 ///
 /// Records a graph View whose result axis ``i`` aliases parent axis
 /// ``perm[i]`` (``perm`` must be a permutation of ``[0, rank)``). The returned
-/// view is graph-owned and aliases the parent, so — unlike the raw
-/// ``RuntimeTensor.transpose_view()`` (which shares the parent's data pointer
-/// and is invisible to the graph) — a transposed tensor can be fed to captured
+/// view is graph-owned and aliases the parent. Unlike the raw
+/// ``RuntimeTensor.transpose_view()``, which shares the parent's data pointer
+/// and is invisible to the graph, a transposed tensor here can be fed to captured
 /// gemm/axpy/etc. ops. This is what backs the capture-aware ``A.T``.
 ///
 /// @code
@@ -600,7 +600,7 @@ APIARY_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<std::complex<do
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// write_param — explicit dataflow write into a Pipeline parameter.
+// write_param: explicit dataflow write into a Pipeline parameter.
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Two forms:
@@ -644,7 +644,7 @@ void write_param(std::string name, T &source) {
 
 /// Write a parameter from an arbitrary callback evaluated at execute time.
 ///
-/// No graph dependency is created — the callback is treated as opaque. Use
+/// No graph dependency is created; the callback is treated as opaque. Use
 /// the tensor-source form when the value is produced by upstream graph ops
 /// and you want correct scheduling.
 inline void write_param(std::string name, std::function<std::int64_t()> source_fn) {

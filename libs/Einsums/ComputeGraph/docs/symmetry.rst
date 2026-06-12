@@ -11,18 +11,18 @@ Einsums supports declaring tensor symmetries as first-class metadata. A
 satisfies the invariant ``T(i,j,...) = ±T(permutation(i,j,...))``." The
 information is consumed in three places:
 
-1. **Rank-2 BLAS dispatch** — ``gemm()`` on a symmetric tensor routes to
-   ``symm`` (or ``hemm`` for Hermitian complex matrices), which does half
+1. **Rank-2 BLAS dispatch**: ``gemm()`` on a symmetric tensor routes to
+   ``symm``, or ``hemm`` for Hermitian complex matrices, which does half
    the work of the general kernel.
 
-2. **ComputeGraph propagation** — the ``SymmetryPropagation`` pass walks
+2. **ComputeGraph propagation**: the ``SymmetryPropagation`` pass walks
    a captured graph and tags intermediates whose symmetry can be proven
    from their inputs. Downstream ``graph.execute()`` calls then pick up
    the BLAS dispatch above automatically.
 
-3. **Symmetry-exploiting algorithms** — analytic passes (memory planning,
-   CSE, inplace detection) can read the descriptor to make better
-   decisions in the future. Today they're mostly informational.
+3. **Symmetry-exploiting algorithms**: analytic passes such as memory
+   planning, CSE, and inplace detection can read the descriptor to make
+   better decisions in the future. Today they are mostly informational.
 
 .. contents::
    :local:
@@ -74,14 +74,14 @@ For uncommon patterns, build a descriptor directly from generators:
    desc.add(SymmetryOp::swap(2, 3, /*sign=*/-1));
    desc.add(SymmetryOp::group_swap({0,1}, {2,3}, /*sign=*/+1));
 
-The descriptor stores the **generators** of the invariance group, not the
-full group — ERIs' 8-fold symmetry fits in three generators; the 48-element
+The descriptor stores the generators of the invariance group, not the
+full group. ERIs' 8-fold symmetry fits in three generators, and the 48-element
 group is recomputed on demand when needed.
 
 .. note::
 
-   The descriptor is **metadata only** — attaching it doesn't rearrange
-   the stored data or reduce memory. Storage stays dense; the benefit
+   The descriptor is metadata only. Attaching it does not rearrange
+   the stored data or reduce memory. Storage stays dense, and the benefit
    comes from BLAS dispatch and graph-level reasoning that trust the
    declared invariant.
 
@@ -140,19 +140,18 @@ routes to a specialized BLAS kernel:
      - Falls through to ``gemm``
 
 For Hermitian matrices, ``'t'`` (transpose without conjugation) has no
-shortcut and falls through. Both row-major and column-major storage work
-— the dispatch adjusts argument order to match BLAS's column-major
+shortcut and falls through. Both row-major and column-major storage work;
+the dispatch adjusts argument order to match BLAS's column-major
 semantics.
 
-The win is the usual ~2× from computing only one triangle of the
-symmetric product, plus the cache-friendly layout ``symm`` uses. The
-dispatch happens at the user-facing ``gemm()`` entry; callers don't need
+The win is the usual factor of about 2 from computing only one triangle of
+the symmetric product, plus the cache-friendly layout ``symm`` uses. The
+dispatch happens at the user-facing ``gemm()`` entry, so callers do not need
 to know which kernel fires.
 
-Hermitian-only coverage today: ``symm``/``hemm``/``syrk``/``syev``/
-``potrf`` and friends exist on CUDA and HIP, falling back to general
-``gemm`` on MPS. Packed storage (``spsv``/``spev``) is deferred — dense
-storage with a flag is used throughout.
+Coverage today: ``symm``, ``hemm``, ``syrk``, ``syev``, ``potrf`` and friends
+exist on CUDA and HIP, falling back to general ``gemm`` on MPS. Packed storage
+(``spsv``, ``spev``) is deferred; dense storage with a flag is used throughout.
 
 ComputeGraph Propagation
 ========================
@@ -160,7 +159,7 @@ ComputeGraph Propagation
 If you capture a graph that computes, say, ``C = Aᵀ·A`` as an
 intermediate and then uses ``C`` in subsequent operations, the
 ``SymmetryPropagation`` pass recognizes that ``C`` must be symmetric and
-tags it for you — the downstream ``gemm(C, …)`` then takes the ``symm``
+tags it for you. The downstream ``gemm(C, …)`` then takes the ``symm``
 fast path automatically.
 
 .. code-block:: cpp
@@ -192,30 +191,30 @@ block. No user action is needed beyond using the default pipeline.
 - **Permute of rank-2 symmetric**: a ``permute`` with β=0 acting on a
   symmetric tensor produces a symmetric output.
 
-Rules are conservative — only cases that provably hold are tagged.
+Rules are conservative: only cases that provably hold are tagged.
 Everything else is left untagged and falls through to general dispatch.
 
-**Scope**: propagation only tags graph-owned intermediates (created by
-``graph.create_tensor<T>()``). User-owned tensors passed into the graph
+**Scope**: propagation only tags graph-owned intermediates, those created by
+``graph.create_tensor<T>()``. User-owned tensors passed into the graph
 are never mutated.
 
 Higher-Rank Coverage
 ====================
 
 The Phase 2 BLAS dispatch covers rank 2 exhaustively. Higher-rank
-symmetries are declared and verified today (the descriptor type and
-``symmetrize`` / ``check_symmetry`` are rank-N generic), but vendor BLAS
-has no direct support for them — no ``spmm`` for 4-index symmetric, no
+symmetries are declared and verified today, since the descriptor type and
+``symmetrize`` / ``check_symmetry`` are rank-N generic, but vendor BLAS
+has no direct support for them: no ``spmm`` for 4-index symmetric, no
 batched ``syrk``. Two paths are available when needed:
 
-1. **Dense storage + custom kernels** — write the specialized loop by
-   hand (what production CC codes do for 8-fold ERI contractions).
-2. **Expand-on-demand** — call general ``gemm`` / ``gemm_batch`` on the
+1. **Dense storage with custom kernels**: write the specialized loop by
+   hand, as production CC codes do for 8-fold ERI contractions.
+2. **Expand-on-demand**: call general ``gemm`` or ``gemm_batch`` on the
    dense storage and accept paying for the redundant work.
 
-Packed storage for big higher-rank tensors (compact ERI, antisym T2) is
-future work — the memory savings are real (~8× for 8-fold ERI) but
-require either custom kernels or per-access canonicalization.
+Packed storage for big higher-rank tensors such as compact ERI or antisym T2
+is future work. The memory savings are real, roughly 8 times for 8-fold ERI,
+but require either custom kernels or per-access canonicalization.
 
 Python API
 ==========
@@ -253,9 +252,9 @@ descriptor's ``tolerance`` field controls how much drift
 double-precision BLAS workloads.
 
 **Descriptor as source of truth.** BLAS dispatch and ComputeGraph
-passes trust the declared descriptor — they do not re-verify at every
+passes trust the declared descriptor and do not re-verify at every
 call. If you attach a symmetric descriptor to a non-symmetric matrix,
-you'll get silently wrong results. Use ``symmetrize()`` on ingest when in
+you will get silently wrong results. Use ``symmetrize()`` on ingest when in
 doubt.
 
 **Views don't inherit symmetry.** ``TensorView`` always reports
@@ -266,18 +265,18 @@ general dispatch.
 See Also
 ========
 
-- :doc:`optimization_passes` — catalog of every pass in the default pipeline.
-- ``libs/Einsums/TensorBase/include/Einsums/TensorBase/SymmetryDescriptor.hpp``
-  — the descriptor type with inline documentation on each factory.
-- ``libs/Einsums/Tensor/include/Einsums/Tensor/SymmetryOps.hpp`` —
+- :doc:`optimization_passes`: catalog of every pass in the default pipeline.
+- ``libs/Einsums/TensorBase/include/Einsums/TensorBase/SymmetryDescriptor.hpp``:
+  the descriptor type with inline documentation on each factory.
+- ``libs/Einsums/Tensor/include/Einsums/Tensor/SymmetryOps.hpp``:
   ``symmetrize`` and ``check_symmetry``.
-- ``libs/Einsums/LinearAlgebra/include/Einsums/LinearAlgebra/SymmetryDispatch.hpp``
-  — the gemm → symm/hemm dispatcher.
-- ``libs/Einsums/ComputeGraph/src/Passes/SymmetryPropagation.cpp`` —
+- ``libs/Einsums/LinearAlgebra/include/Einsums/LinearAlgebra/SymmetryDispatch.hpp``:
+  the gemm to symm/hemm dispatcher.
+- ``libs/Einsums/ComputeGraph/src/Passes/SymmetryPropagation.cpp``:
   the propagation pass's rule implementations.
-- ``libs/Einsums/Tensor/tests/unit/Symmetry.cpp`` — descriptor and
+- ``libs/Einsums/Tensor/tests/unit/Symmetry.cpp``: descriptor and
   symmetrize/check_symmetry test coverage.
-- ``libs/Einsums/LinearAlgebra/tests/unit/symm_dispatch.cpp`` — BLAS
+- ``libs/Einsums/LinearAlgebra/tests/unit/symm_dispatch.cpp``: BLAS
   dispatch correctness parity.
-- ``libs/Einsums/ComputeGraph/tests/unit/Pass_SymmetryPropagation.cpp``
-  — propagation rule coverage.
+- ``libs/Einsums/ComputeGraph/tests/unit/Pass_SymmetryPropagation.cpp``:
+  propagation rule coverage.

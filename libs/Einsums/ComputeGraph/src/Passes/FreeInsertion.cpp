@@ -24,7 +24,7 @@ namespace {
 // tid      : tensor id within `owner`.
 // owns_tid : true when `tid` lives in the graph being mutated, so the
 //            Free node can carry it as an input for dependency tracking.
-//            False for hoisted frees — the tid belongs to a child graph,
+//            False for hoisted frees, the tid belongs to a child graph,
 //            so we leave the Free's inputs empty and rely on position
 //            (FreeInsertion runs near the end of the pipeline and marks
 //            the graph sorted, so nothing reorders it).
@@ -47,7 +47,7 @@ bool already_has_free_named(std::vector<Node> const &nodes, std::string const &n
 // bodies, conditional branches, and any nesting underneath), in
 // post-order. A body-scoped intermediate is live across every iteration
 // of the loop that contains it, so its single Free belongs in the parent
-// *after* the outermost enclosing loop — never inside the body, which
+// *after* the outermost enclosing loop, never inside the body, which
 // would free-then-reuse each iteration.
 struct DescendantFreeable {
     Graph   *owner;
@@ -78,7 +78,7 @@ bool FreeInsertion::run(Graph &graph) {
 
     // Resolve a TensorId through any chain of aliases to the underlying owner.
     // Aliases (View outputs) read/write through the parent's storage, so a use
-    // of the alias is logically a use of the owner — extend the owner's
+    // of the alias is logically a use of the owner, extend the owner's
     // lifetime accordingly.
     auto resolve_owner = [&](TensorId id) {
         for (int hops = 0; hops < 32; ++hops) {
@@ -97,7 +97,7 @@ bool FreeInsertion::run(Graph &graph) {
 
     for (size_t idx = 0; idx < nodes.size(); idx++) {
         // A Free node carries the freed tensor as an input purely for
-        // dependency ordering — it isn't a real "use" that extends the
+        // dependency ordering, it isn't a real "use" that extends the
         // tensor's lifetime. Skipping it keeps the pass idempotent: on a
         // repeated run, last_use stays at the genuine final consumer, so
         // the forward dedup scan below still finds the existing Free.

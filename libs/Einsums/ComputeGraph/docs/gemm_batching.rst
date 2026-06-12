@@ -8,29 +8,29 @@ GEMM Batching
 
 The ``GEMMBatching`` optimization pass collapses groups of independent
 GEMM-pattern einsum nodes into a single ``blas::gemm_batch`` call. The
-primary win is **OpenMP-parallel execution across the batch
-dimension**: many small independent matrix multiplies can now run in
-parallel instead of one-by-one.
+primary win is OpenMP-parallel execution across the batch dimension: many
+small independent matrix multiplies can now run in parallel instead of
+one-by-one.
 
 .. note::
 
    Einsums's current ``blas::gemm_batch`` is an OpenMP-parallel loop
    over per-matrix ``dgemm`` calls (``libs/Einsums/BLASVendor/src/gemm_batch.cpp``).
-   It is **not** a vendor-native batched GEMM (MKL's
-   ``cblas_dgemm_batch``, OpenBLAS's batched path). If Einsums ever
+   It is not a vendor-native batched GEMM such as MKL's
+   ``cblas_dgemm_batch`` or OpenBLAS's batched path. If Einsums ever
    gains a vendor-native override, this pass benefits automatically
    with no code change on the pass side.
 
-   This means: the speedup comes from **batch-level parallelism**, not
+   The speedup therefore comes from batch-level parallelism, not
    from vendor-level dispatch amortization. The win is largest when
    each individual GEMM is small enough that its own internal BLAS
-   threads don't already saturate the machine — attention heads,
-   Kronecker factors, per-sample evaluations, batched chemistry
+   threads do not already saturate the machine: attention heads,
+   Kronecker factors, per-sample evaluations, and batched chemistry
    fragments. For large matrices where each GEMM already occupies all
    cores, batching can be neutral or slightly negative.
 
-The pass runs automatically as part of ``PassManager::create_default()``
-— if you already use the default pipeline, no code changes are needed.
+The pass runs automatically as part of ``PassManager::create_default()``.
+If you already use the default pipeline, no code changes are needed.
 
 .. contents::
    :local:
@@ -75,9 +75,10 @@ agree on:
        batch. Members with mismatched strides (e.g. a view vs an
        owning tensor) are rejected as a group.
 
-Any mismatch in the key splits the group; a workload can produce
+Any mismatch in the key splits the group. A workload can produce
 multiple batches if, say, half the einsums are ``float`` and half are
-``double`` — the pass emits one ``BatchedGemm`` per compatible group.
+``double``, in which case the pass emits one ``BatchedGemm`` per compatible
+group.
 
 What the graph looks like
 =========================
@@ -140,28 +141,28 @@ A runnable example lives at
    graph.apply(pm);         // GEMMBatching collapses the 32 nodes into 1
    graph.execute();
 
-On a typical development box (32 × 16×16×16 double GEMMs) the demo
-reports roughly **2-3× speedup** from the batched dispatch. Bigger wins
-show up as the matrices shrink (overhead dominates more) and as the
-batch size grows.
+On a typical development box, with 32 GEMMs of shape 16×16×16 in double
+precision, the demo reports roughly a 2 to 3 times speedup from the batched
+dispatch. Bigger wins show up as the matrices shrink, where overhead dominates
+more, and as the batch size grows.
 
-When batching does NOT help (or actively hurts)
+When batching does not help, or actively hurts
 ================================================
 
-- **Large matrices** (say ≥ 256×256×256). BLAS dispatch overhead is a
-  small fraction of the compute cost; batching won't help much.
-- **Very small batches** (2-3 members). The setup cost of packing
+- **Large matrices**, say 256×256×256 or larger. BLAS dispatch overhead is a
+  small fraction of the compute cost, so batching will not help much.
+- **Very small batches** of 2 to 3 members. The setup cost of packing
   pointer arrays can outweigh the saved dispatch.
-- **GPU paths.** The pass currently lives before GPU placement; GPU
-  batching (``cublasDgemmBatched`` / ``cublasDgemmStridedBatched``) is
+- **GPU paths.** The pass currently lives before GPU placement. GPU
+  batching through ``cublasDgemmBatched`` or ``cublasDgemmStridedBatched`` is
   a future addition. For now, GPU-placed einsums are not batched.
 - **Distributed tensors.** ``DistributionPlanning`` runs after
   ``GEMMBatching``. Einsums that would need distributed dispatch are
   not given a ``GemmHint`` by the capture path when that case is
-  relevant — and even when they are, ``DistributionPlanning`` inspects
-  ``EinsumDescriptor`` which ``BatchedGemm`` replaces. Treat the
-  interaction with distributed dispatch as "use one or the other,
-  don't expect both" for now.
+  relevant, and even when they are, ``DistributionPlanning`` inspects
+  ``EinsumDescriptor``, which ``BatchedGemm`` replaces. For now, treat the
+  interaction with distributed dispatch as use one or the other, and do
+  not expect both.
 
 Opting out
 ==========
@@ -232,11 +233,11 @@ TODO / future work
 See also
 ========
 
-- :doc:`optimization_passes` — catalog of every pass in the default pipeline.
-- :doc:`operations` — ``cg::einsum`` string syntax reference.
-- ``libs/Einsums/ComputeGraph/tests/unit/GEMMBatching.cpp`` —
+- :doc:`optimization_passes`: catalog of every pass in the default pipeline.
+- :doc:`operations`: ``cg::einsum`` string syntax reference.
+- ``libs/Einsums/ComputeGraph/tests/unit/GEMMBatching.cpp``:
   correctness suite exercising all skip paths plus multi-type and
   multi-batch cases.
-- ``libs/Einsums/ComputeGraph/tests/unit/StridedBatchedGemm.cpp`` —
-  3D, 4D, and 5D batched-contraction capture + correctness coverage,
+- ``libs/Einsums/ComputeGraph/tests/unit/StridedBatchedGemm.cpp``:
+  3D, 4D, and 5D batched-contraction capture and correctness coverage,
   plus the Target::GPU routing test.

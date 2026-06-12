@@ -14,10 +14,10 @@ namespace einsums::compute_graph::passes {
  *
  * Detects when an intermediate tensor is produced by one node and consumed
  * by exactly one subsequent node. These are candidates for in-place
- * optimization — the consumer could overwrite the intermediate's buffer
+ * optimization: the consumer could overwrite the intermediate's buffer
  * instead of using a separate output tensor.
  *
- * This pass reports candidates but does NOT modify the graph — actual
+ * This pass reports candidates but does NOT modify the graph, actual
  * in-place execution requires changes to the BLAS dispatch layer.
  *
  * @par Criteria for in-place eligibility:

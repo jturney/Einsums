@@ -85,7 +85,7 @@ Distribution Threshold
 -----------------------
 
 The ``DistributionPlanning`` pass only distributes tensors above a size threshold.
-Default is 64 MB — tensors smaller than this are replicated on every rank.
+The default is 64 MB. Tensors smaller than this are replicated on every rank.
 
 .. code-block:: cpp
 
@@ -117,10 +117,10 @@ link indices too). On non-square grids, it falls back to outer-product.
 
 **When to disable SUMMA:**
 
-- When K (link dimension) is small relative to M and N — the broadcast overhead
-  exceeds the memory savings.
-- When tensors are used in chains where the link dimension changes role — SUMMA
-  distribution may conflict (though conflict resolution handles most cases).
+- When K, the link dimension, is small relative to M and N, so the broadcast
+  overhead exceeds the memory savings.
+- When tensors are used in chains where the link dimension changes role, so SUMMA
+  distribution may conflict. Conflict resolution handles most such cases.
 
 Process Grid Shape
 -------------------
@@ -144,8 +144,8 @@ FreeInsertion Threshold
 ------------------------
 
 The ``FreeInsertion`` pass frees intermediate tensors above a size threshold.
-Default is 1 MB — smaller intermediates stay alive to avoid alloc/free overhead
-in loops.
+The default is 1 MB. Smaller intermediates stay alive to avoid alloc/free
+overhead in loops.
 
 .. code-block:: cpp
 
@@ -177,7 +177,7 @@ intermediates.
 
 - Set to ~80% of available RAM to leave room for BLAS workspace and OS overhead.
 - If your graph never exceeds RAM, leave at 0 (unlimited) for best parallelism.
-- The budget only gates Materialize nodes — it doesn't affect compute scheduling.
+- The budget only gates Materialize nodes; it does not affect compute scheduling.
 
 I/O Tuning
 ===========
@@ -204,10 +204,10 @@ with independent compute.
 
 For maximum throughput:
 
-- Use large tensors (> 1 MB) per write call — small writes are overhead-dominated.
-- Use ``ReadWrite`` mode for append (avoids rewriting existing data).
+- Use large tensors, above 1 MB per write call; small writes are overhead-dominated.
+- Use ``ReadWrite`` mode for append, which avoids rewriting existing data.
 - For distributed I/O, ``DistributedTensorFile`` uses POSIX pwrite with MPI offset
-  coordination — no MPI-IO dependency, works reliably on all filesystems.
+  coordination. It has no MPI-IO dependency and works reliably on all filesystems.
 - For slice reads, the innermost dimension (dim 0 in column-major) is contiguous
   and fastest. Non-contiguous slices require multiple read calls.
 
@@ -229,15 +229,15 @@ Enable detailed profiling to find bottlenecks:
 
 **What to look for:**
 
-- **SUMMA panels**: ``broadcast_A``, ``broadcast_B``, ``local_gemm`` — if broadcasts
-  dominate, tensors may be too small for SUMMA. Switch to outer-product.
-- **MPI collectives**: ``allreduce``, ``broadcast``, ``barrier`` — if communication
+- **SUMMA panels**: ``broadcast_A``, ``broadcast_B``, ``local_gemm``. If broadcasts
+  dominate, tensors may be too small for SUMMA, so switch to outer-product.
+- **MPI collectives**: ``allreduce``, ``broadcast``, ``barrier``. If communication
   dominates, reduce the number of distributed tensors or increase computation per
   communication.
-- **FreeInsertion**: ``free(tensor_name)`` events — if alloc/free overhead is visible,
+- **FreeInsertion**: ``free(tensor_name)`` events. If alloc/free overhead is visible,
   increase the FreeInsertion threshold.
-- **I/O**: ``read_etn``, ``write_etn`` — if I/O is not overlapped with compute,
-  ensure you're using DataflowExecutor with IOPrefetch.
+- **I/O**: ``read_etn``, ``write_etn``. If I/O is not overlapped with compute,
+  ensure you are using DataflowExecutor with IOPrefetch.
 
 Common Patterns
 ================

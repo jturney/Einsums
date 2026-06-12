@@ -35,7 +35,7 @@ int einsums_main() {
     std::cout << "=== ComputeGraph GPU Offloading Example ===\n\n";
 
     // ── 1. Create float tensors (GPU-eligible on MPS) ───────────────────────
-    // Use float, not double — MPS only accelerates float32 GEMM.
+    // Use float, not double, MPS only accelerates float32 GEMM.
     auto A = create_random_tensor<float>("A", 256, 256);
     auto B = create_random_tensor<float>("B", 256, 256);
     auto C = create_zero_tensor<float>("C", 256, 256);

@@ -81,7 +81,7 @@ TEST_CASE("FreeInsertion - is idempotent across runs", "[ComputeGraph][FreeInser
 
 TEST_CASE("FreeInsertion - hoists a body intermediate to after the loop", "[ComputeGraph][FreeInsertion][Loop]") {
     // A body-created intermediate is live across every iteration. Its Free
-    // must land in the parent, *after* the Loop node — never inside the
+    // must land in the parent, *after* the Loop node, never inside the
     // body (which would free-then-reuse each iteration).
     auto A = create_random_tensor<double>("A", 8, 8);
     auto C = create_zero_tensor<double>("C", 8, 8);

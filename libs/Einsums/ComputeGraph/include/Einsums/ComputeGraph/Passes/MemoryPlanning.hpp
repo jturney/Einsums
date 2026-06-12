@@ -23,7 +23,7 @@ namespace einsums::compute_graph::passes {
  * - **device_peak_memory()**: Peak simultaneously live device tensors
  * - **device_reuse_savings()**: Bytes saveable by reusing non-overlapping device allocations
  *
- * @note This pass does NOT modify the graph — it is analysis only.
+ * @note This pass does NOT modify the graph, it is analysis only.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT MemoryPlanning : public OptimizerPass {
   public:

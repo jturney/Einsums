@@ -127,7 +127,7 @@ TEST_CASE("GEMMBatching: five GEMMs all batch together", "[ComputeGraph][Optimiz
 }
 
 TEST_CASE("GEMMBatching: single-precision floats batch separately from doubles", "[ComputeGraph][Optimizer][GEMMBatching]") {
-    // Two doubles at the same level + two floats — pass should create
+    // Two doubles at the same level + two floats, pass should create
     // two batches (one per type).
     constexpr size_t M = 3, K = 3, N = 3;
     auto             Ad1 = create_random_tensor<double>("Ad1", M, K);
@@ -212,8 +212,8 @@ TEST_CASE("GEMMBatching: different alpha/beta do not batch", "[ComputeGraph][Opt
 }
 
 TEST_CASE("GEMMBatching: different trans flags do not batch", "[ComputeGraph][Optimizer][GEMMBatching]") {
-    // First einsum: "ik;kj->ij" — trans_a=N, trans_b=N
-    // Second einsum: "ki;kj->ij" — trans_a=T (link k is first index of A)
+    // First einsum: "ik;kj->ij", trans_a=N, trans_b=N
+    // Second einsum: "ki;kj->ij", trans_a=T (link k is first index of A)
     auto A1 = create_random_tensor<double>("A1", 4, 5);
     auto B1 = create_random_tensor<double>("B1", 5, 3);
     auto C1 = create_zero_tensor<double>("C1", 4, 3);
@@ -235,7 +235,7 @@ TEST_CASE("GEMMBatching: different trans flags do not batch", "[ComputeGraph][Op
 
 TEST_CASE("GEMMBatching: dependent GEMMs (chain) do not batch", "[ComputeGraph][Optimizer][GEMMBatching]") {
     // C1 feeds into the second einsum via its A input, so they're at
-    // different levels — shouldn't batch (and can't, semantically).
+    // different levels, shouldn't batch (and can't, semantically).
     constexpr size_t M = 3, K = 3, N = 3;
     auto             A  = create_random_tensor<double>("A", M, K);
     auto             B  = create_random_tensor<double>("B", K, N);

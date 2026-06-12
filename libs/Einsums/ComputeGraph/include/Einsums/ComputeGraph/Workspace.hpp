@@ -21,9 +21,9 @@ namespace einsums::compute_graph {
  * @brief Owns tensors that persist across multiple Graphs and Pipelines.
  *
  * Workspace is the outermost scoping layer for tensor lifetime:
- * - **Workspace** — cross-computation (ERI, MO coefficients, basis data)
- * - **Pipeline** — cross-stage (Fock matrix, density, amplitudes)
- * - **Graph** — single-computation intermediates (temporaries)
+ * - Workspace: cross-computation (ERI, MO coefficients, basis data)
+ * - Pipeline: cross-stage (Fock matrix, density, amplitudes)
+ * - Graph: single-computation intermediates (temporaries)
  *
  * Tensors declared via Workspace use deferred allocation: they have
  * valid metadata (name, dims, dtype) but no backing data until the
@@ -37,7 +37,7 @@ namespace einsums::compute_graph {
  *
  * cg::Workspace ws("h2o");
  *
- * // Declare tensors — no data allocated yet
+ * // Declare tensors, no data allocated yet
  * auto &eri = ws.declare_tensor<double, 4>("ERI", nao, nao, nao, nao);
  * auto &C   = ws.declare_zero_tensor<double, 2>("C", nao, nmo);
  *
@@ -53,7 +53,7 @@ namespace einsums::compute_graph {
  * scf.apply(pm);   // Passes decide distribution, then materialize
  * scf.execute();    // Computation runs on materialized tensors
  *
- * // eri and C survive — reuse in MP2, CCSD, etc.
+ * // eri and C survive, reuse in MP2, CCSD, etc.
  * @endcode
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace {
@@ -117,7 +117,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
         auto &t                   = declare_tensor<T, Rank>(tensor_name, dims...);
         _handles.back().init_kind = InitKind::Zero;
         // Tag the tensor itself so the same init kind reaches any Graph
-        // that captures this tensor later — make_handle reads
+        // that captures this tensor later, make_handle reads
         // tensor.pending_init() and populates the new handle's
         // init_kind / zero_fn. Without this the workspace's canonical
         // handle would have init metadata, but each per-graph handle

@@ -138,7 +138,7 @@ TEST_CASE("View - aliasing: write through slice mutates parent", "[ComputeGraph]
         // Use permute to fill slice with a constant: slice(i,j) = 7 via permute from a const tensor
         // Simpler: scale-by-zero then add. But we have no add on a constant. Use a custom fill via cg::ones-like setup:
         // For this test we just verify the view aliases by directly setting A through the slice's identity.
-        // Capture: scale slice by 0 then by some constant via two-pass — easier to use a permute from a filled source.
+        // Capture: scale slice by 0 then by some constant via two-pass, easier to use a permute from a filled source.
         cg::scale(0.0, &slice); // slice = 0
     }
     pipe.execute();
@@ -268,7 +268,7 @@ TEST_CASE("View - param bounds across multiple executes", "[ComputeGraph][View][
         REQUIRE(A(k) == 0.0);
     REQUIRE(A(5) == 7.0);
 
-    // Execute 3: n = 0  (no-op slice — 0-extent is allowed)
+    // Execute 3: n = 0  (no-op slice, 0-extent is allowed)
     for (size_t k = 0; k < 6; ++k)
         A(k) = 9.0;
     pipe.set_param("n", 0);
@@ -373,7 +373,7 @@ TEST_CASE("View - aliases survive FreeInsertion (parent kept alive)", "[ComputeG
         // First reader of the slice
         cg::permute("ij <- ij", 0.0, &external_out, 1.0, slice);
 
-        // Second reader of the slice — touches external_in's storage again.
+        // Second reader of the slice, touches external_in's storage again.
         cg::scale(2.0, &slice);
     }
 
@@ -403,11 +403,11 @@ TEST_CASE("View - topological order: parent write before alias read", "[ComputeG
         cg::scale(0.0, &A); // A := 0
 
         auto &slice = cg::view<double, 1>(A, cg::ViewAxis::range(0, 2));
-        // Read alias — must run AFTER the parent write.
+        // Read alias, must run AFTER the parent write.
         cg::permute("i <- i", 0.0, &dst, 1.0, slice);
     }
 
-    // Prime A nonzero before execute — if the read ran before the write,
+    // Prime A nonzero before execute, if the read ran before the write,
     // dst would see the old values. After execute, dst must read zeros.
     A(0) = 99.0;
     A(1) = 99.0;
@@ -560,7 +560,7 @@ TEST_CASE("Trace - recorded form into pipeline", "[ComputeGraph][Trace]") {
 }
 
 TEST_CASE("Trace - recorded form on a graph view", "[ComputeGraph][Trace][View]") {
-    // Trace of a slice — the trace executor reads through the view's data
+    // Trace of a slice, the trace executor reads through the view's data
     // pointer just like any other consumer. With slice = A[1:4, 1:4] from
     // a 5x5 A whose entries are i*10+j, the slice is:
     //   [[11, 12, 13],
@@ -599,7 +599,7 @@ TEST_CASE("View - mixed callback + param + const bounds", "[ComputeGraph][View][
         auto                  &stage = pipe.add_stage("s");
         cg::CaptureGuard const g(stage);
 
-        // lo = callback (1), hi = param "hi" (5) — slice [1, 5)
+        // lo = callback (1), hi = param "hi" (5), slice [1, 5)
         auto &slice = cg::view<double, 1>(A, cg::ViewAxis::range(std::function<int64_t()>([&] { return dynamic_lo; }), "hi"));
         cg::scale(0.0, &slice);
     }

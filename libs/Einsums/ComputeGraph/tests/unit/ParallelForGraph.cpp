@@ -163,7 +163,7 @@ TEST_CASE("cg::parallel_for + einsum + parallel_reduce in one graph", "[ComputeG
 TEST_CASE("cg::parallel_for - outside capture executes immediately", "[ComputeGraph][ParallelFor]") {
     auto A = create_zero_tensor<double>("A", 20);
 
-    // No capture guard — should execute immediately via TaskPool
+    // No capture guard, should execute immediately via TaskPool
     cg::parallel_for(
         "fill", 0, 20, [&A](size_t i) { A(i) = static_cast<double>(i); }, &A);
 

@@ -21,7 +21,7 @@
 namespace einsums::compute_graph {
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HardwareProfileDB — runtime detection
+// HardwareProfileDB: runtime detection
 // ═══════════════════════════════════════════════════════════════════════════════
 
 std::string HardwareProfileDB::detect_cpu_brand() {
@@ -240,7 +240,7 @@ HardwareProfileDB HardwareProfileDB::load_defaults() {
         p.peak_gflops_fp64      = 0.0; // MPS doesn't support FP64 GEMM
         p.peak_gflops_fp32      = 200.0;
         p.device_bandwidth_gbps = 200.0; // Unified memory
-        p.pcie_bandwidth_gbps   = 200.0; // No PCIe — unified
+        p.pcie_bandwidth_gbps   = 200.0; // No PCIe, unified
         p.gpu_launch_latency_us = 5.0;
         p.gemm_efficiency       = {{.M = 16, .N = 16, .K = 16, .gflops = 10.0},
                                    {.M = 64, .N = 64, .K = 64, .gflops = 80.0},

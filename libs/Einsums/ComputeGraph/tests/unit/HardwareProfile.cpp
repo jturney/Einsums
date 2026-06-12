@@ -480,9 +480,9 @@ TEST_CASE("ContractionPlanning - rank-4 contraction detected", "[ComputeGraph][P
     cg::Graph graph("cp_rank4");
     {
         cg::CaptureGuard const guard(graph);
-        // T1[j,k,l,m] = A[i,j,k,l] * B[i,m] — contract over i
+        // T1[j,k,l,m] = A[i,j,k,l] * B[i,m], contract over i
         cg::einsum("ijkl;im->jklm", 0.0, &T1, 1.0, A, B);
-        // T2[j,k,l,m] = T1[j,k,l,i] * C[i,m] — contract over i (reusing index)
+        // T2[j,k,l,m] = T1[j,k,l,i] * C[i,m], contract over i (reusing index)
         // Actually need different link index. Let's use a separate capture:
     }
 
@@ -655,7 +655,7 @@ TEST_CASE("HardwareProfile - estimate_allgather_time_us", "[ComputeGraph][Hardwa
 
 TEST_CASE("HardwareProfile - zero bandwidth fallback", "[ComputeGraph][HardwareProfile]") {
     cg::HardwareProfile profile;
-    profile.cpu.inter_node_bandwidth_gbps = 0.0; // Unset — should fallback to 1.0
+    profile.cpu.inter_node_bandwidth_gbps = 0.0; // Unset: should fallback to 1.0
 
     double const t = profile.estimate_allreduce_time_us(1024, 4);
     CHECK(t > 0.0); // Should not divide by zero
@@ -680,7 +680,7 @@ TEST_CASE("HardwareProfileDB - detect_gpu_name", "[ComputeGraph][HardwareProfile
 TEST_CASE("HardwareProfileDB - fallback for unknown brand", "[ComputeGraph][HardwareProfile]") {
     auto db = cg::HardwareProfileDB::load_defaults();
 
-    // Build profile — should always succeed even with unknown hardware
+    // Build profile, should always succeed even with unknown hardware
     auto profile = db.build_profile();
     CHECK_FALSE(profile.cpu.name.empty());
     CHECK(profile.cpu.peak_gflops_fp64 > 0);
@@ -988,6 +988,6 @@ TEST_CASE("Workspace - declare tensors of different types", "[ComputeGraph][Work
 TEST_CASE("gpu::device_name returns string", "[ComputeGraph][GPU]") {
     // On mock backend, returns "". On MPS, returns device name.
     std::string const name = einsums::gpu::device_name();
-    // Just verify it doesn't crash — content depends on backend
+    // Just verify it doesn't crash, content depends on backend
     CHECK(name.size() >= 0); // Always true, but exercises the function
 }

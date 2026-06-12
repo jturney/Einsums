@@ -105,7 +105,7 @@ TEST_CASE("Conditional node - predicate inspects tensor", "[ComputeGraph][Contro
     graph.execute();
     REQUIRE(std::abs(value(0) - 2.5) < 1e-12); // 5.0 * 0.5 = 2.5
 
-    // Execute again — now value is 2.5, which is < 3, so else branch
+    // Execute again, now value is 2.5, which is < 3, so else branch
     graph.execute();
     REQUIRE(std::abs(value(0) - 5.0) < 1e-12); // 2.5 * 2.0 = 5.0
 }
@@ -121,7 +121,7 @@ TEST_CASE("Conditional node - empty else branch", "[ComputeGraph][ControlFlow]")
         cg::CaptureGuard const guard(then_g);
         cg::scale(0.5, &value);
     }
-    // else_g left empty — no-op if predicate is false
+    // else_g left empty, no-op if predicate is false
 
     graph.execute();
     REQUIRE(std::abs(value(0) - 5.0) < 1e-12); // 10 * 0.5

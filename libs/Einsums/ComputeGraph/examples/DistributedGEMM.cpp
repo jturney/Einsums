@@ -11,7 +11,7 @@
  * 1. Declare deferred tensors (globally-sized, allocated lazily)
  * 2. Capture einsum operations into a graph
  * 3. Optimization passes automatically distribute, slice, and communicate
- * 4. Execute — each rank computes its local partition
+ * 4. Execute: each rank computes its local partition
  *
  * Run with: mpirun -np 4 ./CG_DistributedGEMM
  *
@@ -70,8 +70,8 @@ int einsums_main() {
     }
 
     // ── Method 2: ComputeGraph with automatic distribution ──────────────
-    // C is deferred — DistributionPlanning will distribute it on the 2D grid.
-    // A and B are pre-allocated — InputSlicing auto-slices them.
+    // C is deferred, DistributionPlanning will distribute it on the 2D grid.
+    // A and B are pre-allocated, InputSlicing auto-slices them.
     cg::Graph graph("distributed_gemm");
     auto     &C = graph.declare_zero_tensor<double, 2>(std::string("C"), M, N);
 

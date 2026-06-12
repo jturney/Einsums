@@ -21,7 +21,7 @@ namespace einsums::compute_graph::passes {
  * - DeviceToHost is redundant if residency is Host or Both
  *
  * Additionally, consecutive GPU nodes sharing a tensor don't need
- * intermediate D2H + H2D round-trips — the tensor stays on device.
+ * intermediate D2H + H2D round-trips, the tensor stays on device.
  *
  * Uses Belady's optimal strategy: when the full schedule is known,
  * tensors whose next GPU use is furthest away are the best eviction

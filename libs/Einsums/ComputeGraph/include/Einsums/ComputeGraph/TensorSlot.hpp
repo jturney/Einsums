@@ -61,7 +61,7 @@ struct TensorSlot {
  * Stored in a shared_ptr so the executor lambda captures it by shared
  * ownership. Updating the values changes the computation on next execute().
  *
- * Both prefactors are @ref PrefactorScalar variants — they hold one of
+ * Both prefactors are @ref PrefactorScalar variants, they hold one of
  * float/double/complex<float>/complex<double>. The executor extracts the
  * concrete scalar via ``as<T>`` when dispatching to typed BLAS.
  */

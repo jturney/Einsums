@@ -93,7 +93,7 @@ expected<ParsedEinsumSpec, GraphError> parse_einsum_spec(std::string_view spec) 
     // (so multi-char index names like "sig"/"lam" work); a comma-less operand is
     // char-split, one index per character. Deciding this globally silently
     // mis-tokenized a comma-less operand as a single multi-char index whenever a
-    // sibling operand used commas — e.g. "ijab <- Q,a,i,j,f ; Q,b,f" parsed the
+    // sibling operand used commas, e.g. "ijab <- Q,a,i,j,f ; Q,b,f" parsed the
     // output as one index "ijab" instead of [i,j,a,b], giving wrong results (bug-1026).
     ParsedEinsumSpec result;
     result.raw       = std::string(spec);

@@ -20,7 +20,7 @@ namespace einsums::compute_graph::passes {
  * Should run after Reorder (which optimizes for memory) so that IOPrefetch
  * can pull reads earlier without violating dependency constraints.
  *
- * DiskWrite nodes are NOT moved — writes should happen as late as possible
+ * DiskWrite nodes are NOT moved, writes should happen as late as possible
  * to avoid blocking compute on I/O completion.
  */
 class EINSUMS_EXPORT IOPrefetch : public OptimizerPass {

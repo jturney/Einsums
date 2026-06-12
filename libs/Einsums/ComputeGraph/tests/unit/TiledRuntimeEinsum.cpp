@@ -161,7 +161,7 @@ TEST_CASE("TiledRuntimeTensor - sparse inputs: missing tiles contribute zero", "
 
 TEST_CASE("TiledRuntimeTensor - misaligned contracted partition throws", "[ComputeGraph][TiledRuntime]") {
     TiledRuntimeTensor<double> A("A", Grid{{1, 2}, {2, 1}}); // k partition {2,1}
-    TiledRuntimeTensor<double> B("B", Grid{{1, 2}, {1, 1}}); // k partition {1,2} — mismatch
+    TiledRuntimeTensor<double> B("B", Grid{{1, 2}, {1, 1}}); // k partition {1,2}, mismatch
     TiledRuntimeTensor<double> C("C", Grid{{1, 2}, {1, 1}});
 
     fill_tiled(A, [](int, int) { return 1.0; });

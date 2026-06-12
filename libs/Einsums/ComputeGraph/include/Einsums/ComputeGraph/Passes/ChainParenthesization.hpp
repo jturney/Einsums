@@ -12,7 +12,7 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief Optimal matrix chain parenthesization pass (analysis only).
  *
- * Detects chains of matrix multiplications in the graph — sequences of Einsum
+ * Detects chains of matrix multiplications in the graph, sequences of Einsum
  * nodes with GEMM pattern (C[i,j] = A[i,k] * B[k,j]) where each node's output
  * feeds the next node as input. Applies the classical O(n³) dynamic programming
  * algorithm to find the optimal multiplication order.

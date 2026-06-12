@@ -79,7 +79,7 @@ TEST_CASE("OpenMPExecutor - produces correct results", "[ComputeGraph][Executor]
 }
 
 TEST_CASE("OpenMPExecutor - independent nodes", "[ComputeGraph][Executor]") {
-    // Two independent operations — can run in parallel
+    // Two independent operations, can run in parallel
     auto A = create_random_tensor<double>("A", 5, 5);
     auto B = create_random_tensor<double>("B", 5, 5);
     auto C = create_zero_tensor<double>("C", 5, 5);
@@ -110,7 +110,7 @@ TEST_CASE("OpenMPExecutor - independent nodes", "[ComputeGraph][Executor]") {
 }
 
 TEST_CASE("OpenMPExecutor - dependent chain", "[ComputeGraph][Executor]") {
-    // Chain: C = A*B, then D = C*A — must execute in order
+    // Chain: C = A*B, then D = C*A, must execute in order
     auto A = create_random_tensor<double>("A", 4, 4);
     auto B = create_random_tensor<double>("B", 4, 4);
     auto C = create_zero_tensor<double>("C", 4, 4);
@@ -498,7 +498,7 @@ TEST_CASE("DataflowExecutor - async read correctness", "[ComputeGraph][Executor]
 
         cg::read_async(
             "async load", "fake.h5", "/data", &data,
-            /*start*/ [&]() { /* Begin "async" read — in mock, just set a flag */ },
+            /*start*/ [&]() { /* Begin "async" read, in mock, just set a flag */ },
             /*finish*/
             [&]() {
                 // Fill data with known values
@@ -590,10 +590,10 @@ TEST_CASE("DataflowExecutor - async read overlap with compute", "[ComputeGraph][
                     data.data()[idx] = 1.0;
             });
 
-        // Independent of data — can overlap with the async read
+        // Independent of data, can overlap with the async read
         cg::scale(3.0, &indep);
 
-        // Depends on data — must wait for finish
+        // Depends on data, must wait for finish
         cg::axpy(1.0, data, &result);
     }
 
@@ -620,7 +620,7 @@ TEST_CASE("IOPrefetch - moves DiskRead to beginning", "[ComputeGraph][Passes][IO
     cg::Graph graph("prefetch_test");
     {
         cg::CaptureGuard const guard(graph);
-        // Compute first, then read — read has no dependency on compute
+        // Compute first, then read, read has no dependency on compute
         cg::scale(2.0, &A);
         cg::scale(3.0, &A);
         cg::read("load data", "fake.h5", "/data", &data, [&]() { std::memcpy(data.data(), A.data(), 16 * sizeof(double)); });
@@ -745,7 +745,7 @@ TEST_CASE("IOPrefetch - hoists a loop-invariant DiskRead out of the loop body", 
 TEST_CASE("IOPrefetch - does NOT hoist when the destination is overwritten in the body", "[ComputeGraph][Passes][IO][Loop]") {
     // The destination is re-read every iteration and then OVERWRITTEN by an
     // einsum (a second value-writer the optimizer can't absorb away). The
-    // read must stay in the body — hoisting would freeze stale data. The
+    // read must stay in the body, hoisting would freeze stale data. The
     // read counter must show one read per iteration.
     constexpr size_t N          = 4;
     auto             B          = create_random_tensor<double>("B", 4, 4);
@@ -762,7 +762,7 @@ TEST_CASE("IOPrefetch - does NOT hoist when the destination is overwritten in th
             for (size_t k = 0; k < data.size(); ++k)
                 data.data()[k] = 1.0;
         });
-        cg::einsum("ik;kj->ij", &data, B, B); // overwrites data — second writer
+        cg::einsum("ik;kj->ij", &data, B, B); // overwrites data, second writer
         cg::axpy(1.0, data, &acc);
     }
 
@@ -782,7 +782,7 @@ TEST_CASE("IOPrefetch - does NOT hoist when the destination is overwritten in th
 }
 
 TEST_CASE("IOPrefetch - hoists a DiskRead out of a nested loop", "[ComputeGraph][Passes][IO][Loop]") {
-    // Read in an inner loop body, read-only — must be hoisted all the way
+    // Read in an inner loop body, read-only, must be hoisted all the way
     // out, past the outer loop, and read exactly once.
     constexpr size_t No         = 2;
     constexpr size_t Ni         = 3;

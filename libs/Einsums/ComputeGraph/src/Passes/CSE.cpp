@@ -37,7 +37,7 @@ bool permute_desc_equal(PermuteDescriptor const &a, PermuteDescriptor const &b) 
 }
 
 /// Check if two BatchedGemmDescriptors are equivalent. All fields must
-/// match — including the strided flag and its per-operand batch strides,
+/// match: including the strided flag and its per-operand batch strides,
 /// since pointer-array and strided batches have different executor
 /// semantics even when the BLAS key looks identical.
 bool batched_gemm_desc_equal(BatchedGemmDescriptor const &a, BatchedGemmDescriptor const &b) {
@@ -64,7 +64,7 @@ bool op_data_equal(OpData const &a, OpData const &b) {
     if (auto *ba = std::get_if<BatchedGemmDescriptor>(&a)) {
         return batched_gemm_desc_equal(*ba, std::get<BatchedGemmDescriptor>(b));
     }
-    // monostate or unknown — only equal if both monostate
+    // monostate or unknown, only equal if both monostate
     return std::holds_alternative<std::monostate>(a) && std::holds_alternative<std::monostate>(b);
 }
 
@@ -78,9 +78,9 @@ bool prefactor_is_zero(PrefactorScalar const &pf) {
 /// CSE eliminates a duplicate node by redirecting readers of its output onto
 /// another node's output. That is only valid for a *pure overwrite* producer:
 /// the output must be a function of the inputs alone, never read back. Ops that
-/// accumulate into or otherwise read their destination — axpby/axpy/scale/
+/// accumulate into or otherwise read their destination, axpby/axpy/scale/
 /// element-transform (monostate op_data here), or an einsum/permute/batched
-/// gemm with a nonzero destination prefactor — are excluded. Two such nodes
+/// gemm with a nonzero destination prefactor, are excluded. Two such nodes
 /// writing different buffers are not the same computation (they read different
 /// destinations), and their scalar coefficients may not even be represented in
 /// op_data, so op_data_equal cannot tell them apart.
@@ -138,7 +138,7 @@ bool CSE::run(Graph &graph) {
     // value: if anything writes node i's output again (e.g. a later in-place
     // scale), the redirected readers would observe the mutated value instead
     // of the common subexpression. So every output buffer involved in a merge
-    // must have exactly one writer — the producing node itself.
+    // must have exactly one writer, the producing node itself.
     std::unordered_map<void const *, int> writer_count;
     for (auto const &nd : nodes) {
         if (is_lifecycle(nd.kind))
@@ -233,11 +233,11 @@ bool CSE::run(Graph &graph) {
             // Equivalent! Redirect j's outputs to i's outputs.
             //
             // Two redirects are needed, for two different consumers:
-            //   1. tensor_redirect + the Node::inputs rewrite below — keeps the
+            //   1. tensor_redirect + the Node::inputs rewrite below, keeps the
             //      TensorId metadata correct so liveness-based passes
             //      (MemoryPlanning, FreeInsertion) see node i's output as the
             //      live buffer and node j's as dead.
-            //   2. Graph::redirect_slot — repoints node j's output slot at node
+            //   2. Graph::redirect_slot: repoints node j's output slot at node
             //      i's buffer so any *already-baked* executor lambda that
             //      captured j's slot reads i's result at execute time. Without
             //      this the metadata rewrite is invisible at runtime and a

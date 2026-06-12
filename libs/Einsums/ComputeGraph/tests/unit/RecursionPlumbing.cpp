@@ -5,7 +5,7 @@
 
 /// @file RecursionPlumbing.cpp
 /// @brief Tests for the sub-graph recursion infrastructure shared by
-///        optimization passes — ``Graph::for_each_subgraph`` and
+///        optimization passes, ``Graph::for_each_subgraph`` and
 ///        ``PassManager::run`` opt-in recursion via
 ///        ``OptimizerPass::recurse_into_subgraphs()``.
 ///
@@ -53,12 +53,12 @@ class TracingPass : public cg::OptimizerPass {
 // Builds a parent graph with one Loop and one Conditional child. Sub-graph
 // names are the auto-generated ``<label>/body``, ``<label>/then``,
 // ``<label>/else`` that ``Graph::add_loop`` / ``add_conditional`` assign at
-// construction time — there's no ``set_name`` on Graph, the name is bound
+// construction time, there's no ``set_name`` on Graph, the name is bound
 // to the label passed in.
 cg::Graph build_loop_and_conditional(Tensor<double, 2> &A, Tensor<double, 2> &B, Tensor<double, 2> &C) {
     cg::Graph g("parent");
 
-    // ``CaptureGuard`` is non-nesting — every capture block runs against
+    // ``CaptureGuard`` is non-nesting, every capture block runs against
     // exactly one graph and must exit before the next one starts. So we
     // (1) capture parent ops, (2) declare the loop/conditional nodes on
     // the parent (no capture needed for ``add_loop``/``add_conditional``
@@ -167,7 +167,7 @@ TEST_CASE("PassManager recurses for opt-in passes", "[ComputeGraph][Recursion][P
 
     pm.run(g);
 
-    // Expect: parent, then each direct child of parent — order matches
+    // Expect: parent, then each direct child of parent, order matches
     // node iteration. The exact order in build_loop_and_conditional is:
     //   parent → body/body → cond/then → cond/else.
     REQUIRE(log.size() == 4);
@@ -274,7 +274,7 @@ TEST_CASE("Recursion policy - safe local-rewrite passes opt in", "[ComputeGraph]
 
 TEST_CASE("Recursion policy - hoisting / aggregation passes stay opt-out", "[ComputeGraph][Recursion][Policy]") {
     // Hoisting passes walk children themselves inside run() and emit into
-    // the parent — they must not be auto-recursed.
+    // the parent, they must not be auto-recursed.
     CHECK_FALSE(cg::passes::Materialization{}.recurse_into_subgraphs());
     CHECK_FALSE(cg::passes::FreeInsertion{}.recurse_into_subgraphs());
     CHECK_FALSE(cg::passes::GPUPlacement{}.recurse_into_subgraphs()); // shared-budget walk
@@ -286,7 +286,7 @@ TEST_CASE("Recursion policy - hoisting / aggregation passes stay opt-out", "[Com
     CHECK_FALSE(cg::passes::ChainParenthesization{}.recurse_into_subgraphs());
     CHECK_FALSE(cg::passes::GPUDiagnostics{}.recurse_into_subgraphs());
     // CSE stays opt-out: it has a soundness gap on the mutable-tensor reuse a
-    // loop body exhibits — it merges nodes writing distinct, later-mutated
+    // loop body exhibits, it merges nodes writing distinct, later-mutated
     // outputs. Recursing it broke the SCF example. See CSE.hpp.
     CHECK_FALSE(cg::passes::CSE{}.recurse_into_subgraphs());
 }
@@ -294,9 +294,9 @@ TEST_CASE("Recursion policy - hoisting / aggregation passes stay opt-out", "[Com
 TEST_CASE("DeadNodeElimination transforms a loop body via PassManager recursion", "[ComputeGraph][Recursion]") {
     // A dead body intermediate (written, never read). With DNE opted into
     // sub-graph recursion, running the PassManager eliminates it inside the
-    // body — proving the recursion actually transforms the body, not just
+    // body: proving the recursion actually transforms the body, not just
     // the top-level graph. (We use DNE rather than CSE/Reorder, which stay
-    // opt-out — see the policy test above.)
+    // opt-out, see the policy test above.)
     auto A = create_random_tensor<double>("A", 4, 4);
     auto C = create_zero_tensor<double>("C", 4, 4);
 

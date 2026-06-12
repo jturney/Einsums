@@ -31,7 +31,7 @@ int einsums_main() {
     using namespace einsums::index;
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 1. Conditional node — if-then-else based on tensor value
+    // 1. Conditional node, if-then-else based on tensor value
     // ═══════════════════════════════════════════════════════════════════════
     println("=== Conditional Node ===\n");
     {
@@ -46,7 +46,7 @@ int einsums_main() {
             [&]() { cg::scale(2.0, &value); }                                             // else
         );
 
-        // Execute repeatedly — value oscillates between halving and doubling
+        // Execute repeatedly, value oscillates between halving and doubling
         for (int rep = 0; rep < 6; rep++) {
             graph.execute();
             println("  After execute {}: value = {:.4f}", rep + 1, value(0));
@@ -55,7 +55,7 @@ int einsums_main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 2. Loop node — convergence-based iteration
+    // 2. Loop node, convergence-based iteration
     // ═══════════════════════════════════════════════════════════════════════
     println("\n=== Loop Node ===\n");
     {

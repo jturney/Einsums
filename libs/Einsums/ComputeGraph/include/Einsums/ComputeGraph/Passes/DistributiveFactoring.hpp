@@ -48,7 +48,7 @@ namespace einsums::compute_graph::passes {
  *
  * @par Opt-in
  * This pass is **not** registered in ``PassManager::create_default()``.
- * Factoring is a workload-dependent tradeoff — it saves FLOPs only when
+ * Factoring is a workload-dependent tradeoff, it saves FLOPs only when
  * the shared operand's contraction is expensive relative to the extra
  * axpy chain, and it adds a temporary allocation. Opt in per graph when
  * you know the pattern helps:

@@ -26,7 +26,7 @@ bool prefactor_is_zero(PrefactorScalar const &pf) {
 }
 
 /// A node that reads its own destination is self-modifying across iterations
-/// and must never be hoisted out of a loop — hoisting drops the per-iteration
+/// and must never be hoisted out of a loop, hoisting drops the per-iteration
 /// update. This covers the always-accumulating ops (scale/axpy/axpby/element-
 /// transform) and any einsum/permute/batched-gemm with a *nonzero* destination
 /// prefactor (``C = c_pf*C + …`` reads the old C). A pure overwrite (prefactor
@@ -56,7 +56,7 @@ bool reads_its_output(Node const &nd) {
 /// Count real (non-lifecycle) writers of each tensor across @p g and every
 /// descendant sub-graph, keyed by the tensor's underlying pointer (stable
 /// across graphs). A producer can only be hoisted out of a loop when each
-/// of its outputs has exactly one such writer in the loop subtree — itself.
+/// of its outputs has exactly one such writer in the loop subtree, itself.
 /// Otherwise another node in the loop also writes that tensor, and removing
 /// the producer's per-iteration write changes which write wins (e.g. an
 /// einsum that resets C followed by an in-place scale that would then
@@ -127,7 +127,7 @@ bool LoopInvariantHoisting::run(Graph &graph) {
 
             // A node that reads the tensor it writes is self-modifying
             // (scale(C), or an accumulating gemm C = C + A·B). Never hoist
-            // these — the per-iteration update would be lost. ``reads_its_output``
+            // these: the per-iteration update would be lost. ``reads_its_output``
             // covers the always-accumulating ops and nonzero-prefactor einsum/
             // permute/gemm; the explicit input==output scan catches any other op
             // that lists the same tensor as both an input and an output.
@@ -150,8 +150,8 @@ bool LoopInvariantHoisting::run(Graph &graph) {
                 // A tensor counts as written-in-body if a *direct* body node
                 // writes it, OR if any node anywhere in the loop body subtree
                 // writes the same underlying buffer. The latter catches writes
-                // performed inside nested subgraphs — a conditional branch or
-                // an inner loop — which never appear in this body's own output
+                // performed inside nested subgraphs, a conditional branch or
+                // an inner loop, which never appear in this body's own output
                 // lists. Without it, an input mutated only inside a conditional
                 // would look invariant and the consumer would be wrongly
                 // hoisted out of the loop.
@@ -174,7 +174,7 @@ bool LoopInvariantHoisting::run(Graph &graph) {
 
             // Refuse to hoist a producer whose output is written by more than
             // one value-node in the loop subtree. Removing its per-iteration
-            // write would change which write wins each iteration — e.g. an
+            // write would change which write wins each iteration, e.g. an
             // einsum that resets C, followed by an in-place op that would then
             // accumulate across iterations instead of starting fresh. (A
             // DiskRead with no inputs is "invariant" by the input check above;
@@ -201,14 +201,14 @@ bool LoopInvariantHoisting::run(Graph &graph) {
             // body node. That earlier read observes the value from the previous
             // iteration (the output is loop-carried *through* this producer), so
             // computing it once before the loop would change what the earlier
-            // reader sees. Reads by *later* body nodes are fine — they consume
+            // reader sees. Reads by *later* body nodes are fine, they consume
             // this iteration's value, which is loop-invariant once hoisted.
             bool output_read_earlier = false;
             for (auto out_tid : bnode.outputs) {
                 for (size_t bj = 0; bj < bi && !output_read_earlier; bj++) {
                     // Use *effective* reads so an earlier control-flow node (a
                     // nested loop / conditional) that reads the output inside its
-                    // subtree counts — its own raw input list is empty.
+                    // subtree counts, its own raw input list is empty.
                     auto [ein, eout] = loop_desc->body->effective_io(body_nodes[bj]);
                     if (std::ranges::find(ein, out_tid) != ein.end()) {
                         output_read_earlier = true;
@@ -230,7 +230,7 @@ bool LoopInvariantHoisting::run(Graph &graph) {
             }
         }
 
-        // Bail out cheaply if nothing's invariant — otherwise we'd move-from
+        // Bail out cheaply if nothing's invariant, otherwise we'd move-from
         // every body_nodes entry just to put them back, and a ``continue``
         // path that left ``body_nodes`` with moved-from std::function
         // executors would silently turn the loop body into a no-op.
@@ -246,7 +246,7 @@ bool LoopInvariantHoisting::run(Graph &graph) {
 
         // Move invariant nodes from body to parent graph. Hoisted nodes
         // reference TensorIds from the body graph's tensor table, but those
-        // IDs are not registered in the parent graph — naively appending the
+        // IDs are not registered in the parent graph, naively appending the
         // node to the parent leaves later passes (and the executor) unable
         // to resolve its tensors. So for each TensorId the hoisted node
         // touches, we register the corresponding TensorHandle in the parent
@@ -303,7 +303,7 @@ bool LoopInvariantHoisting::run(Graph &graph) {
         }
 
         // Collect each hoisted node's output IDs so we can wire them as
-        // inputs of the Loop node below — without this data-flow edge,
+        // inputs of the Loop node below, without this data-flow edge,
         // ``topological_sort`` has nothing tying the hoisted producers
         // to the loop's body.
         std::vector<TensorId> hoisted_output_ids;

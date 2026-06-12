@@ -114,7 +114,7 @@ template <VectorConcept ResultType, MatrixConcept MatType>
 void tensor_trace(ResultType *result, MatType const &A) {
     // Tr(A) = sum_i A(i,i) = einsum(" <- ii", result, A) but we don't have
     // single-operand einsum. Use dot with identity-like approach:
-    // Tr(A) = sum_i A(i,i) — compute manually outside graph, or use
+    // Tr(A) = sum_i A(i,i), compute manually outside graph, or use
     // einsum with a unit vector trick.
     // Simplest correct approach: element_transform to sum diagonal
     using T        = typename MatType::ValueType;
@@ -171,7 +171,7 @@ void matrix_exponential(MatType *expA, MatType const &A, size_t order = 10) {
         auto &tmp  = ctx.graph()->create_tensor<T, 2>("_exp_tmp", n, n);
 
         // expA = I (identity)
-        // We need to set expA to identity — use a custom node
+        // We need to set expA to identity, use a custom node
         auto    *exp_ptr = expA;
         TensorId exp_id  = ctx.get_or_register(*expA);
         TensorId a_id    = ctx.get_or_register(A);

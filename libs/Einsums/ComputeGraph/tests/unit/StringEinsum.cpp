@@ -422,7 +422,7 @@ TEST_CASE("String einsum - rank-3 contraction to rank-1", "[ComputeGraph][String
 
 TEST_CASE("String einsum - rank-3 × rank-2 contraction", "[ComputeGraph][StringEinsum][HighRank]") {
     // C[i,j] = A[i,j,k] * B[k,j]  (contract over k)
-    // Note: j appears in A, B, and C — it's a target index, not a link
+    // Note: j appears in A, B, and C, it's a target index, not a link
     auto A          = create_random_tensor<double>("A", 3, 4, 5);
     auto B          = create_random_tensor<double>("B", 5, 4);
     auto C          = create_zero_tensor<double>("C", 3, 4);

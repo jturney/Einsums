@@ -30,7 +30,7 @@ namespace einsums::compute_graph {
  * Each thread has its own CaptureContext (thread-local singleton), so capture
  * is thread-safe. Nested captures are not supported.
  *
- * Users typically don't interact with CaptureContext directly — use CaptureGuard
+ * Users typically don't interact with CaptureContext directly, use CaptureGuard
  * instead for RAII-based capture.
  *
  * @see CaptureGuard for the RAII wrapper
@@ -172,7 +172,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
             }
         }
 
-        // New tensor — register it
+        // New tensor, register it
         TensorId id     = _graph->register_tensor(make_handle(tensor, 0));
         _ptr_to_id[ptr] = id;
         return id;
@@ -220,8 +220,8 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
 
     /// Get-or-create a TensorSlot for an already-registered tensor.
     /// Used by capture-time helpers (e.g. ``cg::view``) that need to
-    /// create a slot for a tensor object they constructed themselves
-    /// — the @ref get_slot path requires the object's address to match
+    /// create a slot for a tensor object they constructed themselves.
+    /// The @ref get_slot path requires the object's address to match
     /// a re-registration cycle, but explicit-registration callers can
     /// bypass that.
     template <GraphCapturableTensor TensorType>

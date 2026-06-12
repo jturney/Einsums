@@ -13,8 +13,8 @@
  * on the scalar would explode the variant or force every Node/Graph to be
  * templated. Instead, the prefactor itself is type-erased into a variant over
  * the four bound dtypes. Optimization passes that read the prefactor use
- * the helpers below; the executor lambda — which already knows the concrete
- * tensor type — calls @ref as<T> to extract a typed scalar for BLAS dispatch.
+ * the helpers below; the executor lambda, which already knows the concrete
+ * tensor type, calls @ref as<T> to extract a typed scalar for BLAS dispatch.
  */
 
 #include <fmt/format.h>

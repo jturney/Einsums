@@ -32,8 +32,8 @@ namespace einsums::compute_graph {
  * RuntimeTensor, ...) or a tile-wise sparse in-core tensor
  * (TiledRuntimeTensor). The latter no longer satisfies BasicTensorConcept (a
  * tiled tensor isn't a single-buffer tensor), but it still exposes the metadata
- * surface make_handle needs — name/rank/dim/stride/data (with data() null for
- * the multi-tile case) — so we admit it explicitly here.
+ * surface make_handle needs, name/rank/dim/stride/data (with data() null for
+ * the multi-tile case), so we admit it explicitly here.
  */
 template <typename D>
 concept GraphCapturableTensor =
@@ -125,7 +125,7 @@ struct TensorHandle {
     std::function<void(std::vector<size_t> const &)> resize_deferred_fn;
 
     /// Type-erased function to set distribution metadata on the tensor after materialization.
-    /// Args: (global_dims, local_offsets) — enables T.range(dim) and T.global(indices...).
+    /// Args: (global_dims, local_offsets), enabling T.range(dim) and T.global(indices...).
     std::function<void(std::vector<size_t> const &, std::vector<size_t> const &)> set_distribution_fn;
 
     /// Distribution metadata (set by DistributionPlanningPass, read by MaterializationPass).
@@ -138,7 +138,7 @@ struct TensorHandle {
     /// ``.symmetry()`` and stores a copy here. The ``SymmetryPropagation``
     /// pass may later infer additional symmetry and update this hint plus
     /// the backing tensor (via ``set_symmetry_fn``). ``nullptr`` means
-    /// "no declared symmetry" — downstream dispatch falls through.
+    /// "no declared symmetry", so downstream dispatch falls through.
     std::shared_ptr<SymmetryDescriptor const> symmetry_hint;
 
     /// Type-erased setter that pushes a SymmetryDescriptor back to the
@@ -167,18 +167,18 @@ struct TensorHandle {
     size_t name_hash{0};
 
     /**
-     * @brief Aliasing parent — set when this handle represents a non-owning
+     * @brief Aliasing parent, set when this handle represents a non-owning
      *        view of another tensor.
      *
      * Populated by ``cg::view()`` (the @c View op): the slice's TensorHandle
      * has ``aliases == parent_id``. Storage allocation is the parent's
-     * responsibility — the Alloc/Free passes skip handles with ``aliases``
+     * responsibility: the Alloc/Free passes skip handles with ``aliases``
      * set, the Lifetime pass extends the parent's live range to cover all
      * uses of any of its aliases, and the InplaceOptimization /
      * scheduling passes treat reads/writes through an alias as touching
      * the parent.
      *
-     * ``0`` means "not an alias" (no parent — own your own storage).
+     * ``0`` means "not an alias" (no parent, own your own storage).
      */
     TensorId aliases{0};
 
@@ -189,7 +189,7 @@ struct TensorHandle {
      * a reference to the original tensor and checks that its name hash still matches.
      * Returns true if the tensor appears valid, false if it may have been destroyed.
      *
-     * @note This is a best-effort check — it catches most use-after-free cases but
+     * @note This is a best-effort check, it catches most use-after-free cases but
      *       is not guaranteed to detect all memory corruption.
      */
     std::function<bool()> validator;
@@ -234,7 +234,7 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
     TensorHandle h;
     h.tensor_ptr = const_cast<void *>(static_cast<void const *>(&tensor));
 
-    // data_ptr may be nullptr for deferred (shell) tensors — that's expected.
+    // data_ptr may be nullptr for deferred (shell) tensors, that's expected.
     if constexpr (requires { tensor.is_materialized(); }) {
         h.data_ptr    = tensor.is_materialized() ? const_cast<void *>(static_cast<void const *>(tensor.data())) : nullptr;
         h.alloc_state = tensor.is_materialized() ? AllocState::Materialized : AllocState::Deferred;
@@ -262,7 +262,7 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
 
     // swap_data: redirect the tensor's internal data pointer to a new buffer.
     // Returns the previous data pointer. Used for GPU shadow allocation swapping.
-    // Owning tensors expose ``set_data``; non-owning views (TensorView) do not —
+    // Owning tensors expose ``set_data``; non-owning views (TensorView) do not,
     // skip the lambda for view types so make_handle still type-checks.
     using CleanTensor = std::remove_cvref_t<TensorType>;
     using ValType     = typename CleanTensor::ValueType;
@@ -304,16 +304,16 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
     // materialize_fn: allocate backing storage for a deferred tensor. When a
     // workspace-declared tensor is later referenced by ops in some Graph's
     // capture, that Graph's tensor_map gets a fresh handle made by this
-    // function — workspace's canonical handle (with its own ``materialize_fn``)
+    // function: workspace's canonical handle (with its own ``materialize_fn``)
     // is *not* shared. Synthesizing the callback here means the Materialization
     // pass can hoist allocation of body-resident workspace tensors out of a
     // loop without having to look up workspace's canonical handle.
     //
     // Owning tensors expose ``materialize()``; TensorView / RuntimeTensorView
-    // do not — the if-constexpr keeps the function type-erased for both. For
+    // do not, the if-constexpr keeps the function type-erased for both. For
     // workspace-declared tensors, the workspace's own canonical handle also
     // sets ``materialize_fn`` (so ``Workspace::materialize_all()`` still works
-    // unchanged) — both closures end up calling the same ``ptr->materialize()``,
+    // unchanged), both closures end up calling the same ``ptr->materialize()``,
     // which is idempotent.
     if constexpr (requires(CleanTensor &t) { t.materialize(); }) {
         h.materialize_fn = [tensor_mut]() { tensor_mut->materialize(); };
@@ -323,7 +323,7 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
     // policy at declaration time (e.g. by ``Workspace::declare_zero_tensor``),
     // propagate that to the handle so the Materialization pass knows to emit
     // an Initialize node alongside the Materialize. ``pending_init()`` lives
-    // on the tensor itself — not on workspace's _handles vector — so the
+    // on the tensor itself, not on workspace's _handles vector, so the
     // information survives capture into bodies the workspace doesn't own.
     if constexpr (requires(CleanTensor const &t) { t.pending_init(); }) {
         switch (tensor.pending_init()) {
@@ -411,7 +411,7 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
         try {
             if constexpr (has_life_token) {
                 if (life_token.expired())
-                    return false; // tensor destroyed — definitive, no UB
+                    return false; // tensor destroyed, definitive, no UB
             }
             return std::hash<std::string>{}(tensor_mut->name()) == expected_hash;
         } catch (...) {

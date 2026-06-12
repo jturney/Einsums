@@ -229,7 +229,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * Convenience wrapper over
      * ``apply(PassManager::create_default()) + workspace()->materialize_all() + execute()``.
-     * Throws if ``workspace()`` is null — pipelines must own their
+     * Throws if ``workspace()`` is null, pipelines must own their
      * storage scope explicitly.
      *
      * @code
@@ -365,7 +365,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         return _params->get_or(name, fallback);
     }
 
-    /// Direct access to the parameter table — used by capture-time helpers
+    /// Direct access to the parameter table, used by capture-time helpers
     /// to bake the table into executor lambdas (capture by shared_ptr).
     [[nodiscard]] std::shared_ptr<ParamTable>       &params_ptr() { return _params; }
     [[nodiscard]] std::shared_ptr<ParamTable> const &params_ptr() const { return _params; }
@@ -399,7 +399,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 // These free functions wrap the construct-set_workspace-add_stage-CaptureGuard-
 // apply-materialize-execute ritual so a caller can spell the whole pipeline in
 // one expression without touching every chore by hand. Workspace is always
-// required — there is no default singleton; pipelines must own their storage
+// required: there is no default singleton; pipelines must own their storage
 // scope explicitly.
 
 /**

@@ -14,7 +14,7 @@ namespace einsums::compute_graph::passes {
  *
  * For each Loop node in the graph, identifies operations inside the loop body
  * whose inputs are never modified by any other operation in the loop body.
- * These operations are "loop-invariant" — they compute the same result every
+ * These operations are "loop-invariant", they compute the same result every
  * iteration and can be moved before the loop to execute only once.
  *
  * @par Example

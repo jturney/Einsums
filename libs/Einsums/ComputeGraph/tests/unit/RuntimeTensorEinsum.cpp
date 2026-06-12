@@ -51,7 +51,7 @@ TEST_CASE("cg::einsum — RuntimeTensor GEMM-shaped contraction", "[ComputeGraph
 }
 
 TEST_CASE("cg::einsum — RuntimeTensor rank-3 batched contraction", "[ComputeGraph][RuntimeTensor]") {
-    // "ijk <- ik ; ij" — rank-3 from rank-2 operands.
+    // "ijk <- ik ; ij", rank-3 from rank-2 operands.
     auto A_typed = create_random_tensor<double>("A", 2, 3);
     auto B_typed = create_random_tensor<double>("B", 2, 4);
     auto C_typed = create_zero_tensor<double>("C", 2, 4, 3);
@@ -136,7 +136,7 @@ TEST_CASE("cg::einsum — rank-4 outer product (ijab <- ia ; jb)", "[ComputeGrap
         }
     }
 
-    // Same operation on RuntimeTensor operands — exercises the runtime-rank
+    // Same operation on RuntimeTensor operands, exercises the runtime-rank
     // generic_string_einsum path with no link indices and a rank-4 output.
     RuntimeTensor<double> const A_rt(A_typed);
     RuntimeTensor<double> const B_rt(B_typed);
@@ -165,7 +165,7 @@ TEST_CASE("cg::einsum — rank-4 outer product (ijab <- ia ; jb)", "[ComputeGrap
 
 TEST_CASE("cg::einsum — RuntimeTensor batched-GEMM via PackedGemm (bij;bjk->bik)", "[ComputeGraph][RuntimeTensor][PackedGemm]") {
     // C[b,i,k] = sum_j A[b,i,j] * B[b,j,k]. Has a Hadamard index (b) and
-    // a link index (j) — exactly the shape PackedGemm specializes for.
+    // a link index (j), exactly the shape PackedGemm specializes for.
     // Previously this would have fallen through to the generic nested-loop
     // kernel for RuntimeTensor; now it should reach try_packed_gemm via
     // the runtime ContractionSpec entry point.

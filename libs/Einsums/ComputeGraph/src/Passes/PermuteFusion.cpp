@@ -18,7 +18,7 @@ namespace einsums::compute_graph::passes {
 namespace {
 
 /// Is this permute safe to fuse into a consumer's index pattern?
-/// Must be a pure axis reordering — no scaling, no accumulation, no
+/// Must be a pure axis reordering, no scaling, no accumulation, no
 /// duplicate or missing labels (which would be a diagonal/sum, not a
 /// permutation).
 bool can_fuse(PermuteDescriptor const &p) {
@@ -92,7 +92,7 @@ bool try_fuse(Graph &graph, std::vector<Node> &nodes, size_t perm_idx, size_t ei
     // The executor lambda captured `a_slot` / `b_slot` pointers by value,
     // so we can't change WHICH slot it reads. Instead we repoint the
     // PERMUTE-OUTPUT slot's data pointer and dims to match the
-    // PRE-PERMUTE tensor — the einsum then reads the original tensor's
+    // PRE-PERMUTE tensor, the einsum then reads the original tensor's
     // memory through its existing slot capture. Safe because we already
     // checked the permute's output has exactly one consumer (this
     // einsum); no other node observes the mutated slot.
@@ -106,7 +106,7 @@ bool try_fuse(Graph &graph, std::vector<Node> &nodes, size_t perm_idx, size_t ei
     auto new_slot_sub = rewrite_subscript(*perm_desc, slot_indices);
 
     // Commit: live indices, descriptor snapshot, slot redirect, and
-    // graph-level edge. Order doesn't matter — none of these are
+    // graph-level edge. Order doesn't matter, none of these are
     // observed until graph.execute() runs next.
     slot_indices = new_slot_sub;
     slot_spec    = new_slot_sub;
@@ -145,7 +145,7 @@ bool PermuteFusion::run(Graph &graph) {
 
     // consumer_count[tid] = how many nodes read tensor tid. Needed so
     // we only fuse when the permute's output has EXACTLY one consumer
-    // — otherwise removing the permute would break other readers.
+    // otherwise removing the permute would break other readers.
     std::unordered_map<TensorId, size_t> consumer_count;
     for (auto const &n : nodes)
         for (auto tid : n.inputs)
@@ -204,7 +204,7 @@ bool PermuteFusion::run(Graph &graph) {
     report(1, fmt::format("absorbed {} permute(s) into einsum subscripts ({} candidate(s) examined)", _num_rewrites, _num_candidates));
 
     // Compact: drop marked-for-removal nodes. Same idiom as
-    // ScaleAbsorption — cheap single-pass filter, preserves order.
+    // ScaleAbsorption: cheap single-pass filter, preserves order.
     std::vector<Node> filtered;
     filtered.reserve(nodes.size());
     for (size_t i = 0; i < nodes.size(); i++)

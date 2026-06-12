@@ -88,7 +88,7 @@ bool TransferElimination::run(Graph &graph) {
     // Build next-use map for Belady eviction decisions.
     auto next_use = build_next_use_map(nodes);
 
-    // Identify pinned tensors (used in loop bodies — don't evict).
+    // Identify pinned tensors (used in loop bodies, don't evict).
     std::unordered_set<TensorId> pinned;
     for (auto const &[tid, handle] : graph.tensors_map()) {
         if (is_loop_tensor(nodes, tid)) {
@@ -127,7 +127,7 @@ bool TransferElimination::run(Graph &graph) {
             auto res = residency[tid];
 
             if (res == Residency::Device || res == Residency::Both) {
-                // Already on device — redundant.
+                // Already on device, redundant.
                 remove[idx] = true;
                 _num_eliminated++;
                 EINSUMS_LOG_INFO("TransferElimination: removed redundant H2D for tensor id={}", tid);
@@ -156,7 +156,7 @@ bool TransferElimination::run(Graph &graph) {
                 }
 
                 if (!found_evictable)
-                    break; // All resident tensors are pinned — can't free space.
+                    break; // All resident tensors are pinned, can't free space.
 
                 // Insert a D2H eviction node.
                 auto &evict_handle = graph.tensor(evict_tid);
@@ -201,7 +201,7 @@ bool TransferElimination::run(Graph &graph) {
             auto res = residency[tid];
 
             if (res == Residency::Host || res == Residency::Both) {
-                // Already on host — redundant.
+                // Already on host, redundant.
                 remove[idx] = true;
                 _num_eliminated++;
                 EINSUMS_LOG_INFO("TransferElimination: removed redundant D2H for tensor id={}", tid);

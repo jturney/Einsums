@@ -47,14 +47,14 @@ int einsums_main() {
 
     cg::Workspace workspace("My Workspace");
 
-    // Input tensors — owned by the Workspace (shared across pipelines)
+    // Input tensors, owned by the Workspace (shared across pipelines)
     auto &H = workspace.declare_random_tensor<double, 2>("H", N, N); // "Hamiltonian"
     auto &X = workspace.declare_random_tensor<double, 2>("X", N, N); // "Transformation"
 
     cg::Pipeline pipeline("iterative_solver");
     pipeline.set_workspace(workspace);
 
-    // Working tensors — owned by the Pipeline (stage-local intermediates)
+    // Working tensors, owned by the Pipeline (stage-local intermediates)
     auto &F       = pipeline.declare_zero_tensor<double, 2>("F", N, N);     // "Fock matrix"
     auto &F_old   = pipeline.declare_zero_tensor<double, 2>("F_old", N, N); // Previous iteration
     auto &tmp     = pipeline.declare_zero_tensor<double, 2>("tmp", N, N);

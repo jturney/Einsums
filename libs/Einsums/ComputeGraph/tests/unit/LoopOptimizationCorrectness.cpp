@@ -8,8 +8,8 @@
 ///        optimization passes (loop_handling_audit.md).
 ///
 /// Every test here builds a ComputeGraph with one or more *loop nodes*
-/// (``cg::Graph::add_loop``) whose bodies use heavy in-place tensor reuse —
-/// the pattern that exposed the CSE and Reorder soundness gaps — then runs
+/// (``cg::Graph::add_loop``) whose bodies use heavy in-place tensor reuse,
+/// the pattern that exposed the CSE and Reorder soundness gaps, then runs
 /// the FULL default PassManager and asserts the executed result matches an
 /// eager reference computed the same way. If any pass that recurses into
 /// loop bodies corrupts the body (eliminates a needed node, reorders past an
@@ -67,7 +67,7 @@ TEST_CASE("Loop correctness - mutable-reuse body through full default pipeline",
         // CSE bait: two ops writing distinct tensors from the same input.
         cg::axpby(1.0, H, 0.0, &F); // F = H
         cg::axpby(1.0, H, 0.0, &G); // G = H   (same computation, different output)
-        // F and G then diverge — a CSE that merged them would corrupt G.
+        // F and G then diverge, a CSE that merged them would corrupt G.
         cg::axpy(1.0, A, &F); // F += A
         // gemm into a reused intermediate, then accumulate (mutable reuse of acc).
         cg::einsum("ik;kj->ij", 0.0, &tmp, 1.0, A, A); // tmp = A*A
@@ -130,7 +130,7 @@ TEST_CASE("Loop correctness - sequential loops through full default pipeline", "
     auto             out = create_zero_tensor<double>("out", 3, 3);
 
     // Two loop nodes at the same graph level. The second consumes the
-    // first's output — exercises cross-loop dataflow at the parent level.
+    // first's output, exercises cross-loop dataflow at the parent level.
     cg::Graph g("sequential");
     auto     &loop1 = g.add_loop("loop1", N1, fixed_iterations(N1));
     {
@@ -200,7 +200,7 @@ TEST_CASE("Loop correctness - GEMM chain restructured inside a loop body", "[Com
     // ContractionPlanning recursing, the chain inside the loop body gets
     // restructured; the result must still match the eager reference
     // (associativity-equivalent), proving the restructuring is sound on a
-    // loop body — the same kind of body transform that broke CSE/Reorder.
+    // loop body, the same kind of body transform that broke CSE/Reorder.
     auto A   = create_random_tensor<double>("A", 100, 1);
     auto B   = create_random_tensor<double>("B", 1, 100);
     auto C   = create_random_tensor<double>("C", 100, 1);

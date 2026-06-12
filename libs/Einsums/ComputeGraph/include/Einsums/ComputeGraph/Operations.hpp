@@ -46,7 +46,7 @@
 namespace einsums::compute_graph {
 
 // ─────────────────────────────────────────────────────────────────────────────
-// einsum — graph-aware, runtime-string contraction spec
+// einsum: graph-aware, runtime-string contraction spec
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // The tuple-indexed overloads (`einsum(Indices{i,j}, ...)`) were removed
@@ -272,17 +272,17 @@ APIARY_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<float,        
 APIARY_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-// dst is a view, src is an owning tensor — common when writing a tensor into a slab of a larger destination.
+// dst is a view, src is an owning tensor, common when writing a tensor into a slab of a larger destination.
 APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<float>,                                                   einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
 APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<double>,                                                  einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<float>>,                                     einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<double>>,                                    einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-// dst is an owning tensor, src is a view — common when extracting a slab into a freshly-allocated dst.
+// dst is an owning tensor, src is a view, common when extracting a slab into a freshly-allocated dst.
 APIARY_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("block_copy", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
-// Both view — copying between two captured view slabs.
+// Both view, copying between two captured view slabs.
 APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<float>,                                                   einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<double>,                                                  einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<float>>,                                     einsums::RuntimeTensorView<std::complex<float>>)
@@ -335,7 +335,7 @@ APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<doub
                 s_off += (src_offsets[k] + idx[k]) * s_str[k];
             }
             d_data[d_off] = s_data[s_off];
-            // Axis 0 fastest — correctness-only, not cache-aware.
+            // Axis 0 fastest, correctness-only, not cache-aware.
             for (size_t k = 0; k < N; ++k) {
                 if (++idx[k] < extents[k])
                     break;
@@ -419,7 +419,7 @@ void element_transform(CType *C, UnaryOperator unary_op) {
 /// directly and accepts ``std::function<T(T)>`` so pybind11's caster can wrap a
 /// Python callable. A serial loop (rather than the OMP-parallel path used by
 /// ``tensor_algebra::element_transform``) keeps the per-call GIL acquire from
-/// causing thread contention — fine for the small unary maps typical of
+/// causing thread contention, which is fine for the small unary maps typical of
 /// SCF/MP2 (eigenvalues, denominators).
 template <typename TensorType>
     requires(CoreBasicTensorConcept<TensorType> || IsTiledTensorV<std::remove_cvref_t<TensorType>>)
@@ -509,15 +509,15 @@ APIARY_INSTANTIATE_AS("element_transform", einsums::TiledRuntimeTensor<std::comp
 /// The additive complement of @ref scale. Unlike the Python-callable
 /// @ref element_transform_python (a Python call per element), this is a tight
 /// compiled loop, so it's the fast backing for the numpy-style scalar ``+`` /
-/// ``-`` operators (e.g. ``A + 1.0``, ``A += c``). In-place — no allocation —
-/// which is what lets a denominator scratch be reused across a loop instead of
-/// allocating a fresh tensor per iteration. Records an opaque @ref
+/// ``-`` operators (e.g. ``A + 1.0``, ``A += c``). It works in place with no
+/// allocation, which is what lets a denominator scratch be reused across a loop
+/// instead of allocating a fresh tensor per iteration. Records an opaque @ref
 /// OpKind::Custom node when capturing (no einsum pass rewrites it), or runs
 /// eagerly otherwise.
 ///
 /// Walks the contiguous backing storage (``data()[0..size())``), matching
-/// @ref element_transform_python's convention — correct for dense tensors and
-/// the contiguous views the operators produce.
+/// @ref element_transform_python's convention. This is correct for dense tensors
+/// and the contiguous views the operators produce.
 template <CoreBasicTensorConcept AType>
 // clang-format off
 APIARY_EXPOSE
@@ -733,7 +733,7 @@ void gemm(U const alpha, T const &A, T const &B, U const beta, T *C) {
 
     // When beta != 0 the gemm accumulates into C (``C = α·A·B + β·C``), so it
     // *reads* C as well as writing it. List C as an input in that case so the
-    // scheduler and loop-invariance analysis see the read-modify-write — without
+    // scheduler and loop-invariance analysis see the read-modify-write, without
     // it, an accumulating gemm looks like a pure producer and can be wrongly
     // hoisted out of a loop or reordered. A pure overwrite (beta == 0) keeps the
     // two-input form and stays eligible for those optimizations.
@@ -768,7 +768,7 @@ APIARY_TEMPLATE_KWARGS("trans_a", "trans_b")
 // All 8 combinations of (A, B, C) x (owning, view), per dtype, per (TransA, TransB)
 // bool pair. INSTANTIATE_BOOLS expands each line to 4 entries (T/F)x(T/F).
 //
-// float — AAA/AAV/AVA/AVV/VAA/VAV/VVA/VVV (A = owning, V = view)
+// float: AAA/AAV/AVA/AVV/VAA/VAV/VVA/VVV (A = owning, V = view)
 APIARY_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
 APIARY_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          float)
 APIARY_INSTANTIATE_BOOLS("gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
@@ -999,7 +999,7 @@ void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType 
     };
 
     // ger always accumulates (``A += α·X·Y^T``), so it reads A as well as
-    // writing it — list A as an input so loop-invariance and scheduling see the
+    // writing it, list A as an input so loop-invariance and scheduling see the
     // read-modify-write (see the gemm note above).
     ctx.record(OpKind::Ger, "ger", {x_id, y_id, a_id}, {a_id}, std::move(executor));
 }
@@ -1079,7 +1079,7 @@ APIARY_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,  
     };
 
     // ger always accumulates (``A += α·X·Y^T``), so it reads A as well as
-    // writing it — list A as an input so loop-invariance and scheduling see the
+    // writing it, list A as an input so loop-invariance and scheduling see the
     // read-modify-write (see the gemm note above).
     ctx.record(OpKind::Ger, "ger", {x_id, y_id, a_id}, {a_id}, std::move(executor));
 }
@@ -1143,7 +1143,7 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
 /// Python-friendly graph-aware dot: writes the result into ``result->data()[0]``.
 ///
 /// ``result`` is a pre-allocated rank-1 (or higher, but only element 0 is
-/// touched) tensor that gives Python users a graph-native scalar handle —
+/// touched) tensor that gives Python users a graph-native scalar handle, so
 /// SCF energy patterns like ``e = ½ Σ D · (H+F)`` can be captured.
 template <CoreBasicTensorConcept ResultType, typename AType, typename BType>
     requires requires {
@@ -1160,7 +1160,7 @@ APIARY_MODULE("linalg")
 // alias their parent so reads through them participate in the graph's
 // dependency edges via TensorHandle::aliases.
 //
-// float — RRR/RRV/RVR/RVV/VRR/VRV/VVR/VVV
+// float: RRR/RRV/RVR/RVV/VRR/VRV/VVR/VVV
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::RuntimeTensorView<float>,                                                    einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
@@ -1227,7 +1227,7 @@ APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>,
     LabeledSection("dot_python capture");
     // Register the result as a normal tensor slot (not a scalar handle) so
     // downstream tensor ops (scale, axpy, ...) on the same tensor see the
-    // same slot id — get_or_register_scalar would key by data()[0] and
+    // same slot id, get_or_register_scalar would key by data()[0] and
     // collide with get_slot(*result), giving rank-0 metadata to the scale.
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
@@ -1324,8 +1324,8 @@ APIARY_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<std::complex<double>,
 }
 
 /// Graph-aware maximum element (real dtypes), written into ``result->data()[0]``.
-/// Backs the numpy-style ``A.max()``. Real-only — complex ordering is not
-/// meaningful (use ``norm(MAXABS)`` for the largest magnitude).
+/// Backs the numpy-style ``A.max()``. Real dtypes only, since complex ordering
+/// is not meaningful; use ``norm(MAXABS)`` for the largest magnitude.
 template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
     requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>)
 // clang-format off
@@ -1530,7 +1530,7 @@ template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept VectorType>
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
 // All 4 combinations of (Result, Vectors) x (owning, view), per dtype. The
-// vectors list is homogeneous — every element must be the same C++ type,
+// vectors list is homogeneous, every element must be the same C++ type,
 // since VectorType is a single template parameter shared across the list.
 // For the canonical MP2 denominator use case (all four eps vectors are
 // owning tensors) this is fine. If you really need a mix of owning and
@@ -1569,7 +1569,7 @@ APIARY_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<doubl
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::outer_sum: result rank ({}) must equal number of vectors ({})", result->rank(), N);
     }
     // Capture-time checks: only rank and null. Dim matching is deferred to
-    // execute time because views report their parent's dims at capture time —
+    // execute time because views report their parent's dims at capture time,
     // the slice dims aren't resolved until the View executor runs.
     for (size_t k = 0; k < N; ++k) {
         if (vectors[k] == nullptr) {
@@ -1615,7 +1615,7 @@ APIARY_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<doubl
             for (size_t k = 0; k < N; ++k)
                 offset += idx[k] * strides[k];
             out[offset] = sum;
-            // Increment multi-index (axis 0 fastest — direction is irrelevant for correctness).
+            // Increment multi-index (axis 0 fastest, direction is irrelevant for correctness).
             for (size_t k = 0; k < N; ++k) {
                 if (++idx[k] < dims[k])
                     break;
@@ -1811,12 +1811,12 @@ APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocat
 //   tr(A) = Σᵢ A(i,i)
 //
 // Two forms, mirroring the dot/norm pattern:
-//   - eager:    ``auto t = cg::trace(A);`` — executes immediately. Throws if
+//   - eager:    ``auto t = cg::trace(A);``, executes immediately. Throws if
 //               called during graph capture (capture has no scalar return).
-//   - recorded: ``cg::trace(&t, A);`` — records into the active graph. ``t``
+//   - recorded: ``cg::trace(&t, A);``, records into the active graph. ``t``
 //               is read at execute time and is the destination scalar.
 //
-// Trace doesn't need a dedicated OpKind — it lowers to a one-liner inside an
+// Trace doesn't need a dedicated OpKind, it lowers to a one-liner inside an
 // ``OpKind::Custom`` node. Passes that want to recognize the pattern can
 // pattern-match by node label (``"trace"``).
 
@@ -2068,7 +2068,7 @@ APIARY_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<do
     ctx.record(OpKind::SymmGemm, "symm_gemm", {a_id, b_id}, {c_id}, std::move(executor));
 }
 
-// Original compile-time-rank symm_gemm — kept under a different signature
+// Original compile-time-rank symm_gemm, kept under a different signature
 // for legacy C++ callers; the runtime-rank form above is what the Python
 // bindings target.
 template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, MatrixConcept CType>
@@ -2539,7 +2539,7 @@ auto svd(AType const &A) {
 /// Singular value decomposition (returning): ``A = U * diag(S) * Vt``.
 ///
 /// Returns the tuple ``(U, S, Vt)``. ``S`` is real even for complex
-/// inputs. ``U`` and ``Vt`` are always present — the user can post-
+/// inputs. ``U`` and ``Vt`` are always present, and the user can post-
 /// filter for the "no vectors" case if needed. Cannot be used during
 /// graph capture (returns by value); ``A`` is left unmodified.
 template <RuntimeRankTensorConcept AType>
@@ -2647,7 +2647,7 @@ auto truncated_svd(AType const &A, size_t k) {
 /// triples of ``A``. Returns ``(U_k, S_k, Vt_k)`` with ``U_k`` of shape
 /// ``(m, k)``, ``S_k`` of shape ``(k,)``, and ``Vt_k`` of shape ``(k, n)``.
 ///
-/// Randomized algorithm with over-sampling factor 5 — requires
+/// Randomized algorithm with over-sampling factor 5, which requires
 /// ``A.dim(0) >= k + 5``. Smaller inputs raise ``IndexError`` from the
 /// projection step. Results are approximate; expect small drift versus a
 /// full ``svd``.
@@ -2704,7 +2704,7 @@ auto truncated_syev(AType const &A, size_t k) {
 /// ``(eigenvectors, eigenvalues)`` where eigenvectors has shape ``(n, k)``
 /// and eigenvalues has shape ``(k,)``.
 ///
-/// Randomized algorithm with over-sampling factor 5 — requires
+/// Randomized algorithm with over-sampling factor 5, which requires
 /// ``A.dim(0) >= k + 5``. Smaller inputs raise ``IndexError`` from the
 /// projection step. Results are approximate top-``k`` eigenpairs; expect
 /// small drift versus a full ``syev``, especially for tightly clustered
@@ -2962,8 +2962,8 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     // time constants here; for typed tensors with a static ::Rank the whole
     // condition is a constant comparison and the throw-branch is dead-code-
     // eliminated. For runtime-rank tensors (RuntimeTensor) the check fires
-    // against ``tensor.rank()``. Spec strings built at runtime — ``Python``
-    // bindings, user input — leave ``counts.known == false`` and skip the
+    // against ``tensor.rank()``. Spec strings built at runtime, ``Python``
+    // bindings, user input, leave ``counts.known == false`` and skip the
     // check entirely (matching the "compile-time when possible, silent
     // otherwise" policy).
     if (spec.counts.known) {
@@ -3014,12 +3014,12 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     // shared between the descriptor (for pass introspection / rewrite)
     // and the executor lambda. Seeded with the parsed indices and the
     // link set that `detail::build_einsum_descriptor` computes from
-    // them — avoids recomputing link indices on every execute().
+    // them: avoids recomputing link indices on every execute().
     auto indices = ctx.graph()->create_indices(parsed.a_indices, parsed.b_indices, parsed.c_indices, desc.spec.link_indices);
     desc.indices = indices;
 
     // BLAS-level batching hint. Only populated when the contraction is
-    // a pure 2D GEMM pattern (rank-2 inputs/output, one link index) —
+    // a pure 2D GEMM pattern (rank-2 inputs/output, one link index),
     // that's the shape `blas::gemm_batch` accepts. For other shapes the
     // hint stays null and GEMMBatching falls through. `trans_a`/`trans_b`
     // follow string_gemm's convention: 'T' when the link is the first
@@ -3047,7 +3047,7 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
 
             // Extractors capture AType/BType/CType so at call time they
             // can read .data() + .impl().get_lda() off the live tensor
-            // (handles graph.rebind() — the slot's ptr points at the
+            // (handles graph.rebind(), the slot's ptr points at the
             // current tensor). get_lda is on TensorImpl, not GeneralTensor.
             hint->extract_a = [a_slot]() -> std::pair<void const *, int> {
                 auto const &a_ref = *static_cast<AType const *>(a_slot->ptr);
@@ -3069,10 +3069,10 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     // Strided-batched GEMM fast path for 3D×3D→3D with a batch index.
     // ────────────────────────────────────────────────────────────────────
     //
-    // If the einsum expresses a batched matrix multiply — a 3D tensor
+    // If the einsum expresses a batched matrix multiply, a 3D tensor
     // where one index appears in A, B, AND C (the batch) and the other
     // three indices form a standard 2D GEMM pattern (target-A, link,
-    // target-B) — we can collapse N per-batch 2D gemms into a single
+    // target-B), we can collapse N per-batch 2D gemms into a single
     // `blas::gemm_batch` call at execute time. This is the same layout
     // `cublasDgemmStridedBatched` expects on GPU, so the descriptor
     // carries enough info to dispatch there too once the GPU backend is
@@ -3082,17 +3082,17 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     // their data to match some arbitrary choice:
     //   - Row-major tensors with batch(es) at the FIRST axes
     //     (e.g. "bij;bjk->bik" shape (B, M, K); or "abij;abjk->abik"
-    //     shape (A, B, M, K)) — the ML/CUDA convention
+    //     shape (A, B, M, K)), the ML/CUDA convention
     //   - Column-major tensors with batch(es) at the LAST axes
     //     (e.g. "ijb;jkb->ikb" shape (M, K, B); or "ijab;jkab->ikab"
-    //     shape (M, K, A, B)) — Einsums's default layout
+    //     shape (M, K, A, B)), Einsums's default layout
     //
     // Multiple batch indices (rank 4+) are flattened: N batch dims with
     // sizes (d1, d2, ..., dN) become a single effective batch of size
     // prod(di) with uniform stride equal to the product of the per-slice
     // 2D dims. This works as long as all batch indices appear in the
     // outermost contiguous region in memory, in the same relative order
-    // across A, B, C — typical of how tensors carry "free" axes like
+    // across A, B, C, typical of how tensors carry "free" axes like
     // (head, layer, sample, fragment) through to the matmul.
     //
     // In either case the 2D slice at each flat batch index is a
@@ -3131,7 +3131,7 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
             bool const shape_ok = batch_names.size() == Rank - 2;
 
             // Batch indices must appear at the same positions in all three
-            // operands — otherwise flattening the batch doesn't produce
+            // operands: otherwise flattening the batch doesn't produce
             // consistent strides. Collect those positions (same for A, B, C).
             std::vector<int> batch_positions;
             batch_positions.reserve(batch_names.size());
@@ -3417,7 +3417,7 @@ void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
 /// ``spec`` is a string of the form ``"<output> <- <a> ; <b>"``; e.g.
 /// ``"ij <- ik ; kj"`` (matrix multiply), ``"i <- ij ; j"`` (matrix-
 /// vector), ``" <- i ; i"`` (dot product). ``c_pf`` and ``ab_pf``
-/// default to 0 and 1 — i.e. ``C = A op B`` — but can be set to
+/// default to 0 and 1, giving ``C = A op B``, but can be set to
 /// accumulate (``c_pf=1``) or scale.
 ///
 /// Complex dtypes (``RuntimeTensor<complex<T>>``) accept only the
@@ -3431,10 +3431,10 @@ template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
 APIARY_EXPOSE
 // All 8 combinations of (C, A, B) x (owning, view), per dtype. Same-dtype
 // across operands is enforced by the requires clause above. Plus the all-tiled
-// case (TiledRuntimeTensor) — TensorConcept (not BasicTensorConcept) so a tiled
+// case (TiledRuntimeTensor), TensorConcept (not BasicTensorConcept) so a tiled
 // operand is admitted; the body's einsum() dispatches to the tiled tile-walk.
 //
-// float — OOO/OOV/OVO/OVV/VOO/VOV/VVO/VVV in (C, A, B) order
+// float: OOO/OOV/OVO/OVV/VOO/VOV/VVO/VVV in (C, A, B) order
 APIARY_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
 APIARY_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("einsum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
@@ -3483,7 +3483,7 @@ APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<double>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parallel_for — graph-capturable data-parallel loop via TaskPool
+// parallel_for: graph-capturable data-parallel loop via TaskPool
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Graph-aware parallel_for that captures into the computation graph.
@@ -3644,7 +3644,7 @@ void parallel_reduce(std::string name, size_t begin, size_t end, Acc *result, In
  */
 template <typename F, CoreBasicTensorConcept... InputTensors, CoreBasicTensorConcept... OutputTensors>
 void custom(std::string label, std::initializer_list<void const *> input_ptrs, std::initializer_list<void *> output_ptrs, F &&executor) {
-    // This overload takes raw pointers — prefer the typed overload below.
+    // This overload takes raw pointers, prefer the typed overload below.
     // Provided for cases where tensor types are heterogeneous.
     (void)input_ptrs;
     (void)output_ptrs;
@@ -3679,7 +3679,7 @@ void custom(std::string label, std::tuple<Inputs const &...> inputs, std::tuple<
 }
 
 /**
- * @brief No-dependency custom node — Python-friendly overload.
+ * @brief No-dependency custom node, Python-friendly overload.
  *
  * Records a graph node that runs ``executor`` with no declared
  * input/output tensor dependencies. Outside a capture context the
@@ -3693,7 +3693,7 @@ void custom(std::string label, std::tuple<Inputs const &...> inputs, std::tuple<
  * @endcode
  */
 /**
- * @brief No-dependency custom node — Python-friendly overload.
+ * @brief No-dependency custom node, Python-friendly overload.
  *
  * Records a graph node that runs ``executor`` with no declared
  * input/output tensor dependencies. Outside a capture context the
@@ -3715,7 +3715,7 @@ APIARY_EXPOSE APIARY_MODULE("graph") inline void custom(std::string label, std::
 }
 
 /**
- * @brief Single-tensor read-modify-write custom node — Python-friendly.
+ * @brief Single-tensor read-modify-write custom node, Python-friendly.
  *
  * Records a graph node whose executor mutates @p target in place.
  * @p target is registered as both an input and an output, so the

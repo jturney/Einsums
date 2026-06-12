@@ -44,7 +44,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
   public:
     virtual ~OptimizerPass() = default;
 
-    /// @brief Human-readable pass name — exposed so Python tests can
+    /// @brief Human-readable pass name, exposed so Python tests can
     ///        assert which pass they're invoking.
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] virtual std::string name() const = 0;
 
@@ -61,12 +61,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * Controls whether the PassManager automatically descends into
      * loop bodies and conditional branches (via
      * ``Graph::for_each_subgraph``) and calls ``run()`` again at each
-     * level. Default ``false`` — preserves the historical flat-graph
+     * level. Default ``false``, preserves the historical flat-graph
      * behavior.
      *
      * Passes whose semantics are *correct on a flat sub-graph* (CSE,
      * ScaleAbsorption, PermuteFusion, …) should return ``true`` once
-     * verified — that lets the same per-pass tests cover bodies.
+     * verified: that lets the same per-pass tests cover bodies.
      *
      * Passes whose effect must *cross the loop boundary* (Materialization
      * hoisting allocs to the parent, FreeInsertion placing frees after
@@ -123,7 +123,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
  * get a PassManager pre-loaded with all built-in passes in the
  * recommended order.
  *
- * @par Example — custom pass pipeline
+ * @par Example: custom pass pipeline
  * @code
  * cg::PassManager pm;
  * pm.add<cg::passes::ConstantFolding>();
@@ -134,7 +134,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
  * graph.apply(pm);
  * @endcode
  *
- * @par Example — default pass pipeline
+ * @par Example: default pass pipeline
  * @code
  * auto pm = cg::PassManager::create_default();
  * graph.apply(pm);
@@ -188,14 +188,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * templated form can't be bound directly because pybind11 has no way
      * to deduce ``PassType`` from a Python call site. C++ callers should
      * prefer ``add<PassType>(...)`` since it constructs in place. Stored
-     * as ``shared_ptr`` to match the pybind11 holder type — pybind can't
+     * as ``shared_ptr`` to match the pybind11 holder type, pybind can't
      * transfer ownership of a Python-held ``unique_ptr`` across the FFI
      * boundary without ``py::smart_holder``.
      */
     // The parameter name ``optimizer_pass`` rather than ``pass`` so the
     // pyi codegen (which copies parameter names verbatim) doesn't emit
     // a method signature whose argument name collides with Python's
-    // ``pass`` keyword — pyright can't parse it.
+    // ``pass`` keyword, pyright can't parse it.
     APIARY_EXPOSE APIARY_RVP(reference_internal) PassManager &add(std::shared_ptr<OptimizerPass> optimizer_pass) {
         if (_verbosity != 0) {
             optimizer_pass->set_verbosity(_verbosity);
@@ -254,43 +254,43 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * analyses. The GPU and distributed blocks are compile-time-gated by
      * backend availability.
      *
-     *  1. ConstantFolding           — evaluate constant-input nodes at compile time
-     *  2. ScaleAbsorption           — fold Scale(α) into the next op's beta
-     *  3. PermuteFusion             — absorb leading permutes into the GEMM trans flags
-     *  4. CSE                       — common subexpression elimination
-     *  5. DeadNodeElimination       — drop nodes whose outputs are unused
-     *  6. ElementWiseFusion         — merge adjacent element-wise ops
-     *  7. LoopInvariantHoisting     — move invariant ops out of Loop bodies
-     *  8. GEMMBatching              — collapse compatible GEMMs into one BatchedGemm
-     *  9. Reorder                   — memory-aware topological sort
-     * 10. IOPrefetch                — overlap DiskRead with compute
-     * 11. DistributionPlanning      — classify indices for distributed dispatch
-     * 12. Materialization           — resize deferred tensors to local partitions
-     * 13. SymmetryPropagation       — infer symmetry on graph intermediates and
+     *  1. ConstantFolding: evaluate constant-input nodes at compile time
+     *  2. ScaleAbsorption: fold Scale(α) into the next op's beta
+     *  3. PermuteFusion: absorb leading permutes into the GEMM trans flags
+     *  4. CSE: common subexpression elimination
+     *  5. DeadNodeElimination: drop nodes whose outputs are unused
+     *  6. ElementWiseFusion: merge adjacent element-wise ops
+     *  7. LoopInvariantHoisting: move invariant ops out of Loop bodies
+     *  8. GEMMBatching: collapse compatible GEMMs into one BatchedGemm
+     *  9. Reorder: memory-aware topological sort
+     * 10. IOPrefetch: overlap DiskRead with compute
+     * 11. DistributionPlanning: classify indices for distributed dispatch
+     * 12. Materialization: resize deferred tensors to local partitions
+     * 13. SymmetryPropagation: infer symmetry on graph intermediates and
      *                                 push to backing tensors for rank-2 BLAS dispatch
      *
      * GPU block (when a GPU backend or mock is available):
-     * 14. GPUPlacement              — cost-model based node-to-GPU assignment
-     * 15. TransferInsertion         — insert HostToDevice / DeviceToHost nodes
-     * 16. TransferElimination       — drop redundant transfers
-     * 17. GPUDiagnostics            — log placement decisions
-     * 18. StreamAssignment          — assign CUDA/HIP streams for overlap
+     * 14. GPUPlacement: cost-model based node-to-GPU assignment
+     * 15. TransferInsertion: insert HostToDevice / DeviceToHost nodes
+     * 16. TransferElimination: drop redundant transfers
+     * 17. GPUDiagnostics: log placement decisions
+     * 18. StreamAssignment: assign CUDA/HIP streams for overlap
      *
      * Distributed block (when MPI or its mock is available):
-     * 19. InputSlicing              — create per-rank views of distributed inputs
-     * 20. SUMMAExpansion            — expand einsums to SUMMA loops on square grids
-     * 21. CommunicationInsertion    — insert allreduces for replicated outputs
-     * 22. CommunicationElimination  — drop redundant communications
-     * 23. CommunicationScheduling   — split allreduce into async iallreduce + wait
+     * 19. InputSlicing: create per-rank views of distributed inputs
+     * 20. SUMMAExpansion: expand einsums to SUMMA loops on square grids
+     * 21. CommunicationInsertion: insert allreduces for replicated outputs
+     * 22. CommunicationElimination: drop redundant communications
+     * 23. CommunicationScheduling: split allreduce into async iallreduce + wait
      *
      * Tail (always registered):
-     * 24. FreeInsertion             — free intermediates after last consumer
-     * 25. MemoryPlanning            — analysis: tensor liveness + peak memory
-     * 26. ContractionPlanning       — analysis: per-einsum dispatch choice
-     * 27. InplaceOptimization       — analysis: detect in-place candidates
+     * 24. FreeInsertion: free intermediates after last consumer
+     * 25. MemoryPlanning: analysis: tensor liveness + peak memory
+     * 26. ContractionPlanning: analysis: per-einsum dispatch choice
+     * 27. InplaceOptimization: analysis: detect in-place candidates
      *
      * Note: DistributiveFactoring and ChainParenthesization are deliberately
-     * not registered by default — see their own docstrings for when to opt in.
+     * not registered by default, see their own docstrings for when to opt in.
      *
      * @return A fully-populated PassManager.
      */

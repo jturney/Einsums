@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Phase D.1 — runtime-tensor coverage for the LAPACK ops in
+// Phase D.1, runtime-tensor coverage for the LAPACK ops in
 // einsums::compute_graph (det, qr, svd, syev_eig). The C.11-vintage runtime
 // overloads do their own copy-into-static / move-back wrap; these tests
 // cross-check that round-trip against the long-standing static-tensor path

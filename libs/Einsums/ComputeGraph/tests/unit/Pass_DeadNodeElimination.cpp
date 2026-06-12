@@ -172,7 +172,7 @@ TEST_CASE("DeadNodeElimination - keeps a producer feeding only a nested loop", "
     pm.add<cg::passes::DeadNodeElimination>();
     pm.run(g);
 
-    // The producer of `shared` must survive — it feeds the nested loop.
+    // The producer of `shared` must survive, it feeds the nested loop.
     CHECK(outer.num_nodes() == outer_nodes_before);
     bool found_shared_producer = false;
     for (auto const &nd : outer.nodes()) {

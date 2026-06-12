@@ -30,7 +30,7 @@ void CaptureContext::end_capture() {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext: not currently capturing.");
     }
 
-    // Reset capture state and balance the profiler push unconditionally —
+    // Reset capture state and balance the profiler push unconditionally,
     // before running validation/finalization that can throw. If validation
     // fails the caller still sees the exception, but the next `with
     // cg.capture(...)` is no longer locked out by a stale `_capturing` flag.

@@ -146,7 +146,7 @@ TEST_CASE("GPUPlacement - small operation stays on CPU", "[ComputeGraph][GPU]") 
         cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
     }
 
-    // High thresholds — 2x2 won't qualify.
+    // High thresholds, 2x2 won't qualify.
     cg::passes::GPUPlacement pass(1000000, 1000000);
     bool const               modified = pass.run(graph);
 
@@ -186,7 +186,7 @@ TEST_CASE("GPUPlacement - mix of large and small nodes places selectively", "[Co
 
 TEST_CASE("GPUPlacement - places a GEMM inside a loop body", "[ComputeGraph][GPU][Loop]") {
     // The hot GEMM lives entirely inside an SCF-style loop body. The
-    // loop-aware placement walks the tree and must place it on GPU — a
+    // loop-aware placement walks the tree and must place it on GPU, a
     // flat-graph-only pass would leave it on CPU.
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
@@ -207,7 +207,7 @@ TEST_CASE("GPUPlacement - places a GEMM inside a loop body", "[ComputeGraph][GPU
         CHECK(pass.num_placed() == 1);
         // The body's einsum is the placed node, not the parent Loop node.
         CHECK(body.nodes()[0].target == cg::Target::GPU);
-        // The parent only holds the Loop node — still CPU/control-flow.
+        // The parent only holds the Loop node, still CPU/control-flow.
         CHECK(graph.nodes()[0].target == cg::Target::CPU);
     }
 }
@@ -216,7 +216,7 @@ TEST_CASE("GPUPlacement - shared budget across loop boundary", "[ComputeGraph][G
     // Two large GEMMs compete for device memory: one at the parent level,
     // one inside the loop body. With a budget that fits only one, the
     // shared-budget placement must place exactly one (the larger), not
-    // both — proving parent and body draw from the same budget.
+    // both: proving parent and body draw from the same budget.
     auto Abig = create_random_tensor<float>("Abig", 256, 256);
     auto Bbig = create_random_tensor<float>("Bbig", 256, 256);
     auto Cbig = create_zero_tensor<float>("Cbig", 256, 256);
@@ -255,7 +255,7 @@ TEST_CASE("GPUPlacement - shared budget across loop boundary", "[ComputeGraph][G
 TEST_CASE("TransferInsertion - inserts transfers inside a loop body", "[ComputeGraph][GPU][Loop]") {
     // After GPUPlacement marks a body GEMM as GPU, TransferInsertion must
     // recurse and insert H2D before it (and D2H after) so the body is
-    // self-contained — otherwise the GPU op reads host-only memory.
+    // self-contained, otherwise the GPU op reads host-only memory.
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -299,7 +299,7 @@ TEST_CASE("GPUPlacement - idempotent (running twice has no effect)", "[ComputeGr
     CHECK(modified1);
     CHECK(pass1.num_placed() == 1);
 
-    // Run again — already placed, should be no-op.
+    // Run again, already placed, should be no-op.
     auto [modified2, pass2] = graph.apply<cg::passes::GPUPlacement>();
     CHECK_FALSE(modified2);
     CHECK(pass2.num_placed() == 0);
@@ -346,7 +346,7 @@ TEST_CASE("GPUPlacement - cost model rejects when transfer overhead dominates", 
     }
 
     // Manually set estimated_flops to a small value where transfer overhead dominates.
-    graph.nodes()[0].estimated_flops = 1000;  // tiny — 1000 FLOPs
+    graph.nodes()[0].estimated_flops = 1000;  // tiny: 1000 FLOPs
     graph.nodes()[0].estimated_bytes = 98304; // but large transfer
 
     cg::passes::GPUPlacement pass;
@@ -542,7 +542,7 @@ TEST_CASE("TransferInsertion - GPU→GPU chain: no D2H between consecutive GPU n
         cg::CaptureGuard const guard(graph);
         // Node 1: C = A * B  (GPU)
         cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
-        // Node 2: D = C * B  (GPU) — C flows directly GPU→GPU
+        // Node 2: D = C * B  (GPU), C flows directly GPU→GPU
         cg::einsum("ik;kj->ij", 0.0, &D, 1.0, C, B);
     }
 
@@ -575,13 +575,13 @@ TEST_CASE("TransferInsertion - GPU→GPU chain: no D2H between consecutive GPU n
     for (auto const &n : graph.nodes()) {
         if (n.target == cg::Target::GPU && n.kind == cg::OpKind::Einsum) {
             if (found_first_gpu) {
-                break; // Second GPU node — stop checking.
+                break; // Second GPU node, stop checking.
             }
             found_first_gpu = true;
             continue;
         }
         if (found_first_gpu && n.kind == cg::OpKind::DeviceToHost) {
-            d2h_between_gpu = true; // D2H found between the two GPU nodes — bad!
+            d2h_between_gpu = true; // D2H found between the two GPU nodes, bad!
         }
     }
     CHECK_FALSE(d2h_between_gpu); // No D2H round-trip between consecutive GPU nodes.
@@ -599,7 +599,7 @@ TEST_CASE("TransferInsertion - D2H inserted when CPU node reads GPU output", "[C
         cg::CaptureGuard const guard(graph);
         // Node 1: C = A * B  (will be GPU)
         cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
-        // Node 2: D = 2.0 * C (will be CPU due to small thresholds? No — Scale is GPU-capable)
+        // Node 2: D = 2.0 * C (will be CPU due to small thresholds? No, Scale is GPU-capable)
         // We need a node that stays on CPU. Use a Permute instead.
         cg::permute("ij <- ij", 0.0, &D, 1.0, C);
     }
@@ -925,7 +925,7 @@ TEST_CASE("GPUDiagnostics - aggregates node counts inside a loop body", "[Comput
 
     // 3 CPU nodes: the parent-level Loop node (counted as non-GPU) plus
     // the two body einsums. The key point is that the body's nodes are
-    // now included in the count — a flat-graph-only pass would report 1.
+    // now included in the count, a flat-graph-only pass would report 1.
     CHECK(diag.cpu_nodes() == 3);
     CHECK(diag.gpu_nodes() == 0);
 }
@@ -1125,7 +1125,7 @@ TEST_CASE("GPU pass pipeline end-to-end: chained GEMMs", "[ComputeGraph][GPU]") 
     // Verify structure.
     CHECK(count_gpu_nodes(graph.nodes()) == 2);
 
-    // Execute — mock backend runs CPU lambdas, transfer nodes are no-ops.
+    // Execute: mock backend runs CPU lambdas, transfer nodes are no-ops.
     graph.execute();
 
     // Verify BOTH intermediates and final output.
@@ -1209,7 +1209,7 @@ TEST_CASE("GPU runtime fallback when dispatch is not applicable", "[ComputeGraph
     }
     CHECK(found_gpu_scale);
 
-    // Execute — GPU GEMM dispatch won't apply (it's a Scale, not Einsum),
+    // Execute: GPU GEMM dispatch won't apply (it's a Scale, not Einsum),
     // so the CPU lambda runs as fallback with data swapped to shadows.
     REQUIRE_NOTHROW(graph.execute());
 
@@ -1260,7 +1260,7 @@ TEST_CASE("StreamAssignment - no transfers means no assignments", "[ComputeGraph
         cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
     }
 
-    // No GPU passes — all nodes stay CPU with default stream_id=0.
+    // No GPU passes, all nodes stay CPU with default stream_id=0.
     auto [modified, pass] = graph.apply<cg::passes::StreamAssignment>();
 
     CHECK_FALSE(modified);
@@ -1317,7 +1317,7 @@ TEST_CASE("GPU pipeline: GEMM then Scale stays on GPU", "[ComputeGraph][GPU]") {
             d2h_between = true;
         }
         if (found_gemm && n.kind == cg::OpKind::Scale) {
-            break; // Found Scale after GEMM — check is done
+            break; // Found Scale after GEMM, check is done
         }
     }
     CHECK_FALSE(d2h_between);

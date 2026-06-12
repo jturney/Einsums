@@ -198,7 +198,7 @@ TEST_CASE("Graph declare_tensor - usable in capture and execute", "[ComputeGraph
     einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
 
     cg::Graph graph("declared_graph");
-    // Use declare_tensor for the intermediate — deferred allocation
+    // Use declare_tensor for the intermediate, deferred allocation
     auto &C = graph.declare_tensor<double, 2>(std::string("C"), 4, 5);
 
     {
@@ -487,7 +487,7 @@ TEST_CASE("Workspace + Pipeline - tensor survives across pipelines", "[ComputeGr
 
     cg::Pipeline p2("reader");
     p2.set_workspace(ws);
-    // shared is still valid — workspace owns it
+    // shared is still valid, workspace owns it
     CHECK(shared.is_materialized());
 }
 
@@ -567,7 +567,7 @@ TEST_CASE("cg::run does build + run in one expression", "[ComputeGraph][Facade]"
 TEST_CASE("Materialization hoists workspace tensors used inside a loop body", "[ComputeGraph][Materialization][Loop]") {
     // A workspace-declared tensor that is only referenced inside a loop
     // body would historically remain Deferred after a Materialization
-    // pass run on the parent graph — the pass scanned only the parent's
+    // pass run on the parent graph, the pass scanned only the parent's
     // tensor_map. The loop-aware version walks descendant graphs and
     // hoists Materialize/Initialize nodes to the parent just before the
     // owning Loop node, so allocation happens once per outer execution
@@ -593,7 +593,7 @@ TEST_CASE("Materialization hoists workspace tensors used inside a loop body", "[
     CHECK(mat.num_materialized() >= 1);
 
     // The hoisted Materialize+Initialize nodes should sit *before* the
-    // Loop node in the parent's node list — that's what makes
+    // Loop node in the parent's node list, that's what makes
     // allocation happen once per outer execution instead of per
     // iteration.
     auto const &parent_nodes = g.nodes();
@@ -641,7 +641,7 @@ TEST_CASE("Workspace declare_zero_tensor propagates pending_init through capture
           "[ComputeGraph][Materialization][Loop][Init]") {
     // Without init_kind propagation, body's capture-time handle for a
     // workspace-declared tensor was missing init_kind, so the hoisted
-    // Materialize would allocate but not zero — the body had to
+    // Materialize would allocate but not zero, the body had to
     // overwrite the tensor before any read. After Step 2.5, the
     // tensor's ``pending_init()`` survives through ``make_handle``, the
     // body handle gets ``InitKind::Zero`` + ``zero_fn``, and the
@@ -661,7 +661,7 @@ TEST_CASE("Workspace declare_zero_tensor propagates pending_init through capture
     }
 
     // After capture, body's handle for A should also reflect the
-    // workspace's init policy — that's what make_handle now propagates.
+    // workspace's init policy, that's what make_handle now propagates.
     bool body_handle_has_init = false;
     for (auto const &[tid, h] : body.tensors_map()) {
         if (h.tensor_ptr == static_cast<void *>(&A)) {
@@ -722,7 +722,7 @@ TEST_CASE("Materialization hoists deeply-nested workspace tensors past every loo
     CHECK(modified);
 
     // The outer parent should now contain a Materialize node *before*
-    // the outer Loop — neither the outer body nor the inner body owns
+    // the outer Loop, neither the outer body nor the inner body owns
     // it after hoisting.
     auto const &parent_nodes = g.nodes();
     size_t      mat_count    = 0;

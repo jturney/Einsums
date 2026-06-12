@@ -7,7 +7,7 @@
 /// @brief Unit tests for the ChainParenthesization analysis pass.
 ///
 /// This pass reasons about matrix chain multiplication, which is an
-/// inherently 2D concept — higher-rank coverage is not applicable here.
+/// inherently 2D concept, higher-rank coverage is not applicable here.
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>

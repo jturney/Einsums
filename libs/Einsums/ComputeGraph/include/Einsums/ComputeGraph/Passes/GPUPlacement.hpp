@@ -30,7 +30,7 @@ namespace einsums::compute_graph::passes {
  * size thresholds. Budget-aware greedy placement ensures total device memory
  * is not exceeded.
  *
- * This pass does NOT insert transfer nodes — that is handled by TransferInsertion.
+ * This pass does NOT insert transfer nodes, that is handled by TransferInsertion.
  */
 class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
   public:

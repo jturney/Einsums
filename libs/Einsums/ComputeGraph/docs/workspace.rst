@@ -5,7 +5,7 @@
 Workspace and Deferred Tensor Allocation
 =========================================
 
-The Einsums ComputeGraph supports **deferred tensor allocation**: tensors are declared
+The Einsums ComputeGraph supports deferred tensor allocation: tensors are declared
 with their shape and type, but memory is not allocated until optimization passes have
 decided where and how to store the data. This enables transparent distributed computing
 where the DistributionPlanningPass decides which tensors to partition across MPI ranks
@@ -28,7 +28,7 @@ tensors from outer scopes.
 Workspace
 ---------
 
-A ``Workspace`` holds tensors that persist across multiple Pipelines — for example,
+A ``Workspace`` holds tensors that persist across multiple Pipelines, for example
 two-electron integrals computed once and reused by SCF, MP2, and CCSD:
 
 .. code-block:: cpp
@@ -79,9 +79,9 @@ A ``Graph`` holds single-computation intermediates:
 Shell Tensors (Deferred Allocation)
 ====================================
 
-When you call ``declare_tensor()``, it creates a **shell tensor**: a ``Tensor<T, Rank>``
+When you call ``declare_tensor()``, it creates a shell tensor: a ``Tensor<T, Rank>``
 object with valid dimensions and strides but no data storage. The tensor has a valid
-memory address (for graph registration) and ``dim()`` / ``stride()`` work correctly,
+memory address for graph registration, and ``dim()`` and ``stride()`` work correctly,
 but ``data()`` returns an invalid pointer until materialization.
 
 .. code-block:: cpp
@@ -150,8 +150,8 @@ The lifecycle with deferred allocation:
       c. Compute nodes run → einsum, scale, etc.
       d. Free node runs → releases intermediate storage (large tensors only)
 
-On **re-execution** (loops, Pipeline stages), the Materialize node detects
-released storage and re-allocates automatically. Small intermediates (< 1 MB)
+On re-execution, as in loops and Pipeline stages, the Materialize node detects
+released storage and re-allocates automatically. Small intermediates below 1 MB
 are kept alive to avoid alloc/free overhead.
 
 Complete Example

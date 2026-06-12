@@ -97,7 +97,7 @@ TEST_CASE("LoopInvariantHoisting - does NOT hoist a producer whose output is ove
 
     auto [modified, pass] = graph.apply<cg::passes::LoopInvariantHoisting>();
     CHECK_FALSE(modified);
-    CHECK(pass.num_hoisted() == 0); // C has two writers — not hoisted
+    CHECK(pass.num_hoisted() == 0); // C has two writers, not hoisted
 
     graph.execute();
 
@@ -163,8 +163,8 @@ TEST_CASE("LoopInvariantHoisting - rank-3 BatchedGemm hoists", "[ComputeGraph][P
     auto &body = graph.add_loop("loop", 4, [](size_t iter) { return iter < 3; });
     {
         cg::CaptureGuard const guard(body);
-        cg::einsum("ikb;kjb->ijb", &C, A, B); // invariant — A, B never change
-        cg::scale(0.9, &D);                   // not invariant — writes D
+        cg::einsum("ikb;kjb->ijb", &C, A, B); // invariant: A, B never change
+        cg::scale(0.9, &D);                   // not invariant, writes D
     }
 
     // Confirm the einsum is actually captured as BatchedGemm inside the body.
@@ -190,7 +190,7 @@ TEST_CASE("LoopInvariantHoisting - rank-3 BatchedGemm hoists", "[ComputeGraph][P
 TEST_CASE("LoopInvariantHoisting - hoisted node with a deferred output stays materialized", "[ComputeGraph][Passes][Loop]") {
     // LIH runs before MaterializationPass. If it hoists an invariant einsum
     // whose output is a workspace (deferred) tensor, the full pipeline must
-    // still place the Materialize before the hoisted node — otherwise the
+    // still place the Materialize before the hoisted node, otherwise the
     // hoisted einsum would write unallocated storage. Verify via the full
     // default pipeline + a correctness check.
     constexpr size_t N = 4;

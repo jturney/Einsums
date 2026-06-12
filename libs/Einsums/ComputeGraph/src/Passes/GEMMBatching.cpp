@@ -197,7 +197,7 @@ bool GEMMBatching::run(Graph &graph) {
 
         // Collect the per-member extractors (ordered so a_array[i],
         // b_array[i], c_array[i] all reference the same original
-        // contraction — preserves semantics when alpha*A*B+beta*C).
+        // contraction: preserves semantics when alpha*A*B+beta*C).
         std::vector<std::function<std::pair<void const *, int>()>> a_exs;
         std::vector<std::function<std::pair<void const *, int>()>> b_exs;
         std::vector<std::function<std::pair<void *, int>()>>       c_exs;
@@ -272,7 +272,7 @@ bool GEMMBatching::run(Graph &graph) {
     // Compact: drop originals in place, then hand the new BatchedGemm
     // nodes to Graph::add_node() so it assigns ids and invalidates the
     // topological sort. Ordering between the new nodes and survivors
-    // is settled on the next sort — dependency edges are intact.
+    // is settled on the next sort, dependency edges are intact.
     std::vector<Node> filtered;
     filtered.reserve(nodes.size() - _total_batched);
     for (size_t i = 0; i < nodes.size(); ++i)

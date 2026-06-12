@@ -242,7 +242,7 @@ bool DistributionPlanning::run(Graph &graph) {
 
         // Conflict resolution: check ALL usages of this tensor. If a dimension's
         // index is a link (contraction) index in ANY other einsum, it must NOT be
-        // distributed — distributing a link dim produces partial sums that need
+        // distributed: distributing a link dim produces partial sums that need
         // SUMMA-style communication. For the outer-product strategy, downgrade to None.
         for (size_t u = 1; u < it->second.size(); u++) {
             auto const                           &other_usage = it->second[u];

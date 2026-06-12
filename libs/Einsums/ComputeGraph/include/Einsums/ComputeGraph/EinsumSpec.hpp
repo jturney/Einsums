@@ -120,7 +120,7 @@ constexpr bool is_einsum_char(char c) {
 // matches the number of indices the spec asks for. Runs at consteval time
 // from EinsumFormatString's literal ctor so the resulting counts fold to
 // compile-time constants at every well-typed callsite. Zeroed for runtime-
-// constructed strings — the dispatcher then skips the rank check, matching
+// constructed strings, the dispatcher then skips the rank check, matching
 // the "if possible, compile-time check; otherwise silent" policy.
 
 /// @brief Per-operand index counts parsed from an einsum spec.
@@ -178,7 +178,7 @@ constexpr std::size_t count_operand_indices(std::string_view s) {
 
 /// @brief Parse per-operand index counts from a (validated) einsum spec.
 ///
-/// Accepts both arrow forms — ``"C <- A ; B"`` and ``"A ; B -> C"``.
+/// Accepts both arrow forms: ``"C <- A ; B"`` and ``"A ; B -> C"``.
 /// Returns ``known = false`` for malformed input so the caller falls back
 /// to runtime parsing (validate_einsum_spec is responsible for diagnostics).
 constexpr IndexCounts parse_index_counts(std::string_view spec) {
@@ -274,7 +274,7 @@ constexpr bool validate_einsum_spec(std::string_view spec) {
  * checked at compile time for structural validity:
  *
  * @code
- * cg::einsum(EinsumFormatString("ij <- ik ; kj"), &C, A, B);  // OK — validated at compile time
+ * cg::einsum(EinsumFormatString("ij <- ik ; kj"), &C, A, B);  // OK, validated at compile time
  * cg::einsum(EinsumFormatString("ij <- ik"),       &C, A, B);  // Compile error! Missing ';'
  * @endcode
  *
@@ -312,7 +312,7 @@ struct EinsumFormatString {
      * or user input). Validation happens at runtime via parse_einsum_spec().
      *
      * Non-explicit to allow Python-facing bindings to receive a Python ``str``
-     * — pybind11 keeps the converted std::string alive for the duration of
+     * pybind11 keeps the converted std::string alive for the duration of
      * the call, so the string_view remains valid throughout the einsum
      * dispatch. C++ callers passing a temporary string should still wrap
      * explicitly for clarity.

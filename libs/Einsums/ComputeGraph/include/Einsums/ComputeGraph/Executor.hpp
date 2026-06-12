@@ -50,7 +50,7 @@ struct DependencyInfo {
 /**
  * @brief Abstract base class for graph execution backends.
  *
- * An executor determines HOW graph nodes are executed — sequentially,
+ * An executor determines HOW graph nodes are executed, sequentially,
  * in parallel via threads, on GPU streams, etc. The graph structure,
  * optimization passes, and capture mechanism are executor-agnostic.
  */
@@ -72,7 +72,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Executor 
 };
 
 /**
- * @brief Sequential executor — executes nodes in topological order.
+ * @brief Sequential executor, executes nodes in topological order.
  *
  * This is the default execution strategy. Nodes run one at a time
  * in dependency order. Zero overhead, no thread safety concerns.
@@ -86,7 +86,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 };
 
 /**
- * @brief OpenMP task-based executor — launches independent nodes in parallel.
+ * @brief OpenMP task-based executor, launches independent nodes in parallel.
  *
  * Uses OpenMP tasks with dependency tracking. When a node completes,
  * it decrements the in-degree of its successors. Successors whose
@@ -105,7 +105,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 };
 
 /**
- * @brief TaskPool dataflow executor — maximum overlap via continuations.
+ * @brief TaskPool dataflow executor, maximum overlap via continuations.
  *
  * Uses the TaskPool module to execute graph nodes as dataflow tasks.
  * Each node is submitted when all its predecessors complete, using
@@ -156,7 +156,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
  * are collective operations that all ranks participate in.
  *
  * On the mock backend (single rank), behaves identically to
- * SequentialExecutor — communication nodes are no-ops.
+ * SequentialExecutor: communication nodes are no-ops.
  *
  * @par Example
  * @code

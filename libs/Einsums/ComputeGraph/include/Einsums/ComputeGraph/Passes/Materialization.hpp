@@ -14,13 +14,13 @@ namespace einsums::compute_graph::passes {
  *
  * For each tensor with AllocState::Deferred, this pass:
  * 1. Finds the earliest node that writes to or reads from this tensor.
- * 2. Inserts a Materialize node just before that point — its executor
+ * 2. Inserts a Materialize node just before that point, its executor
  *    calls materialize_fn() to allocate the backing storage.
  * 3. If init_kind is set (Zero, Random), inserts an Initialize node
  *    immediately after the Materialize node.
  *
  * Allocation happens lazily during graph.execute() when the Materialize
- * node runs — NOT during the pass itself. This means:
+ * node runs, NOT during the pass itself. This means:
  * - Intermediates only consume memory when needed
  * - MemoryPlanning can see Materialize nodes for accurate peak estimation
  * - Distributed allocation can happen at execution time per-rank

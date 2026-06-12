@@ -27,7 +27,7 @@ namespace einsums::compute_graph::detail {
  * and hand the underlying dense `RuntimeTensor` tile to @p op. Absent tiles are
  * rigorously zero and are skipped, which is correct for any op that maps zero to
  * zero (true for scale and y+=a*x; element_transform on a sparse tile set
- * transforms only stored tiles — see its wrapper).
+ * transforms only stored tiles, see its wrapper).
  *
  * Serial over tiles; each dense op is itself BLAS/threaded.
  */
@@ -48,7 +48,7 @@ void tiled_scale(T factor, TiledRuntimeTensor<T> *A) {
 /// Tiled in-place unary map `A[i] = op(A[i])` over every stored tile. Walks the
 /// tile's contiguous storage directly (a RuntimeTensor tile has runtime rank, so
 /// the RankTensorConcept-constrained tensor_algebra::element_transform doesn't
-/// apply) — same approach as the element_transform_python wrapper.
+/// apply), the same approach as the element_transform_python wrapper.
 template <typename T, typename UnaryOp>
 void tiled_element_transform(TiledRuntimeTensor<T> *A, UnaryOp unary_op) {
     tiled_for_each_tile(A, [&unary_op](RuntimeTensor<T> *tile) {

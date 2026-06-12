@@ -35,7 +35,7 @@ int einsums_main() {
     auto E = create_random_tensor<double>("E", N, N);
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 1. Graph with independent operations — parallelism detected automatically
+    // 1. Graph with independent operations, parallelism detected automatically
     // ═══════════════════════════════════════════════════════════════════════
     println("=== Independent Operations ===\n");
     {
@@ -46,7 +46,7 @@ int einsums_main() {
 
         {
             cg::CaptureGuard guard(graph);
-            // These three einsums are INDEPENDENT — they read different inputs
+            // These three einsums are INDEPENDENT, they read different inputs
             // and write to different outputs. The OpenMP executor will run them
             // in parallel automatically.
             cg::einsum("ik;kj->ij", &C, A, B);
@@ -75,7 +75,7 @@ int einsums_main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 2. Dependent chain — still correct with parallel executor
+    // 2. Dependent chain, still correct with parallel executor
     // ═══════════════════════════════════════════════════════════════════════
     println("\n=== Dependent Chain ===\n");
     {
@@ -87,7 +87,7 @@ int einsums_main() {
             cg::CaptureGuard guard(graph);
             // C depends on A, B
             cg::einsum("ik;kj->ij", &C, A, B);
-            // F depends on C — must run AFTER C is computed
+            // F depends on C, must run AFTER C is computed
             cg::einsum("ik;kj->ij", &F, C, D);
         }
 

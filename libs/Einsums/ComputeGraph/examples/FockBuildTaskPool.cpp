@@ -147,7 +147,7 @@ int einsums_main() {
     println("  E(0,0) = {:.6f}", E_mat(0, 0));
     println("  Graph nodes: {}", parallel_graph.num_nodes());
 
-    // ── Method 3: Full SCF-like iteration — entire loop in one graph ────────
+    // ── Method 3: Full SCF-like iteration, entire loop in one graph ────────
     println("\n--- Method 3: SCF iteration with cg::parallel_for in graph ---");
 
     double energy     = 0.0;

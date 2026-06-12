@@ -24,13 +24,13 @@ bool Reorder::run(Graph &graph) {
     size_t const n = nodes.size();
 
     // Build adjacency and in-degree from data dependencies. We must encode all
-    // three hazard classes, not just true dependencies — otherwise the
+    // three hazard classes, not just true dependencies, otherwise the
     // memory-aware reordering below can float a write ahead of a read of the
     // old value (or ahead of an earlier write), corrupting in-place reuse:
     //
-    //   RAW (true):  writer → reader   — reader needs the produced value.
-    //   WAW (output): writer → writer  — the later write must win.
-    //   WAR (anti):  reader → writer   — the overwrite can't happen until
+    //   RAW (true):  writer → reader, reader needs the produced value.
+    //   WAW (output): writer → writer, the later write must win.
+    //   WAR (anti):  reader → writer, the overwrite can't happen until
     //                                    every reader of the old value is done.
     //
     // Tracking only ``last_writer`` (the original implementation) covered RAW
@@ -39,7 +39,7 @@ bool Reorder::run(Graph &graph) {
     // here points from a lower to a higher program index, so program order
     // remains a valid topological order and no cycle is ever introduced.
     //
-    // Use sets to deduplicate edges — a tensor appearing in both inputs and
+    // Use sets to deduplicate edges, a tensor appearing in both inputs and
     // outputs of the same pair of nodes should only count once.
     std::unordered_map<TensorId, size_t>              last_writer;
     std::unordered_map<TensorId, std::vector<size_t>> readers_since_write;
@@ -48,7 +48,7 @@ bool Reorder::run(Graph &graph) {
     for (size_t i = 0; i < n; i++) {
         // Use effective I/O so Loop/Conditional nodes (whose own input/output
         // lists are empty) carry dependency edges for the tensors their bodies
-        // touch — otherwise the memory-aware reorder below can float a loop
+        // touch: otherwise the memory-aware reorder below can float a loop
         // past a producer or consumer of one of those tensors.
         auto [eff_in, eff_out] = graph.effective_io(nodes[i]);
         for (auto raw_tid : eff_in) {
@@ -144,7 +144,7 @@ bool Reorder::run(Graph &graph) {
     }
 
     if (order.size() != n) {
-        // Cycle or stuck nodes — don't modify (nodes vector is untouched)
+        // Cycle or stuck nodes, don't modify (nodes vector is untouched)
         return false;
     }
 
@@ -164,7 +164,7 @@ bool Reorder::run(Graph &graph) {
         sorted.reserve(n);
         for (size_t const idx : order) {
             if (!nodes[idx].execute) {
-                // Node already has an empty executor — don't corrupt the graph.
+                // Node already has an empty executor, don't corrupt the graph.
                 // This can happen for structural nodes (Loop, Conditional) that
                 // don't have an execute lambda.
             }

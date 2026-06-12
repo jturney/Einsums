@@ -93,7 +93,7 @@ namespace {
 /// Run a single pass on @p graph and, when the pass opts in via
 /// ``recurse_into_subgraphs()``, on every descendant loop body /
 /// conditional branch in post-order (children before re-running on parent
-/// is not required — passes either rewrite a level in isolation or hoist
+/// is not required, passes either rewrite a level in isolation or hoist
 /// from children into the parent in a single ``run()`` call on the
 /// parent). Returns ``true`` if any invocation of @p pass modified its
 /// graph.
@@ -133,7 +133,7 @@ bool PassManager::run(Graph &graph) {
 
         if (analyze) {
             // Analysis-only: save node list, run pass, log results, restore.
-            // Sub-graph recursion is intentionally skipped here — we only
+            // Sub-graph recursion is intentionally skipped here, we only
             // want to *measure* the top-level effect, not mutate
             // descendants (we don't snapshot them).
             auto       saved_nodes  = graph.nodes();
@@ -228,7 +228,7 @@ void PassManager::populate_default() {
     // passes and executions see the inferred symmetry.
     pm.add<passes::SymmetryPropagation>();
 
-    // GPU passes — only included when a GPU backend (or mock) is available.
+    // GPU passes, only included when a GPU backend (or mock) is available.
     // GPUPlacement uses the shared HardwareProfile for its cost model.
     if constexpr (gpu::has_gpu || gpu::is_mock) {
         pm.add<passes::GPUPlacement>(profile);

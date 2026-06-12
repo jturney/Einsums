@@ -98,7 +98,7 @@ void OpenMPExecutor::execute(Graph &graph) {
         levels[level[i]].push_back(i);
     }
 
-    // An exception must NOT escape an OpenMP structured block — doing so leaves
+    // An exception must NOT escape an OpenMP structured block, doing so leaves
     // the team waiting at the join barrier forever (deadlock). Catch any node
     // failure inside the region, keep the first, and rethrow after the barrier.
     std::exception_ptr first_exc;

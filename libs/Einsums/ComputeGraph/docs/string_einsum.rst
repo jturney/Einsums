@@ -35,7 +35,7 @@ Rules:
 Index Modes
 ===========
 
-**Single-character** (default — no commas):
+**Single-character** (the default, used when there are no commas):
 
 .. code-block:: cpp
 

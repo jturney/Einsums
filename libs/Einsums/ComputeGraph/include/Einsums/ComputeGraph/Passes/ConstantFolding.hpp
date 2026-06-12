@@ -12,7 +12,7 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief Constant folding pass.
  *
- * Identifies nodes whose inputs are all "constant" — meaning no other node
+ * Identifies nodes whose inputs are all "constant", meaning no other node
  * in the graph writes to those tensors. These nodes can be executed once
  * during the pass and replaced with no-ops, since their results won't
  * change across graph replays.

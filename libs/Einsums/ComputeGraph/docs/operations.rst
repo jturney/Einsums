@@ -68,10 +68,10 @@ shift
 
    cg::shift(3.0, &A);   // A += 3.0 (adds a scalar to every element)
 
-The additive complement of ``scale``. A tight compiled loop (not a
-Python-callback ``element_transform``), so it backs the Python numpy-style
-scalar ``+`` / ``-`` operators (``A + c``, ``A += c``). Records an opaque
-``OpKind::Custom`` node when capturing.
+The additive complement of ``scale``. It is a tight compiled loop rather than a
+Python-callback ``element_transform``, so it backs the Python numpy-style
+scalar ``+`` and ``-`` operators, such as ``A + c`` and ``A += c``. Records an
+opaque ``OpKind::Custom`` node when capturing.
 
 gemm
 ----
@@ -140,8 +140,8 @@ trace
    cg::trace(&t, A);          // A must be square
    cg::trace(&t, slice);      // also works on cg::view results
 
-Records an ``OpKind::Trace`` node (label-only — the executor body is just a
-diagonal-sum loop, with no special pass treatment).
+Records a label-only ``OpKind::Trace`` node. The executor body is just a
+diagonal-sum loop, with no special pass treatment.
 
 sum / max
 ---------
@@ -153,11 +153,11 @@ sum / max
    cg::sum(&result, A);   // result[0] = Σ A_i   (any dtype)
    cg::max(&result, A);   // result[0] = max A_i (real dtypes only)
 
-``result`` is a pre-allocated rank-1 ``[1]`` tensor (a graph-native scalar
-handle, as for the scalar-writing ``cg::dot`` / ``cg::trace``). Both are
-stride-correct, so they reduce slice/transpose views, not just contiguous
+``result`` is a pre-allocated rank-1 ``[1]`` tensor, a graph-native scalar
+handle, as for the scalar-writing ``cg::dot`` and ``cg::trace``. Both are
+stride-correct, so they reduce slice and transpose views, not just contiguous
 storage. They back the Python ``A.sum()`` / ``A.mean()`` / ``A.max()``
-methods. ``max`` is real-only — complex has no natural ordering, so use
+methods. ``max`` is real-only, since complex has no natural ordering, so use
 ``cg::norm(MAXABS, A)`` for the largest magnitude. Each records an opaque
 ``OpKind::Custom`` node when capturing.
 
@@ -178,8 +178,9 @@ symm_gemm
 LinearAlgebra - LAPACK Level
 =============================
 
-These operations **always execute eagerly** during capture (they produce output
-tensors that subsequent operations need). They are recorded as nodes for replay.
+These operations always execute eagerly during capture, because they produce
+output tensors that subsequent operations need. They are still recorded as nodes
+for replay.
 
 syev
 ----
@@ -351,9 +352,9 @@ See :doc:`workspace` for the full lifecycle.
 Internal Node Types
 ====================
 
-These ``OpKind`` values are inserted by passes — not directly by users:
+These ``OpKind`` values are inserted by passes, not directly by users:
 
-- ``Materialize`` — allocates storage for a deferred tensor
-- ``Initialize`` — fills tensor with zeros/random after materialization
-- ``HostToDevice`` / ``DeviceToHost`` — GPU data transfers
-- ``Allreduce`` / ``Broadcast`` / ``Allgather`` / ``Scatter`` / ``Barrier`` — MPI collectives
+- ``Materialize``: allocates storage for a deferred tensor
+- ``Initialize``: fills tensor with zeros or random values after materialization
+- ``HostToDevice`` / ``DeviceToHost``: GPU data transfers
+- ``Allreduce`` / ``Broadcast`` / ``Allgather`` / ``Scatter`` / ``Barrier``: MPI collectives

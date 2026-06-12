@@ -64,7 +64,7 @@ void accumulate(Graph &graph, size_t &candidates) {
 bool InplaceOptimization::run(Graph &graph) {
     // Aggregate candidate count over the whole graph tree so body-resident
     // intermediates are considered too. recurse_into_subgraphs() stays
-    // false — we aggregate here rather than being re-run per sub-graph.
+    // false: we aggregate here rather than being re-run per sub-graph.
     _num_candidates = 0;
     accumulate(graph, _num_candidates);
 
@@ -72,7 +72,7 @@ bool InplaceOptimization::run(Graph &graph) {
         report(1, fmt::format("found {} in-place candidate tensor(s) (single producer + single consumer)", _num_candidates));
     }
 
-    // Analysis only — does not modify the graph
+    // Analysis only, does not modify the graph
     return false;
 }
 

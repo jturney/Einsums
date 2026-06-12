@@ -5,7 +5,7 @@
 
 /// @file StridedBatchedGemm.cpp
 /// @brief Tests for the capture-time 3D-batch GEMM fast path that emits a
-///        BatchedGemm node in strided mode — the layout
+///        BatchedGemm node in strided mode, the layout
 ///        `cublasDgemmStridedBatched` expects on GPU, mapped to `blas::gemm_batch`
 ///        with base-plus-stride pointer computation on CPU.
 ///
@@ -193,7 +193,7 @@ TEST_CASE("StridedBatchedGemm: nonzero c_prefactor accumulates correctly", "[Com
 
 TEST_CASE("StridedBatchedGemm: 3D einsum without batch index falls through to generic", "[ComputeGraph][StridedBatchedGemm]") {
     // pqr;rs->pqs has no batch index (p, q are targets only in A/C; r is link).
-    // Not a batched-GEMM pattern — generic nested-loop executor handles it.
+    // Not a batched-GEMM pattern, generic nested-loop executor handles it.
     auto T = create_random_tensor<double>("T", 2, 3, 4);
     auto M = create_random_tensor<double>("M", 4, 5);
     auto C = create_zero_tensor<double>("C", 2, 3, 5);
@@ -209,7 +209,7 @@ TEST_CASE("StridedBatchedGemm: 3D einsum without batch index falls through to ge
 
 TEST_CASE("StridedBatchedGemm: col-major with batch at front falls through (interleaved)", "[ComputeGraph][StridedBatchedGemm]") {
     // In Einsums's default column-major layout, batch at position 0
-    // interleaves slices in memory — cannot be strided-batched. Must
+    // interleaves slices in memory, cannot be strided-batched. Must
     // fall through to the generic path; correctness preserved.
     constexpr size_t B = 4, I = 3, J = 4, K = 5;
     auto             A  = create_random_tensor<double>("A", B, I, J);
@@ -276,7 +276,7 @@ TEST_CASE("StridedBatchedGemm: forcing Target::GPU routes through gpu::blas disp
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST_CASE("StridedBatchedGemm: rank-4 with two batch indices (col-major, batches last)", "[ComputeGraph][StridedBatchedGemm]") {
-    // "ijab;jkab->ikab" — two batch indices (a, b) at positions [2, 3].
+    // "ijab;jkab->ikab", two batch indices (a, b) at positions [2, 3].
     // Col-major contiguous → batches are the outermost axes in memory.
     // Effective batch_count = A * B = 4 * 3 = 12.
     constexpr size_t I = 3, J = 4, K = 2, A_ = 4, B_ = 3;
@@ -322,7 +322,7 @@ TEST_CASE("StridedBatchedGemm: rank-4 with two batch indices (col-major, batches
 }
 
 TEST_CASE("StridedBatchedGemm: rank-5 with three batch indices", "[ComputeGraph][StridedBatchedGemm]") {
-    // "ijabc;jkabc->ikabc" — three batch indices.
+    // "ijabc;jkabc->ikabc", three batch indices.
     // Flat batch = 2 * 3 * 2 = 12.
     constexpr size_t I = 3, J = 4, K = 2, A_ = 2, B_ = 3, C_ = 2;
     auto             A  = create_random_tensor<double>("A", I, J, A_, B_, C_);
@@ -360,8 +360,8 @@ TEST_CASE("StridedBatchedGemm: rank-5 with three batch indices", "[ComputeGraph]
 }
 
 TEST_CASE("StridedBatchedGemm: batch indices at non-matching positions fall through", "[ComputeGraph][StridedBatchedGemm]") {
-    // "ijab;jkba->ikab" — batch (a,b) order differs between A and B.
-    // The stride-flattening assumption breaks — we can't index both with
+    // "ijab;jkba->ikab", batch (a,b) order differs between A and B.
+    // The stride-flattening assumption breaks, we can't index both with
     // a single flat batch counter. Must fall through to generic einsum.
     constexpr size_t I = 3, J = 3, K = 3, A_ = 3, B_ = 3;
     auto             A  = create_random_tensor<double>("A", I, J, A_, B_);

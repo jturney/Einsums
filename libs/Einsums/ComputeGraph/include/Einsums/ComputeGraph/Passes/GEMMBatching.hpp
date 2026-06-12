@@ -36,7 +36,7 @@ namespace einsums::compute_graph::passes {
  *
  * @par Leading-dimension handling:
  * `blas::gemm_batch` takes a single scalar `lda`/`ldb`/`ldc` shared
- * across the batch — different per-matrix strides can't be batched.
+ * across the batch, different per-matrix strides can't be batched.
  * Verifies uniformity at pass time using the hint's extractors on the
  * current tensor state; if strides differ across the group, the pass
  * falls through without rewriting (a future optimisation could split

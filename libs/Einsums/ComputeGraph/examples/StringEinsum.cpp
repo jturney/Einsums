@@ -31,7 +31,7 @@ int einsums_main() {
     using namespace einsums::index;
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 1. Basic string notation — arrow and NumPy styles
+    // 1. Basic string notation, arrow and NumPy styles
     // ═══════════════════════════════════════════════════════════════════════
     println("=== 1. Basic Notation ===\n");
     {
@@ -183,7 +183,7 @@ int einsums_main() {
         println("Graph summary:");
         graph.print_summary(std::cout);
 
-        // Apply ScaleAbsorption — the scale(2.0) + einsum(ij<-ij;ij) pattern
+        // Apply ScaleAbsorption, the scale(2.0) + einsum(ij<-ij;ij) pattern
         // won't fuse because they write to different tensors. But the first
         // scale+einsum pair won't fuse either because the einsum is the first op.
         graph.apply<cg::passes::ScaleAbsorption>();

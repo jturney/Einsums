@@ -69,9 +69,9 @@ Distribution Strategy
 
 The ``DistributionPlanning`` pass assigns each tensor dimension to a grid axis:
 
-- **GridAxis::Row** — distributed across Pr grid rows
-- **GridAxis::Col** — distributed across Pc grid columns
-- **GridAxis::None** — replicated (full data on each rank)
+- **GridAxis::Row**: distributed across Pr grid rows
+- **GridAxis::Col**: distributed across Pc grid columns
+- **GridAxis::None**: replicated, with full data on each rank
 
 Index classification for ``C[i,j] = A[i,k] * B[k,j]``:
 
@@ -83,11 +83,12 @@ Index      Role         Axis     Meaning
 ``k``      link         None     Contraction (in A,B, not C)
 ========== ============ ======== =====================
 
-For **batch indices** (in all three tensors), the pass assigns them to the
-grid axis with fewer dimensions so far (load-balancing heuristic).
+For batch indices, those present in all three tensors, the pass assigns them to
+the grid axis with fewer dimensions so far, a load-balancing heuristic.
 
 **Balanced blocking**: Elements are distributed evenly. For N=41 across P=4
-ranks: {11, 11, 10, 9} instead of {11, 11, 11, 8}. Maximum imbalance is 1.
+ranks the split is {11, 11, 10, 9} rather than {11, 11, 11, 8}, so the maximum
+imbalance is 1.
 
 Distribution Patterns
 ======================
@@ -182,7 +183,7 @@ Filling Distributed Tensors
 ============================
 
 ``declare_tensor_filled`` declares a deferred tensor with a user-provided fill
-function. The fill lambda is called after materialization and distribution —
+function. The fill lambda is called after materialization and distribution, and
 it receives a tensor with ``range()`` and ``global()`` methods for
 distribution-aware access.
 
@@ -200,9 +201,9 @@ distribution-aware access.
 **Key methods on the tensor:**
 
 ``T.range(dim)``
-   Returns ``{start, end}`` — the global index range this rank owns along
-   dimension ``dim``. Non-distributed: ``{0, full_size}``. Use this to skip
-   irrelevant work (e.g., shell batches outside the local range).
+   Returns ``{start, end}``, the global index range this rank owns along
+   dimension ``dim``. For a non-distributed dimension this is ``{0, full_size}``.
+   Use it to skip irrelevant work, such as shell batches outside the local range.
 
 ``T.global(indices...)``
    Access an element using global indices. Automatically subtracts the local
@@ -211,7 +212,7 @@ distribution-aware access.
 ``T.global_dim(dim)``
    Returns the global (pre-partition) size along dimension ``dim``.
 
-The same code works on 1 rank (serial) and N ranks (distributed) — the user
+The same code works on 1 rank (serial) and N ranks (distributed). The user
 only adds ``range()`` checks to skip irrelevant batches.
 
 Chemistry Example: Shell-Batch ERI Fill
@@ -267,7 +268,7 @@ The fill lambda runs on the host CPU in a single thread by default. Since it
 executes during ``graph.execute()`` where the full runtime is available, you can
 parallelize it with OpenMP or the einsums TaskPool.
 
-``T.global()`` is thread-safe — each shell pair writes to non-overlapping
+``T.global()`` is thread-safe: each shell pair writes to non-overlapping
 regions, so no locks are needed.
 
 **OpenMP** (simplest):

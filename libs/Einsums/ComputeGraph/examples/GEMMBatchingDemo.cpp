@@ -16,7 +16,7 @@
 ///   - A small timing measurement so you can see the dispatch-overhead
 ///     saving on short contractions.
 ///
-/// This example is contrived — the whole point is that the optimization
+/// This example is contrived, the whole point is that the optimization
 /// runs automatically via `PassManager::create_default()` once you
 /// capture a workload that happens to have many independent GEMMs
 /// (stacked attention heads, Kronecker-factored updates, batched

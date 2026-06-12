@@ -38,7 +38,7 @@ bool CommunicationInsertion::run(Graph &graph) {
     for (size_t idx = 0; idx < nodes.size(); idx++) {
         auto const &node = nodes[idx];
 
-        // Skip infrastructure nodes — process all compute nodes (Einsum, Scale, Axpy, Permute, etc.)
+        // Skip infrastructure nodes, process all compute nodes (Einsum, Scale, Axpy, Permute, etc.)
         // BatchedGemm is intentionally not listed: it arrives here only if a user
         // mixes GEMMBatching with the distribution pipeline, which is unsupported
         // (see libs/Einsums/ComputeGraph/docs/gemm_batching.rst). On non-distributed

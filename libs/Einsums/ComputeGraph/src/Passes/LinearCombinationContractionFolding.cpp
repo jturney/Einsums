@@ -96,7 +96,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
             continue;
         }
         // Complex prefactors would lose their imaginary part in the real-valued
-        // linear combination below — skip to never silently miscompute.
+        // linear combination below, skip to never silently miscompute.
         auto const ab_pf = as_real<double>(desc->ab_prefactor);
         // c_pf must be exactly 1 (pure accumulate) for all but the first node;
         // record it and enforce in Phase 2.
@@ -307,7 +307,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
 
         // The fused contraction is node-0's einsum with its non-shared operand
         // replaced by L. Build a ParsedEinsumSpec from node-0's index lists and run
-        // string_einsum reading L DIRECTLY (no slot mutation — thread-safe and
+        // string_einsum reading L DIRECTLY (no slot mutation, thread-safe and
         // unambiguous when the operands are shared across the graph).
         auto const *n0_desc = std::get_if<EinsumDescriptor>(&nodes[members[0].node_index].op_data);
         if (n0_desc == nullptr) {

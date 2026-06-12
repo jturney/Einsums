@@ -39,7 +39,7 @@ void require_close(Tensor<double, Rank> const &got, Tensor<double, Rank> const &
 
 TEST_CASE("PermuteFusion: 2D transpose absorbed into einsum A slot", "[ComputeGraph][Optimizer][PermuteFusion]") {
     // Before:  A_T = A^T,  C = einsum("ji;jk->ik", A_T, B)
-    // After:   C = einsum("ij;jk->ik", A, B)  — permute removed.
+    // After:   C = einsum("ij;jk->ik", A, B), permute removed.
     auto A = create_random_tensor<double>("A", 3, 4);
     auto B = create_random_tensor<double>("B", 4, 5);
 
@@ -121,7 +121,7 @@ TEST_CASE("PermuteFusion: 2D transpose absorbed into einsum B slot", "[ComputeGr
 }
 
 TEST_CASE("PermuteFusion: both inputs permuted in same einsum", "[ComputeGraph][Optimizer][PermuteFusion]") {
-    // Both A and B come through separate permutes — pass should fuse both in one run.
+    // Both A and B come through separate permutes, pass should fuse both in one run.
     auto A = create_random_tensor<double>("A", 3, 4);
     auto B = create_random_tensor<double>("B", 4, 5);
 
@@ -195,7 +195,7 @@ TEST_CASE("PermuteFusion: 3D permute on A slot (rank-3 × matrix)", "[ComputeGra
 }
 
 TEST_CASE("PermuteFusion: identity permute is still fused (no-op removal)", "[ComputeGraph][Optimizer][PermuteFusion]") {
-    // Permute with identical input/output indices is a plain copy — the
+    // Permute with identical input/output indices is a plain copy, the
     // subscript rewrite is a no-op but the permute node should still be
     // removed, so the einsum can run directly on the original tensor.
     auto A = create_random_tensor<double>("A", 3, 4);
@@ -236,7 +236,7 @@ TEST_CASE("PermuteFusion: identity permute is still fused (no-op removal)", "[Co
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST_CASE("PermuteFusion: skip when permute output has multiple consumers", "[ComputeGraph][Optimizer][PermuteFusion]") {
-    // A_T is consumed by TWO einsums — removing the permute would leave
+    // A_T is consumed by TWO einsums, removing the permute would leave
     // the second one dangling. Pass should report the candidate but
     // not rewrite.
     auto A  = create_random_tensor<double>("A", 3, 4);
@@ -264,7 +264,7 @@ TEST_CASE("PermuteFusion: skip when permute output has multiple consumers", "[Co
 }
 
 TEST_CASE("PermuteFusion: skip when permute has non-trivial alpha", "[ComputeGraph][Optimizer][PermuteFusion]") {
-    // permute with alpha != 1 scales values — not a pure axis reorder.
+    // permute with alpha != 1 scales values, not a pure axis reorder.
     // Must not fuse.
     auto A = create_random_tensor<double>("A", 3, 4);
     auto B = create_random_tensor<double>("B", 4, 5);
@@ -305,7 +305,7 @@ TEST_CASE("PermuteFusion: skip when permute accumulates (non-zero beta)", "[Comp
 }
 
 TEST_CASE("PermuteFusion: no candidates when no permute feeds einsum", "[ComputeGraph][Optimizer][PermuteFusion]") {
-    // Straight einsum with no preceding permute — nothing to do.
+    // Straight einsum with no preceding permute, nothing to do.
     auto A = create_random_tensor<double>("A", 3, 4);
     auto B = create_random_tensor<double>("B", 4, 5);
     auto C = create_zero_tensor<double>("C", 3, 5);
@@ -329,7 +329,7 @@ TEST_CASE("PermuteFusion: no candidates when no permute feeds einsum", "[Compute
 
 TEST_CASE("PermuteFusion: fused graph is replayable", "[ComputeGraph][Optimizer][PermuteFusion]") {
     // After fusion, re-executing the graph with different input values
-    // must produce the correct result — confirms the shared indices
+    // must produce the correct result, confirms the shared indices
     // the executor reads are consistent across calls.
     auto A   = create_random_tensor<double>("A", 3, 4);
     auto B   = create_random_tensor<double>("B", 4, 5);
@@ -348,7 +348,7 @@ TEST_CASE("PermuteFusion: fused graph is replayable", "[ComputeGraph][Optimizer]
     graph.execute();
     auto C_snapshot = Tensor<double, 2>(C);
 
-    // Rerun — C should be recomputed to the same values.
+    // Rerun: C should be recomputed to the same values.
     C.zero();
     graph.execute();
     require_close(C, C_snapshot);

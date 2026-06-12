@@ -7,21 +7,21 @@
 /// @brief Demonstrates all optimization passes available for computation graphs.
 ///
 /// Passes demonstrated:
-///   1. ScaleAbsorption (einsum) — absorbs scale into einsum's C prefactor
-///   2. MemoryPlanning           — analyzes tensor liveness and reports memory savings
-///   3. Reorder                  — memory-aware topological sort
-///   4. CSE                      — common subexpression elimination
-///   5. ChainParenthesization    — optimal matrix chain multiplication analysis
-///   6. ConstantFolding          — folds constant-input operations at optimization time
-///   7. ScaleAbsorption (permute) — scale absorption into a downstream permute
-///   8. GEMMBatching          — detects independent GEMMs that can be batched
-///   9. LoopInvariantHoisting — moves invariant operations out of loops
-///  10. DeadNodeElimination   — removes nodes whose outputs are unused
-///  11. ElementWiseFusion     — fuses consecutive element-wise operations
-///  12. DistributiveFactoring — rewrites A*B1 + A*B2 → A*(B1+B2)
-///  13. InplaceOptimization   — detects in-place operation candidates (analysis)
-///  14. PermuteFusion         — detects transpose-into-GEMM fusion (analysis)
-///  15. create_default()      — applies all safe passes in one call
+///   1. ScaleAbsorption (einsum), absorbs scale into einsum's C prefactor
+///   2. MemoryPlanning: analyzes tensor liveness and reports memory savings
+///   3. Reorder: memory-aware topological sort
+///   4. CSE: common subexpression elimination
+///   5. ChainParenthesization: optimal matrix chain multiplication analysis
+///   6. ConstantFolding: folds constant-input operations at optimization time
+///   7. ScaleAbsorption (permute), scale absorption into a downstream permute
+///   8. GEMMBatching: detects independent GEMMs that can be batched
+///   9. LoopInvariantHoisting: moves invariant operations out of loops
+///  10. DeadNodeElimination: removes nodes whose outputs are unused
+///  11. ElementWiseFusion: fuses consecutive element-wise operations
+///  12. DistributiveFactoring: rewrites A*B1 + A*B2 → A*(B1+B2)
+///  13. InplaceOptimization: detects in-place operation candidates (analysis)
+///  14. PermuteFusion: detects transpose-into-GEMM fusion (analysis)
+///  15. create_default(): applies all safe passes in one call
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Print.hpp>
@@ -115,7 +115,7 @@ int einsums_main() {
         {
             cg::CaptureGuard guard(graph);
 
-            // Two independent operations — can be reordered
+            // Two independent operations, can be reordered
             cg::einsum("ik;kj->ij", &C, A, B);
             cg::einsum("ik;kj->ij", &D, B, A);
         }
@@ -145,7 +145,7 @@ int einsums_main() {
         {
             cg::CaptureGuard guard(graph);
 
-            // Two identical computations — CSE eliminates the duplicate
+            // Two identical computations, CSE eliminates the duplicate
             cg::einsum("ik;kj->ij", &C, A, B);
             cg::einsum("ik;kj->ij", &D, A, B);
         }
@@ -251,7 +251,7 @@ int einsums_main() {
         cg::Graph graph("constant_fold");
         {
             cg::CaptureGuard guard(graph);
-            // A and B are user-owned — the pass will NOT fold this.
+            // A and B are user-owned, the pass will NOT fold this.
             // To fold, use graph-owned intermediates.
             cg::einsum("ik;kj->ij", &C, A, B);
         }
@@ -342,7 +342,7 @@ int einsums_main() {
         auto C = create_zero_tensor<double>("C", 4, 4);
 
         cg::Graph graph("dne_demo");
-        // Graph-owned intermediate T — if nothing reads it, it's dead.
+        // Graph-owned intermediate T, if nothing reads it, it's dead.
         auto &T = graph.create_zero_tensor<double, 2>("T", 4, 4);
 
         {
@@ -449,7 +449,7 @@ int einsums_main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 15. PassManager::create_default() — all safe passes in one call
+    // 15. PassManager::create_default(): all safe passes in one call
     // ═══════════════════════════════════════════════════════════════════════
     println("\n=== create_default() ===\n");
     {

@@ -8,12 +8,12 @@
 ///        ``cg::write_param`` (graph-driven parameter updates).
 ///
 /// Shows three patterns, in order:
-///   1. **Constant-bound view** — slice with literal integer bounds.
-///   2. **Pipeline-parameter view** — slice bounds resolved each iteration
+///   1. Constant-bound view, slice with literal integer bounds.
+///   2. Pipeline-parameter view, slice bounds resolved each iteration
 ///      from a named ParamTable entry. Update the param between
 ///      ``Pipeline::execute()`` calls; the next execute picks up the new
 ///      slice without rebuilding the graph.
-///   3. **Mid-loop parameter update** — ``cg::write_param`` from a callback
+///   3. Mid-loop parameter update, ``cg::write_param`` from a callback
 ///      changes the param *within* a single execute, so subsequent
 ///      iterations of the same loop body see the new bounds.
 ///
@@ -33,7 +33,7 @@ int einsums_main() {
     using namespace einsums::index;
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 1. Constant-bound view — slice the first 2 rows of a 4×4 matrix
+    // 1. Constant-bound view, slice the first 2 rows of a 4×4 matrix
     // ═══════════════════════════════════════════════════════════════════════
     println("=== Constant-bound view ===\n");
     {
@@ -49,7 +49,7 @@ int einsums_main() {
             auto                  &stage = pipe.add_stage("copy_top_two");
             cg::CaptureGuard const g(stage);
 
-            // slice = A[0:2, :]  — rank-preserving, zero-copy alias.
+            // slice = A[0:2, :], rank-preserving, zero-copy alias.
             auto &slice = cg::view<double, 2>(A, cg::ViewAxis::range(0, 2), // rows 0..2
                                               cg::ViewAxis::full());        // all cols
 
@@ -64,7 +64,7 @@ int einsums_main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 2. Pipeline-parameter view — slice extent set per execute
+    // 2. Pipeline-parameter view, slice extent set per execute
     // ═══════════════════════════════════════════════════════════════════════
     //
     // The HF case: ``C_occ = C[:, 0:n_occ]``. ``n_occ`` is decided once per
@@ -110,7 +110,7 @@ int einsums_main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 3. Mid-loop parameter update — cg::write_param from a callback
+    // 3. Mid-loop parameter update, cg::write_param from a callback
     // ═══════════════════════════════════════════════════════════════════════
     //
     // SCF-style loop where the slice grows by one each iteration. ``n_occ``

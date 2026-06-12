@@ -103,7 +103,7 @@ size_t compute_bytes_from_tensors(Node const &node, Graph const &graph) {
 } // namespace
 
 bool GPUPlacement::run(Graph &graph) {
-    // No GPU backend available — nothing to do.
+    // No GPU backend available, nothing to do.
     if constexpr (!gpu::has_gpu && !gpu::is_mock) {
         _num_placed = 0;
         return false;
@@ -118,7 +118,7 @@ bool GPUPlacement::run(Graph &graph) {
             return false;
         }
     } catch (...) { // NOLINT
-        // Config not available (e.g., in unit tests) — proceed normally.
+        // Config not available (e.g., in unit tests), proceed normally.
     }
 
     _num_placed = 0;
@@ -126,7 +126,7 @@ bool GPUPlacement::run(Graph &graph) {
     // Phase 1: Identify candidates across the whole graph tree (loop
     // bodies, conditional branches, nesting). A hot GEMM inside an SCF
     // loop is the common case, so body candidates must be considered.
-    // recurse_into_subgraphs() stays false — we walk here so that Phase 2
+    // recurse_into_subgraphs() stays false, we walk here so that Phase 2
     // can place everything within a *single shared* device-memory budget
     // rather than letting the parent and each body each consume the full
     // budget (which would over-subscribe device memory and risk OOM).
@@ -186,7 +186,7 @@ bool GPUPlacement::run(Graph &graph) {
         return false;
 
     // Phase 2: Budget-aware greedy placement across the whole tree.
-    // Sort candidates by bytes descending — prioritize the largest operations.
+    // Sort candidates by bytes descending, prioritize the largest operations.
     std::ranges::sort(candidates, [](Candidate const &a, Candidate const &b) { return a.eff_bytes > b.eff_bytes; });
 
     size_t const budget = gpu::available_device_memory();

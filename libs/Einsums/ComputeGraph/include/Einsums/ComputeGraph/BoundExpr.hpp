@@ -21,13 +21,13 @@ class ParamTable;
 /// Used to specify slice bounds on @ref ViewDesc and similar runtime-resolvable
 /// scalars. A ``BoundExpr`` is one of:
 ///
-///   - **Const**     — known integer literal (e.g. ``0``, ``5``).
-///   - **Param**     — named lookup into a @ref ParamTable. Resolved by walking the
+///   - **Const**:    a known integer literal (e.g. ``0``, ``5``).
+///   - **Param**:    a named lookup into a @ref ParamTable. Resolved by walking the
 ///                     active pipeline's parameter table at execute time. Codegen
 ///                     emits ``params.<name>``.
-///   - **Callback**  — a ``std::function<int64_t()>`` evaluated at execute time.
-///                     Most flexible but interpreted-mode-only — codegen has to
-///                     either fall back to a thunk or refuse the graph.
+///   - **Callback**: a ``std::function<int64_t()>`` evaluated at execute time.
+///                     Most flexible but interpreted-mode only, since codegen has
+///                     to either fall back to a thunk or refuse the graph.
 ///
 /// Implicit conversions are provided so callers can write
 /// ``cg::Range{0, 5}``, ``cg::Range{0, "n_occ"}``, or
@@ -72,9 +72,9 @@ class BoundExpr {
 
     /// Resolve the expression to a concrete integer.
     ///
-    /// - ``Const``    — returns the literal.
-    /// - ``Param``    — looks up the name in @p params; throws if absent.
-    /// - ``Callback`` — invokes the captured lambda.
+    /// - ``Const``:    returns the literal.
+    /// - ``Param``:    looks up the name in @p params; throws if absent.
+    /// - ``Callback``: invokes the captured lambda.
     [[nodiscard]] std::int64_t resolve(ParamTable const &params) const;
 
   private:
@@ -88,8 +88,8 @@ class BoundExpr {
 /// (e.g., from a ``LoopCondition`` callback or a @c WriteParam node) take
 /// effect on the next read.
 ///
-/// Optimization passes treat parameter values as opaque — they may inspect
-/// the *structure* of a ``BoundExpr`` (Const vs. Param) but must not branch
+/// Optimization passes treat parameter values as opaque. They may inspect
+/// the structure of a ``BoundExpr`` (Const vs. Param) but must not branch
 /// on the runtime value of a ``Param``. See ``BoundExpr`` documentation.
 ///
 /// Held as a ``std::shared_ptr`` so executor lambdas can capture and read
@@ -97,8 +97,8 @@ class BoundExpr {
 /// executors) writes to.
 class ParamTable {
   public:
-    /// Set or overwrite a parameter. Allowed at any time — capture, between
-    /// iterations, between Pipeline::execute() invocations.
+    /// Set or overwrite a parameter. Allowed at any time: during capture, between
+    /// iterations, and between Pipeline::execute() invocations.
     void set(std::string name, std::int64_t value) { _values[std::move(name)] = value; }
 
     /// Read a parameter. Throws ``std::runtime_error`` if @p name is unset.
@@ -118,7 +118,7 @@ class ParamTable {
     [[nodiscard]] bool   contains(std::string const &name) const { return _values.contains(name); }
     [[nodiscard]] size_t size() const noexcept { return _values.size(); }
 
-    /// Read-only view of all entries — used by codegen to emit a Params POD.
+    /// Read-only view of all entries, used by codegen to emit a Params POD.
     [[nodiscard]] std::unordered_map<std::string, std::int64_t> const &entries() const noexcept { return _values; }
 
   private:
