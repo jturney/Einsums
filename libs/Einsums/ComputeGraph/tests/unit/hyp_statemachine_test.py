@@ -3,17 +3,18 @@
 
 """Stateful Hypothesis model of einsums tensor algebra.
 
-A RuleBasedStateMachine that keeps a *persistent* pool of einsums tensors paired
+A RuleBasedStateMachine that keeps a persistent pool of einsums tensors paired
 with numpy oracle arrays. Each rule applies one operation (in place) to both and
 asserts they still agree. Because the pool persists across rules, this exercises
-read-modify-write chains (a later op reads what an earlier op wrote) — the hazard
-class that broke the optimization passes historically — and on failure Hypothesis
-shrinks the *operation sequence*, dropping ops that don't contribute to the bug.
+read-modify-write chains, where a later op reads what an earlier op wrote. That
+is the hazard class that broke the optimization passes historically, and on
+failure Hypothesis shrinks the operation sequence, dropping ops that don't
+contribute to the bug.
 
 Shapes are drawn over dims {1, 2, 3}, so degenerate (size-1) extents are covered
-by default — exactly the class that the two bugs fixed this session lived in.
+by default, exactly the class that the two bugs fixed this session lived in.
 
-The pool holds COPIES distinct tensors per shape so rules can pick *distinct*
+The pool holds COPIES distinct tensors per shape so rules can pick distinct
 operands where the operation requires it (BLAS axpy/gemv/gemm don't accept an
 output aliasing an input, and gemv needs x != y). This mirrors the hand-rolled
 fuzzer's operand-distinctness rules; without them the harness reports false

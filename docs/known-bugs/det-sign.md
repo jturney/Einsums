@@ -54,7 +54,7 @@ typename AType::ValueType det(AType const &A) {
 }
 ```
 
-The parity counter *looks* correct: LAPACK's `getrf` returns `ipiv[i] = j+1`
+The parity counter appears correct: LAPACK's `getrf` returns `ipiv[i] = j+1`
 where `j` is the row swapped into position `i` at step `i`. `ipiv[i] == i+1`
 means no swap. Counting the number of swaps gives the permutation parity, and
 `(-1)^parity` is the sign correction.
@@ -62,11 +62,11 @@ means no swap. Counting the number of swaps gives the permutation parity, and
 So either:
 
 1. The counter has a subtle off-by-one I'm not seeing.
-2. The OpenMP reduction is somehow flipping a sign (unlikely — `*` reduction
-   on `double` doesn't flip signs).
+2. The OpenMP reduction is somehow flipping a sign. This is unlikely, since a
+   `*` reduction on `double` doesn't flip signs.
 3. The `temp(i, i)` access on certain layouts reads the wrong cell.
-4. MKL on Linux returns `ipiv` in a different convention than OpenBLAS /
-   Accelerate (different base, different meaning).
+4. MKL on Linux returns `ipiv` in a different convention than OpenBLAS or
+   Accelerate, using a different base or a different meaning.
 5. There's an interaction with `MKL_ILP64` (64-bit `int_t`) and the way
    `pivots[i] != i + 1` is evaluated.
 

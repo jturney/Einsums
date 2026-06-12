@@ -134,7 +134,7 @@ def test_pow_square_recovers_matmul(dtype):
     """``pow(A, 2.0) == A @ A`` for a symmetric positive-definite ``A``."""
     # Deterministic, well-conditioned SPD input (fixed seed). An unseeded random
     # draw occasionally lands ill-conditioned, which blows the float32
-    # eigendecomposition reconstruction past the rtol below — an intermittent CI
+    # eigendecomposition reconstruction past the rtol below: an intermittent CI
     # flake. A fixed seed keeps the input ~1000x inside the tolerance.
     np_dtype = np.dtype(dtype)
     rng = np.random.default_rng(1)

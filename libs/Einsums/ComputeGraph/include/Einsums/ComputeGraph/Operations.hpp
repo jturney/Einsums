@@ -3340,7 +3340,7 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
                                              col_mode ? "col" : "row", fmt::join(batch_names, ","), d.m, d.k, d.n);
                     ctx.record(OpKind::BatchedGemm, std::move(label), {a_id, b_id}, {c_id}, std::move(executor), std::move(d));
                     return;
-                } // canonical_mn — otherwise fall through to the generic einsum
+                } // canonical_mn, otherwise fall through to the generic einsum
             }
         }
     }

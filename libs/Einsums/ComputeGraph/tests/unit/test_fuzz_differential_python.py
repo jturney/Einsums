@@ -69,8 +69,8 @@ from einsums.testing import ALL_DTYPES
 # Dimension 1 is included on purpose: degenerate extents (K=1 rank-1-like
 # contractions, M=1 row / N=1 col gemms, length-1 vectors, 1×1 transpose/symm)
 # stress the stride / leading-dimension / packing logic that fixed dims ≥ 2
-# never reach. numpy oracles them cleanly, so any divergence — or any ASan/UBSan
-# trip on a zero-stride or single-element buffer — is a real finding.
+# never reach. numpy oracles them cleanly, so any divergence, or any ASan/UBSan
+# trip on a zero-stride or single-element buffer, is a real finding.
 DIMS = (1, 2, 3, 4)
 R3_DIMS = (1, 2, 3)
 COPIES = 3  # copies of each matrix shape / vector length / rank-3 shape
@@ -677,10 +677,10 @@ def test_fuzz_cross_executor_deep_nesting(seed, dtype):
 # ──────────────────────────────────────────────────────────────────────────
 # Parallel-executor stress (ASan/UBSan bait)
 #
-# A use-after-free or heap-overflow in the OpenMP / Dataflow scheduler — a node
+# A use-after-free or heap-overflow in the OpenMP / Dataflow scheduler, a node
 # whose buffer is freed while a concurrent node still reads it, from a missing
-# dependency edge — is timing-dependent. A single execution rarely lands on the
-# offending interleaving, and under a *sanitizer* the corruption is only flagged
+# dependency edge, is timing-dependent. A single execution rarely lands on the
+# offending interleaving, and under a sanitizer the corruption is only flagged
 # when the bad access actually fires. So we replay each program through the two
 # parallel executors many times to shuffle the thread schedule and give ASan
 # repeated chances at the bad window. This arm is pure sanitizer bait: float64

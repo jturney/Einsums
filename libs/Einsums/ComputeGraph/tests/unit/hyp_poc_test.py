@@ -7,9 +7,9 @@ Mirrors a slice of the hand-rolled ComputeGraph fuzzer, but lets Hypothesis
 generate the shapes/ops and (on failure) auto-shrink to a minimal reproducer.
 
 Key point vs the hand-rolled fuzzer: dimensions are drawn from
-`st.integers(1, 4)` — Hypothesis includes the boundary value 1 by default and
+`st.integers(1, 4)`. Hypothesis includes the boundary value 1 by default and
 biases toward it, so the degenerate-dim class is covered without anyone
-hardcoding it. The `*_empty` test pushes further (dim 0) into a vector the
+hardcoding it. The `*_empty` test pushes further, to dim 0, into a vector the
 hand-rolled fuzzer never explored.
 
 Run:  pytest hyp_poc_test.py -q            (under the ASan DYLD setup)
@@ -95,7 +95,7 @@ def test_hyp_beinsum_kib(i, k, j, batch, a):
     np.testing.assert_allclose(np.asarray(Ct), oracle, rtol=1e-9, atol=1e-9)
 
 
-# ── NEW vector: empty (size-0) extents — never tried by the hand-rolled fuzzer
+# ── NEW vector: empty (size-0) extents, never tried by the hand-rolled fuzzer
 @given(m=st.integers(0, 3), k=st.integers(0, 3), n=st.integers(0, 3), a=SCALAR)
 @_POOL
 def test_hyp_gemm_empty(m, k, n, a):
@@ -113,7 +113,7 @@ def test_hyp_gemm_empty(m, k, n, a):
 
 # ── #1: arbitrary einsum-spec differential vs numpy.einsum ──────────────────
 # The hand-rolled fuzzer hard-codes a handful of contraction patterns. Here we
-# generate VALID two-operand contractions across the whole role model:
+# generate valid two-operand contractions across the whole role model:
 #   batch index -> in A, B, and C
 #   M index     -> in A and C   (free of B)
 #   N index     -> in B and C   (free of A)

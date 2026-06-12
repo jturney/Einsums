@@ -1,16 +1,16 @@
 # Copyright (c) The Einsums Developers. All rights reserved.
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
-"""Hypothesis differential: a multi-node graph program THROUGH the pass pipeline.
+"""Hypothesis differential: a multi-node graph program run through the pass pipeline.
 
 Generates a random straight-line program of RMW ops (gemm / axpy / axpby /
 direct_product / scale) over a small pool of NxN tensors, replays it on numpy
-for the oracle, then builds the same program in a graph, applies the FULL default
+for the oracle, then builds the same program in a graph, applies the full default
 pass manager (CSE, reorder, fusion, in-place, memory planning, scale absorption,
 contraction folding, ...), executes, and compares every tensor.
 
 Unlike the single-op harnesses, this exercises the passes that only fire across
-*chains* of ops, and the executor's read-modify-write ordering. N includes the
+chains of ops, and the executor's read-modify-write ordering. N includes the
 degenerate 1; gemm keeps its output distinct from its inputs (BLAS requires it).
 
 The ``@example`` entries pin the in-place / self-aliasing reducers that were once

@@ -523,7 +523,7 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if (in.strides() != out.strides()) {
         // The vectorized paths below traverse `in` and `out` in lock-step by a
         // single increment, which is only valid when the two operands map logical
-        // indices to memory identically. Equal is_column_major() flags do NOT
+        // indices to memory identically. Equal is_column_major() flags do not
         // guarantee that: a permuted/transposed view can share the flag yet have a
         // different stride ordering (e.g. both internally contiguous but one
         // stored (1,2,4) and the other (1,4,2)), so a flat axpy would pair up
@@ -583,7 +583,7 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         // column-major-ness, but a degenerate extent ties the two strides (a
         // contiguous 1xN operand has equal row and column strides), so the proxy
         // picked the wrong branch and extracted an operand's row stride where its
-        // column stride was needed — the hard loop then wrote contiguously and
+        // column stride was needed. The hard loop then wrote contiguously and
         // only the first column landed correctly. The flag is what
         // query_vectorable_params folds against, keeping split and extraction
         // consistent for degenerate (size-1) extents.

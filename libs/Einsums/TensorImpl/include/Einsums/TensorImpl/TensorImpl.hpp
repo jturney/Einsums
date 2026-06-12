@@ -591,9 +591,9 @@ struct TensorImpl final {
             return (_ptr == nullptr) ? 0 : 1;
         }
         // A null data pointer with non-zero size is an unmaterialized (deferred)
-        // tensor — report 0 so it reads as not-yet-allocated (and the buffer
-        // protocol exposes nothing to dereference). A null pointer with size 0 is
-        // a *legitimately empty* tensor: its storage holds no elements, so the
+        // tensor. Report 0 so it reads as not-yet-allocated and the buffer
+        // protocol exposes nothing to dereference. A null pointer with size 0 is
+        // a legitimately empty tensor: its storage holds no elements, so the
         // backing std::vector's data() is null, but its extents are real and must
         // be reported (e.g. a (0, N) tensor is not a (0, 0) tensor).
         if (_ptr == nullptr && _size != 0) {
@@ -667,8 +667,8 @@ struct TensorImpl final {
             }
             return false;
         }
-        // Ignore size-1 dimensions (their stride is irrelevant — a permuted view
-        // can leave one at a boundary with an inflated stride). The tensor is
+        // Ignore size-1 dimensions, whose stride is irrelevant since a permuted
+        // view can leave one at a boundary with an inflated stride. The tensor is
         // totally vectorable iff the extent>1 dimensions tile memory with a
         // single increment and no gaps, i.e. the span (largest dim * largest
         // stride) equals element_count * smallest_stride.
