@@ -8,20 +8,27 @@ Getting Started
 Overview
 ========
 
-The ComputeGraph module lets you capture a sequence of Einsums operations into a
-directed acyclic graph (DAG), optimize it with built-in passes, and then execute or
-replay it. This is useful for:
+The ComputeGraph module records a sequence of Einsums operations as a directed
+acyclic graph, optimizes that graph with built-in passes, and then executes or
+replays it. Recording the work once and running it later pays off in three
+common situations.
 
-- **Iterative algorithms** (SCF, CC): Replay the same operations hundreds of times
-  without re-dispatch overhead.
-- **One-shot optimization**: Apply fusion, CSE, and memory planning to a complex
-  tensor network before executing it.
-- **Profiling**: Get per-operation profiler annotations with tensor dimensions and
-  contraction patterns.
+Iterative algorithms such as SCF and coupled cluster run the same sequence of
+operations hundreds of times. Capturing the sequence once lets you replay it
+without paying the dispatch cost on every iteration.
 
-All graph-aware operations live in the ``einsums::compute_graph`` namespace and
-mirror the signatures of their eager counterparts in ``tensor_algebra`` and
-``linear_algebra``.
+One-shot optimization applies fusion, common subexpression elimination, and
+memory planning to a whole tensor network before it runs. An eager pass cannot
+do this because it sees only one operation at a time.
+
+Profiling becomes easier because every node carries profiler annotations that
+record tensor dimensions and contraction patterns, so a captured graph is
+straightforward to read in a trace.
+
+Every graph-aware operation lives in the ``einsums::compute_graph`` namespace
+and mirrors the signature of its eager counterpart in ``tensor_algebra`` and
+``linear_algebra``. If you know the eager call, you already know the captured
+call.
 
 Basic Workflow
 ==============
@@ -34,61 +41,63 @@ Basic Workflow
    using namespace einsums;
    using namespace einsums::index;
 
-   // 1. Create tensors
+   // 1. Create the input tensors.
    auto A = create_random_tensor<double>("A", 10, 5);
    auto B = create_random_tensor<double>("B", 5, 8);
 
-   // 2. Create a graph with an owned intermediate (inserts Alloc node)
+   // 2. Create a graph and an owned output tensor. This records an Alloc node.
    cg::Graph graph("my_graph");
    auto &C = graph.create_zero_tensor<double, 2>("C", 10, 8);
 
-   // 3. Capture operations
+   // 3. Capture operations inside a guard.
    {
        cg::CaptureGuard guard(graph);
        cg::einsum("ik;kj->ij", &C, A, B);
    }
 
-   // 4. (Optional) Optimize
+   // 4. Optimize the graph. This step is optional.
    auto pm = cg::PassManager::create_default();
    graph.apply(pm);
 
-   // 5. Execute
+   // 5. Execute the graph.
    graph.execute();
 
-   // 6. Replay (for iterative algorithms)
-   graph.execute();  // Same operations, same tensors
+   // 6. Replay it. The same operations run again on the same tensors.
+   graph.execute();
 
 How Capture Works
 =================
 
-During capture (between ``CaptureGuard`` construction and destruction):
+Capture happens between the construction and destruction of a ``CaptureGuard``.
+While the guard is alive, each call to ``cg::einsum()``, ``cg::scale()``,
+``cg::gemm()``, and the other graph-aware operations checks
+``CaptureContext::current().is_capturing()`` and then takes one of two paths.
 
-1. Each call to ``cg::einsum()``, ``cg::scale()``, ``cg::gemm()``, etc. checks
-   ``CaptureContext::current().is_capturing()``.
-2. If capturing, the operation is NOT executed. Instead, a ``Node`` is created
-   containing:
+When capture is active, the operation does not run. It creates a ``Node`` that
+holds four things: a type-erased ``std::function<void()>`` that closes over the
+fully resolved template call, the operation kind such as ``OpKind::Einsum`` or
+``OpKind::Scale``, the input and output tensor ids used for dependency
+tracking, and the operation metadata such as ``EinsumDescriptor`` or
+``ScaleDescriptor``.
 
-   - A type-erased lambda (``std::function<void()>``) that captures the fully
-     resolved template call
-   - The operation kind (``OpKind::Einsum``, ``OpKind::Scale``, etc.)
-   - Input/output tensor IDs for dependency tracking
-   - Operation metadata (``EinsumDescriptor``, ``ScaleDescriptor``, etc.)
+When capture is not active, the operation runs immediately and adds no overhead
+over the eager path.
 
-3. If not capturing, the operation executes immediately (zero overhead).
+When the ``CaptureGuard`` is destroyed, the graph is topologically sorted so
+that execution honors the recorded dependencies.
 
-When the ``CaptureGuard`` is destroyed, the graph is topologically sorted.
-
-**Exception**: Return-value operations (``syev(A)``, ``svd(A)``, ``qr(A)``, etc.)
-always execute eagerly, even during capture. This is because subsequent captured
-operations need the returned tensors to exist. They are recorded as nodes so
-that on replay they re-execute.
+Return-value operations are the one exception. Calls such as ``syev(A)``,
+``svd(A)``, and ``qr(A)`` return new tensors, and later captured operations
+need those tensors to exist while the graph is still being built. These calls
+therefore run eagerly even during capture. They are still recorded as nodes, so
+a replay re-runs them.
 
 Graph Inspection
 ================
 
 .. code-block:: cpp
 
-   // Text summary
+   // Text summary.
    graph.print_summary(std::cout);
    // Output:
    //   Graph 'my_graph': 1 nodes, 3 tensors
@@ -96,52 +105,53 @@ Graph Inspection
    //       inputs: A, B
    //       outputs: C
 
-   // GraphViz DOT format (render with: dot -Tpng graph.dot -o graph.png)
+   // GraphViz DOT format. Render it with: dot -Tpng graph.dot -o graph.png
    std::ofstream f("graph.dot");
    graph.print_dot(f);
 
 Parallel Execution
 ==================
 
-Use the OpenMP executor for automatic parallelism of independent nodes:
+Pass an OpenMP executor to ``execute`` to run independent nodes in parallel.
 
 .. code-block:: cpp
 
    cg::OpenMPExecutor omp;
-   graph.execute(omp);       // Independent nodes run in parallel
+   graph.execute(omp);       // Independent nodes run in parallel.
 
-The executor automatically detects which nodes are independent based on
-data dependencies — no user intervention needed.
+The executor decides which nodes are independent from the recorded data
+dependencies, so you do not have to mark parallelism by hand.
 
 String-Based Einsum
 ===================
 
-Instead of compile-time index types, you can use string notation:
+You can name indices with a string instead of compile-time index types. Three
+notations are accepted.
 
 .. code-block:: cpp
 
-   // Arrow notation
+   // Arrow notation.
    cg::einsum("ij <- ik ; kj", &C, A, B);
 
-   // NumPy notation
+   // NumPy notation.
    cg::einsum("ik;kj -> ij", &C, A, B);
 
-   // Multi-character indices
+   // Multi-character indices.
    cg::einsum("mu,nu <- mu,rho ; rho,nu", &C, A, B);
 
-See :doc:`string_einsum` for full details.
+See :doc:`string_einsum` for the full grammar.
 
 Graph Rebind
 ============
 
-Reuse a captured graph with different data without re-capturing:
+You can reuse a captured graph with different data without capturing it again.
 
 .. code-block:: cpp
 
-   graph.rebind(tensor_id, new_tensor);   // Swap tensor binding
-   graph.update_prefactors(node_id, c_pf, ab_pf);  // Change prefactors
+   graph.rebind(tensor_id, new_tensor);            // Swap a tensor binding.
+   graph.update_prefactors(node_id, c_pf, ab_pf);  // Change the scalar prefactors.
 
-See :doc:`rebind` for full details.
+See :doc:`rebind` for the full interface.
 
 Profiled Execution
 ==================
@@ -150,10 +160,13 @@ Profiled Execution
 
    graph.execute();
 
-This wraps each node in a profiler region with annotations:
+Execution wraps each node in a profiler region. The annotations on that region
+include the following.
 
-- ``op_kind``: "Einsum", "Scale", "Gemm", etc.
-- ``c_indices``, ``a_indices``, ``b_indices``: Contraction pattern (for einsum)
-- ``c_prefactor``, ``ab_prefactor``: Scalar prefactors
-- ``input.<name>``, ``output.<name>``: Tensor dimensions (e.g., "10x8")
-- ``estimated_flops``: FLOP count (if set)
+- ``op_kind`` names the operation, for example Einsum, Scale, or Gemm.
+- ``c_indices``, ``a_indices``, and ``b_indices`` give the contraction pattern
+  for an einsum.
+- ``c_prefactor`` and ``ab_prefactor`` give the scalar prefactors.
+- ``input.<name>`` and ``output.<name>`` give the tensor dimensions, for
+  example 10x8.
+- ``estimated_flops`` gives the FLOP count when it has been set.
