@@ -7,7 +7,7 @@ The single-einsum conj tests never exercise the multi-einsum rewriting passes
 (LinearCombinationContractionFolding, GEMMBatching, ChainParenthesization,
 DistributiveFactoring) because those only fire on graphs with several related
 contractions. Those passes don't thread conj_a/conj_b through their rewrites, so
-they conservatively skip conjugated einsums — this test builds graphs shaped to
+they conservatively skip conjugated einsums; this test builds graphs shaped to
 trigger them (the 2J-K linear-combination idiom, a GEMM chain, a batchable set),
 runs the default pass manager, and checks the result still matches numpy. A pass
 that silently folded/batched a conj einsum and dropped the flag would diverge.
@@ -57,7 +57,7 @@ def test_einsum_conj_through_passes(pattern, conj_flags, dt, seed):
 
     if pattern == "linear_comb":
         # 2J-K idiom: O = 2*(opA . opB) - (opA . opC), two accumulating contractions
-        # sharing operand A — the shape LinearCombinationContractionFolding targets.
+        # sharing operand A, the shape LinearCombinationContractionFolding targets.
         i, k, j = (int(rng.integers(2, 5)) for _ in range(3))
         A, B, C = _rnd((i, k), cplx, rng), _rnd((k, j), cplx, rng), _rnd((k, j), cplx, rng)
         oracle = 2.0 * (cj(A, f0) @ cj(B, f1)) - (cj(A, f0) @ cj(C, f2))

@@ -3,12 +3,12 @@
 
 """Conjugation property tests (Tier 3): cross-path agreement + metamorphic identities.
 
-Cross-path: the conjugate-transpose product A^H @ B can be expressed four ways —
+Cross-path: the conjugate-transpose product A^H @ B can be expressed four ways:
 linalg.gemm(trans_a=Transpose.C), einsum(conj_a=) with transposed indices, the
 einsum conj(...) spec, and a materialized A.conj() then plain einsum. All must
 agree (with each other and numpy), so a bug local to one path is caught.
 
-Metamorphic: identities that hold regardless of numpy's conventions —
+Metamorphic: identities that hold regardless of numpy's conventions:
 conj(conj(A))==A, (A^H)^H==A, (A@B)^H == B^H@A^H, dotc(a,b)==conj(dotc(b,a)).
 """
 from __future__ import annotations

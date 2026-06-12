@@ -291,8 +291,8 @@ void symm_gemm(AType const &A, BType const &B, CType *C) {
     gemm<!TransB, false>(T{1.0}, B, temp, T{0.0}, C);
 }
 
-// Hermitian congruence C = op(B)^H op(A) op(B) (compile-time-rank); only the
-// outer factor differs from symm_gemm (conjugate-transpose instead of transpose).
+// Hermitian congruence C = op(B)^H op(A) op(B) for compile-time-rank operands.
+// Only the outer factor differs from symm_gemm: conjugate-transpose, not transpose.
 template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, MatrixConcept CType>
     requires requires {
         requires InSamePlace<AType, BType, CType>;
@@ -305,9 +305,9 @@ void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
 }
 
 // Runtime-rank Hermitian congruence C = op(B)^H op(A) op(B). Mirrors the
-// runtime-rank symm_gemm above; the outer factor is conjugate-transpose -- BLAS
-// 'c' when B is not transposed, else a materialized conj(B) (BLAS has no
-// conjugate-without-transpose). For real dtypes it coincides with symm_gemm.
+// runtime-rank symm_gemm above; the outer factor is conjugate-transpose, so it
+// uses BLAS 'c' when B is not transposed, else a materialized conj(B) because BLAS
+// has no conjugate-without-transpose op. For real dtypes it coincides with symm_gemm.
 template <bool TransA, bool TransB, BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
     requires requires {
         requires std::remove_cvref_t<AType>::Rank == einsums::dynamic_rank || std::remove_cvref_t<BType>::Rank == einsums::dynamic_rank ||
@@ -1067,7 +1067,7 @@ void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType
     detail::gerc(alpha, X, Y, A);
 }
 
-// Runtime-rank overload (mirrors the dynamic_rank ``ger`` above): accepts
+// Runtime-rank overload mirroring the dynamic_rank ``ger`` above. It accepts
 // RuntimeTensor / RuntimeTensorView and goes straight to the TensorImpl kernel.
 template <BasicTensorConcept AType, BasicTensorConcept XType, BasicTensorConcept YType>
     requires requires {
@@ -1262,7 +1262,8 @@ enum class APIARY_EXPOSE APIARY_MODULE("linalg") Norm : char{
 };
 
 /// Transpose mode for a matrix operand, mapping 1:1 onto the BLAS op flag.
-/// Enumerators are the BLAS letters (``None`` is avoided — it is a Python keyword).
+/// Enumerators are the BLAS letters. ``None`` is avoided because it is a Python
+/// keyword.
 enum class APIARY_EXPOSE APIARY_MODULE("linalg") Transpose : char{
     N = 'N', /**< op(A) = A (no transpose). */
     T = 'T', /**< op(A) = A^T (transpose, no conjugation). */

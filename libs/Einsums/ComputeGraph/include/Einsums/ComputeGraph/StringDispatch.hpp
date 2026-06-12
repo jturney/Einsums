@@ -395,11 +395,11 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 
         // ── Runtime-rank BLAS fast paths ────────────────────────────────────────
         // Mirror of the typed BLAS ladder above for runtime-rank operands. We
-        // build a zero-copy TensorView<T, K> over the RuntimeTensor's data
-        // (impl carries the same dims+strides), then call the same rank-
-        // specialized BLAS helpers. The upcast is just a pointer + small
-        // metadata array — no allocation, no copy. Only fires when ALL three
-        // operands are runtime-rank; mixed typed/runtime calls fall through
+        // build a zero-copy TensorView<T, K> over the RuntimeTensor's data, whose
+        // impl carries the same dims and strides, then call the same rank-
+        // specialized BLAS helpers. The upcast is just a pointer plus a small
+        // metadata array, with no allocation and no copy. It only fires when all
+        // three operands are runtime-rank; mixed typed/runtime calls fall through
         // to PackedGemm or the generic loop.
         if constexpr (!HasCompileTimeRank<AType> && !HasCompileTimeRank<BType> && !HasCompileTimeRank<CType>) {
             std::size_t const a_rank = detail::tensor_rank(A);
@@ -533,7 +533,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     }
 
     // ── Generic fallback: runtime nested-loop contraction ──────────
-    // Reached when no fast path applies — pure outer products, mixed-dtype
+    // Reached when no fast path applies: pure outer products, mixed-dtype
     // edge cases, or contractions that even PackedGemm can't form into a
     // valid GEMM shape (no M-dims, no N-dims, no links).
     ProfileAnnotate("dispatch", "generic_loop");

@@ -4,11 +4,11 @@
 # ----------------------------------------------------------------------------------------------
 
 # Stub overlay for the NumPy-style ergonomics that ``einsums/__init__.py``
-# installs at RUNTIME (monkey-patched onto the bound RuntimeTensor classes +
-# module-level constructors). The C++ codegen reads the AST and can't see runtime
+# installs at run time by monkey-patching the bound RuntimeTensor classes and the
+# module-level constructors. The C++ codegen reads the AST and can't see runtime
 # patching, so these stubs are maintained here and merged in by apiary's
-# aggregate_stubs pass (see Einsums_FinalizePybind.cmake: STUB_OVERLAY /
-# STUB_OVERLAY_CLASS_REGEX).
+# aggregate_stubs pass. See Einsums_FinalizePybind.cmake: STUB_OVERLAY /
+# STUB_OVERLAY_CLASS_REGEX.
 #
 # Two parts:
 #   * top-level ``def``s        -> module functions appended to einsums/__init__.pyi
@@ -17,7 +17,7 @@
 #
 # Keep in sync with ``_patch_numpy_ergonomics`` and the constructors in
 # ``einsums/__init__.py``. Imports here are for readability only; the aggregator
-# ignores them (the generated stubs carry their own shared header).
+# ignores them, since the generated stubs carry their own shared header.
 from __future__ import annotations
 
 from typing import Any

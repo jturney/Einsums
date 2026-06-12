@@ -513,7 +513,8 @@ def _tensor_copy(self):
     return _copy_of(self, f"{getattr(self, 'name', 'A')}_copy")
 
 
-# Trailing class-name letter F/D -> real (no change); C/Z -> the matching real type.
+# Trailing class-name letter: F/D are already real and map to themselves; C/Z map
+# to the matching real type.
 _REAL_DTYPE_SUFFIX = {"F": "float32", "D": "float64", "C": "float32", "Z": "float64"}
 
 
@@ -527,10 +528,10 @@ def _real_dtype_name(self):
 
 
 def _tensor_conj(self):
-    """``A.conj()`` -> a new tensor holding the complex conjugate of A.
+    """``A.conj()`` returns a new tensor holding the complex conjugate of A.
 
-    Returns a fresh tensor (numpy.conj semantics); for real dtypes this is just
-    a copy. Graph-aware: inside ``cg.capture`` the copy and conjugation are
+    Follows numpy.conj semantics and returns a fresh tensor; for real dtypes this
+    is just a copy. Graph-aware: inside ``cg.capture`` the copy and conjugation are
     recorded as graph nodes."""
     out = _copy_of(self, f"conj({getattr(self, 'name', 'A')})")
     _core.linalg.conj(out)  # in-place on the copy; no-op for real dtypes
@@ -538,7 +539,7 @@ def _tensor_conj(self):
 
 
 def _tensor_real(self):
-    """``A.real`` -> the real part as a new real-valued tensor (a copy if A is real)."""
+    """``A.real`` returns the real part as a new real-valued tensor, a copy if A is real."""
     if not _is_complex_tensor(self):
         return _tensor_copy(self)
     out = _alloc_output(f"real({getattr(self, 'name', 'A')})", list(self.shape), _real_dtype_name(self))
@@ -547,7 +548,7 @@ def _tensor_real(self):
 
 
 def _tensor_imag(self):
-    """``A.imag`` -> the imaginary part as a new real-valued tensor (zeros if A is real)."""
+    """``A.imag`` returns the imaginary part as a new real-valued tensor, zeros if A is real."""
     out = _alloc_output(f"imag({getattr(self, 'name', 'A')})", list(self.shape), _real_dtype_name(self))
     if _is_complex_tensor(self):
         _core.linalg.imag(out, self)
@@ -555,19 +556,19 @@ def _tensor_imag(self):
 
 
 def _tensor_abs(self):
-    """``abs(A)`` -> the element-wise magnitude as a new real-valued tensor."""
+    """``abs(A)`` returns the element-wise magnitude as a new real-valued tensor."""
     out = _alloc_output(f"abs({getattr(self, 'name', 'A')})", list(self.shape), _real_dtype_name(self))
     _core.linalg.abs(out, self)
     return out
 
 
 def _tensor_H(self):
-    """``A.H`` -> conjugate-transpose (adjoint): reverse axes then conjugate.
+    """``A.H`` is the conjugate-transpose, or adjoint: reverse axes then conjugate.
 
-    Returns a fresh owning tensor (not a view): copy the transpose of ``self``
-    then conjugate in place, since conj(A^T) == A^H. Materializing avoids
-    handing back a view of a temporary (which dangles after graph execute), and
-    the only intermediate view is over ``self`` — always alive. Graph-aware: the
+    Returns a fresh owning tensor rather than a view. It copies the transpose of
+    ``self`` then conjugates in place, since conj(A^T) == A^H. Materializing avoids
+    handing back a view of a temporary, which would dangle after graph execute; the
+    only intermediate view is over ``self``, which is always alive. Graph-aware: the
     transpose-copy and the conjugation are recorded as nodes inside cg.capture."""
     out = _tensor_copy(_tensor_T(self))
     _core.linalg.conj(out)

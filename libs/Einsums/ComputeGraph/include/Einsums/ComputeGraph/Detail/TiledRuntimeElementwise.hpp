@@ -60,18 +60,18 @@ void tiled_element_transform(TiledRuntimeTensor<T> *A, UnaryOp unary_op) {
     });
 }
 
-/// Tiled in-place complex conjugate `A := conj(A)` (per stored tile; no-op for
-/// real T). Absent tiles are zero and stay absent.
+/// Tiled in-place complex conjugate `A := conj(A)`, applied per stored tile and a
+/// no-op for real T. Absent tiles are zero and stay absent.
 template <typename T>
 void tiled_conj(TiledRuntimeTensor<T> *A) {
     tiled_for_each_tile(A, [](RuntimeTensor<T> *tile) { einsums::detail::impl_conj(tile->impl()); });
 }
 
-/// Tiled complex->real elementwise extraction `Out[tile] = f(In[tile])` where f
+/// Tiled complex-to-real elementwise extraction `Out[tile] = f(In[tile])` where f
 /// is one of the TensorImpl kernels real/imag/abs. ``In`` and ``Out`` must share
-/// a tile grid; only In's stored tiles are visited (absent -> zero, and the real
-/// part / imag part / magnitude of zero is zero). ``Out`` tiles are created on
-/// demand. Used by the cg conj/real/imag/abs ops for tiled operands.
+/// a tile grid; only In's stored tiles are visited. Absent tiles are zero, and the
+/// real part, imaginary part, or magnitude of zero is zero. ``Out`` tiles are
+/// created on demand. Used by the cg conj/real/imag/abs ops for tiled operands.
 template <typename TOut, typename TIn, typename Kernel>
 void tiled_complex_to_real(TiledRuntimeTensor<TIn> const &In, TiledRuntimeTensor<TOut> *Out, Kernel &&kernel) {
     if (In.tile_sizes() != Out->tile_sizes()) {

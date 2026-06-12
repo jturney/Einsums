@@ -80,7 +80,7 @@ def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, dt, mode, via, va, vb, seed)
     c_idx = spec.split(" <- ")[0]
     b_idx = rest
     # Scalar-output einsum (empty C indices, e.g. dot) isn't supported by the
-    # graph-capture shape validator yet — a pre-existing limitation unrelated to
+    # graph-capture shape validator yet; a pre-existing limitation unrelated to
     # conjugation. Exercise those specs eagerly only.
     if not c_idx and mode != "eager":
         return
@@ -97,7 +97,7 @@ def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, dt, mode, via, va, vb, seed)
     At, Bt = _mkv(A0, va, dt, rng), _mkv(B0, vb, dt, rng)
     C = _mk(np.zeros(c_shape), dt)
     # Express conjugation either as conj_a/conj_b kwargs or as conj(...) wrappers
-    # in the spec string — both must agree with the oracle.
+    # in the spec string; both must agree with the oracle.
     if via == "spec":
         aw = f"conj({a_idx})" if conj_a else a_idx
         bw = f"conj({b_idx})" if conj_b else b_idx

@@ -52,10 +52,10 @@ std::vector<std::string> parse_index_group(std::string_view group, bool multi_ch
     return indices;
 }
 
-// Detect and strip a ``conj(...)`` wrapper around an operand's index block
-// (the input is already whitespace-stripped). Sets @p conj and returns the inner
+// Detect and strip a ``conj(...)`` wrapper around an operand's index block. The
+// input is already whitespace-stripped. Sets @p conj and returns the inner
 // index string; returns the input unchanged when not wrapped. The wrapper marks
-// the operand for conjugation in the contraction (no-op for real dtypes).
+// the operand for conjugation in the contraction, a no-op for real dtypes.
 std::string_view unwrap_conj(std::string_view part, bool &conj) {
     conj = false;
     if (part.size() >= 6 && part.substr(0, 5) == "conj(" && part.back() == ')') {

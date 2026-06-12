@@ -135,12 +135,12 @@ APIARY_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<std::complex<double>>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// conj / real / imag / abs  (complex-conjugation primitives)
+// conj / real / imag / abs: complex-conjugation primitives
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Graph-aware in-place complex conjugate: ``A := conj(A)``. No-op for real
-/// dtypes (matches numpy.conj on a real array). Captured as an opaque Custom
-/// node — the einsum-rewriting passes don't reason about conjugation.
+/// Graph-aware in-place complex conjugate: ``A := conj(A)``. A no-op for real
+/// dtypes, matching ``numpy.conj`` on a real array. Captured as an opaque Custom
+/// node, since the einsum-rewriting passes do not reason about conjugation.
 template <TensorConcept AType>
 // clang-format off
 APIARY_EXPOSE
@@ -193,8 +193,9 @@ APIARY_INSTANTIATE_AS("conj", einsums::TiledRuntimeTensor<std::complex<double>>)
     }
 }
 
-/// Graph-aware real part: ``out := Re(A)``. Complex ``A`` -> real ``out``; for a
-/// real ``A`` it is a copy (Re(x) == x), matching numpy ``.real``. Dense or tiled.
+/// Graph-aware real part: ``out := Re(A)``. Complex ``A`` produces real ``out``.
+/// For real ``A`` it is a copy, since Re(x) == x, matching numpy ``.real``. Dense
+/// or tiled.
 template <typename ResultType, typename AType>
     requires requires {
         requires(CoreBasicTensorConcept<ResultType> || IsTiledTensorV<std::remove_cvref_t<ResultType>>);
@@ -253,8 +254,9 @@ APIARY_INSTANTIATE_AS("real", einsums::TiledRuntimeTensor<double>, einsums::Tile
     }
 }
 
-/// Graph-aware imaginary part: ``out := Im(A)``. Complex ``A`` -> real ``out``;
-/// for a real ``A`` it is zeros (Im(x) == 0), matching numpy ``.imag``. Dense or tiled.
+/// Graph-aware imaginary part: ``out := Im(A)``. Complex ``A`` produces real
+/// ``out``. For real ``A`` it is zeros, since Im(x) == 0, matching numpy
+/// ``.imag``. Dense or tiled.
 template <typename ResultType, typename AType>
     requires requires {
         requires(CoreBasicTensorConcept<ResultType> || IsTiledTensorV<std::remove_cvref_t<ResultType>>);
@@ -316,8 +318,8 @@ APIARY_INSTANTIATE_AS("imag", einsums::TiledRuntimeTensor<double>, einsums::Tile
     }
 }
 
-/// Graph-aware magnitude: ``out := |A|`` (real or complex ``A`` -> real ``out``).
-/// Dense or tiled.
+/// Graph-aware magnitude: ``out := |A|``. Real or complex ``A`` produces real
+/// ``out``. Dense or tiled.
 template <typename ResultType, typename AType>
     requires requires {
         requires(CoreBasicTensorConcept<ResultType> || IsTiledTensorV<std::remove_cvref_t<ResultType>>);
@@ -1099,7 +1101,7 @@ template <RuntimeRankTensorConcept AType, RuntimeRankTensorConcept BType, Runtim
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
-// float — AAA/AAV/AVA/AVV/VAA/VAV/VVA/VVV (A = owning, V = view)
+// float: AAA/AAV/AVA/AVV/VAA/VAV/VVA/VVV, where A = owning and V = view
 APIARY_INSTANTIATE_AS("gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
 APIARY_INSTANTIATE_AS("gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          float)
 APIARY_INSTANTIATE_AS("gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, float)
@@ -1494,9 +1496,9 @@ APIARY_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,  
 
 /// Graph-aware conjugating rank-1 update (GERC): ``A += alpha * X * Y^H``.
 ///
-/// The Hermitian counterpart of ``ger`` (``A += alpha * X * Y^T``): the second
-/// vector is conjugated. Complex-only (for real operands use ``ger``). Backed by
-/// linear_algebra::gerc (BLAS cgerc/zgerc).
+/// The Hermitian counterpart of ``ger``, which computes ``A += alpha * X * Y^T``:
+/// here the second vector is conjugated. Complex operands only; for real operands
+/// use ``ger``. Backed by linear_algebra::gerc (BLAS cgerc/zgerc).
 template <RuntimeRankTensorConcept AType, RuntimeRankTensorConcept XType, RuntimeRankTensorConcept YType>
     requires SameUnderlying<AType, XType, YType>
 // clang-format off
@@ -1723,9 +1725,9 @@ APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>,
 
 /// Graph-aware Hermitian inner product: ``result := sum_i conj(A_i) * B_i``.
 ///
-/// The conjugating counterpart of ``dot`` (which is the bilinear ``sum A_i B_i``).
-/// For real dtypes this coincides with ``dot``. Backed by ``true_dot`` (BLAS
-/// dotc on the contiguous complex path).
+/// The conjugating counterpart of ``dot``, the bilinear ``sum A_i B_i``. For real
+/// dtypes this coincides with ``dot``. Backed by ``true_dot``, which uses BLAS
+/// dotc on the contiguous complex path.
 template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
     requires requires {
         requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>;
@@ -1734,7 +1736,7 @@ template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType, CoreB
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
-// float — RRR/RRV/RVR/RVV/VRR/VRV/VVR/VVV
+// float: RRR/RRV/RVR/RVV/VRR/VRV/VVR/VVV
 APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
 APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,                einsums::RuntimeTensorView<float>,                                                    einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
@@ -2619,7 +2621,7 @@ APIARY_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<do
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
     }
     // conjugate=true computes the Hermitian congruence op(B)^H op(A) op(B); the
-    // default is the (bilinear) op(B)^T op(A) op(B). For real dtypes they coincide.
+    // default is the bilinear op(B)^T op(A) op(B). For real dtypes they coincide.
     auto run = [conjugate](AType const &a, BType const &b, CType *c) {
         if (conjugate) {
             linear_algebra::hermitian_symm_gemm<TransA, TransB>(a, b, c);
@@ -4039,11 +4041,11 @@ void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
 /// stores prefactors as doubles internally, which would narrow the
 /// imaginary part out of a complex ``c_pf``/``ab_pf``.
 ///
-/// ``conj_a`` / ``conj_b`` conjugate A / B inside the contraction (for complex
-/// dtypes; a no-op for real). They only conjugate the *elements* — a conjugate-
-/// *transpose* is the conj flag together with transposed index placement in the
-/// spec (just like any transpose in einsum). To compute ``C = A^H @ B``, store A
-/// as ``(k, i)`` so its row index k is the one contracted:
+/// ``conj_a`` / ``conj_b`` conjugate A / B inside the contraction for complex
+/// dtypes, and are a no-op for real. They conjugate only the elements. A
+/// conjugate-transpose is the conj flag combined with transposed index placement
+/// in the spec, just like any transpose in einsum. To compute ``C = A^H @ B``,
+/// store A as ``(k, i)`` so its row index k is the one contracted:
 /// @code
 /// // (A^H @ B)[i,j] = sum_k conj(A[k,i]) * B[k,j]
 /// einsum("ij <- ki ; kj", C, A, B, conj_a=True);   // A^H @ B
@@ -4052,7 +4054,7 @@ void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
 /// @endcode
 /// Equivalently, wrap an operand in ``conj(...)`` directly in the spec; it ORs
 /// with the kwargs, so ``einsum("ij <- conj(ki) ; kj", C, A, B)`` is also A^H @ B.
-/// Native (no operand copy) for GEMM-shaped contractions via PackedGemm; the
+/// Native for GEMM-shaped contractions via PackedGemm, with no operand copy. The
 /// generic loop conjugates per element otherwise. Not supported for tiled operands.
 template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
     requires(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&

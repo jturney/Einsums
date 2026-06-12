@@ -962,8 +962,8 @@ void symm_gemm(AType const &A, BType const &B, CType *C) {
     gemm<!TransB, false>(typename AType::ValueType{1.0}, B, temp, typename CType::ValueType{0.0}, C);
 }
 
-// Hermitian congruence: C = op(B)^H op(A) op(B) (the conjugating counterpart of
-// symm_gemm's op(B)^T op(A) op(B)). For real types it coincides with symm_gemm.
+// Hermitian congruence: C = op(B)^H op(A) op(B), the conjugating counterpart of
+// symm_gemm's op(B)^T op(A) op(B). For real types it coincides with symm_gemm.
 // The inner product op(A) op(B) is unchanged; only the outer factor is conjugated.
 template <bool TransA, bool TransB, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicTensorConcept CType>
     requires requires {

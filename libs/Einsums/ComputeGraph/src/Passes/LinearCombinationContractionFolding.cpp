@@ -89,8 +89,8 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
             continue;
         }
         // Conjugated contractions are left untouched: this fold doesn't track
-        // conj_a/conj_b through the rewrite, so skip them (they still execute
-        // correctly, just unfolded). TODO: make conj-aware if it shows up hot.
+        // conj_a/conj_b through the rewrite, so skip them. They still execute
+        // correctly, just unfolded. TODO: make conj-aware if it shows up hot.
         if (desc->conj_a || desc->conj_b) {
             continue;
         }
