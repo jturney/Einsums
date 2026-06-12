@@ -143,10 +143,11 @@ def test_pow_square_recovers_matmul(dtype):
     # Mac Accelerate's float32 SGEMM accumulates wider rounding than Linux
     # OpenBLAS / MKL, observed ~2.5e-5 relative on macOS CI vs <1e-6 on Linux.
     # Default c32/f32 rtol is 1e-5; loosen to 1e-4 for this matmul-of-matmul
-    # shape (still tight enough to catch real bugs). f64 likewise: pow() goes
-    # through an eigendecomposition whose reconstruction differs from the direct
-    # A@A at the ~1e-12 level (BLAS-dependent; ~2.2e-12 observed on clang/OpenBLAS),
-    # so loosen f64 from 1e-12 to 1e-10 — matching test_pow_inverse_round_trip below.
+    # shape, which is still tight enough to catch real bugs. f64 likewise: pow()
+    # goes through an eigendecomposition whose reconstruction differs from the
+    # direct A@A at the ~1e-12 level. The gap is BLAS-dependent, about 2.2e-12 on
+    # clang/OpenBLAS, so loosen f64 from 1e-12 to 1e-10 to match
+    # test_pow_inverse_round_trip below.
     assert_close(got, expected, rtol=1e-4 if dtype.endswith("32") else 1e-10)
 
 
