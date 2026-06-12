@@ -131,20 +131,20 @@ void TaskPool::worker_loop(size_t worker_id) {
 
 #ifdef _OPENMP
     // Run BLAS (and any other OpenMP code) single-threaded on worker threads.
-    // omp_set_num_threads sets the *thread-scoped* nthreads-var ICV, so this
-    // affects only parallel regions this worker encounters — the main thread
-    // and its OpenMP parallelism are untouched. This is both the right policy
-    // (the pool parallelizes across nodes, so nested per-node BLAS threads only
-    // oversubscribe) AND a correctness fix: a libomp parallel region opened from
-    // a foreign (non-main) thread, with several workers doing so concurrently,
-    // can deadlock libomp's thread pool — e.g. a control-flow node whose body
+    // omp_set_num_threads sets the thread-scoped nthreads-var ICV, so this
+    // affects only parallel regions this worker encounters; the main thread
+    // and its OpenMP parallelism are untouched. This is both the right policy,
+    // since the pool parallelizes across nodes so nested per-node BLAS threads
+    // only oversubscribe, and a correctness fix: a libomp parallel region opened
+    // from a foreign (non-main) thread, with several workers doing so concurrently,
+    // can deadlock libomp's thread pool. For example, a control-flow node whose body
     // runs inline on a worker and calls multithreaded BLAS would intermittently
     // wedge at the fork/join barrier.
     omp_set_num_threads(1);
 #endif
 
     // Register thread name with profiler (safe to call from any thread after
-    // Profiler singleton is initialized — the thread-local ring buffer is
+    // Profiler singleton is initialized; the thread-local ring buffer is
     // created lazily on first push, and set_thread_name just records the name).
 #if defined(EINSUMS_HAVE_PROFILER)
     try {
@@ -239,7 +239,7 @@ void TaskPool::enqueue(std::function<void()> task) {
         _workers[static_cast<size_t>(tls_worker_id)]->deque.push(std::move(task));
     } else {
         // External submission: push to shared MPMC queue (mutex-protected).
-        // Cannot use worker deques from external threads — they are SPMC
+        // Cannot use worker deques from external threads; they are SPMC
         // (single-producer only from the owner thread).
         std::scoped_lock const lock(_external_mutex);
         _external_queue.push(std::move(task));
@@ -256,7 +256,7 @@ void TaskPool::help_until(std::function<bool()> const &predicate) {
     size_t const nw = _workers.size();
 
     while (!predicate() && !_shutdown_flag.load(std::memory_order_relaxed)) {
-        // Wake parked workers — they may have tasks in their deques
+        // Wake parked workers; they may have tasks in their deques
         if (_parked_count.load(std::memory_order_relaxed) > 0) {
             _notify_cv.notify_all();
         }
@@ -274,7 +274,7 @@ void TaskPool::help_until(std::function<bool()> const &predicate) {
             }
         }
         if (!found) {
-            // Nothing to steal — workers are processing. Short sleep to avoid spinning.
+            // Nothing to steal; workers are processing. Short sleep to avoid spinning.
             std::this_thread::sleep_for(std::chrono::microseconds(50));
         }
     }

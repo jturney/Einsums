@@ -144,7 +144,7 @@ TEMPLATE_TEST_CASE("symm dispatch - trans='T' on symmetric A still dispatches", 
     auto C_trans = create_zero_tensor<T>(true, "Ctrans", N, N);
     auto C_ref   = create_zero_tensor<T>(true, "Cref", N, N);
 
-    // trans='T' on A — should still dispatch to symm.
+    // trans='T' on A; should still dispatch to symm.
     gemm('t', 'n', T{1}, A_sym, B, T{0}, &C_trans);
 
     // Same call with explicit 'n' trans on a plain (non-symmetric-tagged) copy.
@@ -195,7 +195,7 @@ TEMPLATE_TEST_CASE("symm dispatch - no descriptor falls through to gemm", "[line
     auto C_auto = create_zero_tensor<T>(true, "Cauto", N, N);
     auto C_ref  = create_zero_tensor<T>(true, "Cref", N, N);
 
-    // No descriptor set — should take the general path and compute correctly.
+    // No descriptor set; should take the general path and compute correctly.
     gemm('n', 'n', T{1}, A, B, T{0}, &C_auto);
     gemm('n', 'n', T{1}, A, B, T{0}, &C_ref);
 

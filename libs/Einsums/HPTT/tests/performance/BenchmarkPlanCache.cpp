@@ -76,7 +76,7 @@ void bench_plan(int N) {
 } // namespace
 
 EINSUMS_TEST_CASE("Plan cache hit vs miss", "[performance][hptt][plancache]") {
-    // Small sizes where plan construction dominates the actual transpose —
+    // Small sizes where plan construction dominates the actual transpose;
     // that's where the cache saves the most.
     for (int N : {32, 64, 128, 256, 512, 1024})
         bench_plan(N);

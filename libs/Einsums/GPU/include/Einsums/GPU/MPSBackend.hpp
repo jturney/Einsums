@@ -25,7 +25,7 @@ EINSUMS_EXPORT void   device_synchronize();
 EINSUMS_EXPORT size_t available_device_memory();
 EINSUMS_EXPORT std::string device_name();
 
-// BLAS — GEMM
+// BLAS: GEMM
 EINSUMS_EXPORT void sgemm(char transa, char transb, int m, int n, int k, float alpha, float const *a, int lda, float const *b, int ldb,
                           float beta, float *c, int ldc);
 
@@ -33,11 +33,11 @@ EINSUMS_EXPORT void sgemm(char transa, char transb, int m, int n, int k, float a
 EINSUMS_EXPORT void hgemm(char transa, char transb, int m, int n, int k, float alpha, __fp16 const *a, int lda, __fp16 const *b, int ldb,
                           float beta, __fp16 *c, int ldc);
 
-// Note: MPSMatrixMultiplication does NOT support BFloat16 or ComplexFloat32/ComplexFloat16.
+// Note: MPSMatrixMultiplication does not support BFloat16 or ComplexFloat32/ComplexFloat16.
 // BFloat16 GEMM converts BF16→F32, runs MPS sgemm, stores F32 result.
 // Complex types fall back to CPU BLAS.
 
-// BLAS — GEMV
+// BLAS: GEMV
 EINSUMS_EXPORT void sgemv(char trans, int m, int n, float alpha, float const *a, int lda, float const *x, int incx, float beta, float *y,
                           int incy);
 

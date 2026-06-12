@@ -30,7 +30,7 @@ using int_t = ::einsums::blas::int_t;
 namespace einsums::gpu::solver {
 
 // ===========================================================================
-// syev — Symmetric eigenvalue decomposition
+// syev: Symmetric eigenvalue decomposition
 // ===========================================================================
 
 template <>
@@ -64,7 +64,7 @@ int syev<double>(char jobz, char uplo, int64_t n, double *A, int64_t lda, double
 }
 
 // ===========================================================================
-// heev — Hermitian eigenvalue decomposition (complex)
+// heev: Hermitian eigenvalue decomposition (complex)
 // ===========================================================================
 
 template <>
@@ -110,7 +110,7 @@ int heev<double>(char jobz, char uplo, int64_t n, std::complex<double> *A, int64
 }
 
 // ===========================================================================
-// gesv — Linear solve AX = B
+// gesv: Linear solve AX = B
 // ===========================================================================
 
 template <>
@@ -157,7 +157,7 @@ int gesv<double>(int64_t n, int64_t nrhs, double *A, int64_t lda, int64_t *ipiv,
 }
 
 // ===========================================================================
-// getrf — LU factorization
+// getrf: LU factorization
 // ===========================================================================
 
 template <>
@@ -197,7 +197,7 @@ int getrf<double>(int64_t m, int64_t n, double *A, int64_t lda, int64_t *ipiv) {
 }
 
 // ===========================================================================
-// getri — Inverse from LU factorization
+// getri: Inverse from LU factorization
 // ===========================================================================
 
 template <>
@@ -235,7 +235,7 @@ int getri<double>(int64_t n, double *A, int64_t lda, int64_t const *ipiv) {
 }
 
 // ===========================================================================
-// gesvd — Singular value decomposition
+// gesvd: Singular value decomposition
 // ===========================================================================
 
 template <>

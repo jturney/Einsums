@@ -5,12 +5,12 @@
 
 // Half-precision vector tests.
 //
-// FP16 (IEEE binary16): full arithmetic surface — broadcast / load / store /
+// FP16 (IEEE binary16): full arithmetic surface, broadcast / load / store /
 // add / sub / mul / fmadd. Tested whenever the build sees
 // `__ARM_FEATURE_FP16_VECTOR_ARITHMETIC` (M1+ default) or `__AVX512FP16__`
 // (Sapphire Rapids+).
 //
-// BF16: load/store only — direct arithmetic requires FP32 round-trip.
+// BF16: load/store only; direct arithmetic requires FP32 round-trip.
 // Tested when `__ARM_FEATURE_BF16_VECTOR_ARITHMETIC` (M3+, requires
 // -mcpu=apple-m3 or later) or `__AVX512BF16__` is set. On the default
 // conda toolchain build for Apple Silicon the BF16 tests stay disabled

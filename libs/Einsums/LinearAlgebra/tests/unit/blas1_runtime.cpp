@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Phase D.1 — runtime-tensor coverage for BLAS-1 ops + invert + syev/heev
+// Phase D.1: runtime-tensor coverage for BLAS-1 ops + invert + syev/heev
 // void forms. These take simple inputs and either return scalars or modify
 // in place; one file batches them since each test is short.
 
@@ -80,7 +80,7 @@ TEMPLATE_TEST_CASE("RuntimeTensor dot — scalar matches manual sum", "[linear-a
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Complex dtypes — exercises the dispatcher path on the BLAS-1 runtime ops
+// Complex dtypes: exercises the dispatcher path on the BLAS-1 runtime ops
 // ──────────────────────────────────────────────────────────────────────────
 
 TEST_CASE("RuntimeTensor axpy — complex<double>", "[linear-algebra][runtime]") {
@@ -98,7 +98,7 @@ TEST_CASE("RuntimeTensor axpy — complex<double>", "[linear-algebra][runtime]")
 
 TEST_CASE("RuntimeTensor dot — complex<double> conjugate-aware", "[linear-algebra][runtime]") {
     // linear_algebra::dot computes X^T * Y (not the Hermitian-conjugating
-    // version — that's true_dot). Verify with hand-computed values.
+    // version; that's true_dot). Verify with hand-computed values.
     using C = std::complex<double>;
     RuntimeTensor<C> X("X", {3});
     RuntimeTensor<C> Y("Y", {3});
@@ -112,7 +112,7 @@ TEST_CASE("RuntimeTensor dot — complex<double> conjugate-aware", "[linear-alge
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// RuntimeTensorView inputs — non-owning views must dispatch through the
+// RuntimeTensorView inputs: non-owning views must dispatch through the
 // runtime overloads exactly like owned RuntimeTensors do.
 // ──────────────────────────────────────────────────────────────────────────
 

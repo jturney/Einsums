@@ -15,7 +15,7 @@
 namespace einsums::gpu {
 
 // ===========================================================================
-// DeviceAllocator tag — used by GeneralTensor to select DeviceVector storage.
+// DeviceAllocator tag: used by GeneralTensor to select DeviceVector storage.
 // ===========================================================================
 
 /// Tag type indicating device memory allocation.
@@ -37,10 +37,10 @@ template <typename Alloc>
 inline constexpr bool IsDeviceAllocatorV = IsDeviceAllocator<Alloc>::value;
 
 // ===========================================================================
-// DeviceVector<T> — minimal vector-like container backed by GPU memory.
+// DeviceVector<T>: minimal vector-like container backed by GPU memory.
 //
 // Supports only bulk operations: data(), size(), resize(), copy, move.
-// No element access (operator[], begin/end, at) — device memory is not
+// No element access (operator[], begin/end, at), since device memory is not
 // host-accessible. Use gpu::memcpy_device_to_host to read elements.
 //
 // On the mock backend, uses std::malloc (same address space) so tests work.
@@ -51,17 +51,17 @@ class DeviceVector {
   public:
     using value_type = T; // NOLINT(readability-identifier-naming)
 
-    /// Default constructor — empty vector.
+    /// Default constructor. Creates an empty vector.
     DeviceVector() noexcept = default;
 
-    /// Construct with a given size. Memory is allocated but NOT initialized.
+    /// Construct with a given size. Memory is allocated but not initialized.
     explicit DeviceVector(size_t count) : _size(count) {
         if (count > 0) {
             _ptr = static_cast<T *>(device_malloc(count * sizeof(T)));
         }
     }
 
-    /// Copy constructor — allocates new device memory and copies data.
+    /// Copy constructor. Allocates new device memory and copies data.
     DeviceVector(DeviceVector const &other) : _size(other._size) {
         if (_size > 0) {
             _ptr = static_cast<T *>(device_malloc(_size * sizeof(T)));
@@ -69,20 +69,20 @@ class DeviceVector {
         }
     }
 
-    /// Move constructor — takes ownership, leaves other empty.
+    /// Move constructor. Takes ownership and leaves the other vector empty.
     DeviceVector(DeviceVector &&other) noexcept : _ptr(other._ptr), _size(other._size) {
         other._ptr  = nullptr;
         other._size = 0;
     }
 
-    /// Destructor — frees device memory.
+    /// Destructor. Frees device memory.
     ~DeviceVector() {
         if (_ptr != nullptr) {
             device_free(_ptr);
         }
     }
 
-    /// Copy assignment — deep copy of device data.
+    /// Copy assignment. Performs a deep copy of device data.
     DeviceVector &operator=(DeviceVector const &other) {
         if (this != &other) {
             if (_size != other._size) {

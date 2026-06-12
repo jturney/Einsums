@@ -33,7 +33,7 @@ void register_free_pointer(std::function<void()> f) {
 int finalize() {
     // The Runtime destructor now handles shutdown: running shutdown functions,
     // profiler shutdown, deinit_global_data. This function remains for backward
-    // compatibility but is effectively a no-op — the destructor runs when the
+    // compatibility but is effectively a no-op; the destructor runs when the
     // Runtime unique_ptr goes out of scope in run_impl().
     //
     // If called explicitly before the destructor, it will run the cleanup early.

@@ -13,11 +13,11 @@
 /// provides the feature), the standard library version is used automatically.
 ///
 /// Available backports:
-///   - einsums::expected<T, E>  — value-or-error type (std::expected)
-///   - einsums::unexpected<E>   — error tag for expected
-///   - einsums::unreachable()   — mark code as unreachable (std::unreachable)
-///   - einsums::flat_set<K>     — sorted set on contiguous storage (std::flat_set)
-///   - einsums::flat_map<K, V>  — sorted map on contiguous storage (std::flat_map)
+///   - einsums::expected<T, E>: a value-or-error type, the std::expected backport.
+///   - einsums::unexpected<E>: the error tag for expected.
+///   - einsums::unreachable(): marks code as unreachable, the std::unreachable backport.
+///   - einsums::flat_set<K>: a sorted set on contiguous storage, the std::flat_set backport.
+///   - einsums::flat_map<K, V>: a sorted map on contiguous storage, the std::flat_map backport.
 
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/CXX23/FlatMap.hpp>

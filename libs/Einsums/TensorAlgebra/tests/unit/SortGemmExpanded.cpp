@@ -24,7 +24,7 @@ TEST_CASE("sort_gemm_complex", "[sort_gemm]") {
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     // C(i,l,j) = A(j,k,i) * B(l,k)
-    // M={i,j} in A at positions {2,0} — non-contiguous → not a matrix product
+    // M={i,j} in A at positions {2,0}, non-contiguous → not a matrix product
     size_t di = 3, dj = 4, dk = 5, dl = 3;
     auto   A = create_random_tensor<T>("A", dj, dk, di);
     auto   B = create_random_tensor<T>("B", dl, dk);
@@ -58,7 +58,7 @@ TEST_CASE("sort_gemm_conjugation", "[sort_gemm]") {
     using T = std::complex<double>;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
-    // C(i,l,j) = conj(A(j,k,i)) * B(l,k) — ConjA with scrambled indices
+    // C(i,l,j) = conj(A(j,k,i)) * B(l,k), ConjA with scrambled indices
     size_t di = 3, dj = 4, dk = 5, dl = 3;
     auto   A = create_random_tensor<T>("A", dj, dk, di);
     auto   B = create_random_tensor<T>("B", dl, dk);
@@ -126,7 +126,7 @@ TEST_CASE("sort_gemm_tensorview", "[sort_gemm]") {
 TEST_CASE("sort_gemm_batch_scrambled", "[sort_gemm]") {
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
-    // C(p,i,l,j) = A(p,j,k,i) * B(p,l,k) — single batch dim p, scrambled M/N/K
+    // C(p,i,l,j) = A(p,j,k,i) * B(p,l,k), single batch dim p, scrambled M/N/K
     size_t dp = 3, di = 4, dj = 5, dk = 6, dl = 3;
     auto   A     = create_random_tensor<double>("A", dp, dj, dk, di);
     auto   B     = create_random_tensor<double>("B", dp, dl, dk);
@@ -162,7 +162,7 @@ TEST_CASE("sort_gemm_batch_scrambled", "[sort_gemm]") {
 TEST_CASE("sort_gemm_batch_c_permute", "[sort_gemm]") {
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
-    // C(i,p,j,l) = A(p,j,k,i) * B(p,l,k) — batch dim p not at front of C (c_needs_permute)
+    // C(i,p,j,l) = A(p,j,k,i) * B(p,l,k), batch dim p not at front of C (c_needs_permute)
     size_t dp = 3, di = 4, dj = 5, dk = 6, dl = 3;
     auto   A     = create_random_tensor<double>("A", dp, dj, dk, di);
     auto   B     = create_random_tensor<double>("B", dp, dl, dk);
@@ -288,7 +288,7 @@ TEST_CASE("sort_gemm_complex_conj_combined", "[sort_gemm]") {
     using T = std::complex<double>;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
-    // C(i,l,j) = conj(A(j,k,i)) * conj(B(l,k)) — both ConjA and ConjB, scrambled
+    // C(i,l,j) = conj(A(j,k,i)) * conj(B(l,k)), both ConjA and ConjB, scrambled
     size_t di = 3, dj = 4, dk = 5, dl = 3;
     auto   A = create_random_tensor<T>("A", dj, dk, di);
     auto   B = create_random_tensor<T>("B", dl, dk);

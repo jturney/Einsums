@@ -36,7 +36,7 @@ void fill_sequential(Tensor<T, Rank> &t) {
 } // namespace
 
 // ===========================================================================
-// Large matrix tests — exercise macro_kernel tiling
+// Large matrix tests: exercise macro_kernel tiling
 // ===========================================================================
 
 TEMPLATE_TEST_CASE("Large rank-2 transpose", "[hptt][large]", float, double) {
@@ -198,4 +198,4 @@ TEMPLATE_TEST_CASE("Large rank-3 transpose with beta, threaded", "[hptt][threade
 // NOTE: MEASURE selection method is not tested here because the direct HPTT API
 // requires careful column-major vs row-major handling that is abstracted by the
 // permute() function. The MEASURE path is functionally identical to ESTIMATE
-// except for plan selection timing — it uses the same micro_kernel code paths.
+// except for plan selection timing; it uses the same micro_kernel code paths.

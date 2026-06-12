@@ -107,15 +107,17 @@ Symmetry Metadata
 -----------------
 
 Every tensor can optionally carry a ``SymmetryDescriptor`` describing
-invariants such as ``T(i,j) = T(j,i)``. The descriptor is metadata only
-(storage stays dense) and is consumed by the rank-2 BLAS dispatch
-(``gemm`` → ``symm``/``hemm``) and the ComputeGraph
+invariants such as ``T(i,j) = T(j,i)``. The descriptor is metadata only, so
+storage stays dense. It is consumed by the rank-2 BLAS dispatch, which
+promotes ``gemm`` to ``symm`` or ``hemm``, and by the ComputeGraph
 ``SymmetryPropagation`` pass.
 
-Attach with ``tensor.set_symmetry(desc)``; read with ``tensor.symmetry()``;
-clear with ``tensor.clear_symmetry()``. Enforce with ``symmetrize(tensor)``
-and verify with ``check_symmetry(tensor, tolerance)`` (both declared in
-``Einsums/Tensor/SymmetryOps.hpp``).
+Attach a descriptor with ``tensor.set_symmetry(desc)``, read it with
+``tensor.symmetry()``, and clear it with ``tensor.clear_symmetry()``. Enforce
+a descriptor with ``symmetrize(tensor)`` and verify one with
+``check_symmetry(tensor, tolerance)``. Both functions are declared in
+``Einsums/Tensor/SymmetryOps.hpp``.
 
-See the ComputeGraph module's ``symmetry`` page for the full guide
-(named factories for common patterns, propagation rules, design notes).
+See the ComputeGraph module's ``symmetry`` page for the full guide, which
+covers named factories for common patterns, propagation rules, and design
+notes.

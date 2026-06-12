@@ -251,7 +251,7 @@ inline void precompute_offsets(int64_t start, int64_t len, std::vector<DimSpec> 
 
         for (int64_t idx = 0; idx < len; ++idx) {
             out[static_cast<size_t>(idx)] = i * stride0 + j * stride1;
-            // Increment (i, j) — just increment j and carry to i
+            // Increment (i, j): just increment j and carry to i
             if (++j >= dim1) {
                 j = 0;
                 ++i;

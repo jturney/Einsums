@@ -15,8 +15,8 @@
 TEST_CASE("TiledRuntimeTensor aliases external buffers (zero-copy)", "[tensor][tiled][alias]") {
     using namespace einsums;
 
-    // Two irreps per axis: block (0,0) is 2x2, block (1,1) is 3x3, both row-major
-    // — exactly how psi4 stores contiguous irrep blocks.
+    // Two irreps per axis: block (0,0) is 2x2, block (1,1) is 3x3, both row-major,
+    // exactly how psi4 stores contiguous irrep blocks.
     std::vector<int> const     axis{2, 3};
     TiledRuntimeTensor<double> T("aliased", {axis, axis}, /*row_major=*/true);
 
@@ -49,7 +49,7 @@ TEST_CASE("TiledRuntimeTensor aliases external buffers (zero-copy)", "[tensor][t
         REQUIRE(T.tile({0, 0}).is_materialized());
         T.tile({0, 0}).materialize();                   // no-op
         REQUIRE(T.tile({0, 0}).data() == blk00.data()); // still pointing at the buffer
-        T.tile({0, 0}).release();                       // no-op — must not free foreign memory
+        T.tile({0, 0}).release();                       // no-op; must not free foreign memory
         REQUIRE(T.tile({0, 0}).data() == blk00.data());
         REQUIRE(blk00[0] == 1.0); // buffer untouched
     }

@@ -182,9 +182,9 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
     /// Global shape (one extent per axis).
     [[nodiscard]] APIARY_EXPOSE std::vector<size_t> dims() const { return _dims; }
 
-    /// Row/column-major stride of the *global* bounding shape along axis @p d.
-    /// Advisory only — a tiled tensor has no single contiguous buffer; these
-    /// describe the dense shape the tiles tile over.
+    /// Row/column-major stride of the global bounding shape along axis @p d.
+    /// This is advisory only, since a tiled tensor has no single contiguous
+    /// buffer; the strides describe the dense shape the tiles tile over.
     [[nodiscard]] size_t stride(int d) const {
         int const r = static_cast<int>(_strides.size());
         if (d < 0) {
@@ -266,7 +266,7 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
     [[nodiscard]] APIARY_EXPOSE bool has_tile(std::vector<int> const &coord) const { return _tiles.find(normalize(coord)) != _tiles.end(); }
 
     /**
-     * @brief Declare a tile at @p coord (deferred — no storage allocated).
+     * @brief Declare a tile at @p coord. The declaration is deferred, with no storage allocated.
      *
      * Creates a shell @ref RuntimeTensor with the right dims for that grid cell
      * but no backing data. The tile is allocated later by @ref materialize (or
@@ -317,11 +317,11 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
     /// Access an existing tile; throws if it is not populated.
     [[nodiscard]] StoredType const &tile(std::vector<int> const &coord) const { return _tiles.at(normalize(coord)); }
 
-    /// EXPERIMENTAL (zero-copy bridge). Add a tile at @p coord that ALIASES the
+    /// Experimental zero-copy bridge. Add a tile at @p coord that aliases the
     /// external buffer @p ptr instead of owning a copy. The tile takes the grid
-    /// dims for @p coord and the given layout (row_major matches psi4's
-    /// contiguous irrep blocks). @p ptr must outlive this tensor. This lets a
-    /// psi4 Matrix/Vector be wrapped as a tiled Einsums tensor with no copy —
+    /// dims for @p coord and the given layout, where row_major matches psi4's
+    /// contiguous irrep blocks. @p ptr must outlive this tensor. This lets a
+    /// psi4 Matrix/Vector be wrapped as a tiled Einsums tensor with no copy,
     /// the precursor to making such tensors the storage backend.
     void add_alias_tile(std::vector<int> const &coord, T *ptr, bool row_major) {
         std::vector<int> const key = normalize(coord);
@@ -471,8 +471,8 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
 
 // Explicit instantiations live in TensorDefs.cpp (built into libEinsums with
 // default visibility via EINSUMS_EXPORT). The pybind codegen TU is compiled
-// with hidden visibility, so it must NOT re-instantiate these — extern template
-// makes it link against libEinsums's copies instead.
+// with hidden visibility, so it must not re-instantiate these. The extern
+// template declaration makes it link against libEinsums's copies instead.
 #if !defined(EINSUMS_WINDOWS)
 extern template class EINSUMS_EXPORT TiledRuntimeTensor<float>;
 extern template class EINSUMS_EXPORT TiledRuntimeTensor<double>;

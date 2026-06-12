@@ -13,7 +13,7 @@ namespace einsums {
 ///
 /// Set at declaration time (e.g. by ``Workspace::declare_zero_tensor``) and
 /// consumed by ``make_handle`` so the init metadata flows through capture
-/// into a ``Graph`` that the workspace doesn't directly own — the
+/// into a ``Graph`` that the workspace doesn't directly own. The
 /// loop-aware Materialization pass then emits the corresponding
 /// Initialize node alongside Materialize.
 ///

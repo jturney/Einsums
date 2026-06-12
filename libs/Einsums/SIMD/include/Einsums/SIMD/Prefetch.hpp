@@ -19,7 +19,7 @@ namespace einsums::simd {
 
 // Prefetch hints. T0/T1/T2/NTA are read-prefetch hints (different cache
 // levels). The Write* variants tell the cache "this line is about to be
-// written" — on aarch64 they lower to ``prfm pst*``, on x86 to ``PREFETCHW``
+// written". On aarch64 they lower to ``prfm pst*``, on x86 to ``PREFETCHW``
 // (or its T1 variant on Xeon Phi-class chips). The CPU then primes the line
 // in the right state to avoid a read-for-ownership transaction at write time.
 enum class PrefetchHint { T0, T1, T2, NTA, WriteT0, WriteT1, WriteT2, WriteStreaming };

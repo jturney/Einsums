@@ -22,7 +22,7 @@ namespace einsums {
  *
  * Concepts that compare ``Rank`` across tensor types (``IsSameRankV``,
  * ``SameRank``, ``SameUnderlyingAndRank``) treat any operand whose
- * ``Rank == dynamic_rank`` as a wildcard — no compile-time mismatch can
+ * ``Rank == dynamic_rank`` as a wildcard, so no compile-time mismatch can
  * be inferred against it. Runtime-rank checks remain the caller's
  * responsibility.
  */

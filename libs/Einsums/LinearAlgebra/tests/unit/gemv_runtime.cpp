@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Phase D.1 — parallel RuntimeTensor coverage for linear_algebra::gemv.
+// Phase D.1: parallel RuntimeTensor coverage for linear_algebra::gemv.
 // Mirrors gemv.cpp's static-rank tests against the runtime overload added
 // in C.10. Tests both column-major and row-major layouts since the runtime
 // path defers layout to the underlying TensorImpl.

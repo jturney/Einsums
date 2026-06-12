@@ -58,7 +58,7 @@ template <typename T>
 using device_complex_t = typename DeviceComplexType<T>::type; // NOLINT(readability-identifier-naming)
 
 // ===========================================================================
-// BLAS operation enum — vendor-independent.
+// BLAS operation enum: vendor-independent.
 // ===========================================================================
 
 enum class Operation : std::uint8_t { None, Transpose, ConjTranspose };

@@ -47,7 +47,8 @@ template <typename T, size_t Rank>
 using BufferTensor = GeneralTensor<T, Rank, BufferAllocator<T>>;
 
 /// GPU-resident tensor using the gpu:: abstraction layer.
-/// On mock backend (no GPU), uses std::malloc — same behavior, testable anywhere.
+/// On the mock backend, with no GPU, it uses std::malloc with the same
+/// behavior, so it is testable anywhere.
 template <typename T, size_t Rank>
 using GPUTensor = GeneralTensor<T, Rank, gpu::DeviceAllocator<T>>;
 
@@ -82,10 +83,10 @@ template <typename T>
 struct TiledRuntimeTensor;
 
 /// GPU-resident runtime-rank tensor using the gpu:: abstraction layer.
-/// Mirrors GPUTensor but with rank known only at runtime. Not exposed to
-/// Python — ComputeGraph optimization passes (GPUPlacement, etc.) own
-/// the host↔device decision; users program in Python as if everything
-/// runs on a single host. On mock backend (no GPU), uses std::malloc.
+/// Mirrors GPUTensor but with rank known only at runtime. It is not exposed to
+/// Python. The ComputeGraph optimization passes, such as GPUPlacement, own
+/// the host-to-device decision; users program in Python as if everything
+/// runs on a single host. On the mock backend, with no GPU, it uses std::malloc.
 template <typename T>
 using RuntimeGPUTensor = GeneralRuntimeTensor<T, gpu::DeviceAllocator<T>>;
 

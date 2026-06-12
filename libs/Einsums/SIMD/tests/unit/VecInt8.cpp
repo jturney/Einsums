@@ -6,7 +6,7 @@
 // Vec<int8_t> / Vec<uint8_t>: round-trip plus the dot-product helpers.
 //
 // Each dot-product test computes a scalar reference and compares lane-wise.
-// Tests gate themselves on the underlying feature flag — `dot_product_ss`
+// Tests gate themselves on the underlying feature flag; `dot_product_ss`
 // only runs when FEAT_DOTPROD is on (always true on M-series default
 // builds), `dot_product_us` only runs when either FEAT_I8MM (M3+, needs
 // `-mcpu=apple-m3` or later) or AVX-VNNI / AVX-512 VNNI is on.

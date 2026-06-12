@@ -14,8 +14,8 @@ The ``SIMD`` module provides a portable, header-only SIMD abstraction for
 vectorized operations. It wraps platform-specific intrinsics behind a clean
 C++20 interface that works across:
 
-- **x86_64:** SSE2, SSSE3, SSE4.1/4.2, AVX, AVX2, AVX-512
-- **ARM:** NEON (Apple Silicon, aarch64)
+- x86_64: SSE2, SSSE3, SSE4.1/4.2, AVX, AVX2, and AVX-512.
+- ARM: NEON on Apple Silicon and other aarch64 targets.
 
 The module is used internally by the HPTT transpose library and can be used
 directly for performance-critical inner loops.

@@ -195,7 +195,7 @@ void GlobalConfigMap::unlock(bool notify) {
     // sub-Observable's mutex via get_value()) doesn't run while *sibling*
     // sub-Observables are still locked. The previous implementation
     // sequentially called _str_map->unlock(true), which fired the str_map's
-    // observers immediately while _int/_double/_bool were still held — TSan
+    // observers immediately while _int/_double/_bool were still held; TSan
     // caught the resulting M0 <-> M1 cycle (CI run 26690424069, third
     // lock-order finding in this complex). The Observable API was extended
     // with a public notify() to allow this split. See task #20 for the

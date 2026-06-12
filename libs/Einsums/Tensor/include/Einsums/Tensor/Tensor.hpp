@@ -452,12 +452,12 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     GeneralTensor(DeferredAlloc, std::string name, Dims... dims)
         : _name{std::move(name)},
           // Use a sentinel non-null pointer so TensorImpl stores dims/strides correctly.
-          // The pointer is never dereferenced — it just prevents TensorImpl::dim() from
-          // returning 0 (which it does when _ptr == nullptr).
+          // The pointer is never dereferenced; it just prevents TensorImpl::dim() from
+          // returning 0, which it does when _ptr == nullptr.
           _impl(reinterpret_cast<T *>(0x1), std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...},
                 GlobalConfigMap::get_singleton().get_bool("row-major")) {
         static_assert(Rank == sizeof...(dims), "Declared Rank does not match provided dims");
-        // DO NOT resize _data — storage is deferred until materialize()
+        // Do not resize _data; storage is deferred until materialize().
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
@@ -468,7 +468,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * @brief Allocate the backing data storage for a deferred tensor.
      *
      * After this call, data() returns a valid pointer and the tensor
-     * can be used in computations. Idempotent — safe to call multiple times.
+     * can be used in computations. The call is idempotent and safe to repeat.
      */
     void materialize() {
         if (is_materialized())
@@ -497,7 +497,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         ProfileMemFree(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
         _data.clear();
         _data.shrink_to_fit();
-        _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel — dims/strides preserved
+        _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel; dims/strides preserved
     }
 
     /**
@@ -677,7 +677,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
         // Rebuild impl with new data and dims, then OVERRIDE strides.
         // The strides must stay the same as the original tensor because the
-        // underlying memory layout hasn't changed — we're just viewing a subset.
+        // underlying memory layout hasn't changed; we're just viewing a subset.
         bool                  row_major = _impl.is_row_major();
         detail::TensorImpl<T> new_impl(new_data, new_dims, row_major);
         // Override the computed strides with the original ones
@@ -723,10 +723,10 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         // Build new impl to compute the required size, but don't commit yet.
         detail::TensorImpl<T> new_impl(nullptr, dims, _impl.is_row_major());
 
-        // Resize data first — if this throws, _impl and _data remain consistent.
+        // Resize data first; if this throws, _impl and _data remain consistent.
         _data.resize(new_impl.size());
 
-        // Data resize succeeded — now commit the new impl.
+        // Data resize succeeded, so now commit the new impl.
         _impl = std::move(new_impl);
         _impl.set_data(_data.data());
 
@@ -1415,11 +1415,11 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     }
 
     /// Lazily-created token whose lifetime tracks this object. The graph's
-    /// validator (see make_handle) holds a std::weak_ptr to it to detect
-    /// destruction WITHOUT dereferencing a possibly-freed tensor — reading a
-    /// destroyed object's memory (the old canary approach) is UB and unreliable.
-    /// Created on first request, so tensors never captured into a graph pay
-    /// nothing.
+    /// validator, see make_handle, holds a std::weak_ptr to it to detect
+    /// destruction without dereferencing a possibly-freed tensor. Reading a
+    /// destroyed object's memory, the old canary approach, is undefined
+    /// behavior and unreliable. The token is created on first request, so
+    /// tensors never captured into a graph pay nothing.
     [[nodiscard]] std::weak_ptr<void> liveness_token() const {
         if (!_life_token) {
             _life_token = std::make_shared<char>();
@@ -1439,11 +1439,12 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     Dim<Rank>    _dim_array;
     Stride<Rank> _stride_array;
 
-    /// Optional declared symmetry — null when the tensor is treated as general.
-    /// unique_ptr keeps copies independent (no accidental aliasing via refcount)
-    /// and avoids atomic overhead. Null pays 8 bytes per tensor. Copy
-    /// constructors / copy-assign operators on GeneralTensor deep-clone the
-    /// descriptor so the symmetry survives across copies.
+    /// Optional declared symmetry, null when the tensor is treated as general.
+    /// unique_ptr keeps copies independent, avoiding accidental aliasing through
+    /// a refcount, and avoids atomic overhead. A null descriptor costs 8 bytes
+    /// per tensor. The copy constructor and copy-assignment operator on
+    /// GeneralTensor deep-clone the descriptor so the symmetry survives across
+    /// copies.
     std::unique_ptr<SymmetryDescriptor> _symmetry{};
 
     /// Post-materialize init policy. Set at declaration time (e.g. by
@@ -1614,11 +1615,11 @@ struct GeneralTensor<T, 0, Alloc> final : tensor_base::CoreTensor,
     [[nodiscard]] Stride<0> strides() const { return Stride{}; }
 
     /// Lazily-created token whose lifetime tracks this object. The graph's
-    /// validator (see make_handle) holds a std::weak_ptr to it to detect
-    /// destruction WITHOUT dereferencing a possibly-freed tensor — reading a
-    /// destroyed object's memory (the old canary approach) is UB and unreliable.
-    /// Created on first request, so tensors never captured into a graph pay
-    /// nothing.
+    /// validator, see make_handle, holds a std::weak_ptr to it to detect
+    /// destruction without dereferencing a possibly-freed tensor. Reading a
+    /// destroyed object's memory, the old canary approach, is undefined
+    /// behavior and unreliable. The token is created on first request, so
+    /// tensors never captured into a graph pay nothing.
     [[nodiscard]] std::weak_ptr<void> liveness_token() const {
         if (!_life_token) {
             _life_token = std::make_shared<char>();

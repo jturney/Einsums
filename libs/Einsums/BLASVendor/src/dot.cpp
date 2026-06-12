@@ -23,7 +23,7 @@ extern double FC_GLOBAL(ddot, DDOT)(int_t *, double const *, int_t *, double con
 
 // Complex dot products use CBLAS interface to avoid the Fortran complex return
 // convention issue (by-value vs hidden-first-pointer varies across vendors).
-// The CBLAS _sub variants always write the result to a pointer — unambiguous.
+// The CBLAS _sub variants always write the result to a pointer, which is unambiguous.
 extern void cblas_cdotu_sub(int_t n, void const *x, int_t incx, void const *y, int_t incy, void *result);
 extern void cblas_zdotu_sub(int_t n, void const *x, int_t incx, void const *y, int_t incy, void *result);
 extern void cblas_cdotc_sub(int_t n, void const *x, int_t incx, void const *y, int_t incy, void *result);

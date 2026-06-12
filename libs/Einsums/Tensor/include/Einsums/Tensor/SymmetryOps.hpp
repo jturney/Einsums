@@ -8,7 +8,7 @@
 /// @file SymmetryOps.hpp
 /// @brief Free functions that enforce / verify a tensor's declared symmetry.
 ///
-/// ``Tensor::set_symmetry`` only attaches metadata — it does not touch the
+/// ``Tensor::set_symmetry`` only attaches metadata; it does not touch the
 /// data. ``symmetrize()`` walks the data and mutates it to satisfy the
 /// descriptor in place; ``check_symmetry()`` walks the data and reports
 /// whether the descriptor holds to within a tolerance. Both are rank-N

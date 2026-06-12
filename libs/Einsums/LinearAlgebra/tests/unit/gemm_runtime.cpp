@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Phase D.1 — parallel RuntimeTensor coverage for linear_algebra::gemm.
+// Phase D.1: parallel RuntimeTensor coverage for linear_algebra::gemm.
 //
 // gemm.cpp covers static Tensor<T, 2>. This file exercises the runtime-rank
 // overloads added in C.9: linear_algebra::gemm taking BasicTensorConcept
@@ -56,7 +56,7 @@ TEMPLATE_TEST_CASE("RuntimeTensor gemm — fixed reference values", "[linear-alg
     fill_runtime(
         B, {TestType(11), TestType(22), TestType(33), TestType(44), TestType(55), TestType(66), TestType(77), TestType(88), TestType(99)});
 
-    // NN (no transpose, no transpose) — reference values from the static gemm.cpp test.
+    // NN (no transpose, no transpose): reference values from the static gemm.cpp test.
     linear_algebra::gemm<false, false>(TestType{1}, A, B, TestType{0}, &C);
     CHECK_THAT(runtime_data(C),
                Catch::Matchers::Equals(std::vector<TestType>{TestType(330), TestType(396), TestType(462), TestType(726), TestType(891),
@@ -127,7 +127,7 @@ TEMPLATE_TEST_CASE("RuntimeTensor gemm — beta scaling accumulates onto C", "[l
 }
 
 TEST_CASE("RuntimeTensor gemm — rank mismatch surfaces a clean error", "[linear-algebra][runtime]") {
-    RuntimeTensor<double> A("A", {3, 3, 3}); // rank-3 — invalid for gemm
+    RuntimeTensor<double> A("A", {3, 3, 3}); // rank-3, invalid for gemm
     RuntimeTensor<double> B("B", {3, 3});
     RuntimeTensor<double> C("C", {3, 3});
 

@@ -45,7 +45,7 @@ int einsums_main() {
         return std::vector<double>{0.1, 0.5, 0.8, 0.2, 0.9, 0.3, 0.7, 0.4};
     });
 
-    // Stage 2: depends on screening — use .then() for typed chaining
+    // Stage 2: depends on screening; use .then() for typed chaining
     einsums::println("Submitting stage 2: batch computation (continuation)...");
     auto batches = screening.then("batch_compute", [&pool](std::vector<double> const &bounds) {
         einsums::println("  Stage 2 running: received {} screening bounds", bounds.size());
@@ -70,7 +70,7 @@ int einsums_main() {
         return total;
     });
 
-    // Stage 3: depends on batch results — continuation chain
+    // Stage 3: depends on batch results; continuation chain
     einsums::println("Submitting stage 3: assembly (continuation)...");
     auto result = batches.then("assemble", [](double batch_result) {
         einsums::println("  Stage 3 running: assembling from batch result = {:.6f}", batch_result);
@@ -108,7 +108,7 @@ int einsums_main() {
     auto dbl_val = pool.submit("dbl", []() { return 2.5; });
     auto str_val = pool.submit("str", []() { return std::string("result"); });
 
-    // dataflow with mixed types — fully async, no blocking
+    // dataflow with mixed types: fully async, no blocking
     auto typed_result = pool.dataflow(
         "combine_typed",
         [](int x, double y, std::string const &label) { return fmt::format("{}: {:.1f}", label, static_cast<double>(x) * y); }, int_val,

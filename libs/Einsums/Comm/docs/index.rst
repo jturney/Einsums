@@ -12,8 +12,8 @@ Comm
 
 The ``Comm`` module is Einsums' distributed-computing layer. It provides MPI
 communication primitives behind a thin abstraction so the same Einsums code
-runs on a single process (using a mock backend) or across many ranks (using
-Open MPI or MPICH).
+runs on a single process through a mock backend or across many ranks through
+Open MPI or MPICH.
 
 The module is the foundation for distributed tensor support in the
 :ref:`ComputeGraph <modules_Einsums_ComputeGraph>` and exposes:
@@ -28,9 +28,9 @@ ProcessGrid
 ===========
 
 ``ProcessGrid`` is a 2D :math:`P_r \times P_c` factorization of the world
-communicator. The factorization defaults to near-square; row and column
-sub-communicators are exposed for distribution-aware kernels (for example,
-SUMMA-style GEMM).
+communicator. The factorization defaults to near-square. Row and column
+sub-communicators are exposed for distribution-aware kernels such as
+SUMMA-style GEMM.
 
 .. code-block:: cpp
 
@@ -38,14 +38,13 @@ SUMMA-style GEMM).
 
     using namespace einsums::comm;
 
-    // World grid (auto-factored near-square)
-    auto const &grid = ProcessGrid::world();
+    // Default grid, auto-factored near-square on first access
+    auto &grid = ProcessGrid::default_grid();
 
-    int rank      = grid.rank();
-    int row       = grid.row();
-    int col       = grid.col();
-    int p_rows    = grid.p_rows();
-    int p_cols    = grid.p_cols();
+    int row    = grid.my_row();
+    int col    = grid.my_col();
+    int p_rows = grid.rows();
+    int p_cols = grid.cols();
 
     // Sub-communicators
     Communicator const &row_comm = grid.row_comm();
@@ -55,9 +54,9 @@ DistributionDescriptor
 ======================
 
 ``DistributionDescriptor`` describes how each axis of a tensor is partitioned
-across the process grid. Each axis is one of ``None`` (replicated),
-``Row`` (split along the grid's row dimension), or ``Col`` (split along
-the column dimension).
+across the process grid. Every axis takes one ``GridAxis`` value: ``None``
+leaves the axis replicated, ``Row`` splits it along the grid's row dimension,
+and ``Col`` splits it along the column dimension.
 
 .. code-block:: cpp
 
@@ -66,10 +65,13 @@ the column dimension).
     using namespace einsums::comm;
 
     // 2D tensor with rows split across grid rows, columns replicated
-    DistributionDescriptor d{Distribution::Row, Distribution::None};
+    DistributionDescriptor d;
+    d.dim_to_axis = {GridAxis::Row, GridAxis::None};
+    d.global_dims = {1024, 512};
+    d.grid        = &grid;
 
-    // Local dimensions for THIS rank, given a global shape
-    auto local = d.local_dims_for({1024, 512}, grid);
+    // Local dimensions for this rank
+    auto local = d.local_dims_for(world_rank());
 
 Collectives
 ===========
@@ -86,7 +88,7 @@ Both blocking and non-blocking versions are available:
     Tensor<double, 2> A = create_random_tensor("A", 100, 100);
     allreduce(A, ReduceOp::Sum);
 
-    // Non-blocking allreduce + wait — useful for overlap with compute
+    // Non-blocking allreduce + wait, useful for overlap with compute
     auto handle = iallreduce(A, ReduceOp::Sum);
     // ... do other work ...
     wait(handle);

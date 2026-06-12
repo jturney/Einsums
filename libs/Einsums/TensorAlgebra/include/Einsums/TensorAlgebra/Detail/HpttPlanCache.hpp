@@ -28,8 +28,8 @@ namespace einsums::tensor_algebra::detail {
 // Plan cache for hptt::Transpose<T>.
 //
 // HPTT plans are expensive to build (per call: structural analysis,
-// loop ordering, parallelism strategy selection — even in ESTIMATE
-// mode it walks the candidate list). The plan tree depends only on
+// loop ordering, parallelism strategy selection, and even in ESTIMATE
+// mode it walks the candidate list. The plan tree depends only on
 // shape, not on the runtime A/B/alpha/beta, so we hash on the
 // structural parameters and reuse the plan across calls. On hit, the
 // pointers and scalars are reset via the existing setters.
@@ -133,9 +133,9 @@ get_or_create_hptt_plan(int const *perm, int dim, T alpha, T const *A, size_t co
     else
         key.offsetB.assign(dim, 0);
 
-    // The cache stores plan **templates** keyed on shape. Each caller gets a
+    // The cache stores plan templates keyed on shape. Each caller gets a
     // fresh ``Transpose<T>`` copy with its own ``_A``/``_B``/``_alpha``/
-    // ``_beta``/``_conjA`` slots — the plan tree (``_masterPlan``) is the
+    // ``_beta``/``_conjA`` slots, while the plan tree (``_masterPlan``) is the
     // expensive thing to build and is shared via ``shared_ptr`` inside the
     // copy. We can't return the template directly because higher-level
     // callers (e.g. ``cached_permute`` in Dispatch.hpp) hang onto the plan

@@ -499,7 +499,7 @@ EINSUMS_FORCEINLINE Vec<T> operator*(Vec<T> a, Vec<T> b) {
 #endif
 
 // ===========================================================================
-// Integer SIMD operations — Vec<int32_t>, Vec<uint32_t>, Vec<int64_t>,
+// Integer SIMD operations: Vec<int32_t>, Vec<uint32_t>, Vec<int64_t>,
 // Vec<uint64_t>.
 //
 // On x86 all integer widths share the same register type (__m128i / __m256i /
@@ -516,10 +516,10 @@ EINSUMS_FORCEINLINE Vec<T> operator*(Vec<T> a, Vec<T> b) {
 //   compare-equal
 //
 // Skipped (intentionally) in this round:
-//   stream_store on integers — no observed user; add when needed.
-//   i64 multiply on SSE2 — no native instruction; emulation costs more
+//   stream_store on integers: no observed user; add when needed.
+//   i64 multiply on SSE2: no native instruction; emulation costs more
 //   than scalar fallback for typical kernels. Add later if a user needs it.
-//   i8 / i16 vectors — not in scope; saturation semantics double the surface.
+//   i8 / i16 vectors: not in scope; saturation semantics double the surface.
 // ===========================================================================
 
 // ── broadcast ─────────────────────────────────────────────────────────────
@@ -885,7 +885,7 @@ EINSUMS_FORCEINLINE void storea(uint64_t *p, Vec<uint64_t> v) {
     vst1q_u64(p, v.reg);
 }
 #else
-// Scalar fallback — Vec<T>::reg is a single T.
+// Scalar fallback: Vec<T>::reg is a single T.
 template <>
 EINSUMS_FORCEINLINE Vec<int32_t> loadu(int32_t const *p) {
     return {*p};
@@ -953,17 +953,17 @@ EINSUMS_FORCEINLINE void storea(uint64_t *p, Vec<uint64_t> v) {
 #endif
 
 // ===========================================================================
-// Integer arithmetic — add / sub / mul.
+// Integer arithmetic: add / sub / mul.
 //
 // `add` and `sub` are trivial across every ISA tier and signedness because
-// two's-complement wraparound is bit-identical for signed and unsigned —
+// two's-complement wraparound is bit-identical for signed and unsigned, so
 // the same instruction handles both.
 //
 // `mul` returns the low half of the elementwise product (matching every
 // SIMD ISA's "low multiply" semantics; full 32×32→64 multiplies are a
 // different operation we skip here).
 //
-// Coverage caveats — instructions that don't exist on the tier:
+// Coverage caveats for instructions that don't exist on the tier:
 //   - SSE2 has no 32-bit integer multiply (added in SSE4.1 as PMULLD); we
 //     skip Vec<int32_t>/Vec<uint32_t> mul on SSE2 unless SSE4.1 is on.
 //   - SSE2/AVX/AVX2 have no native 64-bit element multiply. AVX-512DQ adds
@@ -971,7 +971,7 @@ EINSUMS_FORCEINLINE void storea(uint64_t *p, Vec<uint64_t> v) {
 //   - aarch64 NEON has no 64-bit integer vector multiply (vmulq_s64 only
 //     exists under SVE2). We skip i64/u64 mul on NEON.
 // Calls to a missing specialization produce a link error referencing the
-// primary template — clear signal to the user that the op needs a wider
+// primary template, a clear signal to the user that the op needs a wider
 // ISA.
 // ===========================================================================
 
@@ -1028,7 +1028,7 @@ EINSUMS_FORCEINLINE Vec<uint64_t> mul(Vec<uint64_t> a, Vec<uint64_t> b) {
 }
 #    endif
 #elif defined(__AVX2__)
-// 256-bit integer arithmetic requires AVX2 — AVX1 only had float ops.
+// 256-bit integer arithmetic requires AVX2; AVX1 only had float ops.
 // Chips with __AVX__ but not __AVX2__ get a link error here, which is the
 // right signal: the integer Vec on that tier won't work.
 template <>
@@ -1071,7 +1071,7 @@ template <>
 EINSUMS_FORCEINLINE Vec<uint32_t> mul(Vec<uint32_t> a, Vec<uint32_t> b) {
     return _mm256_mullo_epi32(a.reg, b.reg);
 }
-// i64/u64 mul not implemented — needs AVX-512DQ.
+// i64/u64 mul not implemented; needs AVX-512DQ.
 #elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 template <>
 EINSUMS_FORCEINLINE Vec<int32_t> add(Vec<int32_t> a, Vec<int32_t> b) {
@@ -1134,7 +1134,7 @@ EINSUMS_FORCEINLINE Vec<uint32_t> mul(Vec<uint32_t> a, Vec<uint32_t> b) {
     return einsums_sse2_mullo_epi32(a.reg, b.reg);
 }
 #    endif
-// i64/u64 mul not implemented — needs AVX-512DQ.
+// i64/u64 mul not implemented; needs AVX-512DQ.
 #elif defined(__aarch64__) || defined(_M_ARM64)
 template <>
 EINSUMS_FORCEINLINE Vec<int32_t> add(Vec<int32_t> a, Vec<int32_t> b) {
@@ -1176,7 +1176,7 @@ template <>
 EINSUMS_FORCEINLINE Vec<uint32_t> mul(Vec<uint32_t> a, Vec<uint32_t> b) {
     return vmulq_u32(a.reg, b.reg);
 }
-// i64/u64 mul not implemented — aarch64 NEON has no 64-bit element mul.
+// i64/u64 mul not implemented; aarch64 NEON has no 64-bit element mul.
 #else
 // Scalar fallback: Vec<T>::reg is a single T. Two's-complement wraparound
 // on signed/unsigned overflow matches every hardware path above.
@@ -1231,9 +1231,9 @@ EINSUMS_FORCEINLINE Vec<uint64_t> mul(Vec<uint64_t> a, Vec<uint64_t> b) {
 #endif
 
 // ===========================================================================
-// Bitwise — and / or / xor.
+// Bitwise: and / or / xor.
 //
-// Single intrinsic per ISA per width — no element-type dispatch needed
+// Single intrinsic per ISA per width, so no element-type dispatch is needed
 // since the bit pattern is what matters. NEON exposes per-signedness/width
 // names but they all alias the same vand/vor/veor instruction.
 // ===========================================================================
@@ -1288,7 +1288,7 @@ EINSUMS_FORCEINLINE Vec<T> bitwise_xor(Vec<T> a, Vec<T> b);
             return _mm_xor_si128(a.reg, b.reg);                                                                                            \
         }
 #elif defined(__aarch64__) || defined(_M_ARM64)
-// NEON: vand/vorr/veor — typed by signedness and width but all alias the same hw op.
+// NEON: vand/vorr/veor, typed by signedness and width but all alias the same hw op.
 #    define EINSUMS_SIMD_INT_BITWISE_ONE(T, AND_F, OR_F, XOR_F)                                                                            \
         template <>                                                                                                                        \
         EINSUMS_FORCEINLINE Vec<T> bitwise_and(Vec<T> a, Vec<T> b) {                                                                       \
@@ -1307,7 +1307,7 @@ EINSUMS_SIMD_INT_BITWISE_ONE(uint32_t, vandq_u32, vorrq_u32, veorq_u32)
 EINSUMS_SIMD_INT_BITWISE_ONE(int64_t, vandq_s64, vorrq_s64, veorq_s64)
 EINSUMS_SIMD_INT_BITWISE_ONE(uint64_t, vandq_u64, vorrq_u64, veorq_u64)
 #    undef EINSUMS_SIMD_INT_BITWISE_ONE
-#    define EINSUMS_SIMD_INT_BITWISE(T) /* nothing — NEON expanded above per type */
+#    define EINSUMS_SIMD_INT_BITWISE(T) /* nothing; NEON expanded above per type */
 #else
 // Scalar fallback.
 #    define EINSUMS_SIMD_INT_BITWISE(T)                                                                                                    \
@@ -1332,7 +1332,7 @@ EINSUMS_SIMD_INT_BITWISE(uint64_t)
 #undef EINSUMS_SIMD_INT_BITWISE
 
 // ===========================================================================
-// Logical shifts — shift_left<N>(v) and shift_right<N>(v).
+// Logical shifts: shift_left<N>(v) and shift_right<N>(v).
 //
 // The shift count is a non-type template parameter so the intrinsics
 // generated are immediate-form (best codegen). Variable-count shifts are a
@@ -1522,7 +1522,7 @@ EINSUMS_FORCEINLINE Vec<uint64_t> shift_right(Vec<uint64_t> v) {
 #endif
 
 // ===========================================================================
-// Compare equal — cmp_eq.
+// Compare equal: cmp_eq.
 //
 // Returns a Vec<T> mask: each lane is all-1s (interpreted as -1 for signed,
 // max value for unsigned) where a == b, otherwise 0. Suitable for use with
@@ -1781,7 +1781,7 @@ EINSUMS_FORCEINLINE void storeu(uint8_t *p, Vec<uint8_t> v) {
 #endif
 
 // ===========================================================================
-// Dot-product helpers — int8 × int8 → int32 accumulating.
+// Dot-product helpers: int8 × int8 → int32 accumulating.
 //
 // Three signedness combos:
 //   - dot_product_ss(acc, a, b): signed × signed
@@ -1789,7 +1789,7 @@ EINSUMS_FORCEINLINE void storeu(uint8_t *p, Vec<uint8_t> v) {
 //   - dot_product_us(acc, a, b): unsigned × signed (the standard ML-quant
 //     shape; activations are unsigned, weights are signed)
 //
-// All three accumulate `acc + sum_of_4_byte_products` per int32 lane —
+// All three accumulate `acc + sum_of_4_byte_products` per int32 lane:
 // 16 byte pairs → 4 int32 outputs per 128-bit register, scaling up to 64
 // pairs → 16 outputs at AVX-512 width.
 //
@@ -1798,7 +1798,7 @@ EINSUMS_FORCEINLINE void storeu(uint8_t *p, Vec<uint8_t> v) {
 // Intel AVX-VNNI / AVX-512 VNNI gives only the us shape natively. For the
 // missing combos on each platform a kernel needs to either fall back to
 // scalar or emulate via shuffle + sign-extend; we don't ship emulation
-// here — calling a missing specialization fails to link, which is the
+// here. Calling a missing specialization fails to link, which is the
 // cleanest signal that a wider ISA is needed.
 // ===========================================================================
 
@@ -1836,15 +1836,15 @@ EINSUMS_FORCEINLINE Vec<int32_t> dot_product_us(Vec<int32_t> acc, Vec<uint8_t> a
 #endif
 
 // ===========================================================================
-// IEEE half-precision (Vec<half_t>) — broadcast / load / store / arithmetic.
+// IEEE half-precision (Vec<half_t>): broadcast / load / store / arithmetic.
 //
 // Available when the build sees:
 //   - `__ARM_FEATURE_FP16_VECTOR_ARITHMETIC` on aarch64 (M1+ default), or
 //   - `__AVX512FP16__` on x86 (Sapphire Rapids+, requires -mavx512fp16).
 //
 // Operations covered: broadcast, loadu/loada, storeu/storea, add, sub, mul,
-// fma. Other ops (gather, transpose, complex) are deferred — they need
-// dedicated specializations in Shuffle.hpp / Gather.hpp / ComplexVec.hpp.
+// fma. Other ops such as gather, transpose, and complex are deferred; they
+// need dedicated specializations in Shuffle.hpp / Gather.hpp / ComplexVec.hpp.
 // ===========================================================================
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
@@ -1927,11 +1927,11 @@ EINSUMS_FORCEINLINE Vec<half_t> fmadd(Vec<half_t> a, Vec<half_t> b, Vec<half_t> 
 #endif // __ARM_FEATURE_FP16_VECTOR_ARITHMETIC || __AVX512FP16__
 
 // ===========================================================================
-// Brain-float bf16 (Vec<bfloat16_t>) — load / store only.
+// Brain-float bf16 (Vec<bfloat16_t>): load / store only.
 //
 // Both ARM BF16 and AVX-512BF16 expose conversion to/from FP32 plus dot
 // product, but no native lane-wise add/sub/mul on bf16. The convention
-// in BF16 kernels is "convert to FP32, do math, convert back" — so we
+// in BF16 kernels is "convert to FP32, do math, convert back", so we
 // expose only what the hardware supports natively here. Convert helpers
 // land in a follow-up alongside the `bf16_to_float` / `float_to_bf16`
 // API, plus the `bf16_dot_product` helper that uses FEAT_BF16's BFDOT
@@ -1958,7 +1958,7 @@ EINSUMS_FORCEINLINE void storea(bfloat16_t *p, Vec<bfloat16_t> v) {
 #elif defined(__AVX512BF16__)
 template <>
 EINSUMS_FORCEINLINE Vec<bfloat16_t> loadu(bfloat16_t const *p) {
-    // __m512bh and __m512i alias each other on Intel ICC/Clang — the load
+    // __m512bh and __m512i alias each other on Intel ICC/Clang, so the load
     // is the integer variant since there's no `_mm512_loadu_pbh` intrinsic.
     return reinterpret_cast<__m512bh>(_mm512_loadu_si512(reinterpret_cast<__m512i const *>(p)));
 }

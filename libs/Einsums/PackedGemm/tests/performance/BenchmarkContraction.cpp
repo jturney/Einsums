@@ -6,10 +6,10 @@
 // Performance benchmark: MLIR JIT kernels for tensor contractions.
 //
 // Each test reports three timings:
-//   1. t_generic     — OpenMP generic algorithm only (pre-MLIR einsum behavior for
+//   1. t_generic: OpenMP generic algorithm only (pre-MLIR einsum behavior for
 //                      non-BLAS contractions; for rank-2 this bypasses BLAS).
-//   2. t_packed        — MLIR JIT backend called directly (Pack-A/Pack-B + JIT macro-kernel).
-//   3. t_einsum      — Full einsum() dispatch; the algorithm label in the output
+//   2. t_packed: MLIR JIT backend called directly (Pack-A/Pack-B + JIT macro-kernel).
+//   3. t_einsum: Full einsum() dispatch; the algorithm label in the output
 //                      shows which path einsum() actually chose (BLAS-GEMM, BLAS-GEMV,
 //                      generic/MLIR, etc.).
 //
@@ -17,7 +17,7 @@
 //   MLIR/gen  : t_generic / t_packed        (>1 means MLIR is faster than generic)
 //   einsum/gen: t_generic / t_einsum      (>1 means einsum is faster than generic)
 
-// TensorAlgebra.hpp must come first — it defines the einsums::index namespace
+// TensorAlgebra.hpp must come first; it defines the einsums::index namespace
 // containing the index tag types (i, j, k, l, ...) used below.
 #include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
 #include <Einsums/Performance.hpp>
@@ -136,7 +136,7 @@ EINSUMS_TEST_CASE("Benchmark: rank-2 contraction N=64 (MLIR direct)", "[mlir][be
     C.zero();
     bool ok = run_packed_gemm(0.0, std::tuple<struct i, struct j>{}, C, 1.0, std::tuple<struct i, struct k>{}, A,
                               std::tuple<struct j, struct k>{}, B);
-    // Rank-2 single-M/single-N/single-K is a standard GEMM — MLIR correctly defers to BLAS dispatch.
+    // Rank-2 single-M/single-N/single-K is a standard GEMM; MLIR correctly defers to BLAS dispatch.
     REQUIRE_FALSE(ok);
 
     // --- Timing: generic vs einsum (MLIR not applicable for this shape) ---
@@ -227,7 +227,7 @@ EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=32 (MLIR direct)", "[mlir][be
 }
 
 // ---------------------------------------------------------------------------
-// Rank-3 contraction N=64 — larger problem size
+// Rank-3 contraction N=64, larger problem size
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=64 (MLIR direct)", "[mlir][benchmark]") {
     LabeledSection0();
@@ -303,7 +303,7 @@ EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=64 (MLIR direct)", "[mlir][be
 // but j at pos 2), so einsum() cannot reshape this to GEMM.  It falls through
 // to einsum_generic_default which tries the MLIR JIT backend first.
 //
-// N=8 gives 8^5 = 32768 FLOPs — fast enough for correctness checking.
+// N=8 gives 8^5 = 32768 FLOPs, fast enough for correctness checking.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-4 contraction C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=8 (MLIR direct)", "[mlir][benchmark]") {
     LabeledSection0();
@@ -364,7 +364,7 @@ EINSUMS_TEST_CASE("Benchmark: rank-4 contraction C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N
 }
 
 // ---------------------------------------------------------------------------
-// Rank-2 N=256 — GEMM-equivalent large-N (vs BLAS target: MLIR ≤ 2× BLAS)
+// Rank-2 N=256, GEMM-equivalent large-N (vs BLAS target: MLIR ≤ 2× BLAS)
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-2 contraction N=256 (MLIR direct)", "[mlir][benchmark][large]") {
     LabeledSection0();
@@ -407,7 +407,7 @@ EINSUMS_TEST_CASE("Benchmark: rank-2 contraction N=256 (MLIR direct)", "[mlir][b
 }
 
 // ---------------------------------------------------------------------------
-// Rank-3 N=128 — first tiling-benefiting size (link_dim=128 > tile_size=64)
+// Rank-3 N=128, first tiling-benefiting size (link_dim=128 > tile_size=64)
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=128 (MLIR direct)", "[mlir][benchmark][large]") {
     LabeledSection0();
@@ -459,7 +459,7 @@ EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=128 (MLIR direct)", "[mlir][b
 }
 
 // ---------------------------------------------------------------------------
-// Rank-3 N=256 — large-N tiling benefit (link_dims 256 >> tile_size 64)
+// Rank-3 N=256, large-N tiling benefit (link_dims 256 >> tile_size 64)
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=256 (MLIR direct)", "[mlir][benchmark][large]") {
     LabeledSection0();
@@ -534,7 +534,7 @@ EINSUMS_TEST_CASE("Benchmark: kernel cache hit overhead", "[mlir][benchmark]") {
                               std::tuple<struct j, struct k, struct l>{}, B);
     REQUIRE(ok);
 
-    // Subsequent calls: cache warm — measure per-call overhead.
+    // Subsequent calls: cache warm, measure per-call overhead.
     auto t_packed = time_us(
         "packed_gemm",
         [&]() {
@@ -624,7 +624,7 @@ EINSUMS_TEST_CASE("Benchmark: Hadamard C[i]+=A[i,i]*B[i] N=256", "[mlir][benchma
 // ---------------------------------------------------------------------------
 // Hadamard rank-3: C[i,j] += A[i,i,j] * B[j]  (repeated index + free dims)
 //
-// Same Hadamard blocking — repeated 'i' in A means no packing path.
+// Same Hadamard blocking; repeated 'i' in A means no packing path.
 // Larger working set than the rank-1 Hadamard above.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: Hadamard C[i,j]+=A[i,i,j]*B[j] N=64", "[mlir][benchmark][nongemm]") {
@@ -681,7 +681,7 @@ EINSUMS_TEST_CASE("Benchmark: Hadamard C[i,j]+=A[i,i,j]*B[j] N=64", "[mlir][benc
 // Scalar output: s += A[i,j] * B[i,j]  (Frobenius inner product)
 //
 // All indices are link (reduction) dims, C is a scalar (rank-0 memref).
-// No packing path — scalar output is always per-topology MLIR.
+// No packing path; scalar output is always per-topology MLIR.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: scalar output s+=A[i,j]*B[i,j] N=128", "[mlir][benchmark][nongemm]") {
     LabeledSection0();
@@ -772,7 +772,7 @@ EINSUMS_TEST_CASE("Benchmark: scalar output s+=A[i,j,k]*B[i,j,k] N=32", "[mlir][
 // Asymmetric rank: C[i,j,k] += A[i,l] * B[l,j,k]  (rank-2 x rank-3 -> rank-3)
 //
 // One M dim (i), two N dims (j,k), one K dim (l).  Multi-dim N means the
-// packing path is invalid — falls through to per-topology MLIR.
+// packing path is invalid; falls through to per-topology MLIR.
 // ---------------------------------------------------------------------------
 // FIXME: This test crashes with SIGABRT during the timing phase (pre-existing).
 // The generic OMP algorithm with nested parallelism on rank-3+ contractions
@@ -833,7 +833,7 @@ EINSUMS_TEST_CASE("Benchmark: asymmetric C[i,j,k]+=A[i,l]*B[l,j,k] N=32", "[mlir
 // ---------------------------------------------------------------------------
 // Batch contraction: C[b,i,j] += A[b,i,k] * B[b,k,j]  (batched GEMM)
 //
-// Index 'b' is a target index that appears in both A and B — a batch dim.
+// Index 'b' is a target index that appears in both A and B, a batch dim.
 // The packing path rejects batch dims, so this falls through to MLIR.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: batch C[b,i,j]+=A[b,i,k]*B[b,k,j] B=16 N=32", "[mlir][benchmark][nongemm]") {
@@ -953,7 +953,7 @@ EINSUMS_TEST_CASE("Benchmark: batch C[b,i,j]+=A[b,i,k]*B[b,k,j] B=4 N=128", "[ml
 // Batch contraction with batch as inner dim: C[i,j,b] += A[i,k,b] * B[k,j,b]
 //
 // When b is last (innermost for row-major, outermost stride for col-major),
-// each batch slice has contiguous M*K / K*N layout — ideal for direct BLAS GEMM.
+// each batch slice has contiguous M*K / K*N layout, ideal for direct BLAS GEMM.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: batch C[i,j,b]+=A[i,k,b]*B[k,j,b] B=4 N=128", "[mlir][benchmark][batch]") {
     LabeledSection0();
@@ -1071,7 +1071,7 @@ EINSUMS_TEST_CASE("Benchmark: batch+multiK C[b,i,l]+=A[b,i,j,k]*B[b,j,k,l] B=4 N
 // Multi-link asymmetric: C[i,k] += A[i,j,k,l] * B[j,l]  (rank-4 x rank-2)
 //
 // Two link dims (j,l) with different positions in A and B.  The output
-// index k appears in both C and A but NOT B — one M dim (i) and one N dim
+// index k appears in both C and A but not B, one M dim (i) and one N dim
 // (k) in the standard sense, but k is embedded in a rank-4 A.  einsum
 // may reshape this as GEMM or fall through to MLIR depending on stride
 // contiguity.
@@ -1125,7 +1125,7 @@ EINSUMS_TEST_CASE("Benchmark: C[i,k]+=A[i,j,k,l]*B[j,l] N=16", "[mlir][benchmark
 // ---------------------------------------------------------------------------
 // Outer product: C[i,j] += A[i] * B[j]  (no link/reduction dims)
 //
-// Zero contraction dims — this is a pure outer product.  Not a GEMM
+// Zero contraction dims; this is a pure outer product.  Not a GEMM
 // (no summation).  einsum() uses BLAS GER for this, but the MLIR backend
 // should also be able to handle it via a 2D parallel linalg.generic with
 // no reduction iterator.
@@ -1386,7 +1386,7 @@ EINSUMS_TEST_CASE("Benchmark: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=16", "[mlir
 
 // ---------------------------------------------------------------------------
 // Both A and B zero-copy: C[i,l] += A[i,j,k] * B[l,j,k]
-// No data copying at all — single GEMM call on raw tensor pointers.
+// No data copying at all; single GEMM call on raw tensor pointers.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: zero-copy both N=64", "[mlir][benchmark][zerocopy]") {
     LabeledSection0();

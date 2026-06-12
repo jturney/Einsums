@@ -59,7 +59,7 @@ APIARY_EXPOSE
 // (T, std::allocator<T>) tuple individually rather than using a flat
 // INSTANTIATE_TEMPLATE cross-product. BUFFER_PROTOCOL_STD lets the
 // codegen synthesize the buffer-info builder from the named pure-C++
-// accessors — Tensor.hpp has zero pybind11 references.
+// accessors, so Tensor.hpp has zero pybind11 references.
 APIARY_BUFFER_PROTOCOL
 APIARY_BUFFER_PROTOCOL_STD(data = data, rank = rank, dim = dim, stride = stride, element_type = T)
 APIARY_ITERATOR_STD(begin = begin, end = end)
@@ -81,7 +81,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * For device allocators, gpu::DeviceVector is used instead of std::vector
      * (mirrors the storage selection in GeneralTensor). On a device tensor,
      * host-only operations (iterators, scalar subscript, set_all) are
-     * disabled — see IsDeviceTensor below.
+     * disabled. See IsDeviceTensor below.
      */
     using Vector =
         std::conditional_t<gpu::IsDeviceAllocatorV<Alloc>, gpu::DeviceVector<std::remove_cv_t<T>>, std::vector<std::remove_cv_t<T>, Alloc>>;
@@ -141,8 +141,8 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * @brief Tag type for deferred allocation.
      *
      * Constructs a shell tensor (valid metadata, no data) without allocating
-     * backing storage. Mirrors GeneralTensor::DeferredAlloc — same semantics:
-     * data() returns a sentinel pointer until materialize() is called.
+     * backing storage. Mirrors GeneralTensor::DeferredAlloc with the same
+     * semantics: data() returns a sentinel pointer until materialize() is called.
      */
     struct DeferredAlloc {};
 
@@ -378,7 +378,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      *
      * @param val The value to fill the tensor with.
      *
-     * Not supported on device runtime tensors — throws at runtime.
+     * Not supported on device runtime tensors; throws at runtime.
      * (set_all is virtual, so its body is instantiated for the v-table
      * even if never called; we branch with if constexpr instead of
      * static_assert to keep the device variant compilable.)
@@ -397,11 +397,11 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * Iterate over the storage in linear memory order. Used by Python's
      * iteration protocol via APIARY_ITERATOR_STD; for C++ callers,
      * also enables range-for and STL algorithms over the tensor's elements.
-     * This iterates *elements*, not rows — for row-iteration, take
+     * This iterates elements, not rows. For row-iteration, take
      * sub-views first.
      *
-     * Disabled for device runtime tensors (gpu::DeviceVector has no
-     * iterators — device memory is not host-accessible).
+     * Disabled for device runtime tensors, because gpu::DeviceVector has no
+     * iterators and device memory is not host-accessible.
      */
     auto begin() noexcept
         requires(!IsDeviceTensor)
@@ -504,7 +504,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * The index vector must have one entry per axis (length == rank()),
      * each in [0, dim(i)). Negative-index normalization happens at the
      * Python layer before this is called; the C++ entry point assumes
-     * non-negative, in-range indices. Disabled for device tensors —
+     * non-negative, in-range indices. Disabled for device tensors, since
      * scalar reads of GPU memory must go through gpu::memcpy_device_to_host.
      */
     T at_element(std::vector<std::int64_t> const &idx) const {
@@ -554,7 +554,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
             switch (s.kind) {
             case einsums::SliceSpec::Kind::Index:
                 offsets[i] = static_cast<std::size_t>(s.index);
-                // Axis collapses — omit from view_dims/view_strides.
+                // Axis collapses, so omit it from view_dims/view_strides.
                 break;
             case einsums::SliceSpec::Kind::Range: {
                 offsets[i]              = static_cast<std::size_t>(s.start);
@@ -814,7 +814,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      *
      * @param other The tensor view to copy from.
      *
-     * Not supported on device runtime tensors — throws at runtime.
+     * Not supported on device runtime tensors; throws at runtime.
      * (operator= is virtual, so its body is instantiated for the v-table
      * even on device. Branch with if constexpr to keep the device
      * variant compilable.)
@@ -884,7 +884,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         return *this;
     }
 
-    // Element-wise compound-assignment operators are host-only — they go
+    // Element-wise compound-assignment operators are host-only. They go
     // through detail::add_assign/sub_assign/etc., which iterate scalar
     // elements. For device tensors, do GPU-side equivalents through
     // ComputeGraph or BLAS calls.
@@ -1118,29 +1118,30 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         _impl.set_data(_data.data());
     }
 
-    /// True iff backing storage is available — owned (_data non-empty),
-    /// aliased to an external buffer, or rank-0 with no data needed.
+    /// True iff backing storage is available. Storage counts as available when
+    /// it is owned with _data non-empty, aliased to an external buffer, or
+    /// rank-0 with no data needed.
     [[nodiscard]] bool is_materialized() const { return _aliased || !_data.empty() || _impl.size() == 0; }
 
     /// Release backing storage, returning to the deferred state. Dims and
     /// strides are preserved. data() returns a sentinel pointer until
     /// materialize() is called again. Used by FreeInsertion to free
-    /// intermediates after their last consumer. No-op for aliased tensors —
-    /// they don't own their memory, so there is nothing to free.
+    /// intermediates after their last consumer. This is a no-op for aliased
+    /// tensors, which don't own their memory, so there is nothing to free.
     void release() {
         if (_aliased || _data.empty())
             return;
         _data.clear();
         _data.shrink_to_fit();
-        _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel — dims/strides preserved
+        _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel; dims/strides preserved
     }
 
-    /// Re-point this tensor at an external buffer it does NOT own (zero-copy
-    /// alias), with the given layout. The previous owned storage (if any) is
-    /// dropped — the caller guarantees @p ptr outlives this tensor. Used to
-    /// wrap foreign block memory (e.g. a psi4 Matrix irrep block) as a tile of
-    /// a TiledRuntimeTensor without copying. After this the tensor reports
-    /// materialized and is release-proof. EXPERIMENTAL (zero-copy bridge).
+    /// Re-point this tensor at an external buffer it does not own, a zero-copy
+    /// alias, with the given layout. Any previous owned storage is dropped, and
+    /// the caller guarantees @p ptr outlives this tensor. Used to wrap foreign
+    /// block memory, such as a psi4 Matrix irrep block, as a tile of a
+    /// TiledRuntimeTensor without copying. After this the tensor reports
+    /// materialized and is release-proof. This is an experimental zero-copy bridge.
     void alias_to(T *ptr, bool row_major) {
         std::vector<size_t> d(_impl.rank());
         for (size_t i = 0; i < d.size(); ++i) {
@@ -1160,8 +1161,8 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
 
     /// Change dimensions of an already-materialized tensor.
     /// No-op if dims match the current shape. Otherwise allocates a
-    /// new buffer (existing data is discarded — same contract as
-    /// GeneralTensor's resize). Argument is any range of size_t.
+    /// new buffer, discarding existing data, under the same contract as
+    /// GeneralTensor's resize. The argument is any range of size_t.
     template <typename Dims>
         requires requires(Dims const &d) {
             d.begin();
@@ -1174,14 +1175,14 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
             return;
         }
         // Build new impl to compute the required size, but don't commit yet.
-        // NB: ``stored_row_major()``, not ``is_row_major()`` — the latter
+        // NB: ``stored_row_major()``, not ``is_row_major()``, because the latter
         // collapses to true for rank-≤1 tensors regardless of how the
         // tensor was originally constructed, so resizing a column-major
         // ``[0]`` placeholder up to ``[3,4]`` would silently flip layout.
         detail::TensorImpl<T> new_impl(nullptr, dims, _impl.stored_row_major());
-        // Resize data first — if this throws, _impl and _data remain consistent.
+        // Resize data first; if this throws, _impl and _data remain consistent.
         _data.resize(new_impl.size());
-        // Data resize succeeded — now commit.
+        // Data resize succeeded, so now commit.
         _impl = std::move(new_impl);
         _impl.set_data(_data.data());
     }
@@ -1222,12 +1223,13 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         resize_deferred(std::vector<size_t>{static_cast<size_t>(dims)...});
     }
 
-    /// Lazily-created liveness token used by ComputeGraph's runtime validator
-    /// (see make_handle). The validator holds a std::weak_ptr to it so it can
-    /// detect destruction without dereferencing a possibly-freed tensor — the
-    /// old canary read freed memory (UB) and was unreliable (a reused-but-
-    /// unchanged canary read as alive). Created on first request, so tensors
-    /// never captured into a graph pay nothing.
+    /// Lazily-created liveness token used by ComputeGraph's runtime validator;
+    /// see make_handle. The validator holds a std::weak_ptr to it so it can
+    /// detect destruction without dereferencing a possibly-freed tensor. The
+    /// old canary read freed memory, which is undefined behavior, and was
+    /// unreliable, since a reused but unchanged canary read as alive. The token
+    /// is created on first request, so tensors never captured into a graph pay
+    /// nothing.
     [[nodiscard]] std::weak_ptr<void> liveness_token() const {
         if (!_life_token) {
             _life_token = std::make_shared<char>();
@@ -1276,8 +1278,8 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
 template <typename T>
 struct APIARY_EXPOSE
     // Same Plan C protocol surface as GeneralRuntimeTensor: zero-copy numpy
-    // interop via buffer protocol, Python iter, scalar subscript, AND
-    // slice/partial-tuple subscript — at_view returns a nested
+    // interop via buffer protocol, Python iter, scalar subscript, and
+    // slice/partial-tuple subscript. at_view returns a nested
     // RuntimeTensorView, so a view slices just like a full tensor.
     APIARY_BUFFER_PROTOCOL
     APIARY_BUFFER_PROTOCOL_STD(data = data, rank = rank, dim = dim, stride = stride, element_type = T)
@@ -2013,8 +2015,8 @@ extern template class EINSUMS_EXPORT GeneralRuntimeTensor<double, BufferAllocato
 extern template class EINSUMS_EXPORT GeneralRuntimeTensor<std::complex<float>, BufferAllocator<std::complex<float>>>;
 extern template class EINSUMS_EXPORT GeneralRuntimeTensor<std::complex<double>, BufferAllocator<std::complex<double>>>;
 
-// gpu::DeviceAllocator variants are implicitly instantiated where used —
-// see TensorDefs.cpp for rationale (mirrors GeneralTensor's pattern).
+// gpu::DeviceAllocator variants are implicitly instantiated where used.
+// See TensorDefs.cpp for rationale; this mirrors GeneralTensor's pattern.
 
 extern template class EINSUMS_EXPORT RuntimeTensorView<float>;
 extern template class EINSUMS_EXPORT RuntimeTensorView<double>;

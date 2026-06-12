@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Phase D.1 — runtime-tensor coverage for linear_algebra::gesv (linear solve).
+// Phase D.1: runtime-tensor coverage for linear_algebra::gesv (linear solve).
 // Mirrors gesv.cpp's static-rank LAPACKE example so we can directly compare
 // the runtime overload (added in C.11) against the same reference values.
 

@@ -161,7 +161,7 @@ class EINSUMS_EXPORT TaskPool {
     /// @brief Dataflow: submit a task that runs when all typed input handles are ready.
     ///
     /// The callable receives the results of the input handles as arguments.
-    /// Fully asynchronous — no blocking. The callable is submitted to the pool
+    /// Fully asynchronous, with no blocking. The callable is submitted to the pool
     /// when all inputs complete, via the variadic when_all continuation mechanism.
     template <typename F, typename... Ts>
     auto dataflow(std::string name, F &&callable, TaskHandle<Ts>... inputs) -> TaskHandle<std::invoke_result_t<F, Ts...>> {

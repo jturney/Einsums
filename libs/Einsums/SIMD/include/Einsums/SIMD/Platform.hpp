@@ -11,7 +11,7 @@
 namespace einsums::simd {
 
 // ---------------------------------------------------------------------------
-// Feature detection — constexpr booleans for each ISA extension.
+// Feature detection: constexpr booleans for each ISA extension.
 // These are independent: e.g. has_avx2 and has_sse42 are both true on AVX2 hw.
 // ---------------------------------------------------------------------------
 
@@ -87,7 +87,7 @@ inline constexpr bool has_avx512 =
 // Future enhancement (not in this round): on AVX-10/256-only chips, we
 // could opt into the EVEX-encoded AVX-512 instruction set at 256-bit
 // width (masked ops, embedded broadcast). The existing AVX2 path is
-// correct as-is — these flags expose the additional capability for
+// correct as-is; these flags expose the additional capability for
 // callers who want to hand-write specialized kernels.
 inline constexpr bool has_avx10_1 =
 #if defined(__AVX10_1__)
@@ -117,7 +117,7 @@ inline constexpr bool has_avx10_512 =
     false;
 #endif
 
-// VNNI (Vector Neural Network Instructions) — int8 dot-product accelerators.
+// VNNI (Vector Neural Network Instructions): int8 dot-product accelerators.
 //   - `has_avx_vnni`     ⇒ Alder Lake+ consumer chips, 256-bit dpbusd_epi32.
 //   - `has_avx512_vnni`  ⇒ Cascade Lake-X+ server, 512-bit dpbusd at full
 //     AVX-512 width. Both add the fused unsigned×signed → int32
@@ -166,7 +166,7 @@ inline constexpr bool has_neon_i8mm =
     false;
 #endif
 
-// FEAT_DOTPROD — vdotq_s32/_u32. Default-on for M1+ and most modern
+// FEAT_DOTPROD: vdotq_s32/_u32. Default-on for M1+ and most modern
 // aarch64 server chips; gates the same-sign int8 dot-product helpers.
 inline constexpr bool has_neon_dotprod =
 #if defined(__ARM_FEATURE_DOTPROD)
@@ -204,7 +204,7 @@ inline constexpr bool is_apple_silicon =
 #endif
 
 // ---------------------------------------------------------------------------
-// Native register width — widest available ISA determines this.
+// Native register width: the widest available ISA determines this.
 // Used to set Vec<T>::lanes and blocking parameters.
 // ---------------------------------------------------------------------------
 

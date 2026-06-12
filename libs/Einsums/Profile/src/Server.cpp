@@ -253,12 +253,12 @@ void Server::shutdown() {
         recv_requests();
         send_updates();
     } else if (drain_iterations > 5) {
-        // No client connected yet but wait-for-viewer was set — give viewer a chance to connect late
+        // No client connected yet but wait-for-viewer was set, so give viewer a chance to connect late
         EINSUMS_LOG_INFO("Profile server: waiting briefly for late viewer connections...");
         for (int i = 0; i < drain_iterations; i++) {
             accept_clients();
             if (!_client_fds.empty()) {
-                // Client just connected — drain remaining data
+                // Client just connected; drain remaining data
                 EINSUMS_LOG_INFO("Profile server: late viewer connected, draining...");
                 for (int j = 0; j < 10; j++) {
                     recv_requests();
@@ -476,7 +476,7 @@ void Server::send_snapshot_to(int fd) {
     msg += R"(,"git_branch":")" + escape_json_str(EINSUMS_HAVE_GIT_BRANCH) + "\"";
     msg += std::string(",\"git_dirty\":") + (EINSUMS_HAVE_GIT_DIRTY ? "true" : "false");
     {
-        // EINSUMS_BUILD_TYPE is a bare identifier (e.g. release, debug) — stringify it.
+        // EINSUMS_BUILD_TYPE is a bare identifier (e.g. release, debug), so stringify it.
 #    define EINSUMS_STRINGIFY_HELPER_(x) #x
 #    define EINSUMS_STRINGIFY_(x)        EINSUMS_STRINGIFY_HELPER_(x)
         msg += R"(,"build_type":")" + escape_json_str(EINSUMS_STRINGIFY_(EINSUMS_BUILD_TYPE)) + "\"";
@@ -930,8 +930,8 @@ void Server::export_session(std::string const &path, std::string const &label,
 
             if (!content.empty()) {
                 // Find the existing sessions array. Two formats:
-                // 1. {"sessions": [...]}  — multi-session
-                // 2. {"label": ...}       — single session
+                // 1. {"sessions": [...]}  is multi-session
+                // 2. {"label": ...}       is single session
                 //
                 // Strategy: find "sessions" key. If present, insert before the closing ']}'.
                 // If single session, wrap both in multi-session format.

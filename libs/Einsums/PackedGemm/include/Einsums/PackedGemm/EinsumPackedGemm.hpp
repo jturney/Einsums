@@ -510,7 +510,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             //
             // For complex types with conjugation, BLAS uses 'C' (conjugate transpose)
             // instead of 'T'.  When 'N' (no transpose) with conjugation is needed,
-            // BLAS has no flag — fall through to the BLIS tiled path which conjugates
+            // BLAS has no flag, so fall through to the BLIS tiled path which conjugates
             // during packing.
             bool dispatched = false;
 
@@ -782,7 +782,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Runtime entry point — accepts a pre-built ContractionSpec.
+// Runtime entry point: accepts a pre-built ContractionSpec.
 // ---------------------------------------------------------------------------
 
 /// @brief Attempt to execute an einsum contraction via the packed GEMM backend
@@ -792,8 +792,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 /// caller has already populated from string indices (or from a compile-time
 /// index pack via the convenience overload below). Works uniformly for typed
 /// `Tensor<T, K>`, `RuntimeTensor<T, Alloc>`, or any `BasicTensorConcept`
-/// operand — all dispatch decisions (rank classification, batch handling,
-/// kernel selection) happen at runtime against the spec.
+/// operand. All dispatch decisions, including rank classification, batch
+/// handling, and kernel selection, happen at runtime against the spec.
 ///
 /// Returns `true` if the contraction was handled; `false` if the caller should
 /// fall back (to a direct BLAS GEMM, generic loop, etc.).
@@ -818,7 +818,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         return false;
     }
 
-    // Snapshot the spec — we may need to refresh derived fields (target/link/all)
+    // Snapshot the spec, since we may need to refresh derived fields (target/link/all)
     // if the caller didn't fill them, and we want to set scalar_type from T.
     ContractionSpec spec = spec_in;
     if (spec.target_indices.empty()) {
@@ -891,7 +891,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // Skip contractions that BLAS GEMM can handle directly (no batch, single M/N/K).
         if (m_count == 1 && n_count == 1 && link.size() == 1 && !spec.conj_a && !spec.conj_b && m_count + n_count == target.size()) {
             ProfileAnnotate("packed_gemm_skip", "defer_to_direct_gemm");
-            return false; // Deferred to direct BLAS GEMM — not a rejection.
+            return false; // Deferred to direct BLAS GEMM, not a rejection.
         }
         if (m_count == 0) {
             ProfileAnnotate("packed_gemm_skip", "no_m_dims");
@@ -952,12 +952,12 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         EINSUMS_LOG_INFO("PackedGemm: skipping — packing topology invalid for this contraction pattern.");
     }
 
-    // Contraction doesn't fit packed GEMM — fall back to generic algorithm.
+    // Contraction doesn't fit packed GEMM, so fall back to generic algorithm.
     return false;
 }
 
 // ---------------------------------------------------------------------------
-// Compile-time index-pack overload — thin shim that builds the ContractionSpec
+// Compile-time index-pack overload: thin shim that builds the ContractionSpec
 // from `Indices...` packs and forwards to the runtime entry point.
 // ---------------------------------------------------------------------------
 
@@ -979,7 +979,7 @@ bool try_packed_gemm(einsums::ValueTypeT<CType> C_prefactor, std::tuple<CIndices
     LabeledSection0();
 
     // Scalar-output (CType is `T`, not a tensor) is not yet routed through the
-    // runtime entry point — keep the original handling for that one shape.
+    // runtime entry point, so keep the original handling for that one shape.
     if constexpr (!einsums::TensorConcept<CType>) {
         return false; // The original implementation built a degenerate key here;
                       // current packed-GEMM kernels require a tensor C anyway.

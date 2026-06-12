@@ -150,13 +150,13 @@ TEST_CASE("TaskPool - dataflow void input", "[TaskPool]") {
 TEST_CASE("TaskPool - metrics", "[TaskPool]") {
     auto &pool = TaskPool::get_singleton();
 
-    // Test order is randomized, so this case may run before any other — do NOT
+    // Test order is randomized, so this case may run before any other, so do not
     // rely on prior tests having submitted work (that made this test flaky at a
     // rate of ~1/N when it happened to run first). Generate our own activity.
     //
     // total_submitted is incremented synchronously inside enqueue(), but a
-    // worker bumps total_completed *just after* the task body runs — i.e. a hair
-    // after wait() can return — so spin until that increment lands.
+    // worker bumps total_completed just after the task body runs, i.e. a hair
+    // after wait() can return, so spin until that increment lands.
     pool.submit("metrics_probe", []() {}).wait();
 
     auto m = pool.snapshot_metrics();

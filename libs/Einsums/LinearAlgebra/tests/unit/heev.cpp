@@ -84,7 +84,7 @@ void heev_strided_test() {
         scale_column(2, div3, &A);
 
         for (int i = 0; i < 3; i++) {
-            // Eigenvector components after phase alignment — allow for small
+            // Eigenvector components after phase alignment; allow for small
             // numerical differences between strided and contiguous LAPACK paths.
             CHECK_THAT(std::real(A(i, 0)), Catch::Matchers::WithinAbs(std::real(A2(i, 0)), 0.01));
             CHECK_THAT(std::imag(A(i, 0)), Catch::Matchers::WithinAbs(std::imag(A2(i, 0)), 0.01));

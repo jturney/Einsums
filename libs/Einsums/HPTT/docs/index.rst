@@ -20,25 +20,25 @@ Overview
 ========
 
 HPTT performs multi-dimensional tensor transpositions using a plan-based
-execution model. The key abstraction is the **transpose plan**: a precomputed
+execution model. The key abstraction is the transpose plan, a precomputed
 strategy for permuting indices of an N-dimensional tensor, including blocking,
 threading, and micro-kernel selection.
 
 Supported Types
 ---------------
 
-- ``float``, ``double`` --- full SIMD-accelerated micro-kernels
-- ``std::complex<float>``, ``std::complex<double>`` --- supported with scalar
-  micro-kernels (SIMD complex is future work)
+- ``float`` and ``double`` use full SIMD-accelerated micro-kernels.
+- ``std::complex<float>`` and ``std::complex<double>`` are supported with
+  scalar micro-kernels. SIMD complex support is future work.
 
 How It Works
 ------------
 
-1. **Plan creation:** ``create_plan()`` analyzes the tensor dimensions, strides,
+1. Plan creation. ``create_plan()`` analyzes the tensor dimensions, strides,
    and permutation pattern to select an optimal blocking strategy and thread
    decomposition.
 
-2. **Execution:** ``execute()`` runs the plan, performing the transpose using
+2. Execution. ``execute()`` runs the plan, performing the transpose using
    SIMD micro-kernels for the inner loops and OpenMP threads for parallelism.
 
 .. code-block:: cpp
@@ -58,13 +58,14 @@ SIMD Refactoring
 ================
 
 The HPTT micro-kernels were refactored from raw SSE/AVX/AVX-512/NEON intrinsics
-to use the ``einsums::simd`` module. This provides:
+to use the ``einsums::simd`` module. This provides three benefits:
 
-- **Portability:** Same code runs on x86_64 (SSE2 through AVX-512) and ARM (NEON)
-- **Maintainability:** ~30 lines of ``einsums::simd`` calls replace ~510 lines
-  of raw intrinsics per type
-- **Performance:** 10--15% improvement on Apple Silicon, substantial improvement
-  for complex datatypes
+- Portability: the same code runs on x86_64, from SSE2 through AVX-512, and on
+  ARM NEON.
+- Maintainability: roughly 30 lines of ``einsums::simd`` calls replace about
+  510 lines of raw intrinsics per type.
+- Performance: a 10 to 15 percent improvement on Apple Silicon, and a
+  substantial improvement for complex datatypes.
 
 The micro-kernels use:
 

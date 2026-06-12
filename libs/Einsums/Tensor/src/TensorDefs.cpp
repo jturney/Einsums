@@ -47,7 +47,7 @@ template class GeneralRuntimeTensor<double, BufferAllocator<double>>;
 template class GeneralRuntimeTensor<std::complex<float>, BufferAllocator<std::complex<float>>>;
 template class GeneralRuntimeTensor<std::complex<double>, BufferAllocator<std::complex<double>>>;
 
-// NB: no explicit instantiations for gpu::DeviceAllocator — the device
+// NB: no explicit instantiations for gpu::DeviceAllocator; the device
 // runtime variant has host-only members gated with static_assert /
 // requires, so explicit class instantiation would force-instantiate
 // those bodies and fail. Code that uses RuntimeGPUTensor<T> picks it

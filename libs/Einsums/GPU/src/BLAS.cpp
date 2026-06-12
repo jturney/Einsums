@@ -36,7 +36,7 @@
 namespace einsums::gpu::blas {
 
 namespace {
-/// Unwrap device_malloc or throw — for internal BLAS use where OOM is fatal.
+/// Unwrap device_malloc or throw, for internal BLAS use where OOM is fatal.
 void *device_malloc_or_throw(size_t bytes) {
     auto result = gpu::device_malloc(bytes);
     if (!result)
@@ -136,7 +136,7 @@ void zgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, std::compl
 // Strided-batched GEMM.
 //
 // On CUDA/HIP: one `{cublas,hipblas}?gemmStridedBatched` call handles
-// the entire batch — the GPU runtime pipelines matrix launches and
+// the entire batch; the GPU runtime pipelines matrix launches and
 // avoids per-call pointer-array construction.
 //
 // On CPU / mock / MPS: fall back to the pointer-array CPU
@@ -151,10 +151,10 @@ void zgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, std::compl
 // Silicon users GPU-accelerated batching without them having to
 // rebuild against CUDA/HIP. Blockers: MPS expects row-major storage
 // so the col-major-batch-last layout needs a thin wrapper, and MPS
-// doubles generally round-trip to CPU anyway — so float32 is the
+// doubles generally round-trip to CPU anyway, so float32 is the
 // first target.
 //
-// Pattern shared across all dtypes — kept inline rather than factored
+// Pattern shared across all dtypes, kept inline rather than factored
 // into a helper because each type has its own cuBLAS entry point.
 // ===========================================================================
 
@@ -356,9 +356,9 @@ void gemv<double>(char trans, int64_t m, int64_t n, double alpha, double const *
 }
 
 // ===========================================================================
-// BLAS Level 1 — element-wise operations
+// BLAS Level 1: element-wise operations
 // All backends: delegate to CPU vendor BLAS (data is accessible on all
-// backends — unified memory on MPS, shadow memory on CUDA/HIP/mock).
+// backends, with unified memory on MPS and shadow memory on CUDA/HIP/mock).
 // On CUDA/HIP, these should be replaced with cuBLAS/hipBLAS calls.
 // ===========================================================================
 
@@ -416,7 +416,7 @@ double nrm2<double>(int64_t n, double const *x, int64_t incx) {
 }
 
 // ===========================================================================
-// Template wrapper — explicit instantiations (GEMM)
+// Template wrapper: explicit instantiations (GEMM)
 // ===========================================================================
 
 template <>
@@ -476,7 +476,7 @@ void gemm_strided_batched<std::complex<double>>(char transa, char transb, int64_
 }
 
 // ===========================================================================
-// Reduced-precision GEMM — stubs for now, implemented when Ozaki pass lands
+// Reduced-precision GEMM: stubs for now, implemented when Ozaki pass lands
 // ===========================================================================
 
 void hgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, float alpha, half_t const *a, int64_t lda, half_t const *b,

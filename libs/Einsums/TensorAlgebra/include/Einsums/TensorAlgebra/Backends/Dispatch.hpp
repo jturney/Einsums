@@ -871,7 +871,7 @@ constexpr bool einsum_is_sort_gemm_candidate(std::tuple<CIndices...> const &, st
     }
 
     // Every C index must appear in A or B. If CminusA ∩ CminusB is non-empty,
-    // there is an index in C that is in neither A nor B — not a valid GEMM.
+    // there is an index in C that is in neither A nor B, so it is not a valid GEMM.
     using ExternalIndices = IntersectT<CminusA_check, CminusB_check>;
     if constexpr (std::tuple_size_v<ExternalIndices> > 0) {
         return false;
@@ -1081,7 +1081,7 @@ bool einsum_do_sort_gemm(ValueTypeT<CType> const C_prefactor, std::tuple<CIndice
     cached_permute<ConjB, CDataType, BRank>(B_sorted_indices, &B_s, B_indices, B);
 
     if constexpr (NumBatch == 0) {
-        // No batch dims — original path.
+        // No batch dims: original path.
         if constexpr (!c_needs_permute) {
             detail::einsum<false, false, false, false>(C_prefactor, C_indices, C, AB_prefactor, A_sorted_indices, A_s, B_sorted_indices,
                                                        B_s);
@@ -1105,7 +1105,7 @@ bool einsum_do_sort_gemm(ValueTypeT<CType> const C_prefactor, std::tuple<CIndice
             cached_permute<false, CDataType, CRank>(CDataType{0}, C_indices, C, CDataType{1}, C_sorted_indices, C_s_temp);
         }
     } else {
-        // Batch dims present — loop over batch indices and call GEMM on slices.
+        // Batch dims present: loop over batch indices and call GEMM on slices.
         constexpr auto A_inner_indices = A_inner_t{};
         constexpr auto B_inner_indices = B_inner_t{};
         constexpr auto C_inner_indices = C_inner_t{};

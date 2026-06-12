@@ -1331,7 +1331,7 @@ struct TensorImpl final {
      * Like @ref transpose_view but for an arbitrary permutation of the axes
      * (``transpose_view`` is the full-reversal special case). Does not move data;
      * only the dims/strides are reordered. @p perm must be a permutation of
-     * ``[0, rank)`` (unchecked here — callers validate).
+     * ``[0, rank)``. This is unchecked here; callers validate.
      */
     [[nodiscard]] constexpr TensorImpl<T> permute_view(std::vector<size_t> const &perm) {
         BufferVector<size_t> new_dims, new_strides;

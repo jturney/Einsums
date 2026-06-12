@@ -201,7 +201,7 @@ TEST_CASE("gemv2") {
 // a 3D tensor, e.g. R[0,:,:] of a column-major (2,d1,d2)). is_gemmable() is
 // false so this takes impl_gemv_noncontiguous. Regression context: that path
 // used to ``collapse(2)`` over (link, target), racing on ``Y[target] += ...``.
-// The race only manifests when the kernel runs multi-threaded — which depends
+// The race only manifests when the kernel runs multi-threaded, which depends
 // on this TU's OpenMP/instantiation context, so this is a correctness check,
 // not a reliable race detector (the deterministic race guard is the looped
 // Python test test_dropped_view_matvec_repeated, exercising the _core path

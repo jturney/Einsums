@@ -264,7 +264,7 @@ void symm_gemm(AType const &A, BType const &B, CType *C) {
     detail::symm_gemm<TransA, TransB>(A, B, C);
 }
 
-// Runtime-rank symm_gemm overload — checks rank-2 at runtime and computes
+// Runtime-rank symm_gemm overload: checks rank-2 at runtime and computes
 // ``C = B^T * A * B`` (with optional transposes) via two gemm calls.
 template <bool TransA, bool TransB, BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
     requires requires {
@@ -367,7 +367,7 @@ void gemv(char transA, U const alpha, AType const &A, XType const &z, U const be
     detail::gemv(transA, alpha, A, z, beta, y);
 }
 
-// Runtime-rank gemv overloads — accept dynamic-rank operands. The detail
+// Runtime-rank gemv overloads: accept dynamic-rank operands. The detail
 // kernel runtime-checks A.rank() == 2 and z.rank() == y.rank() == 1.
 template <bool TransA, BasicTensorConcept AType, BasicTensorConcept XType, BasicTensorConcept YType, typename U>
     requires requires {
@@ -443,7 +443,7 @@ void syev(AType *A, WType *W) {
     detail::syev<ComputeEigenvectors>(A, W);
 }
 
-// Runtime-rank syev overload — runtime rank-2 + rank-1 check inside the
+// Runtime-rank syev overload: runtime rank-2 + rank-1 check inside the
 // TensorImpl-level kernel.
 template <bool ComputeEigenvectors = true, BasicTensorConcept AType, BasicTensorConcept WType>
     requires requires {
@@ -608,7 +608,7 @@ template <MatrixConcept AType, TensorConcept BType>
     return detail::gesv(A, B);
 }
 
-// Runtime-rank gesv overload — TensorImpl-level kernel runtime-checks rank-2
+// Runtime-rank gesv overload: TensorImpl-level kernel runtime-checks rank-2
 // + rank-1-or-2.
 template <BasicTensorConcept AType, BasicTensorConcept BType>
     requires requires {
@@ -1079,7 +1079,7 @@ template <MatrixConcept TensorType, typename Pivots,
     return detail::getrf(A, pivot);
 }
 
-// Runtime-rank getrf overload — TensorImpl-level kernel runtime-checks rank-2.
+// Runtime-rank getrf overload: TensorImpl-level kernel runtime-checks rank-2.
 template <BasicTensorConcept TensorType, typename Pivots>
     requires requires(Pivots a, size_t ind) {
         requires std::remove_cvref_t<TensorType>::Rank == einsums::dynamic_rank;
@@ -1170,7 +1170,7 @@ void invert(TensorType *A) {
     detail::invert(A);
 }
 
-// Runtime-rank invert overload — TensorImpl-level kernel runtime-checks
+// Runtime-rank invert overload: TensorImpl-level kernel runtime-checks
 // rank-2 + square.
 template <BasicTensorConcept TensorType>
     requires requires {
@@ -1247,7 +1247,7 @@ template <MatrixConcept AType>
     return detail::norm(static_cast<char>(norm_type), a);
 }
 
-// Runtime-rank norm overload — delegates to the TensorImpl form which
+// Runtime-rank norm overload: delegates to the TensorImpl form which
 // already handles rank-1 (vector) and rank-2 (matrix) inputs.
 template <BasicTensorConcept AType>
     requires requires {
@@ -1620,7 +1620,7 @@ template <MatrixConcept AType>
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "An unknown error has occurred in ormqr/unmqr.");
     }
 
-    // Step 2: B = (Q^T * A) * Q  — apply Q from the right to the first (k+5) rows of A_work
+    // Step 2: B = (Q^T * A) * Q, applying Q from the right to the first (k+5) rows of A_work
     // A_work is now Q^T * A (n×n). We need B = (first k+5 rows) * Q = Btemp * Q.
     // Use ormqr with side='R' on the first (k+5) rows.
     Tensor<T, 2> Btemp("Btemp", k + 5, n);

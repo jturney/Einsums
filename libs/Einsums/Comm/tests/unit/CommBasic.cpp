@@ -230,7 +230,7 @@ TEST_CASE("Communicator - equality", "[Comm][Communicator]") {
 
     auto dup = world.dup();
     // dup is a different communicator object
-    // On mock, both share same impl so might be equal — platform dependent
+    // On mock, both share same impl so might be equal; platform dependent
 }
 
 TEST_CASE("Send and Recv - double", "[Comm][Collectives]") {
@@ -364,7 +364,7 @@ TEST_CASE("Allreduce - complex<float>", "[Comm][Collectives]") {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TEST_CASE("DistributionMap - auto replicate small tensor", "[Comm][DistributionMap]") {
-    // 10x10 doubles = 800 bytes — well below 64MB threshold
+    // 10x10 doubles = 800 bytes, well below 64MB threshold
     auto map = comm::auto_distribute<2>({10, 10}, sizeof(double));
 
     CHECK(map.is_replicated());

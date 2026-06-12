@@ -232,8 +232,8 @@ struct EINSUMS_EXPORT Profiler {
     // in reverse declaration order, so ``_server`` would otherwise be torn down
     // while the thread is still ticking, and the thread would dereference a
     // destroyed Server (an intermittent shutdown SIGSEGV). This is the fallback
-    // for interpreter/static shutdown when einsums::finalize() — which already
-    // calls shutdown() — was not invoked (e.g. a Python process exiting). Both
+    // for interpreter/static shutdown when einsums::finalize(), which already
+    // calls shutdown(), was not invoked, such as a Python process exiting. Both
     // calls are idempotent with finalize()'s.
     ~Profiler() {
         if (_consumer) {
@@ -252,11 +252,11 @@ struct EINSUMS_EXPORT Profiler {
     }
 
     // ------------------ thread-local ring buffer ------------------
-    // The ring buffer is *shared* with the Consumer: a producer thread (e.g. a
+    // The ring buffer is shared with the Consumer: a producer thread (e.g. a
     // transient TaskPool worker) can exit while the Consumer's drain thread is
     // still popping residual events, so ownership must outlive the thread. With
     // a thread_local unique_ptr the buffer was freed on thread exit while the
-    // Consumer held a raw pointer to it — a heap-use-after-free (caught by ASan
+    // Consumer held a raw pointer to it, a heap-use-after-free (caught by ASan
     // via the DataflowExecutor). Shared ownership lets the buffer live until the
     // last of {producer thread, Consumer} releases it.
     static auto thread_ring_buffer() -> std::shared_ptr<EventRingBuffer> & {
@@ -414,7 +414,7 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void mem_free(int64_t bytes) {
 // having to bind the Profiler class itself (which holds non-copyable
 // unique_ptrs and exposes an ostream& on print()).
 
-/// Begin a profile region. Pair with ``pop()`` — usually via the
+/// Begin a profile region. Pair it with ``pop()``, usually through the
 /// ``einsums.profile.section(name)`` context manager.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void push(std::string const &name, std::string const &file = "", int line = 0,
                                                         std::string const &func = "") {

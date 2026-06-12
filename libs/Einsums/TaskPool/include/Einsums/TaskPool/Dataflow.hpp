@@ -19,7 +19,7 @@
 
 namespace einsums::task_pool {
 
-// Forward declaration — defined in TaskPool.hpp
+// Forward declaration; defined in TaskPool.hpp
 class TaskPool;
 
 } // namespace einsums::task_pool

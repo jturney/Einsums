@@ -23,7 +23,7 @@ namespace einsums {
 namespace print {
 namespace {
 std::mutex lock;
-// Indent state is thread_local — Indent is an RAII scope object, and its
+// Indent state is thread_local. Indent is an RAII scope object, and its
 // scope is naturally per-thread (an Indent guard on thread A should not
 // affect output from thread B). The previous shared `int` + `std::string`
 // with an `omp_get_thread_num() == 0` guard had two bugs: (1) the guard

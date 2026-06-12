@@ -9,17 +9,17 @@
 // that prevent einsum() from dispatching to BLAS GEMM directly.  Two strategies
 // exist to accelerate these:
 //
-//   (a) MLIR JIT backend — compiles a custom kernel for the contraction topology.
-//   (b) Sort + GEMM — permute (sort) the input tensors so that target indices
+//   (a) MLIR JIT backend: compiles a custom kernel for the contraction topology.
+//   (b) Sort + GEMM: permute (sort) the input tensors so that target indices
 //       are contiguous and link indices are contiguous in the same order,
 //       enabling einsum() to dispatch to BLAS GEMM.
 //
 // This benchmark compares three (or four) paths for each contraction:
 //
-//   1. t_generic      — OpenMP generic algorithm (OnlyUseGenericAlgorithm=true).
-//   2. t_packed         — MLIR JIT backend called directly.
-//   3. t_sort_gemm    — permute A and B, then einsum() → BLAS GEMM.
-//   4. t_einsum       — full einsum() dispatch (shows which path it chose).
+//   1. t_generic: OpenMP generic algorithm (OnlyUseGenericAlgorithm=true).
+//   2. t_packed: MLIR JIT backend called directly.
+//   3. t_sort_gemm: permute A and B, then einsum() → BLAS GEMM.
+//   4. t_einsum: full einsum() dispatch (shows which path it chose).
 //
 // Speedup ratios are reported relative to t_generic.
 
@@ -128,7 +128,7 @@ void report_paths(char const *label, int N, TimingStats const &s_generic, Timing
 //
 // Sort strategy:
 //   A_s[i,j,k] = permute A[i,k,j]  (swap j,k)
-//   B_s[l,j,k] = B[l,j,k]          (already sorted — j,k contiguous)
+//   B_s[l,j,k] = B[l,j,k]          (already sorted, j,k contiguous)
 //   C[i,l] += A_s[i,j,k] * B_s[l,j,k]  →  BLAS GEMM
 // ---------------------------------------------------------------------------
 
@@ -169,7 +169,7 @@ TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=32", "[mlir][benchmark]
     // Permute A[i,k,j] → A_s[i,j,k] so link indices (j,k) are contiguous.
     Tensor<double, 3> A_s{"A_s", N, N, N};
     tensor_algebra::permute(Indices{i, j, k}, &A_s, Indices{i, k, j}, A);
-    // B[l,j,k] already has j,k contiguous — no permute needed.
+    // B[l,j,k] already has j,k contiguous; no permute needed.
     C.zero();
     auto sort_alg = run_einsum(0.0, Indices{i, l}, C, 1.0, Indices{i, j, k}, A_s, Indices{l, j, k}, B);
     REQUIRE(sort_alg == tensor_algebra::detail::GEMM);
@@ -415,7 +415,7 @@ TEST_CASE("Sort+GEMM: rank-4 rectangular C[i,j]+=A[i,k,l,m]*B[j,m,k,l]", "[mlir]
             REQUIRE(std::abs(C(ii, jj) - ref(ii, jj)) < 1e-10);
 
     // --- Correctness: Sort + GEMM ---
-    // A[i,k,l,m] already has target i first and link k,l,m contiguous — no permute needed.
+    // A[i,k,l,m] already has target i first and link k,l,m contiguous; no permute needed.
     // Permute B[j,m,k,l] → B_s[j,k,l,m].
     Tensor<double, 4> B_s{"B_s", Nj, Nk, Nl, Nm};
     tensor_algebra::permute(Indices{j, k, l, m}, &B_s, Indices{j, m, k, l}, B);
@@ -768,7 +768,7 @@ TEST_CASE("Sort+GEMM: rank-4 rect C[i,j]+=A[i,k,l,m]*B[j,m,k,l] (64x64x32x16x8)"
 // 4 link indices (k,l,m,n) fully scrambled in B.
 //
 // Sort strategy:
-//   A[i,k,l,m,n] already has target i first, link contiguous — no sort needed.
+//   A[i,k,l,m,n] already has target i first, link contiguous; no sort needed.
 //   B_s[j,k,l,m,n] = permute B[j,n,m,l,k]
 //   C[i,j] += A[i,k,l,m,n] * B_s[j,k,l,m,n]  →  BLAS GEMM
 // ---------------------------------------------------------------------------

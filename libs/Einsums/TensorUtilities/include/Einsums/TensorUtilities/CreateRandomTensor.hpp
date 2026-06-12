@@ -59,7 +59,7 @@ auto create_random_tensor(bool row_major, std::string const &name, Distribution 
     Tensor<T, sizeof...(MultiIndex)> A(row_major, name, std::forward<MultiIndex>(index)...);
     // Serial fill: einsums::random_engine is a shared global LCG and
     // std::uniform_real_distribution carries mutable internal state. Wrapping
-    // this loop in #pragma omp parallel for races on both — TSan reported
+    // this loop in #pragma omp parallel for races on both. TSan reported
     // 1647 hits at this line on arm64 (1305 on amd64), top of the report
     // list and the source of every downstream SIMD-load race when the
     // generated buffer is read by consumers. The parallel form is also not
@@ -193,7 +193,7 @@ auto create_random_tensor(bool row_major, std::string const &name, Distribution 
 
     RuntimeTensor<T> A(name, dims, row_major);
 
-    // Serial fill — same rationale as the templated overload above:
+    // Serial fill, with the same rationale as the templated overload above:
     // einsums::random_engine + distribution share state and racing them from
     // an OMP region produces 1600+ TSan reports plus non-deterministic data.
     for (size_t i = 0; i < A.size(); i++) {

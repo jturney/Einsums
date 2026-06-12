@@ -144,7 +144,7 @@ EINSUMS_TEST_CASE("LAPACK LU Factorization", "[performance][lapack]") {
 }
 
 EINSUMS_TEST_CASE("LAPACK SVD", "[performance][lapack]") {
-    progress_init(6); // 3 sizes × 2 levels — SVD at N=2048 exceeds timeout
+    progress_init(6); // 3 sizes × 2 levels; SVD at N=2048 exceeds timeout
     for (int N : {64, 256, 512}) {
         bench_gesvd(N);
     }

@@ -74,10 +74,10 @@ EINSUMS_FORCEINLINE void transpose_inplace(Vec<double> *rows) {
 // 16×16 float transpose (AVX-512)
 //
 // Four-phase algorithm operating on 16 __m512 registers:
-//   Phase 1: unpacklo/hi — interleave pairs within 128-bit lanes
-//   Phase 2: shuffle_ps  — group 4 elements within each 128-bit lane
-//   Phase 3: shuffle_f32x4 — permute 128-bit lanes (combine 4-row blocks into 8-row blocks)
-//   Phase 4: shuffle_f32x4 — permute 128-bit lanes (combine 8-row blocks into 16-row result)
+//   Phase 1: unpacklo/hi interleaves pairs within 128-bit lanes
+//   Phase 2: shuffle_ps groups 4 elements within each 128-bit lane
+//   Phase 3: shuffle_f32x4 permutes 128-bit lanes, combining 4-row blocks into 8-row blocks
+//   Phase 4: shuffle_f32x4 permutes 128-bit lanes, combining 8-row blocks into the 16-row result
 //
 // After phases 1+2, each register s[k] contains, in its four 128-bit lanes,
 // 4 elements of column (k, k+4, k+8, k+12) from a group of 4 consecutive rows.
@@ -241,7 +241,7 @@ EINSUMS_FORCEINLINE void transpose_8x8_u16(uint16x8_t *r) {
     uint32x4_t const u7 = vtrn2q_u32(vreinterpretq_u32_u16(t5), vreinterpretq_u32_u16(t7));
 
     // Stage 3: u64 TRN gives the final rows, but in shuffled order.
-    // After this step, results land at (0,4,2,6,1,5,3,7) — write back at the right slots.
+    // After this step, results land at (0,4,2,6,1,5,3,7), so write back at the right slots.
     r[0] = vreinterpretq_u16_u64(vtrn1q_u64(vreinterpretq_u64_u32(u0), vreinterpretq_u64_u32(u4)));
     r[4] = vreinterpretq_u16_u64(vtrn2q_u64(vreinterpretq_u64_u32(u0), vreinterpretq_u64_u32(u4)));
     r[2] = vreinterpretq_u16_u64(vtrn1q_u64(vreinterpretq_u64_u32(u1), vreinterpretq_u64_u32(u5)));

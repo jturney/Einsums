@@ -367,7 +367,7 @@ void bench_sort_gemm_caching(int N) {
     fill(A);
     fill(B);
 
-    // First call (cold — compiles HPTT plan)
+    // First call (cold, compiles HPTT plan)
     C.zero();
     ProfileAnnotate("cache_state", "cold");
     auto t_cold = time_us(

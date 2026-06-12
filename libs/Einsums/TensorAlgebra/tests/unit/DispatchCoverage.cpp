@@ -138,14 +138,14 @@ TEST_CASE("ger_conjugation", "[dispatch][ger]") {
     using T = std::complex<double>;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
-    // C(j,i) = A(i) * conj(B(j)) — ConjB with swap_AB=true (B targets at front of C)
+    // C(j,i) = A(i) * conj(B(j)), ConjB with swap_AB=true (B targets at front of C)
     // einsum_is_outer_product: swap_AB=true, swapped_conjugation = !ConjB && swap_AB is false
     // Actually: the dispatch tries (C,B,A) too. Let's use a pattern that works:
-    // C(j,i) = conj(A(j)) * B(i) — swap_AB=false (A targets at front), ConjA with straight
+    // C(j,i) = conj(A(j)) * B(i), swap_AB=false (A targets at front), ConjA with straight
     // straight_conjugation = !ConjA && !swap_AB = false. Doesn't work either.
     //
     // GER conjugation is very restricted: only !ConjA when !swap, or !ConjB when swap.
-    // It's actually NOT supported by the GER path — conjugation falls through to generic.
+    // It's actually not supported by the GER path; conjugation falls through to generic.
     // Instead, test that GER works with complex types (no conjugation).
     size_t di = 5, dj = 6;
     auto   A = create_random_tensor<T>("A", di);
@@ -225,7 +225,7 @@ TEST_CASE("gemv_conjugation", "[dispatch][gemv]") {
     using T = std::complex<double>;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
-    // C(i) = conj(A(j,i)) * B(j) — ConjA with transpose
+    // C(i) = conj(A(j,i)) * B(j), ConjA with transpose
     // einsum_is_matrix_vector requires ConjA only when transpose_A is true
     size_t di = 5, dj = 6;
     auto   A = create_random_tensor<T>("A", dj, di);
@@ -279,7 +279,7 @@ TEST_CASE("gemm_complex_double", "[dispatch][gemm]") {
     using T = std::complex<double>;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
-    // C(i,j) = A(i,k) * B(k,j) — standard GEMM with complex<double>
+    // C(i,j) = A(i,k) * B(k,j), standard GEMM with complex<double>
     size_t di = 4, dj = 5, dk = 6;
     auto   A = create_random_tensor<T>("A", di, dk);
     auto   B = create_random_tensor<T>("B", dk, dj);
@@ -308,7 +308,7 @@ TEST_CASE("gemm_conjA_transposed", "[dispatch][gemm]") {
     using T = std::complex<double>;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
-    // C(i,j) = conj(A(k,i)) * B(k,j) — ConjA with transposed A.
+    // C(i,j) = conj(A(k,i)) * B(k,j), ConjA with transposed A.
     // transpose_A=true, transpose_C=false → BLAS uses 'c' flag for A^H.
     size_t di = 4, dj = 5, dk = 6;
     auto   A = create_random_tensor<T>("A", dk, di);
@@ -338,7 +338,7 @@ TEST_CASE("gemm_conjA_nontransposed_falls_through", "[dispatch][gemm]") {
     using T = std::complex<double>;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
-    // C(i,j) = conj(A(i,k)) * B(k,j) — ConjA without transpose.
+    // C(i,j) = conj(A(i,k)) * B(k,j), ConjA without transpose.
     // BLAS can't apply conjugation-only (no 'c' without transpose), so this
     // must NOT dispatch to GEMM. Falls through to SORT_GEMM or generic.
     size_t di = 4, dj = 5, dk = 6;
@@ -356,7 +356,7 @@ TEST_CASE("gemm_conjA_nontransposed_falls_through", "[dispatch][gemm]") {
     }
 
     REQUIRE_NOTHROW(einsum<true, false>(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B, &alg_choice));
-    // Must NOT be GEMM — BLAS can't do conjugate-only.
+    // Must not be GEMM; BLAS can't do conjugate-only.
     REQUIRE(alg_choice != tensor_algebra::detail::GEMM);
 
     for (size_t i0 = 0; i0 < di; i0++) {
@@ -429,7 +429,7 @@ TEST_CASE("gemm_complex_float", "[dispatch][gemm]") {
 TEST_CASE("sort_gemm_float", "[dispatch][sort_gemm]") {
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
-    // C(i,l,j) = A(j,k,i) * B(l,k) — scrambled indices, float
+    // C(i,l,j) = A(j,k,i) * B(l,k), scrambled indices, float
     size_t di = 3, dj = 4, dk = 5, dl = 3;
     auto   A = create_random_tensor<float>("A", dj, dk, di);
     auto   B = create_random_tensor<float>("B", dl, dk);
@@ -516,7 +516,7 @@ TEST_CASE("generic_tensorview", "[dispatch][generic]") {
     }
 
     REQUIRE_NOTHROW(einsum(Indices{i, j}, &C, Indices{i, j, k}, A_view, Indices{i, j, k}, B_view, &alg_choice));
-    // This is a trace-like contraction with shared target indices — goes to generic.
+    // This is a trace-like contraction with shared target indices; goes to generic.
     // (Not DOT because C is not scalar; not GEMM because no proper M/N/K split)
 
     for (size_t i0 = 0; i0 < di; i0++) {
@@ -530,8 +530,8 @@ TEST_CASE("generic_conjugation", "[dispatch][generic]") {
     using T = std::complex<double>;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
-    // Hadamard contraction with conjugation — must go to generic.
-    // C(i) = conj(A(i,i)) * B(i,i) — repeated index i forces Hadamard/generic
+    // Hadamard contraction with conjugation; must go to generic.
+    // C(i) = conj(A(i,i)) * B(i,i), repeated index i forces Hadamard/generic
     size_t di = 5;
     auto   A  = create_random_tensor<T>("A", di, di);
     auto   B  = create_random_tensor<T>("B", di, di);

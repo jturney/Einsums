@@ -39,7 +39,7 @@ extern void FC_GLOBAL(zgemm, ZGEMM)(char *, char *, int_t *, int_t *, int_t *, s
 
 // LAPACK's gemm takes its scalar arguments by pointer (Fortran ABI), so we pass
 // addresses of the function-locals. Without ``firstprivate``, every OMP worker
-// reads those addresses out of the *caller's* stack frame — fine while the
+// reads those addresses out of the caller's stack frame, which is fine while the
 // parallel region is live (workers only read; gemm never writes its inputs)
 // but TSan can't see libgomp's barrier and so reports a race against any
 // later write to the same stack region (e.g. the next fmt formatting in the

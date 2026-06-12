@@ -17,13 +17,13 @@ balancing.
 Inspired by `HPX <https://github.com/STEllAR-GROUP/hpx>`_, the TaskPool
 provides:
 
-- **Work-stealing thread pool** with lock-free Chase-Lev deques
-- **Continuations** via ``TaskHandle::then()`` for composing async pipelines
-- **Fan-in** via ``when_all()`` for waiting on multiple tasks
-- **Dataflow** via ``dataflow()`` for dependency-driven task scheduling
-- **Data-parallel patterns**: ``parallel_for()`` and ``parallel_reduce()``
-- **Profiler integration** with per-task regions and metrics export
-- **ComputeGraph integration** via ``DataflowExecutor``
+- A work-stealing thread pool built on lock-free Chase-Lev deques.
+- Continuations through ``TaskHandle::then()`` for composing async pipelines.
+- Fan-in through ``when_all()`` for waiting on multiple tasks.
+- Dataflow through ``dataflow()`` for dependency-driven task scheduling.
+- Data-parallel patterns: ``parallel_for()`` and ``parallel_reduce()``.
+- Profiler integration with per-task regions and metrics export.
+- ComputeGraph integration through ``DataflowExecutor``.
 
 Getting Started
 ===============
@@ -125,7 +125,7 @@ For handles of different types, use the variadic form which returns a
     auto [x, y, z] = combined.get();
     // x=42, y=3.14, z="hello"
 
-This is fully asynchronous — no thread blocks waiting for individual handles.
+This is fully asynchronous, with no thread blocking to wait for individual handles.
 
 Dataflow
 ========
@@ -295,9 +295,9 @@ Profiler Integration
 
 TaskPool integrates with the Einsums profiler:
 
-- **Worker threads** appear as ``taskpool-worker-N`` in the profiler timeline
-- **Each task** creates a named profiler region (visible in tree and flame graph)
-- **Metrics** are accessible via the ``"get_taskpool_metrics"`` server handler
+- Worker threads appear as ``taskpool-worker-N`` in the profiler timeline.
+- Each task creates a named profiler region, visible in both the tree and the flame graph.
+- Metrics are accessible through the ``"get_taskpool_metrics"`` server handler.
 
 The imgui profile viewer's Gantt panel shows task execution across workers.
 Task regions appear nested under the submitting thread's profiler tree.
@@ -323,7 +323,7 @@ The TaskPool and OpenMP coexist in the same program:
 - Use OpenMP for BLAS-internal vectorization (handled by the vendor)
 - Use ComputeGraph for operation-level sequencing
 
-TaskPool workers do NOT call ``omp_set_num_threads()`` — this avoids
+TaskPool workers do not call ``omp_set_num_threads()``, which avoids
 globally affecting OpenMP parallelism. Tasks submitted to the pool may
 call BLAS routines that use OpenMP internally; the vendor BLAS manages
 its own thread count.

@@ -8,9 +8,10 @@
 /// @file Expected.hpp
 /// @brief C++23 std::expected<T, E> backport for C++20.
 ///
-/// A vocabulary type for functions that can fail: holds either a value (T)
-/// or an error (E). Unlike exceptions, the caller MUST handle the error —
-/// no silent propagation. Unlike error codes, the value type is preserved.
+/// A vocabulary type for functions that can fail: holds either a value of
+/// type T or an error of type E. Unlike exceptions, the caller has to handle
+/// the error, so nothing propagates silently. Unlike error codes, the value
+/// type is preserved.
 ///
 /// When C++23 is available, define EINSUMS_USE_STD_EXPECTED to use the
 /// standard library version.

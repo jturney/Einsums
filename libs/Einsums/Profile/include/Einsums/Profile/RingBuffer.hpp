@@ -17,11 +17,11 @@ namespace einsums::profile {
 
 /// Single-Producer, Single-Consumer (SPSC) ring buffer.
 /// The producer (application thread) writes events; the consumer thread reads them.
-/// Never blocks the producer — try_push() returns false if the buffer is full.
+/// Never blocks the producer; try_push() returns false if the buffer is full.
 ///
 /// Template parameters:
-///   T        — element type (must be trivially copyable)
-///   Capacity — must be a power of 2
+///   T:        the element type, which must be trivially copyable.
+///   Capacity: must be a power of 2.
 template <typename T, size_t Capacity>
 class RingBuffer {
     static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be a power of 2");
@@ -55,7 +55,7 @@ class RingBuffer {
         return true;
     }
 
-    /// Check if buffer is empty (approximate — may race with producer).
+    /// Check if buffer is empty. The result is approximate and may race with the producer.
     auto empty() const -> bool { return _tail.load(std::memory_order_acquire) == _head.load(std::memory_order_acquire); }
 
   private:

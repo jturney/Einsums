@@ -22,8 +22,8 @@ namespace einsums::gpu {
  * Used with expected<T, GpuError> for recoverable GPU errors
  * (allocation failure, device not found, etc.).
  *
- * BLAS/solver errors continue to throw — they represent unrecoverable
- * hardware failures (dimension mismatch, kernel launch failure).
+ * BLAS/solver errors continue to throw, since they represent unrecoverable
+ * hardware failures such as a dimension mismatch or a kernel launch failure.
  */
 struct GpuError {
     std::string message;
@@ -56,7 +56,7 @@ EINSUMS_EXPORT void memcpy_device_to_device(void *dst, void const *src, size_t b
 EINSUMS_EXPORT void device_memset(void *ptr, int value, size_t bytes);
 
 /// Synchronize the entire device. Blocks until all queued GPU work
-/// completes — wrap GPU calls in this when timing from Python.
+/// completes. Wrap GPU calls in this when timing from Python.
 APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT void device_synchronize();
 
 /// Query available (free) device memory in bytes.
@@ -65,8 +65,8 @@ APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT void device_synchronize();
 APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT size_t available_device_memory();
 
 /// Set the mock device memory limit (only effective on mock backend).
-/// Has no effect when a real GPU is present — useful for tests that want
-/// to simulate an OOM under the mock.
+/// Has no effect when a real GPU is present. This is useful for tests that
+/// want to simulate an OOM under the mock.
 APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT void set_mock_device_memory_limit(size_t bytes);
 
 /// Query the device name string.

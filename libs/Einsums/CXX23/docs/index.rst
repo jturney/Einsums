@@ -13,9 +13,9 @@ CXX23
 The ``CXX23`` module is a small collection of C++23 polyfills for compilers
 or standard library versions where a feature isn't yet available.
 
-Einsums targets the C++23 baseline, but some toolchains (older libstdc++,
-Apple libc++ on certain SDK levels, intel oneAPI) lag on individual
-library features. ``CXX23`` provides drop-in replacements behind
+Einsums targets the C++23 baseline, but some toolchains lag on individual
+library features. Examples include older libstdc++, Apple libc++ on certain
+SDK levels, and Intel oneAPI. ``CXX23`` provides drop-in replacements behind
 feature-test-macro guards so the rest of the codebase can use the C++23
 spelling unconditionally.
 
@@ -29,11 +29,11 @@ namespace.
 
 Currently provided:
 
-- ``Einsums/CXX23/Expected.hpp`` — ``std::expected<T, E>`` polyfill,
-  guarded on ``__cpp_lib_expected``. Required to be included as the very
+- ``Einsums/CXX23/Expected.hpp`` provides the ``std::expected<T, E>``
+  polyfill, guarded on ``__cpp_lib_expected``. Include it as the very
   first standard header so the macro is set consistently across
-  translation units; mismatches between TUs that did vs didn't see the
-  polyfill cause ODR violations at link time.
+  translation units. If some TUs see the polyfill and others do not, the
+  mismatch causes ODR violations at link time.
 
 Usage
 =====

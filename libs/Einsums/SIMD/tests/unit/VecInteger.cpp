@@ -19,7 +19,7 @@
 using namespace einsums::simd;
 
 TEMPLATE_TEST_CASE("integer Vec lane count matches native register width", "[simd][integer]", int32_t, uint32_t, int64_t, uint64_t) {
-    // Lane count derives from native_bits and sizeof(TestType) — same rule
+    // Lane count derives from native_bits and sizeof(TestType); same rule
     // as float/double. Skip the assertion on the scalar fallback (lanes==1)
     // because native_bits is 0 there and the formula would divide by zero.
     if (native_bits == 0) {

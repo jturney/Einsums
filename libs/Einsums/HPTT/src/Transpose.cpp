@@ -143,7 +143,7 @@ static EINSUMS_FORCEINLINE void micro_kernel_simd(T const *A, size_t lda, size_t
 
     Vec<T> rows[N]; // NOLINT
 
-    // Load A rows — fast path for stride==1
+    // Load A rows: fast path for stride==1
     if (innerStrideA == 1) {
         for (int i = 0; i < N; ++i)
             rows[i] = gather_fixed<1>(A + i * lda);
@@ -222,7 +222,7 @@ struct MicroKernel<einsums::simd::half_t, betaIsZero, conjA> {
 
 // ---------------------------------------------------------------------------
 // micro_kernel for bfloat16_t. BF16 has SIMD load/store but no Vec<bf16>×Vec<bf16>
-// multiply that returns BF16 — every native arithmetic instruction
+// multiply that returns BF16; every native arithmetic instruction
 // (vbfmla*, vbfdot, vmulq_f32 of converted halves) lands in FP32. So we
 // load BF16 vectors, transpose 8×8 in-register, then for each output row
 // convert BF16→FP32 (two halves), do alpha·A (+ beta·B) in FP32, and pack
@@ -391,7 +391,7 @@ struct MicroKernel<std::complex<double>, betaIsZero, conjA> {
 };
 
 // ---------------------------------------------------------------------------
-// streamingStore and prefetch — now use einsums::simd
+// streamingStore and prefetch: now use einsums::simd
 // ---------------------------------------------------------------------------
 template <typename floatType>
 static void streamingStore(floatType *out, floatType const *in) {
@@ -403,7 +403,7 @@ static void streamingStore(floatType *out, floatType const *in) {
         // Complex: SIMD load+store. (No non-temporal complex variant yet.)
         complex_storeu(out, complex_loadu(in));
     } else {
-        // half_t / bfloat16_t — non-temporal store on aarch64, regular SIMD store elsewhere.
+        // half_t / bfloat16_t: non-temporal store on aarch64, regular SIMD store elsewhere.
         stream_store(out, loadu(in));
     }
 }

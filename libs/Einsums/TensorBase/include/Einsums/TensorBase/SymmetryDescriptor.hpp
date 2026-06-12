@@ -15,15 +15,15 @@
 namespace einsums {
 
 /// Maximum tensor rank that a single symmetry operation can describe. Tensor
-/// rank doesn't need to match this value — permutations are stored padded.
-/// The value mirrors the practical upper bound used elsewhere in the library
-/// (4-index integrals, rank-5 tests, HPTT limits).
+/// rank doesn't need to match this value, since permutations are stored padded.
+/// The value mirrors the practical upper bound used elsewhere in the library,
+/// such as 4-index integrals, rank-5 tests, and HPTT limits.
 inline constexpr int kMaxSymmetryRank = 8;
 
 /// One generator of a tensor's symmetry group.
 ///
 /// ``permutation[i]`` is the new position of the index that currently sits at
-/// position ``i`` — i.e. for a tensor ``T(i0, i1, ...)`` the operation maps
+/// position ``i``. For a tensor ``T(i0, i1, ...)`` the operation maps
 /// ``T(i0, i1, ...) -> sign * T(i_{perm[0]}, i_{perm[1]}, ...)``. For the
 /// Hermitian case the right-hand side is additionally complex-conjugated.
 ///
@@ -72,11 +72,11 @@ struct EINSUMS_EXPORT SymmetryOp {
 /// group elements.
 ///
 /// @par Common patterns
-/// - ``SymmetryDescriptor::symmetric_pair(i, j)`` — ``T(..,i,..,j,..) = T(..,j,..,i,..)``
-/// - ``SymmetryDescriptor::antisymmetric_pair(i, j)`` — negated on swap
-/// - ``SymmetryDescriptor::hermitian_pair(i, j)`` — symmetric plus complex conjugate
-/// - ``SymmetryDescriptor::eri_8fold()`` — 8-fold ERI symmetry in chemists' notation
-/// - ``SymmetryDescriptor::ccsd_t2()`` — antisym in (0,1) and antisym in (2,3)
+/// - ``SymmetryDescriptor::symmetric_pair(i, j)``: ``T(..,i,..,j,..) = T(..,j,..,i,..)``.
+/// - ``SymmetryDescriptor::antisymmetric_pair(i, j)``: negated on swap.
+/// - ``SymmetryDescriptor::hermitian_pair(i, j)``: symmetric plus complex conjugate.
+/// - ``SymmetryDescriptor::eri_8fold()``: 8-fold ERI symmetry in chemists' notation.
+/// - ``SymmetryDescriptor::ccsd_t2()``: antisym in (0,1) and antisym in (2,3).
 ///
 /// @par Tolerance
 /// Floating-point arithmetic drifts away from exact symmetry. ``tolerance``
@@ -101,7 +101,7 @@ struct EINSUMS_EXPORT SymmetryDescriptor {
     [[nodiscard]] bool operator==(SymmetryDescriptor const &other) const noexcept {
         // Exact generator-list equality (including ordering). Canonicalization
         // for semantic equality across different generator sets is intentionally
-        // deferred — it's only needed once CSE starts merging symmetric nodes
+        // deferred; it's only needed once CSE starts merging symmetric nodes
         // and we can design that comparator alongside.
         return ops == other.ops && tolerance == other.tolerance;
     }
@@ -131,7 +131,7 @@ struct EINSUMS_EXPORT SymmetryDescriptor {
     [[nodiscard]] static SymmetryDescriptor eri_4fold();
 
     /// CCSD T2 amplitudes ``T[a,b,i,j]``: antisym in virtual pair (0,1) and
-    /// antisym in occupied pair (2,3) — so ``T[a,b,i,j] = -T[b,a,i,j] =
+    /// antisym in occupied pair (2,3), so ``T[a,b,i,j] = -T[b,a,i,j] =
     /// -T[a,b,j,i] = T[b,a,j,i]``.
     [[nodiscard]] static SymmetryDescriptor ccsd_t2();
 };

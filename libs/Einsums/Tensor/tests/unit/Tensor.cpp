@@ -439,7 +439,7 @@ void test_tensor_from_tensorview() {
 
     // vA owns an independent mutex from A (both inherit Lockable<recursive_mutex>
     // separately). The point of these blocks is to prove the view's lock isn't
-    // hijacked by the parent's lock — try_lock on vA must succeed even while A
+    // hijacked by the parent's lock; try_lock on vA must succeed even while A
     // is held, from at least one thread. The original code did `locked++` (not
     // atomic) inside an `omp parallel` and asserted == 1, which only held by
     // accident: the test binary used to wrap session.run() in

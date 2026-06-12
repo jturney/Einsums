@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Phase D.1 — runtime-tensor coverage for linear_algebra::ger (rank-1 update
+// Phase D.1: runtime-tensor coverage for linear_algebra::ger (rank-1 update
 // A := A + alpha * x * y^T). LinearAlgebra has no existing CPU unit test
 // for ger of any kind; this file establishes baseline coverage for the
 // runtime overload added in C.10.

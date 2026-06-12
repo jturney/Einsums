@@ -20,7 +20,7 @@
 using namespace einsums::gpu;
 
 namespace {
-/// Unwrap device_malloc for tests — asserts on failure.
+/// Unwrap device_malloc for tests; asserts on failure.
 void *test_malloc(size_t bytes) {
     auto result = device_malloc(bytes);
     REQUIRE(result.has_value());
@@ -221,7 +221,7 @@ TEMPLATE_TEST_CASE("gpu::solver::gesv mock correctness", "[gpu][solver]", float,
 }
 
 // ===========================================================================
-// GPUTensor tests — GeneralTensor with DeviceAllocator
+// GPUTensor tests: GeneralTensor with DeviceAllocator
 // ===========================================================================
 
 TEMPLATE_TEST_CASE("GPUTensor creation and zero", "[gpu][tensor]", float, double) {
@@ -346,7 +346,7 @@ TEST_CASE("GPUTensor IsDeviceTensor trait", "[gpu][tensor]") {
 }
 
 // ===========================================================================
-// RuntimeGPUTensor tests — runtime-rank counterpart of GPUTensor
+// RuntimeGPUTensor tests: runtime-rank counterpart of GPUTensor
 // ===========================================================================
 
 TEMPLATE_TEST_CASE("RuntimeGPUTensor creation and zero", "[gpu][runtime_tensor]", float, double) {
@@ -899,17 +899,17 @@ TEST_CASE("MPS supported datatypes for GEMM", "[gpu][mps]") {
         SUCCEED("Float16 type exists in MPS (MPSDataTypeFloat16)");
     }
 
-    // ComplexFloat32 GEMM test — available since macOS 13.1
+    // ComplexFloat32 GEMM test, available since macOS 13.1
     SECTION("ComplexFloat32 type exists") {
         SUCCEED("ComplexFloat32 type exists in MPS (MPSDataTypeComplexFloat32, macOS 13.1+)");
     }
 
-    // BFloat16 — available since macOS 14.0
+    // BFloat16, available since macOS 14.0
     SECTION("BFloat16 type exists") {
         SUCCEED("BFloat16 type exists in MPS (MPSDataTypeBFloat16, macOS 14.0+)");
     }
 
-    // No Float64/Double — not defined in MPS
+    // No Float64/Double, not defined in MPS
     SECTION("No Float64 in MPS") {
         SUCCEED("MPS has no MPSDataTypeFloat64 — double precision not supported");
     }

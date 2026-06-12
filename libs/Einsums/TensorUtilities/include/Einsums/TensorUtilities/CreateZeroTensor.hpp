@@ -51,10 +51,10 @@ auto create_zero_tensor(bool row_major, std::string const &name, MultiIndex... i
  * @brief Create a runtime-rank zero tensor from a runtime shape vector.
  *
  * RuntimeTensor-returning overload mirroring the typed family above.
- * Lets Python callers (and any C++ caller with a runtime shape) avoid
+ * Lets Python callers, and any C++ caller with a runtime shape, avoid
  * the typed-rank cross-product. Annotated for the einsums-pybind
- * codegen — exposed to Python as ``create_zero_tensor`` (overloaded
- * across the four bound dtypes).
+ * codegen and exposed to Python as ``create_zero_tensor``, overloaded
+ * across the four bound dtypes.
  */
 template <typename T = double>
 APIARY_EXPOSE APIARY_INSTANTIATE_AS("create_zero_tensor", double) APIARY_INSTANTIATE_AS("create_zero_tensor", float)

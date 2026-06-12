@@ -18,7 +18,7 @@ void *allocate(size_t n) {
     ptr = mi_malloc_aligned(n, 64);
 #elif defined(_ISOC11_SOURCE) || (__STDC_VERSION__ >= 201112L)
     // std::aligned_alloc(alignment, size) requires `size` to be a multiple of
-    // `alignment` per the C/C++ standard — passing e.g. (64, 16) is UB and
+    // `alignment` per the C/C++ standard; passing e.g. (64, 16) is UB and
     // ASan rightly catches it ("invalid alignment requested in aligned_alloc").
     // Round the request up to the next multiple of 64 so any caller can pass
     // an arbitrary byte count.

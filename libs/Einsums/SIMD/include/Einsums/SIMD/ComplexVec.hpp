@@ -14,7 +14,7 @@
 namespace einsums::simd {
 
 // ===========================================================================
-// CVec<T> — interleaved complex SIMD vector.
+// CVec<T>: interleaved complex SIMD vector.
 //
 // Wraps a Vec<T> register containing N/2 complex<T> values stored as
 // [re0, im0, re1, im1, ...]. This matches the memory layout of
@@ -41,7 +41,7 @@ struct CVec {
 };
 
 // ===========================================================================
-// Load / Store — cast complex<T>* to T* and use real load/store
+// Load / Store: cast complex<T>* to T* and use real load/store
 // ===========================================================================
 
 template <typename T>
@@ -113,7 +113,7 @@ EINSUMS_FORCEINLINE CVec<double> complex_broadcast(std::complex<double>) {
 #endif
 
 // ===========================================================================
-// Add / Sub — element-wise, identical to real operations
+// Add / Sub: element-wise, identical to real operations
 // ===========================================================================
 
 template <typename T>
@@ -127,7 +127,7 @@ EINSUMS_FORCEINLINE CVec<T> complex_sub(CVec<T> a, CVec<T> b) {
 }
 
 // ===========================================================================
-// Conjugate — negate imaginary parts (every odd element)
+// Conjugate: negate imaginary parts (every odd element)
 // ===========================================================================
 
 template <typename T>
@@ -356,7 +356,7 @@ EINSUMS_FORCEINLINE CVec<T> complex_scale(CVec<T> v, T scalar) {
 }
 
 // ===========================================================================
-// Complex gather/scatter — gather complex<T> values from strided memory
+// Complex gather/scatter: gather complex<T> values from strided memory
 // ===========================================================================
 
 template <typename T>

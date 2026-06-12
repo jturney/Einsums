@@ -75,7 +75,7 @@ template <typename T>
 using deref_type_t = typename DerefTypeHelper<T>::type;
 
 // Dereference A or B: smart-pointer → *ptr; anything else → passthrough.
-// Note: weak_ptr satisfies SmartPointer but has no operator* — calling auto_deref
+// Note: weak_ptr satisfies SmartPointer but has no operator*, so calling auto_deref
 // on one fails to compile, matching the behaviour of the old explicit overloads.
 template <typename T>
 [[nodiscard]] decltype(auto) auto_deref(T &&t) {
@@ -117,8 +117,8 @@ void einsum(U const C_prefactor, std::tuple<CIndices...> const &C_indices, CType
 }
 
 // Default-prefactor dispatcher: handles all pointer/non-pointer combinations,
-// including containers (batched einsum). No TensorConcept constraint here —
-// the forwarded with-prefactors call is responsible for type checking.
+// including containers (batched einsum). There is no TensorConcept constraint
+// here; the forwarded with-prefactors call is responsible for type checking.
 template <bool ConjA = false, bool ConjB = false, typename AType, typename BType, typename CType, typename... CIndices,
           typename... AIndices, typename... BIndices>
 void einsum(std::tuple<CIndices...> const &C_indices, CType *C, std::tuple<AIndices...> const &A_indices, AType const &A,

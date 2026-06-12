@@ -12,7 +12,7 @@
  * forces every TU that includes this header to take a reference to
  * setup_Einsums_Comm(), which both (a) prevents `--gc-sections` from dropping
  * the symbol at link time and (b) auto-runs the registration at executable
- * load — the same pattern Tensor, BLAS, BufferAllocator, etc. use. Comm's
+ * load. This is the same pattern Tensor, BLAS, BufferAllocator, and others use. Comm's
  * register_pre_startup_function(initialize) is what actually flips
  * comm::is_initialized() to true once the runtime starts; without this header
  * being referenced from a public, library-internal TU, the pre-startup hook

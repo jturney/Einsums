@@ -37,12 +37,12 @@ void impl_gemv_noncontiguous(char transA, YType alpha, einsums::detail::TensorIm
 
     // Do the matrix multiplication.
     //
-    // Parallelize over the *output* index (target) only — each Y element is
+    // Parallelize over the output index (target) only, so each Y element is
     // owned by exactly one thread, which sums its contributions over all
     // links into a local accumulator and writes the result once. A previous
     // ``collapse(2)`` parallelized the link loop too, so multiple threads did
     // an unsynchronized read-modify-write (``Y_data[target] += ...``) on the
-    // same Y element for different links — a data race that intermittently
+    // same Y element for different links, a data race that intermittently
     // dropped contributions, leaving one output element wrong run-to-run.
     if constexpr (IsComplexV<YType>) {
         if (tA == 'c') {

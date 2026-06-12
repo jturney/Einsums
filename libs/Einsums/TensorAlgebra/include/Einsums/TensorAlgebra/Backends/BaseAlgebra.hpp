@@ -44,7 +44,7 @@ std::remove_cvref_t<T> einsums_generic_link_loop(std::tuple<LinkDims...> const  
 
         T sum{0.0};
 
-        // No OMP here — the link loop is always nested inside the parallel target loop.
+        // No OMP here; the link loop is always nested inside the parallel target loop.
         for (size_t i = 0; i < curr_dim; i++) {
             sum += einsums_generic_link_loop<__I + 1, T, ConjA, ConjB>(link_dims, A_link_strides, B_link_strides, A_index + i * A_stride,
                                                                        B_index + i * B_stride, A, B);

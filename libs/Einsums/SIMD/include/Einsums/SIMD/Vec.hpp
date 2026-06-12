@@ -27,13 +27,13 @@ namespace einsums::simd {
 // ---------------------------------------------------------------------------
 // Half-precision type aliases.
 //
-// `half_t` is the IEEE-754 binary16 type (5-bit exponent, 10-bit mantissa)
-// — same numeric range as float but ~half the precision. ARM uses `__fp16`
+// `half_t` is the IEEE-754 binary16 type (5-bit exponent, 10-bit mantissa),
+// the same numeric range as float but roughly half the precision. ARM uses `__fp16`
 // (also exposed as `_Float16` on newer Clang) under the FP16 vector
 // extension; x86 uses `_Float16` under AVX-512FP16.
 //
-// `bfloat16_t` is the brain-float format (8-bit exponent, 7-bit mantissa)
-// — same range as float, much less precision. Useful for ML inference.
+// `bfloat16_t` is the brain-float format (8-bit exponent, 7-bit mantissa),
+// the same range as float with much less precision. Useful for ML inference.
 // Both ARM and x86 spell it `__bf16`.
 //
 // These aliases only exist when the compiler accepts the underlying type;
@@ -52,7 +52,7 @@ using bfloat16_t = __bf16;
 #endif
 
 // ---------------------------------------------------------------------------
-// VecTraits<T> — maps scalar type T to native SIMD register type.
+// VecTraits<T>: maps scalar type T to native SIMD register type.
 // Specializations are guarded by ISA macros. Widest available wins.
 // ---------------------------------------------------------------------------
 
@@ -80,7 +80,7 @@ struct VecTraits<double> {
     static constexpr int bits  = 512;
 };
 
-// All x86 integer types share __m512i — element type is encoded in the
+// All x86 integer types share __m512i, so the element type is encoded in the
 // `lanes` count and the per-op intrinsic the user calls (epi32 / epi64 / …).
 template <>
 struct VecTraits<int32_t> {
@@ -111,7 +111,7 @@ struct VecTraits<uint64_t> {
     static constexpr int bits  = 512;
 };
 
-// 8-bit integer types — 64 lanes per 512-bit register. The general
+// 8-bit integer types: 64 lanes per 512-bit register. The general
 // arithmetic API is intentionally NOT specialized for these because
 // per-lane mul/shift on bytes has saturation surprises and many ISAs
 // only expose dot-product accumulators rather than direct ops. Use
@@ -131,7 +131,7 @@ struct VecTraits<uint8_t> {
     static constexpr int bits  = 512;
 };
 
-// AVX-512FP16 — 32 IEEE half-precision lanes per 512-bit register.
+// AVX-512FP16: 32 IEEE half-precision lanes per 512-bit register.
 #    if defined(__AVX512FP16__)
 template <>
 struct VecTraits<half_t> {
@@ -141,7 +141,7 @@ struct VecTraits<half_t> {
     static constexpr int bits  = 512;
 };
 #    endif
-// AVX-512BF16 — 32 bfloat16 lanes; native arithmetic intrinsics are limited
+// AVX-512BF16: 32 bfloat16 lanes; native arithmetic intrinsics are limited
 // to convert + dot product (see Operations.hpp). The register type alias
 // follows Intel's `__m512bh`.
 #    if defined(__AVX512BF16__)
@@ -305,8 +305,8 @@ struct VecTraits<double> {
     static constexpr int bits  = 128;
 };
 
-// NEON has distinct register types per signedness/width — vaddq_s32 vs
-// vaddq_u32 vs vaddq_s64 etc — so each integer Vec specialization picks
+// NEON has distinct register types per signedness/width, such as vaddq_s32 vs
+// vaddq_u32 vs vaddq_s64, so each integer Vec specialization picks
 // the matching `*x*_t` typedef.
 template <>
 struct VecTraits<int32_t> {
@@ -442,7 +442,7 @@ struct VecTraits<uint8_t> {
 #endif
 
 // ---------------------------------------------------------------------------
-// Vec<T> — thin wrapper over a platform SIMD register.
+// Vec<T>: thin wrapper over a platform SIMD register.
 //
 // Design:
 //   - Aggregate type, no virtual dispatch
@@ -455,7 +455,7 @@ struct Vec {
     // VecTraits<T> is only specialized for the types we support on the
     // active ISA tier. Instantiating Vec<T> for an unsupported type
     // (e.g. int8_t, char, std::complex) gives an "incomplete type"
-    // error pointing here — the cleanest signal short of a `requires`
+    // error pointing here, the cleanest signal short of a `requires`
     // clause that doesn't tie us to a specific compile-time concept.
     using traits   = VecTraits<T>;
     using reg_type = typename traits::reg_type;
@@ -471,7 +471,7 @@ struct Vec {
 
     EINSUMS_FORCEINLINE operator reg_type() const { return reg; }
 
-    /// Element access (debug only — stores to temp buffer then indexes).
+    /// Element access for debugging only. Stores to a temporary buffer, then indexes it.
     EINSUMS_FORCEINLINE T operator[](int i) const {
         alignas(native_alignment) T buf[lanes];
         std::memcpy(buf, &reg, sizeof(reg));

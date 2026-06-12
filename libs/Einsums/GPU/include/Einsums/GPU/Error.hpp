@@ -93,7 +93,7 @@ inline void check_hipsolver_error(hipsolverStatus_t err, std::source_location lo
 #    define gpu_blas_catch(call)   ::einsums::gpu::detail::check_hipblas_error(call)
 #    define gpu_solver_catch(call) ::einsums::gpu::detail::check_hipsolver_error(call)
 
-#else // Mock backend — no GPU errors possible
+#else // Mock backend: no GPU errors possible
 
 #    define gpu_catch(call)        ((void)(call))
 #    define gpu_blas_catch(call)   ((void)(call))

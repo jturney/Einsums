@@ -53,7 +53,7 @@ size_t hash_vec_i64(std::vector<int64_t> const &v) {
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
-// cpu_config() — detect native SIMD width and compute MR, NR.
+// cpu_config(): detect native SIMD width and compute MR, NR.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -155,7 +155,7 @@ CpuConfig const &cpu_config() {
 #elif defined(__AVX__) || defined(__AVX2__)
         c.VL = 4;
 #else
-        // SSE2 (x86-64 baseline), NEON (ARM), or unknown — use 128-bit / 2 doubles.
+        // SSE2 (x86-64 baseline), NEON (ARM), or unknown: use 128-bit / 2 doubles.
         c.VL = 2;
 #endif
         c.MR = 2 * c.VL; // Two full vector registers as C accumulators per j-column.

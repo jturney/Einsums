@@ -104,7 +104,7 @@ bool try_symmetric_gemm(char transA, char transB, T alpha, einsums::detail::Tens
     }
 
     if constexpr (einsums::IsComplexV<T>) {
-        // hemm: Hermitian matrix — A^T ≠ A, so the row-major swap needs
+        // hemm: Hermitian matrix where A^T ≠ A, so the row-major swap needs
         // extra thought. For side='L', row-major C = A·B becomes column-major
         // C^T = B^T·A^T. A^T = conj(A) for Hermitian A, not A itself. BLAS
         // has no direct "conj-Hermitian" kernel, so we only fire hemm on the

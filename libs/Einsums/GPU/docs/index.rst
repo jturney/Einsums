@@ -11,15 +11,15 @@ GPU
 ***
 
 The ``GPU`` module provides a portable abstraction layer for GPU-accelerated
-linear algebra. It supports three backends:
+linear algebra. It supports four backends:
 
-- **CUDA** --- NVIDIA GPUs via cuBLAS/cuSOLVER
-- **HIP** --- AMD GPUs via hipBLAS/hipSOLVER
-- **MPS** --- Apple Silicon GPUs via Metal Performance Shaders (auto-detected on macOS)
-- **Mock** --- CPU fallback when no GPU is available
+- CUDA: NVIDIA GPUs via cuBLAS/cuSOLVER.
+- HIP: AMD GPUs via hipBLAS/hipSOLVER.
+- MPS: Apple Silicon GPUs via Metal Performance Shaders, auto-detected on macOS.
+- Mock: CPU fallback when no GPU is available.
 
-The user writes backend-agnostic code; the build system selects the appropriate
-backend at configure time.
+The user writes backend-agnostic code, and the build system selects the
+appropriate backend at configure time.
 
 Backends
 ========
@@ -31,7 +31,7 @@ On macOS with Apple Silicon, the MPS backend is enabled automatically. It uses
 ``MPSMatrixMultiplication`` for GEMM and ``MPSMatrixVectorMultiplication`` for
 GEMV, running on the M-series GPU cores.
 
-**Supported operations on MPS:**
+The MPS backend supports the following operations.
 
 +------------------+------------------+-------------------------------------+
 | Type             | GEMM             | Notes                               |
@@ -49,12 +49,12 @@ GEMV, running on the M-series GPU cores.
 | Complex<double>  | CPU (Accelerate) | No GPU double or complex            |
 +------------------+------------------+-------------------------------------+
 
-**Unified memory:** Apple Silicon shares physical memory between CPU and GPU.
-The ComputeGraph inserts explicit H2D/D2H transfer nodes for correctness on
-all backends, but on MPS the actual copies are skipped at execution time ---
-the GPU reads tensor data directly from host memory through zero-copy MTLBuffer
-wrappers. Final D2H nodes ensure user-visible results are available after
-``execute()`` on discrete GPUs without relying on implicit flushes.
+Apple Silicon shares physical memory between CPU and GPU. The ComputeGraph
+inserts explicit H2D/D2H transfer nodes for correctness on all backends, but on
+MPS the actual copies are skipped at execution time. The GPU reads tensor data
+directly from host memory through zero-copy MTLBuffer wrappers. Final D2H nodes
+ensure user-visible results are available after ``execute()`` on discrete GPUs
+without relying on implicit flushes.
 
 CUDA and HIP
 ------------
@@ -202,7 +202,7 @@ passes decide what runs on the GPU:
     auto pm = cg::PassManager::create_default();
     graph.apply(pm);
 
-    // Execute --- GEMM runs on GPU automatically for large float tensors
+    // Execute. GEMM runs on GPU automatically for large float tensors.
     graph.execute();
 
 See :ref:`tutorial-compute-graph` for the full tutorial.

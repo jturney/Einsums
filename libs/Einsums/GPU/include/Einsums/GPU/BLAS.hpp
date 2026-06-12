@@ -16,7 +16,7 @@
 namespace einsums::gpu::blas {
 
 // ===========================================================================
-// Standard precision GEMM — matches CPU BLAS signatures.
+// Standard precision GEMM: matches CPU BLAS signatures.
 // CUDA: cuBLAS, HIP: hipBLAS, Mock: delegates to CPU einsums::blas::vendor
 // ===========================================================================
 
@@ -40,7 +40,7 @@ EINSUMS_EXPORT void gemm(char transa, char transb, int64_t m, int64_t n, int64_t
                          int64_t ldb, T beta, T *c, int64_t ldc);
 
 // ===========================================================================
-// Strided-batched GEMM — N independent 2D GEMMs with matrices stored
+// Strided-batched GEMM: N independent 2D GEMMs with matrices stored
 // contiguously in memory with a uniform stride between them. Maps to
 // cublasDgemmStridedBatched / hipblasDgemmStridedBatched on discrete
 // GPUs; on CPU/mock builds, falls through to a loop over the CPU
@@ -76,7 +76,7 @@ EINSUMS_EXPORT void gemm_strided_batched(char transa, char transb, int64_t m, in
                                          int64_t stride_c, int64_t batch_count);
 
 // ===========================================================================
-// Standard precision GEMV — matches CPU BLAS signatures.
+// Standard precision GEMV: matches CPU BLAS signatures.
 // ===========================================================================
 
 EINSUMS_EXPORT void sgemv(char trans, int64_t m, int64_t n, float alpha, float const *a, int64_t lda, float const *x, int64_t incx,
@@ -91,7 +91,7 @@ EINSUMS_EXPORT void gemv(char trans, int64_t m, int64_t n, T alpha, T const *a, 
                          int64_t incy);
 
 // ===========================================================================
-// BLAS Level 1 — element-wise operations on device memory.
+// BLAS Level 1: element-wise operations on device memory.
 // These avoid unnecessary D2H/H2D round-trips when data is already on GPU.
 // ===========================================================================
 

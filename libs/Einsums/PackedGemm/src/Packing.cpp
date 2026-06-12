@@ -68,7 +68,7 @@ PackingPlan compute_packing_topology(ContractionKey const &key) {
     };
 
     // --- Extract batch dims: target indices in both A and B ---
-    // Batch dims are NOT rejected — they are looped over in blis_contraction.
+    // Batch dims are not rejected; they are looped over in blis_contraction.
     std::unordered_set<std::string> batch_set;
     for (auto const &idx : spec.target_indices) {
         if (a_set.count(idx) && b_set.count(idx)) {

@@ -96,8 +96,8 @@ struct SharedState {
     /// Register completion handlers. @p on_ok runs with the value on success;
     /// @p on_err runs with the exception on failure. Exactly one fires. If the
     /// state is already complete the matching handler runs immediately, but only
-    /// after the lock is released (never run user code while holding the mutex —
-    /// it can re-enter the pool / acquire other locks and deadlock).
+    /// after the lock is released. User code never runs while holding the mutex,
+    /// because it can re-enter the pool or acquire other locks and deadlock.
     void on_complete(std::function<void(T const &)> on_ok, std::function<void(std::exception_ptr)> on_err) {
         bool run_ok  = false;
         bool run_err = false;

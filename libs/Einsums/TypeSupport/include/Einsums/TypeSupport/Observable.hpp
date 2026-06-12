@@ -198,8 +198,8 @@ struct Observable {
     void notify_observers() {
         // Bump the change counter without re-acquiring _mutex. The earlier
         // version of this method locked _mutex around the increment, but
-        // notify_observers is called from unlock(bool) AFTER _mutex was just
-        // released — re-acquiring it there created a lock-order risk when the
+        // notify_observers is called from unlock(bool) after _mutex was just
+        // released, and re-acquiring it there created a lock-order risk when the
         // Observable was one element of a `std::scoped_lock` over several
         // Observables (the other siblings' mutexes are still held during the
         // destructor walk, so re-locking this one builds an acquisition order
@@ -227,10 +227,10 @@ struct Observable {
     mutable std::mutex      _mutex{}; ///< For thread-safe value access
     std::condition_variable _cv{};    ///< For thread synchronization
     /// Counter indicating how many times the value has changed. Atomic so
-    /// ``notify_observers`` can bump it without re-acquiring ``_mutex`` — the
+    /// ``notify_observers`` can bump it without re-acquiring ``_mutex``. The
     /// re-acquire previously created a lock-order risk when the Observable
-    /// participated in a multi-mutex ``std::scoped_lock`` (see the comment in
-    /// ``notify_observers``).
+    /// participated in a multi-mutex ``std::scoped_lock``. See the comment in
+    /// ``notify_observers``.
     std::atomic<size_t> _value_changed{0};
 
     std::list<std::function<void(T const &)>> _observers{};      ///< List of observers

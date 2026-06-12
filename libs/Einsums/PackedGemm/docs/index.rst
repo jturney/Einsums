@@ -27,10 +27,10 @@ no vendor BLAS acceleration.
 PackedGemm fills that gap. For every contraction Einsums detects at
 compile time, the dispatcher classifies indices into:
 
-- **M dimensions** — target indices that appear in ``A`` but not ``B``
-- **N dimensions** — target indices that appear in ``B`` but not ``A``
-- **K dimensions** — link indices that appear in both ``A`` and ``B``
-- **Batch dimensions** — target indices that appear in both ``A`` and ``B``
+- ``M`` dimensions are target indices that appear in ``A`` but not ``B``.
+- ``N`` dimensions are target indices that appear in ``B`` but not ``A``.
+- ``K`` dimensions are link indices that appear in both ``A`` and ``B``.
+- Batch dimensions are target indices that appear in both ``A`` and ``B``.
 
 A ``PackingPlan`` records the strides and sizes of each group. The
 runtime then packs ``A`` and ``B`` into contiguous tiles
@@ -58,10 +58,10 @@ Cache-aware blocking
 Block sizes :math:`MC \times KC \times NC` are tuned at runtime from the
 detected CPU cache hierarchy. ``compute_blocking(elem_size)`` returns:
 
-- ``KC`` — K tile size, sized so one A panel fits in ~half of L2.
-- ``MC`` — M tile size, sized so one A panel fits in ~half of L2.
-- ``NC`` — N tile size, sized so one B panel fits in ~half of L3.
-- ``NR`` — N register-block (6, fully unrolled by LLVM).
+- ``KC`` is the K tile size, sized so one A panel fits in roughly half of L2.
+- ``MC`` is the M tile size, sized so one A panel fits in roughly half of L2.
+- ``NC`` is the N tile size, sized so one B panel fits in roughly half of L3.
+- ``NR`` is the N register-block, fixed at 6 and fully unrolled by LLVM.
 
 The values automatically adapt to the element width:
 ``sizeof(double) = 8`` vs ``sizeof(std::complex<double>) = 16``.
@@ -70,8 +70,8 @@ PackingPlanCache
 ================
 
 Plans are deterministic functions of the contraction's index pattern,
-dimensions, and strides — so they cache cleanly. ``PackingPlanCache``
-keys on a ``ContractionKey`` (an exact-match digest of the call shape)
+dimensions, and strides, so they cache cleanly. ``PackingPlanCache``
+keys on a ``ContractionKey``, an exact-match digest of the call shape,
 and reuses plans across repeated calls. The pack itself runs every time;
 only the planning is memoized.
 
@@ -87,7 +87,7 @@ Future direction: GPU
 =====================
 
 The same ``PackingPlan`` abstraction is intended to drive a GPU backend
-once NVIDIA hardware is available — the planning code is backend-agnostic;
+once NVIDIA hardware is available. The planning code is backend-agnostic;
 only the pack kernel and tile-GEMM emitter need swapping. See the project
 roadmap for the Ozaki mixed-precision integration plan.
 

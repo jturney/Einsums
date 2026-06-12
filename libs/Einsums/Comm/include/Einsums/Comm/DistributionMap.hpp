@@ -10,7 +10,7 @@
 ///
 /// Used internally by ComputeGraph passes (DistributionPlanning, Materialization)
 /// to decide how deferred tensors are partitioned across ranks. Users never interact
-/// with these types directly — the pass infrastructure handles everything transparently.
+/// with these types directly; the pass infrastructure handles everything transparently.
 
 #include <Einsums/Comm/Runtime.hpp>
 

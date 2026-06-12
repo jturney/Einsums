@@ -16,8 +16,8 @@ details.
 Here is a list of public utilities defined in this module. See the
 :ref:`API reference <modules_Einsums_Assertion_api>` for full signatures and details.
 
-- :c:macro:`EINSUMS_ASSERT` — assert an expression in debug builds (no custom message).
-- :c:macro:`EINSUMS_ASSERT_MSG` — assert an expression with a custom failure message.
+- :c:macro:`EINSUMS_ASSERT` asserts an expression in debug builds, with no custom message.
+- :c:macro:`EINSUMS_ASSERT_MSG` asserts an expression with a custom failure message.
 
 -------------
 Example Usage

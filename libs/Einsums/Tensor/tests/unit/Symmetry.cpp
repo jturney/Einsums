@@ -208,7 +208,7 @@ TEST_CASE("check_symmetry - ERI 8-fold on a random rank-4 tensor", "[Tensor][Sym
     auto E = create_random_tensor<double>("E", 3, 3, 3, 3);
     E.set_symmetry(SymmetryDescriptor::eri_8fold());
 
-    // Random — definitely not ERI-symmetric.
+    // Random, definitely not ERI-symmetric.
     REQUIRE_FALSE(check_symmetry(E));
 
     symmetrize(E);

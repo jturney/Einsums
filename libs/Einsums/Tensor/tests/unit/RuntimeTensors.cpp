@@ -418,7 +418,7 @@ TEST_CASE("Runtime Tensor View Assignment") {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Phase A — RuntimeTensor lifecycle methods
+// Phase A: RuntimeTensor lifecycle methods
 //
 // Mirrors the deferred-allocation API on GeneralTensor so ComputeGraph's
 // Materialization / FreeInsertion / GPU-shadow passes work uniformly on
@@ -457,7 +457,7 @@ TEMPLATE_TEST_CASE("RuntimeTensor lifecycle: materialize/release/is_materialized
         REQUIRE(t.is_materialized());
         REQUIRE(t.data() != nullptr);
         REQUIRE(t.size() == 25);
-        // Buffer is fresh, but writable — verify by writing then reading.
+        // Buffer is fresh, but writable; verify by writing then reading.
         t(2, 2) = original_value;
         REQUIRE(t(2, 2) == original_value);
     }
@@ -582,8 +582,8 @@ TEST_CASE("RuntimeTensor liveness token tracks destruction", "[tensor][runtime][
 
     SECTION("token expires once the tensor is destroyed") {
         // The graph's runtime validator holds exactly this weak_ptr to detect a
-        // destroyed (dangling) captured tensor without ever touching its memory
-        // — unlike the old canary, this is definitive and free of UB.
+        // destroyed (dangling) captured tensor without ever touching its memory.
+        // Unlike the old canary, this is definitive and free of UB.
         std::weak_ptr<void> w;
         {
             RuntimeTensor<double> const t;

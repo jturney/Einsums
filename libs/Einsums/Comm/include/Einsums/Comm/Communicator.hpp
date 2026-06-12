@@ -17,7 +17,7 @@ namespace einsums::comm {
  * Provides rank/size queries and communicator management (split, duplicate).
  * On the mock backend, always reports rank=0, size=1.
  *
- * Value-semantic via shared_ptr to internal state — cheap to copy.
+ * Value-semantic via shared_ptr to internal state, so copies are cheap.
  *
  * @par Example
  * @code

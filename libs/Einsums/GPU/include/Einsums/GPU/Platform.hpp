@@ -10,7 +10,7 @@
 namespace einsums::gpu {
 
 // ---------------------------------------------------------------------------
-// Backend detection — exactly one GPU backend (or mock) is active.
+// Backend detection: exactly one GPU backend (or mock) is active.
 // ---------------------------------------------------------------------------
 
 inline constexpr bool has_cuda =
@@ -37,7 +37,7 @@ inline constexpr bool has_mps =
 /// True if any real GPU backend is available.
 inline constexpr bool has_gpu = has_cuda || has_hip || has_mps;
 
-/// True if running with the mock (CPU) backend — no real GPU.
+/// True if running with the mock CPU backend, meaning no real GPU.
 inline constexpr bool is_mock = !has_gpu;
 
 // ---------------------------------------------------------------------------
@@ -46,8 +46,8 @@ inline constexpr bool is_mock = !has_gpu;
 
 /// True if host and device share physical memory (no PCIe copies needed).
 /// Apple Silicon (MPS) has unified memory; discrete GPUs (CUDA/HIP) do not.
-/// The mock backend has no separate device at all — host *is* the device —
-/// so it is unified by definition. The Graph executor uses this flag to
+/// The mock backend has no separate device at all, since the host is the
+/// device, so it is unified by definition. The Graph executor uses this flag to
 /// skip device-shadow allocation and pointer swaps; without is_mock here,
 /// the mock path swaps tensor data pointers to uninitialized "shadow"
 /// memory and then computes on garbage (e.g. the StridedBatchedGemm

@@ -23,7 +23,7 @@
 namespace einsums::gpu {
 
 // ===========================================================================
-// Type aliases — resolve to vendor type or mock placeholder.
+// Type aliases: resolve to vendor type or mock placeholder.
 // ===========================================================================
 
 // NOLINTBEGIN

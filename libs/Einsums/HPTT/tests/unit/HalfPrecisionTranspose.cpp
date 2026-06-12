@@ -32,7 +32,7 @@ namespace {
 // against the plan's threadIds. Outside an explicit OMP parallel region the
 // thread number is unstable in libomp, so we mirror what TensorAlgebra does
 // in src/Permute.cpp and pass omp_get_max_threads() as the plan's worker
-// count — that creates threadIds {0..max-1} which always covers the calling
+// count; that creates threadIds {0..max-1} which always covers the calling
 // thread.
 inline int hptt_test_threads() {
 #ifdef _OPENMP

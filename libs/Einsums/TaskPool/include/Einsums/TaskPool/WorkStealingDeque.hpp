@@ -64,7 +64,7 @@ class WorkStealingDeque {
             // Non-empty
             T item = buf->load(b);
             if (t == b) {
-                // Last element — race with steal()
+                // Last element; race with steal()
                 if (!_top.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) {
                     // Lost race
                     _bottom.store(b + 1, std::memory_order_relaxed);

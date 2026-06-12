@@ -80,7 +80,7 @@ ContractionKey make_rank3_key(int64_t N) {
     return key;
 }
 
-/// Build a ContractionKey for C[i,i] += A[i,i] * B[i,i] (Hadamard — invalid for packing).
+/// Build a ContractionKey for C[i,i] += A[i,i] * B[i,i] (Hadamard, invalid for packing).
 ContractionKey make_hadamard_key(int64_t N) {
     ContractionSpec spec;
     spec.c_indices      = {"i"};
@@ -104,7 +104,7 @@ ContractionKey make_hadamard_key(int64_t N) {
     return key;
 }
 
-/// Build a ContractionKey for scalar output (C += A[i]*B[i]) — invalid for packing.
+/// Build a ContractionKey for scalar output (C += A[i]*B[i]), invalid for packing.
 ContractionKey make_scalar_output_key(int64_t N) {
     ContractionSpec spec;
     spec.c_indices      = {};

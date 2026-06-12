@@ -19,8 +19,8 @@ Public Symbols
 Most symbols in this module are private. However, there are some that may be useful to the user.
 See the :ref:`API reference <modules_Einsums_Config_api>` for full details.
 
-- :c:macro:`EINSUMS_COMPUTE_CODE` — defined only when Einsums is built with GPU capabilities.
-- :c:macro:`EINSUMS_OMP_PARALLEL_FOR` — marks a loop as parallelizable.
+- :c:macro:`EINSUMS_COMPUTE_CODE` is defined only when Einsums is built with GPU capabilities.
+- :c:macro:`EINSUMS_OMP_PARALLEL_FOR` marks a loop as parallelizable.
 
 .. cpp:class:: GlobalConfigMap
 

@@ -63,7 +63,7 @@ std::string complete_version() {
 
 std::string build_date_time() {
     // __DATE__ __TIME__ are captured when this TU is compiled, which only
-    // happens when Version.cpp itself is rebuilt — not on every CMake regen.
+    // happens when Version.cpp itself is rebuilt, not on every CMake regen.
     return __DATE__ " " __TIME__;
 }
 

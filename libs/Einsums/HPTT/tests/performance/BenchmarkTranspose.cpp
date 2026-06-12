@@ -8,15 +8,15 @@
 //
 // Drives HPTT through its direct create_plan API rather than tensor_algebra::
 // permute() because Tensor<half_t> / Tensor<bfloat16_t> aren't wired into the
-// rest of the framework yet — the lower-level path lets us still cover the
+// rest of the framework yet; the lower-level path lets us still cover the
 // half-precision MicroKernels.
 //
 // Reports per-call wall time via `time_us` so the benchmark CLI's regex-based
 // parser can pick it up. The interesting comparisons:
-//   - bf16 / fp16 vs double — sees the SIMD MicroKernel rewrite + the
+//   - bf16 / fp16 vs double: sees the SIMD MicroKernel rewrite + the
 //     in-register 8x8 NEON transpose
-//   - 2048x2048 — the size where double exceeds L2 and bandwidth dominates
-//   - 1024x1024 — the size where everyone fits in L2 and per-call overhead matters
+//   - 2048x2048: the size where double exceeds L2 and bandwidth dominates
+//   - 1024x1024: the size where everyone fits in L2 and per-call overhead matters
 
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/Performance.hpp>

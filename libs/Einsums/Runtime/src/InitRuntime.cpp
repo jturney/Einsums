@@ -100,7 +100,7 @@ int run(std::function<int()> const &f, Runtime &rt, InitParams const &params) {
             }
         }
     } catch (...) {
-        // profiler-save not configured or unavailable — skip
+        // profiler-save not configured or unavailable; skip
     }
 #endif
 
