@@ -5,10 +5,10 @@
 
 """ComputeGraph Python interface.
 
-Surface for ``einsums._core.graph`` plus a few Pythonic helpers
-(``default_pass_manager``, ``capture``). The C-extension submodule is
-loaded lazily on first attribute access — importing this module
-``einsums.graph`` does not by itself fire ``einsums::initialize()``.
+Surface for ``einsums._core.graph`` plus a few Pythonic helpers such as
+``default_pass_manager`` and ``capture``. The C-extension submodule is
+loaded lazily on first attribute access, so importing ``einsums.graph``
+does not by itself fire ``einsums::initialize()``.
 """
 
 import contextlib as _contextlib
@@ -18,10 +18,10 @@ import importlib as _importlib
 def _core():
     """Resolve and cache the compiled ``einsums._core.graph`` submodule.
 
-    Helpers defined in this file reference C-extension classes
-    (``PassManager``, ``CaptureContext``, …) by name, but Python only
-    triggers ``__getattr__`` for *attribute* access on the module from
-    *outside*. Unqualified-name lookups inside helpers go straight to
+    Helpers defined in this file reference C-extension classes such as
+    ``PassManager`` and ``CaptureContext`` by name, but Python only
+    triggers ``__getattr__`` for attribute access on the module from
+    outside. Unqualified-name lookups inside helpers go straight to
     module globals, which are empty until the lazy loader has cached
     something. So helpers reach the C extension through this small
     accessor instead.
@@ -30,12 +30,12 @@ def _core():
 
 
 def __getattr__(name):
-    """PEP 562 lazy attribute access — mirrors ``einsums/__init__.py``.
+    """PEP 562 lazy attribute access, mirroring ``einsums/__init__.py``.
 
     Looking up ``einsums.graph.<Name>`` for the first time imports the
     compiled ``einsums._core.graph`` submodule, fetches the attribute,
-    caches it in this module's globals (so subsequent lookups skip
-    ``__getattr__``), and returns it.
+    caches it in this module's globals so subsequent lookups skip
+    ``__getattr__``, and returns it.
 
     The dunder/private short-circuit avoids re-entry when Python's
     import machinery probes for things like ``__path__``.
@@ -55,7 +55,7 @@ def default_pass_manager():
 
     Mirrors the C++ ``cg::PassManager::create_default()`` helper. The
     binding can't expose the static factory directly because PassManager
-    holds a vector of unique_ptrs (non-copyable), so we construct an empty
+    holds a vector of non-copyable unique_ptrs, so we construct an empty
     one and call ``populate_default()`` in-place.
     """
     pm = _core().PassManager()
@@ -65,9 +65,9 @@ def default_pass_manager():
 
 # Python-side stack of graphs currently being captured. The C++
 # CaptureContext owns the authoritative capture state, but its ``graph()``
-# accessor isn't bound to Python — and operator helpers in
+# accessor isn't bound to Python. Operator helpers in
 # ``einsums/__init__.py`` need the active graph so they can allocate
-# intermediate outputs (for ``A + B``, ``A @ B``, …) via
+# intermediate outputs for expressions like ``A + B`` and ``A @ B`` via
 # ``graph.create_zero_tensor`` instead of the process-owned
 # ``_core.create_zero_tensor``. Graph-owned intermediates outlive
 # ``graph.execute()``; process-owned ones can be GC'd mid-chain, which
@@ -80,7 +80,7 @@ def current_graph():
 
     Used by the numpy-ergonomics operators to decide where to allocate
     operator outputs. ``None`` means we're not inside ``cg.capture``, so
-    eager (process-owned) allocation is correct.
+    eager process-owned allocation is correct.
     """
     return _capture_graph_stack[-1] if _capture_graph_stack else None
 
@@ -97,7 +97,6 @@ def capture(graph):
         g = cg.Graph("my_workflow")
         with cg.capture(g):
             einsums.linalg.gemm(1.0, A, B, 0.0, C)
-            einsums.einsum("ij,jk->ik", &D, A, C)
 
         g.execute()
     """

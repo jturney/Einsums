@@ -5,9 +5,9 @@
 
 """Pre-import configuration for einsums.
 
-Set fields here BEFORE the first compute call to influence
+Set fields here before the first compute call to influence
 ``einsums::initialize()``. Once the runtime is up these fields are read-only
-as far as einsums is concerned (changing them after init has no effect).
+as far as einsums is concerned, so changing them after init has no effect.
 
 Usage::
 
@@ -26,10 +26,10 @@ from enum import Enum
 def _bool_env(name: str) -> bool | None:
     """Read a boolean override from the environment.
 
-    Returns ``True`` / ``False`` for recognized truthy / falsy strings,
-    ``None`` when the variable is unset. Lets pytest harnesses (and any
-    other launcher) flip the corresponding rc field without monkey-patching
-    this module before ``import einsums``; in particular the test launcher
+    Returns ``True`` or ``False`` for recognized truthy or falsy strings,
+    and ``None`` when the variable is unset. This lets pytest harnesses and
+    any other launcher flip the corresponding rc field without monkey-patching
+    this module before ``import einsums``. In particular the test launcher
     in cmake/Einsums_AddTest.cmake sets EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS
     and EINSUMS_DEBUG_NO_ATTACH_DEBUGGER so a failing pytest doesn't hang on
     the runtime's "waiting for debugger" prompt.
@@ -86,8 +86,8 @@ def _bool_env(name: str) -> bool | None:
 threads: int | None = None
 
 # Buffer Allocator
-#   Sizes accept the same shorthand strings the runtime understands
-#   (e.g. ``"1G"``, ``"512M"``). ``None`` means einsums default.
+#   Sizes accept the same shorthand strings the runtime understands,
+#   such as ``"1G"`` or ``"512M"``. ``None`` means einsums default.
 buffer_size: str | None = None
 work_buffer_size: str | None = None
 
@@ -116,15 +116,15 @@ class LogLevel(Enum):
 # Logging
 # Log level. One of ``LogLevel.TRACE``..``LogLevel.ERROR``; ``None`` means einsums default.
 log_level: LogLevel | None = None
-# Log destination. ``None`` means einsums default (which is ``cerr``).
+# Log destination. ``None`` means the einsums default of ``cerr``.
 log_destination: str | None = None
 # Log format. ``None`` means einsums default.
 log_format: str | None = None
 
 # Profile
-# Don't generate profile report. ``None`` means einsums default (which is ``False``).
+# Don't generate profile report. ``None`` means the einsums default of ``False``.
 profile_no_report: bool | None = None
-# Generate profile filename. ``None`` means einsums default (``"profile.txt"``).
+# Generate profile filename. ``None`` means the einsums default of ``"profile.txt"``.
 profile_filename: str | None = None
 # Don't append to profile file.
 profile_no_append: bool | None = None
@@ -140,8 +140,8 @@ profile_wait_for_viewer: bool | None = None
 # Tensor Options
 # The scratch directory for Einsums tensor files. ``None`` means einsums default.
 scratch_dir: str | None = None
-# The name of the HDF5 file for Einsums. ``None`` means einsums default
-# (``einsums.[pid].h5`` where ``[pid]`` is the PID of the current process).
+# The name of the HDF5 file for Einsums. ``None`` means the einsums default
+# of ``einsums.[pid].h5``, where ``[pid]`` is the PID of the current process.
 hdf5_file_name: str | None = None
 # Tell einsums not to clean up HDF5 files on exit.
 no_delete_hdf5_files: bool | None = None

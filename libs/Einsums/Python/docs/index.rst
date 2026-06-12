@@ -26,7 +26,7 @@ The generated Python package ``einsums`` mirrors the C++ namespace structure:
   bindings.
 - ``einsums.graph``: :ref:`ComputeGraph <modules_Einsums_ComputeGraph>`
   capture, executors, and the bound subset of optimization passes.
-- ``einsums.io`: slab I/O wrappers.
+- ``einsums.io``: slab I/O wrappers.
 - ``einsums.profile``: profiling annotations.
 - ``einsums.testing``: pytest helpers.
 
@@ -63,9 +63,8 @@ The generated module
 ====================
 
 The native extension lives at ``${CMAKE_BINARY_DIR}/lib/einsums/_core.*.so``.
-Pure-Python wrappers in ``libs/Einsums/Python/python/einsums/`` add a 
-configuration object,
-pretty repr, and a few convenience helpers.
+Pure-Python wrappers in ``libs/Einsums/Python/python/einsums/`` add a
+configuration object, a pretty repr, and a few convenience helpers.
 
 einsums.rc
 ==========
@@ -87,7 +86,7 @@ concerned. Changing them post-init has no effect.
 
 The same fields can be set via environment variables. This is useful for test
 harnesses that need to disable signal handlers and debugger prompts
-without hackey fixes::
+without ad hoc workarounds::
 
     EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1
     EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1

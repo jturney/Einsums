@@ -8,9 +8,9 @@
 // This file is not auto-generated. It owns the runtime startup/shutdown
 // boilerplate and the PYBIND11_MODULE block. The list of per-module
 // register functions is the only piece that varies with the enabled module
-// set, and that's pulled in from a tiny auto-generated header
-// (``Einsums_PyEinsumsModules.hpp``) that ``einsums_finalize_pybind`` writes
-// at config time. Splitting the static and generated halves keeps this
+// set, and that's pulled in from a tiny auto-generated header,
+// ``Einsums/Python/Detail/PyEinsumsModules.hpp``, that ``einsums_finalize_pybind``
+// writes at config time. Splitting the static and generated halves keeps this
 // file linted, formatted, and IDE-indexed like ordinary C++ sources.
 
 #include <Einsums/Runtime/InitRuntime.hpp>
@@ -38,8 +38,8 @@ namespace {
 // libs/Einsums/Runtime configuration.
 //
 // Per-category block layout mirrors the runtime's cl::OptionCategory
-// groupings (see libs/Einsums/RuntimeConfiguration/src/RuntimeConfiguration.cpp
-// and the per-module InitModule.cpp files in BufferAllocator/Tensor/...).
+// groupings. See libs/Einsums/RuntimeConfiguration/src/RuntimeConfiguration.cpp
+// and the per-module InitModule.cpp files in BufferAllocator, Tensor, and so on.
 std::vector<std::string> argv_from_rc(py::module_ const &rc) {
     std::vector<std::string> argv;
     argv.emplace_back("einsums-python");
@@ -52,7 +52,7 @@ std::vector<std::string> argv_from_rc(py::module_ const &rc) {
             argv.emplace_back(std::string{"--einsums:"} + flag + "=" + v.cast<std::string>());
         }
     };
-    // Helper: append a integer-valued ``--einsums:<flag>=<int>`` if the
+    // Helper: append an integer-valued ``--einsums:<flag>=<int>`` if the
     // attribute is not None.
     auto opt_int = [&](char const *attr, char const *flag) {
         py::object const v = rc.attr(attr);
@@ -70,7 +70,8 @@ std::vector<std::string> argv_from_rc(py::module_ const &rc) {
         }
     };
     // Helper: append a ``--einsums:<flag>=<true|false>`` for cl::Opt<bool>
-    // options that take an explicit value (rare; profile:no-append is one).
+    // options that take an explicit value. These are rare; profile:no-append
+    // is one.
     auto opt_bool_value = [&](char const *attr, char const *flag) {
         py::object const v = rc.attr(attr);
         if (!v.is(py::none())) {
@@ -166,17 +167,17 @@ PYBIND11_MODULE(_core, m) {
     // NOTE: importing _core only registers the bindings. It deliberately
     // does not start the runtime. Runtime startup is deferred to
     // _initialize_from_rc() below, called lazily on the first real use from
-    // the Python package (see einsums/__init__.py::_ensure_initialized). This
-    // decouples "the extension is loaded" (so `import einsums`, or an external
-    // module receiving an einsums object, has the types registered) from "the
-    // runtime is up" (which must wait until after einsums.rc is configured).
+    // the Python package; see einsums/__init__.py::_ensure_initialized. This
+    // decouples "the extension is loaded", which gives `import einsums` or an
+    // external module receiving an einsums object the registered types, from
+    // "the runtime is up", which must wait until after einsums.rc is configured.
     m.def(
         "_initialize_from_rc",
         []() {
             // Idempotent: no-op once the runtime is already running. Reads the
-            // user's einsums.rc settings (or defaults if rc was never touched).
-            // einsums.rc is a pure-Python sibling; importing it does not recurse
-            // back into _core.
+            // user's einsums.rc settings, falling back to defaults if rc was
+            // never touched. einsums.rc is a pure-Python sibling; importing it
+            // does not recurse back into _core.
             if (einsums::is_running()) {
                 return;
             }

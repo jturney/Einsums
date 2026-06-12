@@ -5,16 +5,16 @@
 
 """Python package shell for einsums.
 
-Importing ``einsums`` (or any subpackage like ``einsums.rc``) loads the
-compiled extension ``einsums._core`` so its bindings — types *and* functions
-— are registered immediately. This is what lets an external module that
-merely *receives* an einsums object (e.g. psi4 returning a
-``TiledRuntimeTensor``) work after a plain ``import einsums``, with no need
+Importing ``einsums``, or any subpackage like ``einsums.rc``, loads the
+compiled extension ``einsums._core`` so that its bindings, both types and
+functions, are registered immediately. This is what lets an external module
+that merely receives an einsums object, such as psi4 returning a
+``TiledRuntimeTensor``, work after a plain ``import einsums``, with no need
 to ``import einsums._core`` explicitly.
 
-Loading ``_core`` only **registers** the bindings; it does NOT start the C++
-runtime. Runtime startup (``einsums::initialize``) is deferred to the first
-real use via :func:`_ensure_initialized`, so ``einsums.rc`` can still be
+Loading ``_core`` only registers the bindings; it does NOT start the C++
+runtime. Runtime startup through ``einsums::initialize`` is deferred to the
+first real use via :func:`_ensure_initialized`, so ``einsums.rc`` can still be
 configured first and is read at init time.
 
 Typical usage::
@@ -25,8 +25,8 @@ Typical usage::
     import einsums
     einsums.gemm(...)              # runtime initializes here, using rc
 
-``import einsums.rc`` is optional — ``einsums.rc`` is always present with
-default (``None``) values, and the runtime initializes from those defaults
+``import einsums.rc`` is optional. ``einsums.rc`` is always present with
+default ``None`` values, and the runtime initializes from those defaults
 on first use if nothing was configured.
 """
 
@@ -37,18 +37,19 @@ from . import rc  # noqa: F401  (exposed as einsums.rc)
 from .rc import LogLevel  # noqa: F401  (exposed as einsums.LogLevel)
 
 # Eager-load the compiled extension so its bindings are registered as soon as
-# the package is imported. This only registers types/functions — _core's
-# module init does not start the runtime (see PyEinsumsMain.cpp). Runtime
-# startup is deferred to _ensure_initialized() on first real use.
+# the package is imported. This only registers types and functions; _core's
+# module init does not start the runtime, as described in PyEinsumsMain.cpp.
+# Runtime startup is deferred to _ensure_initialized() on first real use.
 from . import _core as _core  # noqa: F401
 
 
 def _ensure_initialized() -> None:
     """Start the einsums runtime from ``einsums.rc`` on first real use.
 
-    Idempotent — ``_core._initialize_from_rc()`` no-ops once the runtime is
-    running. Called lazily (not at import) so ``einsums.rc`` settings made
-    after ``import einsums`` but before the first compute still take effect.
+    Idempotent: ``_core._initialize_from_rc()`` no-ops once the runtime is
+    running. Called lazily rather than at import time so that ``einsums.rc``
+    settings made after ``import einsums`` but before the first compute still
+    take effect.
     """
     _core._initialize_from_rc()
 
@@ -56,9 +57,9 @@ def _ensure_initialized() -> None:
 # ----------------------------------------------------------------------
 # Version / build metadata
 # ----------------------------------------------------------------------
-# ``__version__`` and ``version_info`` follow Python convention (PEP 396,
-# sys.version_info-style tuple). ``build_info()`` returns the heavier
-# build-time metadata as a dict — kept callable to defer the C++ call to
+# ``__version__`` and ``version_info`` follow Python convention: PEP 396 and
+# a sys.version_info-style tuple. ``build_info()`` returns the heavier
+# build-time metadata as a dict. It is kept callable to defer the C++ call to
 # ``_core._version.*`` until someone actually asks for it.
 #
 # Importing this module does NOT load ``_core``; the compiled extension
@@ -69,8 +70,8 @@ def _load_version() -> tuple[str, tuple[int, int, int, str]]:
     """Pull version string + info tuple from the compiled ``_core._version``.
 
     Returns ``(__version__, version_info)``. Cached at module import for
-    cheap repeat lookups — but the call itself fires ``_core`` (and thus
-    ``einsums::initialize``) the first time it's invoked.
+    cheap repeat lookups, though the call itself fires ``_core``, and thus
+    ``einsums::initialize``, the first time it's invoked.
     """
     v = _importlib.import_module("._core._version", __name__)
     return v.full_version_as_string(), (
@@ -100,8 +101,8 @@ def get_log_level() -> "LogLevel":
     """Return the current einsums runtime log level as a :class:`LogLevel`.
 
     Falls back to the raw integer if the current level doesn't map to a
-    :class:`LogLevel` member (e.g. spdlog's CRITICAL / OFF which we don't
-    expose in the Python enum yet).
+    :class:`LogLevel` member, as with spdlog's CRITICAL and OFF, which the
+    Python enum doesn't expose yet.
     """
     _ensure_initialized()
     raw = _core.get_log_level()
@@ -116,7 +117,7 @@ def build_info() -> dict[str, str]:
 
     Keys: ``version``, ``type``, ``date_time``, ``configuration``,
     ``full``. Values mirror the corresponding ``einsums::*`` C++ helpers
-    in ``Einsums/Version.hpp`` — the build type and timestamp are
+    in ``Einsums/Version.hpp``. The build type and timestamp are
     captured at compile time, so the dict is constant across the
     lifetime of a process.
     """
@@ -134,27 +135,27 @@ def build_info() -> dict[str, str]:
 # Capture-aware __getitem__ on RuntimeTensor classes
 # ----------------------------------------------------------------------
 # Outside of a graph capture, ``t[1:3, :]`` returns a non-graph
-# RuntimeTensorView via the codegen's index protocol — the same behavior
+# RuntimeTensorView via the codegen's index protocol, the same behavior
 # numpy users expect. Inside ``with cg.capture(g):`` though, that view
 # isn't registered with the graph, so subsequent ops on it would see an
-# off-graph tensor (or fail to find it as a slot).
+# off-graph tensor or fail to find it as a slot.
 #
 # We monkey-patch __getitem__ on each RuntimeTensor class once at _core
 # load time so slice-only access inside capture routes through
-# ``cg.view`` automatically. The view it returns aliases the parent
-# (TensorHandle::aliases is set), so reads/writes through it propagate
-# correctly. Anything we can't translate (integer indices, strided
-# slices, mismatched arity) raises a clear error so the user knows to
+# ``cg.view`` automatically. The view it returns aliases the parent, with
+# TensorHandle::aliases set, so reads and writes through it propagate
+# correctly. Anything we can't translate, such as integer indices, strided
+# slices, or mismatched arity, raises a clear error so the user knows to
 # either drop out of capture or use ``cg.view`` directly with a custom
 # axis spec.
 
 _RUNTIME_TENSOR_CLASS_NAMES = ("RuntimeTensorF", "RuntimeTensorD", "RuntimeTensorC", "RuntimeTensorZ")
-# Views need the same capture-aware __getitem__: slicing a view (e.g.
-# ``(A.T)[1:]``) must also route through ``cg.view`` so the resulting
+# Views need the same capture-aware __getitem__: slicing a view such as
+# ``(A.T)[1:]`` must also route through ``cg.view`` so the resulting
 # sub-view aliases the parent chain. Without this it falls back to a raw
-# eager slice with ``aliases == 0`` — invisible to the scheduler, which
-# then can reorder a read of it ahead of an in-place write to the owning
-# tensor (bug-optimizer-scale-view-alias).
+# eager slice with ``aliases == 0``, which is invisible to the scheduler.
+# The scheduler can then reorder a read of it ahead of an in-place write to
+# the owning tensor (bug-optimizer-scale-view-alias).
 _RUNTIME_TENSOR_VIEW_CLASS_NAMES = ("RuntimeTensorViewF", "RuntimeTensorViewD", "RuntimeTensorViewC", "RuntimeTensorViewZ")
 _runtime_tensor_getitem_patched = False
 
@@ -241,9 +242,9 @@ def _make_capture_aware_getitem(orig_getitem):
 def _patch_runtime_tensor_getitem(core):
     """Install the capture-aware ``__getitem__`` on each RuntimeTensor class.
 
-    Idempotent — the global ``_runtime_tensor_getitem_patched`` flag
-    prevents double-wrapping (which would deepen the call stack and
-    confuse error reporting).
+    Idempotent: the global ``_runtime_tensor_getitem_patched`` flag
+    prevents double-wrapping, which would deepen the call stack and
+    confuse error reporting.
     """
     global _runtime_tensor_getitem_patched
     if _runtime_tensor_getitem_patched:
@@ -260,14 +261,15 @@ def _patch_runtime_tensor_getitem(core):
 # ----------------------------------------------------------------------
 # __setitem__ for sub-view assignment (A[block] = value)
 # ----------------------------------------------------------------------
-# The codegen binds __setitem__ for full-element scalar writes (A[1,2] = x).
-# This wrapper adds the partial/slice cases (A[i] = vec, A[1:3, :] = mat,
-# A[...] = B): it resolves the target sub-view via __getitem__, coerces the
-# RHS to an einsums tensor of the matching shape (a tensor is used directly,
-# a scalar becomes a full(...) block, an array-like is ingested with
-# asarray), and copies it in with axpby — which is stride-aware (sub-views of
-# a column-major tensor are strided) and capture-aware. Full-element writes
-# still fall through to the bound scalar setter.
+# The codegen binds __setitem__ for full-element scalar writes like A[1,2] = x.
+# This wrapper adds the partial and slice cases such as A[i] = vec,
+# A[1:3, :] = mat, and A[...] = B. It resolves the target sub-view via
+# __getitem__, coerces the RHS to an einsums tensor of the matching shape, and
+# copies it in with axpby. A tensor RHS is used directly, a scalar becomes a
+# full(...) block, and an array-like is ingested with asarray. axpby is both
+# stride-aware, which matters because sub-views of a column-major tensor are
+# strided, and capture-aware. Full-element writes still fall through to the
+# bound scalar setter.
 
 _runtime_tensor_setitem_patched = False
 
@@ -276,9 +278,9 @@ def _assignment_target_shape(self, key):
     """Result shape of ``self[key]`` computed from the key + parent dims.
 
     Used instead of reading ``self[key].shape`` because under capture the
-    sub-view's dims are a placeholder (the full parent) until execute — only
-    the parent's own dims are known at capture time. Contiguous (step==1)
-    slices and rank-reducing int indices only."""
+    sub-view's dims are a placeholder, the full parent, until execute; only
+    the parent's own dims are known at capture time. Supports contiguous
+    step==1 slices and rank-reducing int indices only."""
     rank = self.rank()
     kt = key if isinstance(key, tuple) else (key,)
     if any(k is Ellipsis for k in kt):
@@ -336,12 +338,12 @@ def _make_setitem(orig_setitem):
 def _patch_runtime_tensor_setitem(core):
     """Install sub-view-aware ``__setitem__`` on each RuntimeTensor class.
 
-    Views (``RuntimeTensorView{F,D,C,Z}``) are patched too — symmetric with
-    the capture-aware ``__getitem__`` — so slice-assignment into a view of a
-    view (``(A.T)[1:] = X``) resolves the target through ``cg.view`` and
+    Views (``RuntimeTensorView{F,D,C,Z}``) are patched too, symmetric with
+    the capture-aware ``__getitem__``, so slice-assignment into a view of a
+    view such as ``(A.T)[1:] = X`` resolves the target through ``cg.view`` and
     aliases the parent chain. Without it the write would take the eager raw
-    path with ``aliases == 0`` (the write-side twin of
-    bug-optimizer-scale-view-alias)."""
+    path with ``aliases == 0``, the write-side twin of
+    bug-optimizer-scale-view-alias."""
     global _runtime_tensor_setitem_patched
     if _runtime_tensor_setitem_patched:
         return
@@ -358,8 +360,8 @@ def _patch_runtime_tensor_setitem(core):
 # ----------------------------------------------------------------------
 # TiledRuntimeTensor.view([s0, s1, ...]) takes one IndexSpace per axis and
 # returns a TiledRuntimeTensorView. We add subscript sugar so the natural
-# ``A[o, v, o, v]`` (IndexSpace per axis) maps onto it — matching how users
-# think about occupied/virtual orbital blocks per irrep.
+# ``A[o, v, o, v]``, one IndexSpace per axis, maps onto it. This matches how
+# users think about occupied and virtual orbital blocks per irrep.
 
 _TILED_TENSOR_CLASS_NAMES = ("TiledRuntimeTensorF", "TiledRuntimeTensorD", "TiledRuntimeTensorC", "TiledRuntimeTensorZ")
 _tiled_tensor_getitem_patched = False
@@ -390,14 +392,14 @@ def _patch_tiled_tensor_getitem(core):
 # ``np.asarray(t)`` is zero-copy. What they lack is the thin attribute
 # layer numpy users reach for reflexively: ``.shape``, ``.ndim``,
 # ``.dtype``, ``.T``, ``len(t)``, a useful ``repr``, an explicit
-# ``__array__``, and ``@`` (matmul). We install those here, in Python,
-# rather than growing the C++ surface — they're pure conveniences built
-# on the handful of methods the bindings already expose (``rank``,
-# ``dim``, ``transpose_view``, ``name`` where present).
+# ``__array__``, and ``@`` for matmul. We install those here, in Python,
+# rather than growing the C++ surface. They are pure conveniences built
+# on the handful of methods the bindings already expose: ``rank``,
+# ``dim``, ``transpose_view``, and ``name`` where present.
 #
 # Crucially, ``@`` is NOT delegated to numpy: it dispatches to
-# ``einsums.linalg.gemm`` so the operation stays on Einsums code paths
-# (and is recorded into the active graph when inside ``cg.capture``).
+# ``einsums.linalg.gemm`` so the operation stays on Einsums code paths,
+# and it is recorded into the active graph when inside ``cg.capture``.
 
 # Class-name suffix -> numpy dtype. RuntimeTensor{F,D,C,Z} and the View
 # variants share the BLAS-style letter: F=float32, D=float64,
@@ -414,7 +416,7 @@ def _np():
     """Import numpy lazily.
 
     The ergonomics layer is numpy-interop sugar, so it's reasonable to
-    require numpy only when one of these attributes is actually touched —
+    require numpy only when one of these attributes is actually touched,
     keeping ``import einsums`` free of a hard numpy dependency.
     """
     import numpy as np  # noqa: PLC0415
@@ -447,13 +449,13 @@ def _tensor_dtype(self):
 def _tensor_T(self):
     """``.T`` -> zero-copy reversed-axis view.
 
-    Outside capture this is the C++ ``transpose_view`` (KEEP_ALIVE-tied to
-    this tensor's storage). Inside ``cg.capture`` that raw transpose view
-    is invisible to the graph (it shares the parent's data pointer, so the
-    capture machinery resolves it to the parent's slot with non-transposed
-    dims — a latent crash). So when capturing we route through
+    Outside capture this is the C++ ``transpose_view``, which is
+    KEEP_ALIVE-tied to this tensor's storage. Inside ``cg.capture`` that raw
+    transpose view is invisible to the graph: it shares the parent's data
+    pointer, so the capture machinery resolves it to the parent's slot with
+    non-transposed dims, a latent crash. So when capturing we route through
     ``cg.permute_view``, which records a graph-registered, parent-aliasing
-    view with the correct reversed dims/strides that captured ops can
+    view with the correct reversed dims and strides that captured ops can
     safely consume."""
     _g = _importlib.import_module("einsums.graph")
     if _g.current_graph() is not None:
@@ -465,9 +467,9 @@ def _tensor_T(self):
 def _permuted_view(self, perm):
     """Zero-copy axis-permuted view, graph-aware.
 
-    Inside ``cg.capture`` routes through ``cg.permute_view`` (graph-registered,
-    parent-aliasing); eagerly uses the C++ ``permute_view`` method. Backs
-    ``.transpose`` and ``.swapaxes``."""
+    Inside ``cg.capture`` this routes through ``cg.permute_view``, which is
+    graph-registered and parent-aliasing; eagerly it uses the C++
+    ``permute_view`` method. Backs ``.transpose`` and ``.swapaxes``."""
     _g = _importlib.import_module("einsums.graph")
     if _g.current_graph() is not None:
         return _g.permute_view(self, perm)
@@ -477,8 +479,9 @@ def _permuted_view(self, perm):
 def _normalize_axes(self, axes):
     """Resolve numpy-style ``transpose`` axis args to a perm list.
 
-    Accepts ``transpose()`` (reverse — numpy default), ``transpose(0, 2, 1)``,
-    or ``transpose((0, 2, 1))``; negative axes are allowed."""
+    Accepts ``transpose()``, which reverses the axes as numpy does by
+    default, as well as ``transpose(0, 2, 1)`` or ``transpose((0, 2, 1))``.
+    Negative axes are allowed."""
     rank = self.rank()
     if len(axes) == 0:
         return list(range(rank - 1, -1, -1))
@@ -493,12 +496,12 @@ def _normalize_axes(self, axes):
 
 
 def _tensor_transpose(self, *axes):
-    """``A.transpose(*axes)`` — zero-copy permuted view (numpy semantics)."""
+    """``A.transpose(*axes)``: zero-copy permuted view with numpy semantics."""
     return _permuted_view(self, _normalize_axes(self, axes))
 
 
 def _tensor_swapaxes(self, axis1, axis2):
-    """``A.swapaxes(i, j)`` — zero-copy view with two axes exchanged."""
+    """``A.swapaxes(i, j)``: zero-copy view with two axes exchanged."""
     rank = self.rank()
     perm = list(range(rank))
     perm[axis1 % rank], perm[axis2 % rank] = perm[axis2 % rank], perm[axis1 % rank]
@@ -506,7 +509,7 @@ def _tensor_swapaxes(self, axis1, axis2):
 
 
 def _tensor_copy(self):
-    """``A.copy()`` — a fresh dense tensor holding a copy of A (like numpy)."""
+    """``A.copy()``: a fresh dense tensor holding a copy of A, like numpy."""
     return _copy_of(self, f"{getattr(self, 'name', 'A')}_copy")
 
 
@@ -518,8 +521,9 @@ def _is_capturing():
 def _tensor_sum(self):
     """``A.sum()`` -> sum of all elements (einsums.linalg.sum).
 
-    Eager: returns a Python scalar. Inside ``cg.capture``: returns a graph
-    ``[1]`` tensor (read its element after execute). Works on views."""
+    Eager mode returns a Python scalar. Inside ``cg.capture`` it returns a
+    graph ``[1]`` tensor whose element you read after execute. Works on
+    views."""
     dtype_name = _DTYPE_SUFFIX[type(self).__name__[-1]]
     out = _alloc_output(f"sum({getattr(self, 'name', 'A')})", [1], dtype_name)
     _core.linalg.sum(out, self)
@@ -541,7 +545,7 @@ def _tensor_mean(self):
 def _tensor_max(self):
     """``A.max()`` -> maximum element (real dtypes; einsums.linalg.max).
 
-    Complex has no natural ordering — use ``linalg.norm(MAXABS, A)`` for the
+    Complex has no natural ordering, so use ``linalg.norm(MAXABS, A)`` for the
     largest magnitude. Eager returns a scalar; capture returns a graph ``[1]``."""
     dtype_name = _DTYPE_SUFFIX[type(self).__name__[-1]]
     if dtype_name.startswith("complex"):
@@ -574,10 +578,10 @@ def _tensor_repr(self):
 def _tensor_array(self, dtype=None, copy=None):
     """numpy's ``__array__`` protocol.
 
-    Goes through ``memoryview(self)`` (the buffer protocol) rather than
-    ``np.asarray(self)`` — the latter would re-enter this very method and
+    Goes through ``memoryview(self)``, the buffer protocol, rather than
+    ``np.asarray(self)``, since the latter would re-enter this very method and
     recurse. The base result aliases tensor storage; we only copy when
-    numpy asks (``copy=True``) or a dtype cast forces it.
+    numpy asks via ``copy=True`` or a dtype cast forces it.
     """
     np = _np()
     arr = np.asarray(memoryview(self))
@@ -596,16 +600,16 @@ def _alloc_output(name, shape, dtype_name):
     """Allocate a fresh zero output tensor for an operator result.
 
     Inside ``cg.capture`` the output must be owned by the active graph
-    (``graph.create_zero_tensor``) so it outlives ``graph.execute()`` — a
-    process-owned tensor can be garbage-collected mid-chain (e.g. the first
-    intermediate of ``(A + B) - A``), which the executor reports as
+    via ``graph.create_zero_tensor`` so it outlives ``graph.execute()``. A
+    process-owned tensor can be garbage-collected mid-chain, for instance the
+    first intermediate of ``(A + B) - A``, which the executor reports as
     "tensor ... appears to have been destroyed". Outside capture, eager
     process-owned allocation is correct.
     """
     # NB: ``from . import graph`` would hit this package's __getattr__, which
-    # forwards "graph" to the C-extension ``_core.graph`` (it has
-    # CaptureContext but NOT current_graph). import_module resolves the real
-    # Python shell ``einsums/graph.py``.
+    # forwards "graph" to the C-extension ``_core.graph``. That submodule has
+    # CaptureContext but NOT current_graph, so we use import_module to resolve
+    # the real Python shell ``einsums/graph.py``.
     _g = _importlib.import_module("einsums.graph")
     g = _g.current_graph()
     if g is not None:
@@ -621,13 +625,14 @@ def _tensor_matmul(self, other):
 
     Stays on Einsums code paths instead of falling through to numpy. When
     invoked inside ``with cg.capture(g):`` the gemm/gemv call is recorded
-    into the active graph (the C++ capture context intercepts it), so ``@``
-    composes inside a captured workflow. Supported, matching numpy:
+    into the active graph, because the C++ capture context intercepts it, so
+    ``@`` composes inside a captured workflow. Supported, matching numpy:
       * (m,k) @ (k,n) -> (m,n)   gemm
       * (m,k) @ (k,)  -> (m,)    gemv
-      * (k,)  @ (k,n) -> (n,)    gemv (A^T x)
-    Two vectors (inner product) raises -> use einsums.linalg.dot; higher
-    ranks (batched) are not supported. dtypes must match.
+      * (k,)  @ (k,n) -> (n,)    gemv, computing A^T x
+    Two vectors form an inner product and raise, directing you to
+    einsums.linalg.dot; higher, batched ranks are not supported. dtypes must
+    match.
     """
     if not _is_einsums_tensor(other):
         raise TypeError(
@@ -679,8 +684,8 @@ def _tensor_matmul(self, other):
 # ----------------------------------------------------------------------
 # Tier-2 arithmetic operators -> einsums.linalg (axpy / scale / direct_product)
 # ----------------------------------------------------------------------
-# numpy-style operators that return a NEW tensor (operands never mutated)
-# and dispatch to Einsums BLAS-level ops rather than numpy:
+# numpy-style operators that return a NEW tensor, never mutating their
+# operands, and dispatch to Einsums BLAS-level ops rather than numpy:
 #
 #   A + B, A - B   -> two axpy into a fresh zero output
 #   c * A, A * c   -> axpy(c, A, zeros)           (scalar scaling)
@@ -692,8 +697,8 @@ def _tensor_matmul(self, other):
 #   A += B, A -= B -> axpy(±1, B, A)
 #   A *= c, A /= c -> scale(c | 1/c, A)
 #
-# All of these record into the active graph when used inside cg.capture
-# (the underlying axpy/scale/direct_product are capture-aware), exactly
+# All of these record into the active graph when used inside cg.capture,
+# because the underlying axpy/scale/direct_product are capture-aware, exactly
 # like __matmul__. Non-einsums, non-scalar operands raise TypeError so the
 # operation never silently falls through to numpy; use np.asarray(t) to
 # opt into numpy math explicitly.
@@ -798,7 +803,7 @@ def _tensor_mul(self, other):
 
 
 def _tensor_rmul(self, other):
-    # c * A — only the scalar case reaches here (tensor*tensor uses __mul__).
+    # c * A. Only the scalar case reaches here; tensor*tensor uses __mul__.
     if isinstance(other, _numbers.Number):
         return _tensor_mul(self, other)
     _reject_operand("*", other)
@@ -859,7 +864,7 @@ def _tensor_isub(self, other):
 
 def _tensor_imul(self, other):
     # In-place scalar scaling only; tensor '*=' would need a self-aliased
-    # direct_product (skip — use `A = A * B` for element-wise).
+    # direct_product, which we skip. Use `A = A * B` for element-wise.
     if isinstance(other, _numbers.Number):
         _core.linalg.scale(other, self)
         return self
@@ -922,11 +927,11 @@ def _patch_numpy_ergonomics(core):
 def _bootstrap():
     """Start the runtime and install the Python-side patches.
 
-    Idempotent. Called from ``__getattr__`` (first compiled-symbol touch)
-    and from the Tier-3 constructor aliases below — those are *real*
-    module attributes, so they bypass ``__getattr__`` and must bootstrap
+    Idempotent. Called from ``__getattr__`` on the first compiled-symbol
+    touch, and from the Tier-3 constructor aliases below. Those aliases are
+    real module attributes, so they bypass ``__getattr__`` and must bootstrap
     themselves to guarantee the runtime is up and the numpy-ergonomics
-    layer (``.shape``, ``@``, …) is on the returned tensor's class.
+    layer, such as ``.shape`` and ``@``, is on the returned tensor's class.
     """
     _ensure_initialized()
     _patch_runtime_tensor_getitem(_core)
@@ -938,17 +943,17 @@ def _bootstrap():
 # ----------------------------------------------------------------------
 # Tier-3 numpy-style constructor aliases
 # ----------------------------------------------------------------------
-# Familiar spellings (einsums.zeros / ones / empty / full / eye / array /
-# asarray and the *_like variants) layered over create_zero_tensor and the
-# buffer protocol. numpy conventions: shape first, ``dtype=`` keyword
-# (numpy dtype or string), default float64. The einsums-specific ``name=``
-# is optional and defaults to the constructor name.
+# Familiar spellings such as einsums.zeros, ones, empty, full, eye, array,
+# asarray, and the *_like variants, layered over create_zero_tensor and the
+# buffer protocol. numpy conventions: shape first, then a ``dtype=`` keyword
+# that takes a numpy dtype or string and defaults to float64. The
+# einsums-specific ``name=`` is optional and defaults to the constructor name.
 #
-# einsums has four element types; ``dtype`` is normalized to one of them
-# (float32 stays float32; every other real type -> float64; complex64
-# stays, every other complex -> complex128). Allocation goes through
-# _alloc_output so a constructor used inside cg.capture yields a
-# graph-owned tensor (consistent with the operators).
+# einsums has four element types, and ``dtype`` is normalized to one of them:
+# float32 stays float32, every other real type becomes float64, complex64
+# stays, and every other complex becomes complex128. Allocation goes through
+# _alloc_output so a constructor used inside cg.capture yields a graph-owned
+# tensor, consistent with the operators.
 
 
 def _normalize_shape(shape):
@@ -973,23 +978,23 @@ def _einsums_dtype_str(dtype):
 
 
 def zeros(shape, dtype="float64", name=None):
-    """Zero-filled tensor of the given shape — like ``numpy.zeros``."""
+    """Zero-filled tensor of the given shape, like ``numpy.zeros``."""
     _bootstrap()
     return _alloc_output(name or "zeros", _normalize_shape(shape), _einsums_dtype_str(dtype))
 
 
 def empty(shape, dtype="float64", name=None):
-    """Uninitialized-tensor stand-in — like ``numpy.empty``.
+    """Uninitialized-tensor stand-in, like ``numpy.empty``.
 
     einsums has no uninitialized-allocation primitive, so this is
-    currently zero-filled (safe, just not the fastest). Kept for numpy
+    currently zero-filled, which is safe but not the fastest. Kept for numpy
     parity and forward compatibility."""
     _bootstrap()
     return _alloc_output(name or "empty", _normalize_shape(shape), _einsums_dtype_str(dtype))
 
 
 def full(shape, fill_value, dtype="float64", name=None):
-    """Tensor filled with ``fill_value`` — like ``numpy.full``."""
+    """Tensor filled with ``fill_value``, like ``numpy.full``."""
     _bootstrap()
     t = _alloc_output(name or "full", _normalize_shape(shape), _einsums_dtype_str(dtype))
     t.set_all(fill_value)
@@ -997,12 +1002,12 @@ def full(shape, fill_value, dtype="float64", name=None):
 
 
 def ones(shape, dtype="float64", name=None):
-    """One-filled tensor — like ``numpy.ones``."""
+    """One-filled tensor, like ``numpy.ones``."""
     return full(shape, 1, dtype=dtype, name=name or "ones")
 
 
 def eye(n, m=None, dtype="float64", name=None):
-    """2-D tensor with ones on the main diagonal — like ``numpy.eye``."""
+    """2-D tensor with ones on the main diagonal, like ``numpy.eye``."""
     _bootstrap()
     np = _np()
     cols = n if m is None else m
@@ -1014,12 +1019,12 @@ def eye(n, m=None, dtype="float64", name=None):
 
 
 def asarray(obj, dtype=None, name=None):
-    """Convert ``obj`` to an einsums tensor — like ``numpy.asarray``.
+    """Convert ``obj`` to an einsums tensor, like ``numpy.asarray``.
 
-    An einsums tensor with a compatible dtype is returned unchanged (no
-    copy); anything else (numpy array, nested list, scalar) is copied into
-    a fresh einsums tensor via the buffer protocol. ``dtype`` is honored
-    and normalized to an einsums element type."""
+    An einsums tensor with a compatible dtype is returned unchanged, with no
+    copy. Anything else, such as a numpy array, nested list, or scalar, is
+    copied into a fresh einsums tensor via the buffer protocol. ``dtype`` is
+    honored and normalized to an einsums element type."""
     _bootstrap()
     np = _np()
     if _is_einsums_tensor(obj) and (dtype is None or np.dtype(dtype) == obj.dtype):
@@ -1071,9 +1076,9 @@ def __getattr__(name):
     ``_core``, which fires ``einsums::initialize()`` inside its
     ``PYBIND11_MODULE`` body using the current ``einsums.rc`` settings.
 
-    Short-circuits on dunder / private names: Python's import machinery
+    Short-circuits on dunder and private names: Python's import machinery
     itself probes them during ``from . import _core``, and we'd loop.
-    The two exceptions are ``__version__`` and ``version_info`` — both
+    The two exceptions are ``__version__`` and ``version_info``. Both
     are part of the public Python surface and are populated lazily from
     the ``_core._version`` submodule on first access.
     """

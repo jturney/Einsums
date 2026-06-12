@@ -5,10 +5,10 @@
 
 #pragma once
 
-// The binding-annotation contract (the APIARY_* macros) is owned by
-// Apiary — the standalone libclang codegen tool, vendored at
-// external/apiary. This thin shim is kept at the historical
+// The binding-annotation contract, the APIARY_* macros, is owned by
+// Apiary, the standalone libclang codegen tool vendored at
+// external/apiary. This thin shim stays at the historical
 // ``Einsums/Python/Annotations.hpp`` path so existing includes across the
-// codebase keep working unchanged; the macros themselves live in
+// codebase keep working unchanged. The macros themselves live in
 // <apiary/Annotations.hpp>.
 #include <apiary/Annotations.hpp>

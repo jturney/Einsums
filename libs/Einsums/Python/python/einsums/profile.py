@@ -7,7 +7,7 @@
 
 Surface for ``einsums._core.profile`` plus the ``section`` context manager
 that mirrors the C++ ``LabeledSection`` macro. The C-extension submodule
-is loaded lazily on first attribute access — importing this module does
+is loaded lazily on first attribute access, so importing this module does
 not by itself fire ``einsums::initialize()``.
 
 Typical usage::
@@ -33,7 +33,7 @@ def _core():
 
 
 def __getattr__(name):
-    """PEP 562 lazy attribute access — mirrors ``einsums.graph``."""
+    """PEP 562 lazy attribute access, mirroring ``einsums.graph``."""
     if name.startswith("_"):
         raise AttributeError(name)
     attr = getattr(_core(), name)
@@ -43,12 +43,12 @@ def __getattr__(name):
 
 @_contextlib.contextmanager
 def section(name, *, file="", line=0, func=""):
-    """Scoped profile region — Python equivalent of ``LabeledSection``.
+    """Scoped profile region, the Python equivalent of ``LabeledSection``.
 
-    The optional ``file``/``line``/``func`` arguments parallel the C++
-    macro's compile-time captures so reports can link a Python-side region
-    to a specific source location. Defaults leave them empty (the report
-    falls back to the region name alone).
+    The optional ``file``, ``line``, and ``func`` arguments parallel the
+    C++ macro's compile-time captures so reports can link a Python-side
+    region to a specific source location. Defaults leave them empty, in
+    which case the report falls back to the region name alone.
 
     Usage::
 

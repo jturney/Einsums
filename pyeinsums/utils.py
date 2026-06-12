@@ -61,8 +61,8 @@ def enumerate_many(*args, start=0):
     Enumerate only takes one iterable argument, but it is sometimes useful to
     be able to enumerate multiple lists at once. This allows you to do that.
     If the iterables are of different lengths, then once one ends, it will emit
-    :py:code:`None` in its variables. Once they all end, this will raise
-    :py:code:`StopIteraton`.
+    ``None`` in its variables. Once they all end, this will raise
+    ``StopIteration``.
 
     :param args: The iterators to iterate over.
     :return: Iterator of tuples. The last entry in the tuple is the index number. If an
@@ -216,7 +216,7 @@ def tensor_factory(name: str, dims: list[int], dtype=float, method="einsums"):
     :param name: The name of the tensor. Ignored for NumPy tensors.
     :param dims: The dimensions of the tensor.
     :param dtype: The data type for the tensor.
-    :param method: The kind of tensor to create. It should be either "einsums"  or "numpy'.
+    :param method: The kind of tensor to create. It should be either "einsums" or "numpy".
     :raises ValueError: if the method is not valid.
 
     .. versionadded:: 1.1.0
@@ -332,7 +332,7 @@ def random_tensor_factory(
     :param name: The name of the tensor. Ignored for NumPy tensors.
     :param dims: The dimensions of the tensor.
     :param dtype: The data type for the tensor.
-    :param method: The kind of tensor to create. It should be either "einsums"  or "numpy'.
+    :param method: The kind of tensor to create. It should be either "einsums" or "numpy".
     :raises ValueError: if the method is not valid.
 
     .. versionadded:: 1.1.0
@@ -355,8 +355,8 @@ def create_random_definite(name: str, rows: int, mean=1.0, dtype=float):
     :param name: The name of the tensor.
     :param rows: The number of rows for the tensor. It is a square matrix, so this
     is also the number of columns.
-    :param mean: The average eigenvalue. The eigenvalues will be distributed in a
-    Boltzmann-Maxwell distribution to ensure that there will never be a zero eigenvalue.
+    :param mean: The average eigenvalue. The eigenvalues are drawn from a
+    Maxwell-Boltzmann distribution, so none of them is ever zero.
     :param dtype: The data type to store.
     :return: A positive definite matrix.
     :raises ValueError: if the data type is not a real or complex floating point type.
@@ -382,8 +382,8 @@ def create_random_definite_numpy_array(rows: int, mean=1.0, dtype=float):
 
     :param rows: The number of rows for the tensor. It is a square matrix, so this
     is also the number of columns.
-    :param mean: The average eigenvalue. The eigenvalues will be distributed in a
-    Boltzmann-Maxwell distribution to ensure that there will never be a zero eigenvalue.
+    :param mean: The average eigenvalue. The eigenvalues are drawn from a
+    Maxwell-Boltzmann distribution, so none of them is ever zero.
     :param dtype: The data type to store.
     :return: A positive definite matrix.
     :raises ValueError: if the data type is not a real or complex floating point type.
@@ -403,8 +403,8 @@ def random_definite_tensor_factory(
     :param name: The name for the matrix.
     :param rows: The number of rows for the tensor. It is a square matrix, so this
     is also the number of columns.
-    :param mean: The average eigenvalue. The eigenvalues will be distributed in a
-    Boltzmann-Maxwell distribution to ensure that there will never be a zero eigenvalue.
+    :param mean: The average eigenvalue. The eigenvalues are drawn from a
+    Maxwell-Boltzmann distribution, so none of them is ever zero.
     :param dtype: The data type to store.
     :param method: Which kind of tensor to create. Can be "einsums" or "numpy".
     :return: A positive definite matrix.
@@ -434,11 +434,11 @@ def create_random_semidefinite(
     :param name: The name of the tensor.
     :param rows: The number of rows for the tensor. It is a square matrix, so this
     is also the number of columns.
-    :param mean: The average eigenvalue. The eigenvalues will be distributed in a
-    Boltzmann-Maxwell distribution to ensure that there will never be a zero eigenvalue.
+    :param mean: The average eigenvalue. The nonzero eigenvalues are drawn from a
+    Maxwell-Boltzmann distribution; ``force_zeros`` of them are then set to zero.
     :param force_zeros: The number of guaranteed zero eigenvalues to use.
     :param dtype: The data type to store.
-    :return: A positive definite matrix.
+    :return: A positive semidefinite matrix.
     :raises ValueError: if the data type is not a real or complex floating point type.
 
     .. versionadded:: 1.1.0
@@ -466,11 +466,11 @@ def create_random_semidefinite_numpy_array(
 
     :param rows: The number of rows for the tensor. It is a square matrix, so this
     is also the number of columns.
-    :param mean: The average eigenvalue. The eigenvalues will be distributed in a
-    Boltzmann-Maxwell distribution to ensure that there will never be a zero eigenvalue.
+    :param mean: The average eigenvalue. The nonzero eigenvalues are drawn from a
+    Maxwell-Boltzmann distribution; ``force_zeros`` of them are then set to zero.
     :param force_zeros: The number of guaranteed zero eigenvalues to use.
     :param dtype: The data type to store.
-    :return: A positive definite matrix.
+    :return: A positive semidefinite matrix.
     :raises ValueError: if the data type is not a real or complex floating point type.
 
     .. versionadded:: 1.1.0
@@ -490,19 +490,19 @@ def random_semidefinite_tensor_factory(
 ):
     """
     Create a random positive semidefinite NumPy array or Einsums tensor. If the ``mean`` parameter is
-    negative, then this will create a random negative demidefinite tensor.
+    negative, then this will create a random negative semidefinite tensor.
     The number of guaranteed zeros can be set. By default, at least one eigenvalue
     will be zero.
 
     :param name: The name for the matrix.
     :param rows: The number of rows for the tensor. It is a square matrix, so this
     is also the number of columns.
-    :param mean: The average eigenvalue. The eigenvalues will be distributed in a
-    Boltzmann-Maxwell distribution to ensure that there will never be a zero eigenvalue.
+    :param mean: The average eigenvalue. The nonzero eigenvalues are drawn from a
+    Maxwell-Boltzmann distribution; ``force_zeros`` of them are then set to zero.
     :param force_zeros: The number of guaranteed zero eigenvalues to use.
     :param dtype: The data type to store.
     :param method: Which kind of tensor to create. Can be "einsums" or "numpy".
-    :return: A positive definite matrix.
+    :return: A positive semidefinite matrix.
     :raises ValueError: if the method is not valid.
 
     .. versionadded:: 1.1.0

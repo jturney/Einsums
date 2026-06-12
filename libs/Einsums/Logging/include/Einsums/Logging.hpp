@@ -203,8 +203,8 @@ namespace einsums {
 
 /// Set the runtime log level on the einsums logger. Values mirror
 /// spdlog: 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=CRITICAL, 6=OFF.
-/// Out-of-range values are clamped by spdlog. Compile-time disablement
-/// (``EINSUMS_ACTIVE_LOG_LEVEL``) takes precedence — runtime
+/// Out-of-range values are clamped by spdlog. Compile-time disablement via
+/// ``EINSUMS_ACTIVE_LOG_LEVEL`` takes precedence, so a runtime
 /// ``set_log_level(0)`` cannot re-enable TRACE in a Release build.
 APIARY_EXPOSE EINSUMS_EXPORT void set_log_level(int level);
 
