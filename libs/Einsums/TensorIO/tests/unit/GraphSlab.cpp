@@ -9,9 +9,9 @@
 /// Exercises the graph-aware slab APIs end-to-end: capture a graph that
 /// reads a slab, transforms it, writes it back, then run the graph and
 /// inspect the file. Covers both the static-rank and runtime-rank
-/// dispatcher branches plus the read-transform-write-back loop pattern
-/// that motivated the design (drive a single graph node over multiple
-/// slabs by mutating Slab::ranges between executor invocations).
+/// dispatcher branches, plus the read-transform-write-back loop pattern
+/// that motivated the design, where a single graph node drives multiple
+/// slabs by mutating Slab::ranges between executor invocations.
 
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Executor.hpp>
@@ -134,14 +134,14 @@ TEST_CASE("Slab loop: read→transform→write-back tiles via the graph", "[Tens
     Tensor<double, 2> block("blk", 2, 2);
     Slab              slab{{{0, 2}, {0, 2}}}; // mutated each iteration
 
-    // Build the graph ONCE — read this slab, the user transforms in
-    // place, then write back. Driver loop mutates `slab.ranges` and
-    // re-runs the graph for every 2×2 tile.
+    // Build the graph once: read this slab, the user transforms in
+    // place, then write back. The driver loop mutates `slab.ranges` and
+    // re-runs the graph for every 2x2 tile.
     compute_graph::Graph g;
     {
         compute_graph::CaptureGuard const guard(g);
         read_slice_etn(tmp.path, "A", slab, &block);
-        // Compute step is implicit between executor runs — see loop body.
+        // Compute step is implicit between executor runs; see loop body.
         write_slice_etn(tmp.path, "A", slab, &block);
     }
 
@@ -150,13 +150,13 @@ TEST_CASE("Slab loop: read→transform→write-back tiles via the graph", "[Tens
     auto run_tile = [&](size_t bi, size_t bj) {
         slab.ranges = {{bi * 2, bi * 2 + 2}, {bj * 2, bj * 2 + 2}};
         g.execute();
-        // After read_slice_etn finished and before write_slice_etn fires
-        // we'd want a compute step; but SequentialExecutor runs nodes
-        // in topo order in one pass, so we transform between *graph
-        // runs* instead. The test exercises the surface; in practice
-        // the user would record a compute node between the read and
-        // the write, or use Graph::add_loop in Step 4.
-        // (We just multiply by 10 here to prove the round-trip works.)
+        // After read_slice_etn finishes and before write_slice_etn fires
+        // we would want a compute step, but SequentialExecutor runs nodes
+        // in topo order in one pass, so we transform between graph runs
+        // instead. The test exercises the surface; in practice the user
+        // would record a compute node between the read and the write, or
+        // use Graph::add_loop in Step 4. Here we just multiply by 10 to
+        // prove the round-trip works.
         for (size_t i = 0; i < 2; ++i) {
             for (size_t j = 0; j < 2; ++j) {
                 block(i, j) *= 10.0;

@@ -35,7 +35,7 @@ namespace einsums {
 namespace APIARY_MODULE("io") tensor_io {
 
 /**
- * @brief Read a tensor from a .etn file (graph-aware).
+ * @brief Read a tensor from a .etn file, graph-aware.
  *
  * During graph capture, records a DiskRead node. Outside capture, reads immediately.
  * Works with IOPrefetch for async overlap when using DataflowExecutor.
@@ -63,7 +63,7 @@ APIARY_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<std::complex<double>
 }
 
 /**
- * @brief Write a tensor to a .etn file (graph-aware).
+ * @brief Write a tensor to a .etn file, graph-aware.
  *
  * During graph capture, records a DiskWrite node that executes after the
  * tensor is computed. Outside capture, writes immediately.
@@ -91,14 +91,14 @@ APIARY_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<std::complex<double
 }
 
 /**
- * @brief A slab descriptor — per-dimension half-open ranges into a stored tensor.
+ * @brief A slab descriptor: per-dimension half-open ranges into a stored tensor.
  *
  * Used by @ref read_slice_etn and @ref write_slice_etn to address a
- * hyperslab of a `.etn` entry. `ranges[d]` is `{start, end}` (end is
- * exclusive). The struct is captured by reference into the graph
- * executor lambda, so the *same* graph node can drive a loop by
- * mutating `ranges` between executor invocations — useful for
- * read-transform-write-back patterns over batches of an ERI.
+ * hyperslab of a `.etn` entry. `ranges[d]` is `{start, end}` with end
+ * exclusive. The struct is captured by reference into the graph
+ * executor lambda, so one graph node can drive a loop by mutating
+ * `ranges` between executor invocations. This is what makes
+ * read-transform-write-back patterns over batches of an ERI possible.
  */
 struct APIARY_EXPOSE Slab {
     APIARY_EXPOSE Slab() = default;
@@ -109,8 +109,8 @@ struct APIARY_EXPOSE Slab {
 
 namespace detail {
 /// Dispatcher: route a Slab onto the right TensorFile slice method.
-/// Static-rank `Tensor<T, N>` exposes `::Rank` as a constant — use the
-/// std::array overload. Runtime-rank `GeneralRuntimeTensor<T, A>` has
+/// Static-rank `Tensor<T, N>` exposes `::Rank` as a constant, so it uses
+/// the std::array overload. Runtime-rank `GeneralRuntimeTensor<T, A>` has
 /// no such constant and goes through the std::vector overload.
 template <typename TensorType>
 void file_read_slice_dispatch(TensorFile &file, std::string_view name, TensorType &t, std::vector<std::pair<size_t, size_t>> const &rng) {
@@ -143,7 +143,7 @@ void file_write_slice_dispatch(TensorFile &file, std::string_view name, TensorTy
 } // namespace detail
 
 /**
- * @brief Read a slab of a tensor from a .etn file (graph-aware).
+ * @brief Read a slab of a tensor from a .etn file, graph-aware.
  *
  * During graph capture, records a DiskRead node whose executor reads
  * the slab described by @p slab into @p output. The Slab is captured
@@ -181,13 +181,13 @@ APIARY_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<std::complex<d
 }
 
 /**
- * @brief Write a slab of a tensor to a .etn file (graph-aware).
+ * @brief Write a slab of a tensor to a .etn file, graph-aware.
  *
  * During capture, records a DiskWrite node that, when executed, opens
  * the file in ReadWrite mode and patches the slab described by
  * @p slab with the contents of @p input. The target entry must
- * already exist (e.g. via a prior @ref write_etn or
- * @ref TensorFile::reserve). The Slab is captured by reference for
+ * already exist, for example via a prior @ref write_etn or
+ * @ref TensorFile::reserve. The Slab is captured by reference for
  * loop-driven write-back patterns.
  *
  * @code
@@ -218,7 +218,7 @@ APIARY_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<std::complex<
 }
 
 /**
- * @brief Checkpoint all graph tensors to a .etn file (graph-aware).
+ * @brief Checkpoint all graph tensors to a .etn file, graph-aware.
  *
  * During capture, records a DiskWrite node. Outside capture, saves immediately.
  */

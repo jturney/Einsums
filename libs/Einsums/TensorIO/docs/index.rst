@@ -10,91 +10,92 @@
 TensorIO
 ########
 
-The ``TensorIO`` module provides on-disk tensor storage via HDF5 plus
-graph-aware slab I/O primitives that integrate with the
-:ref:`ComputeGraph <modules_Einsums_ComputeGraph>` for streaming workloads
-that don't fit in memory.
+The ``TensorIO`` module stores tensors on disk in a native binary format
+(``.etn``) and adds graph-aware slab I/O primitives that integrate with the
+:ref:`ComputeGraph <modules_Einsums_ComputeGraph>`. Together they let you
+stream a tensor too large for memory through a computation block by block.
 
-DiskTensor
+TensorFile
 ==========
 
-``DiskTensor<T, Rank>`` is a tensor whose data lives in an HDF5 dataset
-rather than RAM. The path string maps to an HDF5 dataset path; the file
-is created on first write, persisted across program runs, and lazily read
-when accessed.
+``TensorFile`` is the serial entry point: it reads and writes whole tensors,
+or hyperslabs of them, in the ``.etn`` format. A file holds many named
+tensors. New tensors append to the end without rewriting existing data.
 
 .. code-block:: cpp
 
-    #include <Einsums/TensorIO/DiskTensor.hpp>
-
-    using namespace einsums;
-
-    DiskTensor<double, 2> A{"/integrals/oovv", 100, 100};
-
-    // Write a row (or any sub-region)
-    auto in_memory_row = create_random_tensor("row", 100);
-    A(0, All) = in_memory_row;
-
-    // Read it back
-    auto row_back = A(0, All);  // triggers HDF5 read
-
-Slab IO
-=======
-
-For loops that walk a large tensor block by block, ``tensor_io::Slab``
-captures a window onto a ``DiskTensor`` and exposes it via two graph-aware
-wrappers:
-
-- ``read_slice_etn`` — schedule a read of one slab into an in-memory
-  destination as a ComputeGraph node.
-- ``write_slice_etn`` — schedule a write of an in-memory source into one
-  slab as a ComputeGraph node.
-
-The slab is captured by reference, so the SAME slab object can be advanced
-between graph executions to walk an arbitrarily large tensor with a small
-working set.
-
-.. code-block:: cpp
-
-    #include <Einsums/TensorIO/Slab.hpp>
+    #include <Einsums/TensorIO/TensorFile.hpp>
 
     using namespace einsums::tensor_io;
 
-    DiskTensor<double, 3> big{"/integrals/full", 1000, 1000, 1000};
+    // Write tensors to a file.
+    TensorFile out("integrals.etn", TensorFile::Mode::Write);
+    out.write("A", A);
+    out.write("B", B);
 
-    Slab slab{big};
-    slab.set_window({0, 0, 0}, {100, 1000, 1000});
+    // Read one back.
+    TensorFile in("integrals.etn", TensorFile::Mode::Read);
+    in.read("A", A);
 
-    // Build a graph that reads, processes, writes — once.
-    Graph g;
+    // Read a sub-region without loading the whole tensor.
+    in.read_slice("A", slice, {{3, 8}, {0, 10}});
+
+Slab I/O
+========
+
+For a loop that walks a large stored tensor block by block, ``tensor_io::Slab``
+names a hyperslab and the two graph-aware wrappers schedule I/O against it:
+
+- ``read_slice_etn`` records a ComputeGraph node that reads the slab into an
+  in-memory destination.
+- ``write_slice_etn`` records a ComputeGraph node that writes an in-memory
+  source into the slab.
+
+A ``Slab`` holds ``ranges``, one half-open ``{start, end}`` pair per
+dimension. The wrappers capture the ``Slab`` by reference, so the same graph
+node can drive a loop: mutate ``slab.ranges`` between executions to walk an
+arbitrarily large tensor with a small working set.
+
+.. code-block:: cpp
+
+    #include <Einsums/TensorIO/GraphIO.hpp>
+
+    using namespace einsums::tensor_io;
+    namespace cg = einsums::compute_graph;
+
+    // "full" already exists in the file; "block" is sized to one slab.
+    Slab slab{{ {0, 100}, {0, 1000}, {0, 1000} }};
+    auto block = create_zero_tensor<double>("block", 100, 1000, 1000);
+
+    // Build a graph that reads one slab, processes it, and writes it back.
+    cg::Graph g("slab_walk");
     {
-        Capture cap{g};
-        auto src = read_slice_etn(g, slab, ...);
-        // ... use src in subsequent graph nodes ...
-        write_slice_etn(g, slab, processed);
+        cg::CaptureGuard guard(g);
+        read_slice_etn("full.etn", "T", slab, &block);
+        // ... use block in subsequent graph nodes ...
+        write_slice_etn("full.etn", "T", slab, &block);
     }
 
-    // Walk the tensor by advancing the slab and re-executing.
+    // Walk the tensor by advancing the slab and re-executing the same graph.
     for (size_t z = 0; z < 1000; z += 100) {
-        slab.set_window({z, 0, 0}, {100, 1000, 1000});
+        slab.ranges[0] = {z, z + 100};
         g.execute();
     }
+
+The target entry must already exist before ``write_slice_etn`` runs, for
+example from a prior ``write_etn`` or ``TensorFile::reserve``. The in-memory
+tensor must match the slab shape; the bound ``TensorFile`` methods throw at
+execute time if the dimensions disagree.
 
 Python surface
 ==============
 
-``read_slice`` and ``write_slice`` are exposed in Python as
-``einsums.io.read_slice`` and ``einsums.io.write_slice``. The same
-slab-by-reference pattern applies — the Python ``Slab`` object can be
-advanced between captures.
+The graph wrappers are exposed in Python under ``einsums.io``. Each C++
+``read_slice_etn`` / ``write_slice_etn`` is bound as ``einsums.io.read_slice``
+/ ``einsums.io.write_slice``, and ``read_etn`` / ``write_etn`` as
+``einsums.io.read`` / ``einsums.io.write``. The slab-by-reference pattern
+carries over: a Python ``Slab`` object can be advanced between graph
+executions the same way.
 
-HDF5 file lifecycle
-===================
-
-By default Einsums creates a per-process HDF5 file named
-``einsums.<pid>.h5`` and cleans it up on shutdown. Override the path with
-``--einsums:hdf5-file-name <path>`` and disable cleanup with
-``--einsums:no-delete-hdf5-files`` to persist data across runs.
-
-See the :ref:`API reference <modules_Einsums_TensorIO_api>` of this module
-for ``DiskTensor``, ``Slab``, and the graph wrappers.
+See the :ref:`API reference <modules_Einsums_TensorIO_api>` for ``TensorFile``,
+``Slab``, the graph wrappers, distributed I/O, and checkpointing.

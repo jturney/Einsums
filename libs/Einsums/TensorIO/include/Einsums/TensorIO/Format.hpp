@@ -16,14 +16,15 @@
 /// [Data region 1]
 /// ...
 /// [Data region N-1]
-/// [TensorEntry 0]  (128 bytes each, at end of file)
+/// [TensorEntry 0]  (160 bytes each, at end of file)
 /// [TensorEntry 1]
 /// ...
 /// [TensorEntry N-1]
 /// ```
 ///
-/// Entry table at the end enables appending without shifting existing data.
-/// Files created with MPI-IO are standard binary — readable without MPI.
+/// Putting the entry table at the end allows appending without shifting
+/// existing data. Files written through the distributed path are standard
+/// binary, so they can be read back without MPI.
 
 #include <algorithm>
 #include <complex>
@@ -95,7 +96,7 @@ inline constexpr size_t ETN_MAX_RANK = 8;
 /// Sentinel value for owning_rank meaning "all ranks / serial".
 inline constexpr uint32_t ETN_ALL_RANKS = UINT32_MAX;
 
-/// Per-tensor metadata entry (128 bytes).
+/// Per-tensor metadata entry (160 bytes).
 struct TensorEntry {
     // NOLINTNEXTLINE(modernize-avoid-c-arrays)
     char    name[ETN_MAX_NAME]; ///< Null-terminated tensor name

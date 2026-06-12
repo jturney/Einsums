@@ -59,7 +59,7 @@ EINSUMS_EXPORT void restore(std::string const &path, compute_graph::Workspace &w
 // Distributed (MPI-coordinated single-file I/O)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Save distributed Graph tensors — replicated written once, distributed per-rank.
+/// Save distributed Graph tensors: replicated ones written once, distributed ones per-rank.
 EINSUMS_EXPORT void save_distributed(std::string const &path, compute_graph::Graph const &graph,
                                      std::vector<std::string> const &tensor_names = {});
 

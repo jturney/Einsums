@@ -6,10 +6,13 @@
 #pragma once
 
 /// @file DistributedTensorFile.hpp
-/// @brief MPI-IO based tensor file for distributed parallel I/O.
+/// @brief Tensor file for distributed parallel I/O.
+///
+/// File operations use POSIX I/O on every rank; MPI handles only the
+/// offset coordination, not the data transfer.
 ///
 /// All ranks open the same file. Each rank writes its local tensor partitions
-/// at computed offsets. The file is a standard .etn binary file — readable
+/// at computed offsets. The file is a standard .etn binary file, readable
 /// by the serial TensorFile without MPI.
 ///
 /// @code
@@ -105,7 +108,7 @@ class EINSUMS_EXPORT DistributedTensorFile {
     void write_metadata();
     void read_metadata();
 
-    /// Compute offset for this rank's data using MPI_Scan prefix sum.
+    /// Compute this rank's data offset via an MPI_Exscan exclusive prefix sum.
     uint64_t compute_distributed_offset(size_t local_bytes);
 };
 

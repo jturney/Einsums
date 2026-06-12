@@ -108,7 +108,7 @@ TEST_CASE("TensorFile::write_slice rejects mismatched dims", "[TensorIO][slice]"
     REQUIRE_THROWS_AS(out.write_slice("A", wrong, {{{1, 3}, {1, 3}}}), std::runtime_error);
 }
 
-// ── reserve + write_slice — fill an entry block-by-block ────────────────
+// ── reserve + write_slice: fill an entry block-by-block ─────────────────
 
 TEST_CASE("TensorFile::reserve + write_slice fills a tensor incrementally", "[TensorIO][slice]") {
     TempFile const tmp("reserve.etn");

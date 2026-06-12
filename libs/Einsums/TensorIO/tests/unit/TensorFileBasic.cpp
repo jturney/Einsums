@@ -27,7 +27,7 @@ struct TempFile {
     bool        distributed; ///< True for distributed tests (shared path across ranks)
     TempFile(std::string const &name = "test.etn", bool dist = false) : distributed(dist) {
         if (dist) {
-            // Shared path — all ranks use the same file
+            // Shared path: all ranks use the same file
             path = "/tmp/einsums_test_" + name;
         } else {
             // Per-rank path to avoid contention

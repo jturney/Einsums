@@ -8,21 +8,21 @@ Tensor I/O (.etn)
 ==================
 
 The ``TensorIO`` module provides high-performance tensor file I/O in a native
-binary format (``.etn``). It replaces HDF5 for performance-critical workloads
-with zero external dependencies.
+binary format, ``.etn``. It replaces HDF5 for performance-critical workloads
+and pulls in no external dependencies.
 
 Features
 =========
 
-- **Binary format**: 64-byte header, 160-byte entries, 64-byte aligned data
-- **Fast**: Raw ``pwrite``/``pread`` — no metadata overhead, near-memory-bandwidth throughput
-- **All datatypes**: float32, float64, complex64, complex128, int32, int64, uint32, uint64
-- **Ranks 1-8**: Vectors through 8-index tensors
-- **Slice reads**: Read a hyperslab without loading the full tensor
-- **Multi-tensor files**: Store many tensors in one file
-- **Distributed I/O**: MPI-coordinated writes to a single file using ``MPI_Exscan``
-- **ComputeGraph integration**: ``read_etn``/``write_etn`` create DiskRead/DiskWrite nodes
-- **Checkpointing**: Save/restore Graph or Workspace state with one call
+- **Binary format**: 64-byte header, 160-byte entries, 64-byte aligned data.
+- **Fast**: raw ``pwrite``/``pread`` with no metadata overhead, near memory-bandwidth throughput.
+- **All datatypes**: float32, float64, complex64, complex128, int32, int64, uint32, uint64.
+- **Ranks 1-8**: vectors through 8-index tensors.
+- **Slice reads**: read a hyperslab without loading the full tensor.
+- **Multi-tensor files**: store many tensors in one file.
+- **Distributed I/O**: MPI-coordinated writes to a single file using ``MPI_Exscan``.
+- **ComputeGraph integration**: ``read_etn``/``write_etn`` create DiskRead/DiskWrite nodes.
+- **Checkpointing**: save and restore Graph or Workspace state with one call.
 
 File Format
 ============
@@ -37,8 +37,9 @@ File Format
    [TensorEntry 1]
    ...
 
-Entry table at the end enables appending tensors without shifting existing data.
-Files created with MPI-IO are standard binary — readable by serial programs.
+Putting the entry table at the end lets you append tensors without shifting
+existing data. Files written through the distributed path are standard binary,
+so serial programs can read them.
 
 TensorFile
 ===========
@@ -75,7 +76,7 @@ Basic read/write for serial programs:
 DistributedTensorFile
 ======================
 
-MPI-parallel I/O — all ranks write to one file:
+MPI-parallel I/O where all ranks write to one file:
 
 .. code-block:: cpp
 
@@ -93,8 +94,9 @@ MPI-parallel I/O — all ranks write to one file:
    in.read("global", tensor);             // All ranks read same data
    in.read_local("partition", local);     // Each rank reads its part
 
-Uses POSIX ``pwrite``/``pread`` for file operations (reliable on all platforms)
-with MPI ``Exscan`` and ``Gather`` for offset coordination. No MPI-IO dependency.
+File operations go through POSIX ``pwrite``/``pread``, which behaves reliably
+on all platforms. MPI ``Exscan`` and ``Gather`` coordinate the per-rank
+offsets. There is no dependency on MPI-IO.
 
 Checkpointing
 ==============

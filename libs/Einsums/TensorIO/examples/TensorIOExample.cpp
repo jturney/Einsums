@@ -9,7 +9,7 @@
  *
  * Demonstrates:
  * 1. Writing tensors to a .etn file
- * 2. Reading back with slice (partial read)
+ * 2. Reading part of a tensor back with a slice
  * 3. Checkpointing a ComputeGraph and restoring
  * 4. Using read_etn/write_etn inside graph capture
  */

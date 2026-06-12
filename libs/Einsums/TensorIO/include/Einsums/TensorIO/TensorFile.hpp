@@ -101,7 +101,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     // ── RuntimeTensor overloads ──────────────────────────────────────────
     //
     // RuntimeTensor variants of read / write / read_slice / write_slice.
-    // These are what the Python bindings call into — RuntimeTensor is
+    // These are what the Python bindings call into. RuntimeTensor is
     // the runtime-rank type bound to numpy via the buffer protocol.
 
     /// Read a full tensor into a RuntimeTensor. Resizes the tensor.
@@ -198,7 +198,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Slab walker — shared between read_slice and write_slice (static + runtime).
+// Slab walker, shared between read_slice and write_slice (static + runtime).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 namespace detail {
@@ -215,7 +215,7 @@ void walk_slab(uint64_t entry_data_offset, std::vector<size_t> const &entry_dims
                Visit &&visit) {
     size_t const rank = entry_dims.size();
     if (rank == 0) {
-        // Scalar entry — emit a single zero-byte run.
+        // Scalar entry: emit a single zero-byte run.
         visit(entry_data_offset, std::size_t{0}, std::size_t{0});
         return;
     }

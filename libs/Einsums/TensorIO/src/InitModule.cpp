@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// TensorIO module initialization — currently a no-op.
+// TensorIO module initialization. Currently a no-op.
 // Future: register runtime config options for default I/O paths.
 
 namespace {
