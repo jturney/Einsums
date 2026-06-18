@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Einsums is a C++23 tensor algebra library that provides compile-time contraction pattern analysis to select optimal operations (BLAS calls, a packed-GEMM backend, or generic algorithms). It uses a modular CMake build system with an optional GPU (CUDA/HIP) backend.
+Einsums is a C++20 tensor algebra library that uses compile-time contraction pattern analysis to select optimal operations: BLAS calls, a packed-GEMM backend, or generic algorithms. It uses a modular CMake build system with an optional CUDA or HIP GPU backend. A few components rely on C++23 features through the CXX23 compatibility module, which supplies C++20 fallbacks.
 
 ## Build Commands
 
@@ -19,7 +19,7 @@ Einsums is a C++23 tensor algebra library that provides compile-time contraction
 # Configure (from build directory, out-of-source required)
 cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
-# With MPI distributed computing (requires Open MPI or MPICH)
+# With MPI distributed computing (requires Open MPI or MPICH), experimental
 cmake -S . -B build -GNinja -DEINSUMS_WITH_MPI=ON
 
 # Build everything
@@ -43,12 +43,18 @@ cmake --build build --target Tests.Unit.Modules.TensorAlgebra
 
 ### Conda Development Environment
 
+The conda environment file is generated rather than checked in. `devtools/conda-envs/conda.yml` is gitignored, so you create it with `merge_yml.py`, which merges the per-OS, per-compiler, and per-BLAS snippets under `devtools/conda-envs/snippets/`:
+
 ```bash
-conda env create -f devtools/conda-envs/conda.yml
+cd devtools/conda-envs
+python merge_yml.py            # platform defaults: gcc on Linux or clang on macOS, with openblas or accelerate
+# To choose a toolchain and BLAS, or add documentation dependencies:
+#   python merge_yml.py clang openblas --docs
+conda env create -f conda.yml
 conda activate einsums-dev
 ```
 
-When looking for header files outside of Einsums look inside the `einsums-dev` conda environment.
+When looking for header files outside of Einsums, look inside the `einsums-dev` conda environment.
 
 ## Code Formatting
 
@@ -72,13 +78,17 @@ libs/Einsums/<Name>/
   tests/performance/          # benchmarks
 ```
 
-Module registration uses `einsums_add_module(Einsums <Name> SOURCES ... HEADERS ... MODULE_DEPENDENCIES ...)` in CMake. The module list lives in `libs/Einsums/CMakeLists.txt`. New modules are created via `libs/create_module_skeleton.py`.
+Module registration uses `einsums_add_module(Einsums <Name> SOURCES ... HEADERS ... MODULE_DEPENDENCIES ...)` in CMake. The module list lives in `libs/Einsums/CMakeLists.txt`. New modules are created with the `create_module_skeleton` Python package in `libs/`, run from that directory as `python3 create_module_skeleton LIBRARY_NAME MODULE_NAME`.
 
 ### Key Module Dependency Chain
 
-`TensorAlgebra` -> `LinearAlgebra` -> `BLAS` -> `BLASBase` -> `BLASVendor`
+`TensorAlgebra` -> `LinearAlgebra` -> `BLAS` -> `BLASBase` and `BLASVendor`
 
-`TensorAlgebra` is the main entry point. Its `einsum()` function dispatches through `Backends/Dispatch.hpp` which selects: BLAS specializations > packed-GEMM backend (`try_packed_gemm`) > generic algorithm.
+`BLAS` depends on both `BLASBase` and `BLASVendor`. `TensorAlgebra` is the eager entry point. Its `einsum()` function dispatches through `Backends/Dispatch.hpp`, which selects in order: BLAS specializations, the packed-GEMM backend (`try_packed_gemm`), then a generic algorithm.
+
+### ComputeGraph
+
+`ComputeGraph` (`libs/Einsums/ComputeGraph/`) is the preferred way to use Einsums for real workloads. It records a sequence of operations as a graph, optimizes that graph with built-in passes such as common subexpression elimination, fusion, and memory planning, and then executes or replays it. Prefer it for anything beyond a quick experiment, and especially for iterative algorithms such as SCF or coupled cluster, where the same operations run many times and the graph is built once and replayed. Every graph-aware operation lives in the `einsums::compute_graph` namespace and mirrors the signature of its eager counterpart, so moving eager code onto a graph is mostly mechanical. The eager `einsum()` and `linear_algebra` calls remain a convenient way to script quick one-off computations. See `libs/Einsums/ComputeGraph/docs/getting_started.rst` for a walkthrough.
 
 ### Tensor Types
 
@@ -122,28 +132,8 @@ Build options map to preprocessor defines: `EINSUMS_WITH_FOO=ON` -> `einsums_add
 
 Each dependency has a `cmake/Einsums_Setup<Dep>.cmake` file included from the root CMakeLists.txt. Required: BLAS/LAPACK, HDF5, OpenMP. Auto-fetched if missing: fmt, Catch2, spdlog. Optional: MPI (Open MPI or MPICH).
 
-### Distributed Computing (MPI)
+### Distributed Computing (MPI, experimental)
 
-The `Comm` module (`libs/Einsums/Comm/`) provides MPI communication with a mock backend for serial builds. Key components:
+Einsums has early, incomplete MPI support gated behind `EINSUMS_WITH_MPI`. The `Comm` module (`libs/Einsums/Comm/`) provides a 2D process grid, distribution descriptors, and collectives, with a mock backend so serial builds still compile, and ComputeGraph has passes that can distribute an einsum across ranks. This area is under active development and not yet production-ready, so treat the distributed APIs as unstable.
 
-- **ProcessGrid** (`Comm/ProcessGrid.hpp`): 2D Pr×Pc process grid with row/col sub-communicators. Auto-computes near-square factorization.
-- **DistributionDescriptor** (`Comm/DistributionDescriptor.hpp`): Per-dimension grid axis assignment (None/Row/Col) with balanced blocking.
-- **Collectives** (`Comm/Collectives.hpp`): Allreduce, broadcast, scatter, allgather, both blocking and non-blocking via iallreduce.
-
-ComputeGraph passes for automatic distribution:
-- `DistributionPlanning`: Classifies einsum indices (target_a→Row, target_b→Col, shared→balanced, link→None). Detects chain conflicts.
-- `Materialization`: Resizes deferred tensors to local partitions using `DistributionDescriptor::local_dims_for()`.
-- `InputSlicing`: Creates temporary views of pre-allocated inputs for each rank's slice. Handles cross-axis permute.
-- `SUMMAExpansion`: Replaces einsum with broadcast+GEMM loop on square grids.
-- `CommunicationInsertion`: Inserts allreduce for replicated outputs from distributed inputs.
-- `CommunicationScheduling`: Splits allreduce into async iallreduce + wait for overlap.
-
-```bash
-# Run MPI tests
-mpirun -np 4 ./build/libs/Einsums/ComputeGraph/tests/unit/DistributedIntegration_test
-
-# Test on non-square grid
-mpirun -np 6 ./build/libs/Einsums/ComputeGraph/tests/unit/DistributedIntegration_test
-```
-
-**Important**: `einsums_add_executable` already links `libEinsums`, so do NOT add extra `target_link_libraries` for Einsums modules in test CMakeLists. Doing so causes duplicate symbol issues with MPI.
+When you do build tests, note that `einsums_add_executable` already links `libEinsums`. Do not add extra `target_link_libraries` for Einsums modules in test CMakeLists, since that causes duplicate-symbol issues with MPI.
