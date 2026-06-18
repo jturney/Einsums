@@ -6,7 +6,7 @@
 #include <Einsums/CommandLine.hpp>
 #include <Einsums/Runtime.hpp>
 
-#include "InitModule.hpp"
+#include <{lib_name}/{module_name}/InitModule.hpp>
 
 namespace einsums {{
     

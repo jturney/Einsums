@@ -9,41 +9,42 @@ import build_structure
 import configure_toplevel
 
 
-def build_new(library, module, args):
-    lib_symb = library if not args.python else "${EINSUMS_PYTHON_LIB_NAME}"
+# The package lives at <repo>/libs/create_module_skeleton, so its parent
+# directory is the libs/ folder that holds the library trees. Deriving the
+# output base from the script location lets the tool run from any working
+# directory and still write modules into the right place.
+LIBS_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def build_new(libs_dir, library, module, args):
     if args.python_name is None:
         args.python_name = library
 
+    # A module exposes Python bindings through the PYBIND keyword on
+    # einsums_add_module, not by becoming a separate Python extension library,
+    # so the library symbol is always the real library name.
     build_structure.build_structure(
-        os.curdir, library, module, lib_symb=lib_symb, **vars(args)
+        libs_dir, library, module, lib_symb=library, **vars(args)
     )
 
-    configure_toplevel.configure_python(os.curdir, library, **vars(args))
     configure_toplevel.configure_cmake(
-        os.curdir, library, lib_symb=lib_symb, **vars(args)
+        libs_dir, library, lib_symb=library, **vars(args)
     )
     configure_toplevel.configure_module_docs(
-        os.curdir, library, lib_symb=lib_symb, **vars(args)
+        libs_dir, library, lib_symb=library, **vars(args)
     )
 
 
-def reindex(libraries=None):
+def reindex(libs_dir, libraries=None):
     if libraries is None or len(libraries) == 0:
         libraries = filter(
-            lambda x: os.path.isfile(os.path.join(os.curdir, x, "CMakeLists.txt")),
-            os.listdir(),
+            lambda x: os.path.isfile(os.path.join(libs_dir, x, "CMakeLists.txt")),
+            os.listdir(libs_dir),
         )
 
     for lib in libraries:
-        lib_symb = lib
-        if os.path.isfile(os.path.join(os.curdir, lib, ".is_python_lib")):
-            lib_symb = "${EINSUMS_PYTHON_LIB_NAME}"
-            configure_toplevel.configure_python(
-                os.curdir, lib, python=True, python_name=lib
-            )
-
-        configure_toplevel.configure_cmake(os.curdir, lib, lib_symb=lib_symb)
-        configure_toplevel.configure_module_docs(os.curdir, lib, lib_symb=lib_symb)
+        configure_toplevel.configure_cmake(libs_dir, lib, lib_symb=lib)
+        configure_toplevel.configure_module_docs(libs_dir, lib, lib_symb=lib)
 
 
 def main():
@@ -79,6 +80,11 @@ def main():
         help="Adds new files that were added to the template but do not exist in the output structure. It also re-indexes.",
         action="store_true",
     )
+    parser.add_argument(
+        "--libs-dir",
+        default=LIBS_DIR,
+        help="Directory that holds the library folders. Defaults to the libs/ directory containing this script, so the tool can be run from any working directory.",
+    )
 
     known_args, unknown_args = parser.parse_known_intermixed_args()
 
@@ -87,10 +93,13 @@ def main():
         sys.exit(1)
 
     if known_args.reindex:
-        reindex(unknown_args)
+        reindex(known_args.libs_dir, unknown_args)
     else:
-        assert len(unknown_args) == 2
-        build_new(unknown_args[0], unknown_args[1], known_args)
+        if len(unknown_args) != 2:
+            parser.error(
+                "expected exactly two positional arguments: LIBRARY_NAME MODULE_NAME"
+            )
+        build_new(known_args.libs_dir, unknown_args[0], unknown_args[1], known_args)
 
 
 if __name__ == "__main__":

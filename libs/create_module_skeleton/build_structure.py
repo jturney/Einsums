@@ -17,9 +17,6 @@ def parse_template(filename, output_file, **kwargs):
 
 def build_layer(input_dir, output_dir, **kwargs):
     for item in os.listdir(input_dir):
-        # Skip exports if we don't need them.
-        if item in ["Export.cpp.fstring"] and not kwargs["python"]:
-            continue
         item_out = kwargs.get(item, item)
 
         if os.path.splitext(item_out)[1] == ".fstring" :
@@ -63,11 +60,13 @@ def build_structure(output_base, lib_name, module_name, python=False, **kwargs):
         lib_name=lib_name,
         docs_head="".join("=" for i in lib_name + ' ' + module_name),
         readme_head="".join("=" for i in module_name),
-        export_source="Export.cpp" if python else "",
         export_depends="" if lib_name == "Einsums" else "Einsums",
-        python_footer=f"include(Einsums_ExtendWithPython)\neinsums_extend_with_python_headers(${{EINSUMS_PYTHON_LIB_NAME}}_{module_name})" if python else "",
+        # ``--python`` adds the PYBIND keyword to einsums_add_module so apiary
+        # generates the bindings. It no longer makes the module a separate
+        # Python extension library.
+        pybind_flag="PYBIND\n  " if python else "",
         python=python,
-        python_deps="pybind11::embed" if python else "",
+        python_deps="",
         gpu_head="if(EINSUMS_WITH_GPU_SUPPORT)" if kwargs["gpu"] else "",
         gpu_foot=f"""
         if(EINSUMS_WITH_CUDA)

@@ -1,1 +1,0 @@
-set_target_properties(${{EINSUMS_PYTHON_LIB_NAME}} PROPERTIES OUTPUT_NAME {python_name})
