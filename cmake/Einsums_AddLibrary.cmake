@@ -4,13 +4,13 @@
 #----------------------------------------------------------------------------------------------
 
 #:
-#: .. cmake:command:: einsums_add_library
+#: einsums_add_library
 #:
 #:    Define an Einsums library target (SHARED/STATIC/OBJECT) with project‑standard setup.
 #:
-#:    A convenience wrapper around :cmake:command:`add_library` that normalizes sources/headers,
+#:    A convenience wrapper around ``add_library`` that normalizes sources/headers,
 #:    applies GPU language tweaks for HIP/NVHPC, configures output directories (optionally with a
-#:    suffix), and then delegates policy‑specific wiring to :cmake:command:`einsums_setup_target`.
+#:    suffix), and then delegates policy‑specific wiring to ``einsums_setup_target``.
 #:
 #:    **Signature**
 #:    ``einsums_add_library(<name>
@@ -37,7 +37,7 @@
 #:
 #:    **Boolean options**
 #:    - ``EXCLUDE_FROM_ALL``: Create the target but omit it from the default build.
-#:    - ``INTERNAL_FLAGS``: Forward a project‑internal flag to :cmake:command:`einsums_setup_target`.
+#:    - ``INTERNAL_FLAGS``: Forward a project‑internal flag to ``einsums_setup_target``.
 #:    - ``NOLIBS``: Forward to `einsums_setup_target` to avoid linking default Einsums libs.
 #:    - ``NOEXPORT``: Suppress export setup (if omitted, export is enabled).
 #:    - ``STATIC``: Build as a static library.
@@ -63,14 +63,14 @@
 #:    **Behavior**
 #:    1. Validates that ``STATIC`` and ``OBJECT`` are **not** both set; errors if so.
 #:    2. Defaults ``SOURCE_ROOT``/``HEADER_ROOT`` to ``"."`` and logs inputs.
-#:    3. Normalizes source lists via :cmake:command:`einsums_add_library_sources_noglob` and groups
-#:       files with :cmake:command:`einsums_add_source_group`.
+#:    3. Normalizes source lists via ``einsums_add_library_sources_noglob`` and groups
+#:       files with ``einsums_add_source_group``.
 #:    4. **GPU source handling**
-#:       - If :cmake:variable:`EINSUMS_WITH_HIP` is ON, ``.cu`` sources are marked ``LANGUAGE HIP``.
+#:       - If ``EINSUMS_WITH_HIP`` is ON, ``.cu`` sources are marked ``LANGUAGE HIP``.
 #:       - With NVHPC, ``.cu`` sources receive compiler‑specific CUDA flags via
-#:         :cmake:command:`einsums_add_nvhpc_cuda_flags`.
+#:         ``einsums_add_nvhpc_cuda_flags``.
 #:    5. Chooses link type: ``STATIC`` → static, ``OBJECT`` → object, otherwise **shared**.
-#:    6. Invokes :cmake:command:`add_library` with the chosen type, optional
+#:    6. Invokes ``add_library`` with the chosen type, optional
 #:       ``EXCLUDE_FROM_ALL``, and the collected sources/headers/aux files.
 #:    7. **Output directories** — If ``OUTPUT_SUFFIX`` is set, adjusts
 #:       ``RUNTIME/LIBRARY/ARCHIVE_OUTPUT_DIRECTORY`` (per‑config on MSVC; single‑config otherwise)
@@ -90,7 +90,7 @@
 #:
 #:    **Notes**
 #:    - Installation destinations and certain flags (e.g., PDB install on MSVC, NONAMEPREFIX) are
-#:      prepared internally but must be honored by :cmake:command:`einsums_setup_target` (or other
+#:      prepared internally but must be honored by ``einsums_setup_target`` (or other
 #:      project logic). If you expect install rules to be applied here, ensure
 #:      `einsums_setup_target` consumes these settings.
 #:    - When both ``STATIC`` and ``OBJECT`` are requested, the function aborts with a clear error.
@@ -129,10 +129,10 @@
 #:       )
 #:
 #:    **See also**
-#:    - :cmake:command:`add_library`
-#:    - :cmake:command:`einsums_setup_target`
-#:    - :cmake:command:`einsums_add_library_sources_noglob`
-#:    - :cmake:command:`einsums_add_source_group`
+#:    - ``add_library``
+#:    - ``einsums_setup_target``
+#:    - ``einsums_add_library_sources_noglob``
+#:    - ``einsums_add_source_group``
 function(einsums_add_library name)
   set(options
       EXCLUDE_FROM_ALL

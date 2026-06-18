@@ -7,12 +7,12 @@ include(CMakeParseArguments)
 include(CheckCXXCompilerFlag)
 
 #:
-#: .. cmake:command:: einsums_add_link_flag
+#: einsums_add_link_flag
 #:
 #:    Register a linker flag on Einsums’ global interface targets, with optional config/target gating.
 #:
 #:    Adds a link option to either ``einsums_public_flags`` (when ``PUBLIC`` is set) or
-#:    ``einsums_private_flags`` (default) using :cmake:command:`target_link_options`. The flag can be
+#:    ``einsums_private_flags`` (default) using ``target_link_options``. The flag can be
 #:    conditionally applied via generator expressions based on **build configuration** and/or the
 #:    consuming target’s **TYPE** (e.g., ``EXECUTABLE``, ``SHARED_LIBRARY``).
 #:
@@ -29,7 +29,7 @@ include(CheckCXXCompilerFlag)
 #:      ``einsums_private_flags``.
 #:
 #:    - ``TARGETS <types...>`` *(optional, multi-value)*:
-#:      Restrict application to consuming targets whose :cmake:prop_tgt:`TYPE` matches any of the
+#:      Restrict application to consuming targets whose ``TYPE`` matches any of the
 #:      given values (e.g., ``EXECUTABLE``, ``SHARED_LIBRARY``, ``STATIC_LIBRARY``, ``MODULE_LIBRARY``).
 #:
 #:    - ``CONFIGURATIONS <configs...>`` *(optional, multi-value)*:
@@ -42,7 +42,7 @@ include(CheckCXXCompilerFlag)
 #:      - only config → ``$<$<CONFIG:cfg>:flag>``
 #:      - neither → ``flag`` (always on)
 #:    - Appends each expression to the chosen interface target with
-#:      :cmake:command:`target_link_options(<iface> INTERFACE <expr>)`.
+#:      ``target_link_options(<iface> INTERFACE <expr>)``.
 #:
 #:    **Examples**
 #:    Apply a flag to all executables in Release:
@@ -56,8 +56,8 @@ include(CheckCXXCompilerFlag)
 #:       einsums_add_link_flag(/INCREMENTAL:NO PUBLIC)
 #:
 #:    **See also**
-#:    - :cmake:command:`target_link_options`
-#:    - :cmake:prop_tgt:`TYPE`
+#:    - ``target_link_options``
+#:    - ``TYPE``
 macro(einsums_add_link_flag FLAG)
   set(options PUBLIC)
   set(one_value_args)
@@ -101,12 +101,12 @@ macro(einsums_add_link_flag FLAG)
 endmacro()
 
 #:
-#: .. cmake:command:: einsums_add_link_flag_if_available
+#: einsums_add_link_flag_if_available
 #:
 #:    Conditionally register a linker flag if the toolchain accepts it.
 #:
 #:    Checks support for a given linker flag and, if available, forwards to
-#:    :cmake:command:`einsums_add_link_flag`. This avoids injecting unsupported options that would
+#:    ``einsums_add_link_flag``. This avoids injecting unsupported options that would
 #:    break the build on certain platforms or toolchains.
 #:
 #:    **Signature**
@@ -125,12 +125,12 @@ endmacro()
 #:      If set, attach the flag to ``einsums_public_flags``; otherwise to ``einsums_private_flags``.
 #:
 #:    - ``TARGETS <types...>`` *(optional)*:
-#:      Restrict application to consuming target types (see :cmake:prop_tgt:`TYPE`).
+#:      Restrict application to consuming target types (see ``TYPE``).
 #:
 #:    **Behavior**
-#:    - Uses :cmake:command:`check_cxx_compiler_flag` to attempt a compile‑time probe with the given
+#:    - Uses ``check_cxx_compiler_flag`` to attempt a compile‑time probe with the given
 #:      flag (stored in a cache variable named ``WITH_LINKER_FLAG_<NAME>``).
-#:    - On success, calls :cmake:command:`einsums_add_link_flag` with the original arguments
+#:    - On success, calls ``einsums_add_link_flag`` with the original arguments
 #:      (propagating ``PUBLIC`` and ``TARGETS``).
 #:    - On failure, prints an informational message (``Linker "<flag>" not available.``) and makes no changes.
 #:
@@ -150,9 +150,9 @@ endmacro()
 #:      Some link‑only flags may require different detection logic on certain toolchains.
 #:
 #:    **See also**
-#:    - :cmake:command:`einsums_add_link_flag`
-#:    - :cmake:command:`check_cxx_compiler_flag`
-#:    - :cmake:command:`target_link_options`
+#:    - ``einsums_add_link_flag``
+#:    - ``check_cxx_compiler_flag``
+#:    - ``target_link_options``
 macro(einsums_add_link_flag_if_available FLAG)
   set(options PUBLIC)
   set(one_value_args NAME)

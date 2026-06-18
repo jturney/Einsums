@@ -7,7 +7,7 @@ include(CMakeParseArguments)
 include(CheckCXXCompilerFlag)
 
 #:
-#: .. cmake:command:: einsums_add_target_compile_option
+#: einsums_add_target_compile_option
 #:
 #:    Add a compile flag conditionally based on configuration and language.
 #:
@@ -82,7 +82,7 @@ function(einsums_add_target_compile_option FLAG)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_add_target_compile_option_if_available
+#: einsums_add_target_compile_option_if_available
 #:
 #:    Add a compile flag only if it is supported by the compiler.
 #:
@@ -120,7 +120,7 @@ endfunction()
 #:    1. Checks if the compiler accepts the given flag using `check_cxx_compiler_flag()`.
 #:
 #:    2. If supported:
-#:       - Calls :cmake:command:`einsums_add_target_compile_option` with the flag and other parsed arguments.
+#:       - Calls ``einsums_add_target_compile_option`` with the flag and other parsed arguments.
 #:
 #:    3. If not supported:
 #:       - Logs an informational message using `einsums_info()`.
@@ -161,9 +161,9 @@ endfunction()
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_target_compile_option`
-#:    - :cmake:command:`check_cxx_compiler_flag`
-#:    - :cmake:command:`target_compile_options`
+#:    - ``einsums_add_target_compile_option``
+#:    - ``check_cxx_compiler_flag``
+#:    - ``target_compile_options``
 function(einsums_add_target_compile_option_if_available FLAG)
   set(options PUBLIC)
   set(one_value_args NAME)
@@ -213,7 +213,7 @@ function(einsums_add_target_compile_option_if_available FLAG)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_remove_target_compile_option
+#: einsums_remove_target_compile_option
 #:
 #:    Remove a previously registered compile flag from global Einsums compile options.
 #:
@@ -273,10 +273,10 @@ endfunction()
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_target_compile_option`
-#:    - :cmake:command:`einsums_add_target_compile_option_if_available`
-#:    - :cmake:command:`target_compile_options`
-#:    - :cmake:command:`set_property(GLOBAL ...)`
+#:    - ``einsums_add_target_compile_option``
+#:    - ``einsums_add_target_compile_option_if_available``
+#:    - ``target_compile_options``
+#:    - ``set_property(GLOBAL ...)``
 function(einsums_remove_target_compile_option FLAG)
   set(options PUBLIC)
   set(one_value_args)
@@ -320,7 +320,7 @@ function(einsums_remove_target_compile_option FLAG)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_add_target_compile_definition
+#: einsums_add_target_compile_definition
 #:
 #:    Add a preprocessor definition to Einsums' global interface targets.
 #:
@@ -335,7 +335,7 @@ endfunction()
 #:
 #:    - ``<definition>`` *(required)*:
 #:      The compile-time macro to define, e.g., ``EINSUMS_USE_MIMALLOC`` or ``VERSION=42``.
-#:      This is passed directly to :cmake:command:`target_compile_definitions`.
+#:      This is passed directly to ``target_compile_definitions``.
 #:
 #:    - ``PUBLIC`` *(optional, boolean switch)*:
 #:      If passed, adds the definition to the `einsums_public_flags` target.
@@ -375,8 +375,8 @@ endfunction()
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`target_compile_definitions`
-#:    - :cmake:command:`einsums_add_target_compile_option`
+#:    - ``target_compile_definitions``
+#:    - ``einsums_add_target_compile_option``
 #:    - ``einsums_public_flags`` and ``einsums_private_flags`` interface targets
 function(einsums_add_target_compile_definition FLAG)
   set(options PUBLIC)
@@ -408,12 +408,12 @@ function(einsums_add_target_compile_definition FLAG)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_add_compile_flag
+#: einsums_add_compile_flag
 #:
-#:    Shorthand for :cmake:command:`einsums_add_target_compile_option` applied to global flags.
+#:    Shorthand for ``einsums_add_target_compile_option`` applied to global flags.
 #:
 #:    This function is a convenience wrapper around
-#:    :cmake:command:`einsums_add_target_compile_option`, used to register a
+#:    ``einsums_add_target_compile_option``, used to register a
 #:    compiler flag globally on the Einsums interface targets (e.g., for
 #:    `einsums_public_flags` or `einsums_private_flags`).
 #:
@@ -423,7 +423,7 @@ endfunction()
 #:    **Arguments**
 #:
 #:    - All arguments are forwarded directly to
-#:      :cmake:command:`einsums_add_target_compile_option`.
+#:      ``einsums_add_target_compile_option``.
 #:
 #:    This includes:
 #:
@@ -451,18 +451,18 @@ endfunction()
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_target_compile_option`
-#:    - :cmake:command:`einsums_add_compile_definition`
+#:    - ``einsums_add_target_compile_option``
+#:    - ``einsums_add_compile_definition``
 function(einsums_add_compile_flag)
   einsums_add_target_compile_option(${ARGN})
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_add_compile_flag_if_available
+#: einsums_add_compile_flag_if_available
 #:
 #:    Conditionally adds a compile flag if the compiler supports it.
 #:
-#:    This function wraps :cmake:command:`einsums_add_compile_flag`, performing a check
+#:    This function wraps ``einsums_add_compile_flag``, performing a check
 #:    to determine if the given compiler flag is supported by the current compiler.
 #:    If supported, the flag is added with optional visibility, configuration, and language constraints.
 #:
@@ -497,10 +497,10 @@ endfunction()
 #:       - `=`, `-`, `,` → `_`
 #:       - `+` → `X`
 #:
-#:    2. Performs a compiler feature check using :cmake:command:`check_cxx_compiler_flag`.
+#:    2. Performs a compiler feature check using ``check_cxx_compiler_flag``.
 #:
 #:    3. If the flag is supported:
-#:       - Calls :cmake:command:`einsums_add_compile_flag` with the parsed args.
+#:       - Calls ``einsums_add_compile_flag`` with the parsed args.
 #:
 #:    4. If unsupported:
 #:       - Logs an informational message using `einsums_info()`.
@@ -528,10 +528,10 @@ endfunction()
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_compile_flag`
-#:    - :cmake:command:`einsums_add_target_compile_option_if_available`
-#:    - :cmake:command:`check_cxx_compiler_flag`
-#:    - :cmake:command:`target_compile_options`
+#:    - ``einsums_add_compile_flag``
+#:    - ``einsums_add_target_compile_option_if_available``
+#:    - ``check_cxx_compiler_flag``
+#:    - ``target_compile_options``
 function(einsums_add_compile_flag_if_available FLAG)
   set(options PUBLIC)
   set(one_value_args NAME)

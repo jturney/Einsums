@@ -4,7 +4,7 @@
 #----------------------------------------------------------------------------------------------
 
 #:
-#: .. cmake:command:: einsums_add_compile_test
+#: einsums_add_compile_test
 #:
 #:    Add a build-only test that verifies whether a source compiles.
 #:
@@ -52,11 +52,11 @@
 #:
 #:    This function:
 #:
-#:    1. Registers a test named `<category>.<name>` using CMake’s :cmake:command:`add_test`.
+#:    1. Registers a test named `<category>.<name>` using CMake’s ``add_test``.
 #:
 #:    2. Adds a compile target using either:
-#:       - :cmake:command:`einsums_add_library` (if `OBJECT` is set), or
-#:       - :cmake:command:`einsums_add_executable` (default).
+#:       - ``einsums_add_library`` (if `OBJECT` is set), or
+#:       - ``einsums_add_executable`` (default).
 #:
 #:    3. Sets the test to trigger a build of the target (but does not run it).
 #:
@@ -88,10 +88,10 @@
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_executable`
-#:    - :cmake:command:`einsums_add_library`
-#:    - :cmake:command:`add_test`
-#:    - :cmake:command:`set_tests_properties`
+#:    - ``einsums_add_executable``
+#:    - ``einsums_add_library``
+#:    - ``add_test``
+#:    - ``set_tests_properties``
 function(einsums_add_compile_test category name)
   set(options FAILURE_EXPECTED NOLIBS OBJECT)
   set(one_value_args SOURCE_ROOT FOLDER)
@@ -143,7 +143,7 @@ function(einsums_add_compile_test category name)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_add_compile_test_target_dependencies
+#: einsums_add_compile_test_target_dependencies
 #:
 #:    Register a pseudo-target for a compile test and link it to its category group.
 #:
@@ -166,10 +166,10 @@ endfunction()
 #:
 #:    This function:
 #:
-#:    1. Creates a pseudo-target named `<category>.<name>` via :cmake:command:`einsums_add_pseudo_target`.
+#:    1. Creates a pseudo-target named `<category>.<name>` via ``einsums_add_pseudo_target``.
 #:
 #:    2. Registers it as a dependency of the category-wide pseudo-target `<category>` via
-#:       :cmake:command:`einsums_add_pseudo_dependencies`.
+#:       ``einsums_add_pseudo_dependencies``.
 #:
 #:    3. Enables easy invocation of category-wide test targets, e.g.:
 #:       - `ninja compile_flags`
@@ -188,10 +188,10 @@ endfunction()
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_compile_test`
-#:    - :cmake:command:`einsums_add_pseudo_target`
-#:    - :cmake:command:`einsums_add_pseudo_dependencies`
-#:    - :cmake:command:`add_custom_target`
+#:    - ``einsums_add_compile_test``
+#:    - ``einsums_add_pseudo_target``
+#:    - ``einsums_add_pseudo_dependencies``
+#:    - ``add_custom_target``
 function(einsums_add_compile_test_target_dependencies category name)
   einsums_add_pseudo_target(${category}.${name})
   # make pseudo-targets depend on master pseudo-target
@@ -199,7 +199,7 @@ function(einsums_add_compile_test_target_dependencies category name)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_add_test_and_deps_compile_test
+#: einsums_add_test_and_deps_compile_test
 #:
 #:    Register a compile-only test along with its pseudo-target and category grouping.
 #:
@@ -224,7 +224,7 @@ endfunction()
 #:    **Forwarded Arguments**
 #:
 #:    All additional keyword arguments (`SOURCES`, `SOURCE_ROOT`, `DEPENDENCIES`, `CONFIGURATIONS`, etc.)
-#:    are forwarded directly to :cmake:command:`einsums_add_compile_test`.
+#:    are forwarded directly to ``einsums_add_compile_test``.
 #:
 #:    **Behavior**
 #:
@@ -232,9 +232,9 @@ endfunction()
 #:      - ``Tests.<category>.<subcategory>.<name>`` (if subcategory is non-empty)
 #:      - ``Tests.<category>.<name>`` (if subcategory is empty)
 #:
-#:    - Registers the test via :cmake:command:`einsums_add_compile_test`.
+#:    - Registers the test via ``einsums_add_compile_test``.
 #:
-#:    - Creates a pseudo-target for the test via :cmake:command:`einsums_add_compile_test_target_dependencies`,
+#:    - Creates a pseudo-target for the test via ``einsums_add_compile_test_target_dependencies``,
 #:      enabling grouped builds like:
 #:        - `cmake --build . --target Tests.headers`
 #:        - `ninja Tests.compile_flags.GNU`
@@ -269,9 +269,9 @@ endfunction()
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_compile_test`
-#:    - :cmake:command:`einsums_add_compile_test_target_dependencies`
-#:    - :cmake:command:`add_test`
+#:    - ``einsums_add_compile_test``
+#:    - ``einsums_add_compile_test_target_dependencies``
+#:    - ``add_test``
 function(einsums_add_test_and_deps_compile_test category subcategory name)
   if("${subcategory}" STREQUAL "")
     einsums_add_compile_test(Tests.${category} ${name} ${ARGN})
@@ -283,11 +283,11 @@ function(einsums_add_test_and_deps_compile_test category subcategory name)
 endfunction(einsums_add_test_and_deps_compile_test)
 
 #:
-#: .. cmake:command:: einsums_add_unit_compile_test
+#: einsums_add_unit_compile_test
 #:
 #:    Register a compile-only unit test under the `Unit` test category.
 #:
-#:    This is a wrapper around :cmake:command:`einsums_add_test_and_deps_compile_test`
+#:    This is a wrapper around ``einsums_add_test_and_deps_compile_test``
 #:    that hardcodes the top-level category to `Unit`, enabling you to more concisely
 #:    define compile-only tests that check low-level correctness or API usage in isolation.
 #:
@@ -303,7 +303,7 @@ endfunction(einsums_add_test_and_deps_compile_test)
 #:      Unique name for the test within the `Unit.<subcategory>` namespace.
 #:
 #:    - Additional keyword arguments are forwarded to
-#:      :cmake:command:`einsums_add_test_and_deps_compile_test`, such as:
+#:      ``einsums_add_test_and_deps_compile_test``, such as:
 #:
 #:      - ``SOURCES``: Source files for the compile test.
 #:      - ``SOURCE_ROOT``: Source root directory for Einsums.
@@ -344,21 +344,21 @@ endfunction(einsums_add_test_and_deps_compile_test)
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_test_and_deps_compile_test`
-#:    - :cmake:command:`einsums_add_compile_test`
-#:    - :cmake:command:`einsums_add_compile_test_target_dependencies`
-#:    - :cmake:command:`add_test`
+#:    - ``einsums_add_test_and_deps_compile_test``
+#:    - ``einsums_add_compile_test``
+#:    - ``einsums_add_compile_test_target_dependencies``
+#:    - ``add_test``
 function(einsums_add_unit_compile_test subcategory name)
   einsums_add_test_and_deps_compile_test("Unit" "${subcategory}" ${name} ${ARGN})
 endfunction(einsums_add_unit_compile_test)
 
 #:
-#: .. cmake:command:: einsums_add_regression_compile_test
+#: einsums_add_regression_compile_test
 #:
 #:    Register a compile-only regression test under the `Regressions` category.
 #:
 #:    This function is a convenience wrapper around
-#:    :cmake:command:`einsums_add_test_and_deps_compile_test`, hardcoding the category
+#:    ``einsums_add_test_and_deps_compile_test``, hardcoding the category
 #:    to `Regressions` to help organize compile-time regression tests.
 #:
 #:    These tests are typically used to ensure that previously reported issues do not
@@ -377,7 +377,7 @@ endfunction(einsums_add_unit_compile_test)
 #:      Name of the specific regression test case.
 #:
 #:    - All additional keyword arguments are forwarded to
-#:      :cmake:command:`einsums_add_test_and_deps_compile_test`, including:
+#:      ``einsums_add_test_and_deps_compile_test``, including:
 #:
 #:      - ``SOURCES``: Required source files.
 #:      - ``SOURCE_ROOT``: Einsums project source root.
@@ -414,23 +414,23 @@ endfunction(einsums_add_unit_compile_test)
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_test_and_deps_compile_test`
-#:    - :cmake:command:`einsums_add_compile_test`
-#:    - :cmake:command:`einsums_add_compile_test_target_dependencies`
-#:    - :cmake:command:`add_test`
+#:    - ``einsums_add_test_and_deps_compile_test``
+#:    - ``einsums_add_compile_test``
+#:    - ``einsums_add_compile_test_target_dependencies``
+#:    - ``add_test``
 function(einsums_add_regression_compile_test subcategory name)
   einsums_add_test_and_deps_compile_test("Regressions" "${subcategory}" ${name} ${ARGN})
 endfunction(einsums_add_regression_compile_test)
 
 #:
-#: .. cmake:command:: einsums_add_headers_compile_test
+#: einsums_add_headers_compile_test
 #:
 #:    Register a compile-only test for validating header inclusion.
 #:
 #:    This function defines a test that checks whether one or more header files
 #:    can be compiled in isolation — i.e., without relying on transitive includes
 #:    or implicit ordering. It is a wrapper around
-#:    :cmake:command:`einsums_add_test_and_deps_compile_test` with the category
+#:    ``einsums_add_test_and_deps_compile_test`` with the category
 #:    fixed to `Headers` and `OBJECT` mode enabled.
 #:
 #:    **Signature**
@@ -446,7 +446,7 @@ endfunction(einsums_add_regression_compile_test)
 #:      The name of the test case within the category.
 #:
 #:    - Additional keyword arguments are forwarded to
-#:      :cmake:command:`einsums_add_test_and_deps_compile_test`, including:
+#:      ``einsums_add_test_and_deps_compile_test``, including:
 #:
 #:      - ``SOURCES``: The source file that includes the header(s) under test.
 #:      - ``SOURCE_ROOT``: Einsums source root directory.
@@ -457,10 +457,10 @@ endfunction(einsums_add_regression_compile_test)
 #:    **Behavior**
 #:
 #:    - Creates a test named: `Tests.Headers[.<subcategory>].<name>`
-#:    - Compiles the given source in `OBJECT` mode using :cmake:command:`einsums_add_library`
+#:    - Compiles the given source in `OBJECT` mode using ``einsums_add_library``
 #:      (ensures linking is skipped — this is for compile-only validation).
-#:    - Adds a test via :cmake:command:`add_test` that builds the target.
-#:    - Adds the test to a pseudo-target via :cmake:command:`einsums_add_compile_test_target_dependencies`.
+#:    - Adds a test via ``add_test`` that builds the target.
+#:    - Adds the test to a pseudo-target via ``einsums_add_compile_test_target_dependencies``.
 #:
 #:    **Note**
 #:
@@ -489,11 +489,11 @@ endfunction(einsums_add_regression_compile_test)
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_test_and_deps_compile_test`
-#:    - :cmake:command:`einsums_add_compile_test`
-#:    - :cmake:command:`einsums_add_compile_test_target_dependencies`
-#:    - :cmake:command:`einsums_add_library`
-#:    - :cmake:command:`add_test`
+#:    - ``einsums_add_test_and_deps_compile_test``
+#:    - ``einsums_add_compile_test``
+#:    - ``einsums_add_compile_test_target_dependencies``
+#:    - ``einsums_add_library``
+#:    - ``add_test``
 function(einsums_add_headers_compile_test subcategory name)
   # Important to keep the double quotes around subcategory otherwise it doesn't consider empty
   # argument but just removes it
@@ -501,7 +501,7 @@ function(einsums_add_headers_compile_test subcategory name)
 endfunction(einsums_add_headers_compile_test)
 
 #:
-#: .. cmake:command:: einsums_add_header_tests
+#: einsums_add_header_tests
 #:
 #:    Generate compile‑only tests for a set of header files (plus an aggregate “all headers” test).
 #:
@@ -548,7 +548,7 @@ endfunction(einsums_add_headers_compile_test)
 #:         (``.cpp``) in the binary dir that does: ``#include <rel/path.hpp>`` and a guardable
 #:         ``main()``.
 #:       - Registers an individual compile‑only test via
-#:         :cmake:command:`einsums_add_headers_compile_test` with:
+#:         ``einsums_add_headers_compile_test`` with:
 #:           - Category ``"<category>"`` and a test name derived from the header path
 #:             (slashes → underscores, ``.hpp`` → ``_hpp``).
 #:           - ``SOURCE_ROOT`` set to the header’s directory (for include resolution).
@@ -560,7 +560,7 @@ endfunction(einsums_add_headers_compile_test)
 #:    4. Writes the aggregate TU ``AllHeaders.cpp`` (concatenation of selected ``#include`` lines,
 #:       with a guardable ``main()``) and registers an aggregate compile‑only test
 #:       ``Tests.Headers.<category>.AllHeaders`` via
-#:       :cmake:command:`einsums_add_headers_compile_test`.
+#:       ``einsums_add_headers_compile_test``.
 #:
 #:    **Notes**
 #:    - Tests are compile‑only (OBJECT mode) and wired into the appropriate pseudo‑targets so you
@@ -588,9 +588,9 @@ endfunction(einsums_add_headers_compile_test)
 #:      together.
 #:
 #:    **See also**
-#:    - :cmake:command:`einsums_add_headers_compile_test`
-#:    - :cmake:command:`einsums_add_test_and_deps_compile_test`
-#:    - :cmake:command:`add_custom_target`
+#:    - ``einsums_add_headers_compile_test``
+#:    - ``einsums_add_test_and_deps_compile_test``
+#:    - ``add_custom_target``
 function(einsums_add_header_tests category)
   set(options NOLIBS)
   set(one_value_args HEADER_ROOT)

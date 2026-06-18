@@ -6,7 +6,7 @@
 include(CheckLibraryExists)
 
 #:
-#: .. cmake:command:: einsums_add_config_test
+#: einsums_add_config_test
 #:
 #:    Configure–time probe that compiles (and optionally runs) a tiny test to set a cache variable.
 #:
@@ -38,9 +38,9 @@ include(CheckLibraryExists)
 #:    **Boolean Options**
 #:    - ``FILE``: Treat ``SOURCE`` as a file path (see *Source selection*). Otherwise, the
 #:      literal contents of ``SOURCE`` are written into a generated test file.
-#:    - ``EXECUTE``: After compiling, run the test program via :cmake:command:`try_run` and
+#:    - ``EXECUTE``: After compiling, run the test program via ``try_run`` and
 #:      only succeed if it **compiles** and **returns 0**. Without this flag, only compilation
-#:      via :cmake:command:`try_compile` is required.
+#:      via ``try_compile`` is required.
 #:    - ``GPU``: Generate a ``.cu`` test file instead of ``.cpp`` when writing from literal
 #:      source (affects only the file extension and CUDA parameters).
 #:    - ``NOT_REQUIRED``: Suppress hard failure even if the check is marked ``REQUIRED``.
@@ -52,11 +52,11 @@ include(CheckLibraryExists)
 #:    - ``ROOT``: Root directory used with ``FILE`` mode. If given, the source is resolved as
 #:      ``<ROOT>/share/${PROJECT_NAME}/<SOURCE>``; otherwise ``${PROJECT_SOURCE_DIR}/<SOURCE>``.
 #:    - ``CMAKECXXFEATURE``: Name of a CMake C++ compile feature (e.g., ``cxx_constexpr``).
-#:      If present in :cmake:variable:`CMAKE_CXX_COMPILE_FEATURES` and the variable is not
+#:      If present in ``CMAKE_CXX_COMPILE_FEATURES`` and the variable is not
 #:      pre‑set and ``GPU`` is not used, the check is considered an immediate success without
 #:      compiling.
 #:    - ``CHECK_CXXSTD``: Minimum C++ standard required (integer). If this value is **greater**
-#:      than :cmake:variable:`EINSUMS_WITH_CXX_STANDARD`, the test is skipped: the cache variable
+#:      than ``EINSUMS_WITH_CXX_STANDARD``, the test is skipped: the cache variable
 #:      (if set) is unset and the function returns early.
 #:    - ``EXTRA_MSG``: Extra text appended to the status line printed for this test.
 #:
@@ -69,17 +69,17 @@ include(CheckLibraryExists)
 #:    - ``LIBRARIES``: Libraries/targets to link the test against.
 #:    - ``ARGS``: Runtime arguments passed when ``EXECUTE`` is enabled.
 #:    - ``DEFINITIONS``: On **success**, each item is forwarded to
-#:      :cmake:command:`einsums_add_config_define` to set global config defines.
+#:      ``einsums_add_config_define`` to set global config defines.
 #:    - ``REQUIRED``: If provided and the test fails, emit its string as a fatal error (unless
 #:      ``NOT_REQUIRED`` is set).
 #:
 #:    **Behavior**
 #:    1. **Early standard gate** — If ``CHECK_CXXSTD`` is set and exceeds
-#:       :cmake:variable:`EINSUMS_WITH_CXX_STANDARD`, unset any pre‑existing cache for
+#:       ``EINSUMS_WITH_CXX_STANDARD``, unset any pre‑existing cache for
 #:       ``<variable>``, log a note, and return.
 #:    2. **CMake feature fast‑path** — If ``<variable>`` is **not** already defined, ``GPU`` is
 #:       **off**, and ``CMAKECXXFEATURE`` is present in
-#:       :cmake:variable:`CMAKE_CXX_COMPILE_FEATURES`, set the result to success without compiling.
+#:       ``CMAKE_CXX_COMPILE_FEATURES``, set the result to success without compiling.
 #:    3. **Source selection**
 #:       - *FILE mode*: Resolve ``SOURCE`` via ``ROOT`` (if provided) or project source dir.
 #:       - *Literal mode*: Write ``SOURCE`` into a generated test file under
@@ -96,14 +96,14 @@ include(CheckLibraryExists)
 #:       - When not executing, pass CUDA standard parameters if
 #:         ``EINSUMS_WITH_CUDA`` is enabled and the compiler is **not** NVHPC.
 #:    5. **Run the check**
-#:       - With ``EXECUTE`` (and not cross‑compiling): use :cmake:command:`try_run`; success
+#:       - With ``EXECUTE`` (and not cross‑compiling): use ``try_run``; success
 #:         requires both successful compilation and exit code 0.
-#:       - Without ``EXECUTE``: use :cmake:command:`try_compile`; success requires compilation.
+#:       - Without ``EXECUTE``: use ``try_compile``; success requires compilation.
 #:    6. **Result handling**
 #:       - Set ``<variable>`` (CACHE INTERNAL BOOL) to the outcome.
 #:       - Print a concise status line (with ``EXTRA_MSG`` when provided).
 #:       - On **success**, forward each item in ``DEFINITIONS`` to
-#:         :cmake:command:`einsums_add_config_define`.
+#:         ``einsums_add_config_define``.
 #:       - On **failure** and if ``REQUIRED`` is provided (and ``NOT_REQUIRED`` is **not** set),
 #:         log the compiler output via ``einsums_warn`` and then abort with ``einsums_error``.
 #:
@@ -145,10 +145,10 @@ include(CheckLibraryExists)
 #:       )
 #:
 #:    **See also**
-#:    - :cmake:command:`try_compile`, :cmake:command:`try_run`
-#:    - :cmake:variable:`CMAKE_CXX_COMPILE_FEATURES`
-#:    - :cmake:command:`einsums_add_config_define`
-#:    - :cmake:variable:`EINSUMS_WITH_CXX_STANDARD`
+#:    - ``try_compile``, ``try_run``
+#:    - ``CMAKE_CXX_COMPILE_FEATURES``
+#:    - ``einsums_add_config_define``
+#:    - ``EINSUMS_WITH_CXX_STANDARD``
 function(einsums_add_config_test variable)
   set(options FILE EXECUTE GPU NOT_REQUIRED)
   set(one_value_args SOURCE ROOT CMAKECXXFEATURE CHECK_CXXSTD EXTRA_MSG)

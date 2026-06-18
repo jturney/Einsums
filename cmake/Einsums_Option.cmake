@@ -9,11 +9,11 @@ include(CMakeParseArguments)
 set(EINSUMS_OPTION_CATEGORIES "Generic" "Build Targets" "Profiling" "Debugging")
 
 #:
-#: .. cmake:command:: einsums_option
+#: einsums_option
 #:
 #:    Declare a project option with optional dependency, category, advanced flag, and string choices.
 #:
-#:    A unified wrapper around :cmake:command:`option`, :cmake:command:`cmake_dependent_option`, and
+#:    A unified wrapper around ``option``, ``cmake_dependent_option``, and
 #:    cache variables for non‑BOOL types. It also records the option in Einsums’ metadata and stores
 #:    its category for later documentation/UX.
 #:
@@ -35,14 +35,14 @@ set(EINSUMS_OPTION_CATEGORIES "Generic" "Build Targets" "Profiling" "Debugging")
 #:    - ``ADVANCED`` *(switch)*: Marks the cache entry as advanced.
 #:    - ``CATEGORY <name>``: Logical grouping for this option (defaults to ``Generic``). Stored in
 #:      the internal cache variable ``<option>Category``.
-#:    - ``DEPENDS <expr>``: For ``BOOL`` options, creates a :cmake:command:`cmake_dependent_option`
+#:    - ``DEPENDS <expr>``: For ``BOOL`` options, creates a ``cmake_dependent_option``
 #:      gated by the given CMake expression ; for non‑BOOL types this is **invalid** and triggers an error.
 #:    - ``STRINGS <v1;v2;...>``: For ``STRING`` type only, sets the allowed values list shown in GUIs.
 #:
 #:    **Behavior**
 #:    - If ``type`` is ``BOOL``:
-#:      - Without ``DEPENDS`` → defines a normal :cmake:command:`option`.
-#:      - With ``DEPENDS`` → defines a :cmake:command:`cmake_dependent_option` with the provided guard.
+#:      - Without ``DEPENDS`` → defines a normal ``option``.
+#:      - With ``DEPENDS`` → defines a ``cmake_dependent_option`` with the provided guard.
 #:    - If ``type`` is **not** ``BOOL``:
 #:      - Fails if ``DEPENDS`` was provided.
 #:      - Ensures a cache entry of the given ``type`` exists with ``description`` and ``default``.

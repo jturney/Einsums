@@ -8,7 +8,7 @@ if(EINSUMS_WITH_TESTS_VALGRIND)
 endif()
 
 #:
-#: .. cmake:command:: einsums_add_test
+#: einsums_add_test
 #:
 #:    Register a runtime test with optional wrappers, Valgrind, and test properties.
 #:
@@ -36,14 +36,14 @@ endif()
 #:    - Prepends internal runtime args ``--einsums:no-install-signal-handlers`` and
 #:      ``--einsums:no-profiler-report``.
 #:    - Optionally prefixes the command with ``WRAPPER`` and/or Valgrind when
-#:      :cmake:variable:`EINSUMS_WITH_TESTS_VALGRIND` is ON.
+#:      ``EINSUMS_WITH_TESTS_VALGRIND`` is ON.
 #:    - Sets CTest properties: ``RUN_SERIAL``, ``COST``, ``TIMEOUT``, ``WILL_FAIL`` as requested.
 #:    - For real test targets ``<exe>_test`` with ``TESTING``: links ``Catch2::Catch2`` and
 #:      ``einsums_testing``.
 #:
 #:    **Notes**
 #:    - ``RANKS`` and ``THREADS`` are parsed for future use; ``THREADS`` is clamped by
-#:      :cmake:variable:`EINSUMS_WITH_TESTS_MAX_THREADS` when > 0.
+#:      ``EINSUMS_WITH_TESTS_MAX_THREADS`` when > 0.
 #:    - When Valgrind is enabled globally, it is discovered via ``find_program(valgrind)``.
 #:
 #:    **Example**
@@ -136,7 +136,7 @@ function(einsums_add_test category name)
 endfunction(einsums_add_test)
 
 #:
-#: .. cmake:command:: einsums_add_test_target_dependencies
+#: einsums_add_test_target_dependencies
 #:
 #:    Create a pseudo‑target for a test and wire it into its category group.
 #:
@@ -150,8 +150,8 @@ endfunction(einsums_add_test)
 #:    **Behavior**
 #:    - If the category does **not** match ``Tests.Examples*``, the dependent test target name is
 #:      assumed to end with ``_test``; otherwise no suffix is used.
-#:    - Creates pseudo‑target ``<category>.<name>`` via :cmake:command:`einsums_add_pseudo_target`.
-#:    - Attaches it to the category root via :cmake:command:`einsums_add_pseudo_dependencies`.
+#:    - Creates pseudo‑target ``<category>.<name>`` via ``einsums_add_pseudo_target``.
+#:    - Attaches it to the category root via ``einsums_add_pseudo_dependencies``.
 #:    - Makes the pseudo‑target depend on either ``<PSEUDO_DEPS_NAME><suffix>`` or ``<name><suffix>``.
 #:
 #:    **Example**
@@ -179,13 +179,13 @@ function(einsums_add_test_target_dependencies category name)
 endfunction(einsums_add_test_target_dependencies)
 
 #:
-#: .. cmake:command:: einsums_add_test_and_deps_test
+#: einsums_add_test_and_deps_test
 #:
 #:    Convenience wrapper to define a test and its pseudo‑target within the Tests hierarchy.
 #:
 #:    Constructs the full category path as ``Tests.<category>[.<subcategory>]`` and invokes
-#:    :cmake:command:`einsums_add_test` and
-#:    :cmake:command:`einsums_add_test_target_dependencies` with the same arguments.
+#:    ``einsums_add_test`` and
+#:    ``einsums_add_test_target_dependencies`` with the same arguments.
 #:
 #:    **Signature**
 #:    ``einsums_add_test_and_deps_test(<category> <subcategory> <name> [ARGS ...])``
@@ -205,7 +205,7 @@ function(einsums_add_test_and_deps_test category subcategory name)
 endfunction(einsums_add_test_and_deps_test)
 
 #:
-#: .. cmake:command:: einsums_set_test_properties
+#: einsums_set_test_properties
 #:
 #:    Apply standard Einsums labels and sanitizer/profiler environment to a test.
 #:
@@ -238,12 +238,12 @@ function(einsums_set_test_properties name labels)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_add_unit_test
+#: einsums_add_unit_test
 #:
 #:    Define a unit test under ``Tests.Unit.<subcategory>`` and wire its pseudo‑target.
 #:
-#:    Forwards to :cmake:command:`einsums_add_test_and_deps_test` with ``TESTING`` enabled and then
-#:    :cmake:command:`einsums_set_test_properties` with the label ``UNIT_ONLY``.
+#:    Forwards to ``einsums_add_test_and_deps_test`` with ``TESTING`` enabled and then
+#:    ``einsums_set_test_properties`` with the label ``UNIT_ONLY``.
 #:
 #:    **Signature**
 #:    ``einsums_add_unit_test(<subcategory> <name> [ARGS ...])``
@@ -258,12 +258,12 @@ function(einsums_add_unit_test subcategory name)
 endfunction(einsums_add_unit_test)
 
 #:
-#: .. cmake:command:: einsums_add_regression_test
+#: einsums_add_regression_test
 #:
 #:    Define a regression test under ``Tests.Regressions.<subcategory>`` and wire its pseudo‑target.
 #:
-#:    Forwards to :cmake:command:`einsums_add_test_and_deps_test` with ``TESTING`` enabled and then
-#:    :cmake:command:`einsums_set_test_properties` with the label ``REGRESSION_ONLY``.
+#:    Forwards to ``einsums_add_test_and_deps_test`` with ``TESTING`` enabled and then
+#:    ``einsums_set_test_properties`` with the label ``REGRESSION_ONLY``.
 #:
 #:    **Signature**
 #:    ``einsums_add_regression_test(<subcategory> <name> [ARGS ...])``
@@ -279,11 +279,11 @@ function(einsums_add_regression_test subcategory name)
 endfunction(einsums_add_regression_test)
 
 #:
-#: .. cmake:command:: einsums_add_performance_test
+#: einsums_add_performance_test
 #:
 #:    Define a performance test under ``Tests.Performance.<subcategory>`` and wire its pseudo‑target.
 #:
-#:    Forwards to :cmake:command:`einsums_add_test_and_deps_test` with ``RUN_SERIAL`` and
+#:    Forwards to ``einsums_add_test_and_deps_test`` with ``RUN_SERIAL`` and
 #:    ``PERFORMANCE_TESTING`` enabled, then sets label ``PERFORMANCE_ONLY``.
 #:
 #:    **Signature**
@@ -301,11 +301,11 @@ function(einsums_add_performance_test subcategory name)
 endfunction(einsums_add_performance_test)
 
 #:
-#: .. cmake:command:: einsums_add_example_test
+#: einsums_add_example_test
 #:
 #:    Register an example as a test under ``Tests.Examples.<subcategory>`` and wire its pseudo‑target.
 #:
-#:    Forwards to :cmake:command:`einsums_add_test_and_deps_test` and labels the test ``EXAMPLES_ONLY``.
+#:    Forwards to ``einsums_add_test_and_deps_test`` and labels the test ``EXAMPLES_ONLY``.
 #:
 #:    **Signature**
 #:    ``einsums_add_example_test(<subcategory> <name> [ARGS ...])``
@@ -320,7 +320,7 @@ function(einsums_add_example_test subcategory name)
 endfunction(einsums_add_example_test)
 
 #:
-#: .. cmake:command:: einsums_add_example_target_dependencies
+#: einsums_add_example_target_dependencies
 #:
 #:    Create an ``Examples.<subcategory>.<name>`` pseudo‑target and attach it to its category.
 #:

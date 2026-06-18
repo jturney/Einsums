@@ -4,7 +4,7 @@
 #----------------------------------------------------------------------------------------------
 
 #:
-#: .. cmake:command:: einsums_add_config_define
+#: einsums_add_config_define
 #:
 #:    Append a compile-time preprocessor definition to the global Einsums config property.
 #:
@@ -58,8 +58,8 @@
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_config_test`
-#:    - :cmake:command:`set_property(GLOBAL APPEND PROPERTY ...)`
+#:    - ``einsums_add_config_test``
+#:    - ``set_property(GLOBAL APPEND PROPERTY ...)``
 #:    - Global property: ``EINSUMS_CONFIG_DEFINITIONS``
 function(einsums_add_config_define definition)
   # if(ARGN) ignores an argument "0"
@@ -73,11 +73,11 @@ function(einsums_add_config_define definition)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_add_config_cond_define
+#: einsums_add_config_cond_define
 #:
 #:    Append a **conditional** preprocessor definition to the Einsums configuration property list.
 #:
-#:    This function works similarly to :cmake:command:`einsums_add_config_define`, but stores
+#:    This function works similarly to ``einsums_add_config_define``, but stores
 #:    the result in the global property `EINSUMS_CONFIG_COND_DEFINITIONS`, which is intended for
 #:    **conditionally emitted** macros — e.g., those gated by platform, compiler, GPU support,
 #:    or user build options.
@@ -122,11 +122,11 @@ endfunction()
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_config_define`
+#:    - ``einsums_add_config_define``
 #:    - Global properties:
 #:      - ``EINSUMS_CONFIG_DEFINITIONS``
 #:      - ``EINSUMS_CONFIG_COND_DEFINITIONS``
-#:    - :cmake:command:`set_property(GLOBAL APPEND PROPERTY ...)`
+#:    - ``set_property(GLOBAL APPEND PROPERTY ...)``
 function(einsums_add_config_cond_define definition)
 
   # Check if the definition starts with a -D if so, post a warning and remove it.
@@ -150,7 +150,7 @@ function(einsums_add_config_cond_define definition)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_add_config_define_namespace
+#: einsums_add_config_define_namespace
 #:
 #:    Register a compile-time macro under a **named definition namespace**.
 #:
@@ -206,8 +206,8 @@ endfunction()
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_config_define`
-#:    - :cmake:command:`set_property(GLOBAL APPEND PROPERTY ...)`
+#:    - ``einsums_add_config_define``
+#:    - ``set_property(GLOBAL APPEND PROPERTY ...)``
 #:    - Global properties:
 #:      - ``EINSUMS_CONFIG_DEFINITIONS_<NAMESPACE>``
 #:      - ``EINSUMS_CONFIG_DEFINITIONS``
@@ -229,12 +229,12 @@ function(einsums_add_config_define_namespace)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_add_config_cond_define_namespace
+#: einsums_add_config_cond_define_namespace
 #:
 #:    Register a **conditionally scoped** macro inside a named configuration namespace.
 #:
 #:    This function is the conditional counterpart to
-#:    :cmake:command:`einsums_add_config_define_namespace`, storing the definition in the
+#:    ``einsums_add_config_define_namespace``, storing the definition in the
 #:    global property `EINSUMS_CONFIG_COND_DEFINITIONS_<NAMESPACE>` instead of the always-defined one.
 #:
 #:    Use this for config macros that should be emitted only under certain conditions or build
@@ -267,7 +267,7 @@ endfunction()
 #:    - If a value is provided (including `"0"`), the macro is recorded as:
 #:      ``DEFINE VALUE``. Otherwise, it is recorded as ``DEFINE``.
 #:
-#:    - Stores the define using :cmake:command:`set_property(GLOBAL APPEND PROPERTY ...)`.
+#:    - Stores the define using ``set_property(GLOBAL APPEND PROPERTY ...)``.
 #:
 #:    **Use case**
 #:
@@ -301,8 +301,8 @@ endfunction()
 #:
 #:    **See also**
 #:
-#:    - :cmake:command:`einsums_add_config_define_namespace`
-#:    - :cmake:command:`einsums_add_config_cond_define`
+#:    - ``einsums_add_config_define_namespace``
+#:    - ``einsums_add_config_cond_define``
 #:    - Global property: ``EINSUMS_CONFIG_COND_DEFINITIONS_<NAMESPACE>``
 function(einsums_add_config_cond_define_namespace)
   set(one_value_args DEFINE NAMESPACE)
@@ -321,7 +321,7 @@ function(einsums_add_config_cond_define_namespace)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_write_config_defines_file
+#: einsums_write_config_defines_file
 #:
 #:    Emit a header (or templated file) containing configured preprocessor macros.
 #:
@@ -344,7 +344,7 @@ endfunction()
 #:
 #:    - ``FILENAME`` *(required)*:
 #:      Output path to write. If ``TEMPLATE`` is **not** provided, a complete header is generated.
-#:      If ``TEMPLATE`` **is** provided, that template is processed via :cmake:command:`configure_file`
+#:      If ``TEMPLATE`` **is** provided, that template is processed via ``configure_file``
 #:      and written here.
 #:
 #:    - ``TEMPLATE`` *(optional)*:
@@ -373,7 +373,7 @@ endfunction()
 #:       - Generate a self‑contained C++ header with a license banner, ``#pragma once``, and the
 #:         contents of ``einsums_config_defines``; then copy it to ``FILENAME``.
 #:    5. If ``TEMPLATE`` is **present**:
-#:       - Call :cmake:command:`configure_file` with ``@ONLY`` so that the template can reference
+#:       - Call ``configure_file`` with ``@ONLY`` so that the template can reference
 #:         ``@einsums_config_defines@`` (and other standard CMake variables) and write the result
 #:         to ``FILENAME``.
 #:
@@ -403,10 +403,10 @@ endfunction()
 #:       )
 #:
 #:    **See also**
-#:    - :cmake:command:`einsums_add_config_define`
-#:    - :cmake:command:`einsums_add_config_cond_define`
-#:    - :cmake:command:`einsums_add_config_define_namespace`
-#:    - :cmake:command:`einsums_add_config_cond_define_namespace`
+#:    - ``einsums_add_config_define``
+#:    - ``einsums_add_config_cond_define``
+#:    - ``einsums_add_config_define_namespace``
+#:    - ``einsums_add_config_cond_define_namespace``
 #:    - Global properties:
 #:      ``EINSUMS_CONFIG_DEFINITIONS*``, ``EINSUMS_CONFIG_COND_DEFINITIONS*``
 function(einsums_write_config_defines_file)

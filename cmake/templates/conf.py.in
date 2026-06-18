@@ -58,7 +58,6 @@ extensions = [
     'sphinx_design',
     'sphinx-einsums',  # Custom Einsums roles
     'sphinx_copybutton',
-    'moderncmakedomain',
 ]
 
 # breathe_projects = {"Einsums": os.path.join('..', 'doxygen', 'xml')}

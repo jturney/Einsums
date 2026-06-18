@@ -4,13 +4,13 @@
 #----------------------------------------------------------------------------------------------
 
 #:
-#: .. cmake:command:: einsums_add_library_sources
+#: einsums_add_library_sources
 #:
 #:    Collect source files for a library target using CMake globs.
 #:
 #:    Populates the cache variable ``<name>_SOURCES`` with **absolute paths** discovered by
-#:    :cmake:command:`file` globs, optionally filtering with a regex and/or appending to an
-#:    existing list. This list is typically consumed by :cmake:command:`einsums_add_library`.
+#:    ``file`` globs, optionally filtering with a regex and/or appending to an
+#:    existing list. This list is typically consumed by ``einsums_add_library``.
 #:
 #:    **Signature**
 #:    ``einsums_add_library_sources(<name> <globtype> [APPEND] [EXCLUDE <regex>] [GLOBS <...>])``
@@ -18,7 +18,7 @@
 #:    **Positional Arguments**
 #:    - ``name`` *(required)*: Logical library name. The function writes to the
 #:      ``INTERNAL`` cache variable ``<name>_SOURCES``.
-#:    - ``globtype`` *(required)*: Passed to :cmake:command:`file`; usually ``GLOB`` or
+#:    - ``globtype`` *(required)*: Passed to ``file``; usually ``GLOB`` or
 #:      ``GLOB_RECURSE``.
 #:
 #:    **Options**
@@ -45,9 +45,9 @@
 #:       )
 #:
 #:    **See also**
-#:    - :cmake:command:`file`
-#:    - :cmake:command:`einsums_add_library`
-#:    - :cmake:command:`einsums_add_library_sources_noglob`
+#:    - ``file``
+#:    - ``einsums_add_library``
+#:    - ``einsums_add_library_sources_noglob``
 function(einsums_add_library_sources name globtype)
   set(options APPEND)
   set(one_value_args)
@@ -87,11 +87,11 @@ function(einsums_add_library_sources name globtype)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_add_library_sources_noglob
+#: einsums_add_library_sources_noglob
 #:
 #:    Collect source files for a library target from an explicit list (no globs).
 #:
-#:    Non‑glob counterpart to :cmake:command:`einsums_add_library_sources`. Populates the
+#:    Non‑glob counterpart to ``einsums_add_library_sources``. Populates the
 #:    ``INTERNAL`` cache variable ``<name>_SOURCES`` with **absolute paths** from a provided list,
 #:    with optional regex filtering and append semantics.
 #:
@@ -124,8 +124,8 @@ endfunction()
 #:       )
 #:
 #:    **See also**
-#:    - :cmake:command:`einsums_add_library_sources`
-#:    - :cmake:command:`einsums_add_library`
+#:    - ``einsums_add_library_sources``
+#:    - ``einsums_add_library``
 function(einsums_add_library_sources_noglob name)
   set(options APPEND)
   set(one_value_args)

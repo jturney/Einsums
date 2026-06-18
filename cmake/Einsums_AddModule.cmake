@@ -8,7 +8,7 @@ include(Einsums_WriteModuleHeader)
 include(Einsums_CodeCoverage)
 
 #:
-#: .. cmake:command:: einsums_add_module
+#: einsums_add_module
 #:
 #:    Define and integrate an Einsums **module** (``<libname>_<modulename>``) with generated headers,
 #:    dependency wiring, IDE grouping, install/export rules, and optional config files.
@@ -46,7 +46,7 @@ include(Einsums_CodeCoverage)
 #:      - ``<build>/include/<PROJECT_NAME>/Config/Version.hpp`` from
 #:        ``cmake/templates/ConfigVersion.hpp.in``.
 #:      - ``<build>/include/<PROJECT_NAME>/Config/Defines.hpp`` using
-#:        :cmake:command:`einsums_write_config_defines_file` with the default namespace and the
+#:        ``einsums_write_config_defines_file`` with the default namespace and the
 #:        template ``cmake/templates/ConfigDefines.hpp.in``.
 #:
 #:    - ``SOURCES <...>``:
@@ -63,11 +63,11 @@ include(Einsums_CodeCoverage)
 #:      Targets linked with module’s public keyword (``PUBLIC`` for object modules, ``INTERFACE`` for
 #:      header‑only modules).
 #:    - ``MODULE_DEPENDENCIES <libname_foo ...>``:
-#:      Other *modules* this one depends on. When :cmake:variable:`EINSUMS_WITH_CHECK_MODULE_DEPENDENCIES`
+#:      Other *modules* this one depends on. When ``EINSUMS_WITH_CHECK_MODULE_DEPENDENCIES``
 #:      is ON, the function validates that listed modules belong to the same category set.
 #:
 #:    - ``CMAKE_SUBDIRS <dirs...>``:
-#:      Subdirectories to add via :cmake:command:`add_subdirectory` (e.g., nested components/tests).
+#:      Subdirectories to add via ``add_subdirectory`` (e.g., nested components/tests).
 #:
 #:    **Layout & paths**
 #:    - ``SOURCE_ROOT`` is fixed to ``<module dir>/src``
@@ -77,10 +77,10 @@ include(Einsums_CodeCoverage)
 #:    **Generated headers**
 #:    - **Per‑module defines header**:
 #:      ``<build>/include/<BASE_LIBNAME>/<modulename>/Defines.hpp`` created via
-#:      :cmake:command:`einsums_write_config_defines_file(NAMESPACE <MODULENAME_UPPER>)`.
+#:      ``einsums_write_config_defines_file(NAMESPACE <MODULENAME_UPPER>)``.
 #:    - **Per‑module umbrella header**:
 #:      ``<build>/include/<BASE_LIBNAME>/<modulename>.hpp`` created via
-#:      :cmake:command:`einsums_write_module_header(NAMESPACE <MODULENAME_UPPER>)`.
+#:      ``einsums_write_module_header(NAMESPACE <MODULENAME_UPPER>)``.
 #:    - The function also removes stale (“zombie”) generated headers under
 #:      ``<build>/include`` that are no longer part of this module’s output.
 #:
@@ -90,7 +90,7 @@ include(Einsums_CodeCoverage)
 #:
 #:    **Target creation & wiring**
 #:    - Creates ``add_library(<libname>_<modulename> <OBJECT|INTERFACE> ...)`` with sources/objects.
-#:    - Appends code‑coverage flags via :cmake:command:`einsums_append_coverage_compiler_flags_to_target`
+#:    - Appends code‑coverage flags via ``einsums_append_coverage_compiler_flags_to_target``
 #:      using the module’s public keyword.
 #:    - Links, in order:
 #:      - ``MODULE_DEPENDENCIES`` (public/interface as appropriate),
@@ -107,16 +107,16 @@ include(Einsums_CodeCoverage)
 #:
 #:    **IDE grouping & properties**
 #:    - Source groups are created for headers, sources, and generated files via
-#:      :cmake:command:`einsums_add_source_group`.
+#:      ``einsums_add_source_group``.
 #:    - For non‑interface modules:
 #:      - Places target under folder ``Core/Modules/<LibnameCapitalized>``.
-#:      - Enables :cmake:prop_tgt:`POSITION_INDEPENDENT_CODE`.
+#:      - Enables ``POSITION_INDEPENDENT_CODE``.
 #:      - Enables Unity build/markers when ``EINSUMS_WITH_UNITY_BUILD`` is ON.
 #:      - On MSVC, configures compile PDB name/output directories for Debug/RelWithDebInfo.
 #:
 #:    **Install & export**
 #:    - Installs the module target (library/archive/runtime) and exports it via
-#:      :cmake:command:`einsums_export_internal_targets`.
+#:      ``einsums_export_internal_targets``.
 #:    - Installs public **source headers** from the module’s ``include/`` and the **generated headers**
 #:      from ``<build>/include/<BASE_LIBNAME>``.
 #:    - On MSVC, installs compile PDBs for Debug/RelWithDebInfo (if present).
@@ -127,9 +127,9 @@ include(Einsums_CodeCoverage)
 #:
 #:    **Book‑keeping & summary**
 #:    - Marks the module enabled by appending ``<BASENAME_UPPER>_<modulename>`` to the cached list
-#:      :cmake:variable:`EINSUMS_ENABLED_MODULES`.
+#:      ``EINSUMS_ENABLED_MODULES``.
 #:    - Optionally adds extra subdirectories from ``CMAKE_SUBDIRS``.
-#:    - Prints a configuration summary via :cmake:command:`einsums_create_configuration_summary`.
+#:    - Prints a configuration summary via ``einsums_create_configuration_summary``.
 #:
 #:    **Environment/toggles referenced**
 #:    - ``EINSUMS_WITH_CHECK_MODULE_DEPENDENCIES``, ``EINSUMS_WITH_UNITY_BUILD``,

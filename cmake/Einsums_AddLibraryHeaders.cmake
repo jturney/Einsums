@@ -4,7 +4,7 @@
 #----------------------------------------------------------------------------------------------
 
 #:
-#: .. cmake:command:: einsums_add_library_headers
+#: einsums_add_library_headers
 #:
 #:    Collect header files for a library target (IDE visibility on MSVC), using CMake globs.
 #:
@@ -18,7 +18,7 @@
 #:    **Positional Arguments**
 #:    - ``name`` *(required)*: Logical target name whose header cache variable
 #:      ``<name>_HEADERS`` will be filled.
-#:    - ``globtype`` *(required)*: Passed to :cmake:command:`file` (e.g., ``GLOB`` or
+#:    - ``globtype`` *(required)*: Passed to ``file`` (e.g., ``GLOB`` or
 #:      ``GLOB_RECURSE``).
 #:
 #:    **Options**
@@ -48,8 +48,8 @@
 #:    (MSVC only), suitable for attaching to the target for IDE display.
 #:
 #:    **See also**
-#:    - :cmake:command:`file`
-#:    - :cmake:command:`einsums_add_library_headers_noglob`
+#:    - ``file``
+#:    - ``einsums_add_library_headers_noglob``
 function(einsums_add_library_headers name globtype)
   if(MSVC)
     set(options APPEND)
@@ -91,11 +91,11 @@ function(einsums_add_library_headers name globtype)
 endfunction()
 
 #:
-#: .. cmake:command:: einsums_add_library_headers_noglob
+#: einsums_add_library_headers_noglob
 #:
 #:    Collect header files for a library target (IDE visibility on MSVC), from an explicit list.
 #:
-#:    This is the non‑glob counterpart to :cmake:command:`einsums_add_library_headers`. On **MSVC
+#:    This is the non‑glob counterpart to ``einsums_add_library_headers``. On **MSVC
 #:    generators only**, it filters an explicit list of headers and stores absolute paths in the
 #:    ``<name>_HEADERS`` cache variable for later attachment to the library target.
 #:
@@ -131,7 +131,7 @@ endfunction()
 #:       )
 #:
 #:    **See also**
-#:    - :cmake:command:`einsums_add_library_headers`
+#:    - ``einsums_add_library_headers``
 function(einsums_add_library_headers_noglob name)
   if(MSVC)
     set(options APPEND)

@@ -4,14 +4,14 @@
 #----------------------------------------------------------------------------------------------
 
 #:
-#: .. cmake:command:: einsums_add_executable
+#: einsums_add_executable
 #:
 #:    Define an Einsums executable target with rich options (install/layout, GPU language, flags, unity, etc.).
 #:
-#:    A convenience wrapper around :cmake:command:`add_executable` plus project‑standard setup:
+#:    A convenience wrapper around ``add_executable`` plus project‑standard setup:
 #:    source/headers discovery, GPU language handling (CUDA/HIP/NVHPC), macOS dSYM generation,
 #:    custom output names/suffixes, optional install rules, and forwarding of build policy flags to
-#:    :cmake:command:`einsums_setup_target`.
+#:    ``einsums_setup_target``.
 #:
 #:    **Signature**
 #:    ``einsums_add_executable(<name>
@@ -44,7 +44,7 @@
 #:    - ``GPU``: Mark the target as GPU code. Sets target language to CUDA/HIP (or NVHPC CUDA link).
 #:    - ``EXCLUDE_FROM_ALL``: Do not build by default (opt‑in only).
 #:    - ``EXCLUDE_FROM_DEFAULT_BUILD``: Exclude from default config build on multi‑config generators.
-#:    - ``INTERNAL_FLAGS``: Forwarded to :cmake:command:`einsums_setup_target` to enable internal policy flags.
+#:    - ``INTERNAL_FLAGS``: Forwarded to ``einsums_setup_target`` to enable internal policy flags.
 #:    - ``NOLIBS``: Forwarded to `einsums_setup_target`; avoid linking standard Einsums libs.
 #:    - ``UNITY_BUILD``: Forwarded to `einsums_setup_target` to opt into unity builds.
 #:    - ``NOINSTALL``: Suppress install rules for this executable.
@@ -57,7 +57,7 @@
 #:    - ``SOURCE_GLOB``, ``HEADER_GLOB``: (reserved) Glob patterns—actual expansion handled upstream.
 #:    - ``OUTPUT_NAME``: Basename of produced artifact (prefixed by `EINSUMS_WITH_EXECUTABLE_PREFIX`).
 #:    - ``OUTPUT_SUFFIX``: Extra path component under the runtime output directory (e.g., ``tools``).
-#:    - ``INSTALL_SUFFIX``: Override install destination (defaults to :cmake:variable:`CMAKE_INSTALL_BINDIR`).
+#:    - ``INSTALL_SUFFIX``: Override install destination (defaults to ``CMAKE_INSTALL_BINDIR``).
 #:    - ``LANGUAGE``: Nominal language (default ``CXX``). GPU/compilers may override per‑file.
 #:
 #:    **Multi‑value keywords**
@@ -70,19 +70,19 @@
 #:
 #:    **Behavior (high‑level)**
 #:    1. **Defaults & roots** — Ensures ``LANGUAGE=CXX``, ``SOURCE_ROOT``/``HEADER_ROOT`` default to ``"."``.
-#:    2. **Source staging** — Uses project helper :cmake:command:`einsums_add_library_sources_noglob`
+#:    2. **Source staging** — Uses project helper ``einsums_add_library_sources_noglob``
 #:       to normalize provided ``SOURCES`` (and attach headers); groups files with
-#:       :cmake:command:`einsums_add_source_group` under ``FOLDER``/roots for IDEs.
+#:       ``einsums_add_source_group`` under ``FOLDER``/roots for IDEs.
 #:    3. **GPU language tweaks**
 #:       - When ``EINSUMS_WITH_HIP``: `.cu` sources are coerced to ``LANGUAGE HIP``.
 #:       - With NVHPC: `.cu` sources get compiler‑specific flags via
-#:         :cmake:command:`einsums_add_nvhpc_cuda_flags`; if GPU content is present, link with ``-cuda``.
+#:         ``einsums_add_nvhpc_cuda_flags``; if GPU content is present, link with ``-cuda``.
 #:       - With ``GPU`` option:
 #:         * HIP available → target ``LANGUAGE HIP``,
 #:         * NVHPC → set link flags ``-cuda``,
 #:         * otherwise → target ``LANGUAGE CUDA``.
-#:    4. **Target creation** — Calls :cmake:command:`add_executable` with sources/headers/auxiliary.
-#:    5. **macOS dSYM** — On Apple with Debug/RelWithDebInfo, post‑build :cmake:command:`dsymutil` runs
+#:    4. **Target creation** — Calls ``add_executable`` with sources/headers/auxiliary.
+#:    5. **macOS dSYM** — On Apple with Debug/RelWithDebInfo, post‑build ``dsymutil`` runs
 #:       to generate a `.dSYM` bundle.
 #:    6. **Output naming/layout**
 #:       - ``OUTPUT_NAME`` sets the runtime name (prefixed).
@@ -95,7 +95,7 @@
 #:       - Applies ``EXCLUDE_FROM_ALL`` and/or ``EXCLUDE_FROM_DEFAULT_BUILD`` properties to the target.
 #:    9. **Forwarding to project policy**
 #:       - Constructs `_target_flags` from ``NOLIBS``, ``INTERNAL_FLAGS``, ``UNITY_BUILD`` and calls
-#:         :cmake:command:`einsums_setup_target`:
+#:         ``einsums_setup_target``:
 #:         ``einsums_setup_target(<name> TYPE EXECUTABLE FOLDER <...> COMPILE_FLAGS <...> LINK_FLAGS <...> DEPENDENCIES <...> <_target_flags>)``.
 #:
 #:    **Notes**
@@ -138,10 +138,10 @@
 #:       )
 #:
 #:    **See also**
-#:    - :cmake:command:`add_executable`
-#:    - :cmake:command:`einsums_setup_target`
-#:    - :cmake:command:`einsums_add_library_sources_noglob`, :cmake:command:`einsums_add_source_group`
-#:    - :cmake:command:`dsymutil`
+#:    - ``add_executable``
+#:    - ``einsums_setup_target``
+#:    - ``einsums_add_library_sources_noglob``, ``einsums_add_source_group``
+#:    - ``dsymutil``
 function(einsums_add_executable name)
   set(options
       GPU
