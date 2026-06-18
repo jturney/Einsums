@@ -9,9 +9,10 @@
 Creating Module Skeletons
 =========================
 
-In the ``libs`` directory, there is a Python package called ``create_module_skeleton``. This package
-sets up a module skeleton to help you create new modules. This page will act as the documentation
-on how to call it and modify it.
+In the ``libs`` directory there is a Python package called ``create_module_skeleton``. It
+sets up a module skeleton to help you create new modules. The package locates the ``libs``
+directory from its own location, so you can run it from any working directory. This page
+documents how to call it and how to modify it.
 
 
 Usage
@@ -27,7 +28,10 @@ Options
 
 ``-h, --help``: Print a help message.
 
-``--python``: If included, the new package will be set up as a Python extension module.
+``--python``: If included, the module is built with Python bindings. This adds the ``PYBIND``
+keyword to the ``einsums_add_module`` call, which makes apiary generate pybind11 bindings from
+the module's annotated headers when ``EINSUMS_BUILD_PYTHON`` is on. The module stays a normal
+C++ module under its real library.
 
 ``--gpu``: If included, the new package will be set up as a GPU-enabled module.
 
@@ -37,10 +41,13 @@ the Python name of ``_core``.
 
 ``--reindex``: Goes through and updates the CMake files and auto-generated documentation to
 see the modules that are currently present. If no libraries are given, it will reindex all
-libraries in the current directory.
+libraries in the ``libs`` directory.
 
 ``--rebuild``: Adds new files to the given module that may not have existed when the module was
 originally created.
+
+``--libs-dir DIR``: The directory that holds the library folders. Defaults to the ``libs``
+directory that contains the script, so you normally do not need to set it.
 
 ``LIBRARY_NAME``: The name of the top-level library. If it does not exist, it will be created.
 
@@ -51,30 +58,11 @@ originally created.
 Output Files
 ------------
 
-``.is_python_lib``: If this file is present, the library is considered to be a Python extension module.
-It also contains options for updating the library's tree. These options are as follows.
-
-* ``CONFIGURE_PREAMBLE``: If set to a truthy value, the preable file will be updated if the module is ever
-  rebuilt.
-* ``CONFIGURE_CLOSER``: If set to a truthy value, the closer file will be updated if the module is ever
-  rebuilt.
-
 ``CMakeLists.txt``: This is the library's CMake file. It is automatically populated when the library is indexed
 and should not be edited.
 
-``ExportAll.cpp.in``: (Python library only) Template file for exporting symbols to be seen by Python.
-It is automatically generated and populated. It shouldn't need to be generated, but may be if needed.
-
 ``modules.rst``: This is the top-level documentation for the library, containing a list of modules within
 the library. It is automatically populated when the library is indexed, and should not be edited.
-
-``preamble.txt``: This file contains CMake code to be executed before adding module subdirectories. It
-is automatically generated for Python libraries, and may be overwritten by a rebuild. However, it may be changed if needed.
-If you do, don't forget to set the ``CONFIGURE_PREAMBLE`` option in the ``.is_python_lib`` file appropriately.
-
-``closer.txt``: This file contains CMake code to be executed after adding module subdirectories. It
-is automatically generated for Python libraries, and may be overwritten by a rebuild. However, it may be changed if needed.
-If you do, don't forget to set the ``CONFIGURE_CLOSER`` option in the ``.is_python_lib`` file appropriately.
 
 ``MODULE/docs/index.rst``: This is the top-level documentation for the module.
 
@@ -95,9 +83,6 @@ along with ``MODULE/src/ModuleVars.cpp``, and references to it can be removed fr
 
 ``MODULE/src/.gitkeep``: This file makes sure that the directory doesn't disappear on GitHub when empty.
 
-``MODULE/src/Export.cpp``: (Python library only) This file contains the code to export symbols from the module to Python.
-It shouldn't be deleted, but the export function may be empty.
-
 ``MODULE/src/InitModule.cpp``: This file contains the module initialization code. The functions to modify are
 ``initialize_LIBRARY_MODULE`` and ``finalize_LIBRARY_MODULE``. If your code does not need to be initialized,
 you may delete it, along with ``MODULE/include/LIBRARY/MODULE/InitModule.hpp``, and references to it can be removed from ``MODULE/CMakeLists.txt``.
@@ -110,9 +95,10 @@ along with ``MODULE/include/LIBRARY/MODULE/ModuleVars.hpp``, and references to i
 
 ``MODULE/tests/regressions/CMakeLists.txt``: The CMake file for adding regression tests.
 
-``MODULE/tests/unit/CMakeLists.txt``: The CMake file for adding unit tests. Add your test names to the 
-line that says ``set(MODULETests)``. For instance, ``set(TensorTests dot)`` will add a test called "dot"
-that depends on a file called ``dot.cpp``.
+``MODULE/tests/unit/CMakeLists.txt``: The CMake file for adding unit tests. Add your test file names to the
+line that says ``set(MODULETests)``. C++ tests use a ``.cpp`` source, for example ``set(TensorTests dot.cpp)``
+adds a test called ``dot`` built from ``dot.cpp``. Python tests use the name ``test_<snake>_python.py`` and are
+run through pytest, for example ``test_mixed_ops_python.py`` registers as the Python test ``MixedOpsPython``.
 
 ``MODULE/tests/CMakeLists.txt``: Top-level CMake file for tests.
 
@@ -133,21 +119,17 @@ are made available.
 
 ``lib_name``: The name of the library.
 
-``lib_symb``: Normally, it is the name of the library. For Python libraries, though, it is ``${EINSUMS_PYTHON_LIB_NAME}``,
-which allows the Python version to be attached to the library outputs.
+``lib_symb``: The name of the library.
+
+``pybind_flag``: When ``--python`` is given, this is ``PYBIND`` followed by a newline, which adds the
+``PYBIND`` keyword to the ``einsums_add_module`` call. Otherwise it is empty.
 
 ``docs_head``: The name of the library and module, followed by an appropriate amount of equals signs.
 
 ``readme_head``: The name of the module, followed by an appropriate amount of equals signs.
 
-``export_source``: If this is a Python module, it will be ``Export.cpp``. Otherwise, it will be empty.
-
 ``export_depends``: If the current library is Einsums, it will be empty. Otherwise, it will contain ``Einsums``,
 which will link the Einsums target to the library.
-
-``python_footer``: If this is a Python module, it will contain code for adding Python dependencies.
-
-``python_deps``: Contains Python dependencies for tests, if the module is a Python module. Otherwise, it will be empty.
 
 ``gpu_head`` and ``gpu_foot``: Puts an if-statement around the CMake code that only evaluates when GPU support
 is enabled.
@@ -155,4 +137,3 @@ is enabled.
 ``modules``: Contains a list of modules in a library.
 
 ``module_docs``: Contains a list of module documentation paths in a library.
-
