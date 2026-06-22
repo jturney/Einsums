@@ -30,7 +30,8 @@ Capture a graph once, then rebind tensors to process different data:
    C.zero();
    graph.execute();  // Now uses A2!
 
-**Constraints:**
+Constraints
+^^^^^^^^^^^
 
 - New tensor must have the same rank and dimensions as the original
 - Type must match (checked at compile time via template)
