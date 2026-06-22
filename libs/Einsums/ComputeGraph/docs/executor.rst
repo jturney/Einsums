@@ -75,7 +75,8 @@ that runs when all its predecessors complete via continuation chaining:
    cg::DataflowExecutor df;
    graph.execute(df);  // Maximum overlap, no barriers
 
-**How it works:**
+How it works
+^^^^^^^^^^^^
 
 1. Each node gets a ``TaskHandle<void>`` representing its completion
 2. Nodes with no predecessors are submitted immediately
@@ -83,7 +84,8 @@ that runs when all its predecessors complete via continuation chaining:
    for all predecessors before executing
 4. The work-stealing pool naturally load-balances across workers
 
-**When to use:**
+When to use
+^^^^^^^^^^^
 
 - Use ``DataflowExecutor`` when your graph has many independent nodes,
   async I/O nodes, and you want maximum overlap
@@ -148,11 +150,14 @@ To set up async I/O:
    cg::DataflowExecutor df;
    graph.execute(df);
 
-**Note**: ``SequentialExecutor`` and ``OpenMPExecutor`` call the synchronous
-fallback lambda, so no overlap occurs. Use ``DataflowExecutor`` for async
-I/O overlap.
+.. note::
 
-**Graph-capturable parallel_for and parallel_reduce:**
+   ``SequentialExecutor`` and ``OpenMPExecutor`` call the synchronous
+   fallback lambda, so no overlap occurs. Use ``DataflowExecutor`` for async
+   I/O overlap.
+
+Graph-capturable parallel_for and parallel_reduce
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``cg::parallel_for()`` and ``cg::parallel_reduce()`` capture into the graph
 as nodes, with dependency tracking via declared tensor outputs. The graph's
@@ -189,7 +194,8 @@ The tensor arguments at the end of ``cg::parallel_for()`` and
 ``cg::parallel_reduce()`` declare which tensors the body reads/writes,
 enabling the graph's topological sort to order these nodes correctly.
 
-**Manual TaskPool usage inside nodes:**
+Manual TaskPool usage inside nodes
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 You can also call TaskPool directly from within a graph node's lambda. In this
 case there is no automatic dependency tracking. The ``parallel_for`` blocks
