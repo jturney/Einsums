@@ -13,7 +13,7 @@ dependencies:
   # Prebuilts to save einsums the work
   - catch2
   - fftw
-  - fmt
+  - fmt<=12.1
   - cpptrace
   - spdlog
   # HDF5
