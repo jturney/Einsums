@@ -24,7 +24,8 @@ Choose the executor based on your workload:
    cg::MPIExecutor mpi;
    graph.execute(mpi);                 // MPI-aware (same as Sequential on 1 rank)
 
-**When to use which:**
+When to use which
+^^^^^^^^^^^^^^^^^
 
 - **Sequential**: Small graphs (<10 nodes), debugging, or when nodes are already
   internally parallel (OpenMP BLAS). Zero scheduling overhead.
@@ -96,7 +97,8 @@ The default is 64 MB. Tensors smaller than this are replicated on every rank.
    // Disable distribution entirely
    pm.add<cg::passes::DistributionPlanning>(/*threshold=*/SIZE_MAX);
 
-**Guidelines:**
+Guidelines
+^^^^^^^^^^
 
 - For small calculations (< 1000 basis functions): keep default (64 MB). Most
   tensors are small enough that replication is cheaper than communication.
@@ -115,7 +117,8 @@ link indices too). On non-square grids, it falls back to outer-product.
    // Force outer-product only (no SUMMA, even on square grids)
    pm.add<cg::passes::DistributionPlanning>(/*threshold=*/1, /*enable_summa=*/false);
 
-**When to disable SUMMA:**
+When to disable SUMMA
+^^^^^^^^^^^^^^^^^^^^^
 
 - When K, the link dimension, is small relative to M and N, so the broadcast
   overhead exceeds the memory savings.
@@ -173,7 +176,8 @@ When the budget would be exceeded, the executor delays Materialize nodes until
 Free nodes release enough memory. This prevents OOM for graphs with many large
 intermediates.
 
-**Guidelines:**
+Guidelines
+^^^^^^^^^^
 
 - Set to ~80% of available RAM to leave room for BLAS workspace and OS overhead.
 - If your graph never exceeds RAM, leave at 0 (unlimited) for best parallelism.
@@ -227,7 +231,8 @@ Enable detailed profiling to find bottlenecks:
    # TCP server (for live monitoring)
    ./my_program --einsums:profiler-port 19216
 
-**What to look for:**
+What to look for
+^^^^^^^^^^^^^^^^
 
 - **SUMMA panels**: ``broadcast_A``, ``broadcast_B``, ``local_gemm``. If broadcasts
   dominate, tensors may be too small for SUMMA, so switch to outer-product.
