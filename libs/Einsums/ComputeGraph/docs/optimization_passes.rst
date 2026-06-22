@@ -209,7 +209,8 @@ einsum's indices are mutated in place through the
 ``std::shared_ptr<EinsumIndices>`` captured by its executor, and the
 permute-output slot is redirected to the pre-permute tensor.
 
-**Safety conditions (all must hold):**
+Safety conditions (all must hold)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 - The permute's output has exactly one consumer.
 - The permute is a pure axis reorder: ``alpha == 1``, ``beta == 0``,
@@ -301,7 +302,8 @@ Inserts ``Free`` nodes after each intermediate tensor's last consumer. When
 executed, Free nodes call ``Tensor::release()`` to immediately free the backing
 storage, reducing peak memory for graphs with many large intermediates.
 
-**Key behaviors:**
+Key behaviors
+^^^^^^^^^^^^^
 
 - **Only frees intermediates**: user-provided tensors (inputs and outputs) are never freed.
 - **Size threshold**: only frees tensors above 1 MB by default, configurable via the constructor. Small tensors are kept alive to avoid alloc/free overhead in loops.
