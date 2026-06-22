@@ -54,7 +54,8 @@ The API:
    // Zero-initialized tensor (with Alloc node)
    auto &T = graph.create_zero_tensor<double, 2>("name", rows, cols);
 
-**Template parameters**:
+Template parameters
+^^^^^^^^^^^^^^^^^^^
 
 - ``T``: Element type (``double``, ``float``, ``std::complex<double>``, etc.)
 - ``Rank``: Number of dimensions (must be explicitly specified)
