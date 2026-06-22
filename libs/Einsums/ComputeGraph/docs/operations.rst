@@ -305,14 +305,16 @@ For I/O-compute overlap, use the async variants. They accept three lambdas:
        /*sync*/   [&]() { load_from_disk(ERI); }
    );
 
-**How async I/O works with executors:**
+How async I/O works with executors
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 - **SequentialExecutor / OpenMPExecutor**: Call ``sync_fn`` directly (no overlap).
 - **DataflowExecutor**: Calls ``start_fn`` as soon as predecessors complete,
   then submits ``finish_fn`` as a separate task. Independent compute nodes
   can execute between start and finish, overlapping I/O with computation.
 
-**Combine with IOPrefetch for maximum overlap:**
+Combine with IOPrefetch for maximum overlap
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The ``IOPrefetch`` pass moves ``DiskRead`` nodes to the earliest legal position
 in the schedule, maximizing the window between ``async_start`` and the first
