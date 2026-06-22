@@ -156,7 +156,7 @@ Pre-allocated tensors (not deferred) are automatically sliced by the
    // InputSlicing detects that A shares index i with distributed C
    // → automatically creates a view of A's local rows for each rank
 
-This also works for **distributed permute** (cross-axis redistribution):
+This also works for distributed permute (cross-axis redistribution):
 
 .. code-block:: cpp
 
@@ -175,7 +175,7 @@ subsequent contraction, the pass detects and resolves it:
    T[i,j] = A[i,k] * B[k,j]   → T gets [Row, Col]
    C[i,j] = T[i,k] * D[k,j]   → T's j-dim (Col) is now link index k!
 
-DistributionPlanning detects that T's Col dimension becomes a link index and
+``DistributionPlanning`` detects that T's Col dimension becomes a link index and
 downgrades it to None: T gets [Row, None] instead. This prevents incorrect
 partial results.
 
@@ -198,7 +198,8 @@ distribution-aware access.
                    T.global(i, j) = compute(i, j);  // Global indices, auto-mapped
        });
 
-**Key methods on the tensor:**
+Key methods on the tensor
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``T.range(dim)``
    Returns ``{start, end}``, the global index range this rank owns along
@@ -271,7 +272,8 @@ parallelize it with OpenMP or the einsums TaskPool.
 ``T.global()`` is thread-safe: each shell pair writes to non-overlapping
 regions, so no locks are needed.
 
-**OpenMP** (simplest):
+OpenMP (simplest)
+^^^^^^^^^^^^^^^^^
 
 .. code-block:: cpp
 
@@ -306,7 +308,8 @@ regions, so no locks are needed.
            }
        });
 
-**TaskPool** (integrates with einsums task infrastructure):
+TaskPool (integrates with einsums task infrastructure)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: cpp
 
