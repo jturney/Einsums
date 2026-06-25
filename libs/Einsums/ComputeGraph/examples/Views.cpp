@@ -26,6 +26,8 @@
 #include <Einsums/Runtime.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
+#include <cstdint>
+
 namespace cg = einsums::compute_graph;
 
 int einsums_main() {

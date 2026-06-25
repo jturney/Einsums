@@ -12,6 +12,7 @@
 #include <fmt/format.h>
 
 #include <complex>
+#include <cstdint>
 #include <cstring>
 #include <map>
 #include <tuple>

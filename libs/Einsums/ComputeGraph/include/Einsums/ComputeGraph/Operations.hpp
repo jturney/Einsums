@@ -34,6 +34,8 @@
 #endif
 
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>

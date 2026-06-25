@@ -18,6 +18,7 @@
 #include <fmt/format.h>
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <stdexcept>
 #include <string>

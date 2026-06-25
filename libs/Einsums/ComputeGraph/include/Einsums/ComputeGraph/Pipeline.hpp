@@ -14,6 +14,7 @@
 #include <Einsums/Tensor/Tensor.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>

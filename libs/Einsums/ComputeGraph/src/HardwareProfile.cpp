@@ -11,6 +11,7 @@
 #include <fmt/format.h>
 
 #include <cctype>
+#include <cstring>
 #include <fstream>
 #include <string>
 

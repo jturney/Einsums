@@ -14,6 +14,7 @@
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
