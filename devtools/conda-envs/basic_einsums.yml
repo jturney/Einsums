@@ -10,7 +10,7 @@ dependencies:
   # Prebuilts to save einsums the work
   - catch2
   - fftw
-  - fmt >=11,<12  # fmt 12 has breaking API changes; spdlog (SPDLOG_FMT_EXTERNAL) needs fmt 11
+  - fmt >=11,<11.1  # fmt 12 breaks spdlog; fmt 11.1+ malloc/free allocator fails on macOS libc++. Stay on 11.0.x
   - cpptrace
   - spdlog
   # HDF5
