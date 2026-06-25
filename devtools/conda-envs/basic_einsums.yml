@@ -10,7 +10,7 @@ dependencies:
   # Prebuilts to save einsums the work
   - catch2
   - fftw
-  - fmt
+  - fmt >=11,<12  # fmt 12 has breaking API changes; spdlog (SPDLOG_FMT_EXTERNAL) needs fmt 11
   - cpptrace
   - spdlog
   # HDF5
