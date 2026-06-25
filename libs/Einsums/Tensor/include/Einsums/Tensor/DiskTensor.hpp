@@ -25,6 +25,7 @@
 #include <H5Spublic.h>
 #include <H5Tpublic.h>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <stdexcept>
 #include <string>

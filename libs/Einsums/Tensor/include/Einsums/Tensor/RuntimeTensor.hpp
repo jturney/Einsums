@@ -26,6 +26,7 @@
 
 #include <fmt/format.h>
 
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>

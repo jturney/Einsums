@@ -38,6 +38,7 @@
 #include <cassert>
 #include <concepts>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <numeric>

@@ -19,6 +19,7 @@
 #endif
 
 #include <atomic>
+#include <cstring>
 
 namespace einsums::gpu {
 

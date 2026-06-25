@@ -15,6 +15,7 @@
 #include <Einsums/Profile/Profile.hpp>
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <unordered_set>
 #include <vector>

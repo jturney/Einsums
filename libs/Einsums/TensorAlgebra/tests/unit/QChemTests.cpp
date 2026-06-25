@@ -13,6 +13,8 @@
 #include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorBase/TensorBase.hpp>
 
+#include <cstring>
+
 #include <Einsums/Testing.hpp>
 
 class ScaleFunctionTensor : public einsums::tensor_base::FunctionTensor<double, 4> {

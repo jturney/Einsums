@@ -12,6 +12,7 @@
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cstddef>
+#include <cstring>
 #include <string>
 
 namespace einsums::gpu {

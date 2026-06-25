@@ -30,6 +30,7 @@
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
 #include <Einsums/TensorUtilities/CreateTensorLike.hpp>
 
+#include <cstring>
 #include <optional>
 #include <stdexcept>
 
