@@ -13,9 +13,9 @@ dependencies:
   # Prebuilts to save einsums the work
   - catch2
   - fftw
-  - fmt >=11,<11.1  # fmt 12 breaks spdlog; fmt 11.1+ malloc/free allocator fails on macOS libc++. Stay on 11.0.x
+  - fmt >=12,<13  # clang 22 / macOS libc++ needs fmt 12 (11.0.x fails consteval, 11.1+ fails the malloc allocator)
   - cpptrace
-  - spdlog
+  # spdlog is built from source against fmt 12 (Einsums_SetupSpdlog); conda has no fmt-12-compatible spdlog
   # HDF5
   # * zlib brings headers; hdf5 package only bring libzlib
   - hdf5

@@ -9,16 +9,18 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 fetchcontent_declare(
   fmt
-  URL https://github.com/fmtlib/fmt/archive/refs/tags/11.0.2.tar.gz
-  URL_HASH SHA256=6cb1e6d37bdcb756dbbe59be438790db409cdb4868c66e888d5df9f13f7c027f
-  # Accept only a system fmt in the 11.0 series. fmt 12+ has breaking API
-  # changes our spdlog cannot consume, and fmt 11.1+ added a detail::allocator
-  # that calls bare malloc/free, which fails to compile against the macOS
-  # libc++ that no longer exposes ::malloc through <cstdlib>. fmt ships an
-  # AnyNewerVersion config, so a bare "11" would wrongly accept those; the
-  # tight upper bound keeps us on the pinned 11.0.2 (or a matching system 11.0.x).
+  URL https://github.com/fmtlib/fmt/archive/refs/tags/12.2.0.tar.gz
+  URL_HASH SHA256=8b852bb5aa6e7d8564f9e81394055395dd1d1936d38dfd3a17792a02bebd7af0
+  # Require fmt 12. The conda clang 22 / macOS libc++ toolchain rejects the
+  # older series: fmt 11.0.x trips a consteval FMT_STRING error under the new
+  # clang, and fmt 11.1-11.2 added a detail::allocator that calls bare
+  # malloc/free that fails against the libc++ which no longer exposes ::malloc
+  # through <cstdlib>. fmt 12 fixes both. spdlog is built from source against
+  # this external fmt (see Einsums_SetupSpdlog), because conda has no
+  # fmt-12-compatible spdlog. fmt ships an AnyNewerVersion config, so the range
+  # is bounded on both sides to stay on 12.x.
   FIND_PACKAGE_ARGS
-  11...<11.1
+  12...<13
 )
 
 fetchcontent_makeavailable(fmt)
