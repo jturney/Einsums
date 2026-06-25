@@ -25,7 +25,7 @@ Choose the executor based on your workload:
    graph.execute(mpi);                 // MPI-aware (same as Sequential on 1 rank)
 
 When to use which
-^^^^^^^^^^^^^^^^^
+-----------------
 
 - **Sequential**: Small graphs (<10 nodes), debugging, or when nodes are already
   internally parallel (OpenMP BLAS). Zero scheduling overhead.
@@ -232,7 +232,7 @@ Enable detailed profiling to find bottlenecks:
    ./my_program --einsums:profiler-port 19216
 
 What to look for
-^^^^^^^^^^^^^^^^
+----------------
 
 - **SUMMA panels**: ``broadcast_A``, ``broadcast_B``, ``local_gemm``. If broadcasts
   dominate, tensors may be too small for SUMMA, so switch to outer-product.

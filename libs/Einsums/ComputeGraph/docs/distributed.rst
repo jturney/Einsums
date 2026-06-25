@@ -199,7 +199,7 @@ distribution-aware access.
        });
 
 Key methods on the tensor
-^^^^^^^^^^^^^^^^^^^^^^^^^
+-------------------------
 
 ``T.range(dim)``
    Returns ``{start, end}``, the global index range this rank owns along
