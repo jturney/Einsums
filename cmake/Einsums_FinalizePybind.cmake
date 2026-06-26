@@ -50,6 +50,18 @@ function(einsums_finalize_pybind)
         "${PROJECT_BINARY_DIR}/libs/*/Defines.hpp"
     )
 
+    # spdlog is built from source (FetchContent) because conda ships no
+    # fmt-12-compatible spdlog, so its headers live in the build tree rather
+    # than the env include apiary already sees. Modules whose public headers
+    # include <spdlog/...> (e.g. Logging) would otherwise fail codegen with
+    # "spdlog/sinks/sink.h not found". Hand apiary that include dir and
+    # SPDLOG_FMT_EXTERNAL so it parses spdlog against the external fmt rather
+    # than spdlog's bundled copy.
+    set(_apiary_spdlog_flags "")
+    if(spdlog_SOURCE_DIR)
+        list(APPEND _apiary_spdlog_flags "-DSPDLOG_FMT_EXTERNAL" "-I${spdlog_SOURCE_DIR}/include")
+    endif()
+
     # Emit one add_custom_command per opted-in module producing its
     # generated TU.
     set(_generated_tus "")
@@ -87,6 +99,7 @@ function(einsums_finalize_pybind)
                 "-I${CMAKE_BINARY_DIR}"
                 "-I${CMAKE_SOURCE_DIR}/libs/Einsums/Python/include"
                 "-I${CMAKE_SOURCE_DIR}/external/apiary/include"
+                ${_apiary_spdlog_flags}
             EXTRA_DEPENDS ${_all_defines_headers}
             OUT_BINDING _out OUT_STUB _stub_out OUT_DOCS_JSON _docs_json
         )
