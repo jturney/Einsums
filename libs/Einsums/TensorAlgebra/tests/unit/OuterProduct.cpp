@@ -227,3 +227,142 @@ TEMPLATE_TEST_CASE("view outer product", "[tensor_algebra]", float, double, std:
         }
     }
 }
+
+// ----------------------------------------------------------------------------
+// Issue #283: outer products (no contracted index) where a rank-2+ operand's
+// indices are NON-CONTIGUOUS in the output. Every case above keeps each
+// operand's indices contiguous in C ('ij,k->ijk', 'ij,kl->ijkl'); the eager
+// outer-product path (einsum_do_outer_product) flattens C into a rank-2
+// GER-style view assuming that contiguity, so interleaved targets produce a
+// wrong result (dense) or run off the output's stride array (tiled).
+//
+// This is a sweep over the distinct non-contiguous rank-3/rank-4 orderings, so
+// it doubles as a fix-completeness check: each ordering is its OWN test case,
+// tagged [!shouldfail], so a partial fix (some orderings fixed, others not)
+// shows up per ordering -- a fixed one starts passing and Catch2 turns the run
+// RED, a reminder to drop that tag. The contiguous controls confirm the
+// reference math. All non-contiguous cases below currently fail cleanly with
+// wrong values (verified); the tiled variant instead aborts and is skipped.
+// See https://github.com/Einsums/Einsums/pull/257.
+// ----------------------------------------------------------------------------
+namespace {
+template <typename F>
+void verify_outer3(einsums::Tensor<double, 3> const &C, F ref) {
+    using namespace einsums; // CheckWithinRel
+    for (int x = 0; x < 3; x++)
+        for (int y = 0; y < 3; y++)
+            for (int z = 0; z < 3; z++)
+                REQUIRE_THAT(C(x, y, z), CheckWithinRel(ref(x, y, z), 0.001));
+}
+template <typename F>
+void verify_outer4(einsums::Tensor<double, 4> const &C, F ref) {
+    using namespace einsums; // CheckWithinRel
+    for (int w = 0; w < 3; w++)
+        for (int x = 0; x < 3; x++)
+            for (int y = 0; y < 3; y++)
+                for (int z = 0; z < 3; z++)
+                    REQUIRE_THAT(C(w, x, y, z), CheckWithinRel(ref(w, x, y, z), 0.001));
+}
+} // namespace
+
+TEST_CASE("outer product, contiguous controls (#283 sweep)", "[tensor_algebra][outer_product]") {
+    using namespace einsums;
+    using namespace einsums::tensor_algebra;
+    using namespace einsums::index;
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto B = create_random_tensor<double>("B", 3, 3);
+    auto v = create_random_tensor<double>("v", 3);
+
+    SECTION("ab,c->abc") {
+        auto C = create_tensor<double>("C", 3, 3, 3);
+        C.set_all(0.0);
+        REQUIRE_NOTHROW(einsum(Indices{a, b, c}, &C, Indices{a, b}, A, Indices{c}, v));
+        verify_outer3(C, [&](int x, int y, int z) { return A(x, y) * v(z); });
+    }
+    SECTION("ab,cd->abcd") {
+        auto C = create_tensor<double>("C", 3, 3, 3, 3);
+        C.set_all(0.0);
+        REQUIRE_NOTHROW(einsum(Indices{a, b, c, d}, &C, Indices{a, b}, A, Indices{c, d}, B));
+        verify_outer4(C, [&](int w, int x, int y, int z) { return A(w, x) * B(y, z); });
+    }
+}
+
+// Each non-contiguous ordering is its own [!shouldfail] case for per-ordering
+// fix tracking. 'ac,b->abc' / 'b,ac->abc' straddle in rank 3; 'ac,bd->abcd'
+// fully interleaves; 'ad,bc->abcd' straddles the outer operand around the
+// inner; 'bc,ad->abcd' is the operand-swapped mirror.
+TEST_CASE("outer product 'ac,b->abc' non-contiguous (#283)", "[tensor_algebra][outer_product][!shouldfail]") {
+    using namespace einsums;
+    using namespace einsums::tensor_algebra;
+    using namespace einsums::index;
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto v = create_random_tensor<double>("v", 3);
+    auto C = create_tensor<double>("C", 3, 3, 3);
+    C.set_all(0.0);
+    REQUIRE_NOTHROW(einsum(Indices{a, b, c}, &C, Indices{a, c}, A, Indices{b}, v));
+    verify_outer3(C, [&](int x, int y, int z) { return A(x, z) * v(y); });
+}
+TEST_CASE("outer product 'b,ac->abc' non-contiguous (#283)", "[tensor_algebra][outer_product][!shouldfail]") {
+    using namespace einsums;
+    using namespace einsums::tensor_algebra;
+    using namespace einsums::index;
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto v = create_random_tensor<double>("v", 3);
+    auto C = create_tensor<double>("C", 3, 3, 3);
+    C.set_all(0.0);
+    REQUIRE_NOTHROW(einsum(Indices{a, b, c}, &C, Indices{b}, v, Indices{a, c}, A));
+    verify_outer3(C, [&](int x, int y, int z) { return v(y) * A(x, z); });
+}
+TEST_CASE("outer product 'ac,bd->abcd' non-contiguous (#283)", "[tensor_algebra][outer_product][!shouldfail]") {
+    using namespace einsums;
+    using namespace einsums::tensor_algebra;
+    using namespace einsums::index;
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto B = create_random_tensor<double>("B", 3, 3);
+    auto C = create_tensor<double>("C", 3, 3, 3, 3);
+    C.set_all(0.0);
+    REQUIRE_NOTHROW(einsum(Indices{a, b, c, d}, &C, Indices{a, c}, A, Indices{b, d}, B));
+    verify_outer4(C, [&](int w, int x, int y, int z) { return A(w, y) * B(x, z); });
+}
+TEST_CASE("outer product 'ad,bc->abcd' non-contiguous (#283)", "[tensor_algebra][outer_product][!shouldfail]") {
+    using namespace einsums;
+    using namespace einsums::tensor_algebra;
+    using namespace einsums::index;
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto B = create_random_tensor<double>("B", 3, 3);
+    auto C = create_tensor<double>("C", 3, 3, 3, 3);
+    C.set_all(0.0);
+    REQUIRE_NOTHROW(einsum(Indices{a, b, c, d}, &C, Indices{a, d}, A, Indices{b, c}, B));
+    verify_outer4(C, [&](int w, int x, int y, int z) { return A(w, z) * B(x, y); });
+}
+TEST_CASE("outer product 'bc,ad->abcd' non-contiguous (#283)", "[tensor_algebra][outer_product][!shouldfail]") {
+    using namespace einsums;
+    using namespace einsums::tensor_algebra;
+    using namespace einsums::index;
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto B = create_random_tensor<double>("B", 3, 3);
+    auto C = create_tensor<double>("C", 3, 3, 3, 3);
+    C.set_all(0.0);
+    REQUIRE_NOTHROW(einsum(Indices{a, b, c, d}, &C, Indices{b, c}, A, Indices{a, d}, B));
+    verify_outer4(C, [&](int w, int x, int y, int z) { return A(x, y) * B(w, z); });
+}
+
+TEST_CASE("tiled outer product, no contracted index (#283)", "[tensor_algebra][outer_product]") {
+    // 'ia,jb->ijab' into a single-tile rank-4 TiledTensor (pure outer product,
+    // operands interleaved in the output). On 1.1.2 this SIGSEGV'd; today it
+    // throws std::out_of_range from inside the einsum and std::terminate()s --
+    // the throw escapes through a context (an OpenMP region) that Catch2 cannot
+    // intercept, so a [!shouldfail] guard does not help: the SIGABRT would take
+    // down the whole test binary. Skip until the outer-product path handles
+    // non-contiguous tiled targets (PR #257), then replace the SKIP with:
+    //
+    //   std::vector<int> occ{5}, vir{2};
+    //   einsums::TiledTensor<double, 2> t1("t1", occ, vir);
+    //   einsums::TiledTensor<double, 4> tau("tau", occ, occ, vir, vir);
+    //   t1.tile(0, 0).zero(); tau.tile(0, 0, 0, 0).zero();
+    //   using namespace einsums::index;
+    //   REQUIRE_NOTHROW(einsum(einsums::tensor_algebra::Indices{i, j, a, b}, &tau,
+    //                          einsums::tensor_algebra::Indices{i, a}, t1,
+    //                          einsums::tensor_algebra::Indices{j, b}, t1));
+    SKIP("#283: tiled outer product 'ia,jb->ijab' aborts the process (uncatchable); re-enable after the fix");
+}

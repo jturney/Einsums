@@ -1,15 +1,25 @@
 # Copyright (c) The Einsums Developers. All rights reserved.
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
-"""Hypothesis differential: graph-captured einsum vs numpy.einsum.
+"""Hypothesis differential: einsum (graph-captured and eager) vs numpy.einsum.
 
 Generates VALID two-operand contractions across the whole role model
-(batch / M / N / K indices), permutes the index order within each operand
-to exercise transposes, and draws each extent 1..N so size-1 boundaries are
-covered. Operands may be passed as non-contiguous permuted VIEWS, the dtype
-may be real or complex, the prefactors exercise accumulation (c_pf != 0), and
-the default pass manager may be applied before execution. numpy.einsum is the
-oracle.
+(batch / M / N / K indices, with K allowed to be 0 so pure outer products are
+covered), permutes the index order within each operand AND the output to
+exercise transposes and non-contiguous targets, and draws each extent 1..N so
+size-1 boundaries are covered. Operands may be passed as non-contiguous
+permuted VIEWS, the dtype may be real or complex, and the prefactors exercise
+accumulation (c_pf != 0). Each draw runs one of two execution modes:
+
+  * graph: capture into a Graph, optionally apply the default pass manager,
+    then execute (the capture/optimize/replay route);
+  * eager: call einsums.einsum() with no capture, running immediately through
+    the runtime string-einsum dispatch.
+
+numpy.einsum is the oracle. Note both modes go through the same runtime
+StringDispatch; the eager mode does not reach the eager *compile-time*
+``Indices{}`` template path (that one is C++-only and covered by the
+TensorAlgebra OuterProduct unit test).
 
 This is the registered/regression form of the local mining harness; the
 ``@example`` entries pin the specific reducers that were once miscompiled:
@@ -81,18 +91,23 @@ def _einsum_problem(draw):
     return (a_idx, b_idx, c_idx, extent,
             draw(st.sampled_from(["float64", "complex128"])),
             draw(st.sampled_from([0.0, 1.0])), draw(st.sampled_from([1.0, -2.0])),
-            draw(st.booleans()), draw(st.booleans()), draw(st.booleans()))
+            # view_a, view_b, passes, eager
+            draw(st.booleans()), draw(st.booleans()), draw(st.booleans()), draw(st.booleans()))
 
 
 @given(prob=_einsum_problem())
 @settings(max_examples=250, deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 @example(prob=(["j", "l", "i"], ["l", "k", "i"], ["k", "j", "i"],
-               {"i": 1, "j": 1, "k": 2, "l": 1}, "float64", 0.0, 1.0, False, False, False))  # batched transposed output
+               {"i": 1, "j": 1, "k": 2, "l": 1}, "float64", 0.0, 1.0, False, False, False, False))  # batched transposed output (graph)
 @example(prob=(["b", "i", "k"], ["b", "k", "j"], ["b", "i", "j"],
-               {"b": 2, "i": 3, "k": 2, "j": 2}, "complex128", 1.0, 1.0, True, True, True))   # canonical batched matmul
+               {"b": 2, "i": 3, "k": 2, "j": 2}, "complex128", 1.0, 1.0, True, True, True, False))   # canonical batched matmul (graph)
+@example(prob=(["a", "c"], ["b"], ["a", "b", "c"],
+               {"a": 3, "b": 3, "c": 3}, "float64", 0.0, 1.0, False, False, False, True))            # eager outer product, non-contiguous output
+@example(prob=(["a", "c"], ["b"], ["a", "b", "c"],
+               {"a": 3, "b": 3, "c": 3}, "float64", 0.0, 1.0, False, False, True, False))            # graph+passes outer product, non-contiguous output
 def test_hyp_einsum_diff(prob):
-    a_idx, b_idx, c_idx, extent, dt, c_pf, ab_pf, view_a, view_b, passes = prob
+    a_idx, b_idx, c_idx, extent, dt, c_pf, ab_pf, view_a, view_b, passes, eager = prob
     rng = np.random.default_rng(0)
     A0 = _rnd([extent[x] for x in a_idx], dt, rng)
     B0 = _rnd([extent[x] for x in b_idx], dt, rng)
@@ -103,13 +118,19 @@ def test_hyp_einsum_diff(prob):
     At = _mk_maybe_view(A0, view_a, dt, rng)
     Bt = _mk_maybe_view(B0, view_b, dt, rng)
     Ct = _mk(C0, dt)
-    g = cg.Graph(_nm())
-    with cg.capture(g):
+    if eager:
+        # Eager: no graph capture. Runs immediately through the runtime
+        # string-einsum dispatch, exercising that path directly instead of
+        # the graph capture/optimize/replay route. (passes is irrelevant here.)
         einsums.einsum(es_spec, Ct, At, Bt, c_pf=c_pf, ab_pf=ab_pf)
-    if passes:
-        g.apply(cg.default_pass_manager())
-    g.execute()
+    else:
+        g = cg.Graph(_nm())
+        with cg.capture(g):
+            einsums.einsum(es_spec, Ct, At, Bt, c_pf=c_pf, ab_pf=ab_pf)
+        if passes:
+            g.apply(cg.default_pass_manager())
+        g.execute()
     np.testing.assert_allclose(
         np.asarray(Ct), oracle, rtol=1e-9, atol=1e-9,
         err_msg=f"einsums '{es_spec}' dt={dt} c_pf={c_pf} ab_pf={ab_pf} "
-                f"view_a={view_a} view_b={view_b} passes={passes} extents={extent}")
+                f"view_a={view_a} view_b={view_b} passes={passes} eager={eager} extents={extent}")
