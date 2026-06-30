@@ -25,7 +25,11 @@ DIR_PATH = os.path.dirname(os.path.realpath(__file__))
 # Bump these to move CI + local dev onto newer compilers.
 GCC_VERSION = "15"  # gcc/g++ on Linux            -> gcc_linux-64 / gxx_linux-64
 CLANG_VERSION = "22"  # clang/clang++ (Linux + macOS)
-DPCPP_VERSION = "2026.0.0"  # Intel oneAPI icx/icpx on Linux -> dpcpp_linux-64
+# Pinned to 2025.2: icx/icpx 2026.0.0 ICEs in its X86 TLS/PIE address lowering
+# on our thread-local-heavy headers (crashes on every TU, even trivial ones),
+# and is markedly more memory-hungry. 2025.2 has neither problem -- it compiles
+# and links the whole tree. Re-test before bumping to a newer icx.
+DPCPP_VERSION = "2025.2.0"  # Intel oneAPI icx/icpx on Linux -> dpcpp_linux-64
 
 # The compiler implied by ``--compiler default`` on each platform.
 PLATFORM_DEFAULT_COMPILER = {

@@ -1,10 +1,14 @@
 name: Linux intel build and test workflow
 
-# Intel/icpx is gated to manual runs only (called from cmake.yml when the
-# workflow is triggered via workflow_dispatch). icpx's per-TU memory peaks
-# blow past ubuntu-latest's 16GB ceiling even at Debug + -j1, so we don't
-# run it on every push/PR — it always OOM-kills the runner. Trigger from
-# the Actions UI when you actively want icpx validation.
+# Intel/icpx is gated to manual runs only (called from cmake.yml on
+# workflow_dispatch). History: icx/icpx 2026.0.0 was unusable here -- it ICE'd
+# in X86 TLS lowering on our headers AND its per-TU memory peaks blew past
+# ubuntu-latest's 16GB even at Debug + -j1. merge_yml.py now pins 2025.2.0,
+# which has neither problem: it compiles and links the whole tree well under
+# 16GB (validated with BUILD_PYTHON=OFF). The gate stays until a manual run
+# confirms the full BUILD_PYTHON=ON build green on a real runner (the heavy
+# ComputeGraph pybind TU is the last unvalidated piece); then drop the
+# workflow_dispatch condition in cmake.yml to run it on every push/PR.
 
 on:
   workflow_call:
@@ -108,9 +112,11 @@ jobs:
 
       - name: Build and Install
         run: |
-          # -j1: even at Debug, single-TU icpx peaks tip the 16GB runner over.
-          # If a future runner change (more RAM, or a memory-friendlier icpx)
-          # makes -j2 viable, bump it.
+          # -j1, conservatively: icx 2025.2 is far lighter than 2026 (the core
+          # tree builds at -j2 under 8GB with BUILD_PYTHON=OFF), but this leg is
+          # BUILD_PYTHON=ON and the ComputeGraph pybind TU is the heaviest in the
+          # build. Keep -j1 until a manual run confirms -j2 fits the 16GB runner
+          # with bindings on, then bump it.
           cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install -j1
 
       - name: ccache statistics

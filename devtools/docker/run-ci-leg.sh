@@ -108,6 +108,19 @@ leg_settings() {
             BUILD_TYPE=RelWithDebInfo
             EXTRA=("-DEINSUMS_BUILD_PYTHON=OFF")
             ;;
+        intel)
+            # Intel oneAPI icx/icpx (dpcpp_linux-64) + MKL. merge_yml.py pulls
+            # the pinned dpcpp_linux-64 (currently 2026.x, conda-forge
+            # intel-compiler-repack) and forces BLAS=mkl; the conda activation
+            # sets CC=icx / CXX=icpx, which CMake picks up. Intel is x86_64-only,
+            # so this leg has no -arm64 variant (and on Apple silicon it runs
+            # under Rosetta -- fine to compile, but AVX-512 codegen won't execute
+            # under emulation, so use a real x86_64 host to run the tests).
+            COMPILER=intel
+            BLAS=mkl
+            BUILD_TYPE=Debug
+            EXTRA=("-DEINSUMS_BUILD_PYTHON=OFF")
+            ;;
         gcc-mkl-py)
             COMPILER=default
             BLAS=mkl
@@ -151,7 +164,7 @@ leg_settings() {
             ;;
         *)
             echo "Unknown leg: $1" >&2
-            echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], tsan, tsan-nopy, asan" >&2
+            echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], intel, tsan, tsan-nopy, asan" >&2
             echo "       (append -arm64 to any of the above for native arm64)" >&2
             exit 1
             ;;
