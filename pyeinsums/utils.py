@@ -12,7 +12,10 @@ import functools
 import typing
 import random
 
-from einsums import core
+try :
+    from einsums import core
+except ModuleNotFoundError :
+    from pyeinsums import core
 
 import numpy as np
 
