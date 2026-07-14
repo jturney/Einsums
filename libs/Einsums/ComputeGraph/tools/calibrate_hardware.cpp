@@ -209,11 +209,14 @@ double measure_overhead_us() {
     return total_us / static_cast<double>(NUM_ITERS);
 }
 
+// einsums_main() has no argc/argv; main() stashes them here before
+// einsums::start so parse_args can see the tool's own flags (einsums has
+// already consumed and removed its --einsums: arguments by this point).
+int    g_argc = 0;
+char **g_argv = nullptr;
+
 int einsums_main() {
-    // Parse command line (einsums has already consumed --einsums: args)
-    // We need access to argc/argv but einsums_main doesn't have them.
-    // For simplicity, use defaults. The tool can be enhanced later.
-    Config const cfg;
+    Config const cfg = parse_args(g_argc, g_argv);
 
     einsums::println("=== Einsums Hardware Calibration Tool ===\n");
     einsums::println("Output: {}", cfg.output);
@@ -287,5 +290,7 @@ int einsums_main() {
 } // namespace
 
 int main(int argc, char **argv) {
+    g_argc = argc;
+    g_argv = argv;
     return einsums::start(einsums_main, argc, argv);
 }

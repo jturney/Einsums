@@ -7,10 +7,12 @@
 #include <Einsums/Errors.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
+#include <Einsums/Logging.hpp>
 
 #include <fmt/format.h>
 
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -258,6 +260,24 @@ HardwareProfileDB HardwareProfileDB::load_defaults() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 HardwareProfile HardwareProfile::detect_default() {
+    // A calibrated profile (written by the calibrate_hardware tool) takes
+    // precedence over the built-in table: point EINSUMS_HARDWARE_PROFILE at
+    // its JSON and every profile consumer (ContractionPlanning's chain DP,
+    // GPUPlacement, GEMMBatching's profitability gate) uses the measured
+    // efficiency curve and bandwidths instead of generic estimates. A
+    // missing or unreadable file falls back to the table with a warning
+    // rather than failing: the profile shapes optimization choices, never
+    // correctness.
+    if (char const *env_path = std::getenv("EINSUMS_HARDWARE_PROFILE"); env_path != nullptr && *env_path != '\0') {
+        auto loaded = load_json(env_path);
+        if (loaded) {
+            EINSUMS_LOG_INFO("HardwareProfile: using calibrated profile from EINSUMS_HARDWARE_PROFILE={}", env_path);
+            return *loaded;
+        }
+        EINSUMS_LOG_WARN("HardwareProfile: EINSUMS_HARDWARE_PROFILE={} could not be loaded ({}); falling back to the built-in table",
+                         env_path, loaded.error().message);
+    }
+
     auto db = HardwareProfileDB::load_defaults();
     return db.build_profile();
 }

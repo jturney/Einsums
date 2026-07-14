@@ -14,6 +14,8 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 
 #include <Einsums/Testing.hpp>
 
@@ -990,4 +992,31 @@ TEST_CASE("gpu::device_name returns string", "[ComputeGraph][GPU]") {
     std::string const name = einsums::gpu::device_name();
     // Just verify it doesn't crash, content depends on backend
     CHECK(name.size() >= 0); // Always true, but exercises the function
+}
+
+TEST_CASE("HardwareProfile - EINSUMS_HARDWARE_PROFILE overrides the built-in table", "[ComputeGraph][HardwareProfile]") {
+    // Write a minimal calibrated profile, point the env var at it, and
+    // detect_default() must load it instead of the database. A bogus path
+    // must fall back to the table instead of failing (the profile shapes
+    // optimization choices, never correctness).
+    auto profile     = cg::HardwareProfile::detect_default();
+    profile.source   = "calibrated";
+    profile.cpu.name = "EnvOverrideTest CPU";
+
+    std::string const path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/einsums_hw_env_test.json";
+    REQUIRE(profile.save_json(path));
+
+    setenv("EINSUMS_HARDWARE_PROFILE", path.c_str(), 1);
+    auto loaded = cg::HardwareProfile::detect_default();
+    unsetenv("EINSUMS_HARDWARE_PROFILE");
+
+    CHECK(loaded.source == "calibrated");
+    CHECK(loaded.cpu.name == "EnvOverrideTest CPU");
+
+    setenv("EINSUMS_HARDWARE_PROFILE", "/nonexistent/einsums_hw.json", 1);
+    auto fallback = cg::HardwareProfile::detect_default();
+    unsetenv("EINSUMS_HARDWARE_PROFILE");
+
+    CHECK(fallback.source == "database");
+    std::remove(path.c_str());
 }
