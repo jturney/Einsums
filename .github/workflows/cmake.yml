@@ -12,6 +12,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
+# Stacked-PR economy: the stack merges bottom-up and the TOP PR's CI proves
+# the whole union builds (intermediate PRs are documented expected-red
+# standalone below the bindings PR). Heavy build legs therefore run only on
+# non-stack PRs, on the stack PR carrying the 'ci-full' label (keep it on the
+# top of the stack; move it when the stack grows), on pushes to main, and on
+# manual dispatch. This cuts a cascade's Actions cost ~10x and stops the
+# cache-eviction storms that came with it.
+
 jobs:
   detect_changes:
     name: "Detect Changes"
@@ -20,7 +28,7 @@ jobs:
   linux_default:
     name: Linux
     needs: [ detect_changes ]
-    if: ${{ contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src') }}
+    if: ${{ (contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src')) && (github.event_name != 'pull_request' || !startsWith(github.head_ref, 'stack/') || contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
     uses: ./.github/workflows/linux-build-and-test.yml
 
   # intel/icpx is gated to manual runs only: icpx's per-TU memory exceeds
@@ -36,13 +44,13 @@ jobs:
   macos_default:
     name: macOS
     needs: [ detect_changes ]
-    if: ${{ contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src') }}
+    if: ${{ (contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src')) && (github.event_name != 'pull_request' || !startsWith(github.head_ref, 'stack/') || contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
     uses: ./.github/workflows/macos-build-and-test.yml
 
   sanitizers:
     name: Sanitizers
     needs: [ detect_changes ]
-    if: ${{ contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src') }}
+    if: ${{ (contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src')) && (github.event_name != 'pull_request' || !startsWith(github.head_ref, 'stack/') || contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
     uses: ./.github/workflows/linux-build-and-test-sanitizer.yml
 
   documentation:

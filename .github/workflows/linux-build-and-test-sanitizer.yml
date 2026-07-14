@@ -4,6 +4,11 @@ on:
   workflow_dispatch:
   workflow_call:
     inputs:
+      full_matrix:
+        description: "Run every sanitizer. Per-PR runs default to thread-only; the nightly passes true to add address,leak,undefined (~1.5h)."
+        type: boolean
+        required: false
+        default: false
       build_ref:
         type: string
         required: false
@@ -31,9 +36,7 @@ jobs:
         blas: [ openblas ]
         build_type: [ Debug ]
         variant: [ default ]
-        sanitizer:
-          - address,leak,undefined
-          - thread
+        sanitizer: ${{ fromJSON(inputs.full_matrix && '["address,leak,undefined","thread"]' || '["thread"]') }}
 
     name: "${{ matrix.sanitizer }} • ${{ matrix.compiler }} • ${{ matrix.blas }} • ${{ matrix.build_type }} • ${{ matrix.variant }}"
     runs-on: ubuntu-latest
@@ -100,6 +103,9 @@ jobs:
           # the line and the runner OOM-kills the build. -j2 keeps two workers
           # in flight, well under budget.
           cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install -j2
+
+      - name: ccache statistics
+        run: ccache -sv 2>/dev/null || ccache -s
 
       - name: Test (CTest) - C++ unit tests
         working-directory: "${{ github.workspace }}/build"

@@ -2,6 +2,11 @@ name: macOS build and test workflow
 on:
   workflow_call:
     inputs:
+      full_matrix:
+        description: "Also build the Debug configuration (~35 min). Per-PR runs default to RelWithDebInfo-only; the nightly passes true."
+        type: boolean
+        required: false
+        default: false
       build_ref:
         type: string
         required: false
@@ -24,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: [ Debug, RelWithDebInfo ]
+        build_type: ${{ fromJSON(inputs.full_matrix && '["Debug","RelWithDebInfo"]' || '["RelWithDebInfo"]') }}
 
     name: "default • accelerate • ${{ matrix.build_type }}"
     runs-on: macos-latest
@@ -81,6 +86,9 @@ jobs:
       # The Python test suite is registered as ctest entries (labelled PYTHON)
       # by einsums_add_python_unit_test, so this single ctest run exercises both
       # the C++ and the Python bindings — no separate pytest step is needed.
+      - name: ccache statistics
+        run: ccache -sv 2>/dev/null || ccache -s
+
       - name: Test (CTest) - Unit Tests
         working-directory: "${{ github.workspace }}/build"
         run: ctest --rerun-failed --output-on-failure -j3

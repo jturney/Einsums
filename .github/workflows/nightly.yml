@@ -1,0 +1,33 @@
+name: Nightly
+
+# The expensive, low-churn legs live here instead of running per-PR:
+# address/leak/undefined sanitizers (~1.5h) and the macOS Debug build
+# (~35 min). Runs against main every night; dispatch manually to aim it
+# at a branch.
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux
+    uses: ./.github/workflows/linux-build-and-test.yml
+
+  macos_full:
+    name: macOS (full)
+    uses: ./.github/workflows/macos-build-and-test.yml
+    with:
+      full_matrix: true
+
+  sanitizers_full:
+    name: Sanitizers (full)
+    uses: ./.github/workflows/linux-build-and-test-sanitizer.yml
+    with:
+      full_matrix: true

@@ -49,24 +49,12 @@ runs:
         if [ "${{ inputs.docs }}" = "true" ]; then docs_flag="--docs"; fi
         python merge_yml.py ${docs_flag} ${{ inputs.compiler }} ${{ inputs.blas }}
 
-    - name: Get Week
-      id: get-date
-      shell: bash
-      run: echo "week=$(/bin/date -u '+%W')" >> "$GITHUB_OUTPUT"
-
-    - name: Cache Conda env
-      uses: actions/cache@v4
-      id: cache
-      with:
-        path: ${{ env.CONDA }}/envs
-        key:
-          conda-${{ runner.os }}-${{ runner.arch }}-${{ steps.get-date.outputs.week }}-${{ inputs.compiler }}-${{ inputs.blas }}-${{ hashFiles(format('{0}/devtools/conda-envs/conda.yml', inputs.source-dir)) }}-${{ env.CACHE_NUMBER }}
-      env:
-        # Bump to force a fresh environment even when conda.yml is unchanged.
-        CACHE_NUMBER: 0
-
+    # The conda env is deliberately NOT cached. The env tarballs weighed
+    # ~1GB each (per OS/compiler/blas/week/yml-hash, duplicated per branch)
+    # and pinned the repo at GitHub's 10GB cache cap, LRU-evicting the ccache
+    # build caches - trading ~60s of env solve for 30-45 min of cold compile
+    # per leg. Creating the env fresh costs about a minute.
     - name: Update environment
-      if: steps.cache.outputs.cache-hit != 'true'
       shell: bash -el {0}
       run: |
         conda env update -n ${{ inputs.environment-name }} -f ${{ inputs.source-dir }}/devtools/conda-envs/conda.yml
