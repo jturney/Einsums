@@ -247,6 +247,11 @@ void PassManager::populate_default() {
         pm.add<passes::CommunicationScheduling>();
     }
 
+    // Merge elementwise outputs into dying inputs BEFORE the liveness-based
+    // passes: each merge removes a buffer, shortening the intervals
+    // FreeInsertion and MemoryPlanning then work with.
+    pm.add<passes::InplaceOptimization>();
+
     // Free intermediates after their last consumer to reduce peak memory.
     pm.add<passes::FreeInsertion>();
 
@@ -254,7 +259,6 @@ void PassManager::populate_default() {
     // ContractionPlanning uses the same profile for consistent cost estimation.
     pm.add<passes::MemoryPlanning>();
     pm.add<passes::ContractionPlanning>(profile);
-    pm.add<passes::InplaceOptimization>();
 }
 
 } // namespace einsums::compute_graph

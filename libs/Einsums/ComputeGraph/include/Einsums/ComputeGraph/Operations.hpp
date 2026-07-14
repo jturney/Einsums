@@ -880,7 +880,12 @@ APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<double>>,
             linear_algebra::axpy(alpha, *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
         };
 
-        ctx.record(OpKind::Axpy, std::move(label), {x_id}, {y_id}, std::move(executor));
+        // Y += alpha*X reads its destination unconditionally; list it as an
+        // input so dependency passes see the read (matches gemm's and
+        // direct_product's out-tensor-as-input convention - without it,
+        // LoopInvariantHoisting's reads-its-output guard is blind to the
+        // accumulation and Reorder misses the WAR hazard on Y's old value).
+        ctx.record(OpKind::Axpy, std::move(label), {x_id, y_id}, {y_id}, std::move(executor));
     }
 }
 
@@ -938,7 +943,11 @@ APIARY_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<double>>,
         linear_algebra::axpby(alpha, *static_cast<XType const *>(x_slot->ptr), beta, static_cast<YType *>(y_slot->ptr));
     };
 
-    ctx.record(OpKind::Axpby, std::move(label), {x_id}, {y_id}, std::move(executor));
+    // Y = alpha*X + beta*Y reads its destination when beta != 0; same
+    // out-tensor-as-input convention as gemm/direct_product (see axpy).
+    std::vector<TensorId> axpby_inputs =
+        (beta != typename XType::ValueType{0}) ? std::vector<TensorId>{x_id, y_id} : std::vector<TensorId>{x_id};
+    ctx.record(OpKind::Axpby, std::move(label), std::move(axpby_inputs), {y_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
