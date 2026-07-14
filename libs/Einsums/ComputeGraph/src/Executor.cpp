@@ -141,90 +141,170 @@ void DataflowExecutor::execute(Graph &graph) {
     if (n == 0)
         return;
 
-    auto      &pool = task_pool::TaskPool::get_singleton();
-    std::mutex timing_mutex;
+    auto &pool = task_pool::TaskPool::get_singleton();
 
-    // Memory budget tracking (shared across all tasks)
-    struct MemBudgetState {
-        std::atomic<size_t>     current{0};
-        std::mutex              gate_mutex;
-        std::condition_variable gate_cv;
+    // Counter-based dataflow scheduling. The old implementation rebuilt a
+    // full TaskHandle/when_all scaffold per execute (per-node handle vectors,
+    // combined shared states, "/start"+"/finish" label concatenations) and
+    // submitted every node from this thread - each submission taking the
+    // pool's external mutex and waking every worker. Here only the
+    // dependency-free roots are submitted externally; every other node is
+    // submitted by the worker that completed its last predecessor (an
+    // own-deque push, no lock), and readiness is tracked with plain atomic
+    // countdowns taken from the graph's cached dependency lists.
+    struct RunState {
+        std::vector<std::atomic<int>> remaining; ///< preds left per node
+        std::atomic<size_t>           completed{0};
+        std::atomic<bool>             failed{false};
+        std::exception_ptr            first_exc;
+        std::mutex                    exc_mutex;
+        std::mutex                    timing_mutex;
+
+        // Memory budget: Materialize nodes that would exceed the budget wait
+        // in `deferred` (instead of blocking a worker) and are resubmitted
+        // when a Free node returns bytes.
+        size_t              budget{0};
+        std::atomic<size_t> mem_current{0};
+        std::mutex          deferred_mutex;
+        std::vector<size_t> deferred;
     };
-    auto   mem_state = std::make_shared<MemBudgetState>();
-    size_t budget    = _memory_budget;
-
-    std::vector<task_pool::TaskHandle<void>> handles(n);
-
+    auto state       = std::make_shared<RunState>();
+    state->budget    = _memory_budget;
+    state->remaining = std::vector<std::atomic<int>>(n);
     for (size_t i = 0; i < n; i++) {
-        auto const &preds = deps.predecessors[i];
+        state->remaining[i].store(static_cast<int>(deps.predecessors[i].size()), std::memory_order_relaxed);
+    }
 
-        // Build predecessor dependency handles.
-        std::vector<task_pool::TaskHandle<void>> pred_handles;
-        pred_handles.reserve(preds.size());
-        for (size_t const p : preds) {
-            pred_handles.push_back(handles[p]);
+    // The scheduling callables live on this frame: help_until() below does
+    // not return until every task has completed, and no task touches them
+    // after its final completed-counter increment, so reference captures
+    // into task bodies are safe and avoid shared_ptr cycles.
+    std::function<void(size_t)> submit_node;
+
+    auto record_failure = [state]() {
+        std::scoped_lock const lock(state->exc_mutex);
+        if (!state->first_exc) {
+            state->first_exc = std::current_exception();
         }
+        state->failed.store(true, std::memory_order_release);
+    };
 
-        bool const has_async = static_cast<bool>(nodes[i].async_start) && static_cast<bool>(nodes[i].async_finish);
-
-        // Memory budget gating: if this is a Materialize node and budget is set,
-        // wait until there's enough room before submitting.
-        if (budget > 0 && nodes[i].kind == OpKind::Materialize) {
-            size_t alloc_bytes = nodes[i].estimated_bytes;
-            if (alloc_bytes > 0) {
-                std::unique_lock lock(mem_state->gate_mutex);
-                mem_state->gate_cv.wait(lock, [&]() { return mem_state->current.load() + alloc_bytes <= budget; });
-                mem_state->current += alloc_bytes;
+    auto complete_node = [state, &deps, &submit_node](size_t i) {
+        for (size_t const succ : deps.successors[i]) {
+            if (state->remaining[succ].fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                submit_node(succ);
             }
         }
+        state->completed.fetch_add(1, std::memory_order_release);
+    };
 
-        if (has_async) {
-            task_pool::TaskHandle<void> start_handle;
-            if (preds.empty()) {
-                start_handle = pool.submit(nodes[i].label + "/start", [&node = nodes[i]]() { node.async_start(); });
-            } else {
-                auto all_preds = task_pool::when_all(std::move(pred_handles));
-                start_handle   = pool.dataflow(
-                    nodes[i].label + "/start", [&node = nodes[i]]() { node.async_start(); }, all_preds);
-            }
-
-            handles[i] = pool.dataflow(
-                nodes[i].label + "/finish",
-                [&node = nodes[i], &graph, &timing_mutex]() {
-                    auto t0 = std::chrono::steady_clock::now();
-                    node.async_finish();
-                    auto                   t1 = std::chrono::steady_clock::now();
-                    double const           ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-                    std::scoped_lock const lock(timing_mutex);
-                    graph.record_node_timing(node.id, node.label, node.kind, ms);
-                },
-                start_handle);
-        } else {
-            // For Free nodes with budget tracking: decrement memory and wake the gate
-            bool const   is_free    = (budget > 0 && nodes[i].kind == OpKind::Free);
-            size_t const free_bytes = is_free ? nodes[i].estimated_bytes : 0;
-
-            auto task_fn = [&node = nodes[i], &graph, &timing_mutex, mem_state, is_free, free_bytes]() {
-                execute_timed_mt(node, graph, timing_mutex);
-                if (is_free && free_bytes > 0) {
-                    mem_state->current -= free_bytes;
-                    mem_state->gate_cv.notify_one();
+    auto drain_deferred = [state, &submit_node, &nodes]() {
+        // Called after a Free returns bytes: resubmit deferred Materialize
+        // nodes that now fit, charging them under the lock so concurrent
+        // drains don't double-book the budget.
+        std::vector<size_t> runnable;
+        {
+            std::scoped_lock const lk(state->deferred_mutex);
+            for (auto it = state->deferred.begin(); it != state->deferred.end();) {
+                size_t const bytes = nodes[*it].estimated_bytes;
+                if (state->mem_current.load(std::memory_order_relaxed) + bytes <= state->budget) {
+                    state->mem_current.fetch_add(bytes, std::memory_order_relaxed);
+                    runnable.push_back(*it);
+                    it = state->deferred.erase(it);
+                } else {
+                    ++it;
                 }
-            };
-
-            if (preds.empty()) {
-                handles[i] = pool.submit(nodes[i].label, std::move(task_fn));
-            } else {
-                auto all_preds = task_pool::when_all(std::move(pred_handles));
-                handles[i]     = pool.dataflow(nodes[i].label, std::move(task_fn), all_preds);
             }
+        }
+        for (size_t const i : runnable) {
+            submit_node(i);
+        }
+    };
+
+    auto run_body = [state, &graph](Node &node, auto &&body) {
+        // After any failure the remaining nodes are drained without
+        // executing (execute() rethrows the first exception; partial
+        // results are unspecified either way).
+        if (state->failed.load(std::memory_order_acquire)) {
+            return;
+        }
+        try {
+            auto t0 = std::chrono::steady_clock::now();
+            body();
+            auto         t1 = std::chrono::steady_clock::now();
+            double const ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+            std::scoped_lock const lock(state->timing_mutex);
+            graph.record_node_timing(node.id, node.label, node.kind, ms);
+        } catch (...) {
+            std::scoped_lock const lock(state->exc_mutex);
+            if (!state->first_exc) {
+                state->first_exc = std::current_exception();
+            }
+            state->failed.store(true, std::memory_order_release);
+        }
+    };
+
+    submit_node = [state, &submit_node, &complete_node, &drain_deferred, &run_body, &record_failure, &pool, &nodes](size_t i) {
+        Node &node = nodes[i];
+
+        // Budget gate: park over-budget Materialize nodes instead of
+        // submitting them (never blocks a worker; Frees are never gated,
+        // so parked allocations always drain).
+        if (state->budget > 0 && node.kind == OpKind::Materialize && node.estimated_bytes > 0) {
+            std::scoped_lock const lk(state->deferred_mutex);
+            if (state->mem_current.load(std::memory_order_relaxed) + node.estimated_bytes > state->budget) {
+                state->deferred.push_back(i);
+                return;
+            }
+            state->mem_current.fetch_add(node.estimated_bytes, std::memory_order_relaxed);
+        }
+
+        bool const has_async = static_cast<bool>(node.async_start) && static_cast<bool>(node.async_finish);
+        if (has_async) {
+            // Two chained tasks: start when ready, finish afterwards (other
+            // ready nodes can interleave between them for real overlap).
+            pool.submit(node.label, [state, &complete_node, &run_body, &record_failure, &pool, &node, i]() {
+                if (!state->failed.load(std::memory_order_acquire)) {
+                    try {
+                        node.async_start();
+                    } catch (...) {
+                        record_failure();
+                    }
+                }
+                pool.submit(node.label, [&complete_node, &run_body, &node, i]() {
+                    run_body(node, [&node]() { node.async_finish(); });
+                    complete_node(i);
+                });
+            });
+            return;
+        }
+
+        bool const   is_free    = state->budget > 0 && node.kind == OpKind::Free;
+        size_t const free_bytes = is_free ? node.estimated_bytes : 0;
+
+        pool.submit(node.label, [state, &complete_node, &drain_deferred, &run_body, &node, i, is_free, free_bytes]() {
+            run_body(node, [&node]() { execute_node(node); });
+            if (is_free && free_bytes > 0) {
+                state->mem_current.fetch_sub(free_bytes, std::memory_order_relaxed);
+                drain_deferred();
+            }
+            complete_node(i);
+        });
+    };
+
+    // Seed the dependency-free roots; everything else self-schedules.
+    for (size_t i = 0; i < n; i++) {
+        if (deps.predecessors[i].empty()) {
+            submit_node(i);
         }
     }
 
-    for (size_t i = 0; i < n; i++) {
-        if (deps.successors[i].empty()) {
-            handles[i].wait();
-        }
+    // The calling thread work-steals while waiting instead of parking.
+    pool.help_until([&]() { return state->completed.load(std::memory_order_acquire) == n; });
+
+    if (state->first_exc) {
+        std::rethrow_exception(state->first_exc);
     }
 }
 

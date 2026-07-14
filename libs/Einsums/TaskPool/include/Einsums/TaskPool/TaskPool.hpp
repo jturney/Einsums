@@ -247,6 +247,12 @@ class EINSUMS_EXPORT TaskPool {
 
     ~TaskPool();
 
+    /// Participate in work-stealing on the calling thread until the
+    /// predicate returns true. Used by TaskHandle::wait and by executors
+    /// with their own completion tracking (e.g. the counter-based
+    /// DataflowExecutor), so a waiting thread contributes instead of parking.
+    void help_until(std::function<bool()> const &predicate);
+
   private:
     TaskPool();
 
@@ -263,7 +269,6 @@ class EINSUMS_EXPORT TaskPool {
     friend class TaskHandle;
 
     void enqueue(std::function<void()> task);
-    void help_until(std::function<bool()> const &predicate);
 
     /// Create a wrapped task with profiler instrumentation.
     template <typename F, typename R>
