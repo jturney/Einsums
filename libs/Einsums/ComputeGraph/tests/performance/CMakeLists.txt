@@ -5,6 +5,7 @@
 
 set(ComputeGraphPerfTests
     BenchmarkExecutors.cpp
+    BenchmarkGraphOverhead.cpp
 )
 
 foreach(test ${ComputeGraphPerfTests})
