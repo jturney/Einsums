@@ -450,6 +450,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         // The caller vouches for the node ORDER, but node positions changed,
         // so the position-keyed _deps lists must be rebuilt on next demand.
         _deps_valid = false;
+        // Passes also rewrite labels/descriptors; refresh cached profiler
+        // payloads on next execute.
+        _profile_strings_valid = false;
     }
 
     /**
@@ -1147,6 +1150,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         slot->ptr  = const_cast<void *>(static_cast<void const *>(&new_tensor));
         slot->name = new_tensor.name();
 
+        // Tensor names feed the cached profiler annotations.
+        _profile_strings_valid = false;
+
         // An explicit rebind of a merged-away tensor overrides its pass
         // redirect; otherwise a later rebind of the survivor would stomp it.
         _slot_redirects.erase(id);
@@ -1310,6 +1316,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// mark_sorted() vouches for the order without rebuilding _deps, so
     /// topological_sort() can skip the Kahn pass but must refresh the lists.
     bool _deps_valid{false};
+
+    /// Pre-formatted profiler payloads for one node: the zone name plus every
+    /// annotation whose value is invariant across replays. Built once per
+    /// graph mutation instead of fmt::format-ing per node per execute() -
+    /// for an SCF/CC loop that replays the graph hundreds of times, the
+    /// formatting dominated the serial replay overhead.
+    struct NodeProfileStrings {
+        std::string                                      zone;    ///< "graph:<name>/<label>"
+        std::vector<std::pair<std::string, std::string>> texts;   ///< invariant string annotations
+        std::vector<std::pair<std::string, int64_t>>     numbers; ///< invariant integer annotations
+        std::vector<std::pair<std::string, double>>      reals;   ///< invariant floating-point annotations
+    };
+
+    /// Keyed by NodeId (stable across reorders). Invalidated wherever the
+    /// node list or annotated metadata changes: add_node, mark_sorted (the
+    /// declared-mutation contract - passes rewrite labels/descriptors),
+    /// rebind (tensor names), and update_prefactors.
+    std::unordered_map<NodeId, NodeProfileStrings> _profile_strings;
+    bool                                           _profile_strings_valid{false};
+    std::string                                    _exec_zone_name;
+
+    /// Rebuild _profile_strings for the current node list.
+    void rebuild_profile_strings();
 
     /// See EffectiveIoCache. Span-returning fast path used by the hazard
     /// scans: ordinary nodes view their own I/O lists (no copies),

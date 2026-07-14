@@ -504,7 +504,9 @@ Graph::Graph(Graph &&other) noexcept
       _next_tensor_id(other._next_tensor_id), _sorted(other._sorted), _executed(other._executed), _deps(std::move(other._deps)),
       _owned_tensors(std::move(other._owned_tensors)), _adopted_cleanups(std::move(other._adopted_cleanups)),
       _params(std::move(other._params)), _slot_map(std::move(other._slot_map)), _timing_report(std::move(other._timing_report)),
-      _params_store(std::move(other._params_store)), _slot_redirects(std::move(other._slot_redirects)), _deps_valid(other._deps_valid) {
+      _params_store(std::move(other._params_store)), _slot_redirects(std::move(other._slot_redirects)), _deps_valid(other._deps_valid),
+      _profile_strings(std::move(other._profile_strings)), _profile_strings_valid(other._profile_strings_valid),
+      _exec_zone_name(std::move(other._exec_zone_name)) {
     // Invalidate moved-from so its destructor doesn't unregister
     other._executed = false;
     // Transfer registration from old address to new
@@ -517,27 +519,30 @@ Graph::Graph(Graph &&other) noexcept
 Graph &Graph::operator=(Graph &&other) noexcept {
     if (this != &other) {
         unregister_graph(this);
-        _name             = std::move(other._name);
-        _pipeline_name    = std::move(other._pipeline_name);
-        _workspace_name   = std::move(other._workspace_name);
-        _stage_name       = std::move(other._stage_name);
-        _stage_type       = std::move(other._stage_type);
-        _stage_index      = other._stage_index;
-        _nodes            = std::move(other._nodes);
-        _tensors          = std::move(other._tensors);
-        _next_node_id     = other._next_node_id;
-        _next_tensor_id   = other._next_tensor_id;
-        _sorted           = other._sorted;
-        _executed         = other._executed;
-        _deps             = std::move(other._deps);
-        _owned_tensors    = std::move(other._owned_tensors);
-        _adopted_cleanups = std::move(other._adopted_cleanups);
-        _params           = std::move(other._params);
-        _slot_map         = std::move(other._slot_map);
-        _timing_report    = std::move(other._timing_report);
-        _params_store     = std::move(other._params_store);
-        _slot_redirects   = std::move(other._slot_redirects);
-        _deps_valid       = other._deps_valid;
+        _name                  = std::move(other._name);
+        _pipeline_name         = std::move(other._pipeline_name);
+        _workspace_name        = std::move(other._workspace_name);
+        _stage_name            = std::move(other._stage_name);
+        _stage_type            = std::move(other._stage_type);
+        _stage_index           = other._stage_index;
+        _nodes                 = std::move(other._nodes);
+        _tensors               = std::move(other._tensors);
+        _next_node_id          = other._next_node_id;
+        _next_tensor_id        = other._next_tensor_id;
+        _sorted                = other._sorted;
+        _executed              = other._executed;
+        _deps                  = std::move(other._deps);
+        _owned_tensors         = std::move(other._owned_tensors);
+        _adopted_cleanups      = std::move(other._adopted_cleanups);
+        _params                = std::move(other._params);
+        _slot_map              = std::move(other._slot_map);
+        _timing_report         = std::move(other._timing_report);
+        _params_store          = std::move(other._params_store);
+        _slot_redirects        = std::move(other._slot_redirects);
+        _deps_valid            = other._deps_valid;
+        _profile_strings       = std::move(other._profile_strings);
+        _profile_strings_valid = other._profile_strings_valid;
+        _exec_zone_name        = std::move(other._exec_zone_name);
 
         // Invalidate moved-from so its destructor doesn't unregister
         other._executed = false;
@@ -553,9 +558,10 @@ NodeId Graph::add_node(Node node) {
     node.id         = _next_node_id++;
     NodeId const id = node.id;
     _nodes.push_back(std::move(node));
-    _sorted     = false;
-    _deps_valid = false;
-    _executed   = false;
+    _sorted                = false;
+    _deps_valid            = false;
+    _profile_strings_valid = false;
+    _executed              = false;
     return id;
 }
 
@@ -1020,6 +1026,8 @@ void Graph::update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorSca
             desc->params->c_pf  = c_pf;
             desc->params->ab_pf = ab_pf;
         }
+        // Prefactors appear in the cached profiler annotations.
+        _profile_strings_valid = false;
         return;
     }
     EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no node with id {}", _name, node_id);
@@ -1499,6 +1507,59 @@ void Graph::print_timing_report(std::ostream &os) const {
     }
 }
 
+void Graph::rebuild_profile_strings() {
+    _exec_zone_name = fmt::format("ComputeGraph::execute({})", _name);
+    _profile_strings.clear();
+    _profile_strings.reserve(_nodes.size());
+
+    for (auto const &node : _nodes) {
+        NodeProfileStrings entry;
+        entry.zone = fmt::format("graph:{}/{}", _name, node.label);
+
+        if (auto const *tdesc = std::get_if<TransferDescriptor>(&node.op_data)) {
+            entry.numbers.emplace_back("transfer_bytes", static_cast<int64_t>(tdesc->size_bytes));
+        }
+
+        if (auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data)) {
+            entry.texts.emplace_back("c_prefactor", to_string(desc->c_prefactor));
+            entry.texts.emplace_back("ab_prefactor", to_string(desc->ab_prefactor));
+            if (!desc->spec.c_indices.empty()) {
+                entry.texts.emplace_back("c_indices", fmt::format("{}", fmt::join(desc->spec.c_indices, ",")));
+                entry.texts.emplace_back("a_indices", fmt::format("{}", fmt::join(desc->spec.a_indices, ",")));
+                entry.texts.emplace_back("b_indices", fmt::format("{}", fmt::join(desc->spec.b_indices, ",")));
+            }
+        } else if (auto const *sdesc = std::get_if<ScaleDescriptor>(&node.op_data)) {
+            entry.reals.emplace_back("scale_factor", sdesc->factor);
+        } else if (auto const *cdesc = std::get_if<CommDescriptor>(&node.op_data)) {
+            entry.numbers.emplace_back("comm_bytes", static_cast<int64_t>(cdesc->size_bytes));
+            entry.numbers.emplace_back("comm_tensor", static_cast<int64_t>(cdesc->tensor_id));
+        }
+
+        auto annotate_tensors = [&](std::vector<TensorId> const &ids, char const *prefix) {
+            for (TensorId const tid : ids) {
+                auto it = _tensors.find(tid);
+                if (it != _tensors.end() && !it->second.dims.empty()) {
+                    entry.texts.emplace_back(fmt::format("{}.{}", prefix, it->second.name),
+                                             fmt::format("{}", fmt::join(it->second.dims, "x")));
+                    if (it->second.is_distributed) {
+                        entry.texts.emplace_back(fmt::format("{}.{}.distributed", prefix, it->second.name), "true");
+                    }
+                }
+            }
+        };
+        annotate_tensors(node.inputs, "input");
+        annotate_tensors(node.outputs, "output");
+
+        if (node.estimated_flops > 0) {
+            entry.numbers.emplace_back("estimated_flops", static_cast<int64_t>(node.estimated_flops));
+        }
+
+        _profile_strings.emplace(node.id, std::move(entry));
+    }
+
+    _profile_strings_valid = true;
+}
+
 void Graph::execute() {
     if (!_sorted) {
         topological_sort();
@@ -1529,60 +1590,40 @@ void Graph::execute() {
     }
 
     _timing_report.clear();
+    _timing_report.reserve(_nodes.size());
+
+    // All fmt::format work for zones/annotations is precomputed; replays of
+    // an unchanged graph only pay the profiler's record cost itself.
+    if (!_profile_strings_valid) {
+        rebuild_profile_strings();
+    }
 
     // RAII zones (see execute(Executor&)): a node that throws must still pop its
     // profiler zone, or the tree depth grows without bound across failed runs.
-    profile::ScopedZone const _exec_zone(fmt::format("ComputeGraph::execute({})", _name));
+    profile::ScopedZone const _exec_zone(_exec_zone_name);
+
+    // A node missing from the cache falls back to its bare label (defensive:
+    // an undeclared mutation after the rebuild above).
+    static NodeProfileStrings const kEmptyEntry{};
 
     for (auto &node : _nodes) {
-        profile::ScopedZone const _node_zone(fmt::format("graph:{}/{}", _name, node.label));
+        auto                      ps_it = _profile_strings.find(node.id);
+        NodeProfileStrings const &ps    = ps_it != _profile_strings.end() ? ps_it->second : kEmptyEntry;
 
-        // Annotate with operation metadata
+        profile::ScopedZone const _node_zone(ps.zone.empty() ? node.label : ps.zone);
+
+        // These two are static strings; no caching needed.
         profile::annotate("op_kind", op_kind_name(node.kind));
         profile::annotate("device", node.target == Target::GPU ? "GPU" : "CPU");
 
-        // Transfer node annotations
-        if (auto *tdesc = std::get_if<TransferDescriptor>(&node.op_data)) {
-            profile::annotate("transfer_bytes", static_cast<int64_t>(tdesc->size_bytes));
+        for (auto const &[key, value] : ps.texts) {
+            profile::annotate(key, value);
         }
-
-        if (auto *desc = std::get_if<EinsumDescriptor>(&node.op_data)) {
-            profile::annotate("c_prefactor", to_string(desc->c_prefactor));
-            profile::annotate("ab_prefactor", to_string(desc->ab_prefactor));
-            if (!desc->spec.c_indices.empty()) {
-                profile::annotate("c_indices", fmt::format("{}", fmt::join(desc->spec.c_indices, ",")));
-                profile::annotate("a_indices", fmt::format("{}", fmt::join(desc->spec.a_indices, ",")));
-                profile::annotate("b_indices", fmt::format("{}", fmt::join(desc->spec.b_indices, ",")));
-            }
-        } else if (auto *sdesc = std::get_if<ScaleDescriptor>(&node.op_data)) {
-            profile::annotate("scale_factor", sdesc->factor);
-        } else if (auto *cdesc = std::get_if<CommDescriptor>(&node.op_data)) {
-            profile::annotate("comm_bytes", static_cast<int64_t>(cdesc->size_bytes));
-            profile::annotate("comm_tensor", static_cast<int64_t>(cdesc->tensor_id));
+        for (auto const &[key, value] : ps.numbers) {
+            profile::annotate(key, value);
         }
-
-        // Annotate tensor dimensions and distribution for inputs/outputs
-        for (unsigned long long const input : node.inputs) {
-            auto it = _tensors.find(input);
-            if (it != _tensors.end() && !it->second.dims.empty()) {
-                profile::annotate(fmt::format("input.{}", it->second.name), fmt::format("{}", fmt::join(it->second.dims, "x")));
-                if (it->second.is_distributed) {
-                    profile::annotate(fmt::format("input.{}.distributed", it->second.name), "true");
-                }
-            }
-        }
-        for (unsigned long long const output : node.outputs) {
-            auto it = _tensors.find(output);
-            if (it != _tensors.end() && !it->second.dims.empty()) {
-                profile::annotate(fmt::format("output.{}", it->second.name), fmt::format("{}", fmt::join(it->second.dims, "x")));
-                if (it->second.is_distributed) {
-                    profile::annotate(fmt::format("output.{}.distributed", it->second.name), "true");
-                }
-            }
-        }
-
-        if (node.estimated_flops > 0) {
-            profile::annotate("estimated_flops", static_cast<int64_t>(node.estimated_flops));
+        for (auto const &[key, value] : ps.reals) {
+            profile::annotate(key, value);
         }
 
         auto t_start = std::chrono::steady_clock::now();
