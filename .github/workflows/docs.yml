@@ -60,6 +60,7 @@ jobs:
             -S "$GITHUB_WORKSPACE" \
             -B "$GITHUB_WORKSPACE/build" \
             -D EINSUMS_BUILD_PYTHON=ON \
+            -D Python_EXECUTABLE="${CONDA_PREFIX}/bin/python3" \
             -D EINSUMS_WITH_COVERAGE=ON \
             -D CMAKE_C_COMPILER_LAUNCHER=ccache \
             -D CMAKE_CXX_COMPILER_LAUNCHER=ccache \

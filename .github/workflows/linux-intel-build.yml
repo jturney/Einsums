@@ -97,6 +97,7 @@ jobs:
             -S "$GITHUB_WORKSPACE/src" \
             -B "$GITHUB_WORKSPACE/build" \
             -D EINSUMS_BUILD_PYTHON=ON \
+            -D Python_EXECUTABLE="${CONDA_PREFIX}/bin/python3" \
             -D CMAKE_C_COMPILER_LAUNCHER=ccache \
             -D CMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} \

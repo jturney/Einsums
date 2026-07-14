@@ -31,6 +31,14 @@ dependencies:
   - numpy
   - mimalloc
   # Python stuff
+  #
+  # Pin the interpreter to the regular (GIL) CPython ABI. Without an explicit
+  # python entry the solver picks it transitively, and conda-forge's linux-64
+  # solver started resolving that to the free-threaded cp314t variant
+  # (2026-07). FindPython rejects a t-build for
+  # `COMPONENTS Interpreter Development` and silently falls back to the CI
+  # runner's system python, whose multiarch dev headers are absent.
+  - python 3.14.* *_cp314
   - pybind11
   - pytest
   - numpy
