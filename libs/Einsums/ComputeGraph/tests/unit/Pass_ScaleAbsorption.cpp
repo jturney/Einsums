@@ -44,12 +44,14 @@ TEST_CASE("ScaleAbsorption - absorbs into einsum", "[ComputeGraph][Passes]") {
     REQUIRE(pass.num_absorbed() == 1);
     REQUIRE(graph.num_nodes() == 1);
 
-    // Check the fused einsum's c_prefactor.
-    auto &fused = graph.nodes()[0];
-    REQUIRE(fused.kind == cg::OpKind::Einsum);
-    auto *desc = std::get_if<cg::EinsumDescriptor>(&fused.op_data);
+    // The einsum must be left untouched: the dead scale is deleted, not
+    // "absorbed" into c_prefactor (CPU executors read EinsumParams live,
+    // GPU dispatch reads the descriptor - editing it would desync them).
+    auto &surviving = graph.nodes()[0];
+    REQUIRE(surviving.kind == cg::OpKind::Einsum);
+    auto *desc = std::get_if<cg::EinsumDescriptor>(&surviving.op_data);
     REQUIRE(desc != nullptr);
-    REQUIRE(cg::as<double>(desc->c_prefactor) == 3.0);
+    REQUIRE(cg::as<double>(desc->c_prefactor) == 0.0);
 
     graph.execute();
 
@@ -196,14 +198,17 @@ TEST_CASE("ScaleAbsorption in Pipeline loop", "[ComputeGraph][Passes][Pipeline]"
     }
 }
 
-TEST_CASE("ScaleAbsorption - skips rank-3 BatchedGemm (documented gap)", "[ComputeGraph][Passes][HigherRank]") {
-    // When the rank-3 einsum hits the strided-batched fast path it captures
-    // as OpKind::BatchedGemm, which ScaleAbsorption does not handle. The
-    // scale stays as a separate node. If this gets fixed in the future,
-    // flip this test to assert absorption.
+TEST_CASE("ScaleAbsorption - rank-3 BatchedGemm", "[ComputeGraph][Passes][HigherRank]") {
+    // The rank-3 einsum hits the strided-batched fast path and captures as
+    // OpKind::BatchedGemm. With beta == 0 it overwrites C, so the preceding
+    // scale is dead and gets removed.
     auto A = create_random_tensor<double>("A", 3, 5, 4);
     auto B = create_random_tensor<double>("B", 5, 6, 4);
     auto C = create_random_tensor<double>("C", 3, 6, 4);
+
+    auto C_ref = Tensor<double, 3>(C);
+    linear_algebra::scale(2.5, &C_ref);
+    tensor_algebra::einsum(0.0, Indices{i, j, b}, &C_ref, 1.0, Indices{i, k, b}, A, Indices{k, j, b}, B);
 
     cg::Graph graph("sa_rank3_batched");
     {
@@ -217,9 +222,19 @@ TEST_CASE("ScaleAbsorption - skips rank-3 BatchedGemm (documented gap)", "[Compu
 
     auto [modified, pass] = graph.apply<cg::passes::ScaleAbsorption>();
 
-    CHECK_FALSE(modified);
-    CHECK(pass.num_absorbed() == 0);
-    CHECK(graph.num_nodes() == 2);
+    CHECK(modified);
+    CHECK(pass.num_absorbed() == 1);
+    CHECK(graph.num_nodes() == 1);
+
+    graph.execute();
+
+    for (size_t ii = 0; ii < 3; ii++) {
+        for (size_t jj = 0; jj < 6; jj++) {
+            for (size_t bb = 0; bb < 4; bb++) {
+                REQUIRE(std::abs(C(ii, jj, bb) - C_ref(ii, jj, bb)) < 1e-12);
+            }
+        }
+    }
 }
 
 TEST_CASE("ScaleAbsorption - rank-4 scale into permute", "[ComputeGraph][Passes][HigherRank]") {

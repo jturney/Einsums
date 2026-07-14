@@ -504,7 +504,7 @@ Graph::Graph(Graph &&other) noexcept
       _next_tensor_id(other._next_tensor_id), _sorted(other._sorted), _executed(other._executed), _deps(std::move(other._deps)),
       _owned_tensors(std::move(other._owned_tensors)), _adopted_cleanups(std::move(other._adopted_cleanups)),
       _params(std::move(other._params)), _slot_map(std::move(other._slot_map)), _timing_report(std::move(other._timing_report)),
-      _params_store(std::move(other._params_store)) {
+      _params_store(std::move(other._params_store)), _slot_redirects(std::move(other._slot_redirects)), _deps_valid(other._deps_valid) {
     // Invalidate moved-from so its destructor doesn't unregister
     other._executed = false;
     // Transfer registration from old address to new
@@ -536,6 +536,8 @@ Graph &Graph::operator=(Graph &&other) noexcept {
         _slot_map         = std::move(other._slot_map);
         _timing_report    = std::move(other._timing_report);
         _params_store     = std::move(other._params_store);
+        _slot_redirects   = std::move(other._slot_redirects);
+        _deps_valid       = other._deps_valid;
 
         // Invalidate moved-from so its destructor doesn't unregister
         other._executed = false;
@@ -551,8 +553,9 @@ NodeId Graph::add_node(Node node) {
     node.id         = _next_node_id++;
     NodeId const id = node.id;
     _nodes.push_back(std::move(node));
-    _sorted   = false;
-    _executed = false;
+    _sorted     = false;
+    _deps_valid = false;
+    _executed   = false;
     return id;
 }
 
@@ -746,9 +749,97 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node
     return {ins, outs};
 }
 
+std::pair<std::span<TensorId const>, std::span<TensorId const>> Graph::effective_io_cached(Node const &node, EffectiveIoCache &cache) {
+    if (node.kind != OpKind::Loop && node.kind != OpKind::Conditional) {
+        // Ordinary nodes: their own I/O lists ARE the effective lists; hand
+        // out views instead of heap-copying two vectors per node per scan.
+        return {node.inputs, node.outputs};
+    }
+    // Control-flow nodes: the subtree walk is expensive, memoize it for the
+    // duration of one sort (both hazard scans). The cache must NOT outlive
+    // the call: passes like LoopInvariantHoisting move nodes across loop-body
+    // boundaries, which changes the subtree I/O between sorts.
+    auto it = cache.find(node.id);
+    if (it == cache.end()) {
+        it = cache.emplace(node.id, effective_io(node)).first;
+    }
+    return {it->second.first, it->second.second};
+}
+
+void Graph::rebuild_deps(EffectiveIoCache &cache) {
+    // Position-keyed dependency lists for the current node order. Same
+    // RAW/WAW/WAR hazard scan as the Kahn adjacency build, keyed by owner
+    // TensorId after view-alias resolution.
+    size_t const n = _nodes.size();
+    _deps.successors.assign(n, {});
+    _deps.predecessors.assign(n, {});
+
+    std::unordered_map<TensorId, size_t>              lw;
+    std::unordered_map<TensorId, std::vector<size_t>> lr;
+    for (size_t i2 = 0; i2 < n; i2++) {
+        auto [eff_in, eff_out] = effective_io_cached(_nodes[i2], cache);
+        for (auto raw : eff_in) {
+            TensorId const tid = resolve_alias(raw);
+            auto           it2 = lw.find(tid);
+            if (it2 != lw.end() && it2->second != i2) {
+                _deps.successors[it2->second].push_back(i2);
+                _deps.predecessors[i2].push_back(it2->second);
+            }
+            lr[tid].push_back(i2);
+        }
+        for (auto raw : eff_out) {
+            TensorId const tid = resolve_alias(raw);
+            auto           it2 = lw.find(tid);
+            if (it2 != lw.end() && it2->second != i2) {
+                _deps.successors[it2->second].push_back(i2);
+                _deps.predecessors[i2].push_back(it2->second);
+            }
+            auto rdit = lr.find(tid);
+            if (rdit != lr.end()) {
+                for (size_t const reader : rdit->second) {
+                    if (reader != i2) {
+                        _deps.successors[reader].push_back(i2);
+                        _deps.predecessors[i2].push_back(reader);
+                    }
+                }
+                rdit->second.clear();
+            }
+            lw[tid] = i2;
+        }
+    }
+}
+
 void Graph::topological_sort() {
+    // Defense in depth: a pass that mutates the node list without declaring
+    // it (mark_sorted / add_node) leaves stale flags. A count mismatch is the
+    // detectable symptom; downgrade to a full re-sort instead of letting a
+    // consumer index _deps out of range.
+    if (_deps.successors.size() != _nodes.size()) {
+        _deps_valid = false;
+    }
+
+    if (_sorted && _deps_valid) {
+        // Node order and dependency lists both current; the ~20-pass default
+        // pipeline hits this on every pass that follows a non-mutating one.
+        return;
+    }
+
     if (_nodes.empty()) {
-        _sorted = true;
+        _deps.successors.clear();
+        _deps.predecessors.clear();
+        _sorted     = true;
+        _deps_valid = true;
+        return;
+    }
+
+    if (_sorted) {
+        // A pass rebuilt or filtered the node list and vouched for the order
+        // via mark_sorted(); only the position-keyed _deps are stale. This
+        // also means a pass-chosen order (e.g. Reorder's memory-aware
+        // schedule) survives instead of being re-derived by a fresh Kahn.
+        EffectiveIoCache cache;
+        rebuild_deps(cache);
+        _deps_valid = true;
         return;
     }
 
@@ -758,35 +849,28 @@ void Graph::topological_sort() {
 
     size_t const n = _nodes.size();
 
-    // Resolve any chain of aliases (View outputs) to the underlying owner so
-    // reads/writes through a slice register as reads/writes of the parent.
-    // Without this, the scheduler would treat ``GEMM(C_occ, …)`` and
-    // ``Syev(C, …)`` as independent, they're not, since C_occ aliases C.
-    auto resolve_owner = [&](TensorId id) {
-        for (int hops = 0; hops < 32; ++hops) {
-            auto it = _tensors.find(id);
-            if (it == _tensors.end() || it->second.aliases == 0)
-                return id;
-            id = it->second.aliases;
-        }
-        return id;
-    };
-
     // Track dependencies: read-after-write, write-after-write, write-after-read.
-    // Keyed by *owner* TensorId (after alias resolution), see above.
+    // Keyed by *owner* TensorId (resolve_alias), so reads/writes through a view
+    // register against the parent tensor. Without this, the scheduler would
+    // treat ``GEMM(C_occ, …)`` and ``Syev(C, …)`` as independent, they're not,
+    // since C_occ aliases C.
     std::unordered_map<TensorId, size_t>              last_writer;
     std::unordered_map<TensorId, std::vector<size_t>> last_readers;
     std::vector<std::vector<size_t>>                  adj(n);
     std::vector<size_t>                               in_degree(n, 0);
 
+    // Shared by both hazard scans; keyed by NodeId so it survives the move
+    // of nodes into their sorted positions below.
+    EffectiveIoCache eff_cache;
+
     for (size_t i = 0; i < n; i++) {
         // Control-flow nodes carry no SSA I/O of their own; use the effective
         // (subtree-augmented) lists so a Loop/Conditional depends on producers
         // of the tensors its body reads and precedes consumers of what it writes.
-        auto [eff_in, eff_out] = effective_io(_nodes[i]);
+        auto [eff_in, eff_out] = effective_io_cached(_nodes[i], eff_cache);
         // Read-after-write: this node reads T → depends on last writer of T
         for (auto raw : eff_in) {
-            TensorId const tid = resolve_owner(raw);
+            TensorId const tid = resolve_alias(raw);
             auto           it  = last_writer.find(tid);
             if (it != last_writer.end() && it->second != i) {
                 adj[it->second].push_back(i);
@@ -796,7 +880,7 @@ void Graph::topological_sort() {
         }
         // Write-after-write + write-after-read: this node writes T
         for (auto raw : eff_out) {
-            TensorId const tid = resolve_owner(raw);
+            TensorId const tid = resolve_alias(raw);
             // Write-after-write: depends on last writer
             auto writ = last_writer.find(tid);
             if (writ != last_writer.end() && writ->second != i) {
@@ -847,48 +931,11 @@ void Graph::topological_sort() {
 
     _nodes = std::move(sorted);
 
-    // Rebuild dependency info on the sorted node order.
-    // After sorting, node positions changed, so recompute adjacency.
-    // Same alias-aware resolution as the first pass.
-    _deps.successors.assign(n, {});
-    _deps.predecessors.assign(n, {});
-    {
-        std::unordered_map<TensorId, size_t>              lw;
-        std::unordered_map<TensorId, std::vector<size_t>> lr;
-        for (size_t i2 = 0; i2 < n; i2++) {
-            auto [eff_in, eff_out] = effective_io(_nodes[i2]);
-            for (auto raw : eff_in) {
-                TensorId const tid = resolve_owner(raw);
-                auto           it2 = lw.find(tid);
-                if (it2 != lw.end() && it2->second != i2) {
-                    _deps.successors[it2->second].push_back(i2);
-                    _deps.predecessors[i2].push_back(it2->second);
-                }
-                lr[tid].push_back(i2);
-            }
-            for (auto raw : eff_out) {
-                TensorId const tid = resolve_owner(raw);
-                auto           it2 = lw.find(tid);
-                if (it2 != lw.end() && it2->second != i2) {
-                    _deps.successors[it2->second].push_back(i2);
-                    _deps.predecessors[i2].push_back(it2->second);
-                }
-                auto rdit = lr.find(tid);
-                if (rdit != lr.end()) {
-                    for (size_t const reader : rdit->second) {
-                        if (reader != i2) {
-                            _deps.successors[reader].push_back(i2);
-                            _deps.predecessors[i2].push_back(reader);
-                        }
-                    }
-                    rdit->second.clear();
-                }
-                lw[tid] = i2;
-            }
-        }
-    }
+    // Rebuild dependency info on the sorted node order (positions changed).
+    rebuild_deps(eff_cache);
 
-    _sorted = true;
+    _sorted     = true;
+    _deps_valid = true;
 }
 
 std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, std::function<bool()> predicate) {
@@ -953,44 +1000,27 @@ void Graph::add_loop(std::string label, size_t max_iterations, std::function<boo
 
 void Graph::update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorScalar ab_pf) {
     for (auto &node : _nodes) {
-        if (node.id == node_id) {
-            if (auto *desc = std::get_if<EinsumDescriptor>(&node.op_data)) {
-                desc->c_prefactor  = c_pf;
-                desc->ab_prefactor = ab_pf;
-            }
-            // Update all params in the store that match the old values
-            // The executor lambda captures a shared_ptr<EinsumParams>,
-            // so updating through the store changes the execution behavior.
-            for (auto &params : _params_store) {
-                // We need to find the params associated with this node.
-                // Since we don't have a direct node→params mapping, update
-                // all params (this is a simplification, in practice there's
-                // typically one params per einsum node).
-                // TODO: Add node_id → params mapping for precise updates.
-            }
-            // For now, update the params via the shared_ptr store.
-            // The params are ordered by creation (same as node order during capture).
-            // Find the params for this node by matching the node index.
-            size_t node_idx  = 0;
-            size_t param_idx = 0;
-            for (size_t ni = 0; ni < _nodes.size(); ni++) {
-                if (_nodes[ni].id == node_id) {
-                    node_idx = ni;
-                    break;
-                }
-            }
-            // Count einsum nodes before this one to find the params index
-            for (size_t ni = 0; ni < node_idx; ni++) {
-                if (_nodes[ni].kind == OpKind::Einsum) {
-                    param_idx++;
-                }
-            }
-            if (param_idx < _params_store.size()) {
-                _params_store[param_idx]->c_pf  = c_pf;
-                _params_store[param_idx]->ab_pf = ab_pf;
-            }
-            return;
+        if (node.id != node_id) {
+            continue;
         }
+        auto *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        if (desc == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "Graph '{}': node {} ({}) is not an einsum; update_prefactors only applies to einsum nodes", _name,
+                                    node_id, op_kind_name(node.kind));
+        }
+        // Keep both prefactor sources in sync: the descriptor snapshot
+        // (read by GPU dispatch and analysis passes) and the shared
+        // EinsumParams the CPU executor lambda reads live. The descriptor
+        // owns its params handle, so this stays correct when passes
+        // reorder or remove nodes.
+        desc->c_prefactor  = c_pf;
+        desc->ab_prefactor = ab_pf;
+        if (desc->params) {
+            desc->params->c_pf  = c_pf;
+            desc->params->ab_pf = ab_pf;
+        }
+        return;
     }
     EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no node with id {}", _name, node_id);
 }

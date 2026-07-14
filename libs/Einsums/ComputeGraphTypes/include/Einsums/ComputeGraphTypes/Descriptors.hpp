@@ -18,7 +18,7 @@ namespace einsums::compute_graph {
  * @brief Metadata for Scale nodes.
  *
  * Stores the scalar factor applied to the tensor: ``A *= factor``.
- * Used by ScaleAbsorption to fold scale(alpha) into a following op's prefactor.
+ * Used by ScaleAbsorption to detect scales a following overwrite makes dead.
  */
 struct ScaleDescriptor {
     double factor{1.0}; ///< The scaling factor

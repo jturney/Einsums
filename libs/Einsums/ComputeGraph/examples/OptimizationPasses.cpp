@@ -7,13 +7,13 @@
 /// @brief Demonstrates all optimization passes available for computation graphs.
 ///
 /// Passes demonstrated:
-///   1. ScaleAbsorption (einsum), absorbs scale into einsum's C prefactor
+///   1. ScaleAbsorption (einsum), removes a scale the einsum overwrites
 ///   2. MemoryPlanning: analyzes tensor liveness and reports memory savings
 ///   3. Reorder: memory-aware topological sort
 ///   4. CSE: common subexpression elimination
 ///   5. ChainParenthesization: optimal matrix chain multiplication analysis
 ///   6. ConstantFolding: folds constant-input operations at optimization time
-///   7. ScaleAbsorption (permute), scale absorption into a downstream permute
+///   7. ScaleAbsorption (permute), removes a scale a downstream permute overwrites
 ///   8. GEMMBatching: detects independent GEMMs that can be batched
 ///   9. LoopInvariantHoisting: moves invariant operations out of loops
 ///  10. DeadNodeElimination: removes nodes whose outputs are unused
@@ -476,7 +476,7 @@ int einsums_main() {
         graph.apply(pm);
 
         println("After create_default(): {} nodes", graph.num_nodes());
-        println("  -> ScaleAbsorption fused scale(2.0) into the einsum");
+        println("  -> ScaleAbsorption removed the dead scale(2.0) the einsum overwrites");
         println("  -> ConstantFolding is safe (only folds graph-owned intermediates)");
         println("  -> GPU passes included but won't place double-precision ops on MPS");
 

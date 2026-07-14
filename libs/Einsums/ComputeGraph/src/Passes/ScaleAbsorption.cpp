@@ -9,43 +9,36 @@
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <complex>
 #include <vector>
 
 namespace einsums::compute_graph::passes {
 
 namespace {
 
-/// Try to absorb a scale factor into a node's prefactor.
-/// Returns true if absorbed (the scale node can be removed).
-bool try_absorb(double scale_factor, Node &target) {
+/// Does `target` fully overwrite its output without reading its prior
+/// contents (c_prefactor / beta == 0)? If so, a Scale of that tensor
+/// immediately preceding it (with no intervening reader) is dead: its
+/// result is discarded wholesale.
+///
+/// The target node must NOT be mutated here. CPU einsum executors read
+/// their prefactors live from the shared EinsumParams, while GPU dispatch
+/// reads the descriptor; editing the descriptor alone desyncs the two
+/// backends and makes every later descriptor-reading pass misclassify
+/// this node as accumulating.
+bool overwrites_without_reading(Node const &target) {
     switch (target.kind) {
     case OpKind::Einsum: {
-        auto *desc = std::get_if<EinsumDescriptor>(&target.op_data);
-        if (desc && is_zero(desc->c_prefactor)) {
-            // Preserve the descriptor's existing dtype alternative, the
-            // executor lambda extracts via as<T> and a type mismatch here
-            // would surface as a runtime conversion at execute time.
-            desc->c_prefactor = std::visit(
-                [&](auto x) -> PrefactorScalar {
-                    using U = decltype(x);
-                    if constexpr (std::is_arithmetic_v<U>) {
-                        return static_cast<U>(scale_factor);
-                    } else {
-                        return U{static_cast<typename U::value_type>(scale_factor), typename U::value_type{0}};
-                    }
-                },
-                desc->c_prefactor);
-            return true;
-        }
-        return false;
+        auto const *desc = std::get_if<EinsumDescriptor>(&target.op_data);
+        return desc != nullptr && is_zero(desc->c_prefactor);
     }
     case OpKind::Permute: {
-        auto *desc = std::get_if<PermuteDescriptor>(&target.op_data);
-        if (desc && desc->beta == 0.0) {
-            desc->beta = scale_factor;
-            return true;
-        }
-        return false;
+        auto const *desc = std::get_if<PermuteDescriptor>(&target.op_data);
+        return desc != nullptr && desc->beta == 0.0;
+    }
+    case OpKind::BatchedGemm: {
+        auto const *desc = std::get_if<BatchedGemmDescriptor>(&target.op_data);
+        return desc != nullptr && desc->beta == std::complex<double>{0.0, 0.0};
     }
     default:
         return false;
@@ -99,22 +92,15 @@ bool ScaleAbsorption::run(Graph &graph) {
                 continue;
             }
 
-            // Try to absorb
-            if (try_absorb(scale_factor, target)) {
-                // Create composite executor
-                auto scale_exec  = std::move(scale_node.execute);
-                auto target_exec = std::move(target.execute);
-                target.execute   = [scale_exec = std::move(scale_exec), target_exec = std::move(target_exec)]() {
-                    scale_exec();
-                    target_exec();
-                };
-
-                target.label = fmt::format("[absorbed scale={}] {}", scale_factor, target.label);
-                remove[sc]   = true;
+            // The next writer overwrites the scaled tensor without reading
+            // it, so the scale's result is discarded: drop the Scale node.
+            if (overwrites_without_reading(target)) {
+                remove[sc] = true;
                 _num_absorbed++;
 
-                EINSUMS_LOG_INFO("ScaleAbsorption: absorbed scale({}) into {} node {}", scale_factor, op_kind_name(target.kind), target.id);
-                report(2, fmt::format("absorb scale({}) into {} node {} (drops the standalone Scale)", scale_factor,
+                EINSUMS_LOG_INFO("ScaleAbsorption: removed dead scale({}) of a tensor overwritten by {} node {}", scale_factor,
+                                 op_kind_name(target.kind), target.id);
+                report(2, fmt::format("remove dead scale({}); {} node {} overwrites the tensor without reading it", scale_factor,
                                       op_kind_name(target.kind), target.id));
             }
             break;
@@ -123,7 +109,7 @@ bool ScaleAbsorption::run(Graph &graph) {
 
     if (_num_absorbed == 0)
         return false;
-    report(1, fmt::format("absorbed {} scale(s) into a following op", _num_absorbed));
+    report(1, fmt::format("removed {} dead scale(s) whose result the following op overwrites", _num_absorbed));
 
     std::vector<Node> filtered;
     filtered.reserve(nodes.size());

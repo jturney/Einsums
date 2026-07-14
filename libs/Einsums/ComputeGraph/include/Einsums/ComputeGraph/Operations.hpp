@@ -3603,6 +3603,7 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     // them: avoids recomputing link indices on every execute().
     auto indices = ctx.graph()->create_indices(parsed.a_indices, parsed.b_indices, parsed.c_indices, desc.spec.link_indices);
     desc.indices = indices;
+    desc.params  = params;
 
     // BLAS-level batching hint. Only populated when the contraction is
     // a pure 2D GEMM pattern (rank-2 inputs/output, one link index),

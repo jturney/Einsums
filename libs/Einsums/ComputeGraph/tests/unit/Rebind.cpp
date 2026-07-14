@@ -126,6 +126,52 @@ TEST_CASE("Rebind - string einsum", "[ComputeGraph][Rebind]") {
     }
 }
 
+TEST_CASE("update_prefactors - correct after CSE removes an earlier einsum", "[ComputeGraph][Rebind][CSE]") {
+    // Regression: update_prefactors used to locate the EinsumParams by
+    // counting einsum nodes before the target in _nodes and indexing
+    // _params_store by that ordinal. Any pass that removes or reorders
+    // einsum nodes (CSE here) desynced the ordinal, so the update landed on
+    // a dead einsum's params and the target silently kept its old scalars.
+    // The params handle now lives on the EinsumDescriptor itself.
+    auto A   = create_random_tensor<double>("A", 4, 3);
+    auto B   = create_random_tensor<double>("B", 3, 4);
+    auto C   = create_zero_tensor<double>("C", 4, 4);
+    auto D   = create_zero_tensor<double>("D", 4, 4);
+    auto OUT = create_zero_tensor<double>("OUT", 4, 4);
+
+    cg::Graph graph("update_pf_after_cse");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);   // survivor
+        cg::einsum("ik;kj->ij", &D, A, B);   // duplicate, removed by CSE
+        cg::einsum("ik;kj->ij", &OUT, C, D); // target of update_prefactors
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    REQUIRE(modified);
+    REQUIRE(graph.num_nodes() == 2);
+
+    // The target einsum is now the last node; scale its contribution by 2.
+    cg::NodeId const out_id = graph.nodes()[graph.num_nodes() - 1].id;
+    graph.update_prefactors(out_id, 0.0, 2.0);
+
+    graph.execute();
+
+    auto AB = create_zero_tensor<double>("AB", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
+    auto OUT_ref = create_zero_tensor<double>("OUTref", 4, 4);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &OUT_ref, 2.0, Indices{i, k}, AB, Indices{k, j}, AB);
+
+    double max_abs = 0.0;
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            max_abs = std::max(max_abs, std::abs(OUT(ii, jj)));
+            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-12);
+        }
+    }
+    REQUIRE(max_abs > 1e-10);
+}
+
 TEST_CASE("update_prefactors - changes computation", "[ComputeGraph][Rebind]") {
     auto A = create_random_tensor<double>("A", 3, 3);
     auto B = create_random_tensor<double>("B", 3, 3);

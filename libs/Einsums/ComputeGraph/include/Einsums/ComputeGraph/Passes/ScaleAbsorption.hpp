@@ -10,17 +10,22 @@
 namespace einsums::compute_graph::passes {
 
 /**
- * @brief Generalized scale absorption pass.
+ * @brief Dead-scale elimination pass.
  *
- * Absorbs Scale(α, C) into any subsequent operation that writes to C with a
- * beta/c_prefactor parameter:
+ * Removes Scale(α, C) when the next node writing C overwrites it without
+ * reading its prior contents (c_prefactor / beta == 0) and no node reads C
+ * in between — the scale's result is discarded wholesale, so the scal is
+ * pure wasted work:
  *
- * - **Einsum**: Scale(α) + Einsum(c_pf=0) → Einsum(c_pf=α)
- * - **Gemm**: Scale(α) + Gemm(beta=0) → Gemm(beta=α)
- * - **Permute**: Scale(α) + Permute(beta=0) → Permute(beta=α)
+ * - **Einsum**: Scale(α) + Einsum(c_pf=0) → Einsum(c_pf=0)
+ * - **BatchedGemm**: Scale(α) + BatchedGemm(beta=0) → BatchedGemm(beta=0)
+ * - **Permute**: Scale(α) + Permute(beta=0) → Permute(beta=0)
  *
- * The Scale node is removed from the graph and its effect is absorbed
- * into the following operation's prefactor.
+ * The following operation is left untouched. It must not be rewritten to
+ * "absorb" the factor: CPU einsum executors read prefactors live from the
+ * shared EinsumParams while GPU dispatch reads the descriptor, so a
+ * descriptor-only edit desyncs the backends (and the scaled value is dead
+ * anyway — absorbing it would change the result).
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT ScaleAbsorption : public OptimizerPass {
   public:

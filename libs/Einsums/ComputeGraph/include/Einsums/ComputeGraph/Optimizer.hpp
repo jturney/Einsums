@@ -255,7 +255,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * backend availability.
      *
      *  1. ConstantFolding: evaluate constant-input nodes at compile time
-     *  2. ScaleAbsorption: fold Scale(α) into the next op's beta
+     *  2. ScaleAbsorption: drop a Scale(α) made dead by the next op overwriting it
      *  3. PermuteFusion: absorb leading permutes into the GEMM trans flags
      *  4. CSE: common subexpression elimination
      *  5. DeadNodeElimination: drop nodes whose outputs are unused

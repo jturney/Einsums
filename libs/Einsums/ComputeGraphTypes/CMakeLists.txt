@@ -8,7 +8,6 @@ set(ComputeGraphTypesHeaders
     Einsums/ComputeGraphTypes/Enums.hpp
     Einsums/ComputeGraphTypes/Ids.hpp
     Einsums/ComputeGraphTypes/Descriptors.hpp
-    Einsums/ComputeGraphTypes/EinsumSpec.hpp
     Einsums/ComputeGraphTypes/GraphData.hpp
 )
 

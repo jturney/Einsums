@@ -111,7 +111,9 @@ bool try_fuse(Graph &graph, std::vector<Node> &nodes, size_t perm_idx, size_t ei
     slot_indices = new_slot_sub;
     slot_spec    = new_slot_sub;
 
-    dst_slot->ptr  = src_slot->ptr;
+    // Durable redirect (not a raw ptr copy) so the einsum keeps following
+    // the source tensor if it is rebound after this pass runs.
+    graph.redirect_slot(perm_output_tid, perm_input_tid);
     dst_slot->rank = src_slot->rank;
     dst_slot->dims = src_slot->dims;
     dst_slot->name = src_slot->name;

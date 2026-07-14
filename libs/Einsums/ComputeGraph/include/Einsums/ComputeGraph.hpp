@@ -58,7 +58,7 @@
  *
  * @par Optimization Passes (einsums::compute_graph::passes namespace)
  * Graph-transforming:
- * - ScaleAbsorption: Absorb scale into subsequent operations' prefactors
+ * - ScaleAbsorption: remove scales whose result the next writer overwrites
  * - CSE: Common subexpression elimination
  * - ConstantFolding: Execute constant computations at optimization time
  * - DeadNodeElimination: Remove nodes with no consumers

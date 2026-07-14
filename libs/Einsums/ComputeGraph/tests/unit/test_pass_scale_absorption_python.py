@@ -158,11 +158,13 @@ def test_scale_absorption_in_pipeline_loop():
     assert_close(C, C_ref)
 
 
-def test_scale_absorption_skips_rank3_batched_gemm():
-    """Documented gap: BatchedGemm-captured rank-3 einsum is not handled by ScaleAbsorption."""
+def test_scale_absorption_rank3_batched_gemm():
+    """BatchedGemm with beta=0 overwrites C, so the preceding scale is dead and removed."""
     A = einsums.create_random_tensor("A", [3, 5, 4])
     B = einsums.create_random_tensor("B", [5, 6, 4])
     C = einsums.create_random_tensor("C", [3, 6, 4])
+
+    C_ref = np.einsum("ikb,kjb->ijb", np.asarray(A), np.asarray(B))
 
     g = cg.Graph("sa_rank3_batched")
     with cg.capture(g):
@@ -173,9 +175,12 @@ def test_scale_absorption_skips_rank3_batched_gemm():
     assert _count_kind(g, "BatchedGemm") == 1
 
     pass_inst = cg.ScaleAbsorption()
-    assert not _run(pass_inst, g)
-    assert pass_inst.num_absorbed == 0
-    assert g.num_nodes() == 2
+    assert _run(pass_inst, g)
+    assert pass_inst.num_absorbed == 1
+    assert g.num_nodes() == 1
+
+    g.execute()
+    assert_close(C, C_ref)
 
 
 def test_scale_absorption_rank4_scale_into_permute():

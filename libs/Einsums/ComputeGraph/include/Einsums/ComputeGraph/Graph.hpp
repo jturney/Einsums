@@ -27,6 +27,7 @@
 #include <functional>
 #include <iosfwd>
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -407,6 +408,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     std::pair<std::vector<TensorId>, std::vector<TensorId>> effective_io(Node const &node);
 
+    /// Memoization store for effective_io_cached(). Keyed by NodeId so
+    /// entries stay valid across in-sort node moves. Scoped to a single
+    /// topological_sort() call: control-flow subtree I/O changes when passes
+    /// move nodes across loop-body boundaries, so it must not persist.
+    using EffectiveIoCache = std::unordered_map<NodeId, std::pair<std::vector<TensorId>, std::vector<TensorId>>>;
+
     /**
      * @brief Resolve a TensorId through its alias chain to the owning buffer.
      *
@@ -440,6 +447,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void mark_sorted() {
         _sorted   = true;
         _executed = false;
+        // The caller vouches for the node ORDER, but node positions changed,
+        // so the position-keyed _deps lists must be rebuilt on next demand.
+        _deps_valid = false;
     }
 
     /**
@@ -1024,19 +1034,44 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * No-op if either slot is absent, a tensor never captured through a slot
      * has no baked lambda to fix. The caller guarantees @p from and @p to have
-     * identical type and dimensions (CSE only merges nodes with equal op_data
-     * and output shapes), so no validation is performed.
+     * identical element type (CSE only merges nodes with equal op_data and
+     * output shapes; PermuteFusion fixes up rank/dims itself), so no
+     * validation is performed.
+     *
+     * The redirect is durable, not a one-time pointer copy: it is recorded in
+     * @ref _slot_redirects and re-applied whenever the target slot is
+     * repointed later (see rebind()). Without that, a rebind of the surviving
+     * tensor after CSE would leave consumers of the merged-away duplicate
+     * reading the survivor's old buffer.
      *
      * @param[in] from TensorId whose slot should be repointed.
-     * @param[in] to   TensorId whose current buffer @p from should resolve to.
+     * @param[in] to   TensorId whose buffer @p from should resolve to, now and
+     *                 after future rebinds of @p to.
      */
     void redirect_slot(TensorId from, TensorId to) {
+        // Collapse chains so every recorded redirect points at a terminal id.
+        for (auto it = _slot_redirects.find(to); it != _slot_redirects.end(); it = _slot_redirects.find(to)) {
+            to = it->second;
+        }
+        if (from == to) {
+            return;
+        }
         TensorSlot const *to_slot   = find_slot(to);
         TensorSlot       *from_slot = find_slot(from);
         if (to_slot == nullptr || from_slot == nullptr) {
             return;
         }
-        from_slot->ptr = to_slot->ptr;
+        from_slot->ptr        = to_slot->ptr;
+        _slot_redirects[from] = to;
+        // Anything already redirected to `from` now follows the same terminal.
+        for (auto &[f, t] : _slot_redirects) {
+            if (t == from) {
+                t = to;
+                if (auto *fs = find_slot(f)) {
+                    fs->ptr = to_slot->ptr;
+                }
+            }
+        }
     }
 
     // ── Rebind support ──────────────────────────────────────────────────────
@@ -1112,6 +1147,20 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         slot->ptr  = const_cast<void *>(static_cast<void const *>(&new_tensor));
         slot->name = new_tensor.name();
 
+        // An explicit rebind of a merged-away tensor overrides its pass
+        // redirect; otherwise a later rebind of the survivor would stomp it.
+        _slot_redirects.erase(id);
+
+        // Slots that a pass redirected to this tensor (CSE duplicates,
+        // fused permute outputs) must follow the new buffer.
+        for (auto const &[f, t] : _slot_redirects) {
+            if (t == id) {
+                if (auto *fs = find_slot(f)) {
+                    fs->ptr = slot->ptr;
+                }
+            }
+        }
+
         // Update the TensorHandle too
         auto th_it = _tensors.find(id);
         if (th_it != _tensors.end()) {
@@ -1148,12 +1197,27 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void rebind(TensorType const &old_tensor, TensorType &new_tensor) {
         void *old_ptr = const_cast<void *>(static_cast<void const *>(&old_tensor));
 
-        // Find the slot and TensorId for old_tensor
+        // Find the slot and TensorId for old_tensor. After a pass redirect
+        // (CSE, PermuteFusion) several slots share one pointer; prefer the
+        // surviving tensor's id so redirected followers propagate, rather
+        // than whichever duplicate the map yields first.
+        bool     have_fallback = false;
+        TensorId fallback{};
         for (auto &[id, slot] : _slot_map) {
             if (slot->ptr == old_ptr) {
-                rebind(id, new_tensor);
-                return;
+                if (!_slot_redirects.contains(id)) {
+                    rebind(id, new_tensor);
+                    return;
+                }
+                if (!have_fallback) {
+                    fallback      = id;
+                    have_fallback = true;
+                }
             }
+        }
+        if (have_fallback) {
+            rebind(fallback, new_tensor);
+            return;
         }
 
         // Also check tensors_ in case no slot exists yet (tensor registered but never captured via slot)
@@ -1239,8 +1303,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     // (TensorHandle::aliases defaults to 0 and the codebase tests `aliases == 0`
     // for "not a view"). If a real tensor could be id 0, a view of it would have
     // aliases == 0 and silently fail to resolve to its parent in the scheduler.
-    TensorId       _next_tensor_id{1};
-    bool           _sorted{false};
+    TensorId _next_tensor_id{1};
+    bool     _sorted{false};
+
+    /// Whether _deps matches the current node order. Distinct from _sorted:
+    /// mark_sorted() vouches for the order without rebuilding _deps, so
+    /// topological_sort() can skip the Kahn pass but must refresh the lists.
+    bool _deps_valid{false};
+
+    /// See EffectiveIoCache. Span-returning fast path used by the hazard
+    /// scans: ordinary nodes view their own I/O lists (no copies),
+    /// control-flow nodes memoize the subtree walk in @p cache.
+    std::pair<std::span<TensorId const>, std::span<TensorId const>> effective_io_cached(Node const &node, EffectiveIoCache &cache);
+
+    /// Rebuild the position-keyed _deps lists for the current node order.
+    void           rebuild_deps(EffectiveIoCache &cache);
     bool           _executed{false}; ///< True after first successful execute (caching)
     DependencyInfo _deps;            ///< Populated by topological_sort()
 
@@ -1260,6 +1337,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /// Tensor slots for rebindable tensor references (TensorId → TensorSlot).
     std::unordered_map<TensorId, std::unique_ptr<TensorSlot>> _slot_map;
+
+    /// Durable slot redirects recorded by redirect_slot(): key resolves to
+    /// value's buffer. Chains are collapsed at insert, so values are always
+    /// terminal ids. rebind() re-applies these so redirected slots follow.
+    std::unordered_map<TensorId, TensorId> _slot_redirects;
 
     /// Device shadow allocations for GPU execution.
     /// Persists across execute() calls so shadows can be reused.

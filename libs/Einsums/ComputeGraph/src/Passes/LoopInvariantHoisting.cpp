@@ -312,8 +312,11 @@ bool LoopInvariantHoisting::run(Graph &graph) {
                 hoisted_output_ids.push_back(tid);
         }
 
-        // Update body to only contain remaining (non-hoisted) nodes
+        // Update body to only contain remaining (non-hoisted) nodes.
+        // Removing nodes keeps the body's relative order valid, but its
+        // position-keyed dependency lists are stale; declare that.
         body_nodes = std::move(remaining);
+        loop_desc->body->mark_sorted();
 
         // Insert hoisted nodes directly BEFORE the loop in the parent's
         // ``nodes`` vector. ``topological_sort`` (Kahn's algorithm)
@@ -337,7 +340,11 @@ bool LoopInvariantHoisting::run(Graph &graph) {
     }
 
     if (_num_hoisted > 0) {
-        // Nodes were appended; need topological_sort to place them correctly
+        // The hoisted producers were inserted directly before their loop, so
+        // the order is already valid; declare the mutation so the sort below
+        // rebuilds the stale dependency lists instead of early-returning on
+        // the pre-hoist state.
+        graph.mark_sorted();
         graph.topological_sort();
     }
 

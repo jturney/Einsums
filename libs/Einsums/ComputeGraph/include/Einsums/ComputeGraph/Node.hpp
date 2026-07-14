@@ -34,7 +34,7 @@ class Graph; // Forward declaration for ConditionalDescriptor/LoopDescriptor
  *
  * Stores the contraction pattern (which indices belong to A, B, C, which are
  * link/target indices) and the scalar prefactors. This metadata is used by:
- * - ScaleAbsorption to absorb scale operations into the einsum's C prefactor
+ * - ScaleAbsorption to spot dead scales (einsum with c_prefactor == 0 overwrites them)
  * - CSE to detect duplicate computations
  * - ChainParenthesization to detect GEMM chains
  *
@@ -81,6 +81,14 @@ struct EinsumDescriptor {
     /// can read either, but rewriters must update both to keep
     /// downstream analysis consistent.
     std::shared_ptr<EinsumIndices> indices;
+
+    /// Live-mutable scalar state shared with the executor lambda, same
+    /// pattern as `indices`. CPU executors read prefactors from here on
+    /// every call; `c_prefactor`/`ab_prefactor` above are the at-capture
+    /// snapshots (still read by GPU dispatch). Graph::update_prefactors
+    /// writes both through this handle so the node stays self-contained
+    /// under passes that reorder or remove nodes.
+    std::shared_ptr<EinsumParams> params;
 
     /// BLAS-level batching hint; non-null only for 2D×2D→2D contractions
     /// with one link index. Read by the GEMMBatching pass.

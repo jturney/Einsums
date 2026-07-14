@@ -6,7 +6,6 @@
 #pragma once
 
 #include <Einsums/ComputeGraphTypes/Descriptors.hpp>
-#include <Einsums/ComputeGraphTypes/EinsumSpec.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/GraphData.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
