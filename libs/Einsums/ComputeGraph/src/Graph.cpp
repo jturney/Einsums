@@ -813,6 +813,22 @@ void Graph::rebuild_deps(EffectiveIoCache &cache) {
             lw[tid] = i2;
         }
     }
+
+    // Level partition for level-scheduling executors. Edges always point
+    // from earlier to later positions (the scan above links prior
+    // writers/readers to the current node), so one forward pass suffices.
+    std::vector<size_t> level(n, 0);
+    size_t              max_level = 0;
+    for (size_t i2 = 0; i2 < n; i2++) {
+        for (size_t const pred : _deps.predecessors[i2]) {
+            level[i2] = std::max(level[i2], level[pred] + 1);
+        }
+        max_level = std::max(max_level, level[i2]);
+    }
+    _deps.levels.assign(max_level + 1, {});
+    for (size_t i2 = 0; i2 < n; i2++) {
+        _deps.levels[level[i2]].push_back(i2);
+    }
 }
 
 void Graph::topological_sort() {
@@ -833,6 +849,7 @@ void Graph::topological_sort() {
     if (_nodes.empty()) {
         _deps.successors.clear();
         _deps.predecessors.clear();
+        _deps.levels.clear();
         _sorted     = true;
         _deps_valid = true;
         return;

@@ -44,17 +44,6 @@ void execute_timed(Node &node, Graph &graph) {
     graph.record_node_timing(node.id, node.label, node.kind, ms);
 }
 
-/// Thread-safe version for parallel executors.
-void execute_timed_mt(Node &node, Graph &graph, std::mutex &timing_mutex) {
-    auto t0 = std::chrono::steady_clock::now();
-    execute_node(node);
-    auto t1 = std::chrono::steady_clock::now();
-
-    double const           ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    std::scoped_lock const lock(timing_mutex);
-    graph.record_node_timing(node.id, node.label, node.kind, ms);
-}
-
 } // namespace
 
 // ─── SequentialExecutor ─────────────────────────────────────────────────────
@@ -75,28 +64,15 @@ void OpenMPExecutor::execute(Graph &graph) {
     if (n == 0)
         return;
 
-    std::mutex timing_mutex;
-
 #ifdef _OPENMP
-    std::vector<size_t> level(n, 0);
-    for (size_t i = 0; i < n; i++) {
-        for (size_t const pred : deps.predecessors[i]) {
-            if (level[pred] + 1 > level[i]) {
-                level[i] = level[pred] + 1;
-            }
-        }
-    }
+    // Level partition comes precomputed with the dependency lists (it used
+    // to be re-derived here on every execute).
+    auto const &levels = deps.levels;
 
-    size_t max_level = 0;
-    for (size_t i = 0; i < n; i++) {
-        if (level[i] > max_level)
-            max_level = level[i];
-    }
-
-    std::vector<std::vector<size_t>> levels(max_level + 1);
-    for (size_t i = 0; i < n; i++) {
-        levels[level[i]].push_back(i);
-    }
+    // Lock-free timing: every node writes its own slot (distinct indices,
+    // no sharing), merged serially below in deterministic node order. The
+    // old path serialized every node on a shared mutex.
+    std::vector<double> node_ms(n, -1.0);
 
     // An exception must NOT escape an OpenMP structured block, doing so leaves
     // the team waiting at the join barrier forever (deadlock). Catch any node
@@ -106,12 +82,20 @@ void OpenMPExecutor::execute(Graph &graph) {
 
     for (auto const &group : levels) {
         if (group.size() == 1) {
-            execute_timed(nodes[group[0]], graph);
+            size_t const i  = group[0];
+            auto         t0 = std::chrono::steady_clock::now();
+            execute_node(nodes[i]);
+            auto t1    = std::chrono::steady_clock::now();
+            node_ms[i] = std::chrono::duration<double, std::milli>(t1 - t0).count();
         } else {
 #    pragma omp parallel for schedule(dynamic)
             for (size_t g = 0; g < group.size(); g++) { // NOLINT(modernize-loop-convert)
+                size_t const i = group[g];
                 try {
-                    execute_timed_mt(nodes[group[g]], graph, timing_mutex);
+                    auto t0 = std::chrono::steady_clock::now();
+                    execute_node(nodes[i]);
+                    auto t1    = std::chrono::steady_clock::now();
+                    node_ms[i] = std::chrono::duration<double, std::milli>(t1 - t0).count();
                 } catch (...) {
                     std::scoped_lock const lock(exc_mutex);
                     if (!first_exc) {
@@ -122,6 +106,12 @@ void OpenMPExecutor::execute(Graph &graph) {
             if (first_exc) {
                 std::rethrow_exception(first_exc); // safely outside the parallel region
             }
+        }
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        if (node_ms[i] >= 0.0) {
+            graph.record_node_timing(nodes[i].id, nodes[i].label, nodes[i].kind, node_ms[i]);
         }
     }
 #else
@@ -158,7 +148,12 @@ void DataflowExecutor::execute(Graph &graph) {
         std::atomic<bool>             failed{false};
         std::exception_ptr            first_exc;
         std::mutex                    exc_mutex;
-        std::mutex                    timing_mutex;
+
+        /// Per-node timing slots: each task writes only its own index, so no
+        /// lock is needed. Slot writes happen-before the task's completed
+        /// increment (release), and the merge below runs after help_until
+        /// observes completed == n (acquire).
+        std::vector<double> node_ms;
 
         // Memory budget: Materialize nodes that would exceed the budget wait
         // in `deferred` (instead of blocking a worker) and are resubmitted
@@ -171,6 +166,7 @@ void DataflowExecutor::execute(Graph &graph) {
     auto state       = std::make_shared<RunState>();
     state->budget    = _memory_budget;
     state->remaining = std::vector<std::atomic<int>>(n);
+    state->node_ms.assign(n, -1.0);
     for (size_t i = 0; i < n; i++) {
         state->remaining[i].store(static_cast<int>(deps.predecessors[i].size()), std::memory_order_relaxed);
     }
@@ -221,7 +217,7 @@ void DataflowExecutor::execute(Graph &graph) {
         }
     };
 
-    auto run_body = [state, &graph](Node &node, auto &&body) {
+    auto run_body = [state](size_t i, auto &&body) {
         // After any failure the remaining nodes are drained without
         // executing (execute() rethrows the first exception; partial
         // results are unspecified either way).
@@ -231,11 +227,9 @@ void DataflowExecutor::execute(Graph &graph) {
         try {
             auto t0 = std::chrono::steady_clock::now();
             body();
-            auto         t1 = std::chrono::steady_clock::now();
-            double const ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            auto t1 = std::chrono::steady_clock::now();
 
-            std::scoped_lock const lock(state->timing_mutex);
-            graph.record_node_timing(node.id, node.label, node.kind, ms);
+            state->node_ms[i] = std::chrono::duration<double, std::milli>(t1 - t0).count();
         } catch (...) {
             std::scoped_lock const lock(state->exc_mutex);
             if (!state->first_exc) {
@@ -273,7 +267,7 @@ void DataflowExecutor::execute(Graph &graph) {
                     }
                 }
                 pool.submit_detached(node.label, [&complete_node, &run_body, &node, i]() {
-                    run_body(node, [&node]() { node.async_finish(); });
+                    run_body(i, [&node]() { node.async_finish(); });
                     complete_node(i);
                 });
             });
@@ -284,7 +278,7 @@ void DataflowExecutor::execute(Graph &graph) {
         size_t const free_bytes = is_free ? node.estimated_bytes : 0;
 
         pool.submit_detached(node.label, [state, &complete_node, &drain_deferred, &run_body, &node, i, is_free, free_bytes]() {
-            run_body(node, [&node]() { execute_node(node); });
+            run_body(i, [&node]() { execute_node(node); });
             if (is_free && free_bytes > 0) {
                 state->mem_current.fetch_sub(free_bytes, std::memory_order_relaxed);
                 drain_deferred();
@@ -302,6 +296,14 @@ void DataflowExecutor::execute(Graph &graph) {
 
     // The calling thread work-steals while waiting instead of parking.
     pool.help_until([&]() { return state->completed.load(std::memory_order_acquire) == n; });
+
+    // Serial merge in deterministic node order (the mutex-per-node this
+    // replaces produced completion order, which was nondeterministic anyway).
+    for (size_t i = 0; i < n; i++) {
+        if (state->node_ms[i] >= 0.0) {
+            graph.record_node_timing(nodes[i].id, nodes[i].label, nodes[i].kind, state->node_ms[i]);
+        }
+    }
 
     if (state->first_exc) {
         std::rethrow_exception(state->first_exc);

@@ -45,6 +45,13 @@ class Graph; // Forward declaration
 struct DependencyInfo {
     std::vector<std::vector<size_t>> successors;   ///< successors[i] = nodes that depend on node i
     std::vector<std::vector<size_t>> predecessors; ///< predecessors[i] = nodes that node i depends on
+
+    /// levels[k] = node positions whose longest predecessor chain has length
+    /// k; every node in a level is independent of the others. Computed with
+    /// the lists above (positions are topological, so one forward pass) and
+    /// invalidated with them - executors that schedule level-by-level
+    /// (OpenMPExecutor) previously re-derived this on every execute.
+    std::vector<std::vector<size_t>> levels;
 };
 
 /**
