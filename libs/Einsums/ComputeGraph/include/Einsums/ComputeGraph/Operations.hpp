@@ -3859,8 +3859,24 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
                     d.batch_stride_b = static_cast<std::int64_t>(b_slice_dim(0)) * static_cast<std::int64_t>(b_slice_dim(1));
                     d.batch_stride_c = static_cast<std::int64_t>(c_slice_dim(0)) * static_cast<std::int64_t>(c_slice_dim(1));
 
-                    bool const swap_ab  = row_mode;
-                    auto       executor = [d, swap_ab, a_slot, b_slot, c_slot]() {
+                    bool const swap_ab = row_mode;
+
+                    // The per-slice pointer tables are pure functions of the
+                    // three base pointers (base + i*stride); rebuild them only
+                    // when a rebind moves a base, not on every replay. One
+                    // cache per captured node; a node never runs concurrently
+                    // with itself, so no synchronization is needed.
+                    struct BatchPtrTables {
+                        T const               *base_a{nullptr};
+                        T const               *base_b{nullptr};
+                        T                     *base_c{nullptr};
+                        std::vector<T const *> a_arr;
+                        std::vector<T const *> b_arr;
+                        std::vector<T *>       c_arr;
+                    };
+                    auto tables = std::make_shared<BatchPtrTables>();
+
+                    auto executor = [d, swap_ab, a_slot, b_slot, c_slot, tables]() {
                         LabeledSection("einsum batched execute");
                         ProfileAnnotate("m", static_cast<int64_t>(d.m));
                         ProfileAnnotate("n", static_cast<int64_t>(d.n));
@@ -3870,27 +3886,32 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
                         auto const *base_b = static_cast<T const *>(static_cast<BType const *>(b_slot->ptr)->data());
                         auto       *base_c = static_cast<T *>(static_cast<CType *>(c_slot->ptr)->data());
 
-                        std::vector<T const *> a_arr(d.batch_count);
-                        std::vector<T const *> b_arr(d.batch_count);
-                        std::vector<T *>       c_arr(d.batch_count);
-                        for (int i = 0; i < d.batch_count; ++i) {
-                            a_arr[i] = base_a + i * d.batch_stride_a;
-                            b_arr[i] = base_b + i * d.batch_stride_b;
-                            c_arr[i] = base_c + i * d.batch_stride_c;
+                        if (base_a != tables->base_a || base_b != tables->base_b || base_c != tables->base_c) {
+                            tables->a_arr.resize(d.batch_count);
+                            tables->b_arr.resize(d.batch_count);
+                            tables->c_arr.resize(d.batch_count);
+                            for (int i = 0; i < d.batch_count; ++i) {
+                                tables->a_arr[i] = base_a + i * d.batch_stride_a;
+                                tables->b_arr[i] = base_b + i * d.batch_stride_b;
+                                tables->c_arr[i] = base_c + i * d.batch_stride_c;
+                            }
+                            tables->base_a = base_a;
+                            tables->base_b = base_b;
+                            tables->base_c = base_c;
                         }
 
-                        T const **blas_a = swap_ab ? b_arr.data() : a_arr.data();
-                        T const **blas_b = swap_ab ? a_arr.data() : b_arr.data();
+                        T const **blas_a = swap_ab ? tables->b_arr.data() : tables->a_arr.data();
+                        T const **blas_b = swap_ab ? tables->a_arr.data() : tables->b_arr.data();
 
                         if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
                             using R = typename T::value_type;
                             T alpha{static_cast<R>(d.alpha.real()), static_cast<R>(d.alpha.imag())};
                             T beta{static_cast<R>(d.beta.real()), static_cast<R>(d.beta.imag())};
                             blas::gemm_batch<T>(d.trans_a, d.trans_b, d.m, d.n, d.k, alpha, blas_a, d.lda, blas_b, d.ldb, beta,
-                                                c_arr.data(), d.ldc, d.batch_count);
+                                                tables->c_arr.data(), d.ldc, d.batch_count);
                         } else {
                             blas::gemm_batch<T>(d.trans_a, d.trans_b, d.m, d.n, d.k, static_cast<T>(d.alpha.real()), blas_a, d.lda, blas_b,
-                                                d.ldb, static_cast<T>(d.beta.real()), c_arr.data(), d.ldc, d.batch_count);
+                                                d.ldb, static_cast<T>(d.beta.real()), tables->c_arr.data(), d.ldc, d.batch_count);
                         }
                     };
 
