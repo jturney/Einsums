@@ -5,6 +5,12 @@ channels:
 dependencies:
   - libblas[build=*mkl]
   - mkl-devel
-  - mkl!=2026.0
+  # The != pin below excluded 2026.0; 2026.1.0 slipped past it and broke the
+  # Python bindings the same way: conda-forge's MKL 2026.x libmkl_intel_thread
+  # references __atomic_compare_exchange (GCC libatomic), which is unresolved
+  # when python dlopens _core.so (C++ test executables link the runtime
+  # directly, so only Python tests die). Cap below 2026 until the packaging
+  # settles, then re-test with a bumped upper bound.
+  - mkl <2026
   - tbb-devel
 
