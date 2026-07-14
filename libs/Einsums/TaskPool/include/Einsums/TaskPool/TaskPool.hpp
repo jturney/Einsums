@@ -6,6 +6,8 @@
 #pragma once
 
 #include <Einsums/Config.hpp>
+
+#include <Einsums/Logging.hpp>
 #if defined(EINSUMS_HAVE_PROFILER)
 #    include <Einsums/Profile/Profile.hpp>
 #endif
@@ -81,6 +83,34 @@ class EINSUMS_EXPORT TaskPool {
     template <typename F>
     auto submit(F &&callable) -> TaskHandle<std::invoke_result_t<F>> {
         return submit("task", std::forward<F>(callable));
+    }
+
+    /// @brief Fire-and-forget submission: no TaskHandle, no SharedState.
+    ///
+    /// For callers that track completion and failure themselves (the
+    /// counter-based DataflowExecutor), submit() wastes a SharedState
+    /// allocation per task on a handle that is immediately dropped. This
+    /// path skips the handle machinery entirely; the task still gets a
+    /// profiler zone under its name.
+    ///
+    /// The callable should not throw: with no handle to carry an exception,
+    /// anything that escapes is logged and dropped, never propagated into
+    /// the worker loop.
+    template <typename F>
+    void submit_detached(std::string name, F &&callable) {
+        enqueue([name = std::move(name), task = std::forward<F>(callable)]() mutable {
+#if defined(EINSUMS_HAVE_PROFILER)
+            profile::Profiler::instance().push(name);
+#endif
+            try {
+                task();
+            } catch (...) { // NOLINT
+                EINSUMS_LOG_ERROR("TaskPool: detached task '{}' threw; the exception is dropped", name);
+            }
+#if defined(EINSUMS_HAVE_PROFILER)
+            profile::Profiler::instance().pop();
+#endif
+        });
     }
 
     /// @brief Submit a group of tasks with a collective barrier.

@@ -264,7 +264,7 @@ void DataflowExecutor::execute(Graph &graph) {
         if (has_async) {
             // Two chained tasks: start when ready, finish afterwards (other
             // ready nodes can interleave between them for real overlap).
-            pool.submit(node.label, [state, &complete_node, &run_body, &record_failure, &pool, &node, i]() {
+            pool.submit_detached(node.label, [state, &complete_node, &run_body, &record_failure, &pool, &node, i]() {
                 if (!state->failed.load(std::memory_order_acquire)) {
                     try {
                         node.async_start();
@@ -272,7 +272,7 @@ void DataflowExecutor::execute(Graph &graph) {
                         record_failure();
                     }
                 }
-                pool.submit(node.label, [&complete_node, &run_body, &node, i]() {
+                pool.submit_detached(node.label, [&complete_node, &run_body, &node, i]() {
                     run_body(node, [&node]() { node.async_finish(); });
                     complete_node(i);
                 });
@@ -283,7 +283,7 @@ void DataflowExecutor::execute(Graph &graph) {
         bool const   is_free    = state->budget > 0 && node.kind == OpKind::Free;
         size_t const free_bytes = is_free ? node.estimated_bytes : 0;
 
-        pool.submit(node.label, [state, &complete_node, &drain_deferred, &run_body, &node, i, is_free, free_bytes]() {
+        pool.submit_detached(node.label, [state, &complete_node, &drain_deferred, &run_body, &node, i, is_free, free_bytes]() {
             run_body(node, [&node]() { execute_node(node); });
             if (is_free && free_bytes > 0) {
                 state->mem_current.fetch_sub(free_bytes, std::memory_order_relaxed);

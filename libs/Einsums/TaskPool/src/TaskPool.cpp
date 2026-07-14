@@ -245,8 +245,14 @@ void TaskPool::enqueue(std::function<void()> task) {
         _external_queue.push(std::move(task));
     }
 
-    // Wake parked workers
-    _notify_cv.notify_all();
+    // Wake one parked worker for the one new task. notify_all here woke
+    // every parked worker on every push - including a worker's own-deque
+    // push during dataflow execution - so an n-node graph triggered n
+    // thundering herds. A lost or insufficient wakeup self-heals: workers
+    // park with a 1ms timeout and re-scan all queues on wake.
+    if (_parked_count.load(std::memory_order_relaxed) > 0) {
+        _notify_cv.notify_one();
+    }
 }
 
 void TaskPool::help_until(std::function<bool()> const &predicate) {
@@ -256,9 +262,11 @@ void TaskPool::help_until(std::function<bool()> const &predicate) {
     size_t const nw = _workers.size();
 
     while (!predicate() && !_shutdown_flag.load(std::memory_order_relaxed)) {
-        // Wake parked workers; they may have tasks in their deques
+        // Wake a parked worker (same reasoning as enqueue: this loop runs
+        // every ~50us, so notify_all amounted to a periodic herd wakeup;
+        // the 1ms park timeout backstops any missed signal).
         if (_parked_count.load(std::memory_order_relaxed) > 0) {
-            _notify_cv.notify_all();
+            _notify_cv.notify_one();
         }
 
         // Try to steal work ourselves
