@@ -33,6 +33,13 @@ struct FreePlan {
     Graph   *owner;
     TensorId tid;
     bool     owns_tid;
+
+    /// Insert a paired Materialize BEFORE this parent-node index, or SIZE_MAX
+    /// for none. Deferred tensors already got a Materialize node from the
+    /// Materialization pass; eager create_tensor intermediates did not, so a
+    /// bare Free left the second execute() reading released storage (the
+    /// buffer is reclaimed by release_fn but nothing reallocates it).
+    size_t materialize_before{SIZE_MAX};
 };
 
 // Is `name` already freed by an existing Free node anywhere in `nodes`?
@@ -41,6 +48,13 @@ struct FreePlan {
 bool already_has_free_named(std::vector<Node> const &nodes, std::string const &name) {
     auto const want = fmt::format("free({})", name);
     return std::ranges::any_of(nodes, [&](Node const &n) { return n.kind == OpKind::Free && n.label == want; });
+}
+
+// Same idempotency check for the paired Materialize (also label-based: the
+// Materialization pass and this pass both label materialize(<name>)).
+bool already_has_materialize_named(std::vector<Node> const &nodes, std::string const &name) {
+    auto const want = fmt::format("materialize({})", name);
+    return std::ranges::any_of(nodes, [&](Node const &n) { return n.kind == OpKind::Materialize && n.label == want; });
 }
 
 // Collect freeable intermediates from every descendant of `graph` (loop
@@ -94,6 +108,7 @@ bool FreeInsertion::run(Graph &graph) {
     // Find the last node that references each intermediate, then free it
     // right after that node. Unchanged from the original flat-graph logic.
     std::unordered_map<TensorId, size_t> last_use;
+    std::unordered_map<TensorId, size_t> first_writer;
 
     for (size_t idx = 0; idx < nodes.size(); idx++) {
         // A Free node carries the freed tensor as an input purely for
@@ -116,6 +131,12 @@ bool FreeInsertion::run(Graph &graph) {
             auto           it    = tensors.find(owner);
             if (it != tensors.end() && it->second.is_intermediate) {
                 last_use[owner] = idx;
+                // Alloc nodes mark creation, not a data write; the paired
+                // Materialize must precede the first REAL writer so a
+                // replayed graph reallocates before producing into the buffer.
+                if (nodes[idx].kind != OpKind::Alloc) {
+                    first_writer.try_emplace(owner, idx);
+                }
             }
         }
     }
@@ -154,7 +175,13 @@ bool FreeInsertion::run(Graph &graph) {
         if (already_freed)
             continue;
 
-        plans.push_back({.position = last_idx, .owner = &graph, .tid = tid, .owns_tid = true});
+        size_t mat_before = SIZE_MAX;
+        auto   fw         = first_writer.find(tid);
+        if (fw != first_writer.end() && handle.materialize_fn && !already_has_materialize_named(nodes, handle.name)) {
+            mat_before = fw->second;
+        }
+
+        plans.push_back({.position = last_idx, .owner = &graph, .tid = tid, .owns_tid = true, .materialize_before = mat_before});
     }
 
     // ── Part B: body-resident intermediates, hoisted to after the loop ────
@@ -178,7 +205,12 @@ bool FreeInsertion::run(Graph &graph) {
                 if (already_has_free_named(nodes, handle.name)) {
                     continue;
                 }
-                plans.push_back({.position = i, .owner = f.owner, .tid = f.tid, .owns_tid = false});
+                size_t mat_before = SIZE_MAX;
+                if (handle.materialize_fn && !already_has_materialize_named(nodes, handle.name) &&
+                    !already_has_materialize_named(f.owner->nodes(), handle.name)) {
+                    mat_before = i;
+                }
+                plans.push_back({.position = i, .owner = f.owner, .tid = f.tid, .owns_tid = false, .materialize_before = mat_before});
             }
         };
 
@@ -199,8 +231,14 @@ bool FreeInsertion::run(Graph &graph) {
     if (plans.empty())
         return false;
 
-    // Sort by position descending so inserts don't shift earlier positions.
-    std::ranges::sort(plans, [](FreePlan const &a, FreePlan const &b) { return a.position > b.position; });
+    // Build every insertion (Frees and their paired Materializes), then
+    // apply them in descending index order so earlier positions stay valid.
+    struct Insertion {
+        size_t index;
+        Node   node;
+    };
+    std::vector<Insertion> insertions;
+    insertions.reserve(plans.size() * 2);
 
     for (auto const &plan : plans) {
         auto &handle = plan.owner->tensor(plan.tid);
@@ -225,8 +263,34 @@ bool FreeInsertion::run(Graph &graph) {
         free_node.estimated_bytes = bytes;
 
         report(2, fmt::format("insert Free for '{}' ({} bytes) after its last consumer at position {}", handle.name, bytes, plan.position));
-        nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(plan.position + 1), std::move(free_node));
+        insertions.push_back({.index = plan.position + 1, .node = std::move(free_node)});
         _num_freed++;
+
+        if (plan.materialize_before != SIZE_MAX) {
+            Node mat_node;
+            mat_node.kind  = OpKind::Materialize;
+            mat_node.label = fmt::format("materialize({})", handle.name);
+            if (plan.owns_tid) {
+                mat_node.outputs = {plan.tid}; // WAW edge orders it before the writer.
+            }
+
+            mat_node.execute = [mat_fn = handle.materialize_fn]() {
+                // Idempotent: a no-op on the first execute (the eager tensor
+                // is already allocated); reallocates on every replay after
+                // the Free above reclaimed the buffer.
+                mat_fn();
+            };
+            mat_node.estimated_bytes = bytes;
+
+            report(2, fmt::format("pair Materialize for eager '{}' before its first writer at position {}", handle.name,
+                                  plan.materialize_before));
+            insertions.push_back({.index = plan.materialize_before, .node = std::move(mat_node)});
+        }
+    }
+
+    std::ranges::sort(insertions, [](Insertion const &a, Insertion const &b) { return a.index > b.index; });
+    for (auto &ins : insertions) {
+        nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(ins.index), std::move(ins.node));
     }
 
     if (_num_freed > 0) {

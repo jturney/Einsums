@@ -143,6 +143,45 @@ TEST_CASE("FreeInsertion - hoists a deeply-nested body intermediate past every l
     CHECK(count_nodes(inner, cg::OpKind::Free) == 0);
 }
 
+TEST_CASE("FreeInsertion - eager create_tensor intermediate survives replay", "[ComputeGraph][FreeInsertion][Replay]") {
+    // Eager graph-owned intermediates (create_tensor) DO carry a release_fn
+    // via make_handle, so once they cross the pass's min-bytes threshold a
+    // real Free is inserted - but unlike deferred tensors they had no paired
+    // Materialize, so the SECOND execute() touched released storage. Every
+    // prior test tensor sat under the 1MB threshold, hiding this. 400x400
+    // doubles = 1.28MB.
+    constexpr size_t N   = 400;
+    auto             A   = create_random_tensor<double>("A", N, N);
+    auto             B   = create_random_tensor<double>("B", N, N);
+    auto             OUT = create_zero_tensor<double>("OUT", N, N);
+
+    cg::Graph graph("fi_eager_replay");
+    auto     &tmp = graph.create_tensor<double, 2>("tmp", N, N);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &tmp, A, B);   // writes tmp
+        cg::einsum("ik;kj->ij", &OUT, tmp, B); // last (only) read of tmp
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::FreeInsertion>();
+    REQUIRE(modified); // 1.28MB > 1MB threshold
+    REQUIRE(count_nodes(graph, cg::OpKind::Free) == 1);
+    // The Free must come with a paired Materialize so replays re-allocate.
+    REQUIRE(count_nodes(graph, cg::OpKind::Materialize) == 1);
+
+    graph.execute();
+    auto const OUT_first = Tensor<double, 2>(OUT);
+
+    OUT.zero();
+    graph.execute(); // replay: tmp must be re-materialized, not dangling
+
+    for (size_t ii = 0; ii < N; ii += 37) {
+        for (size_t jj = 0; jj < N; jj += 41) {
+            REQUIRE(std::abs(OUT(ii, jj) - OUT_first(ii, jj)) < 1e-10);
+        }
+    }
+}
+
 TEST_CASE("FreeInsertion - leaves workspace tensors alive (not freed)", "[ComputeGraph][FreeInsertion][Loop]") {
     // Workspace tensors are is_intermediate = false: they persist across
     // pipelines, so FreeInsertion must never free them even when used
