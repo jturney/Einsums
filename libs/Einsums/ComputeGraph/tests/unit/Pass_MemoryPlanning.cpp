@@ -133,3 +133,132 @@ TEST_CASE("MemoryPlanning - aggregates across nested loops", "[ComputeGraph][Pas
     // A and C, both 8x8 doubles, used in the innermost body.
     CHECK(pass.total_memory() == 2 * size_t{8 * 8} * sizeof(double));
 }
+
+TEST_CASE("MemoryPlanning - arena shares storage between disjoint-lifetime intermediates", "[ComputeGraph][Passes][Arena]") {
+    // X and Y are eager 1.28MB intermediates with sequential, non-overlapping
+    // lifetimes: FreeInsertion brackets each with Materialize/Free, and the
+    // arena planner places both at the same offset - one buffer instead of
+    // two, verbatim across replays.
+    constexpr size_t N    = 400;
+    auto             A    = create_random_tensor<double>("A", N, N);
+    auto             B    = create_random_tensor<double>("B", N, N);
+    auto             OUT1 = create_zero_tensor<double>("OUT1", N, N);
+    auto             OUT2 = create_zero_tensor<double>("OUT2", N, N);
+
+    // Reference.
+    auto X_ref = create_zero_tensor<double>("Xref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
+    auto OUT1_ref = create_zero_tensor<double>("OUT1ref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT1_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    auto Y_ref = create_zero_tensor<double>("Yref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &Y_ref, Indices{i, k}, OUT1_ref, Indices{k, j}, B);
+    auto OUT2_ref = create_zero_tensor<double>("OUT2ref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT2_ref, Indices{i, k}, Y_ref, Indices{k, j}, B);
+
+    cg::Graph graph("mp_arena");
+    auto     &X = graph.create_tensor<double, 2>("X", N, N);
+    auto     &Y = graph.create_tensor<double, 2>("Y", N, N);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &X, A, B);
+        cg::einsum("ik;kj->ij", &OUT1, X, B); // X dies here
+        cg::einsum("ik;kj->ij", &Y, OUT1, B); // Y born after X's death
+        cg::einsum("ik;kj->ij", &OUT2, Y, B);
+    }
+
+    // Bracket the intermediates, then plan + apply the arena.
+    {
+        auto [fi_mod, fi] = graph.apply<cg::passes::FreeInsertion>();
+        REQUIRE(fi_mod);
+        REQUIRE(fi.num_freed() == 2);
+    }
+    auto [mp_mod, mp] = graph.apply<cg::passes::MemoryPlanning>();
+    REQUIRE(mp_mod);
+    CHECK(mp.num_planned() == 2);
+    constexpr size_t kBuf = N * N * sizeof(double);
+    CHECK(mp.planned_tensor_bytes() == 2 * kBuf);
+    // Disjoint lifetimes -> both at offset 0: the arena is ONE buffer.
+    CHECK(mp.planned_arena_bytes() == ((kBuf + 63) / 64) * 64);
+
+    graph.execute();
+    for (size_t ii = 0; ii < N; ii += 41) {
+        for (size_t jj = 0; jj < N; jj += 37) {
+            REQUIRE(std::abs(OUT2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
+        }
+    }
+
+    OUT1.zero();
+    OUT2.zero();
+    graph.execute(); // replay through the arena
+    for (size_t ii = 0; ii < N; ii += 41) {
+        for (size_t jj = 0; jj < N; jj += 37) {
+            REQUIRE(std::abs(OUT2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
+        }
+    }
+}
+
+TEST_CASE("MemoryPlanning - arena keeps overlapping lifetimes apart", "[ComputeGraph][Passes][Arena]") {
+    // X and Y are simultaneously live (Y's producer reads X after Y exists),
+    // so they must get disjoint arena ranges: arena == sum of both buffers.
+    constexpr size_t N   = 400;
+    auto             A   = create_random_tensor<double>("A", N, N);
+    auto             B   = create_random_tensor<double>("B", N, N);
+    auto             OUT = create_zero_tensor<double>("OUT", N, N);
+
+    cg::Graph graph("mp_arena_overlap");
+    auto     &X = graph.create_tensor<double, 2>("X", N, N);
+    auto     &Y = graph.create_tensor<double, 2>("Y", N, N);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &X, A, B);
+        cg::einsum("ik;kj->ij", &Y, X, B);   // X and Y both live
+        cg::einsum("ik;kj->ij", &OUT, Y, X); // reads both: lifetimes overlap
+    }
+
+    graph.apply<cg::passes::FreeInsertion>();
+    auto [mp_mod, mp] = graph.apply<cg::passes::MemoryPlanning>();
+    REQUIRE(mp_mod);
+    CHECK(mp.num_planned() == 2);
+    constexpr size_t kAligned = ((N * N * sizeof(double) + 63) / 64) * 64;
+    CHECK(mp.planned_arena_bytes() == 2 * kAligned);
+
+    // Numerics with both intermediates arena-resident at distinct offsets.
+    auto X_ref = create_zero_tensor<double>("Xref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
+    auto Y_ref = create_zero_tensor<double>("Yref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &Y_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    auto OUT_ref = create_zero_tensor<double>("OUTref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, Y_ref, Indices{k, j}, X_ref);
+
+    graph.execute();
+    for (size_t ii = 0; ii < N; ii += 41) {
+        for (size_t jj = 0; jj < N; jj += 37) {
+            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-8);
+        }
+    }
+}
+
+TEST_CASE("MemoryPlanning - analysis-only mode plans without applying", "[ComputeGraph][Passes][Arena]") {
+    constexpr size_t N   = 400;
+    auto             A   = create_random_tensor<double>("A", N, N);
+    auto             B   = create_random_tensor<double>("B", N, N);
+    auto             OUT = create_zero_tensor<double>("OUT", N, N);
+
+    cg::Graph graph("mp_arena_analysis");
+    auto     &X = graph.create_tensor<double, 2>("X", N, N);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &X, A, B);
+        cg::einsum("ik;kj->ij", &OUT, X, B);
+    }
+
+    graph.apply<cg::passes::FreeInsertion>();
+
+    cg::passes::MemoryPlanning mp(/*apply_arena=*/false);
+    bool const                 modified = mp.run(graph);
+    CHECK_FALSE(modified); // plan computed, graph untouched
+    CHECK(mp.num_planned() == 1);
+    CHECK(mp.planned_arena_bytes() > 0);
+
+    graph.execute(); // still runs on its own allocations
+}

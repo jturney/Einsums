@@ -93,6 +93,11 @@ struct TensorHandle {
     /// Called by MaterializationPass. Null for already-materialized tensors.
     std::function<void()> materialize_fn;
 
+    /// Attach caller-provided storage instead of allocating (type-erased
+    /// Tensor::materialize_into). Set only for owning tensor types that
+    /// support external storage; the MemoryPlanning arena requires it.
+    std::function<void(void *)> materialize_into_fn;
+
     /// Type-erased function to release backing storage (free memory, return to deferred state).
     /// Set by make_handle() or declare_tensor(). Called by Free nodes from FreeInsertion pass.
     std::function<void()> release_fn;
@@ -317,6 +322,15 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
     // which is idempotent.
     if constexpr (requires(CleanTensor &t) { t.materialize(); }) {
         h.materialize_fn = [tensor_mut]() { tensor_mut->materialize(); };
+    }
+
+    // materialize_into_fn: place the tensor at caller-provided storage (the
+    // MemoryPlanning arena). Only owning tensors with external-storage
+    // support (Tensor::materialize_into) qualify.
+    if constexpr (requires(CleanTensor &t, typename CleanTensor::ValueType *p) { t.materialize_into(p); }) {
+        h.materialize_into_fn = [tensor_mut](void *ptr) {
+            tensor_mut->materialize_into(static_cast<typename CleanTensor::ValueType *>(ptr));
+        };
     }
 
     // Post-materialize init: if the tensor was tagged with a pending-init

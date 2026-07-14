@@ -188,19 +188,21 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * @brief Default move constructor.
      */
     GeneralTensor(GeneralTensor &&other) noexcept
-        : _name{std::move(other._name)}, _data{std::move(other._data)}, _dim_array{std::move(other._dim_array)},
-          _stride_array{std::move(other._stride_array)}, _impl{std::move(other._impl)}, _symmetry{std::move(other._symmetry)} {}
+        : _name{std::move(other._name)}, _data{std::move(other._data)}, _external_data{std::exchange(other._external_data, nullptr)},
+          _dim_array{std::move(other._dim_array)}, _stride_array{std::move(other._stride_array)}, _impl{std::move(other._impl)},
+          _symmetry{std::move(other._symmetry)} {}
 
     /**
      * @brief Default move assignment.
      */
     GeneralTensor &operator=(GeneralTensor &&other) noexcept {
-        _name         = std::move(other._name);
-        _data         = std::move(other._data);
-        _dim_array    = std::move(other._dim_array);
-        _stride_array = std::move(other._stride_array);
-        _symmetry     = std::move(other._symmetry);
-        _impl         = std::move(other._impl);
+        _name          = std::move(other._name);
+        _data          = std::move(other._data);
+        _external_data = std::exchange(other._external_data, nullptr);
+        _dim_array     = std::move(other._dim_array);
+        _stride_array  = std::move(other._stride_array);
+        _symmetry      = std::move(other._symmetry);
+        _impl          = std::move(other._impl);
 
         return *this;
     }
@@ -480,19 +482,53 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     }
 
     /**
+     * @brief Materialize into caller-provided storage instead of allocating.
+     *
+     * The tensor uses @p ptr (which must hold at least size() elements and
+     * outlive every use of this tensor) as its backing storage without taking
+     * ownership: release() detaches from it and the destructor never frees
+     * it. Used by the MemoryPlanning arena to place graph-owned intermediates
+     * at planned offsets in one shared block. Idempotent for the same
+     * pointer; switching storage requires an intervening release().
+     */
+    void materialize_into(T *ptr) {
+        if (_external_data == ptr) {
+            return;
+        }
+        assert(_external_data == nullptr && "materialize_into(): release() before switching external storage");
+        // An owned buffer gives way to the external one (the MemoryPlanning
+        // arena attaches to eager intermediates that were allocated at
+        // create_tensor time); holding both would waste the owned copy.
+        if (!_data.empty()) {
+            ProfileMemFree(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
+            _data.clear();
+            _data.shrink_to_fit();
+        }
+        _external_data = ptr;
+        _impl.set_data(ptr);
+    }
+
+    /**
      * @brief Check if this tensor has allocated backing storage.
      * @return true if data() returns a valid pointer.
      */
-    [[nodiscard]] bool is_materialized() const { return !_data.empty() || _impl.size() == 0; }
+    [[nodiscard]] bool is_materialized() const { return !_data.empty() || _external_data != nullptr || _impl.size() == 0; }
 
     /**
      * @brief Release the backing data storage, returning to deferred state.
      *
-     * Frees memory immediately. The tensor retains its dimensions and strides
-     * but data() returns a sentinel pointer. Call materialize() to re-allocate.
+     * Frees owned memory immediately; external storage (materialize_into) is
+     * detached, never freed. The tensor retains its dimensions and strides
+     * but data() returns a sentinel pointer. Call materialize() or
+     * materialize_into() to re-attach storage.
      * Used by FreeInsertion pass to release intermediates after their last consumer.
      */
     void release() {
+        if (_external_data != nullptr) {
+            _external_data = nullptr;
+            _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel; dims/strides preserved
+            return;
+        }
         if (_data.empty())
             return;
         ProfileMemFree(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
@@ -1434,6 +1470,11 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     std::string _name{"(unnamed)"};
 
     Vector _data{};
+
+    /// Non-owning backing storage attached via materialize_into() (e.g. a
+    /// MemoryPlanning arena slice). Mutually exclusive with _data; never
+    /// freed by this tensor.
+    T *_external_data{nullptr};
 
     detail::TensorImpl<T> _impl{};
 
