@@ -3917,9 +3917,11 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
         ProfileAnnotate("b_size", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->size()));
         ProfileAnnotate("c_size", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->size()));
         ParsedEinsumSpec parsed_live{indices->c_indices, indices->a_indices, indices->b_indices, /*raw*/ std::string{}};
+        // link_indices was computed once at capture (sorted, same order the
+        // dispatch derives); passing it spares every replay three set builds.
         dispatch::string_einsum(parsed_live, as<T>(params->c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params->ab_pf),
                                 *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), params->conj_a,
-                                params->conj_b);
+                                params->conj_b, &indices->link_indices);
     };
 
     ctx.record(OpKind::Einsum, std::move(label), {a_id, b_id}, {c_id}, std::move(executor), std::move(desc));

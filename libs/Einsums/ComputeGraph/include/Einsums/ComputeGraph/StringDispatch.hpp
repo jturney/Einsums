@@ -48,14 +48,9 @@ namespace einsums::compute_graph::dispatch {
 // ── GEMM dispatch (rank-2 × rank-2 → rank-2) ───────────────────────────────
 
 template <typename T, MatrixConcept AType, MatrixConcept BType, MatrixConcept CType>
-void string_gemm(ParsedEinsumSpec const &parsed, T c_pf, CType *C, T ab_pf, AType const &A, BType const &B) {
-    auto links = parsed.link_indices();
-    if (links.size() != 1) {
-        EINSUMS_THROW_EXCEPTION(std::runtime_error, "String einsum '{}': GEMM requires exactly 1 link index, got {}", parsed.raw,
-                                links.size());
-    }
-
-    std::string const &k = links[0];
+void string_gemm(ParsedEinsumSpec const &parsed, std::string const &k, T c_pf, CType *C, T ab_pf, AType const &A, BType const &B) {
+    // `k` is the single link index; string_einsum classified the contraction
+    // (links.size() == 1) before dispatching here, so it is not recomputed.
 
     // A GEMM op(A)·op(B) yields rows = A's free (non-link) index, cols = B's free
     // index. The output may be requested in EITHER order, so honor c_indices:
@@ -286,7 +281,8 @@ template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept
         requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
     }
 void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf,
-                   AType const &A, BType const &B, bool conj_a = false, bool conj_b = false) {
+                   AType const &A, BType const &B, bool conj_a = false, bool conj_b = false,
+                   std::vector<std::string> const *precomputed_links = nullptr) {
     using T = typename AType::ValueType;
 
     LabeledSection("cg::einsum: {} <- {} ; {}", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
@@ -299,16 +295,25 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     auto const &a_idx = parsed.a_indices;
     auto const &b_idx = parsed.b_indices;
 
-    std::set<std::string> const a_set(a_idx.begin(), a_idx.end());
-    std::set<std::string> const b_set(b_idx.begin(), b_idx.end());
-    std::set<std::string>       c_set(c_idx.begin(), c_idx.end());
-
-    std::vector<std::string> links;
-    for (auto const &idx : a_set) {
-        if (b_set.count(idx) && !c_set.count(idx)) {
-            links.push_back(idx);
+    // Contracted indices (in A and B, not in C). Graph executors pass the
+    // list computed once at capture (EinsumIndices::link_indices) so replays
+    // don't recompute it; the eager path derives it here. Index lists are
+    // tiny (rank-bounded), so linear scans beat building three
+    // std::set<std::string>s, and the result is sorted to match the
+    // set-based order this code historically produced.
+    std::vector<std::string> links_storage;
+    if (precomputed_links == nullptr) {
+        for (auto const &idx : a_idx) {
+            bool const in_b = std::find(b_idx.begin(), b_idx.end(), idx) != b_idx.end();
+            bool const in_c = std::find(c_idx.begin(), c_idx.end(), idx) != c_idx.end();
+            bool const seen = std::find(links_storage.begin(), links_storage.end(), idx) != links_storage.end();
+            if (in_b && !in_c && !seen) {
+                links_storage.push_back(idx);
+            }
         }
+        std::sort(links_storage.begin(), links_storage.end());
     }
+    std::vector<std::string> const &links = precomputed_links != nullptr ? *precomputed_links : links_storage;
 
     // ── Rank-1 special-case BLAS fast paths ─────────────────────────────────
     // These call helpers (string_gemv_mat_vec, linear_algebra::ger, etc.)
@@ -381,11 +386,11 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             if constexpr (a_rank == 2 && b_rank == 2 && c_rank == 2) {
                 if (links.size() == 1) {
                     ProfileAnnotate("dispatch", "gemm_direct");
-                    string_gemm(parsed, c_pf, C, ab_pf, A, B);
+                    string_gemm(parsed, links[0], c_pf, C, ab_pf, A, B);
                     return;
                 }
                 // Direct product: same indices on all tensors, no links
-                if (links.empty() && a_set == b_set && a_set == c_set && a_idx == b_idx && a_idx == c_idx) {
+                if (links.empty() && a_idx == b_idx && a_idx == c_idx) {
                     ProfileAnnotate("dispatch", "direct_product");
                     linear_algebra::direct_product(ab_pf, A, B, c_pf, C);
                     return;
@@ -484,10 +489,10 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                     auto av = upcast(A, std::integral_constant<std::size_t, 2>{});
                     auto bv = upcast(B, std::integral_constant<std::size_t, 2>{});
                     auto cv = upcast(*C, std::integral_constant<std::size_t, 2>{});
-                    string_gemm(parsed, c_pf, &cv, ab_pf, av, bv);
+                    string_gemm(parsed, links[0], c_pf, &cv, ab_pf, av, bv);
                     return;
                 }
-                if (links.empty() && a_set == b_set && a_set == c_set && a_idx == b_idx && a_idx == c_idx) {
+                if (links.empty() && a_idx == b_idx && a_idx == c_idx) {
                     ProfileAnnotate("dispatch", "direct_product_runtime");
                     auto av = upcast(A, std::integral_constant<std::size_t, 2>{});
                     auto bv = upcast(B, std::integral_constant<std::size_t, 2>{});
@@ -508,11 +513,14 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // PackedGemm can't form (no M-dims, no N-dims, no link indices).
     {
         packed_gemm::ContractionSpec spec;
-        spec.c_indices      = c_idx;
-        spec.a_indices      = a_idx;
-        spec.b_indices      = b_idx;
-        spec.link_indices   = links;
-        spec.target_indices = std::vector<std::string>(c_set.begin(), c_set.end());
+        spec.c_indices    = c_idx;
+        spec.a_indices    = a_idx;
+        spec.b_indices    = b_idx;
+        spec.link_indices = links;
+        std::vector<std::string> c_sorted_unique(c_idx.begin(), c_idx.end());
+        std::sort(c_sorted_unique.begin(), c_sorted_unique.end());
+        c_sorted_unique.erase(std::unique(c_sorted_unique.begin(), c_sorted_unique.end()), c_sorted_unique.end());
+        spec.target_indices = std::move(c_sorted_unique);
         // Preserve target order from c_idx (sets aren't ordered).
         spec.target_indices.clear();
         std::set<std::string> seen_target;
