@@ -44,6 +44,10 @@ struct InsensitiveHash {
      * @versionadded{1.0.1}
      */
     size_t operator()(str_type const &str) const {
+        // PJW hash (Peter J. Weinberger's ELF-style rolling hash), applied to
+        // the case-folded, dash-normalized bytes. The shift/mask constants are
+        // derived from sizeof(size_t) rather than hard-coded so the algorithm
+        // keeps its shape on any word size.
         size_t hash = 0;
 
         // Calculate the mask for the top byte of size_t.

@@ -41,6 +41,14 @@ auto sgels(char trans, int_t m, int_t n, int_t nrhs, float *a, int_t lda, float 
 
     FC_GLOBAL(sgels, SGELS)(&trans, &m, &n, &nrhs, a, &lda, b, &ldb, work.data(), &lwork, &info);
 
+    if (info < 0) {
+        EINSUMS_LOG_WARN("sgels warning: argument {} has an illegal value", -info);
+    } else if (info > 0) {
+        EINSUMS_LOG_WARN("sgels warning: diagonal element {} of the triangular factor is zero; A is rank deficient and no "
+                         "full-rank solution could be computed",
+                         info);
+    }
+
     return info;
 }
 
@@ -61,6 +69,14 @@ auto dgels(char trans, int_t m, int_t n, int_t nrhs, double *a, int_t lda, doubl
     BufferVector<double> work(lwork);
 
     FC_GLOBAL(dgels, DGELS)(&trans, &m, &n, &nrhs, a, &lda, b, &ldb, work.data(), &lwork, &info);
+
+    if (info < 0) {
+        EINSUMS_LOG_WARN("dgels warning: argument {} has an illegal value", -info);
+    } else if (info > 0) {
+        EINSUMS_LOG_WARN("dgels warning: diagonal element {} of the triangular factor is zero; A is rank deficient and no "
+                         "full-rank solution could be computed",
+                         info);
+    }
 
     return info;
 }
@@ -83,6 +99,14 @@ auto cgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<float> *a, int
 
     FC_GLOBAL(cgels, CGELS)(&trans, &m, &n, &nrhs, a, &lda, b, &ldb, work.data(), &lwork, &info);
 
+    if (info < 0) {
+        EINSUMS_LOG_WARN("cgels warning: argument {} has an illegal value", -info);
+    } else if (info > 0) {
+        EINSUMS_LOG_WARN("cgels warning: diagonal element {} of the triangular factor is zero; A is rank deficient and no "
+                         "full-rank solution could be computed",
+                         info);
+    }
+
     return info;
 }
 
@@ -103,6 +127,14 @@ auto zgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<double> *a, in
     BufferVector<std::complex<double>> work(lwork);
 
     FC_GLOBAL(zgels, ZGELS)(&trans, &m, &n, &nrhs, a, &lda, b, &ldb, work.data(), &lwork, &info);
+
+    if (info < 0) {
+        EINSUMS_LOG_WARN("zgels warning: argument {} has an illegal value", -info);
+    } else if (info > 0) {
+        EINSUMS_LOG_WARN("zgels warning: diagonal element {} of the triangular factor is zero; A is rank deficient and no "
+                         "full-rank solution could be computed",
+                         info);
+    }
 
     return info;
 }

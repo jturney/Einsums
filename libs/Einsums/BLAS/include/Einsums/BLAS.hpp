@@ -2025,6 +2025,27 @@ void EINSUMS_EXPORT ztrsm(char side, char uplo, char transa, char diag, int_t m,
                           std::complex<double> const *a, int_t lda, std::complex<double> *b, int_t ldb);
 } // namespace detail
 
+/**
+ * @brief Solve a triangular matrix equation.
+ *
+ * Solves @f$ op(\mathbf{A}) \mathbf{X} = \alpha \mathbf{B} @f$ (side='L') or
+ * @f$ \mathbf{X}\, op(\mathbf{A}) = \alpha \mathbf{B} @f$ (side='R') for
+ * @f$ \mathbf{X} @f$, where @f$ \mathbf{A} @f$ is triangular and
+ * @f$ op(\mathbf{A}) @f$ is @f$ \mathbf{A} @f$, @f$ \mathbf{A}^T @f$, or
+ * @f$ \mathbf{A}^H @f$ per @p transa.
+ *
+ * @param side 'L': A is on the left; 'R': A is on the right.
+ * @param uplo 'U': A is upper triangular; 'L': lower triangular.
+ * @param transa 'N', 'T', or 'C' selecting op(A).
+ * @param diag 'U': A is unit triangular (diagonal assumed 1); 'N': non-unit.
+ * @param m Rows of B.
+ * @param n Columns of B.
+ * @param alpha Scalar multiplier on B.
+ * @param a The triangular matrix A.
+ * @param lda Leading dimension of a.
+ * @param b On entry the right-hand side B; on exit the solution X.
+ * @param ldb Leading dimension of b.
+ */
 template <typename T>
 void trsm(char side, char uplo, char transa, char diag, int_t m, int_t n, T alpha, T const *a, int_t lda, T *b, int_t ldb);
 
@@ -2062,6 +2083,21 @@ auto EINSUMS_EXPORT cpotrf(char uplo, int_t n, std::complex<float> *a, int_t lda
 auto EINSUMS_EXPORT zpotrf(char uplo, int_t n, std::complex<double> *a, int_t lda) -> int_t;
 } // namespace detail
 
+/**
+ * @brief Cholesky factorization of a symmetric (Hermitian) positive-definite matrix.
+ *
+ * Overwrites the referenced triangle of @f$ \mathbf{A} @f$ with its Cholesky
+ * factor: @f$ \mathbf{A} = \mathbf{L}\mathbf{L}^T @f$ (uplo='L') or
+ * @f$ \mathbf{A} = \mathbf{U}^T\mathbf{U} @f$ (uplo='U'). For complex types
+ * the transposes are conjugate transposes and A must be Hermitian.
+ *
+ * @param uplo Which triangle of A is stored and factored ('U' or 'L').
+ * @param n Order of A.
+ * @param a On entry the matrix A; on exit the requested triangle holds the factor.
+ * @param lda Leading dimension of a.
+ * @return 0 on success; i > 0 if the leading minor of order i is not positive
+ *         definite and the factorization could not be completed.
+ */
 template <typename T>
 auto potrf(char uplo, int_t n, T *a, int_t lda) -> int_t;
 
@@ -2097,6 +2133,23 @@ auto EINSUMS_EXPORT zpotrs(char uplo, int_t n, int_t nrhs, std::complex<double> 
     -> int_t;
 } // namespace detail
 
+/**
+ * @brief Solve a linear system from a Cholesky factorization.
+ *
+ * Solves @f$ \mathbf{A}\mathbf{X} = \mathbf{B} @f$ where @f$ \mathbf{A} @f$
+ * is symmetric (Hermitian) positive definite, using the triangular factor
+ * previously computed by potrf(). Note the input contract: @p a is the
+ * FACTORED matrix from potrf, not the original A.
+ *
+ * @param uplo Which triangle holds the factor, matching the potrf call.
+ * @param n Order of A.
+ * @param nrhs Number of right-hand sides (columns of B).
+ * @param a The Cholesky factor from potrf().
+ * @param lda Leading dimension of a.
+ * @param b On entry the right-hand sides B; on exit the solutions X.
+ * @param ldb Leading dimension of b.
+ * @return 0 on success; < 0 for an illegal argument.
+ */
 template <typename T>
 auto potrs(char uplo, int_t n, int_t nrhs, T const *a, int_t lda, T *b, int_t ldb) -> int_t;
 
@@ -2132,6 +2185,18 @@ auto EINSUMS_EXPORT cpotri(char uplo, int_t n, std::complex<float> *a, int_t lda
 auto EINSUMS_EXPORT zpotri(char uplo, int_t n, std::complex<double> *a, int_t lda) -> int_t;
 } // namespace detail
 
+/**
+ * @brief Invert a symmetric (Hermitian) positive-definite matrix from its Cholesky factor.
+ *
+ * Computes @f$ \mathbf{A}^{-1} @f$ from the triangular factor previously
+ * produced by potrf(), overwriting the referenced triangle in place.
+ *
+ * @param uplo Which triangle holds the factor, matching the potrf call.
+ * @param n Order of A.
+ * @param a On entry the Cholesky factor; on exit the corresponding triangle of the inverse.
+ * @param lda Leading dimension of a.
+ * @return 0 on success; i > 0 if the factor has a zero diagonal element (singular).
+ */
 template <typename T>
 auto potri(char uplo, int_t n, T *a, int_t lda) -> int_t;
 
@@ -2168,6 +2233,24 @@ void EINSUMS_EXPORT zsyrk(char uplo, char trans, int_t n, int_t k, std::complex<
                           std::complex<double> beta, std::complex<double> *c, int_t ldc);
 } // namespace detail
 
+/**
+ * @brief Symmetric rank-k update.
+ *
+ * Computes @f$ \mathbf{C} := \alpha \mathbf{A}\mathbf{A}^T + \beta \mathbf{C} @f$
+ * (trans='N') or @f$ \mathbf{C} := \alpha \mathbf{A}^T\mathbf{A} + \beta \mathbf{C} @f$
+ * (trans='T'), updating only the referenced triangle of the symmetric result.
+ *
+ * @param uplo Which triangle of C is referenced and updated ('U' or 'L').
+ * @param trans 'N': update with A*A^T (A is n x k); 'T': with A^T*A (A is k x n).
+ * @param n Order of C.
+ * @param k The other dimension of A (see @p trans).
+ * @param alpha Scalar on the product.
+ * @param a The matrix A.
+ * @param lda Leading dimension of a.
+ * @param beta Scalar on C.
+ * @param c The symmetric matrix C, updated in place.
+ * @param ldc Leading dimension of c.
+ */
 template <typename T>
 void syrk(char uplo, char trans, int_t n, int_t k, T alpha, T const *a, int_t lda, T beta, T *c, int_t ldc);
 
@@ -2204,6 +2287,25 @@ void EINSUMS_EXPORT zherk(char uplo, char trans, int_t n, int_t k, double alpha,
                           std::complex<double> *c, int_t ldc);
 } // namespace detail
 
+/**
+ * @brief Hermitian rank-k update.
+ *
+ * Computes @f$ \mathbf{C} := \alpha \mathbf{A}\mathbf{A}^H + \beta \mathbf{C} @f$
+ * (trans='N') or @f$ \mathbf{C} := \alpha \mathbf{A}^H\mathbf{A} + \beta \mathbf{C} @f$
+ * (trans='C'). @f$ \mathbf{C} @f$ is Hermitian, so @p alpha and @p beta are
+ * real and only the referenced triangle is updated.
+ *
+ * @param uplo Which triangle of C is referenced and updated ('U' or 'L').
+ * @param trans 'N': update with A*A^H; 'C': with A^H*A.
+ * @param n Order of C.
+ * @param k The other dimension of A (see @p trans).
+ * @param alpha Real scalar on the product.
+ * @param a The matrix A.
+ * @param lda Leading dimension of a.
+ * @param beta Real scalar on C.
+ * @param c The Hermitian matrix C, updated in place.
+ * @param ldc Leading dimension of c.
+ */
 template <typename T>
 void herk(char uplo, char trans, int_t n, int_t k, RemoveComplexT<T> alpha, T const *a, int_t lda, RemoveComplexT<T> beta, T *c, int_t ldc);
 
@@ -2233,6 +2335,27 @@ void EINSUMS_EXPORT zsymm(char side, char uplo, int_t m, int_t n, std::complex<d
                           std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc);
 } // namespace detail
 
+/**
+ * @brief Matrix multiplication where one operand is symmetric.
+ *
+ * Computes @f$ \mathbf{C} := \alpha \mathbf{A}\mathbf{B} + \beta \mathbf{C} @f$
+ * (side='L') or @f$ \mathbf{C} := \alpha \mathbf{B}\mathbf{A} + \beta \mathbf{C} @f$
+ * (side='R'), where @f$ \mathbf{A} @f$ is symmetric and only its referenced
+ * triangle is read.
+ *
+ * @param side 'L': C := alpha*A*B + beta*C; 'R': C := alpha*B*A + beta*C.
+ * @param uplo Which triangle of A is stored ('U' or 'L').
+ * @param m Rows of C.
+ * @param n Columns of C.
+ * @param alpha Scalar on the product.
+ * @param a The symmetric matrix A.
+ * @param lda Leading dimension of a.
+ * @param b The general matrix B.
+ * @param ldb Leading dimension of b.
+ * @param beta Scalar on C.
+ * @param c The result matrix C, updated in place.
+ * @param ldc Leading dimension of c.
+ */
 template <typename T>
 void symm(char side, char uplo, int_t m, int_t n, T alpha, T const *a, int_t lda, T const *b, int_t ldb, T beta, T *c, int_t ldc);
 
@@ -2272,6 +2395,27 @@ void EINSUMS_EXPORT zhemm(char side, char uplo, int_t m, int_t n, std::complex<d
                           std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc);
 } // namespace detail
 
+/**
+ * @brief Matrix multiplication where one operand is Hermitian.
+ *
+ * Computes @f$ \mathbf{C} := \alpha \mathbf{A}\mathbf{B} + \beta \mathbf{C} @f$
+ * (side='L') or @f$ \mathbf{C} := \alpha \mathbf{B}\mathbf{A} + \beta \mathbf{C} @f$
+ * (side='R'), where @f$ \mathbf{A} @f$ is Hermitian and only its referenced
+ * triangle is read.
+ *
+ * @param side 'L': C := alpha*A*B + beta*C; 'R': C := alpha*B*A + beta*C.
+ * @param uplo Which triangle of A is stored ('U' or 'L').
+ * @param m Rows of C.
+ * @param n Columns of C.
+ * @param alpha Scalar on the product.
+ * @param a The Hermitian matrix A.
+ * @param lda Leading dimension of a.
+ * @param b The general matrix B.
+ * @param ldb Leading dimension of b.
+ * @param beta Scalar on C.
+ * @param c The result matrix C, updated in place.
+ * @param ldc Leading dimension of c.
+ */
 template <typename T>
 void hemm(char side, char uplo, int_t m, int_t n, T alpha, T const *a, int_t lda, T const *b, int_t ldb, T beta, T *c, int_t ldc);
 
@@ -2297,6 +2441,28 @@ auto EINSUMS_EXPORT ssygv(int_t itype, char jobz, char uplo, int_t n, float *a, 
 auto EINSUMS_EXPORT dsygv(int_t itype, char jobz, char uplo, int_t n, double *a, int_t lda, double *b, int_t ldb, double *w) -> int_t;
 } // namespace detail
 
+/**
+ * @brief Generalized symmetric-definite eigenvalue problem.
+ *
+ * Solves one of @f$ \mathbf{A}\mathbf{x} = \lambda \mathbf{B}\mathbf{x} @f$
+ * (itype=1), @f$ \mathbf{A}\mathbf{B}\mathbf{x} = \lambda \mathbf{x} @f$
+ * (itype=2), or @f$ \mathbf{B}\mathbf{A}\mathbf{x} = \lambda \mathbf{x} @f$
+ * (itype=3). @f$ \mathbf{A} @f$ must be symmetric and @f$ \mathbf{B} @f$
+ * symmetric POSITIVE DEFINITE (B is Cholesky-factored internally).
+ *
+ * @param itype Problem form, 1-3 as above.
+ * @param jobz 'N': eigenvalues only; 'V': eigenvalues and eigenvectors.
+ * @param uplo Which triangles of A and B are stored ('U' or 'L').
+ * @param n Order of A and B.
+ * @param a On entry the matrix A; on exit the eigenvectors when jobz='V'.
+ * @param lda Leading dimension of a.
+ * @param b On entry the matrix B; on exit overwritten by its Cholesky factor.
+ * @param ldb Leading dimension of b.
+ * @param w Output: the eigenvalues in ascending order.
+ * @return 0 on success; i in [1, n] if the algorithm failed to converge;
+ *         i > n if the leading minor of order i-n of B is not positive
+ *         definite.
+ */
 template <typename T>
 auto sygv(int_t itype, char jobz, char uplo, int_t n, T *a, int_t lda, T *b, int_t ldb, T *w) -> int_t;
 
@@ -2343,6 +2509,22 @@ auto EINSUMS_EXPORT ssyevd(char jobz, char uplo, int_t n, float *a, int_t lda, f
 auto EINSUMS_EXPORT dsyevd(char jobz, char uplo, int_t n, double *a, int_t lda, double *w) -> int_t;
 } // namespace detail
 
+/**
+ * @brief Symmetric eigendecomposition via divide-and-conquer.
+ *
+ * Solves @f$ \mathbf{A}\mathbf{x} = \lambda \mathbf{x} @f$ like syev(), but
+ * with the divide-and-conquer algorithm instead of QR iteration: typically
+ * much faster when eigenvectors are wanted for large matrices, at the cost
+ * of a larger workspace.
+ *
+ * @param jobz 'N': eigenvalues only; 'V': eigenvalues and eigenvectors.
+ * @param uplo Which triangle of A is stored ('U' or 'L').
+ * @param n Order of A.
+ * @param a On entry the matrix A; on exit the orthonormal eigenvectors when jobz='V'.
+ * @param lda Leading dimension of a.
+ * @param w Output: the eigenvalues in ascending order.
+ * @return 0 on success; > 0 if the algorithm failed to converge.
+ */
 template <typename T>
 auto syevd(char jobz, char uplo, int_t n, T *a, int_t lda, T *w) -> int_t;
 
@@ -2389,6 +2571,25 @@ auto EINSUMS_EXPORT zgetrs(char trans, int_t n, int_t nrhs, std::complex<double>
                            std::complex<double> *b, int_t ldb) -> int_t;
 } // namespace detail
 
+/**
+ * @brief Solve a linear system from an LU factorization.
+ *
+ * Solves @f$ op(\mathbf{A})\mathbf{X} = \mathbf{B} @f$ using the factors
+ * previously computed by getrf(). Note the input contract: @p a is the
+ * FACTORED matrix (L and U packed together) and @p ipiv its pivots, not the
+ * original A - this is what distinguishes getrs from gesv, which takes the
+ * source matrix and is equivalent to getrf followed by getrs.
+ *
+ * @param trans 'N': solve A*X = B; 'T': A^T*X = B; 'C': A^H*X = B.
+ * @param n Order of A.
+ * @param nrhs Number of right-hand sides (columns of B).
+ * @param a The LU factors from getrf().
+ * @param lda Leading dimension of a.
+ * @param ipiv The pivot indices from getrf().
+ * @param b On entry the right-hand sides B; on exit the solutions X.
+ * @param ldb Leading dimension of b.
+ * @return 0 on success; < 0 for an illegal argument.
+ */
 template <typename T>
 auto getrs(char trans, int_t n, int_t nrhs, T const *a, int_t lda, int_t const *ipiv, T *b, int_t ldb) -> int_t;
 
@@ -2426,6 +2627,24 @@ auto EINSUMS_EXPORT zgels(char trans, int_t m, int_t n, int_t nrhs, std::complex
     -> int_t;
 } // namespace detail
 
+/**
+ * @brief Least-squares or minimum-norm solve via QR or LQ factorization.
+ *
+ * Solves the overdetermined system @f$ \min_x \|\mathbf{A}\mathbf{x} - \mathbf{b}\| @f$
+ * (m >= n, QR factorization) or the underdetermined minimum-norm problem
+ * (m < n, LQ factorization), assuming @f$ \mathbf{A} @f$ has full rank.
+ *
+ * @param trans 'N': solve with A; 'T'/'C': with its (conjugate) transpose.
+ * @param m Rows of A.
+ * @param n Columns of A.
+ * @param nrhs Number of right-hand sides.
+ * @param a On entry the matrix A; on exit overwritten by its QR or LQ factorization.
+ * @param lda Leading dimension of a.
+ * @param b On entry the right-hand sides; on exit the solution vectors.
+ * @param ldb Leading dimension of b (>= max(m, n)).
+ * @return 0 on success; i > 0 if the i-th diagonal element of the triangular
+ *         factor is zero (A is rank deficient, no full-rank solution).
+ */
 template <typename T>
 auto gels(char trans, int_t m, int_t n, int_t nrhs, T *a, int_t lda, T *b, int_t ldb) -> int_t;
 
@@ -2461,6 +2680,17 @@ void EINSUMS_EXPORT cswap(int_t n, std::complex<float> *x, int_t incx, std::comp
 void EINSUMS_EXPORT zswap(int_t n, std::complex<double> *x, int_t incx, std::complex<double> *y, int_t incy);
 } // namespace detail
 
+/**
+ * @brief Swap the contents of two vectors.
+ *
+ * Exchanges @f$ \mathbf{x} \leftrightarrow \mathbf{y} @f$ element by element.
+ *
+ * @param n Number of elements to swap.
+ * @param x First vector.
+ * @param incx Stride between elements of x.
+ * @param y Second vector.
+ * @param incy Stride between elements of y.
+ */
 template <typename T>
 void swap(int_t n, T *x, int_t incx, T *y, int_t incy);
 
@@ -2494,6 +2724,21 @@ auto EINSUMS_EXPORT icamax(int_t n, std::complex<float> const *x, int_t incx) ->
 auto EINSUMS_EXPORT izamax(int_t n, std::complex<double> const *x, int_t incx) -> int_t;
 } // namespace detail
 
+/**
+ * @brief Index of the element with the largest absolute value.
+ *
+ * For real vectors this locates @f$ \max_i |x_i| @f$ (the @f$ \infty @f$-norm's
+ * argmax). For complex vectors BLAS convention applies: the maximum of
+ * @f$ |\mathrm{Re}(x_i)| + |\mathrm{Im}(x_i)| @f$, which is NOT the true
+ * complex modulus.
+ *
+ * @note Unlike the Fortran BLAS routine, this wrapper returns a 0-BASED index.
+ *
+ * @param n Number of elements.
+ * @param x The vector.
+ * @param incx Stride between elements of x.
+ * @return Zero-based index of the first element attaining the maximum.
+ */
 template <typename T>
 auto iamax(int_t n, T const *x, int_t incx) -> int_t;
 
@@ -2529,6 +2774,24 @@ void EINSUMS_EXPORT ztrsv(char uplo, char trans, char diag, int_t n, std::comple
                           int_t incx);
 } // namespace detail
 
+/**
+ * @brief Solve a triangular system with a single right-hand side.
+ *
+ * Solves @f$ \mathbf{A}\mathbf{x} = \mathbf{b} @f$,
+ * @f$ \mathbf{A}^T\mathbf{x} = \mathbf{b} @f$, or
+ * @f$ \mathbf{A}^H\mathbf{x} = \mathbf{b} @f$ in place, where
+ * @f$ \mathbf{A} @f$ is triangular. No singularity check is performed; see
+ * trtrs() for the checked, multiple-right-hand-side variant.
+ *
+ * @param uplo 'U': A is upper triangular; 'L': lower triangular.
+ * @param trans 'N', 'T', or 'C' selecting the system form.
+ * @param diag 'U': A is unit triangular; 'N': non-unit.
+ * @param n Order of A.
+ * @param a The triangular matrix A.
+ * @param lda Leading dimension of a.
+ * @param x On entry the right-hand side b; on exit the solution x.
+ * @param incx Stride between elements of x.
+ */
 template <typename T>
 void trsv(char uplo, char trans, char diag, int_t n, T const *a, int_t lda, T *x, int_t incx);
 
@@ -2568,6 +2831,28 @@ void EINSUMS_EXPORT zsyr2k(char uplo, char trans, int_t n, int_t k, std::complex
                            std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc);
 } // namespace detail
 
+/**
+ * @brief Symmetric rank-2k update.
+ *
+ * Computes
+ * @f$ \mathbf{C} := \alpha(\mathbf{A}\mathbf{B}^T + \mathbf{B}\mathbf{A}^T) + \beta \mathbf{C} @f$
+ * (trans='N') or
+ * @f$ \mathbf{C} := \alpha(\mathbf{A}^T\mathbf{B} + \mathbf{B}^T\mathbf{A}) + \beta \mathbf{C} @f$
+ * (trans='T'), updating only the referenced triangle of the symmetric result.
+ *
+ * @param uplo Which triangle of C is referenced and updated ('U' or 'L').
+ * @param trans Selects the update form as above.
+ * @param n Order of C.
+ * @param k The other dimension of A and B.
+ * @param alpha Scalar on the products.
+ * @param a The matrix A.
+ * @param lda Leading dimension of a.
+ * @param b The matrix B.
+ * @param ldb Leading dimension of b.
+ * @param beta Scalar on C.
+ * @param c The symmetric matrix C, updated in place.
+ * @param ldc Leading dimension of c.
+ */
 template <typename T>
 void syr2k(char uplo, char trans, int_t n, int_t k, T alpha, T const *a, int_t lda, T const *b, int_t ldb, T beta, T *c, int_t ldc);
 
@@ -2637,6 +2922,26 @@ auto EINSUMS_EXPORT ztrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs
                            std::complex<double> *b, int_t ldb) -> int_t;
 } // namespace detail
 
+/**
+ * @brief Solve a triangular system with multiple right-hand sides, with a singularity check.
+ *
+ * Solves @f$ op(\mathbf{A})\mathbf{X} = \mathbf{B} @f$ for triangular
+ * @f$ \mathbf{A} @f$, like trsv() but for multiple right-hand sides and with
+ * a check for EXACT singularity (a zero diagonal element) before solving.
+ * Near-singular matrices are not detected; the solve proceeds.
+ *
+ * @param uplo 'U': A is upper triangular; 'L': lower triangular.
+ * @param trans 'N', 'T', or 'C' selecting op(A).
+ * @param diag 'U': A is unit triangular; 'N': non-unit.
+ * @param n Order of A.
+ * @param nrhs Number of right-hand sides (columns of B).
+ * @param a The triangular matrix A.
+ * @param lda Leading dimension of a.
+ * @param b On entry the right-hand sides B; on exit the solutions X.
+ * @param ldb Leading dimension of b.
+ * @return 0 on success; i > 0 if A(i,i) is exactly zero (singular, no solve
+ *         performed).
+ */
 template <typename T>
 auto trtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, T const *a, int_t lda, T *b, int_t ldb) -> int_t;
 
@@ -2673,6 +2978,19 @@ auto EINSUMS_EXPORT ctrtri(char uplo, char diag, int_t n, std::complex<float> *a
 auto EINSUMS_EXPORT ztrtri(char uplo, char diag, int_t n, std::complex<double> *a, int_t lda) -> int_t;
 } // namespace detail
 
+/**
+ * @brief Invert a triangular matrix in place.
+ *
+ * Computes @f$ \mathbf{A}^{-1} @f$ for upper or lower triangular
+ * @f$ \mathbf{A} @f$, overwriting the referenced triangle.
+ *
+ * @param uplo 'U': A is upper triangular; 'L': lower triangular.
+ * @param diag 'U': A is unit triangular; 'N': non-unit.
+ * @param n Order of A.
+ * @param a On entry the triangular matrix; on exit its inverse.
+ * @param lda Leading dimension of a.
+ * @return 0 on success; i > 0 if A(i,i) is exactly zero (singular).
+ */
 template <typename T>
 auto trtri(char uplo, char diag, int_t n, T *a, int_t lda) -> int_t;
 
