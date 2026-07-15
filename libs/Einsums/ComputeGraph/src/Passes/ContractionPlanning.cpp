@@ -203,6 +203,43 @@ std::vector<TensorId> extract_leaves(std::vector<ContractionInfo> const &chain) 
     return leaves;
 }
 
+/// Declare a DEFERRED graph-owned intermediate for a restructured chain.
+/// Deferred (not create_tensor_dynamic, which allocates eagerly and used to
+/// leak these for the graph's lifetime): the Materialization pass allocates
+/// it at the right position, and FreeInsertion / InplaceOptimization /
+/// MemoryPlanning's arena manage its buffer like any other intermediate.
+/// Returns 0 if the dtype is unsupported.
+TensorId declare_chain_intermediate(Graph &graph, std::string name, packed_gemm::ScalarType dtype, size_t rows, size_t cols) {
+    // Typed Tensor<T,2>, not a runtime tensor: make_einsum_executor's rank-2
+    // fast path casts tensor_ptr to Tensor<T,2>*.
+    void const *ptr = nullptr;
+    switch (dtype) {
+    case packed_gemm::ScalarType::Float32:
+        ptr = &graph.declare_tensor<float, 2>(std::move(name), rows, cols);
+        break;
+    case packed_gemm::ScalarType::Float64:
+        ptr = &graph.declare_tensor<double, 2>(std::move(name), rows, cols);
+        break;
+    case packed_gemm::ScalarType::Complex64:
+        ptr = &graph.declare_tensor<std::complex<float>, 2>(std::move(name), rows, cols);
+        break;
+    case packed_gemm::ScalarType::Complex128:
+        ptr = &graph.declare_tensor<std::complex<double>, 2>(std::move(name), rows, cols);
+        break;
+    default:
+        return 0;
+    }
+    for (auto const &[tid, handle] : graph.tensors_map()) {
+        if (handle.tensor_ptr == ptr) {
+            // declare_tensor defaults to user-visible; these are pass-created
+            // scratch the memory passes should manage.
+            graph.tensor(tid).is_intermediate = true;
+            return tid;
+        }
+    }
+    return 0;
+}
+
 /// Recursively build the optimal tree from the DP split table.
 /// Returns the TensorId of the sub-result for leaves[i..j+1].
 /// For a single leaf (i == j), returns leaves[i].
@@ -231,16 +268,33 @@ TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> c
         // This is the top-level result → use the original output tensor
         out_id = final_output_tid;
     } else {
-        // Create an intermediate
-        std::string name   = fmt::format("_cp_{}x{}_{}", out_M, out_N, intermediates_created);
-        auto        result = graph.create_tensor_dynamic(std::move(name), dtype, {out_M, out_N});
-        if (!result) {
-            // Fallback: can't create intermediate. Return left_id (won't produce correct result
-            // but avoids crash). This shouldn't happen in practice.
+        // Declare a deferred intermediate; the memory passes downstream
+        // (FreeInsertion, MemoryPlanning's arena) own its lifecycle - this
+        // pass now runs BEFORE them.
+        std::string name = fmt::format("_cp_{}x{}_{}", out_M, out_N, intermediates_created);
+        out_id           = declare_chain_intermediate(graph, std::move(name), dtype, out_M, out_N);
+        if (out_id == 0) {
+            // Unsupported dtype: leave the chain unrestructured.
             return left_id;
         }
-        out_id = result.value().first;
         intermediates_created++;
+
+        // Emit the Materialize for our own intermediate rather than relying
+        // on a later Materialization pass: the restructured graph must be
+        // executable even when this pass is applied standalone. The
+        // allocation still happens at execute time (deferred until then),
+        // and materialize_fn is idempotent if anything downstream adds
+        // bookkeeping of its own.
+        {
+            auto const &handle = graph.tensor(out_id);
+            Node        mat_node;
+            mat_node.kind            = OpKind::Materialize;
+            mat_node.label           = fmt::format("materialize({})", handle.name);
+            mat_node.outputs         = {out_id};
+            mat_node.execute         = [mat_fn = handle.materialize_fn]() { mat_fn(); };
+            mat_node.estimated_bytes = out_M * out_N * element_size;
+            new_nodes.push_back(std::move(mat_node));
+        }
     }
 
     // Build GEMM/einsum node.
@@ -449,6 +503,15 @@ bool ContractionPlanning::run(Graph &graph) {
             EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions [eff. dims {}], {:.1f}us → {:.1f}us ({:.2f}x speedup) — "
                              "analysis only (higher-rank, needs folding)",
                              n, fmt::join(p, "x"), original_time, optimal_time, speedup);
+            _reports.push_back(std::move(report));
+            continue;
+        }
+
+        // Restructured intermediates are declared deferred with the chain's
+        // dtype; gate on the dtypes we can declare rather than discovering
+        // failure mid-rebuild.
+        if (dtype == packed_gemm::ScalarType::Unknown) {
+            EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (unknown dtype)", n);
             _reports.push_back(std::move(report));
             continue;
         }

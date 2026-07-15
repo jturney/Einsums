@@ -47,7 +47,7 @@ namespace einsums::compute_graph::passes {
  *
  * @par Opt-in
  * Not registered in @ref PassManager::create_default, like DistributiveFactoring
- * and ChainParenthesization it is a workload-dependent rewrite. Apply it
+ * it is a workload-dependent rewrite. Apply it
  * explicitly:
  * @code
  * cg::PassManager pm; pm.add(std::make_shared<LinearCombinationContractionFolding>());

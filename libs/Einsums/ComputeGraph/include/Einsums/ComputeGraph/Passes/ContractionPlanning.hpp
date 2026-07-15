@@ -23,7 +23,7 @@ namespace einsums::compute_graph::passes {
  *   - Kernel overhead (BLAS call and allocation costs)
  *   - GEMM shape efficiency (small/skinny GEMMs are slower per FLOP)
  *
- * Unlike ChainParenthesization (analysis-only), this pass actually
+ * This pass actually
  * restructures the graph: it creates intermediate tensors and rewrites
  * the contraction sequence to minimize estimated wall-clock time.
  *

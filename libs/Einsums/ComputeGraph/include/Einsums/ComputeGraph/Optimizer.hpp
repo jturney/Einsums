@@ -289,7 +289,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * 26. ContractionPlanning: analysis: per-einsum dispatch choice
      * 27. InplaceOptimization: analysis: detect in-place candidates
      *
-     * Note: DistributiveFactoring and ChainParenthesization are deliberately
+     * Note: DistributiveFactoring is deliberately
      * not registered by default, see their own docstrings for when to opt in.
      *
      * @return A fully-populated PassManager.

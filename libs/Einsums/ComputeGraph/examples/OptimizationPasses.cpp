@@ -11,7 +11,7 @@
 ///   2. MemoryPlanning: analyzes tensor liveness and reports memory savings
 ///   3. Reorder: memory-aware topological sort
 ///   4. CSE: common subexpression elimination
-///   5. ChainParenthesization: optimal matrix chain multiplication analysis
+///   5. ContractionPlanning: cost-model chain restructuring
 ///   6. ConstantFolding: folds constant-input operations at optimization time
 ///   7. ScaleAbsorption (permute), removes a scale a downstream permute overwrites
 ///   8. GEMMBatching: detects independent GEMMs that can be batched
@@ -163,9 +163,9 @@ int einsums_main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 5. ChainParenthesization
+    // 5. ContractionPlanning (chain restructuring)
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== ChainParenthesization Pass ===\n");
+    println("\n=== ContractionPlanning Pass ===\n");
     {
         // Classic matrix chain example where parenthesization matters enormously:
         // A(100x1) * B(1x100) * C(100x1)
@@ -193,14 +193,14 @@ int einsums_main() {
             cg::einsum("ik;kj->ij", &T2, T1, C); // T2 = T1*C
         }
 
-        auto [_m2, chain] = graph.apply<cg::passes::ChainParenthesization>();
+        auto [modified5, chain] = graph.apply<cg::passes::ContractionPlanning>();
 
         println("Matrix chain: A(100x1) * B(1x100) * C(100x1)");
-        println("  Original (left-to-right) FLOPs: {}", chain.original_flops());
-        println("  Optimal FLOPs:                  {}", chain.optimal_flops());
-        if (chain.original_flops() > 0) {
-            println("  Speedup: {:.1f}x", static_cast<double>(chain.original_flops()) / static_cast<double>(chain.optimal_flops()));
+        println("  Chains restructured: {} ({} intermediates created)", chain.chains_restructured(), chain.intermediates_created());
+        for (auto const &rep : chain.chain_reports()) {
+            println("  Estimated: {:.1f}us -> {:.1f}us ({:.2f}x speedup)", rep.original_time_us, rep.optimal_time_us, rep.speedup);
         }
+        (void)modified5;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -470,7 +470,7 @@ int einsums_main() {
         // create_default() applies all safe optimization and analysis passes:
         //   ConstantFolding, ScaleAbsorption, CSE, DeadNodeElimination,
         //   ElementWiseFusion, LoopInvariantHoisting, Reorder,
-        //   GPU passes (when available), MemoryPlanning, ChainParenthesization,
+        //   GPU passes (when available), MemoryPlanning,
         //   InplaceOptimization, GEMMBatching, PermuteFusion
         auto pm = cg::PassManager::create_default();
         graph.apply(pm);

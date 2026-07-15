@@ -17,7 +17,6 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Node.hpp
     Einsums/ComputeGraph/Operations.hpp
     Einsums/ComputeGraph/Optimizer.hpp
-    Einsums/ComputeGraph/Passes/ChainParenthesization.hpp
     Einsums/ComputeGraph/Passes/ContractionPlanning.hpp
     Einsums/ComputeGraph/Passes/CommunicationElimination.hpp
     Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp
@@ -65,7 +64,6 @@ set(ComputeGraphSources
     HardwareProfile.cpp
     Node.cpp
     Optimizer.cpp
-    Passes/ChainParenthesization.cpp
     Passes/CommunicationElimination.cpp
     Passes/CommunicationInsertion.cpp
     Passes/CommunicationScheduling.cpp

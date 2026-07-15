@@ -67,7 +67,6 @@
  *
  * Analysis-only:
  * - MemoryPlanning: Tensor liveness analysis
- * - ChainParenthesization: Optimal matrix chain order
  * - InplaceOptimization: Detect in-place candidates
  * - GEMMBatching: Detect batchable independent GEMMs
  * - PermuteFusion: Detect transpose-into-GEMM candidates
@@ -89,7 +88,6 @@
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
-#include <Einsums/ComputeGraph/Passes/ChainParenthesization.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationScheduling.hpp>

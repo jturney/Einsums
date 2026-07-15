@@ -4,7 +4,7 @@
 """Conjugated einsums through the optimization passes (Tier 1).
 
 The single-einsum conj tests never exercise the multi-einsum rewriting passes
-(LinearCombinationContractionFolding, GEMMBatching, ChainParenthesization,
+(LinearCombinationContractionFolding, GEMMBatching,
 DistributiveFactoring) because those only fire on graphs with several related
 contractions. Those passes don't thread conj_a/conj_b through their rewrites, so
 they conservatively skip conjugated einsums; this test builds graphs shaped to
@@ -67,7 +67,7 @@ def test_einsum_conj_through_passes(pattern, conj_flags, dt, seed):
             einsums.einsum("ij <- ik ; kj", O, At, Ct, c_pf=1.0, ab_pf=-1.0, conj_a=f0, conj_b=f2)
         out = O
     elif pattern == "chain":
-        # GEMM chain: T = opA . opB ; O = op(T) . D  (ChainParenthesization target).
+        # GEMM chain: T = opA . opB ; O = op(T) . D  (ContractionPlanning chain target).
         i, k, j, m = (int(rng.integers(2, 5)) for _ in range(4))
         A, B, D = _rnd((i, k), cplx, rng), _rnd((k, j), cplx, rng), _rnd((j, m), cplx, rng)
         tmp = cj(A, f0) @ cj(B, f1)

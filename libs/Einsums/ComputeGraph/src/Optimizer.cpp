@@ -8,7 +8,6 @@
 #include <Einsums/ComputeGraph/HardwareProfile.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
-#include <Einsums/ComputeGraph/Passes/ChainParenthesization.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationScheduling.hpp>
@@ -202,6 +201,15 @@ void PassManager::populate_default() {
     pm.add<passes::DeadNodeElimination>();
     pm.add<passes::ElementWiseFusion>();
     pm.add<passes::LoopInvariantHoisting>();
+
+    // Chain restructuring belongs in the planning phase: it rewrites GEMM
+    // chains using the shared cost model and declares DEFERRED intermediates,
+    // so it must precede GEMMBatching/Reorder (which schedule the final
+    // node set) and DistributionPlanning/Materialization (which size and
+    // allocate the intermediates it introduces). It used to run dead-last,
+    // where its restructured nodes got no placement or memory management and
+    // its eagerly-created intermediates leaked for the graph's lifetime.
+    pm.add<passes::ContractionPlanning>(profile);
     // GEMMBatching collapses groups of independent, shape-compatible
     // 2D×2D→2D einsums into a single BatchedGemm node backed by
     // blas::gemm_batch. Runs after CSE/DNE so duplicates/unused nodes
@@ -256,9 +264,7 @@ void PassManager::populate_default() {
     pm.add<passes::FreeInsertion>();
 
     // Analysis and planning passes (examine final graph).
-    // ContractionPlanning uses the same profile for consistent cost estimation.
     pm.add<passes::MemoryPlanning>();
-    pm.add<passes::ContractionPlanning>(profile);
 }
 
 } // namespace einsums::compute_graph

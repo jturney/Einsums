@@ -1145,7 +1145,7 @@ import einsums._core.graph as _G  # noqa: E402  (pass classes for random pipelin
 # order-independent for correctness on eager tensors. A random permutation that
 # miscompiles is either a real bug or an undocumented ordering constraint.
 _SAFE_PASSES = [
-    "ScaleAbsorption", "ElementWiseFusion", "ChainParenthesization",
+    "ScaleAbsorption", "ElementWiseFusion",
     "ConstantFolding", "CSE", "DeadNodeElimination", "LoopInvariantHoisting",
     "SymmetryPropagation", "MemoryPlanning", "InplaceOptimization", "Reorder",
 ]

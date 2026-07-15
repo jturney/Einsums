@@ -41,7 +41,6 @@ set(ComputeGraphTests
     MixedOps.cpp
     OperationsCoverage.cpp
     ParallelForGraph.cpp
-    Pass_ChainParenthesization.cpp
     Pass_ConstantFolding.cpp
     Pass_CSE.cpp
     Pass_DeadNodeElimination.cpp
@@ -114,7 +113,6 @@ set(ComputeGraphTests
     test_mixed_ops_python.py
     test_mp2_python.py
     test_outer_sum_python.py
-    test_pass_chain_parenthesization_python.py
     test_pass_constant_folding_python.py
     test_pass_cse_python.py
     test_pass_dead_node_elimination_python.py

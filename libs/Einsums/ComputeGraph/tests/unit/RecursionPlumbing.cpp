@@ -283,7 +283,6 @@ TEST_CASE("Recursion policy - hoisting / aggregation passes stay opt-out", "[Com
     // being re-run per sub-graph (which would clobber their counters).
     CHECK_FALSE(cg::passes::MemoryPlanning{}.recurse_into_subgraphs());
     CHECK_FALSE(cg::passes::InplaceOptimization{}.recurse_into_subgraphs());
-    CHECK_FALSE(cg::passes::ChainParenthesization{}.recurse_into_subgraphs());
     CHECK_FALSE(cg::passes::GPUDiagnostics{}.recurse_into_subgraphs());
     // CSE stays opt-out: it has a soundness gap on the mutable-tensor reuse a
     // loop body exhibits, it merges nodes writing distinct, later-mutated

@@ -36,7 +36,7 @@ class Graph; // Forward declaration for ConditionalDescriptor/LoopDescriptor
  * link/target indices) and the scalar prefactors. This metadata is used by:
  * - ScaleAbsorption to spot dead scales (einsum with c_prefactor == 0 overwrites them)
  * - CSE to detect duplicate computations
- * - ChainParenthesization to detect GEMM chains
+ * - ContractionPlanning to detect and restructure GEMM chains
  *
  * @see packed_gemm::ContractionSpec for the contraction topology format
  */
