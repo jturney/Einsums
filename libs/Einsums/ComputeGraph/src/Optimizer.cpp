@@ -183,6 +183,86 @@ PassManager PassManager::create_default() {
     return pm;
 }
 
+PassManager PassManager::create_for(OptLevel level) {
+    PassManager pm;
+    switch (level) {
+    case OptLevel::O0:
+        break;
+    case OptLevel::O1:
+        // Cleanup cluster only: reduce node count, no restructuring, no
+        // memory planning. Matches the head of populate_default().
+        pm.add<passes::ConstantFolding>();
+        pm.add<passes::ScaleAbsorption>();
+        pm.add<passes::PermuteFusion>();
+        pm.add<passes::CSE>();
+        pm.add<passes::DeadNodeElimination>();
+        pm.add<passes::ElementWiseFusion>();
+        break;
+    case OptLevel::O2:
+        pm.populate_default();
+        break;
+    }
+    return pm;
+}
+
+std::string PassManager::explain() const {
+    // Harvest the statistics the passes already expose into one report.
+    // dynamic_cast per known pass type: passes without counters contribute
+    // nothing; unknown/user passes are simply not summarized.
+    std::string out;
+    auto        line = [&out](std::string text) {
+        out += "  - ";
+        out += text;
+        out += '\n';
+    };
+
+    for (auto const &p : _passes) {
+        if (auto const *sa = dynamic_cast<passes::ScaleAbsorption const *>(p.get()); sa && sa->num_absorbed() > 0) {
+            line(fmt::format("ScaleAbsorption: removed {} dead scale(s)", sa->num_absorbed()));
+        } else if (auto const *pf = dynamic_cast<passes::PermuteFusion const *>(p.get()); pf && pf->num_rewrites() > 0) {
+            line(fmt::format("PermuteFusion: folded {} permute(s) into contractions", pf->num_rewrites()));
+        } else if (auto const *dne = dynamic_cast<passes::DeadNodeElimination const *>(p.get()); dne && dne->num_eliminated() > 0) {
+            line(fmt::format("DeadNodeElimination: removed {} dead node(s)", dne->num_eliminated()));
+        } else if (auto const *ewf = dynamic_cast<passes::ElementWiseFusion const *>(p.get()); ewf && ewf->num_fused() > 0) {
+            line(fmt::format("ElementWiseFusion: fused {} elementwise pair(s)", ewf->num_fused()));
+        } else if (auto const *lih = dynamic_cast<passes::LoopInvariantHoisting const *>(p.get()); lih && lih->num_hoisted() > 0) {
+            line(fmt::format("LoopInvariantHoisting: hoisted {} node(s) out of loops", lih->num_hoisted()));
+        } else if (auto const *cp = dynamic_cast<passes::ContractionPlanning const *>(p.get()); cp && !cp->chain_reports().empty()) {
+            line(fmt::format("ContractionPlanning: restructured {} of {} GEMM chain(s), {} intermediate(s)", cp->chains_restructured(),
+                             cp->chain_reports().size(), cp->intermediates_created()));
+            for (auto const &rep : cp->chain_reports()) {
+                if (rep.speedup > 1.05) {
+                    line(fmt::format("    chain of {}: est. {:.1f}us -> {:.1f}us ({:.2f}x)", rep.chain_length, rep.original_time_us,
+                                     rep.optimal_time_us, rep.speedup));
+                }
+            }
+        } else if (auto const *gb = dynamic_cast<passes::GEMMBatching const *>(p.get());
+                   gb && (gb->num_batches() > 0 || gb->num_gate_skipped() > 0)) {
+            line(fmt::format("GEMMBatching: {} batch(es) absorbing {} GEMM(s); {} group(s) left parallel by the profitability gate",
+                             gb->num_batches(), gb->total_batched(), gb->num_gate_skipped()));
+        } else if (auto const *ip = dynamic_cast<passes::InplaceOptimization const *>(p.get());
+                   ip && (ip->num_merged() > 0 || ip->num_candidates() > 0)) {
+            line(fmt::format("InplaceOptimization: merged {} buffer(s) into dying inputs ({} candidate(s))", ip->num_merged(),
+                             ip->num_candidates()));
+        } else if (auto const *fi = dynamic_cast<passes::FreeInsertion const *>(p.get()); fi && fi->num_freed() > 0) {
+            line(fmt::format("FreeInsertion: {} intermediate(s) freed after their last consumer", fi->num_freed()));
+        } else if (auto const *mp = dynamic_cast<passes::MemoryPlanning const *>(p.get()); mp && mp->total_memory() > 0) {
+            line(fmt::format("MemoryPlanning: peak {:.2f} MB of {:.2f} MB total", static_cast<double>(mp->peak_memory()) / 1048576.0,
+                             static_cast<double>(mp->total_memory()) / 1048576.0));
+            if (mp->num_planned() > 0) {
+                line(fmt::format("    arena: {:.2f} MB hosting {} intermediate(s) ({:.2f} MB of buffers)",
+                                 static_cast<double>(mp->planned_arena_bytes()) / 1048576.0, mp->num_planned(),
+                                 static_cast<double>(mp->planned_tensor_bytes()) / 1048576.0));
+            }
+        }
+    }
+
+    if (out.empty()) {
+        out = "  (no optimizations applied)\n";
+    }
+    return out;
+}
+
 void PassManager::populate_default() {
     auto &pm = *this;
 

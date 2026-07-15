@@ -506,7 +506,7 @@ Graph::Graph(Graph &&other) noexcept
       _params(std::move(other._params)), _slot_map(std::move(other._slot_map)), _timing_report(std::move(other._timing_report)),
       _params_store(std::move(other._params_store)), _slot_redirects(std::move(other._slot_redirects)), _deps_valid(other._deps_valid),
       _profile_strings(std::move(other._profile_strings)), _profile_strings_valid(other._profile_strings_valid),
-      _exec_zone_name(std::move(other._exec_zone_name)) {
+      _exec_zone_name(std::move(other._exec_zone_name)), _last_optimize_report(std::move(other._last_optimize_report)) {
     // Invalidate moved-from so its destructor doesn't unregister
     other._executed = false;
     // Transfer registration from old address to new
@@ -543,6 +543,7 @@ Graph &Graph::operator=(Graph &&other) noexcept {
         _profile_strings       = std::move(other._profile_strings);
         _profile_strings_valid = other._profile_strings_valid;
         _exec_zone_name        = std::move(other._exec_zone_name);
+        _last_optimize_report  = std::move(other._last_optimize_report);
 
         // Invalidate moved-from so its destructor doesn't unregister
         other._executed = false;
@@ -1815,6 +1816,21 @@ bool Graph::apply(PassManager &pm) {
     if (modified) {
         _executed = false;
     }
+    return modified;
+}
+
+bool Graph::optimize() {
+    return optimize(OptLevel::O2);
+}
+
+bool Graph::optimize(OptLevel level) {
+    size_t const before = _nodes.size();
+
+    auto       pm       = PassManager::create_for(level);
+    bool const modified = apply(pm);
+
+    _last_optimize_report =
+        fmt::format("optimize(O{}) on '{}': {} -> {} node(s)\n{}", static_cast<int>(level), _name, before, _nodes.size(), pm.explain());
     return modified;
 }
 

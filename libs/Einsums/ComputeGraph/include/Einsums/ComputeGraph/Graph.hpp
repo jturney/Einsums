@@ -37,6 +37,7 @@ namespace einsums::compute_graph {
 
 class PassManager; // Forward declaration
 class OptimizerPass;
+enum class OptLevel : std::uint8_t; // Optimizer.hpp
 struct ParsedEinsumSpec;
 
 /**
@@ -172,6 +173,32 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @endcode
      */
     APIARY_EXPOSE bool apply(PassManager &pm);
+
+    /**
+     * @brief Optimize with the full default pipeline (OptLevel::O2).
+     *
+     * Compiler-style front door over PassManager: builds the pipeline, runs
+     * it, and records a human-readable summary retrievable via explain().
+     *
+     * @code
+     * graph.optimize();
+     * std::cout << graph.explain();
+     * @endcode
+     */
+    APIARY_EXPOSE bool optimize();
+
+    /// @overload Optimize at a specific level (O0 none, O1 cleanup, O2 full).
+    APIARY_EXPOSE bool optimize(OptLevel level);
+
+    /**
+     * @brief What the last optimize() did, as a human-readable report.
+     *
+     * Node counts before/after plus the per-pass highlights (chains
+     * restructured with estimated speedups, buffers merged in place, Frees
+     * inserted, arena size vs the buffers it hosts, batches formed and
+     * profitability-gate skips). Empty until optimize() has run.
+     */
+    APIARY_EXPOSE APIARY_GETTER("explain") [[nodiscard]] std::string const &explain() const { return _last_optimize_report; }
 
     /**
      * @brief Apply a single pass by type (convenience).
@@ -1441,6 +1468,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /// Tensor slots for rebindable tensor references (TensorId → TensorSlot).
     std::unordered_map<TensorId, std::unique_ptr<TensorSlot>> _slot_map;
+
+    /// Summary of the last optimize() run (see explain()).
+    std::string _last_optimize_report;
 
     /// Durable slot redirects recorded by redirect_slot(): key resolves to
     /// value's buffer. Chains are collapsed at insert, so values are always

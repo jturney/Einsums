@@ -9,6 +9,7 @@
 
 #include <Einsums/Python/Annotations.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -143,6 +144,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
  * @see Graph::apply(PassManager&)
  * @see Pipeline::apply(PassManager&)
  */
+/**
+ * @brief Optimization level for Graph::optimize(), compiler-style.
+ *
+ * - O0: no passes; the graph runs exactly as captured.
+ * - O1: node-count cleanup only (constant folding, dead-scale removal,
+ *       permute fusion, CSE, dead-node elimination, elementwise fusion) -
+ *       cheap, no restructuring, no memory planning.
+ * - O2: the full default pipeline (cleanup + loop hoisting + cost-model
+ *       chain restructuring + batching + reorder + distribution/GPU when
+ *       available + in-place merging + free insertion + the memory arena).
+ */
+enum class APIARY_EXPOSE OptLevel : std::uint8_t {
+    O0 = 0,
+    O1 = 1,
+    O2 = 2,
+};
+
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT PassManager {
   public:
     /// Default-construct an empty PassManager. Explicit (rather than
@@ -295,6 +313,20 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return A fully-populated PassManager.
      */
     static PassManager create_default();
+
+    /// Factory for a given optimization level (create_default() == O2).
+    static PassManager create_for(OptLevel level);
+
+    /**
+     * @brief One human-readable report of what the last run() did.
+     *
+     * Harvests the per-pass statistics (nodes eliminated, chains
+     * restructured with estimated speedups, buffers merged in place, Frees
+     * inserted, arena size vs the buffers it hosts, batches formed and
+     * profitability-gate skips) into a few lines of text. Empty until run()
+     * has been called. See Graph::explain() for the graph-level entry point.
+     */
+    APIARY_EXPOSE [[nodiscard]] std::string explain() const;
 
     /**
      * @brief Populate this PassManager with the default pass list (in place).

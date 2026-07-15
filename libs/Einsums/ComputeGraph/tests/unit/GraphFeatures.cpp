@@ -513,3 +513,80 @@ TEST_CASE("scratch_zero - zeroed at materialization", "[ComputeGraph][Scratch]")
         }
     }
 }
+
+TEST_CASE("optimize + explain - one-call pipeline with a readable report", "[ComputeGraph][Optimize]") {
+    constexpr size_t N   = 400;
+    auto             A   = create_random_tensor<double>("A", N, N);
+    auto             B   = create_random_tensor<double>("B", N, N);
+    auto             OUT = create_zero_tensor<double>("OUT", N, N);
+
+    cg::Graph graph("optimize_api");
+    auto     &tmp = graph.scratch<double, 2>("tmp", N, N);
+    auto     &dup = graph.scratch<double, 2>("dup", N, N);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &tmp, A, B);
+        cg::einsum("ik;kj->ij", &dup, A, B); // CSE fodder
+        cg::einsum("ik;kj->ij", &OUT, tmp, dup);
+    }
+
+    CHECK(graph.explain().empty()); // nothing yet
+
+    bool const modified = graph.optimize();
+    CHECK(modified);
+
+    auto const &report = graph.explain();
+    INFO(report);
+    CHECK_FALSE(report.empty());
+    CHECK(report.find("optimize(O2)") != std::string::npos);
+    CHECK(report.find("node(s)") != std::string::npos);
+    // The memory passes engaged on the >1MB scratch intermediates.
+    CHECK(report.find("FreeInsertion") != std::string::npos);
+
+    graph.execute();
+
+    auto tmp_ref = create_zero_tensor<double>("tmpref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, B);
+    auto OUT_ref = create_zero_tensor<double>("OUTref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, tmp_ref, Indices{k, j}, tmp_ref);
+    for (size_t ii = 0; ii < N; ii += 41) {
+        for (size_t jj = 0; jj < N; jj += 37) {
+            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-8);
+        }
+    }
+}
+
+TEST_CASE("optimize levels - O0 is a no-op, O1 cleans up only", "[ComputeGraph][Optimize]") {
+    auto A   = create_random_tensor<double>("A", 4, 4);
+    auto OUT = create_zero_tensor<double>("OUT", 4, 4);
+
+    cg::Graph graph("optimize_levels");
+    // Graph-owned duplicates: CSE never elides writes to user-visible tensors.
+    auto &tmp = graph.create_tensor<double, 2>("tmp", 4, 4);
+    auto &dup = graph.create_tensor<double, 2>("dup", 4, 4);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &tmp, A, A);
+        cg::einsum("ik;kj->ij", &dup, A, A); // duplicate for CSE
+        cg::einsum("ik;kj->ij", &OUT, tmp, dup);
+    }
+    size_t const before = graph.num_nodes();
+
+    CHECK_FALSE(graph.optimize(cg::OptLevel::O0));
+    CHECK(graph.num_nodes() == before);
+
+    CHECK(graph.optimize(cg::OptLevel::O1)); // CSE folds the duplicate
+    CHECK(graph.num_nodes() < before);
+    CHECK(graph.explain().find("optimize(O1)") != std::string::npos);
+
+    graph.execute();
+    auto tmp_ref = create_zero_tensor<double>("tmpref", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, A);
+    auto OUT_ref = create_zero_tensor<double>("OUTref", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, tmp_ref, Indices{k, j}, tmp_ref);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
