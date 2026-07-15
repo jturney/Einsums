@@ -136,7 +136,7 @@ TEST_CASE("update_prefactors - correct after CSE removes an earlier einsum", "[C
     auto A   = create_random_tensor<double>("A", 4, 3);
     auto B   = create_random_tensor<double>("B", 3, 4);
     auto C   = create_zero_tensor<double>("C", 4, 4);
-    auto OUT = create_zero_tensor<double>("OUT", 4, 4);
+    auto out = create_zero_tensor<double>("out", 4, 4);
 
     cg::Graph graph("update_pf_after_cse");
     auto     &D = graph.create_tensor<double, 2>("D", 4, 4); // graph-owned duplicate
@@ -144,7 +144,7 @@ TEST_CASE("update_prefactors - correct after CSE removes an earlier einsum", "[C
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B);   // survivor
         cg::einsum("ik;kj->ij", &D, A, B);   // duplicate, removed by CSE
-        cg::einsum("ik;kj->ij", &OUT, C, D); // target of update_prefactors
+        cg::einsum("ik;kj->ij", &out, C, D); // target of update_prefactors
     }
 
     auto [modified, pass] = graph.apply<cg::passes::CSE>();
@@ -159,14 +159,14 @@ TEST_CASE("update_prefactors - correct after CSE removes an earlier einsum", "[C
 
     auto AB = create_zero_tensor<double>("AB", 4, 4);
     tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
-    auto OUT_ref = create_zero_tensor<double>("OUTref", 4, 4);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &OUT_ref, 2.0, Indices{i, k}, AB, Indices{k, j}, AB);
+    auto out_ref = create_zero_tensor<double>("OUTref", 4, 4);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &out_ref, 2.0, Indices{i, k}, AB, Indices{k, j}, AB);
 
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            max_abs = std::max(max_abs, std::abs(OUT(ii, jj)));
-            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-12);
+            max_abs = std::max(max_abs, std::abs(out(ii, jj)));
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
         }
     }
     REQUIRE(max_abs > 1e-10);

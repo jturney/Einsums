@@ -142,8 +142,8 @@ TEST_CASE("MemoryPlanning - arena shares storage between disjoint-lifetime inter
     constexpr size_t N    = 400;
     auto             A    = create_random_tensor<double>("A", N, N);
     auto             B    = create_random_tensor<double>("B", N, N);
-    auto             OUT1 = create_zero_tensor<double>("OUT1", N, N);
-    auto             OUT2 = create_zero_tensor<double>("OUT2", N, N);
+    auto             out1 = create_zero_tensor<double>("out1", N, N);
+    auto             out2 = create_zero_tensor<double>("out2", N, N);
 
     // Reference.
     auto X_ref = create_zero_tensor<double>("Xref", N, N);
@@ -161,9 +161,9 @@ TEST_CASE("MemoryPlanning - arena shares storage between disjoint-lifetime inter
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &X, A, B);
-        cg::einsum("ik;kj->ij", &OUT1, X, B); // X dies here
-        cg::einsum("ik;kj->ij", &Y, OUT1, B); // Y born after X's death
-        cg::einsum("ik;kj->ij", &OUT2, Y, B);
+        cg::einsum("ik;kj->ij", &out1, X, B); // X dies here
+        cg::einsum("ik;kj->ij", &Y, out1, B); // Y born after X's death
+        cg::einsum("ik;kj->ij", &out2, Y, B);
     }
 
     // Bracket the intermediates, then plan + apply the arena.
@@ -183,16 +183,16 @@ TEST_CASE("MemoryPlanning - arena shares storage between disjoint-lifetime inter
     graph.execute();
     for (size_t ii = 0; ii < N; ii += 41) {
         for (size_t jj = 0; jj < N; jj += 37) {
-            REQUIRE(std::abs(OUT2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
+            REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
         }
     }
 
-    OUT1.zero();
-    OUT2.zero();
+    out1.zero();
+    out2.zero();
     graph.execute(); // replay through the arena
     for (size_t ii = 0; ii < N; ii += 41) {
         for (size_t jj = 0; jj < N; jj += 37) {
-            REQUIRE(std::abs(OUT2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
+            REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
         }
     }
 }
@@ -203,7 +203,7 @@ TEST_CASE("MemoryPlanning - arena keeps overlapping lifetimes apart", "[ComputeG
     constexpr size_t N   = 400;
     auto             A   = create_random_tensor<double>("A", N, N);
     auto             B   = create_random_tensor<double>("B", N, N);
-    auto             OUT = create_zero_tensor<double>("OUT", N, N);
+    auto             out = create_zero_tensor<double>("out", N, N);
 
     cg::Graph graph("mp_arena_overlap");
     auto     &X = graph.create_tensor<double, 2>("X", N, N);
@@ -212,7 +212,7 @@ TEST_CASE("MemoryPlanning - arena keeps overlapping lifetimes apart", "[ComputeG
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &X, A, B);
         cg::einsum("ik;kj->ij", &Y, X, B);   // X and Y both live
-        cg::einsum("ik;kj->ij", &OUT, Y, X); // reads both: lifetimes overlap
+        cg::einsum("ik;kj->ij", &out, Y, X); // reads both: lifetimes overlap
     }
 
     graph.apply<cg::passes::FreeInsertion>();
@@ -227,13 +227,13 @@ TEST_CASE("MemoryPlanning - arena keeps overlapping lifetimes apart", "[ComputeG
     tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
     auto Y_ref = create_zero_tensor<double>("Yref", N, N);
     tensor_algebra::einsum(Indices{i, j}, &Y_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
-    auto OUT_ref = create_zero_tensor<double>("OUTref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, Y_ref, Indices{k, j}, X_ref);
+    auto out_ref = create_zero_tensor<double>("OUTref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, Y_ref, Indices{k, j}, X_ref);
 
     graph.execute();
     for (size_t ii = 0; ii < N; ii += 41) {
         for (size_t jj = 0; jj < N; jj += 37) {
-            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-8);
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-8);
         }
     }
 }
@@ -242,14 +242,14 @@ TEST_CASE("MemoryPlanning - analysis-only mode plans without applying", "[Comput
     constexpr size_t N   = 400;
     auto             A   = create_random_tensor<double>("A", N, N);
     auto             B   = create_random_tensor<double>("B", N, N);
-    auto             OUT = create_zero_tensor<double>("OUT", N, N);
+    auto             out = create_zero_tensor<double>("out", N, N);
 
     cg::Graph graph("mp_arena_analysis");
     auto     &X = graph.create_tensor<double, 2>("X", N, N);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &X, A, B);
-        cg::einsum("ik;kj->ij", &OUT, X, B);
+        cg::einsum("ik;kj->ij", &out, X, B);
     }
 
     graph.apply<cg::passes::FreeInsertion>();

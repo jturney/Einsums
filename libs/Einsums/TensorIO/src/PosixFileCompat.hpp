@@ -22,6 +22,12 @@
 #include <string>
 
 #if defined(EINSUMS_WINDOWS)
+#    ifndef WIN32_LEAN_AND_MEAN
+#        define WIN32_LEAN_AND_MEAN
+#    endif
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
 #    include <fcntl.h>
 #    include <io.h>
 #    include <sys/stat.h>
@@ -99,6 +105,10 @@ inline int truncate_file(int fd, file_offset_t length) {
     return _chsize_s(fd, length) == 0 ? 0 : -1;
 }
 
+inline int sync_file(int fd) {
+    return _commit(fd);
+}
+
 #else
 
 using file_offset_t = off_t;
@@ -135,6 +145,10 @@ inline io_result_t pwrite_file(int fd, void const *buf, std::size_t bytes, file_
 
 inline int truncate_file(int fd, file_offset_t length) {
     return ::ftruncate(fd, length);
+}
+
+inline int sync_file(int fd) {
+    return ::fsync(fd);
 }
 
 #endif

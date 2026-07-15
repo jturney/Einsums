@@ -452,7 +452,7 @@ TEST_CASE("scratch - deferred, intermediate, and fully pass-managed", "[ComputeG
     constexpr size_t N   = 400;
     auto             A   = create_random_tensor<double>("A", N, N);
     auto             B   = create_random_tensor<double>("B", N, N);
-    auto             OUT = create_zero_tensor<double>("OUT", N, N);
+    auto             out = create_zero_tensor<double>("out", N, N);
 
     cg::Graph graph("scratch_managed");
     auto     &tmp = graph.scratch<double, 2>("tmp", N, N);
@@ -461,7 +461,7 @@ TEST_CASE("scratch - deferred, intermediate, and fully pass-managed", "[ComputeG
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &tmp, A, B);
-        cg::einsum("ik;kj->ij", &OUT, tmp, B);
+        cg::einsum("ik;kj->ij", &out, tmp, B);
     }
     CHECK_FALSE(tmp.is_materialized()); // still nothing allocated after capture
 
@@ -474,33 +474,33 @@ TEST_CASE("scratch - deferred, intermediate, and fully pass-managed", "[ComputeG
     // The result must be right regardless:
     auto tmp_ref = create_zero_tensor<double>("tmpref", N, N);
     tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, B);
-    auto OUT_ref = create_zero_tensor<double>("OUTref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, tmp_ref, Indices{k, j}, B);
+    auto out_ref = create_zero_tensor<double>("OUTref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, tmp_ref, Indices{k, j}, B);
     for (size_t ii = 0; ii < N; ii += 37) {
         for (size_t jj = 0; jj < N; jj += 41) {
-            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-8);
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-8);
         }
     }
 
-    OUT.zero();
+    out.zero();
     graph.execute(); // replay through the managed lifecycle
     for (size_t ii = 0; ii < N; ii += 37) {
         for (size_t jj = 0; jj < N; jj += 41) {
-            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-8);
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-8);
         }
     }
 }
 
 TEST_CASE("scratch_zero - zeroed at materialization", "[ComputeGraph][Scratch]") {
     auto A   = create_random_tensor<double>("A", 6, 6);
-    auto OUT = create_zero_tensor<double>("OUT", 6, 6);
+    auto out = create_zero_tensor<double>("out", 6, 6);
 
     cg::Graph graph("scratch_zero");
     auto     &acc = graph.scratch_zero<double, 2>("acc", 6, 6);
     {
         cg::CaptureGuard const guard(graph);
         cg::axpy(1.0, A, &acc); // accumulate into zero-initialized scratch
-        cg::axpy(1.0, acc, &OUT);
+        cg::axpy(1.0, acc, &out);
     }
 
     auto pm = cg::PassManager::create_default();
@@ -509,7 +509,7 @@ TEST_CASE("scratch_zero - zeroed at materialization", "[ComputeGraph][Scratch]")
 
     for (size_t ii = 0; ii < 6; ii++) {
         for (size_t jj = 0; jj < 6; jj++) {
-            REQUIRE(std::abs(OUT(ii, jj) - A(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(out(ii, jj) - A(ii, jj)) < 1e-12);
         }
     }
 }
@@ -518,7 +518,7 @@ TEST_CASE("optimize + explain - one-call pipeline with a readable report", "[Com
     constexpr size_t N   = 400;
     auto             A   = create_random_tensor<double>("A", N, N);
     auto             B   = create_random_tensor<double>("B", N, N);
-    auto             OUT = create_zero_tensor<double>("OUT", N, N);
+    auto             out = create_zero_tensor<double>("out", N, N);
 
     cg::Graph graph("optimize_api");
     auto     &tmp = graph.scratch<double, 2>("tmp", N, N);
@@ -527,7 +527,7 @@ TEST_CASE("optimize + explain - one-call pipeline with a readable report", "[Com
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &tmp, A, B);
         cg::einsum("ik;kj->ij", &dup, A, B); // CSE fodder
-        cg::einsum("ik;kj->ij", &OUT, tmp, dup);
+        cg::einsum("ik;kj->ij", &out, tmp, dup);
     }
 
     CHECK(graph.explain().empty()); // nothing yet
@@ -547,18 +547,18 @@ TEST_CASE("optimize + explain - one-call pipeline with a readable report", "[Com
 
     auto tmp_ref = create_zero_tensor<double>("tmpref", N, N);
     tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, B);
-    auto OUT_ref = create_zero_tensor<double>("OUTref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, tmp_ref, Indices{k, j}, tmp_ref);
+    auto out_ref = create_zero_tensor<double>("OUTref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, tmp_ref, Indices{k, j}, tmp_ref);
     for (size_t ii = 0; ii < N; ii += 41) {
         for (size_t jj = 0; jj < N; jj += 37) {
-            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-8);
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-8);
         }
     }
 }
 
 TEST_CASE("optimize levels - O0 is a no-op, O1 cleans up only", "[ComputeGraph][Optimize]") {
     auto A   = create_random_tensor<double>("A", 4, 4);
-    auto OUT = create_zero_tensor<double>("OUT", 4, 4);
+    auto out = create_zero_tensor<double>("out", 4, 4);
 
     cg::Graph graph("optimize_levels");
     // Graph-owned duplicates: CSE never elides writes to user-visible tensors.
@@ -568,7 +568,7 @@ TEST_CASE("optimize levels - O0 is a no-op, O1 cleans up only", "[ComputeGraph][
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &tmp, A, A);
         cg::einsum("ik;kj->ij", &dup, A, A); // duplicate for CSE
-        cg::einsum("ik;kj->ij", &OUT, tmp, dup);
+        cg::einsum("ik;kj->ij", &out, tmp, dup);
     }
     size_t const before = graph.num_nodes();
 
@@ -582,25 +582,25 @@ TEST_CASE("optimize levels - O0 is a no-op, O1 cleans up only", "[ComputeGraph][
     graph.execute();
     auto tmp_ref = create_zero_tensor<double>("tmpref", 4, 4);
     tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, A);
-    auto OUT_ref = create_zero_tensor<double>("OUTref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, tmp_ref, Indices{k, j}, tmp_ref);
+    auto out_ref = create_zero_tensor<double>("OUTref", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, tmp_ref, Indices{k, j}, tmp_ref);
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
         }
     }
 }
 
 TEST_CASE("deferred tensor without Materialization - actionable execute error", "[ComputeGraph][Validation]") {
     auto A   = create_random_tensor<double>("A", 4, 4);
-    auto OUT = create_zero_tensor<double>("OUT", 4, 4);
+    auto out = create_zero_tensor<double>("out", 4, 4);
 
     cg::Graph graph("deferred_misuse");
     auto     &tmp = graph.scratch<double, 2>("tmp", 4, 4);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &tmp, A, A);
-        cg::einsum("ik;kj->ij", &OUT, tmp, A);
+        cg::einsum("ik;kj->ij", &out, tmp, A);
     }
 
     // Executing with tmp still deferred used to be a segfault (null data
@@ -622,25 +622,25 @@ TEST_CASE("deferred tensor without Materialization - actionable execute error", 
 
     auto tmp_ref = create_zero_tensor<double>("tmpref", 4, 4);
     tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, A);
-    auto OUT_ref = create_zero_tensor<double>("OUTref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, tmp_ref, Indices{k, j}, A);
+    auto out_ref = create_zero_tensor<double>("OUTref", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, tmp_ref, Indices{k, j}, A);
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
         }
     }
 }
 
 TEST_CASE("deferred tensor materialized by hand - no false positive", "[ComputeGraph][Validation]") {
     auto A   = create_random_tensor<double>("A", 4, 4);
-    auto OUT = create_zero_tensor<double>("OUT", 4, 4);
+    auto out = create_zero_tensor<double>("out", 4, 4);
 
     cg::Graph graph("deferred_manual");
     auto     &tmp = graph.scratch<double, 2>("tmp", 4, 4);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &tmp, A, A);
-        cg::einsum("ik;kj->ij", &OUT, tmp, A);
+        cg::einsum("ik;kj->ij", &out, tmp, A);
     }
 
     // The handle's alloc_state snapshot still says Deferred; the live

@@ -1258,10 +1258,10 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     mutable std::shared_ptr<void> _life_token;
 
     template <typename TOther>
-    friend class RuntimeTensorView;
+    friend struct RuntimeTensorView;
 
     template <typename TOther, typename Alloc2>
-    friend class GeneralRuntimeTensor;
+    friend struct GeneralRuntimeTensor;
 
   public:
     /// Pending post-materialize init kind. Defaults to ``None``.

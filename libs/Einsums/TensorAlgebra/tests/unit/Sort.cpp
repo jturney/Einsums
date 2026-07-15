@@ -248,6 +248,7 @@ TEMPLATE_TEST_CASE("permute2", "[tensor]", float, double) {
         }
     }
 
+#if !defined(EINSUMS_WINDOWS) // HPTT plan API unavailable on Windows
     SECTION("Rank 3 - Saved permute") {
         Tensor<TestType, 3> A{"A", 2, 3, 4};
         Tensor<TestType, 3> B{"B", 3, 4, 2};
@@ -271,8 +272,10 @@ TEMPLATE_TEST_CASE("permute2", "[tensor]", float, double) {
             }
         }
     }
+#endif
 }
 
+#if !defined(EINSUMS_WINDOWS) // HPTT plan API unavailable on Windows
 TEST_CASE("Saving and loading permutes") {
     using namespace einsums;
     using namespace einsums::tensor_algebra;
@@ -312,3 +315,4 @@ TEST_CASE("Saving and loading permutes") {
         }
     }
 }
+#endif

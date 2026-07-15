@@ -367,7 +367,7 @@ void finalize_Einsums_Tensor() {
     H5Fclose(singleton.hdf5_file);
 
     if (singleton.hdf5_file != H5I_INVALID_HID && global_config.get_bool("delete-hdf5-files", true)) {
-        H5Fdelete(fname.c_str(), H5P_DEFAULT);
+        H5Fdelete(fname.string().c_str(), H5P_DEFAULT); // .string(): path::c_str() is wchar_t* on Windows
     }
 
     if (singleton.link_property_list != H5I_INVALID_HID) {

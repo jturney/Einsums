@@ -19,6 +19,24 @@
 
 #include <Einsums/Testing.hpp>
 
+namespace {
+// POSIX setenv/unsetenv do not exist in the MSVC CRT.
+void set_env_var(char const *name, char const *value) {
+#if defined(EINSUMS_WINDOWS)
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+void unset_env_var(char const *name) {
+#if defined(EINSUMS_WINDOWS)
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+} // namespace
+
 using namespace einsums;
 using namespace einsums::index;
 namespace cg = einsums::compute_graph;
@@ -1009,16 +1027,16 @@ TEST_CASE("HardwareProfile - EINSUMS_HARDWARE_PROFILE overrides the built-in tab
     std::string const path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/einsums_hw_env_test.json";
     REQUIRE(profile.save_json(path));
 
-    setenv("EINSUMS_HARDWARE_PROFILE", path.c_str(), 1);
+    set_env_var("EINSUMS_HARDWARE_PROFILE", path.c_str());
     auto loaded = cg::HardwareProfile::detect_default();
-    unsetenv("EINSUMS_HARDWARE_PROFILE");
+    unset_env_var("EINSUMS_HARDWARE_PROFILE");
 
     CHECK(loaded.source == "calibrated");
     CHECK(loaded.cpu.name == "EnvOverrideTest CPU");
 
-    setenv("EINSUMS_HARDWARE_PROFILE", "/nonexistent/einsums_hw.json", 1);
+    set_env_var("EINSUMS_HARDWARE_PROFILE", "/nonexistent/einsums_hw.json");
     auto fallback = cg::HardwareProfile::detect_default();
-    unsetenv("EINSUMS_HARDWARE_PROFILE");
+    unset_env_var("EINSUMS_HARDWARE_PROFILE");
 
     CHECK(fallback.source == "database");
     std::remove(path.c_str());

@@ -115,7 +115,17 @@ def compiler_packages(compiler, system):
                 "llvm-openmp",
             ]
         if system == "Windows":
-            return ["clangdev"]
+            # clang_win-64 activates clang-cl and depends on the vs2022
+            # build-tools shim (vs2022_win-64) for the MSVC CRT and Windows
+            # SDK. Unpinned: conda-forge's win-64 clang lags the Linux/macOS
+            # pins, and the vs2022 activation only recognizes VS versions in
+            # [17.0, 18.0) - let the solver pick the newest coherent set.
+            # llvm-openmp provides libomp for clang-cl's /openmp:llvm.
+            return [
+                "clang_win-64",
+                "clangxx_win-64",
+                "llvm-openmp",
+            ]
         raise SystemExit(f"Unknown platform for clang: {system}.")
 
     if compiler == "intel":

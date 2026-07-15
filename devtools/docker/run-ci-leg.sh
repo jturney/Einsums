@@ -164,7 +164,7 @@ leg_settings() {
             ;;
         *)
             echo "Unknown leg: $1" >&2
-            echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], intel, tsan, tsan-nopy, asan" >&2
+            echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], intel, tsan, tsan-nopy, asan, windows-cross" >&2
             echo "       (append -arm64 to any of the above for native arm64)" >&2
             exit 1
             ;;
@@ -336,8 +336,46 @@ if [[ $# -lt 1 ]]; then
     exit 1
 fi
 
+# ──────────────────────────────────────────────────────────────────────────
+# windows-cross: compile+link validation for x86_64-pc-windows-msvc.
+# Self-contained (own image with clang-cl/lld-link + xwin CRT/SDK + conda
+# win-64 libraries); does NOT use the conda-leg container. Cannot RUN tests -
+# there is no Windows kernel - the GitHub windows runner stays the source of
+# truth for test results. Everything after `--` is passed to ninja.
+run_windows_cross() {
+    shift # drop leg name
+    local image=einsums-windows-cross
+    local ctx="$REPO_ROOT/devtools/docker/windows-cross"
+
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        echo ">> building $image (first run: downloads the MSVC CRT/SDK, ~10 min)"
+        docker build -t "$image" "$ctx"
+    fi
+
+    local ninja_args=()
+    if [[ "${1:-}" == "--" ]]; then
+        shift
+        ninja_args=("$@")
+    fi
+
+    docker run --rm \
+        -v "$REPO_ROOT":/src:ro \
+        -v einsums-wincross-build:/wb \
+        "$image" sh -c "
+            cmake -S /src -B /wb/build -GNinja \
+                -DCMAKE_TOOLCHAIN_FILE=/src/devtools/docker/windows-cross/toolchain-clang-cl.cmake \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DEINSUMS_BUILD_PYTHON=OFF \
+                -DEINSUMS_WITH_TESTS=ON \
+                -DEINSUMS_WITH_BACKTRACES=OFF \
+                > /wb/configure.log 2>&1 || { tail -40 /wb/configure.log; exit 1; }
+            ninja -C /wb/build ${ninja_args[*]:-}
+        "
+}
+
 case "$1" in
     start) shift; cmd_start "${1:-amd64}" ;;
     stop)  shift; cmd_stop  "${1:-amd64}" ;;
+    windows-cross) run_windows_cross "$@" ;;
     *)     run_leg "$@" ;;
 esac

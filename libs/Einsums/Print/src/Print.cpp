@@ -222,7 +222,7 @@ inline bool is_terminal(std::ostream const &os) {
 }
 
 bool is_terminal(FILE *file) {
-    return __isatty(_fileno(file));
+    return _isatty(_fileno(file));
 }
 #else
 bool is_terminal(std::ostream const &os) {

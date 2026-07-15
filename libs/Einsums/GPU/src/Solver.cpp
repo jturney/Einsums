@@ -34,7 +34,7 @@ namespace einsums::gpu::solver {
 // ===========================================================================
 
 template <>
-int syev<float>(char jobz, char uplo, int64_t n, float *A, int64_t lda, float *W) {
+EINSUMS_EXPORT int syev<float>(char jobz, char uplo, int64_t n, float *A, int64_t lda, float *W) {
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
     (void)jobz;
     (void)uplo;
@@ -49,7 +49,7 @@ int syev<float>(char jobz, char uplo, int64_t n, float *A, int64_t lda, float *W
 }
 
 template <>
-int syev<double>(char jobz, char uplo, int64_t n, double *A, int64_t lda, double *W) {
+EINSUMS_EXPORT int syev<double>(char jobz, char uplo, int64_t n, double *A, int64_t lda, double *W) {
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
     (void)jobz;
     (void)uplo;
@@ -68,7 +68,7 @@ int syev<double>(char jobz, char uplo, int64_t n, double *A, int64_t lda, double
 // ===========================================================================
 
 template <>
-int heev<float>(char jobz, char uplo, int64_t n, std::complex<float> *A, int64_t lda, float *W) {
+EINSUMS_EXPORT int heev<float>(char jobz, char uplo, int64_t n, std::complex<float> *A, int64_t lda, float *W) {
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
     (void)jobz;
     (void)uplo;
@@ -89,7 +89,7 @@ int heev<float>(char jobz, char uplo, int64_t n, std::complex<float> *A, int64_t
 }
 
 template <>
-int heev<double>(char jobz, char uplo, int64_t n, std::complex<double> *A, int64_t lda, double *W) {
+EINSUMS_EXPORT int heev<double>(char jobz, char uplo, int64_t n, std::complex<double> *A, int64_t lda, double *W) {
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
     (void)jobz;
     (void)uplo;
@@ -114,7 +114,7 @@ int heev<double>(char jobz, char uplo, int64_t n, std::complex<double> *A, int64
 // ===========================================================================
 
 template <>
-int gesv<float>(int64_t n, int64_t nrhs, float *A, int64_t lda, int64_t *ipiv, float *B, int64_t ldb) {
+EINSUMS_EXPORT int gesv<float>(int64_t n, int64_t nrhs, float *A, int64_t lda, int64_t *ipiv, float *B, int64_t ldb) {
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
     (void)n;
     (void)nrhs;
@@ -136,7 +136,7 @@ int gesv<float>(int64_t n, int64_t nrhs, float *A, int64_t lda, int64_t *ipiv, f
 }
 
 template <>
-int gesv<double>(int64_t n, int64_t nrhs, double *A, int64_t lda, int64_t *ipiv, double *B, int64_t ldb) {
+EINSUMS_EXPORT int gesv<double>(int64_t n, int64_t nrhs, double *A, int64_t lda, int64_t *ipiv, double *B, int64_t ldb) {
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
     (void)n;
     (void)nrhs;
@@ -161,7 +161,7 @@ int gesv<double>(int64_t n, int64_t nrhs, double *A, int64_t lda, int64_t *ipiv,
 // ===========================================================================
 
 template <>
-int getrf<float>(int64_t m, int64_t n, float *A, int64_t lda, int64_t *ipiv) {
+EINSUMS_EXPORT int getrf<float>(int64_t m, int64_t n, float *A, int64_t lda, int64_t *ipiv) {
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
     (void)m;
     (void)n;
@@ -179,7 +179,7 @@ int getrf<float>(int64_t m, int64_t n, float *A, int64_t lda, int64_t *ipiv) {
 }
 
 template <>
-int getrf<double>(int64_t m, int64_t n, double *A, int64_t lda, int64_t *ipiv) {
+EINSUMS_EXPORT int getrf<double>(int64_t m, int64_t n, double *A, int64_t lda, int64_t *ipiv) {
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
     (void)m;
     (void)n;
@@ -201,7 +201,7 @@ int getrf<double>(int64_t m, int64_t n, double *A, int64_t lda, int64_t *ipiv) {
 // ===========================================================================
 
 template <>
-int getri<float>(int64_t n, float *A, int64_t lda, int64_t const *ipiv) {
+EINSUMS_EXPORT int getri<float>(int64_t n, float *A, int64_t lda, int64_t const *ipiv) {
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
     (void)n;
     (void)A;
@@ -218,7 +218,7 @@ int getri<float>(int64_t n, float *A, int64_t lda, int64_t const *ipiv) {
 }
 
 template <>
-int getri<double>(int64_t n, double *A, int64_t lda, int64_t const *ipiv) {
+EINSUMS_EXPORT int getri<double>(int64_t n, double *A, int64_t lda, int64_t const *ipiv) {
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
     (void)n;
     (void)A;
@@ -239,8 +239,8 @@ int getri<double>(int64_t n, double *A, int64_t lda, int64_t const *ipiv) {
 // ===========================================================================
 
 template <>
-int gesvd<float>(char jobu, char jobvt, int64_t m, int64_t n, float *A, int64_t lda, float *S, float *U, int64_t ldu, float *VT,
-                 int64_t ldvt) {
+EINSUMS_EXPORT int gesvd<float>(char jobu, char jobvt, int64_t m, int64_t n, float *A, int64_t lda, float *S, float *U, int64_t ldu,
+                                float *VT, int64_t ldvt) {
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
     (void)jobu;
     (void)jobvt;
@@ -263,8 +263,8 @@ int gesvd<float>(char jobu, char jobvt, int64_t m, int64_t n, float *A, int64_t 
 }
 
 template <>
-int gesvd<double>(char jobu, char jobvt, int64_t m, int64_t n, double *A, int64_t lda, double *S, double *U, int64_t ldu, double *VT,
-                  int64_t ldvt) {
+EINSUMS_EXPORT int gesvd<double>(char jobu, char jobvt, int64_t m, int64_t n, double *A, int64_t lda, double *S, double *U, int64_t ldu,
+                                 double *VT, int64_t ldvt) {
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
     (void)jobu;
     (void)jobvt;

@@ -1197,7 +1197,8 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     template <typename TOther>
     auto operator=(TensorView<TOther, Rank> const &other) -> GeneralTensor & {
         LabeledSection("operator=");
-    detail:
+        // Unqualified call resolves to einsums::detail::copy_to via ADL on
+        // TensorImpl (a stray 'detail:' label used to sit here).
         copy_to(other.impl(), _impl);
 
         return *this;
@@ -2724,6 +2725,7 @@ TensorView(std::string, GeneralTensor<T, OtherRank, Alloc> &, Dim<Rank> const &,
  * @return A new tensor. By default, memory is not initialized to anything. It may be filled with garbage.
  */
 template <typename Type = double, typename... Args>
+    requires(std::is_convertible_v<Args, std::size_t> && ...)
 auto create_tensor(std::string const &name, Args... args) {
     EINSUMS_LOG_TRACE("creating tensor {}, {}", name, std::forward_as_tuple(args...));
     return Tensor<Type, sizeof...(Args)>{name, args...};
@@ -2753,7 +2755,12 @@ auto create_tensor(std::string const &name, Args... args) {
  * @param args The arguments needed to construct the tensor.
  * @return A new tensor. By default, memory is not initialized to anything. It may be filled with garbage.
  */
+// The dims-are-integral constraints also disambiguate under MSVC-compat
+// compilers, where a literal `false` converts to a null `char const *` and a
+// call like create_tensor<T>(false, "a", 3, 4) would otherwise match BOTH
+// overloads (this one properly, the one above with name = (char const*)false).
 template <typename Type = double, typename... Args>
+    requires(std::is_convertible_v<Args, std::size_t> && ...)
 auto create_tensor(bool row_major, std::string const &name, Args... args) {
     EINSUMS_LOG_TRACE("creating tensor {}, {}", name, std::forward_as_tuple(args...));
     return Tensor<Type, sizeof...(Args)>{row_major, name, args...};

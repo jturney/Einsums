@@ -35,7 +35,9 @@ namespace einsums {
 
 namespace {
 
-struct EINSUMS_EXPORT ArgumentList final : design_pats::Lockable<std::mutex> {
+// NOT EINSUMS_EXPORT: dllexport requires external linkage, and this type
+// lives in an anonymous namespace on purpose (TU-local singleton).
+struct ArgumentList final : design_pats::Lockable<std::mutex> {
     EINSUMS_SINGLETON_DEF(ArgumentList)
 
     std::list<std::function<void()>> argument_functions{};

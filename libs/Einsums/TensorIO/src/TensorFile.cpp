@@ -194,7 +194,7 @@ std::vector<std::string> TensorFile::tensor_names() const {
 void TensorFile::flush() {
     if (_fd >= 0 && _mode != Mode::Read) {
         write_metadata();
-        ::fsync(_fd);
+        detail::sync_file(_fd);
     }
 }
 

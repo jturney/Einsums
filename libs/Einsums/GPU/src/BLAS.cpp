@@ -344,14 +344,14 @@ void dgemv(char trans, int64_t m, int64_t n, double alpha, double const *a, int6
 }
 
 template <>
-void gemv<float>(char trans, int64_t m, int64_t n, float alpha, float const *a, int64_t lda, float const *x, int64_t incx, float beta,
-                 float *y, int64_t incy) {
+EINSUMS_EXPORT void gemv<float>(char trans, int64_t m, int64_t n, float alpha, float const *a, int64_t lda, float const *x, int64_t incx,
+                                float beta, float *y, int64_t incy) {
     sgemv(trans, m, n, alpha, a, lda, x, incx, beta, y, incy);
 }
 
 template <>
-void gemv<double>(char trans, int64_t m, int64_t n, double alpha, double const *a, int64_t lda, double const *x, int64_t incx, double beta,
-                  double *y, int64_t incy) {
+EINSUMS_EXPORT void gemv<double>(char trans, int64_t m, int64_t n, double alpha, double const *a, int64_t lda, double const *x,
+                                 int64_t incx, double beta, double *y, int64_t incy) {
     dgemv(trans, m, n, alpha, a, lda, x, incx, beta, y, incy);
 }
 
@@ -363,55 +363,55 @@ void gemv<double>(char trans, int64_t m, int64_t n, double alpha, double const *
 // ===========================================================================
 
 template <>
-void scal<float>(int64_t n, float alpha, float *x, int64_t incx) {
+EINSUMS_EXPORT void scal<float>(int64_t n, float alpha, float *x, int64_t incx) {
     ::einsums::blas::vendor::sscal(static_cast<int>(n), alpha, x, static_cast<int>(incx));
 }
 
 template <>
-void scal<double>(int64_t n, double alpha, double *x, int64_t incx) {
+EINSUMS_EXPORT void scal<double>(int64_t n, double alpha, double *x, int64_t incx) {
     ::einsums::blas::vendor::dscal(static_cast<int>(n), alpha, x, static_cast<int>(incx));
 }
 
 template <>
-void axpy<float>(int64_t n, float alpha, float const *x, int64_t incx, float *y, int64_t incy) {
+EINSUMS_EXPORT void axpy<float>(int64_t n, float alpha, float const *x, int64_t incx, float *y, int64_t incy) {
     ::einsums::blas::vendor::saxpy(static_cast<int>(n), alpha, x, static_cast<int>(incx), y, static_cast<int>(incy));
 }
 
 template <>
-void axpy<double>(int64_t n, double alpha, double const *x, int64_t incx, double *y, int64_t incy) {
+EINSUMS_EXPORT void axpy<double>(int64_t n, double alpha, double const *x, int64_t incx, double *y, int64_t incy) {
     ::einsums::blas::vendor::daxpy(static_cast<int>(n), alpha, x, static_cast<int>(incx), y, static_cast<int>(incy));
 }
 
 template <>
-void axpby<float>(int64_t n, float alpha, float const *x, int64_t incx, float beta, float *y, int64_t incy) {
+EINSUMS_EXPORT void axpby<float>(int64_t n, float alpha, float const *x, int64_t incx, float beta, float *y, int64_t incy) {
     // axpby = scale y by beta, then axpy
     ::einsums::blas::vendor::sscal(static_cast<int>(n), beta, y, static_cast<int>(incy));
     ::einsums::blas::vendor::saxpy(static_cast<int>(n), alpha, x, static_cast<int>(incx), y, static_cast<int>(incy));
 }
 
 template <>
-void axpby<double>(int64_t n, double alpha, double const *x, int64_t incx, double beta, double *y, int64_t incy) {
+EINSUMS_EXPORT void axpby<double>(int64_t n, double alpha, double const *x, int64_t incx, double beta, double *y, int64_t incy) {
     ::einsums::blas::vendor::dscal(static_cast<int>(n), beta, y, static_cast<int>(incy));
     ::einsums::blas::vendor::daxpy(static_cast<int>(n), alpha, x, static_cast<int>(incx), y, static_cast<int>(incy));
 }
 
 template <>
-float dot<float>(int64_t n, float const *x, int64_t incx, float const *y, int64_t incy) {
+EINSUMS_EXPORT float dot<float>(int64_t n, float const *x, int64_t incx, float const *y, int64_t incy) {
     return ::einsums::blas::vendor::sdot(static_cast<int>(n), x, static_cast<int>(incx), y, static_cast<int>(incy));
 }
 
 template <>
-double dot<double>(int64_t n, double const *x, int64_t incx, double const *y, int64_t incy) {
+EINSUMS_EXPORT double dot<double>(int64_t n, double const *x, int64_t incx, double const *y, int64_t incy) {
     return ::einsums::blas::vendor::ddot(static_cast<int>(n), x, static_cast<int>(incx), y, static_cast<int>(incy));
 }
 
 template <>
-float nrm2<float>(int64_t n, float const *x, int64_t incx) {
+EINSUMS_EXPORT float nrm2<float>(int64_t n, float const *x, int64_t incx) {
     return ::einsums::blas::vendor::snrm2(static_cast<int>(n), x, static_cast<int>(incx));
 }
 
 template <>
-double nrm2<double>(int64_t n, double const *x, int64_t incx) {
+EINSUMS_EXPORT double nrm2<double>(int64_t n, double const *x, int64_t incx) {
     return ::einsums::blas::vendor::dnrm2(static_cast<int>(n), x, static_cast<int>(incx));
 }
 
@@ -420,58 +420,60 @@ double nrm2<double>(int64_t n, double const *x, int64_t incx) {
 // ===========================================================================
 
 template <>
-void gemm<float>(char transa, char transb, int64_t m, int64_t n, int64_t k, float alpha, float const *a, int64_t lda, float const *b,
-                 int64_t ldb, float beta, float *c, int64_t ldc) {
+EINSUMS_EXPORT void gemm<float>(char transa, char transb, int64_t m, int64_t n, int64_t k, float alpha, float const *a, int64_t lda,
+                                float const *b, int64_t ldb, float beta, float *c, int64_t ldc) {
     sgemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
 }
 
 template <>
-void gemm<double>(char transa, char transb, int64_t m, int64_t n, int64_t k, double alpha, double const *a, int64_t lda, double const *b,
-                  int64_t ldb, double beta, double *c, int64_t ldc) {
+EINSUMS_EXPORT void gemm<double>(char transa, char transb, int64_t m, int64_t n, int64_t k, double alpha, double const *a, int64_t lda,
+                                 double const *b, int64_t ldb, double beta, double *c, int64_t ldc) {
     dgemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
 }
 
 template <>
-void gemm<std::complex<float>>(char transa, char transb, int64_t m, int64_t n, int64_t k, std::complex<float> alpha,
-                               std::complex<float> const *a, int64_t lda, std::complex<float> const *b, int64_t ldb,
-                               std::complex<float> beta, std::complex<float> *c, int64_t ldc) {
+EINSUMS_EXPORT void gemm<std::complex<float>>(char transa, char transb, int64_t m, int64_t n, int64_t k, std::complex<float> alpha,
+                                              std::complex<float> const *a, int64_t lda, std::complex<float> const *b, int64_t ldb,
+                                              std::complex<float> beta, std::complex<float> *c, int64_t ldc) {
     cgemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
 }
 
 template <>
-void gemm<std::complex<double>>(char transa, char transb, int64_t m, int64_t n, int64_t k, std::complex<double> alpha,
-                                std::complex<double> const *a, int64_t lda, std::complex<double> const *b, int64_t ldb,
-                                std::complex<double> beta, std::complex<double> *c, int64_t ldc) {
+EINSUMS_EXPORT void gemm<std::complex<double>>(char transa, char transb, int64_t m, int64_t n, int64_t k, std::complex<double> alpha,
+                                               std::complex<double> const *a, int64_t lda, std::complex<double> const *b, int64_t ldb,
+                                               std::complex<double> beta, std::complex<double> *c, int64_t ldc) {
     zgemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
 }
 
 template <>
-void gemm_strided_batched<float>(char transa, char transb, int64_t m, int64_t n, int64_t k, float alpha, float const *a, int64_t lda,
-                                 int64_t stride_a, float const *b, int64_t ldb, int64_t stride_b, float beta, float *c, int64_t ldc,
-                                 int64_t stride_c, int64_t batch_count) {
+EINSUMS_EXPORT void gemm_strided_batched<float>(char transa, char transb, int64_t m, int64_t n, int64_t k, float alpha, float const *a,
+                                                int64_t lda, int64_t stride_a, float const *b, int64_t ldb, int64_t stride_b, float beta,
+                                                float *c, int64_t ldc, int64_t stride_c, int64_t batch_count) {
     sgemm_strided_batched(transa, transb, m, n, k, alpha, a, lda, stride_a, b, ldb, stride_b, beta, c, ldc, stride_c, batch_count);
 }
 
 template <>
-void gemm_strided_batched<double>(char transa, char transb, int64_t m, int64_t n, int64_t k, double alpha, double const *a, int64_t lda,
-                                  int64_t stride_a, double const *b, int64_t ldb, int64_t stride_b, double beta, double *c, int64_t ldc,
-                                  int64_t stride_c, int64_t batch_count) {
+EINSUMS_EXPORT void gemm_strided_batched<double>(char transa, char transb, int64_t m, int64_t n, int64_t k, double alpha, double const *a,
+                                                 int64_t lda, int64_t stride_a, double const *b, int64_t ldb, int64_t stride_b, double beta,
+                                                 double *c, int64_t ldc, int64_t stride_c, int64_t batch_count) {
     dgemm_strided_batched(transa, transb, m, n, k, alpha, a, lda, stride_a, b, ldb, stride_b, beta, c, ldc, stride_c, batch_count);
 }
 
 template <>
-void gemm_strided_batched<std::complex<float>>(char transa, char transb, int64_t m, int64_t n, int64_t k, std::complex<float> alpha,
-                                               std::complex<float> const *a, int64_t lda, int64_t stride_a, std::complex<float> const *b,
-                                               int64_t ldb, int64_t stride_b, std::complex<float> beta, std::complex<float> *c, int64_t ldc,
-                                               int64_t stride_c, int64_t batch_count) {
+EINSUMS_EXPORT void gemm_strided_batched<std::complex<float>>(char transa, char transb, int64_t m, int64_t n, int64_t k,
+                                                              std::complex<float> alpha, std::complex<float> const *a, int64_t lda,
+                                                              int64_t stride_a, std::complex<float> const *b, int64_t ldb, int64_t stride_b,
+                                                              std::complex<float> beta, std::complex<float> *c, int64_t ldc,
+                                                              int64_t stride_c, int64_t batch_count) {
     cgemm_strided_batched(transa, transb, m, n, k, alpha, a, lda, stride_a, b, ldb, stride_b, beta, c, ldc, stride_c, batch_count);
 }
 
 template <>
-void gemm_strided_batched<std::complex<double>>(char transa, char transb, int64_t m, int64_t n, int64_t k, std::complex<double> alpha,
-                                                std::complex<double> const *a, int64_t lda, int64_t stride_a, std::complex<double> const *b,
-                                                int64_t ldb, int64_t stride_b, std::complex<double> beta, std::complex<double> *c,
-                                                int64_t ldc, int64_t stride_c, int64_t batch_count) {
+EINSUMS_EXPORT void gemm_strided_batched<std::complex<double>>(char transa, char transb, int64_t m, int64_t n, int64_t k,
+                                                               std::complex<double> alpha, std::complex<double> const *a, int64_t lda,
+                                                               int64_t stride_a, std::complex<double> const *b, int64_t ldb,
+                                                               int64_t stride_b, std::complex<double> beta, std::complex<double> *c,
+                                                               int64_t ldc, int64_t stride_c, int64_t batch_count) {
     zgemm_strided_batched(transa, transb, m, n, k, alpha, a, lda, stride_a, b, ldb, stride_b, beta, c, ldc, stride_c, batch_count);
 }
 

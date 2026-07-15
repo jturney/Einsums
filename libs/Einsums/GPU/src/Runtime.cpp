@@ -15,7 +15,17 @@
 #else
 #    include <cstdlib>
 #    include <cstring>
-#    include <unistd.h>
+#    if defined(_WIN32)
+#        ifndef WIN32_LEAN_AND_MEAN
+#            define WIN32_LEAN_AND_MEAN
+#        endif
+#        ifndef NOMINMAX
+#            define NOMINMAX
+#        endif
+#        include <windows.h>
+#    else
+#        include <unistd.h>
+#    endif
 #endif
 
 #include <atomic>
@@ -135,6 +145,12 @@ size_t default_mock_limit() {
     auto page_size = sysconf(_SC_PAGE_SIZE);
     if (pages > 0 && page_size > 0) {
         return static_cast<size_t>(pages) * static_cast<size_t>(page_size) / 2;
+    }
+#    elif defined(EINSUMS_WINDOWS)
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (GlobalMemoryStatusEx(&status) && status.ullTotalPhys > 0) {
+        return static_cast<size_t>(status.ullTotalPhys) / 2;
     }
 #    endif
     return size_t{4} * 1024 * 1024 * 1024; // 4 GB fallback

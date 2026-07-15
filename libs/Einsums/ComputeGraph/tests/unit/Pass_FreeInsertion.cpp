@@ -153,14 +153,14 @@ TEST_CASE("FreeInsertion - eager create_tensor intermediate survives replay", "[
     constexpr size_t N   = 400;
     auto             A   = create_random_tensor<double>("A", N, N);
     auto             B   = create_random_tensor<double>("B", N, N);
-    auto             OUT = create_zero_tensor<double>("OUT", N, N);
+    auto             out = create_zero_tensor<double>("out", N, N);
 
     cg::Graph graph("fi_eager_replay");
     auto     &tmp = graph.create_tensor<double, 2>("tmp", N, N);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &tmp, A, B);   // writes tmp
-        cg::einsum("ik;kj->ij", &OUT, tmp, B); // last (only) read of tmp
+        cg::einsum("ik;kj->ij", &out, tmp, B); // last (only) read of tmp
     }
 
     auto [modified, pass] = graph.apply<cg::passes::FreeInsertion>();
@@ -170,14 +170,14 @@ TEST_CASE("FreeInsertion - eager create_tensor intermediate survives replay", "[
     REQUIRE(count_nodes(graph, cg::OpKind::Materialize) == 1);
 
     graph.execute();
-    auto const OUT_first = Tensor<double, 2>(OUT);
+    auto const OUT_first = Tensor<double, 2>(out);
 
-    OUT.zero();
+    out.zero();
     graph.execute(); // replay: tmp must be re-materialized, not dangling
 
     for (size_t ii = 0; ii < N; ii += 37) {
         for (size_t jj = 0; jj < N; jj += 41) {
-            REQUIRE(std::abs(OUT(ii, jj) - OUT_first(ii, jj)) < 1e-10);
+            REQUIRE(std::abs(out(ii, jj) - OUT_first(ii, jj)) < 1e-10);
         }
     }
 }

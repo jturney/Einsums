@@ -9,4 +9,6 @@ einsums_add_executable(
   FOLDER "Tools/ComputeGraph"
   NOINSTALL
 )
-target_link_libraries(calibrate_hardware PRIVATE Einsums_ComputeGraph Einsums_TensorUtilities)
+# NOTE: no direct module links - einsums_add_executable already links the
+# umbrella Einsums library. Linking module OBJECT libraries alongside it
+# duplicates every symbol under the MSVC ABI (harmlessly merged on ELF).

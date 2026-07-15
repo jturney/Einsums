@@ -64,20 +64,20 @@ TEST_CASE("InplaceOptimization - finds candidates", "[ComputeGraph][Passes]") {
 
 TEST_CASE("InplaceOptimization - merges direct_product output into dying input", "[ComputeGraph][Passes][Inplace]") {
     // X = A·B (intermediate), Y = alpha*(X ⊙ B) with beta=0 (intermediate,
-    // pure overwrite, elementwise), OUT = Y·A (user-visible). X dies at the
+    // pure overwrite, elementwise), out = Y·A (user-visible). X dies at the
     // direct_product, whose output is element-aligned with it, so Y reuses
     // X's storage and Y's own allocation disappears.
     auto A   = create_random_tensor<double>("A", 6, 6);
     auto B   = create_random_tensor<double>("B", 6, 6);
-    auto OUT = create_zero_tensor<double>("OUT", 6, 6);
+    auto out = create_zero_tensor<double>("out", 6, 6);
 
     // Reference, computed eagerly.
     auto X_ref = create_zero_tensor<double>("Xref", 6, 6);
     tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
     auto Y_ref = create_zero_tensor<double>("Yref", 6, 6);
     linear_algebra::direct_product(2.0, X_ref, B, 0.0, &Y_ref);
-    auto OUT_ref = create_zero_tensor<double>("OUTref", 6, 6);
-    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, Y_ref, Indices{k, j}, A);
+    auto out_ref = create_zero_tensor<double>("OUTref", 6, 6);
+    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, Y_ref, Indices{k, j}, A);
 
     cg::Graph graph("inplace_merge");
     auto     &X = graph.create_zero_tensor<double, 2>("X", 6, 6);
@@ -86,7 +86,7 @@ TEST_CASE("InplaceOptimization - merges direct_product output into dying input",
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &X, A, B);
         cg::direct_product(2.0, X, B, 0.0, &Y);
-        cg::einsum("ik;kj->ij", &OUT, Y, A);
+        cg::einsum("ik;kj->ij", &out, Y, A);
     }
 
     size_t const allocs_before = [&] {
@@ -111,16 +111,16 @@ TEST_CASE("InplaceOptimization - merges direct_product output into dying input",
     graph.execute();
     for (size_t ii = 0; ii < 6; ii++) {
         for (size_t jj = 0; jj < 6; jj++) {
-            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
         }
     }
 
     // Replays keep working through the merged storage.
-    OUT.zero();
+    out.zero();
     graph.execute();
     for (size_t ii = 0; ii < 6; ii++) {
         for (size_t jj = 0; jj < 6; jj++) {
-            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
         }
     }
 }
@@ -130,7 +130,7 @@ TEST_CASE("InplaceOptimization - accumulating direct_product is not merged", "[C
     // the recording convention), so the output is not a pure overwrite.
     auto A   = create_random_tensor<double>("A", 4, 4);
     auto B   = create_random_tensor<double>("B", 4, 4);
-    auto OUT = create_zero_tensor<double>("OUT", 4, 4);
+    auto out = create_zero_tensor<double>("out", 4, 4);
 
     cg::Graph graph("inplace_rmw");
     auto     &X = graph.create_zero_tensor<double, 2>("X", 4, 4);
@@ -139,7 +139,7 @@ TEST_CASE("InplaceOptimization - accumulating direct_product is not merged", "[C
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &X, A, B);
         cg::direct_product(2.0, X, B, 1.0, &Y); // beta=1: accumulates into Y
-        cg::einsum("ik;kj->ij", &OUT, Y, A);
+        cg::einsum("ik;kj->ij", &out, Y, A);
     }
 
     auto [modified, pass] = graph.apply<cg::passes::InplaceOptimization>();
@@ -151,8 +151,8 @@ TEST_CASE("InplaceOptimization - twice-read input is not merged", "[ComputeGraph
     // X is read again after the elementwise consumer: its storage must live.
     auto A    = create_random_tensor<double>("A", 4, 4);
     auto B    = create_random_tensor<double>("B", 4, 4);
-    auto OUT1 = create_zero_tensor<double>("OUT1", 4, 4);
-    auto OUT2 = create_zero_tensor<double>("OUT2", 4, 4);
+    auto out1 = create_zero_tensor<double>("out1", 4, 4);
+    auto out2 = create_zero_tensor<double>("out2", 4, 4);
 
     cg::Graph graph("inplace_alive");
     auto     &X = graph.create_zero_tensor<double, 2>("X", 4, 4);
@@ -161,8 +161,8 @@ TEST_CASE("InplaceOptimization - twice-read input is not merged", "[ComputeGraph
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &X, A, B);
         cg::direct_product(1.0, X, B, 0.0, &Y);
-        cg::einsum("ik;kj->ij", &OUT1, Y, A);
-        cg::einsum("ik;kj->ij", &OUT2, X, A); // X read again
+        cg::einsum("ik;kj->ij", &out1, Y, A);
+        cg::einsum("ik;kj->ij", &out2, X, A); // X read again
     }
 
     auto [modified, pass] = graph.apply<cg::passes::InplaceOptimization>();
@@ -177,7 +177,7 @@ TEST_CASE("InplaceOptimization - twice-read input is not merged", "[ComputeGraph
     tensor_algebra::einsum(Indices{i, j}, &OUT2_ref, Indices{i, k}, X_ref, Indices{k, j}, A);
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(std::abs(OUT2(ii, jj) - OUT2_ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-12);
         }
     }
 }

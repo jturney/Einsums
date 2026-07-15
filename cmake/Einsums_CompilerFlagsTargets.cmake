@@ -7,6 +7,26 @@
 add_library(einsums_private_flags INTERFACE)
 add_library(einsums_public_flags INTERFACE)
 
+# MSVC-family compilers (cl, clang-cl) default to the active codepage for
+# source encoding. The tree contains UTF-8 in comments and docstrings
+# (box-drawing banners, math symbols), so force UTF-8 for source and
+# execution character sets; without this those files fail to compile on
+# Windows. GCC/Clang elsewhere already default to UTF-8.
+if(MSVC)
+  target_compile_options(einsums_private_flags INTERFACE /utf-8)
+  target_compile_options(einsums_public_flags INTERFACE /utf-8)
+  # The SIMD module's complex kernels use SSE3+ intrinsics; MSVC-family
+  # compilers default to bare x86-64 (SSE2). AVX2 has been universal on
+  # x86-64 since ~2013 and matches what the packed-GEMM kernels assume.
+  # Revisit if the SIMD module grows a proper runtime feature ladder.
+  target_compile_options(einsums_private_flags INTERFACE /arch:AVX2)
+  target_compile_options(einsums_public_flags INTERFACE /arch:AVX2)
+  # The MSVC CRT deprecates standard functions (strerror, getenv, ...) in
+  # favor of _s variants; we use the portable ones deliberately.
+  target_compile_definitions(einsums_private_flags INTERFACE _CRT_SECURE_NO_WARNINGS)
+  target_compile_definitions(einsums_public_flags INTERFACE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # Set C++ standard
 target_compile_features(einsums_private_flags INTERFACE cxx_std_${EINSUMS_WITH_CXX_STANDARD})
 target_compile_features(einsums_public_flags INTERFACE cxx_std_${EINSUMS_WITH_CXX_STANDARD})

@@ -117,6 +117,15 @@ struct LoopNode {
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT Pipeline {
   public:
+    // dllexport force-instantiates every member, including the implicit copy
+    // operations; Stage holds non-copyable members, so the copy must be
+    // explicitly deleted (ELF builds never instantiated it and got by
+    // implicitly). Moves stay: C++ callers move Pipelines into containers.
+    Pipeline(Pipeline const &)            = delete;
+    Pipeline &operator=(Pipeline const &) = delete;
+    Pipeline(Pipeline &&)                 = default;
+    Pipeline &operator=(Pipeline &&)      = default;
+
     /**
      * @brief Construct a pipeline with the given name.
      * @param[in] name Human-readable name for profiling and debugging.

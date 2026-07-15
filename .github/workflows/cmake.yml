@@ -41,6 +41,12 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && (contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src')) }}
     uses: ./.github/workflows/linux-intel-build.yml
 
+  windows_default:
+    name: Windows
+    needs: [ detect_changes ]
+    if: ${{ (contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src')) && (github.event_name != 'pull_request' || !startsWith(github.head_ref, 'stack/') || contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
+    uses: ./.github/workflows/windows-build-and-test.yml
+
   macos_default:
     name: macOS
     needs: [ detect_changes ]

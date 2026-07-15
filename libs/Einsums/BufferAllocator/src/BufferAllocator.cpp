@@ -16,6 +16,10 @@ void *allocate(size_t n) {
 
 #if defined(EINSUMS_HAVE_MALLOC_MIMALLOC)
     ptr = mi_malloc_aligned(n, 64);
+#elif defined(EINSUMS_WINDOWS)
+    // The MSVC CRT has neither aligned_alloc nor posix_memalign; memory from
+    // _aligned_malloc must be released with _aligned_free (see deallocate).
+    ptr = _aligned_malloc(n, 64);
 #elif defined(_ISOC11_SOURCE) || (__STDC_VERSION__ >= 201112L)
     // std::aligned_alloc(alignment, size) requires `size` to be a multiple of
     // `alignment` per the C/C++ standard; passing e.g. (64, 16) is UB and
@@ -36,6 +40,8 @@ void *allocate(size_t n) {
 void deallocate(void *p) {
 #if defined(EINSUMS_HAVE_MALLOC_MIMALLOC)
     mi_free(p);
+#elif defined(EINSUMS_WINDOWS)
+    _aligned_free(p);
 #else
     free(static_cast<void *>(p));
 #endif

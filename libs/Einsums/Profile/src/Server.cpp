@@ -20,6 +20,9 @@
 #        include <sys/socket.h>
 #        include <unistd.h>
 #    else
+#        ifndef NOMINMAX
+#            define NOMINMAX
+#        endif
 #        include <winsock2.h>
 #        include <ws2tcpip.h>
 #        pragma comment(lib, "ws2_32.lib")
@@ -319,7 +322,7 @@ void Server::accept_clients() {
 }
 
 void Server::write_node_json(std::string &out, AggNode const &n) { // NOLINT
-    static constexpr int64_t kMinSentinel = std::numeric_limits<int64_t>::max();
+    static constexpr int64_t kMinSentinel = (std::numeric_limits<int64_t>::max)();
 
     out += R"({"name":")" + escape_json_str(n.name) + "\"";
     out += ",\"call_count\":" + std::to_string(n.call_count);

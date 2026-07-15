@@ -119,14 +119,14 @@ TEST_CASE("CSE - surviving consumer of an eliminated duplicate reads the survivo
     // never-written) buffer and silently produced zeros. The earlier tests only
     // check the survivor's value or the node count, so they missed this.
     //
-    // Diamond shape: C and D are identical products (D is eliminated); OUT reads
-    // D. After CSE, D's producer is gone and OUT must resolve to C's buffer via
+    // Diamond shape: C and D are identical products (D is eliminated); out reads
+    // D. After CSE, D's producer is gone and out must resolve to C's buffer via
     // Graph::redirect_slot.
     auto A   = create_random_tensor<double>("A", 4, 3);
     auto B   = create_random_tensor<double>("B", 3, 5);
     auto F   = create_random_tensor<double>("F", 5, 2);
     auto C   = create_zero_tensor<double>("C", 4, 5);
-    auto OUT = create_zero_tensor<double>("OUT", 4, 2);
+    auto out = create_zero_tensor<double>("out", 4, 2);
 
     cg::Graph graph("cse_surviving_consumer");
     auto     &D = graph.create_tensor<double, 2>("D", 4, 5); // graph-owned duplicate
@@ -134,7 +134,7 @@ TEST_CASE("CSE - surviving consumer of an eliminated duplicate reads the survivo
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B);   // survivor
         cg::einsum("ik;kj->ij", &D, A, B);   // duplicate (eliminated)
-        cg::einsum("ik;kj->ij", &OUT, D, F); // consumer of the eliminated duplicate
+        cg::einsum("ik;kj->ij", &out, D, F); // consumer of the eliminated duplicate
     }
 
     REQUIRE(graph.num_nodes() == 4); // Alloc(D) + 3 einsums
@@ -146,17 +146,17 @@ TEST_CASE("CSE - surviving consumer of an eliminated duplicate reads the survivo
 
     graph.execute();
 
-    // Reference: OUT = (A·B)·F
+    // Reference: out = (A·B)·F
     auto AB = create_zero_tensor<double>("AB", 4, 5);
     tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
-    auto OUT_ref = create_zero_tensor<double>("OUTref", 4, 2);
-    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, AB, Indices{k, j}, F);
+    auto out_ref = create_zero_tensor<double>("OUTref", 4, 2);
+    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, AB, Indices{k, j}, F);
 
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 2; jj++) {
-            max_abs = std::max(max_abs, std::abs(OUT(ii, jj)));
-            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-12);
+            max_abs = std::max(max_abs, std::abs(out(ii, jj)));
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
         }
     }
     // Guard against the failure mode being masked by an all-zero reference.
@@ -168,12 +168,12 @@ TEST_CASE("CSE - redirect survives a rebind of the survivor", "[ComputeGraph][CS
     // be a one-time pointer copy, so rebinding the SURVIVOR after CSE left the
     // eliminated duplicate's consumers pointing at the survivor's old buffer.
     // The redirect must be durable: after rebind(C, C2) the producer writes C2
-    // and OUT (captured against D's slot) must follow it there.
+    // and out (captured against D's slot) must follow it there.
     auto A   = create_random_tensor<double>("A", 4, 3);
     auto B   = create_random_tensor<double>("B", 3, 5);
     auto F   = create_random_tensor<double>("F", 5, 2);
     auto C   = create_zero_tensor<double>("C", 4, 5);
-    auto OUT = create_zero_tensor<double>("OUT", 4, 2);
+    auto out = create_zero_tensor<double>("out", 4, 2);
 
     cg::Graph graph("cse_rebind_survivor");
     auto     &D = graph.create_tensor<double, 2>("D", 4, 5); // graph-owned duplicate
@@ -181,7 +181,7 @@ TEST_CASE("CSE - redirect survives a rebind of the survivor", "[ComputeGraph][CS
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B);   // survivor
         cg::einsum("ik;kj->ij", &D, A, B);   // duplicate (eliminated)
-        cg::einsum("ik;kj->ij", &OUT, D, F); // consumer of the eliminated duplicate
+        cg::einsum("ik;kj->ij", &out, D, F); // consumer of the eliminated duplicate
     }
 
     auto [modified, pass] = graph.apply<cg::passes::CSE>();
@@ -189,7 +189,7 @@ TEST_CASE("CSE - redirect survives a rebind of the survivor", "[ComputeGraph][CS
     REQUIRE(graph.num_nodes() == 3); // Alloc(D) + 2 einsums remain
 
     // Rebind the survivor to a fresh buffer. C's old buffer stays zero, so a
-    // stale (snapshot) redirect would make OUT read zeros.
+    // stale (snapshot) redirect would make out read zeros.
     auto C2 = create_zero_tensor<double>("C2", 4, 5);
     graph.rebind(C, C2);
 
@@ -197,14 +197,14 @@ TEST_CASE("CSE - redirect survives a rebind of the survivor", "[ComputeGraph][CS
 
     auto AB = create_zero_tensor<double>("AB", 4, 5);
     tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
-    auto OUT_ref = create_zero_tensor<double>("OUTref", 4, 2);
-    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, AB, Indices{k, j}, F);
+    auto out_ref = create_zero_tensor<double>("OUTref", 4, 2);
+    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, AB, Indices{k, j}, F);
 
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 2; jj++) {
-            max_abs = std::max(max_abs, std::abs(OUT(ii, jj)));
-            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-12);
+            max_abs = std::max(max_abs, std::abs(out(ii, jj)));
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
         }
     }
     REQUIRE(max_abs > 1e-10);

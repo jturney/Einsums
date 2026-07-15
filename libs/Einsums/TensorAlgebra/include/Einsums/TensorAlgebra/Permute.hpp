@@ -11,9 +11,11 @@
 #include <Einsums/Concepts/SmartPointer.hpp>
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
-#include <Einsums/HPTT/HPTT.hpp>
-#include <Einsums/HPTT/HPTTTypes.hpp>
-#include <Einsums/HPTT/Transpose.hpp>
+#if !defined(EINSUMS_WINDOWS)
+#    include <Einsums/HPTT/HPTT.hpp>
+#    include <Einsums/HPTT/HPTTTypes.hpp>
+#    include <Einsums/HPTT/Transpose.hpp>
+#endif
 #include <Einsums/Iterator/Enumerate.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile.hpp>
@@ -409,6 +411,8 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
     }
 }
 
+#if !defined(EINSUMS_WINDOWS)
+// The plan-compilation API is HPTT-backed and unavailable on Windows.
 /**
  * Compiles a permutation so that it can be used multiple times.
  *
@@ -454,6 +458,7 @@ template <CoreTensorConcept AType, CoreTensorConcept CType>
 void permute(CType *C, AType const &A, std::shared_ptr<hptt::Transpose<typename AType::ValueType>> plan) {
     detail::permute(&C->impl(), A.impl(), plan);
 }
+#endif
 
 // Sort with default values, no smart pointers
 /**
@@ -511,6 +516,7 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
     }
 }
 
+#if !defined(EINSUMS_WINDOWS) // HPTT plan API unavailable on Windows
 template <bool ConjA = false, CoreTensorConcept AType, CoreTensorConcept CType, typename... CIndices, typename... AIndices>
     requires requires {
         requires sizeof...(CIndices) == sizeof...(AIndices);
@@ -523,6 +529,7 @@ std::shared_ptr<hptt::Transpose<typename AType::ValueType>> compile_permute(std:
                                                                             hptt::SelectionMethod method = hptt::ESTIMATE) {
     return compile_permute(0.0, C_indices, C, 1.0, A_indices, A, method);
 }
+#endif
 
 /**
  * @brief Finds the tile grid dimensions for the requested indices.

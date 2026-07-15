@@ -38,8 +38,6 @@
 #    endif
 #    include <malloc.h>
 #    include <windows.h>
-
-#    include "TracyWinFamily.hpp"
 #else
 #    include <cstring>
 #    include <pthread.h>

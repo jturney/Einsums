@@ -110,14 +110,14 @@ TEST_CASE("UsageAnalysis - lifecycle filters (Alloc creation, Free scheduling ed
     constexpr size_t N   = 400; // clears FreeInsertion's min-bytes threshold
     auto             A   = create_random_tensor<double>("A", N, N);
     auto             B   = create_random_tensor<double>("B", N, N);
-    auto             OUT = create_zero_tensor<double>("OUT", N, N);
+    auto             out = create_zero_tensor<double>("out", N, N);
 
     cg::Graph graph("ua_lifecycle");
     auto     &tmp = graph.scratch<double, 2>("tmp", N, N);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &tmp, A, B);
-        cg::einsum("ik;kj->ij", &OUT, tmp, B);
+        cg::einsum("ik;kj->ij", &out, tmp, B);
     }
     auto pm = cg::PassManager::create_default();
     graph.apply(pm);
