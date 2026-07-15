@@ -1,0 +1,119 @@
+name: Windows build and test workflow
+on:
+  workflow_call:
+    inputs:
+      build_ref:
+        type: string
+        required: false
+      build_configure_extra_args:
+        type: string
+        required: false
+
+permissions: read-all
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [ RelWithDebInfo ]
+
+    name: "clang-cl • openblas • ${{ matrix.build_type }}"
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.build_ref }}
+          path: src
+          submodules: recursive
+
+      # ---- Conda environment setup ----
+      # Mirrors .github/actions/setup-conda-env, but the activation and every
+      # build step below must run in cmd: conda-forge's vs2022 activation is a
+      # .bat script (the PowerShell counterpart selects clang/clang++ instead
+      # of clang-cl), and the generator variables it exports must be UNSET
+      # before a Ninja configure - see devtools/configure_windows.bat for the
+      # full story.
+      - name: Setup Miniforge
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          activate-environment: einsums-env
+          conda-remove-defaults: "true"
+
+      - name: Install ruamel.yaml
+        run: conda install -y -c conda-forge ruamel.yaml
+
+      - name: Merge Conda YAML files
+        working-directory: src/devtools/conda-envs
+        run: python merge_yml.py default openblas
+
+      - name: Cache Conda env
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONDA }}/envs
+          key: conda-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/devtools/conda-envs/conda.yml') }}
+        id: cache
+
+      - name: Update environment
+        run: conda env update -n einsums-env -f src/devtools/conda-envs/conda.yml
+        if: steps.cache.outputs.cache-hit != 'true'
+
+      - name: Conda Environment
+        run: |
+          conda info
+          conda list
+
+      # ---- Configure, Build, Test ----
+      - name: Configure CMake
+        shell: cmd
+        run: |
+          call conda activate einsums-env
+          if errorlevel 1 exit /b %ERRORLEVEL%
+
+          rem Clear feedstock flags so CMAKE_BUILD_TYPE / the C++ standard win.
+          set "CXXFLAGS="
+          set "CFLAGS="
+          set "CPPFLAGS="
+          rem vs2022_compiler_vars exports these for the VS generator; Ninja
+          rem rejects any platform/toolset spec (even empty), and a preset
+          rem cannot unset an environment variable.
+          set "CMAKE_GENERATOR_PLATFORM="
+          set "CMAKE_GENERATOR_TOOLSET="
+          set "CMAKE_GENERATOR="
+          set "CC=%CONDA_PREFIX%\Library\bin\clang-cl.exe"
+          set "CXX=%CONDA_PREFIX%\Library\bin\clang-cl.exe"
+
+          cmake -G Ninja ^
+            -S "%GITHUB_WORKSPACE%\src" ^
+            -B "%GITHUB_WORKSPACE%\build" ^
+            -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} ^
+            -D CMAKE_C_COMPILER="%CC%" ^
+            -D CMAKE_CXX_COMPILER="%CXX%" ^
+            -D CMAKE_PREFIX_PATH="%CONDA_PREFIX%\Library" ^
+            -D EINSUMS_BUILD_PYTHON=OFF ^
+            -D EINSUMS_WITH_TESTS=ON ^
+            -D EINSUMS_WITH_EXAMPLES=ON ^
+            -D EINSUMS_WITH_BACKTRACES=OFF ^
+            -D EINSUMS_SHOW_WARNING=OFF ^
+            -D CMAKE_INSTALL_PREFIX="%GITHUB_WORKSPACE%\installed" ^
+            ${{ inputs.build_configure_extra_args }}
+
+      - name: Build
+        shell: cmd
+        run: |
+          call conda activate einsums-env
+          if errorlevel 1 exit /b %ERRORLEVEL%
+          cmake --build "%GITHUB_WORKSPACE%\build" --config ${{ matrix.build_type }}
+
+      - name: Test (CTest)
+        shell: cmd
+        working-directory: ${{ github.workspace }}/build
+        run: |
+          call conda activate einsums-env
+          if errorlevel 1 exit /b %ERRORLEVEL%
+          ctest --output-on-failure -j3
