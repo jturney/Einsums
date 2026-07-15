@@ -11,6 +11,8 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <algorithm>
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -203,4 +205,41 @@ TEST_CASE("create_default - safe on rank-3 BatchedGemm", "[ComputeGraph][PassMan
             }
         }
     }
+}
+
+namespace {
+/// A deliberately unsound pass: rotates the first node to the end and vouches
+/// for the order. If that node wrote a tensor a later node reads, the reader
+/// now precedes its writer - the exact bug-1012 shape GEMMBatching produced
+/// by appending its BatchedGemm node.
+struct RotateNodesPass final : cg::OptimizerPass {
+    [[nodiscard]] std::string name() const override { return "RotateNodesPass"; }
+    bool                      run(cg::Graph &graph) override {
+        auto &nodes = graph.nodes();
+        if (nodes.size() < 2) {
+            return false;
+        }
+        std::rotate(nodes.begin(), nodes.begin() + 1, nodes.end());
+        graph.mark_sorted();
+        return true;
+    }
+};
+} // namespace
+
+TEST_CASE("PassManager - program-order guard rejects a writer moved after its reader", "[ComputeGraph][PassManager][Validation]") {
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+    auto D = create_zero_tensor<double>("D", 4, 4);
+
+    cg::Graph graph("rotate_guard");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);          // writer of C
+        cg::gemm<false, false>(1.0, C, B, 0.0, &D); // reader of C
+    }
+
+    cg::PassManager pm;
+    pm.add<RotateNodesPass>(); // moves the C-writer after the C-reader
+    REQUIRE_THROWS_AS(graph.apply(pm), std::logic_error);
 }

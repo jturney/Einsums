@@ -295,6 +295,7 @@ TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> c
         {
             auto const &handle = graph.tensor(out_id);
             Node        mat_node;
+            mat_node.id              = graph.reserve_node_id();
             mat_node.kind            = OpKind::Materialize;
             mat_node.label           = fmt::format("materialize({})", handle.name);
             mat_node.outputs         = {out_id};
@@ -313,6 +314,7 @@ TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> c
     spec.b_indices = {"k", "n"};
 
     Node node;
+    node.id              = graph.reserve_node_id();
     node.kind            = OpKind::Gemm;
     node.label           = fmt::format("cp_gemm({}x{}x{})", out_M, K_dim, out_N);
     node.execute         = graph.make_einsum_executor(left_id, right_id, out_id, spec, 1.0, 0.0);
@@ -521,6 +523,53 @@ bool ContractionPlanning::run(Graph &graph) {
             EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (unknown dtype)", n);
             _reports.push_back(std::move(report));
             continue;
+        }
+
+        // Interior soundness gate (bug-1014, same class as CSE's bug-1010):
+        // restructuring re-parenthesizes the chain, so every INTERIOR output
+        // (all but the last member's) stops being computed. That is only
+        // legal when the interior tensor is a graph-owned intermediate no
+        // one else observes: a user-visible tensor keeps whatever it held
+        // before execute, and an outside reader would consume a value whose
+        // producer was deleted. Found by the pass program-order validator on
+        // a LIH-hoisted chain whose interior was a user tensor.
+        {
+            std::unordered_set<size_t>   member_indices;
+            std::unordered_set<TensorId> interior;
+            for (size_t ci = 0; ci < chain.size(); ci++) {
+                member_indices.insert(chain[ci].node_idx);
+                if (ci + 1 < chain.size())
+                    interior.insert(chain[ci].output_tid);
+            }
+            bool interior_observable = false;
+            for (auto const tid : interior) {
+                auto const it = graph.tensors_map().find(tid);
+                if (it == graph.tensors_map().end() || !it->second.is_intermediate || it->second.aliases != 0) {
+                    interior_observable = true; // user-visible (or aliased): the eliminated write is observable
+                    break;
+                }
+            }
+            if (!interior_observable) {
+                auto const &all_nodes = graph.nodes();
+                for (size_t idx = 0; idx < all_nodes.size() && !interior_observable; idx++) {
+                    if (member_indices.count(idx))
+                        continue;
+                    for (auto const tid : all_nodes[idx].inputs) {
+                        if (interior.count(tid)) {
+                            interior_observable = true; // outside reader of an interior value
+                            break;
+                        }
+                    }
+                }
+            }
+            if (interior_observable) {
+                EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (interior output is user-visible or "
+                                 "read outside the chain; restructuring would elide an observable write)",
+                                 n);
+                this->report(3, fmt::format("skip chain of {} — interior output is observable", n));
+                _reports.push_back(std::move(report));
+                continue;
+            }
         }
 
         EINSUMS_LOG_INFO(

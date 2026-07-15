@@ -267,6 +267,19 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         }
         auto const &b_handle = nb_it->second;
 
+        // The combine executor casts the user operands (shared, non-shared,
+        // output) to GeneralRuntimeTensor<T>. Statically-typed Tensor<T, Rank>
+        // captures produce the same handle shape, and a blind cast is type
+        // confusion (bug-1015, segfault in the fused axpy). Fold only when
+        // all three really are runtime tensors.
+        auto const is_rt = [&](TensorId tid) {
+            auto it = tensors.find(tid);
+            return it != tensors.end() && it->second.is_runtime;
+        };
+        if (!is_rt(vg.key.output_id) || !is_rt(vg.key.shared_id) || !is_rt(vg.key.non_shared_id)) {
+            continue;
+        }
+
         auto const dtype = b_handle.dtype;
 
         // L = sum_k (ab_k / ab_0) * P_k(B), in operand-0's canonical layout, and a

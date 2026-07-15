@@ -108,6 +108,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     NodeId add_node(Node node);
 
     /**
+     * @brief Reserve a fresh unique NodeId without adding a node.
+     *
+     * For passes that build replacement nodes and splice them into the node
+     * list directly (at a chosen position, not appended): every node in a
+     * graph must carry a unique id - the default Node::id of 0 collides with
+     * the first captured node and corrupts anything keyed by id (dependency
+     * bookkeeping, the pass program-order validator, profile strings).
+     */
+    NodeId reserve_node_id() { return _next_node_id++; }
+
+    /**
      * @brief Register a tensor handle with the graph.
      *
      * Assigns a unique TensorId and stores the handle's metadata. The tensor itself

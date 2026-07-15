@@ -169,3 +169,47 @@ TEST_CASE("ElementWiseFusion - fuses consecutive rank-3 scales", "[ComputeGraph]
         }
     }
 }
+
+TEST_CASE("ElementWiseFusion - fused output feeding a downstream consumer stays correct", "[ComputeGraph][Passes]") {
+    // Consumer-bearing topology (bug-1012 class): the fused node's POSITION
+    // matters because a later gemm reads the scaled tensor. The fused
+    // replacement must stay ahead of that reader.
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto C = create_random_tensor<double>("C", 4, 4);
+    auto D = create_zero_tensor<double>("D", 4, 4);
+
+    auto C_ref = Tensor<double, 2>(C);
+    linear_algebra::scale(2.0, &C_ref);
+    linear_algebra::scale(3.0, &C_ref);
+
+    cg::Graph graph("ewf_consumer");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(2.0, &C);
+        cg::scale(3.0, &C);
+        cg::gemm<false, false>(1.0, C, A, 0.0, &D); // consumer of the fused scales
+    }
+    REQUIRE(graph.num_nodes() == 3);
+
+    auto [modified, ewf] = graph.apply<cg::passes::ElementWiseFusion>();
+    REQUIRE(modified);
+    REQUIRE(graph.num_nodes() == 2);
+
+    graph.execute();
+
+    Tensor<double, 2> D_ref("D_ref", 4, 4);
+    D_ref.zero();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            for (size_t kk = 0; kk < 4; kk++) {
+                D_ref(ii, jj) += C_ref(ii, kk) * A(kk, jj);
+            }
+        }
+    }
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            REQUIRE(std::abs(C(ii, jj) - C_ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(D(ii, jj) - D_ref(ii, jj)) < 1e-11);
+        }
+    }
+}

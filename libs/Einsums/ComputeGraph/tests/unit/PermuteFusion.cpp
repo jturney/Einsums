@@ -353,3 +353,43 @@ TEST_CASE("PermuteFusion: fused graph is replayable", "[ComputeGraph][Optimizer]
     graph.execute();
     require_close(C, C_snapshot);
 }
+
+TEST_CASE("PermuteFusion: fused einsum output feeding a downstream consumer stays correct", "[ComputeGraph][Optimizer][PermuteFusion]") {
+    // Consumer-bearing topology (bug-1012 class): after the permute is
+    // absorbed, the rewritten einsum must remain positioned before the gemm
+    // that reads its output.
+    auto A = create_random_tensor<double>("A", 3, 4);
+    auto B = create_random_tensor<double>("B", 4, 3);
+    auto E = create_random_tensor<double>("E", 3, 5);
+
+    // Reference: direct computation, no permute.
+    auto C_ref = create_zero_tensor<double>("C_ref", 3, 3);
+    auto D_ref = create_zero_tensor<double>("D_ref", 3, 5);
+    {
+        cg::Graph              g("ref");
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ij;jk->ik", &C_ref, A, B);
+        cg::einsum("ij;jk->ik", &D_ref, C_ref, E);
+        g.execute();
+    }
+
+    auto      A_T = create_zero_tensor<double>("A_T", 4, 3);
+    auto      C   = create_zero_tensor<double>("C", 3, 3);
+    auto      D   = create_zero_tensor<double>("D", 3, 5);
+    cg::Graph graph("fusion_consumer");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("ji <- ij", &A_T, A);
+        cg::einsum("ji;jk->ik", &C, A_T, B);
+        cg::einsum("ij;jk->ik", &D, C, E); // consumer of the fused einsum's output
+    }
+    REQUIRE(graph.num_nodes() == 3);
+
+    auto [modified, pass] = graph.apply<cg::passes::PermuteFusion>();
+    REQUIRE(modified);
+    REQUIRE(graph.num_nodes() == 2);
+
+    graph.execute();
+    require_close(C, C_ref);
+    require_close(D, D_ref);
+}

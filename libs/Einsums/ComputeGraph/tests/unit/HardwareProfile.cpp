@@ -508,7 +508,6 @@ TEST_CASE("ContractionPlanning - restructured 2-GEMM chain correct", "[ComputeGr
     auto A  = create_random_tensor<double>("A", 100, 1);
     auto B  = create_random_tensor<double>("B", 1, 100);
     auto C  = create_random_tensor<double>("C", 100, 1);
-    auto T1 = create_zero_tensor<double>("T1", 100, 100);
     auto T2 = create_zero_tensor<double>("T2", 100, 1);
 
     // Reference
@@ -518,6 +517,9 @@ TEST_CASE("ContractionPlanning - restructured 2-GEMM chain correct", "[ComputeGr
     tensor_algebra::einsum(0.0, Indices{i, j}, &T2r, 1.0, Indices{i, k}, T1r, Indices{k, j}, C);
 
     cg::Graph graph("cp_restructure");
+    // Chain interiors must be graph-owned: restructuring elides their writes,
+    // which is only legal when nothing outside the chain can observe them.
+    auto &T1 = graph.create_zero_tensor<double, 2>("T1", 100, 100);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, A, B);
@@ -543,8 +545,6 @@ TEST_CASE("ContractionPlanning - restructured 3-GEMM chain correct", "[ComputeGr
     auto C = create_random_tensor<double>("C", 50, 3);
     auto D = create_random_tensor<double>("D", 3, 10);
 
-    auto T1 = create_zero_tensor<double>("T1", 50, 50);
-    auto T2 = create_zero_tensor<double>("T2", 50, 3);
     auto T3 = create_zero_tensor<double>("T3", 50, 10);
 
     // Reference
@@ -556,6 +556,9 @@ TEST_CASE("ContractionPlanning - restructured 3-GEMM chain correct", "[ComputeGr
     tensor_algebra::einsum(0.0, Indices{i, j}, &T3r, 1.0, Indices{i, k}, T2r, Indices{k, j}, D);
 
     cg::Graph graph("cp_3chain");
+    // Graph-owned interiors: see the 2-GEMM test above.
+    auto &T1 = graph.create_zero_tensor<double, 2>("T1", 50, 50);
+    auto &T2 = graph.create_zero_tensor<double, 2>("T2", 50, 3);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, A, B);
@@ -1019,4 +1022,75 @@ TEST_CASE("HardwareProfile - EINSUMS_HARDWARE_PROFILE overrides the built-in tab
 
     CHECK(fallback.source == "database");
     std::remove(path.c_str());
+}
+
+TEST_CASE("ContractionPlanning - user-visible interior blocks restructuring", "[ComputeGraph][Passes]") {
+    // bug-1014 (same class as CSE's bug-1010): re-parenthesizing a chain
+    // eliminates the writes to its interior tensors. When an interior is a
+    // user tensor - or is read by a node outside the chain - that write is
+    // observable and must not be elided. The pass must fall back to
+    // analysis-only and the interior must hold its computed value.
+    auto A  = create_random_tensor<double>("A", 100, 1);
+    auto B  = create_random_tensor<double>("B", 1, 100);
+    auto C  = create_random_tensor<double>("C", 100, 1);
+    auto T1 = create_zero_tensor<double>("T1", 100, 100); // user-visible interior
+    auto T2 = create_zero_tensor<double>("T2", 100, 1);
+
+    auto T1r = create_zero_tensor<double>("T1r", 100, 100);
+    auto T2r = create_zero_tensor<double>("T2r", 100, 1);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &T2r, 1.0, Indices{i, k}, T1r, Indices{k, j}, C);
+
+    cg::Graph graph("cp_user_interior");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &T2, 1.0, T1, C);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::ContractionPlanning>();
+    CHECK(pass.chains_restructured() == 0);
+    (void)modified;
+
+    graph.execute();
+    for (size_t ii = 0; ii < 100; ii++) {
+        CHECK(T1(ii, 0) == Catch::Approx(T1r(ii, 0)).margin(1e-8)); // the write survived
+        CHECK(T2(ii, 0) == Catch::Approx(T2r(ii, 0)).margin(1e-8));
+    }
+}
+
+TEST_CASE("ContractionPlanning - outside reader of interior blocks restructuring", "[ComputeGraph][Passes]") {
+    // Even a graph-owned interior must keep its write when a node OUTSIDE
+    // the chain reads it (consumer-bearing variant of bug-1014).
+    auto A  = create_random_tensor<double>("A", 100, 1);
+    auto B  = create_random_tensor<double>("B", 1, 100);
+    auto C  = create_random_tensor<double>("C", 100, 1);
+    auto D  = create_zero_tensor<double>("D", 100, 100);
+    auto E  = create_random_tensor<double>("E", 100, 100);
+    auto T2 = create_zero_tensor<double>("T2", 100, 1);
+
+    cg::Graph graph("cp_outside_reader");
+    auto     &T1 = graph.create_zero_tensor<double, 2>("T1", 100, 100);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &T2, 1.0, T1, C);
+        cg::einsum("ik;kj->ij", 0.0, &D, 1.0, T1, E); // outside reader of the interior
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::ContractionPlanning>();
+    CHECK(pass.chains_restructured() == 0);
+    (void)modified;
+
+    graph.execute();
+
+    auto T1r = create_zero_tensor<double>("T1r", 100, 100);
+    auto Dr  = create_zero_tensor<double>("Dr", 100, 100);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &Dr, 1.0, Indices{i, k}, T1r, Indices{k, j}, E);
+    for (size_t ii = 0; ii < 100; ii++) {
+        for (size_t jj = 0; jj < 100; jj++) {
+            CHECK(D(ii, jj) == Catch::Approx(Dr(ii, jj)).margin(1e-8));
+        }
+    }
 }

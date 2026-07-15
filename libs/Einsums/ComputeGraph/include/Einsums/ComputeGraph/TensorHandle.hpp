@@ -14,6 +14,7 @@
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/Tensor/PendingInit.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
+#include <Einsums/TensorBase/TensorBase.hpp>
 
 #include <cstddef>
 #include <functional>
@@ -82,12 +83,15 @@ struct TensorHandle {
     std::vector<size_t>     strides;                                 ///< Stride of each dimension, in elements
     packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Unknown}; ///< Element type enum for runtime dispatch
     bool                    is_intermediate{false};                  ///< True if this tensor is owned by the graph (from create_tensor())
-    bool                    is_tiled{false};       ///< True if a tile-wise sparse tensor (no single contiguous data() buffer)
-    bool                    is_distributed{false}; ///< True if this tensor is distributed across ranks
-    bool                    is_replicated{true};   ///< True if distributed tensor is replicated on all ranks
-    AllocState              alloc_state{AllocState::Materialized}; ///< Whether data is allocated (Materialized) or deferred
-    InitKind                init_kind{InitKind::None};             ///< How to initialize after materialization
-    Residency               residency{Residency::Host};            ///< Where the tensor data currently lives (updated by GPU passes)
+    bool                    is_tiled{false};   ///< True if a tile-wise sparse tensor (no single contiguous data() buffer)
+    bool                    is_runtime{false}; ///< True if tensor_ptr points at a GeneralRuntimeTensor<T> (passes that cast tensor_ptr to a
+                            ///< runtime-tensor type MUST gate on this: statically-typed Tensor<T, Rank> captures pass through
+                            ///< the same handles, and a blind cast is type confusion - see bug-1015)
+    bool       is_distributed{false};                 ///< True if this tensor is distributed across ranks
+    bool       is_replicated{true};                   ///< True if distributed tensor is replicated on all ranks
+    AllocState alloc_state{AllocState::Materialized}; ///< Whether data is allocated (Materialized) or deferred
+    InitKind   init_kind{InitKind::None};             ///< How to initialize after materialization
+    Residency  residency{Residency::Host};            ///< Where the tensor data currently lives (updated by GPU passes)
 
     /// Type-erased function to allocate backing storage for a deferred tensor.
     /// Called by MaterializationPass. Null for already-materialized tensors.
@@ -256,6 +260,7 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
         h.data_ptr = const_cast<void *>(static_cast<void const *>(tensor.data()));
     }
     h.id           = id;
+    h.is_runtime   = std::is_base_of_v<tensor_base::RuntimeTensorNoType, std::remove_cvref_t<TensorType>>;
     h.name         = tensor.name();
     h.rank         = detail::tensor_rank(tensor);
     h.element_size = sizeof(typename std::remove_cvref_t<TensorType>::ValueType);

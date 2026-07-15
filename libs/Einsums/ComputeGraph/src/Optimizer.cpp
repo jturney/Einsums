@@ -108,6 +108,70 @@ bool run_pass_recursive(OptimizerPass &pass, Graph &graph) {
     return modified;
 }
 
+/// bug-1012 class guard. Position is program order in this IR: the hazard
+/// scan in topological_sort treats a read that appears before a write as a
+/// legitimate WAR, so a pass that appends or moves a WRITER past a surviving
+/// reader silently changes which value that reader observes - the reader now
+/// legally runs first and sees the tensor's initial contents instead of the
+/// written result (GEMMBatching did exactly this; LCCF was bitten by the same
+/// trap earlier).
+///
+/// The invariant checked: for every (reader node, input tensor) pair that
+/// exists both before and after a pass, "the read observes an in-graph
+/// writer" may never flip to "the read observes the initial contents".
+/// Pairs created by the pass (new nodes, redirected inputs) have no baseline
+/// and are skipped, as is the reverse transition (a pass may legitimately
+/// insert a writer, e.g. Materialization's Initialize, in front of a read of
+/// a deferred tensor). Top-level graph only; sub-graph bodies are not walked.
+std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> observed_writes(Graph const &graph) {
+    std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> seen;
+    std::unordered_set<TensorId>                                   written;
+    for (auto const &node : graph.nodes()) {
+        for (auto const tid : node.inputs) {
+            seen[node.id][tid] = written.count(graph.resolve_alias(tid)) != 0;
+        }
+        for (auto const tid : node.outputs) {
+            written.insert(graph.resolve_alias(tid));
+        }
+    }
+    return seen;
+}
+
+void check_observed_writes(Graph const &graph, std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> const &before,
+                           std::string const &pass_name) {
+    auto const after = observed_writes(graph);
+    for (auto const &[nid, per_tid] : after) {
+        auto const nit = before.find(nid);
+        if (nit == before.end())
+            continue; // node created by the pass: no baseline
+        for (auto const &[tid, sees_writer] : per_tid) {
+            auto const tit = nit->second.find(tid);
+            if (tit == nit->second.end())
+                continue; // input redirected by the pass: no baseline
+            if (tit->second && !sees_writer) {
+                std::string node_label  = "?";
+                std::string tensor_name = "?";
+                for (auto const &node : graph.nodes()) {
+                    if (node.id == nid) {
+                        node_label = node.label;
+                        break;
+                    }
+                }
+                if (auto const hit = graph.tensors_map().find(tid); hit != graph.tensors_map().end()) {
+                    tensor_name = hit->second.name;
+                }
+                EINSUMS_THROW_EXCEPTION(
+                    std::logic_error,
+                    "Graph '{}': pass '{}' broke program order: node '{}' (id={}) read tensor '{}' (id={}) from an in-graph "
+                    "writer before the pass, but the writer now sits AFTER the reader (or was removed), so the read would "
+                    "observe the tensor's initial contents. Rewrite passes must place replacement writers at the first "
+                    "replaced node's position, never append them (see GEMMBatching/LCCF).",
+                    graph.name(), pass_name, node_label, nid, tensor_name, tid);
+            }
+        }
+    }
+}
+
 } // namespace
 
 bool PassManager::run(Graph &graph) {
@@ -149,12 +213,14 @@ bool PassManager::run(Graph &graph) {
             graph.nodes() = std::move(saved_nodes);
             graph.topological_sort();
         } else {
+            auto const baseline = observed_writes(graph);
             bool const modified = run_pass_recursive(*pass, graph);
             auto       t1       = std::chrono::high_resolution_clock::now();
             double     ms       = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
             if (modified) {
                 any_modified = true;
+                check_observed_writes(graph, baseline, pass->name());
             }
             profile::annotate("modified", modified ? "true" : "false");
 
