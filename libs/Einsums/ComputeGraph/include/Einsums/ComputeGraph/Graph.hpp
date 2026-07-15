@@ -16,6 +16,7 @@
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/ComputeGraph/TensorSlot.hpp>
+#include <Einsums/ComputeGraph/UsageAnalysis.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Python/Annotations.hpp>
@@ -452,6 +453,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// move nodes across loop-body boundaries, so it must not persist.
     using EffectiveIoCache = std::unordered_map<NodeId, std::pair<std::vector<TensorId>, std::vector<TensorId>>>;
 
+    /// See EffectiveIoCache. Span-returning fast path used by the hazard
+    /// scans and UsageAnalysis: ordinary nodes view their own I/O lists (no
+    /// copies), control-flow nodes memoize the subtree walk in @p cache.
+    std::pair<std::span<TensorId const>, std::span<TensorId const>> effective_io_cached(Node const &node, EffectiveIoCache &cache);
+
     /**
      * @brief Resolve a TensorId through its alias chain to the owning buffer.
      *
@@ -491,7 +497,20 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         // Passes also rewrite labels/descriptors; refresh cached profiler
         // payloads on next execute.
         _profile_strings_valid = false;
+        // Position-keyed analyses (UsageAnalysis) are stale too.
+        _analysis_version++;
     }
+
+    /**
+     * @brief Cached reader/writer/liveness index for the current node order.
+     *
+     * Rebuilt lazily when a mutation-declaration point (add_node,
+     * mark_sorted, topological_sort, rebind) has been hit since the last
+     * build, with a node-count defense for undeclared mutations (same
+     * contract as DependencyInfo). Do NOT hold the reference across graph
+     * mutations.
+     */
+    [[nodiscard]] UsageAnalysis const &usage();
 
     /**
      * @brief Add a conditional (if-then-else) node to the graph.
@@ -1450,13 +1469,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     bool                                           _profile_strings_valid{false};
     std::string                                    _exec_zone_name;
 
+    /// Mutation counter for cached analyses. Bumped at every
+    /// mutation-declaration point; UsageAnalysis caches against it.
+    std::uint64_t _analysis_version{0};
+    /// Version _usage was built at (UINT64_MAX = never built).
+    std::uint64_t _usage_version{std::numeric_limits<std::uint64_t>::max()};
+    UsageAnalysis _usage;
+
     /// Rebuild _profile_strings for the current node list.
     void rebuild_profile_strings();
-
-    /// See EffectiveIoCache. Span-returning fast path used by the hazard
-    /// scans: ordinary nodes view their own I/O lists (no copies),
-    /// control-flow nodes memoize the subtree walk in @p cache.
-    std::pair<std::span<TensorId const>, std::span<TensorId const>> effective_io_cached(Node const &node, EffectiveIoCache &cache);
 
     /// Rebuild the position-keyed _deps lists for the current node order.
     void           rebuild_deps(EffectiveIoCache &cache);

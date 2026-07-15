@@ -69,6 +69,7 @@ set(ComputeGraphTests
     TiledRuntimeEinsum.cpp
     TiledRuntimeElementwise.cpp
     TensorRankConcept.cpp
+    UsageAnalysis.cpp
     TiledRuntimeTensorLifetime.cpp
     View.cpp
     Workspace.cpp

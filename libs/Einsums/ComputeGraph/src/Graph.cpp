@@ -506,7 +506,8 @@ Graph::Graph(Graph &&other) noexcept
       _params(std::move(other._params)), _slot_map(std::move(other._slot_map)), _timing_report(std::move(other._timing_report)),
       _params_store(std::move(other._params_store)), _slot_redirects(std::move(other._slot_redirects)), _deps_valid(other._deps_valid),
       _profile_strings(std::move(other._profile_strings)), _profile_strings_valid(other._profile_strings_valid),
-      _exec_zone_name(std::move(other._exec_zone_name)), _last_optimize_report(std::move(other._last_optimize_report)) {
+      _exec_zone_name(std::move(other._exec_zone_name)), _last_optimize_report(std::move(other._last_optimize_report)),
+      _analysis_version(other._analysis_version), _usage_version(other._usage_version), _usage(std::move(other._usage)) {
     // Invalidate moved-from so its destructor doesn't unregister
     other._executed = false;
     // Transfer registration from old address to new
@@ -544,6 +545,9 @@ Graph &Graph::operator=(Graph &&other) noexcept {
         _profile_strings_valid = other._profile_strings_valid;
         _exec_zone_name        = std::move(other._exec_zone_name);
         _last_optimize_report  = std::move(other._last_optimize_report);
+        _analysis_version      = other._analysis_version;
+        _usage_version         = other._usage_version;
+        _usage                 = std::move(other._usage);
 
         // Invalidate moved-from so its destructor doesn't unregister
         other._executed = false;
@@ -563,6 +567,7 @@ NodeId Graph::add_node(Node node) {
     _deps_valid            = false;
     _profile_strings_valid = false;
     _executed              = false;
+    _analysis_version++;
     return id;
 }
 
@@ -960,6 +965,10 @@ void Graph::topological_sort() {
 
     _sorted     = true;
     _deps_valid = true;
+    // Positions changed but the node COUNT did not, so cached position-keyed
+    // analyses (UsageAnalysis) must be invalidated explicitly - the count
+    // defense in usage() cannot see a same-size reorder.
+    _analysis_version++;
 }
 
 std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, std::function<bool()> predicate) {
@@ -1452,6 +1461,7 @@ expected<void, GraphError> Graph::validate_tensors() const {
     bool                             materialize_targets_built = false;
     std::unordered_set<TensorId>     materialize_tids;
     std::unordered_set<void const *> materialize_ptrs;
+    std::unordered_set<TensorId>     referenced_tids;
 
     for (auto const &[id, handle] : _tensors) {
         if (handle.alloc_state == AllocState::Deferred) {
@@ -1463,6 +1473,10 @@ expected<void, GraphError> Graph::validate_tensors() const {
             if (!materialize_targets_built) {
                 materialize_targets_built = true;
                 for (auto const &node : _nodes) {
+                    for (auto in : node.inputs)
+                        referenced_tids.insert(in);
+                    for (auto out : node.outputs)
+                        referenced_tids.insert(out);
                     if (node.kind != OpKind::Materialize)
                         continue;
                     for (auto out : node.outputs) {
@@ -1473,6 +1487,13 @@ expected<void, GraphError> Graph::validate_tensors() const {
                     }
                 }
             }
+            // A deferred handle no node references cannot corrupt execution.
+            // These exist by design: effective_io registers orphan parent
+            // handles for buffers living only inside Loop/Conditional bodies
+            // (the body's own handle gets the hoisted Materialize; the parent
+            // orphan is just an id anchor for dependency edges).
+            if (!referenced_tids.contains(id))
+                continue;
             if (materialize_tids.contains(id))
                 continue;
             if (handle.tensor_ptr != nullptr && materialize_ptrs.contains(handle.tensor_ptr))
@@ -1844,6 +1865,14 @@ void Graph::execute(Executor &executor) {
         executor.execute(*this);
     }
     _executed = true;
+}
+
+UsageAnalysis const &Graph::usage() {
+    if (_usage_version != _analysis_version || _usage.node_count() != _nodes.size()) {
+        _usage         = UsageAnalysis::build(*this);
+        _usage_version = _analysis_version;
+    }
+    return _usage;
 }
 
 bool Graph::apply(PassManager &pm) {

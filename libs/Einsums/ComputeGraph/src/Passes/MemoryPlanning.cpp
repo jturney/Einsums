@@ -58,73 +58,69 @@ MemStats analyze_one(Graph &graph) {
 
     std::unordered_map<TensorId, LiveInterval> intervals;
 
+    // Liveness intervals come from the shared UsageAnalysis (owner-resolved:
+    // a view and its parent count as ONE buffer, so bytes are no longer
+    // double-counted). Subtree expansion is OFF: this pass aggregates body
+    // tensors through its own recursive walk, and effective-IO's orphan
+    // parent handles would double-count them here. The device-residency
+    // flags stay a local scan - they are this pass's policy (GPU targets
+    // and transfer descriptors), not a graph-wide property.
+    auto const &ua = graph.usage();
+    for (auto const &[tid, use] : ua.table()) {
+        size_t const fu = use.first_use(/*include_subtree=*/false);
+        if (fu == TensorUsage::npos) {
+            continue;
+        }
+        auto const it = tensors.find(tid);
+        if (it == tensors.end()) {
+            continue;
+        }
+        intervals[tid] = LiveInterval{fu, use.last_use(/*ignore_free=*/false, /*include_subtree=*/false), it->second.total_bytes(), false};
+    }
+
+    // find(), not operator[]: a default-constructed interval (first_use ==
+    // SIZE_MAX) would blow up the event sweep below.
+    auto mark_device = [&](TensorId tid) {
+        if (auto it = intervals.find(graph.resolve_alias(tid)); it != intervals.end()) {
+            it->second.on_device = true;
+        }
+    };
     for (size_t i = 0; i < n; i++) {
         auto const &node = nodes[i];
-
-        auto update = [&](TensorId tid) {
-            auto &interval     = intervals[tid];
-            interval.first_use = std::min(interval.first_use, i);
-            interval.last_use  = std::max(interval.last_use, i);
-            auto it            = tensors.find(tid);
-            if (it != tensors.end()) {
-                interval.bytes = it->second.total_bytes();
-            }
-        };
-
-        for (auto tid : node.inputs) {
-            update(tid);
-        }
-        for (auto tid : node.outputs) {
-            update(tid);
-        }
-
-        // Mark tensors as device-resident if used by GPU or transfer nodes.
         if (node.target == Target::GPU) {
             for (auto tid : node.inputs)
-                intervals[tid].on_device = true;
+                mark_device(tid);
             for (auto tid : node.outputs)
-                intervals[tid].on_device = true;
+                mark_device(tid);
         }
         if (node.kind == OpKind::HostToDevice) {
             auto const *desc = std::get_if<TransferDescriptor>(&node.op_data);
             if (desc)
-                intervals[desc->tensor_id].on_device = true;
+                mark_device(desc->tensor_id);
         }
     }
 
-    // ── Host memory analysis ────────────────────────────────────────────────
+    // ── Host + device memory analysis ───────────────────────────────────────
+    // Peak via an event sweep (+bytes at first_use, -bytes past last_use):
+    // O(n + tids) instead of the old O(n * tids) per-position rescan.
+    std::vector<long long> delta(n + 1, 0);
+    std::vector<long long> device_delta(n + 1, 0);
     for (auto const &[tid, interval] : intervals) {
         stats.total += interval.bytes;
-    }
-
-    for (size_t i = 0; i < n; i++) {
-        size_t live_bytes = 0;
-        for (auto const &[tid, interval] : intervals) {
-            if (i >= interval.first_use && i <= interval.last_use) {
-                live_bytes += interval.bytes;
-            }
-        }
-        stats.peak = std::max(stats.peak, live_bytes);
-    }
-
-    // ── Device memory analysis ──────────────────────────────────────────────
-    // Only consider tensors that are actually used on the device.
-    for (auto const &[tid, interval] : intervals) {
+        delta[interval.first_use] += static_cast<long long>(interval.bytes);
+        delta[interval.last_use + 1] -= static_cast<long long>(interval.bytes);
         if (interval.on_device) {
             stats.device_total += interval.bytes;
+            device_delta[interval.first_use] += static_cast<long long>(interval.bytes);
+            device_delta[interval.last_use + 1] -= static_cast<long long>(interval.bytes);
         }
     }
-
-    // Device peak: simulate which device tensors are live at each node.
-    // A device tensor is "live" from its first GPU/transfer use to its last.
+    long long live = 0, device_live = 0;
     for (size_t i = 0; i < n; i++) {
-        size_t live_bytes = 0;
-        for (auto const &[tid, interval] : intervals) {
-            if (interval.on_device && i >= interval.first_use && i <= interval.last_use) {
-                live_bytes += interval.bytes;
-            }
-        }
-        stats.device_peak = std::max(stats.device_peak, live_bytes);
+        live += delta[i];
+        device_live += device_delta[i];
+        stats.peak        = std::max(stats.peak, static_cast<size_t>(live));
+        stats.device_peak = std::max(stats.device_peak, static_cast<size_t>(device_live));
     }
 
     return stats;

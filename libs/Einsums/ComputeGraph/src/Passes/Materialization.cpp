@@ -197,20 +197,14 @@ bool Materialization::run(Graph &graph) {
     }
 
     // ── 3. First-use index for parent's own deferred tensors ──────────────
-    auto                                &nodes = graph.nodes();
-    std::unordered_map<TensorId, size_t> first_use;
-    for (size_t idx = 0; idx < nodes.size(); idx++) {
-        for (auto tid : nodes[idx].inputs) {
-            if (first_use.find(tid) == first_use.end()) {
-                first_use[tid] = idx;
-            }
-        }
-        for (auto tid : nodes[idx].outputs) {
-            if (first_use.find(tid) == first_use.end()) {
-                first_use[tid] = idx;
-            }
-        }
-    }
+    // Shared UsageAnalysis instead of a private scan. Two deliberate
+    // semantic upgrades over the old raw loop: alias chains resolve (a view
+    // of a deferred tensor counts as a use of the owner), and a use that
+    // exists only inside a Loop/Conditional body surfaces at the
+    // control-flow node's position (the Materialize then lands right before
+    // the loop instead of defaulting to position 0).
+    auto       &nodes = graph.nodes();
+    auto const &ua    = graph.usage();
 
     // ── 4. Build the insertion plan ───────────────────────────────────────
     struct Insertion {
@@ -257,8 +251,10 @@ bool Materialization::run(Graph &graph) {
     for (auto tid : own_deferred) {
         auto  &handle     = graph.tensor(tid);
         size_t insert_pos = 0;
-        if (auto it = first_use.find(tid); it != first_use.end()) {
-            insert_pos = it->second;
+        if (auto const *use = ua.find_owner(tid)) {
+            if (size_t const fu = use->first_use(); fu != TensorUsage::npos) {
+                insert_pos = fu;
+            }
         }
         add_req(handle.tensor_ptr, insert_pos, /*owns_tid=*/true, &graph, tid);
     }

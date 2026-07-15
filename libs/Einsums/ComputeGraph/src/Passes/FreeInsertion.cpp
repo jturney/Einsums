@@ -90,60 +90,26 @@ bool FreeInsertion::run(Graph &graph) {
     if (nodes.empty())
         return false;
 
-    // Resolve a TensorId through any chain of aliases to the underlying owner.
-    // Aliases (View outputs) read/write through the parent's storage, so a use
-    // of the alias is logically a use of the owner, extend the owner's
-    // lifetime accordingly.
-    auto resolve_owner = [&](TensorId id) {
-        for (int hops = 0; hops < 32; ++hops) {
-            auto it = tensors.find(id);
-            if (it == tensors.end() || it->second.aliases == 0)
-                return id;
-            id = it->second.aliases;
-        }
-        return id;
-    };
-
     // ── Part A: parent-level intermediates ────────────────────────────────
-    // Find the last node that references each intermediate, then free it
-    // right after that node. Unchanged from the original flat-graph logic.
-    std::unordered_map<TensorId, size_t> last_use;
-    std::unordered_map<TensorId, size_t> first_writer;
-
-    for (size_t idx = 0; idx < nodes.size(); idx++) {
-        // A Free node carries the freed tensor as an input purely for
-        // dependency ordering, it isn't a real "use" that extends the
-        // tensor's lifetime. Skipping it keeps the pass idempotent: on a
-        // repeated run, last_use stays at the genuine final consumer, so
-        // the forward dedup scan below still finds the existing Free.
-        if (nodes[idx].kind == OpKind::Free) {
-            continue;
-        }
-        for (auto tid : nodes[idx].inputs) {
-            TensorId const owner = resolve_owner(tid);
-            auto           it    = tensors.find(owner);
-            if (it != tensors.end() && it->second.is_intermediate) {
-                last_use[owner] = idx;
-            }
-        }
-        for (auto tid : nodes[idx].outputs) {
-            TensorId const owner = resolve_owner(tid);
-            auto           it    = tensors.find(owner);
-            if (it != tensors.end() && it->second.is_intermediate) {
-                last_use[owner] = idx;
-                // Alloc nodes mark creation, not a data write; the paired
-                // Materialize must precede the first REAL writer so a
-                // replayed graph reallocates before producing into the buffer.
-                if (nodes[idx].kind != OpKind::Alloc) {
-                    first_writer.try_emplace(owner, idx);
-                }
-            }
-        }
-    }
+    // Free each intermediate right after its last real use. Positions come
+    // from the shared UsageAnalysis (owner-resolved, one scan for the whole
+    // pipeline) with this pass's policy filters: a Free node's input is a
+    // scheduling edge, not a use (keeps the pass idempotent across repeated
+    // runs), and Alloc marks creation, not a data write - the paired
+    // Materialize must precede the first REAL writer so a replayed graph
+    // reallocates before producing into the buffer. Subtree expansion is OFF:
+    // Part B below already handles body-resident intermediates (hoisting one
+    // Free into the parent), and effective-IO registers orphan parent
+    // handles for body buffers - admitting subtree uses here would make
+    // Part A double-free exactly what Part B frees.
+    auto const &ua = graph.usage();
 
     std::vector<FreePlan> plans;
 
-    for (auto const &[tid, last_idx] : last_use) {
+    for (auto const &[tid, use] : ua.table()) {
+        size_t const last_idx = use.last_use(/*ignore_free=*/true, /*include_subtree=*/false);
+        if (last_idx == TensorUsage::npos)
+            continue;
         auto it = tensors.find(tid);
         if (it == tensors.end())
             continue;
@@ -175,10 +141,10 @@ bool FreeInsertion::run(Graph &graph) {
         if (already_freed)
             continue;
 
-        size_t mat_before = SIZE_MAX;
-        auto   fw         = first_writer.find(tid);
-        if (fw != first_writer.end() && handle.materialize_fn && !already_has_materialize_named(nodes, handle.name)) {
-            mat_before = fw->second;
+        size_t       mat_before = SIZE_MAX;
+        size_t const fw         = use.first_writer(/*ignore_alloc=*/true, /*include_subtree=*/false);
+        if (fw != TensorUsage::npos && handle.materialize_fn && !already_has_materialize_named(nodes, handle.name)) {
+            mat_before = fw;
         }
 
         plans.push_back({.position = last_idx, .owner = &graph, .tid = tid, .owns_tid = true, .materialize_before = mat_before});

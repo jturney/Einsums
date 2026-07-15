@@ -17,6 +17,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Node.hpp
     Einsums/ComputeGraph/Operations.hpp
     Einsums/ComputeGraph/Optimizer.hpp
+    Einsums/ComputeGraph/UsageAnalysis.hpp
     Einsums/ComputeGraph/Passes/ContractionPlanning.hpp
     Einsums/ComputeGraph/Passes/CommunicationElimination.hpp
     Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp
@@ -61,6 +62,7 @@ set(ComputeGraphSources
     EinsumSpec.cpp
     Executor.cpp
     Graph.cpp
+    UsageAnalysis.cpp
     HardwareProfile.cpp
     Node.cpp
     Optimizer.cpp

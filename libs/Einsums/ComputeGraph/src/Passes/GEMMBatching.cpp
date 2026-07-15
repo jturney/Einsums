@@ -107,13 +107,15 @@ bool GEMMBatching::run(Graph &graph) {
     if (n_nodes < 2)
         return false;
 
-    // Dependency levels (same computation OpenMPExecutor uses). Two
-    // nodes at the same level have no path between them; safe to batch.
+    // Dependency levels: two nodes at the same level have no path between
+    // them; safe to batch. DependencyInfo already computed these (the
+    // executors consume them) - invert its level->positions lists into a
+    // per-position lookup instead of re-deriving from predecessors.
     std::vector<size_t> level(n_nodes, 0);
-    for (size_t nd = 0; nd < n_nodes; ++nd) {
-        for (size_t const pred : deps.predecessors[nd]) {
-            if (level[pred] + 1 > level[nd])
-                level[nd] = level[pred] + 1;
+    for (size_t lvl = 0; lvl < deps.levels.size(); ++lvl) {
+        for (size_t const pos : deps.levels[lvl]) {
+            if (pos < n_nodes)
+                level[pos] = lvl;
         }
     }
 
