@@ -79,21 +79,23 @@ def test_cse_single_node_graph():
 
 
 def test_cse_eliminates_duplicate_einsum():
-    """Two einsums with identical inputs + spec → CSE collapses to one node."""
+    """Two einsums with identical inputs + spec -> CSE collapses to one node
+    (the duplicate's output is graph-owned scratch; user-visible outputs are
+    never elided - see test_cse_keeps_user_visible_duplicates)."""
     A = einsums.create_random_tensor("A", [4, 3])
     B = einsums.create_random_tensor("B", [3, 5])
     C = einsums.create_zero_tensor("C", [4, 5])
-    D = einsums.create_zero_tensor("D", [4, 5])
 
     g = cg.Graph("cse_test")
+    D = g.create_zero_tensor("D", [4, 5], dtype="float64")
     with cg.capture(g):
         einsums.einsum("ij <- ik ; kj", C, A, B)
         einsums.einsum("ij <- ik ; kj", D, A, B)
-    assert g.num_nodes() == 2
+    nodes_before = g.num_nodes()
 
     modified = g.apply(_one_pass(cg.CSE()))
     assert modified
-    assert g.num_nodes() == 1
+    assert g.num_nodes() < nodes_before
 
     g.execute()
 
@@ -101,24 +103,48 @@ def test_cse_eliminates_duplicate_einsum():
     assert_close(C, expected)
 
 
+def test_cse_keeps_user_visible_duplicates():
+    """A duplicate writing a USER tensor keeps its producer: the user reads
+    that tensor directly, so eliding the write would break the capture
+    contract. Both tensors must hold the result."""
+    A = einsums.create_random_tensor("A", [4, 3])
+    B = einsums.create_random_tensor("B", [3, 5])
+    C = einsums.create_zero_tensor("C", [4, 5])
+    D = einsums.create_zero_tensor("D", [4, 5])
+
+    g = cg.Graph("cse_user_visible")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", C, A, B)
+        einsums.einsum("ij <- ik ; kj", D, A, B)
+
+    modified = g.apply(_one_pass(cg.CSE()))
+    assert not modified
+    assert g.num_nodes() == 2
+
+    g.execute()
+    expected = np.asarray(A) @ np.asarray(B)
+    assert_close(C, expected)
+    assert_close(D, expected)
+
+
 def test_cse_three_identical_einsums_reduce_to_one():
     """Three identical einsums collapse to a single node."""
     A = einsums.create_random_tensor("A", [4, 3])
     B = einsums.create_random_tensor("B", [3, 5])
     C = einsums.create_zero_tensor("C", [4, 5])
-    D = einsums.create_zero_tensor("D", [4, 5])
-    E = einsums.create_zero_tensor("E", [4, 5])
 
     g = cg.Graph("cse_triple")
+    D = g.create_zero_tensor("D", [4, 5], dtype="float64")
+    E = g.create_zero_tensor("E", [4, 5], dtype="float64")
     with cg.capture(g):
         einsums.einsum("ij <- ik ; kj", C, A, B)
         einsums.einsum("ij <- ik ; kj", D, A, B)
         einsums.einsum("ij <- ik ; kj", E, A, B)
-    assert g.num_nodes() == 3
+    nodes_before = g.num_nodes()
 
     modified = g.apply(_one_pass(cg.CSE()))
     assert modified
-    assert g.num_nodes() == 1
+    assert g.num_nodes() < nodes_before
 
 
 # ──────────────────────────────────────────────────────────────────────────

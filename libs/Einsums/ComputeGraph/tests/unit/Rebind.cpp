@@ -136,10 +136,10 @@ TEST_CASE("update_prefactors - correct after CSE removes an earlier einsum", "[C
     auto A   = create_random_tensor<double>("A", 4, 3);
     auto B   = create_random_tensor<double>("B", 3, 4);
     auto C   = create_zero_tensor<double>("C", 4, 4);
-    auto D   = create_zero_tensor<double>("D", 4, 4);
     auto OUT = create_zero_tensor<double>("OUT", 4, 4);
 
     cg::Graph graph("update_pf_after_cse");
+    auto     &D = graph.create_tensor<double, 2>("D", 4, 4); // graph-owned duplicate
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B);   // survivor
@@ -149,7 +149,7 @@ TEST_CASE("update_prefactors - correct after CSE removes an earlier einsum", "[C
 
     auto [modified, pass] = graph.apply<cg::passes::CSE>();
     REQUIRE(modified);
-    REQUIRE(graph.num_nodes() == 2);
+    REQUIRE(graph.num_nodes() == 3); // Alloc(D) + 2 einsums
 
     // The target einsum is now the last node; scale its contribution by 2.
     cg::NodeId const out_id = graph.nodes()[graph.num_nodes() - 1].id;

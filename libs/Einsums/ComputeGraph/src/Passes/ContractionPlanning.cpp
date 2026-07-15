@@ -165,6 +165,13 @@ std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &g
             if (!reads_output)
                 break;
 
+            // The chain model assumes the previous output feeds exactly ONE
+            // operand. A squaring node (OUT = T*T, e.g. after CSE folds two
+            // identical producers) consumes it in both - extract_leaves would
+            // then treat T as both link and leaf and build a circular tree.
+            if (nodes[j].inputs.size() >= 2 && nodes[j].inputs[0] == output_tid && nodes[j].inputs[1] == output_tid)
+                break;
+
             size_t M2, K2, N2;
             if (!analyze_contraction(*next_desc, graph, nodes[j], M2, K2, N2))
                 break;

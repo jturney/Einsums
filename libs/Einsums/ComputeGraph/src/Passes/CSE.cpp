@@ -182,6 +182,23 @@ bool CSE::run(Graph &graph) {
             if (!op_data_equal(nodes[i].op_data, nodes[j].op_data))
                 continue;
 
+            // Guard C: the duplicate's outputs must be graph-owned
+            // intermediates. A user-visible output is a contract - the user
+            // reads that tensor directly, not through an executor slot, so
+            // eliding its producer leaves it unwritten no matter how graph
+            // consumers are redirected. (Folding such duplicates behind an
+            // inserted copy node is possible future work.)
+            bool duplicate_user_visible = false;
+            for (auto out : nodes[j].outputs) {
+                auto it = graph.tensors_map().find(out);
+                if (it == graph.tensors_map().end() || !it->second.is_intermediate || it->second.aliases != 0) {
+                    duplicate_user_visible = true;
+                    break;
+                }
+            }
+            if (duplicate_user_visible)
+                continue;
+
             // Guard B: both producers' output buffers must be written exactly
             // once (by themselves). Otherwise redirecting readers onto a buffer
             // that gets mutated again would hand them the wrong value.

@@ -47,21 +47,23 @@ TEST_CASE("CSE - eliminates duplicate einsum", "[ComputeGraph][CSE]") {
     auto A = create_random_tensor<double>("A", 4, 3);
     auto B = create_random_tensor<double>("B", 3, 5);
     auto C = create_zero_tensor<double>("C", 4, 5);
-    auto D = create_zero_tensor<double>("D", 4, 5);
 
     cg::Graph graph("cse_test");
+    // The duplicate's output must be graph-owned: user-visible outputs are a
+    // contract (the user reads them directly) and are never elided.
+    auto &D = graph.create_tensor<double, 2>("D", 4, 5);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B);
         cg::einsum("ik;kj->ij", &D, A, B);
     }
 
-    REQUIRE(graph.num_nodes() == 2);
+    REQUIRE(graph.num_nodes() == 3); // Alloc(D) + 2 einsums
 
     auto [modified, pass] = graph.apply<cg::passes::CSE>();
 
     REQUIRE(modified);
-    REQUIRE(graph.num_nodes() == 1);
+    REQUIRE(graph.num_nodes() == 2); // D's producer folded away
 
     graph.execute();
 
@@ -73,6 +75,39 @@ TEST_CASE("CSE - eliminates duplicate einsum", "[ComputeGraph][CSE]") {
             REQUIRE(std::abs(C(ii, jj) - C_ref(ii, jj)) < 1e-12);
         }
     }
+}
+
+TEST_CASE("CSE - never elides a write to a user-visible tensor", "[ComputeGraph][CSE][UserVisible]") {
+    // Regression for the silent-contract-break: both C and D are USER
+    // tensors capturing the same computation. Folding D's producer would
+    // redirect graph consumers but leave the user's D unwritten. CSE must
+    // keep both producers, and both tensors must hold the result.
+    auto A = create_random_tensor<double>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 3, 5);
+    auto C = create_zero_tensor<double>("C", 4, 5);
+    auto D = create_zero_tensor<double>("D", 4, 5);
+
+    cg::Graph graph("cse_user_visible");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+        cg::einsum("ik;kj->ij", &D, A, B);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    CHECK_FALSE(modified);
+    CHECK(graph.num_nodes() == 2);
+
+    graph.execute();
+    // D must actually be written (not left at its zero initialization).
+    double d_norm = 0.0;
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(C(ii, jj) - D(ii, jj)) < 1e-12);
+            d_norm += std::abs(D(ii, jj));
+        }
+    }
+    REQUIRE(d_norm > 1e-8);
 }
 
 TEST_CASE("CSE - surviving consumer of an eliminated duplicate reads the survivor", "[ComputeGraph][CSE]") {
@@ -91,10 +126,10 @@ TEST_CASE("CSE - surviving consumer of an eliminated duplicate reads the survivo
     auto B   = create_random_tensor<double>("B", 3, 5);
     auto F   = create_random_tensor<double>("F", 5, 2);
     auto C   = create_zero_tensor<double>("C", 4, 5);
-    auto D   = create_zero_tensor<double>("D", 4, 5);
     auto OUT = create_zero_tensor<double>("OUT", 4, 2);
 
     cg::Graph graph("cse_surviving_consumer");
+    auto     &D = graph.create_tensor<double, 2>("D", 4, 5); // graph-owned duplicate
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B);   // survivor
@@ -102,12 +137,12 @@ TEST_CASE("CSE - surviving consumer of an eliminated duplicate reads the survivo
         cg::einsum("ik;kj->ij", &OUT, D, F); // consumer of the eliminated duplicate
     }
 
-    REQUIRE(graph.num_nodes() == 3);
+    REQUIRE(graph.num_nodes() == 4); // Alloc(D) + 3 einsums
 
     auto [modified, pass] = graph.apply<cg::passes::CSE>();
 
     REQUIRE(modified);
-    REQUIRE(graph.num_nodes() == 2); // D's producer folded away
+    REQUIRE(graph.num_nodes() == 3); // D's producer folded away
 
     graph.execute();
 
@@ -138,10 +173,10 @@ TEST_CASE("CSE - redirect survives a rebind of the survivor", "[ComputeGraph][CS
     auto B   = create_random_tensor<double>("B", 3, 5);
     auto F   = create_random_tensor<double>("F", 5, 2);
     auto C   = create_zero_tensor<double>("C", 4, 5);
-    auto D   = create_zero_tensor<double>("D", 4, 5);
     auto OUT = create_zero_tensor<double>("OUT", 4, 2);
 
     cg::Graph graph("cse_rebind_survivor");
+    auto     &D = graph.create_tensor<double, 2>("D", 4, 5); // graph-owned duplicate
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B);   // survivor
@@ -151,7 +186,7 @@ TEST_CASE("CSE - redirect survives a rebind of the survivor", "[ComputeGraph][CS
 
     auto [modified, pass] = graph.apply<cg::passes::CSE>();
     REQUIRE(modified);
-    REQUIRE(graph.num_nodes() == 2);
+    REQUIRE(graph.num_nodes() == 3); // Alloc(D) + 2 einsums remain
 
     // Rebind the survivor to a fresh buffer. C's old buffer stays zero, so a
     // stale (snapshot) redirect would make OUT read zeros.
@@ -183,10 +218,12 @@ TEST_CASE("CSE - three identical einsums reduces to one", "[ComputeGraph][CSE]")
     auto A = create_random_tensor<double>("A", 4, 3);
     auto B = create_random_tensor<double>("B", 3, 5);
     auto C = create_zero_tensor<double>("C", 4, 5);
-    auto D = create_zero_tensor<double>("D", 4, 5);
-    auto E = create_zero_tensor<double>("E", 4, 5);
 
     cg::Graph graph("cse_triple");
+    auto     &D = graph.create_tensor<double, 2>("D", 4, 5);
+    auto     &E = graph.create_tensor<double, 2>("E", 4, 5);
+    (void)D;
+    (void)E;
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B);
@@ -194,12 +231,12 @@ TEST_CASE("CSE - three identical einsums reduces to one", "[ComputeGraph][CSE]")
         cg::einsum("ik;kj->ij", &E, A, B);
     }
 
-    REQUIRE(graph.num_nodes() == 3);
+    REQUIRE(graph.num_nodes() == 5); // 2 Allocs + 3 einsums
 
     auto [modified, pass] = graph.apply<cg::passes::CSE>();
 
     CHECK(modified);
-    CHECK(graph.num_nodes() == 1);
+    CHECK(graph.num_nodes() == 3); // 2 Allocs + the surviving einsum
 }
 
 TEST_CASE("CSE - does not eliminate different operations", "[ComputeGraph][CSE]") {
@@ -289,9 +326,9 @@ TEST_CASE("CSE - deduplicates rank-3 BatchedGemm nodes (col-major)", "[ComputeGr
     auto A = create_random_tensor<double>("A", 3, 5, 4);
     auto B = create_random_tensor<double>("B", 5, 6, 4);
     auto C = create_zero_tensor<double>("C", 3, 6, 4);
-    auto D = create_zero_tensor<double>("D", 3, 6, 4);
 
     cg::Graph graph("cse_rank3_col");
+    auto     &D = graph.create_tensor<double, 3>("D", 3, 6, 4);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ikb;kjb->ijb", &C, A, B);
@@ -331,6 +368,15 @@ TEST_CASE("CSE - deduplicates rank-3 BatchedGemm nodes (row-major)", "[ComputeGr
         cg::CaptureGuard const guard(graph);
         cg::einsum("bik;bkj->bij", &C, A, B);
         cg::einsum("bik;bkj->bij", &D, A, B);
+    }
+
+    // Mark D's handle intermediate so the fold is allowed (create_tensor has
+    // no row-major variant; this test exercises the row_mode dedup machinery,
+    // not the user-visibility guard - that has its own test above).
+    for (auto &[tid, handle] : graph.tensors_map()) {
+        if (handle.tensor_ptr == &D) {
+            handle.is_intermediate = true;
+        }
     }
 
     size_t batched_before = 0;

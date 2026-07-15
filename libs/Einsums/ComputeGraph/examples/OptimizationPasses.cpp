@@ -139,9 +139,13 @@ int einsums_main() {
         auto A = create_random_tensor<double>("A", 8, 6);
         auto B = create_random_tensor<double>("B", 6, 4);
         auto C = create_zero_tensor<double>("C", 8, 4);
-        auto D = create_zero_tensor<double>("D", 8, 4);
 
         cg::Graph graph("cse_example");
+        // Graph-owned scratch: CSE only folds duplicates whose outputs the
+        // user can't observe directly. A user-visible duplicate (e.g. a
+        // second create_zero_tensor above) keeps its producer - writes to
+        // user tensors are a contract.
+        auto &D = graph.create_tensor<double, 2>("D", 8, 4);
         {
             cg::CaptureGuard guard(graph);
 
