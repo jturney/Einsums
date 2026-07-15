@@ -3,6 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+// Needed for M_SQRT1_2 on MSVC/clang-cl
+#define _USE_MATH_DEFINES
+
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>

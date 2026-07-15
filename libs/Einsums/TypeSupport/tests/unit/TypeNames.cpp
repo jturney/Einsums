@@ -10,7 +10,7 @@
 #include <Einsums/Testing.hpp>
 
 TEST_CASE("Type Names") {
-    INFO(einsums::detail::get_type_name_string_view<int>());
+    INFO(std::string(einsums::detail::get_type_name_string_view<int>()));
 
-    REQUIRE(einsums::detail::get_type_name_string_view<int>() == "int");
+    REQUIRE(std::string(einsums::detail::get_type_name_string_view<int>()) == "int");
 }

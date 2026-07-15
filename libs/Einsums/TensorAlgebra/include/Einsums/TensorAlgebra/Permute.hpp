@@ -380,12 +380,18 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
         if (C_prefactor == T{0.0}) {
             *C = T{0.0};
         }
-        Stride<ARank> index_strides;
-        size_t        elements = dims_to_strides(A.dims(), index_strides);
+        // Enumerate C's index space, not A's: `index` subscripts C directly
+        // below, and A_order is derived from it. Iterating A's dims walked a
+        // differently-shaped space whenever the permutation changes the dim
+        // order - out of bounds for any non-square permutation. Masked on
+        // platforms where HPTT handles every dense case; found on Windows
+        // (no HPTT) by Nathan Gillispie in PR #235.
+        Stride<CRank> index_strides;
+        size_t        elements = dims_to_strides(C->dims(), index_strides);
 
         EINSUMS_OMP_PARALLEL_FOR
         for (size_t i = 0; i < elements; i++) {
-            thread_local std::array<int64_t, ARank> index;
+            thread_local std::array<int64_t, CRank> index;
 
             sentinel_to_indices(i, index_strides, index);
 

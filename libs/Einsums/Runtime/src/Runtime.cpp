@@ -31,11 +31,23 @@ EINSUMS_SINGLETON_IMPL(RuntimeVars)
 #if defined(EINSUMS_WINDOWS)
 
 void handle_termination(char const *reason) {
-    if (runtime_config().einsums.attach_debugger) {
+    // Same GlobalConfigMap pattern as the POSIX termination handler below;
+    // the old runtime_config().einsums.* API no longer exists, this branch
+    // just never compiled on non-Windows CI to notice.
+    bool attach      = true;
+    bool diagnostics = true;
+    try {
+        auto &global_config = GlobalConfigMap::get_singleton();
+        attach              = global_config.get_bool("attach-debugger", true);
+        diagnostics         = global_config.get_bool("diagnostics-on-terminate", true);
+    } catch (...) {
+    }
+
+    if (attach) {
         util::attach_debugger();
     }
 
-    if (runtime_config().einsums.diagnostics_on_terminate) {
+    if (diagnostics) {
         // Add more information here.
         std::cerr << "{what}: " << (reason ? reason : "Unknown reason") << "\n";
     }

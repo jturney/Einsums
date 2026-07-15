@@ -15,8 +15,8 @@ TEST_CASE("Memory specifications") {
         REQUIRE(memory_string("1") == 1);
         REQUIRE(memory_string("2B") == 2);
         REQUIRE(memory_string("3M") == 3 * 1024 * 1024);
-        REQUIRE(memory_string("4GB") == 4 * 1024UL * 1024UL * 1024UL);
-        REQUIRE(memory_string("5To") == 5UL * 1024UL * 1024UL * 1024UL * 1024UL);
+        REQUIRE(memory_string("4GB") == 4ULL * 1024 * 1024 * 1024);
+        REQUIRE(memory_string("5To") == 5ULL * 1024 * 1024 * 1024 * 1024);
         REQUIRE(memory_string("6kw") == 6 * 1024 / sizeof(size_t));
         REQUIRE(memory_string("7.8Mb") == 8178892);
     }

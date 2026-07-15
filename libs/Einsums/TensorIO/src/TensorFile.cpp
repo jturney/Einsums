@@ -8,30 +8,27 @@
 
 #include <cerrno>
 #include <cstring>
-#include <fcntl.h>
 #include <stdexcept>
-#include <sys/stat.h>
-#include <unistd.h>
+
+#include "PosixFileCompat.hpp"
 
 namespace einsums::tensor_io {
 
 TensorFile::TensorFile(std::string path, Mode mode) : _path(std::move(path)), _mode(mode) {
-    int          flags = 0;
-    mode_t const perms = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-
+    detail::OpenMode open_mode = detail::OpenMode::ReadWrite;
     switch (_mode) {
     case Mode::Read:
-        flags = O_RDONLY;
+        open_mode = detail::OpenMode::Read;
         break;
     case Mode::Write:
-        flags = O_RDWR | O_CREAT | O_TRUNC;
+        open_mode = detail::OpenMode::WriteTruncate;
         break;
     case Mode::ReadWrite:
-        flags = O_RDWR | O_CREAT;
+        open_mode = detail::OpenMode::ReadWrite;
         break;
     }
 
-    _fd = ::open(_path.c_str(), flags, perms);
+    _fd = detail::open_file(_path, open_mode);
     if (_fd < 0) {
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: cannot open '{}': {}", _path, std::strerror(errno));
     }
@@ -63,7 +60,7 @@ TensorFile::~TensorFile() {
         if (_mode != Mode::Read) {
             write_metadata(); // Flush entry table
         }
-        ::close(_fd);
+        detail::close_file(_fd);
         _fd = -1;
     }
 }
@@ -74,7 +71,8 @@ void TensorFile::write_at(uint64_t offset, void const *data, size_t bytes) {
     auto  *ptr   = static_cast<char const *>(data);
     size_t total = 0;
     while (total < bytes) {
-        ssize_t const written = ::pwrite(_fd, ptr + total, bytes - total, static_cast<off_t>(offset + total));
+        detail::io_result_t const written =
+            detail::pwrite_file(_fd, ptr + total, bytes - total, static_cast<detail::file_offset_t>(offset + total));
         if (written < 0) {
             if (errno == EINTR)
                 continue;
@@ -90,7 +88,8 @@ void TensorFile::read_at(uint64_t offset, void *data, size_t bytes) const {
     auto  *ptr   = static_cast<char *>(data);
     size_t total = 0;
     while (total < bytes) {
-        ssize_t const nread = ::pread(_fd, ptr + total, bytes - total, static_cast<off_t>(offset + total));
+        detail::io_result_t const nread =
+            detail::pread_file(_fd, ptr + total, bytes - total, static_cast<detail::file_offset_t>(offset + total));
         if (nread < 0) {
             if (errno == EINTR)
                 continue;
@@ -119,7 +118,7 @@ void TensorFile::write_metadata() {
     }
 
     // Truncate file to exact size
-    if (::ftruncate(_fd, static_cast<off_t>(_header.total_size)) < 0) {
+    if (detail::truncate_file(_fd, static_cast<detail::file_offset_t>(_header.total_size)) < 0) {
         // Non-fatal: file may be slightly larger than needed
     }
 }

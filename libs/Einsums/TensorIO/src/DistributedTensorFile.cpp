@@ -10,9 +10,7 @@
 // Always use POSIX I/O for file operations. MPI is only used for offset
 // coordination (Exscan, Allreduce, Gather). This avoids MPI-IO reliability
 // issues on local filesystems (especially macOS).
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include "PosixFileCompat.hpp"
 
 #if defined(EINSUMS_HAVE_MPI)
 #    include <mpi.h>
@@ -33,16 +31,16 @@ DistributedTensorFile::DistributedTensorFile(std::string path, Mode mode)
 
     if (_mode == Mode::Write) {
         if (_my_rank == 0) {
-            _fd = ::open(_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+            _fd = detail::open_file(_path, detail::OpenMode::WriteTruncate);
         }
 #if defined(EINSUMS_HAVE_MPI)
         MPI_Barrier(MPI_COMM_WORLD); // Wait for rank 0 to create the file
 #endif
         if (_my_rank != 0) {
-            _fd = ::open(_path.c_str(), O_RDWR, S_IRUSR | S_IWUSR);
+            _fd = detail::open_file(_path, detail::OpenMode::ReadWrite);
         }
     } else {
-        _fd = ::open(_path.c_str(), O_RDONLY);
+        _fd = detail::open_file(_path, detail::OpenMode::Read);
     }
 
     if (_fd < 0) {
@@ -80,7 +78,7 @@ void DistributedTensorFile::close() {
     }
 
     if (_fd >= 0) {
-        ::close(_fd);
+        detail::close_file(_fd);
         _fd = -1;
     }
 
@@ -94,7 +92,8 @@ void DistributedTensorFile::write_at(uint64_t offset, void const *data, size_t b
     auto  *ptr   = static_cast<char const *>(data);
     size_t total = 0;
     while (total < bytes) {
-        ssize_t const written = ::pwrite(_fd, ptr + total, bytes - total, static_cast<off_t>(offset + total));
+        detail::io_result_t const written =
+            detail::pwrite_file(_fd, ptr + total, bytes - total, static_cast<detail::file_offset_t>(offset + total));
         if (written < 0) {
             if (errno == EINTR)
                 continue;
@@ -111,7 +110,8 @@ void DistributedTensorFile::read_at(uint64_t offset, void *data, size_t bytes) c
     auto  *ptr   = static_cast<char *>(data);
     size_t total = 0;
     while (total < bytes) {
-        ssize_t const nread = ::pread(_fd, ptr + total, bytes - total, static_cast<off_t>(offset + total));
+        detail::io_result_t const nread =
+            detail::pread_file(_fd, ptr + total, bytes - total, static_cast<detail::file_offset_t>(offset + total));
         if (nread < 0) {
             if (errno == EINTR)
                 continue;
@@ -193,7 +193,7 @@ void DistributedTensorFile::write_metadata() {
         if (!unique_entries.empty()) {
             write_at(header_.entry_table_offset, unique_entries.data(), unique_entries.size() * sizeof(TensorEntry));
         }
-        ::ftruncate(fd_, static_cast<off_t>(header_.total_size));
+        detail::truncate_file(fd_, static_cast<detail::file_offset_t>(header_.total_size));
     } else {
         MPI_Gatherv(entries_.data(), local_count * static_cast<int>(sizeof(TensorEntry)), MPI_BYTE, nullptr, nullptr, nullptr, MPI_BYTE, 0,
                     MPI_COMM_WORLD);
@@ -209,7 +209,7 @@ void DistributedTensorFile::write_metadata() {
     if (!_entries.empty()) {
         write_at(_header.entry_table_offset, _entries.data(), _entries.size() * sizeof(TensorEntry));
     }
-    ::ftruncate(_fd, static_cast<off_t>(_header.total_size));
+    detail::truncate_file(_fd, static_cast<detail::file_offset_t>(_header.total_size));
 #endif
 }
 

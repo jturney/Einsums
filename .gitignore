@@ -1,7 +1,7 @@
 /*build*/
 testing/consume/build
 .vscode/
-CMakePresets.json
+CMakeUserPresets.json
 
 # Prerequisites
 *.d
