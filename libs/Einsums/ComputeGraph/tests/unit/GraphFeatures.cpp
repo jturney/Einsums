@@ -443,3 +443,73 @@ TEST_CASE("Graph - execute with annotations", "[ComputeGraph][Profiler]") {
         }
     }
 }
+
+TEST_CASE("scratch - deferred, intermediate, and fully pass-managed", "[ComputeGraph][Scratch]") {
+    // scratch<T,Rank>() is the one-call managed intermediate: deferred until
+    // execution and visible to the memory passes (FreeInsertion frees it,
+    // MemoryPlanning's arena may host it). 400x400 clears the FreeInsertion
+    // min-bytes threshold so the whole lifecycle engages.
+    constexpr size_t N   = 400;
+    auto             A   = create_random_tensor<double>("A", N, N);
+    auto             B   = create_random_tensor<double>("B", N, N);
+    auto             OUT = create_zero_tensor<double>("OUT", N, N);
+
+    cg::Graph graph("scratch_managed");
+    auto     &tmp = graph.scratch<double, 2>("tmp", N, N);
+    CHECK_FALSE(tmp.is_materialized()); // deferred: no allocation yet
+
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &tmp, A, B);
+        cg::einsum("ik;kj->ij", &OUT, tmp, B);
+    }
+    CHECK_FALSE(tmp.is_materialized()); // still nothing allocated after capture
+
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+
+    graph.execute();
+    // Freed after its last consumer (released back to deferred state or
+    // parked by the arena) - either way not holding its own live buffer.
+    // The result must be right regardless:
+    auto tmp_ref = create_zero_tensor<double>("tmpref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, B);
+    auto OUT_ref = create_zero_tensor<double>("OUTref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, tmp_ref, Indices{k, j}, B);
+    for (size_t ii = 0; ii < N; ii += 37) {
+        for (size_t jj = 0; jj < N; jj += 41) {
+            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-8);
+        }
+    }
+
+    OUT.zero();
+    graph.execute(); // replay through the managed lifecycle
+    for (size_t ii = 0; ii < N; ii += 37) {
+        for (size_t jj = 0; jj < N; jj += 41) {
+            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-8);
+        }
+    }
+}
+
+TEST_CASE("scratch_zero - zeroed at materialization", "[ComputeGraph][Scratch]") {
+    auto A   = create_random_tensor<double>("A", 6, 6);
+    auto OUT = create_zero_tensor<double>("OUT", 6, 6);
+
+    cg::Graph graph("scratch_zero");
+    auto     &acc = graph.scratch_zero<double, 2>("acc", 6, 6);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpy(1.0, A, &acc); // accumulate into zero-initialized scratch
+        cg::axpy(1.0, acc, &OUT);
+    }
+
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    graph.execute();
+
+    for (size_t ii = 0; ii < 6; ii++) {
+        for (size_t jj = 0; jj < 6; jj++) {
+            REQUIRE(std::abs(OUT(ii, jj) - A(ii, jj)) < 1e-12);
+        }
+    }
+}

@@ -588,6 +588,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * It is destroyed when the graph is destroyed. This ensures the tensor outlives
      * all captured lambdas, preventing dangling reference bugs.
      *
+     * Prefer scratch() for intermediates: it defers allocation to execution
+     * and hands the buffer to the memory passes (FreeInsertion,
+     * InplaceOptimization, MemoryPlanning's arena). create_tensor allocates
+     * NOW and stays allocated unless those passes intervene.
+     *
      * An Alloc node is inserted into the graph marking the tensor's lifetime start.
      * Pair with free_tensor() to mark the lifetime end. The MemoryPlanning pass
      * uses these markers to identify buffer reuse opportunities.
@@ -858,6 +863,76 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
             }
         }
         return t;
+    }
+
+    /**
+     * @brief Create graph-managed scratch: THE way to make an intermediate.
+     *
+     * One call replaces the create_tensor / declare_tensor / intermediate-flag
+     * decision tree. A scratch tensor is:
+     * - **deferred**: no allocation until execution reaches it (the
+     *   Materialization pass, or the graph's own lifecycle nodes, allocate it
+     *   at the right position - possibly resized to a local partition by
+     *   DistributionPlanning first);
+     * - **intermediate**: FreeInsertion reclaims it after its last consumer,
+     *   InplaceOptimization may merge its storage into a dying input, and
+     *   MemoryPlanning's arena may host it at a planned offset.
+     *
+     * Prefer this over create_tensor() (eager; allocated for the graph's whole
+     * lifetime unless the memory passes intervene) for any tensor that only
+     * exists to carry a value between nodes.
+     *
+     * @code
+     * auto &tmp = graph.scratch<double, 2>("tmp", nocc, nvir);
+     * auto &acc = graph.scratch_zero<double, 2>("acc", nocc, nvir);
+     * @endcode
+     */
+    template <typename T, size_t Rank, std::integral... Dims>
+        requires(sizeof...(Dims) == Rank)
+    Tensor<T, Rank> &scratch(std::string name, Dims... dims) {
+        auto &t = declare_tensor<T, Rank>(std::move(name), dims...);
+        for (auto &[tid, handle] : _tensors) {
+            if (handle.tensor_ptr == &t) {
+                handle.is_intermediate = true;
+                break;
+            }
+        }
+        return t;
+    }
+
+    /// Zero-initialized scratch (zeroed at materialization, like
+    /// declare_zero_tensor, and managed like scratch()).
+    template <typename T, size_t Rank, std::integral... Dims>
+        requires(sizeof...(Dims) == Rank)
+    Tensor<T, Rank> &scratch_zero(std::string name, Dims... dims) {
+        auto &t = declare_zero_tensor<T, Rank>(std::move(name), dims...);
+        for (auto &[tid, handle] : _tensors) {
+            if (handle.tensor_ptr == &t) {
+                handle.is_intermediate = true;
+                break;
+            }
+        }
+        return t;
+    }
+
+    /// Runtime-rank scratch (see scratch(); pybind-facing analog).
+    template <typename T, typename Alloc = std::allocator<T>>
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("scratch", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("scratch", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("scratch", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS("scratch", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
+                    GeneralRuntimeTensor<T, Alloc> &scratch_runtime(std::string name, std::vector<size_t> dims) {
+        return declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), /*intermediate=*/true);
+    }
+
+    /// Runtime-rank zero-initialized scratch.
+    template <typename T, typename Alloc = std::allocator<T>>
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = float, Alloc = std::allocator<float>)
+        APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = double, Alloc = std::allocator<double>)
+            APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+                APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
+                    GeneralRuntimeTensor<T, Alloc> &scratch_zero_runtime(std::string name, std::vector<size_t> dims) {
+        return declare_zero_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), /*intermediate=*/true);
     }
 
     /**
