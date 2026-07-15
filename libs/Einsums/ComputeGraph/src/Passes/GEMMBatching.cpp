@@ -98,8 +98,9 @@ bool GEMMBatching::run(Graph &graph) {
     auto const  &deps    = graph.dependencies();
     size_t const n_nodes = nodes.size();
 
-    _num_batches   = 0;
-    _total_batched = 0;
+    _num_batches      = 0;
+    _total_batched    = 0;
+    _num_gate_skipped = 0;
 
     if (n_nodes < 2)
         return false;
@@ -148,6 +149,29 @@ bool GEMMBatching::run(Graph &graph) {
             continue;
 
         auto const &[lvl, key] = keyed_level;
+
+        // Profitability gate: a batch executes as one node, and TaskPool
+        // workers run BLAS single-threaded, so batching serializes work the
+        // Dataflow executor would spread across workers. Only worth it when
+        // each member is small enough that per-node scheduling overhead is a
+        // meaningful fraction of its runtime.
+        if (_has_profile) {
+            size_t const elem_size = key.scalar == BlasScalar::Float          ? sizeof(float)
+                                     : key.scalar == BlasScalar::Double       ? sizeof(double)
+                                     : key.scalar == BlasScalar::ComplexFloat ? sizeof(std::complex<float>)
+                                                                              : sizeof(std::complex<double>);
+            double const gemm_us   = _profile.estimate_total_gemm_time_us(static_cast<size_t>(key.m), static_cast<size_t>(key.n),
+                                                                          static_cast<size_t>(key.k), elem_size, Target::CPU);
+            if (gemm_us > _max_gemm_us) {
+                _num_gate_skipped++;
+                EINSUMS_LOG_INFO("GEMMBatching: group of {} GEMMs ({}x{}x{}, ~{:.1f}us each) exceeds the {:.0f}us batching "
+                                 "threshold — leaving them as independent nodes",
+                                 group.size(), key.m, key.k, key.n, gemm_us, _max_gemm_us);
+                report(2, fmt::format("skip group of {} GEMMs (~{:.1f}us each > {:.0f}us gate) — better as parallel nodes", group.size(),
+                                      gemm_us, _max_gemm_us));
+                continue;
+            }
+        }
 
         // Probe lda/ldb/ldc on the first member; reject the group if any
         // other member disagrees. Non-uniform strides can't share one

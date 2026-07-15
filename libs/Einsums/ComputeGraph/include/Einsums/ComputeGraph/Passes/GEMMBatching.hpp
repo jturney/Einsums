@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/ComputeGraph/HardwareProfile.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 
 namespace einsums::compute_graph::passes {
@@ -44,6 +45,19 @@ namespace einsums::compute_graph::passes {
  */
 class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
   public:
+    GEMMBatching() = default;
+
+    /// Profitability-gated batching. gemm_batch runs as ONE node - and on
+    /// TaskPool workers BLAS is single-threaded - so collapsing large GEMMs
+    /// that the Dataflow executor would otherwise spread across workers is a
+    /// pessimization. With a profile, a group is only batched when the
+    /// estimated single-GEMM time is at most @p max_gemm_us (default 100us,
+    /// i.e. batching amortizes per-node scheduling for small GEMMs and stays
+    /// away from work that deserves its own node). The default-constructed
+    /// pass keeps the ungated always-batch behavior.
+    explicit GEMMBatching(HardwareProfile profile, double max_gemm_us = 100.0)
+        : _profile(std::move(profile)), _has_profile(true), _max_gemm_us(max_gemm_us) {}
+
     [[nodiscard]] std::string name() const override { return "GEMMBatching"; }
     bool                      run(Graph &graph) override;
 
@@ -59,9 +73,16 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
     /// (sum of group sizes across all batches).
     [[nodiscard]] size_t total_batched() const { return _total_batched; }
 
+    /// Groups skipped by the profitability gate this run.
+    [[nodiscard]] size_t num_gate_skipped() const { return _num_gate_skipped; }
+
   private:
-    size_t _num_batches{0};
-    size_t _total_batched{0};
+    HardwareProfile _profile{};
+    bool            _has_profile{false};
+    double          _max_gemm_us{100.0};
+    size_t          _num_batches{0};
+    size_t          _total_batched{0};
+    size_t          _num_gate_skipped{0};
 };
 
 } // namespace einsums::compute_graph::passes

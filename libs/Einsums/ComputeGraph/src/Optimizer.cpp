@@ -220,7 +220,7 @@ void PassManager::populate_default() {
     // that need those optimizations should not be batched first. A
     // future commit can gate GEMMBatching on the absence of a
     // distribution requirement.
-    pm.add<passes::GEMMBatching>();
+    pm.add<passes::GEMMBatching>(profile);
     pm.add<passes::Reorder>();
     pm.add<passes::IOPrefetch>();
 

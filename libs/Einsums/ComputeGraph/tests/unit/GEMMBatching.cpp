@@ -15,6 +15,8 @@
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
+using namespace einsums::index;
+using namespace einsums::tensor_algebra;
 namespace cg = einsums::compute_graph;
 
 namespace {
@@ -348,4 +350,73 @@ TEST_CASE("GEMMBatching: replay produces consistent results across execute() cal
     graph.execute();
     require_close(C1, snap1);
     require_close(C2, snap2);
+}
+
+TEST_CASE("GEMMBatching - profitability gate leaves large GEMMs unbatched", "[ComputeGraph][GEMMBatching][Gate]") {
+    // Two independent 400x400x400 GEMMs: ~big enough that one gemm each on
+    // its own Dataflow worker beats a single serialized gemm_batch node.
+    // With a profile and a tight threshold they must stay separate; the
+    // ungated pass still batches them.
+    constexpr size_t N  = 400;
+    auto             A1 = create_random_tensor<double>("A1", N, N);
+    auto             B1 = create_random_tensor<double>("B1", N, N);
+    auto             C1 = create_zero_tensor<double>("C1", N, N);
+    auto             A2 = create_random_tensor<double>("A2", N, N);
+    auto             B2 = create_random_tensor<double>("B2", N, N);
+    auto             C2 = create_zero_tensor<double>("C2", N, N);
+
+    auto build = [&](cg::Graph &graph) {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C1, A1, B1);
+        cg::einsum("ik;kj->ij", &C2, A2, B2);
+    };
+
+    {
+        cg::Graph graph("gate_large");
+        build(graph);
+        cg::passes::GEMMBatching gated(cg::HardwareProfile::detect_default(), /*max_gemm_us=*/50.0);
+        bool const               modified = gated.run(graph);
+        CHECK_FALSE(modified);
+        CHECK(gated.num_batches() == 0);
+        CHECK(gated.num_gate_skipped() == 1);
+    }
+    {
+        cg::Graph graph("ungated_large");
+        build(graph);
+        cg::passes::GEMMBatching ungated;
+        REQUIRE(ungated.run(graph));
+        CHECK(ungated.num_batches() == 1);
+    }
+}
+
+TEST_CASE("GEMMBatching - profitability gate still batches small GEMMs", "[ComputeGraph][GEMMBatching][Gate]") {
+    constexpr size_t N  = 8;
+    auto             A1 = create_random_tensor<double>("A1", N, N);
+    auto             B1 = create_random_tensor<double>("B1", N, N);
+    auto             C1 = create_zero_tensor<double>("C1", N, N);
+    auto             A2 = create_random_tensor<double>("A2", N, N);
+    auto             B2 = create_random_tensor<double>("B2", N, N);
+    auto             C2 = create_zero_tensor<double>("C2", N, N);
+
+    cg::Graph graph("gate_small");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C1, A1, B1);
+        cg::einsum("ik;kj->ij", &C2, A2, B2);
+    }
+
+    cg::passes::GEMMBatching gated(cg::HardwareProfile::detect_default(), /*max_gemm_us=*/100.0);
+    REQUIRE(gated.run(graph));
+    CHECK(gated.num_batches() == 1);
+    CHECK(gated.num_gate_skipped() == 0);
+
+    graph.execute();
+    // Numerics through the batched node.
+    auto C1_ref = create_zero_tensor<double>("C1ref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &C1_ref, Indices{i, k}, A1, Indices{k, j}, B1);
+    for (size_t ii = 0; ii < N; ii++) {
+        for (size_t jj = 0; jj < N; jj++) {
+            REQUIRE(std::abs(C1(ii, jj) - C1_ref(ii, jj)) < 1e-12);
+        }
+    }
 }
