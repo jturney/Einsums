@@ -15,6 +15,7 @@
 
 #include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
+#include <Einsums/Utilities/SetEnv.hpp>
 
 #include <cstdlib>
 #include <pybind11/pybind11.h>
@@ -147,12 +148,7 @@ void apply_threads_from_rc(py::module_ const &rc) {
         return;
     }
     int const n = v.cast<int>();
-#if defined(EINSUMS_WINDOWS)
-    // No POSIX setenv in the MSVC CRT.
-    _putenv_s("OMP_NUM_THREADS", std::to_string(n).c_str());
-#else
-    setenv("OMP_NUM_THREADS", std::to_string(n).c_str(), /*overwrite=*/1);
-#endif
+    einsums::set_env_var("OMP_NUM_THREADS", std::to_string(n));
 }
 
 // Py_AtExit hook. Runs at interpreter teardown, which is later than module
