@@ -67,29 +67,32 @@ TimingStats time_us(char const *label, Fn &&fn, int reps = 10) {
         times[r] = std::chrono::duration<double, std::micro>(t1 - t0).count();
     }
 
-    double sum = 0.0, mn = times[0], mx = times[0];
+    double total_us = 0.0, min_us = times[0], max_us = times[0];
     for (double t : times) {
-        sum += t;
-        if (t < mn)
-            mn = t;
-        if (t > mx)
-            mx = t;
+        total_us += t;
+        if (t < min_us)
+            min_us = t;
+        if (t > max_us)
+            max_us = t;
     }
-    double avg = sum / reps;
+    double const mean_us = total_us / reps;
 
-    double var = 0.0;
+    // Sample standard deviation (Bessel's correction, n-1): reps is a small
+    // handful, and the n-1 estimator reports the honest spread for that few
+    // noisy repetitions. A single rep has no spread to estimate.
+    double sum_sq_dev = 0.0;
     for (double t : times) {
-        double d = t - avg;
-        var += d * d;
+        double const dev = t - mean_us;
+        sum_sq_dev += dev * dev;
     }
-    double sd = std::sqrt(var / reps);
+    double const stddev_us = reps > 1 ? std::sqrt(sum_sq_dev / (reps - 1)) : 0.0;
 
-    ProfileAnnotate("avg_us", avg);
-    ProfileAnnotate("min_us", mn);
-    ProfileAnnotate("max_us", mx);
-    ProfileAnnotate("stddev_us", sd);
+    ProfileAnnotate("avg_us", mean_us);
+    ProfileAnnotate("min_us", min_us);
+    ProfileAnnotate("max_us", max_us);
+    ProfileAnnotate("stddev_us", stddev_us);
 
-    return {avg, mn, mx, sd, warmup_us, reps};
+    return {mean_us, min_us, max_us, stddev_us, warmup_us, reps};
 }
 
 /// Convenience overload without a label (for benchmarks that manage their own output).
@@ -157,6 +160,9 @@ void fill(einsums::Tensor<T, R> &t) {
 }
 
 /// Fill a symmetric positive definite matrix (diagonally dominant).
+///
+/// Deterministic like fill(): the values depend only on the dimensions (no
+/// RNG), so repeated benchmark runs factor the data out of the timing.
 template <typename T>
 void fill_spd(einsums::Tensor<T, 2> &A) {
     int N = static_cast<int>(A.dim(0));

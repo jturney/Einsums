@@ -93,3 +93,6 @@ benchmark_report.html
 
 # Claude Code per-user memory
 .claude/
+
+# CTest scratch output (test costs, logs) written next to the test binaries
+testing/Temporary/
