@@ -420,3 +420,85 @@ TEST_CASE("GEMMBatching - profitability gate still batches small GEMMs", "[Compu
         }
     }
 }
+
+TEST_CASE("GEMMBatching - batched node placed before consumers of member outputs", "[ComputeGraph][GEMMBatching]") {
+    // bug-1012: the pass used to append the BatchedGemm at the end of the node
+    // list. Position is program order in this IR, so a downstream consumer of
+    // a member's output was then legally scheduled BEFORE the batch and read a
+    // stale buffer. Two identical contractions plus a gemm consuming the
+    // second output reproduce it (found by the Python differential fuzzer once
+    // CSE stopped folding user-visible duplicates).
+    constexpr size_t N  = 8;
+    auto             A  = create_random_tensor<double>("A", N, N);
+    auto             B  = create_random_tensor<double>("B", N, N);
+    auto             C1 = create_zero_tensor<double>("C1", N, N);
+    auto             C2 = create_zero_tensor<double>("C2", N, N);
+    auto             E  = create_random_tensor<double>("E", N, N);
+    auto             D  = create_zero_tensor<double>("D", N, N);
+
+    cg::Graph graph("batch_before_consumer");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ki ; kj", 0.0, &C1, 1.0, A, B); // transposed pair: CSE-identical
+        cg::einsum("ij <- ki ; kj", 0.0, &C2, 1.0, A, B);
+        cg::gemm<false, false>(1.0, C2, E, 0.0, &D);
+    }
+
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    graph.execute();
+
+    Tensor<double, 2> C_ref("Cref", N, N);
+    C_ref.zero();
+    tensor_algebra::einsum(Indices{index::i, index::j}, &C_ref, Indices{index::k, index::i}, A, Indices{index::k, index::j}, B);
+    Tensor<double, 2> D_ref("Dref", N, N);
+    D_ref.zero();
+    tensor_algebra::einsum(Indices{index::i, index::j}, &D_ref, Indices{index::i, index::k}, C_ref, Indices{index::k, index::j}, E);
+
+    for (size_t ii = 0; ii < N; ii++) {
+        for (size_t jj = 0; jj < N; jj++) {
+            REQUIRE(std::abs(C2(ii, jj) - C_ref(ii, jj)) < 1e-10);
+            REQUIRE(std::abs(D(ii, jj) - D_ref(ii, jj)) < 1e-10);
+        }
+    }
+}
+
+TEST_CASE("GEMMBatching - interfering node between members disables the batch", "[ComputeGraph][GEMMBatching]") {
+    // A reader of the first member's output sits BETWEEN the two batchable
+    // contractions. No slot placement is sound there, so the group must be
+    // skipped and results must still be correct.
+    constexpr size_t N  = 8;
+    auto             A  = create_random_tensor<double>("A", N, N);
+    auto             B  = create_random_tensor<double>("B", N, N);
+    auto             C1 = create_zero_tensor<double>("C1", N, N);
+    auto             C2 = create_zero_tensor<double>("C2", N, N);
+    auto             E  = create_random_tensor<double>("E", N, N);
+    auto             D  = create_zero_tensor<double>("D", N, N);
+
+    cg::Graph graph("batch_interference");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &C1, 1.0, A, B);
+        cg::gemm<false, false>(1.0, C1, E, 0.0, &D); // reads C1 between the members
+        cg::einsum("ik;kj->ij", 0.0, &C2, 1.0, A, B);
+    }
+
+    cg::passes::GEMMBatching pass;
+    pass.run(graph); // whether it batches is not the point; correctness is
+    graph.execute();
+
+    Tensor<double, 2> C_ref("Cref", N, N);
+    C_ref.zero();
+    tensor_algebra::einsum(Indices{index::i, index::j}, &C_ref, Indices{index::i, index::k}, A, Indices{index::k, index::j}, B);
+    Tensor<double, 2> D_ref("Dref", N, N);
+    D_ref.zero();
+    tensor_algebra::einsum(Indices{index::i, index::j}, &D_ref, Indices{index::i, index::k}, C_ref, Indices{index::k, index::j}, E);
+
+    for (size_t ii = 0; ii < N; ii++) {
+        for (size_t jj = 0; jj < N; jj++) {
+            REQUIRE(std::abs(C1(ii, jj) - C_ref(ii, jj)) < 1e-10);
+            REQUIRE(std::abs(C2(ii, jj) - C_ref(ii, jj)) < 1e-10);
+            REQUIRE(std::abs(D(ii, jj) - D_ref(ii, jj)) < 1e-10);
+        }
+    }
+}

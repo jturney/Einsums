@@ -197,6 +197,12 @@ PassManager PassManager::create_for(OptLevel level) {
         pm.add<passes::CSE>();
         pm.add<passes::DeadNodeElimination>();
         pm.add<passes::ElementWiseFusion>();
+        // Materialization is correctness-enabling, not an optimization: a
+        // graph that uses declare_tensor() cannot execute without it, and
+        // the execute-time "still deferred" diagnostic tells users that
+        // graph.optimize() fixes the problem, at every level above O0.
+        // After DNE so dead deferred tensors are not allocated.
+        pm.add<passes::Materialization>();
         break;
     case OptLevel::O2:
         pm.populate_default();

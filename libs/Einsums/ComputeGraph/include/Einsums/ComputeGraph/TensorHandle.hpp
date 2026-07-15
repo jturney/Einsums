@@ -93,6 +93,13 @@ struct TensorHandle {
     /// Called by MaterializationPass. Null for already-materialized tensors.
     std::function<void()> materialize_fn;
 
+    /// Live query: does the tensor currently have backing storage?
+    /// ``alloc_state`` is a snapshot from registration time and goes stale if
+    /// the user calls ``tensor.materialize()`` directly; execute-time
+    /// validation uses this to avoid false "still deferred" diagnostics.
+    /// Null means "assume materialized".
+    std::function<bool()> is_materialized_fn;
+
     /// Attach caller-provided storage instead of allocating (type-erased
     /// Tensor::materialize_into). Set only for owning tensor types that
     /// support external storage; the MemoryPlanning arena requires it.
@@ -241,8 +248,10 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
 
     // data_ptr may be nullptr for deferred (shell) tensors, that's expected.
     if constexpr (requires { tensor.is_materialized(); }) {
-        h.data_ptr    = tensor.is_materialized() ? const_cast<void *>(static_cast<void const *>(tensor.data())) : nullptr;
-        h.alloc_state = tensor.is_materialized() ? AllocState::Materialized : AllocState::Deferred;
+        h.data_ptr           = tensor.is_materialized() ? const_cast<void *>(static_cast<void const *>(tensor.data())) : nullptr;
+        h.alloc_state        = tensor.is_materialized() ? AllocState::Materialized : AllocState::Deferred;
+        auto const *live_ptr = &tensor;
+        h.is_materialized_fn = [live_ptr]() { return live_ptr->is_materialized(); };
     } else {
         h.data_ptr = const_cast<void *>(static_cast<void const *>(tensor.data()));
     }

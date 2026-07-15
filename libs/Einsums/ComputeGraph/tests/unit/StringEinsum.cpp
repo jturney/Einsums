@@ -592,3 +592,60 @@ TEST_CASE("String permute - identity (no reorder)", "[ComputeGraph][StringPermut
         for (size_t jj = 0; jj < 4; jj++)
             REQUIRE(std::abs(C(ii, jj) - A(ii, jj)) < 1e-12);
 }
+
+namespace {
+// Convention here is REQUIRE_THROWS_AS; for these diagnostics the message IS
+// the feature, so capture it and assert on its content directly.
+template <typename Fn>
+std::string message_of(Fn &&fn) {
+    try {
+        fn();
+    } catch (std::invalid_argument const &e) {
+        return e.what();
+    }
+    FAIL("expected std::invalid_argument, but nothing was thrown");
+    return {};
+}
+} // namespace
+
+TEST_CASE("String einsum - rejects disagreeing link dimension at capture", "[ComputeGraph][StringEinsum][Validation]") {
+    auto A = create_random_tensor<double>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 5, 6); // k is 3 in A but 5 in B
+    auto C = create_zero_tensor<double>("C", 4, 6);
+
+    cg::Graph graph("bad-link-dim");
+    {
+        cg::CaptureGuard guard(graph);
+        auto             msg = message_of([&] { cg::einsum("ij <- ik ; kj", &C, A, B); });
+        REQUIRE(msg.find("'k'") != std::string::npos);
+        REQUIRE(msg.find('3') != std::string::npos);
+        REQUIRE(msg.find('5') != std::string::npos);
+    }
+    // Nothing was recorded: the bad op must not survive into the graph.
+    REQUIRE(graph.nodes().empty());
+}
+
+TEST_CASE("String einsum - rejects disagreeing output dimension eagerly", "[ComputeGraph][StringEinsum][Validation]") {
+    auto A = create_random_tensor<double>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 3, 6);
+    auto C = create_zero_tensor<double>("C", 4, 7); // j is 6 in B but 7 in C
+
+    // The same validation guards the eager (no capture) path.
+    auto msg = message_of([&] {
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+    });
+    REQUIRE(msg.find("'j'") != std::string::npos);
+}
+
+TEST_CASE("String einsum - repeated index within one operand must agree", "[ComputeGraph][StringEinsum][Validation]") {
+    auto A = create_random_tensor<double>("A", 4, 5); // "kk" demands a square operand
+    auto B = create_random_tensor<double>("B", 3);
+    auto C = create_zero_tensor<double>("C", 3);
+
+    auto msg = message_of([&] {
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("i <- kk ; i", &C, A, B);
+    });
+    REQUIRE(msg.find("'k'") != std::string::npos);
+}

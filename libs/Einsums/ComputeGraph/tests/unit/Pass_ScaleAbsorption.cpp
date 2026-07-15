@@ -131,12 +131,13 @@ TEST_CASE("ScaleAbsorption - does not absorb when intervening reader", "[Compute
     auto B = create_random_tensor<double>("B", 3, 5);
     auto C = create_random_tensor<double>("C", 4, 5);
     auto D = create_zero_tensor<double>("D", 4, 5);
+    auto E = create_random_tensor<double>("E", 4, 4);
 
     cg::Graph graph("sa_intervening");
     {
         cg::CaptureGuard const guard(graph);
         cg::scale(3.0, &C);
-        cg::einsum("ik;kj->ij", 0.0, &D, 1.0, A, C); // D reads scaled C before next write
+        cg::einsum("ik;kj->ij", 0.0, &D, 1.0, E, C); // D reads scaled C before next write
         cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
     }
 

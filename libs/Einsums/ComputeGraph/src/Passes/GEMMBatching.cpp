@@ -11,11 +11,13 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <complex>
 #include <cstdint>
 #include <cstring>
 #include <map>
 #include <tuple>
+#include <unordered_set>
 #include <vector>
 
 namespace einsums::compute_graph::passes {
@@ -142,7 +144,6 @@ bool GEMMBatching::run(Graph &graph) {
     }
 
     std::vector<bool> remove(n_nodes, false);
-    std::vector<Node> new_nodes_to_append;
 
     for (auto const &[keyed_level, group] : groups) {
         if (group.size() < 2)
@@ -202,6 +203,56 @@ bool GEMMBatching::run(Graph &graph) {
             report(3, fmt::format("skip group of {} einsums at level {} ({}x{}x{}) — mismatched strides", group.size(), lvl, key.m, key.k,
                                   key.n));
             continue;
+        }
+
+        // Placement/interference gate. The topological sort derives RAW/WAR/WAW
+        // edges from scan order (position IS program order in this IR), so the
+        // batched node must occupy the FIRST member's slot to stay ahead of any
+        // consumer of a member's output (appending would legally schedule the
+        // batch after such a consumer, which then reads a stale buffer). That
+        // placement is only sound if no outside node between the first and last
+        // member touches what the batch reads or writes; skip the group when
+        // one does. Control-flow nodes hide their I/O in sub-graphs, so their
+        // presence in the span disqualifies the group outright.
+        size_t const first_pos = *std::min_element(group.begin(), group.end());
+        size_t const last_pos  = *std::max_element(group.begin(), group.end());
+        {
+            std::unordered_set<size_t>   member_set(group.begin(), group.end());
+            std::unordered_set<TensorId> batch_reads, batch_writes;
+            for (size_t const idx : group) {
+                for (auto tid : nodes[idx].inputs)
+                    batch_reads.insert(tid);
+                for (auto tid : nodes[idx].outputs)
+                    batch_writes.insert(tid);
+            }
+            bool interference = false;
+            for (size_t i = first_pos + 1; i < last_pos && !interference; i++) {
+                if (member_set.count(i))
+                    continue;
+                Node const &other = nodes[i];
+                if (other.kind == OpKind::Loop || other.kind == OpKind::Conditional) {
+                    interference = true;
+                    break;
+                }
+                for (auto tid : other.outputs) {
+                    if (batch_reads.count(tid) || batch_writes.count(tid)) {
+                        interference = true;
+                        break;
+                    }
+                }
+                for (auto tid : other.inputs) {
+                    if (batch_writes.count(tid)) {
+                        interference = true;
+                        break;
+                    }
+                }
+            }
+            if (interference) {
+                EINSUMS_LOG_INFO("GEMMBatching: group of {} einsums at level {} has an interfering node between members — not batching",
+                                 group.size(), lvl);
+                report(3, fmt::format("skip group of {} einsums at level {} — interfering node between members", group.size(), lvl));
+                continue;
+            }
         }
 
         // Build the batched descriptor.
@@ -281,10 +332,15 @@ bool GEMMBatching::run(Graph &graph) {
         batched.inputs  = std::move(batched_inputs);
         batched.outputs = std::move(batched_outputs);
         batched.op_data = d;
-        new_nodes_to_append.push_back(std::move(batched));
+        // Occupy the first member's slot (and reuse its id) so the batch stays
+        // scan-before every consumer of a member's output; see the placement
+        // gate above for why appending is unsound.
+        batched.id       = nodes[first_pos].id;
+        nodes[first_pos] = std::move(batched);
 
         for (size_t const idx : group)
-            remove[idx] = true;
+            if (idx != first_pos)
+                remove[idx] = true;
 
         _num_batches++;
         _total_batched += group.size();
@@ -296,20 +352,17 @@ bool GEMMBatching::run(Graph &graph) {
         return false;
     report(1, fmt::format("batched {} GEMM(s) into {} gemm_batch node(s)", _total_batched, _num_batches));
 
-    // Compact: drop originals in place, then hand the new BatchedGemm
-    // nodes to Graph::add_node() so it assigns ids and invalidates the
-    // topological sort. Ordering between the new nodes and survivors
-    // is settled on the next sort, dependency edges are intact.
+    // Compact: each batch already sits at its first member's slot, so
+    // dropping the other members preserves a valid program order; only the
+    // position-keyed dependency lists are stale. topological_sort() sees the
+    // node-count change and rebuilds them without re-deriving the order.
     std::vector<Node> filtered;
-    filtered.reserve(nodes.size() - _total_batched);
+    filtered.reserve(nodes.size() - (_total_batched - _num_batches));
     for (size_t i = 0; i < nodes.size(); ++i)
         if (!remove[i])
             filtered.push_back(std::move(nodes[i]));
     nodes = std::move(filtered);
-
-    for (auto &nn : new_nodes_to_append)
-        graph.add_node(std::move(nn));
-    // add_node() clears the sort flag for us.
+    graph.topological_sort();
     return true;
 }
 

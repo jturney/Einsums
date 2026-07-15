@@ -21,6 +21,7 @@
 /// batch-last) have interleaved batches and fall through to generic einsum.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -395,4 +396,45 @@ TEST_CASE("StridedBatchedGemm: replay across multiple execute() calls", "[Comput
     C.zero();
     graph.execute();
     require_close(C, snap);
+}
+
+TEST_CASE("StridedBatchedGemm: permuted view with transposed slice falls through", "[ComputeGraph][StridedBatchedGemm]") {
+    // bug-1013: a permute_view keeps its parent's storage-order flag but
+    // presents reordered strides. A view of (L, J, I) presented as (J, L, I)
+    // keeps the batch axis outermost - so is_contiguous(), is_column_major(),
+    // and the batch-suffix check all passed - but each 2D slice is TRANSPOSED
+    // in memory, and the strided-batch stride math silently computed garbage.
+    // The layout gate must reject it (fall through to generic) and the result
+    // must match. Found by the Python large-rank differential fuzzer.
+    constexpr size_t J = 2, L = 2, I = 2, K = 3;
+    auto             base = create_random_tensor<double>("base", L, J, I); // (l, j, i) storage
+    auto             B    = create_random_tensor<double>("B", L, K, I);
+    auto             C    = create_zero_tensor<double>("C", J, K, I);
+
+    RuntimeTensor<double>     base_rt(base);
+    RuntimeTensorView<double> At = base_rt.permute_view({1, 0, 2}); // presents (j, l, i)
+
+    RuntimeTensor<double> B_rt(B), C_rt(C);
+
+    cg::Graph graph("view_transposed_slice");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("jki <- jli ; lki", 0.0, &C_rt, 1.0, At, B_rt);
+    }
+    REQUIRE(graph.nodes()[0].kind == cg::OpKind::Einsum); // fell through, not BatchedGemm
+    graph.execute();
+
+    for (size_t j = 0; j < J; j++) {
+        for (size_t k = 0; k < K; k++) {
+            for (size_t i2 = 0; i2 < I; i2++) {
+                double ref = 0.0;
+                for (size_t l = 0; l < L; l++) {
+                    ref += base(l, j, i2) * B(l, k, i2);
+                }
+                REQUIRE(std::abs(
+                            C_rt(std::vector<ptrdiff_t>{static_cast<ptrdiff_t>(j), static_cast<ptrdiff_t>(k), static_cast<ptrdiff_t>(i2)}) -
+                            ref) < 1e-12);
+            }
+        }
+    }
 }

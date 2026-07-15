@@ -414,7 +414,8 @@ int einsums_main() {
     {
         auto A = create_random_tensor<double>("A", 4, 3);
         auto B = create_random_tensor<double>("B", 3, 5);
-        auto C = create_zero_tensor<double>("C", 4, 5);
+        auto D = create_random_tensor<double>("D", 5, 3);
+        auto C = create_zero_tensor<double>("C", 4, 3);
 
         cg::Graph graph("inplace_demo");
         auto     &T = graph.create_zero_tensor<double, 2>("T", 4, 5);
@@ -422,7 +423,7 @@ int einsums_main() {
         {
             cg::CaptureGuard guard(graph);
             cg::einsum("ik;kj->ij", &T, A, B);
-            cg::einsum("ik;kj->ij", &C, T, B);
+            cg::einsum("ik;kj->ij", &C, T, D);
         }
 
         auto [_m13, inplace] = graph.apply<cg::passes::InplaceOptimization>();

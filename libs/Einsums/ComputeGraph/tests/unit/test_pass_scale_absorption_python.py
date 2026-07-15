@@ -104,11 +104,12 @@ def test_scale_absorption_does_not_absorb_when_intervening_reader():
     B = einsums.create_random_tensor("B", [3, 5])
     C = einsums.create_random_tensor("C", [4, 5])
     D = einsums.create_zero_tensor("D", [4, 5])
+    E = einsums.create_random_tensor("E", [4, 4])
 
     g = cg.Graph("sa_intervening")
     with cg.capture(g):
         einsums.linalg.scale(3.0, C)
-        einsums.einsum("ij <- ik ; kj", D, A, C, c_pf=0.0, ab_pf=1.0)  # D reads scaled C
+        einsums.einsum("ij <- ik ; kj", D, E, C, c_pf=0.0, ab_pf=1.0)  # D reads scaled C
         einsums.einsum("ij <- ik ; kj", C, A, B, c_pf=0.0, ab_pf=1.0)
 
     pass_inst = cg.ScaleAbsorption()

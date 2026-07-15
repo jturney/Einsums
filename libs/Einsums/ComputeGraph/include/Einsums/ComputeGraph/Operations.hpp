@@ -3491,6 +3491,32 @@ APIARY_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<std::complex<double>,
 namespace detail {
 
 /// Build an EinsumDescriptor from a ParsedEinsumSpec.
+/// Every index name must denote ONE size wherever it appears. Checking at
+/// capture (and on the eager path) puts the failure in the user's own stack
+/// frame with names attached, instead of a garbage-dimension BLAS error - or
+/// silent corruption - at execute time.
+template <typename AType, typename BType, typename CType>
+void validate_einsum_dims(ParsedEinsumSpec const &parsed, AType const &A, BType const &B, CType const &C) {
+    std::unordered_map<std::string_view, std::pair<size_t, char>> sizes;
+
+    auto scan = [&](std::vector<std::string> const &idx, auto const &t, char who) {
+        size_t const rank = detail::tensor_rank(t);
+        for (size_t d = 0; d < idx.size() && d < rank; d++) {
+            size_t const dim      = t.dim(static_cast<int>(d));
+            auto [it, first_seen] = sizes.try_emplace(std::string_view{idx[d]}, std::pair{dim, who});
+            if (!first_seen && it->second.first != dim) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                        "cg::einsum: index '{}' spans {} elements in operand {} but {} in operand {} - the operand "
+                                        "shapes disagree for spec '{}'",
+                                        idx[d], it->second.first, it->second.second, dim, who, parsed.raw);
+            }
+        }
+    };
+    scan(parsed.a_indices, A, 'A');
+    scan(parsed.b_indices, B, 'B');
+    scan(parsed.c_indices, C, 'C');
+}
+
 inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, PrefactorScalar c_pf, PrefactorScalar ab_pf,
                                                 bool conj_a = false, bool conj_b = false) {
     EinsumDescriptor desc;
@@ -3587,6 +3613,8 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     conj_a = conj_a || parsed.conj_a;
     conj_b = conj_b || parsed.conj_b;
 
+    detail::validate_einsum_dims(parsed, A, B, *C);
+
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("einsum eager");
@@ -3620,9 +3648,35 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     // hint stays null and GEMMBatching falls through. `trans_a`/`trans_b`
     // follow string_gemm's convention: 'T' when the link is the first
     // index of A (resp. last index of B), 'N' otherwise.
+    // A permute_view keeps the storage-order FLAG of its parent but presents
+    // reordered strides, so is_row_major()/is_column_major() alone cannot
+    // prove the canonical layout the fast paths below assume (found by the
+    // large-rank differential fuzzer: a view with the slice axes swapped
+    // passed the flag gates and produced wrong results). Verify the strides
+    // are actually monotone in the flag's direction; size-1 axes are never
+    // traversed, so their (possibly inflated) strides are ignored.
+    auto layout_matches_flag = [](auto const &impl) {
+        bool const   rm    = impl.is_row_major();
+        size_t const rank  = impl.rank();
+        size_t       prev  = 0;
+        bool         first = true;
+        for (size_t n = 0; n < rank; ++n) {
+            size_t const d = rm ? rank - 1 - n : n;
+            if (impl.dim(d) <= 1)
+                continue;
+            size_t const st = impl.stride(d);
+            if (!first && st < prev)
+                return false;
+            prev  = st;
+            first = false;
+        }
+        return true;
+    };
+
     if (detail::tensor_rank(A) == 2 && detail::tensor_rank(B) == 2 && detail::tensor_rank(*C) == 2) {
         if (parsed.a_indices.size() == 2 && parsed.b_indices.size() == 2 && parsed.c_indices.size() == 2 &&
-            desc.spec.link_indices.size() == 1) {
+            desc.spec.link_indices.size() == 1 && layout_matches_flag(A.impl()) && layout_matches_flag(B.impl()) &&
+            layout_matches_flag(C->impl())) {
             auto hint = std::make_shared<GemmHint>();
             if constexpr (std::is_same_v<T, float>)
                 hint->scalar = BlasScalar::Float;
@@ -3747,7 +3801,8 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
             // batch_stride, the batch axes must form a contiguous
             // outermost block. Row-major outermost = [0..num_batch-1];
             // col-major outermost = [rank-num_batch..rank-1].
-            bool const all_contig    = A.impl().is_contiguous() && B.impl().is_contiguous() && C->impl().is_contiguous();
+            bool const all_contig = A.impl().is_contiguous() && B.impl().is_contiguous() && C->impl().is_contiguous() &&
+                                    layout_matches_flag(A.impl()) && layout_matches_flag(B.impl()) && layout_matches_flag(C->impl());
             bool const all_row_major = A.impl().is_row_major() && B.impl().is_row_major() && C->impl().is_row_major();
             bool const all_col_major = A.impl().is_column_major() && B.impl().is_column_major() && C->impl().is_column_major();
 

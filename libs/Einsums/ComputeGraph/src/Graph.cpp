@@ -1445,10 +1445,45 @@ std::function<void()> Graph::make_zero_executor(TensorId tensor_id) {
 }
 
 expected<void, GraphError> Graph::validate_tensors() const {
+    // Lazily built: TensorIds and tensor_ptrs that some Materialize node in
+    // this graph will bring to life during execution. (tensor_ptr matters for
+    // the hoist/dedup case where the node carries a different TensorId than
+    // the handle being checked but targets the same underlying buffer.)
+    bool                             materialize_targets_built = false;
+    std::unordered_set<TensorId>     materialize_tids;
+    std::unordered_set<void const *> materialize_ptrs;
+
     for (auto const &[id, handle] : _tensors) {
-        // Skip validation for deferred tensors, they haven't been materialized yet.
-        if (handle.alloc_state == AllocState::Deferred)
-            continue;
+        if (handle.alloc_state == AllocState::Deferred) {
+            // The snapshot says "deferred", but the user may have called
+            // tensor.materialize() directly since registration - ask the
+            // tensor itself when possible.
+            if (handle.is_materialized_fn && handle.is_materialized_fn())
+                continue;
+            if (!materialize_targets_built) {
+                materialize_targets_built = true;
+                for (auto const &node : _nodes) {
+                    if (node.kind != OpKind::Materialize)
+                        continue;
+                    for (auto out : node.outputs) {
+                        materialize_tids.insert(out);
+                        if (auto it = _tensors.find(out); it != _tensors.end() && it->second.tensor_ptr != nullptr) {
+                            materialize_ptrs.insert(it->second.tensor_ptr);
+                        }
+                    }
+                }
+            }
+            if (materialize_tids.contains(id))
+                continue;
+            if (handle.tensor_ptr != nullptr && materialize_ptrs.contains(handle.tensor_ptr))
+                continue;
+            return unexpected(GraphError::validation(
+                fmt::format("Graph '{}': tensor '{}' (id={}) is still deferred - it was declared (declare_tensor / "
+                            "declare_runtime_tensor) but never given backing storage, and no Materialize node exists for it. "
+                            "Run the Materialization pass (graph.optimize() or PassManager) or Workspace::materialize_all() "
+                            "before execute().",
+                            _name, handle.name, id)));
+        }
         if (handle.validator && !handle.validator()) {
             return unexpected(
                 GraphError::validation(fmt::format("Graph '{}': tensor '{}' (id={}) appears to have been destroyed. "

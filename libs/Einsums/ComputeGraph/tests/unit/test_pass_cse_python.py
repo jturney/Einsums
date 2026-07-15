@@ -206,13 +206,15 @@ def test_cse_does_not_merge_scale_with_different_factors():
 
 
 def test_cse_then_dead_node_elimination_composition():
-    """Run CSE, verify shrink; then run DNE to confirm composition works."""
+    """Run CSE, verify shrink; then run DNE to confirm composition works.
+    The duplicate writes a graph-owned intermediate: CSE never elides writes
+    to user-visible tensors (bug-1010)."""
     A = einsums.create_random_tensor("A", [4, 3])
     B = einsums.create_random_tensor("B", [3, 5])
     C = einsums.create_zero_tensor("C", [4, 5])
-    D = einsums.create_zero_tensor("D", [4, 5])
 
     g = cg.Graph("cse_dne")
+    D = g.create_zero_tensor("D", [4, 5], dtype="float64")
     with cg.capture(g):
         einsums.einsum("ij <- ik ; kj", C, A, B)
         einsums.einsum("ij <- ik ; kj", D, A, B)
@@ -237,9 +239,10 @@ def test_cse_deduplicates_rank3_batched_gemm_col_major():
     A = einsums.create_random_tensor("A", [3, 5, 4])
     B = einsums.create_random_tensor("B", [5, 6, 4])
     C = einsums.create_zero_tensor("C", [3, 6, 4])
-    D = einsums.create_zero_tensor("D", [3, 6, 4])
 
     g = cg.Graph("cse_rank3_col")
+    # Graph-owned duplicate: CSE never elides writes to user-visible tensors.
+    D = g.create_zero_tensor("D", [3, 6, 4], dtype="float64")
     with cg.capture(g):
         einsums.einsum("ijb <- ikb ; kjb", C, A, B)
         einsums.einsum("ijb <- ikb ; kjb", D, A, B)

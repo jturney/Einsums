@@ -590,3 +590,62 @@ TEST_CASE("optimize levels - O0 is a no-op, O1 cleans up only", "[ComputeGraph][
         }
     }
 }
+
+TEST_CASE("deferred tensor without Materialization - actionable execute error", "[ComputeGraph][Validation]") {
+    auto A   = create_random_tensor<double>("A", 4, 4);
+    auto OUT = create_zero_tensor<double>("OUT", 4, 4);
+
+    cg::Graph graph("deferred_misuse");
+    auto     &tmp = graph.scratch<double, 2>("tmp", 4, 4);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &tmp, A, A);
+        cg::einsum("ik;kj->ij", &OUT, tmp, A);
+    }
+
+    // Executing with tmp still deferred used to be a segfault (null data
+    // pointer inside the GEMM). Now it names the tensor and the fix.
+    try {
+        graph.execute();
+        FAIL("expected execute() to reject the unmaterialized deferred tensor");
+    } catch (std::runtime_error const &e) {
+        std::string const msg = e.what();
+        REQUIRE(msg.find("tmp") != std::string::npos);
+        REQUIRE(msg.find("still deferred") != std::string::npos);
+        REQUIRE(msg.find("graph.optimize()") != std::string::npos);
+    }
+
+    // Every optimize level >= O1 includes Materialization, so following the
+    // error's advice makes the graph executable.
+    graph.optimize(cg::OptLevel::O1);
+    REQUIRE_NOTHROW(graph.execute());
+
+    auto tmp_ref = create_zero_tensor<double>("tmpref", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, A);
+    auto OUT_ref = create_zero_tensor<double>("OUTref", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &OUT_ref, Indices{i, k}, tmp_ref, Indices{k, j}, A);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            REQUIRE(std::abs(OUT(ii, jj) - OUT_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("deferred tensor materialized by hand - no false positive", "[ComputeGraph][Validation]") {
+    auto A   = create_random_tensor<double>("A", 4, 4);
+    auto OUT = create_zero_tensor<double>("OUT", 4, 4);
+
+    cg::Graph graph("deferred_manual");
+    auto     &tmp = graph.scratch<double, 2>("tmp", 4, 4);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &tmp, A, A);
+        cg::einsum("ik;kj->ij", &OUT, tmp, A);
+    }
+
+    // The handle's alloc_state snapshot still says Deferred; the live
+    // is_materialized query must win so direct materialize() keeps working.
+    tmp.materialize();
+    tmp.zero();
+    REQUIRE_NOTHROW(graph.execute());
+}
