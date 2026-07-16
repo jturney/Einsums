@@ -301,7 +301,7 @@ TEST_CASE("Saving and loading permutes") {
 
     fp = std::fopen("saved_plan.hptt", "r");
 
-    auto plan2 = std::make_shared<hptt::Transpose<double>>(fp, 1.0, A.data(), 0.0, B.data());
+    auto plan2 = hptt::Transpose<double>::read_from_file(fp, 1.0, A.data(), 0.0, B.data());
 
     permute(&B, A, plan2);
     for (int i = 0, ij = 1; i < A.dim(0); i++) {

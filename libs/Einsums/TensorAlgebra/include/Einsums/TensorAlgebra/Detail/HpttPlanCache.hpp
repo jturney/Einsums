@@ -144,7 +144,7 @@ get_or_create_hptt_plan(int const *perm, int dim, T alpha, T const *A, size_t co
     thread_local std::unordered_map<HpttPlanKey<T>, std::shared_ptr<hptt::Transpose<T>>, HpttPlanKeyHash<T>> cache;
 
     auto fresh_copy = [&](std::shared_ptr<hptt::Transpose<T>> const &templ) {
-        auto p = std::make_shared<hptt::Transpose<T>>(*templ);
+        auto p = templ->clone();
         p->set_input_ptr(A);
         p->set_output_ptr(B);
         p->set_alpha(alpha);

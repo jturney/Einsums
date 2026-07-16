@@ -53,7 +53,6 @@
 #include <Einsums/HPTT/HPTTTypes.hpp>
 #include <Einsums/HPTT/Macros.hpp>
 #include <Einsums/HPTT/Plan.hpp>
-#include <Einsums/HPTT/Transpose.hpp>
 #include <Einsums/HPTT/Utils.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/SIMD/ComplexVec.hpp>
@@ -62,6 +61,8 @@
 #include <Einsums/SIMD/Prefetch.hpp>
 #include <Einsums/SIMD/Shuffle.hpp>
 #include <Einsums/SIMD/Vec.hpp>
+
+#include "TransposeImpl.hpp"
 
 namespace hptt {
 
@@ -921,10 +922,11 @@ void transpose_int_constStride1(floatType const *A, floatType *B, floatType cons
 }
 
 template <typename floatType>
-Transpose<floatType>::Transpose(size_t const *sizeA, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB,
-                                size_t const *offsetA, size_t const *offsetB, size_t const innerStrideA, size_t const innerStrideB,
-                                int const dim, floatType const *A, floatType const alpha, floatType *B, floatType const beta,
-                                SelectionMethod const selectionMethod, int const numThreads, int const *threadIds, bool const useRowMajor)
+TransposeImpl<floatType>::TransposeImpl(size_t const *sizeA, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB,
+                                        size_t const *offsetA, size_t const *offsetB, size_t const innerStrideA, size_t const innerStrideB,
+                                        int const dim, floatType const *A, floatType const alpha, floatType *B, floatType const beta,
+                                        SelectionMethod const selectionMethod, int const numThreads, int const *threadIds,
+                                        bool const useRowMajor)
     : _A(A), _B(B), _alpha(alpha), _beta(beta), _dim(-1), _innerStrideA(0), _innerStrideB(0), _numThreads(numThreads), _masterPlan(nullptr),
       _selectionMethod(selectionMethod), _maxAutotuningCandidates(-1), _selectedParallelStrategyId(-1), _selectedLoopOrderId(-1),
       _conjA(false) {
@@ -976,7 +978,7 @@ Transpose<floatType>::Transpose(size_t const *sizeA, int const *perm, size_t con
 }
 
 template <typename floatType>
-Transpose<floatType>::Transpose(Transpose<floatType> const &other)
+TransposeImpl<floatType>::TransposeImpl(TransposeImpl<floatType> const &other)
     : _A(other._A), _B(other._B), _alpha(other._alpha), _beta(other._beta), _dim(other._dim), _numThreads(other._numThreads),
       _masterPlan(other._masterPlan), _selectionMethod(other._selectionMethod),
       _selectedParallelStrategyId(other._selectedParallelStrategyId), _selectedLoopOrderId(other._selectedLoopOrderId),
@@ -989,14 +991,14 @@ Transpose<floatType>::Transpose(Transpose<floatType> const &other)
 }
 
 template <typename floatType>
-Transpose<floatType>::~Transpose() {
+TransposeImpl<floatType>::~TransposeImpl() {
 #ifdef _OPENMP
     omp_destroy_lock(&_writelock);
 #endif
 }
 
 template <typename floatType>
-void Transpose<floatType>::execute_estimate(Plan const *plan) noexcept {
+void TransposeImpl<floatType>::execute_estimate(Plan const *plan) noexcept {
     if (plan == nullptr) {
         EINSUMS_LOG_ERROR("HPTT: plan has not yet been created.");
         exit(-1);
@@ -1089,7 +1091,7 @@ static void axpy_2D(floatType const *A, size_t const (&lda)[2], floatType *B, si
 
 template <typename floatType>
 template <bool spawnThreads>
-void Transpose<floatType>::get_start_end(size_t n, size_t &myStart, size_t &myEnd) const {
+void TransposeImpl<floatType>::get_start_end(size_t n, size_t &myStart, size_t &myEnd) const {
 #ifdef _OPENMP
     int myLocalThreadId = get_local_thread_id(omp_get_thread_num());
 #else
@@ -1114,7 +1116,7 @@ void Transpose<floatType>::get_start_end(size_t n, size_t &myStart, size_t &myEn
 }
 
 template <typename floatType>
-int Transpose<floatType>::get_local_thread_id(int myThreadId) const {
+int TransposeImpl<floatType>::get_local_thread_id(int myThreadId) const {
     int myLocalId = -1;
     for (int i = 0; i < _numThreads; ++i)
         if (myThreadId == _threadIds[i])
@@ -1124,7 +1126,7 @@ int Transpose<floatType>::get_local_thread_id(int myThreadId) const {
 
 template <typename floatType>
 template <bool useStreamingStores, bool spawnThreads, bool betaIsZero>
-void Transpose<floatType>::execute_expert() noexcept {
+void TransposeImpl<floatType>::execute_expert() noexcept {
     if (_masterPlan == nullptr) {
         EINSUMS_LOG_ERROR("HPTT: master plan has not yet been created.");
         exit(-1);
@@ -1181,7 +1183,7 @@ void Transpose<floatType>::execute_expert() noexcept {
         })
 }
 template <typename floatType>
-void Transpose<floatType>::execute() noexcept {
+void TransposeImpl<floatType>::execute() noexcept {
     if (_masterPlan == nullptr) {
         EINSUMS_LOG_ERROR("HPTT: master plan has not yet been created.");
         exit(-1);
@@ -1206,12 +1208,12 @@ void Transpose<floatType>::execute() noexcept {
 }
 
 template <typename floatType>
-void Transpose<floatType>::print() noexcept {
+void TransposeImpl<floatType>::print() noexcept {
     _masterPlan->print();
 }
 
 template <typename floatType>
-size_t Transpose<floatType>::get_increment(int loopIdx) const {
+size_t TransposeImpl<floatType>::get_increment(int loopIdx) const {
     size_t inc = 1;
     if (_perm[0] != 0) {
         if (loopIdx == 0 || loopIdx == _perm[0])
@@ -1221,7 +1223,7 @@ size_t Transpose<floatType>::get_increment(int loopIdx) const {
 }
 
 template <typename floatType>
-void Transpose<floatType>::get_available_parallelism(std::vector<int> &numTasksPerLoop) const {
+void TransposeImpl<floatType>::get_available_parallelism(std::vector<int> &numTasksPerLoop) const {
     numTasksPerLoop.resize(_dim);
     for (int loopIdx = 0; loopIdx < _dim; ++loopIdx) {
         size_t inc               = this->get_increment(loopIdx);
@@ -1230,10 +1232,10 @@ void Transpose<floatType>::get_available_parallelism(std::vector<int> &numTasksP
 }
 
 template <typename floatType>
-void Transpose<floatType>::get_all_parallelism_strategies(std::list<int>                &primeFactorsToMatch,
-                                                          std::vector<int>              &availableParallelismAtLoop, // NOLINT
-                                                          std::vector<int>              &achievedParallelismAtLoop,
-                                                          std::vector<std::vector<int>> &parallelismStrategies) const {
+void TransposeImpl<floatType>::get_all_parallelism_strategies(std::list<int>                &primeFactorsToMatch,
+                                                              std::vector<int>              &availableParallelismAtLoop, // NOLINT
+                                                              std::vector<int>              &achievedParallelismAtLoop,
+                                                              std::vector<std::vector<int>> &parallelismStrategies) const {
     if (primeFactorsToMatch.size() > 0) {
         // match every primefactor ...
         for (auto p : primeFactorsToMatch) {
@@ -1265,7 +1267,7 @@ static float getBalancing(int avail, int req) {
 }
 
 template <typename floatType>
-float Transpose<floatType>::get_load_balance(std::vector<int> const &parallelismStrategy) const {
+float TransposeImpl<floatType>::get_load_balance(std::vector<int> const &parallelismStrategy) const {
     float load_balance = 1.0;
     int   totalTasks   = 1;
     for (int i = 0; i < _dim; ++i) {
@@ -1294,7 +1296,7 @@ float Transpose<floatType>::get_load_balance(std::vector<int> const &parallelism
 }
 
 template <typename floatType>
-void Transpose<floatType>::get_best_parallelism_strategy(std::vector<int> &bestParallelismStrategy) const {
+void TransposeImpl<floatType>::get_best_parallelism_strategy(std::vector<int> &bestParallelismStrategy) const {
     std::vector<int> availableParallelismAtLoop;
     this->get_available_parallelism(availableParallelismAtLoop);
     int totalAvailableParallelism =
@@ -1420,8 +1422,9 @@ void Transpose<floatType>::get_best_parallelism_strategy(std::vector<int> &bestP
 }
 
 template <typename floatType>
-void Transpose<floatType>::parallelize(std::vector<int> &parallelismStrategy, std::vector<int> &availableParallelismAtLoop, int &totalTasks,
-                                       std::list<int> &primeFactors, float const minBalancing, std::vector<int> const &loopsAllowed) const
+void TransposeImpl<floatType>::parallelize(std::vector<int> &parallelismStrategy, std::vector<int> &availableParallelismAtLoop,
+                                           int &totalTasks, std::list<int> &primeFactors, float const minBalancing,
+                                           std::vector<int> const &loopsAllowed) const
 
 {
     bool suboptimalParallelizationUsed = false;
@@ -1454,7 +1457,7 @@ void Transpose<floatType>::parallelize(std::vector<int> &parallelismStrategy, st
 }
 
 template <typename floatType>
-double Transpose<floatType>::parallelism_cost_heuristic(std::vector<int> const &achievedParallelismAtLoop) const {
+double TransposeImpl<floatType>::parallelism_cost_heuristic(std::vector<int> const &achievedParallelismAtLoop) const {
     std::vector<int> availableParallelismAtLoop;
     this->get_available_parallelism(availableParallelismAtLoop);
 
@@ -1487,7 +1490,7 @@ double Transpose<floatType>::parallelism_cost_heuristic(std::vector<int> const &
 }
 
 template <typename floatType>
-void Transpose<floatType>::get_parallelism_strategies(std::vector<std::vector<int>> &parallelismStrategies) const {
+void TransposeImpl<floatType>::get_parallelism_strategies(std::vector<std::vector<int>> &parallelismStrategies) const {
     parallelismStrategies.clear();
     if (_numThreads == 1) {
         parallelismStrategies.emplace_back(std::vector<int>(_dim, 1));
@@ -1541,9 +1544,9 @@ void Transpose<floatType>::get_parallelism_strategies(std::vector<std::vector<in
 }
 
 template <typename floatType>
-void Transpose<floatType>::verify_parameter(size_t const *size, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB,
-                                            size_t const *offsetA, size_t const *offsetB, size_t const innerStrideA,
-                                            size_t const innerStrideB, int const dim) const {
+void TransposeImpl<floatType>::verify_parameter(size_t const *size, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB,
+                                                size_t const *offsetA, size_t const *offsetB, size_t const innerStrideA,
+                                                size_t const innerStrideB, int const dim) const {
     if (dim < 1) {
         EINSUMS_LOG_ERROR("HPTT: dimensionality too low.");
         exit(-1);
@@ -1605,7 +1608,7 @@ void Transpose<floatType>::verify_parameter(size_t const *size, int const *perm,
 }
 
 template <typename floatType>
-void Transpose<floatType>::compute_leading_dimensions() {
+void TransposeImpl<floatType>::compute_leading_dimensions() {
     _lda[0] = _innerStrideA;
     if (_outerSizeA[0] == -1)
         for (int i = 1; i < _dim; ++i)
@@ -1624,8 +1627,8 @@ void Transpose<floatType>::compute_leading_dimensions() {
 }
 
 template <typename floatType>
-void Transpose<floatType>::skip_indices(size_t const *sizeA, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB,
-                                        size_t const *offsetA, size_t const *offsetB, int const dim) {
+void TransposeImpl<floatType>::skip_indices(size_t const *sizeA, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB,
+                                            size_t const *offsetA, size_t const *offsetB, int const dim) {
     for (int i = 0; i < dim; ++i) {
         _perm[i]  = perm[i];
         _sizeA[i] = sizeA[i];
@@ -1754,7 +1757,7 @@ void Transpose<floatType>::skip_indices(size_t const *sizeA, int const *perm, si
  * outerSizeA_, outersize_ and dim_
  */
 template <typename floatType>
-void Transpose<floatType>::fuse_indices() {
+void TransposeImpl<floatType>::fuse_indices() {
     std::list<std::tuple<int, int>> fusedIndices;
 
     std::vector<int> perm;
@@ -1846,7 +1849,7 @@ void Transpose<floatType>::fuse_indices() {
 
 // returns the best loop order (same as the best one with exhaustive search)
 template <typename floatType>
-void Transpose<floatType>::get_best_loop_order(std::vector<int> &loopOrder) const {
+void TransposeImpl<floatType>::get_best_loop_order(std::vector<int> &loopOrder) const {
     auto totalOuterSizeA = std::accumulate(_outerSizeA.begin(), _outerSizeA.end(), 1, std::multiplies<size_t>()) * sizeof(floatType);
     auto totalOuterSizeB = std::accumulate(_outerSizeB.begin(), _outerSizeB.end(), 1, std::multiplies<size_t>()) * sizeof(floatType);
     if (totalOuterSizeA > totalOuterSizeB && totalOuterSizeB <= 22 * 1024. * 1024.) // B is likely to fit into L3 cache
@@ -1931,7 +1934,7 @@ void Transpose<floatType>::get_best_loop_order(std::vector<int> &loopOrder) cons
 }
 
 template <typename floatType>
-double Transpose<floatType>::loop_cost_heuristic(std::vector<int> const &loopOrder) const {
+double TransposeImpl<floatType>::loop_cost_heuristic(std::vector<int> const &loopOrder) const {
     double loopCost = 0.0;
     for (int i = 1; i < _dim; ++i) {
         int const idx         = loopOrder[_dim - 1 - i];
@@ -1947,7 +1950,7 @@ double Transpose<floatType>::loop_cost_heuristic(std::vector<int> const &loopOrd
 }
 
 template <typename floatType>
-void Transpose<floatType>::get_loop_orders(std::vector<std::vector<int>> &loopOrders) const {
+void TransposeImpl<floatType>::get_loop_orders(std::vector<std::vector<int>> &loopOrders) const {
     loopOrders.clear();
     if (_selectionMethod == ESTIMATE) {
         loopOrders.emplace_back(std::vector<int>(_dim));
@@ -1982,7 +1985,7 @@ void Transpose<floatType>::get_loop_orders(std::vector<std::vector<int>> &loopOr
 }
 
 template <typename floatType>
-void Transpose<floatType>::create_plan() {
+void TransposeImpl<floatType>::create_plan() {
 //   printf("entering createPlan()\n");
 #ifdef HPTT_TIMERS
     double timeStart = omp_get_wtime();
@@ -2006,7 +2009,7 @@ void Transpose<floatType>::create_plan() {
 }
 
 template <typename floatType>
-void Transpose<floatType>::create_plans(std::vector<std::shared_ptr<Plan>> &plans) const {
+void TransposeImpl<floatType>::create_plans(std::vector<std::shared_ptr<Plan>> &plans) const {
     if (_dim == 1 || (_dim == 2 && _perm[0] == 0)) {
         plans.emplace_back(new Plan); // create dummy plan
         return;                       // handled within execute()
@@ -2128,7 +2131,7 @@ void Transpose<floatType>::create_plans(std::vector<std::shared_ptr<Plan>> &plan
  * Estimates the time in seconds for the given computeTree
  */
 template <typename floatType>
-float Transpose<floatType>::estimate_execution_time(std::shared_ptr<Plan> const plan) {
+float TransposeImpl<floatType>::estimate_execution_time(std::shared_ptr<Plan> const plan) {
     auto startTime = std::chrono::high_resolution_clock::now();
     this->execute_estimate(plan.get());
     double elapsedTime =
@@ -2155,7 +2158,7 @@ float Transpose<floatType>::estimate_execution_time(std::shared_ptr<Plan> const 
 }
 
 template <typename floatType>
-double Transpose<floatType>::get_time_limit() const {
+double TransposeImpl<floatType>::get_time_limit() const {
     if (_selectionMethod == ESTIMATE)
         return 0.0;
     else if (_selectionMethod == MEASURE)
@@ -2172,7 +2175,7 @@ double Transpose<floatType>::get_time_limit() const {
 }
 
 template <typename floatType>
-std::shared_ptr<Plan> Transpose<floatType>::select_plan(std::vector<std::shared_ptr<Plan>> const &plans) {
+std::shared_ptr<Plan> TransposeImpl<floatType>::select_plan(std::vector<std::shared_ptr<Plan>> const &plans) {
     if (plans.size() <= 0) {
         EINSUMS_LOG_ERROR("HPTT: internal error: not enough plans generated.");
         exit(-1);
@@ -2221,7 +2224,7 @@ std::shared_ptr<Plan> Transpose<floatType>::select_plan(std::vector<std::shared_
 }
 
 template <typename FloatType>
-void Transpose<FloatType>::write_to_file(std::FILE *fp) const {
+void TransposeImpl<FloatType>::write_to_file(std::FILE *fp) const {
     setup_file(fp);
 
     // Get the file header.
@@ -2360,7 +2363,7 @@ write_to_file_error:
 }
 
 template <typename FloatType>
-Transpose<FloatType>::Transpose(std::FILE *fp, FloatType alpha, FloatType const *A, FloatType beta, FloatType *B) {
+TransposeImpl<FloatType>::TransposeImpl(std::FILE *fp, FloatType alpha, FloatType const *A, FloatType beta, FloatType *B) {
 #ifdef _OPENMP
     omp_init_lock(&_writelock);
 #endif
@@ -2505,71 +2508,104 @@ read_from_file_error:
     EINSUMS_THROW_EXCEPTION(std::runtime_error, "IO error");
 }
 
-template class Transpose<float>;
-template class Transpose<double>;
-template class Transpose<FloatComplex>;
-template class Transpose<DoubleComplex>;
+template class TransposeImpl<float>;
+template class TransposeImpl<double>;
+template class TransposeImpl<FloatComplex>;
+template class TransposeImpl<DoubleComplex>;
 
-template void Transpose<float>::execute_expert<true, true, true>();
-template void Transpose<float>::execute_expert<true, false, true>();
-template void Transpose<float>::execute_expert<false, true, true>();
-template void Transpose<float>::execute_expert<false, false, true>();
-template void Transpose<float>::execute_expert<true, true, false>();
-template void Transpose<float>::execute_expert<true, false, false>();
-template void Transpose<float>::execute_expert<false, true, false>();
-template void Transpose<float>::execute_expert<false, false, false>();
+template void TransposeImpl<float>::execute_expert<true, true, true>();
+template void TransposeImpl<float>::execute_expert<true, false, true>();
+template void TransposeImpl<float>::execute_expert<false, true, true>();
+template void TransposeImpl<float>::execute_expert<false, false, true>();
+template void TransposeImpl<float>::execute_expert<true, true, false>();
+template void TransposeImpl<float>::execute_expert<true, false, false>();
+template void TransposeImpl<float>::execute_expert<false, true, false>();
+template void TransposeImpl<float>::execute_expert<false, false, false>();
 
-template void Transpose<double>::execute_expert<true, true, true>();
-template void Transpose<double>::execute_expert<false, true, true>();
-template void Transpose<double>::execute_expert<true, false, true>();
-template void Transpose<double>::execute_expert<false, false, true>();
-template void Transpose<double>::execute_expert<true, true, false>();
-template void Transpose<double>::execute_expert<false, true, false>();
-template void Transpose<double>::execute_expert<true, false, false>();
-template void Transpose<double>::execute_expert<false, false, false>();
+template void TransposeImpl<double>::execute_expert<true, true, true>();
+template void TransposeImpl<double>::execute_expert<false, true, true>();
+template void TransposeImpl<double>::execute_expert<true, false, true>();
+template void TransposeImpl<double>::execute_expert<false, false, true>();
+template void TransposeImpl<double>::execute_expert<true, true, false>();
+template void TransposeImpl<double>::execute_expert<false, true, false>();
+template void TransposeImpl<double>::execute_expert<true, false, false>();
+template void TransposeImpl<double>::execute_expert<false, false, false>();
 
-template void Transpose<FloatComplex>::execute_expert<true, true, true>();
-template void Transpose<FloatComplex>::execute_expert<false, true, true>();
-template void Transpose<FloatComplex>::execute_expert<true, false, true>();
-template void Transpose<FloatComplex>::execute_expert<false, false, true>();
-template void Transpose<FloatComplex>::execute_expert<true, true, false>();
-template void Transpose<FloatComplex>::execute_expert<false, true, false>();
-template void Transpose<FloatComplex>::execute_expert<true, false, false>();
-template void Transpose<FloatComplex>::execute_expert<false, false, false>();
+template void TransposeImpl<FloatComplex>::execute_expert<true, true, true>();
+template void TransposeImpl<FloatComplex>::execute_expert<false, true, true>();
+template void TransposeImpl<FloatComplex>::execute_expert<true, false, true>();
+template void TransposeImpl<FloatComplex>::execute_expert<false, false, true>();
+template void TransposeImpl<FloatComplex>::execute_expert<true, true, false>();
+template void TransposeImpl<FloatComplex>::execute_expert<false, true, false>();
+template void TransposeImpl<FloatComplex>::execute_expert<true, false, false>();
+template void TransposeImpl<FloatComplex>::execute_expert<false, false, false>();
 
-template void Transpose<DoubleComplex>::execute_expert<true, true, true>();
-template void Transpose<DoubleComplex>::execute_expert<false, true, true>();
-template void Transpose<DoubleComplex>::execute_expert<true, false, true>();
-template void Transpose<DoubleComplex>::execute_expert<false, false, true>();
-template void Transpose<DoubleComplex>::execute_expert<true, true, false>();
-template void Transpose<DoubleComplex>::execute_expert<false, true, false>();
-template void Transpose<DoubleComplex>::execute_expert<true, false, false>();
-template void Transpose<DoubleComplex>::execute_expert<false, false, false>();
+template void TransposeImpl<DoubleComplex>::execute_expert<true, true, true>();
+template void TransposeImpl<DoubleComplex>::execute_expert<false, true, true>();
+template void TransposeImpl<DoubleComplex>::execute_expert<true, false, true>();
+template void TransposeImpl<DoubleComplex>::execute_expert<false, false, true>();
+template void TransposeImpl<DoubleComplex>::execute_expert<true, true, false>();
+template void TransposeImpl<DoubleComplex>::execute_expert<false, true, false>();
+template void TransposeImpl<DoubleComplex>::execute_expert<true, false, false>();
+template void TransposeImpl<DoubleComplex>::execute_expert<false, false, false>();
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-template class Transpose<einsums::simd::half_t>;
+template class TransposeImpl<einsums::simd::half_t>;
 
-template void Transpose<einsums::simd::half_t>::execute_expert<true, true, true>();
-template void Transpose<einsums::simd::half_t>::execute_expert<false, true, true>();
-template void Transpose<einsums::simd::half_t>::execute_expert<true, false, true>();
-template void Transpose<einsums::simd::half_t>::execute_expert<false, false, true>();
-template void Transpose<einsums::simd::half_t>::execute_expert<true, true, false>();
-template void Transpose<einsums::simd::half_t>::execute_expert<false, true, false>();
-template void Transpose<einsums::simd::half_t>::execute_expert<true, false, false>();
-template void Transpose<einsums::simd::half_t>::execute_expert<false, false, false>();
+template void TransposeImpl<einsums::simd::half_t>::execute_expert<true, true, true>();
+template void TransposeImpl<einsums::simd::half_t>::execute_expert<false, true, true>();
+template void TransposeImpl<einsums::simd::half_t>::execute_expert<true, false, true>();
+template void TransposeImpl<einsums::simd::half_t>::execute_expert<false, false, true>();
+template void TransposeImpl<einsums::simd::half_t>::execute_expert<true, true, false>();
+template void TransposeImpl<einsums::simd::half_t>::execute_expert<false, true, false>();
+template void TransposeImpl<einsums::simd::half_t>::execute_expert<true, false, false>();
+template void TransposeImpl<einsums::simd::half_t>::execute_expert<false, false, false>();
 #endif
 
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
-template class Transpose<einsums::simd::bfloat16_t>;
+template class TransposeImpl<einsums::simd::bfloat16_t>;
 
-template void Transpose<einsums::simd::bfloat16_t>::execute_expert<true, true, true>();
-template void Transpose<einsums::simd::bfloat16_t>::execute_expert<false, true, true>();
-template void Transpose<einsums::simd::bfloat16_t>::execute_expert<true, false, true>();
-template void Transpose<einsums::simd::bfloat16_t>::execute_expert<false, false, true>();
-template void Transpose<einsums::simd::bfloat16_t>::execute_expert<true, true, false>();
-template void Transpose<einsums::simd::bfloat16_t>::execute_expert<false, true, false>();
-template void Transpose<einsums::simd::bfloat16_t>::execute_expert<true, false, false>();
-template void Transpose<einsums::simd::bfloat16_t>::execute_expert<false, false, false>();
+template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<true, true, true>();
+template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<false, true, true>();
+template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<true, false, true>();
+template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<false, false, true>();
+template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<true, true, false>();
+template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<false, true, false>();
+template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<true, false, false>();
+template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<false, false, false>();
+#endif
+
+// ---------------------------------------------------------------------------
+// Interface factories: the only place the concrete plan type is chosen.
+// ---------------------------------------------------------------------------
+
+template <typename floatType>
+std::shared_ptr<Transpose<floatType>>
+Transpose<floatType>::create(size_t const *sizeA, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB,
+                             size_t const *offsetA, size_t const *offsetB, size_t const innerStrideA, size_t const innerStrideB,
+                             int const dim, floatType const *A, floatType const alpha, floatType *B, floatType const beta,
+                             SelectionMethod const selectionMethod, int const numThreads, int const *threadIds, bool const useRowMajor) {
+    return std::make_shared<TransposeImpl<floatType>>(sizeA, perm, outerSizeA, outerSizeB, offsetA, offsetB, innerStrideA, innerStrideB,
+                                                      dim, A, alpha, B, beta, selectionMethod, numThreads, threadIds, useRowMajor);
+}
+
+template <typename floatType>
+std::shared_ptr<Transpose<floatType>> Transpose<floatType>::read_from_file(std::FILE *fp, floatType alpha, floatType const *A,
+                                                                           floatType beta, floatType *B) {
+    return std::make_shared<TransposeImpl<floatType>>(fp, alpha, A, beta, B);
+}
+
+template class EINSUMS_EXPORT Transpose<float>;
+template class EINSUMS_EXPORT Transpose<double>;
+template class EINSUMS_EXPORT Transpose<FloatComplex>;
+template class EINSUMS_EXPORT Transpose<DoubleComplex>;
+
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
+template class EINSUMS_EXPORT Transpose<einsums::simd::half_t>;
+#endif
+
+#if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
+template class EINSUMS_EXPORT Transpose<einsums::simd::bfloat16_t>;
 #endif
 
 } // namespace hptt

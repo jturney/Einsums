@@ -48,8 +48,8 @@ inline std::shared_ptr<Transpose<T>> create_plan(int const *perm, int dim, T alp
                                                  size_t const *outerSizeA, T beta, T *B, size_t const *outerSizeB,
                                                  SelectionMethod selectionMethod, int numThreads, int const *threadIds = nullptr,
                                                  bool useRowMajor = false) {
-    return std::make_shared<Transpose<T>>(sizeA, perm, outerSizeA, outerSizeB, nullptr, nullptr, 1, 1, dim, A, alpha, B, beta,
-                                          selectionMethod, numThreads, threadIds, useRowMajor);
+    return Transpose<T>::create(sizeA, perm, outerSizeA, outerSizeB, nullptr, nullptr, 1, 1, dim, A, alpha, B, beta, selectionMethod,
+                                numThreads, threadIds, useRowMajor);
 }
 
 /// Create a transposition plan (basic, vector arguments).
@@ -58,22 +58,8 @@ inline std::shared_ptr<Transpose<T>> create_plan(std::vector<int> const &perm, i
                                                  std::vector<size_t> const &sizeA, std::vector<size_t> const &outerSizeA, T beta, T *B,
                                                  std::vector<size_t> const &outerSizeB, SelectionMethod selectionMethod, int numThreads,
                                                  std::vector<int> const &threadIds = {}, bool useRowMajor = false) {
-    return std::make_shared<Transpose<T>>(sizeA.data(), perm.data(), outerSizeA.data(), outerSizeB.data(), nullptr, nullptr, 1, 1, dim, A,
-                                          alpha, B, beta, selectionMethod, numThreads, threadIds.empty() ? nullptr : threadIds.data(),
-                                          useRowMajor);
-}
-
-/// Create a transposition plan with auto-tuning (basic).
-template <typename T>
-inline std::shared_ptr<Transpose<T>> create_plan(int const *perm, int dim, T alpha, T const *A, size_t const *sizeA,
-                                                 size_t const *outerSizeA, T beta, T *B, size_t const *outerSizeB,
-                                                 int maxAutotuningCandidates, int numThreads, int const *threadIds = nullptr,
-                                                 bool useRowMajor = false) {
-    auto plan = std::make_shared<Transpose<T>>(sizeA, perm, outerSizeA, outerSizeB, nullptr, nullptr, 1, 1, dim, A, alpha, B, beta, MEASURE,
-                                               numThreads, threadIds, useRowMajor);
-    plan->setMaxAutotuningCandidates(maxAutotuningCandidates);
-    plan->createPlan();
-    return plan;
+    return Transpose<T>::create(sizeA.data(), perm.data(), outerSizeA.data(), outerSizeB.data(), nullptr, nullptr, 1, 1, dim, A, alpha, B,
+                                beta, selectionMethod, numThreads, threadIds.empty() ? nullptr : threadIds.data(), useRowMajor);
 }
 
 /// Create a transposition plan with offsets.
@@ -82,8 +68,8 @@ inline std::shared_ptr<Transpose<T>> create_plan(int const *perm, int dim, T alp
                                                  size_t const *outerSizeA, size_t const *offsetA, T beta, T *B, size_t const *outerSizeB,
                                                  size_t const *offsetB, SelectionMethod selectionMethod, int numThreads,
                                                  int const *threadIds = nullptr, bool useRowMajor = false) {
-    return std::make_shared<Transpose<T>>(sizeA, perm, outerSizeA, outerSizeB, offsetA, offsetB, 1, 1, dim, A, alpha, B, beta,
-                                          selectionMethod, numThreads, threadIds, useRowMajor);
+    return Transpose<T>::create(sizeA, perm, outerSizeA, outerSizeB, offsetA, offsetB, 1, 1, dim, A, alpha, B, beta, selectionMethod,
+                                numThreads, threadIds, useRowMajor);
 }
 
 /// Create a transposition plan with offsets (vector arguments).
@@ -93,22 +79,9 @@ inline std::shared_ptr<Transpose<T>> create_plan(std::vector<int> const &perm, i
                                                  std::vector<size_t> const &offsetA, T beta, T *B, std::vector<size_t> const &outerSizeB,
                                                  std::vector<size_t> const &offsetB, SelectionMethod selectionMethod, int numThreads,
                                                  std::vector<int> const &threadIds = {}, bool useRowMajor = false) {
-    return std::make_shared<Transpose<T>>(sizeA.data(), perm.data(), outerSizeA.data(), outerSizeB.data(), offsetA.data(), offsetB.data(),
-                                          1, 1, dim, A, alpha, B, beta, selectionMethod, numThreads,
-                                          threadIds.empty() ? nullptr : threadIds.data(), useRowMajor);
-}
-
-/// Create a transposition plan with offsets and auto-tuning.
-template <typename T>
-inline std::shared_ptr<Transpose<T>> create_plan(int const *perm, int dim, T alpha, T const *A, size_t const *sizeA,
-                                                 size_t const *outerSizeA, size_t const *offsetA, T beta, T *B, size_t const *outerSizeB,
-                                                 size_t const *offsetB, int maxAutotuningCandidates, int numThreads,
-                                                 int const *threadIds = nullptr, bool useRowMajor = false) {
-    auto plan = std::make_shared<Transpose<T>>(sizeA, perm, outerSizeA, outerSizeB, offsetA, offsetB, 1, 1, dim, A, alpha, B, beta, MEASURE,
-                                               numThreads, threadIds, useRowMajor);
-    plan->setMaxAutotuningCandidates(maxAutotuningCandidates);
-    plan->createPlan();
-    return plan;
+    return Transpose<T>::create(sizeA.data(), perm.data(), outerSizeA.data(), outerSizeB.data(), offsetA.data(), offsetB.data(), 1, 1, dim,
+                                A, alpha, B, beta, selectionMethod, numThreads, threadIds.empty() ? nullptr : threadIds.data(),
+                                useRowMajor);
 }
 
 /// Create a transposition plan with offsets and inner strides.
@@ -117,8 +90,8 @@ inline std::shared_ptr<Transpose<T>>
 create_plan(int const *perm, int dim, T alpha, T const *A, size_t const *sizeA, size_t const *outerSizeA, size_t const *offsetA,
             size_t innerStrideA, T beta, T *B, size_t const *outerSizeB, size_t const *offsetB, size_t innerStrideB,
             SelectionMethod selectionMethod, int numThreads, int const *threadIds = nullptr, bool useRowMajor = false) {
-    return std::make_shared<Transpose<T>>(sizeA, perm, outerSizeA, outerSizeB, offsetA, offsetB, innerStrideA, innerStrideB, dim, A, alpha,
-                                          B, beta, selectionMethod, numThreads, threadIds, useRowMajor);
+    return Transpose<T>::create(sizeA, perm, outerSizeA, outerSizeB, offsetA, offsetB, innerStrideA, innerStrideB, dim, A, alpha, B, beta,
+                                selectionMethod, numThreads, threadIds, useRowMajor);
 }
 
 /// Create a transposition plan with offsets and inner strides (vector arguments).
@@ -128,22 +101,9 @@ create_plan(std::vector<int> const &perm, int dim, T alpha, T const *A, std::vec
             std::vector<size_t> const &outerSizeA, std::vector<size_t> const &offsetA, size_t innerStrideA, T beta, T *B,
             std::vector<size_t> const &outerSizeB, std::vector<size_t> const &offsetB, size_t innerStrideB, SelectionMethod selectionMethod,
             int numThreads, std::vector<int> const &threadIds = {}, bool useRowMajor = false) {
-    return std::make_shared<Transpose<T>>(sizeA.data(), perm.data(), outerSizeA.data(), outerSizeB.data(), offsetA.data(), offsetB.data(),
-                                          innerStrideA, innerStrideB, dim, A, alpha, B, beta, selectionMethod, numThreads,
-                                          threadIds.empty() ? nullptr : threadIds.data(), useRowMajor);
-}
-
-/// Create a transposition plan with offsets, inner strides, and auto-tuning.
-template <typename T>
-inline std::shared_ptr<Transpose<T>>
-create_plan(int const *perm, int dim, T alpha, T const *A, size_t const *sizeA, size_t const *outerSizeA, size_t const *offsetA,
-            size_t innerStrideA, T beta, T *B, size_t const *outerSizeB, size_t const *offsetB, size_t innerStrideB,
-            int maxAutotuningCandidates, int numThreads, int const *threadIds = nullptr, bool useRowMajor = false) {
-    auto plan = std::make_shared<Transpose<T>>(sizeA, perm, outerSizeA, outerSizeB, offsetA, offsetB, innerStrideA, innerStrideB, dim, A,
-                                               alpha, B, beta, MEASURE, numThreads, threadIds, useRowMajor);
-    plan->setMaxAutotuningCandidates(maxAutotuningCandidates);
-    plan->createPlan();
-    return plan;
+    return Transpose<T>::create(sizeA.data(), perm.data(), outerSizeA.data(), outerSizeB.data(), offsetA.data(), offsetB.data(),
+                                innerStrideA, innerStrideB, dim, A, alpha, B, beta, selectionMethod, numThreads,
+                                threadIds.empty() ? nullptr : threadIds.data(), useRowMajor);
 }
 
 } // namespace hptt

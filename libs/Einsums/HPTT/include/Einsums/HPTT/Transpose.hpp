@@ -43,324 +43,132 @@
 
 namespace hptt {
 
-class Plan;
-
 /**
  * @class Transpose
  *
- * \brief The Transpose class encodes all information related to the execution of the tensor transposition.
+ * \brief Arch-neutral interface to a compiled tensor-transposition plan.
  *
- * Once a transpose (henceforth referred to as plan) t has been created it can be
- * executed via t->execute().
- * Moreover, a plan can be reused multiple times. For this purpose you might
- * want to have a look at the functions:
- * * setInputPtr()
- * * setOutputPtr()
+ * A plan is created once via hptt::create_plan() (or Transpose::create())
+ * and can be executed many times via execute(). To reuse a plan on new
+ * buffers, repoint it with set_input_ptr()/set_output_ptr(); scaling
+ * factors and conjugation can likewise be updated between executions.
  *
- * In addition to the normal execute() function, this class also offers the
- * execute_expert() interface. This interface is intended for the expert user
- * and offers more flexibility than execute(). If you want to use the expert
- * interface, then you might want to checkout the following functions as well:
- * * resetThreadIds()
- * * addThreadId()
+ * This class is a pure interface: the concrete implementation (selected at
+ * plan-creation time) lives inside the HPTT module. Copying a plan is done
+ * through clone(); plans round-trip through files via write_to_file() and
+ * read_from_file().
  *
- * @tparam floatType The type of data this class can handle.
+ * @tparam floatType The element type this plan transposes.
  */
 template <typename floatType>
-class EINSUMS_EXPORT Transpose {
-
+class Transpose {
   public:
-    /***************************************************
-     * Cons, Decons, Copy, ...
-     ***************************************************/
-    /**
-     * \param[in] perm dim-dimensional array representing the permutation of the indices.
-     *                 * For instance, perm[] = {1,0,2} denotes the following transposition: \f$B_{i1,i0,i2} \gets A_{i0,i1,i2}\f$.
-     * \param[in] dim Dimensionality of the tensors
-     * \param[in] alpha scaling factor for A
-     * \param[in] A Pointer to the raw-data of the input tensor A
-     * \param[in] sizeA dim-dimensional array that stores the sizes of each dimension of A
-     * \param[in] outerSizeA dim-dimensional array that stores the outer-sizes of each dimension of A.
-     *                       * This parameter may be NULL, indicating that the outer-size is equal to sizeA.
-     *                       * If outerSizeA is not NULL, outerSizeA[i] >= sizeA[i] for all 0 <= i < dim must hold.
-     *                       * This option enables HPTT to operate on sub-tensors.
-     * \param[in] offsetA dim-dimensional array that stores the offsets in each dimension of A
-     *                       * This parameter may be NULL, indicating that the offset is zero.
-     *                       * If offsetA is not NULL, outerSizeA[i] >= offsetA[i] + sizeA[i] >= 0 for all 0 <= i < dim must hold.
-     *                       * This option enables HPTT to operate on intermediate sub-tensors.
-     * \param[in] innerStrideA integer storing a non-unitary stride for the innermost dimension of A.
-     * \param[in] beta scaling factor for B
-     * \param[inout] B Pointer to the raw-data of the output tensor B
-     * \param[in] outerSizeB dim-dimensional array that stores the outer-sizes of each dimension of B.
-     *                       * This parameter may be NULL, indicating that the outer-size is equal to the perm(sizeA).
-     *                       * If outerSizeA is not NULL, outerSizeB[i] >= perm(sizeA)[i] for all 0 <= i < dim must hold.
-     * \param[in] offsetB dim-dimensional array that stores the offsets in each dimension of B
-     *                       * This parameter may be NULL, indicating that the offset is zero.
-     *                       * If offsetB is not NULL, outerSizeB[i] >= offsetB[i] + sizeB[i] >= 0 for all 0 <= i < dim must hold.
-     *                       * This option enables HPTT to operate on intermediate sub-tensors.
-     *                       * This option enables HPTT to operate on sub-tensors.
-     * \param[in] innerStrideB integer storing a non-unitary stride for the innermost dimension of B.
-     * \param[in] selectionMethod Determines if auto-tuning should be used. See hptt::SelectionMethod for details.
-     *                            ATTENTION: If you enable auto-tuning (e.g., hptt::MEASURE)
-     *                            then the output data will be used during the
-     *                            auto-tuning process. The original data (i.e., A and B), however, is preserved
-     *                            after this function call completes -- unless your input
-     *                            data (i.e. A) has invalid data (e.g., NaN, inf).
-     * \param[in] numThreads number of threads that participate in this tensor transposition.
-     * \param[in] threadIds Array of OpenMP threadIds that participate in this
-     *            tensor transposition. This parameter is only important if you want to call
-     *            HPTT from within a parallel region (i.e., via execute_expert()).
-     * \param[in] useRowMajor This flag indicates whether a row-major memory layout should be used (default: off = column-major).
-     *            Column-Major: indices are stored from left to right (leftmost = stride-1 index)
-     *            Row-Major: indices are stored from right to left (right = stride-1 index)
-     */
-    Transpose(size_t const *sizeA, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA,
-              size_t const *offsetB, size_t const innerStrideA, size_t const innerStrideB, int const dim, floatType const *A,
-              floatType const alpha, floatType *B, floatType const beta, SelectionMethod const selectionMethod, int const numThreads,
-              int const *threadIds = nullptr, bool const useRowMajor = false);
+    virtual ~Transpose() = default;
 
     /**
-     * Copy construct a Transpose object.
+     * Executes the transposition.
      */
-    Transpose(Transpose const &other);
-
-    ~Transpose();
-
-    /***************************************************
-     * Getter & Setter
-     ***************************************************/
+    virtual void execute() noexcept = 0;
 
     /**
-     * Indicates whether to conjugate the input tensor.
+     * \brief Set the pointer for A.
+     *
+     * Useful to reuse the compiled transposition over multiple invocations.
      */
-    bool get_conj_a() noexcept { return _conjA; }
+    virtual void set_input_ptr(floatType const *A) noexcept = 0;
+
+    /**
+     * \brief Set the pointer for B.
+     *
+     * Useful to reuse the compiled transposition over multiple invocations.
+     */
+    virtual void set_output_ptr(floatType *B) noexcept = 0;
+
+    /**
+     * \brief Set the scaling factor for A.
+     */
+    virtual void set_alpha(floatType alpha) noexcept = 0;
+
+    /**
+     * \brief Set the scaling factor for B.
+     */
+    virtual void set_beta(floatType beta) noexcept = 0;
 
     /**
      * Change whether to conjugate the input tensor.
      */
-    void set_conj_a(bool conjA) noexcept { _conjA = conjA; }
+    virtual void set_conj_a(bool conjA) noexcept = 0;
 
     /**
-     * Get the number of threads to use in this operation.
+     * Serialize this plan (parameters and compiled loop structure) to a file
+     * previously prepared with hptt::setup_file(). Restore with
+     * read_from_file().
      */
-    [[nodiscard]] int get_num_threads() const noexcept { return _numThreads; }
+    virtual void write_to_file(std::FILE *fp) const = 0;
 
     /**
-     * Set the number of threads to use in this operation.
-     */
-    void set_num_threads(int numThreads) noexcept { _numThreads = numThreads; }
-
-    /**
-     * Get the scaling factor for A.
-     */
-    [[nodiscard]] floatType get_alpha() const noexcept { return _alpha; }
-
-    /**
-     * Get the scaling factor for B.
-     */
-    [[nodiscard]] floatType get_beta() const noexcept { return _beta; }
-    /**
-     * \brief set the scaling factor for A.
-     */
-    void set_alpha(floatType alpha) noexcept { _alpha = alpha; }
-    /**
-     * \brief set the scaling factor for B.
-     */
-    void set_beta(floatType beta) noexcept { _beta = beta; }
-    /**
-     * \brief Set the pointer for A
+     * \brief Deep-copy this plan.
      *
-     * This features is especially useful if one wants to reuse the
-     * transposition over multiple invocations.
+     * Replaces the copy constructor of earlier versions: the concrete plan
+     * type is hidden behind this interface, so copying must go through a
+     * virtual call. Used to clone a cached template plan before repointing
+     * it at new buffers.
      */
-    void set_input_ptr(floatType const *A) noexcept { _A = A; }
+    [[nodiscard]] virtual std::shared_ptr<Transpose> clone() const = 0;
+
     /**
-     * \brief Set the pointer for B
+     * \brief Create a transposition plan.
      *
-     * This features is especially useful if one wants to reuse the
-     * transposition over multiple invocations.
-     */
-    void set_output_ptr(floatType *B) noexcept { _B = B; }
-    /**
-     * \brief Get raw-data pointer to A
-     */
-    [[nodiscard]] floatType const *get_input_ptr() const noexcept { return _A; }
-    /**
-     * \brief Get raw-data pointer to B
-     */
-    [[nodiscard]] floatType *get_output_ptr() const noexcept { return _B; }
-
-    /**
-     * \brief Clears the array that stores the OpenMP threadIds. This function
-     *        should only be used in conjuction with addThreadId().
-     */
-    void reset_thread_ids() noexcept { _threadIds.clear(); }
-
-    /**
-     * setMaxAutotuningCandidates() enables users to specify the number of
-     * candidates that should be tested during the autotuning phase
-     */
-    void set_max_autotuning_candidates(int num) { _maxAutotuningCandidates = num; }
-
-    /**
-     * This thread-safe function adds an OpenMP threadId to the set of threads
-     * that will participate in this tensor transposition. This function is
-     * only required in conjunction with the execute_expert() interface where
-     * the transposition is executed from within a parallel region (i.e.,~HPTT
-     * does not spawn the threads). It is the programmers responsibility to
-     * specify the correct thread IDs that participate in this call.
+     * This is the factory behind every hptt::create_plan() overload; the
+     * overloads normalize their arguments into this superset signature.
+     * The concrete plan implementation is chosen here, at creation time.
      *
-     * \param[in] threadId An OpenMP threadId
+     * \param[in] sizeA dim-dimensional array with the sizes of each dimension of A.
+     * \param[in] perm dim-dimensional array representing the permutation of the indices.
+     *                 For instance, perm[] = {1,0,2} denotes: \f$B_{i1,i0,i2} \gets A_{i0,i1,i2}\f$.
+     * \param[in] outerSizeA outer sizes of A, or NULL (meaning equal to sizeA); enables operating on sub-tensors.
+     * \param[in] outerSizeB outer sizes of B, or NULL (meaning equal to perm(sizeA)).
+     * \param[in] offsetA per-dimension offsets into A, or NULL (meaning zero).
+     * \param[in] offsetB per-dimension offsets into B, or NULL (meaning zero).
+     * \param[in] innerStrideA non-unit stride of A's innermost dimension.
+     * \param[in] innerStrideB non-unit stride of B's innermost dimension.
+     * \param[in] dim Dimensionality of the tensors.
+     * \param[in] A Pointer to the raw data of the input tensor A.
+     * \param[in] alpha Scaling factor for A.
+     * \param[inout] B Pointer to the raw data of the output tensor B.
+     * \param[in] beta Scaling factor for B.
+     * \param[in] selectionMethod Whether/how to auto-tune (see hptt::SelectionMethod).
+     *                            ATTENTION: auto-tuning (e.g. hptt::MEASURE) writes to B during tuning.
+     * \param[in] numThreads Number of threads participating in the transposition.
+     * \param[in] threadIds OpenMP thread IDs participating, for execution inside an existing parallel region.
+     * \param[in] useRowMajor Row-major memory layout when set (default: column-major).
      */
-    void add_thread_id(int threadId) noexcept {
-#ifdef _OPENMP
-        omp_set_lock(&_writelock);
-        _threadIds.push_back(threadId);
-        std::ranges::sort(_threadIds);
-        omp_unset_lock(&_writelock);
-#endif
-    }
+    static std::shared_ptr<Transpose> create(size_t const *sizeA, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB,
+                                             size_t const *offsetA, size_t const *offsetB, size_t const innerStrideA,
+                                             size_t const innerStrideB, int const dim, floatType const *A, floatType const alpha,
+                                             floatType *B, floatType const beta, SelectionMethod const selectionMethod,
+                                             int const numThreads, int const *threadIds = nullptr, bool const useRowMajor = false);
 
     /**
-     * Prints the thread ID's used in this operation.
-     */
-    void print_thread_ids() const noexcept { EINSUMS_LOG_DEBUG("HPTT: thread IDs: [{}]", fmt::join(_threadIds, ", ")); }
-
-    /**
-     * Gets the ID of the master thread for the operation.
-     */
-    [[nodiscard]] int get_master_thread_id() const noexcept { return _threadIds[0]; }
-
-    /***************************************************
-     * Public Methods
-     ***************************************************/
-    /**
-     * \brief Creates the plan that encodes the execution of the tensor transposition.
-     */
-    void create_plan();
-
-    /**
-     * Executes the transposition. This functions requires that the plan has
-     * already been created via the createPlan() function.
-     * This function behaves similarly to the execute() function but it
-     * offers additional template parameters to improve performance for very
-     * small tensor transpositions. Moreover it adds more flexibility.
+     * \brief Reconstruct a plan previously saved with write_to_file().
      *
-     * \tparam useStreamingStores Iff this variable is set, HPTT will use
-     *                         streaming stores which improves performance because they avoid the
-     *                         write-allocate traffic incurred by the write to B. However, sometimes
-     *                         the user might want to avoid streaming stores
-     *                         because the packed data fits int cache and is
-     *                         reused shortly (e.g., within BLAS packing
-     *                         routines).
-     * \tparam spawnThreads If the variable is set, the threads will be
-     *                         spawned from within this call, otherwise it is
-     *                         expected that this function call executes from
-     *                         within a parallel region.
-     * \tparam betaIsZero   Only set this variable if beta is zero.
+     * The data pointers, alpha, and beta are not part of the serialized
+     * form and must be supplied afresh.
      */
-    template <bool useStreamingStores = true, bool spawnThreads = true, bool betaIsZero>
-    void execute_expert() noexcept;
-
-    /**
-     * Executes the transposition. This functions requires that the plan has
-     * already been created via the createPlan() function.
-     */
-    void execute() noexcept;
-
-    /**
-     * Print information about this transpose operation.
-     */
-    void print() noexcept;
-
-    void write_to_file(std::FILE *fp) const;
-    Transpose(std::FILE *fp, floatType alpha, floatType const *A, floatType beta, floatType *B);
-
-  private:
-    /***************************************************
-     * Private Methods
-     ***************************************************/
-    void                  create_plans(std::vector<std::shared_ptr<Plan>> &plans) const;
-    std::shared_ptr<Plan> select_plan(std::vector<std::shared_ptr<Plan>> const &plans);
-    void                  fuse_indices();
-    void skip_indices(size_t const *_sizeA, int const *_perm, size_t const *_outerSizeA, size_t const *_outerSizeB, size_t const *_offsetA,
-                      size_t const *_offsetB, int const dim);
-    void compute_leading_dimensions();
-    [[nodiscard]] double loop_cost_heuristic(std::vector<int> const &loopOrder) const;
-    [[nodiscard]] double parallelism_cost_heuristic(std::vector<int> const &loopOrder) const;
-    [[nodiscard]] int    get_local_thread_id(int myThreadId) const;
-    template <bool spawnThreads>
-    void get_start_end(size_t n, size_t &myStart, size_t &myEnd) const;
-    void set_parallel_strategy(int id) noexcept { _selectedParallelStrategyId = id; }
-    void set_loop_order(int id) noexcept { _selectedLoopOrderId = id; }
-
-    /***************************************************
-     * Helper Methods
-     ***************************************************/
-    // parallelizes the loops by changing the value of parallelismStrategy
-    void                parallelize(std::vector<int> &parallelismStrategy, std::vector<int> &availableParallelismAtLoop, int &totalTasks,
-                                    std::list<int> &primeFactors, float const minBalancing, std::vector<int> const &loopsAllowed) const;
-    [[nodiscard]] float get_load_balance(std::vector<int> const &parallelismStrategy) const;
-    float estimate_execution_time(std::shared_ptr<Plan> const plan); // execute just a few iterations and extrapolate the result
-    void  verify_parameter(size_t const *size, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA,
-                           size_t const *offsetB, size_t const innerStrideA, size_t const innerStrideB, int const dim) const;
-    void  get_best_parallelism_strategy(std::vector<int> &bestParallelismStrategy) const;
-    void  get_best_loop_order(std::vector<int> &loopOrder) const; // innermost loop idx is stored at dim_-1
-    void  get_loop_orders(std::vector<std::vector<int>> &loopOrders) const;
-    void  get_parallelism_strategies(std::vector<std::vector<int>> &parallelismStrategies) const;
-    void  get_all_parallelism_strategies(std::list<int> &primeFactorsToMatch, std::vector<int> &availableParallelismAtLoop,
-                                         std::vector<int>              &achievedParallelismAtLoop,
-                                         std::vector<std::vector<int>> &parallelismStrategies) const;
-    void  get_available_parallelism(std::vector<int> &numTasksPerLoop) const;
-    [[nodiscard]] size_t get_increment(int loopIdx) const;
-    void
-    execute_estimate(Plan const *plan) noexcept; // almost identical to execute, but it just executes few iterations and then extrapolates
-    [[nodiscard]] double get_time_limit() const;
-
-    floatType const    *_A;            //!< rawdata pointer for A
-    floatType          *_B;            //!< rawdata pointer for B
-    floatType           _alpha;        //!< scaling factor for A
-    floatType           _beta;         //!< scaling factor for B
-    int                 _dim;          //!< dimension of the tensor
-    std::vector<size_t> _sizeA;        //!< size of A
-    std::vector<int>    _perm;         //!< permutation
-    std::vector<size_t> _outerSizeA;   //!< outer sizes of A
-    std::vector<size_t> _outerSizeB;   //!< outer sizes of B
-    std::vector<size_t> _offsetA;      //!< offsets of A
-    std::vector<size_t> _offsetB;      //!< offsets of B
-    size_t              _innerStrideA; //!< innerStride of A
-    size_t              _innerStrideB; //!< innerStride of B
-    std::vector<size_t> _lda;          //!< strides for all dimensions of A (first dimension has a stride of 1)
-    std::vector<size_t> _ldb;          //!< strides for all dimensions of B (first dimension has a stride of 1)
-    std::vector<int>    _threadIds;    //!< OpenMP threadIds of the threads involed in the transposition
-    int                 _numThreads;
-    int                 _selectedParallelStrategyId;
-    int                 _selectedLoopOrderId;
-    bool                _conjA;
-#ifdef _OPENMP
-    omp_lock_t _writelock;
-#endif
-
-    std::shared_ptr<Plan> _masterPlan;
-    SelectionMethod       _selectionMethod;
-    int                   _maxAutotuningCandidates;
-    static constexpr int  blocking_micro_ = einsums::simd::native_bits / 8 / sizeof(floatType);
-    static constexpr int  blocking_       = blocking_micro_ * 4;
-
-    static constexpr int infoLevel_ = 0; // determines which auxiliary messages should be printed
+    static std::shared_ptr<Transpose> read_from_file(std::FILE *fp, floatType alpha, floatType const *A, floatType beta, floatType *B);
 };
 
-extern template class Transpose<float>;
-extern template class Transpose<double>;
-extern template class Transpose<FloatComplex>;
-extern template class Transpose<DoubleComplex>;
+extern template class EINSUMS_EXPORT Transpose<float>;
+extern template class EINSUMS_EXPORT Transpose<double>;
+extern template class EINSUMS_EXPORT Transpose<FloatComplex>;
+extern template class EINSUMS_EXPORT Transpose<DoubleComplex>;
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-extern template class Transpose<einsums::simd::half_t>;
+extern template class EINSUMS_EXPORT Transpose<einsums::simd::half_t>;
 #endif
 
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
-extern template class Transpose<einsums::simd::bfloat16_t>;
+extern template class EINSUMS_EXPORT Transpose<einsums::simd::bfloat16_t>;
 #endif
 
 } // namespace hptt
