@@ -18,4 +18,5 @@ foreach(test ${HPTTTests})
   )
 
   einsums_add_unit_test("Modules.HPTT" ${test})
+  einsums_add_simd_rung_tests("Modules.HPTT" ${test})
 endforeach()

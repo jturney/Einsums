@@ -16,7 +16,15 @@ set(HPTTHeaders
     Einsums/HPTT/Files.hpp
 )
 
-set(HPTTSources HPTT.cpp Plan.cpp Transpose.cpp Utils.cpp Primes.hpp Files.cpp)
+set(HPTTSources HPTT.cpp Plan.cpp TransposeFactory.cpp Utils.cpp Primes.hpp Files.cpp)
+
+# Transpose.cpp is the arch-generic kernel implementation: it is compiled
+# once per SIMD-dispatch rung (each copy in its own namespace) rather than
+# as a regular module source. TransposeFactory.cpp bridges the copies at
+# plan creation. See Einsums/SIMD/RuntimeFeatures.hpp and
+# Einsums_AddSIMDDispatch.cmake.
+include(Einsums_AddSIMDDispatch)
+einsums_add_simd_dispatch_sources(HPTTTransposeRungs IMPL src/Transpose.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -27,3 +35,9 @@ einsums_add_module(
   MODULE_DEPENDENCIES Einsums_Assertion Einsums_BLASBase Einsums_Errors Einsums_Logging Einsums_SIMD
   CMAKE_SUBDIRS examples tests
 )
+
+# The generated rung TUs carry absolute paths, which einsums_add_module's
+# src/ prepend cannot express; attach them (and the rung-availability
+# definitions TransposeFactory.cpp keys off) directly to the module target.
+target_sources(Einsums_HPTT PRIVATE ${HPTTTransposeRungs})
+target_compile_definitions(Einsums_HPTT PRIVATE ${HPTTTransposeRungs_DEFINITIONS})

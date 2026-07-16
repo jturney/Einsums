@@ -216,7 +216,14 @@ compiler-defined macros (``__AVX2__`` and friends), the same source
 automatically widens ``Vec<T>``, ``native_lanes`` and every operation to
 each rung's register width - no source changes per rung. CMake helpers that
 generate the per-rung translation units live with this module (see
-``Einsums_AddSIMDDispatch.cmake``); HPTT is the reference consumer.
+``Einsums_AddSIMDDispatch.cmake``); HPTT is the reference consumer: its
+``Transpose.cpp`` compiles once per rung, and the arch-neutral factory in
+``TransposeFactory.cpp`` selects a rung at plan creation.
+
+The whole mechanism sits behind ``EINSUMS_WITH_SIMD_DISPATCH`` (default ON).
+When it is OFF, on non-x86 targets, or when a compile-time pin is in effect
+(below), the helper emits a single ``native`` rung compiled at the ambient
+flags - exactly the pre-dispatch behavior.
 
 Interaction with the compile-time pinning options: building with
 ``EINSUMS_SIMD_NATIVE_ARCH=ON`` or ``EINSUMS_SIMD_TARGET_CPU=<cpu>`` raises

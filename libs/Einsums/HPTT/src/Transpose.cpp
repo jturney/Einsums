@@ -65,6 +65,7 @@
 #include "TransposeImpl.hpp"
 
 namespace hptt {
+namespace EINSUMS_SIMD_ARCH_NS {
 
 // std::abs has no overload for __fp16 / __bf16, so promote those to float
 // before calling. Real and complex types pass straight through.
@@ -2576,36 +2577,47 @@ template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<false, fa
 #endif
 
 // ---------------------------------------------------------------------------
-// Interface factories: the only place the concrete plan type is chosen.
+// Per-rung factory entry points. The arch-neutral factory in
+// TransposeFactory.cpp selects among these at plan creation; explicit
+// instantiations below give it symbols to link against.
 // ---------------------------------------------------------------------------
 
 template <typename floatType>
-std::shared_ptr<Transpose<floatType>>
-Transpose<floatType>::create(size_t const *sizeA, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB,
-                             size_t const *offsetA, size_t const *offsetB, size_t const innerStrideA, size_t const innerStrideB,
-                             int const dim, floatType const *A, floatType const alpha, floatType *B, floatType const beta,
-                             SelectionMethod const selectionMethod, int const numThreads, int const *threadIds, bool const useRowMajor) {
+std::shared_ptr<hptt::Transpose<floatType>>
+make_transpose(size_t const *sizeA, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA,
+               size_t const *offsetB, size_t const innerStrideA, size_t const innerStrideB, int const dim, floatType const *A,
+               floatType const alpha, floatType *B, floatType const beta, SelectionMethod const selectionMethod, int const numThreads,
+               int const *threadIds, bool const useRowMajor) {
     return std::make_shared<TransposeImpl<floatType>>(sizeA, perm, outerSizeA, outerSizeB, offsetA, offsetB, innerStrideA, innerStrideB,
                                                       dim, A, alpha, B, beta, selectionMethod, numThreads, threadIds, useRowMajor);
 }
 
 template <typename floatType>
-std::shared_ptr<Transpose<floatType>> Transpose<floatType>::read_from_file(std::FILE *fp, floatType alpha, floatType const *A,
-                                                                           floatType beta, floatType *B) {
+std::shared_ptr<hptt::Transpose<floatType>> make_transpose_from_file(std::FILE *fp, floatType alpha, floatType const *A, floatType beta,
+                                                                     floatType *B) {
     return std::make_shared<TransposeImpl<floatType>>(fp, alpha, A, beta, B);
 }
 
-template class EINSUMS_EXPORT Transpose<float>;
-template class EINSUMS_EXPORT Transpose<double>;
-template class EINSUMS_EXPORT Transpose<FloatComplex>;
-template class EINSUMS_EXPORT Transpose<DoubleComplex>;
+#define EINSUMS_HPTT_INSTANTIATE_FACTORIES(T)                                                                                              \
+    template std::shared_ptr<hptt::Transpose<T>> make_transpose<T>(                                                                        \
+        size_t const *, int const *, size_t const *, size_t const *, size_t const *, size_t const *, size_t const, size_t const,           \
+        int const, T const *, T const, T *, T const, SelectionMethod const, int const, int const *, bool const);                           \
+    template std::shared_ptr<hptt::Transpose<T>> make_transpose_from_file<T>(std::FILE *, T, T const *, T, T *);
+
+EINSUMS_HPTT_INSTANTIATE_FACTORIES(float)
+EINSUMS_HPTT_INSTANTIATE_FACTORIES(double)
+EINSUMS_HPTT_INSTANTIATE_FACTORIES(FloatComplex)
+EINSUMS_HPTT_INSTANTIATE_FACTORIES(DoubleComplex)
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-template class EINSUMS_EXPORT Transpose<einsums::simd::half_t>;
+EINSUMS_HPTT_INSTANTIATE_FACTORIES(einsums::simd::half_t)
 #endif
 
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
-template class EINSUMS_EXPORT Transpose<einsums::simd::bfloat16_t>;
+EINSUMS_HPTT_INSTANTIATE_FACTORIES(einsums::simd::bfloat16_t)
 #endif
 
+#undef EINSUMS_HPTT_INSTANTIATE_FACTORIES
+
+} // namespace EINSUMS_SIMD_ARCH_NS
 } // namespace hptt

@@ -39,17 +39,21 @@
 #:    the namespaces that exist (add them to the consuming target with
 #:    ``target_compile_definitions``).
 #:
-#:    Rung pruning: the requested ladder is reduced to ``baseline`` alone
-#:    when any of the following holds, because the extra rungs would be
-#:    either meaningless or unreachable:
+#:    Single-TU mode: the requested ladder collapses to one ``native`` rung
+#:    (namespace ``arch_native``, ambient compiler flags, definition
+#:    ``EINSUMS_SIMD_HAS_RUNG_NATIVE``) when any of the following holds,
+#:    because a ladder would be meaningless or unreachable:
 #:
+#:    * ``EINSUMS_WITH_SIMD_DISPATCH`` is OFF,
 #:    * the target processor is not x86-64 (the v2/v3/v4 rungs are x86
 #:      levels; on aarch64 the toolchain baseline already includes NEON),
 #:    * ``EINSUMS_SIMD_NATIVE_ARCH`` or ``EINSUMS_SIMD_TARGET_CPU`` pins the
 #:      whole SIMD interface to a specific CPU (the pin raises every TU's
-#:      baseline, so a runtime ladder below it can never be selected),
-#:    * the compiler is the true MSVC driver and the rung has no ``/arch:``
-#:      equivalent (``v2`` only; ``v3``/``v4`` map to ``/arch:AVX2/AVX512``).
+#:      baseline, so a runtime ladder below it can never be selected).
+#:
+#:    Independent of that, the true MSVC driver drops the ``v2`` rung (no
+#:    ``/arch:`` flag exists for it; ``v3``/``v4`` map to ``/arch:AVX2`` and
+#:    ``/arch:AVX512``).
 #:
 #:    The implementation file is compiled once per surviving rung, so keep
 #:    everything arch-independent out of it; heavy shared code belongs in a
@@ -82,8 +86,14 @@ function(einsums_add_simd_dispatch_sources out_var)
   if(EINSUMS_SIMD_NATIVE_ARCH OR NOT "${EINSUMS_SIMD_TARGET_CPU}" STREQUAL "")
     set(_pinned TRUE)
   endif()
-  if(NOT _is_x86 OR _pinned)
-    set(_simd_RUNGS baseline)
+  # Single-TU mode: no ladder. The wrapper compiles at the ambient flags in
+  # the arch_native namespace, and consumers get EINSUMS_SIMD_HAS_RUNG_NATIVE
+  # instead of the per-rung definitions.
+  if(NOT _is_x86
+     OR _pinned
+     OR NOT EINSUMS_WITH_SIMD_DISPATCH
+  )
+    set(_simd_RUNGS native)
   endif()
 
   # True MSVC driver (cl.exe): no flag exists for the v2 level. clang-cl
@@ -98,7 +108,10 @@ function(einsums_add_simd_dispatch_sources out_var)
   set(_generated_rungs)
   foreach(_rung IN LISTS _simd_RUNGS)
     # Per-rung ordinal and compiler flags.
-    if(_rung STREQUAL "baseline")
+    if(_rung STREQUAL "native")
+      set(_ordinal 0)
+      set(_flags "")
+    elseif(_rung STREQUAL "baseline")
       set(_ordinal 0)
       set(_flags "")
     elseif(_rung STREQUAL "v2")
@@ -165,4 +178,37 @@ function(einsums_add_simd_dispatch_sources out_var)
       "${_definitions}"
       PARENT_SCOPE
   )
+endfunction()
+
+#:
+#: .. cmake:command:: einsums_add_simd_rung_tests
+#:
+#:    Re-register an existing ``<name>_test`` executable once per x86
+#:    dispatch rung, forcing the rung via the ``EINSUMS_SIMD_ARCH``
+#:    environment variable:
+#:
+#:    .. code-block:: cmake
+#:
+#:       einsums_add_simd_rung_tests("Modules.HPTT" LargeTranspose)
+#:
+#:    creates ``Tests.Unit.<subcategory>.<name>.simd_baseline`` / ``.simd_v2``
+#:    / ``.simd_v3`` / ``.simd_v4``. On hosts that lack a rung the override
+#:    clamps to the host ceiling (the test then repeats a lower rung -
+#:    harmless). No-op when the build is single-TU (dispatch OFF, non-x86,
+#:    or a compile-time CPU pin), where only arch_native exists.
+function(einsums_add_simd_rung_tests subcategory name)
+  if(NOT EINSUMS_WITH_SIMD_DISPATCH
+     OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64"
+     OR EINSUMS_SIMD_NATIVE_ARCH
+     OR NOT "${EINSUMS_SIMD_TARGET_CPU}" STREQUAL ""
+  )
+    return()
+  endif()
+  foreach(_rung baseline v2 v3 v4)
+    set(_test_name "Tests.Unit.${subcategory}.${name}.simd_${_rung}")
+    add_test(NAME ${_test_name} COMMAND ${name}_test "--einsums:debug:no-install-signal-handlers" "--einsums:debug:no-attach-debugger"
+                                        "--einsums:profile:no-report"
+    )
+    set_tests_properties(${_test_name} PROPERTIES ENVIRONMENT "EINSUMS_SIMD_ARCH=${_rung}" LABELS "UNIT_ONLY")
+  endforeach()
 endfunction()

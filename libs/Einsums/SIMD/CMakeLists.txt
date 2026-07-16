@@ -4,6 +4,10 @@
 #----------------------------------------------------------------------------------------------
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+# CMAKE_MODULE_PATH is directory-scoped; export the append so sibling modules
+# configured after this one (HPTT and other dispatch consumers) can
+# include(Einsums_AddSIMDDispatch).
+set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" PARENT_SCOPE)
 
 set(SIMDHeaders
     Einsums/SIMD/Platform.hpp
@@ -44,6 +48,17 @@ set(SIMDSources RuntimeFeatures.cpp)
 # Trade-off either knob makes: the resulting binary is no longer portable
 # across older CPUs of the same family. Default is OFF — the module
 # silently runs at whatever ISA tier the toolchain's baseline exposes.
+einsums_option(
+    EINSUMS_WITH_SIMD_DISPATCH BOOL
+    "Compile SIMD kernel TUs once per instruction-set rung (x86-64 baseline/\
+     v2/v3/v4) and pick the best at runtime (see Einsums/SIMD/RuntimeFeatures.hpp). \
+     One portable binary, full speed on newer CPUs. OFF compiles a single TU at \
+     the toolchain baseline, matching pre-dispatch behavior. Automatically \
+     treated as OFF on non-x86 targets and when EINSUMS_SIMD_NATIVE_ARCH or \
+     EINSUMS_SIMD_TARGET_CPU pins the build."
+    ON
+    CATEGORY "Build Targets"
+)
 einsums_option(
     EINSUMS_SIMD_NATIVE_ARCH BOOL
     "Compile SIMD-using TUs with -mcpu=native / -march=native. Unlocks every \

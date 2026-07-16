@@ -63,3 +63,8 @@ foreach(test ${TensorAlgebraTests})
     "Modules.TensorAlgebra" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS}
   )
 endforeach()
+
+# The permute paths are HPTT-kernel-heavy; run the Sort suite once per SIMD
+# dispatch rung (no-op on single-TU builds).
+include(Einsums_AddSIMDDispatch)
+einsums_add_simd_rung_tests("Modules.TensorAlgebra" Sort)

@@ -28,6 +28,13 @@
 
 #include <Einsums/HPTT/HPTTTypes.hpp>
 #include <Einsums/HPTT/Transpose.hpp>
+
+// Each SIMD-dispatch rung compiles this implementation into its own
+// namespace (see Einsums_AddSIMDDispatch.cmake). When the file is compiled
+// outside the dispatch machinery, default to the single native namespace.
+#if !defined(EINSUMS_SIMD_ARCH_NS)
+#    define EINSUMS_SIMD_ARCH_NS arch_native
+#endif
 #include <Einsums/Logging.hpp>
 
 #include <fmt/format.h>
@@ -45,8 +52,10 @@ namespace hptt {
 
 class Plan;
 
+namespace EINSUMS_SIMD_ARCH_NS {
+
 template <typename floatType>
-class TransposeImpl final : public Transpose<floatType> {
+class TransposeImpl final : public hptt::Transpose<floatType> {
 
   public:
     /***************************************************
@@ -348,4 +357,5 @@ extern template class TransposeImpl<einsums::simd::half_t>;
 extern template class TransposeImpl<einsums::simd::bfloat16_t>;
 #endif
 
+} // namespace EINSUMS_SIMD_ARCH_NS
 } // namespace hptt
