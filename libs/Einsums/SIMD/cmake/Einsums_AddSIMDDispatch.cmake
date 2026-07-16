@@ -51,13 +51,20 @@
 #:      whole SIMD interface to a specific CPU (the pin raises every TU's
 #:      baseline, so a runtime ladder below it can never be selected).
 #:
-#:    Independent of that, the true MSVC driver drops the ``v2`` rung (no
-#:    ``/arch:`` flag exists for it; ``v3``/``v4`` map to ``/arch:AVX2`` and
-#:    ``/arch:AVX512``).
+#:    Independent of that, individual rungs are dropped (degrading toward
+#:    the always-present baseline) when their flag is unusable: the true
+#:    MSVC driver has no flag for ``v2`` (``v3``/``v4`` map to
+#:    ``/arch:AVX2`` and ``/arch:AVX512``; clang-cl reaches ``v2`` via
+#:    ``/clang:-march=x86-64-v2`` and Intel icx accepts the GCC spelling),
+#:    and every rung flag is probed with ``check_cxx_compiler_flag`` first,
+#:    so compilers predating ``-march=x86-64-vN`` (GCC < 11, Clang < 12)
+#:    build baseline-only instead of failing to configure.
 #:
 #:    The implementation file is compiled once per surviving rung, so keep
 #:    everything arch-independent out of it; heavy shared code belongs in a
 #:    regular TU.
+include(CheckCXXCompilerFlag)
+
 function(einsums_add_simd_dispatch_sources out_var)
   set(options)
   set(one_value_args IMPL)
@@ -97,9 +104,10 @@ function(einsums_add_simd_dispatch_sources out_var)
   endif()
 
   # True MSVC driver (cl.exe): no flag exists for the v2 level. clang-cl
-  # takes the GCC spellings through the /clang: escape hatch.
+  # takes the GCC spelling through the /clang: escape hatch, and Intel's
+  # icx-cl (IntelLLVM) accepts the GCC spelling directly.
   set(_msvc_true_driver FALSE)
-  if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|IntelLLVM")
     set(_msvc_true_driver TRUE)
   endif()
 
@@ -119,9 +127,9 @@ function(einsums_add_simd_dispatch_sources out_var)
       if(_msvc_true_driver)
         message(STATUS "einsums_add_simd_dispatch_sources(${_impl_name}): MSVC cl has no x86-64-v2 flag; dropping the v2 rung")
         continue()
-      elseif(MSVC) # clang-cl
+      elseif(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang") # clang-cl
         set(_flags "/clang:-march=x86-64-v2")
-      else()
+      else() # GCC/Clang/IntelLLVM (icx accepts the GCC spelling on Windows too)
         set(_flags "-march=x86-64-v2")
       endif()
     elseif(_rung STREQUAL "v3")
@@ -156,7 +164,16 @@ function(einsums_add_simd_dispatch_sources out_var)
       NEWLINE_STYLE UNIX
     )
 
+    # Old compilers (pre -march=x86-64-vN: GCC < 11, Clang < 12) or drivers
+    # that reject a spelling drop the rung instead of breaking the build -
+    # the ladder degrades toward baseline, which always exists.
     if(NOT "${_flags}" STREQUAL "")
+      string(TOUPPER "${_rung}" _rung_upper)
+      check_cxx_compiler_flag("${_flags}" EINSUMS_SIMD_RUNG_FLAG_${_rung_upper})
+      if(NOT EINSUMS_SIMD_RUNG_FLAG_${_rung_upper})
+        message(STATUS "einsums_add_simd_dispatch_sources(${_impl_name}): compiler rejects '${_flags}'; dropping the ${_rung} rung")
+        continue()
+      endif()
       set_source_files_properties("${_wrapper}" PROPERTIES COMPILE_OPTIONS "${_flags}")
     endif()
 
