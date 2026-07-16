@@ -13,9 +13,10 @@ set(SIMDHeaders
     Einsums/SIMD/Shuffle.hpp
     Einsums/SIMD/Gather.hpp
     Einsums/SIMD/Prefetch.hpp
+    Einsums/SIMD/RuntimeFeatures.hpp
 )
 
-set(SIMDSources)
+set(SIMDSources RuntimeFeatures.cpp)
 
 # ── Architecture-targeting options ───────────────────────────────────────────
 #
@@ -69,7 +70,7 @@ einsums_add_module(
   SOURCES ${SIMDSources}
   HEADERS ${SIMDHeaders}
   DEPENDENCIES
-  MODULE_DEPENDENCIES Einsums_Config
+  MODULE_DEPENDENCIES Einsums_Config Einsums_Logging
   CMAKE_SUBDIRS examples tests
 )
 

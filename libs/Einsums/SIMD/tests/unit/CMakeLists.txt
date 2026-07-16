@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-set(SIMDTests VecBasic VecInteger VecHalf VecInt8 Shuffle GatherScatter ComplexVec)
+set(SIMDTests VecBasic VecInteger VecHalf VecInt8 Shuffle GatherScatter ComplexVec RuntimeFeatures)
 
 foreach(test ${SIMDTests})
   set(sources ${test}.cpp)

@@ -1,0 +1,168 @@
+#----------------------------------------------------------------------------------------------
+# Copyright (c) The Einsums Developers. All rights reserved.
+# Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+#----------------------------------------------------------------------------------------------
+
+#:
+#: .. cmake:command:: einsums_add_simd_dispatch_sources
+#:
+#:    Generate per-instruction-set translation units for a runtime dispatch
+#:    ladder (see ``Einsums/SIMD/RuntimeFeatures.hpp``).
+#:
+#:    .. code-block:: cmake
+#:
+#:       einsums_add_simd_dispatch_sources(<out_var>
+#:         IMPL <impl-file>
+#:         [RUNGS <rung>...]        # subset of: baseline v2 v3 v4 (default: all)
+#:       )
+#:
+#:    For each rung, a thin wrapper ``.cpp`` is generated into the current
+#:    binary directory that
+#:
+#:    1. defines ``EINSUMS_SIMD_ARCH_NS`` to ``arch_<rung>`` (the namespace
+#:       the implementation file must wrap its arch-dependent code in),
+#:    2. defines ``EINSUMS_SIMD_DISPATCH_RUNG`` to the rung's ordinal
+#:       (0 = baseline ... 3 = v4), and
+#:    3. includes the implementation file,
+#:
+#:    and is given the compiler flags of that rung (``-march=x86-64-v2/-v3/-v4``
+#:    for GCC/Clang, ``/arch:AVX2``/``/arch:AVX512`` for the MSVC driver).
+#:    Because the SIMD headers key off compiler-defined feature macros, the
+#:    same implementation source widens ``Vec<T>``/``native_lanes``/all
+#:    operations to each rung's register width without source changes.
+#:
+#:    The generated source list is returned in ``<out_var>`` for passing to
+#:    ``einsums_add_module``'s ``SOURCES``. The rungs actually generated are
+#:    returned in ``<out_var>_RUNGS``, and matching compile definitions of
+#:    the form ``EINSUMS_SIMD_HAS_RUNG_<RUNG>=1`` are returned in
+#:    ``<out_var>_DEFINITIONS`` so dispatch-table code can declare exactly
+#:    the namespaces that exist (add them to the consuming target with
+#:    ``target_compile_definitions``).
+#:
+#:    Rung pruning: the requested ladder is reduced to ``baseline`` alone
+#:    when any of the following holds, because the extra rungs would be
+#:    either meaningless or unreachable:
+#:
+#:    * the target processor is not x86-64 (the v2/v3/v4 rungs are x86
+#:      levels; on aarch64 the toolchain baseline already includes NEON),
+#:    * ``EINSUMS_SIMD_NATIVE_ARCH`` or ``EINSUMS_SIMD_TARGET_CPU`` pins the
+#:      whole SIMD interface to a specific CPU (the pin raises every TU's
+#:      baseline, so a runtime ladder below it can never be selected),
+#:    * the compiler is the true MSVC driver and the rung has no ``/arch:``
+#:      equivalent (``v2`` only; ``v3``/``v4`` map to ``/arch:AVX2/AVX512``).
+#:
+#:    The implementation file is compiled once per surviving rung, so keep
+#:    everything arch-independent out of it; heavy shared code belongs in a
+#:    regular TU.
+function(einsums_add_simd_dispatch_sources out_var)
+  set(options)
+  set(one_value_args IMPL)
+  set(multi_value_args RUNGS)
+  cmake_parse_arguments(_simd "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
+
+  if(NOT _simd_IMPL)
+    message(FATAL_ERROR "einsums_add_simd_dispatch_sources: IMPL is required")
+  endif()
+  if(NOT _simd_RUNGS)
+    set(_simd_RUNGS baseline v2 v3 v4)
+  endif()
+
+  get_filename_component(_impl_abs "${_simd_IMPL}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+  if(NOT EXISTS "${_impl_abs}")
+    message(FATAL_ERROR "einsums_add_simd_dispatch_sources: IMPL file not found: ${_impl_abs}")
+  endif()
+  get_filename_component(_impl_name "${_impl_abs}" NAME_WE)
+
+  # Decide whether the x86 ladder applies at all.
+  set(_is_x86 FALSE)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    set(_is_x86 TRUE)
+  endif()
+  set(_pinned FALSE)
+  if(EINSUMS_SIMD_NATIVE_ARCH OR NOT "${EINSUMS_SIMD_TARGET_CPU}" STREQUAL "")
+    set(_pinned TRUE)
+  endif()
+  if(NOT _is_x86 OR _pinned)
+    set(_simd_RUNGS baseline)
+  endif()
+
+  # True MSVC driver (cl.exe): no flag exists for the v2 level. clang-cl
+  # takes the GCC spellings through the /clang: escape hatch.
+  set(_msvc_true_driver FALSE)
+  if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set(_msvc_true_driver TRUE)
+  endif()
+
+  set(_sources)
+  set(_definitions)
+  set(_generated_rungs)
+  foreach(_rung IN LISTS _simd_RUNGS)
+    # Per-rung ordinal and compiler flags.
+    if(_rung STREQUAL "baseline")
+      set(_ordinal 0)
+      set(_flags "")
+    elseif(_rung STREQUAL "v2")
+      set(_ordinal 1)
+      if(_msvc_true_driver)
+        message(STATUS "einsums_add_simd_dispatch_sources(${_impl_name}): MSVC cl has no x86-64-v2 flag; dropping the v2 rung")
+        continue()
+      elseif(MSVC) # clang-cl
+        set(_flags "/clang:-march=x86-64-v2")
+      else()
+        set(_flags "-march=x86-64-v2")
+      endif()
+    elseif(_rung STREQUAL "v3")
+      set(_ordinal 2)
+      if(MSVC)
+        set(_flags "/arch:AVX2")
+      else()
+        set(_flags "-march=x86-64-v3")
+      endif()
+    elseif(_rung STREQUAL "v4")
+      set(_ordinal 3)
+      if(MSVC)
+        set(_flags "/arch:AVX512")
+      else()
+        set(_flags "-march=x86-64-v4")
+      endif()
+    else()
+      message(FATAL_ERROR "einsums_add_simd_dispatch_sources: unknown rung '${_rung}' (expected baseline/v2/v3/v4)")
+    endif()
+
+    set(_wrapper "${CMAKE_CURRENT_BINARY_DIR}/simd_dispatch/${_impl_name}_${_rung}.cpp")
+    file(
+      CONFIGURE
+      OUTPUT "${_wrapper}"
+      CONTENT
+        "// Generated by einsums_add_simd_dispatch_sources - do not edit.
+#define EINSUMS_SIMD_ARCH_NS arch_${_rung}
+#define EINSUMS_SIMD_DISPATCH_RUNG ${_ordinal}
+#include \"${_impl_abs}\"
+"
+      @ONLY
+      NEWLINE_STYLE UNIX
+    )
+
+    if(NOT "${_flags}" STREQUAL "")
+      set_source_files_properties("${_wrapper}" PROPERTIES COMPILE_OPTIONS "${_flags}")
+    endif()
+
+    list(APPEND _sources "${_wrapper}")
+    string(TOUPPER "${_rung}" _rung_upper)
+    list(APPEND _definitions "EINSUMS_SIMD_HAS_RUNG_${_rung_upper}=1")
+    list(APPEND _generated_rungs "${_rung}")
+  endforeach()
+
+  set(${out_var}
+      "${_sources}"
+      PARENT_SCOPE
+  )
+  set(${out_var}_RUNGS
+      "${_generated_rungs}"
+      PARENT_SCOPE
+  )
+  set(${out_var}_DEFINITIONS
+      "${_definitions}"
+      PARENT_SCOPE
+  )
+endfunction()
