@@ -12,6 +12,10 @@ if(EINSUMS_WITH_TESTS)
     add_subdirectory(unit)
   endif()
 
+  # The rung-guard launcher is needed whenever unit tests exist: rung tests
+  # in other modules (HPTT, TensorAlgebra) wrap their binaries with it.
+  add_subdirectory(rung_guard)
+
   if(EINSUMS_WITH_TESTS_BENCHMARKS)
     einsums_add_pseudo_target(Tests.Performance.Modules.SIMD)
     einsums_add_pseudo_dependencies(Tests.Performance.Modules Tests.Performance.Modules.SIMD)

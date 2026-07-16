@@ -187,7 +187,10 @@ Set the ``EINSUMS_SIMD_ARCH`` environment variable (``baseline``, ``v2``,
 before process start to force a lower rung - the primary tool for testing
 every rung of a dispatch ladder on one machine. An override can only lower
 the selection; requesting more than the hardware supports logs a warning and
-clamps. The value is read once and cached; tests that need to exercise the
+clamps. For test suites, prefer ``einsums_add_simd_rung_tests()``: it wraps
+each per-rung registration in the ``simd_rung_guard`` launcher, which turns
+an unsupported rung into an honest ctest "Skipped" (exit 77) instead of a
+silently clamped rerun. The value is read once and cached; tests that need to exercise the
 resolution logic itself should call ``resolve_arch()`` with explicit
 arguments instead of mutating the environment.
 

@@ -192,10 +192,12 @@ endfunction()
 #:       einsums_add_simd_rung_tests("Modules.HPTT" LargeTranspose)
 #:
 #:    creates ``Tests.Unit.<subcategory>.<name>.simd_baseline`` / ``.simd_v2``
-#:    / ``.simd_v3`` / ``.simd_v4``. On hosts that lack a rung the override
-#:    clamps to the host ceiling (the test then repeats a lower rung -
-#:    harmless). No-op when the build is single-TU (dispatch OFF, non-x86,
-#:    or a compile-time CPU pin), where only arch_native exists.
+#:    / ``.simd_v3`` / ``.simd_v4``. Each test runs through the
+#:    ``simd_rung_guard`` launcher, which exits with the registered
+#:    ``SKIP_RETURN_CODE`` (77) when the host CPU cannot execute the rung -
+#:    ctest then reports the test as Skipped rather than silently passing at
+#:    a clamped lower rung. No-op when the build is single-TU (dispatch OFF,
+#:    non-x86, or a compile-time CPU pin), where only arch_native exists.
 function(einsums_add_simd_rung_tests subcategory name)
   if(NOT EINSUMS_WITH_SIMD_DISPATCH
      OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64"
@@ -206,9 +208,15 @@ function(einsums_add_simd_rung_tests subcategory name)
   endif()
   foreach(_rung baseline v2 v3 v4)
     set(_test_name "Tests.Unit.${subcategory}.${name}.simd_${_rung}")
-    add_test(NAME ${_test_name} COMMAND ${name}_test "--einsums:debug:no-install-signal-handlers" "--einsums:debug:no-attach-debugger"
-                                        "--einsums:profile:no-report"
+    # simd_rung_guard exits 77 (SKIP_RETURN_CODE) when the host CPU cannot
+    # execute the rung, so ctest reports "Skipped" instead of silently
+    # rerunning at the clamped lower rung.
+    add_test(NAME ${_test_name}
+             COMMAND simd_rung_guard ${_rung} $<TARGET_FILE:${name}_test> "--einsums:debug:no-install-signal-handlers"
+                     "--einsums:debug:no-attach-debugger" "--einsums:profile:no-report"
     )
-    set_tests_properties(${_test_name} PROPERTIES ENVIRONMENT "EINSUMS_SIMD_ARCH=${_rung}" LABELS "UNIT_ONLY")
+    set_tests_properties(
+      ${_test_name} PROPERTIES ENVIRONMENT "EINSUMS_SIMD_ARCH=${_rung}" LABELS "UNIT_ONLY" SKIP_RETURN_CODE 77
+    )
   endforeach()
 endfunction()
