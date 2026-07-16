@@ -252,9 +252,11 @@ EINSUMS_FORCEINLINE CVec<double> complex_mul(CVec<double> a, CVec<double> b) {
     auto t2     = _mm256_mul_pd(a_ii, b_swap);
     return _mm256_addsub_pd(t1, t2);
 }
-#elif defined(__SSE3__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
-// SSE3+ path: moveldup/movehdup/movedup and addsub are SSE3 intrinsics. MSVC always exposes
-// these regardless of the target feature level, so the MSVC checks stay here.
+#elif defined(__SSE3__) || (!defined(__clang__) && (defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)))
+// SSE3+ path: moveldup/movehdup/movedup and addsub are SSE3 intrinsics. True MSVC (cl) exposes
+// them regardless of the target feature level, so its checks stay here - but clang-cl enforces
+// target features (always_inline errors at the bare x86-64 baseline), so it only takes this
+// path when __SSE3__ is actually enabled and otherwise falls through to the SSE2 emulation.
 template <>
 EINSUMS_FORCEINLINE CVec<float> complex_mul(CVec<float> a, CVec<float> b) {
     auto a_rr   = _mm_moveldup_ps(a.reg);
