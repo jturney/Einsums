@@ -16,10 +16,6 @@ set(PackedGemmSources
     Packing.cpp
 )
 
-if(NOT WIN32)
-  set(EXTRA_PACKEDGEMM_DEPENDENCIES Einsums_HPTT)
-endif()
-
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums PackedGemm
@@ -32,6 +28,6 @@ einsums_add_module(
     Einsums_Logging
     Einsums_Profile
     Einsums_Runtime
-    ${EXTRA_PACKEDGEMM_DEPENDENCIES}
+    Einsums_HPTT
   CMAKE_SUBDIRS tests
 )

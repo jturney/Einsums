@@ -7,21 +7,20 @@
 
 #include <Einsums/Config.hpp>
 
-#if !defined(EINSUMS_WINDOWS)
-#    include <Einsums/HPTT/HPTT.hpp>
+#include <Einsums/HPTT/HPTT.hpp>
 
-#    if defined(I)
-#        undef I
-#    endif
+#if defined(I)
+#    undef I
+#endif
 
-#    include <cstddef>
-#    include <memory>
-#    include <unordered_map>
-#    include <vector>
+#include <cstddef>
+#include <memory>
+#include <unordered_map>
+#include <vector>
 
-#    ifdef _OPENMP
-#        include <omp.h>
-#    endif
+#ifdef _OPENMP
+#    include <omp.h>
+#endif
 
 namespace einsums::tensor_algebra::detail {
 
@@ -90,11 +89,11 @@ get_or_create_hptt_plan(int const *perm, int dim, T alpha, T const *A, size_t co
                         size_t innerStrideA, T beta, T *B, size_t const *outerSizeB, size_t const *offsetB, size_t innerStrideB,
                         bool row_major, hptt::SelectionMethod method = hptt::ESTIMATE) {
     int const numThreads = []() {
-#    ifdef _OPENMP
+#ifdef _OPENMP
         return omp_get_max_threads();
-#    else
+#else
         return 1;
-#    endif
+#endif
     }();
 
     // MEASURE/PATIENT/CRAZY do their own autotuning; the caller is
@@ -178,5 +177,3 @@ inline std::shared_ptr<hptt::Transpose<T>> get_or_create_hptt_plan(int const *pe
 }
 
 } // namespace einsums::tensor_algebra::detail
-
-#endif // !EINSUMS_WINDOWS

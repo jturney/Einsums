@@ -9,11 +9,8 @@
 
 #include <Einsums/Assert.hpp>
 #include <Einsums/BLAS/Types.hpp>
-
-#ifndef EINSUMS_WINDOWS
-#    include <Einsums/HPTT/HPTT.hpp>
-#    include <Einsums/HPTT/HPTTTypes.hpp>
-#endif
+#include <Einsums/HPTT/HPTT.hpp>
+#include <Einsums/HPTT/HPTTTypes.hpp>
 
 #include <omp.h>
 
@@ -52,7 +49,6 @@ void transpose(int_t m, int_t n, T const *in, int_t ldin, T *out, int_t ldout) {
     EINSUMS_ASSERT(m >= 0);
     EINSUMS_ASSERT(n >= 0);
 
-#ifndef EINSUMS_WINDOWS
     int    perm[]    = {1, 0};
     size_t size_in[] = {static_cast<unsigned long>(m), static_cast<unsigned long>(n)}, outer_size_in[2], outer_size_out[2];
     if constexpr (Order == OrderMajor::Row) {
@@ -71,23 +67,6 @@ void transpose(int_t m, int_t n, T const *in, int_t ldin, T *out, int_t ldout) {
                                   omp_get_max_threads(), {}, Order == OrderMajor::Row);
 
     plan->execute();
-#else
-    // HPTT is unavailable on Windows; plain blocked loop transpose. Slow but
-    // correct - revisit with a Windows-capable HPTT or librett.
-    int_t x, y;
-    if constexpr (Order == OrderMajor::Column) {
-        x = n;
-        y = m;
-    } else {
-        x = m;
-        y = n;
-    }
-    for (int_t i = 0; i < std::min(y, ldin); i++) {
-        for (int_t j = 0; j < std::min(x, ldout); j++) {
-            out[(size_t)i * ldout + j] = in[(size_t)j * ldin + i];
-        }
-    }
-#endif
 }
 
 template <OrderMajor Order, typename T, typename Alloc1>

@@ -11,11 +11,9 @@
 #include <Einsums/Concepts/SmartPointer.hpp>
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
-#if !defined(EINSUMS_WINDOWS)
-#    include <Einsums/HPTT/HPTT.hpp>
-#    include <Einsums/HPTT/HPTTTypes.hpp>
-#    include <Einsums/HPTT/Transpose.hpp>
-#endif
+#include <Einsums/HPTT/HPTT.hpp>
+#include <Einsums/HPTT/HPTTTypes.hpp>
+#include <Einsums/HPTT/Transpose.hpp>
 #include <Einsums/Iterator/Enumerate.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile.hpp>
@@ -30,7 +28,6 @@
 
 namespace einsums::tensor_algebra {
 
-#if !defined(EINSUMS_WINDOWS)
 namespace detail {
 
 template <bool ConjA = false, typename T, typename... CIndices, typename... AIndices>
@@ -310,7 +307,6 @@ void permute(T beta, std::string const &C_indices, einsums::detail::TensorImpl<T
 }
 
 } // namespace detail
-#endif
 
 /**
  * @brief Permutes the elements of a tensor and puts it into an output tensor.
@@ -366,12 +362,9 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
         }
     });
 
-#if !defined(EINSUMS_WINDOWS)
     if (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<CType>) {
         detail::permute<ConjA>(C_prefactor, C_indices, &C->impl(), A_prefactor, A_indices, A.impl());
-    } else
-#endif
-        if constexpr (std::is_same_v<decltype(A_indices), decltype(C_indices)> && !(ConjA && IsComplexV<T>)) {
+    } else if constexpr (std::is_same_v<decltype(A_indices), decltype(C_indices)> && !(ConjA && IsComplexV<T>)) {
         // If the prefactor is zero, set the tensor to zero. This avoids NaNs.
         if (C_prefactor == T{0.0}) {
             *C = T{0.0};
@@ -411,8 +404,6 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
     }
 }
 
-#if !defined(EINSUMS_WINDOWS)
-// The plan-compilation API is HPTT-backed and unavailable on Windows.
 /**
  * Compiles a permutation so that it can be used multiple times.
  *
@@ -458,7 +449,6 @@ template <CoreTensorConcept AType, CoreTensorConcept CType>
 void permute(CType *C, AType const &A, std::shared_ptr<hptt::Transpose<typename AType::ValueType>> plan) {
     detail::permute(&C->impl(), A.impl(), plan);
 }
-#endif
 
 // Sort with default values, no smart pointers
 /**
@@ -516,7 +506,6 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
     }
 }
 
-#if !defined(EINSUMS_WINDOWS) // HPTT plan API unavailable on Windows
 template <bool ConjA = false, CoreTensorConcept AType, CoreTensorConcept CType, typename... CIndices, typename... AIndices>
     requires requires {
         requires sizeof...(CIndices) == sizeof...(AIndices);
@@ -529,7 +518,6 @@ std::shared_ptr<hptt::Transpose<typename AType::ValueType>> compile_permute(std:
                                                                             hptt::SelectionMethod method = hptt::ESTIMATE) {
     return compile_permute(0.0, C_indices, C, 1.0, A_indices, A, method);
 }
-#endif
 
 /**
  * @brief Finds the tile grid dimensions for the requested indices.

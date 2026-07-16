@@ -23,10 +23,7 @@ set(TensorAlgebraHeaders
     Einsums/TensorAlgebra/Detail/Utilities.hpp
 )
 
-if(NOT WIN32)
-  set(TensorAlgebraSources Permute.cpp)
-  set(EXTRA_TENSOR_ALGEBRA_DEPENDENCIES Einsums_HPTT)
-endif()
+set(TensorAlgebraSources Permute.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -46,6 +43,6 @@ einsums_add_module(
     Einsums_Tensor
     Einsums_TensorUtilities
     Einsums_PackedGemm
-    ${EXTRA_TENSOR_ALGEBRA_DEPENDENCIES}
+    Einsums_HPTT
   CMAKE_SUBDIRS examples tests
 )

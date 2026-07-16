@@ -507,8 +507,6 @@ void pack_B(T *Bp, T const *B_data, PackingPlan const &plan, int64_t kc_start, i
 // HPTT-accelerated transpose (cache-blocked, SIMD-optimized)
 // ---------------------------------------------------------------------------
 
-#if !defined(EINSUMS_WINDOWS)
-
 EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, float const *src, size_t const *sizes, float *dst, int num_threads,
                                    bool conj = false);
 EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, double const *src, size_t const *sizes, double *dst, int num_threads,
@@ -517,7 +515,5 @@ EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, std::complex<float
                                    int num_threads, bool conj = false);
 EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, std::complex<double> const *src, size_t const *sizes,
                                    std::complex<double> *dst, int num_threads, bool conj = false);
-
-#endif // !EINSUMS_WINDOWS
 
 } // namespace einsums::packed_gemm

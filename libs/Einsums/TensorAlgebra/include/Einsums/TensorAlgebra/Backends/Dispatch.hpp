@@ -889,7 +889,6 @@ constexpr bool einsum_is_sort_gemm_candidate(std::tuple<CIndices...> const &, st
     return true;
 }
 
-#if !defined(EINSUMS_WINDOWS) // HPTT unavailable on Windows
 /**
  * @brief Returns the HPTT selection method from the runtime config.
  *
@@ -913,7 +912,6 @@ inline hptt::SelectionMethod hptt_selection_method() {
     }();
     return method;
 }
-#endif
 
 /**
  * @brief Cached HPTT permute: reuses the plan when tensor dimensions/strides match.
@@ -924,11 +922,6 @@ inline hptt::SelectionMethod hptt_selection_method() {
 template <bool ConjA, typename T, size_t SrcRank, typename SrcType, typename DstType, typename... DstIndices, typename... SrcIndices>
 void cached_permute(std::tuple<DstIndices...> const &dst_indices, DstType *dst, std::tuple<SrcIndices...> const &src_indices,
                     SrcType const &src) {
-#if defined(EINSUMS_WINDOWS)
-    // No HPTT on Windows: no plan to cache. The generic permute is correct,
-    // just slower.
-    permute<ConjA>(T{0}, dst_indices, dst, T{1}, src_indices, src);
-#else
     thread_local Dim<SrcRank>                        prev_dims{};
     thread_local Stride<SrcRank>                     prev_strides{};
     thread_local std::shared_ptr<hptt::Transpose<T>> plan{};
@@ -954,7 +947,6 @@ void cached_permute(std::tuple<DstIndices...> const &dst_indices, DstType *dst, 
         plan->set_output_ptr(dst->data());
     }
     plan->execute();
-#endif
 }
 
 /**
@@ -963,9 +955,6 @@ void cached_permute(std::tuple<DstIndices...> const &dst_indices, DstType *dst, 
 template <bool ConjA, typename T, size_t SrcRank, typename SrcType, typename DstType, typename... DstIndices, typename... SrcIndices>
 void cached_permute(T beta, std::tuple<DstIndices...> const &dst_indices, DstType *dst, T alpha,
                     std::tuple<SrcIndices...> const &src_indices, SrcType const &src) {
-#if defined(EINSUMS_WINDOWS)
-    permute<ConjA>(beta, dst_indices, dst, alpha, src_indices, src);
-#else
     thread_local Dim<SrcRank>                        prev_dims{};
     thread_local Stride<SrcRank>                     prev_strides{};
     thread_local std::shared_ptr<hptt::Transpose<T>> plan{};
@@ -993,7 +982,6 @@ void cached_permute(T beta, std::tuple<DstIndices...> const &dst_indices, DstTyp
         plan->set_beta(beta);
     }
     plan->execute();
-#endif
 }
 
 /**

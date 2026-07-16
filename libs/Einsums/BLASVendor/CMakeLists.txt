@@ -65,21 +65,13 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL x86_64 AND CMAKE_HOST_SYSTEM STREQUAL Linux)
 endif()
 
 include(Einsums_AddModule)
-# HPTT does not build or run on Windows; the transpose helper in Common.hpp
-# falls back to a plain loop there.
-if(WIN32)
-  set(_einsums_blasvendor_hptt_dep)
-else()
-  set(_einsums_blasvendor_hptt_dep Einsums_HPTT)
-endif()
-
 einsums_add_module(
   Einsums BLASVendor
   SOURCES ${BLASVendorSources}
   HEADERS ${BLASVendorHeaders}
   DEPENDENCIES tgt::lapack
         MODULE_DEPENDENCIES Einsums_Assertion Einsums_Config Einsums_Print Einsums_Profile
-                            Einsums_BLASBase ${_einsums_blasvendor_hptt_dep} Einsums_Errors Einsums_Logging Einsums_BufferAllocator
+                            Einsums_BLASBase Einsums_HPTT Einsums_Errors Einsums_Logging Einsums_BufferAllocator
   CMAKE_SUBDIRS examples tests
 )
 

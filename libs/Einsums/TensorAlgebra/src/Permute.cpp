@@ -5,17 +5,16 @@
 
 #include <Einsums/Config.hpp>
 
-#if !defined(EINSUMS_WINDOWS)
-#    include <Einsums/HPTT/HPTT.hpp>
-#    include <Einsums/TensorAlgebra/Detail/HpttPlanCache.hpp>
-#    include <Einsums/TensorAlgebra/Permute.hpp>
+#include <Einsums/HPTT/HPTT.hpp>
+#include <Einsums/TensorAlgebra/Detail/HpttPlanCache.hpp>
+#include <Einsums/TensorAlgebra/Permute.hpp>
 
 // HPTT includes <complex> which defined I as a shorthand for complex values.
 // This causes issues with einsums since we define I to be a useable index
 // for the user. Undefine the one defined in <complex> here.
-#    if defined(I)
-#        undef I
-#    endif
+#if defined(I)
+#    undef I
+#endif
 
 namespace einsums::tensor_algebra::detail {
 
@@ -148,5 +147,3 @@ permute(int const *perm, int const dim, std::complex<double> const alpha, std::c
 }
 
 } // namespace einsums::tensor_algebra::detail
-
-#endif

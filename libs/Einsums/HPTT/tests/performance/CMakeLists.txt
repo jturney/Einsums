@@ -3,28 +3,6 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-# The plan-cache benchmark drives tensor_algebra's HPTT plan internals,
-# which are compiled out on Windows.
-if(WIN32)
-  return()
-endif()
-
-#----------------------------------------------------------------------------------------------
-# Copyright (c) The Einsums Developers. All rights reserved.
-# Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-#----------------------------------------------------------------------------------------------
-
-# The plan-cache benchmark drives tensor_algebra's HPTT plan internals,
-# which are compiled out on Windows.
-if(WIN32)
-  return()
-endif()
-
-#----------------------------------------------------------------------------------------------
-# Copyright (c) The Einsums Developers. All rights reserved.
-# Licensed under the MIT License. See LICENSE.txt in the project root for license information.
-#----------------------------------------------------------------------------------------------
-
 set(HPTTPerfTests
     BenchmarkTranspose.cpp
     BenchmarkPlanCache.cpp

@@ -317,7 +317,6 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 B_flat = tls_B_flat.data();
             }
 
-#if !defined(EINSUMS_WINDOWS)
             // Read ranks at runtime so the path works for both compile-time-rank
             // (Tensor<T, K>) and runtime-rank (RuntimeTensor<T, Alloc>) operands.
             auto rank_of = [](auto const &t) -> int {
@@ -375,9 +374,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 // HPTT-transpose the full tensor(s) into flat M*K / K*N layout once,
                 // then do KC-tiled GEMM over the contiguous flat buffers.
                 int num_threads = 1;
-#    ifdef _OPENMP
+#ifdef _OPENMP
                 num_threads = omp_get_max_threads();
-#    endif
+#endif
 
                 if (!a_zero_copy) {
                     std::vector<int>    perm_a(rank_a_rt);
@@ -428,10 +427,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                                        static_cast<blas_int>(M), beta_k, C_data, static_cast<blas_int>(ldc_row));
                     }
                 }
-            } else
-#endif // !EINSUMS_WINDOWS
-            {
-                // Scalar gather fallback (Windows or non-contiguous tensors).
+            } else {
+                // Scalar gather fallback (non-contiguous tensors).
                 int64_t const KC = std::min(K, blk.KC);
                 for (int64_t kc = 0; kc < K; kc += KC) {
                     int64_t const   kc_len = std::min(KC, K - kc);

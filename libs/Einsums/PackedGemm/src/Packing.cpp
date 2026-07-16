@@ -3,17 +3,14 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/Profile/Profile.hpp>
-
-#if !defined(EINSUMS_WINDOWS)
-#    include <Einsums/HPTT/HPTT.hpp>
 // HPTT includes <complex> which on some platforms defines I as a macro.
 // Undefine it to avoid conflicts with einsums' MAKE_INDEX(I).
-#    if defined(I)
-#        undef I
-#    endif
+#if defined(I)
+#    undef I
 #endif
 
 #include <unordered_set>
@@ -194,8 +191,6 @@ PackingPlan compute_packing_topology(ContractionKey const &key) {
 // HPTT transpose wrappers with plan caching
 // ---------------------------------------------------------------------------
 
-#if !defined(EINSUMS_WINDOWS)
-
 namespace {
 
 struct HpttPlanKey {
@@ -264,7 +259,5 @@ void hptt_transpose(int const *perm, int rank, std::complex<double> const *src, 
     p->set_conj_a(conj);
     p->execute();
 }
-
-#endif // !EINSUMS_WINDOWS
 
 } // namespace einsums::packed_gemm
