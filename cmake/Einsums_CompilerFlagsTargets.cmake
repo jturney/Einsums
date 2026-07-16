@@ -15,12 +15,6 @@ add_library(einsums_public_flags INTERFACE)
 if(MSVC)
   target_compile_options(einsums_private_flags INTERFACE /utf-8)
   target_compile_options(einsums_public_flags INTERFACE /utf-8)
-  # The SIMD module's complex kernels use SSE3+ intrinsics; MSVC-family
-  # compilers default to bare x86-64 (SSE2). AVX2 has been universal on
-  # x86-64 since ~2013 and matches what the packed-GEMM kernels assume.
-  # Revisit if the SIMD module grows a proper runtime feature ladder.
-  target_compile_options(einsums_private_flags INTERFACE /arch:AVX2)
-  target_compile_options(einsums_public_flags INTERFACE /arch:AVX2)
   # The MSVC CRT deprecates standard functions (strerror, getenv, ...) in
   # favor of _s variants; we use the portable ones deliberately.
   target_compile_definitions(einsums_private_flags INTERFACE _CRT_SECURE_NO_WARNINGS)
