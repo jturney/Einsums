@@ -66,9 +66,13 @@ def _mk_maybe_view(arr, use_view, dt, rng):
 
 
 def _rnd(shape, dt, rng):
-    if dt == "complex128":
-        return rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
-    return rng.standard_normal(shape)
+    a = rng.standard_normal(shape)
+    if dt.startswith("complex"):
+        a = a + 1j * rng.standard_normal(shape)
+    # Cast to the target dtype so the oracle and the tensor computation see
+    # bit-identical inputs (otherwise 32-bit runs compare a float32 result
+    # against a float64-input oracle and eat the input-rounding difference).
+    return a.astype(dt)
 
 
 @st.composite
@@ -124,7 +128,7 @@ def _einsum_problem(draw):
     alias_ab = draw(st.booleans()) and not any(x in c_idx and a_idx.count(x) != b_idx.count(x) for x in set(a_idx + b_idx))
     if alias_ab:
         b_idx = list(a_idx)
-    dt = draw(st.sampled_from(["float64", "complex128"]))
+    dt = draw(st.sampled_from(["float64", "complex128", "float32", "complex64"]))
     # Complex dtypes may carry COMPLEX prefactors (stored as PrefactorScalar,
     # a variant type - no narrowing through capture/replay).
     if dt == "complex128":
@@ -180,7 +184,8 @@ def test_hyp_einsum_diff(prob):
         if passes:
             g.apply(cg.default_pass_manager())
         g.execute()
+    rt, at = (2e-3, 1e-4) if dt in ("float32", "complex64") else (1e-9, 1e-9)
     np.testing.assert_allclose(
-        np.asarray(Ct), oracle, rtol=1e-9, atol=1e-9,
+        np.asarray(Ct), oracle, rtol=rt, atol=at,
         err_msg=f"einsums '{es_spec}' dt={dt} c_pf={c_pf} ab_pf={ab_pf} "
                 f"view_a={view_a} view_b={view_b} passes={passes} eager={eager} extents={extent}")

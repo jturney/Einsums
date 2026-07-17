@@ -22,9 +22,13 @@ from hypothesis import strategies as st
 
 import einsums
 
-_TRT = {np.float64: einsums.TiledRuntimeTensorD, np.complex128: einsums.TiledRuntimeTensorZ}
-_RT = {np.float64: einsums.RuntimeTensorD, np.complex128: einsums.RuntimeTensorZ}
-_REAL_RT = {np.float64: einsums.RuntimeTensorD, np.complex128: einsums.RuntimeTensorD}
+_TRT = {np.float64: einsums.TiledRuntimeTensorD, np.complex128: einsums.TiledRuntimeTensorZ,
+        np.float32: einsums.TiledRuntimeTensorF, np.complex64: einsums.TiledRuntimeTensorC}
+_RT = {np.float64: einsums.RuntimeTensorD, np.complex128: einsums.RuntimeTensorZ,
+       np.float32: einsums.RuntimeTensorF, np.complex64: einsums.RuntimeTensorC}
+_REAL_RT = {np.float64: einsums.RuntimeTensorD, np.complex128: einsums.RuntimeTensorD,
+            np.float32: einsums.RuntimeTensorF, np.complex64: einsums.RuntimeTensorF}
+_DT32 = (np.float32, np.complex64)
 _ctr = itertools.count()
 
 
@@ -95,43 +99,59 @@ def _mask(grid, sparse, rng):
     return p
 
 
-@given(op=st.sampled_from(["scale", "axpy", "dot", "norm", "trace", "einsum"]),
-       rows=_axis(), cols=_axis(), kk=_axis(), cplx=st.booleans(),
+@given(op=st.sampled_from(["scale", "axpy", "dot", "norm", "trace", "einsum", "einsum_diag"]),
+       rows=_axis(), cols=_axis(), kk=_axis(),
+       dtype=st.sampled_from([np.float64, np.complex128, np.float32, np.complex64]),
        sparse=st.booleans(), seed=st.integers(0, 2**31 - 1))
 @settings(max_examples=350, deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
-def test_hyp_tiled_diff(op, rows, cols, kk, cplx, sparse, seed):
+def test_hyp_tiled_diff(op, rows, cols, kk, dtype, sparse, seed):
     rng = np.random.default_rng(seed)
-    dt = np.complex128 if cplx else np.float64
+    dt = dtype
+    cplx = dtype in (np.complex128, np.complex64)
+    # 32-bit dtypes carry looser tolerances.
+    rt = 2e-3 if dtype in _DT32 else 1e-6
+    at = 1e-4 if dtype in _DT32 else 1e-8
     R, C, K = sum(rows), sum(cols), sum(kk)
     if op == "scale":
         g = [rows, cols]; pm = _mask(g, sparse, rng); ref = _zero_absent(_rnd((R, C), cplx, rng), g, pm)
         A = _make(dt, g, ref, pm); einsums.linalg.scale(2.0, A)
-        np.testing.assert_allclose(_gather(A, R, C), 2.0 * ref, rtol=1e-7, atol=1e-9)
+        np.testing.assert_allclose(_gather(A, R, C), 2.0 * ref, rtol=rt, atol=at)
     elif op == "axpy":
         g = [rows, cols]; pm = _mask(g, sparse, rng)
         xr = _zero_absent(_rnd((R, C), cplx, rng), g, pm); yr = _zero_absent(_rnd((R, C), cplx, rng), g, pm)
         X = _make(dt, g, xr, pm); Y = _make(dt, g, yr, pm); einsums.linalg.axpy(1.5, X, Y)
-        np.testing.assert_allclose(_gather(Y, R, C), yr + 1.5 * xr, rtol=1e-7, atol=1e-9)
+        np.testing.assert_allclose(_gather(Y, R, C), yr + 1.5 * xr, rtol=rt, atol=at)
     elif op == "dot":
         g = [rows, cols]; pmx = _mask(g, sparse, rng); pmy = _mask(g, sparse, rng)
         xr = _zero_absent(_rnd((R, C), cplx, rng), g, pmx); yr = _zero_absent(_rnd((R, C), cplx, rng), g, pmy)
         X = _make(dt, g, xr, pmx); Y = _make(dt, g, yr, pmy); res = _RT[dt]("r", [1]); einsums.linalg.dot(res, X, Y)
-        np.testing.assert_allclose(np.asarray(res).ravel()[0], np.sum(xr * yr), rtol=1e-6, atol=1e-8)
+        np.testing.assert_allclose(np.asarray(res).ravel()[0], np.sum(xr * yr), rtol=rt, atol=at)
     elif op == "norm":
         g = [rows, cols]; pm = _mask(g, sparse, rng); xr = _zero_absent(_rnd((R, C), cplx, rng), g, pm)
         X = _make(dt, g, xr, pm); res = _REAL_RT[dt]("r", [1]); einsums.linalg.norm(res, einsums.linalg.Norm.FROBENIUS, X)
-        np.testing.assert_allclose(np.asarray(res).ravel()[0], np.linalg.norm(xr.ravel()), rtol=1e-6, atol=1e-8)
+        np.testing.assert_allclose(np.asarray(res).ravel()[0], np.linalg.norm(xr.ravel()), rtol=rt, atol=at)
     elif op == "trace":
         g = [rows, rows]; pm = _mask(g, sparse, rng); xr = _zero_absent(_rnd((R, R), cplx, rng), g, pm)
         X = _make(dt, g, xr, pm); res = _RT[dt]("r", [1]); einsums.linalg.trace(res, X)
-        np.testing.assert_allclose(np.asarray(res).ravel()[0], np.trace(xr), rtol=1e-6, atol=1e-8)
-    else:  # einsum gemm with (possibly) absent input tiles
+        np.testing.assert_allclose(np.asarray(res).ravel()[0], np.trace(xr), rtol=rt, atol=at)
+    elif op == "einsum":  # einsum gemm with (possibly) absent input tiles
         ga = [rows, kk]; gb = [kk, cols]; pma = _mask(ga, sparse, rng); pmb = _mask(gb, sparse, rng)
-        ar = _zero_absent(_rnd((R, K), cplx, rng), ga, pma); br = _zero_absent(_rnd((K, C), cplx, rng), gb, pmb)
+        ar = _zero_absent(_rnd((R, K), cplx, rng), ga, pma).astype(dt)
+        br = _zero_absent(_rnd((K, C), cplx, rng), gb, pmb).astype(dt)
         A = _make(dt, ga, ar, pma); B = _make(dt, gb, br, pmb)
         Cc = _TRT[np.dtype(dt).type]("C", [rows, cols]); einsums.einsum("ij <- ik ; kj", Cc, A, B)
-        np.testing.assert_allclose(_gather(Cc, R, C), ar @ br, rtol=1e-6, atol=1e-8)
+        np.testing.assert_allclose(_gather(Cc, R, C), ar @ br, rtol=rt, atol=at)
+    else:  # einsum_diag: repeated-letter diagonal outer, C(i,j) = A(i,i)*B(j,j)
+        # Diagonal elements live in the diagonal TILES; sparse masks exercise
+        # absent-tile handling of a repeated-letter (bug-1023 class) spec on
+        # the tiled dispatch path.
+        ga = [rows, rows]; gb = [cols, cols]; pma = _mask(ga, sparse, rng); pmb = _mask(gb, sparse, rng)
+        ar = _zero_absent(_rnd((R, R), cplx, rng), ga, pma).astype(dt)
+        br = _zero_absent(_rnd((C, C), cplx, rng), gb, pmb).astype(dt)
+        A = _make(dt, ga, ar, pma); B = _make(dt, gb, br, pmb)
+        Cc = _TRT[np.dtype(dt).type]("C", [rows, cols]); einsums.einsum("ij <- ii ; jj", Cc, A, B)
+        np.testing.assert_allclose(_gather(Cc, R, C), np.diag(ar)[:, None] * np.diag(br)[None, :], rtol=rt, atol=at)
 
 
 def test_tiled_axpy_materializes_missing_tile():
