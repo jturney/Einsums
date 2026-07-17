@@ -66,7 +66,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool run(Graph &graph) override;
 
     /// Safe on loop bodies / conditional branches: a local rewrite within the
-    /// graph it is handed. See docs/loop_handling_audit.md.
+    /// graph it is handed.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of fold groups rewritten.

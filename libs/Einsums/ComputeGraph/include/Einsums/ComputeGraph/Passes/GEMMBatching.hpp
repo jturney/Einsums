@@ -63,7 +63,7 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
 
     /// Safe on loop bodies / conditional branches: batches sibling GEMMs
     /// within the single graph it's handed (one iteration's worth of
-    /// nodes). See docs/loop_handling_audit.md.
+    /// nodes).
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of batches created this run (one per collapsed group).

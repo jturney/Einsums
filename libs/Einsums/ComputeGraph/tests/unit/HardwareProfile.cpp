@@ -1026,7 +1026,7 @@ TEST_CASE("HardwareProfile - EINSUMS_HARDWARE_PROFILE overrides the built-in tab
 }
 
 TEST_CASE("ContractionPlanning - user-visible interior blocks restructuring", "[ComputeGraph][Passes]") {
-    // bug-1014 (same class as CSE's bug-1010): re-parenthesizing a chain
+    // Regression guard (same class as the CSE redirect defect): re-parenthesizing a chain
     // eliminates the writes to its interior tensors. When an interior is a
     // user tensor - or is read by a node outside the chain - that write is
     // observable and must not be elided. The pass must fall back to
@@ -1062,7 +1062,7 @@ TEST_CASE("ContractionPlanning - user-visible interior blocks restructuring", "[
 
 TEST_CASE("ContractionPlanning - outside reader of interior blocks restructuring", "[ComputeGraph][Passes]") {
     // Even a graph-owned interior must keep its write when a node OUTSIDE
-    // the chain reads it (consumer-bearing variant of bug-1014).
+    // the chain reads it (consumer-bearing variant of the same defect).
     auto A  = create_random_tensor<double>("A", 100, 1);
     auto B  = create_random_tensor<double>("B", 1, 100);
     auto C  = create_random_tensor<double>("C", 100, 1);

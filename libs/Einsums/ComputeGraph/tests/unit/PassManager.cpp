@@ -210,7 +210,7 @@ TEST_CASE("create_default - safe on rank-3 BatchedGemm", "[ComputeGraph][PassMan
 namespace {
 /// A deliberately unsound pass: rotates the first node to the end and vouches
 /// for the order. If that node wrote a tensor a later node reads, the reader
-/// now precedes its writer - the exact bug-1012 shape GEMMBatching produced
+/// now precedes its writer - the exact hazard shape GEMMBatching once produced
 /// by appending its BatchedGemm node.
 struct RotateNodesPass final : cg::OptimizerPass {
     [[nodiscard]] std::string name() const override { return "RotateNodesPass"; }

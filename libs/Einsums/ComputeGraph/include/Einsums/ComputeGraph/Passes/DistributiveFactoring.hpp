@@ -63,7 +63,7 @@ class EINSUMS_EXPORT DistributiveFactoring : public OptimizerPass {
     bool run(Graph &graph) override;
 
     /// Safe on loop bodies / conditional branches: a local factoring
-    /// rewrite within the graph it's handed. See docs/loop_handling_audit.md.
+    /// rewrite within the graph it's handed.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of factoring groups found.

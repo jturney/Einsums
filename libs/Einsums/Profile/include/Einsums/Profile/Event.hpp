@@ -43,7 +43,7 @@ struct Event {
     uint32_t func_id;
     int      line;
 
-    // Hardware counter slots (Phase 2; zeros for now)
+    // Hardware counter slots (future work; zeros for now)
     uint64_t counters[4];
 
     // For Annotate events

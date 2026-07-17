@@ -336,16 +336,16 @@ ensures thread safety since the work-stealing deques are single-producer
 Future: MPI Distribution
 ========================
 
-Phase 2 will add distributed execution across MPI ranks:
+Future work will add distributed execution across MPI ranks:
 
 - ``TaskDescriptor`` with placement hints and data dependencies
 - ``DistributedTaskPool`` that ships tasks to remote ranks
 - ``parallel_reduce_distributed()`` with ``MPI_Allreduce``
 - Execution policy: ``execution::distributed{comm}``
 
-Phase 1 prepares for this by:
+The current design prepares for this by:
 
-- ``WorkerContext.rank`` field (0 in Phase 1)
+- ``WorkerContext.rank`` field (0 until MPI support lands)
 - Value-typed ``TaskHandle`` (serializable for remote)
 - ``parallel_reduce`` combiner takes ``const&`` (MPI compatible)
 

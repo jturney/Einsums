@@ -239,7 +239,7 @@ TEST_CASE("LoopInvariantHoisting still opts out (manages its own descent)", "[Co
 // ── Per-pass recursion-policy contract ───────────────────────────────────
 // Locks in which passes opt into PassManager auto-recursion. A pass that
 // flips this accidentally (or a new pass that picks the wrong default)
-// trips this test. See docs/loop_handling_audit.md for the rationale per
+// trips this test.
 // pass.
 
 TEST_CASE("Recursion policy - safe local-rewrite passes opt in", "[ComputeGraph][Recursion][Policy]") {
@@ -268,7 +268,7 @@ TEST_CASE("Recursion policy - safe local-rewrite passes opt in", "[ComputeGraph]
     // classes (RAW/WAW/WAR) with view-alias resolution + effective_io, so the
     // memory-aware sort no longer drops the WAR edges that broke the SCF
     // body's snapshot+recompute sequence. Guarded by the fuzzer's loop-body
-    // "Reorder bait" patterns. See Reorder.hpp / docs/loop_handling_audit.md.
+    // "Reorder bait" patterns.
     CHECK(cg::passes::Reorder{}.recurse_into_subgraphs());
 }
 

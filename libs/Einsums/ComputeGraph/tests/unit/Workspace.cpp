@@ -561,7 +561,7 @@ TEST_CASE("cg::run does build + run in one expression", "[ComputeGraph][Facade]"
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Loop-aware Materialization (Step 2 of loop_handling_audit.md)
+// Loop-aware Materialization
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TEST_CASE("Materialization hoists workspace tensors used inside a loop body", "[ComputeGraph][Materialization][Loop]") {

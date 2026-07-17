@@ -50,7 +50,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// ``axpby(1,H,0,F)`` and ``axpby(1,H,0,sum_HF)``, where F and sum_HF
     /// then diverge). Recursing exposed this on the SCF example. Until CSE
     /// gains a write-once precondition on the merged output it must not run
-    /// on bodies. See docs/loop_handling_audit.md.
+    /// on bodies.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
 
     /**

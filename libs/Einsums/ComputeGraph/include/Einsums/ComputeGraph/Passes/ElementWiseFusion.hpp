@@ -38,7 +38,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Safe on loop bodies / conditional branches: a local fusion of
     /// adjacent element-wise ops within the graph it's handed.
-    /// See docs/loop_handling_audit.md.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     APIARY_EXPOSE APIARY_GETTER("num_fused") [[nodiscard]] size_t num_fused() const { return _num_fused; }

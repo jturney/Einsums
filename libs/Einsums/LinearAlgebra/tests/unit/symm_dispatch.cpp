@@ -4,7 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 /// @file symm_dispatch.cpp
-/// @brief Phase 2 tests for symmetry-aware gemm dispatch. Each test constructs
+/// @brief Tests for symmetry-aware gemm dispatch. Each test constructs
 /// a symmetric/Hermitian input, runs gemm both with and without the symmetry
 /// descriptor attached, and verifies the results agree to within tolerance.
 

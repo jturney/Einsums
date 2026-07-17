@@ -355,7 +355,7 @@ TEST_CASE("PermuteFusion: fused graph is replayable", "[ComputeGraph][Optimizer]
 }
 
 TEST_CASE("PermuteFusion: fused einsum output feeding a downstream consumer stays correct", "[ComputeGraph][Optimizer][PermuteFusion]") {
-    // Consumer-bearing topology (bug-1012 class): after the permute is
+    // Consumer-bearing topology (node-position hazard): after the permute is
     // absorbed, the rewritten einsum must remain positioned before the gemm
     // that reads its output.
     auto A = create_random_tensor<double>("A", 3, 4);

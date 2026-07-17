@@ -5,7 +5,7 @@
 #  Copyright (c) The Einsums Developers. All rights reserved.
 #  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 # ----------------------------------------------------------------------------------------------
-"""Captured-node parity for the non-einsum coverage-audit gaps.
+"""Captured-node parity for operation edge cases previously tested only eagerly.
 
 Each test drives an operation through graph capture with the dtype/view/
 dimension class that was previously tested only eagerly, comparing against a
@@ -72,8 +72,7 @@ def test_heev_in_graph_capture(dtype):
 @pytest.mark.parametrize("dtype", COMPLEX_DTYPES)
 def test_heev_on_view_in_graph_capture(dtype):
     # Hermitian sub-block of a larger tensor through cg.view - exercises the
-    # RuntimeTensorView heev binding (added after the audit pinned its
-    # absence) and the captured node's strided-input path.
+    # RuntimeTensorView heev binding (previously unbound) and the captured node's strided-input path.
     n, big = 4, 6
     rng = np.random.default_rng(12)
     B0 = _rand((big, big), dtype, rng)
@@ -235,7 +234,7 @@ def test_gemv_on_permuted_view_in_capture(dtype):
 def test_syev_on_permuted_view_in_capture(dtype):
     # A symmetric matrix through a permuted (transposed) view is still
     # symmetric; drives the captured syev node's RuntimeTensorView binding
-    # (added after the audit pinned its absence) with non-unit column stride.
+    # (previously unbound) with non-unit column stride.
     rng = np.random.default_rng(20)
     S0 = _rand((4, 4), dtype, rng)
     S0 = ((S0 + S0.T) / 2.0).astype(dtype)

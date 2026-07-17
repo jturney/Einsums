@@ -5,7 +5,7 @@
 
 /// @file Symmetry.cpp
 /// @brief Phase 1 tests for SymmetryDescriptor + Tensor::{set_symmetry,
-/// symmetrize,check_symmetry}. Phase 2 will add BLAS dispatch tests.
+/// symmetrize,check_symmetry}. Future work: BLAS dispatch tests.
 
 #include <Einsums/Tensor/SymmetryOps.hpp>
 #include <Einsums/Tensor/Tensor.hpp>

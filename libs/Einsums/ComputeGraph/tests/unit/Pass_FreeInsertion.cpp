@@ -5,7 +5,7 @@
 
 /// @file Pass_FreeInsertion.cpp
 /// @brief Tests for the FreeInsertion pass, including loop-aware behavior
-///        (Step 3 of loop_handling_audit.md): a body-resident intermediate
+///       : a body-resident intermediate
 ///        must be freed once *after* the owning loop, never inside the body.
 
 #include <Einsums/ComputeGraph.hpp>

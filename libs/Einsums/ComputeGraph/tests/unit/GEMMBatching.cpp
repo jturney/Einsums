@@ -422,7 +422,7 @@ TEST_CASE("GEMMBatching - profitability gate still batches small GEMMs", "[Compu
 }
 
 TEST_CASE("GEMMBatching - batched node placed before consumers of member outputs", "[ComputeGraph][GEMMBatching]") {
-    // bug-1012: the pass used to append the BatchedGemm at the end of the node
+    // Regression guard: the pass used to append the BatchedGemm at the end of the node
     // list. Position is program order in this IR, so a downstream consumer of
     // a member's output was then legally scheduled BEFORE the batch and read a
     // stale buffer. Two identical contractions plus a gemm consuming the

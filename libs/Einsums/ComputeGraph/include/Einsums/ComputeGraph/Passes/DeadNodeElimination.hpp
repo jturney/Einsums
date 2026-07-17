@@ -38,7 +38,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// run() treats any tensor referenced by a descendant sub-graph as
     /// live (via Graph::collect_subtree_referenced_ptrs), so a producer
     /// feeding only a nested loop is never eliminated. See
-    /// docs/loop_handling_audit.md.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of nodes eliminated in the last run.

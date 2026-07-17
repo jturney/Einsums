@@ -43,7 +43,6 @@ class EINSUMS_EXPORT TransferInsertion : public OptimizerPass {
     /// before each GPU op and D2H after, making the body self-contained.
     /// It re-transfers loop-invariant inputs each iteration; hoisting those
     /// before the loop is a later optimization. See
-    /// docs/loop_handling_audit.md.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of transfer nodes inserted in the last run.

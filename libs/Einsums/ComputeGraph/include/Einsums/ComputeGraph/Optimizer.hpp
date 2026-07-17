@@ -80,9 +80,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * liveness, ConstantFolding iteration-variance check, Reorder
      * boundary respect) must also keep this ``false`` until they grow the
      * required cross-graph reasoning.
-     *
-     * See ``libs/Einsums/ComputeGraph/docs/loop_handling_audit.md`` for
-     * the per-pass plan.
      */
     [[nodiscard]] virtual bool recurse_into_subgraphs() const { return false; }
 

@@ -12,7 +12,7 @@ mutable-output ops, or Reorder violating a loop-carried anti-dependency) makes
 the SCF diverge, which small synthetic per-pass tests can miss but these
 physical reference energies catch immediately.
 
-See libs/Einsums/ComputeGraph/docs/loop_handling_audit.md.
+
 """
 
 from __future__ import annotations

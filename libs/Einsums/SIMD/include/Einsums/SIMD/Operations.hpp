@@ -515,7 +515,7 @@ EINSUMS_FORCEINLINE Vec<T> operator*(Vec<T> a, Vec<T> b) {
 //   logical shift left / right (immediate count)
 //   compare-equal
 //
-// Skipped (intentionally) in this round:
+// Intentionally not provided here:
 //   stream_store on integers: no observed user; add when needed.
 //   i64 multiply on SSE2: no native instruction; emulation costs more
 //   than scalar fallback for typical kernels. Add later if a user needs it.
@@ -1336,7 +1336,7 @@ EINSUMS_SIMD_INT_BITWISE(uint64_t)
 //
 // The shift count is a non-type template parameter so the intrinsics
 // generated are immediate-form (best codegen). Variable-count shifts are a
-// separate API not added in this round.
+// separate API not added yet.
 //
 // `shift_right` is *logical* (zero-fill on the high bit). Arithmetic shift
 // (sign-extending) is a separate operation we'll add when there's a use.

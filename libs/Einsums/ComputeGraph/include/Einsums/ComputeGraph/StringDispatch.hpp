@@ -337,7 +337,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     std::vector<std::string> const &links = precomputed_links != nullptr ? *precomputed_links : links_storage;
 
     // Zero-extent operands: nothing to contract, but BLAS-style semantics
-    // still apply the output prefactor (bug-1024). An empty C is a pure
+    // still apply the output prefactor. An empty C is a pure
     // no-op; an empty input with a non-empty C (zero-extent link or trace
     // letter) means C = c_pf * C, with c_pf == 0 assigning zero rather than
     // multiplying so stale NaNs never survive. Handled here once so no
@@ -415,7 +415,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // Repeated letters within one operand ('ij <- ii ; jj') are diagonal
     // accesses. Every fast path below classifies indices assuming each
     // letter appears at most once per operand - the outer-product/GER
-    // routes silently computed wrong values for these specs (bug-1023).
+    // routes silently computed wrong values for these specs.
     // The generic loop above is the only repeat-aware path; route there.
     auto const has_repeated_letter = [](std::vector<std::string> const &idx) {
         for (size_t p = 1; p < idx.size(); p++) {

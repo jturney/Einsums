@@ -786,7 +786,7 @@ def check_program_raises(prog, m_arrays, v_arrays, t_arrays, label):
     "this case cycles Sequential+OpenMP+Dataflow executors in one process via "
     "check_program_raises (a fuzz-only pattern; real callers pick one executor). "
     "Surfaced on Linux gcc+openblas CI as a mid-pytest subprocess abort. Tracked in "
-    "loop_handling_audit.md alongside the control-flow variant."
+    "alongside the control-flow variant."
 )
 @pytest.mark.parametrize("seed", range(120))
 def test_fuzz_executor_propagates_exception(seed):
@@ -800,7 +800,7 @@ def test_fuzz_executor_propagates_exception(seed):
     "single-threaded, so a control-flow body's BLAS no longer opens a libomp region "
     "from a worker thread). What remains is a separate, intermittent thread::join "
     "EDEADLK that only triggers when this case cycles seq+omp+df in one process — a "
-    "fuzz-only pattern; real callers pick one executor. Tracked in loop_handling_audit.md."
+    "fuzz-only pattern; real callers pick one executor."
 )
 @pytest.mark.parametrize("seed", range(80))
 def test_fuzz_executor_propagates_exception_control_flow(seed):
@@ -1601,7 +1601,7 @@ def test_fuzz_pipeline(seed, dtype):
 
 # ══════════════════════════════════════════════════════════════════════════
 # Deliberate GEMMBatching attack: identical batchable contractions plus a
-# consumer. bug-1012 was found here only by ACCIDENT (the cse_redundant
+# consumer. That defect was found here only by ACCIDENT (the cse_redundant
 # generator produced the shape as a side effect of the CSE user-visible
 # guard); this generator emits it on purpose so batch PLACEMENT stays probed
 # as the pass evolves.
@@ -1613,7 +1613,7 @@ def test_fuzz_gemm_batching_with_consumers(seed):
     """N identical (batchable) contractions into distinct user-visible
     outputs, then a consumer reading a randomly chosen member's output, and
     optionally a second consumer of another member. GEMMBatching must place
-    the fused gemm_batch node BEFORE every consumer (bug-1012: it used to
+    the fused gemm_batch node BEFORE every consumer (regression: it used to
     append, and position is program order). Full-buffer differential: every
     output is written by the batch, so nothing is dead."""
     rng = np.random.default_rng(130_000 + seed)

@@ -208,7 +208,7 @@ def test_cse_does_not_merge_scale_with_different_factors():
 def test_cse_then_dead_node_elimination_composition():
     """Run CSE, verify shrink; then run DNE to confirm composition works.
     The duplicate writes a graph-owned intermediate: CSE never elides writes
-    to user-visible tensors (bug-1010)."""
+    to user-visible tensors."""
     A = einsums.create_random_tensor("A", [4, 3])
     B = einsums.create_random_tensor("B", [3, 5])
     C = einsums.create_zero_tensor("C", [4, 5])

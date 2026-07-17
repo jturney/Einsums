@@ -6,7 +6,7 @@
 #pragma once
 
 /// @file SymmetryDispatch.hpp
-/// @brief Phase 2 of the symmetry plan: route rank-2 BLAS calls through the
+/// @brief Symmetry-aware dispatch: route rank-2 BLAS calls through the
 /// specialized kernels (``symm``/``hemm``) when the operand carries a
 /// matching ``SymmetryDescriptor``.
 ///

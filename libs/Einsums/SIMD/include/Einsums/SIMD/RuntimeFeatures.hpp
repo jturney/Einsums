@@ -32,7 +32,7 @@ namespace einsums::simd {
  * On non-x86, non-aarch64 targets every field is false; such targets run the
  * baseline (scalar) code path.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 struct CpuFeatures {
     // ---- x86 ----
@@ -86,7 +86,7 @@ struct CpuFeatures {
  *
  * @return A reference to the cached feature set.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 EINSUMS_EXPORT CpuFeatures const &cpu_features();
 
@@ -113,7 +113,7 @@ EINSUMS_EXPORT CpuFeatures const &cpu_features();
  * value strictly implies every feature of the smaller ones, so ordinary
  * comparison operators express "at least" relationships.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 enum class InstructionSet : std::uint8_t {
     Baseline = 0, ///< Toolchain default target: SSE2 on x86-64, NEON on aarch64.
@@ -129,7 +129,7 @@ enum class InstructionSet : std::uint8_t {
  *
  * @return A static string; never nullptr.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 EINSUMS_EXPORT char const *to_string(InstructionSet set);
 
@@ -145,7 +145,7 @@ EINSUMS_EXPORT char const *to_string(InstructionSet set);
  *
  * @return The rung, or std::nullopt if the spelling is not recognized.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 EINSUMS_EXPORT std::optional<InstructionSet> parse_instruction_set(std::string_view name);
 
@@ -161,7 +161,7 @@ EINSUMS_EXPORT std::optional<InstructionSet> parse_instruction_set(std::string_v
  *
  * @return The highest rung whose complete feature list is present.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 EINSUMS_EXPORT InstructionSet highest_supported(CpuFeatures const &features);
 
@@ -181,7 +181,7 @@ EINSUMS_EXPORT InstructionSet highest_supported(CpuFeatures const &features);
  *
  * @return The rung to dispatch to.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 EINSUMS_EXPORT InstructionSet resolve_arch(CpuFeatures const &features, std::optional<std::string_view> override_name);
 
@@ -197,7 +197,7 @@ EINSUMS_EXPORT InstructionSet resolve_arch(CpuFeatures const &features, std::opt
  *
  * @return The cached rung.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 EINSUMS_EXPORT InstructionSet selected_arch();
 
@@ -223,7 +223,7 @@ EINSUMS_EXPORT InstructionSet selected_arch();
  *
  * @return The entry point to call; never nullptr.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 template <typename F>
 F select(F baseline, F v2 = nullptr, F v3 = nullptr, F v4 = nullptr) {

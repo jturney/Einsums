@@ -37,8 +37,7 @@ class EINSUMS_EXPORT TransferElimination : public OptimizerPass {
 
     /// Recurse into loop bodies / conditional branches. Per-graph cleanup
     /// of redundant transfers within each body (its existing is_loop_tensor
-    /// pin keeps tensors needed by a nested loop from being evicted). See
-    /// docs/loop_handling_audit.md.
+    /// pin keeps tensors needed by a nested loop from being evicted).
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of transfer nodes removed in the last run.

@@ -106,7 +106,7 @@ TEST_CASE("parse_einsum_spec - arrow notation, numbered indices", "[ComputeGraph
 }
 
 // Mixed delimiters: a comma-less operand alongside comma'd operands must be
-// char-split per operand, not mis-read as one multi-char index (bug-1026).
+// char-split per operand, not mis-read as one multi-char index.
 TEST_CASE("parse_einsum_spec - mixed comma/no-comma operands", "[ComputeGraph][EinsumSpec]") {
     SECTION("comma-less output, comma'd inputs") {
         auto result = parse_einsum_spec("ijab <- Q,a,i,j,f ; Q,b,f");

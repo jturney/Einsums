@@ -11,7 +11,7 @@ the captured-graph SCF (a loop) followed by the captured-graph MP2 correction
 MP2 total energies against reference values, a whole-pipeline guard against
 optimization passes corrupting either graph.
 
-See libs/Einsums/ComputeGraph/docs/loop_handling_audit.md.
+
 """
 
 from __future__ import annotations

@@ -8,10 +8,10 @@
 ///        mirror (test_pass_linear_combination_contraction_folding_python.py);
 ///        this file pins two things Python cannot reach:
 ///        - the consumer-bearing topology, where the fused Custom node's
-///          PLACEMENT is load-bearing (the bug-1012 class - position is
+///          PLACEMENT is load-bearing (the node-position hazard - position is
 ///          program order in this IR), and
 ///        - statically-typed Tensor<T, Rank> captures, which the fused
-///          executor must NOT touch (bug-1015: it casts the user operands to
+///          executor must NOT touch (it casts the user operands to
 ///          GeneralRuntimeTensor<T>, so folding a typed capture was type
 ///          confusion and a segfault).
 
@@ -96,7 +96,7 @@ TEST_CASE("LCCF - folded output feeding a downstream consumer stays correct", "[
 }
 
 TEST_CASE("LCCF - statically-typed captures are not folded (and stay correct)", "[ComputeGraph][Passes][LCCF]") {
-    // bug-1015: the fused executor casts the user operands to
+    // Regression guard: the fused executor casts the user operands to
     // GeneralRuntimeTensor<T>. Folding a Tensor<T, Rank> capture was type
     // confusion (segfault in the fused axpy). The pass must skip these and
     // the unfused graph must still execute correctly.

@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Tier-B (B1) coverage: cg::einsum over TiledRuntimeTensor operands. The whole
+// Coverage: cg::einsum over TiledRuntimeTensor operands. The whole
 // tiled tensor becomes a graph operand; the contraction walks the tile grid and
 // composes dense per-tile einsums. Tests cover eager + captured execution, the
 // non-symmetric (off-diagonal/rectangular) sparsity with infer-and-create

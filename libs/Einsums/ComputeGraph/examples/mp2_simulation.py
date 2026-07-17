@@ -296,7 +296,7 @@ if __name__ == "__main__":
     # The expected energies are asserted so the example doubles as a
     # correctness regression test — a graph-optimization bug that corrupts
     # the captured SCF/MP2 would change these, which a plain exit-code check
-    # would miss. See libs/Einsums/ComputeGraph/docs/loop_handling_audit.md.
+    # would miss.
     cases = [
         (_h2_sto3g(),       "E_HF ≈ −1.117 Ha,  E_MP2 ≈ −1.130 Ha", -1.1167529403, -1.1299033127),
         (_heh_plus_sto3g(), "E_HF ≈ −2.86 Ha,  E_MP2 ≈ −2.87 Ha",   -2.8605882865, -2.8751351018),

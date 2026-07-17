@@ -272,7 +272,7 @@ if __name__ == "__main__":
     # correctness regression test — a bad optimization pass that silently
     # corrupts the captured graph (e.g. CSE merging two distinct
     # mutable-output ops) makes the run *diverge*, which a plain exit-code
-    # check would miss. See libs/Einsums/ComputeGraph/docs/loop_handling_audit.md.
+    # check would miss.
     cases = [
         (_h2_sto3g(),       "-1.117 Ha (Szabo & Ostlund)",          -1.1167529403),
         (_heh_plus_sto3g(), "≈ -2.84 Ha (HeH+/STO-3G literature)",  -2.8605882865),

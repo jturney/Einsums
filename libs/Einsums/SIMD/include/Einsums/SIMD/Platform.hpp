@@ -84,7 +84,7 @@ inline constexpr bool has_avx512 =
 //     AVX-512 family. These chips define `__AVX512F__` *and* the
 //     AVX-10/512 macros, so they already hit the existing AVX-512 tier.
 //
-// Future enhancement (not in this round): on AVX-10/256-only chips, we
+// Future enhancement: on AVX-10/256-only chips, we
 // could opt into the EVEX-encoded AVX-512 instruction set at 256-bit
 // width (masked ops, embedded broadcast). The existing AVX2 path is
 // correct as-is; these flags expose the additional capability for

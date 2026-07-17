@@ -17,7 +17,7 @@ namespace einsums::compute_graph::passes {
  * / Hermitian from the inputs' declared descriptors, and if so tags the
  * output ``TensorHandle`` and pushes the descriptor back to the backing
  * tensor (so subsequent ``graph.execute()`` benefits from the rank-2 BLAS
- * dispatch added in Phase 2).
+ * dispatch in LinearAlgebra/SymmetryDispatch.hpp).
  *
  * @par Current rules
  * - **Scale**: ``C = α·A`` inherits A's descriptor (scaling preserves symmetry).
@@ -46,7 +46,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// and not written by a child sub-graph (see the InferGuard in run()).
     /// So a body intermediate proven symmetric by a self-contraction gets
     /// tagged per iteration; anything that could be invalidated is left
-    /// untagged. See docs/loop_handling_audit.md.
+    /// untagged.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of tensor handles this pass tagged with an inferred descriptor.

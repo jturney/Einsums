@@ -399,7 +399,7 @@ TEST_CASE("StridedBatchedGemm: replay across multiple execute() calls", "[Comput
 }
 
 TEST_CASE("StridedBatchedGemm: permuted view with transposed slice falls through", "[ComputeGraph][StridedBatchedGemm]") {
-    // bug-1013: a permute_view keeps its parent's storage-order flag but
+    // Regression guard: a permute_view keeps its parent's storage-order flag but
     // presents reordered strides. A view of (L, J, I) presented as (J, L, I)
     // keeps the batch axis outermost - so is_contiguous(), is_column_major(),
     // and the batch-suffix check all passed - but each 2D slice is TRANSPOSED

@@ -108,7 +108,7 @@ bool run_pass_recursive(OptimizerPass &pass, Graph &graph) {
     return modified;
 }
 
-/// bug-1012 class guard. Position is program order in this IR: the hazard
+/// Node-position hazard guard. Position is program order in this IR: the hazard
 /// scan in topological_sort treats a read that appears before a write as a
 /// legitimate WAR, so a pass that appends or moves a WRITER past a surviving
 /// reader silently changes which value that reader observes - the reader now

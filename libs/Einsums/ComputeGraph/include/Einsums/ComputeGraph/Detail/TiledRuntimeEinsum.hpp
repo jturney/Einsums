@@ -23,7 +23,7 @@ inline constexpr bool any_tiled_v =
     IsTiledTensorV<std::remove_cvref_t<AType>> || IsTiledTensorV<std::remove_cvref_t<BType>> || IsTiledTensorV<std::remove_cvref_t<CType>>;
 
 /**
- * @brief Tier-B (B1) tiled einsum: compose dense per-tile contractions over a tile grid.
+ * @brief Tiled einsum: compose dense per-tile contractions over a tile grid.
  *
  * Runtime-rank analogue of TensorAlgebra's compile-time `TileAlgebra` dispatch.
  * It walks the grid of all unique einsum indices and, for every combination of
@@ -37,7 +37,7 @@ inline constexpr bool any_tiled_v =
  * contraction path exists (infer-and-create), and each per-tile contribution
  * accumulates with `beta == 1` (a freshly created tile starts zeroed).
  *
- * @par Requirements / limitations (B1)
+ * @par Requirements / limitations
  * - All three operands are `TiledRuntimeTensor<T>`; mixed tiled/dense is rejected
  *   by the caller's overload constraint.
  * - Indices shared across operands must share an identical tile partition; a

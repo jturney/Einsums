@@ -49,7 +49,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// (see the materialization guard in run()): a loop body's deferred
     /// workspace tensors are simply skipped rather than executed against
     /// unallocated storage. Loop-carried tensors are never folded because
-    /// they appear in ``written_tensors``. See docs/loop_handling_audit.md.
+    /// they appear in ``written_tensors``.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of nodes folded in the last run.

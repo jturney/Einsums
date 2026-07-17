@@ -4,7 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 // Comprehensive dispatch coverage tests.
-// Fills gaps identified in the test audit: conjugation, prefactors, TensorView,
+// Covers dispatch edge cases: conjugation, prefactors, TensorView,
 // complex types, and float variants across all dispatch paths.
 
 #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>

@@ -52,7 +52,7 @@ TEST_CASE("cg parity - mixed-dtype einsum is not yet expressible through capture
 // ---------------------------------------------------------------------------
 // Gap 2: repeated-index / diagonal einsum (TensorAlgebra/Hadamard.cpp parity)
 //
-// These found bug-1023 on first run (2026-07-17): string_einsum's fast
+// These caught a real defect on their first run: string_einsum's fast
 // paths classified repeated-letter specs as outer products (empty link
 // set) and silently computed wrong values, and even the generic loop
 // stored only the FIRST position of each letter per operand. Fixed by

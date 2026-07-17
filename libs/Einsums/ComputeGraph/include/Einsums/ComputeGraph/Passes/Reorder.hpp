@@ -38,12 +38,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     [[nodiscard]] std::string name() const override { return "Reorder"; }
 
-    /// EXPERIMENT (2026-05-26): recursion re-enabled now that run() encodes all
-    /// three hazard classes (RAW/WAW/WAR) with view-alias resolution + effective_io.
-    /// The original opt-out was because the memory-aware sort dropped WAR and
-    /// reordered the SCF body's E_elec/D/F snapshot+recompute sequence, breaking
-    /// HeH+ convergence. That WAR gap is now fixed. Guarded by the differential
-    /// fuzzer's loop-body "Reorder bait" patterns. See docs/loop_handling_audit.md.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /**

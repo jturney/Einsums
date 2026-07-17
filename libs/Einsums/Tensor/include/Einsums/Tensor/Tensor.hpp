@@ -2403,7 +2403,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
 
     // Views don't inherit symmetry yet (would need reasoning about which
     // slice preserves the parent's invariants). Return null so the
-    // dispatch fast-path falls through to the general kernel. Phase 2+
+    // dispatch fast-path falls through to the general kernel. Future work
     // can populate a descriptor when the view is provably symmetric.
     [[nodiscard]] SymmetryDescriptor const *symmetry() const noexcept { return nullptr; }
     [[nodiscard]] bool                      has_symmetry() const noexcept { return false; }

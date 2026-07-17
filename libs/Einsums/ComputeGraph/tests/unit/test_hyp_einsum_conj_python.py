@@ -31,7 +31,7 @@ _SPECS = [
     ("ij <- ikp ; kpj", "ikp,kpj->ij"),  # multi-K (packed)
     (" <- i ; i", "i,i->"),              # dot
     ("ij <- i ; j", "i,j->ij"),          # outer / ger
-    ("ij <- ii ; jj", "ii,jj->ij"),      # repeated letters: diagonals (bug-1023) x conj
+    ("ij <- ii ; jj", "ii,jj->ij"),      # repeated letters: diagonals x conj
     ("ij <- iij ; jji", "iij,jji->ij"),  # repeated letters in rank-3 operands x conj
     ("j <- iik ; kj", "iik,kj->j"),      # trace letter (self-contraction) x conj
 ]

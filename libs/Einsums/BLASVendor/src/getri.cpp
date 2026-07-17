@@ -26,7 +26,7 @@ auto sgetri(int_t n, float *a, int_t lda, int_t const *ipiv) -> int_t {
 
     // A 0x0 inversion is a no-op. Quick-return per LAPACK semantics: with
     // n == 0 the workspace below would be zero-sized, and OpenBLAS's getri
-    // hangs rather than quick-returning on that input (bug-1026).
+    // hangs rather than quick-returning on that input.
     if (n == 0) {
         return 0;
     }
@@ -43,7 +43,7 @@ auto dgetri(int_t n, double *a, int_t lda, int_t const *ipiv) -> int_t {
 
     // A 0x0 inversion is a no-op. Quick-return per LAPACK semantics: with
     // n == 0 the workspace below would be zero-sized, and OpenBLAS's getri
-    // hangs rather than quick-returning on that input (bug-1026).
+    // hangs rather than quick-returning on that input.
     if (n == 0) {
         return 0;
     }
@@ -60,7 +60,7 @@ auto cgetri(int_t n, std::complex<float> *a, int_t lda, int_t const *ipiv) -> in
 
     // A 0x0 inversion is a no-op. Quick-return per LAPACK semantics: with
     // n == 0 the workspace below would be zero-sized, and OpenBLAS's getri
-    // hangs rather than quick-returning on that input (bug-1026).
+    // hangs rather than quick-returning on that input.
     if (n == 0) {
         return 0;
     }
@@ -77,7 +77,7 @@ auto zgetri(int_t n, std::complex<double> *a, int_t lda, int_t const *ipiv) -> i
 
     // A 0x0 inversion is a no-op. Quick-return per LAPACK semantics: with
     // n == 0 the workspace below would be zero-sized, and OpenBLAS's getri
-    // hangs rather than quick-returning on that input (bug-1026).
+    // hangs rather than quick-returning on that input.
     if (n == 0) {
         return 0;
     }

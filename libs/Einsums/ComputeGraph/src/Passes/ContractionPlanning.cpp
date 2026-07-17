@@ -525,14 +525,12 @@ bool ContractionPlanning::run(Graph &graph) {
             continue;
         }
 
-        // Interior soundness gate (bug-1014, same class as CSE's bug-1010):
         // restructuring re-parenthesizes the chain, so every INTERIOR output
         // (all but the last member's) stops being computed. That is only
         // legal when the interior tensor is a graph-owned intermediate no
         // one else observes: a user-visible tensor keeps whatever it held
         // before execute, and an outside reader would consume a value whose
-        // producer was deleted. Found by the pass program-order validator on
-        // a LIH-hoisted chain whose interior was a user tensor.
+        // producer was deleted.
         {
             std::unordered_set<size_t>   member_indices;
             std::unordered_set<TensorId> interior;

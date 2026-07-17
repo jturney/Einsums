@@ -47,7 +47,6 @@ class EINSUMS_EXPORT PermuteFusion : public OptimizerPass {
 
     /// Safe on loop bodies / conditional branches: a local fold of
     /// Permute→Einsum/Gemm pairs within the graph it's handed.
-    /// See docs/loop_handling_audit.md.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of Permute→Einsum/Gemm pairs detected this run (before safety filtering).

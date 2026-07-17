@@ -397,8 +397,8 @@ else()
   )
 endif()
 
-# MPI distributed computing (optional)
-einsums_option(EINSUMS_WITH_MPI BOOL "Enable MPI distributed computing (default: OFF)" OFF CATEGORY "Build Targets")
+# WIP: MPI distributed computing (optional).
+einsums_option(EINSUMS_WITH_MPI BOOL "Enable MPI distributed computing (default: OFF) WIP" OFF CATEGORY "Build Targets")
 if(EINSUMS_WITH_MPI)
   einsums_add_config_define(EINSUMS_HAVE_MPI)
   find_package(MPI REQUIRED COMPONENTS CXX)
@@ -414,15 +414,7 @@ endif()
 # Utility configuration
 # ##################################################################################################
 
-# TODO Reenable hidden visiblity by default. Will require auditing all types the cross TU boundardies.
 set(EINSUMS_HIDDEN_VISIBILITY_DEFAULT ON)
-# if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
-#   set(EINSUMS_HIDDEN_VISIBILITY_DEFAULT OFF)
-# endif()
-# if(APPLE)
-#   set(EINSUMS_HIDDEN_VISIBILITY_DEFAULT OFF)
-# endif()
-
 einsums_option(
   EINSUMS_WITH_HIDDEN_VISIBILITY
   BOOL

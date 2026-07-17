@@ -270,7 +270,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // The combine executor casts the user operands (shared, non-shared,
         // output) to GeneralRuntimeTensor<T>. Statically-typed Tensor<T, Rank>
         // captures produce the same handle shape, and a blind cast is type
-        // confusion (bug-1015, segfault in the fused axpy). Fold only when
+        // confusion (a segfault in the fused axpy). Fold only when
         // all three really are runtime tensors.
         auto const is_rt = [&](TensorId tid) {
             auto it = tensors.find(tid);

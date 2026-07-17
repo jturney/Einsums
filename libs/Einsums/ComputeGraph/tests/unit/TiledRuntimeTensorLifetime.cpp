@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Tier-A coverage for TiledRuntimeTensor: a runtime-rank, tile-wise sparse
+// Coverage for TiledRuntimeTensor: a runtime-rank, tile-wise sparse
 // tensor that the ComputeGraph can capture for lifecycle orchestration
 // (materialize / release / zero) without understanding its tile structure.
 // These tests exercise the integration seam (make_handle) and the captured

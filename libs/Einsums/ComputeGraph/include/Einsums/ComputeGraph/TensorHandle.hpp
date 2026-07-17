@@ -86,7 +86,7 @@ struct TensorHandle {
     bool                    is_tiled{false};   ///< True if a tile-wise sparse tensor (no single contiguous data() buffer)
     bool                    is_runtime{false}; ///< True if tensor_ptr points at a GeneralRuntimeTensor<T> (passes that cast tensor_ptr to a
                             ///< runtime-tensor type MUST gate on this: statically-typed Tensor<T, Rank> captures pass through
-                            ///< the same handles, and a blind cast is type confusion - see bug-1015)
+                            ///< the same handles, and a blind cast is type confusion)
     bool       is_distributed{false};                 ///< True if this tensor is distributed across ranks
     bool       is_replicated{true};                   ///< True if distributed tensor is replicated on all ranks
     AllocState alloc_state{AllocState::Materialized}; ///< Whether data is allocated (Materialized) or deferred

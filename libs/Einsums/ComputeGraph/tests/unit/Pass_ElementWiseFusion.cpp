@@ -171,7 +171,7 @@ TEST_CASE("ElementWiseFusion - fuses consecutive rank-3 scales", "[ComputeGraph]
 }
 
 TEST_CASE("ElementWiseFusion - fused output feeding a downstream consumer stays correct", "[ComputeGraph][Passes]") {
-    // Consumer-bearing topology (bug-1012 class): the fused node's POSITION
+    // Consumer-bearing topology (node-position hazard): the fused node's POSITION
     // matters because a later gemm reads the scaled tensor. The fused
     // replacement must stay ahead of that reader.
     auto A = create_random_tensor<double>("A", 4, 4);

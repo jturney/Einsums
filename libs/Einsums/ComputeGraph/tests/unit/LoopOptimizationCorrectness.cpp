@@ -5,7 +5,7 @@
 
 /// @file LoopOptimizationCorrectness.cpp
 /// @brief End-to-end numerical-correctness hardening for the loop-aware
-///        optimization passes (loop_handling_audit.md).
+///        optimization passes.
 ///
 /// Every test here builds a ComputeGraph with one or more *loop nodes*
 /// (``cg::Graph::add_loop``) whose bodies use heavy in-place tensor reuse,

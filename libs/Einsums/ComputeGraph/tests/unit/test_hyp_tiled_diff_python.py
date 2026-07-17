@@ -144,7 +144,7 @@ def test_hyp_tiled_diff(op, rows, cols, kk, dtype, sparse, seed):
         np.testing.assert_allclose(_gather(Cc, R, C), ar @ br, rtol=rt, atol=at)
     else:  # einsum_diag: repeated-letter diagonal outer, C(i,j) = A(i,i)*B(j,j)
         # Diagonal elements live in the diagonal TILES; sparse masks exercise
-        # absent-tile handling of a repeated-letter (bug-1023 class) spec on
+        # absent-tile handling of a repeated-letter (diagonal) spec on
         # the tiled dispatch path.
         ga = [rows, rows]; gb = [cols, cols]; pma = _mask(ga, sparse, rng); pmb = _mask(gb, sparse, rng)
         ar = _zero_absent(_rnd((R, R), cplx, rng), ga, pma).astype(dt)

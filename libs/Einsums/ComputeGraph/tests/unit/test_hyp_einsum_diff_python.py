@@ -95,7 +95,7 @@ def _einsum_problem(draw):
     b_idx = draw(st.permutations(batch + kids + nids))
     c_idx = draw(st.permutations(batch + mids + nids))
     # Optionally repeat a letter WITHIN an input operand: 'iik,kj' style
-    # diagonal access (bug-1023 was invisible because specs only ever used
+    # diagonal access (a silent miscompilation was invisible while specs only used
     # distinct letters). np.einsum supports repeated input letters, so the
     # oracle stays valid; repeated OUTPUT letters are not expressible in
     # np.einsum and are covered by the C++ EagerParityGaps suite instead.
@@ -155,9 +155,9 @@ def _einsum_problem(draw):
 @example(prob=(["a", "c"], ["b"], ["a", "b", "c"],
                {"a": 3, "b": 3, "c": 3}, False, "float64", 0.0, 1.0, False, False, True, False))            # graph+passes outer product, non-contiguous output
 @example(prob=(["i", "i"], ["j", "j"], ["i", "j"],
-               {"i": 3, "j": 4}, False, "float64", 0.0, 1.0, False, False, False, False))                   # Hadamard diagonals (bug-1023, graph)
+               {"i": 3, "j": 4}, False, "float64", 0.0, 1.0, False, False, False, False))                   # Hadamard diagonals (regression, graph)
 @example(prob=(["i", "i", "k"], ["k", "j"], ["i", "j"],
-               {"i": 3, "j": 2, "k": 2}, False, "complex128", 1.0, -2.0, False, False, True, False))        # diagonal-contract + passes (bug-1023)
+               {"i": 3, "j": 2, "k": 2}, False, "complex128", 1.0, -2.0, False, False, True, False))        # diagonal-contract + passes (regression)
 def test_hyp_einsum_diff(prob):
     a_idx, b_idx, c_idx, extent, alias_ab, dt, c_pf, ab_pf, view_a, view_b, passes, eager = prob
     rng = np.random.default_rng(0)
