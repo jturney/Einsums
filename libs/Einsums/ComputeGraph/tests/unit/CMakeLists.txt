@@ -58,6 +58,7 @@ set(ComputeGraphTests
     PipelineLoop.cpp
     Rebind.cpp
     RecursionPlumbing.cpp
+    EagerParityGaps.cpp
     RuntimeTensorEinsum.cpp
     RuntimeTensorLAPACK.cpp
     RuntimeTensorOwnership.cpp
