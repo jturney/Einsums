@@ -324,27 +324,6 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     }
     std::vector<std::string> const &links = precomputed_links != nullptr ? *precomputed_links : links_storage;
 
-    // Repeated letters within one operand ('ij <- ii ; jj') are diagonal
-    // accesses. Every fast path below classifies indices assuming each
-    // letter appears at most once per operand - the outer-product/GER
-    // routes silently computed wrong values for these specs (bug-1023).
-    // The generic loop above is the only repeat-aware path; route there.
-    auto const has_repeated_letter = [](std::vector<std::string> const &idx) {
-        for (size_t p = 1; p < idx.size(); p++) {
-            for (size_t q = 0; q < p; q++) {
-                if (idx[p] == idx[q]) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    };
-    if (has_repeated_letter(a_idx) || has_repeated_letter(b_idx) || has_repeated_letter(c_idx)) {
-        ProfileAnnotate("dispatch", "generic_loop_repeated_indices");
-        generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
-        return;
-    }
-
     // Zero-extent operands: nothing to contract, but BLAS-style semantics
     // still apply the output prefactor (bug-1024). An empty C is a pure
     // no-op; an empty input with a non-empty C (zero-extent link or trace
@@ -370,6 +349,58 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         } else if (c_pf != T{1}) {
             linear_algebra::scale(c_pf, C);
         }
+        return;
+    }
+
+    // Output aliasing an input is rejected: contractions read operands while
+    // writing C, so overlap silently corrupts results (the GEMM-shaped case
+    // computed garbage before this check existed). The one provably safe
+    // shape is carved out: when C's index list is IDENTICAL to the aliased
+    // operand's, every element is read exactly once immediately before its
+    // own overwrite (pure elementwise update, e.g. "ij <- ij ; ij" with C
+    // aliasing A). A and B sharing a buffer is always fine - inputs are
+    // read-only. Runs after the zero-size quick-path so the span arithmetic
+    // never sees a zero dimension.
+    {
+        auto const span_of = [](auto const &t) {
+            size_t last = 0;
+            for (size_t d = 0; d < detail::tensor_rank(t); d++) {
+                last += (t.dim(d) - 1) * t.stride(d);
+            }
+            return last + 1;
+        };
+        T const   *c_lo       = C->data();
+        T const   *c_hi       = c_lo + span_of(*C);
+        auto const overlaps_c = [&](auto const &x) {
+            T const *lo = x.data();
+            return lo < c_hi && c_lo < lo + span_of(x);
+        };
+        if ((overlaps_c(A) && a_idx != c_idx) || (overlaps_c(B) && b_idx != c_idx)) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "einsum: output tensor overlaps an input operand. In-place einsum is only supported for pure "
+                                    "elementwise updates (the aliased operand's index list identical to the output's); for this "
+                                    "contraction, pass a separate output tensor or copy the input first.");
+        }
+    }
+
+    // Repeated letters within one operand ('ij <- ii ; jj') are diagonal
+    // accesses. Every fast path below classifies indices assuming each
+    // letter appears at most once per operand - the outer-product/GER
+    // routes silently computed wrong values for these specs (bug-1023).
+    // The generic loop above is the only repeat-aware path; route there.
+    auto const has_repeated_letter = [](std::vector<std::string> const &idx) {
+        for (size_t p = 1; p < idx.size(); p++) {
+            for (size_t q = 0; q < p; q++) {
+                if (idx[p] == idx[q]) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    if (has_repeated_letter(a_idx) || has_repeated_letter(b_idx) || has_repeated_letter(c_idx)) {
+        ProfileAnnotate("dispatch", "generic_loop_repeated_indices");
+        generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
         return;
     }
 

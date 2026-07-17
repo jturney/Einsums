@@ -244,3 +244,60 @@ TEST_CASE("cg parity - #283 non-contiguous outer abcd<-ad;bc", "[ComputeGraph][E
 
     require_close(C_graph, ref);
 }
+
+// ---------------------------------------------------------------------------
+// Output-aliasing policy: C overlapping an input is rejected unless the
+// update is provably elementwise (aliased operand's index list identical to
+// C's). A and B sharing a buffer is always allowed - inputs are read-only.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("cg aliasing - contraction with C as input throws", "[ComputeGraph][EagerParity][aliasing]") {
+    auto C = create_random_tensor<double>("C", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    REQUIRE_THROWS_AS(cg::einsum("ij <- ik ; kj", &C, C, B), std::invalid_argument);
+
+    cg::Graph graph("alias_reject");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, C, B);
+    }
+    REQUIRE_THROWS_AS(graph.execute(), std::invalid_argument);
+}
+
+TEST_CASE("cg aliasing - elementwise in-place update is allowed", "[ComputeGraph][EagerParity][aliasing]") {
+    auto C = create_random_tensor<double>("C", 3, 3);
+    auto D = create_random_tensor<double>("D", 3, 3);
+
+    auto expected = create_zero_tensor<double>("E", 3, 3);
+    for (size_t a = 0; a < 3; ++a)
+        for (size_t b = 0; b < 3; ++b)
+            expected(a, b) = C(a, b) * D(a, b);
+
+    cg::Graph graph("alias_elementwise");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ij ; ij", &C, C, D);
+    }
+    graph.execute();
+
+    require_close(C, expected);
+}
+
+TEST_CASE("cg aliasing - A and B sharing a tensor is allowed", "[ComputeGraph][EagerParity][aliasing]") {
+    auto A = create_random_tensor<double>("A", 3, 3);
+
+    auto expected = create_zero_tensor<double>("E", 3, 3);
+    einsum(Indices{i, j}, &expected, Indices{i, k}, A, Indices{k, j}, A);
+
+    auto      C = create_zero_tensor<double>("C", 3, 3);
+    cg::Graph graph("alias_ab");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, A, A);
+    }
+    graph.execute();
+
+    require_close(C, expected);
+}
