@@ -70,16 +70,14 @@ def test_heev_in_graph_capture(dtype):
 
 
 @pytest.mark.parametrize("dtype", COMPLEX_DTYPES)
-def test_heev_view_operand_is_not_bound(dtype):
-    # FINDING (audit follow-up): the heev python binding has no
-    # RuntimeTensorView overload, so a Hermitian sub-block cannot be
-    # captured directly - unlike the C++ eager path, which covers strided
-    # views (LinearAlgebra/heev.cpp). This assertion pins the current
-    # binding surface; when a view overload is added, replace it with the
-    # sub-block eigvalsh parity check.
+def test_heev_on_view_in_graph_capture(dtype):
+    # Hermitian sub-block of a larger tensor through cg.view - exercises the
+    # RuntimeTensorView heev binding (added after the audit pinned its
+    # absence) and the captured node's strided-input path.
     n, big = 4, 6
     rng = np.random.default_rng(12)
     B0 = _rand((big, big), dtype, rng)
+    B0[1 : 1 + n, 1 : 1 + n] = (B0[1 : 1 + n, 1 : 1 + n] + np.conj(B0[1 : 1 + n, 1 : 1 + n].T)) / 2.0
     real_dtype = "float32" if dtype == "complex64" else "float64"
 
     big_t = _mk(B0, dtype)
@@ -88,8 +86,11 @@ def test_heev_view_operand_is_not_bound(dtype):
     g = cg.Graph(_nm())
     with cg.capture(g):
         Av = cg.view(big_t, [(1, 1 + n), (1, 1 + n)])
-        with pytest.raises(TypeError):
-            einsums.linalg.heev(Av, W, compute_eigenvectors=True)
+        einsums.linalg.heev(Av, W, compute_eigenvectors=True)
+    g.execute()
+
+    expected = np.linalg.eigvalsh(B0[1 : 1 + n, 1 : 1 + n])
+    np.testing.assert_allclose(np.sort(np.asarray(W)), np.sort(expected), rtol=5e-4 if dtype == "complex64" else 1e-9)
 
 
 # ── Gaps 2 & 8: complex direct_product / direct_division / outer_sum ─────────
@@ -231,13 +232,10 @@ def test_gemv_on_permuted_view_in_capture(dtype):
 
 
 @pytest.mark.parametrize("dtype", ("float32", "float64"))
-def test_syev_view_operand_is_not_bound(dtype):
-    # FINDING (same class as heev): the syev python binding has no
-    # RuntimeTensorView overload either, so strided/permuted views cannot
-    # reach the captured syev node - unlike the C++ eager path
-    # (LinearAlgebra/syev.cpp covers Stride{6,2} views). Pins the current
-    # binding surface; replace with the eigvalsh parity check when a view
-    # overload lands.
+def test_syev_on_permuted_view_in_capture(dtype):
+    # A symmetric matrix through a permuted (transposed) view is still
+    # symmetric; drives the captured syev node's RuntimeTensorView binding
+    # (added after the audit pinned its absence) with non-unit column stride.
     rng = np.random.default_rng(20)
     S0 = _rand((4, 4), dtype, rng)
     S0 = ((S0 + S0.T) / 2.0).astype(dtype)
@@ -248,8 +246,10 @@ def test_syev_view_operand_is_not_bound(dtype):
 
     g = cg.Graph(_nm())
     with cg.capture(g):
-        with pytest.raises(TypeError):
-            einsums.linalg.syev(Sv, W, compute_eigenvectors=True)
+        einsums.linalg.syev(Sv, W, compute_eigenvectors=True)
+    g.execute()
+
+    np.testing.assert_allclose(np.sort(np.asarray(W)), np.sort(np.linalg.eigvalsh(S0)), rtol=5e-4 if dtype == "float32" else 1e-9)
 
 
 # ── Gap 7: complex gesv / invert through capture ─────────────────────────────

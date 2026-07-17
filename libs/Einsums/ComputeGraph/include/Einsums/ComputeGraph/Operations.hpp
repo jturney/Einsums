@@ -2742,6 +2742,8 @@ APIARY_MODULE("linalg")
 APIARY_TEMPLATE_KWARGS("compute_eigenvectors")
 APIARY_INSTANTIATE_BOOLS("syev", einsums::GeneralRuntimeTensor<float,  std::allocator<float>>,  einsums::GeneralRuntimeTensor<float,  std::allocator<float>>)
 APIARY_INSTANTIATE_BOOLS("syev", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_BOOLS("syev", einsums::RuntimeTensorView<float>,  einsums::GeneralRuntimeTensor<float,  std::allocator<float>>)
+APIARY_INSTANTIATE_BOOLS("syev", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
     // clang-format on
     void syev(AType *A, WType *W) {
     if (A->rank() != 2 || W->rank() != 1) {
@@ -2864,6 +2866,8 @@ APIARY_MODULE("linalg")
 APIARY_TEMPLATE_KWARGS("compute_eigenvectors")
 APIARY_INSTANTIATE_BOOLS("heev", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<float,  std::allocator<float>>)
 APIARY_INSTANTIATE_BOOLS("heev", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_BOOLS("heev", einsums::RuntimeTensorView<std::complex<float>>,  einsums::GeneralRuntimeTensor<float,  std::allocator<float>>)
+APIARY_INSTANTIATE_BOOLS("heev", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
     // clang-format on
     void heev(AType *A, WType *W) {
     if (A->rank() != 2 || W->rank() != 1) {
