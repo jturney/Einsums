@@ -90,8 +90,25 @@ void sgemm(char transa, char transb, int_t m, int_t n, int_t k, float alpha, flo
            float beta, float *c, int_t ldc) {
     LabeledSection0();
 
-    if (m == 0 || n == 0 || k == 0)
+    if (m == 0 || n == 0)
         return;
+
+    if (k == 0) {
+        // BLAS semantics: an empty contraction still scales the output,
+        // C = beta*C (beta == 0 assigns zero, never propagating stale NaNs).
+        // Handled here because empty A/B legitimately carry ld 0, which
+        // GEMM_CHECK would reject even though no element is read (bug-1024).
+        for (int_t j = 0; j < n; j++) {
+            for (int_t i = 0; i < m; i++) {
+                if (beta == decltype(beta){0}) {
+                    c[static_cast<size_t>(j) * ldc + i] = decltype(beta){0};
+                } else {
+                    c[static_cast<size_t>(j) * ldc + i] *= beta;
+                }
+            }
+        }
+        return;
+    }
 
     GEMM_CHECK(transa, transb, m, n, k, lda, ldb, ldc)
 
@@ -102,8 +119,25 @@ void dgemm(char transa, char transb, int_t m, int_t n, int_t k, double alpha, do
            double beta, double *c, int_t ldc) {
     LabeledSection0();
 
-    if (m == 0 || n == 0 || k == 0)
+    if (m == 0 || n == 0)
         return;
+
+    if (k == 0) {
+        // BLAS semantics: an empty contraction still scales the output,
+        // C = beta*C (beta == 0 assigns zero, never propagating stale NaNs).
+        // Handled here because empty A/B legitimately carry ld 0, which
+        // GEMM_CHECK would reject even though no element is read (bug-1024).
+        for (int_t j = 0; j < n; j++) {
+            for (int_t i = 0; i < m; i++) {
+                if (beta == decltype(beta){0}) {
+                    c[static_cast<size_t>(j) * ldc + i] = decltype(beta){0};
+                } else {
+                    c[static_cast<size_t>(j) * ldc + i] *= beta;
+                }
+            }
+        }
+        return;
+    }
 
     GEMM_CHECK(transa, transb, m, n, k, lda, ldb, ldc)
 
@@ -114,8 +148,25 @@ void cgemm(char transa, char transb, int_t m, int_t n, int_t k, std::complex<flo
            std::complex<float> const *b, int_t ldb, std::complex<float> beta, std::complex<float> *c, int_t ldc) {
     LabeledSection0();
 
-    if (m == 0 || n == 0 || k == 0)
+    if (m == 0 || n == 0)
         return;
+
+    if (k == 0) {
+        // BLAS semantics: an empty contraction still scales the output,
+        // C = beta*C (beta == 0 assigns zero, never propagating stale NaNs).
+        // Handled here because empty A/B legitimately carry ld 0, which
+        // GEMM_CHECK would reject even though no element is read (bug-1024).
+        for (int_t j = 0; j < n; j++) {
+            for (int_t i = 0; i < m; i++) {
+                if (beta == decltype(beta){0}) {
+                    c[static_cast<size_t>(j) * ldc + i] = decltype(beta){0};
+                } else {
+                    c[static_cast<size_t>(j) * ldc + i] *= beta;
+                }
+            }
+        }
+        return;
+    }
 
     GEMM_CHECK(transa, transb, m, n, k, lda, ldb, ldc)
 
@@ -126,8 +177,25 @@ void zgemm(char transa, char transb, int_t m, int_t n, int_t k, std::complex<dou
            std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc) {
     LabeledSection0();
 
-    if (m == 0 || n == 0 || k == 0)
+    if (m == 0 || n == 0)
         return;
+
+    if (k == 0) {
+        // BLAS semantics: an empty contraction still scales the output,
+        // C = beta*C (beta == 0 assigns zero, never propagating stale NaNs).
+        // Handled here because empty A/B legitimately carry ld 0, which
+        // GEMM_CHECK would reject even though no element is read (bug-1024).
+        for (int_t j = 0; j < n; j++) {
+            for (int_t i = 0; i < m; i++) {
+                if (beta == decltype(beta){0}) {
+                    c[static_cast<size_t>(j) * ldc + i] = decltype(beta){0};
+                } else {
+                    c[static_cast<size_t>(j) * ldc + i] *= beta;
+                }
+            }
+        }
+        return;
+    }
 
     GEMM_CHECK(transa, transb, m, n, k, lda, ldb, ldc)
 

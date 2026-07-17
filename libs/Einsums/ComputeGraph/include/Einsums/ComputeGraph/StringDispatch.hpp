@@ -165,6 +165,14 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
         add_index(t, false);
     for (auto const &l : links)
         add_index(l, true);
+    // Letters appearing in only ONE input and not in C (trace letters,
+    // e.g. the doubled i of "j <- iik ; kj") are in neither `targets` nor
+    // `links` (which holds A-and-B letters only). Einsum semantics sum
+    // them; add them as link (summed) indices so their axes iterate.
+    for (auto const &name : a_idx)
+        add_index(name, true);
+    for (auto const &name : b_idx)
+        add_index(name, true);
 
     // Separate into target and link index groups
     std::vector<IndexInfo const *> target_infos, link_infos;
@@ -334,6 +342,34 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     if (has_repeated_letter(a_idx) || has_repeated_letter(b_idx) || has_repeated_letter(c_idx)) {
         ProfileAnnotate("dispatch", "generic_loop_repeated_indices");
         generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
+        return;
+    }
+
+    // Zero-extent operands: nothing to contract, but BLAS-style semantics
+    // still apply the output prefactor (bug-1024). An empty C is a pure
+    // no-op; an empty input with a non-empty C (zero-extent link or trace
+    // letter) means C = c_pf * C, with c_pf == 0 assigning zero rather than
+    // multiplying so stale NaNs never survive. Handled here once so no
+    // fast path (BLAS wrappers, PackedGemm tiling, generic loop) needs its
+    // own empty-tensor bookkeeping.
+    auto const total_size = [](auto const &t) {
+        size_t total = 1;
+        for (size_t d = 0; d < detail::tensor_rank(t); d++) {
+            total *= t.dim(d);
+        }
+        return total;
+    };
+    if (total_size(*C) == 0) {
+        ProfileAnnotate("dispatch", "empty_output_noop");
+        return;
+    }
+    if (total_size(A) == 0 || total_size(B) == 0) {
+        ProfileAnnotate("dispatch", "empty_input_scale_only");
+        if (c_pf == T{0}) {
+            C->zero();
+        } else if (c_pf != T{1}) {
+            linear_algebra::scale(c_pf, C);
+        }
         return;
     }
 

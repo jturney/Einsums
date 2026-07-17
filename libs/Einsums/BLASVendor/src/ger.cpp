@@ -30,6 +30,12 @@ extern void FC_GLOBAL(zgerc, ZGERC)(int_t *, int_t *, std::complex<double> *, st
 }
 
 #define ger_parameter_check(m, n, inc_x, inc_y, lda)                                                                                       \
+    /* Zero-sized update: nothing to do. Quick-return BEFORE the lda check -                                                               \
+       an empty tensor legitimately carries lda 0, which max(1, m) would                                                                   \
+       reject even though no element is ever touched (bug-1025). */                                                                        \
+    if ((m) == 0 || (n) == 0) {                                                                                                            \
+        return;                                                                                                                            \
+    }                                                                                                                                      \
     if ((m) < 0) {                                                                                                                         \
         EINSUMS_THROW_EXCEPTION(std::domain_error, "First parameter (m) in ger call ({}) is less than zero.", m);                          \
     }                                                                                                                                      \
