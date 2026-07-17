@@ -7,24 +7,59 @@
   },
   "configurePresets": [
     {
+      "name": "einsums-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "EINSUMS_WITH_TESTS": "ON",
+        "EINSUMS_WITH_EXAMPLES": "ON"
+      }
+    },
+    {
+      "name": "macos",
+      "displayName": "macOS (conda) + Ninja",
+      "description": "Activate the einsums-dev conda env FIRST (conda activate einsums-dev), then: cmake --preset macos. Configuring without the env caches Apple's SDK Accelerate BLAS (silently wrong float BLAS-1 results) and fails on OpenMP; if that happened, purge with cmake -U '*BLAS*' -U '*LAPACK*' and reconfigure inside the env.",
+      "inherits": "einsums-base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{CONDA_PREFIX}"
+      }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux (conda) + Ninja",
+      "description": "Activate the einsums-dev conda env FIRST (conda activate einsums-dev), then: cmake --preset linux. The env supplies the pinned compilers, BLAS/LAPACK, HDF5, and OpenMP; configuring outside it finds system libraries that CI does not test against.",
+      "inherits": "einsums-base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{CONDA_PREFIX}"
+      }
+    },
+    {
       "name": "windows-clang-cl",
       "displayName": "Windows clang-cl (conda) + Ninja",
       "description": "Activate the conda env first, then configure via devtools/configure_windows.bat (or: cmake -E env --unset=CMAKE_GENERATOR_PLATFORM --unset=CMAKE_GENERATOR_TOOLSET --unset=CMAKE_GENERATOR cmake --preset windows-clang-cl). The unset dance is required because conda-forge's vs2022 activation exports VS-generator settings that Ninja rejects, and CMake treats an empty CMAKE_GENERATOR_PLATFORM as still specified - a preset cannot neutralize it.",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build",
+      "inherits": "einsums-base",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
       },
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_C_COMPILER": "$env{CONDA_PREFIX}/Library/bin/clang-cl.exe",
         "CMAKE_CXX_COMPILER": "$env{CONDA_PREFIX}/Library/bin/clang-cl.exe",
         "CMAKE_PREFIX_PATH": "$env{CONDA_PREFIX}/Library",
         "EINSUMS_BUILD_PYTHON": "OFF",
-        "EINSUMS_WITH_TESTS": "ON",
-        "EINSUMS_WITH_EXAMPLES": "ON",
         "EINSUMS_WITH_BACKTRACES": "OFF"
       },
       "environment": {
@@ -38,11 +73,33 @@
   ],
   "buildPresets": [
     {
+      "name": "macos",
+      "configurePreset": "macos"
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux"
+    },
+    {
       "name": "windows-clang-cl",
       "configurePreset": "windows-clang-cl"
     }
   ],
   "testPresets": [
+    {
+      "name": "macos",
+      "configurePreset": "macos",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
     {
       "name": "windows-clang-cl",
       "configurePreset": "windows-clang-cl",
