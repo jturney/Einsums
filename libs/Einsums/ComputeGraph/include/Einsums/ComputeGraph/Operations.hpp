@@ -4124,10 +4124,11 @@ void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
 /// default to 0 and 1, giving ``C = A op B``, but can be set to
 /// accumulate (``c_pf=1``) or scale.
 ///
-/// Complex dtypes (``RuntimeTensor<complex<T>>``) accept only the
-/// 4-argument form (no explicit prefactors); Graph::create_params still
-/// stores prefactors as doubles internally, which would narrow the
-/// imaginary part out of a complex ``c_pf``/``ab_pf``.
+/// Complex prefactors are fully supported for complex dtypes:
+/// Graph::create_params and the einsum node store PrefactorScalar (a
+/// variant covering float/double/complex<float>/complex<double>), so a
+/// complex ``c_pf``/``ab_pf`` round-trips through capture and replay
+/// without narrowing.
 ///
 /// ``conj_a`` / ``conj_b`` conjugate A / B inside the contraction for complex
 /// dtypes, and are a no-op for real. They conjugate only the elements. A
