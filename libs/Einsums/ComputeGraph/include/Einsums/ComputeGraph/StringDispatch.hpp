@@ -84,6 +84,18 @@ void string_gemv_mat_vec(ParsedEinsumSpec const & /*parsed*/, T c_pf, OutType *o
 
 // ── Generic nested-loop contraction ─────────────────────────────────────
 
+/// Name of the kernel route the most recent string_einsum call on this
+/// thread selected ("packed_gemm", "gemv_mat_vec", "generic_loop",
+/// "generic_loop_repeated_indices", "empty_input_scale_only", ...). Test
+/// introspection ONLY: lets dispatch-coverage tests assert the intended
+/// fast path fired instead of a silent generic-loop fallback, mirroring the
+/// eager API's AlgorithmChoice out-parameter. Thread-local; not an API for
+/// steering execution.
+inline char const *&last_dispatch_route() {
+    thread_local char const *route = "none";
+    return route;
+}
+
 /**
  * @brief Generic runtime nested-loop contraction for arbitrary rank/pattern.
  *
@@ -340,10 +352,12 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     };
     if (total_size(*C) == 0) {
         ProfileAnnotate("dispatch", "empty_output_noop");
+        last_dispatch_route() = "empty_output_noop";
         return;
     }
     if (total_size(A) == 0 || total_size(B) == 0) {
         ProfileAnnotate("dispatch", "empty_input_scale_only");
+        last_dispatch_route() = "empty_input_scale_only";
         if (c_pf == T{0}) {
             C->zero();
         } else if (c_pf != T{1}) {
@@ -415,6 +429,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     };
     if (has_repeated_letter(a_idx) || has_repeated_letter(b_idx) || has_repeated_letter(c_idx)) {
         ProfileAnnotate("dispatch", "generic_loop_repeated_indices");
+        last_dispatch_route() = "generic_loop_repeated_indices";
         generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
         return;
     }
@@ -440,8 +455,9 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             if constexpr (a_rank == 1 && b_rank == 1 && c_rank == 1) {
                 if (c_idx.empty() || (links.size() == a_idx.size())) {
                     ProfileAnnotate("dispatch", "dot");
-                    T temp       = linear_algebra::dot(A, B);
-                    C->data()[0] = c_pf * C->data()[0] + ab_pf * temp;
+                    last_dispatch_route() = "dot";
+                    T temp                = linear_algebra::dot(A, B);
+                    C->data()[0]          = c_pf * C->data()[0] + ab_pf * temp;
                     return;
                 }
             }
@@ -450,6 +466,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             if constexpr (a_rank == 2 && b_rank == 1 && c_rank == 1) {
                 if (links.size() == 1) {
                     ProfileAnnotate("dispatch", "gemv_mat_vec");
+                    last_dispatch_route() = "gemv_mat_vec";
                     string_gemv_mat_vec(parsed, c_pf, C, ab_pf, A, B, a_idx, links[0]);
                     return;
                 }
@@ -459,6 +476,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             if constexpr (a_rank == 1 && b_rank == 2 && c_rank == 1) {
                 if (links.size() == 1) {
                     ProfileAnnotate("dispatch", "gemv_vec_mat");
+                    last_dispatch_route() = "gemv_vec_mat";
                     // Reinterpret as B^T * A or B * A depending on where the link is
                     char trans = (b_idx[1] == links[0]) ? 'n' : 't';
                     linear_algebra::gemv(trans, ab_pf, B, A, c_pf, C);
@@ -470,6 +488,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             if constexpr (a_rank == 1 && b_rank == 1 && c_rank == 2) {
                 if (links.empty()) {
                     ProfileAnnotate("dispatch", "ger");
+                    last_dispatch_route() = "ger";
                     if (c_pf != T{1}) {
                         linear_algebra::scale(c_pf, C);
                     }
@@ -490,12 +509,14 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             if constexpr (a_rank == 2 && b_rank == 2 && c_rank == 2) {
                 if (links.size() == 1) {
                     ProfileAnnotate("dispatch", "gemm_direct");
+                    last_dispatch_route() = "gemm_direct";
                     string_gemm(parsed, links[0], c_pf, C, ab_pf, A, B);
                     return;
                 }
                 // Direct product: same indices on all tensors, no links
                 if (links.empty() && a_idx == b_idx && a_idx == c_idx) {
                     ProfileAnnotate("dispatch", "direct_product");
+                    last_dispatch_route() = "direct_product";
                     linear_algebra::direct_product(ab_pf, A, B, c_pf, C);
                     return;
                 }
@@ -532,10 +553,11 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             if (a_rank == 1 && b_rank == 1 && c_rank <= 1) {
                 if (c_idx.empty() || (links.size() == a_idx.size())) {
                     ProfileAnnotate("dispatch", "dot_runtime");
-                    auto av      = upcast(A, std::integral_constant<std::size_t, 1>{});
-                    auto bv      = upcast(B, std::integral_constant<std::size_t, 1>{});
-                    T    temp    = linear_algebra::dot(av, bv);
-                    C->data()[0] = c_pf * C->data()[0] + ab_pf * temp;
+                    last_dispatch_route() = "dot_runtime";
+                    auto av               = upcast(A, std::integral_constant<std::size_t, 1>{});
+                    auto bv               = upcast(B, std::integral_constant<std::size_t, 1>{});
+                    T    temp             = linear_algebra::dot(av, bv);
+                    C->data()[0]          = c_pf * C->data()[0] + ab_pf * temp;
                     return;
                 }
             }
@@ -544,9 +566,10 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             if (a_rank == 2 && b_rank == 1 && c_rank == 1) {
                 if (links.size() == 1) {
                     ProfileAnnotate("dispatch", "gemv_mat_vec_runtime");
-                    auto av = upcast(A, std::integral_constant<std::size_t, 2>{});
-                    auto bv = upcast(B, std::integral_constant<std::size_t, 1>{});
-                    auto cv = upcast(*C, std::integral_constant<std::size_t, 1>{});
+                    last_dispatch_route() = "gemv_mat_vec_runtime";
+                    auto av               = upcast(A, std::integral_constant<std::size_t, 2>{});
+                    auto bv               = upcast(B, std::integral_constant<std::size_t, 1>{});
+                    auto cv               = upcast(*C, std::integral_constant<std::size_t, 1>{});
                     string_gemv_mat_vec(parsed, c_pf, &cv, ab_pf, av, bv, a_idx, links[0]);
                     return;
                 }
@@ -556,10 +579,11 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             if (a_rank == 1 && b_rank == 2 && c_rank == 1) {
                 if (links.size() == 1) {
                     ProfileAnnotate("dispatch", "gemv_vec_mat_runtime");
-                    auto av    = upcast(A, std::integral_constant<std::size_t, 1>{});
-                    auto bv    = upcast(B, std::integral_constant<std::size_t, 2>{});
-                    auto cv    = upcast(*C, std::integral_constant<std::size_t, 1>{});
-                    char trans = (b_idx[1] == links[0]) ? 'n' : 't';
+                    last_dispatch_route() = "gemv_vec_mat_runtime";
+                    auto av               = upcast(A, std::integral_constant<std::size_t, 1>{});
+                    auto bv               = upcast(B, std::integral_constant<std::size_t, 2>{});
+                    auto cv               = upcast(*C, std::integral_constant<std::size_t, 1>{});
+                    char trans            = (b_idx[1] == links[0]) ? 'n' : 't';
                     linear_algebra::gemv(trans, ab_pf, bv, av, c_pf, &cv);
                     return;
                 }
@@ -569,9 +593,10 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             if (a_rank == 1 && b_rank == 1 && c_rank == 2) {
                 if (links.empty()) {
                     ProfileAnnotate("dispatch", "ger_runtime");
-                    auto av = upcast(A, std::integral_constant<std::size_t, 1>{});
-                    auto bv = upcast(B, std::integral_constant<std::size_t, 1>{});
-                    auto cv = upcast(*C, std::integral_constant<std::size_t, 2>{});
+                    last_dispatch_route() = "ger_runtime";
+                    auto av               = upcast(A, std::integral_constant<std::size_t, 1>{});
+                    auto bv               = upcast(B, std::integral_constant<std::size_t, 1>{});
+                    auto cv               = upcast(*C, std::integral_constant<std::size_t, 2>{});
                     if (c_pf != T{1}) {
                         linear_algebra::scale(c_pf, &cv);
                     }
@@ -590,17 +615,19 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             if (a_rank == 2 && b_rank == 2 && c_rank == 2) {
                 if (links.size() == 1) {
                     ProfileAnnotate("dispatch", "gemm_direct_runtime");
-                    auto av = upcast(A, std::integral_constant<std::size_t, 2>{});
-                    auto bv = upcast(B, std::integral_constant<std::size_t, 2>{});
-                    auto cv = upcast(*C, std::integral_constant<std::size_t, 2>{});
+                    last_dispatch_route() = "gemm_direct_runtime";
+                    auto av               = upcast(A, std::integral_constant<std::size_t, 2>{});
+                    auto bv               = upcast(B, std::integral_constant<std::size_t, 2>{});
+                    auto cv               = upcast(*C, std::integral_constant<std::size_t, 2>{});
                     string_gemm(parsed, links[0], c_pf, &cv, ab_pf, av, bv);
                     return;
                 }
                 if (links.empty() && a_idx == b_idx && a_idx == c_idx) {
                     ProfileAnnotate("dispatch", "direct_product_runtime");
-                    auto av = upcast(A, std::integral_constant<std::size_t, 2>{});
-                    auto bv = upcast(B, std::integral_constant<std::size_t, 2>{});
-                    auto cv = upcast(*C, std::integral_constant<std::size_t, 2>{});
+                    last_dispatch_route() = "direct_product_runtime";
+                    auto av               = upcast(A, std::integral_constant<std::size_t, 2>{});
+                    auto bv               = upcast(B, std::integral_constant<std::size_t, 2>{});
+                    auto cv               = upcast(*C, std::integral_constant<std::size_t, 2>{});
                     linear_algebra::direct_product(ab_pf, av, bv, c_pf, &cv);
                     return;
                 }
@@ -640,6 +667,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 
         if (packed_gemm::try_packed_gemm<AType, BType, CType>(spec, c_pf, C, ab_pf, A, B)) {
             ProfileAnnotate("dispatch", "packed_gemm");
+            last_dispatch_route() = "packed_gemm";
             return;
         }
     }
@@ -649,6 +677,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // edge cases, or contractions that even PackedGemm can't form into a
     // valid GEMM shape (no M-dims, no N-dims, no links).
     ProfileAnnotate("dispatch", "generic_loop");
+    last_dispatch_route() = "generic_loop";
     generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
 }
 

@@ -323,3 +323,141 @@ TEST_CASE("eager aliasing - typed-Indices dispatcher matches the policy", "[Comp
     auto C2 = create_zero_tensor<double>("C2", 4, 4);
     REQUIRE_NOTHROW(einsum(Indices{i, j}, &C2, Indices{i, k}, A, Indices{k, j}, A));
 }
+
+// ---------------------------------------------------------------------------
+// Dispatch introspection: assert the intended kernel route fired, mirroring
+// eager DispatchCoverage.cpp's AlgorithmChoice assertions. A regression that
+// silently falls back to the generic loop passes every value test while
+// losing orders of magnitude of performance - this is the tripwire.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("cg dispatch route - fast paths fire where intended", "[ComputeGraph][EagerParity][dispatch-route]") {
+    namespace cgd = einsums::compute_graph::dispatch;
+
+    auto A = create_random_tensor<double>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 3, 5);
+    auto C = create_zero_tensor<double>("C", 4, 5);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("ij <- ik ; kj", &C, A, B);
+    CHECK(std::string_view{cgd::last_dispatch_route()} == "gemm_direct");
+
+    auto x = create_random_tensor<double>("x", 6);
+    auto y = create_random_tensor<double>("y", 6);
+    auto G = create_zero_tensor<double>("G", 6, 6);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("ij <- i ; j", &G, x, y);
+    CHECK(std::string_view{cgd::last_dispatch_route()} == "ger");
+
+    auto D  = create_random_tensor<double>("D", 4, 5);
+    auto C2 = create_zero_tensor<double>("C2", 4, 5);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("ij <- ij ; ij", &C2, C, D);
+    CHECK(std::string_view{cgd::last_dispatch_route()} == "direct_product");
+
+    // Repeated letters must take the repeat-aware generic loop.
+    auto H = create_zero_tensor<double>("H", 4, 4);
+    auto S = create_random_tensor<double>("S", 4, 4);
+    auto R = create_random_tensor<double>("R", 4, 4);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("ij <- ii ; jj", &H, S, R);
+    CHECK(std::string_view{cgd::last_dispatch_route()} == "generic_loop_repeated_indices");
+
+    // Zero-extent input: prefactor-only path.
+    auto Ez = create_random_tensor<double>("Ez", size_t{2}, size_t{0});
+    auto Bz = create_random_tensor<double>("Bz", size_t{0}, size_t{3});
+    auto Cz = create_zero_tensor<double>("Cz", 2, 3);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("ij <- ik ; kj", &Cz, Ez, Bz);
+    CHECK(std::string_view{cgd::last_dispatch_route()} == "empty_input_scale_only");
+}
+
+// ---------------------------------------------------------------------------
+// SortGemmExpanded parity: the batch-scrambled and combined-conjugation
+// sort-gemm shapes, pinned exactly (the fuzzers cover the space
+// statistically but not these orderings).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("cg parity - sort-gemm batch scrambled pilj<-pjki;plk", "[ComputeGraph][EagerParity][sort-gemm]") {
+    size_t const dp = 3, di = 4, dj = 5, dk = 6, dl = 3;
+    auto         A = create_random_tensor<double>("A", dp, dj, dk, di);
+    auto         B = create_random_tensor<double>("B", dp, dl, dk);
+
+    auto C_eager = create_zero_tensor<double>("Ce", dp, di, dl, dj);
+    einsum(Indices{p, i, l, j}, &C_eager, Indices{p, j, k, i}, A, Indices{p, l, k}, B);
+
+    auto      C_graph = create_zero_tensor<double>("Cg", dp, di, dl, dj);
+    cg::Graph graph("sort_gemm_scrambled");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("pilj <- pjki ; plk", &C_graph, A, B);
+    }
+    graph.execute();
+
+    require_close(C_graph, C_eager);
+}
+
+TEST_CASE("cg parity - sort-gemm combined conjugation ilj<-conj(jki);conj(lk)", "[ComputeGraph][EagerParity][sort-gemm]") {
+    using T         = std::complex<double>;
+    size_t const di = 3, dj = 4, dk = 5, dl = 3;
+    auto         A = create_random_tensor<T>("A", dj, dk, di);
+    auto         B = create_random_tensor<T>("B", dl, dk);
+
+    auto C_eager = create_zero_tensor<T>("Ce", di, dl, dj);
+    einsum<true, true>(T{0.0}, Indices{i, l, j}, &C_eager, T{1.0}, Indices{j, k, i}, A, Indices{l, k}, B);
+
+    auto      C_graph = create_zero_tensor<T>("Cg", di, dl, dj);
+    cg::Graph graph("sort_gemm_conj");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ilj <- conj(jki) ; conj(lk)", &C_graph, A, B);
+    }
+    graph.execute();
+
+    auto const n = C_graph.size();
+    for (size_t flat = 0; flat < n; ++flat) {
+        REQUIRE(std::abs(C_graph.data()[flat] - C_eager.data()[flat]) <= 1e-10 * (1.0 + std::abs(C_eager.data()[flat])));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rank-0 scalar tensor OPERANDS (scalar output is covered by the dot tests).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("cg parity - rank-0 einsum operands are not expressible in either API", "[ComputeGraph][EagerParity][rank0]") {
+    // Tensor<T, 0> as an einsum INPUT does not compile on the eager path
+    // (rank-0 lacks is_totally_vectorable; empty index tuples hit
+    // std::tuple<> out-of-bounds access in the dispatcher) and therefore has
+    // no oracle to test the graph path against. Scalar multiplication is
+    // expressed via scale()/prefactors instead. This placeholder records the
+    // shared limitation; if rank-0 operands ever become supported eagerly,
+    // replace it with a graph-vs-eager parity check.
+    SUCCEED("rank-0 einsum operands are rejected at compile time by both the eager and graph APIs");
+}
+
+TEST_CASE("cg parity - smart-pointer operands are eager-only", "[ComputeGraph][EagerParity][smart-pointer]") {
+    // The eager dispatcher auto-derefs shared_ptr/unique_ptr operands in
+    // every C/A/B combination (TensorAlgebra SharedPointer.cpp /
+    // UniquePointer.cpp); cg::einsum constrains on tensor concepts and
+    // rejects smart pointers at compile time. This is deliberate: the graph
+    // tracks tensors by identity and lifetime (TensorLifetime.cpp), and
+    // owning-pointer operands would bypass that tracking. Callers capture
+    // the dereferenced tensor instead. Placeholder records the intended
+    // divergence; the eager smart-pointer path keeps its own test coverage.
+    auto sp = std::make_shared<Tensor<double, 2>>(create_random_tensor<double>("sp", 3, 3));
+    auto B  = create_random_tensor<double>("B", 3, 3);
+    auto C  = create_zero_tensor<double>("C", 3, 3);
+
+    // Eager: smart-pointer operand works.
+    auto C_eager = create_zero_tensor<double>("Ce", 3, 3);
+    REQUIRE_NOTHROW(einsum(Indices{i, j}, &C_eager, Indices{i, k}, sp, Indices{k, j}, B));
+
+    // Graph: capture the DEREFERENCED tensor - the supported spelling.
+    cg::Graph graph("smart_ptr_deref");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, *sp, B);
+    }
+    graph.execute();
+
+    require_close(C, C_eager);
+}
