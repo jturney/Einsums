@@ -349,20 +349,17 @@ TEST_CASE("outer product 'bc,ad->abcd' non-contiguous (#283)", "[tensor_algebra]
 
 TEST_CASE("tiled outer product, no contracted index (#283)", "[tensor_algebra][outer_product]") {
     // 'ia,jb->ijab' into a single-tile rank-4 TiledTensor (pure outer product,
-    // operands interleaved in the output). On 1.1.2 this SIGSEGV'd; today it
-    // throws std::out_of_range from inside the einsum and std::terminate()s --
-    // the throw escapes through a context (an OpenMP region) that Catch2 cannot
-    // intercept, so a  guard does not help: the SIGABRT would take
-    // down the whole test binary. Skip until the outer-product path handles
-    // non-contiguous tiled targets (PR #257), then replace the SKIP with:
-    //
-    //   std::vector<int> occ{5}, vir{2};
-    //   einsums::TiledTensor<double, 2> t1("t1", occ, vir);
-    //   einsums::TiledTensor<double, 4> tau("tau", occ, occ, vir, vir);
-    //   t1.tile(0, 0).zero(); tau.tile(0, 0, 0, 0).zero();
-    //   using namespace einsums::index;
-    //   REQUIRE_NOTHROW(einsum(einsums::tensor_algebra::Indices{i, j, a, b}, &tau,
-    //                          einsums::tensor_algebra::Indices{i, a}, t1,
-    //                          einsums::tensor_algebra::Indices{j, b}, t1));
-    SKIP("#283: tiled outer product 'ia,jb->ijab' aborts the process (uncatchable); re-enable after the fix");
+    // operands interleaved in the output). On 1.1.2 this SIGSEGV'd; later it
+    // std::terminate()d through an OpenMP region Catch2 cannot intercept. The
+    // #257 contiguity gate (ported from release/v1.1.x) refuses outer-product
+    // candidacy for interleaved targets, routing this through the generic
+    // algorithm - enabled per the note that used to sit here.
+    std::vector<int>                occ{5}, vir{2};
+    einsums::TiledTensor<double, 2> t1("t1", occ, vir);
+    einsums::TiledTensor<double, 4> tau("tau", occ, occ, vir, vir);
+    t1.tile(0, 0).zero();
+    tau.tile(0, 0, 0, 0).zero();
+    using namespace einsums::index;
+    REQUIRE_NOTHROW(
+        einsums::tensor_algebra::einsum(einsums::Indices{i, j, a, b}, &tau, einsums::Indices{i, a}, t1, einsums::Indices{j, b}, t1));
 }
