@@ -88,6 +88,19 @@ def _einsum_problem(draw):
     a_idx = draw(st.permutations(batch + mids + kids))
     b_idx = draw(st.permutations(batch + kids + nids))
     c_idx = draw(st.permutations(batch + mids + nids))
+    # Optionally repeat a letter WITHIN an input operand: 'iik,kj' style
+    # diagonal access (bug-1023 was invisible because specs only ever used
+    # distinct letters). np.einsum supports repeated input letters, so the
+    # oracle stays valid; repeated OUTPUT letters are not expressible in
+    # np.einsum and are covered by the C++ EagerParityGaps suite instead.
+    if a_idx and draw(st.booleans()):
+        dup = draw(st.sampled_from(a_idx))
+        ins = draw(st.integers(0, len(a_idx)))
+        a_idx = a_idx[:ins] + [dup] + a_idx[ins:]
+    if b_idx and draw(st.booleans()):
+        dup = draw(st.sampled_from(b_idx))
+        ins = draw(st.integers(0, len(b_idx)))
+        b_idx = b_idx[:ins] + [dup] + b_idx[ins:]
     return (a_idx, b_idx, c_idx, extent,
             draw(st.sampled_from(["float64", "complex128"])),
             draw(st.sampled_from([0.0, 1.0])), draw(st.sampled_from([1.0, -2.0])),
@@ -106,6 +119,10 @@ def _einsum_problem(draw):
                {"a": 3, "b": 3, "c": 3}, "float64", 0.0, 1.0, False, False, False, True))            # eager outer product, non-contiguous output
 @example(prob=(["a", "c"], ["b"], ["a", "b", "c"],
                {"a": 3, "b": 3, "c": 3}, "float64", 0.0, 1.0, False, False, True, False))            # graph+passes outer product, non-contiguous output
+@example(prob=(["i", "i"], ["j", "j"], ["i", "j"],
+               {"i": 3, "j": 4}, "float64", 0.0, 1.0, False, False, False, False))                   # Hadamard diagonals (bug-1023, graph)
+@example(prob=(["i", "i", "k"], ["k", "j"], ["i", "j"],
+               {"i": 3, "j": 2, "k": 2}, "complex128", 1.0, -2.0, False, False, True, False))        # diagonal-contract + passes (bug-1023)
 def test_hyp_einsum_diff(prob):
     a_idx, b_idx, c_idx, extent, dt, c_pf, ab_pf, view_a, view_b, passes, eager = prob
     rng = np.random.default_rng(0)
