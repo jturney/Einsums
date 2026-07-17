@@ -112,6 +112,16 @@ TEMPLATE_TEST_CASE("einsum4", "[tensor_algebra]", float, double) {
         }
     }
 
+    SECTION("3x3x3x3<-3x3,3x3") {
+        Tensor<TestType, 4> out{"out", 3, 3, 3, 3};
+        Tensor<TestType, 2> in = create_random_tensor<TestType>("in", 3, 3);
+
+        REQUIRE_NOTHROW(einsum(Indices{index::i, index::j, index::a, index::b}, &out, Indices{index::i, index::a}, in,
+                               Indices{index::j, index::b}, in, &alg_choice));
+
+        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+    }
+
     // profile::report();
     // profile::finalize();
 }

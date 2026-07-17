@@ -258,8 +258,16 @@ constexpr bool einsum_is_outer_product(std::tuple<CIndices...> const &, std::tup
     constexpr auto A_target_position_in_C          = detail::find_type_with_position(A_indices, C_indices);
     constexpr auto B_target_position_in_C          = detail::find_type_with_position(B_indices, C_indices);
 
-    constexpr bool condition =
-        std::tuple_size_v<decltype(linksAB)> == 0 && contiguous_target_position_in_A && contiguous_target_position_in_B;
+    // #257 (ported from release/v1.1.x): each operand's indices must also be
+    // CONTIGUOUS within C. Interleaved targets ('abc <- ac ; b') otherwise
+    // reach einsum_do_outer_product, whose rank-2 flattening of C scrambles
+    // the result; refusing candidacy here routes them to the generic
+    // algorithm instead. See issue #283.
+    constexpr auto contiguous_A_target_position_in_C = detail::contiguous_positions(A_target_position_in_C);
+    constexpr auto contiguous_B_target_position_in_C = detail::contiguous_positions(B_target_position_in_C);
+
+    constexpr bool condition = std::tuple_size_v<decltype(linksAB)> == 0 && contiguous_target_position_in_A &&
+                               contiguous_target_position_in_B && contiguous_A_target_position_in_C && contiguous_B_target_position_in_C;
 
     if constexpr (condition) {
         constexpr bool swap_AB = std::get<1>(A_target_position_in_C) != 0;

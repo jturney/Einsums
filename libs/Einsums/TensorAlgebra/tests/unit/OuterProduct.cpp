@@ -238,7 +238,7 @@ TEMPLATE_TEST_CASE("view outer product", "[tensor_algebra]", float, double, std:
 //
 // This is a sweep over the distinct non-contiguous rank-3/rank-4 orderings, so
 // it doubles as a fix-completeness check: each ordering is its OWN test case,
-// tagged [!shouldfail], so a partial fix (some orderings fixed, others not)
+// tagged , so a partial fix (some orderings fixed, others not)
 // shows up per ordering -- a fixed one starts passing and Catch2 turns the run
 // RED, a reminder to drop that tag. The contiguous controls confirm the
 // reference math. All non-contiguous cases below currently fail cleanly with
@@ -287,11 +287,11 @@ TEST_CASE("outer product, contiguous controls (#283 sweep)", "[tensor_algebra][o
     }
 }
 
-// Each non-contiguous ordering is its own [!shouldfail] case for per-ordering
+// Each non-contiguous ordering is its own  case for per-ordering
 // fix tracking. 'ac,b->abc' / 'b,ac->abc' straddle in rank 3; 'ac,bd->abcd'
 // fully interleaves; 'ad,bc->abcd' straddles the outer operand around the
 // inner; 'bc,ad->abcd' is the operand-swapped mirror.
-TEST_CASE("outer product 'ac,b->abc' non-contiguous (#283)", "[tensor_algebra][outer_product][!shouldfail]") {
+TEST_CASE("outer product 'ac,b->abc' non-contiguous (#283)", "[tensor_algebra][outer_product]") {
     using namespace einsums;
     using namespace einsums::tensor_algebra;
     using namespace einsums::index;
@@ -302,7 +302,7 @@ TEST_CASE("outer product 'ac,b->abc' non-contiguous (#283)", "[tensor_algebra][o
     REQUIRE_NOTHROW(einsum(Indices{a, b, c}, &C, Indices{a, c}, A, Indices{b}, v));
     verify_outer3(C, [&](int x, int y, int z) { return A(x, z) * v(y); });
 }
-TEST_CASE("outer product 'b,ac->abc' non-contiguous (#283)", "[tensor_algebra][outer_product][!shouldfail]") {
+TEST_CASE("outer product 'b,ac->abc' non-contiguous (#283)", "[tensor_algebra][outer_product]") {
     using namespace einsums;
     using namespace einsums::tensor_algebra;
     using namespace einsums::index;
@@ -313,7 +313,7 @@ TEST_CASE("outer product 'b,ac->abc' non-contiguous (#283)", "[tensor_algebra][o
     REQUIRE_NOTHROW(einsum(Indices{a, b, c}, &C, Indices{b}, v, Indices{a, c}, A));
     verify_outer3(C, [&](int x, int y, int z) { return v(y) * A(x, z); });
 }
-TEST_CASE("outer product 'ac,bd->abcd' non-contiguous (#283)", "[tensor_algebra][outer_product][!shouldfail]") {
+TEST_CASE("outer product 'ac,bd->abcd' non-contiguous (#283)", "[tensor_algebra][outer_product]") {
     using namespace einsums;
     using namespace einsums::tensor_algebra;
     using namespace einsums::index;
@@ -324,7 +324,7 @@ TEST_CASE("outer product 'ac,bd->abcd' non-contiguous (#283)", "[tensor_algebra]
     REQUIRE_NOTHROW(einsum(Indices{a, b, c, d}, &C, Indices{a, c}, A, Indices{b, d}, B));
     verify_outer4(C, [&](int w, int x, int y, int z) { return A(w, y) * B(x, z); });
 }
-TEST_CASE("outer product 'ad,bc->abcd' non-contiguous (#283)", "[tensor_algebra][outer_product][!shouldfail]") {
+TEST_CASE("outer product 'ad,bc->abcd' non-contiguous (#283)", "[tensor_algebra][outer_product]") {
     using namespace einsums;
     using namespace einsums::tensor_algebra;
     using namespace einsums::index;
@@ -335,7 +335,7 @@ TEST_CASE("outer product 'ad,bc->abcd' non-contiguous (#283)", "[tensor_algebra]
     REQUIRE_NOTHROW(einsum(Indices{a, b, c, d}, &C, Indices{a, d}, A, Indices{b, c}, B));
     verify_outer4(C, [&](int w, int x, int y, int z) { return A(w, z) * B(x, y); });
 }
-TEST_CASE("outer product 'bc,ad->abcd' non-contiguous (#283)", "[tensor_algebra][outer_product][!shouldfail]") {
+TEST_CASE("outer product 'bc,ad->abcd' non-contiguous (#283)", "[tensor_algebra][outer_product]") {
     using namespace einsums;
     using namespace einsums::tensor_algebra;
     using namespace einsums::index;
@@ -352,7 +352,7 @@ TEST_CASE("tiled outer product, no contracted index (#283)", "[tensor_algebra][o
     // operands interleaved in the output). On 1.1.2 this SIGSEGV'd; today it
     // throws std::out_of_range from inside the einsum and std::terminate()s --
     // the throw escapes through a context (an OpenMP region) that Catch2 cannot
-    // intercept, so a [!shouldfail] guard does not help: the SIGABRT would take
+    // intercept, so a  guard does not help: the SIGABRT would take
     // down the whole test binary. Skip until the outer-product path handles
     // non-contiguous tiled targets (PR #257), then replace the SKIP with:
     //
