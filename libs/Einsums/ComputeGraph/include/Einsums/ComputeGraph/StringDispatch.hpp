@@ -362,18 +362,33 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // read-only. Runs after the zero-size quick-path so the span arithmetic
     // never sees a zero dimension.
     {
-        auto const span_of = [](auto const &t) {
-            size_t last = 0;
+        // Interval overlap alone is NOT proof of element overlap: disjoint
+        // column-major slices of one parent interleave in memory. Only
+        // provable overlap rejects: both regions contiguous, or identical
+        // base pointers (see the eager guard in TensorAlgebra's
+        // Backends/Dispatch.hpp for the full rationale).
+        struct Region {
+            T const *lo;
+            T const *hi;
+            bool     contiguous;
+        };
+        auto const region_of = [](auto const &t) -> Region {
+            T const *lo     = t.data();
+            size_t   last   = 0;
+            size_t   nelems = 1;
             for (size_t d = 0; d < detail::tensor_rank(t); d++) {
                 last += (t.dim(d) - 1) * t.stride(d);
+                nelems *= t.dim(d);
             }
-            return last + 1;
+            return {lo, lo + last + 1, last + 1 == nelems};
         };
-        T const   *c_lo       = C->data();
-        T const   *c_hi       = c_lo + span_of(*C);
+        auto const c_region   = region_of(*C);
         auto const overlaps_c = [&](auto const &x) {
-            T const *lo = x.data();
-            return lo < c_hi && c_lo < lo + span_of(x);
+            auto const r = region_of(x);
+            if (!(r.lo < c_region.hi && c_region.lo < r.hi)) {
+                return false;
+            }
+            return (r.contiguous && c_region.contiguous) || r.lo == c_region.lo;
         };
         if ((overlaps_c(A) && a_idx != c_idx) || (overlaps_c(B) && b_idx != c_idx)) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument,

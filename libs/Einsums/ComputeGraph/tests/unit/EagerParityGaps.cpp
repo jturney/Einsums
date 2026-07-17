@@ -301,3 +301,25 @@ TEST_CASE("cg aliasing - A and B sharing a tensor is allowed", "[ComputeGraph][E
 
     require_close(C, expected);
 }
+
+TEST_CASE("eager aliasing - typed-Indices dispatcher matches the policy", "[ComputeGraph][EagerParity][aliasing]") {
+    auto C = create_random_tensor<double>("C", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+
+    // Contraction with C as an input: rejected.
+    REQUIRE_THROWS_AS(einsum(Indices{i, j}, &C, Indices{i, k}, C, Indices{k, j}, B), std::invalid_argument);
+
+    // Elementwise in-place (identical index lists): allowed and correct.
+    auto D        = create_random_tensor<double>("D", 4, 4);
+    auto expected = create_zero_tensor<double>("E", 4, 4);
+    for (size_t a = 0; a < 4; ++a)
+        for (size_t b = 0; b < 4; ++b)
+            expected(a, b) = D(a, b) * B(a, b);
+    REQUIRE_NOTHROW(einsum(Indices{i, j}, &D, Indices{i, j}, D, Indices{i, j}, B));
+    require_close(D, expected);
+
+    // A and B sharing a tensor: always allowed.
+    auto A  = create_random_tensor<double>("A", 4, 4);
+    auto C2 = create_zero_tensor<double>("C2", 4, 4);
+    REQUIRE_NOTHROW(einsum(Indices{i, j}, &C2, Indices{i, k}, A, Indices{k, j}, A));
+}

@@ -1374,6 +1374,63 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
 
     using ABDataType = std::conditional_t<(sizeof(ADataType) > sizeof(BDataType)), ADataType, BDataType>;
 
+    // Output aliasing an input is rejected unless provably elementwise-safe:
+    // when the aliased operand's index list is IDENTICAL to C's, every
+    // element is read exactly once immediately before its own overwrite and
+    // in-place updates stay supported; any other overlap silently corrupts
+    // the contraction (C is rewritten while still being read, and BLAS
+    // kernels assume no operand overlap). Mirrors string_einsum's policy
+    // (ComputeGraph/StringDispatch.hpp). Byte-based spans handle mixed
+    // element types; only dense core tensors are checked - block/tiled
+    // layouts have no single address span.
+    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && IsTensorV<CType> && CoreBasicTensorConcept<CType>) {
+        // Interval overlap alone is NOT proof of element overlap: disjoint
+        // column-major slices of one parent ("original(2, All, All)" vs
+        // "original(4, All, All)") interleave in memory, so their address
+        // intervals intersect while their element sets are disjoint - a
+        // legitimate pattern this guard must not reject. Overlap is only
+        // treated as real when it is provable: both regions are contiguous
+        // (dense blocks sharing an interval genuinely share elements) or the
+        // base pointers are identical (element (0,...,0) is shared). Strided
+        // views that interleave without either property pass unchecked -
+        // conservative in the permissive direction.
+        struct Region {
+            char const *lo;
+            char const *hi;
+            bool        contiguous;
+        };
+        auto const region_of = [](auto const &t) -> Region {
+            using TT           = std::remove_cvref_t<decltype(t)>;
+            char const *lo     = reinterpret_cast<char const *>(t.data());
+            size_t      last   = 0;
+            size_t      nelems = 1;
+            for (size_t d = 0; d < TT::Rank; d++) {
+                if (t.dim(d) == 0) {
+                    return {lo, lo, true};
+                }
+                last += (t.dim(d) - 1) * t.stride(d);
+                nelems *= t.dim(d);
+            }
+            return {lo, lo + (last + 1) * sizeof(typename TT::ValueType), last + 1 == nelems};
+        };
+        auto const c_region   = region_of(*C);
+        auto const overlaps_c = [&](auto const &x) {
+            auto const r = region_of(x);
+            if (!(r.lo < c_region.hi && c_region.lo < r.hi)) {
+                return false;
+            }
+            return (r.contiguous && c_region.contiguous) || r.lo == c_region.lo;
+        };
+        constexpr bool c_matches_a = std::is_same_v<std::tuple<CIndices...>, std::tuple<AIndices...>>;
+        constexpr bool c_matches_b = std::is_same_v<std::tuple<CIndices...>, std::tuple<BIndices...>>;
+        if ((!c_matches_a && overlaps_c(A)) || (!c_matches_b && overlaps_c(B))) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "einsum: output tensor overlaps an input operand. In-place einsum is only supported for pure "
+                                    "elementwise updates (the aliased operand's indices identical to the output's); for this "
+                                    "contraction, pass a separate output tensor or copy the input first.");
+        }
+    }
+
     EINSUMS_LOG_TRACE("BEGIN: einsum");
 #if defined(EINSUMS_HAVE_PROFILER)
     std::unique_ptr<profile::ScopedZone> _section;
