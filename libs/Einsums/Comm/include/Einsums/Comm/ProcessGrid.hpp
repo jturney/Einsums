@@ -57,7 +57,7 @@ class EINSUMS_EXPORT ProcessGrid {
     [[nodiscard]] Communicator const &col_comm() const { return _col_comm; }
 
     /// Default grid constructed from Communicator::world() on first access.
-    [[nodiscard]] static ProcessGrid &default_grid();
+    [[nodiscard]] static ProcessGrid const &default_grid();
 
   private:
     int          _pr;

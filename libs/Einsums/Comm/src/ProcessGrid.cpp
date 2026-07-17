@@ -57,7 +57,7 @@ ProcessGrid::ProcessGrid(int pr, int pc, Communicator const &parent) {
     init(pr, pc, parent);
 }
 
-ProcessGrid &ProcessGrid::default_grid() {
+ProcessGrid const &ProcessGrid::default_grid() {
     static ProcessGrid grid;
     return grid;
 }
