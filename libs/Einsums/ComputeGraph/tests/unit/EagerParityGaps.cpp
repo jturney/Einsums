@@ -52,15 +52,14 @@ TEST_CASE("cg parity - mixed-dtype einsum is not yet expressible through capture
 // ---------------------------------------------------------------------------
 // Gap 2: repeated-index / diagonal einsum (TensorAlgebra/Hadamard.cpp parity)
 //
-// FINDING (2026-07-17, first run of these tests): the graph path SILENTLY
-// PRODUCES WRONG VALUES for every repeated-index contraction below - the
-// eager dispatcher special-cases repeated indices, the graph einsum lowering
-// does not, and no exception is raised. Tagged [!shouldfail] per the #283
-// convention: when the graph lowering is fixed these start passing, Catch2
-// turns the run red, and the tags must be dropped. See buglog bug-1023.
+// These found bug-1023 on first run (2026-07-17): string_einsum's fast
+// paths classified repeated-letter specs as outer products (empty link
+// set) and silently computed wrong values, and even the generic loop
+// stored only the FIRST position of each letter per operand. Fixed by
+// routing repeated-letter specs to the (now repeat-aware) generic loop.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("cg parity - Hadamard diagonal outer ij<-ii;jj", "[ComputeGraph][EagerParity][hadamard][!shouldfail]") {
+TEST_CASE("cg parity - Hadamard diagonal outer ij<-ii;jj", "[ComputeGraph][EagerParity][hadamard]") {
     constexpr size_t N = 5;
     auto             A = create_random_tensor<double>("A", N, N);
     auto             B = create_random_tensor<double>("B", N, N);
@@ -79,7 +78,7 @@ TEST_CASE("cg parity - Hadamard diagonal outer ij<-ii;jj", "[ComputeGraph][Eager
     require_close(C_graph, C_eager);
 }
 
-TEST_CASE("cg parity - Hadamard rank-3 operands ij<-iij;jji", "[ComputeGraph][EagerParity][hadamard][!shouldfail]") {
+TEST_CASE("cg parity - Hadamard rank-3 operands ij<-iij;jji", "[ComputeGraph][EagerParity][hadamard]") {
     constexpr size_t N = 4;
     auto             A = create_random_tensor<double>("A", N, N, N);
     auto             B = create_random_tensor<double>("B", N, N, N);
@@ -98,7 +97,7 @@ TEST_CASE("cg parity - Hadamard rank-3 operands ij<-iij;jji", "[ComputeGraph][Ea
     require_close(C_graph, C_eager);
 }
 
-TEST_CASE("cg parity - Hadamard repeated output index iji<-iji;jij", "[ComputeGraph][EagerParity][hadamard][!shouldfail]") {
+TEST_CASE("cg parity - Hadamard repeated output index iji<-iji;jij", "[ComputeGraph][EagerParity][hadamard]") {
     constexpr size_t N = 4;
     auto             A = create_random_tensor<double>("A", N, N, N);
     auto             B = create_random_tensor<double>("B", N, N, N);
@@ -117,7 +116,7 @@ TEST_CASE("cg parity - Hadamard repeated output index iji<-iji;jij", "[ComputeGr
     require_close(C_graph, C_eager);
 }
 
-TEST_CASE("cg parity - Hadamard diagonal accumulation ii<-ijk;jik", "[ComputeGraph][EagerParity][hadamard][!shouldfail]") {
+TEST_CASE("cg parity - Hadamard diagonal accumulation ii<-ijk;jik", "[ComputeGraph][EagerParity][hadamard]") {
     constexpr size_t N = 4;
     auto             A = create_random_tensor<double>("A", N, N, N);
     auto             B = create_random_tensor<double>("B", N, N, N);

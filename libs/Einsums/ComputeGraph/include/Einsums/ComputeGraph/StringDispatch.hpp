@@ -113,10 +113,14 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
     struct IndexInfo {
         std::string name;
         size_t      dim_size{0};
-        int         pos_in_a{-1}; // Position in A's index list, or -1
-        int         pos_in_b{-1};
-        int         pos_in_c{-1};
-        bool        is_link{false}; // True if this is a contraction (link) index
+        // EVERY position the index occupies in each tensor's index list.
+        // Repeated letters within one operand ('ii <- ...') mean a diagonal
+        // access: all occurrences advance together, so offsets accumulate
+        // the strides of every occurrence (empty when absent).
+        std::vector<int> pos_in_a;
+        std::vector<int> pos_in_b;
+        std::vector<int> pos_in_c;
+        bool             is_link{false}; // True if this is a contraction (link) index
     };
 
     // Collect all unique indices preserving target-first, link-second order
@@ -131,32 +135,29 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
         IndexInfo info;
         info.name    = name;
         info.is_link = link;
-        // Find position in each tensor's index list
+        // Record every occurrence in each tensor's index list
         for (size_t p = 0; p < a_idx.size(); p++) {
             if (a_idx[p] == name) {
-                info.pos_in_a = static_cast<int>(p);
-                break;
+                info.pos_in_a.push_back(static_cast<int>(p));
             }
         }
         for (size_t p = 0; p < b_idx.size(); p++) {
             if (b_idx[p] == name) {
-                info.pos_in_b = static_cast<int>(p);
-                break;
+                info.pos_in_b.push_back(static_cast<int>(p));
             }
         }
         for (size_t p = 0; p < c_idx.size(); p++) {
             if (c_idx[p] == name) {
-                info.pos_in_c = static_cast<int>(p);
-                break;
+                info.pos_in_c.push_back(static_cast<int>(p));
             }
         }
         // Get dimension size from whichever tensor has this index
-        if (info.pos_in_a >= 0)
-            info.dim_size = A.dim(info.pos_in_a);
-        else if (info.pos_in_b >= 0)
-            info.dim_size = B.dim(info.pos_in_b);
-        else if (info.pos_in_c >= 0)
-            info.dim_size = C->dim(info.pos_in_c);
+        if (!info.pos_in_a.empty())
+            info.dim_size = A.dim(info.pos_in_a.front());
+        else if (!info.pos_in_b.empty())
+            info.dim_size = B.dim(info.pos_in_b.front());
+        else if (!info.pos_in_c.empty())
+            info.dim_size = C->dim(info.pos_in_c.front());
         all_indices.push_back(info);
     };
 
@@ -213,9 +214,9 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
         // Compute C offset for this target combination
         size_t c_offset = 0;
         for (auto const &info : all_indices) {
-            if (info.pos_in_c >= 0) {
-                size_t idx_pos = &info - &all_indices[0];
-                c_offset += idx_values[idx_pos] * C->stride(info.pos_in_c);
+            size_t idx_pos = &info - &all_indices[0];
+            for (int pos : info.pos_in_c) {
+                c_offset += idx_values[idx_pos] * C->stride(pos);
             }
         }
 
@@ -241,18 +242,18 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
             // Compute A offset
             size_t a_offset = 0;
             for (auto const &info : all_indices) {
-                if (info.pos_in_a >= 0) {
-                    size_t idx_pos = &info - &all_indices[0];
-                    a_offset += idx_values[idx_pos] * A.stride(info.pos_in_a);
+                size_t idx_pos = &info - &all_indices[0];
+                for (int pos : info.pos_in_a) {
+                    a_offset += idx_values[idx_pos] * A.stride(pos);
                 }
             }
 
             // Compute B offset
             size_t b_offset = 0;
             for (auto const &info : all_indices) {
-                if (info.pos_in_b >= 0) {
-                    size_t idx_pos = &info - &all_indices[0];
-                    b_offset += idx_values[idx_pos] * B.stride(info.pos_in_b);
+                size_t idx_pos = &info - &all_indices[0];
+                for (int pos : info.pos_in_b) {
+                    b_offset += idx_values[idx_pos] * B.stride(pos);
                 }
             }
 
@@ -314,6 +315,27 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         std::sort(links_storage.begin(), links_storage.end());
     }
     std::vector<std::string> const &links = precomputed_links != nullptr ? *precomputed_links : links_storage;
+
+    // Repeated letters within one operand ('ij <- ii ; jj') are diagonal
+    // accesses. Every fast path below classifies indices assuming each
+    // letter appears at most once per operand - the outer-product/GER
+    // routes silently computed wrong values for these specs (bug-1023).
+    // The generic loop above is the only repeat-aware path; route there.
+    auto const has_repeated_letter = [](std::vector<std::string> const &idx) {
+        for (size_t p = 1; p < idx.size(); p++) {
+            for (size_t q = 0; q < p; q++) {
+                if (idx[p] == idx[q]) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    if (has_repeated_letter(a_idx) || has_repeated_letter(b_idx) || has_repeated_letter(c_idx)) {
+        ProfileAnnotate("dispatch", "generic_loop_repeated_indices");
+        generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
+        return;
+    }
 
     // ── Rank-1 special-case BLAS fast paths ─────────────────────────────────
     // These call helpers (string_gemv_mat_vec, linear_algebra::ger, etc.)
