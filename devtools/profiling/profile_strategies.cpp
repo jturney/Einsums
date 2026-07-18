@@ -6,6 +6,9 @@
 // Fock-build (G = 2J - K from the TEI and the density) through four execution
 // strategies, one line each in the "Why Einsums?" figure:
 //
+//   unfused  serial loops, no fusion: one full pass over the TEI for J,
+//            a second full pass for K (the straightforward translation)
+//   serial   the fused hand nest below, single thread
 //   forloop  hand-written OpenMP loop nests, index arithmetic by hand
 //   eager    the same math as two einsum calls; automatic dispatch picks the
 //            engines (a well-ordered GEMV for J, the measured-best route for
@@ -17,7 +20,8 @@
 //            ONE storage-order pass over the TEI feeding both accumulators
 //
 // Usage: profile_strategies -n <norbs> -t <trials> [-c]
-//   -c prints one CSV line: n,forloop_ms,eager_ms,lccf_ms,stream_ms
+//   -c prints one CSV line:
+//   n,unfused_ms,serial_ms,forloop_ms,eager_ms,lccf_ms,stream_ms
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Runtime.hpp>
@@ -55,13 +59,13 @@ double best_ms(F &&f, int trials) {
 // thread owns disjoint G columns. This is strong hand code on purpose: the
 // figure's claim is that the notation and the graph passes match and then
 // beat it, not that they beat a strawman.
-void fock_forloop(Tensor<double, 2> &G, Tensor<double, 4> const &TEI, Tensor<double, 2> const &D) {
+void fock_forloop(Tensor<double, 2> &G, Tensor<double, 4> const &TEI, Tensor<double, 2> const &D, bool parallel) {
     ptrdiff_t const n  = static_cast<ptrdiff_t>(G.dim(0));
     ptrdiff_t const n2 = n * n, n3 = n2 * n;
     double         *g = G.data();
     double const   *t = TEI.data();
     double const   *d = D.data();
-#pragma omp parallel for
+#pragma omp parallel for if (parallel)
     for (ptrdiff_t nu = 0; nu < n; nu++) {
         double *gcol = g + nu * n;
         for (ptrdiff_t mu = 0; mu < n; mu++) {
@@ -75,6 +79,46 @@ void fock_forloop(Tensor<double, 2> &G, Tensor<double, 4> const &TEI, Tensor<dou
                 double const *tk_col = t + lam * n + nu * n2 + sig * n3; // TEI(:, lam, nu, sig)
                 for (ptrdiff_t mu = 0; mu < n; mu++) {
                     gcol[mu] += dj * tj_col[mu] - dk * tk_col[mu];
+                }
+            }
+        }
+    }
+}
+
+// Unfused serial loops: the straightforward translation of the math - one
+// full pass over the TEI accumulates 2J, a second full pass subtracts K.
+// Column-major access stays sensible (unit-stride mu inner loop), so the only
+// handicaps relative to fock_forloop are the missing fusion and the missing
+// threads - exactly the two effects the figure separates.
+void fock_unfused_serial(Tensor<double, 2> &G, Tensor<double, 4> const &TEI, Tensor<double, 2> const &D) {
+    ptrdiff_t const n  = static_cast<ptrdiff_t>(G.dim(0));
+    ptrdiff_t const n2 = n * n, n3 = n2 * n;
+    double         *g = G.data();
+    double const   *t = TEI.data();
+    double const   *d = D.data();
+    for (ptrdiff_t nu = 0; nu < n; nu++) {
+        double *gcol = g + nu * n;
+        for (ptrdiff_t mu = 0; mu < n; mu++) {
+            gcol[mu] = 0.0;
+        }
+        for (ptrdiff_t sig = 0; sig < n; sig++) {
+            for (ptrdiff_t lam = 0; lam < n; lam++) {
+                double const  dj     = 2.0 * d[lam + sig * n];
+                double const *tj_col = t + nu * n + lam * n2 + sig * n3; // TEI(:, nu, lam, sig)
+                for (ptrdiff_t mu = 0; mu < n; mu++) {
+                    gcol[mu] += dj * tj_col[mu];
+                }
+            }
+        }
+    }
+    for (ptrdiff_t nu = 0; nu < n; nu++) {
+        double *gcol = g + nu * n;
+        for (ptrdiff_t sig = 0; sig < n; sig++) {
+            for (ptrdiff_t lam = 0; lam < n; lam++) {
+                double const  dk     = d[lam + sig * n];
+                double const *tk_col = t + lam * n + nu * n2 + sig * n3; // TEI(:, lam, nu, sig)
+                for (ptrdiff_t mu = 0; mu < n; mu++) {
+                    gcol[mu] -= dk * tk_col[mu];
                 }
             }
         }
@@ -99,9 +143,15 @@ int einsums_main(int argc, char **argv) {
     auto TEI = create_random_tensor<double>("TEI", n, n, n, n);
     auto D   = create_random_tensor<double>("D", n, n);
 
-    // 1. for-loops
+    // 0. serial baselines: unfused loops, then the fused nest single-threaded
+    Tensor<double, 2> G_unf("G_unf", n, n);
+    auto const        t_unfused = best_ms([&] { fock_unfused_serial(G_unf, TEI, D); }, trials);
+    Tensor<double, 2> G_ser("G_ser", n, n);
+    auto const        t_serial = best_ms([&] { fock_forloop(G_ser, TEI, D, false); }, trials);
+
+    // 1. for-loops (fused + OpenMP)
     Tensor<double, 2> G_loop("G_loop", n, n);
-    auto const        t_forloop = best_ms([&] { fock_forloop(G_loop, TEI, D); }, trials);
+    auto const        t_forloop = best_ms([&] { fock_forloop(G_loop, TEI, D, true); }, trials);
 
     // 2. eager einsum
     Tensor<double, 2> G_eager("G_eager", n, n);
@@ -137,10 +187,11 @@ int einsums_main(int argc, char **argv) {
     auto const t_stream = best_ms([&] { g_stream.execute(); }, trials);
 
     if (csv) {
-        std::printf("%d,%.4f,%.4f,%.4f,%.4f\n", n, t_forloop, t_eager, t_lccf, t_stream);
+        std::printf("%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n", n, t_unfused, t_serial, t_forloop, t_eager, t_lccf, t_stream);
     } else {
-        std::printf("n=%4d  for-loops %10.2f ms  eager einsum %10.2f ms  lccf graph %10.2f ms  stream graph %10.2f ms\n", n, t_forloop,
-                    t_eager, t_lccf, t_stream);
+        std::printf("n=%4d  unfused serial %10.2f ms  fused serial %10.2f ms  fused omp %10.2f ms  eager einsum %10.2f ms  "
+                    "lccf graph %10.2f ms  stream graph %10.2f ms\n",
+                    n, t_unfused, t_serial, t_forloop, t_eager, t_lccf, t_stream);
     }
 
     einsums::finalize();

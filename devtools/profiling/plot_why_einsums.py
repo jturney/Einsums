@@ -6,11 +6,14 @@
 """Regenerate docs/sphinx/_static/index-images/why_einsums.png.
 
 Runs the profile_strategies driver over a range of orbital counts and plots
-the Fock build (G = 2J - K from the TEI and the density) through four
+the Fock build (G = 2J - K from the TEI and the density) through six
 execution strategies:
 
-    hand-fused loops        strong hand code: J and K fused in one OpenMP
-                            nest, cache-ordered, unit-stride inner loop
+    unfused loops           serial, no fusion: one full TEI pass for J,
+                            a second for K (the straightforward translation)
+    hand-fused (serial)     J and K fused in one cache-ordered nest,
+                            single thread
+    hand-fused (OpenMP)     the same nest, parallel: strong hand code
     einsum (eager)          the same math as two einsum calls, automatic
                             dispatch per contraction
     LCCF graph              captured graph + algebraic folding (one
@@ -28,6 +31,7 @@ then from the repo root:
 """
 
 import argparse
+import math
 import pathlib
 import platform
 import subprocess
@@ -38,13 +42,16 @@ SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
 INK_2 = "#52514e"
 
-# Validated categorical trio + a recessive gray for the hand-code baseline
-# (consistent with the packed_gemm_dispatch figure's use of gray).
+# Validated categorical trio for the Einsums strategies + a gray family
+# (light to dark, dotted to solid) for the three hand-code baselines, so the
+# colored lines stay the story (consistent with packed_gemm_dispatch's gray).
 SERIES = [
-    ("hand-fused loops (OpenMP)", "#8a8984"),
-    ("einsum (eager)", "#2a78d6"),
-    ("LCCF graph (fold)", "#4a3aa7"),
-    ("stream-fused graph (now)", "#1baf7a"),
+    ("not hand-fused (no OpenMP)", "#b5b4b0", ":"),
+    ("hand-fused (no OpenMP)", "#8a8984", "--"),
+    ("hand-fused (OpenMP)", "#52514e", "-"),
+    ("einsum (eager)", "#2a78d6", "-"),
+    ("LCCF graph (fold)", "#4a3aa7", "-"),
+    ("stream-fused graph (now)", "#1baf7a", "-"),
 ]
 
 
@@ -53,7 +60,7 @@ def run_driver(exe, n, trials):
                          capture_output=True, text=True, check=True).stdout
     for line in out.splitlines():
         parts = line.strip().split(",")
-        if len(parts) == 5 and parts[0] == str(n):
+        if len(parts) == 7 and parts[0] == str(n):
             return [float(p) for p in parts[1:]]
     raise RuntimeError(f"no CSV line for n={n}:\n{out}")
 
@@ -67,30 +74,39 @@ def main():
     args = ap.parse_args()
 
     exe = pathlib.Path(args.bin_dir) / "profile_strategies"
-    data = {name: [] for name, _ in SERIES}
+    data = {name: [] for name, _, _ in SERIES}
     for n in args.sizes:
         row = run_driver(exe, n, args.trials)
-        for (name, _), v in zip(SERIES, row):
+        for (name, _, _), v in zip(SERIES, row):
             data[name].append(v)
-        print(f"n={n:4d}  " + "  ".join(f"{name.split(' (')[0]} {v:9.2f} ms" for (name, _), v in zip(SERIES, row)))
+        print(f"n={n:4d}  " + "  ".join(f"{name.split(' (')[0]} {v:9.2f} ms" for (name, _, _), v in zip(SERIES, row)))
 
     fig, ax = plt.subplots(figsize=(9.6, 5.4), dpi=150)
     fig.patch.set_facecolor(SURFACE)
     ax.set_facecolor(SURFACE)
 
-    for name, color in SERIES:
+    for name, color, style in SERIES:
         emphasize = name.startswith("stream")
-        ax.plot(args.sizes, data[name], "-o", color=color, linewidth=2.4 if emphasize else 2.0,
-                markersize=7 if emphasize else 6, label=name, zorder=4 if emphasize else 3)
-        # Slight vertical splay keeps end labels of nearby lines apart.
-        ax.annotate(f" {data[name][-1]:,.0f}", xy=(args.sizes[-1], data[name][-1]), xytext=(6, -5 if emphasize else 5),
+        ax.plot(args.sizes, data[name], style, marker="o", color=color, linewidth=2.4 if emphasize else 2.0,
+                markersize=7 if emphasize else 5, label=name, zorder=4 if emphasize else 3)
+
+    # End-value labels with collision avoidance: sort by final value and push
+    # each label up until it clears the one below it (in log space).
+    finals = sorted((math.log10(data[name][-1]), name) for name, _, _ in SERIES)
+    min_gap = 0.11  # decades
+    ys = [v for v, _ in finals]
+    for i in range(1, len(ys)):
+        ys[i] = max(ys[i], ys[i - 1] + min_gap)
+    for (_, name), y in zip(finals, ys):
+        emphasize = name.startswith("stream")
+        ax.annotate(f" {data[name][-1]:,.0f}", xy=(args.sizes[-1], 10.0**y), xytext=(6, 0),
                     textcoords="offset points", va="center", fontsize=9,
                     color=INK if emphasize else INK_2, fontweight="bold" if emphasize else "normal")
 
     ax.set_yscale("log")
     ax.set_xlabel("orbitals", fontsize=10, color=INK_2)
     ax.set_ylabel("Fock-build time, G = 2J − K (ms)", fontsize=10, color=INK_2)
-    ax.set_title("One Fock build, four execution strategies — Apple M4", fontsize=12, color=INK, loc="left", pad=12)
+    ax.set_title("One Fock build, six execution strategies — Apple M4", fontsize=12, color=INK, loc="left", pad=12)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     for side in ("left", "bottom"):
