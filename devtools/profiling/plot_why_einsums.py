@@ -6,7 +6,7 @@
 """Regenerate docs/sphinx/_static/index-images/why_einsums.png.
 
 Runs the profile_strategies driver over a range of orbital counts and plots
-the Fock build (G = 2J - K from the TEI and the density) through six
+the Fock build (G = 2J - K from the TEI and the density) through five
 execution strategies:
 
     unfused loops           serial, no fusion: one full TEI pass for J,
@@ -16,11 +16,14 @@ execution strategies:
     hand-fused (OpenMP)     the same nest, parallel: strong hand code
     einsum (eager)          the same math as two einsum calls, automatic
                             dispatch per contraction
-    LCCF graph              captured graph + algebraic folding (one
-                            contraction over a materialized combination)
     stream-fused graph      captured graph + StreamContractionFusion: one
                             storage-order pass over the TEI feeds both
                             accumulators
+
+The driver also measures the LCCF-folded graph (CSV column 5); it is not
+plotted - algebraic folding targets flop-bound contraction groups and is
+the wrong rewrite for this bandwidth-bound shape, a comparison that
+belongs in the docs discussion rather than the headline figure.
 
 Build the driver first (see profile_compare.py for the cmake invocation),
 then from the repo root:
@@ -42,16 +45,17 @@ SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
 INK_2 = "#52514e"
 
-# Validated categorical trio for the Einsums strategies + a gray family
+# Validated categorical hues for the Einsums strategies + a gray family
 # (light to dark, dotted to solid) for the three hand-code baselines, so the
 # colored lines stay the story (consistent with packed_gemm_dispatch's gray).
+# The last field is the CSV column in the driver's output (column 0 is n);
+# column 5 (LCCF) is measured but not plotted.
 SERIES = [
-    ("not hand-fused (no OpenMP)", "#b5b4b0", ":"),
-    ("hand-fused (no OpenMP)", "#8a8984", "--"),
-    ("hand-fused (OpenMP)", "#52514e", "-"),
-    ("einsum (eager)", "#2a78d6", "-"),
-    ("LCCF graph (fold)", "#4a3aa7", "-"),
-    ("stream-fused graph (now)", "#1baf7a", "-"),
+    ("not hand-fused (no OpenMP)", "#b5b4b0", ":", 1),
+    ("hand-fused (no OpenMP)", "#8a8984", "--", 2),
+    ("hand-fused (OpenMP)", "#52514e", "-", 3),
+    ("einsum (eager)", "#2a78d6", "-", 4),
+    ("stream-fused graph (now)", "#1baf7a", "-", 6),
 ]
 
 
@@ -74,25 +78,25 @@ def main():
     args = ap.parse_args()
 
     exe = pathlib.Path(args.bin_dir) / "profile_strategies"
-    data = {name: [] for name, _, _ in SERIES}
+    data = {name: [] for name, _, _, _ in SERIES}
     for n in args.sizes:
         row = run_driver(exe, n, args.trials)
-        for (name, _, _), v in zip(SERIES, row):
-            data[name].append(v)
-        print(f"n={n:4d}  " + "  ".join(f"{name.split(' (')[0]} {v:9.2f} ms" for (name, _, _), v in zip(SERIES, row)))
+        for name, _, _, col in SERIES:
+            data[name].append(row[col - 1])
+        print(f"n={n:4d}  " + "  ".join(f"{name.split(' (')[0]} {data[name][-1]:9.2f} ms" for name, _, _, _ in SERIES))
 
     fig, ax = plt.subplots(figsize=(9.6, 5.4), dpi=150)
     fig.patch.set_facecolor(SURFACE)
     ax.set_facecolor(SURFACE)
 
-    for name, color, style in SERIES:
+    for name, color, style, _ in SERIES:
         emphasize = name.startswith("stream")
         ax.plot(args.sizes, data[name], style, marker="o", color=color, linewidth=2.4 if emphasize else 2.0,
                 markersize=7 if emphasize else 5, label=name, zorder=4 if emphasize else 3)
 
     # End-value labels with collision avoidance: sort by final value and push
     # each label up until it clears the one below it (in log space).
-    finals = sorted((math.log10(data[name][-1]), name) for name, _, _ in SERIES)
+    finals = sorted((math.log10(data[name][-1]), name) for name, _, _, _ in SERIES)
     min_gap = 0.11  # decades
     ys = [v for v, _ in finals]
     for i in range(1, len(ys)):
@@ -106,7 +110,7 @@ def main():
     ax.set_yscale("log")
     ax.set_xlabel("orbitals", fontsize=10, color=INK_2)
     ax.set_ylabel("Fock-build time, G = 2J − K (ms)", fontsize=10, color=INK_2)
-    ax.set_title("One Fock build, six execution strategies — Apple M4", fontsize=12, color=INK, loc="left", pad=12)
+    ax.set_title("One Fock build, five execution strategies — Apple M4", fontsize=12, color=INK, loc="left", pad=12)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     for side in ("left", "bottom"):
