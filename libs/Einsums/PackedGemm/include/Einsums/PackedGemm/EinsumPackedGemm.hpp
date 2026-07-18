@@ -1205,15 +1205,21 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         }
         // Bandwidth-bound shape classes where the packed pass structure
         // (pack + kernel + scatter = 2-3 memory passes) measurably loses to
-        // the generic loop's single fused pass, at every size tested:
+        // the COMPILE-TIME generic loop's single fused pass, at every size
+        // tested:
         //   - batch-dot: no M and no N indices (per-batch dot products)
         //   - GEMV-shaped: exactly one of M/N empty (no K reuse to amortize
         //     the packing copy)
-        if (m_count == 0 && n_count == 0) {
+        // The decline is gated on !allow_scatter (the eager einsum dispatch,
+        // whose generic fallback is the good one). Runtime callers
+        // (allow_scatter=true, e.g. ComputeGraph's string dispatch) fall back
+        // to the runtime nested loop instead, which measures ~1000x slower
+        // than packed for streamed GEMV shapes - they keep the packed path.
+        if (!allow_scatter && m_count == 0 && n_count == 0) {
             ProfileAnnotate("packed_gemm_skip", "defer_to_generic_batch_dot");
             return false;
         }
-        if (m_count == 0 || n_count == 0) {
+        if (!allow_scatter && (m_count == 0 || n_count == 0)) {
             ProfileAnnotate("packed_gemm_skip", "defer_to_generic_gemv_shaped");
             return false;
         }
