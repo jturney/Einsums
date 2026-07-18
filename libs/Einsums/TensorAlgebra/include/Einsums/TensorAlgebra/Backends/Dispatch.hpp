@@ -1335,7 +1335,7 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
     // runtime declines for unsupported C strides or repeated indices).
     if (!has_performed_contraction) {
         if constexpr (!OnlyUseGenericAlgorithm && !DryRun && IsBasicTensorV<AType> && IsBasicTensorV<BType> && IsBasicTensorV<CType> &&
-                      std::is_same_v<CDataType, ADataType> && std::is_same_v<CDataType, BDataType> && CRank >= 2) {
+                      std::is_same_v<CDataType, ADataType> && std::is_same_v<CDataType, BDataType> && CRank >= 1) {
             if (einsums::packed_gemm::try_packed_gemm<ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices, B,
                                                                     /*allow_scatter=*/false)) {
                 has_performed_contraction = true;

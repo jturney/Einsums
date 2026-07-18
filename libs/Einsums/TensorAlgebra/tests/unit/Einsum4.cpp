@@ -119,7 +119,9 @@ TEMPLATE_TEST_CASE("einsum4", "[tensor_algebra]", float, double) {
         REQUIRE_NOTHROW(einsum(Indices{index::i, index::j, index::a, index::b}, &out, Indices{index::i, index::a}, in,
                                Indices{index::j, index::b}, in, &alg_choice));
 
-        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        // Outer-product shapes (no link indices) now run through PackedGemm
+        // with a synthesized unit K dim instead of the generic loop.
+        REQUIRE((alg_choice == tensor_algebra::detail::GENERIC || alg_choice == tensor_algebra::detail::PACKED_GEMM));
     }
 
     // profile::report();

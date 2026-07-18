@@ -120,6 +120,11 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
     // The flat-to-offset conversion handles the rest.
     bool const C_col_major = (!multi_m && C_m_stride == 1);
 
+    // Scatter is needed for multi-M/N outputs and for single-M/N layouts
+    // where neither output dim is unit-stride (batched C with a stride-1
+    // batch index, strided views, synthetic unit dims with stride 0).
+    bool const scatter_c = multi_m || multi_n || (C_m_stride != 1 && C_n_stride != 1);
+
     // BLAS requires the output leading dimension to be at least the number of
     // rows of the stored result: M for a column-major result (ldc = C_n_stride),
     // N for the swapped form (ldc = C_m_stride). For a transposed or degenerate
@@ -147,7 +152,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
     // strides, precompute pointer arrays and call gemm_batch() for all batches
     // at once. This is much faster than looping over batches individually.
     // -------------------------------------------------------------------------
-    if (plan.batch_total > 1 && plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n) {
+    if (plan.batch_total > 1 && plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && !plan.synthetic) {
         // NOLINTNEXTLINE(readability-identifier-naming)
         using blas_int = einsums::blas::int_t;
 
@@ -263,7 +268,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // Multi-K fast path: flatten A and B into contiguous M*K / K*N buffers,
         // then call BLAS GEMM directly.
         // -------------------------------------------------------------------------
-        if (plan.k_dims_in_a.size() > 1 && !multi_m && !multi_n) {
+        // The flatten+GEMM path writes C directly and supports only stride-1
+        // column- or row-major outputs; scatter-layout C goes to the tiled or
+        // block-GEMM paths below.
+        if (plan.k_dims_in_a.size() > 1 && !scatter_c && !plan.synthetic) {
             // Multi-K fast path: only for single-M, single-N (can map to flat BLAS GEMM).
             LabeledSection("flatten + GEMM");
             // NOLINTNEXTLINE(readability-identifier-naming)
@@ -529,7 +537,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // strides.  BLAS can handle this directly via lda/ldb/ldc parameters,
         // avoiding the expensive pack_A/pack_B + tiled micro-GEMM.
         // -------------------------------------------------------------------------
-        if (plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n) {
+        if (plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && !plan.synthetic) {
             // Single-K fast path: only for single-M, single-N (direct BLAS GEMM dispatch).
             // NOLINTNEXTLINE(readability-identifier-naming)
             using blas_int = einsums::blas::int_t;
@@ -684,7 +692,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // scatter passes. The M block shrinks in compensation so the packed
         // A panel (MC_blk * KC_blk) stays within ~4 MiB.
         int64_t kc_hint = shape.kc;
-        if (kc_hint == 0 && shape.block_gemm && (multi_m || multi_n)) {
+        if (kc_hint == 0 && shape.block_gemm && scatter_c) {
             kc_hint = 4096;
         }
         int64_t const KC_blk = (kc_hint > 0) ? std::min<int64_t>(std::max<int64_t>(kc_hint, blk.KC), K) : blk.KC;
@@ -696,7 +704,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
         // For multi-M/N: we need a temporary contiguous C tile buffer because
         // the multi-dim C elements are non-contiguous in memory.
-        bool const needs_c_scatter = (multi_m || multi_n);
+        bool const needs_c_scatter = scatter_c;
 
         // The NC loop is the parallel loop: shrink the NC block below the
         // cache-derived blk.NC when needed so every thread gets at least one
@@ -792,10 +800,28 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                                            static_cast<blas_int>(mc_len), tls_Bf.data(), static_cast<blas_int>(nc_len),
                                                            ValueType{0}, tls_Cb.data(), static_cast<blas_int>(mc_len));
 
-                            // Scatter-accumulate the contiguous block into C.
+                            // Scatter-accumulate the contiguous block into C. When C's
+                            // stride along the fastest flat m coordinate is 1, the
+                            // destination decomposes into contiguous runs and the
+                            // accumulation vectorizes.
+                            bool const    c_m_unit = plan.c_m_dims.back().tensor_stride == 1;
+                            int64_t const c_m_fast = plan.c_m_dims.back().size;
                             for (int64_t j = 0; j < nc_len; ++j) {
                                 int64_t const    n_off = c_n_offsets[static_cast<size_t>(j)];
                                 ValueType const *src   = tls_Cb.data() + j * mc_len;
+                                if (c_m_unit) {
+                                    int64_t pos = 0;
+                                    while (pos < mc_len) {
+                                        int64_t const    run = std::min(c_m_fast - ((mc + pos) % c_m_fast), mc_len - pos);
+                                        ValueType       *dst = C_data + c_m_offsets[static_cast<size_t>(pos)] + n_off;
+                                        ValueType const *s   = src + pos;
+                                        for (int64_t r = 0; r < run; ++r) {
+                                            dst[r] += s[r];
+                                        }
+                                        pos += run;
+                                    }
+                                    continue;
+                                }
                                 for (int64_t i2 = 0; i2 < mc_len; ++i2) {
                                     C_data[c_m_offsets[static_cast<size_t>(i2)] + n_off] += src[i2];
                                 }
@@ -1025,8 +1051,14 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     }
 
     // -------------------------------------------------------------------------
-    // Classify target indices to check viability.
+    // Classify target indices. Empty M/N/link groups are no longer
+    // rejections: compute_packing_topology synthesizes a unit dim so GEMV-
+    // and outer-product-shaped contractions run through the same block/tile
+    // machinery. What the classification still decides is (a) the direct-GEMM
+    // deferral and (b) whether Sort+GEMM exists as a fallback for the policy
+    // check below (it requires all three groups non-empty).
     // -------------------------------------------------------------------------
+    bool ttgt_exists = false;
     {
         std::unordered_set<std::string> const a_set(a_raw.begin(), a_raw.end());
         std::unordered_set<std::string> const b_set(b_raw.begin(), b_raw.end());
@@ -1045,24 +1077,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             ProfileAnnotate("packed_gemm_skip", "defer_to_direct_gemm");
             return false; // Deferred to direct BLAS GEMM, not a rejection.
         }
-        if (m_count == 0) {
-            ProfileAnnotate("packed_gemm_skip", "no_m_dims");
-            EINSUMS_LOG_INFO("PackedGemm: skipping — no M-dims (all C indices come from B). "
-                             "Consider rewriting as GEMV or transposing.");
-            return false;
-        }
-        if (n_count == 0) {
-            ProfileAnnotate("packed_gemm_skip", "no_n_dims");
-            EINSUMS_LOG_INFO("PackedGemm: skipping — no N-dims (all C indices come from A). "
-                             "Consider rewriting as GEMV or transposing.");
-            return false;
-        }
-        if (link.empty()) {
-            ProfileAnnotate("packed_gemm_skip", "no_link_indices");
-            EINSUMS_LOG_INFO("PackedGemm: skipping — no link (contraction) indices. "
-                             "This is an outer/direct product, not a contraction.");
-            return false;
-        }
+        ttgt_exists = m_count > 0 && n_count > 0 && !link.empty();
     }
 
     // -------------------------------------------------------------------------
@@ -1087,26 +1102,28 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
 
         bool const multi_m = (plan.c_m_dims.size() > 1);
         bool const multi_n = (plan.c_n_dims.size() > 1);
+        // Scatter is needed for multi-M/N and for single-M/N layouts where
+        // neither output dim is unit-stride (e.g. a batched C whose batch
+        // index owns stride 1). The block/tile scatter paths handle all of
+        // these; the only question is policy.
+        bool const needs_scatter = multi_m || multi_n || (plan.c_m_dims[0].tensor_stride != 1 && plan.c_n_dims[0].tensor_stride != 1);
 
-        if ((multi_m || multi_n) && !allow_scatter && !micro_kernel_shape<ValueType>().fast_scatter) {
-            ProfileAnnotate("packed_gemm_skip", "multi_mn_after_coalescing");
-            EINSUMS_LOG_INFO("PackedGemm: declining — still multi-M/N after dim coalescing, the caller has a "
-                             "TTGT fallback, and this rung's kernel does not beat it on the scatter path.");
+        // Decline only when a TTGT fallback actually exists for this shape
+        // and neither the caller nor the rung wants the scatter path. GEMV-
+        // and outer-product-shaped contractions (synthetic plans) have no
+        // Sort+GEMM fallback - their alternative is the generic loop, which
+        // the scatter path beats on every architecture.
+        if (needs_scatter && ttgt_exists && !allow_scatter && !micro_kernel_shape<ValueType>().fast_scatter) {
+            ProfileAnnotate("packed_gemm_skip", "scatter_defer_to_ttgt");
+            EINSUMS_LOG_INFO("PackedGemm: declining — scatter-path shape, the caller has a TTGT fallback, "
+                             "and this rung's kernel does not beat it on the scatter path.");
             return false;
         }
 
-        // For single-M/N: require stride-1 in C's M or N dim (col or row major).
-        // For multi-M/N: the scatter path handles arbitrary strides, so always proceed.
-        if (multi_m || multi_n || plan.c_m_dims[0].tensor_stride == 1 || plan.c_n_dims[0].tensor_stride == 1) {
-            ProfileAnnotate("packed_gemm_path", multi_m || multi_n ? "scatter" : "single_mn");
-            blis_contraction<ValueType>(plan, *C, A, B, static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor),
-                                        spec.conj_a, spec.conj_b);
-            return true;
-        }
-        ProfileAnnotate("packed_gemm_skip", "non_stride1_c");
-        EINSUMS_LOG_INFO("PackedGemm: skipping — single-M/N with non-stride-1 C layout "
-                         "(M stride={}, N stride={}). Consider permuting C first.",
-                         plan.c_m_dims[0].tensor_stride, plan.c_n_dims[0].tensor_stride);
+        ProfileAnnotate("packed_gemm_path", needs_scatter ? "scatter" : "single_mn");
+        blis_contraction<ValueType>(plan, *C, A, B, static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor), spec.conj_a,
+                                    spec.conj_b);
+        return true;
     } else {
         ProfileAnnotate("packed_gemm_skip", "invalid_topology");
         EINSUMS_LOG_INFO("PackedGemm: skipping — packing topology invalid for this contraction pattern.");

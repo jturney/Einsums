@@ -29,6 +29,14 @@ struct DimSpec {
     int64_t tensor_stride{0}; ///< Stride (in elements) in the source/destination tensor
 };
 
+/// @brief tensor_pos of a synthesized unit dimension (see compute_packing_topology).
+///
+/// GEMV-shaped (no M or no N indices) and outer-product-shaped (no link
+/// indices) contractions get a unit dim (size 1, stride 0) in the empty
+/// group so the whole GEMM machinery applies unchanged. The sentinel pos
+/// marks entries that must never be used to index a real tensor axis.
+inline constexpr size_t kSyntheticDimPos = static_cast<size_t>(-1);
+
 /// @brief Describes how a contraction can be packed as a flat BLIS-style GEMM.
 ///
 /// For a contraction C[m,n] = beta*C[m,n] + alpha * Sum_k A[m,k] * B[k,n]
@@ -74,6 +82,13 @@ struct PackingPlan {
     /// DimSpecs have meaningless tensor_pos values, so the HPTT flatten path
     /// (which rebuilds axis permutations from tensor_pos) must be skipped.
     bool coalesced{false};
+
+    /// True when compute_packing_topology() synthesized a unit dim for an
+    /// empty M/N/K group (GEMV- or outer-product-shaped contraction). The
+    /// direct BLAS fast paths (gemm_batch, single-K, multi-K flatten) must
+    /// be skipped: a synthetic stride of 0 maps to invalid leading
+    /// dimensions there. The tiled/block scatter paths handle it naturally.
+    bool synthetic{false};
 };
 
 // ---------------------------------------------------------------------------
@@ -166,23 +181,31 @@ PackingPlan EINSUMS_EXPORT compute_packing_topology(ContractionKey const &key);
 /// Must be called after `compute_packing_topology` returns a valid plan.
 template <einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType, einsums::BasicTensorConcept CType>
 void fill_strides(PackingPlan &plan, AType const &A, BType const &B, CType const &C) {
+    // Synthetic unit dims (kSyntheticDimPos) keep their stride of 0; they do
+    // not correspond to any real tensor axis.
     for (auto &ds : plan.m_dims) {
-        ds.tensor_stride = static_cast<int64_t>(A.stride(ds.tensor_pos));
+        if (ds.tensor_pos != kSyntheticDimPos)
+            ds.tensor_stride = static_cast<int64_t>(A.stride(ds.tensor_pos));
     }
     for (auto &ds : plan.k_dims_in_a) {
-        ds.tensor_stride = static_cast<int64_t>(A.stride(ds.tensor_pos));
+        if (ds.tensor_pos != kSyntheticDimPos)
+            ds.tensor_stride = static_cast<int64_t>(A.stride(ds.tensor_pos));
     }
     for (auto &ds : plan.n_dims) {
-        ds.tensor_stride = static_cast<int64_t>(B.stride(ds.tensor_pos));
+        if (ds.tensor_pos != kSyntheticDimPos)
+            ds.tensor_stride = static_cast<int64_t>(B.stride(ds.tensor_pos));
     }
     for (auto &ds : plan.k_dims_in_b) {
-        ds.tensor_stride = static_cast<int64_t>(B.stride(ds.tensor_pos));
+        if (ds.tensor_pos != kSyntheticDimPos)
+            ds.tensor_stride = static_cast<int64_t>(B.stride(ds.tensor_pos));
     }
     for (auto &ds : plan.c_m_dims) {
-        ds.tensor_stride = static_cast<int64_t>(C.stride(ds.tensor_pos));
+        if (ds.tensor_pos != kSyntheticDimPos)
+            ds.tensor_stride = static_cast<int64_t>(C.stride(ds.tensor_pos));
     }
     for (auto &ds : plan.c_n_dims) {
-        ds.tensor_stride = static_cast<int64_t>(C.stride(ds.tensor_pos));
+        if (ds.tensor_pos != kSyntheticDimPos)
+            ds.tensor_stride = static_cast<int64_t>(C.stride(ds.tensor_pos));
     }
     for (auto &bds : plan.batch_dims) {
         bds.a_stride = static_cast<int64_t>(A.stride(bds.a_pos));

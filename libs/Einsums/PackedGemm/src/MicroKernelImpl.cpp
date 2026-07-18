@@ -105,6 +105,42 @@ __arm_new("za") __arm_locally_streaming static void sme_dgemm_accumulate(int64_t
     }
 }
 
+/// @brief One (2*VL32) x (2*VL32) float block via SME FMOPA outer products.
+///
+/// ZA32 has four tiles (16x16 f32 each at SVL 512), arranged here as a 2x2
+/// grid: MR = NR = 2*VL32 (32x32 on M4). Same panel layouts, streaming
+/// discipline, and buffer-extraction structure as the double kernel; f32
+/// FMOPA is 4x denser per instruction than f64.
+__arm_new("za") __arm_locally_streaming static void sme_sgemm_accumulate(int64_t kc, float const *Ap, float const *Bp, float *buf) {
+    int64_t const  vl = static_cast<int64_t>(svcntw()); // streaming VL in f32 lanes
+    int64_t const  mr = 2 * vl;
+    svbool_t const pg = svptrue_b32();
+
+    svzero_za();
+
+    for (int64_t k = 0; k < kc; ++k) {
+        float const *a = Ap + k * mr;
+        float const *b = Bp + k * mr;
+
+        svfloat32_t const a0 = svld1_f32(pg, a);
+        svfloat32_t const a1 = svld1_f32(pg, a + vl);
+        svfloat32_t const b0 = svld1_f32(pg, b);
+        svfloat32_t const b1 = svld1_f32(pg, b + vl);
+
+        svmopa_za32_f32_m(0, pg, pg, a0, b0);
+        svmopa_za32_f32_m(1, pg, pg, a0, b1);
+        svmopa_za32_f32_m(2, pg, pg, a1, b0);
+        svmopa_za32_f32_m(3, pg, pg, a1, b1);
+    }
+
+    for (uint32_t r = 0; r < static_cast<uint32_t>(vl); ++r) {
+        svst1_hor_za32(0, r, pg, buf + r * mr);
+        svst1_hor_za32(1, r, pg, buf + r * mr + vl);
+        svst1_hor_za32(2, r, pg, buf + (vl + r) * mr);
+        svst1_hor_za32(3, r, pg, buf + (vl + r) * mr + vl);
+    }
+}
+
 #endif // EINSUMS_PACKED_GEMM_HAVE_SME_KERNEL
 
 template <typename T>
@@ -127,6 +163,20 @@ void micro_kernel_tile(int mr_block, int nr_block, int64_t kc, T alpha, T const 
             return;
         }
     }
+    if constexpr (std::is_same_v<T, float>) {
+        int64_t const vl = static_cast<int64_t>(svcntsw()); // f32 streaming VL, queryable from normal mode
+        if (vl <= 2 * kSmeMaxVl && mr_block == 2 * vl && nr_block == 2 * vl) {
+            float         buf[(4 * kSmeMaxVl) * (4 * kSmeMaxVl)];
+            int64_t const nr = 2 * vl;
+            sme_sgemm_accumulate(kc, Ap, Bp, buf);
+            for (int64_t i = 0; i < mr_eff; ++i) {
+                for (int64_t j = 0; j < nr_eff; ++j) {
+                    C[i * rs_c + j * cs_c] += alpha * buf[i * nr + j];
+                }
+            }
+            return;
+        }
+    }
 #endif
     micro_kernel_run<T>(mr_block, nr_block, kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c);
 }
@@ -139,6 +189,14 @@ MicroKernelShape micro_kernel_block() {
         int64_t const vl = static_cast<int64_t>(svcntsd());
         if (vl <= kSmeMaxVl) {
             return {static_cast<int>(2 * vl), static_cast<int>(4 * vl), int64_t{4096}, /*fast_scatter=*/true, /*block_gemm=*/false};
+        }
+    }
+    if constexpr (std::is_same_v<T, float>) {
+        int64_t const vl = static_cast<int64_t>(svcntsw());
+        if (vl <= 2 * kSmeMaxVl) {
+            // Measured on M4: f32 FMOPA scatter runs the ring benchmark in
+            // 1.67 ms against Sort+GEMM's 7.12 ms (4.3x).
+            return {static_cast<int>(2 * vl), static_cast<int>(2 * vl), int64_t{4096}, /*fast_scatter=*/true, /*block_gemm=*/false};
         }
     }
 #endif

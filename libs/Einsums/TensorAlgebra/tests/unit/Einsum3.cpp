@@ -76,7 +76,9 @@ TEMPLATE_TEST_CASE("einsum3", "[tensor_algebra]", float, double) {
         auto B = create_random_tensor<TestType>("B", 4, 3, 5);
 
         REQUIRE_NOTHROW(einsum(Indices{i}, &C0, Indices{i, j, k}, A, Indices{j, i, k}, B, &alg_choice));
-        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        // Shapes with no M or N indices (batch + links only) now run through
+        // PackedGemm with synthesized unit dims instead of the generic loop.
+        REQUIRE((alg_choice == tensor_algebra::detail::GENERIC || alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
         for (size_t i0 = 0; i0 < 3; i0++) {
             TestType sum{0};
@@ -104,7 +106,9 @@ TEMPLATE_TEST_CASE("einsum3", "[tensor_algebra]", float, double) {
 
         // profile::push("einsum: 3x5 <- 3x4x5 * 4x3x5");
         REQUIRE_NOTHROW(einsum(Indices{i, k}, &C0, Indices{i, j, k}, A, Indices{j, i, k}, B, &alg_choice));
-        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        // Shapes with no M or N indices (batch + links only) now run through
+        // PackedGemm with synthesized unit dims instead of the generic loop.
+        REQUIRE((alg_choice == tensor_algebra::detail::GENERIC || alg_choice == tensor_algebra::detail::PACKED_GEMM));
         // profile::pop();
 
         // profile::push("hand  : 3x5 <- 3x4x5 * 4x3x5");
@@ -135,7 +139,9 @@ TEMPLATE_TEST_CASE("einsum3", "[tensor_algebra]", float, double) {
 
         // profile::push("einsum: 3x5 <- 3x4x5 * 4x3x5");
         REQUIRE_NOTHROW(einsum(Indices{i, l}, &C0, Indices{i, j, k}, A, Indices{j, i, k}, B, &alg_choice));
-        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        // Shapes with no M or N indices (batch + links only) now run through
+        // PackedGemm with synthesized unit dims instead of the generic loop.
+        REQUIRE((alg_choice == tensor_algebra::detail::GENERIC || alg_choice == tensor_algebra::detail::PACKED_GEMM));
         // profile::pop();
 
         // profile::push("hand  : 3x5 <- 3x4x5 * 4x3x5");

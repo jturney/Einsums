@@ -447,7 +447,9 @@ TEST_CASE("sort_gemm_float", "[dispatch][sort_gemm]") {
     }
 
     REQUIRE_NOTHROW(einsum(Indices{i, l, j}, &C, Indices{j, k, i}, A, Indices{l, k}, B, &alg_choice));
-    REQUIRE(alg_choice == tensor_algebra::detail::SORT_GEMM);
+    // On rungs whose kernel wins the scatter path (SME double/float), einsum
+    // legitimately picks PACKED_GEMM here instead of Sort+GEMM.
+    REQUIRE((alg_choice == tensor_algebra::detail::SORT_GEMM || alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t l0 = 0; l0 < dl; l0++) {
@@ -479,7 +481,9 @@ TEST_CASE("sort_gemm_complex_float", "[dispatch][sort_gemm]") {
     }
 
     REQUIRE_NOTHROW(einsum(Indices{i, l, j}, &C, Indices{j, k, i}, A, Indices{l, k}, B, &alg_choice));
-    REQUIRE(alg_choice == tensor_algebra::detail::SORT_GEMM);
+    // On rungs whose kernel wins the scatter path (SME double/float), einsum
+    // legitimately picks PACKED_GEMM here instead of Sort+GEMM.
+    REQUIRE((alg_choice == tensor_algebra::detail::SORT_GEMM || alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t l0 = 0; l0 < dl; l0++) {

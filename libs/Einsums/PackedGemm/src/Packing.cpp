@@ -30,7 +30,19 @@ PackingPlan compute_packing_topology(ContractionKey const &key) {
         return plan;
     }
 
-    // Reject Hadamard: repeated indices in A or B.
+    // Reject Hadamard: repeated indices in A, B, or C. A repeated C index is
+    // a diagonal write (offset = sum of both axis strides per step), which
+    // DimSpec's single-stride model cannot express - the first-occurrence
+    // mapping would silently write the wrong elements.
+    {
+        std::unordered_set<std::string> seen_c;
+        for (auto const &idx : spec.c_indices) {
+            if (!seen_c.insert(idx).second) {
+                EINSUMS_LOG_TRACE("compute_packing_topology: rejected (repeated index '{}' in C)", idx);
+                return plan;
+            }
+        }
+    }
     {
         std::unordered_set<std::string> seen_a, seen_b;
         for (auto const &idx : spec.a_indices) {
@@ -151,11 +163,40 @@ PackingPlan compute_packing_topology(ContractionKey const &key) {
         }
     }
 
-    // --- Validity: need at least one dim in each group ---
-    if (plan.m_dims.empty() || plan.n_dims.empty() || plan.k_dims_in_a.empty()) {
-        EINSUMS_LOG_TRACE("compute_packing_topology: rejected (empty m/n/k group: m={}, n={}, k={})", plan.m_dims.size(),
-                          plan.n_dims.size(), plan.k_dims_in_a.size());
-        return plan;
+    // --- Reject broadcast outputs ---
+    // A C index that appears in neither A nor B is a broadcast dimension
+    // (every slice along it receives the same contraction result). The plan
+    // has no dim group that can carry it - it would silently vanish and only
+    // the first slice would be written. The generic algorithm handles these.
+    for (auto const &idx : spec.c_indices) {
+        if (!a_set.count(idx) && !b_set.count(idx)) {
+            EINSUMS_LOG_TRACE("compute_packing_topology: rejected (broadcast index '{}' in C only)", idx);
+            return plan;
+        }
+    }
+
+    // --- Synthesize unit dims for empty groups ---
+    // A contraction with no M indices (all C indices from B), no N indices
+    // (all from A), or no link indices (outer product) is still a GEMM with
+    // the missing extent equal to 1. Synthesizing a unit dim (size 1,
+    // stride 0, sentinel pos) lets the block/tile scatter machinery handle
+    // GEMV- and GER-shaped contractions that would otherwise fall to the
+    // generic loops. The direct BLAS fast paths are skipped for such plans
+    // (see PackingPlan::synthetic).
+    if (plan.m_dims.empty()) {
+        plan.m_dims.push_back({.tensor_pos = kSyntheticDimPos, .size = 1, .tensor_stride = 0});
+        plan.c_m_dims.push_back({.tensor_pos = kSyntheticDimPos, .size = 1, .tensor_stride = 0});
+        plan.synthetic = true;
+    }
+    if (plan.n_dims.empty()) {
+        plan.n_dims.push_back({.tensor_pos = kSyntheticDimPos, .size = 1, .tensor_stride = 0});
+        plan.c_n_dims.push_back({.tensor_pos = kSyntheticDimPos, .size = 1, .tensor_stride = 0});
+        plan.synthetic = true;
+    }
+    if (plan.k_dims_in_a.empty()) {
+        plan.k_dims_in_a.push_back({.tensor_pos = kSyntheticDimPos, .size = 1, .tensor_stride = 0});
+        plan.k_dims_in_b.push_back({.tensor_pos = kSyntheticDimPos, .size = 1, .tensor_stride = 0});
+        plan.synthetic = true;
     }
 
     // Multi-M and multi-N are now supported via flat-index-to-offset conversion
