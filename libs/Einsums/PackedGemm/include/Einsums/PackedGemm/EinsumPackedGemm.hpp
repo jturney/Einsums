@@ -843,13 +843,35 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                     // NOLINTNEXTLINE(readability-identifier-naming)
                     using blas_int = einsums::blas::int_t;
                     static thread_local std::vector<ValueType> tls_Af, tls_Bf, tls_Cb;
-                    tls_Af.resize(static_cast<size_t>(MC_blk * KC_blk));
-                    tls_Bf.resize(static_cast<size_t>(nc_len) * static_cast<size_t>(KC_blk));
-                    tls_Cb.resize(static_cast<size_t>(MC_blk) * static_cast<size_t>(nc_len));
+                    bool const                                 use_3m = is_complex && shape.use_3m;
+                    if (!use_3m) {
+                        tls_Af.resize(static_cast<size_t>(MC_blk * KC_blk));
+                        tls_Bf.resize(static_cast<size_t>(nc_len) * static_cast<size_t>(KC_blk));
+                        tls_Cb.resize(static_cast<size_t>(MC_blk) * static_cast<size_t>(nc_len));
+                    }
+
+                    // 3m buffers: three real splits of A, B, and the block
+                    // product, laid out as consecutive segments.
+                    using Real3m = RemoveComplexT<ValueType>;
+                    static thread_local std::vector<Real3m> tls_A3, tls_B3, tls_T3;
+                    if (use_3m) {
+                        tls_A3.resize(3 * static_cast<size_t>(MC_blk * KC_blk));
+                        tls_B3.resize(3 * static_cast<size_t>(nc_len) * static_cast<size_t>(KC_blk));
+                        tls_T3.resize(3 * static_cast<size_t>(MC_blk) * static_cast<size_t>(nc_len));
+                    }
 
                     for (int64_t kc = 0; kc < K; kc += KC_blk) {
                         int64_t const kc_len = std::min(KC_blk, K - kc);
-                        pack_B_flat(tls_Bf.data(), B_data, plan, kc, kc_len, nc, nc_len, conj_b);
+                        if constexpr (is_complex) {
+                            if (use_3m) {
+                                size_t const bseg = static_cast<size_t>(nc_len) * static_cast<size_t>(kc_len);
+                                pack_B_3m_flat<Real3m>(tls_B3.data(), tls_B3.data() + bseg, tls_B3.data() + 2 * bseg, B_data, plan, kc,
+                                                       kc_len, nc, nc_len, conj_b);
+                            }
+                        }
+                        if (!use_3m) {
+                            pack_B_flat(tls_Bf.data(), B_data, plan, kc, kc_len, nc, nc_len, conj_b);
+                        }
 
                         for (int64_t mc = 0; mc < M; mc += MC_blk) {
                             int64_t const mc_len = std::min(MC_blk, M - mc);
@@ -862,6 +884,37 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     for (int64_t ni = 0; ni < nc_len; ++ni) {
                                         C_data[m_off + c_n_offsets[static_cast<size_t>(ni)]] *= beta;
                                     }
+                                }
+                            }
+
+                            if constexpr (is_complex) {
+                                if (use_3m) {
+                                    // ---- 3m: three real GEMMs, combined at the scatter ----
+                                    size_t const aseg = static_cast<size_t>(mc_len) * static_cast<size_t>(kc_len);
+                                    size_t const bseg = static_cast<size_t>(nc_len) * static_cast<size_t>(kc_len);
+                                    size_t const tseg = static_cast<size_t>(mc_len) * static_cast<size_t>(nc_len);
+                                    pack_A_3m_flat<Real3m>(tls_A3.data(), tls_A3.data() + aseg, tls_A3.data() + 2 * aseg, A_data, plan, mc,
+                                                           mc_len, kc, kc_len, conj_a);
+                                    for (int t = 0; t < 3; ++t) {
+                                        einsums::blas::gemm<Real3m>('N', 'T', static_cast<blas_int>(mc_len), static_cast<blas_int>(nc_len),
+                                                                    static_cast<blas_int>(kc_len), Real3m{1}, tls_A3.data() + t * aseg,
+                                                                    static_cast<blas_int>(mc_len), tls_B3.data() + t * bseg,
+                                                                    static_cast<blas_int>(nc_len), Real3m{0}, tls_T3.data() + t * tseg,
+                                                                    static_cast<blas_int>(mc_len));
+                                    }
+                                    Real3m const *t1 = tls_T3.data();
+                                    Real3m const *t2 = tls_T3.data() + tseg;
+                                    Real3m const *t3 = tls_T3.data() + 2 * tseg;
+                                    for (int64_t j = 0; j < nc_len; ++j) {
+                                        int64_t const n_off = c_n_offsets[static_cast<size_t>(j)];
+                                        for (int64_t i2 = 0; i2 < mc_len; ++i2) {
+                                            size_t const idx = static_cast<size_t>(j * mc_len + i2);
+                                            Real3m const re  = t1[idx] - t2[idx];
+                                            Real3m const im  = t3[idx] - t1[idx] - t2[idx];
+                                            C_data[c_m_offsets[static_cast<size_t>(i2)] + n_off] += alpha * ValueType{re, im};
+                                        }
+                                    }
+                                    continue; // next mc block
                                 }
                             }
 

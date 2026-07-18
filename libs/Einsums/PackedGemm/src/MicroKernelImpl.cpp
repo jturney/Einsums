@@ -230,6 +230,14 @@ MicroKernelShape micro_kernel_block() {
     if constexpr (std::is_same_v<T, double>) {
         shape.fast_scatter = true;
     }
+    // Complex on Apple without SME: the 3m method runs the block path on
+    // three real GEMMs (AMX-backed via Accelerate) instead of one complex
+    // GEMM. Measured on the ring benchmark (baseline rung, M4 as an M1-M3
+    // proxy): 17.7 ms vs Sort+GEMM's 23.4 ms (1.32x) for complex<double>.
+    if constexpr (std::is_same_v<T, std::complex<double>> || std::is_same_v<T, std::complex<float>>) {
+        shape.use_3m       = true;
+        shape.fast_scatter = true;
+    }
 #endif
     return shape;
 }

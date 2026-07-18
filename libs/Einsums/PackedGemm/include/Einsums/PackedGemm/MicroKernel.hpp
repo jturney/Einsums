@@ -67,6 +67,13 @@ struct MicroKernelShape {
     /// (Mh = 2M, Kh = 2K). Measured 1.74x over Sort+GEMM for complex<double>
     /// on the M4 SME rung.
     bool use_1m = false;
+    /// Complex elements via the 3m (Karatsuba) method on the BLOCK-GEMM
+    /// path: three real vendor GEMMs per block (Re*Re, Im*Im, (Re+Im)*(Re+Im))
+    /// instead of one complex GEMM - 25% fewer flops, and the real GEMMs
+    /// reach matrix hardware (Accelerate's AMX) that complex arithmetic may
+    /// not. Error bounds are mildly weakened versus conventional complex
+    /// multiplication (Higham's 3m analysis); enable only where measured.
+    bool use_3m = false;
 };
 
 /// @brief Signature of a resolved micro-kernel tile function.

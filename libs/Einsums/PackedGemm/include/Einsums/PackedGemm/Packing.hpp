@@ -707,6 +707,68 @@ void pack_B_flat(T *dst, T const *B_data, PackingPlan const &plan, int64_t kc_st
 }
 
 // ---------------------------------------------------------------------------
+// 3m packing (complex block-GEMM via three real GEMMs; Karatsuba)
+// ---------------------------------------------------------------------------
+//
+// C = A*B over complex splits into three real products:
+//   T1 = Ar*Br,  T2 = Ai*Bi,  T3 = (Ar+Ai)*(Br+Bi)
+//   Cr = T1 - T2,  Ci = T3 - T1 - T2
+// 25% fewer real flops than componentwise complex multiplication, at the
+// cost of mildly weakened error bounds (Higham). One pass over the complex
+// source fills all three real blocks; conjugation is a sign flip on the
+// imaginary split.
+
+/// @brief Split-pack the complex A block into three real column-major
+///        mc_len x kc_len matrices: Re, (signed) Im, and their sum.
+template <typename RealT>
+// NOLINTNEXTLINE(readability-identifier-naming)
+void pack_A_3m_flat(RealT *Ar, RealT *Ai, RealT *As, std::complex<RealT> const *A_data, PackingPlan const &plan, int64_t mc_start,
+                    int64_t mc_len, int64_t kc_start, int64_t kc_len, bool conj = false) {
+    LabeledSectionInternal0();
+    static thread_local std::vector<int64_t> k_offsets, m_offsets;
+    precompute_offsets(kc_start, kc_len, plan.k_dims_in_a, k_offsets);
+    precompute_offsets(mc_start, mc_len, plan.m_dims, m_offsets);
+
+    RealT const sign = conj ? RealT{-1} : RealT{1};
+    for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
+        int64_t const k_off = k_offsets[static_cast<size_t>(k_local)];
+        RealT        *cr = Ar + k_local * mc_len, *ci = Ai + k_local * mc_len, *cs = As + k_local * mc_len;
+        for (int64_t i = 0; i < mc_len; ++i) {
+            std::complex<RealT> const v  = A_data[m_offsets[static_cast<size_t>(i)] + k_off];
+            RealT const               im = sign * v.imag();
+            cr[i]                        = v.real();
+            ci[i]                        = im;
+            cs[i]                        = v.real() + im;
+        }
+    }
+}
+
+/// @brief Split-pack the complex B block into three real k-major
+///        kc_len x nc_len matrices: Re, (signed) Im, and their sum.
+template <typename RealT>
+// NOLINTNEXTLINE(readability-identifier-naming)
+void pack_B_3m_flat(RealT *Br, RealT *Bi, RealT *Bs, std::complex<RealT> const *B_data, PackingPlan const &plan, int64_t kc_start,
+                    int64_t kc_len, int64_t nc_start, int64_t nc_len, bool conj = false) {
+    LabeledSectionInternal0();
+    static thread_local std::vector<int64_t> k_offsets, n_offsets;
+    precompute_offsets(kc_start, kc_len, plan.k_dims_in_b, k_offsets);
+    precompute_offsets(nc_start, nc_len, plan.n_dims, n_offsets);
+
+    RealT const sign = conj ? RealT{-1} : RealT{1};
+    for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
+        int64_t const k_off = k_offsets[static_cast<size_t>(k_local)];
+        RealT        *rr = Br + k_local * nc_len, *ri = Bi + k_local * nc_len, *rs = Bs + k_local * nc_len;
+        for (int64_t j = 0; j < nc_len; ++j) {
+            std::complex<RealT> const v  = B_data[k_off + n_offsets[static_cast<size_t>(j)]];
+            RealT const               im = sign * v.imag();
+            rr[j]                        = v.real();
+            ri[j]                        = im;
+            rs[j]                        = v.real() + im;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 1m packing (complex contraction via the real kernel; Van Zee's 1m method)
 // ---------------------------------------------------------------------------
 //
