@@ -41,6 +41,12 @@ namespace einsums::packed_gemm {
 struct MicroKernelShape {
     int mr;
     int nr;
+    /// K-block hint: 0 = use the cache-derived default (compute_blocking).
+    /// The SME rung raises it: the ZA tile accumulators hold the C block for
+    /// the whole K loop, so deep K blocks mean C is read-modify-written and
+    /// the tiles extracted once instead of once per cache-sized K slice. The
+    /// M block shrinks to compensate so the packed A panel stays L2-sized.
+    int64_t kc = 0;
 };
 
 /// @brief Signature of a resolved micro-kernel tile function.

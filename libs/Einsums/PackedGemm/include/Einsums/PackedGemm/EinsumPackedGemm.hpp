@@ -675,10 +675,17 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // NOLINTNEXTLINE(readability-identifier-naming)
         using blas_int = einsums::blas::int_t;
 
-        int64_t const mc_panels_max = (blk.MC + MR - 1) / MR;
-        int64_t const nc_panels_max = (blk.NC + NR - 1) / NR;
-        auto const    ap_buf_elems  = static_cast<size_t>(mc_panels_max * MR * blk.KC);
-        auto const    bp_buf_elems  = static_cast<size_t>(nc_panels_max * NR * blk.KC);
+        // K blocking: the kernel rung may deepen the cache-derived KC (the SME
+        // rung's ZA accumulators need no C cache blocking), which cuts the
+        // number of beta/scatter read-modify-write passes over C and ZA
+        // extractions to one per tile. The M block shrinks in compensation so
+        // the packed A panel (MC_blk * KC_blk) stays within ~4 MiB.
+        int64_t const KC_blk = (shape.kc > 0) ? std::min<int64_t>(std::max<int64_t>(shape.kc, blk.KC), K) : blk.KC;
+        int64_t       MC_blk = blk.MC;
+        if (KC_blk > blk.KC) {
+            int64_t const mc_cap = (int64_t{4} << 20) / (KC_blk * static_cast<int64_t>(sizeof(ValueType)));
+            MC_blk               = std::clamp((mc_cap / MR) * MR, static_cast<int64_t>(MR), blk.MC);
+        }
 
         // For multi-M/N: we need a temporary contiguous C tile buffer because
         // the multi-dim C elements are non-contiguous in memory.
@@ -700,6 +707,15 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             }
         }
 #endif
+
+        // Size the packing buffers from the blocks actually used, not the
+        // cache-derived maxima - with a deep KC_blk, sizing from blk.NC would
+        // allocate NC/NC_blk times more B-panel memory than any iteration
+        // touches.
+        int64_t const mc_panels_max = (MC_blk + MR - 1) / MR;
+        int64_t const nc_panels_max = (std::min(NC_blk, N) + NR - 1) / NR;
+        auto const    ap_buf_elems  = static_cast<size_t>(mc_panels_max * MR * KC_blk);
+        auto const    bp_buf_elems  = static_cast<size_t>(nc_panels_max * NR * KC_blk);
 
         {
             LabeledSection("C++ packing and kernel");
@@ -726,13 +742,13 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                     precompute_offsets(nc, nc_len, plan.c_n_dims, c_n_offsets);
                 }
 
-                for (int64_t kc = 0; kc < K; kc += blk.KC) {
-                    int64_t const kc_len = std::min(blk.KC, K - kc);
+                for (int64_t kc = 0; kc < K; kc += KC_blk) {
+                    int64_t const kc_len = std::min(KC_blk, K - kc);
 
                     bool bp_packed = false;
 
-                    for (int64_t mc = 0; mc < M; mc += blk.MC) {
-                        int64_t const mc_len = std::min(blk.MC, M - mc);
+                    for (int64_t mc = 0; mc < M; mc += MC_blk) {
+                        int64_t const mc_len = std::min(MC_blk, M - mc);
 
                         if (needs_c_scatter) {
                             precompute_offsets(mc, mc_len, plan.c_m_dims, c_m_offsets);

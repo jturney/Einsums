@@ -133,7 +133,7 @@ MicroKernelShape micro_kernel_block() {
     if constexpr (std::is_same_v<T, double>) {
         int64_t const vl = static_cast<int64_t>(svcntsd());
         if (vl <= kSmeMaxVl) {
-            return {static_cast<int>(2 * vl), static_cast<int>(4 * vl)};
+            return {static_cast<int>(2 * vl), static_cast<int>(4 * vl), int64_t{4096}};
         }
     }
 #endif
