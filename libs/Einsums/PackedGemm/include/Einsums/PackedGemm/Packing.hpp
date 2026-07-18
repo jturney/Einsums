@@ -592,6 +592,98 @@ void pack_B(T *Bp, T const *B_data, PackingPlan const &plan, int64_t kc_start, i
 }
 
 // ---------------------------------------------------------------------------
+// Flat block packing (vendor-GEMM block strategy)
+// ---------------------------------------------------------------------------
+
+/// @brief Pack A[mc:mc+mc_len, kc:kc+kc_len] into a plain column-major
+///        mc_len x kc_len matrix (element (i, k) at dst[i + k*mc_len]).
+///
+/// Feeds the block-GEMM scatter strategy: one vendor GEMM per cache block
+/// instead of MRxNR micro-tiles. Like the panel packers, unit-stride runs of
+/// the fastest (post-coalescing) M dim are copied with memcpy; everything
+/// else falls back to the scalar gather. Conjugation is applied here so the
+/// vendor GEMM can run without transpose flags.
+template <typename T>
+// NOLINTNEXTLINE(readability-identifier-naming)
+void pack_A_flat(T *dst, T const *A_data, PackingPlan const &plan, int64_t mc_start, int64_t mc_len, int64_t kc_start, int64_t kc_len,
+                 bool conj = false) {
+    LabeledSectionInternal0();
+    auto const &m_dims = plan.m_dims;
+    auto const &k_dims = plan.k_dims_in_a;
+
+    static thread_local std::vector<int64_t> k_offsets, m_offsets;
+    precompute_offsets(kc_start, kc_len, k_dims, k_offsets);
+    precompute_offsets(mc_start, mc_len, m_dims, m_offsets);
+
+    bool const    m_fast_unit = !conj && m_dims.back().tensor_stride == 1;
+    int64_t const m_fast_size = m_dims.back().size;
+
+    for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
+        int64_t const k_offset = k_offsets[static_cast<size_t>(k_local)];
+        T            *col      = dst + k_local * mc_len;
+        if (m_fast_unit) {
+            int64_t pos = 0;
+            while (pos < mc_len) {
+                int64_t const run = std::min(m_fast_size - ((mc_start + pos) % m_fast_size), mc_len - pos);
+                std::memcpy(col + pos, A_data + m_offsets[static_cast<size_t>(pos)] + k_offset, static_cast<size_t>(run) * sizeof(T));
+                pos += run;
+            }
+            continue;
+        }
+        for (int64_t i = 0; i < mc_len; ++i) {
+            T val = A_data[m_offsets[static_cast<size_t>(i)] + k_offset];
+            if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
+                if (conj)
+                    val = std::conj(val);
+            }
+            col[i] = val;
+        }
+    }
+}
+
+/// @brief Pack B[kc:kc+kc_len, nc:nc+nc_len] into a plain k-major
+///        kc_len x nc_len matrix (element (k, j) at dst[k*nc_len + j]) -
+///        i.e. the column-major nc_len x kc_len matrix a vendor GEMM
+///        consumes with transB='T'.
+template <typename T>
+// NOLINTNEXTLINE(readability-identifier-naming)
+void pack_B_flat(T *dst, T const *B_data, PackingPlan const &plan, int64_t kc_start, int64_t kc_len, int64_t nc_start, int64_t nc_len,
+                 bool conj = false) {
+    LabeledSectionInternal0();
+    auto const &n_dims = plan.n_dims;
+    auto const &k_dims = plan.k_dims_in_b;
+
+    static thread_local std::vector<int64_t> k_offsets, n_offsets;
+    precompute_offsets(kc_start, kc_len, k_dims, k_offsets);
+    precompute_offsets(nc_start, nc_len, n_dims, n_offsets);
+
+    bool const    n_fast_unit = !conj && n_dims.back().tensor_stride == 1;
+    int64_t const n_fast_size = n_dims.back().size;
+
+    for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
+        int64_t const k_offset = k_offsets[static_cast<size_t>(k_local)];
+        T            *row      = dst + k_local * nc_len;
+        if (n_fast_unit) {
+            int64_t pos = 0;
+            while (pos < nc_len) {
+                int64_t const run = std::min(n_fast_size - ((nc_start + pos) % n_fast_size), nc_len - pos);
+                std::memcpy(row + pos, B_data + k_offset + n_offsets[static_cast<size_t>(pos)], static_cast<size_t>(run) * sizeof(T));
+                pos += run;
+            }
+            continue;
+        }
+        for (int64_t j = 0; j < nc_len; ++j) {
+            T val = B_data[k_offset + n_offsets[static_cast<size_t>(j)]];
+            if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
+                if (conj)
+                    val = std::conj(val);
+            }
+            row[j] = val;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // HPTT-accelerated transpose (cache-blocked, SIMD-optimized)
 // ---------------------------------------------------------------------------
 

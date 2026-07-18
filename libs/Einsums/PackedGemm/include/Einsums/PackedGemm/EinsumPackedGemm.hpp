@@ -678,9 +678,16 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // K blocking: the kernel rung may deepen the cache-derived KC (the SME
         // rung's ZA accumulators need no C cache blocking), which cuts the
         // number of beta/scatter read-modify-write passes over C and ZA
-        // extractions to one per tile. The M block shrinks in compensation so
-        // the packed A panel (MC_blk * KC_blk) stays within ~4 MiB.
-        int64_t const KC_blk = (shape.kc > 0) ? std::min<int64_t>(std::max<int64_t>(shape.kc, blk.KC), K) : blk.KC;
+        // extractions to one per tile. The block-GEMM scatter strategy gets
+        // the same deep default: the vendor GEMM blocks K internally, so the
+        // only KC role left is bounding the packed panels and the number of
+        // scatter passes. The M block shrinks in compensation so the packed
+        // A panel (MC_blk * KC_blk) stays within ~4 MiB.
+        int64_t kc_hint = shape.kc;
+        if (kc_hint == 0 && shape.block_gemm && (multi_m || multi_n)) {
+            kc_hint = 4096;
+        }
+        int64_t const KC_blk = (kc_hint > 0) ? std::min<int64_t>(std::max<int64_t>(kc_hint, blk.KC), K) : blk.KC;
         int64_t       MC_blk = blk.MC;
         if (KC_blk > blk.KC) {
             int64_t const mc_cap = (int64_t{4} << 20) / (KC_blk * static_cast<int64_t>(sizeof(ValueType)));
@@ -740,6 +747,62 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 static thread_local std::vector<int64_t> c_n_offsets, c_m_offsets;
                 if (needs_c_scatter) {
                     precompute_offsets(nc, nc_len, plan.c_n_dims, c_n_offsets);
+                }
+
+                // ---- Block-GEMM scatter strategy ----
+                // One vendor GEMM per (mc, kc) block: pack A to a plain
+                // column-major mc_len x kc_len matrix and B to k-major
+                // kc_len x nc_len, GEMM into a contiguous C block, then
+                // scatter-accumulate through the offset tables. Vendor
+                // libraries run cache-blocked GEMMs of this size at full
+                // speed (including matrix units the tile kernels cannot
+                // reach, e.g. Accelerate's AMX/SME), while the packed blocks
+                // and C temp stay cache-sized and thread-local - no
+                // operand-sized temporaries, unlike Sort+GEMM.
+                if (needs_c_scatter && shape.block_gemm) {
+                    // NOLINTNEXTLINE(readability-identifier-naming)
+                    using blas_int = einsums::blas::int_t;
+                    static thread_local std::vector<ValueType> tls_Af, tls_Bf, tls_Cb;
+                    tls_Af.resize(static_cast<size_t>(MC_blk * KC_blk));
+                    tls_Bf.resize(static_cast<size_t>(nc_len) * static_cast<size_t>(KC_blk));
+                    tls_Cb.resize(static_cast<size_t>(MC_blk) * static_cast<size_t>(nc_len));
+
+                    for (int64_t kc = 0; kc < K; kc += KC_blk) {
+                        int64_t const kc_len = std::min(KC_blk, K - kc);
+                        pack_B_flat(tls_Bf.data(), B_data, plan, kc, kc_len, nc, nc_len, conj_b);
+
+                        for (int64_t mc = 0; mc < M; mc += MC_blk) {
+                            int64_t const mc_len = std::min(MC_blk, M - mc);
+                            precompute_offsets(mc, mc_len, plan.c_m_dims, c_m_offsets);
+
+                            // Beta prescale once per (mc, nc) block on the first kc slice.
+                            if (kc == 0 && beta != ValueType{1}) {
+                                for (int64_t mi = 0; mi < mc_len; ++mi) {
+                                    int64_t const m_off = c_m_offsets[static_cast<size_t>(mi)];
+                                    for (int64_t ni = 0; ni < nc_len; ++ni) {
+                                        C_data[m_off + c_n_offsets[static_cast<size_t>(ni)]] *= beta;
+                                    }
+                                }
+                            }
+
+                            pack_A_flat(tls_Af.data(), A_data, plan, mc, mc_len, kc, kc_len, conj_a);
+
+                            einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(mc_len), static_cast<blas_int>(nc_len),
+                                                           static_cast<blas_int>(kc_len), alpha, tls_Af.data(),
+                                                           static_cast<blas_int>(mc_len), tls_Bf.data(), static_cast<blas_int>(nc_len),
+                                                           ValueType{0}, tls_Cb.data(), static_cast<blas_int>(mc_len));
+
+                            // Scatter-accumulate the contiguous block into C.
+                            for (int64_t j = 0; j < nc_len; ++j) {
+                                int64_t const    n_off = c_n_offsets[static_cast<size_t>(j)];
+                                ValueType const *src   = tls_Cb.data() + j * mc_len;
+                                for (int64_t i2 = 0; i2 < mc_len; ++i2) {
+                                    C_data[c_m_offsets[static_cast<size_t>(i2)] + n_off] += src[i2];
+                                }
+                            }
+                        }
+                    }
+                    continue; // next nc block
                 }
 
                 for (int64_t kc = 0; kc < K; kc += KC_blk) {

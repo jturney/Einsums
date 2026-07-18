@@ -50,9 +50,15 @@ struct MicroKernelShape {
     /// True when this rung's tile kernel makes the multi-M/N scatter path
     /// faster than Sort+GEMM (measured 2.3x on M4 SME), so callers with a
     /// TTGT fallback should still take the scatter path instead of
-    /// declining. NEON/AVX rungs leave it false: their scatter path loses
-    /// to Sort+GEMM.
+    /// declining. Rungs whose scatter path loses to Sort+GEMM leave it
+    /// false.
     bool fast_scatter = false;
+    /// Scatter-path engine: true = one vendor GEMM per cache block into a
+    /// contiguous temp, then scatter (best when the vendor library reaches
+    /// hardware the tile kernel cannot, e.g. Accelerate's AMX on M1-M3);
+    /// false = the rung's own MRxNR tile kernel (the SME rung's FMOPA
+    /// micro-tiles beat a vendor round-trip).
+    bool block_gemm = true;
 };
 
 /// @brief Signature of a resolved micro-kernel tile function.
