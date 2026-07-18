@@ -31,6 +31,7 @@
 #include <Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp>
 #include <Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamAssignment.hpp>
+#include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
 #include <Einsums/ComputeGraph/Passes/SymmetryPropagation.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
@@ -387,6 +388,15 @@ void PassManager::populate_default() {
     // here (after Materialization, before GPU placement) so downstream
     // passes and executions see the inferred symmetry.
     pm.add<passes::SymmetryPropagation>();
+
+    // Stream fusion: merge sibling contractions that sweep one large tensor
+    // into a single storage-order pass. After Materialization (its size
+    // thresholds read real dims) and SymmetryPropagation (which inspects the
+    // einsums it may consume), and before GPU placement and the liveness
+    // passes, which treat the fused Custom node as one unit. Declines
+    // distributed operands; measured >= 1.5x on every qualifying shape
+    // (thresholds gate the rest to no-ops).
+    pm.add<passes::StreamContractionFusion>();
 
     // GPU passes, only included when a GPU backend (or mock) is available.
     // GPUPlacement uses the shared HardwareProfile for its cost model.

@@ -54,7 +54,10 @@ namespace einsums::compute_graph::passes {
  * would otherwise fold.
  *
  * @par Opt-in
- * Not registered in @ref PassManager::create_default; workload-dependent.
+ * Registered in @ref PassManager::create_default (after Materialization /
+ * SymmetryPropagation, before GPU placement): the size and ratio gates make
+ * it a no-op on graphs without a qualifying stream, and it declines
+ * distributed operands.
  * @code
  * cg::PassManager pm; pm.add(std::make_shared<StreamContractionFusion>());
  * graph.apply(pm);

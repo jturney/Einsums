@@ -380,6 +380,12 @@ bool StreamContractionFusion::run(Graph &graph) {
             if (sh == nullptr || wh == nullptr || ch == nullptr || !sh->is_runtime || !wh->is_runtime || !ch->is_runtime) {
                 continue;
             }
+            // Distributed operands belong to the communication passes
+            // (InputSlicing / SUMMAExpansion); fusing them into a local
+            // Custom node would hide the einsum those passes rewrite.
+            if (sh->is_distributed || wh->is_distributed || ch->is_distributed) {
+                continue;
+            }
             size_t const s_elems = elem_count(sh->dims);
             size_t const w_elems = elem_count(wh->dims);
             size_t const c_elems = elem_count(ch->dims);
