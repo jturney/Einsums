@@ -79,9 +79,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
 
   private:
-    /// The streamed tensor must have at least this many elements: below it,
-    /// per-node dispatch overhead is negligible and fusion buys nothing.
-    static constexpr size_t kMinStreamElems = size_t{1} << 20;
+    /// The streamed tensor must have at least this many elements. Measured
+    /// (Apple M4, Fock J/K pair): the fused kernel beats the unfused graph at
+    /// every size down to 4096 elements by 1.5-2.9x, because fusing removes a
+    /// whole node dispatch (and any permute the member would need) while the
+    /// fused kernel costs no more than one node. This floor only excludes
+    /// trivial streams where either path is measurement noise.
+    static constexpr size_t kMinStreamElems = size_t{1} << 12;
 
     /// Outputs above this element count are not privatized per thread;
     /// members writing them stay unfused.

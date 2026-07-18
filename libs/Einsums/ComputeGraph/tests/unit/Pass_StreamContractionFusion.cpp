@@ -125,7 +125,7 @@ TEST_CASE("StreamContractionFusion - dependency-pinned intervening writer blocks
 }
 
 TEST_CASE("StreamContractionFusion - below the stream threshold stays unfused", "[ComputeGraph][Passes][StreamFusion]") {
-    constexpr int n   = 8; // 4096 elements, far below the 1M threshold
+    constexpr int n   = 7; // 2401 elements, below the 4096-element threshold
     auto          TEI = create_random_tensor<double>("TEI", n, n, n, n);
     auto          D   = create_random_tensor<double>("D", n, n);
 
