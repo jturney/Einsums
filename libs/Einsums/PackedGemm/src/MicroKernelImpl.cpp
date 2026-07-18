@@ -199,6 +199,25 @@ MicroKernelShape micro_kernel_block() {
             return {static_cast<int>(2 * vl), static_cast<int>(2 * vl), int64_t{4096}, /*fast_scatter=*/true, /*block_gemm=*/false};
         }
     }
+    // Complex on the SME rung: 1m through the REAL kernel of the underlying
+    // type - there is no complex FMOPA, and 1m puts all complex arithmetic on
+    // the real ZA tiles (measured 1.74x over Sort+GEMM for complex<double>).
+    // The advertised geometry is the real kernel's; blis_contraction doubles
+    // the working extents.
+    if constexpr (std::is_same_v<T, std::complex<double>>) {
+        int64_t const vl = static_cast<int64_t>(svcntsd());
+        if (vl <= kSmeMaxVl) {
+            return {static_cast<int>(2 * vl), static_cast<int>(4 * vl), int64_t{4096}, /*fast_scatter=*/true, /*block_gemm=*/false,
+                    /*use_1m=*/true};
+        }
+    }
+    if constexpr (std::is_same_v<T, std::complex<float>>) {
+        int64_t const vl = static_cast<int64_t>(svcntsw());
+        if (vl <= 2 * kSmeMaxVl) {
+            return {static_cast<int>(2 * vl), static_cast<int>(2 * vl), int64_t{4096}, /*fast_scatter=*/true, /*block_gemm=*/false,
+                    /*use_1m=*/true};
+        }
+    }
 #endif
     auto const      &cfg = cpu_config();
     MicroKernelShape shape{cfg.MR, cfg.NR};

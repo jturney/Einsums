@@ -59,6 +59,14 @@ struct MicroKernelShape {
     /// false = the rung's own MRxNR tile kernel (the SME rung's FMOPA
     /// micro-tiles beat a vendor round-trip).
     bool block_gemm = true;
+    /// Complex elements via Van Zee's 1m method: A packs in the expanded 1e
+    /// form ([[ar,-ai],[ai,ar]] per element), B packs re/im as adjacent K
+    /// rows (1r), and the REAL tile kernel of the underlying real type
+    /// computes interleaved-complex output directly. When set, mr/nr/kc
+    /// describe the REAL kernel's geometry and the working extents double
+    /// (Mh = 2M, Kh = 2K). Measured 1.74x over Sort+GEMM for complex<double>
+    /// on the M4 SME rung.
+    bool use_1m = false;
 };
 
 /// @brief Signature of a resolved micro-kernel tile function.

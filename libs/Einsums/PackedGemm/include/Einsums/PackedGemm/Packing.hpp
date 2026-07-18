@@ -707,6 +707,105 @@ void pack_B_flat(T *dst, T const *B_data, PackingPlan const &plan, int64_t kc_st
 }
 
 // ---------------------------------------------------------------------------
+// 1m packing (complex contraction via the real kernel; Van Zee's 1m method)
+// ---------------------------------------------------------------------------
+//
+// Complex GEMM reformulated as ONE real GEMM by encoding complex
+// multiplication in the packing stage:
+//
+//   1e (A): complex a = ar + i*ai occupies a 2x2 real block
+//              [[ ar, -ai ],
+//               [ ai,  ar ]]
+//           at real rows (2p, 2p+1) x real cols (2q, 2q+1).
+//   1r (B): complex b occupies two consecutive real K rows [br; bi].
+//   C:      the real (2M x N) output's even/odd row pairs are exactly the
+//           interleaved re/im of complex C - no combine step.
+//
+// Conjugation folds into the packing signs. Error bounds are conventional
+// (unlike 3m). Reference: Van Zee, "Implementing High-Performance Complex
+// Matrix Multiplication via the 1M Method", SIAM J. Sci. Comput.
+
+/// @brief Pack the 1e-expanded A block into column-major MR x kh_len real
+///        micro-panels (the layout the real tile kernels consume).
+///
+/// mh/kh index the doubled ("hat") real space: real row ih = 2p + r maps to
+/// complex row p, and real col khi = 2q + s maps to complex link index q.
+/// Panels are zero-padded to full MR like the real packers.
+template <typename RealT>
+// NOLINTNEXTLINE(readability-identifier-naming)
+void pack_A_1m_panels(RealT *Ap, std::complex<RealT> const *A_data, PackingPlan const &plan, int64_t mh_start, int64_t mh_len,
+                      int64_t kh_start, int64_t kh_len, int MR, bool conj = false) {
+    LabeledSectionInternal0();
+    static thread_local std::vector<int64_t> k_offsets, m_offsets;
+    precompute_offsets(kh_start / 2, (kh_start + kh_len + 1) / 2 - kh_start / 2, plan.k_dims_in_a, k_offsets);
+    precompute_offsets(mh_start / 2, (mh_start + mh_len + 1) / 2 - mh_start / 2, plan.m_dims, m_offsets);
+
+    RealT const ai_sign = conj ? RealT{-1} : RealT{1};
+
+    int64_t const num_panels  = (mh_len + MR - 1) / MR;
+    int64_t const full_panels = mh_len / MR;
+    int64_t const tail        = mh_len % MR;
+    if (tail > 0) {
+        RealT *last_panel = Ap + full_panels * MR * kh_len;
+        std::fill(last_panel, last_panel + MR * kh_len, RealT{});
+    }
+
+    for (int64_t kk = 0; kk < kh_len; ++kk) {
+        int64_t const khi = kh_start + kk;
+        int64_t const q = khi / 2, s = khi % 2;
+        int64_t const k_off = k_offsets[static_cast<size_t>(q - kh_start / 2)];
+        for (int64_t p_panel = 0; p_panel < num_panels; ++p_panel) {
+            int64_t const panel_len = (p_panel < full_panels) ? MR : tail;
+            RealT        *dst       = Ap + p_panel * MR * kh_len + kk * MR;
+            for (int64_t ii = 0; ii < panel_len; ++ii) {
+                int64_t const             ih = mh_start + p_panel * MR + ii;
+                int64_t const             p = ih / 2, r = ih % 2;
+                std::complex<RealT> const v  = A_data[m_offsets[static_cast<size_t>(p - mh_start / 2)] + k_off];
+                RealT const               ai = ai_sign * v.imag();
+                dst[ii]                      = (s == 0) ? ((r == 0) ? v.real() : ai) : ((r == 0) ? -ai : v.real());
+            }
+        }
+    }
+}
+
+/// @brief Pack the 1r-expanded B block into row-major kh_len x NR real
+///        micro-panels: real K row 2q + s carries (s == 0 ? re : im) of
+///        complex B link index q.
+template <typename RealT>
+// NOLINTNEXTLINE(readability-identifier-naming)
+void pack_B_1m_panels(RealT *Bp, std::complex<RealT> const *B_data, PackingPlan const &plan, int64_t kh_start, int64_t kh_len,
+                      int64_t nc_start, int64_t nc_len, int NR, bool conj = false) {
+    LabeledSectionInternal0();
+    static thread_local std::vector<int64_t> k_offsets, n_offsets;
+    precompute_offsets(kh_start / 2, (kh_start + kh_len + 1) / 2 - kh_start / 2, plan.k_dims_in_b, k_offsets);
+    precompute_offsets(nc_start, nc_len, plan.n_dims, n_offsets);
+
+    RealT const bi_sign = conj ? RealT{-1} : RealT{1};
+
+    int64_t const num_panels  = (nc_len + NR - 1) / NR;
+    int64_t const full_panels = nc_len / NR;
+    int64_t const tail        = nc_len % NR;
+    if (tail > 0) {
+        RealT *last_panel = Bp + full_panels * kh_len * NR;
+        std::fill(last_panel, last_panel + kh_len * NR, RealT{});
+    }
+
+    for (int64_t kk = 0; kk < kh_len; ++kk) {
+        int64_t const khi = kh_start + kk;
+        int64_t const q = khi / 2, s = khi % 2;
+        int64_t const k_off = k_offsets[static_cast<size_t>(q - kh_start / 2)];
+        for (int64_t p_panel = 0; p_panel < num_panels; ++p_panel) {
+            int64_t const panel_len = (p_panel < full_panels) ? static_cast<int64_t>(NR) : tail;
+            RealT        *dst       = Bp + p_panel * kh_len * NR + kk * NR;
+            for (int64_t j = 0; j < panel_len; ++j) {
+                std::complex<RealT> const v = B_data[k_off + n_offsets[static_cast<size_t>(p_panel * NR + j)]];
+                dst[j]                      = (s == 0) ? v.real() : bi_sign * v.imag();
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // HPTT-accelerated transpose (cache-blocked, SIMD-optimized)
 // ---------------------------------------------------------------------------
 
