@@ -1183,7 +1183,8 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     // deferral and (b) whether Sort+GEMM exists as a fallback for the policy
     // check below (it requires all three groups non-empty).
     // -------------------------------------------------------------------------
-    bool ttgt_exists = false;
+    bool ttgt_exists  = false;
+    bool outer_shaped = false;
     {
         std::unordered_set<std::string> const a_set(a_raw.begin(), a_raw.end());
         std::unordered_set<std::string> const b_set(b_raw.begin(), b_raw.end());
@@ -1202,7 +1203,22 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             ProfileAnnotate("packed_gemm_skip", "defer_to_direct_gemm");
             return false; // Deferred to direct BLAS GEMM, not a rejection.
         }
-        ttgt_exists = m_count > 0 && n_count > 0 && !link.empty();
+        // Bandwidth-bound shape classes where the packed pass structure
+        // (pack + kernel + scatter = 2-3 memory passes) measurably loses to
+        // the generic loop's single fused pass, at every size tested:
+        //   - batch-dot: no M and no N indices (per-batch dot products)
+        //   - GEMV-shaped: exactly one of M/N empty (no K reuse to amortize
+        //     the packing copy)
+        if (m_count == 0 && n_count == 0) {
+            ProfileAnnotate("packed_gemm_skip", "defer_to_generic_batch_dot");
+            return false;
+        }
+        if (m_count == 0 || n_count == 0) {
+            ProfileAnnotate("packed_gemm_skip", "defer_to_generic_gemv_shaped");
+            return false;
+        }
+        outer_shaped = link.empty();
+        ttgt_exists  = m_count > 0 && n_count > 0 && !link.empty();
     }
 
     // -------------------------------------------------------------------------
@@ -1233,15 +1249,24 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // these; the only question is policy.
         bool const needs_scatter = multi_m || multi_n || (plan.c_m_dims[0].tensor_stride != 1 && plan.c_n_dims[0].tensor_stride != 1);
 
-        // Decline only when a TTGT fallback actually exists for this shape
-        // and neither the caller nor the rung wants the scatter path. GEMV-
-        // and outer-product-shaped contractions (synthetic plans) have no
-        // Sort+GEMM fallback - their alternative is the generic loop, which
-        // the scatter path beats on every architecture.
-        if (needs_scatter && ttgt_exists && !allow_scatter && !micro_kernel_shape<ValueType>().fast_scatter) {
+        // Outer products (no link indices, K synthesized to 1): the packed
+        // pass structure wins only once the output is large enough to make
+        // the generic loop's scattered writes hurt - measured 1.5x faster at
+        // ~19M output elements, 4x slower at ~300k. Below the threshold the
+        // generic/GER paths keep the shape.
+        if (outer_shaped && plan.M_total * plan.N_total < (int64_t{1} << 22)) {
+            ProfileAnnotate("packed_gemm_skip", "defer_small_outer_to_generic");
+            return false;
+        }
+
+        // Decline when a TTGT fallback exists and either the rung's kernel
+        // does not beat it on the scatter path or the shape is batched -
+        // Sort+GEMM's per-batch canonical GEMMs measure faster than the
+        // scatter engines for batched shapes at every size tested.
+        if (needs_scatter && ttgt_exists && !allow_scatter && (!micro_kernel_shape<ValueType>().fast_scatter || plan.batch_total > 1)) {
             ProfileAnnotate("packed_gemm_skip", "scatter_defer_to_ttgt");
             EINSUMS_LOG_INFO("PackedGemm: declining — scatter-path shape, the caller has a TTGT fallback, "
-                             "and this rung's kernel does not beat it on the scatter path.");
+                             "and this rung's kernel does not beat it for this shape.");
             return false;
         }
 
