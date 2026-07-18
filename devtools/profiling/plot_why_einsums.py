@@ -29,7 +29,7 @@ Build the driver first (see profile_compare.py for the cmake invocation),
 then from the repo root:
 
     python devtools/profiling/plot_why_einsums.py --bin-dir build-profiling \
-        --sizes 32 48 64 80 100 --trials 3 \
+        --sizes 48 64 80 100 120 140 --trials 3 \
         --plot docs/sphinx/_static/index-images/why_einsums.png
 """
 
@@ -60,7 +60,7 @@ SERIES = [
 
 
 def run_driver(exe, n, trials):
-    out = subprocess.run([str(exe), "-n", str(n), "-t", str(trials), "-c", "--einsums:debug:no-attach-debugger"],
+    out = subprocess.run([str(exe), "-n", str(n), "-t", str(trials), "-c", "-x", "--einsums:debug:no-attach-debugger"],
                          capture_output=True, text=True, check=True).stdout
     for line in out.splitlines():
         parts = line.strip().split(",")
@@ -72,18 +72,32 @@ def run_driver(exe, n, trials):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin-dir", default="build-profiling")
-    ap.add_argument("--sizes", nargs="+", type=int, default=[32, 48, 64, 80, 100])
+    ap.add_argument("--sizes", nargs="+", type=int, default=[48, 64, 80, 100, 120, 140])
     ap.add_argument("--trials", type=int, default=3)
     ap.add_argument("--plot", default="docs/sphinx/_static/index-images/why_einsums.png")
+    ap.add_argument("--csv-in", default=None,
+                    help="plot from a saved CSV (skip running the driver); the script writes one next to the PNG")
     args = ap.parse_args()
 
-    exe = pathlib.Path(args.bin_dir) / "profile_strategies"
     data = {name: [] for name, _, _, _ in SERIES}
-    for n in args.sizes:
-        row = run_driver(exe, n, args.trials)
-        for name, _, _, col in SERIES:
-            data[name].append(row[col - 1])
-        print(f"n={n:4d}  " + "  ".join(f"{name.split(' (')[0]} {data[name][-1]:9.2f} ms" for name, _, _, _ in SERIES))
+    if args.csv_in:
+        rows = [line.strip().split(",") for line in open(args.csv_in) if line.strip()]
+        args.sizes = [int(r[0]) for r in rows]
+        for r in rows:
+            for name, _, _, col in SERIES:
+                data[name].append(float(r[col]))
+    else:
+        exe = pathlib.Path(args.bin_dir) / "profile_strategies"
+        csv_lines = []
+        for n in args.sizes:
+            row = run_driver(exe, n, args.trials)
+            csv_lines.append(f"{n}," + ",".join(f"{v:.4f}" for v in row))
+            for name, _, _, col in SERIES:
+                data[name].append(row[col - 1])
+            print(f"n={n:4d}  " + "  ".join(f"{name.split(' (')[0]} {data[name][-1]:9.2f} ms" for name, _, _, _ in SERIES))
+        csv_path = pathlib.Path(args.plot).with_suffix(".csv")
+        csv_path.write_text("\n".join(csv_lines) + "\n")
+        print(f"wrote {csv_path}")
 
     fig, ax = plt.subplots(figsize=(9.6, 5.4), dpi=150)
     fig.patch.set_facecolor(SURFACE)
@@ -108,6 +122,10 @@ def main():
                     color=INK if emphasize else INK_2, fontweight="bold" if emphasize else "normal")
 
     ax.set_yscale("log")
+    # Give the top label headroom so collision-avoidance never pushes it
+    # above the axis and clips it.
+    bottom, top = ax.get_ylim()
+    ax.set_ylim(bottom, max(top, 10.0 ** (ys[-1] + 0.08)))
     ax.set_xlabel("orbitals", fontsize=10, color=INK_2)
     ax.set_ylabel("Fock-build time, G = 2J − K (ms)", fontsize=10, color=INK_2)
     ax.set_title("One Fock build, five execution strategies — Apple M4", fontsize=12, color=INK, loc="left", pad=12)

@@ -19,9 +19,11 @@
 //   stream   captured ComputeGraph + StreamContractionFusion: loop fusion -
 //            ONE storage-order pass over the TEI feeding both accumulators
 //
-// Usage: profile_strategies -n <norbs> -t <trials> [-c]
+// Usage: profile_strategies -n <norbs> -t <trials> [-c] [-x]
 //   -c prints one CSV line:
 //   n,unfused_ms,serial_ms,forloop_ms,eager_ms,lccf_ms,stream_ms
+//   -x skips the LCCF strategy (reported as 0); its L build costs an extra
+//      TEI-sized allocation and seconds per trial at large n
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Runtime.hpp>
@@ -129,7 +131,7 @@ void fock_unfused_serial(Tensor<double, 2> &G, Tensor<double, 4> const &TEI, Ten
 
 int einsums_main(int argc, char **argv) {
     int  n = 60, trials = 3;
-    bool csv = false;
+    bool csv = false, skip_lccf = false;
     for (int a = 1; a < argc; a++) {
         if (std::strcmp(argv[a], "-n") == 0 && a + 1 < argc) {
             n = std::atoi(argv[++a]);
@@ -137,6 +139,8 @@ int einsums_main(int argc, char **argv) {
             trials = std::atoi(argv[++a]);
         } else if (std::strcmp(argv[a], "-c") == 0) {
             csv = true;
+        } else if (std::strcmp(argv[a], "-x") == 0) {
+            skip_lccf = true;
         }
     }
 
@@ -174,11 +178,14 @@ int einsums_main(int argc, char **argv) {
     };
 
     // 3. LCCF-folded graph
-    cg::Graph g_lccf("lccf");
-    capture(g_lccf);
-    g_lccf.apply<cg::passes::LinearCombinationContractionFolding>();
-    int const  lccf_trials = (n >= 80) ? 2 : trials; // its L build is expensive at large n
-    auto const t_lccf      = best_ms([&] { g_lccf.execute(); }, lccf_trials);
+    double t_lccf = 0.0;
+    if (!skip_lccf) {
+        cg::Graph g_lccf("lccf");
+        capture(g_lccf);
+        g_lccf.apply<cg::passes::LinearCombinationContractionFolding>();
+        int const lccf_trials = (n >= 80) ? 2 : trials; // its L build is expensive at large n
+        t_lccf                = best_ms([&] { g_lccf.execute(); }, lccf_trials);
+    }
 
     // 4. stream-fused graph
     cg::Graph g_stream("stream");
