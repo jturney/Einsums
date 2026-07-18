@@ -12,7 +12,9 @@ engines (SME FMOPA micro-tiles for real types, the 1m method on those same
 real tiles for complex types).
 
 Workload: the CCSD-like ring contraction C(abij) = A(aeim) B(ebmj) with
-o = 16 and v = 64 (v = 48 for the 16-byte complex types), best of 7 runs.
+o = 16 and v = 64 (v = 48 for both complex types, so cross-dtype memory
+numbers are NOT proportional to sizeof(T): complex<float> is 2*48^2*16^2
+elements * 8 B = exactly 9 MiB), best of 7 runs.
 The timings below were measured on an Apple M4 (macOS, arm64, Accelerate)
 with the benchmark driver in the PR description; re-measure by timing
 tensor_algebra::detail::einsum_do_sort_gemm directly against a plain
@@ -36,7 +38,7 @@ GRAY = "#8a8984"  # generic loops (recessive baseline)
 INK = "#0b0b0b"
 INK_2 = "#52514e"
 
-DTYPES = ["double", "float", "complex<double>", "complex<float>"]
+DTYPES = ["double", "float", "complex<double> (v=48)", "complex<float> (v=48)"]
 GEN_MS = [262.5, 226.8, 125.5, 92.1]
 SORT_MS = [13.04, 6.70, 21.24, 9.91]
 PACK_MS = [5.65, 1.75, 13.46, 5.16]
@@ -69,7 +71,7 @@ def progression_dots(ax):
         ax.plot([p, g], [i, i], color="#d9d8d4", linewidth=1.6, zorder=1)
         ax.plot([g], [i], "o", color=GRAY, markersize=9, zorder=3, label="generic loops" if i == 0 else None)
         ax.plot([s], [i], "o", color=BLUE, markersize=9, zorder=3, label="Sort+GEMM" if i == 0 else None)
-        ax.plot([p], [i], "o", color=AQUA, markersize=10, zorder=4, label="PackedGemm (now)" if i == 0 else None)
+        ax.plot([p], [i], "o", color=AQUA, markersize=10, zorder=4, label="PackedGemm" if i == 0 else None)
         ax.annotate(f"{g:.0f}", xy=(g, i), xytext=(0, 9), textcoords="offset points", ha="center", fontsize=8.5, color=INK_2)
         ax.annotate(f"{s:.1f}", xy=(s, i), xytext=(0, 9), textcoords="offset points", ha="center", fontsize=8.5, color=INK_2)
         ax.annotate(f"{p:.2f}", xy=(p, i), xytext=(0, -17), textcoords="offset points", ha="center", fontsize=9, color=INK,
