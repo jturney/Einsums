@@ -48,6 +48,7 @@ set(ComputeGraphTests
     Pass_FreeInsertion.cpp
     Pass_InplaceOptimization.cpp
     Pass_LinearCombinationContractionFolding.cpp
+    Pass_StreamContractionFusion.cpp
     Pass_LoopInvariantHoisting.cpp
     Pass_MemoryPlanning.cpp
     Pass_Reorder.cpp
