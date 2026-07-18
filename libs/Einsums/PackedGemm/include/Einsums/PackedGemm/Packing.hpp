@@ -69,6 +69,11 @@ struct PackingPlan {
     /// Empty for non-batched contractions.
     std::vector<BatchDimSpec> batch_dims;
     int64_t                   batch_total{1}; ///< Product of all batch dim sizes
+
+    /// True when coalesce_plan() merged at least one pair of dims. Merged
+    /// DimSpecs have meaningless tensor_pos values, so the HPTT flatten path
+    /// (which rebuilds axis permutations from tensor_pos) must be skipped.
+    bool coalesced{false};
 };
 
 // ---------------------------------------------------------------------------
@@ -210,6 +215,65 @@ inline void sort_k_dims_for_packing(PackingPlan &plan) {
     }
     plan.k_dims_in_a = std::move(new_ka);
     plan.k_dims_in_b = std::move(new_kb);
+}
+
+/// @brief Coalesce adjacent dims within each group when they tile contiguously
+///        in every tensor that sees them.
+///
+/// Each group is a pair of parallel DimSpec vectors describing the same logical
+/// indices in two tensors (M: A and C; N: B and C; K: A and B). The group is
+/// first reordered by descending primary-tensor stride (the same permutation is
+/// applied to the mirror so flat-index enumeration stays consistent), then
+/// neighbouring dims are merged whenever slow.stride == fast.stride * fast.size
+/// holds in BOTH tensors. This converts e.g. col-major
+/// C(a,b,i,j) = A(a,b,e,f) * B(e,f,i,j) from a multi-M/N/K plan (scatter path)
+/// into a single-M/N/K plan that maps to one strided BLAS GEMM with no copies.
+///
+/// Must be called after fill_strides() (and after sort_k_dims_for_packing(),
+/// which it may re-permute). Sets plan.coalesced when any merge happened.
+inline void coalesce_plan(PackingPlan &plan) {
+    auto coalesce_group = [&plan](std::vector<DimSpec> &prim, std::vector<DimSpec> &mirr) {
+        size_t const n = prim.size();
+        if (n <= 1) {
+            return;
+        }
+
+        // Order both vectors by descending primary stride so the last entry is
+        // the fastest-varying flat coordinate (the flat_to_offset convention).
+        std::vector<size_t> perm(n);
+        std::iota(perm.begin(), perm.end(), size_t{0});
+        std::stable_sort(perm.begin(), perm.end(), [&](size_t x, size_t y) { return prim[x].tensor_stride > prim[y].tensor_stride; });
+
+        std::vector<DimSpec> ps(n), ms(n);
+        for (size_t d = 0; d < n; ++d) {
+            ps[d] = prim[perm[d]];
+            ms[d] = mirr[perm[d]];
+        }
+
+        std::vector<DimSpec> pout{ps[0]}, mout{ms[0]};
+        for (size_t d = 1; d < n; ++d) {
+            DimSpec   &pl     = pout.back();
+            DimSpec   &ml     = mout.back();
+            bool const contig = pl.tensor_stride == ps[d].tensor_stride * ps[d].size && //
+                                ml.tensor_stride == ms[d].tensor_stride * ms[d].size;
+            if (contig) {
+                pl.size *= ps[d].size;
+                pl.tensor_stride = ps[d].tensor_stride;
+                ml.size *= ms[d].size;
+                ml.tensor_stride = ms[d].tensor_stride;
+                plan.coalesced   = true;
+            } else {
+                pout.push_back(ps[d]);
+                mout.push_back(ms[d]);
+            }
+        }
+        prim = std::move(pout);
+        mirr = std::move(mout);
+    };
+
+    coalesce_group(plan.m_dims, plan.c_m_dims);
+    coalesce_group(plan.n_dims, plan.c_n_dims);
+    coalesce_group(plan.k_dims_in_a, plan.k_dims_in_b);
 }
 
 // ---------------------------------------------------------------------------

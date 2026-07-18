@@ -28,3 +28,9 @@ einsums_add_executable(
   NOINSTALL
 )
 einsums_add_unit_test("Modules.PackedGemm" MultiMN)
+
+# The tile micro-kernel is compiled once per SIMD dispatch rung; run the
+# multi-M/N suite (which drives the scatter path through every tile shape)
+# once per rung (no-op on single-TU builds).
+include(Einsums_AddSIMDDispatch)
+einsums_add_simd_rung_tests("Modules.PackedGemm" MultiMN)

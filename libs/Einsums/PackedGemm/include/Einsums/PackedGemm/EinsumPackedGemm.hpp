@@ -11,6 +11,7 @@
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
+#include <Einsums/PackedGemm/MicroKernel.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/Profile/Profile.hpp>
 
@@ -92,9 +93,17 @@ template <typename ValueType, einsums::BasicTensorConcept CType, einsums::BasicT
 void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType const &B, ValueType alpha, ValueType beta,
                       bool conj_a = false, bool conj_b = false) {
     LabeledSection0();
-    auto const &cfg = cpu_config();
-    int const   MR  = cfg.MR;
-    int const   NR  = cfg.NR;
+
+    // Resolve the SIMD-dispatch rung's tile kernel and its register-block
+    // shape once per contraction; the per-tile call below is through this
+    // pointer, keeping rung resolution out of the hot loop. The shape comes
+    // from the same rung as the kernel (NEON/AVX: cpu_config vector
+    // blocking; SME: ZA-tile blocking), so the panels are packed in the
+    // geometry the kernel expects.
+    MicroKernelFn<ValueType> const micro_tile = micro_kernel_entry<ValueType>();
+    MicroKernelShape const         shape      = micro_kernel_shape<ValueType>();
+    int const                      MR         = shape.mr;
+    int const                      NR         = shape.nr;
 
     // Cache-aware blocking: tile sizes adapt to sizeof(ValueType) and CPU cache hierarchy.
     auto const blk = compute_blocking(static_cast<int64_t>(sizeof(ValueType)));
@@ -348,7 +357,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // the batch-aware scalar gather below, which honors the slice offset
             // and the inner strides. (TODO: a proper per-slice batched HPTT path
             // would recover the transpose perf for batched multi-K contractions.)
-            bool use_hptt = (nb == 0);
+            bool use_hptt = (nb == 0) && !plan.coalesced;
             if (!a_zero_copy) {
                 int64_t expected = 1;
                 for (int i = 0; i < rank_a_rt; ++i) {
@@ -675,6 +684,23 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // the multi-dim C elements are non-contiguous in memory.
         bool const needs_c_scatter = (multi_m || multi_n);
 
+        // The NC loop is the parallel loop: shrink the NC block below the
+        // cache-derived blk.NC when needed so every thread gets at least one
+        // block. The cost is re-packing A once per extra NC block, which is a
+        // bandwidth-trivial price next to leaving all but one core idle on
+        // tall-N contractions (N <= blk.NC previously ran fully serial).
+        int64_t NC_blk = blk.NC;
+#ifdef _OPENMP
+        if (!parallel_batch) {
+            int const nthreads = omp_get_max_threads();
+            if (nthreads > 1) {
+                int64_t const per_thread = (N + nthreads - 1) / nthreads;
+                int64_t const rounded    = ((per_thread + NR - 1) / NR) * NR;
+                NC_blk                   = std::clamp(rounded, static_cast<int64_t>(NR), blk.NC);
+            }
+        }
+#endif
+
         {
             LabeledSection("C++ packing and kernel");
 #ifdef _OPENMP
@@ -682,13 +708,23 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // (to avoid nested parallelism / oversubscription).
 #    pragma omp parallel for schedule(static) if (!parallel_batch)
 #endif
-            for (int64_t nc = 0; nc < N; nc += blk.NC) {
+            for (int64_t nc = 0; nc < N; nc += NC_blk) {
                 static thread_local std::vector<ValueType> tls_Ap, tls_Bp, tls_Ct;
                 tls_Ap.resize(ap_buf_elems);
                 tls_Bp.resize(bp_buf_elems);
                 ValueType    *Ap     = tls_Ap.data();
                 ValueType    *Bp     = tls_Bp.data();
-                int64_t const nc_len = std::min(blk.NC, N - nc);
+                int64_t const nc_len = std::min(NC_blk, N - nc);
+
+                // Scatter path: precompute the C offset tables (one entry per
+                // flat index) instead of paying a div/mod chain per element in
+                // the beta prescale and tile scatter loops below. n-offsets are
+                // invariant for the whole nc block; m-offsets are refreshed per
+                // mc block inside the kc loop.
+                static thread_local std::vector<int64_t> c_n_offsets, c_m_offsets;
+                if (needs_c_scatter) {
+                    precompute_offsets(nc, nc_len, plan.c_n_dims, c_n_offsets);
+                }
 
                 for (int64_t kc = 0; kc < K; kc += blk.KC) {
                     int64_t const kc_len = std::min(blk.KC, K - kc);
@@ -698,15 +734,18 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                     for (int64_t mc = 0; mc < M; mc += blk.MC) {
                         int64_t const mc_len = std::min(blk.MC, M - mc);
 
+                        if (needs_c_scatter) {
+                            precompute_offsets(mc, mc_len, plan.c_m_dims, c_m_offsets);
+                        }
+
                         // Beta prescale: apply once per (mc, nc) block on first kc tile.
                         if (kc == 0 && beta != ValueType{1}) {
                             if (needs_c_scatter) {
-                                // Multi-M/N: element-by-element prescale via flat-to-offset
-                                for (int64_t mi = mc; mi < mc + mc_len; ++mi) {
-                                    int64_t const m_off = flat_to_offset(mi, plan.c_m_dims);
-                                    for (int64_t ni = nc; ni < nc + nc_len; ++ni) {
-                                        int64_t const n_off = flat_to_offset(ni, plan.c_n_dims);
-                                        C_data[m_off + n_off] *= beta;
+                                // Multi-M/N: element-by-element prescale via the offset tables
+                                for (int64_t mi = 0; mi < mc_len; ++mi) {
+                                    int64_t const m_off = c_m_offsets[static_cast<size_t>(mi)];
+                                    for (int64_t ni = 0; ni < nc_len; ++ni) {
+                                        C_data[m_off + c_n_offsets[static_cast<size_t>(ni)]] *= beta;
                                     }
                                 }
                             } else if (C_col_major) {
@@ -752,18 +791,15 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     ValueType *Ap_panel = Ap + ir * MR * kc_len;
                                     ValueType *Bp_panel = Bp + jr * NR * kc_len;
 
-                                    // GEMM into contiguous Ct (col-major: ldc = MR)
-                                    einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(mr_actual),
-                                                                   static_cast<blas_int>(nr_actual), static_cast<blas_int>(kc_len), alpha,
-                                                                   Ap_panel, static_cast<blas_int>(MR), Bp_panel, static_cast<blas_int>(NR),
-                                                                   ValueType{0}, Ct, static_cast<blas_int>(MR));
+                                    // Micro-kernel into contiguous Ct (col-major: rs=1, cs=MR)
+                                    micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, mr_actual,
+                                               nr_actual, Ct, 1, MR);
 
-                                    // Scatter Ct back to C using multi-dim offsets
+                                    // Scatter Ct back to C using the precomputed offset tables
                                     for (int64_t jj = 0; jj < nr_actual; ++jj) {
-                                        int64_t const n_off = flat_to_offset(nc + jr * NR + jj, plan.c_n_dims);
+                                        int64_t const n_off = c_n_offsets[static_cast<size_t>(jr * NR + jj)];
                                         for (int64_t ii = 0; ii < mr_actual; ++ii) {
-                                            int64_t const m_off = flat_to_offset(mc + ir * MR + ii, plan.c_m_dims);
-                                            C_data[m_off + n_off] += Ct[jj * MR + ii];
+                                            C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] += Ct[jj * MR + ii];
                                         }
                                     }
                                 }
@@ -780,17 +816,11 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     ValueType *Bp_panel = Bp + jr * NR * kc_len;
                                     ValueType *C_tile   = C_data + (mc + ir * MR) * C_m_stride + (nc + jr * NR) * C_n_stride;
 
-                                    if (C_col_major) {
-                                        einsums::blas::gemm<ValueType>(
-                                            'N', 'T', static_cast<blas_int>(mr_actual), static_cast<blas_int>(nr_actual),
-                                            static_cast<blas_int>(kc_len), alpha, Ap_panel, static_cast<blas_int>(MR), Bp_panel,
-                                            static_cast<blas_int>(NR), ValueType{1}, C_tile, static_cast<blas_int>(ldc_col));
-                                    } else {
-                                        einsums::blas::gemm<ValueType>(
-                                            'N', 'T', static_cast<blas_int>(nr_actual), static_cast<blas_int>(mr_actual),
-                                            static_cast<blas_int>(kc_len), alpha, Bp_panel, static_cast<blas_int>(NR), Ap_panel,
-                                            static_cast<blas_int>(MR), ValueType{1}, C_tile, static_cast<blas_int>(ldc_row));
-                                    }
+                                    // Micro-kernel accumulates directly into strided C; the
+                                    // (rs, cs) pair covers both col-major (1, C_n_stride) and
+                                    // row-major (C_m_stride, 1) layouts without a branch.
+                                    micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, mr_actual,
+                                               nr_actual, C_tile, C_m_stride, C_n_stride);
                                 }
                             }
                         }
@@ -833,10 +863,17 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 ///
 /// Returns `true` if the contraction was handled; `false` if the caller should
 /// fall back (to a direct BLAS GEMM, generic loop, etc.).
+///
+/// @param allow_scatter When false, contractions that remain multi-M/N after
+///        dim coalescing are declined instead of taking the slow per-tile
+///        scatter path. Pass false from callers that have a faster fallback
+///        (the compile-time einsum dispatch falls back to Sort+GEMM); leave
+///        true for callers whose only alternative is a generic loop (the
+///        ComputeGraph runtime string dispatch).
 template <einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType, einsums::BasicTensorConcept CType>
 bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> C_prefactor, CType *C,
                      einsums::BiggestTypeT<typename AType::ValueType, typename BType::ValueType> AB_prefactor, AType const &A,
-                     BType const &B) {
+                     BType const &B, bool allow_scatter = true) {
     LabeledSection("packed_gemm: {} <- {} ; {}", fmt::join(spec_in.c_indices, ","), fmt::join(spec_in.a_indices, ","),
                    fmt::join(spec_in.b_indices, ","));
 
@@ -967,9 +1004,17 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     if (plan.valid) {
         fill_strides(plan, A, B, *C);
         sort_k_dims_for_packing(plan);
+        coalesce_plan(plan);
 
         bool const multi_m = (plan.c_m_dims.size() > 1);
         bool const multi_n = (plan.c_n_dims.size() > 1);
+
+        if ((multi_m || multi_n) && !allow_scatter) {
+            ProfileAnnotate("packed_gemm_skip", "multi_mn_after_coalescing");
+            EINSUMS_LOG_INFO("PackedGemm: declining — still multi-M/N after dim coalescing and the caller "
+                             "has a faster fallback than the scatter path.");
+            return false;
+        }
 
         // For single-M/N: require stride-1 in C's M or N dim (col or row major).
         // For multi-M/N: the scatter path handles arbitrary strides, so always proceed.
@@ -1011,7 +1056,7 @@ template <bool ConjA, bool ConjB, einsums::BasicTensorConcept AType, einsums::Ba
 bool try_packed_gemm(einsums::ValueTypeT<CType> C_prefactor, std::tuple<CIndices...> const & /*C_indices_tup*/, CType *C,
                      einsums::BiggestTypeT<typename AType::ValueType, typename BType::ValueType> AB_prefactor,
                      std::tuple<AIndices...> const & /*A_indices_tup*/, AType const &A, std::tuple<BIndices...> const & /*B_indices_tup*/,
-                     BType const &B) {
+                     BType const &B, bool allow_scatter = true) {
     LabeledSection0();
 
     // Scalar-output (CType is `T`, not a tensor) is not yet routed through the
@@ -1028,7 +1073,7 @@ bool try_packed_gemm(einsums::ValueTypeT<CType> C_prefactor, std::tuple<CIndices
         spec.conj_b    = ConjB;
         // Derived fields (target/link/all_indices, scalar_type) are filled in by
         // the runtime entry point.
-        return try_packed_gemm<AType, BType, CType>(spec, C_prefactor, C, AB_prefactor, A, B);
+        return try_packed_gemm<AType, BType, CType>(spec, C_prefactor, C, AB_prefactor, A, B, allow_scatter);
     }
 }
 

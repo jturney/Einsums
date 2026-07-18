@@ -175,18 +175,6 @@ AlgorithmChoice einsum_generic_default(ValueTypeT<CType> const C_prefactor, std:
         EINSUMS_LOG_TRACE("Performing the generic algorithm.");
 
         if constexpr (!DryRun) {
-            // Attempt the packed GEMM backend for BasicTensor contractions that
-            // were not handled by any BLAS specialisation.  The backend is
-            // skipped when OnlyUseGenericAlgorithm is true (e.g. during
-            // correctness-regression tests of the generic loops themselves).
-            if constexpr (!OnlyUseGenericAlgorithm && IsBasicTensorV<AType> && IsBasicTensorV<BType> &&
-                          std::is_same_v<typename AType::ValueType, typename BType::ValueType> && TensorConcept<CType> &&
-                          std::is_same_v<ValueTypeT<CType>, typename AType::ValueType> && TensorRank<CType> >= 2) {
-                if (einsums::packed_gemm::try_packed_gemm<ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices,
-                                                                        B)) {
-                    return PACKED_GEMM;
-                }
-            }
             einsum_generic_algorithm<ConjA, ConjB>(C_unique, A_unique, B_unique, link_unique, C_indices, A_indices, B_indices,
                                                    unique_target_dims, unique_link_dims, target_position_in_C, link_position_in_link,
                                                    C_prefactor, C, AB_prefactor, A, B);
@@ -1337,9 +1325,28 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
         }
     }
 
+    // Packed GEMM: tried before Sort+GEMM. When the contraction has (or can be
+    // dim-coalesced down to) a single M dim and a single N dim, the packed
+    // backend maps it onto strided or flattened BLAS GEMM without materializing
+    // permuted copies of A, B, or C — beating TTGT (Sort+GEMM) on rank-3..6
+    // operands and avoiding its per-call temporaries entirely. allow_scatter is
+    // false: shapes that remain multi-M/N after coalescing decline instead of
+    // taking the slow scatter path, and fall through to Sort+GEMM below (as do
+    // runtime declines for unsupported C strides or repeated indices).
+    if (!has_performed_contraction) {
+        if constexpr (!OnlyUseGenericAlgorithm && !DryRun && IsBasicTensorV<AType> && IsBasicTensorV<BType> && IsBasicTensorV<CType> &&
+                      std::is_same_v<CDataType, ADataType> && std::is_same_v<CDataType, BDataType> && CRank >= 2) {
+            if (einsums::packed_gemm::try_packed_gemm<ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices, B,
+                                                                    /*allow_scatter=*/false)) {
+                has_performed_contraction = true;
+                retval                    = PACKED_GEMM;
+            }
+        }
+    }
+
     // Sort+GEMM: auto-permute scrambled indices to enable GEMM dispatch.
     if (!has_performed_contraction) {
-        if constexpr (IsBasicTensorV<AType> && IsBasicTensorV<BType> && IsBasicTensorV<CType> &&
+        if constexpr (!OnlyUseGenericAlgorithm && IsBasicTensorV<AType> && IsBasicTensorV<BType> && IsBasicTensorV<CType> &&
                       einsum_is_sort_gemm_candidate<ConjA, ConjB>(C_indices, A_indices, B_indices)) {
             has_performed_contraction =
                 einsum_do_sort_gemm<DryRun, ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices, B);
