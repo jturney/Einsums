@@ -27,7 +27,11 @@ TEMPLATE_TEST_CASE("einsum3", "[tensor_algebra]", float, double) {
 
         for (size_t i0 = 0; i0 < C0.dim(0); i0++) {
             for (size_t j0 = 0; j0 < C0.dim(1); j0++) {
-                REQUIRE_THAT(C0(i0, j0), Catch::Matchers::WithinRel(C1(i0, j0), TestType{0.0001}));
+                // Composite tolerance: relative for normal magnitudes, absolute for the
+                // near-zero sums random data occasionally produces (a bare WithinRel
+                // fails stochastically there).
+                REQUIRE_THAT(C0(i0, j0), Catch::Matchers::WithinRel(C1(i0, j0), TestType{0.0001}) ||
+                                             Catch::Matchers::WithinAbs(C1(i0, j0), TestType{1e-5}));
             }
         }
     }
@@ -44,7 +48,11 @@ TEMPLATE_TEST_CASE("einsum3", "[tensor_algebra]", float, double) {
 
         for (size_t i0 = 0; i0 < C0.dim(0); i0++) {
             for (size_t j0 = 0; j0 < C0.dim(1); j0++) {
-                REQUIRE_THAT(C0(i0, j0), Catch::Matchers::WithinRel(C1(i0, j0), TestType{0.0001}));
+                // Composite tolerance: relative for normal magnitudes, absolute for the
+                // near-zero sums random data occasionally produces (a bare WithinRel
+                // fails stochastically there).
+                REQUIRE_THAT(C0(i0, j0), Catch::Matchers::WithinRel(C1(i0, j0), TestType{0.0001}) ||
+                                             Catch::Matchers::WithinAbs(C1(i0, j0), TestType{1e-5}));
             }
         }
     }
@@ -92,7 +100,8 @@ TEMPLATE_TEST_CASE("einsum3", "[tensor_algebra]", float, double) {
         }
 
         for (size_t i0 = 0; i0 < 3; i0++) {
-            REQUIRE_THAT(C0(i0), Catch::Matchers::WithinRel(C1(i0), TestType{0.0001}));
+            REQUIRE_THAT(C0(i0),
+                         Catch::Matchers::WithinRel(C1(i0), TestType{0.0001}) || Catch::Matchers::WithinAbs(C1(i0), TestType{1e-5}));
         }
     }
 
@@ -126,7 +135,11 @@ TEMPLATE_TEST_CASE("einsum3", "[tensor_algebra]", float, double) {
 
         for (size_t i0 = 0; i0 < 3; i0++) {
             for (size_t j0 = 0; j0 < 5; j0++) {
-                REQUIRE_THAT(C0(i0, j0), Catch::Matchers::WithinRel(C1(i0, j0), TestType{0.0001}));
+                // Composite tolerance: relative for normal magnitudes, absolute for the
+                // near-zero sums random data occasionally produces (a bare WithinRel
+                // fails stochastically there).
+                REQUIRE_THAT(C0(i0, j0), Catch::Matchers::WithinRel(C1(i0, j0), TestType{0.0001}) ||
+                                             Catch::Matchers::WithinAbs(C1(i0, j0), TestType{1e-5}));
             }
         }
     }
@@ -162,7 +175,11 @@ TEMPLATE_TEST_CASE("einsum3", "[tensor_algebra]", float, double) {
         for (size_t i0 = 0; i0 < 3; i0++) {
             for (size_t j0 = 0; j0 < 5; j0++) {
                 // REQUIRE(C0(i0, j0) == C1(i0, j0));?
-                REQUIRE_THAT(C0(i0, j0), Catch::Matchers::WithinRel(C1(i0, j0), TestType{0.0001}));
+                // Composite tolerance: relative for normal magnitudes, absolute for the
+                // near-zero sums random data occasionally produces (a bare WithinRel
+                // fails stochastically there).
+                REQUIRE_THAT(C0(i0, j0), Catch::Matchers::WithinRel(C1(i0, j0), TestType{0.0001}) ||
+                                             Catch::Matchers::WithinAbs(C1(i0, j0), TestType{1e-5}));
             }
         }
     }
