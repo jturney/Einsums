@@ -153,6 +153,9 @@ CpuFeatures detect() {
     f.neon_bf16    = sysctl_flag("hw.optional.arm.FEAT_BF16");
     f.neon_i8mm    = sysctl_flag("hw.optional.arm.FEAT_I8MM");
     f.neon_dotprod = sysctl_flag("hw.optional.arm.FEAT_DotProd");
+    f.sme          = sysctl_flag("hw.optional.arm.FEAT_SME");
+    f.sme2         = sysctl_flag("hw.optional.arm.FEAT_SME2");
+    f.sme_f64f64   = sysctl_flag("hw.optional.arm.FEAT_SME_F64F64");
     return f;
 }
 
@@ -177,6 +180,15 @@ CpuFeatures detect() {
 #            endif
 #            if defined(HWCAP2_I8MM)
     f.neon_i8mm                = (hwcap2 & HWCAP2_I8MM) != 0;
+#            endif
+#            if defined(HWCAP2_SME)
+    f.sme                      = (hwcap2 & HWCAP2_SME) != 0;
+#            endif
+#            if defined(HWCAP2_SME2)
+    f.sme2                     = (hwcap2 & HWCAP2_SME2) != 0;
+#            endif
+#            if defined(HWCAP2_SME_F64F64)
+    f.sme_f64f64               = (hwcap2 & HWCAP2_SME_F64F64) != 0;
 #            endif
 #        endif
 
@@ -222,6 +234,8 @@ char const *to_string(InstructionSet set) {
         return "x86-64-v3";
     case InstructionSet::V4:
         return "x86-64-v4";
+    case InstructionSet::Sme:
+        return "sme";
     }
     return "baseline";
 }
@@ -246,10 +260,20 @@ std::optional<InstructionSet> parse_instruction_set(std::string_view name) {
     if (lowered == "v4" || lowered == "x86-64-v4" || lowered == "avx512") {
         return InstructionSet::V4;
     }
+    if (lowered == "sme" || lowered == "sme2") {
+        return InstructionSet::Sme;
+    }
     return std::nullopt;
 }
 
 InstructionSet highest_supported(CpuFeatures const &f) {
+    // aarch64 ladder: the sme rung requires SME2 with FP64 outer products,
+    // since the rung's TUs are compiled with +sme2+sme-f64f64 and may emit
+    // any of it anywhere.
+    if (f.sme && f.sme2 && f.sme_f64f64) {
+        return InstructionSet::Sme;
+    }
+
     // Full psABI gates: every extension of a level must be present for the
     // level to qualify, because a compiler told -march=x86-64-v3 may emit
     // any of them anywhere in the TU.

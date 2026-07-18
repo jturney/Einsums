@@ -191,12 +191,20 @@ TEST_CASE("select: falls down the ladder through missing rungs", "[simd][runtime
     static constexpr auto ret_v2       = +[]() { return 2; };
     static constexpr auto ret_v3       = +[]() { return 3; };
     static constexpr auto ret_v4       = +[]() { return 4; };
+    static constexpr auto ret_sme      = +[]() { return 5; };
 
     int const rung = static_cast<int>(einsums::simd::selected_arch());
 
     SECTION("full ladder picks the selected rung exactly") {
-        Fn const  fn       = einsums::simd::select<Fn>(ret_baseline, ret_v2, ret_v3, ret_v4);
+        Fn const  fn       = einsums::simd::select<Fn>(ret_baseline, ret_v2, ret_v3, ret_v4, ret_sme);
         int const expected = rung == 0 ? 0 : rung + 1;
+        CHECK(fn() == expected);
+    }
+
+    SECTION("an sme-selected host falls through a ladder built without an sme entry") {
+        Fn const  fn       = einsums::simd::select<Fn>(ret_baseline, ret_v2, ret_v3, ret_v4);
+        int const clamped  = rung > 3 ? 3 : rung;
+        int const expected = clamped == 0 ? 0 : clamped + 1;
         CHECK(fn() == expected);
     }
 

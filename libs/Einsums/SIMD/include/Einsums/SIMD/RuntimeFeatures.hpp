@@ -76,6 +76,10 @@ struct CpuFeatures {
     bool neon_bf16    = false; ///< FEAT_BF16: bfloat16 vector instructions.
     bool neon_i8mm    = false; ///< FEAT_I8MM: int8 matrix-multiply instructions.
     bool neon_dotprod = false; ///< FEAT_DotProd: vdotq int8 dot product.
+
+    bool sme        = false; ///< FEAT_SME: Scalable Matrix Extension (streaming SVE + ZA tiles).
+    bool sme2       = false; ///< FEAT_SME2: SME2 (multi-vector, required by the sme rung).
+    bool sme_f64f64 = false; ///< FEAT_SME_F64F64: FP64 outer-product FMOPA into ZA64 tiles.
 };
 
 /**
@@ -107,11 +111,17 @@ EINSUMS_EXPORT CpuFeatures const &cpu_features();
  * - `V4` (x86-64-v4): adds AVX-512 F/BW/CD/DQ/VL
  *   (Skylake-X 2017 / Zen 4 2022 and newer).
  *
- * On aarch64 only `Baseline` exists today; NEON *is* the baseline there.
- * Runtime rungs for optional aarch64 features (FEAT_FP16, FEAT_BF16) are
- * future extensions of this enum. Rungs are ordered: a larger enumerator
- * value strictly implies every feature of the smaller ones, so ordinary
- * comparison operators express "at least" relationships.
+ * On aarch64 `Baseline` is NEON, and `Sme` is the one optional rung: SME2
+ * with FP64 outer products (FEAT_SME2 + FEAT_SME_F64F64, Apple M4 and
+ * newer). Runtime rungs for further aarch64 features (FEAT_FP16,
+ * FEAT_BF16) are future extensions of this enum.
+ *
+ * Rungs are ordered within an architecture: a larger enumerator value
+ * strictly implies every feature of the smaller ones on that architecture,
+ * so ordinary comparison operators express "at least" relationships. The
+ * x86 rungs (V2-V4) and the aarch64 rung (Sme) never coexist at runtime -
+ * highest_supported() only ever reports rungs of the running architecture,
+ * so the cross-architecture ordering between V4 and Sme is never consulted.
  *
  * @versionadded{2.0.0}
  */
@@ -120,6 +130,7 @@ enum class InstructionSet : std::uint8_t {
     V2       = 1, ///< x86-64-v2 (SSE4.2 era).
     V3       = 2, ///< x86-64-v3 (AVX2 + FMA era).
     V4       = 3, ///< x86-64-v4 (AVX-512 era).
+    Sme      = 4, ///< aarch64 SME2 + FP64 FMOPA (Apple M4 era).
 };
 
 /**
@@ -226,8 +237,8 @@ EINSUMS_EXPORT InstructionSet selected_arch();
  * @versionadded{2.0.0}
  */
 template <typename F>
-F select(F baseline, F v2 = nullptr, F v3 = nullptr, F v4 = nullptr) {
-    F const ladder[] = {baseline, v2, v3, v4};
+F select(F baseline, F v2 = nullptr, F v3 = nullptr, F v4 = nullptr, F sme = nullptr) {
+    F const ladder[] = {baseline, v2, v3, v4, sme};
     for (int rung = static_cast<int>(selected_arch()); rung > 0; --rung) {
         if (ladder[rung] != nullptr) {
             return ladder[rung];

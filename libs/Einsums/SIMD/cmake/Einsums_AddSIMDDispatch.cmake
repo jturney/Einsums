@@ -84,10 +84,14 @@ function(einsums_add_simd_dispatch_sources out_var)
   endif()
   get_filename_component(_impl_name "${_impl_abs}" NAME_WE)
 
-  # Decide whether the x86 ladder applies at all.
+  # Decide which architecture's ladder applies.
   set(_is_x86 FALSE)
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     set(_is_x86 TRUE)
+  endif()
+  set(_is_aarch64 FALSE)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    set(_is_aarch64 TRUE)
   endif()
   set(_pinned FALSE)
   if(EINSUMS_SIMD_NATIVE_ARCH OR NOT "${EINSUMS_SIMD_TARGET_CPU}" STREQUAL "")
@@ -96,10 +100,24 @@ function(einsums_add_simd_dispatch_sources out_var)
   # Single-TU mode: no ladder. The wrapper compiles at the ambient flags in
   # the arch_native namespace, and consumers get EINSUMS_SIMD_HAS_RUNG_NATIVE
   # instead of the per-rung definitions.
-  if(NOT _is_x86
-     OR _pinned
-     OR NOT EINSUMS_WITH_SIMD_DISPATCH
-  )
+  #
+  # On aarch64 the x86 rungs (baseline/v2/v3/v4) collapse to `native`, but a
+  # requested `sme` rung survives alongside it: NEON is the toolchain
+  # baseline (native), and SME2 is the one optional aarch64 rung.
+  if(_pinned OR NOT EINSUMS_WITH_SIMD_DISPATCH)
+    set(_simd_RUNGS native)
+  elseif(_is_aarch64)
+    set(_arm_rungs native)
+    if("sme" IN_LIST _simd_RUNGS)
+      list(APPEND _arm_rungs sme)
+    endif()
+    set(_simd_RUNGS ${_arm_rungs})
+  elseif(_is_x86)
+    list(REMOVE_ITEM _simd_RUNGS sme)
+    if(NOT _simd_RUNGS)
+      set(_simd_RUNGS native)
+    endif()
+  else()
     set(_simd_RUNGS native)
   endif()
 
@@ -146,8 +164,18 @@ function(einsums_add_simd_dispatch_sources out_var)
       else()
         set(_flags "-march=x86-64-v4")
       endif()
+    elseif(_rung STREQUAL "sme")
+      set(_ordinal 4)
+      if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|IntelLLVM")
+        message(STATUS "einsums_add_simd_dispatch_sources(${_impl_name}): MSVC cl has no SME flag; dropping the sme rung")
+        continue()
+      elseif(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang") # clang-cl
+        set(_flags "/clang:-march=armv8.6-a+sme2+sme-f64f64")
+      else() # GCC/Clang/AppleClang
+        set(_flags "-march=armv8.6-a+sme2+sme-f64f64")
+      endif()
     else()
-      message(FATAL_ERROR "einsums_add_simd_dispatch_sources: unknown rung '${_rung}' (expected baseline/v2/v3/v4)")
+      message(FATAL_ERROR "einsums_add_simd_dispatch_sources: unknown rung '${_rung}' (expected baseline/v2/v3/v4/sme)")
     endif()
 
     set(_wrapper "${CMAKE_CURRENT_BINARY_DIR}/simd_dispatch/${_impl_name}_${_rung}.cpp")
@@ -217,13 +245,21 @@ endfunction()
 #:    non-x86, or a compile-time CPU pin), where only arch_native exists.
 function(einsums_add_simd_rung_tests subcategory name)
   if(NOT EINSUMS_WITH_SIMD_DISPATCH
-     OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64"
      OR EINSUMS_SIMD_NATIVE_ARCH
      OR NOT "${EINSUMS_SIMD_TARGET_CPU}" STREQUAL ""
   )
     return()
   endif()
-  foreach(_rung baseline v2 v3 v4)
+  # Per-arch rung list: x86 gets the psABI ladder, aarch64 gets the sme rung
+  # (the guard skips it with SKIP_RETURN_CODE 77 on non-SME hardware).
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    set(_guard_rungs baseline v2 v3 v4)
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    set(_guard_rungs baseline sme)
+  else()
+    return()
+  endif()
+  foreach(_rung IN LISTS _guard_rungs)
     set(_test_name "Tests.Unit.${subcategory}.${name}.simd_${_rung}")
     # simd_rung_guard exits 77 (SKIP_RETURN_CODE) when the host CPU cannot
     # execute the rung, so ctest reports "Skipped" instead of silently
