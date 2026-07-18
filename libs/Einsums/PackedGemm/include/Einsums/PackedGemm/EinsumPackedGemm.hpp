@@ -1025,10 +1025,10 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         bool const multi_m = (plan.c_m_dims.size() > 1);
         bool const multi_n = (plan.c_n_dims.size() > 1);
 
-        if ((multi_m || multi_n) && !allow_scatter) {
+        if ((multi_m || multi_n) && !allow_scatter && !micro_kernel_shape<ValueType>().fast_scatter) {
             ProfileAnnotate("packed_gemm_skip", "multi_mn_after_coalescing");
-            EINSUMS_LOG_INFO("PackedGemm: declining — still multi-M/N after dim coalescing and the caller "
-                             "has a faster fallback than the scatter path.");
+            EINSUMS_LOG_INFO("PackedGemm: declining — still multi-M/N after dim coalescing, the caller has a "
+                             "TTGT fallback, and this rung's kernel does not beat it on the scatter path.");
             return false;
         }
 

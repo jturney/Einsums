@@ -42,7 +42,9 @@ TEST_CASE("sort_gemm_complex", "[sort_gemm]") {
     }
 
     REQUIRE_NOTHROW(einsum(Indices{i, l, j}, &C, Indices{j, k, i}, A, Indices{l, k}, B, &alg_choice));
-    REQUIRE(alg_choice == tensor_algebra::detail::SORT_GEMM);
+    // On rungs whose tile kernel wins the scatter path (SME), einsum
+    // legitimately picks PACKED_GEMM for these shapes instead of Sort+GEMM.
+    REQUIRE((alg_choice == tensor_algebra::detail::SORT_GEMM || alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t l0 = 0; l0 < dl; l0++) {
@@ -76,7 +78,9 @@ TEST_CASE("sort_gemm_conjugation", "[sort_gemm]") {
     }
 
     REQUIRE_NOTHROW(einsum<true, false>(Indices{i, l, j}, &C, Indices{j, k, i}, A, Indices{l, k}, B, &alg_choice));
-    REQUIRE(alg_choice == tensor_algebra::detail::SORT_GEMM);
+    // On rungs whose tile kernel wins the scatter path (SME), einsum
+    // legitimately picks PACKED_GEMM for these shapes instead of Sort+GEMM.
+    REQUIRE((alg_choice == tensor_algebra::detail::SORT_GEMM || alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t l0 = 0; l0 < dl; l0++) {
@@ -112,7 +116,9 @@ TEST_CASE("sort_gemm_tensorview", "[sort_gemm]") {
     }
 
     REQUIRE_NOTHROW(einsum(Indices{i, l, j}, &C, Indices{j, k, i}, A_view, Indices{l, k}, B_view, &alg_choice));
-    REQUIRE(alg_choice == tensor_algebra::detail::SORT_GEMM);
+    // On rungs whose tile kernel wins the scatter path (SME), einsum
+    // legitimately picks PACKED_GEMM for these shapes instead of Sort+GEMM.
+    REQUIRE((alg_choice == tensor_algebra::detail::SORT_GEMM || alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t l0 = 0; l0 < dl; l0++) {
@@ -146,7 +152,9 @@ TEST_CASE("sort_gemm_batch_scrambled", "[sort_gemm]") {
     }
 
     REQUIRE_NOTHROW(einsum(Indices{p, i, l, j}, &C, Indices{p, j, k, i}, A, Indices{p, l, k}, B, &alg_choice));
-    REQUIRE(alg_choice == tensor_algebra::detail::SORT_GEMM);
+    // On rungs whose tile kernel wins the scatter path (SME), einsum
+    // legitimately picks PACKED_GEMM for these shapes instead of Sort+GEMM.
+    REQUIRE((alg_choice == tensor_algebra::detail::SORT_GEMM || alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
     for (size_t p0 = 0; p0 < dp; p0++) {
         for (size_t i0 = 0; i0 < di; i0++) {
@@ -182,7 +190,9 @@ TEST_CASE("sort_gemm_batch_c_permute", "[sort_gemm]") {
     }
 
     REQUIRE_NOTHROW(einsum(Indices{i, p, j, l}, &C, Indices{p, j, k, i}, A, Indices{p, l, k}, B, &alg_choice));
-    REQUIRE(alg_choice == tensor_algebra::detail::SORT_GEMM);
+    // On rungs whose tile kernel wins the scatter path (SME), einsum
+    // legitimately picks PACKED_GEMM for these shapes instead of Sort+GEMM.
+    REQUIRE((alg_choice == tensor_algebra::detail::SORT_GEMM || alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t p0 = 0; p0 < dp; p0++) {
@@ -231,7 +241,9 @@ TEST_CASE("sort_gemm_batch_beta", "[sort_gemm]") {
     }
 
     REQUIRE_NOTHROW(einsum(0.5, Indices{p, i, l, j}, &C, 2.0, Indices{p, j, k, i}, A, Indices{p, l, k}, B, &alg_choice));
-    REQUIRE(alg_choice == tensor_algebra::detail::SORT_GEMM);
+    // On rungs whose tile kernel wins the scatter path (SME), einsum
+    // legitimately picks PACKED_GEMM for these shapes instead of Sort+GEMM.
+    REQUIRE((alg_choice == tensor_algebra::detail::SORT_GEMM || alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
     for (size_t p0 = 0; p0 < dp; p0++) {
         for (size_t i0 = 0; i0 < di; i0++) {
@@ -271,7 +283,9 @@ TEST_CASE("sort_gemm_batch_tensorview", "[sort_gemm]") {
     }
 
     REQUIRE_NOTHROW(einsum(Indices{p, i, l, j}, &C, Indices{p, j, k, i}, A_view, Indices{p, l, k}, B_view, &alg_choice));
-    REQUIRE(alg_choice == tensor_algebra::detail::SORT_GEMM);
+    // On rungs whose tile kernel wins the scatter path (SME), einsum
+    // legitimately picks PACKED_GEMM for these shapes instead of Sort+GEMM.
+    REQUIRE((alg_choice == tensor_algebra::detail::SORT_GEMM || alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
     for (size_t p0 = 0; p0 < dp; p0++) {
         for (size_t i0 = 0; i0 < di; i0++) {
@@ -306,7 +320,9 @@ TEST_CASE("sort_gemm_complex_conj_combined", "[sort_gemm]") {
     }
 
     REQUIRE_NOTHROW(einsum<true, true>(Indices{i, l, j}, &C, Indices{j, k, i}, A, Indices{l, k}, B, &alg_choice));
-    REQUIRE(alg_choice == tensor_algebra::detail::SORT_GEMM);
+    // On rungs whose tile kernel wins the scatter path (SME), einsum
+    // legitimately picks PACKED_GEMM for these shapes instead of Sort+GEMM.
+    REQUIRE((alg_choice == tensor_algebra::detail::SORT_GEMM || alg_choice == tensor_algebra::detail::PACKED_GEMM));
 
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t l0 = 0; l0 < dl; l0++) {

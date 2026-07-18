@@ -25,7 +25,12 @@
 #include <complex>
 #include <cstdint>
 
-#if defined(__ARM_FEATURE_SME2) && defined(__ARM_FEATURE_SME_F64F64)
+// The sme rung TU is compiled with -march=...+sme2+sme-f64f64 (flag-probed
+// by the CMake helper), which guarantees the FP64 FMOPA intrinsics. Gate on
+// __ARM_FEATURE_SME2 only: clang defines no separate feature macro for the
+// f64f64 extension, so testing one would (silently!) compile this TU with
+// just the portable body.
+#if defined(__ARM_FEATURE_SME2)
 #    include <arm_sme.h>
 #    define EINSUMS_PACKED_GEMM_HAVE_SME_KERNEL 1
 #endif
@@ -133,7 +138,7 @@ MicroKernelShape micro_kernel_block() {
     if constexpr (std::is_same_v<T, double>) {
         int64_t const vl = static_cast<int64_t>(svcntsd());
         if (vl <= kSmeMaxVl) {
-            return {static_cast<int>(2 * vl), static_cast<int>(4 * vl), int64_t{4096}};
+            return {static_cast<int>(2 * vl), static_cast<int>(4 * vl), int64_t{4096}, /*fast_scatter=*/true};
         }
     }
 #endif

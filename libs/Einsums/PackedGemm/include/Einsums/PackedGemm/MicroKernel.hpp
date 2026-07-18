@@ -47,6 +47,12 @@ struct MicroKernelShape {
     /// the tiles extracted once instead of once per cache-sized K slice. The
     /// M block shrinks to compensate so the packed A panel stays L2-sized.
     int64_t kc = 0;
+    /// True when this rung's tile kernel makes the multi-M/N scatter path
+    /// faster than Sort+GEMM (measured 2.3x on M4 SME), so callers with a
+    /// TTGT fallback should still take the scatter path instead of
+    /// declining. NEON/AVX rungs leave it false: their scatter path loses
+    /// to Sort+GEMM.
+    bool fast_scatter = false;
 };
 
 /// @brief Signature of a resolved micro-kernel tile function.

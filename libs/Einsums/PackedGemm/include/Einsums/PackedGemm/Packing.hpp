@@ -443,12 +443,28 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
         }
     }
 
+    // --- Contiguous-run detection ---
+    // After coalesce_plan() the group is ordered by descending stride, so the
+    // last dim is the fastest flat coordinate. When it has unit stride, a
+    // panel row whose flat range stays inside one segment of that dim is a
+    // contiguous MR-element run in A - copy it with memcpy (which the
+    // compiler vectorizes) instead of the scalar gather. Panels that straddle
+    // a segment boundary, non-unit fast strides, and conjugation fall back to
+    // the scalar path. (Fully mergeable neighbours were already coalesced, so
+    // any straddle is a genuine discontinuity.)
+    bool const    m_fast_unit = !conj && m_dims.back().tensor_stride == 1;
+    int64_t const m_fast_size = m_dims.back().size;
+
     // --- Pack with precomputed offsets ---
     for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
         int64_t const k_offset = k_offsets[static_cast<size_t>(k_local)];
         for (int64_t p = 0; p < num_panels; ++p) {
             int64_t const panel_len = (p < full_panels) ? MR : tail;
             T            *dst       = Ap + p * MR * kc_len + k_local * MR;
+            if (m_fast_unit && ((mc_start + p * MR) % m_fast_size) + panel_len <= m_fast_size) {
+                std::memcpy(dst, A_data + m_offsets[static_cast<size_t>(p * MR)] + k_offset, static_cast<size_t>(panel_len) * sizeof(T));
+                continue;
+            }
             for (int64_t i = 0; i < panel_len; ++i) {
                 T val = A_data[m_offsets[static_cast<size_t>(p * MR + i)] + k_offset];
                 if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
@@ -549,12 +565,20 @@ void pack_B(T *Bp, T const *B_data, PackingPlan const &plan, int64_t kc_start, i
         }
     }
 
+    // --- Contiguous-run detection (see pack_A) ---
+    bool const    n_fast_unit = !conj && n_dims.back().tensor_stride == 1;
+    int64_t const n_fast_size = n_dims.back().size;
+
     // --- Pack with precomputed offsets ---
     for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
         int64_t const k_offset = k_offsets[static_cast<size_t>(k_local)];
         for (int64_t p = 0; p < num_panels; ++p) {
             int64_t const panel_len = (p < full_panels) ? static_cast<int64_t>(NR) : tail;
             T            *dst       = Bp + p * kc_len * NR + k_local * NR;
+            if (n_fast_unit && ((nc_start + p * NR) % n_fast_size) + panel_len <= n_fast_size) {
+                std::memcpy(dst, B_data + k_offset + n_offsets[static_cast<size_t>(p * NR)], static_cast<size_t>(panel_len) * sizeof(T));
+                continue;
+            }
             for (int64_t j = 0; j < panel_len; ++j) {
                 T val = B_data[k_offset + n_offsets[static_cast<size_t>(p * NR + j)]];
                 if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
