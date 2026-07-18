@@ -47,3 +47,6 @@ target_link_libraries(profile_einsums PRIVATE Einsums::Einsums)
 add_executable(profile_blas profile_blas.cpp)
 #target_link_directories(profile_blas PRIVATE /usr/lib/x86_64-linux-gnu)
 target_link_libraries(profile_blas PRIVATE Einsums::Einsums)
+
+add_executable(profile_strategies profile_strategies.cpp)
+target_link_libraries(profile_strategies PRIVATE Einsums::Einsums)
