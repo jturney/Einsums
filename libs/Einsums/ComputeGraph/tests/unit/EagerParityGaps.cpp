@@ -362,9 +362,11 @@ TEST_CASE("cg dispatch route - fast paths fire where intended", "[ComputeGraph][
     cg::einsum("ij <- ii ; jj", &H, S, R);
     CHECK(std::string_view{cgd::last_dispatch_route()} == "generic_loop_repeated_indices");
 
-    // Zero-extent input: prefactor-only path.
-    auto Ez = create_random_tensor<double>("Ez", size_t{2}, size_t{0});
-    auto Bz = create_random_tensor<double>("Bz", size_t{0}, size_t{3});
+    // Zero-extent input: prefactor-only path. The explicit std::string keeps
+    // the call unambiguous for GCC, which otherwise also considers the
+    // (bool row_major, ...) overload via the const char* -> bool conversion.
+    auto Ez = create_random_tensor<double>(std::string("Ez"), size_t{2}, size_t{0});
+    auto Bz = create_random_tensor<double>(std::string("Bz"), size_t{0}, size_t{3});
     auto Cz = create_zero_tensor<double>("Cz", 2, 3);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- ik ; kj", &Cz, Ez, Bz);
