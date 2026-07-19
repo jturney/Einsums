@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/ComputeGraph/HardwareProfile.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 
 #include <cstddef>
@@ -40,10 +41,32 @@ namespace einsums::compute_graph::passes {
  * Members may write different outputs (J and K) or accumulate into a shared
  * one; for a shared output every member after the first must purely
  * accumulate (c prefactor 1), mirroring
- * @ref LinearCombinationContractionFolding's tail rule. Conjugated members,
- * repeated indices, and complex prefactors are left unfused. The streamed
- * tensor must dominate the member operands and outputs in size, and outputs
- * are capped so per-thread privatization stays cheap (both thresholds below).
+ * @ref LinearCombinationContractionFolding's tail rule. Conjugated members
+ * and repeated indices are left unfused. Complex prefactors fuse on complex
+ * tensors (the kernel carries element-typed alphas); on real tensors a
+ * prefactor with a nonzero imaginary part declines the member rather than
+ * silently dropping it. The streamed tensor must dominate the member
+ * operands and outputs in size (ratio gate below).
+ *
+ * @par Output handling: privatization, with owner-computes chunking above the cap
+ * Outputs are normally accumulated in thread-private buffers and reduced at
+ * the end, which requires them to stay cache-resident: with a
+ * @ref HardwareProfile carrying cache sizes the cap is derived as
+ * last-level-cache / threads bytes per output (so the aggregate private
+ * buffers fit in cache); without one a fixed fallback applies. When a
+ * member's output exceeds the cap, the group switches to owner-computes
+ * chunking instead of declining: partitioning a physical @f$S@f$ axis whose
+ * label lands in the output pins one output coordinate, so threads owning
+ * disjoint blocks of that axis write disjoint output slices directly - no
+ * private copy, no reduction, no size cap. The pass records every axis that
+ * covers all over-cap members; the kernel partitions the highest-stride one
+ * (a low-stride partition turns each thread's read into a strided comb,
+ * measured ~5x slower than contiguous slabs). Under-cap members not covered
+ * by the chosen axis keep their private buffers inside the same stream. An
+ * over-cap member no axis can cover drops out of the group and stays an
+ * ordinary einsum. Groups with all outputs under the cap keep the flat
+ * privatized walk unconditionally - its contiguous per-thread slabs are the
+ * measured-fastest layout.
  *
  * @par Relationship to LinearCombinationContractionFolding
  * LCCF serves the same 2J-K algebra by materializing a linear combination
@@ -67,6 +90,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
   public:
     APIARY_EXPOSE StreamContractionFusion() = default;
 
+    /// Profile-aware construction: the output-size cap is derived from the
+    /// CPU cache hierarchy (see @ref max_output_elems) instead of the fixed
+    /// fallback. The default-constructed pass keeps the fallback cap.
+    explicit StreamContractionFusion(HardwareProfile profile) : _profile(std::move(profile)), _has_profile(true) {}
+
     [[nodiscard]] std::string name() const override { return "StreamContractionFusion"; }
 
     bool run(Graph &graph) override;
@@ -81,6 +109,19 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Total number of einsum nodes eliminated (fused away).
     [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
 
+    /// Cap on a member output's element count for the given element size.
+    ///
+    /// The fused kernel gives every thread a private copy of each output, so
+    /// the transient footprint is threads x output bytes. The privatized
+    /// accumulators only stay cheap while each thread's copy is
+    /// cache-resident, so with a profile carrying cache sizes the cap is
+    ///     (last-level cache bytes / threads) / elem_size
+    /// i.e. the aggregate private buffers fill at most the last-level cache.
+    /// Clamped below by kMinOutputElemsFloor so implausibly small detected
+    /// caches cannot disable the pass outright. Without a profile (or
+    /// without cache data) returns kMaxOutputElemsFallback.
+    [[nodiscard]] size_t max_output_elems(size_t elem_size) const;
+
   private:
     /// The streamed tensor must have at least this many elements. Measured
     /// (Apple M4, Fock J/K pair): the fused kernel beats the unfused graph at
@@ -90,17 +131,24 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// trivial streams where either path is measurement noise.
     static constexpr size_t kMinStreamElems = size_t{1} << 12;
 
-    /// Outputs above this element count are not privatized per thread;
-    /// members writing them stay unfused.
-    static constexpr size_t kMaxOutputElems = size_t{1} << 22;
+    /// Output-size cap used when no hardware profile (or no cache data) is
+    /// available; members writing larger outputs stay unfused.
+    static constexpr size_t kMaxOutputElemsFallback = size_t{1} << 22;
+
+    /// Lower clamp on the profile-derived cap: outputs up to this many
+    /// elements (8 KB at fp64) are always eligible, whatever the detected
+    /// cache hierarchy claims.
+    static constexpr size_t kMinOutputElemsFloor = size_t{1} << 10;
 
     /// The streamed tensor must be at least this many times larger than each
     /// member's output and small operand for the "one stream dominates"
     /// argument to hold.
     static constexpr size_t kMinSizeRatio = 8;
 
-    size_t _num_groups{0};
-    size_t _num_eliminated{0};
+    HardwareProfile _profile{};
+    bool            _has_profile{false};
+    size_t          _num_groups{0};
+    size_t          _num_eliminated{0};
 };
 
 } // namespace einsums::compute_graph::passes

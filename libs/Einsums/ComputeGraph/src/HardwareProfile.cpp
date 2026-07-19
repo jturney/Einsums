@@ -51,6 +51,93 @@ std::string HardwareProfileDB::detect_gpu_name() {
     return gpu::device_name();
 }
 
+namespace {
+
+/// Detect the CPU data-cache hierarchy at runtime. Returns detected levels
+/// in L1 -> L3 order (only those that report a positive size); empty when
+/// the platform offers no query. Bandwidth/latency stay unmeasured (zero) -
+/// consumers key off size_bytes.
+std::vector<CacheLevel> detect_cpu_caches() {
+    std::vector<CacheLevel> levels;
+
+#if defined(__APPLE__)
+    auto sysctl_size = [](char const *name) -> size_t {
+        int64_t val = 0;
+        size_t  len = sizeof(val);
+        if (sysctlbyname(name, &val, &len, nullptr, 0) == 0 && val > 0) {
+            return static_cast<size_t>(val);
+        }
+        return 0;
+    };
+    // Plain hw.l2cachesize reports the efficiency cluster on Apple Silicon;
+    // hw.perflevel0.l2cachesize is the performance-cluster L2 the compute
+    // threads actually see, so take the larger of the two.
+    if (size_t const bytes = sysctl_size("hw.l1dcachesize"); bytes > 0) {
+        levels.push_back({.size_bytes = bytes});
+    }
+    if (size_t const bytes = std::max(sysctl_size("hw.perflevel0.l2cachesize"), sysctl_size("hw.l2cachesize")); bytes > 0) {
+        levels.push_back({.size_bytes = bytes});
+    }
+    if (size_t const bytes = sysctl_size("hw.l3cachesize"); bytes > 0) {
+        levels.push_back({.size_bytes = bytes});
+    }
+#elif defined(__linux__)
+    // sysfs: /sys/devices/system/cpu/cpu0/cache/index*/ carries one entry
+    // per cache; keep the largest data/unified cache seen per level.
+    size_t by_level[4] = {0, 0, 0, 0}; // NOLINT
+    for (int idx = 0; idx <= 4; idx++) {
+        std::string const base = "/sys/devices/system/cpu/cpu0/cache/index" + std::to_string(idx) + "/";
+
+        std::ifstream type_file(base + "type");
+        std::string   type_str;
+        if (type_file.is_open()) {
+            std::getline(type_file, type_str);
+        }
+        if (type_str == "Instruction") {
+            continue;
+        }
+
+        int           level = 0;
+        std::ifstream level_file(base + "level");
+        if (!level_file.is_open() || !(level_file >> level) || level < 1 || level > 3) {
+            continue;
+        }
+
+        std::ifstream size_file(base + "size");
+        std::string   size_str;
+        if (!size_file.is_open()) {
+            continue;
+        }
+        std::getline(size_file, size_str);
+        if (size_str.empty()) {
+            continue;
+        }
+        size_t     bytes = 0;
+        char const unit  = size_str.back();
+        try {
+            bytes = static_cast<size_t>(std::stoll(size_str));
+        } catch (std::exception const &) {
+            continue;
+        }
+        if (unit == 'K' || unit == 'k') {
+            bytes *= 1024;
+        } else if (unit == 'M' || unit == 'm') {
+            bytes *= 1024 * 1024;
+        }
+        by_level[level] = std::max(by_level[level], bytes);
+    }
+    for (int level = 1; level <= 3; level++) {
+        if (by_level[level] > 0) {
+            levels.push_back({.size_bytes = by_level[level]});
+        }
+    }
+#endif
+
+    return levels;
+}
+
+} // namespace
+
 std::string HardwareProfileDB::normalize(std::string const &s) {
     std::string result;
     result.reserve(s.size());
@@ -268,18 +355,28 @@ HardwareProfile HardwareProfile::detect_default() {
     // missing or unreadable file falls back to the table with a warning
     // rather than failing: the profile shapes optimization choices, never
     // correctness.
+    // Cache sizes are pure topology, so runtime detection beats any table or
+    // calibration file that omits them; a profile that DOES carry cache data
+    // (a calibrated JSON) keeps its own numbers.
+    auto const with_detected_caches = [](HardwareProfile profile) {
+        if (profile.cpu.caches.empty()) {
+            profile.cpu.caches = detect_cpu_caches();
+        }
+        return profile;
+    };
+
     if (char const *env_path = std::getenv("EINSUMS_HARDWARE_PROFILE"); env_path != nullptr && *env_path != '\0') {
         auto loaded = load_json(env_path);
         if (loaded) {
             EINSUMS_LOG_INFO("HardwareProfile: using calibrated profile from EINSUMS_HARDWARE_PROFILE={}", env_path);
-            return *loaded;
+            return with_detected_caches(*loaded);
         }
         EINSUMS_LOG_WARN("HardwareProfile: EINSUMS_HARDWARE_PROFILE={} could not be loaded ({}); falling back to the built-in table",
                          env_path, loaded.error().message);
     }
 
     auto db = HardwareProfileDB::load_defaults();
-    return db.build_profile();
+    return with_detected_caches(db.build_profile());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

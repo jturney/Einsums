@@ -33,10 +33,10 @@ struct StreamMember {
     std::vector<std::string> s_indices; // this member's index pattern for S
     std::vector<std::string> c_indices;
     std::vector<std::string> w_indices;
-    double                   alpha;
+    PrefactorScalar          alpha;
     bool                     c_pf_is_one;
     bool                     c_pf_is_zero;
-    double                   c_pf;
+    PrefactorScalar          c_pf;
 };
 
 bool no_repeats(std::vector<std::string> const &v) {
@@ -63,9 +63,10 @@ size_t elem_count(std::vector<size_t> const &dims) {
     return std::accumulate(dims.begin(), dims.end(), size_t{1}, std::multiplies<>{});
 }
 
-/// True when the prefactor carries no imaginary component; the fused kernel
-/// stores real alphas, so complex prefactors must stay unfused rather than
-/// silently losing their imaginary part.
+/// True when the prefactor carries no imaginary component. Complex-dtype
+/// members carry full complex prefactors through the kernel; real-dtype
+/// members must have real-valued ones (a nonzero imaginary part cannot land
+/// in a real accumulator, so such members stay unfused).
 bool is_real_valued(PrefactorScalar const &v) {
     return std::visit(
         [](auto x) {
@@ -83,10 +84,21 @@ bool is_real_valued(PrefactorScalar const &v) {
 ///   C_k[rho_k(idx)] += alpha_k * S[idx] * W_k[pi_k(idx)]
 /// The coordinate-to-offset maps are affine, so each member carries one
 /// offset delta per storage axis of S and the walk maintains running offsets
-/// with an odometer. Outputs are privatized per thread and reduced at the
-/// end; the caller guarantees they are small (kMaxOutputElems).
+/// with an odometer.
+///
+/// With a non-empty allowed_axes (owner-computes chunking) the kernel
+/// partitions the highest-stride allowed physical S axis into per-thread
+/// blocks - the stride decides because a low-stride partition turns each
+/// thread's read into a strided comb through S, while a high-stride one
+/// keeps contiguous slabs. Each thread walks only its slab; members whose
+/// output pattern contains the axis label write DIRECTLY into their
+/// (disjoint) output slices, members without it accumulate into
+/// thread-private buffers reduced at the end. With allowed_axes empty every
+/// member is privatized and threads split the flattened outer space; the
+/// caller guarantees privatized outputs are small (max_output_elems).
 template <typename T>
-void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &members, std::vector<TensorId> const &unique_outs) {
+void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &members, std::vector<TensorId> const &unique_outs,
+                std::vector<int> const &allowed_axes) {
     using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
 
     auto const *S      = static_cast<RT const *>(graph->tensor(s_id).tensor_ptr);
@@ -136,7 +148,7 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
                 C->zero();
             } else if (!m.c_pf_is_one) {
                 T                   *cd = C->data();
-                T const              f  = static_cast<T>(m.c_pf);
+                T const              f  = as<T>(m.c_pf);
                 int const            cr = static_cast<int>(C->rank());
                 std::vector<int64_t> cc(static_cast<size_t>(cr), 0);
                 bool                 done = (span_of(C) == 0);
@@ -159,11 +171,25 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
         }
     }
 
+    // Partition axis: the allowed axis with the largest S stride.
+    int part_axis = -1;
+    {
+        size_t best_stride = 0;
+        for (int const axis : allowed_axes) {
+            if (S->stride(axis) > best_stride) {
+                best_stride = S->stride(axis);
+                part_axis   = axis;
+            }
+        }
+    }
+
     // Per-member affine deltas: for storage axis d (label = member's S
     // pattern at original axis axes[d]), the label's stride in C / W, or 0.
     struct Plan {
         T                    alpha;
         T const             *w;
+        T                   *out;
+        bool                 direct;
         std::vector<int64_t> cdelta, wdelta;
         size_t               out_slot;
         size_t               out_elems;
@@ -173,9 +199,11 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
     for (auto const &m : members) {
         Plan        p;
         auto const *W = static_cast<RT const *>(graph->tensor(m.w_id).tensor_ptr);
-        auto const *C = static_cast<RT const *>(graph->tensor(m.out_id).tensor_ptr);
-        p.alpha       = static_cast<T>(m.alpha);
+        auto       *C = static_cast<RT *>(graph->tensor(m.out_id).tensor_ptr);
+        p.alpha       = as<T>(m.alpha);
         p.w           = W->data();
+        p.out         = C->data();
+        p.direct      = part_axis >= 0 && std::ranges::find(m.c_indices, m.s_indices[static_cast<size_t>(part_axis)]) != m.c_indices.end();
         p.cdelta.resize(rank, 0);
         p.wdelta.resize(rank, 0);
         for (int d = 0; d < rank; d++) {
@@ -192,12 +220,16 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
         plans.push_back(std::move(p));
     }
 
-    // Outer iteration space: all axes but the innermost, flattened.
-    int64_t outer_total = 1;
-    for (int d = 0; d < rank - 1; d++) {
-        outer_total *= dims[d];
+    // Storage-order position of the partition axis, if any.
+    int pd = -1;
+    if (part_axis >= 0) {
+        for (int d = 0; d < rank; d++) {
+            if (axes[d] == part_axis) {
+                pd = d;
+                break;
+            }
+        }
     }
-    int64_t const inner_n = dims[rank - 1];
 
     T const *s_data = S->data();
 
@@ -219,21 +251,56 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
 #else
         int const tid = 0;
 #endif
+        // This thread's iteration space: with a partition axis, one block of
+        // that axis and the full extent of every other (bases carry the
+        // block offset); otherwise the full volume with the flattened outer
+        // space chunked across threads.
+        std::vector<int64_t> ldims  = dims;
+        int64_t              s_base = 0;
+        std::vector<int64_t> c_base(plans.size(), 0), w_base(plans.size(), 0);
+        int64_t              q0 = 0, q1 = 0;
+
+        if (pd >= 0) {
+            int64_t const extent  = dims[pd];
+            int const     nblocks = static_cast<int>(std::min<int64_t>(nthreads, extent));
+            if (tid < nblocks) {
+                int64_t const b0 = extent * tid / nblocks;
+                int64_t const b1 = extent * (tid + 1) / nblocks;
+                ldims[pd]        = b1 - b0;
+                s_base           = b0 * s_delta[pd];
+                for (size_t k = 0; k < plans.size(); k++) {
+                    c_base[k] = b0 * plans[k].cdelta[pd];
+                    w_base[k] = b0 * plans[k].wdelta[pd];
+                }
+                q1 = 1;
+                for (int d = 0; d < rank - 1; d++) {
+                    q1 *= ldims[d];
+                }
+            }
+        } else {
+            int64_t outer_total = 1;
+            for (int d = 0; d < rank - 1; d++) {
+                outer_total *= dims[d];
+            }
+            int64_t const chunk = (outer_total + nthreads - 1) / nthreads;
+            q0                  = std::min<int64_t>(static_cast<int64_t>(tid) * chunk, outer_total);
+            q1                  = std::min<int64_t>(q0 + chunk, outer_total);
+        }
+        int64_t const inner_n = ldims[rank - 1];
+
         auto &priv = thread_priv[static_cast<size_t>(tid)];
         priv.resize(unique_outs.size());
         for (size_t u = 0; u < unique_outs.size(); u++) {
             size_t elems = 0;
-            for (auto const &p : plans) {
-                if (p.out_slot == u) {
-                    elems = p.out_elems;
+            if (q0 < q1) {
+                for (auto const &p : plans) {
+                    if (p.out_slot == u && !p.direct) {
+                        elems = p.out_elems;
+                    }
                 }
             }
             priv[u].assign(elems, T{0});
         }
-
-        int64_t const chunk = (outer_total + nthreads - 1) / nthreads;
-        int64_t const q0    = std::min<int64_t>(static_cast<int64_t>(tid) * chunk, outer_total);
-        int64_t const q1    = std::min<int64_t>(q0 + chunk, outer_total);
 
         if (q0 < q1) {
             // Decompose q0 into outer coordinates and compute starting offsets.
@@ -241,12 +308,12 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
             {
                 int64_t rem = q0;
                 for (int d = rank - 2; d >= 0; d--) {
-                    coord[static_cast<size_t>(d)] = rem % dims[d];
-                    rem /= dims[d];
+                    coord[static_cast<size_t>(d)] = rem % ldims[d];
+                    rem /= ldims[d];
                 }
             }
-            int64_t              s_off = 0;
-            std::vector<int64_t> c_off(plans.size(), 0), w_off(plans.size(), 0);
+            int64_t              s_off = s_base;
+            std::vector<int64_t> c_off = c_base, w_off = w_base;
             for (int d = 0; d < rank - 1; d++) {
                 s_off += coord[static_cast<size_t>(d)] * s_delta[d];
                 for (size_t k = 0; k < plans.size(); k++) {
@@ -261,7 +328,7 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
                 T const *sp = s_data;
                 for (size_t k = 0; k < plans.size(); k++) {
                     auto const   &p  = plans[k];
-                    T            *cb = priv[p.out_slot].data();
+                    T            *cb = p.direct ? p.out : priv[p.out_slot].data();
                     int64_t const dc = p.cdelta[rank - 1];
                     int64_t const dw = p.wdelta[rank - 1];
                     int64_t       co = c_off[k];
@@ -276,7 +343,8 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
                     }
                 }
 
-                // Odometer: advance the outer coordinates.
+                // Odometer: advance the outer coordinates (bases stay put:
+                // the wrap subtracts only the local-axis contribution).
                 for (int d = rank - 2; d >= 0; d--) {
                     coord[static_cast<size_t>(d)]++;
                     s_off += s_delta[d];
@@ -284,7 +352,7 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
                         c_off[k] += plans[k].cdelta[d];
                         w_off[k] += plans[k].wdelta[d];
                     }
-                    if (coord[static_cast<size_t>(d)] < dims[d]) {
+                    if (coord[static_cast<size_t>(d)] < ldims[d]) {
                         break;
                     }
                     s_off -= coord[static_cast<size_t>(d)] * s_delta[d];
@@ -319,6 +387,25 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
 
 } // namespace
 
+size_t StreamContractionFusion::max_output_elems(size_t elem_size) const {
+    if (!_has_profile || _profile.cpu.caches.empty() || elem_size == 0) {
+        return kMaxOutputElemsFallback;
+    }
+    size_t llc_bytes = 0;
+    for (auto const &level : _profile.cpu.caches) {
+        llc_bytes = std::max(llc_bytes, level.size_bytes);
+    }
+    if (llc_bytes == 0) {
+        return kMaxOutputElemsFallback;
+    }
+#ifdef _OPENMP
+    auto const threads = static_cast<size_t>(std::max(1, omp_get_max_threads()));
+#else
+    size_t const threads = 1;
+#endif
+    return std::max(kMinOutputElemsFloor, llc_bytes / threads / elem_size);
+}
+
 bool StreamContractionFusion::run(Graph &graph) {
     graph.topological_sort();
 
@@ -349,18 +436,13 @@ bool StreamContractionFusion::run(Graph &graph) {
         if (desc == nullptr || desc->conj_a || desc->conj_b) {
             continue;
         }
-        if (!is_real_valued(desc->ab_prefactor) || !is_real_valued(desc->c_prefactor)) {
-            continue;
-        }
         auto const &spec = desc->spec;
         if (!no_repeats(spec.c_indices) || !no_repeats(spec.a_indices) || !no_repeats(spec.b_indices)) {
             continue;
         }
 
-        double const ab_pf     = as_real<double>(desc->ab_prefactor);
-        double const c_pf      = as_real<double>(desc->c_prefactor);
-        bool const   c_is_one  = is_one(desc->c_prefactor);
-        bool const   c_is_zero = is_zero(desc->c_prefactor);
+        bool const c_is_one  = is_one(desc->c_prefactor);
+        bool const c_is_zero = is_zero(desc->c_prefactor);
 
         // Try each operand as the streamed tensor S; the other is W. The
         // member qualifies when C's and W's labels are all drawn from S's.
@@ -380,17 +462,31 @@ bool StreamContractionFusion::run(Graph &graph) {
             if (sh == nullptr || wh == nullptr || ch == nullptr || !sh->is_runtime || !wh->is_runtime || !ch->is_runtime) {
                 continue;
             }
+            // The kernel casts all three operands to the streamed tensor's
+            // element type; a mixed-dtype member must stay unfused.
+            if (wh->dtype != sh->dtype || ch->dtype != sh->dtype) {
+                continue;
+            }
+            // Complex prefactors ride through the kernel as element-typed
+            // alphas; on a real dtype a nonzero imaginary part has nowhere
+            // to go, so such members stay unfused.
+            bool const complex_dtype = sh->dtype == packed_gemm::ScalarType::Complex64 || sh->dtype == packed_gemm::ScalarType::Complex128;
+            if (!complex_dtype && (!is_real_valued(desc->ab_prefactor) || !is_real_valued(desc->c_prefactor))) {
+                continue;
+            }
             // Distributed operands belong to the communication passes
             // (InputSlicing / SUMMAExpansion); fusing them into a local
             // Custom node would hide the einsum those passes rewrite.
             if (sh->is_distributed || wh->is_distributed || ch->is_distributed) {
                 continue;
             }
+            // No output-size gate here: phase 2 admits large outputs when an
+            // owner-computes partition axis covers them, and only privatized
+            // members are held to max_output_elems.
             size_t const s_elems = elem_count(sh->dims);
             size_t const w_elems = elem_count(wh->dims);
             size_t const c_elems = elem_count(ch->dims);
-            if (s_elems < kMinStreamElems || c_elems > kMaxOutputElems || s_elems < kMinSizeRatio * w_elems ||
-                s_elems < kMinSizeRatio * c_elems) {
+            if (s_elems < kMinStreamElems || s_elems < kMinSizeRatio * w_elems || s_elems < kMinSizeRatio * c_elems) {
                 continue;
             }
 
@@ -400,10 +496,10 @@ bool StreamContractionFusion::run(Graph &graph) {
                                     .s_indices    = s_idx,
                                     .c_indices    = spec.c_indices,
                                     .w_indices    = w_idx,
-                                    .alpha        = ab_pf,
+                                    .alpha        = desc->ab_prefactor,
                                     .c_pf_is_one  = c_is_one,
                                     .c_pf_is_zero = c_is_zero,
-                                    .c_pf         = c_pf});
+                                    .c_pf         = desc->c_prefactor});
             break; // one orientation per node is enough
         }
     }
@@ -425,6 +521,53 @@ bool StreamContractionFusion::run(Graph &graph) {
             continue;
         }
         std::ranges::sort(members, [](StreamMember const &a, StreamMember const &b) { return a.node_index < b.node_index; });
+
+        // Owner-computes chunking, engaged ONLY when some output exceeds the
+        // privatization cap: a physical S axis whose label lands in a
+        // member's output pins one output coordinate, so threads owning
+        // disjoint blocks of that axis write disjoint output slices DIRECTLY
+        // (no thread-private copy, no reduction) - fusing outputs the flat
+        // walk would have to decline. An axis is allowed when every member
+        // it does NOT cover fits under the cap; the kernel picks the
+        // highest-stride allowed axis at execute time (partitioning a
+        // low-stride axis turns each thread's read into a strided comb -
+        // measured ~5x slower than contiguous slabs - so layout, which only
+        // the kernel knows, drives the choice). Over-cap members no axis can
+        // cover drop out of the group and stay ordinary einsums. When
+        // nothing is over the cap the flat privatized walk is kept: its
+        // contiguous per-thread slabs are the measured-fastest layout, and
+        // the private buffers are cache-resident by construction.
+        size_t const cap    = max_output_elems(handle_of(s_id)->element_size);
+        auto const  &s_dims = handle_of(s_id)->dims;
+        size_t const s_rank = s_dims.size();
+
+        auto const out_elems_of = [&](StreamMember const &m) {
+            auto const *h = handle_of(m.out_id);
+            return h == nullptr ? size_t{0} : elem_count(h->dims);
+        };
+        auto const covered_by = [](StreamMember const &m, size_t axis) {
+            return std::ranges::find(m.c_indices, m.s_indices[axis]) != m.c_indices.end();
+        };
+
+        std::vector<int> allowed_axes;
+        if (std::ranges::any_of(members, [&](StreamMember const &m) { return out_elems_of(m) > cap; })) {
+            for (size_t d = 0; d < s_rank; d++) {
+                if (s_dims[d] < 2) {
+                    continue; // a length-1 block feeds one thread
+                }
+                bool const valid =
+                    std::ranges::all_of(members, [&](StreamMember const &m) { return covered_by(m, d) || out_elems_of(m) <= cap; });
+                if (valid) {
+                    allowed_axes.push_back(static_cast<int>(d));
+                }
+            }
+            if (allowed_axes.empty()) {
+                std::erase_if(members, [&](StreamMember const &m) { return out_elems_of(m) > cap; });
+                if (members.size() < 2) {
+                    continue;
+                }
+            }
+        }
 
         // Shared-output tail rule: only the first member touching an output
         // may have c_pf != 1 (contributions interleave in the fused stream,
@@ -497,19 +640,19 @@ bool StreamContractionFusion::run(Graph &graph) {
         }
 
         Graph *graph_ptr = &graph;
-        auto   fused_fn  = [graph_ptr, s_id, members, unique_outs, dtype]() {
+        auto   fused_fn  = [graph_ptr, s_id, members, unique_outs, dtype, allowed_axes]() {
             switch (dtype) {
             case packed_gemm::ScalarType::Float32:
-                run_stream<float>(graph_ptr, s_id, members, unique_outs);
+                run_stream<float>(graph_ptr, s_id, members, unique_outs, allowed_axes);
                 break;
             case packed_gemm::ScalarType::Float64:
-                run_stream<double>(graph_ptr, s_id, members, unique_outs);
+                run_stream<double>(graph_ptr, s_id, members, unique_outs, allowed_axes);
                 break;
             case packed_gemm::ScalarType::Complex64:
-                run_stream<std::complex<float>>(graph_ptr, s_id, members, unique_outs);
+                run_stream<std::complex<float>>(graph_ptr, s_id, members, unique_outs, allowed_axes);
                 break;
             case packed_gemm::ScalarType::Complex128:
-                run_stream<std::complex<double>>(graph_ptr, s_id, members, unique_outs);
+                run_stream<std::complex<double>>(graph_ptr, s_id, members, unique_outs, allowed_axes);
                 break;
             default:
                 EINSUMS_THROW_EXCEPTION(std::invalid_argument, "StreamContractionFusion: unknown ScalarType");
@@ -544,8 +687,10 @@ bool StreamContractionFusion::run(Graph &graph) {
         _num_groups++;
         modified = true;
 
-        report(2, fmt::format("fused {} contractions into one stream over '{}' feeding {} output(s)", members.size(),
-                              handle_of(s_id) != nullptr ? handle_of(s_id)->name : "?", unique_outs.size()));
+        report(2, fmt::format(
+                      "fused {} contractions into one stream over '{}' feeding {} output(s){}", members.size(),
+                      handle_of(s_id) != nullptr ? handle_of(s_id)->name : "?", unique_outs.size(),
+                      allowed_axes.empty() ? "" : fmt::format(" (owner-computes chunking, {} candidate axis/axes)", allowed_axes.size())));
     }
 
     if (!modified) {

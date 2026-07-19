@@ -395,8 +395,10 @@ void PassManager::populate_default() {
     // einsums it may consume), and before GPU placement and the liveness
     // passes, which treat the fused Custom node as one unit. Declines
     // distributed operands; measured >= 1.5x on every qualifying shape
-    // (thresholds gate the rest to no-ops).
-    pm.add<passes::StreamContractionFusion>();
+    // (thresholds gate the rest to no-ops). The shared profile derives the
+    // output-size cap from the cache hierarchy (thread-private accumulators
+    // must stay cache-resident).
+    pm.add<passes::StreamContractionFusion>(profile);
 
     // GPU passes, only included when a GPU backend (or mock) is available.
     // GPUPlacement uses the shared HardwareProfile for its cost model.

@@ -146,6 +146,188 @@ TEST_CASE("StreamContractionFusion - below the stream threshold stays unfused", 
     REQUIRE(pass.num_groups() == 0);
 }
 
+TEST_CASE("StreamContractionFusion - complex prefactors on complex tensors", "[ComputeGraph][Passes][StreamFusion]") {
+    using T           = std::complex<double>;
+    constexpr int n_c = 34; // 34^4 = 1.34M elements, above the threshold
+
+    auto TEI = create_random_tensor<T>("TEI", n_c, n_c, n_c, n_c);
+    auto D   = create_random_tensor<T>("D", n_c, n_c);
+    auto J0  = create_random_tensor<T>("J0", n_c, n_c); // pre-existing J content, scaled by the complex c prefactor
+
+    T const alpha_j{2.0, 0.5};
+    T const alpha_k{-1.0, 0.25};
+    T const c_j{0.5, -0.25};
+
+    Tensor<T, 2> J_ref = J0;
+    Tensor<T, 2> K_ref("K_ref", n_c, n_c);
+    einsum(c_j, Indices{i, j}, &J_ref, alpha_j, Indices{i, j, k, l}, TEI, Indices{k, l}, D);
+    einsum(T{0.0}, Indices{i, j}, &K_ref, alpha_k, Indices{i, k, j, l}, TEI, Indices{k, l}, D);
+
+    RuntimeTensor<T> TEI_rt(TEI), D_rt(D);
+    RuntimeTensor<T> J_rt(J0);
+    RuntimeTensor<T> K_rt("K", std::vector<size_t>{n_c, n_c});
+    K_rt.zero();
+
+    cg::Graph graph("stream_complex_pf");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,j,k,l ; k,l", c_j, &J_rt, alpha_j, TEI_rt, D_rt);
+        cg::einsum("i,j <- i,k,j,l ; k,l", T{0.0}, &K_rt, alpha_k, TEI_rt, D_rt);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::StreamContractionFusion>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 1);
+    REQUIRE(pass.num_eliminated() == 1);
+
+    graph.execute();
+
+    for (size_t ii = 0; ii < n_c; ii++) {
+        for (size_t jj = 0; jj < n_c; jj++) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), static_cast<ptrdiff_t>(jj)};
+            REQUIRE(std::abs(J_rt(idx) - J_ref(ii, jj)) < 1e-8);
+            REQUIRE(std::abs(K_rt(idx) - K_ref(ii, jj)) < 1e-8);
+        }
+    }
+}
+
+TEST_CASE("StreamContractionFusion - profile-derived output cap", "[ComputeGraph][Passes][StreamFusion]") {
+    auto TEI = create_random_tensor<double>("TEI", kN, kN, kN, kN);
+    auto D   = create_random_tensor<double>("D", kN, kN);
+
+    auto const capture = [&](cg::Graph &graph, RuntimeTensor<double> &TEI_rt, RuntimeTensor<double> &D_rt, RuntimeTensor<double> &J_rt,
+                             RuntimeTensor<double> &K_rt) {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,j,k,l ; k,l", 0.0, &J_rt, 2.0, TEI_rt, D_rt);
+        cg::einsum("i,j <- i,k,j,l ; k,l", 0.0, &K_rt, -1.0, TEI_rt, D_rt);
+    };
+
+    SECTION("over-cap outputs fuse via owner-computes chunking") {
+        // llc/threads/8B lands at or below the 1024-element floor, so the
+        // kN x kN = 1600-element outputs exceed the privatization cap - but
+        // physical axis 0 carries output label i for BOTH members, so the
+        // chunked kernel writes disjoint output slices directly.
+        cg::HardwareProfile profile{};
+        profile.cpu.caches = {cg::CacheLevel{.size_bytes = 4096}};
+
+        Tensor<double, 2> J_ref("J_ref", kN, kN), K_ref("K_ref", kN, kN);
+        einsum(0.0, Indices{i, j}, &J_ref, 2.0, Indices{i, j, k, l}, TEI, Indices{k, l}, D);
+        einsum(0.0, Indices{i, j}, &K_ref, -1.0, Indices{i, k, j, l}, TEI, Indices{k, l}, D);
+
+        RuntimeTensor<double> TEI_rt(TEI), D_rt(D);
+        RuntimeTensor<double> J_rt("J", std::vector<size_t>{kN, kN}), K_rt("K", std::vector<size_t>{kN, kN});
+        J_rt.zero();
+        K_rt.zero();
+
+        cg::Graph graph("stream_tiny_cache");
+        capture(graph, TEI_rt, D_rt, J_rt, K_rt);
+
+        cg::passes::StreamContractionFusion pass(profile);
+        REQUIRE(pass.max_output_elems(sizeof(double)) < static_cast<size_t>(kN) * kN);
+        REQUIRE(pass.run(graph));
+        REQUIRE(pass.num_groups() == 1);
+
+        graph.execute();
+        for (size_t ii = 0; ii < kN; ii++) {
+            for (size_t jj = 0; jj < kN; jj++) {
+                std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), static_cast<ptrdiff_t>(jj)};
+                REQUIRE_THAT(J_rt(idx), Catch::Matchers::WithinAbs(J_ref(ii, jj), 1e-9));
+                REQUIRE_THAT(K_rt(idx), Catch::Matchers::WithinAbs(K_ref(ii, jj), 1e-9));
+            }
+        }
+    }
+
+    SECTION("two over-cap outputs with no shared axis stay unfused") {
+        // J(i,j) needs a chunk axis from {i,j}, X(k,l) needs one from {k,l};
+        // no axis covers both over-cap outputs, so both drop and no group
+        // survives.
+        cg::HardwareProfile profile{};
+        profile.cpu.caches = {cg::CacheLevel{.size_bytes = 4096}};
+
+        RuntimeTensor<double> TEI_rt(TEI), D_rt(D);
+        RuntimeTensor<double> J_rt("J", std::vector<size_t>{kN, kN}), X_rt("X", std::vector<size_t>{kN, kN});
+        J_rt.zero();
+        X_rt.zero();
+
+        cg::Graph graph("stream_disjoint_axes");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("i,j <- i,j,k,l ; k,l", 0.0, &J_rt, 2.0, TEI_rt, D_rt);
+            cg::einsum("k,l <- i,j,k,l ; i,j", 0.0, &X_rt, 1.0, TEI_rt, D_rt);
+        }
+
+        cg::passes::StreamContractionFusion pass(profile);
+        REQUIRE_FALSE(pass.run(graph));
+        REQUIRE(pass.num_groups() == 0);
+    }
+
+    SECTION("mixed mode: chunked large output plus privatized small output") {
+        // J(i,j) is over the tiny cap, so the group chunks one of J's axes
+        // (the kernel picks the higher-stride j); Y(k) does not contain the
+        // chunk label but is far under the cap, so it keeps thread-private
+        // accumulators inside the same fused stream.
+        cg::HardwareProfile profile{};
+        profile.cpu.caches = {cg::CacheLevel{.size_bytes = 4096}};
+
+        auto W3 = create_random_tensor<double>("W3", kN, kN, kN);
+
+        Tensor<double, 2> J_ref("J_ref", kN, kN);
+        Tensor<double, 1> Y_ref("Y_ref", kN);
+        einsum(0.0, Indices{i, j}, &J_ref, 2.0, Indices{i, j, k, l}, TEI, Indices{k, l}, D);
+        einsum(0.0, Indices{k}, &Y_ref, 0.5, Indices{i, j, k, l}, TEI, Indices{i, j, l}, W3);
+
+        RuntimeTensor<double> TEI_rt(TEI), D_rt(D), W3_rt(W3);
+        RuntimeTensor<double> J_rt("J", std::vector<size_t>{kN, kN}), Y_rt("Y", std::vector<size_t>{kN});
+        J_rt.zero();
+        Y_rt.zero();
+
+        cg::Graph graph("stream_mixed_mode");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("i,j <- i,j,k,l ; k,l", 0.0, &J_rt, 2.0, TEI_rt, D_rt);
+            cg::einsum("k <- i,j,k,l ; i,j,l", 0.0, &Y_rt, 0.5, TEI_rt, W3_rt);
+        }
+
+        cg::passes::StreamContractionFusion pass(profile);
+        REQUIRE(pass.run(graph));
+        REQUIRE(pass.num_groups() == 1);
+
+        graph.execute();
+        for (size_t ii = 0; ii < kN; ii++) {
+            for (size_t jj = 0; jj < kN; jj++) {
+                std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), static_cast<ptrdiff_t>(jj)};
+                REQUIRE_THAT(J_rt(idx), Catch::Matchers::WithinAbs(J_ref(ii, jj), 1e-9));
+            }
+            std::vector<ptrdiff_t> const yidx{static_cast<ptrdiff_t>(ii)};
+            REQUIRE_THAT(Y_rt(yidx), Catch::Matchers::WithinAbs(Y_ref(ii), 1e-8));
+        }
+    }
+
+    SECTION("a generous cache fuses") {
+        cg::HardwareProfile profile{};
+        profile.cpu.caches = {cg::CacheLevel{.size_bytes = size_t{1} << 30}};
+
+        RuntimeTensor<double> TEI_rt(TEI), D_rt(D);
+        RuntimeTensor<double> J_rt("J", std::vector<size_t>{kN, kN}), K_rt("K", std::vector<size_t>{kN, kN});
+        J_rt.zero();
+        K_rt.zero();
+
+        cg::Graph graph("stream_big_cache");
+        capture(graph, TEI_rt, D_rt, J_rt, K_rt);
+
+        cg::passes::StreamContractionFusion pass(profile);
+        REQUIRE(pass.max_output_elems(sizeof(double)) >= static_cast<size_t>(kN) * kN);
+        REQUIRE(pass.run(graph));
+        REQUIRE(pass.num_groups() == 1);
+    }
+
+    SECTION("no cache data keeps the fallback cap") {
+        cg::passes::StreamContractionFusion const with_empty_profile{cg::HardwareProfile{}};
+        cg::passes::StreamContractionFusion const without_profile{};
+        REQUIRE(with_empty_profile.max_output_elems(sizeof(double)) == without_profile.max_output_elems(sizeof(double)));
+    }
+}
+
 TEST_CASE("StreamContractionFusion - complex elements with real prefactors", "[ComputeGraph][Passes][StreamFusion]") {
     using T           = std::complex<double>;
     constexpr int n_c = 34; // 34^4 = 1.34M elements, above the threshold
