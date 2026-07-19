@@ -7,6 +7,8 @@
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 
+#include <unordered_set>
+
 namespace einsums::compute_graph::passes {
 
 /**
@@ -34,16 +36,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::string name() const override { return "DeadNodeElimination"; }
     bool                      run(Graph &graph) override;
 
-    /// Recurse into loop bodies / conditional branches. Safe now that
-    /// run() treats any tensor referenced by a descendant sub-graph as
-    /// live (via Graph::collect_subtree_referenced_ptrs), so a producer
-    /// feeding only a nested loop is never eliminated. See
-    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+    /// Opt out of PassManager auto-recursion: run() descends the sub-graph
+    /// tree itself. A body tensor is live if ANY enclosing or sibling graph
+    /// reads it, a cross-graph fact the per-graph recursion cannot see (it
+    /// would eliminate a body producer whose only reader sits in the parent
+    /// after the loop, or in a sibling loop body). run() threads the external
+    /// references down into each child instead.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
 
     /// Number of nodes eliminated in the last run.
     APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
 
   private:
+    /// Eliminate dead nodes in @p g, then descend into its sub-graphs. A
+    /// node's output tensor is kept alive if its buffer pointer appears in
+    /// @p external_refs (referenced by an enclosing or sibling graph).
+    bool run_one(Graph &g, std::unordered_set<void const *> const &external_refs);
+
     size_t _num_eliminated{0};
 };
 

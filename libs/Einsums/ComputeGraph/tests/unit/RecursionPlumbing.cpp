@@ -252,9 +252,6 @@ TEST_CASE("Recursion policy - safe local-rewrite passes opt in", "[ComputeGraph]
     // GPU transfer transforms (per-graph; self-contained body transfers).
     CHECK(cg::passes::TransferInsertion{}.recurse_into_subgraphs());
     CHECK(cg::passes::TransferElimination{}.recurse_into_subgraphs());
-    // DeadNodeElimination opts in now that it treats tensors referenced by
-    // a child sub-graph as live (Graph::collect_subtree_referenced_ptrs).
-    CHECK(cg::passes::DeadNodeElimination{}.recurse_into_subgraphs());
     // ConstantFolding opts in now that it only folds nodes whose tensors
     // are materialized at pass time (skips deferred body tensors).
     CHECK(cg::passes::ConstantFolding{}.recurse_into_subgraphs());
@@ -288,14 +285,19 @@ TEST_CASE("Recursion policy - hoisting / aggregation passes stay opt-out", "[Com
     // loop body exhibits, it merges nodes writing distinct, later-mutated
     // outputs. Recursing it broke the SCF example. See CSE.hpp.
     CHECK_FALSE(cg::passes::CSE{}.recurse_into_subgraphs());
+    // DeadNodeElimination stays opt-out: liveness is cross-graph (a body
+    // tensor may be read by an enclosing or sibling graph), so run() descends
+    // the sub-graph tree itself, threading the external references down. The
+    // per-graph auto-recursion cannot see those references and would wrongly
+    // eliminate a body producer whose only reader is outside the child.
+    CHECK_FALSE(cg::passes::DeadNodeElimination{}.recurse_into_subgraphs());
 }
 
-TEST_CASE("DeadNodeElimination transforms a loop body via PassManager recursion", "[ComputeGraph][Recursion]") {
-    // A dead body intermediate (written, never read). With DNE opted into
-    // sub-graph recursion, running the PassManager eliminates it inside the
-    // body: proving the recursion actually transforms the body, not just
-    // the top-level graph. (We use DNE rather than CSE/Reorder, which stay
-    // opt-out, see the policy test above.)
+TEST_CASE("DeadNodeElimination transforms a loop body via its own descent", "[ComputeGraph][Recursion]") {
+    // A dead body intermediate (written, never read). DNE descends the
+    // sub-graph tree itself (opt-out of PassManager recursion), so running the
+    // PassManager still eliminates it inside the body: proving the descent
+    // actually transforms the body, not just the top-level graph.
     auto A = create_random_tensor<double>("A", 4, 4);
     auto C = create_zero_tensor<double>("C", 4, 4);
 

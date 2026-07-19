@@ -184,3 +184,124 @@ TEST_CASE("DeadNodeElimination - keeps a producer feeding only a nested loop", "
     }
     CHECK(found_shared_producer);
 }
+
+// ── Cross-graph liveness: a body tensor read by an ENCLOSING or SIBLING graph ──
+// A tensor produced inside a control-flow child is dead only if nothing outside
+// that child reads it. DNE descends itself carrying the enclosing references, so
+// a body producer feeding a parent-after-the-loop node, a sibling loop body, or
+// a parent-after-the-conditional node is never eliminated.
+
+TEST_CASE("DeadNodeElimination - keeps a body intermediate consumed by the parent after the loop", "[ComputeGraph][Passes][Loop]") {
+    auto A   = create_random_tensor<double>("A", 4, 4);
+    auto out = create_zero_tensor<double>("out", 4, 4);
+
+    cg::Graph g("dne_body_to_parent");
+    auto     &body = g.add_loop("iter", 1, [](size_t) { return false; });
+    auto     &tmp  = body.create_zero_tensor<double, 2>("tmp", 4, 4);
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", 0.0, &tmp, 1.0, A, A); // tmp = A*A, its only reader is the parent below
+    }
+    {
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ik;kj->ij", 0.0, &out, 1.0, tmp, A); // out = tmp*A, in the PARENT after the loop
+    }
+
+    size_t const body_before = body.num_nodes();
+
+    cg::PassManager pm;
+    pm.add<cg::passes::DeadNodeElimination>();
+    pm.run(g);
+
+    // The body producer of `tmp` must survive: an outside consumer reads it.
+    CHECK(body.num_nodes() == body_before);
+
+    g.execute();
+
+    auto AA = create_zero_tensor<double>("AA", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &AA, Indices{i, k}, A, Indices{k, j}, A);
+    auto ref = create_zero_tensor<double>("ref", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &ref, Indices{i, k}, AA, Indices{k, j}, A);
+    for (size_t i = 0; i < 4; i++) {
+        for (size_t j = 0; j < 4; j++) {
+            CHECK(std::abs(out(i, j) - ref(i, j)) < 1e-10);
+        }
+    }
+}
+
+TEST_CASE("DeadNodeElimination - keeps a body intermediate consumed by a sibling loop body", "[ComputeGraph][Passes][Loop]") {
+    auto A   = create_random_tensor<double>("A", 4, 4);
+    auto acc = create_zero_tensor<double>("acc", 4, 4);
+
+    cg::Graph g("dne_sibling_loops");
+    auto     &body1 = g.add_loop("loop1", 1, [](size_t) { return false; });
+    auto     &tmp   = body1.create_zero_tensor<double, 2>("tmp", 4, 4);
+    {
+        cg::CaptureGuard const guard(body1);
+        cg::einsum("ik;kj->ij", 0.0, &tmp, 1.0, A, A); // tmp = A*A, read only by the sibling loop
+    }
+    auto &body2 = g.add_loop("loop2", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body2);
+        cg::einsum("ik;kj->ij", 0.0, &acc, 1.0, tmp, A); // acc = tmp*A, in a SIBLING loop body
+    }
+
+    size_t const body1_before = body1.num_nodes();
+
+    cg::PassManager pm;
+    pm.add<cg::passes::DeadNodeElimination>();
+    pm.run(g);
+
+    // The `tmp` producer in loop1 must survive: loop2's body reads it.
+    CHECK(body1.num_nodes() == body1_before);
+
+    g.execute();
+
+    auto AA = create_zero_tensor<double>("AA", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &AA, Indices{i, k}, A, Indices{k, j}, A);
+    auto ref = create_zero_tensor<double>("ref", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &ref, Indices{i, k}, AA, Indices{k, j}, A);
+    for (size_t i = 0; i < 4; i++) {
+        for (size_t j = 0; j < 4; j++) {
+            CHECK(std::abs(acc(i, j) - ref(i, j)) < 1e-10);
+        }
+    }
+}
+
+TEST_CASE("DeadNodeElimination - keeps a then-branch intermediate consumed by the parent", "[ComputeGraph][Passes][Conditional]") {
+    auto A   = create_random_tensor<double>("A", 4, 4);
+    auto out = create_zero_tensor<double>("out", 4, 4);
+
+    cg::Graph g("dne_then_to_parent");
+    auto [then_g, else_g] = g.add_conditional("cond", [] { return true; });
+    auto &tmp             = then_g.create_zero_tensor<double, 2>("tmp", 4, 4);
+    {
+        cg::CaptureGuard const guard(then_g);
+        cg::einsum("ik;kj->ij", 0.0, &tmp, 1.0, A, A); // tmp = A*A in the then-branch
+    }
+    {
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ik;kj->ij", 0.0, &out, 1.0, tmp, A); // parent reads tmp after the conditional
+    }
+
+    size_t const then_before = then_g.num_nodes();
+
+    cg::PassManager pm;
+    pm.add<cg::passes::DeadNodeElimination>();
+    pm.run(g);
+
+    // The then-branch producer of `tmp` must survive: the parent reads it.
+    CHECK(then_g.num_nodes() == then_before);
+
+    g.execute();
+
+    auto AA = create_zero_tensor<double>("AA", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &AA, Indices{i, k}, A, Indices{k, j}, A);
+    auto ref = create_zero_tensor<double>("ref", 4, 4);
+    tensor_algebra::einsum(Indices{i, j}, &ref, Indices{i, k}, AA, Indices{k, j}, A);
+    for (size_t i = 0; i < 4; i++) {
+        for (size_t j = 0; j < 4; j++) {
+            CHECK(std::abs(out(i, j) - ref(i, j)) < 1e-10);
+        }
+    }
+}
