@@ -43,6 +43,7 @@ set(ComputeGraphTests
     ParallelForGraph.cpp
     Pass_CommunicationPasses.cpp
     Pass_ConstantFolding.cpp
+    Pass_ContractionPlanning.cpp
     Pass_CSE.cpp
     Pass_DistributionPasses.cpp
     Pass_DeadNodeElimination.cpp

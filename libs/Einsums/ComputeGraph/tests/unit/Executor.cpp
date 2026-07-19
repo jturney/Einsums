@@ -900,6 +900,144 @@ TEST_CASE("IOPrefetch - hoists a DiskRead out of a nested loop", "[ComputeGraph]
         CHECK(acc.data()[k] == Catch::Approx(static_cast<double>(No * Ni)));
 }
 
+TEST_CASE("IOPrefetch - within-graph read is not hoisted past a prior reader of its destination", "[ComputeGraph][Passes][IO]") {
+    // A DiskRead has no inputs, so the original sequential hoist slid it to
+    // position 0 unconditionally - past a node that already READ the read's
+    // destination, a WAR violation that changes what that earlier node sees.
+    // The pass's clause (b) keeps the read after the last prior touch of its
+    // output. Here axpy(data->C) reads the zero-initialized data BEFORE the
+    // load; the read must stay behind it.
+    auto data = create_zero_tensor<double>("data", 4, 4);
+    auto src  = create_random_tensor<double>("src", 4, 4);
+    auto C    = create_zero_tensor<double>("C", 4, 4);
+    auto D    = create_zero_tensor<double>("D", 4, 4);
+
+    cg::Graph g("prefetch_war");
+    {
+        cg::CaptureGuard const guard(g);
+        cg::axpy(1.0, data, &C); // reads data (still zero) - must run before the load
+        cg::read("load", "fake.h5", "/d", &data, [&]() { std::memcpy(data.data(), src.data(), 16 * sizeof(double)); });
+        cg::axpy(1.0, data, &D); // reads the loaded data
+    }
+
+    cg::passes::IOPrefetch ioprefetch;
+    ioprefetch.run(g);
+
+    // The read did not slide to position 0; it stays after the first axpy.
+    size_t read_pos = SIZE_MAX;
+    for (size_t idx = 0; idx < g.nodes().size(); idx++) {
+        if (g.nodes()[idx].kind == cg::OpKind::DiskRead) {
+            read_pos = idx;
+            break;
+        }
+    }
+    REQUIRE(read_pos != SIZE_MAX);
+    CHECK(read_pos >= 1);
+
+    g.execute();
+    for (size_t ii = 0; ii < 4; ii++)
+        for (size_t jj = 0; jj < 4; jj++) {
+            CHECK(C(ii, jj) == 0.0); // read the zeros, not the loaded src
+            CHECK(D(ii, jj) == Catch::Approx(src(ii, jj)));
+        }
+}
+
+TEST_CASE("IOPrefetch - loop hoist is idempotent", "[ComputeGraph][Passes][IO][Loop]") {
+    // Running the pass a second time must not re-hoist or duplicate the read:
+    // it is already before the loop and the body has none left.
+    constexpr size_t N          = 5;
+    auto             data       = create_zero_tensor<double>("data", 4, 4);
+    auto             acc        = create_zero_tensor<double>("acc", 4, 4);
+    int              read_count = 0;
+
+    cg::Graph g("io_idem_loop");
+    auto     &body = g.add_loop("iter", N, [](size_t it) { return it + 1 < N; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::read("load", "fake.h5", "/d", &data, [&]() {
+            read_count++;
+            for (size_t k = 0; k < data.size(); ++k)
+                data.data()[k] = 1.0;
+        });
+        cg::axpy(1.0, data, &acc);
+    }
+
+    cg::passes::IOPrefetch first;
+    REQUIRE(first.run(g));
+
+    auto count_reads = [](cg::Graph const &graph) {
+        size_t n = 0;
+        for (auto const &node : graph.nodes())
+            if (node.kind == cg::OpKind::DiskRead)
+                n++;
+        return n;
+    };
+    REQUIRE(count_reads(g) == 1); // one hoisted read in the parent
+    size_t body_reads = 0;
+    for (auto const &node : body.nodes())
+        if (node.kind == cg::OpKind::DiskRead)
+            body_reads++;
+    REQUIRE(body_reads == 0);
+
+    cg::passes::IOPrefetch second;
+    bool const             modified_second = second.run(g);
+    CHECK_FALSE(modified_second);
+    CHECK(second.num_prefetched() == 0);
+    CHECK(count_reads(g) == 1); // still exactly one, not duplicated
+
+    g.execute();
+    CHECK(read_count == 1);
+    for (size_t k = 0; k < acc.size(); ++k)
+        CHECK(acc.data()[k] == Catch::Approx(static_cast<double>(N)));
+}
+
+TEST_CASE("IOPrefetch - within-graph prefetch is idempotent", "[ComputeGraph][Passes][IO]") {
+    // First run slides the read toward the front; a second run finds it already
+    // at its earliest legal slot and does nothing.
+    auto A    = create_random_tensor<double>("A", 4, 4);
+    auto src  = create_random_tensor<double>("src", 4, 4);
+    auto data = create_zero_tensor<double>("data", 4, 4);
+    auto C    = create_zero_tensor<double>("C", 4, 4);
+
+    cg::Graph g("io_idem_flat");
+    {
+        cg::CaptureGuard const guard(g);
+        cg::scale(2.0, &A);
+        cg::scale(3.0, &A);
+        cg::read("load", "fake.h5", "/d", &data, [&]() { std::memcpy(data.data(), src.data(), 16 * sizeof(double)); });
+        cg::axpy(1.0, data, &C);
+    }
+
+    cg::passes::IOPrefetch first;
+    REQUIRE(first.run(g));
+
+    size_t read_pos_after_first = SIZE_MAX;
+    for (size_t idx = 0; idx < g.nodes().size(); idx++)
+        if (g.nodes()[idx].kind == cg::OpKind::DiskRead) {
+            read_pos_after_first = idx;
+            break;
+        }
+    REQUIRE(read_pos_after_first != SIZE_MAX);
+
+    cg::passes::IOPrefetch second;
+    bool const             modified_second = second.run(g);
+    CHECK_FALSE(modified_second);
+    CHECK(second.num_prefetched() == 0);
+
+    size_t read_pos_after_second = SIZE_MAX;
+    for (size_t idx = 0; idx < g.nodes().size(); idx++)
+        if (g.nodes()[idx].kind == cg::OpKind::DiskRead) {
+            read_pos_after_second = idx;
+            break;
+        }
+    CHECK(read_pos_after_second == read_pos_after_first); // unchanged
+
+    g.execute();
+    for (size_t ii = 0; ii < 4; ii++)
+        for (size_t jj = 0; jj < 4; jj++)
+            CHECK(C(ii, jj) == Catch::Approx(src(ii, jj)));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Wide fan-out
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -210,6 +210,85 @@ std::vector<TensorId> extract_leaves(std::vector<ContractionInfo> const &chain) 
     return leaves;
 }
 
+/// True when the link indices occupy exactly the FIRST |link| positions of
+/// @p indices (a contiguous prefix), e.g. "kj" with link {k}.
+bool link_is_prefix(std::vector<std::string> const &indices, std::set<std::string> const &link_set) {
+    size_t nlink = 0;
+    for (auto const &idx : indices)
+        if (link_set.count(idx))
+            nlink++;
+    for (size_t pos = 0; pos < indices.size(); pos++) {
+        bool const is_link = link_set.count(indices[pos]) > 0;
+        if ((pos < nlink) != is_link)
+            return false;
+    }
+    return true;
+}
+
+/// True when the link indices occupy exactly the LAST |link| positions of
+/// @p indices (a contiguous suffix), e.g. "ik" with link {k}.
+bool link_is_suffix(std::vector<std::string> const &indices, std::set<std::string> const &link_set) {
+    size_t nlink = 0;
+    for (auto const &idx : indices)
+        if (link_set.count(idx))
+            nlink++;
+    size_t const first_link = indices.size() - nlink;
+    for (size_t pos = 0; pos < indices.size(); pos++) {
+        bool const is_link = link_set.count(indices[pos]) > 0;
+        if ((pos >= first_link) != is_link)
+            return false;
+    }
+    return true;
+}
+
+/// The restructured chain emits fixed (m,k)x(k,n) GEMM nodes and runs them
+/// through make_einsum_executor's rank-2 fast path, which calls
+/// gemm<false, false> on each leaf's PHYSICAL layout - it ignores the leaf's
+/// captured index order entirely. That is only correct when every leaf is
+/// already stored in the orientation the fold assumes:
+///   - chain[0].input_a (leaf 0)      -> [target..., link...]  (link a suffix)
+///   - chain[0].input_b (leaf 1)      -> [link..., target...]  (link a prefix)
+///   - each later member's fresh leaf -> [link..., target...]  (link a prefix)
+/// and the running product must enter every later member as input_a, because
+/// the matrix-chain DP assumes left-to-right leaf order (GEMM does not
+/// commute).
+///
+/// A member captured with a transposed operand - e.g. "ik;jk->ij", whose leaf
+/// carries its link index LAST rather than first - would be read in the wrong
+/// orientation and SILENTLY produce garbage (measured: a transposed interior
+/// leaf yields max abs error ~38 vs ~1e-14 for the canonical chain). The
+/// correct future fix is to derive per-operand transpose flags from each
+/// leaf's index order and emit gemm<transA, transB> accordingly. Until then,
+/// decline to restructure any chain whose leaves are not already canonical;
+/// the chain still gets a cost report and executes in its original, correct
+/// order (analysis-only, same fallback the higher-rank and observable-interior
+/// gates use).
+bool chain_leaves_canonical(std::vector<ContractionInfo> const &chain, Graph const &graph) {
+    auto const &nodes = graph.nodes();
+    for (size_t m = 0; m < chain.size(); m++) {
+        if (chain[m].node_idx >= nodes.size())
+            return false; // stale index (a prior chain rebuilt the node list): decline conservatively
+        auto const &node = nodes[chain[m].node_idx];
+        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        if (desc == nullptr)
+            return false;
+        std::set<std::string> const link_set(desc->spec.link_indices.begin(), desc->spec.link_indices.end());
+        if (m == 0) {
+            // Both operands are fresh leaves.
+            if (!link_is_suffix(desc->spec.a_indices, link_set) || !link_is_prefix(desc->spec.b_indices, link_set))
+                return false;
+        } else {
+            // The running product must feed as input_a; the fresh leaf is
+            // input_b and must be link-prefix.
+            if (node.inputs.empty() || node.inputs[0] != chain[m - 1].output_tid)
+                return false;
+            if (!link_is_prefix(desc->spec.b_indices, link_set))
+                return false;
+        }
+    }
+    return true;
+}
+
 /// Declare a DEFERRED graph-owned intermediate for a restructured chain.
 /// Deferred (not create_tensor_dynamic, which allocates eagerly and used to
 /// leak these for the graph's lifetime): the Materialization pass allocates
@@ -518,6 +597,20 @@ bool ContractionPlanning::run(Graph &graph) {
             EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions [eff. dims {}], {:.1f}us → {:.1f}us ({:.2f}x speedup) — "
                              "analysis only (higher-rank or runtime-rank, needs folding)",
                              n, fmt::join(p, "x"), original_time, optimal_time, speedup);
+            _reports.push_back(std::move(report));
+            continue;
+        }
+
+        // Leaf-orientation gate (see chain_leaves_canonical): the rank-2 fold
+        // reads each leaf with gemm<false, false> on its physical layout, so a
+        // transposed operand ("ik;jk->ij") would be restructured into a GEMM
+        // that reads the leaf in the wrong orientation and silently corrupt the
+        // result. Decline non-canonical chains until the emitted GEMMs carry
+        // transpose flags.
+        if (!chain_leaves_canonical(chain, graph)) {
+            EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (non-canonical leaf orientation; a "
+                             "transposed operand would be folded into a wrong-orientation GEMM)",
+                             n);
             _reports.push_back(std::move(report));
             continue;
         }
