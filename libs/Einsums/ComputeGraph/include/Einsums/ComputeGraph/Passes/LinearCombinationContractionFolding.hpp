@@ -70,10 +70,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of fold groups rewritten.
-    [[nodiscard]] size_t num_groups() const { return _num_groups; }
+    APIARY_EXPOSE APIARY_GETTER("num_groups") [[nodiscard]] size_t num_groups() const { return _num_groups; }
 
     /// Total number of einsum nodes eliminated (folded away).
-    [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+    APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
 
   private:
     size_t _num_groups{0};

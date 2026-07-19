@@ -130,6 +130,19 @@ BEINSUM_PATTERNS = {
 }
 _BEINSUM_SPECS = list(BEINSUM_PATTERNS.keys())
 
+# "linear-combination" einsum: a vector contracted against a rank-3 tensor read
+# with permuted (i,j) axes. This is exactly the shape
+# LinearCombinationContractionFolding folds (the CCSD 2J-K idiom): two terms into
+# the same matrix output, sharing the vector operand, reading the SAME rank-3
+# tensor with transposed trailing axes. The rank-3 operand must be (k, n, n) so
+# both axis orders yield the same (n, n) output. Only the opt-in arm emits this
+# opcode; the random program generator never does.
+LEINSUM_PATTERNS = {
+    # key: (numpy fn(vec, r3) -> matrix, cg spec string)
+    "kij": (lambda a, b: np.einsum("k,kij->ij", a, b), "i,j <- k ; k,i,j"),
+    "kji": (lambda a, b: np.einsum("k,kji->ij", a, b), "i,j <- k ; k,j,i"),
+}
+
 # Unary element-wise transforms. Each works on a numpy array (oracle) and on a
 # scalar (the C++ executor calls it per element), and is bounded so values stay
 # fp-comparable across loops.
@@ -356,6 +369,9 @@ def interp_np(stmts, m, v, t, dt=None):
             opA = np.conj(t[A]) if ca else t[A]
             opB = np.conj(t[B]) if cb else t[B]
             t[C] = cast(ab * BEINSUM_PATTERNS[spec][0](opA, opB) + cpf * t[C])
+        elif k == "leinsum":
+            spec, ab, Av, Bt, cpf, Cm = s[1:7]
+            m[Cm] = cast(ab * LEINSUM_PATTERNS[spec][0](v[Av], t[Bt]) + cpf * m[Cm])
         elif k == "perm":
             _, a, cpf, A, C = s
             m[C] = cast(a * m[A].T + cpf * m[C])
@@ -418,6 +434,9 @@ def _emit_primitive(s, m, v, t):
         spec, ab, A, B, cpf, C = s[1:7]
         ca, cb = (s[7], s[8]) if len(s) > 7 else (False, False)
         einsums.einsum(spec, t[C], t[A], t[B], c_pf=cpf, ab_pf=ab, conj_a=ca, conj_b=cb)
+    elif k == "leinsum":
+        spec, ab, Av, Bt, cpf, Cm = s[1:7]
+        einsums.einsum(LEINSUM_PATTERNS[spec][1], m[Cm], v[Av], t[Bt], c_pf=cpf, ab_pf=ab)
     elif k == "perm":
         _, a, cpf, A, C = s
         einsums.permute("ij <- ji", m[C], m[A], c_pf=cpf, a_pf=a)
@@ -823,6 +842,210 @@ def test_fuzz_free_lifecycle_parallel_stress(seed):
                     f"{ex_name} rep {rep} diverged (seed {seed}, steps {steps}, rhs_pick {rhs_pick})\n"
                     f"max abs err = {np.abs(got - oracle).max()}"
                 )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Parent-declared graph scratch consumed inside / after control flow.
+#
+# The generator's whole tensor pool is user-visible (created eager, never
+# freed), so a random program NEVER declares an intermediate=True graph scratch
+# that is (re)computed and consumed only inside a generated loop / conditional
+# body, or defined in both branches of a conditional and consumed AFTER it.
+# That exact shape is behind three recent bugs (FreeInsertion Part A
+# last_use/first_writer subtree fixes, hoisted lifecycle nodes): the default
+# pipeline must hoist the scratch's Materialize above the control-flow node,
+# zero it once, and free it after the true last read. These two arms declare
+# 1-2 square scratch tensors in the PARENT graph, drive them through generated
+# control flow, and demand the default-optimized graph (Sequential + both
+# parallel executors) matches a numpy oracle that models the scratch as a
+# plain zero-initialized array.
+#
+# Because a program that never materializes its scratch would pass trivially
+# (that is how the FreeInsertion bug hid), each build ASSERTS the optimized
+# graph carries a Materialize node for every declared scratch before executing.
+# Only the ordinary (user-visible) tensors are compared: FreeInsertion may free
+# the scratch, leaving its post-execute buffer undefined.
+# ──────────────────────────────────────────────────────────────────────────
+
+_SCRATCH_N = 3        # square dimension for the graph-scratch pool
+_SCRATCH_ORDS = 4     # number of ordinary (user-visible) square matrices
+
+
+def _distinct(rng, ords, exclude):
+    """A pool index not in ``exclude`` (contraction/transpose outputs may not
+    alias an operand). ords is always large enough for a fresh pick here."""
+    cands = [o for o in ords if o not in exclude]
+    return int(rng.choice(cands)) if cands else None
+
+
+def _gen_square_primitive(rng, ords):
+    """A random primitive over a square n x n pool (ordinary tensor indices only).
+    Kept self-contained because _gen_primitive indexes the global MAT_SHAPES pool.
+    Contraction/transpose outputs are kept distinct from their inputs (in-place
+    einsum/gemm/perm on a contraction is unsupported)."""
+    roll = int(rng.integers(0, 6))
+    a = _scalar(rng)
+    x, y = int(rng.choice(ords)), int(rng.choice(ords))
+    if roll == 0:
+        return ("scale", a, x)
+    if roll == 1:
+        return ("axpy", a, x, y)
+    if roll == 2:
+        return ("axpby", a, x, _scalar(rng), y)
+    if roll == 3:
+        z = _distinct(rng, ords, {x, y})
+        return ("gemm", a, x, y, float(rng.integers(0, 2)), z) if z is not None else ("scale", a, x)
+    if roll == 4:
+        z = _distinct(rng, ords, {x, y})
+        return ("einsum", _SQ, a, x, y, float(rng.integers(0, 2)), z, False, False) if z is not None else ("scale", a, x)
+    y = _distinct(rng, ords, {x})
+    return ("perm", a, float(rng.integers(0, 2)), x, y) if y is not None else ("scale", a, x)
+
+
+def _write_scratch(rng, dst, ords):
+    """An op that OVERWRITES dst (a scratch index) from ordinary tensors. dst is a
+    scratch index, disjoint from every ordinary operand, so no aliasing arises."""
+    o1, o2 = int(rng.choice(ords)), int(rng.choice(ords))
+    roll = int(rng.integers(0, 4))
+    if roll == 0:
+        return ("gemm", _scalar(rng), o1, o2, 0.0, dst)
+    if roll == 1:
+        return ("einsum", _SQ, _scalar(rng), o1, o2, 0.0, dst, False, False)
+    if roll == 2:
+        return ("perm", _scalar(rng), 0.0, o1, dst)
+    return ("axpby", _scalar(rng), o1, 0.0, dst)
+
+
+def _consume_scratch(rng, src, ords):
+    """An op that READS src (a scratch index) into an ordinary tensor. The output
+    is kept distinct from the ordinary input for the contraction case."""
+    roll = int(rng.integers(0, 3))
+    if roll == 0:
+        return ("axpy", _scalar(rng), src, int(rng.choice(ords)))
+    if roll == 1:
+        o1 = int(rng.choice(ords))
+        o2 = _distinct(rng, ords, {o1})
+        if o2 is None:
+            return ("axpy", _scalar(rng), src, o1)
+        return ("gemm", _scalar(rng), src, o1, float(rng.integers(0, 2)), o2)
+    return ("perm", _scalar(rng), float(rng.integers(0, 2)), src, int(rng.choice(ords)))
+
+
+def _gen_scratch_body_program(rng, ords, scratch):
+    """Arm A: each scratch tensor is (re)computed and consumed strictly INSIDE a
+    generated loop or conditional body; nothing outside the body references it."""
+    stmts = []
+    for si in scratch:
+        body = [_gen_square_primitive(rng, ords) for _ in range(int(rng.integers(0, 2)))]
+        body.append(_write_scratch(rng, si, ords))
+        loop = rng.random() < 0.5
+        if loop and rng.random() < 0.5:
+            # loop-carried accumulation: scratch += ordinary each iteration
+            body.append(("axpby", _scalar(rng), int(rng.choice(ords)), 1.0, si))
+        body.append(_consume_scratch(rng, si, ords))
+        body += [_gen_square_primitive(rng, ords) for _ in range(int(rng.integers(0, 2)))]
+        if loop:
+            stmts.append(("loop", int(rng.integers(2, 4)), body))
+        else:
+            # both branches recompute+consume so the scratch is defined whichever runs
+            other = [_write_scratch(rng, si, ords), _consume_scratch(rng, si, ords)]
+            stmts.append(("cond", bool(rng.integers(0, 2)), body, other))
+    return stmts
+
+
+def _gen_scratch_after_cond_program(rng, ords, scratch):
+    """Arm C: BOTH branches of a conditional define each scratch (overwrite), and
+    the scratch is consumed AFTER the conditional, so its value is well-defined
+    whichever branch runs. Stresses materialize hoisting above the branch and the
+    free of a tensor whose last read follows the conditional (blind spot #3)."""
+    then, els = [], []
+    for si in scratch:
+        then.append(_write_scratch(rng, si, ords))
+        els.append(_write_scratch(rng, si, ords))
+    then += [_gen_square_primitive(rng, ords) for _ in range(int(rng.integers(0, 2)))]
+    els += [_gen_square_primitive(rng, ords) for _ in range(int(rng.integers(0, 2)))]
+    stmts = [("cond", bool(rng.integers(0, 2)), then, els)]
+    for si in scratch:
+        stmts.append(_consume_scratch(rng, si, ords))
+    stmts += [_gen_square_primitive(rng, ords) for _ in range(int(rng.integers(0, 2)))]
+    return stmts
+
+
+def _make_pool_graph_scratch(m_arrays, graph, name, n_scratch, n):
+    """Ordinary matrices (eager, user-visible) followed by n_scratch graph-declared
+    intermediate=True scratch tensors, appended at indices [len(m_arrays), ...)."""
+    mats = []
+    for idx, arr in enumerate(m_arrays):
+        tn = einsums.create_zero_tensor(f"{name}_m{idx}", list(arr.shape), dtype=str(arr.dtype))
+        np.asarray(tn)[...] = arr
+        mats.append(tn)
+    scratch_names = []
+    for k in range(n_scratch):
+        sn = f"{name}_sc{k}"
+        mats.append(graph.declare_zero_tensor(sn, [n, n], intermediate=True, dtype=str(m_arrays[0].dtype)))
+        scratch_names.append(sn)
+    return mats, scratch_names
+
+
+def _assert_scratch_materialized(graph, scratch_names, label):
+    labels = " ".join(
+        nd.get("label", "") for nd in json.loads(graph.to_json()).get("nodes", []) if nd.get("kind") == "Materialize"
+    )
+    for sn in scratch_names:
+        assert sn in labels, f"{label}: scratch {sn} was not materialized (Materialize labels: {labels!r})"
+
+
+def _check_scratch_program(prog, m_arrays, n_scratch, n, label):
+    B = len(m_arrays)
+    om = [a.copy() for a in m_arrays] + [np.zeros((n, n)) for _ in range(n_scratch)]
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        interp_np(prog, om, [], [], np.dtype("float64"))
+    if not _usable(om[:B], cap=_DTYPE_CAP["float64"]):
+        pytest.skip("oracle overflowed — numerically degenerate program")
+    oracle_ord = om[:B]
+
+    for ex_name, exec_cls in _CROSS_EXECUTORS:
+        g = cg.Graph(f"{label}_{ex_name}")
+        mats, scratch_names = _make_pool_graph_scratch(m_arrays, g, f"{label}_{ex_name}", n_scratch, n)
+        build_cg(prog, g, mats, [], [], f"{label}_{ex_name}")
+        g.apply(cg.default_pass_manager())
+        _assert_scratch_materialized(g, scratch_names, f"{label}/{ex_name}")
+        g.execute() if ex_name == "Sequential" else g.execute(exec_cls())
+        for idx in range(B):
+            got = np.asarray(mats[idx])
+            if not np.allclose(got, oracle_ord[idx], rtol=RTOL, atol=ATOL):
+                raise AssertionError(
+                    f"GRAPH-SCRATCH {ex_name} disagrees on m{idx}\n"
+                    f"program={prog!r}\ngot=\n{got}\noracle=\n{oracle_ord[idx]}"
+                )
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_fuzz_graph_scratch_in_control_flow(seed):
+    """Arm A: parent-declared scratch produced and consumed inside a loop /
+    conditional body (default pipeline, Sequential + parallel executors)."""
+    rng = np.random.default_rng(170_000 + seed)
+    n = _SCRATCH_N
+    m_arrays = [rng.standard_normal((n, n)) * 0.5 for _ in range(_SCRATCH_ORDS)]
+    n_scratch = int(rng.integers(1, 3))
+    ords = list(range(_SCRATCH_ORDS))
+    scratch = list(range(_SCRATCH_ORDS, _SCRATCH_ORDS + n_scratch))
+    prog = _gen_scratch_body_program(rng, ords, scratch)
+    _check_scratch_program(prog, m_arrays, n_scratch, n, f"scr{seed}")
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_fuzz_graph_scratch_after_conditional(seed):
+    """Arm C: parent-declared scratch defined in both branches of a conditional
+    and consumed after it (default pipeline, Sequential + parallel executors)."""
+    rng = np.random.default_rng(180_000 + seed)
+    n = _SCRATCH_N
+    m_arrays = [rng.standard_normal((n, n)) * 0.5 for _ in range(_SCRATCH_ORDS)]
+    n_scratch = int(rng.integers(1, 3))
+    ords = list(range(_SCRATCH_ORDS))
+    scratch = list(range(_SCRATCH_ORDS, _SCRATCH_ORDS + n_scratch))
+    prog = _gen_scratch_after_cond_program(rng, ords, scratch)
+    _check_scratch_program(prog, m_arrays, n_scratch, n, f"scrc{seed}")
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1446,6 +1669,10 @@ def _referenced(stmts, m, v, t):
             m.update((s[2], s[7], s[9]))
         elif k == "beinsum":
             t.update((s[3], s[4], s[6]))
+        elif k == "leinsum":
+            v.add(s[3])
+            t.add(s[4])
+            m.add(s[6])
         elif k == "loop":
             _referenced(s[2], m, v, t)
         elif k == "cond":
@@ -1722,3 +1949,239 @@ def test_fuzz_gemm_batching_with_consumers(seed):
         prog.append(consumer(outs[int(rng.integers(0, len(outs)))], D2))
 
     check_program(prog, pool, [], [], f"gemmbatch_consumer{seed}")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Opt-in passes: LinearCombinationContractionFolding + DistributiveFactoring.
+#
+# Neither pass is registered in PassManager::create_default() nor listed in
+# _SAFE_PASSES, so no other fuzz mode ever reaches them - they were exercised
+# only by their own hand-written C++ unit tests. Both are now exposed to Python
+# (via the APIARY annotations on their headers) so the fuzzer can drive them.
+#
+#   LCCF group: C = 2*einsum(k,kij->ij) ; C -= einsum(k,kji->ij)  (same vector A,
+#               same rank-3 B read with transposed axes -> the CCSD 2J-K fold)
+#   DF group:   R += a1*(A@B1) ; R += a2*(A@B2)      (same A, different B,
+#               same index pattern, both accumulate -> DistributiveFactoring)
+#
+# --- REAL FINDING (DistributiveFactoring, do NOT fix here) ---------------------
+# LinearCombinationContractionFolding folds and EXECUTES correctly on the Python
+# (runtime-tensor) path, so it is fuzzed end-to-end below.
+#
+# DistributiveFactoring, however, cannot EXECUTE on any Python graph. Its rewrite
+# builds the "sum of non-shared operands" accumulator with
+# Graph::create_tensor_dynamic(), which returns a COMPILE-TIME typed
+# Tensor<T,Rank>; but a Python graph's tensors are GeneralRuntimeTensor<T>. The
+# axpy chain it installs (Graph::make_axpy_executor -> impl_axpy) then adds a
+# runtime-rank source into a fixed-rank destination and throws
+#   einsums::rank_error: Can not add two tensors of different ranks!
+# This reproduces for every shape, including the exact (4,3)*(3,5)->(4,5) shape
+# the C++ unit test passes with - i.e. it is a runtime-tensor gap in the pass,
+# not a shape/degenerate-dim issue. DF's DETECTION logic is fine; only its
+# rewrite's execution is broken on runtime tensors. So DF is fuzzed for DETECTION
+# only (no execute), and the execution crash is codified as a regression below.
+#
+# --- Secondary finding (counter reporting) ------------------------------------
+# Both passes expose num_groups / num_eliminated, but recurse_into_subgraphs()
+# is true and each run() call resets those counters, so when a graph carries
+# control flow the pass manager's recursion into subgraphs overwrites the
+# top-level count with the LAST subgraph's (usually zero). The rewrite still
+# happens (run() still returns modified); only the exposed count is clobbered.
+# So coverage here is asserted via a control-flow-FREE "group only" probe graph,
+# where the counter is trustworthy, rather than off the full program's count.
+# ------------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _gen_lccf_group(rng):
+    """Two vector*rank-3 contractions into the same matrix output, sharing the
+    vector and reading the same rank-3 with transposed trailing axes:
+    LinearCombinationContractionFolding's canonical shape. Returns (stmts, C)."""
+    n = _d(rng, R3_DIMS)  # trailing square dim doubles as the output extent
+    k = _d(rng, R3_DIMS)
+    Bt = _pick_r3(rng, (k, n, n))
+    Av = _pick_vec(rng, k)
+    Cm = _pick_mat(rng, (n, n))
+    if None in (Bt, Av, Cm):
+        return None, None
+    grp = [
+        ("leinsum", "kij", _scalar(rng), Av, Bt, 0.0, Cm),
+        ("leinsum", "kji", _scalar(rng), Av, Bt, 1.0, Cm),
+    ]
+    return grp, Cm
+
+
+def _gen_df_group(rng):
+    """Two accumulating einsums sharing operand A with different B operands:
+    DistributiveFactoring's canonical shape. Returns (stmts, R) or (None, None)."""
+    m, k, n = _d(rng), _d(rng), _d(rng)
+    A = _pick_mat(rng, (m, k))
+    B1 = _pick_mat(rng, (k, n))
+    B2 = _pick_mat(rng, (k, n), (B1,))
+    R = _pick_mat(rng, (m, n), (A, B1, B2))
+    if None in (A, B1, B2, R):
+        return None, None
+    grp = [
+        ("einsum", "ij <- ik ; kj", _scalar(rng), A, B1, 1.0, R, False, False),
+        ("einsum", "ij <- ik ; kj", _scalar(rng), A, B2, 1.0, R, False, False),
+    ]
+    return grp, R
+
+
+def _optin_group_fires(pass_obj, group, m, v, t, name):
+    """Run an opt-in pass over a control-flow-FREE graph holding only the injected
+    group, so the pass's num_groups counter is trustworthy (see the secondary
+    finding on counter reset under subgraph recursion). Returns num_groups."""
+    mats, vecs, r3 = _make_pool(m, v, t, name)
+    g = cg.Graph(name)
+    build_cg(group, g, mats, vecs, r3, name)
+    pm = cg.PassManager()
+    pm.add(pass_obj)
+    pm.run(g)
+    return pass_obj.num_groups
+
+
+def _run_lccf(prog, m, v, t, name):
+    """Apply LinearCombinationContractionFolding EARLY (on the raw einsum group,
+    before the default manager collapses it), then the default manager, then
+    execute. Returns the resulting pools."""
+    mats, vecs, r3 = _make_pool(m, v, t, name)
+    g = cg.Graph(name)
+    build_cg(prog, g, mats, vecs, r3, name)
+
+    lccf = _G.LinearCombinationContractionFolding()
+    pm = cg.PassManager()
+    pm.add(lccf)
+    pm.run(g)
+
+    g.apply(cg.default_pass_manager())
+    g.execute()
+    return (
+        [np.asarray(x).copy() for x in mats],
+        [np.asarray(x).copy() for x in vecs],
+        [np.asarray(x).copy() for x in r3],
+    )
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@pytest.mark.parametrize("seed", range(100))
+def test_fuzz_optin_lccf(seed, dtype):
+    """Random program embedding an LCCF-foldable group plus random control-flow
+    filler, run through LinearCombinationContractionFolding + the default
+    manager, executed and compared to the numpy oracle over every dtype. A
+    mismatch is a REAL FINDING in the fold (or its interaction with the default
+    pipeline). Coverage: the injected group is built to fold, so the pass MUST
+    fire; the arm asserts num_groups >= 1 whenever the group was generated."""
+    rng = np.random.default_rng(190_000 + seed)
+    m, v, t = _seed_arrays(rng, dtype)
+    lccf_grp, _ = _gen_lccf_group(rng)
+    filler = _gen_block(rng, depth=2, max_stmts=5)
+    prog = (lccf_grp or []) + filler
+
+    rtol, atol = _DTYPE_TOL[dtype]
+    cap = _DTYPE_CAP[dtype]
+    dt = np.dtype(dtype)
+    om = [a.copy() for a in m]
+    ov = [a.copy() for a in v]
+    ot = [a.copy() for a in t]
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        interp_np(prog, om, ov, ot, dt)
+    if not _usable(om, ov, ot, cap=cap):
+        pytest.skip("oracle overflowed — numerically degenerate program")
+
+    # Coverage: prove the fold fired on the (control-flow-free) injected group.
+    if lccf_grp is not None:
+        probe = _G.LinearCombinationContractionFolding()
+        fired = _optin_group_fires(probe, lccf_grp, m, v, t, f"optin_lccf_cov{seed}_{dtype}")
+        assert fired >= 1, f"LinearCombinationContractionFolding did not fire on its injected group (seed {seed})"
+
+    (gm, gv, gt) = _run_lccf(prog, m, v, t, f"optin_lccf{seed}_{dtype}")
+
+    for got, oracle, kind in ((gm, om, "m"), (gv, ov, "v"), (gt, ot, "t")):
+        for idx in range(len(oracle)):
+            if not np.allclose(got[idx], oracle[idx], rtol=rtol, atol=atol):
+                raise AssertionError(
+                    f"OPT-IN LCCF disagrees with oracle on {kind}{idx} (dtype={dtype})\n"
+                    f"program={prog!r}\ngot=\n{got[idx]}\noracle=\n{oracle[idx]}"
+                )
+
+
+@pytest.mark.parametrize("seed", range(100))
+def test_fuzz_optin_distributive_factoring_detection(seed):
+    """DistributiveFactoring DETECTION fuzz over the canonical factorable shape.
+    DF cannot be fuzzed further on the Python path: its rewrite (a) appends the
+    combined node instead of positioning it, breaking program order whenever a
+    downstream op reads a factored tensor, and (b) cannot execute on runtime
+    tensors (both codified as regressions below). So this arm asserts only that
+    DF DETECTS and rewrites the injected group (num_groups >= 1) on a
+    control-flow-free probe, keeping its grouping / legality logic under
+    permanent pressure across the random shapes the generator supplies."""
+    rng = np.random.default_rng(200_000 + seed)
+    m, v, t = _seed_arrays(rng)
+    df_grp, _ = _gen_df_group(rng)
+    if df_grp is None:
+        pytest.skip("pool could not supply a factorable group for this seed")
+
+    probe = _G.DistributiveFactoring()
+    fired = _optin_group_fires(probe, df_grp, m, v, t, f"optin_df_cov{seed}")
+    assert fired >= 1, f"DistributiveFactoring did not fire on its injected group (seed {seed})"
+
+
+def test_distributive_factoring_breaks_program_order():
+    """Minimized regression for DistributiveFactoring finding #1: its rewrite
+    APPENDS the combined node rather than placing it at the first replaced node's
+    position, so when a later op reads a factored tensor the replacement writer
+    lands after the reader. The graph's own pass verifier (check_observed_writes)
+    rejects it - the exact invariant GEMMBatching / LCCF already respect. Pins the
+    current (broken) behavior; will flip to a failure once DF positions its node.
+    DO NOT fix the pass from the fuzz harness."""
+    rng = np.random.default_rng(1)
+    A = einsums.asarray(rng.standard_normal((3, 3)), name="dfo_A")
+    B1 = einsums.asarray(rng.standard_normal((3, 3)), name="dfo_B1")
+    B2 = einsums.asarray(rng.standard_normal((3, 3)), name="dfo_B2")
+    R = einsums.asarray(rng.standard_normal((3, 3)), name="dfo_R")
+    E = einsums.asarray(rng.standard_normal((3, 3)), name="dfo_E")
+    S = einsums.asarray(np.zeros((3, 3)), name="dfo_S")
+    pool = [A, B1, B2, R, E, S]
+
+    g = cg.Graph("df_order")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", R, A, B1, c_pf=1.0, ab_pf=0.5)
+        einsums.einsum("ij <- ik ; kj", R, A, B2, c_pf=1.0, ab_pf=0.7)
+        einsums.linalg.gemm(1.0, R, E, 0.0, S)  # downstream reader of the factored R
+    pm = cg.PassManager()
+    pm.add(_G.DistributiveFactoring())
+    with pytest.raises(Exception):
+        pm.run(g)
+    del pool
+
+
+def test_distributive_factoring_execute_on_runtime_tensor_is_broken():
+    """Minimized regression for DistributiveFactoring finding #2: its rewrite
+    installs an axpy chain that adds a runtime-rank operand into the fixed-rank
+    Tensor<T,Rank> it allocates via create_tensor_dynamic(), so executing a
+    DF-rewritten Python (runtime-tensor) graph throws rank_error. Same
+    (4,3)*(3,5)->(4,5) shape the C++ unit test passes with, so this is a
+    runtime-tensor gap, not a degenerate-shape issue. (No downstream reader here,
+    so finding #1 does not mask it - the graph passes verification and fails only
+    at execute.) Pins the current (broken) behavior; flips to a failure the day DF
+    builds a runtime accumulator. DO NOT fix the pass from the fuzz harness."""
+    rng = np.random.default_rng(0)
+    A = einsums.asarray(rng.standard_normal((4, 3)), name="df_A")
+    B1 = einsums.asarray(rng.standard_normal((3, 5)), name="df_B1")
+    B2 = einsums.asarray(rng.standard_normal((3, 5)), name="df_B2")
+    R = einsums.asarray(np.zeros((4, 5)), name="df_R")
+
+    g = cg.Graph("df_broken")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", R, A, B1, c_pf=1.0, ab_pf=0.5)
+        einsums.einsum("ij <- ik ; kj", R, A, B2, c_pf=1.0, ab_pf=0.7)
+    df = _G.DistributiveFactoring()
+    pm = cg.PassManager()
+    pm.add(df)
+    assert pm.run(g) and df.num_groups == 1  # detection is fine
+
+    pool = [A, B1, B2, R]  # keep operands alive through execute
+    with pytest.raises(Exception):
+        g.execute()
+    del pool

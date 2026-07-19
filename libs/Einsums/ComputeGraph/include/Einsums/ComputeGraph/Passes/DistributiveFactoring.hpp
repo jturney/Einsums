@@ -56,8 +56,10 @@ namespace einsums::compute_graph::passes {
  * auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
  * @endcode
  */
-class EINSUMS_EXPORT DistributiveFactoring : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT DistributiveFactoring : public OptimizerPass {
   public:
+    APIARY_EXPOSE DistributiveFactoring() = default;
+
     [[nodiscard]] std::string name() const override { return "DistributiveFactoring"; }
 
     bool run(Graph &graph) override;
@@ -67,10 +69,10 @@ class EINSUMS_EXPORT DistributiveFactoring : public OptimizerPass {
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of factoring groups found.
-    [[nodiscard]] size_t num_groups() const { return _num_groups; }
+    APIARY_EXPOSE APIARY_GETTER("num_groups") [[nodiscard]] size_t num_groups() const { return _num_groups; }
 
     /// Total number of einsum nodes eliminated.
-    [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+    APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
 
     /// Description of each factoring group found.
     struct FactoringGroup {
