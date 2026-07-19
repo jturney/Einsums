@@ -284,6 +284,186 @@ TEST_CASE("TransferInsertion - inserts transfers inside a loop body", "[ComputeG
     }
 }
 
+// ===========================================================================
+// Loop-boundary seam contract (pinned).
+//
+// TransferInsertion opts into recurse_into_subgraphs(), so the PassManager
+// re-runs it per body graph. A tensor produced in the PARENT and consumed by a
+// GPU node INSIDE a loop body is NOT left without an H2D: the per-body run
+// seeds residency from the body's own tensor map (all Host) and inserts an H2D
+// before the body GPU op. The seam is therefore covered at the body level and
+// there is no missing-transfer hole. The remaining inefficiency (a loop-
+// invariant input is re-copied every iteration rather than once before the
+// loop) is a documented, deferred hoisting optimization - see
+// TransferInsertion.hpp - not a correctness bug.
+//
+// NOTE: the mock/unified-memory backend is memory-transparent (all H2D/D2H
+// copies and shadow swaps are compiled out under has_unified_memory), so
+// numerics cannot surface a missing transfer. These tests therefore assert the
+// STRUCTURAL contract (which side owns the transfer, and no duplication) and
+// keep an end-to-end numeric check as a live guard. On real hardware the same
+// structure yields correct results because the body H2D precedes every GPU read
+// of the parent-produced input.
+// ===========================================================================
+
+namespace {
+// Count HostToDevice / DeviceToHost nodes whose transfer descriptor names a
+// specific tensor by its human-readable handle name (labels are "H2D(<name>)").
+size_t count_transfer_by_label(std::vector<cg::Node> const &nodes, cg::OpKind kind, std::string const &label) {
+    size_t n = 0;
+    for (auto const &node : nodes)
+        if (node.kind == kind && node.label == label)
+            n++;
+    return n;
+}
+} // namespace
+
+TEST_CASE("TransferInsertion - loop seam: body GPU consumer of a parent producer gets an H2D in the body", "[ComputeGraph][GPU][Loop]") {
+    if constexpr (einsums::gpu::has_gpu || einsums::gpu::is_mock) {
+        auto A   = create_random_tensor<float>("A", 128, 128);
+        auto B   = create_random_tensor<float>("B", 128, 128);
+        auto X   = create_zero_tensor<float>("X", 128, 128);
+        auto Cc  = create_random_tensor<float>("Cc", 128, 128);
+        auto acc = create_zero_tensor<float>("acc", 128, 128);
+
+        // Reference: X = A*B (parent), acc = X*Cc (one loop iteration).
+        auto X_ref   = Tensor<float, 2>("X_ref", 128, 128);
+        auto acc_ref = Tensor<float, 2>("acc_ref", 128, 128);
+        tensor_algebra::einsum(0.0, Indices{i, j}, &X_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+        tensor_algebra::einsum(0.0, Indices{i, j}, &acc_ref, 1.0, Indices{i, k}, X_ref, Indices{k, j}, Cc);
+
+        cg::Graph graph("loop-seam-fwd");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", 0.0, &X, 1.0, A, B); // parent CPU producer of X
+        }
+        auto &body = graph.add_loop("iter", 1, [](size_t) { return false; });
+        {
+            cg::CaptureGuard const guard(body);
+            cg::einsum("ik;kj->ij", 0.0, &acc, 1.0, X, Cc); // body consumer of X
+        }
+
+        // The seam: the parent einsum stays CPU, the body einsum is GPU-placed.
+        body.nodes()[0].target = cg::Target::GPU;
+
+        cg::PassManager pm;
+        pm.add<cg::passes::TransferInsertion>();
+        pm.add<cg::passes::TransferElimination>();
+        graph.apply(pm);
+
+        // The parent inserts NO transfer at the boundary: the Loop is control-
+        // flow and the parent producer stays on the host. The seam is owned by
+        // the body-level run.
+        auto tc_parent = count_transfers(graph.nodes());
+        CHECK(tc_parent.h2d_total == 0);
+        CHECK(tc_parent.d2h_total == 0);
+
+        // The body owns the seam: exactly one H2D for the parent-produced X, and
+        // it precedes the GPU einsum that consumes it.
+        CHECK(count_transfer_by_label(body.nodes(), cg::OpKind::HostToDevice, "H2D(X)") == 1);
+
+        size_t h2d_x_idx  = body.nodes().size();
+        size_t einsum_idx = body.nodes().size();
+        for (size_t idx = 0; idx < body.nodes().size(); ++idx) {
+            auto const &n = body.nodes()[idx];
+            if (n.kind == cg::OpKind::HostToDevice && n.label == "H2D(X)")
+                h2d_x_idx = idx;
+            if (n.kind == cg::OpKind::Einsum && n.target == cg::Target::GPU)
+                einsum_idx = idx;
+        }
+        REQUIRE(h2d_x_idx < body.nodes().size());
+        REQUIRE(einsum_idx < body.nodes().size());
+        CHECK(h2d_x_idx < einsum_idx); // H2D happens before the GPU read.
+
+        // Reverse seam: the body GPU writes the user-visible acc, so a D2H must
+        // flush it back to the host for the caller to read after execute().
+        CHECK(count_transfer_by_label(body.nodes(), cg::OpKind::DeviceToHost, "D2H(acc)") >= 1);
+
+        // End-to-end numerics (correct under the memory-transparent mock; the
+        // structure above is what keeps it correct on real hardware).
+        graph.execute();
+        for (size_t ii = 0; ii < 128; ii++)
+            for (size_t jj = 0; jj < 128; jj++)
+                CHECK(acc(ii, jj) == Catch::Approx(acc_ref(ii, jj)).margin(1e-3f));
+    }
+}
+
+TEST_CASE("TransferInsertion - loop seam: no boundary transfers when the body op stays on CPU", "[ComputeGraph][GPU][Loop]") {
+    // Guard against spurious seam transfers: with the body einsum left on CPU,
+    // the pass must insert nothing anywhere (parent or body).
+    if constexpr (einsums::gpu::has_gpu || einsums::gpu::is_mock) {
+        auto A   = create_random_tensor<float>("A", 128, 128);
+        auto B   = create_random_tensor<float>("B", 128, 128);
+        auto X   = create_zero_tensor<float>("X", 128, 128);
+        auto Cc  = create_random_tensor<float>("Cc", 128, 128);
+        auto acc = create_zero_tensor<float>("acc", 128, 128);
+
+        cg::Graph graph("loop-seam-cpu");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", 0.0, &X, 1.0, A, B); // parent CPU
+        }
+        auto &body = graph.add_loop("iter", 1, [](size_t) { return false; });
+        {
+            cg::CaptureGuard const guard(body);
+            cg::einsum("ik;kj->ij", 0.0, &acc, 1.0, X, Cc); // body stays CPU
+        }
+
+        // Drive through a PassManager so the body-level run actually executes
+        // (that is where a spurious seam transfer would appear).
+        cg::PassManager pm;
+        pm.add<cg::passes::TransferInsertion>();
+        bool const modified = graph.apply(pm);
+
+        CHECK_FALSE(modified);
+
+        auto tc_parent = count_transfers(graph.nodes());
+        auto tc_body   = count_transfers(body.nodes());
+        CHECK(tc_parent.h2d_total == 0);
+        CHECK(tc_parent.d2h_total == 0);
+        CHECK(tc_body.h2d_total == 0);
+        CHECK(tc_body.d2h_total == 0);
+    }
+}
+
+TEST_CASE("TransferInsertion - loop seam: re-running does not duplicate the body H2D", "[ComputeGraph][GPU][Loop]") {
+    // Idempotency at the boundary: TransferInsertion tracks residency on the
+    // TensorHandle, so a second run sees X already Device-resident in the body
+    // and inserts no second H2D for it.
+    if constexpr (einsums::gpu::has_gpu || einsums::gpu::is_mock) {
+        auto A   = create_random_tensor<float>("A", 128, 128);
+        auto B   = create_random_tensor<float>("B", 128, 128);
+        auto X   = create_zero_tensor<float>("X", 128, 128);
+        auto Cc  = create_random_tensor<float>("Cc", 128, 128);
+        auto acc = create_zero_tensor<float>("acc", 128, 128);
+
+        cg::Graph graph("loop-seam-idem");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", 0.0, &X, 1.0, A, B);
+        }
+        auto &body = graph.add_loop("iter", 1, [](size_t) { return false; });
+        {
+            cg::CaptureGuard const guard(body);
+            cg::einsum("ik;kj->ij", 0.0, &acc, 1.0, X, Cc);
+        }
+        body.nodes()[0].target = cg::Target::GPU;
+
+        // Only PassManager::apply recurses into loop bodies (apply<Pass>() does
+        // not), so drive the pass through a PassManager here.
+        cg::PassManager pm1;
+        pm1.add<cg::passes::TransferInsertion>();
+        graph.apply(pm1);
+        CHECK(count_transfer_by_label(body.nodes(), cg::OpKind::HostToDevice, "H2D(X)") == 1);
+
+        // Second run: residency bookkeeping prevents a duplicate H2D for X.
+        cg::PassManager pm2;
+        pm2.add<cg::passes::TransferInsertion>();
+        graph.apply(pm2);
+        CHECK(count_transfer_by_label(body.nodes(), cg::OpKind::HostToDevice, "H2D(X)") == 1);
+    }
+}
+
 TEST_CASE("GPUPlacement - idempotent (running twice has no effect)", "[ComputeGraph][GPU]") {
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
