@@ -1964,31 +1964,32 @@ def test_fuzz_gemm_batching_with_consumers(seed):
 #   DF group:   R += a1*(A@B1) ; R += a2*(A@B2)      (same A, different B,
 #               same index pattern, both accumulate -> DistributiveFactoring)
 #
-# --- REAL FINDING (DistributiveFactoring, do NOT fix here) ---------------------
-# LinearCombinationContractionFolding folds and EXECUTES correctly on the Python
-# (runtime-tensor) path, so it is fuzzed end-to-end below.
+# Both passes fold and EXECUTE correctly on the Python (runtime-tensor) path, so
+# both are fuzzed end-to-end below against the numpy oracle.
 #
-# DistributiveFactoring, however, cannot EXECUTE on any Python graph. Its rewrite
-# builds the "sum of non-shared operands" accumulator with
-# Graph::create_tensor_dynamic(), which returns a COMPILE-TIME typed
-# Tensor<T,Rank>; but a Python graph's tensors are GeneralRuntimeTensor<T>. The
-# axpy chain it installs (Graph::make_axpy_executor -> impl_axpy) then adds a
-# runtime-rank source into a fixed-rank destination and throws
-#   einsums::rank_error: Can not add two tensors of different ranks!
-# This reproduces for every shape, including the exact (4,3)*(3,5)->(4,5) shape
-# the C++ unit test passes with - i.e. it is a runtime-tensor gap in the pass,
-# not a shape/degenerate-dim issue. DF's DETECTION logic is fine; only its
-# rewrite's execution is broken on runtime tensors. So DF is fuzzed for DETECTION
-# only (no execute), and the execution crash is codified as a regression below.
+# --- Fixed: DistributiveFactoring runtime execution (bug-1201) -----------------
+# DF's rewrite used to build the "sum of non-shared operands" accumulator with
+# Graph::create_tensor_dynamic(), a COMPILE-TIME Tensor<T,Rank>; on a Python graph
+# whose tensors are GeneralRuntimeTensor<T> the axpy chain then added a runtime
+# source into a fixed-rank destination and threw rank_error. DF now builds a
+# RUNTIME accumulator (create_zero_runtime_tensor_dynamic) when its operands are
+# runtime, and dispatch_binary/dispatch_unary cast runtime handles correctly, so
+# the rewrite executes on runtime tensors and is fuzzed with full execution below.
 #
-# --- Secondary finding (counter reporting) ------------------------------------
-# Both passes expose num_groups / num_eliminated, but recurse_into_subgraphs()
-# is true and each run() call resets those counters, so when a graph carries
-# control flow the pass manager's recursion into subgraphs overwrites the
-# top-level count with the LAST subgraph's (usually zero). The rewrite still
-# happens (run() still returns modified); only the exposed count is clobbered.
-# So coverage here is asserted via a control-flow-FREE "group only" probe graph,
-# where the counter is trustworthy, rather than off the full program's count.
+# --- Fixed: DistributiveFactoring program order (bug-1200) --------------------
+# DF used to APPEND the combined node; when a later op read a factored tensor the
+# replacement writer landed after the reader and the pass verifier rejected it. DF
+# now places the combined node at the first replaced node's slot (like GEMMBatching
+# / LCCF), so downstream readers observe the written result.
+#
+# --- Fixed: counter reset under recursion (bug-1202) --------------------------
+# DF used to expose num_groups / num_eliminated as zero on control-flow graphs:
+# recurse_into_subgraphs() was true and run() reset the counters, so PassManager
+# recursion into subgraphs clobbered the top-level tally with the LAST subgraph's.
+# DF now manages its own descent (recurse_into_subgraphs() false, like
+# LoopInvariantHoisting) and resets once at the root, so the counters accumulate
+# across the whole tree. Coverage below still probes on a control-flow-FREE group
+# for a tight, unambiguous num_groups == 1 signal.
 # ------------------------------------------------------------------------------
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -2015,9 +2016,13 @@ def _gen_df_group(rng):
     """Two accumulating einsums sharing operand A with different B operands:
     DistributiveFactoring's canonical shape. Returns (stmts, R) or (None, None)."""
     m, k, n = _d(rng), _d(rng), _d(rng)
-    A = _pick_mat(rng, (m, k))
     B1 = _pick_mat(rng, (k, n))
     B2 = _pick_mat(rng, (k, n), (B1,))
+    # The shared operand must differ from the summed operands: DF redirects the
+    # non-shared operand's slot (keyed by tensor id), so a shared operand aliasing
+    # a summed one (e.g. when m==k==n picks A==B1) is rejected by the pass and
+    # would not factor. Exclude B1/B2 so the injected group is always factorable.
+    A = _pick_mat(rng, (m, k), (B1, B2))
     R = _pick_mat(rng, (m, n), (A, B1, B2))
     if None in (A, B1, B2, R):
         return None, None
@@ -2052,6 +2057,28 @@ def _run_lccf(prog, m, v, t, name):
     lccf = _G.LinearCombinationContractionFolding()
     pm = cg.PassManager()
     pm.add(lccf)
+    pm.run(g)
+
+    g.apply(cg.default_pass_manager())
+    g.execute()
+    return (
+        [np.asarray(x).copy() for x in mats],
+        [np.asarray(x).copy() for x in vecs],
+        [np.asarray(x).copy() for x in r3],
+    )
+
+
+def _run_df(prog, m, v, t, name):
+    """Apply DistributiveFactoring EARLY (on the raw einsum group, before the
+    default manager restructures it), then the default manager, then execute.
+    Returns the resulting pools."""
+    mats, vecs, r3 = _make_pool(m, v, t, name)
+    g = cg.Graph(name)
+    build_cg(prog, g, mats, vecs, r3, name)
+
+    df = _G.DistributiveFactoring()
+    pm = cg.PassManager()
+    pm.add(df)
     pm.run(g)
 
     g.apply(cg.default_pass_manager())
@@ -2106,41 +2133,69 @@ def test_fuzz_optin_lccf(seed, dtype):
                 )
 
 
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
 @pytest.mark.parametrize("seed", range(100))
-def test_fuzz_optin_distributive_factoring_detection(seed):
-    """DistributiveFactoring DETECTION fuzz over the canonical factorable shape.
-    DF cannot be fuzzed further on the Python path: its rewrite (a) appends the
-    combined node instead of positioning it, breaking program order whenever a
-    downstream op reads a factored tensor, and (b) cannot execute on runtime
-    tensors (both codified as regressions below). So this arm asserts only that
-    DF DETECTS and rewrites the injected group (num_groups >= 1) on a
-    control-flow-free probe, keeping its grouping / legality logic under
-    permanent pressure across the random shapes the generator supplies."""
+def test_fuzz_optin_distributive_factoring(seed, dtype):
+    """Random program embedding a DistributiveFactoring-factorable group plus
+    random control-flow filler, run through DistributiveFactoring + the default
+    manager, executed and compared to the numpy oracle over every dtype. A
+    mismatch is a REAL FINDING in the factoring (or its interaction with the
+    default pipeline). Coverage: the injected group is built to factor, so the
+    pass MUST fire; the arm asserts num_groups >= 1 whenever the group was
+    generated (probed on a control-flow-free graph for an unambiguous count)."""
     rng = np.random.default_rng(200_000 + seed)
-    m, v, t = _seed_arrays(rng)
+    m, v, t = _seed_arrays(rng, dtype)
     df_grp, _ = _gen_df_group(rng)
-    if df_grp is None:
-        pytest.skip("pool could not supply a factorable group for this seed")
+    filler = _gen_block(rng, depth=2, max_stmts=5)
+    prog = (df_grp or []) + filler
 
-    probe = _G.DistributiveFactoring()
-    fired = _optin_group_fires(probe, df_grp, m, v, t, f"optin_df_cov{seed}")
-    assert fired >= 1, f"DistributiveFactoring did not fire on its injected group (seed {seed})"
+    rtol, atol = _DTYPE_TOL[dtype]
+    cap = _DTYPE_CAP[dtype]
+    dt = np.dtype(dtype)
+    om = [a.copy() for a in m]
+    ov = [a.copy() for a in v]
+    ot = [a.copy() for a in t]
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        interp_np(prog, om, ov, ot, dt)
+    if not _usable(om, ov, ot, cap=cap):
+        pytest.skip("oracle overflowed — numerically degenerate program")
+
+    # Coverage: prove the factoring fired on the (control-flow-free) injected group.
+    if df_grp is not None:
+        probe = _G.DistributiveFactoring()
+        fired = _optin_group_fires(probe, df_grp, m, v, t, f"optin_df_cov{seed}_{dtype}")
+        assert fired >= 1, f"DistributiveFactoring did not fire on its injected group (seed {seed})"
+
+    (gm, gv, gt) = _run_df(prog, m, v, t, f"optin_df{seed}_{dtype}")
+
+    for got, oracle, kind in ((gm, om, "m"), (gv, ov, "v"), (gt, ot, "t")):
+        for idx in range(len(oracle)):
+            if not np.allclose(got[idx], oracle[idx], rtol=rtol, atol=atol):
+                raise AssertionError(
+                    f"OPT-IN DF disagrees with oracle on {kind}{idx} (dtype={dtype})\n"
+                    f"program={prog!r}\ngot=\n{got[idx]}\noracle=\n{oracle[idx]}"
+                )
 
 
-def test_distributive_factoring_breaks_program_order():
-    """Minimized regression for DistributiveFactoring finding #1: its rewrite
-    APPENDS the combined node rather than placing it at the first replaced node's
-    position, so when a later op reads a factored tensor the replacement writer
-    lands after the reader. The graph's own pass verifier (check_observed_writes)
-    rejects it - the exact invariant GEMMBatching / LCCF already respect. Pins the
-    current (broken) behavior; will flip to a failure once DF positions its node.
-    DO NOT fix the pass from the fuzz harness."""
+def test_distributive_factoring_preserves_program_order():
+    """Regression for bug-1200: DistributiveFactoring places its combined node at
+    the first replaced node's slot (like GEMMBatching / LCCF), so a later op that
+    reads a factored tensor still observes the written result. The graph's own pass
+    verifier (check_observed_writes) accepts the rewrite, and execution matches the
+    numpy oracle. (Previously DF appended the combined node, landing it after the
+    reader, and the verifier rejected it.)"""
     rng = np.random.default_rng(1)
-    A = einsums.asarray(rng.standard_normal((3, 3)), name="dfo_A")
-    B1 = einsums.asarray(rng.standard_normal((3, 3)), name="dfo_B1")
-    B2 = einsums.asarray(rng.standard_normal((3, 3)), name="dfo_B2")
-    R = einsums.asarray(rng.standard_normal((3, 3)), name="dfo_R")
-    E = einsums.asarray(rng.standard_normal((3, 3)), name="dfo_E")
+    A0 = rng.standard_normal((3, 3))
+    B1_0 = rng.standard_normal((3, 3))
+    B2_0 = rng.standard_normal((3, 3))
+    R0 = rng.standard_normal((3, 3))
+    E0 = rng.standard_normal((3, 3))
+
+    A = einsums.asarray(A0.copy(), name="dfo_A")
+    B1 = einsums.asarray(B1_0.copy(), name="dfo_B1")
+    B2 = einsums.asarray(B2_0.copy(), name="dfo_B2")
+    R = einsums.asarray(R0.copy(), name="dfo_R")
+    E = einsums.asarray(E0.copy(), name="dfo_E")
     S = einsums.asarray(np.zeros((3, 3)), name="dfo_S")
     pool = [A, B1, B2, R, E, S]
 
@@ -2150,38 +2205,45 @@ def test_distributive_factoring_breaks_program_order():
         einsums.einsum("ij <- ik ; kj", R, A, B2, c_pf=1.0, ab_pf=0.7)
         einsums.linalg.gemm(1.0, R, E, 0.0, S)  # downstream reader of the factored R
     pm = cg.PassManager()
-    pm.add(_G.DistributiveFactoring())
-    with pytest.raises(Exception):
-        pm.run(g)
+    df = _G.DistributiveFactoring()
+    pm.add(df)
+    assert pm.run(g) and df.num_groups == 1  # rewrites and passes the verifier
+    g.execute()
+
+    R_np = R0 + 0.5 * (A0 @ B1_0) + 0.7 * (A0 @ B2_0)
+    S_np = R_np @ E0
+    assert np.allclose(np.asarray(R), R_np, rtol=RTOL, atol=ATOL)
+    assert np.allclose(np.asarray(S), S_np, rtol=RTOL, atol=ATOL)
     del pool
 
 
-def test_distributive_factoring_execute_on_runtime_tensor_is_broken():
-    """Minimized regression for DistributiveFactoring finding #2: its rewrite
-    installs an axpy chain that adds a runtime-rank operand into the fixed-rank
-    Tensor<T,Rank> it allocates via create_tensor_dynamic(), so executing a
-    DF-rewritten Python (runtime-tensor) graph throws rank_error. Same
-    (4,3)*(3,5)->(4,5) shape the C++ unit test passes with, so this is a
-    runtime-tensor gap, not a degenerate-shape issue. (No downstream reader here,
-    so finding #1 does not mask it - the graph passes verification and fails only
-    at execute.) Pins the current (broken) behavior; flips to a failure the day DF
-    builds a runtime accumulator. DO NOT fix the pass from the fuzz harness."""
+def test_distributive_factoring_executes_on_runtime_tensor():
+    """Regression for bug-1201: DistributiveFactoring builds a RUNTIME accumulator
+    when its operands are runtime tensors, so a DF-rewritten Python graph executes
+    and matches the numpy oracle. Same (4,3)*(3,5)->(4,5) shape the C++ unit test
+    uses. (Previously the axpy chain added a runtime source into a compile-time
+    Tensor<T,Rank> accumulator and threw rank_error at execute.)"""
     rng = np.random.default_rng(0)
-    A = einsums.asarray(rng.standard_normal((4, 3)), name="df_A")
-    B1 = einsums.asarray(rng.standard_normal((3, 5)), name="df_B1")
-    B2 = einsums.asarray(rng.standard_normal((3, 5)), name="df_B2")
+    A0 = rng.standard_normal((4, 3))
+    B1_0 = rng.standard_normal((3, 5))
+    B2_0 = rng.standard_normal((3, 5))
+
+    A = einsums.asarray(A0.copy(), name="df_A")
+    B1 = einsums.asarray(B1_0.copy(), name="df_B1")
+    B2 = einsums.asarray(B2_0.copy(), name="df_B2")
     R = einsums.asarray(np.zeros((4, 5)), name="df_R")
 
-    g = cg.Graph("df_broken")
+    g = cg.Graph("df_runtime")
     with cg.capture(g):
         einsums.einsum("ij <- ik ; kj", R, A, B1, c_pf=1.0, ab_pf=0.5)
         einsums.einsum("ij <- ik ; kj", R, A, B2, c_pf=1.0, ab_pf=0.7)
     df = _G.DistributiveFactoring()
     pm = cg.PassManager()
     pm.add(df)
-    assert pm.run(g) and df.num_groups == 1  # detection is fine
+    assert pm.run(g) and df.num_groups == 1
 
     pool = [A, B1, B2, R]  # keep operands alive through execute
-    with pytest.raises(Exception):
-        g.execute()
+    g.execute()
+    R_np = 0.5 * (A0 @ B1_0) + 0.7 * (A0 @ B2_0)
+    assert np.allclose(np.asarray(R), R_np, rtol=RTOL, atol=ATOL)
     del pool

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace einsums::compute_graph::passes {
@@ -50,14 +51,34 @@ struct FactorCandidate {
 } // namespace
 
 bool DistributiveFactoring::run(Graph &graph) {
+    // Own the recursion (like LoopInvariantHoisting): reset the counters once
+    // here at the root, then descend ourselves. If we instead opted into
+    // PassManager auto-recursion, run() would be re-invoked per subgraph and
+    // reset the top-level tally each time (bug-1202). recurse_into_subgraphs()
+    // returns false so the PassManager does not double-walk.
+    _num_groups     = 0;
+    _num_eliminated = 0;
+    _groups.clear();
+    return run_recursive(graph);
+}
+
+bool DistributiveFactoring::run_recursive(Graph &graph) {
+    bool modified = factor_one_level(graph);
+    // Factor loop bodies and conditional branches too; counters accumulate
+    // across the whole tree (no per-level reset).
+    graph.for_each_subgraph([&](Graph &sub) {
+        if (run_recursive(sub)) {
+            modified = true;
+        }
+    });
+    return modified;
+}
+
+bool DistributiveFactoring::factor_one_level(Graph &graph) {
     graph.topological_sort();
 
     auto       &nodes   = graph.nodes();
     auto const &tensors = graph.tensors_map();
-
-    _num_groups     = 0;
-    _num_eliminated = 0;
-    _groups.clear();
 
     if (nodes.size() < 2) {
         return false;
@@ -149,6 +170,21 @@ bool DistributiveFactoring::run(Graph &graph) {
         if (has_duplicate)
             continue;
 
+        // The rewrite redirects the non-shared operand's SLOT (keyed by tensor id)
+        // to the summed intermediate T. If the shared operand is the SAME tensor as
+        // a summed operand, they share that slot, so a self-contraction like A*A
+        // would read T for BOTH factors (T*T instead of A*T). Reject aliased groups;
+        // the slot-redirect trick cannot separate the two reads.
+        bool shared_aliases_nonshared = false;
+        for (auto const &c : candidates) {
+            if (c.non_shared_input == key.shared_input_id) {
+                shared_aliases_nonshared = true;
+                break;
+            }
+        }
+        if (shared_aliases_nonshared)
+            continue;
+
         valid_groups.push_back({.key = key, .candidates = std::move(candidates)});
     }
 
@@ -159,8 +195,11 @@ bool DistributiveFactoring::run(Graph &graph) {
     // --- Phase 3: Deduplicate (largest group first, greedy) ---
     std::ranges::sort(valid_groups, [](ValidGroup const &a, ValidGroup const &b) { return a.candidates.size() > b.candidates.size(); });
 
-    std::vector<bool> node_used(nodes.size(), false);
-    std::vector<bool> remove(nodes.size(), false);
+    // create_*_tensor_dynamic appends Alloc nodes (index >= orig_count) that are
+    // always kept; the removal / used sets cover only the original nodes.
+    size_t const      orig_count = nodes.size();
+    std::vector<bool> node_used(orig_count, false);
+    std::vector<bool> remove(orig_count, false);
     bool              modified = false;
 
     for (auto &vg : valid_groups) {
@@ -173,6 +212,65 @@ bool DistributiveFactoring::run(Graph &graph) {
         if (available.size() < 2)
             continue;
 
+        // Candidates are collected in ascending node-index (execution) order and
+        // that order survives filtering, so available.front() is the earliest
+        // member and available.back() the latest.
+        size_t const first_pos = available.front().node_index;
+        size_t const last_pos  = available.back().node_index;
+
+        // --- Placement / interference gate (mirrors GEMMBatching / LCCF) ---
+        // The combined node takes the FIRST member's slot so it stays scan-before
+        // any consumer of the factored output. Position IS program order in this
+        // IR, so appending the writer would let a later reader of the output run
+        // first and observe a stale buffer, and the PassManager's program-order
+        // verifier (check_observed_writes) would reject the rewrite (bug-1200).
+        // The slot move is only sound when no OTHER node between the first and last
+        // member reads/writes the output (would observe/clobber the partial sum)
+        // or writes the shared / non-shared operands (would change a factor
+        // mid-fold). Control-flow nodes hide their I/O in sub-graphs, so their
+        // presence in the span disqualifies the group outright.
+        {
+            std::vector<bool>            is_member(nodes.size(), false);
+            std::unordered_set<TensorId> operand_ids;
+            operand_ids.insert(vg.key.shared_input_id);
+            for (auto const &c : available) {
+                is_member[c.node_index] = true;
+                operand_ids.insert(c.non_shared_input);
+            }
+            bool interference = false;
+            for (size_t n = first_pos + 1; n < last_pos && !interference; n++) {
+                if (is_member[n]) {
+                    continue;
+                }
+                Node const &other = nodes[n];
+                if (other.kind == OpKind::Loop || other.kind == OpKind::Conditional) {
+                    interference = true;
+                    break;
+                }
+                for (auto const out : other.outputs) {
+                    if (out == vg.key.output_id || operand_ids.count(out) != 0) { // clobbers the sum or a factor
+                        interference = true;
+                        break;
+                    }
+                }
+                if (interference) {
+                    break;
+                }
+                for (auto const in : other.inputs) {
+                    if (in == vg.key.output_id) { // observes the partial sum
+                        interference = true;
+                        break;
+                    }
+                }
+            }
+            if (interference) {
+                auto on = tensors.find(vg.key.output_id);
+                report(3, fmt::format("skip factoring into '{}': an intervening node reads/writes the output or a factor operand",
+                                      on != tensors.end() ? on->second.name : "?"));
+                continue;
+            }
+        }
+
         // --- Phase 4: Rewrite the graph ---
 
         // Get the reference tensor handle for the non-shared operands
@@ -181,9 +279,30 @@ bool DistributiveFactoring::run(Graph &graph) {
             continue;
         auto const &ref_handle = ref_it->second;
 
-        // Create intermediate tensor T = sum of non-shared operands
+        // The combined executor redirects the einsum's non-shared operand slot to
+        // the accumulator T, so T must be the SAME tensor kind the operands are: a
+        // runtime graph reads a GeneralRuntimeTensor at that slot, a compile-time
+        // graph a Tensor<T, Rank>. Require every summed operand to share that kind
+        // and build a matching accumulator, so make_zero/make_axpy dispatch
+        // correctly - a compile-time accumulator fed runtime operands rank-errors
+        // at execute on any Python-captured graph (bug-1201).
+        bool const operands_runtime = ref_handle.is_runtime;
+        bool       kinds_uniform    = true;
+        for (auto const &c : available) {
+            auto it = tensors.find(c.non_shared_input);
+            if (it == tensors.end() || it->second.is_runtime != operands_runtime) {
+                kinds_uniform = false;
+                break;
+            }
+        }
+        if (!kinds_uniform)
+            continue;
+
+        // Create intermediate tensor T = sum of non-shared operands, of the same
+        // kind as the operands. This APPENDS an Alloc node (kept below).
         std::string t_name        = fmt::format("_df_sum_{}", _num_groups);
-        auto        create_result = graph.create_tensor_dynamic(t_name, ref_handle.dtype, ref_handle.dims);
+        auto        create_result = operands_runtime ? graph.create_zero_runtime_tensor_dynamic(t_name, ref_handle.dtype, ref_handle.dims)
+                                                     : graph.create_tensor_dynamic(t_name, ref_handle.dtype, ref_handle.dims);
         if (!create_result)
             continue; // Skip this factoring group if tensor creation fails
         auto [t_id, t_ptr] = create_result.value();
@@ -196,6 +315,10 @@ bool DistributiveFactoring::run(Graph &graph) {
         // We capture the first einsum's original executor and the original non-shared
         // input's slot. By updating the slot to point to T before calling the executor,
         // the einsum reads from T.
+        Node combined_node;
+        combined_node.kind    = OpKind::Custom;
+        combined_node.label   = fmt::format("df_factored({} terms via {})", available.size(), t_name);
+        combined_node.outputs = {vg.key.output_id, t_id};
         {
             auto zero_exec = graph.make_zero_executor(t_id);
 
@@ -253,23 +376,23 @@ bool DistributiveFactoring::run(Graph &graph) {
                 all_inputs.push_back(c.non_shared_input);
             }
 
-            Node combined_node;
-            combined_node.kind    = OpKind::Custom;
-            combined_node.label   = fmt::format("df_factored({} terms via {})", available.size(), t_name);
             combined_node.execute = std::move(combined_executor);
             combined_node.inputs  = std::move(all_inputs);
-            combined_node.outputs = {vg.key.output_id, t_id};
-            graph.add_node(std::move(combined_node));
         }
 
-        // Mark ALL original einsum nodes for removal (replaced by the combined node)
-        for (auto const &c : available) {
-            remove[c.node_index] = true;
-        }
-        _num_eliminated += available.size();
+        // Occupy the first member's slot (reusing its id) instead of appending, so
+        // the combined writer stays scan-before every consumer of the output; see
+        // the placement gate above for why appending is unsound.
+        combined_node.id     = nodes[first_pos].id;
+        nodes[first_pos]     = std::move(combined_node);
+        node_used[first_pos] = true;
 
-        // Mark all nodes as used
+        // The remaining members are subsumed by the combined node; drop them.
         for (auto const &c : available) {
+            if (c.node_index != first_pos) {
+                remove[c.node_index] = true;
+                _num_eliminated++;
+            }
             node_used[c.node_index] = true;
         }
 
@@ -294,11 +417,11 @@ bool DistributiveFactoring::run(Graph &graph) {
     if (!modified)
         return false;
 
-    // Remove eliminated nodes
+    // Keep appended Alloc nodes (index >= orig_count); drop the subsumed originals.
     std::vector<Node> filtered;
     filtered.reserve(nodes.size());
     for (size_t i = 0; i < nodes.size(); i++) {
-        if (!remove[i]) {
+        if (i >= orig_count || !remove[i]) {
             filtered.push_back(std::move(nodes[i]));
         }
     }

@@ -246,7 +246,6 @@ TEST_CASE("Recursion policy - safe local-rewrite passes opt in", "[ComputeGraph]
     CHECK(cg::passes::ScaleAbsorption{}.recurse_into_subgraphs());
     CHECK(cg::passes::ElementWiseFusion{}.recurse_into_subgraphs());
     CHECK(cg::passes::PermuteFusion{}.recurse_into_subgraphs());
-    CHECK(cg::passes::DistributiveFactoring{}.recurse_into_subgraphs());
     CHECK(cg::passes::GEMMBatching{}.recurse_into_subgraphs());
     CHECK(cg::passes::StreamAssignment{}.recurse_into_subgraphs());
     // GPU transfer transforms (per-graph; self-contained body transfers).
@@ -276,6 +275,10 @@ TEST_CASE("Recursion policy - hoisting / aggregation passes stay opt-out", "[Com
     CHECK_FALSE(cg::passes::FreeInsertion{}.recurse_into_subgraphs());
     CHECK_FALSE(cg::passes::GPUPlacement{}.recurse_into_subgraphs()); // shared-budget walk
     CHECK_FALSE(cg::passes::IOPrefetch{}.recurse_into_subgraphs());   // own walk + hoist out of loops
+    // DistributiveFactoring manages its own descent (like LoopInvariantHoisting):
+    // run() resets its counters once at the root and recurses itself. Auto-
+    // recursion would re-run run() per sub-graph and clobber the top-level tally.
+    CHECK_FALSE(cg::passes::DistributiveFactoring{}.recurse_into_subgraphs());
     // Analysis passes aggregate across sub-graphs inside run() rather than
     // being re-run per sub-graph (which would clobber their counters).
     CHECK_FALSE(cg::passes::MemoryPlanning{}.recurse_into_subgraphs());

@@ -1168,8 +1168,21 @@ void dispatch_binary(TensorHandle const &a, TensorHandle const &b, Fn &&fn) {
     if (a.dtype != b.dtype || a.rank != b.rank) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_binary: dtype or rank mismatch");
     }
+    // A runtime tensor's storage layout differs from Tensor<T, Rank>; casting one
+    // handle's tensor_ptr with the other's shape is type confusion. Both operands
+    // must be the same kind (callers gate on is_runtime, so this only guards misuse).
+    if (a.is_runtime != b.is_runtime) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_binary: cannot mix runtime and compile-time tensors");
+    }
 
     auto go = [&]<typename T>(T /*tag*/) {
+        // GeneralRuntimeTensor<T> carries its rank dynamically, so one cast covers
+        // every rank; branch on the handle kind before the compile-time rank switch.
+        if (a.is_runtime) {
+            using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
+            fn(static_cast<RT *>(a.tensor_ptr), static_cast<RT *>(b.tensor_ptr));
+            return;
+        }
         switch (a.rank) {
         case 1:
             fn(static_cast<Tensor<T, 1> *>(a.tensor_ptr), static_cast<Tensor<T, 1> *>(b.tensor_ptr));
@@ -1210,6 +1223,13 @@ void dispatch_binary(TensorHandle const &a, TensorHandle const &b, Fn &&fn) {
 template <typename Fn>
 void dispatch_unary(TensorHandle const &a, Fn &&fn) {
     auto go = [&]<typename T>(T /*tag*/) {
+        // See dispatch_binary: a runtime handle casts to GeneralRuntimeTensor<T>
+        // (rank carried dynamically) rather than the compile-time Tensor<T, Rank>.
+        if (a.is_runtime) {
+            using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
+            fn(static_cast<RT *>(a.tensor_ptr));
+            return;
+        }
         switch (a.rank) {
         case 1:
             fn(static_cast<Tensor<T, 1> *>(a.tensor_ptr));

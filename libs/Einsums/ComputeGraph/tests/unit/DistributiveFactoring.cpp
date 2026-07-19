@@ -206,6 +206,78 @@ TEST_CASE("DistributiveFactoring - different ab_prefactors", "[ComputeGraph][Dis
             REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
 }
 
+TEST_CASE("DistributiveFactoring - downstream reader keeps program order", "[ComputeGraph][DistributiveFactoring]") {
+    auto A  = create_random_tensor<double>("A", 4, 3);
+    auto B1 = create_random_tensor<double>("B1", 3, 5);
+    auto B2 = create_random_tensor<double>("B2", 3, 5);
+    auto E  = create_random_tensor<double>("E", 5, 2);
+
+    // Reference: R = A*B1 + A*B2 ; S = R*E (S reads the factored output R)
+    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+    auto S_ref = create_zero_tensor<double>("S_ref", 4, 2);
+    tensor_algebra::einsum(0.0, Indices{i, l}, &S_ref, 1.0, Indices{i, j}, R_ref, Indices{j, l}, E);
+
+    auto      R = create_zero_tensor<double>("R", 4, 5);
+    auto      S = create_zero_tensor<double>("S", 4, 2);
+    cg::Graph graph("factor_downstream");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B1);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B2);
+        cg::einsum("ij;jl->il", 0.0, &S, 1.0, R, E); // downstream reader of the factored R
+    }
+
+    // Run through a PassManager so the program-order verifier (check_observed_writes)
+    // runs. Appending the combined node would trip it (the later S-reader would then
+    // observe R's initial contents); first-member-slot placement keeps it ahead.
+    cg::PassManager pm;
+    pm.add<cg::passes::DistributiveFactoring>();
+    REQUIRE_NOTHROW(pm.run(graph));
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+    for (size_t ii = 0; ii < 4; ii++)
+        for (size_t ll = 0; ll < 2; ll++)
+            REQUIRE_THAT(S(ii, ll), Catch::Matchers::WithinRel(S_ref(ii, ll), 1e-10));
+}
+
+TEST_CASE("DistributiveFactoring - idempotent", "[ComputeGraph][DistributiveFactoring]") {
+    auto A  = create_random_tensor<double>("A", 4, 3);
+    auto B1 = create_random_tensor<double>("B1", 3, 5);
+    auto B2 = create_random_tensor<double>("B2", 3, 5);
+
+    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+
+    auto      R = create_zero_tensor<double>("R", 4, 5);
+    cg::Graph graph("factor_idempotent");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B1);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B2);
+    }
+
+    // First pass factors the group.
+    auto [m1, p1] = graph.apply<cg::passes::DistributiveFactoring>();
+    REQUIRE(m1);
+    REQUIRE(p1.num_groups() == 1);
+
+    // Second pass finds no einsum group left (the combined node is a Custom op).
+    auto [m2, p2] = graph.apply<cg::passes::DistributiveFactoring>();
+    REQUIRE_FALSE(m2);
+    REQUIRE(p2.num_groups() == 0);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+}
+
 TEST_CASE("DistributiveFactoring - replay factored graph", "[ComputeGraph][DistributiveFactoring]") {
     auto A  = create_random_tensor<double>("A", 3, 2);
     auto B1 = create_random_tensor<double>("B1", 2, 4);
