@@ -80,8 +80,45 @@ void count_subtree_writers_by_ptr(Graph const &g, std::unordered_map<void const 
 } // namespace
 
 bool LoopInvariantHoisting::run(Graph &graph) {
-    auto &nodes  = graph.nodes();
     _num_hoisted = 0;
+    run_recursive(graph);
+    return _num_hoisted > 0;
+}
+
+void LoopInvariantHoisting::run_recursive(Graph &graph) {
+    // Innermost-first: descend into each Loop body BEFORE hoisting at this
+    // level. An invariant produced inside an inner loop is first lifted into
+    // its enclosing body here, then (if still invariant there) lifted again by
+    // this level's sweep. Multi-level hoisting is thus the composition of
+    // single-level hoists within one run() call.
+    //
+    // We descend into Loop bodies ONLY, never Conditional branches. A node
+    // inside a branch runs only when the predicate selects that branch, so
+    // lifting it into the enclosing graph would execute it unconditionally and
+    // change semantics when the predicate is false. (Even the "safe" case, a
+    // graph-owned intermediate consumed solely inside the branch, only wastes
+    // work.) The single-level driver likewise never treats a Conditional as a
+    // hoist candidate and refuses any candidate whose input is written inside a
+    // conditional subtree, so nothing crosses a branch boundary in either
+    // direction.
+    for (auto &node : graph.nodes()) {
+        auto *loop_desc = std::get_if<LoopDescriptor>(&node.op_data);
+        if (loop_desc != nullptr && loop_desc->body) {
+            run_recursive(*loop_desc->body);
+        }
+    }
+
+    hoist_one_level(graph);
+}
+
+void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
+    auto        &nodes          = graph.nodes();
+    size_t const hoisted_before = _num_hoisted;
+
+    // Cost caveat (known, out of scope here): this pass has no cost/benefit
+    // test. Hoisting a cheap producer of a huge tensor out of a loop extends
+    // that tensor's live range across the whole loop, which can cost more
+    // memory than it saves in recomputation. A future cost model belongs here.
 
     // Find all Loop nodes
     for (size_t loop_idx = 0; loop_idx < nodes.size(); loop_idx++) {
@@ -335,16 +372,15 @@ bool LoopInvariantHoisting::run(Graph &graph) {
         }
     }
 
-    if (_num_hoisted > 0) {
+    if (_num_hoisted > hoisted_before) {
         // The hoisted producers were inserted directly before their loop, so
         // the order is already valid; declare the mutation so the sort below
         // rebuilds the stale dependency lists instead of early-returning on
-        // the pre-hoist state.
+        // the pre-hoist state. Sort per level: each recursion level owns its
+        // own graph and re-sorts only when it actually hoisted something here.
         graph.mark_sorted();
         graph.topological_sort();
     }
-
-    return _num_hoisted > 0;
 }
 
 } // namespace einsums::compute_graph::passes
