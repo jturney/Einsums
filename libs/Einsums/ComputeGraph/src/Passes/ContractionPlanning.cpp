@@ -497,12 +497,18 @@ bool ContractionPlanning::run(Graph &graph) {
         // Check if all tensors in the chain are rank-2 (safe for direct GEMM restructuring).
         // Higher-rank chains require folding which needs more careful validation.
         // For now, only restructure rank-2 chains. Higher-rank gets analysis only.
+        // The restructured Gemm executor (make_einsum_executor's rank-2 path)
+        // casts operands to Tensor<T, 2>*, so runtime-rank tensors in the
+        // chain are type confusion (garbage ranks at execute) - decline them
+        // too, same gate LCCF grew for the identical hazard.
         bool all_rank2 = true;
         for (auto const &ci : chain) {
             auto a_it = graph.tensors_map().find(ci.input_a_tid);
             auto b_it = graph.tensors_map().find(ci.input_b_tid);
-            if ((a_it != graph.tensors_map().end() && a_it->second.rank != 2) ||
-                (b_it != graph.tensors_map().end() && b_it->second.rank != 2)) {
+            auto c_it = graph.tensors_map().find(ci.output_tid);
+            if ((a_it != graph.tensors_map().end() && (a_it->second.rank != 2 || a_it->second.is_runtime)) ||
+                (b_it != graph.tensors_map().end() && (b_it->second.rank != 2 || b_it->second.is_runtime)) ||
+                (c_it != graph.tensors_map().end() && c_it->second.is_runtime)) {
                 all_rank2 = false;
                 break;
             }
@@ -510,7 +516,7 @@ bool ContractionPlanning::run(Graph &graph) {
 
         if (!all_rank2) {
             EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions [eff. dims {}], {:.1f}us → {:.1f}us ({:.2f}x speedup) — "
-                             "analysis only (higher-rank, needs folding)",
+                             "analysis only (higher-rank or runtime-rank, needs folding)",
                              n, fmt::join(p, "x"), original_time, optimal_time, speedup);
             _reports.push_back(std::move(report));
             continue;

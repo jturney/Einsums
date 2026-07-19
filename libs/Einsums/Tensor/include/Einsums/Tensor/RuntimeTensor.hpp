@@ -173,7 +173,13 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         // An aliased tensor does not own _data; keep _impl pointing at the
         // external buffer (copy.impl() already carries it) rather than
         // repointing at our empty _data.
-        if (!_aliased) {
+        if (copy._external_data != nullptr) {
+            // Arena-backed (materialize_into) source: deep-copy into owned
+            // storage; the copy must not share the source's arena slot.
+            _data.resize(_impl.size());
+            std::memcpy(_data.data(), copy._external_data, _impl.size() * sizeof(T));
+            _impl.set_data(_data.data());
+        } else if (!_aliased) {
             _impl.set_data(_data.data());
         }
     }
@@ -441,12 +447,12 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * For an aliased tensor (@ref alias_to) the data lives in an external
      * buffer, not the owned _data, so return the impl's pointer.
      */
-    [[nodiscard]] Pointer data() noexcept { return _aliased ? _impl.data() : _data.data(); }
+    [[nodiscard]] Pointer data() noexcept { return (_aliased || _external_data != nullptr) ? _impl.data() : _data.data(); }
 
     /**
      * @copydoc data()
      */
-    [[nodiscard]] ConstPointer data() const noexcept { return _aliased ? _impl.data() : _data.data(); }
+    [[nodiscard]] ConstPointer data() const noexcept { return (_aliased || _external_data != nullptr) ? _impl.data() : _data.data(); }
 
     /**
      * @brief Get the pointer to the stored data starting at the given index.
@@ -1119,17 +1125,51 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         _impl.set_data(_data.data());
     }
 
+    /// Materialize into caller-provided storage instead of allocating.
+    /// Mirrors GeneralTensor::materialize_into: @p ptr must hold at least
+    /// size() elements and outlive every use of this tensor; release()
+    /// detaches from it and the destructor never frees it. Used by the
+    /// MemoryPlanning arena to place graph-owned intermediates at planned
+    /// offsets in one shared block. Idempotent for the same pointer;
+    /// switching storage requires an intervening release(). Host tensors
+    /// only: the arena is host memory, so device runtime tensors do not
+    /// offer this (and make_handle's probe then leaves materialize_into_fn
+    /// unset, keeping them out of the arena).
+    void materialize_into(T *ptr)
+        requires(!IsDeviceTensor)
+    {
+        if (_external_data == ptr) {
+            return;
+        }
+        assert(_external_data == nullptr && "materialize_into(): release() before switching external storage");
+        assert(!_aliased && "materialize_into(): aliased tensors do not own storage to replace");
+        // An owned buffer gives way to the external one; holding both would
+        // waste the owned copy.
+        if (!_data.empty()) {
+            _data.clear();
+            _data.shrink_to_fit();
+        }
+        _external_data = ptr;
+        _impl.set_data(ptr);
+    }
+
     /// True iff backing storage is available. Storage counts as available when
-    /// it is owned with _data non-empty, aliased to an external buffer, or
-    /// rank-0 with no data needed.
-    [[nodiscard]] bool is_materialized() const { return _aliased || !_data.empty() || _impl.size() == 0; }
+    /// it is owned with _data non-empty, aliased to an external buffer,
+    /// materialized into external storage, or rank-0 with no data needed.
+    [[nodiscard]] bool is_materialized() const { return _aliased || _external_data != nullptr || !_data.empty() || _impl.size() == 0; }
 
     /// Release backing storage, returning to the deferred state. Dims and
     /// strides are preserved. data() returns a sentinel pointer until
     /// materialize() is called again. Used by FreeInsertion to free
-    /// intermediates after their last consumer. This is a no-op for aliased
+    /// intermediates after their last consumer. External (materialize_into)
+    /// storage is detached, never freed. This is a no-op for aliased
     /// tensors, which don't own their memory, so there is nothing to free.
     void release() {
+        if (_external_data != nullptr) {
+            _external_data = nullptr;
+            _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel; dims/strides preserved
+            return;
+        }
         if (_aliased || _data.empty())
             return;
         _data.clear();
@@ -1150,8 +1190,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         }
         _data.clear();
         _data.shrink_to_fit();
-        _impl    = detail::TensorImpl<T>(ptr, d, row_major);
-        _aliased = true;
+        _external_data = nullptr; // aliasing supersedes any arena attachment
+        _impl          = detail::TensorImpl<T>(ptr, d, row_major);
+        _aliased       = true;
     }
 
     /// Override the internal data pointer. Used by the GPU executor's
@@ -1183,8 +1224,11 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         detail::TensorImpl<T> new_impl(nullptr, dims, _impl.stored_row_major());
         // Resize data first; if this throws, _impl and _data remain consistent.
         _data.resize(new_impl.size());
-        // Data resize succeeded, so now commit.
-        _impl = std::move(new_impl);
+        // Data resize succeeded, so now commit. A resize always lands in
+        // owned storage: any arena attachment is dropped (the planned slot
+        // was sized for the old shape).
+        _external_data = nullptr;
+        _impl          = std::move(new_impl);
         _impl.set_data(_data.data());
     }
 
@@ -1249,6 +1293,12 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     /// @ref alias_to). Such a tensor is permanently "materialized" and
     /// release()/materialize() leave its external buffer untouched.
     bool _aliased{false};
+
+    /// Non-null when the tensor is materialized into caller-provided storage
+    /// (see @ref materialize_into, used by the MemoryPlanning arena). Unlike
+    /// _aliased, release() DETACHES from this storage (returning the tensor
+    /// to the deferred state) without freeing it.
+    Pointer _external_data{nullptr};
 
     std::unique_ptr<SymmetryDescriptor> _symmetry{};
 

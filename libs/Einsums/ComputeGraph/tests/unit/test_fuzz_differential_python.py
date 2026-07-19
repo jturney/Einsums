@@ -58,6 +58,8 @@ Data-dependent branching is covered by the dedicated SCF/MP2 tests.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -758,15 +760,12 @@ def test_fuzz_parallel_executor_stress(seed):
 # 1.13 MB, and the random chain re-reads earlier intermediates so frees sit
 # after multiple readers.
 #
-# HONEST SCOPE: python-declared scratch is runtime-tensor backed, which has
-# no materialize_into(), so MemoryPlanning's arena skips it - this arm
-# exercises Free-node ordering and release/rematerialize replay under the
-# parallel executors, but NOT the arena-detach failure mode that made the
-# original bug visible. The falsified guard for that lives in C++
-# (Pass_FreeInsertion.cpp, the [Dataflow] case, whose scratch<> tensors are
-# arena-eligible): it fails on the pre-fix pass and passes after. If
-# GeneralRuntimeTensor ever gains materialize_into, this arm's coverage
-# upgrades for free.
+# The scratch is declared with intermediate=True (user-visible declares are
+# never freed) and GeneralRuntimeTensor supports materialize_into, so the
+# full lifecycle engages: Materialize, Free, and MemoryPlanning's arena.
+# Because absent coverage is silent (a graph with no Free nodes passes
+# trivially - that is exactly how the original bug hid), the test ASSERTS
+# the optimized graph contains Free nodes before executing anything.
 # ──────────────────────────────────────────────────────────────────────────
 
 _FREE_N = 385  # 385*385*8 B = 1.13 MiB: over FreeInsertion's 1 MiB floor
@@ -796,7 +795,7 @@ def test_fuzz_free_lifecycle_parallel_stress(seed):
         C = einsums.asarray(np.zeros((n, n)), name=f"free_C_{seed}_{ex_name}")
 
         g = cg.Graph(f"free_stress_{seed}_{ex_name}")
-        mids = [g.declare_zero_tensor(f"mid{k}", [n, n], dtype="float64") for k in range(steps - 1)]
+        mids = [g.declare_zero_tensor(f"mid{k}", [n, n], dtype="float64", intermediate=True) for k in range(steps - 1)]
         with cg.capture(g):
             lhs = A
             for s in range(steps):
@@ -806,6 +805,15 @@ def test_fuzz_free_lifecycle_parallel_stress(seed):
                 lhs = out
 
         g.apply(cg.default_pass_manager())
+
+        # Coverage guard: without Free nodes this test proves nothing (a
+        # Free-less graph passes trivially, which is exactly how the original
+        # bug hid). The exact count varies - ContractionPlanning restructures
+        # chains and its _cp_ intermediates get their own lifecycles - so
+        # only presence is asserted.
+        kinds = [node.get("kind") for node in json.loads(g.to_json()).get("nodes", [])]
+        assert kinds.count("Free") >= 1, f"no Free nodes in optimized graph; kinds={kinds}"
+        assert kinds.count("Materialize") >= 1
 
         for rep in range(_FREE_REPS):
             g.execute(exec_cls())
