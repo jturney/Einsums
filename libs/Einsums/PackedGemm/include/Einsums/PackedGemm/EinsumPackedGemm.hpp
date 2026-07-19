@@ -362,9 +362,22 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // single batch slice (M*K / K*N) and A_data/B_data are already offset
             // to the current slice. HPTT then transposes the whole batched tensor
             // into the inner-sized buffer -> heap-buffer-overflow. Fall through to
-            // the batch-aware scalar gather below, which honors the slice offset
-            // and the inner strides. (TODO: a proper per-slice batched HPTT path
-            // would recover the transpose perf for batched multi-K contractions.)
+            // the batch-aware gather below, which honors the slice offset and the
+            // inner strides.
+            //
+            // A per-slice batched HPTT path (each slice described to HPTT as an
+            // embedded subtensor via outer sizes + inner stride, one cached plan
+            // rebound per slice) was implemented and benchmarked on an Apple M4
+            // (2026-07-19) and does NOT pay: the gather below copies one KC x M
+            // tile at a time immediately before the GEMM consumes it, so the
+            // copy stays fused in cache, while an up-front HPTT transpose of the
+            // whole M*K slice round-trips a multi-MB flat buffer through DRAM.
+            // Measured wash at small K to 15% SLOWER at large K, on both the
+            // memcpy (lead stride 1) and strided-lead gather variants. Revisit
+            // only with a cache-resident (KC-tiled) transpose scheme, or on
+            // hardware whose strided-load throughput is much worse relative to
+            // its cache bandwidth. The BatchedMultiK tests pin the layouts that
+            // experiment covered.
             bool use_hptt = (nb == 0) && !plan.coalesced;
             if (!a_zero_copy) {
                 int64_t expected = 1;
