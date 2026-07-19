@@ -140,6 +140,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     [[nodiscard]] TensorHandle const &tensor(TensorId id) const; ///< @overload
 
     /**
+     * @brief Look up a tensor handle by its TensorId, without throwing.
+     * @param[in] id The tensor identifier.
+     * @return Pointer to the TensorHandle, or nullptr if no tensor with the
+     *         given ID exists. The non-throwing counterpart of tensor() for
+     *         the optimizer passes' "handle or skip" lookups.
+     */
+    [[nodiscard]] TensorHandle       *find_tensor(TensorId id) noexcept;
+    [[nodiscard]] TensorHandle const *find_tensor(TensorId id) const noexcept; ///< @overload
+
+    /**
      * @brief Execute all nodes in topological order.
      *
      * Performs topological sorting (if not already sorted), validates that all

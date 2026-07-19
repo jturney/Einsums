@@ -59,26 +59,6 @@ bool subset_of(std::vector<std::string> const &small, std::vector<std::string> c
     return true;
 }
 
-size_t elem_count(std::vector<size_t> const &dims) {
-    return std::accumulate(dims.begin(), dims.end(), size_t{1}, std::multiplies<>{});
-}
-
-/// True when the prefactor carries no imaginary component. Complex-dtype
-/// members carry full complex prefactors through the kernel; real-dtype
-/// members must have real-valued ones (a nonzero imaginary part cannot land
-/// in a real accumulator, so such members stay unfused).
-bool is_real_valued(PrefactorScalar const &v) {
-    return std::visit(
-        [](auto x) {
-            if constexpr (std::is_arithmetic_v<decltype(x)>) {
-                return true;
-            } else {
-                return x.imag() == 0;
-            }
-        },
-        v);
-}
-
 /// The streaming kernel for one element type. Walks S once in storage order
 /// (axes sorted by descending stride) and feeds every member's accumulator:
 ///   C_k[rho_k(idx)] += alpha_k * S[idx] * W_k[pi_k(idx)]
@@ -409,8 +389,7 @@ size_t StreamContractionFusion::max_output_elems(size_t elem_size) const {
 bool StreamContractionFusion::run(Graph &graph) {
     graph.topological_sort();
 
-    auto       &nodes   = graph.nodes();
-    auto const &tensors = graph.tensors_map();
+    auto &nodes = graph.nodes();
 
     _num_groups     = 0;
     _num_eliminated = 0;
@@ -419,10 +398,7 @@ bool StreamContractionFusion::run(Graph &graph) {
         return false;
     }
 
-    auto const handle_of = [&](TensorId tid) -> TensorHandle const * {
-        auto it = tensors.find(tid);
-        return it == tensors.end() ? nullptr : &it->second;
-    };
+    auto const handle_of = [&](TensorId tid) -> TensorHandle const * { return graph.find_tensor(tid); };
 
     // --- Phase 1: collect stream-fusable candidates, grouped by streamed tensor ---
     std::unordered_map<TensorId, std::vector<StreamMember>> groups;
@@ -483,9 +459,9 @@ bool StreamContractionFusion::run(Graph &graph) {
             // No output-size gate here: phase 2 admits large outputs when an
             // owner-computes partition axis covers them, and only privatized
             // members are held to max_output_elems.
-            size_t const s_elems = elem_count(sh->dims);
-            size_t const w_elems = elem_count(wh->dims);
-            size_t const c_elems = elem_count(ch->dims);
+            size_t const s_elems = sh->total_elems();
+            size_t const w_elems = wh->total_elems();
+            size_t const c_elems = ch->total_elems();
             if (s_elems < kMinStreamElems || s_elems < kMinSizeRatio * w_elems || s_elems < kMinSizeRatio * c_elems) {
                 continue;
             }
@@ -543,7 +519,7 @@ bool StreamContractionFusion::run(Graph &graph) {
 
         auto const out_elems_of = [&](StreamMember const &m) {
             auto const *h = handle_of(m.out_id);
-            return h == nullptr ? size_t{0} : elem_count(h->dims);
+            return h == nullptr ? size_t{0} : h->total_elems();
         };
         auto const covered_by = [](StreamMember const &m, size_t axis) {
             return std::ranges::find(m.c_indices, m.s_indices[axis]) != m.c_indices.end();

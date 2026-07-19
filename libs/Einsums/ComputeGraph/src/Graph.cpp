@@ -586,6 +586,16 @@ TensorHandle &Graph::tensor(TensorId id) {
     return it->second;
 }
 
+TensorHandle *Graph::find_tensor(TensorId id) noexcept {
+    auto it = _tensors.find(id);
+    return it == _tensors.end() ? nullptr : &it->second;
+}
+
+TensorHandle const *Graph::find_tensor(TensorId id) const noexcept {
+    auto it = _tensors.find(id);
+    return it == _tensors.end() ? nullptr : &it->second;
+}
+
 TensorHandle const &Graph::tensor(TensorId id) const {
     auto it = _tensors.find(id);
     if (it == _tensors.end()) {

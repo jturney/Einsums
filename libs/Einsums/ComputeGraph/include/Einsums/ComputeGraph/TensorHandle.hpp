@@ -211,14 +211,20 @@ struct TensorHandle {
     std::function<bool()> validator;
 
     /**
+     * @brief Compute the total element count of this tensor.
+     * @return product(dims), or 0 if dims is empty.
+     */
+    [[nodiscard]] size_t total_elems() const {
+        if (dims.empty())
+            return 0;
+        return std::accumulate(dims.begin(), dims.end(), size_t{1}, std::multiplies<>{});
+    }
+
+    /**
      * @brief Compute the total memory footprint of this tensor in bytes.
      * @return element_size * product(dims), or 0 if dims is empty.
      */
-    [[nodiscard]] size_t total_bytes() const {
-        if (dims.empty())
-            return 0;
-        return element_size * std::accumulate(dims.begin(), dims.end(), size_t{1}, std::multiplies<>{});
-    }
+    [[nodiscard]] size_t total_bytes() const { return element_size * total_elems(); }
 
     /**
      * @brief Check if the tensor's dimensions match the given dimensions.

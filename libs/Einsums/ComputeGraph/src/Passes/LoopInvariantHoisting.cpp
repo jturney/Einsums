@@ -21,10 +21,6 @@ bool is_lifecycle(OpKind kind) {
     return kind == OpKind::Alloc || kind == OpKind::Free || kind == OpKind::Materialize || kind == OpKind::Initialize;
 }
 
-bool prefactor_is_zero(PrefactorScalar const &pf) {
-    return std::visit([](auto v) { return v == decltype(v){}; }, pf);
-}
-
 /// A node that reads its own destination is self-modifying across iterations
 /// and must never be hoisted out of a loop, hoisting drops the per-iteration
 /// update. This covers the always-accumulating ops (scale/axpy/axpby/element-
@@ -42,7 +38,7 @@ bool reads_its_output(Node const &nd) {
         break;
     }
     if (auto const *e = std::get_if<EinsumDescriptor>(&nd.op_data)) {
-        return !prefactor_is_zero(e->c_prefactor);
+        return !is_zero(e->c_prefactor);
     }
     if (auto const *p = std::get_if<PermuteDescriptor>(&nd.op_data)) {
         return p->beta != 0.0;

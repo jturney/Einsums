@@ -56,7 +56,7 @@ struct FoldKeyHash {
 struct FoldCandidate {
     size_t                   node_index;
     std::vector<std::string> non_shared_indices; // actual (permuted) order on this node
-    double                   ab_prefactor;
+    PrefactorScalar          ab_prefactor;
     bool                     c_pf_is_one;  // true if this node purely accumulates (c_pf == 1)
     bool                     c_pf_is_zero; // true if this node overwrites the output (c_pf == 0)
 };
@@ -101,9 +101,11 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         if (node.inputs.size() != 2 || node.outputs.size() != 1) {
             continue;
         }
-        // Complex prefactors would lose their imaginary part in the real-valued
-        // linear combination below, skip to never silently miscompute.
-        auto const ab_pf = as_real<double>(desc->ab_prefactor);
+        // Prefactors stay type-erased; the fold kernel converts with as<T>()
+        // so complex prefactors fold exactly on complex tensors. Real dtypes
+        // are gated in Phase 4 (a nonzero imaginary part cannot land in a
+        // real linear combination).
+        auto const &ab_pf = desc->ab_prefactor;
         // c_pf must be exactly 1 (pure accumulate) for all but the first node;
         // record it and enforce in Phase 2.
         bool const c_is_one  = is_one(desc->c_prefactor);
@@ -261,66 +263,90 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         }
 
         // --- Phase 4: rewrite ---
-        auto nb_it = tensors.find(vg.key.non_shared_id);
-        if (nb_it == tensors.end()) {
+        auto const *b_handle = graph.find_tensor(vg.key.non_shared_id);
+        if (b_handle == nullptr) {
             continue;
         }
-        auto const &b_handle = nb_it->second;
 
         // The combine executor casts the user operands (shared, non-shared,
-        // output) to GeneralRuntimeTensor<T>. Statically-typed Tensor<T, Rank>
-        // captures produce the same handle shape, and a blind cast is type
-        // confusion (a segfault in the fused axpy). Fold only when
-        // all three really are runtime tensors.
-        auto const is_rt = [&](TensorId tid) {
-            auto it = tensors.find(tid);
-            return it != tensors.end() && it->second.is_runtime;
+        // output) to GeneralRuntimeTensor<T> of the non-shared operand's
+        // dtype. Statically-typed Tensor<T, Rank> captures produce the same
+        // handle shape, and a blind cast is type confusion (a segfault in
+        // the fused axpy); so is a mixed-dtype triple. Fold only when all
+        // three really are runtime tensors of one dtype.
+        auto const dtype     = b_handle->dtype;
+        auto const rt_dtyped = [&](TensorId tid) {
+            auto const *h = graph.find_tensor(tid);
+            return h != nullptr && h->is_runtime && h->dtype == dtype;
         };
-        if (!is_rt(vg.key.output_id) || !is_rt(vg.key.shared_id) || !is_rt(vg.key.non_shared_id)) {
+        if (!rt_dtyped(vg.key.output_id) || !rt_dtyped(vg.key.shared_id) || !rt_dtyped(vg.key.non_shared_id)) {
             continue;
         }
-
-        auto const dtype = b_handle.dtype;
 
         // L = sum_k (ab_k / ab_0) * P_k(B), in operand-0's canonical layout, and a
         // reused scratch T for permuted contributions. Both RUNTIME tensors so the
         // combine below can cast operands uniformly to GeneralRuntimeTensor<T>.
-        auto l_res = graph.create_zero_runtime_tensor_dynamic(fmt::format("_lccf_L_{}", _num_groups), dtype, b_handle.dims);
+        // The fused contraction is node-0's einsum; grab its descriptor up
+        // front so the prefactor gate below can see c_prefactor too.
+        auto const *n0_desc = std::get_if<EinsumDescriptor>(&nodes[members[0].node_index].op_data);
+        if (n0_desc == nullptr) {
+            continue;
+        }
+
+        // Complex prefactors fold exactly on complex dtypes (the kernel
+        // carries them as T); on a real dtype a nonzero imaginary part has
+        // nowhere to go, so such groups stay unfolded.
+        bool const complex_dtype = dtype == packed_gemm::ScalarType::Complex64 || dtype == packed_gemm::ScalarType::Complex128;
+        if (!complex_dtype) {
+            bool const all_real = std::ranges::all_of(members, [](FoldCandidate const &m) { return is_real_valued(m.ab_prefactor); }) &&
+                                  is_real_valued(n0_desc->c_prefactor);
+            if (!all_real) {
+                continue;
+            }
+        }
+
+        auto l_res = graph.create_zero_runtime_tensor_dynamic(fmt::format("_lccf_L_{}", _num_groups), dtype, b_handle->dims);
         if (!l_res) {
             continue;
         }
         TensorId const l_id  = l_res.value().first;
-        auto           t_res = graph.create_zero_runtime_tensor_dynamic(fmt::format("_lccf_T_{}", _num_groups), dtype, b_handle.dims);
+        auto           t_res = graph.create_zero_runtime_tensor_dynamic(fmt::format("_lccf_T_{}", _num_groups), dtype, b_handle->dims);
         if (!t_res) {
             continue;
         }
         TensorId const t_id = t_res.value().first;
 
-        double ab0 = members[0].ab_prefactor;
-        if (ab0 == 0.0) {
+        // The create_* calls above append Alloc nodes and may reallocate the
+        // node vector, dangling the descriptor pointer fetched for the gate;
+        // re-resolve it before building the fused spec from it.
+        n0_desc = std::get_if<EinsumDescriptor>(&nodes[members[0].node_index].op_data);
+
+        PrefactorScalar ab0 = members[0].ab_prefactor;
+        if (is_zero(ab0)) {
             ab0 = 1.0;
         }
         auto const &canonical = members[0].non_shared_indices;
 
         // Per-member contribution descriptor, resolved against runtime tensors at
-        // execution time (no static-rank assumptions).
+        // execution time (no static-rank assumptions). The ab prefactor stays
+        // type-erased; the kernel forms the ratio ab/ab0 in T so complex
+        // prefactors fold exactly.
         struct Contribution {
             bool              is_permute;
-            double            scale;
+            PrefactorScalar   ab;
             ParsedPermuteSpec spec;
         };
         std::vector<Contribution> contribs;
         contribs.reserve(members.size());
         for (auto const &m : members) {
-            double const scale = m.ab_prefactor / ab0;
             if (m.non_shared_indices == canonical) {
-                contribs.push_back({.is_permute = false, .scale = scale, .spec = {}});
+                contribs.push_back({.is_permute = false, .ab = m.ab_prefactor, .spec = {}});
             } else {
                 ParsedPermuteSpec pspec;
                 pspec.c_indices = canonical;
                 pspec.a_indices = m.non_shared_indices;
                 pspec.raw       = fmt::format("{} <- {}", fmt::join(canonical, ","), fmt::join(m.non_shared_indices, ","));
-                contribs.push_back({.is_permute = true, .scale = scale, .spec = std::move(pspec)});
+                contribs.push_back({.is_permute = true, .ab = m.ab_prefactor, .spec = std::move(pspec)});
             }
         }
 
@@ -328,22 +354,18 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // replaced by L. Build a ParsedEinsumSpec from node-0's index lists and run
         // string_einsum reading L DIRECTLY (no slot mutation, thread-safe and
         // unambiguous when the operands are shared across the graph).
-        auto const *n0_desc = std::get_if<EinsumDescriptor>(&nodes[members[0].node_index].op_data);
-        if (n0_desc == nullptr) {
-            continue;
-        }
         ParsedEinsumSpec einspec;
         einspec.c_indices           = n0_desc->spec.c_indices;
         einspec.a_indices           = n0_desc->spec.a_indices;
         einspec.b_indices           = n0_desc->spec.b_indices;
         einspec.raw                 = fmt::format("{} <- {} ; {}", fmt::join(einspec.c_indices, ","), fmt::join(einspec.a_indices, ","),
                                                   fmt::join(einspec.b_indices, ","));
-        auto const     c_pf0        = as_real<double>(n0_desc->c_prefactor);
-        TensorId const nonshared_id = vg.key.non_shared_id;
-        TensorId const shared_id    = vg.key.shared_id;
-        TensorId const out_id       = vg.key.output_id;
-        bool const     shared_first = vg.key.shared_is_first;
-        Graph         *graph_ptr    = &graph;
+        PrefactorScalar const c_pf0 = n0_desc->c_prefactor;
+        TensorId const        nonshared_id = vg.key.non_shared_id;
+        TensorId const        shared_id    = vg.key.shared_id;
+        TensorId const        out_id       = vg.key.output_id;
+        bool const            shared_first = vg.key.shared_is_first;
+        Graph                *graph_ptr    = &graph;
 
         // Captured for the verbosity report below, before einspec is moved into the lambda.
         std::string const fold_out_indices = fmt::format("{}", fmt::join(einspec.c_indices, ","));
@@ -356,12 +378,14 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
                 auto *B  = static_cast<RT *>(graph_ptr->tensor(nonshared_id).tensor_ptr);
                 auto *Tt = static_cast<RT *>(graph_ptr->tensor(t_id).tensor_ptr);
                 L->zero();
+                T const ab0_t = as<T>(ab0);
                 for (auto const &c : contribs) {
+                    T const scale = as<T>(c.ab) / ab0_t; // exact in T, complex included
                     if (c.is_permute) {
                         dispatch::string_permute<RT, RT>(c.spec, T{0}, Tt, T{1}, *B); // T = P_k(B)
-                        linear_algebra::axpy(static_cast<T>(c.scale), *Tt, L);        // L += scale * T
+                        linear_algebra::axpy(scale, *Tt, L);                          // L += scale * T
                     } else {
-                        linear_algebra::axpy(static_cast<T>(c.scale), *B, L); // L += scale * B
+                        linear_algebra::axpy(scale, *B, L); // L += scale * B
                     }
                 }
                 // Single fused contraction: out = c_pf0*out + ab0 * (shared op L).
@@ -369,7 +393,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
                 auto     *sh  = static_cast<RT *>(graph_ptr->tensor(shared_id).tensor_ptr);
                 RT const *Aop = shared_first ? sh : L;
                 RT const *Bop = shared_first ? L : sh;
-                dispatch::string_einsum<RT, RT, RT>(einspec, static_cast<T>(c_pf0), out, static_cast<T>(ab0), *Aop, *Bop);
+                dispatch::string_einsum<RT, RT, RT>(einspec, as<T>(c_pf0), out, ab0_t, *Aop, *Bop);
             };
             switch (dtype) {
             case packed_gemm::ScalarType::Float32:
@@ -425,7 +449,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
                     fmt::format("{}node {}=[{}]", member_desc.empty() ? "" : ", ", m.node_index, fmt::join(m.non_shared_indices, ","));
             }
             report(2, fmt::format("fold {} contractions into '{}' [{}] via L=Σ(ab/{})·perm(operand); members {}", members.size(),
-                                  on != tensors.end() ? on->second.name : "?", fold_out_indices, ab0, member_desc));
+                                  on != tensors.end() ? on->second.name : "?", fold_out_indices, to_string(ab0), member_desc));
         }
     }
 

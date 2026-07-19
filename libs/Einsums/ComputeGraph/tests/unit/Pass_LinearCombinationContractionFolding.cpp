@@ -22,6 +22,7 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
 #include <cmath>
+#include <complex>
 
 #include <Einsums/Testing.hpp>
 
@@ -91,6 +92,51 @@ TEST_CASE("LCCF - folded output feeding a downstream consumer stays correct", "[
             std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), static_cast<ptrdiff_t>(jj)};
             REQUIRE(std::abs(out_rt(idx) - out_ref(ii, jj)) < 1e-11);
             REQUIRE(std::abs(D_rt(idx) - D_ref(ii, jj)) < 1e-11);
+        }
+    }
+}
+
+TEST_CASE("LCCF - complex prefactors on complex tensors fold exactly", "[ComputeGraph][Passes][LCCF]") {
+    using T = std::complex<double>;
+
+    auto A    = create_random_tensor<T>("A", 4);
+    auto B    = create_random_tensor<T>("B", 4, 3, 3);
+    auto out0 = create_random_tensor<T>("out0", 3, 3); // pre-existing content scaled by the complex c prefactor
+
+    T const a1{2.0, 0.5};
+    T const a2{-1.0, 0.25};
+    T const c0{0.5, -0.75};
+
+    Tensor<T, 2> out_ref("out_ref", 3, 3);
+    for (size_t ii = 0; ii < 3; ii++) {
+        for (size_t jj = 0; jj < 3; jj++) {
+            out_ref(ii, jj) = c0 * out0(ii, jj);
+            for (size_t kk = 0; kk < 4; kk++) {
+                out_ref(ii, jj) += a1 * A(kk) * B(kk, ii, jj) + a2 * A(kk) * B(kk, jj, ii);
+            }
+        }
+    }
+
+    RuntimeTensor<T> A_rt(A), B_rt(B), out_rt(out0);
+
+    cg::Graph graph("lccf_complex_pf");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- k ; k,i,j", c0, &out_rt, a1, A_rt, B_rt);
+        cg::einsum("i,j <- k ; k,j,i", T{1.0}, &out_rt, a2, A_rt, B_rt);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::LinearCombinationContractionFolding>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 1);
+    REQUIRE(pass.num_eliminated() == 1);
+
+    graph.execute();
+
+    for (size_t ii = 0; ii < 3; ii++) {
+        for (size_t jj = 0; jj < 3; jj++) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), static_cast<ptrdiff_t>(jj)};
+            REQUIRE(std::abs(out_rt(idx) - out_ref(ii, jj)) < 1e-10);
         }
     }
 }

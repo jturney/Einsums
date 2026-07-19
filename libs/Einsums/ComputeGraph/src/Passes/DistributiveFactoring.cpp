@@ -86,9 +86,11 @@ bool DistributiveFactoring::run(Graph &graph) {
         TensorId const in_b   = node.inputs[1];
         auto const    &spec   = desc->spec;
 
-        // TODO: when ab_prefactor is complex with non-zero imag, the
-        // factoring math below loses the imaginary part. Skip the pass for
-        // complex prefactors so we never silently miscompute.
+        // The factoring math below is real-valued; a prefactor with nonzero
+        // imaginary part would silently lose it, so skip those nodes.
+        if (!is_real_valued(desc->ab_prefactor)) {
+            continue;
+        }
         auto const ab_pf_d = as_real<double>(desc->ab_prefactor);
 
         // Try first input as shared

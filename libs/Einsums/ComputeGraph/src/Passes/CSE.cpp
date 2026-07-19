@@ -68,11 +68,6 @@ bool op_data_equal(OpData const &a, OpData const &b) {
     return std::holds_alternative<std::monostate>(a) && std::holds_alternative<std::monostate>(b);
 }
 
-/// True when a PrefactorScalar variant holds a zero value.
-bool prefactor_is_zero(PrefactorScalar const &pf) {
-    return std::visit([](auto v) { return v == decltype(v){}; }, pf);
-}
-
 /// Whether a node may participate in CSE at all.
 ///
 /// CSE eliminates a duplicate node by redirecting readers of its output onto
@@ -86,7 +81,7 @@ bool prefactor_is_zero(PrefactorScalar const &pf) {
 /// op_data, so op_data_equal cannot tell them apart.
 bool cse_eligible(Node const &nd) {
     if (auto const *e = std::get_if<EinsumDescriptor>(&nd.op_data)) {
-        return prefactor_is_zero(e->c_prefactor);
+        return is_zero(e->c_prefactor);
     }
     if (auto const *p = std::get_if<PermuteDescriptor>(&nd.op_data)) {
         return p->beta == 0.0;

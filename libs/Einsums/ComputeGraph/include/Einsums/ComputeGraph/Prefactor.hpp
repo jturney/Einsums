@@ -42,6 +42,22 @@ inline bool is_one(PrefactorScalar const &v) {
     return std::visit([](auto x) { return x == decltype(x){1}; }, v);
 }
 
+/// True iff the contained value carries no imaginary component (real
+/// alternatives always qualify). Passes that flatten prefactors into real
+/// arithmetic must gate on this rather than silently truncating with
+/// @ref as_real.
+inline bool is_real_valued(PrefactorScalar const &v) {
+    return std::visit(
+        [](auto x) {
+            if constexpr (std::is_arithmetic_v<decltype(x)>) {
+                return true;
+            } else {
+                return x.imag() == 0;
+            }
+        },
+        v);
+}
+
 /// Convert a PrefactorScalar to a concrete typed scalar.
 ///
 /// Real → real and real → complex are exact. Complex → real throws when the
