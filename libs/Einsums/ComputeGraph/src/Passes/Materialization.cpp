@@ -25,24 +25,23 @@ namespace {
 // @param handle         Mutable handle whose ``materialize_fn`` /
 //                       ``init_kind`` / distribution metadata drives the
 //                       node's execute closure.
-// @param owns_tid       True when the tensor's id lives in the *target*
-//                       graph's tensor_map. When false (the hoisted
-//                       case), we leave the synthetic node's outputs
-//                       empty so the target graph's dep tracking doesn't
-//                       try to resolve a foreign TensorId. Execution
-//                       order is established by node position alone in
-//                       that case.
-std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, bool owns_tid) {
+// @param emit_tid       TensorId this graph resolves the buffer to; the
+//                       synthetic nodes carry it as their output so the
+//                       dependency builder orders the control-flow node
+//                       (whose effective I/O maps the same buffer pointer
+//                       to this id) after the Materialize / Initialize.
+//                       For a hoisted body tensor this is a parent id
+//                       minted via Graph::find_or_register_tensor_ptr,
+//                       not the body's own id.
+std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, TensorId emit_tid) {
     std::vector<Node> out;
 
     // ── Materialize ────────────────────────────────────────────────────
     {
         Node mat_node;
-        mat_node.kind  = OpKind::Materialize;
-        mat_node.label = fmt::format("materialize({})", handle.name);
-        if (owns_tid) {
-            mat_node.outputs = {handle.id};
-        }
+        mat_node.kind    = OpKind::Materialize;
+        mat_node.label   = fmt::format("materialize({})", handle.name);
+        mat_node.outputs = {emit_tid};
 
         auto       mat_fn      = handle.materialize_fn;
         auto       resize_fn   = handle.resize_deferred_fn;
@@ -76,10 +75,8 @@ std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, bool owns_tid) {
     // ── Initialize (optional) ──────────────────────────────────────────
     if (handle.init_kind != InitKind::None) {
         Node init_node;
-        init_node.kind = OpKind::Initialize;
-        if (owns_tid) {
-            init_node.outputs = {handle.id};
-        }
+        init_node.kind    = OpKind::Initialize;
+        init_node.outputs = {emit_tid};
 
         InitializeDescriptor desc;
         desc.tensor_id    = handle.id;
@@ -264,8 +261,13 @@ bool Materialization::run(Graph &graph) {
     }
 
     for (auto const &r : reqs) {
-        auto &handle    = r.owner->tensor(r.tid);
-        auto  new_nodes = build_lifecycle_nodes(handle, r.owns_tid);
+        auto &handle = r.owner->tensor(r.tid);
+        // A parent-owned request emits its own id; a hoisted body request
+        // resolves the buffer to a parent id (minting one if effective_io
+        // has not yet), so the Loop / Conditional node gets a RAW edge after
+        // these lifecycle nodes instead of floating as an edgeless root.
+        TensorId const emit_tid  = r.owns_tid ? r.tid : graph.find_or_register_tensor_ptr(handle);
+        auto           new_nodes = build_lifecycle_nodes(handle, emit_tid);
         _num_materialized++;
         if (handle.init_kind != InitKind::None) {
             _num_initialized++;

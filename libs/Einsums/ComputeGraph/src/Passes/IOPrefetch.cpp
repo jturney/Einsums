@@ -129,24 +129,6 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
     return moved_any;
 }
 
-/// Find a tensor in @p g by pointer, or register a copy of @p src_handle so
-/// @p g has a TensorId for it. Used when hoisting a read across a graph
-/// boundary: each graph keys tensors by its own ids, but the underlying
-/// tensor pointer is stable, so we re-register the destination in the
-/// target graph and give the moved read a valid id there. (A fresh id is
-/// unused by other target nodes, so no spurious dependency arises; keeping
-/// a valid id, rather than clearing it, is what lets a deeply nested read
-/// be recognized and re-hoisted level by level.)
-TensorId find_or_register_by_ptr(Graph &g, TensorHandle const &src_handle) {
-    for (auto const &[id, h] : g.tensors_map()) {
-        if (h.tensor_ptr == src_handle.tensor_ptr) {
-            return id;
-        }
-    }
-    TensorHandle copy = src_handle;
-    return g.register_tensor(std::move(copy));
-}
-
 /// Hoist loop-invariant DiskReads out of @p child (a loop body) into @p
 /// parent, just before the owning Loop node at @p loop_idx. A read is
 /// hoistable when its destination tensor:
@@ -163,7 +145,7 @@ TensorId find_or_register_by_ptr(Graph &g, TensorHandle const &src_handle) {
 /// before the loop is equivalent and avoids per-iteration disk I/O.
 ///
 /// The moved read keeps a *valid* destination id in the parent (via
-/// find_or_register_by_ptr), so a read sitting deep in nested loops gets
+/// Graph::find_or_register_tensor_ptr), so a read sitting deep in nested loops gets
 /// lifted one level per recursion step until it lands before the outermost
 /// loop. The stable topological sort keeps the inserted read before the
 /// Loop node; the load writes through the captured tensor pointer, which
@@ -205,7 +187,7 @@ bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t 
 
         Node copy    = n; // keep the executor (it captures the tensor ptr)
         copy.inputs  = {};
-        copy.outputs = {find_or_register_by_ptr(parent, dest->second)};
+        copy.outputs = {parent.find_or_register_tensor_ptr(dest->second)};
         copy.label   = fmt::format("prefetch_hoisted({})", n.label);
         hoisted.push_back(std::move(copy));
         remove_idx.push_back(idx);

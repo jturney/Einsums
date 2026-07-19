@@ -131,6 +131,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     TensorId register_tensor(TensorHandle handle);
 
     /**
+     * @brief Reuse or mint a TensorId for @p handle's buffer in this graph.
+     *
+     * Scans this graph's tensors for one whose ``tensor_ptr`` matches @p
+     * handle's and returns its id; otherwise registers @p handle. Shares the
+     * orphan-parent-handle convention with effective_io: a buffer used only
+     * inside sub-graphs gets one stable parent id here, so every parent node
+     * touching it (hoisted lifecycle nodes and the control-flow node's
+     * effective I/O) resolves to the same id and a dependency edge forms.
+     *
+     * @param[in] handle Handle whose tensor_ptr keys the lookup.
+     * @return The existing or newly assigned TensorId.
+     */
+    TensorId find_or_register_tensor_ptr(TensorHandle const &handle);
+
+    /**
      * @brief Look up a tensor handle by its TensorId.
      * @param[in] id The tensor identifier.
      * @return Reference to the TensorHandle.

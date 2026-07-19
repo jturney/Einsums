@@ -50,6 +50,7 @@ set(ComputeGraphTests
     Pass_LinearCombinationContractionFolding.cpp
     Pass_StreamContractionFusion.cpp
     Pass_LoopInvariantHoisting.cpp
+    Pass_Materialization.cpp
     Pass_MemoryPlanning.cpp
     Pass_Reorder.cpp
     Pass_ScaleAbsorption.cpp

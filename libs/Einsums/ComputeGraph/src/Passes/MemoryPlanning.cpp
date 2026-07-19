@@ -321,11 +321,10 @@ void apply_arena_plan(Graph &graph, ArenaPlan const &plan) {
     }
 
     // io lists changed: order still valid, position-keyed deps are stale.
-    // MemoryPlanning is the last pass, so nothing else re-sorts before
-    // execute() (which only re-sorts when the order is unknown). Invalidate,
-    // then rebuild the deps in place so the storage-reuse edges are live.
+    // mark_sorted() vouches for the order and flags the deps stale; execute()
+    // (serial or concurrent) rebuilds them in place before running, so the
+    // storage-reuse edges are live without an explicit re-sort here.
     graph.mark_sorted();
-    graph.topological_sort();
 
     EINSUMS_LOG_INFO("MemoryPlanning: arena of {} bytes hosts {} intermediates ({} bytes of buffers)", plan.arena_bytes,
                      plan.tensors.size(), [&] {

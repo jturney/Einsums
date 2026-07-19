@@ -291,6 +291,86 @@ TEST_CASE("FreeInsertion - Free is ordered after every reader under DataflowExec
     }
 }
 
+TEST_CASE("FreeInsertion - hoisted body Free is ordered against the loop under DataflowExecutor",
+          "[ComputeGraph][FreeInsertion][Loop][Dataflow]") {
+    // An eager intermediate CREATED INSIDE a loop body gets a single Free
+    // hoisted to the parent after the Loop, plus a paired Materialize before
+    // it (so replays re-allocate after the Free reclaims the buffer). Pre-fix
+    // both carried no TensorIds (owns_tid=false) and floated as edgeless
+    // roots: the DataflowExecutor could release body_tmp while the loop was
+    // still executing. They must now carry the parent id so the Free is
+    // ordered after the Loop and the Materialize before it.
+    constexpr size_t n   = 24;
+    auto             A   = create_random_tensor<double>("A", n, n);
+    auto             acc = create_zero_tensor<double>("acc", n, n);
+
+    cg::Graph g("body_eager_dataflow");
+    auto     &body = g.add_loop("iter", 2, [](size_t it) { return it < 2; });
+    {
+        cg::CaptureGuard const guard(body);
+        auto                  &body_tmp = body.create_zero_tensor<double, 2>("body_tmp", n, n);
+        cg::einsum("ik;kj->ij", 0.0, &body_tmp, 1.0, A, A);   // body_tmp = A*A
+        cg::einsum("ik;kj->ij", 1.0, &acc, 1.0, body_tmp, A); // acc += body_tmp*A
+    }
+
+    cg::passes::FreeInsertion fi(/*min_bytes=*/0);
+    REQUIRE(fi.run(g));
+    REQUIRE(count_nodes(g, cg::OpKind::Free) == 1);
+    // The Free is paired with a Materialize so replays reallocate the buffer
+    // the Free reclaimed.
+    REQUIRE(count_nodes(g, cg::OpKind::Materialize) == 1);
+
+    // The hoisted Free lands after the Loop and its paired Materialize before
+    // it; both carry a parent TensorId (the Free as both input and output) so a
+    // concurrent executor orders them against the loop instead of releasing the
+    // buffer mid-execution or replaying into released storage.
+    size_t loop_pos = SIZE_MAX, free_pos = SIZE_MAX, mat_pos = SIZE_MAX;
+    for (size_t idx = 0; idx < g.nodes().size(); idx++) {
+        auto const &node = g.nodes()[idx];
+        if (node.kind == cg::OpKind::Loop) {
+            loop_pos = idx;
+        } else if (node.kind == cg::OpKind::Free) {
+            free_pos = idx;
+            CHECK_FALSE(node.inputs.empty());
+            CHECK_FALSE(node.outputs.empty());
+        } else if (node.kind == cg::OpKind::Materialize) {
+            mat_pos = idx;
+            CHECK_FALSE(node.outputs.empty());
+        }
+    }
+    REQUIRE(loop_pos != SIZE_MAX);
+    REQUIRE(free_pos != SIZE_MAX);
+    REQUIRE(mat_pos != SIZE_MAX);
+    REQUIRE(mat_pos < loop_pos);
+    REQUIRE(free_pos > loop_pos);
+
+    // Hand reference: two iterations of acc += (A*A)*A.
+    Tensor<double, 2> ref("ref", n, n);
+    ref.zero();
+    for (size_t ii = 0; ii < n; ii++) {
+        for (size_t jj = 0; jj < n; jj++) {
+            double s = 0.0;
+            for (size_t kk = 0; kk < n; kk++) {
+                for (size_t ll = 0; ll < n; ll++) {
+                    s += A(ii, kk) * A(kk, ll) * A(ll, jj);
+                }
+            }
+            ref(ii, jj) = 2.0 * s;
+        }
+    }
+
+    for (int rep = 0; rep < 20; rep++) {
+        acc.zero();
+        cg::DataflowExecutor df;
+        g.execute(df);
+        for (size_t ii = 0; ii < n; ii++) {
+            for (size_t jj = 0; jj < n; jj++) {
+                REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(ref(ii, jj), 1e-10));
+            }
+        }
+    }
+}
+
 TEST_CASE("FreeInsertion - leaves workspace tensors alive (not freed)", "[ComputeGraph][FreeInsertion][Loop]") {
     // Workspace tensors are is_intermediate = false: they persist across
     // pipelines, so FreeInsertion must never free them even when used

@@ -578,6 +578,17 @@ TensorId Graph::register_tensor(TensorHandle handle) {
     return id;
 }
 
+TensorId Graph::find_or_register_tensor_ptr(TensorHandle const &handle) {
+    if (handle.tensor_ptr != nullptr) {
+        for (auto const &[id, h] : _tensors) {
+            if (h.tensor_ptr == handle.tensor_ptr) {
+                return id;
+            }
+        }
+    }
+    return register_tensor(handle);
+}
+
 TensorHandle &Graph::tensor(TensorId id) {
     auto it = _tensors.find(id);
     if (it == _tensors.end()) {
@@ -1645,7 +1656,11 @@ void Graph::rebuild_profile_strings() {
 }
 
 void Graph::execute() {
-    if (!_sorted) {
+    // Rebuild when the order is unknown OR a pass vouched for the order via
+    // mark_sorted() but left the position-keyed _deps stale (_deps_valid
+    // false). topological_sort() takes the cheap rebuild_deps path in that
+    // second case, keeping the pass-chosen order.
+    if (!_sorted || !_deps_valid) {
         topological_sort();
     }
 
@@ -1853,7 +1868,11 @@ void Graph::execute() {
 }
 
 void Graph::execute(Executor &executor) {
-    if (!_sorted) {
+    // Rebuild when the order is unknown OR a pass vouched for the order via
+    // mark_sorted() but left the position-keyed _deps stale (_deps_valid
+    // false). Concurrent executors read _deps directly, so stale lists here
+    // would drop storage-reuse and lifecycle edges a serial run never needed.
+    if (!_sorted || !_deps_valid) {
         topological_sort();
     }
 

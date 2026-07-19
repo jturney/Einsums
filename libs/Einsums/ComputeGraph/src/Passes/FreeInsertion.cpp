@@ -22,12 +22,13 @@ namespace {
 // owner    : graph whose tensor_map holds the handle (parent for flat
 //            frees; a descendant body/branch for hoisted frees).
 // tid      : tensor id within `owner`.
-// owns_tid : true when `tid` lives in the graph being mutated, so the
-//            Free node can carry it as an input for dependency tracking.
-//            False for hoisted frees, the tid belongs to a child graph,
-//            so we leave the Free's inputs empty and rely on position
-//            (FreeInsertion runs near the end of the pipeline and marks
-//            the graph sorted, so nothing reorders it).
+// owns_tid : true when `tid` lives in the graph being mutated. False for
+//            hoisted frees, where `tid` belongs to a child graph; the Free
+//            and its paired Materialize then carry a PARENT id resolved via
+//            Graph::find_or_register_tensor_ptr (the same id effective_io
+//            maps the buffer to), so the dependency builder orders the Free
+//            after the Loop and the Materialize before it instead of leaving
+//            them as edgeless roots a concurrent executor can misorder.
 struct FreePlan {
     size_t   position;
     Graph   *owner;
@@ -145,8 +146,14 @@ bool FreeInsertion::run(Graph &graph) {
         if (already_freed)
             continue;
 
+        // Subtree ON: a body-CREATED eager intermediate reaches Part A through
+        // its orphan parent id (registered by effective_io), and its only real
+        // writer lives inside the loop body, surfacing at the Loop node. Without
+        // the subtree view first_writer returns npos and no paired Materialize
+        // is emitted, so the Free above reclaims the buffer and no node
+        // reallocates it before the next replay reads released storage.
         size_t       mat_before = SIZE_MAX;
-        size_t const fw         = use.first_writer(/*ignore_alloc=*/true, /*include_subtree=*/false);
+        size_t const fw         = use.first_writer(/*ignore_alloc=*/true, /*include_subtree=*/true);
         if (fw != TensorUsage::npos && handle.materialize_fn && !already_has_materialize_named(nodes, handle.name)) {
             mat_before = fw;
         }
@@ -217,20 +224,23 @@ bool FreeInsertion::run(Graph &graph) {
         auto         rel_fn = handle.release_fn;
         size_t const bytes  = handle.total_bytes();
 
+        // A parent-owned plan frees its own id; a hoisted body plan resolves
+        // the buffer to a parent id (the same one effective_io maps it to) so
+        // the Free / Materialize are ordered against the Loop.
+        TensorId const emit_tid = plan.owns_tid ? plan.tid : graph.find_or_register_tensor_ptr(handle);
+
         Node free_node;
         free_node.kind  = OpKind::Free;
         free_node.label = fmt::format("free({})", handle.name);
-        if (plan.owns_tid) {
-            // The tensor is BOTH an input and an output. The input edge orders
-            // the Free after the last writer; the output makes the Free a
-            // writer itself, so the dependency builder's WAR scan orders it
-            // after every prior READER too. With only the input, a concurrent
-            // executor sees the Free as just another reader and can release
-            // the buffer while a real consumer is still reading it (the
-            // serial executor was safe only by node position).
-            free_node.inputs  = {plan.tid};
-            free_node.outputs = {plan.tid};
-        }
+        // The tensor is BOTH an input and an output. The input edge orders the
+        // Free after the last writer; the output makes the Free a writer
+        // itself, so the dependency builder's WAR scan orders it after every
+        // prior READER too. With only the input, a concurrent executor sees
+        // the Free as just another reader and can release the buffer while a
+        // real consumer is still reading it (the serial executor was safe only
+        // by node position).
+        free_node.inputs  = {emit_tid};
+        free_node.outputs = {emit_tid};
 
         free_node.execute = [rel_fn, bytes, name = handle.name]() {
             if (rel_fn) {
@@ -246,11 +256,9 @@ bool FreeInsertion::run(Graph &graph) {
 
         if (plan.materialize_before != SIZE_MAX) {
             Node mat_node;
-            mat_node.kind  = OpKind::Materialize;
-            mat_node.label = fmt::format("materialize({})", handle.name);
-            if (plan.owns_tid) {
-                mat_node.outputs = {plan.tid}; // WAW edge orders it before the writer.
-            }
+            mat_node.kind    = OpKind::Materialize;
+            mat_node.label   = fmt::format("materialize({})", handle.name);
+            mat_node.outputs = {emit_tid}; // WAW edge orders it before the writer.
 
             mat_node.execute = [mat_fn = handle.materialize_fn]() {
                 // Idempotent: a no-op on the first execute (the eager tensor
