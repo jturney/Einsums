@@ -216,9 +216,16 @@ bool FreeInsertion::run(Graph &graph) {
         free_node.kind  = OpKind::Free;
         free_node.label = fmt::format("free({})", handle.name);
         if (plan.owns_tid) {
-            free_node.inputs = {plan.tid}; // Dependency: runs after last consumer.
+            // The tensor is BOTH an input and an output. The input edge orders
+            // the Free after the last writer; the output makes the Free a
+            // writer itself, so the dependency builder's WAR scan orders it
+            // after every prior READER too. With only the input, a concurrent
+            // executor sees the Free as just another reader and can release
+            // the buffer while a real consumer is still reading it (the
+            // serial executor was safe only by node position).
+            free_node.inputs  = {plan.tid};
+            free_node.outputs = {plan.tid};
         }
-        free_node.outputs = {};
 
         free_node.execute = [rel_fn, bytes, name = handle.name]() {
             if (rel_fn) {

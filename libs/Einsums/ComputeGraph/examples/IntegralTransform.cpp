@@ -37,8 +37,11 @@ int einsums_main() {
     using namespace einsums;
     using namespace einsums::index;
 
-    constexpr size_t nao = 10; // AO basis size
-    constexpr size_t nmo = 8;  // MO basis size (nmo <= nao)
+    // Sized so every half-transformed intermediate (1.28 MB) crosses
+    // FreeInsertion's 1 MiB floor: the deferred scratch then gets the full
+    // [Materialize, Free] lifecycle and MemoryPlanning can arena-pack it.
+    constexpr size_t nao = 20; // AO basis size
+    constexpr size_t nmo = 20; // MO basis size (nmo <= nao)
 
     println("=== AO->MO Integral Transformation ===");
     println("  AO basis: {}, MO basis: {}\n", nao, nmo);
@@ -130,12 +133,19 @@ int einsums_main() {
     // ── Method 2: ComputeGraph einsum for each step ──────────────────────────
     println("\n--- Method 2: ComputeGraph einsum with DataflowExecutor ---");
 
-    auto half1_cg  = create_zero_tensor<double>("half1_cg", nao, nao, nao, nmo);
-    auto half2_cg  = create_zero_tensor<double>("half2_cg", nao, nao, nmo, nmo);
-    auto half3_cg  = create_zero_tensor<double>("half3_cg", nao, nmo, nmo, nmo);
+    // Only the final result is a user-owned tensor (it is read back after
+    // execution). The half-transformed intermediates are DECLARED on the
+    // graph as deferred scratch: shell tensors with metadata but no storage,
+    // so the MaterializationPass allocates them during apply() and the
+    // memory passes (FreeInsertion, InplaceOptimization, MemoryPlanning)
+    // see their footprint. Eager create_zero_tensor buffers would be
+    // allocated up front and stay opaque to all of them.
     auto eri_mo_cg = create_zero_tensor<double>("eri_mo_cg", nmo, nmo, nmo, nmo);
 
     cg::Graph transform_graph("integral_transform");
+    auto     &half1_cg = transform_graph.scratch<double, 4>("half1_cg", nao, nao, nao, nmo);
+    auto     &half2_cg = transform_graph.scratch<double, 4>("half2_cg", nao, nao, nmo, nmo);
+    auto     &half3_cg = transform_graph.scratch<double, 4>("half3_cg", nao, nmo, nmo, nmo);
     {
         cg::CaptureGuard guard(transform_graph);
         // These are rank-5 contractions, each reduces one AO index to MO
@@ -146,9 +156,12 @@ int einsums_main() {
         cg::einsum("iqrs;ip->pqrs", &eri_mo_cg, half3_cg, C_mo);
     }
 
-    // Apply optimization passes
+    // Apply optimization passes. MaterializationPass turns each deferred
+    // scratch declaration into a Materialize node placed before its first
+    // writer (visible in the graph summary below).
     auto pm = cg::PassManager::create_default();
     transform_graph.apply(pm);
+    println("  optimization report:\n{}", pm.explain());
 
     t0 = std::chrono::high_resolution_clock::now();
     cg::DataflowExecutor df;

@@ -182,6 +182,53 @@ TEST_CASE("FreeInsertion - eager create_tensor intermediate survives replay", "[
     }
 }
 
+TEST_CASE("FreeInsertion - Free is ordered after every reader under DataflowExecutor", "[ComputeGraph][FreeInsertion][Dataflow]") {
+    // Regression: Free nodes used to list their tensor only as an INPUT, so
+    // the dependency builder saw them as fellow READERS - unordered against
+    // the real consumers. A concurrent executor could then release the
+    // buffer (arena detach included) while a consumer einsum was still
+    // reading it; the serial executor was safe only by node position. Free
+    // now declares the tensor as an output too, so the WAR scan pins it
+    // after every prior reader. The chain below makes t1 live across TWO
+    // later readers, and replays under the DataflowExecutor must match the
+    // eager reference exactly, every time.
+    constexpr size_t n = 24;
+    auto             A = create_random_tensor<double>("A", n, n);
+    auto             C = create_zero_tensor<double>("C", n, n);
+
+    Tensor<double, 2> t1_ref("t1_ref", n, n), t2_ref("t2_ref", n, n), C_ref("C_ref", n, n);
+    einsum(0.0, Indices{i, j}, &t1_ref, 1.0, Indices{i, k}, A, Indices{k, j}, A);
+    einsum(0.0, Indices{i, j}, &t2_ref, 1.0, Indices{i, k}, t1_ref, Indices{k, j}, A);
+    einsum(0.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, t2_ref, Indices{k, j}, t1_ref);
+
+    cg::Graph g("free_dataflow");
+    auto     &t1 = g.scratch<double, 2>("t1", n, n);
+    auto     &t2 = g.scratch<double, 2>("t2", n, n);
+    {
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ik;kj->ij", 0.0, &t1, 1.0, A, A);
+        cg::einsum("ik;kj->ij", 0.0, &t2, 1.0, t1, A);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, t2, t1); // t1's LAST reader, after t2's writer
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::Materialization>();
+    pm.add<cg::passes::FreeInsertion>(size_t{0});
+    pm.add<cg::passes::MemoryPlanning>();
+    g.apply(pm);
+    REQUIRE(count_nodes(g, cg::OpKind::Free) == 2);
+
+    for (int rep = 0; rep < 10; rep++) {
+        cg::DataflowExecutor df;
+        g.execute(df);
+        for (size_t ii = 0; ii < n; ii++) {
+            for (size_t jj = 0; jj < n; jj++) {
+                REQUIRE_THAT(C(ii, jj), Catch::Matchers::WithinRel(C_ref(ii, jj), 1e-12));
+            }
+        }
+    }
+}
+
 TEST_CASE("FreeInsertion - leaves workspace tensors alive (not freed)", "[ComputeGraph][FreeInsertion][Loop]") {
     // Workspace tensors are is_intermediate = false: they persist across
     // pipelines, so FreeInsertion must never free them even when used
