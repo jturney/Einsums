@@ -197,6 +197,92 @@ TEST_CASE("MemoryPlanning - arena shares storage between disjoint-lifetime inter
     }
 }
 
+TEST_CASE("MemoryPlanning - arena slot reuse is ordered under DataflowExecutor", "[ComputeGraph][Passes][Arena][Dataflow]") {
+    // The arena packs X and Y at the same offset (position-disjoint lifetimes),
+    // so Materialize(Y) claims X's bytes but shares NO TensorId with X's chain.
+    // Y is pushed past X's death only via out1 (X's first reader), so Y's writer
+    // is unordered against X's OTHER readers out1b/out1c. Parallel executors
+    // order nodes ONLY by shared-TensorId hazards, never by node position, so
+    // without a storage-reuse WAW edge Materialize(Y) + Y's writer run
+    // concurrently with out1b/out1c and scribble X's still-live bytes. The
+    // serial executor is safe only by node position; the DataflowExecutor is not.
+    constexpr size_t N     = 400;
+    auto             A     = create_random_tensor<double>("A", N, N);
+    auto             B     = create_random_tensor<double>("B", N, N);
+    auto             out1  = create_zero_tensor<double>("out1", N, N);
+    auto             out1b = create_zero_tensor<double>("out1b", N, N);
+    auto             out1c = create_zero_tensor<double>("out1c", N, N);
+    auto             out1d = create_zero_tensor<double>("out1d", N, N);
+    auto             out1e = create_zero_tensor<double>("out1e", N, N);
+    auto             out2  = create_zero_tensor<double>("out2", N, N);
+
+    // Eager references.
+    auto X_ref = create_zero_tensor<double>("Xref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
+    auto OUT1_ref = create_zero_tensor<double>("OUT1ref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT1_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    auto OUT1B_ref = create_zero_tensor<double>("OUT1Bref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT1B_ref, Indices{i, k}, X_ref, Indices{k, j}, A);
+    auto OUT1C_ref = create_zero_tensor<double>("OUT1Cref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT1C_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    auto OUT1D_ref = create_zero_tensor<double>("OUT1Dref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT1D_ref, Indices{i, k}, X_ref, Indices{k, j}, A);
+    auto OUT1E_ref = create_zero_tensor<double>("OUT1Eref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT1E_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    auto Y_ref = create_zero_tensor<double>("Yref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &Y_ref, Indices{i, k}, OUT1_ref, Indices{k, j}, A);
+    auto OUT2_ref = create_zero_tensor<double>("OUT2ref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT2_ref, Indices{i, k}, Y_ref, Indices{k, j}, A);
+
+    cg::Graph graph("mp_arena_dataflow");
+    auto     &X = graph.create_tensor<double, 2>("X", N, N);
+    auto     &Y = graph.create_tensor<double, 2>("Y", N, N);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &X, A, B);
+        cg::einsum("ik;kj->ij", &out1, X, B);  // X reader that feeds Y
+        cg::einsum("ik;kj->ij", &out1b, X, A); // pure X reader (races with Y)
+        cg::einsum("ik;kj->ij", &out1c, X, B); // pure X reader (races with Y)
+        cg::einsum("ik;kj->ij", &out1d, X, A); // pure X reader (races with Y)
+        cg::einsum("ik;kj->ij", &out1e, X, B); // pure X reader (races with Y)
+        cg::einsum("ik;kj->ij", &Y, out1, A);  // reads out1 (NOT X): one level above X's readers
+        cg::einsum("ik;kj->ij", &out2, Y, A);
+    }
+
+    {
+        auto [fi_mod, fi] = graph.apply<cg::passes::FreeInsertion>();
+        REQUIRE(fi_mod);
+        REQUIRE(fi.num_freed() == 2);
+    }
+    auto [mp_mod, mp] = graph.apply<cg::passes::MemoryPlanning>();
+    REQUIRE(mp_mod);
+    REQUIRE(mp.num_planned() == 2);
+    // Position-disjoint lifetimes -> both at offset 0: one shared buffer.
+    constexpr size_t kBuf = ((N * N * sizeof(double) + 63) / 64) * 64;
+    REQUIRE(mp.planned_arena_bytes() == kBuf);
+
+    for (int rep = 0; rep < 30; rep++) {
+        out1.zero();
+        out1b.zero();
+        out1c.zero();
+        out1d.zero();
+        out1e.zero();
+        out2.zero();
+        cg::DataflowExecutor df;
+        graph.execute(df);
+        for (size_t ii = 0; ii < N; ii += 41) {
+            for (size_t jj = 0; jj < N; jj += 37) {
+                REQUIRE(std::abs(out1(ii, jj) - OUT1_ref(ii, jj)) < 1e-8);
+                REQUIRE(std::abs(out1b(ii, jj) - OUT1B_ref(ii, jj)) < 1e-8);
+                REQUIRE(std::abs(out1c(ii, jj) - OUT1C_ref(ii, jj)) < 1e-8);
+                REQUIRE(std::abs(out1d(ii, jj) - OUT1D_ref(ii, jj)) < 1e-8);
+                REQUIRE(std::abs(out1e(ii, jj) - OUT1E_ref(ii, jj)) < 1e-8);
+                REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
+            }
+        }
+    }
+}
+
 TEST_CASE("MemoryPlanning - arena keeps overlapping lifetimes apart", "[ComputeGraph][Passes][Arena]") {
     // X and Y are simultaneously live (Y's producer reads X after Y exists),
     // so they must get disjoint arena ranges: arena == sum of both buffers.

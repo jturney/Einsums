@@ -298,6 +298,35 @@ void apply_arena_plan(Graph &graph, ArenaPlan const &plan) {
         nodes[pt.free_node].estimated_bytes = 0;
     }
 
+    // Storage-reuse WAW edge. Parallel executors order nodes only by
+    // shared-TensorId hazards, never by node position. When Y's arena bytes
+    // overlap X's and X frees before Y materializes, Materialize(Y) claims
+    // X's storage - so declare it a writer of X's tid. rebuild_deps then
+    // chains readers(X) < Free(X) < Materialize(Y) (Free declares its tensor
+    // as both input and output, so it is X's last writer).
+    for (auto const &x : plan.tensors) {
+        for (auto const &y : plan.tensors) {
+            if (x.tid == y.tid) {
+                continue;
+            }
+            bool const bytes_overlap = x.offset < y.offset + align_up(y.bytes) && y.offset < x.offset + align_up(x.bytes);
+            if (!bytes_overlap || x.free_node >= y.mat_node) {
+                continue;
+            }
+            auto &outs = nodes[y.mat_node].outputs;
+            if (std::ranges::find(outs, x.tid) == outs.end()) {
+                outs.push_back(x.tid);
+            }
+        }
+    }
+
+    // io lists changed: order still valid, position-keyed deps are stale.
+    // MemoryPlanning is the last pass, so nothing else re-sorts before
+    // execute() (which only re-sorts when the order is unknown). Invalidate,
+    // then rebuild the deps in place so the storage-reuse edges are live.
+    graph.mark_sorted();
+    graph.topological_sort();
+
     EINSUMS_LOG_INFO("MemoryPlanning: arena of {} bytes hosts {} intermediates ({} bytes of buffers)", plan.arena_bytes,
                      plan.tensors.size(), [&] {
                          size_t s = 0;
