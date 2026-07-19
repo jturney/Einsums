@@ -104,9 +104,14 @@ la.direct_division(1.0, G["oovv"], Dijab, 0.0, t2)
 #    memory passes engage. g.declare_zero_tensor registers an AllocState::Deferred
 #    handle with no Alloc node; MaterializationPass inserts Materialize+Initialize
 #    (hoisted to the parent, allocated once before the loop) and MemoryPlanning can
-#    then see the body's footprint. Eager create_zero_tensor stays opaque to both. ─
+#    then see the body's footprint. Eager create_zero_tensor stays opaque to both.
+#    intermediate=True marks the scratch graph-owned (not user-visible), which is
+#    what lets FreeInsertion release each buffer after its last consumer (hoisted
+#    past the loop for body-used scratch) and lets MemoryPlanning arena-pack the
+#    over-1MiB ones via GeneralRuntimeTensor::materialize_into. Nothing here is
+#    read back after execution - Ecorr and the amplitudes stay eager. ─
 g = cg.Graph("ccsd")
-def dz(name, shape): return g.declare_zero_tensor(name, list(shape), dtype="float64")
+def dz(name, shape): return g.declare_zero_tensor(name, list(shape), dtype="float64", intermediate=True)
 S = {}
 for nm, sh in [("Tau", SH2), ("Taut", SH2), ("Fae", VV), ("Fmi", OO), ("Fme", NV2),
                ("Wmnij", OOOO), ("Wmbej", OVVO), ("Wmbje", OVOV), ("Zmbij", OVOO), ("jnfb", SH2),
@@ -237,13 +242,16 @@ _lccf.set_verbosity(3)
 g.apply(_lccf)
 print(f"LinearCombinationContractionFolding: body contractions {_before} -> {_contractions(body)}")
 
-# The big scratch is graph-owned DEFERRED (g.declare_zero_tensor), so the memory
-# passes now have work: MaterializationPass turns each deferred handle into a
-# Materialize+Initialize pair HOISTED to the parent (allocated/zeroed once before
-# the loop, not per iteration): parent node count grows, body stays put. Passes
-# also recurse into the body (each opts in via recurse_into_subgraphs), where
-# Reorder reschedules; the scratch is reused in place so CSE/InplaceOptimization
-# have nothing to fold. Correctness holds (vs psi4 conv CCSD).
+# The big scratch is graph-owned DEFERRED (g.declare_zero_tensor with
+# intermediate=True), so the memory passes now have work: MaterializationPass
+# turns each deferred handle into a Materialize+Initialize pair HOISTED to the
+# parent (allocated/zeroed once before the loop, not per iteration), and
+# FreeInsertion releases each over-1MiB buffer after the loop, letting
+# MemoryPlanning arena-pack the [Materialize, Free] brackets. Parent node count
+# grows, body stays put. Passes also recurse into the body (each opts in via
+# recurse_into_subgraphs), where Reorder reschedules; the scratch is reused in
+# place so CSE/InplaceOptimization have nothing to fold. Correctness holds
+# (vs psi4 conv CCSD).
 mod = g.apply(cg.default_pass_manager())
 print(f"optimized: modified={mod}, parent {g.num_nodes()} nodes (Materialize hoisted), body {body.num_nodes()} nodes")
 

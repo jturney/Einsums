@@ -97,17 +97,21 @@ bool FreeInsertion::run(Graph &graph) {
     // scheduling edge, not a use (keeps the pass idempotent across repeated
     // runs), and Alloc marks creation, not a data write - the paired
     // Materialize must precede the first REAL writer so a replayed graph
-    // reallocates before producing into the buffer. Subtree expansion is OFF:
-    // Part B below already handles body-resident intermediates (hoisting one
-    // Free into the parent), and effective-IO registers orphan parent
-    // handles for body buffers - admitting subtree uses here would make
-    // Part A double-free exactly what Part B frees.
+    // reallocates before producing into the buffer. Subtree expansion is ON
+    // for the last use: a PARENT-declared intermediate consumed only inside
+    // a loop body has its real last use at the Loop node, and without the
+    // subtree view Part A freed it right after its Initialize - before the
+    // loop ever ran. (Part B cannot cover that case: the body-map handles of
+    // parent-declared tensors carry neither is_intermediate nor release_fn,
+    // so its collect filter never sees them.) Overlap with Part B for
+    // body-CREATED buffers is prevented by the planned-name dedup below.
     auto const &ua = graph.usage();
 
-    std::vector<FreePlan> plans;
+    std::vector<FreePlan>           plans;
+    std::unordered_set<std::string> planned_names;
 
     for (auto const &[tid, use] : ua.table()) {
-        size_t const last_idx = use.last_use(/*ignore_free=*/true, /*include_subtree=*/false);
+        size_t const last_idx = use.last_use(/*ignore_free=*/true, /*include_subtree=*/true);
         if (last_idx == TensorUsage::npos)
             continue;
         auto it = tensors.find(tid);
@@ -148,6 +152,7 @@ bool FreeInsertion::run(Graph &graph) {
         }
 
         plans.push_back({.position = last_idx, .owner = &graph, .tid = tid, .owns_tid = true, .materialize_before = mat_before});
+        planned_names.insert(handle.name);
     }
 
     // ── Part B: body-resident intermediates, hoisted to after the loop ────
@@ -168,7 +173,7 @@ bool FreeInsertion::run(Graph &graph) {
 
             for (auto const &f : found) {
                 auto const &handle = f.owner->tensor(f.tid);
-                if (already_has_free_named(nodes, handle.name)) {
+                if (already_has_free_named(nodes, handle.name) || planned_names.contains(handle.name)) {
                     continue;
                 }
                 size_t mat_before = SIZE_MAX;

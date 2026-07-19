@@ -182,6 +182,68 @@ TEST_CASE("FreeInsertion - eager create_tensor intermediate survives replay", "[
     }
 }
 
+TEST_CASE("FreeInsertion - parent-declared scratch used only in a loop body frees after the loop", "[ComputeGraph][FreeInsertion][Loop]") {
+    // Regression: Part A's local-only last_use saw only the Materialize /
+    // Initialize writes of PARENT-declared, body-only-used scratch and freed
+    // it BEFORE the loop (execute then failed validation: "still deferred").
+    // Part B never covers these: the body-map handles of parent-declared
+    // tensors carry neither is_intermediate nor release_fn, so its collect
+    // filter skips them. Python intermediate=True scratch driving a captured
+    // loop (the CCSD example) is exactly this shape.
+    constexpr size_t n   = 6;
+    auto             A   = create_random_tensor<double>("A", n, n);
+    auto             acc = create_zero_tensor<double>("acc", n, n);
+
+    cg::Graph g("parent_scratch_loop");
+    auto     &W    = g.scratch<double, 2>("W", n, n);
+    auto     &body = g.add_loop("iter", 2, [](size_t it) { return it < 2; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", 0.0, &W, 1.0, A, A);   // W = A*A, recomputed per iteration
+        cg::einsum("ik;kj->ij", 1.0, &acc, 1.0, W, A); // acc += W*A
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::Materialization>();
+    pm.add<cg::passes::FreeInsertion>(size_t{0});
+    g.apply(pm);
+
+    size_t loop_pos = SIZE_MAX, free_pos = SIZE_MAX;
+    for (size_t idx = 0; idx < g.nodes().size(); idx++) {
+        if (g.nodes()[idx].kind == cg::OpKind::Loop) {
+            loop_pos = idx;
+        }
+        if (g.nodes()[idx].kind == cg::OpKind::Free) {
+            free_pos = idx;
+        }
+    }
+    REQUIRE(loop_pos != SIZE_MAX);
+    REQUIRE(free_pos != SIZE_MAX);
+    REQUIRE(free_pos > loop_pos);
+
+    REQUIRE_NOTHROW(g.execute());
+
+    // Two iterations of acc += (A*A)*A.
+    Tensor<double, 2> ref("ref", n, n);
+    ref.zero();
+    for (size_t ii = 0; ii < n; ii++) {
+        for (size_t jj = 0; jj < n; jj++) {
+            double s = 0.0;
+            for (size_t kk = 0; kk < n; kk++) {
+                for (size_t ll = 0; ll < n; ll++) {
+                    s += A(ii, kk) * A(kk, ll) * A(ll, jj);
+                }
+            }
+            ref(ii, jj) = 2.0 * s;
+        }
+    }
+    for (size_t ii = 0; ii < n; ii++) {
+        for (size_t jj = 0; jj < n; jj++) {
+            REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(ref(ii, jj), 1e-11));
+        }
+    }
+}
+
 TEST_CASE("FreeInsertion - Free is ordered after every reader under DataflowExecutor", "[ComputeGraph][FreeInsertion][Dataflow]") {
     // Regression: Free nodes used to list their tensor only as an INPUT, so
     // the dependency builder saw them as fellow READERS - unordered against
