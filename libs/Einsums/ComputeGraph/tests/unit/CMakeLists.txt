@@ -41,8 +41,10 @@ set(ComputeGraphTests
     MixedOps.cpp
     OperationsCoverage.cpp
     ParallelForGraph.cpp
+    Pass_CommunicationPasses.cpp
     Pass_ConstantFolding.cpp
     Pass_CSE.cpp
+    Pass_DistributionPasses.cpp
     Pass_DeadNodeElimination.cpp
     Pass_ElementWiseFusion.cpp
     Pass_FreeInsertion.cpp

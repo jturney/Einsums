@@ -1512,6 +1512,116 @@ TEST_CASE("GPU pipeline: GEMM then Scale stays on GPU", "[ComputeGraph][GPU]") {
     }
 }
 
+TEST_CASE("StreamAssignment - idempotent across runs", "[ComputeGraph][GPU]") {
+    auto A = create_random_tensor<float>("A", 128, 128);
+    auto B = create_random_tensor<float>("B", 128, 128);
+    auto C = create_zero_tensor<float>("C", 128, 128);
+
+    cg::Graph graph("stream-idem");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
+    }
+    graph.apply<cg::passes::GPUPlacement>();
+    graph.apply<cg::passes::TransferInsertion>();
+
+    auto [mod1, pass1] = graph.apply<cg::passes::StreamAssignment>();
+    CHECK(mod1);
+    CHECK(pass1.num_assigned() > 0);
+
+    // Second run: every node already carries its final stream_id, so nothing
+    // changes and the pass reports no modification.
+    auto [mod2, pass2] = graph.apply<cg::passes::StreamAssignment>();
+    CHECK_FALSE(mod2);
+    CHECK(pass2.num_assigned() == 0);
+}
+
+TEST_CASE("StreamAssignment - independent GPU chains all share the compute stream", "[ComputeGraph][GPU]") {
+    // Surprising truth: StreamAssignment is transfer-vs-compute only. It does NOT
+    // hand independent GPU compute chains distinct streams; every non-transfer
+    // node lands on stream 0. (The audit notes stream_id is never read at
+    // execution, so this is an assignment-contract test, not an overlap test.)
+    auto A1 = create_random_tensor<float>("A1", 128, 128);
+    auto B1 = create_random_tensor<float>("B1", 128, 128);
+    auto C1 = create_zero_tensor<float>("C1", 128, 128);
+    auto A2 = create_random_tensor<float>("A2", 128, 128);
+    auto B2 = create_random_tensor<float>("B2", 128, 128);
+    auto C2 = create_zero_tensor<float>("C2", 128, 128);
+
+    cg::Graph graph("stream-independent");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &C1, 1.0, A1, B1); // chain 1 (independent)
+        cg::einsum("ik;kj->ij", 0.0, &C2, 1.0, A2, B2); // chain 2 (independent)
+    }
+    graph.apply<cg::passes::GPUPlacement>();
+    graph.apply<cg::passes::TransferInsertion>();
+    graph.apply<cg::passes::StreamAssignment>();
+
+    std::unordered_set<int> compute_streams;
+    for (auto const &n : graph.nodes()) {
+        if (n.kind == cg::OpKind::HostToDevice || n.kind == cg::OpKind::DeviceToHost) {
+            CHECK(n.stream_id == 1);
+        } else {
+            CHECK(n.stream_id == 0);
+            compute_streams.insert(n.stream_id);
+        }
+    }
+    // Only one distinct compute stream exists regardless of chain independence.
+    CHECK(compute_streams.size() == 1);
+}
+
+TEST_CASE("GPUDiagnostics - is non-mutating on a mixed CPU/GPU graph", "[ComputeGraph][GPU]") {
+    auto A = create_random_tensor<float>("A", 128, 128);
+    auto B = create_random_tensor<float>("B", 128, 128);
+    auto C = create_zero_tensor<float>("C", 128, 128);
+
+    cg::Graph graph("diag-nonmutating");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
+    }
+    graph.apply<cg::passes::GPUPlacement>();
+    graph.apply<cg::passes::TransferInsertion>();
+
+    size_t const            nodes_before = graph.num_nodes();
+    std::vector<cg::OpKind> kinds_before;
+    for (auto const &n : graph.nodes())
+        kinds_before.push_back(n.kind);
+
+    cg::passes::GPUDiagnostics diag;
+    bool const                 modified = diag.run(graph);
+
+    CHECK_FALSE(modified); // analysis only
+    CHECK(graph.num_nodes() == nodes_before);
+    std::vector<cg::OpKind> kinds_after;
+    for (auto const &n : graph.nodes())
+        kinds_after.push_back(n.kind);
+    CHECK(kinds_after == kinds_before);
+    CHECK(diag.gpu_nodes() == 1);
+    CHECK(diag.peak_device_bytes() > 0);
+}
+
+TEST_CASE("GPUDiagnostics - CPU-only graph reports zero GPU nodes and zero device bytes", "[ComputeGraph][GPU]") {
+    auto A = create_random_tensor<float>("A", 8, 8);
+    auto B = create_random_tensor<float>("B", 8, 8);
+    auto C = create_zero_tensor<float>("C", 8, 8);
+
+    cg::Graph graph("diag-cpu-only");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
+    }
+
+    cg::passes::GPUDiagnostics diag;
+    CHECK_FALSE(diag.run(graph));
+    CHECK(diag.gpu_nodes() == 0);
+    CHECK(diag.h2d_transfers() == 0);
+    CHECK(diag.d2h_transfers() == 0);
+    CHECK(diag.total_transfer_bytes() == 0);
+    CHECK(diag.peak_device_bytes() == 0);
+}
+
 TEST_CASE("GPU pass pipeline: node ordering is valid after all passes", "[ComputeGraph][GPU]") {
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
