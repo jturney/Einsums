@@ -187,6 +187,24 @@ ArenaPlan plan_arena(Graph &graph) {
     // Same conservatism as InplaceOptimization: control flow at this level
     // references tensors invisibly to plain node lists, and GPU placement
     // swaps buffers behind the slots.
+    //
+    // Body-tensor status quo (safe by construction - do not "optimize" without
+    // reading the wraparound note): a Loop/Conditional at THIS level makes
+    // plan_arena bail here, and every body-resident intermediate has already
+    // had its whole lifecycle (Materialize/Initialize/Free) HOISTED into this
+    // parent by Materialization + FreeInsertion. So a body graph never holds a
+    // Materialize/Free bracket and is never arena-planned from either side.
+    // That is exactly what keeps the interval test below sound: it uses
+    // body-LOCAL node positions and is BLIND to cross-iteration liveness. A
+    // value written in iteration i and read in i+1 looks dead in the gap
+    // between its body-local Free and the next iteration's Materialize, so two
+    // iteration-crossing tensors with body-local-disjoint intervals would be
+    // wrongly aliased (last-iteration write clobbered before the next read).
+    // No in-body bracket is reachable today; the Pass_MemoryPlanning
+    // wraparound canary fires if FreeInsertion ever places an in-body Free. If
+    // that changes, treat any iteration-crossing tensor as always-live here (or
+    // refuse to plan inside Loop bodies outright - cross-iteration liveness is
+    // not derivable from the body graph alone).
     for (auto const &node : nodes) {
         if (node.kind == OpKind::Loop || node.kind == OpKind::Conditional || node.target == Target::GPU ||
             node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
