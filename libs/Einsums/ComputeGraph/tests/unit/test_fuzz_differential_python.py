@@ -744,6 +744,80 @@ def test_fuzz_parallel_executor_stress(seed):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Free-lifecycle parallel stress: graphs whose deferred scratch intermediates
+# cross FreeInsertion's 1 MiB floor, so default_pass_manager() emits the full
+# Materialize/Free lifecycle and MemoryPlanning arena-packs the buffers - then
+# replayed under the parallel executors against a numpy oracle.
+#
+# This arm exists because the stress arm above, written to catch "a buffer
+# freed while a concurrent node still reads it", could never fire: fuzz
+# tensors are tiny and come from user pools, so no fuzzed graph ever
+# contained a Free node. That seam hid a real bug (Free nodes were
+# input-only, unordered against readers; the DataflowExecutor could release
+# a buffer mid-read once the arena landed). Every intermediate here is
+# 1.13 MB, and the random chain re-reads earlier intermediates so frees sit
+# after multiple readers.
+#
+# HONEST SCOPE: python-declared scratch is runtime-tensor backed, which has
+# no materialize_into(), so MemoryPlanning's arena skips it - this arm
+# exercises Free-node ordering and release/rematerialize replay under the
+# parallel executors, but NOT the arena-detach failure mode that made the
+# original bug visible. The falsified guard for that lives in C++
+# (Pass_FreeInsertion.cpp, the [Dataflow] case, whose scratch<> tensors are
+# arena-eligible): it fails on the pre-fix pass and passes after. If
+# GeneralRuntimeTensor ever gains materialize_into, this arm's coverage
+# upgrades for free.
+# ──────────────────────────────────────────────────────────────────────────
+
+_FREE_N = 385  # 385*385*8 B = 1.13 MiB: over FreeInsertion's 1 MiB floor
+_FREE_REPS = 8
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_fuzz_free_lifecycle_parallel_stress(seed):
+    rng = np.random.default_rng(150_000 + seed)
+    n = _FREE_N
+    A_np = rng.standard_normal((n, n)) * 0.1  # scaled so chains stay bounded
+    steps = int(rng.integers(3, 7))
+    # rhs_pick[s] chooses the right operand of step s: 0 = A, k>0 = mid k-1.
+    rhs_pick = [int(rng.integers(0, s + 1)) for s in range(steps)]
+
+    # numpy oracle
+    mids_np = []
+    cur = A_np
+    for s in range(steps):
+        rhs = A_np if rhs_pick[s] == 0 else mids_np[rhs_pick[s] - 1]
+        cur = cur @ rhs
+        mids_np.append(cur)
+    oracle = mids_np[-1]
+
+    for ex_name, exec_cls in _PARALLEL_EXECUTORS:
+        A = einsums.asarray(A_np.copy(), name=f"free_A_{seed}_{ex_name}")
+        C = einsums.asarray(np.zeros((n, n)), name=f"free_C_{seed}_{ex_name}")
+
+        g = cg.Graph(f"free_stress_{seed}_{ex_name}")
+        mids = [g.declare_zero_tensor(f"mid{k}", [n, n], dtype="float64") for k in range(steps - 1)]
+        with cg.capture(g):
+            lhs = A
+            for s in range(steps):
+                rhs = A if rhs_pick[s] == 0 else mids[rhs_pick[s] - 1]
+                out = mids[s] if s < steps - 1 else C
+                einsums.einsum("i,j <- i,k ; k,j", out, lhs, rhs, c_pf=0.0, ab_pf=1.0)
+                lhs = out
+
+        g.apply(cg.default_pass_manager())
+
+        for rep in range(_FREE_REPS):
+            g.execute(exec_cls())
+            got = np.asarray(C)
+            if not np.allclose(got, oracle, rtol=1e-10, atol=1e-10):
+                raise AssertionError(
+                    f"{ex_name} rep {rep} diverged (seed {seed}, steps {steps}, rhs_pick {rhs_pick})\n"
+                    f"max abs err = {np.abs(got - oracle).max()}"
+                )
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Exception propagation: a node that throws must make execute() raise on every
 # executor, never hang (TaskPool orphaning a continuation / OpenMP exception
 # escaping its parallel region) and never silently complete (swallowed error).
