@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/CommandLine/CommandLine.hpp>
+#include <Einsums/HPTT/Files.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
@@ -194,14 +195,15 @@ int         main(int argc, char **argv) {
 
                 if (std::filesystem::exists(permute_path)) {
                     auto fp = std::fopen(permute_path.c_str(), "r");
-                    plan    = std::make_shared<hptt::Transpose<double>>(fp, 1.0, TEI.data(), 0.0, sorted_TEI.data());
+                    plan    = hptt::Transpose<double>::read_from_file(fp, 1.0, TEI.data(), 0.0, sorted_TEI.data());
                     std::fclose(fp);
                 } else {
                     plan = einsums::tensor_algebra::compile_permute(Indices{index::mu, index::nu, index::lambda, index::sigma}, &sorted_TEI,
                                                                     Indices{index::mu, index::lambda, index::nu, index::sigma}, TEI,
                                                                     hptt::PATIENT);
                     auto fp = std::fopen(permute_path.c_str(), "w+");
-                    plan->writeToFile(fp);
+                    hptt::setup_file(fp);
+                    plan->write_to_file(fp);
                     std::fclose(fp);
                 }
 
