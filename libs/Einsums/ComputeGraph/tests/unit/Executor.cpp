@@ -8,6 +8,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -739,6 +740,92 @@ TEST_CASE("IOPrefetch - hoists a loop-invariant DiskRead out of the loop body", 
     // acc = N * data (= N * ones).
     for (size_t k = 0; k < acc.size(); ++k) {
         CHECK(acc.data()[k] == Catch::Approx(static_cast<double>(N)));
+    }
+}
+
+TEST_CASE("IOPrefetch - hoisted DiskRead is ordered before the loop under DataflowExecutor", "[ComputeGraph][Passes][IO][Loop][Dataflow]") {
+    // Concurrent sibling of the sequential hoist test. The hoisted read must
+    // not merely SIT before the Loop in the node list, it must be a dependency
+    // PREDECESSOR of the Loop, or the DataflowExecutor could run the loop body
+    // (which reads the loaded buffer) before the read completes. Correctness
+    // comes from find_or_register_tensor_ptr giving the hoisted read the SAME
+    // parent TensorId the body's reads map to via effective_io, which yields a
+    // RAW edge DiskRead -> Loop, not from node position.
+    constexpr size_t N          = 5;
+    auto             data       = create_zero_tensor<double>("data", 4, 4); // eager
+    auto             acc        = create_zero_tensor<double>("acc", 4, 4);  // eager
+    int              read_count = 0;
+
+    cg::Graph g("io_loop_df");
+    auto     &body = g.add_loop("iter", N, [](size_t it) { return it + 1 < N; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::read("load", "fake.h5", "/d", &data, [&]() {
+            read_count++;
+            for (size_t k = 0; k < data.size(); ++k)
+                data.data()[k] = 1.0;
+        });
+        cg::axpy(1.0, data, &acc); // acc += data (data is read-only here)
+    }
+
+    cg::passes::IOPrefetch ioprefetch;
+    REQUIRE(ioprefetch.run(g));
+
+    // Read hoisted out of the body.
+    size_t body_reads = 0;
+    for (auto const &n : body.nodes()) {
+        if (n.kind == cg::OpKind::DiskRead)
+            body_reads++;
+    }
+    REQUIRE(body_reads == 0);
+
+    // Structural: the hoisted read's output tid appears in the Loop's effective
+    // inputs, so the scheduler sees a RAW dependency of the Loop on the read.
+    size_t       read_pos = SIZE_MAX, loop_pos = SIZE_MAX;
+    cg::TensorId read_out_tid = 0;
+    for (size_t idx = 0; idx < g.nodes().size(); idx++) {
+        if (g.nodes()[idx].kind == cg::OpKind::DiskRead) {
+            read_pos = idx;
+            REQUIRE(g.nodes()[idx].outputs.size() == 1);
+            read_out_tid = g.nodes()[idx].outputs.front();
+        } else if (g.nodes()[idx].kind == cg::OpKind::Loop) {
+            loop_pos = idx;
+        }
+    }
+    REQUIRE(read_pos != SIZE_MAX);
+    REQUIRE(loop_pos != SIZE_MAX);
+    REQUIRE(read_pos < loop_pos);
+
+    auto const loop_io      = g.effective_io(g.nodes()[loop_pos]);
+    bool const in_effective = std::find(loop_io.first.begin(), loop_io.first.end(), read_out_tid) != loop_io.first.end();
+    CHECK(in_effective);
+
+    // And the sorted dependency graph pins the read as a predecessor of the Loop.
+    g.topological_sort();
+    size_t sorted_read = SIZE_MAX, sorted_loop = SIZE_MAX;
+    for (size_t idx = 0; idx < g.nodes().size(); idx++) {
+        if (g.nodes()[idx].kind == cg::OpKind::DiskRead)
+            sorted_read = idx;
+        else if (g.nodes()[idx].kind == cg::OpKind::Loop)
+            sorted_loop = idx;
+    }
+    REQUIRE(sorted_read != SIZE_MAX);
+    REQUIRE(sorted_loop != SIZE_MAX);
+    auto const &preds = g.dependencies().predecessors;
+    REQUIRE(sorted_loop < preds.size());
+    CHECK(std::find(preds[sorted_loop].begin(), preds[sorted_loop].end(), sorted_read) != preds[sorted_loop].end());
+
+    // Concurrent replays: read runs once per execute, loop body sees the loaded
+    // ones, acc = N * ones, every rep.
+    for (int rep = 0; rep < 10; rep++) {
+        acc.zero();
+        int const            before = read_count;
+        cg::DataflowExecutor df;
+        g.execute(df);
+        CHECK(read_count == before + 1); // hoisted: one read per execute, not N
+        for (size_t k = 0; k < acc.size(); ++k) {
+            CHECK(acc.data()[k] == Catch::Approx(static_cast<double>(N)));
+        }
     }
 }
 

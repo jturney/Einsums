@@ -371,6 +371,186 @@ TEST_CASE("FreeInsertion - hoisted body Free is ordered against the loop under D
     }
 }
 
+TEST_CASE("FreeInsertion - parent scratch used only in an INNER nested loop frees after the OUTER loop",
+          "[ComputeGraph][FreeInsertion][Loop]") {
+    // Parent-declared scratch consumed only in a doubly-nested body. Part A's
+    // subtree-aware last_use must see the inner-body reads through BOTH loop
+    // levels and free W after the OUTER loop, while Materialize / Initialize
+    // land before it. Freeing before the outer loop would leave W deferred on
+    // entry; freeing inside either body would release-then-reuse each pass.
+    constexpr size_t n   = 6;
+    auto             A   = create_random_tensor<double>("A", n, n);
+    auto             acc = create_zero_tensor<double>("acc", n, n);
+
+    cg::Graph g("parent_scratch_nested");
+    auto     &W     = g.scratch_zero<double, 2>("W", n, n);
+    auto     &outer = g.add_loop("outer", 2, [](size_t it) { return it < 2; });
+    auto     &inner = outer.add_loop("inner", 2, [](size_t it) { return it < 2; });
+    {
+        cg::CaptureGuard const guard(inner);
+        cg::einsum("ik;kj->ij", 0.0, &W, 1.0, A, A);   // W = A*A, recomputed per inner pass
+        cg::einsum("ik;kj->ij", 1.0, &acc, 1.0, W, A); // acc += W*A
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::Materialization>();
+    pm.add<cg::passes::FreeInsertion>(size_t{0});
+    g.apply(pm);
+
+    // At the parent level the only Loop node is the outer loop. Lifecycle
+    // (Materialize / Initialize) before it, Free after it.
+    size_t mat_pos = SIZE_MAX, init_pos = SIZE_MAX, loop_pos = SIZE_MAX, free_pos = SIZE_MAX;
+    for (size_t idx = 0; idx < g.nodes().size(); idx++) {
+        switch (g.nodes()[idx].kind) {
+        case cg::OpKind::Materialize:
+            mat_pos = idx;
+            break;
+        case cg::OpKind::Initialize:
+            init_pos = idx;
+            break;
+        case cg::OpKind::Loop:
+            loop_pos = idx;
+            break;
+        case cg::OpKind::Free:
+            free_pos = idx;
+            break;
+        default:
+            break;
+        }
+    }
+    REQUIRE(mat_pos != SIZE_MAX);
+    REQUIRE(init_pos != SIZE_MAX);
+    REQUIRE(loop_pos != SIZE_MAX);
+    REQUIRE(free_pos != SIZE_MAX);
+    REQUIRE(mat_pos < loop_pos);
+    REQUIRE(init_pos < loop_pos);
+    REQUIRE(free_pos > loop_pos);
+
+    // Hand reference: 2 outer x 2 inner = 4 passes of acc += (A*A)*A.
+    Tensor<double, 2> ref("ref", n, n);
+    ref.zero();
+    for (size_t ii = 0; ii < n; ii++) {
+        for (size_t jj = 0; jj < n; jj++) {
+            double s = 0.0;
+            for (size_t kk = 0; kk < n; kk++) {
+                for (size_t ll = 0; ll < n; ll++) {
+                    s += A(ii, kk) * A(kk, ll) * A(ll, jj);
+                }
+            }
+            ref(ii, jj) = 4.0 * s;
+        }
+    }
+
+    acc.zero();
+    REQUIRE_NOTHROW(g.execute());
+    for (size_t ii = 0; ii < n; ii++) {
+        for (size_t jj = 0; jj < n; jj++) {
+            REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(ref(ii, jj), 1e-11));
+        }
+    }
+
+    // Concurrent replays: Free must stay ordered after the outer loop so the
+    // buffer is not reclaimed mid-execution, every rep.
+    for (int rep = 0; rep < 15; rep++) {
+        acc.zero();
+        cg::DataflowExecutor df;
+        g.execute(df);
+        for (size_t ii = 0; ii < n; ii++) {
+            for (size_t jj = 0; jj < n; jj++) {
+                REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(ref(ii, jj), 1e-11));
+            }
+        }
+    }
+}
+
+TEST_CASE("FreeInsertion - parent scratch used only in a conditional branch frees after the Conditional",
+          "[ComputeGraph][FreeInsertion][ControlFlow]") {
+    // Parent-declared scratch consumed only inside a conditional then-branch.
+    // Part A's subtree-aware last_use must see the branch reads and free W
+    // AFTER the Conditional node, with Materialize / Initialize before it.
+    constexpr size_t n   = 6;
+    auto             A   = create_random_tensor<double>("A", n, n);
+    auto             acc = create_zero_tensor<double>("acc", n, n);
+
+    cg::Graph g("parent_scratch_cond");
+    auto     &W         = g.scratch_zero<double, 2>("W", n, n);
+    bool      take_then = true;
+
+    auto [then_g, else_g] = g.add_conditional("branch", [&]() { return take_then; });
+    {
+        cg::CaptureGuard const guard(then_g);
+        cg::einsum("ik;kj->ij", 0.0, &W, 1.0, A, A);   // W = A*A
+        cg::einsum("ik;kj->ij", 1.0, &acc, 1.0, W, A); // acc += W*A
+    }
+    // else_g left empty.
+
+    cg::PassManager pm;
+    pm.add<cg::passes::Materialization>();
+    pm.add<cg::passes::FreeInsertion>(size_t{0});
+    g.apply(pm);
+
+    size_t mat_pos = SIZE_MAX, init_pos = SIZE_MAX, cond_pos = SIZE_MAX, free_pos = SIZE_MAX;
+    for (size_t idx = 0; idx < g.nodes().size(); idx++) {
+        switch (g.nodes()[idx].kind) {
+        case cg::OpKind::Materialize:
+            mat_pos = idx;
+            break;
+        case cg::OpKind::Initialize:
+            init_pos = idx;
+            break;
+        case cg::OpKind::Conditional:
+            cond_pos = idx;
+            break;
+        case cg::OpKind::Free:
+            free_pos = idx;
+            break;
+        default:
+            break;
+        }
+    }
+    REQUIRE(mat_pos != SIZE_MAX);
+    REQUIRE(init_pos != SIZE_MAX);
+    REQUIRE(cond_pos != SIZE_MAX);
+    REQUIRE(free_pos != SIZE_MAX);
+    REQUIRE(mat_pos < cond_pos);
+    REQUIRE(init_pos < cond_pos);
+    REQUIRE(free_pos > cond_pos);
+
+    // Hand reference: one application of acc = (A*A)*A (then-branch taken).
+    Tensor<double, 2> ref("ref", n, n);
+    ref.zero();
+    for (size_t ii = 0; ii < n; ii++) {
+        for (size_t jj = 0; jj < n; jj++) {
+            double s = 0.0;
+            for (size_t kk = 0; kk < n; kk++) {
+                for (size_t ll = 0; ll < n; ll++) {
+                    s += A(ii, kk) * A(kk, ll) * A(ll, jj);
+                }
+            }
+            ref(ii, jj) = s;
+        }
+    }
+
+    acc.zero();
+    REQUIRE_NOTHROW(g.execute());
+    for (size_t ii = 0; ii < n; ii++) {
+        for (size_t jj = 0; jj < n; jj++) {
+            REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(ref(ii, jj), 1e-11));
+        }
+    }
+
+    for (int rep = 0; rep < 10; rep++) {
+        acc.zero();
+        cg::DataflowExecutor df;
+        g.execute(df);
+        for (size_t ii = 0; ii < n; ii++) {
+            for (size_t jj = 0; jj < n; jj++) {
+                REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(ref(ii, jj), 1e-11));
+            }
+        }
+    }
+}
+
 TEST_CASE("FreeInsertion - leaves workspace tensors alive (not freed)", "[ComputeGraph][FreeInsertion][Loop]") {
     // Workspace tensors are is_intermediate = false: they persist across
     // pipelines, so FreeInsertion must never free them even when used

@@ -144,11 +144,14 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
 /// Such a read produces identical data every iteration, so reading it once
 /// before the loop is equivalent and avoids per-iteration disk I/O.
 ///
-/// The moved read keeps a *valid* destination id in the parent (via
-/// Graph::find_or_register_tensor_ptr), so a read sitting deep in nested loops gets
-/// lifted one level per recursion step until it lands before the outermost
-/// loop. The stable topological sort keeps the inserted read before the
-/// Loop node; the load writes through the captured tensor pointer, which
+/// The moved read is registered against the destination BUFFER in the parent
+/// (via Graph::find_or_register_tensor_ptr), so it owns the same parent
+/// TensorId that the Loop's body reads map back to through effective_io. That
+/// shared id is a real RAW edge DiskRead -> Loop: any executor (Dataflow
+/// included) orders the read before the loop by dependency, not by node
+/// position. A read sitting deep in nested loops is lifted one level per
+/// recursion step until it lands before the outermost loop, gaining the edge
+/// at each level. The load writes through the captured tensor pointer, which
 /// the body's consumers share.
 bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t &num_prefetched) {
     // Single-writer test by pointer across the whole loop subtree: a read is
@@ -185,8 +188,12 @@ bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t 
         if (dest->second.alloc_state != AllocState::Materialized)
             continue;
 
-        Node copy    = n; // keep the executor (it captures the tensor ptr)
-        copy.inputs  = {};
+        Node copy   = n; // keep the executor (it captures the tensor ptr)
+        copy.inputs = {};
+        // Register the destination BUFFER in the parent so the hoisted read
+        // owns the same TensorId the body's reads resolve to via effective_io.
+        // That id, not the read's position, is what gives the Loop a RAW
+        // dependency on this read under a concurrent executor.
         copy.outputs = {parent.find_or_register_tensor_ptr(dest->second)};
         copy.label   = fmt::format("prefetch_hoisted({})", n.label);
         hoisted.push_back(std::move(copy));
