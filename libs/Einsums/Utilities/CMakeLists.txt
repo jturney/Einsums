@@ -17,6 +17,7 @@ einsums_add_module(
   Einsums Utilities
   SOURCES ${UtilitiesSources}
   HEADERS ${UtilitiesHeaders}
+  PYBIND
   DEPENDENCIES
   MODULE_DEPENDENCIES Einsums_Config Einsums_Runtime
   CMAKE_SUBDIRS examples tests

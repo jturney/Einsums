@@ -37,6 +37,27 @@ import einsums.graph as cg
 from einsums.testing import ALL_DTYPES, REAL_DTYPES, assert_close
 
 
+@pytest.fixture(autouse=True)
+def _seed_einsums_rng():
+    """Make every test in this module deterministic.
+
+    Several ops here are approximate by design and are checked against loose
+    tolerances (``truncated_svd``'s 25% gate, ``truncated_syev``'s spectral-radius
+    ballpark, the f32 eigendecomposition reconstructions in ``pow``). Fed an
+    unseeded draw, any of those can land ill-conditioned and fail intermittently
+    - which is how ``test_pow_square_recovers_matmul`` and
+    ``test_pow_inverse_round_trip`` came to hand-roll fixed-seed numpy inputs.
+
+    ``einsums.seed_random`` pins the C++ engine, which covers strictly more than
+    a numpy seed can: besides ``create_random_tensor`` draws it also pins the
+    over-sampled projections *inside* ``truncated_svd`` / ``truncated_syev``,
+    which have no other seam. These are binding-correctness checks against
+    numpy, not fuzzing, so fixed inputs cost no meaningful coverage - the
+    randomized search lives in the fuzz suites.
+    """
+    einsums.seed_random(20260720)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Norm and Vectors enums
 # ──────────────────────────────────────────────────────────────────────────
@@ -307,20 +328,12 @@ def test_truncated_svd_top_k_matches_numpy(dtype):
     relative error is a few percent. We assert order-of-magnitude agreement
     rather than tight numerical match.
 
-    Fixed-seed input, same rationale as test_pow_square_recovers_matmul. This
-    one is a latent flake by construction: the 25% gate is checked against a
-    worst-case-few-percent randomized projection, and the projection's own RNG
-    lives in C++ with no seed binding exposed to Python. Pinning the input at
-    least removes the input-draw half of the variance; an unseeded draw that
-    lands with a near-degenerate top-k spectrum can push the relative error
-    past the gate on its own. The 25% gate is a binding sanity check, so a
-    fixed input costs no meaningful coverage.
+    Both halves of the randomness here - the input draw and the over-sampled
+    projection inside the algorithm - are pinned by the module-level
+    ``_seed_einsums_rng`` fixture, so this is deterministic.
     """
     m, k = 40, 3
-    np_dtype = np.dtype(dtype)
-    rng = np.random.default_rng(1)
-    A = einsums.create_zero_tensor("A", [m, m], dtype=dtype)
-    np.copyto(np.asarray(A), rng.standard_normal((m, m)).astype(np_dtype))
+    A = einsums.create_random_tensor("A", [m, m], dtype=dtype)
     _, S, _ = einsums.linalg.truncated_svd(A, k)
     got = sorted(np.asarray(S), reverse=True)[:k]
     expected = sorted(np.linalg.svd(np.asarray(A), compute_uv=False), reverse=True)[:k]

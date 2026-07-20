@@ -19,3 +19,10 @@ foreach(test ${UtilitiesTests})
 
   einsums_add_unit_test("Modules.Utilities" ${test})
 endforeach()
+
+# Python coverage for the Apiary-exposed free functions (seed_random,
+# make_temp_path). Registers as Tests.Unit.Modules.Utilities.UtilitiesPython.
+einsums_add_python_unit_test(
+  "Modules.Utilities" "UtilitiesPython"
+  SCRIPT test_utilities_python.py
+)

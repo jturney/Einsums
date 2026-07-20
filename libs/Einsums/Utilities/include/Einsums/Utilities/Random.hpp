@@ -7,6 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Python/Annotations.hpp>
+
 #include <numbers>
 #include <random>
 
@@ -160,10 +162,20 @@ EINSUMS_EXPORT extern std::default_random_engine random_engine;
 /**
  * @brief Set the seed of the random number generator.
  *
+ * Seeds the process-global @ref random_engine, which backs every
+ * ``create_random_tensor`` / ``create_random_definite`` draw as well as the
+ * randomized LAPACK-style algorithms (``truncated_svd``, ``truncated_syev``).
+ * Exposed to Python so tests can make those reproducible: seeding a numpy
+ * generator only pins inputs the test builds itself, not the projections
+ * drawn inside the C++ algorithms.
+ *
+ * @warning The engine is process-global and unsynchronized. Seed during setup,
+ *          not concurrently with threads that draw from it.
+ *
  * @param seed The new seed for the random number generator.
  *
  * @versionadded{1.0.0}
  */
-EINSUMS_EXPORT void seed_random(std::default_random_engine::result_type seed);
+APIARY_EXPOSE EINSUMS_EXPORT void seed_random(std::default_random_engine::result_type seed);
 
 } // namespace einsums
