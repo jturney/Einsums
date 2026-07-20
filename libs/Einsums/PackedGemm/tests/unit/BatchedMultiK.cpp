@@ -20,6 +20,7 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
 #include <complex>
+#include <limits>
 
 #include <Einsums/Testing.hpp>
 
@@ -29,6 +30,31 @@ using namespace einsums::index;
 namespace {
 constexpr size_t NB = 3; // batch_total < 4 keeps the batch loop serial
 constexpr size_t NI = 7, NJ = 6, NK = 4, NL = 5;
+
+// Tolerance for "same contraction, different summation order".
+//
+// The reference triple loop and the packed-GEMM path accumulate the same
+// NK*NL products in different orders, so they differ by the usual
+// floating-point reassociation bound, |err| <~ n * eps * sum|a_k b_k|. That
+// bound is set by the MAGNITUDE OF THE TERMS, not by the magnitude of the
+// result, so gating it relatively against C is wrong whenever the sum
+// cancels: with O(1) products and n = 20, an unlucky random draw lands |C|
+// near 1e-4, where the unavoidable ~5e-15 absolute error is ~1e-11 relative.
+// No fixed relative gate can hold there - a 1e-12 REQUIRE_THAT(WithinRel)
+// failed about 3 runs in 120 (seeds 924125733, 4108419291, 2062911554), which
+// read as a mysterious "0.000483158375165 and 0.000483158375165" mismatch
+// because the two values agree to every printed digit.
+//
+// So: accept either tight relative agreement (the meaningful check when the
+// result is well-scaled) or agreement within the accumulation's own error
+// bound. The complex case below already gated absolutely, which is why it
+// never flaked.
+constexpr double kRelTol = 1e-12;
+
+double reassociation_tol(double term_magnitude) {
+    // 32x headroom over the strict n*eps*scale bound (n = NK*NL = 20).
+    return 32.0 * std::numeric_limits<double>::epsilon() * term_magnitude;
+}
 } // namespace
 
 TEST_CASE("Batched multi-K: stride-1 lead axes (memcpy gather)", "[PackedGemm][BatchedMultiK]") {
@@ -39,16 +65,20 @@ TEST_CASE("Batched multi-K: stride-1 lead axes (memcpy gather)", "[PackedGemm][B
     auto C = create_zero_tensor<double>("C", NI, NJ, NB);
 
     auto C_ref = create_zero_tensor<double>("C_ref", NI, NJ, NB);
+    auto C_mag = create_zero_tensor<double>("C_mag", NI, NJ, NB); // sum|terms|, sets the reassociation bound
     for (size_t bb = 0; bb < NB; bb++) {
         for (size_t ii = 0; ii < NI; ii++) {
             for (size_t jj = 0; jj < NJ; jj++) {
-                double sum = 0.0;
+                double sum = 0.0, mag = 0.0;
                 for (size_t kk = 0; kk < NK; kk++) {
                     for (size_t ll = 0; ll < NL; ll++) {
-                        sum += A(ii, kk, ll, bb) * B(jj, kk, ll, bb);
+                        double const term = A(ii, kk, ll, bb) * B(jj, kk, ll, bb);
+                        sum += term;
+                        mag += std::abs(term);
                     }
                 }
                 C_ref(ii, jj, bb) = sum;
+                C_mag(ii, jj, bb) = mag;
             }
         }
     }
@@ -60,7 +90,8 @@ TEST_CASE("Batched multi-K: stride-1 lead axes (memcpy gather)", "[PackedGemm][B
     for (size_t bb = 0; bb < NB; bb++) {
         for (size_t ii = 0; ii < NI; ii++) {
             for (size_t jj = 0; jj < NJ; jj++) {
-                REQUIRE_THAT(C(ii, jj, bb), Catch::Matchers::WithinRel(C_ref(ii, jj, bb), 1e-12));
+                REQUIRE_THAT(C(ii, jj, bb), Catch::Matchers::WithinRel(C_ref(ii, jj, bb), kRelTol) ||
+                                                Catch::Matchers::WithinAbs(C_ref(ii, jj, bb), reassociation_tol(C_mag(ii, jj, bb))));
             }
         }
     }
@@ -75,16 +106,20 @@ TEST_CASE("Batched multi-K: strided lead, batch axis outermost", "[PackedGemm][B
     auto C = create_zero_tensor<double>("C", NI, NJ, NB);
 
     auto C_ref = create_zero_tensor<double>("C_ref", NI, NJ, NB);
+    auto C_mag = create_zero_tensor<double>("C_mag", NI, NJ, NB); // sum|terms|, sets the reassociation bound
     for (size_t bb = 0; bb < NB; bb++) {
         for (size_t ii = 0; ii < NI; ii++) {
             for (size_t jj = 0; jj < NJ; jj++) {
-                double sum = 0.0;
+                double sum = 0.0, mag = 0.0;
                 for (size_t kk = 0; kk < NK; kk++) {
                     for (size_t ll = 0; ll < NL; ll++) {
-                        sum += A(kk, ii, ll, bb) * B(kk, jj, ll, bb);
+                        double const term = A(kk, ii, ll, bb) * B(kk, jj, ll, bb);
+                        sum += term;
+                        mag += std::abs(term);
                     }
                 }
                 C_ref(ii, jj, bb) = sum;
+                C_mag(ii, jj, bb) = mag;
             }
         }
     }
@@ -96,7 +131,8 @@ TEST_CASE("Batched multi-K: strided lead, batch axis outermost", "[PackedGemm][B
     for (size_t bb = 0; bb < NB; bb++) {
         for (size_t ii = 0; ii < NI; ii++) {
             for (size_t jj = 0; jj < NJ; jj++) {
-                REQUIRE_THAT(C(ii, jj, bb), Catch::Matchers::WithinRel(C_ref(ii, jj, bb), 1e-12));
+                REQUIRE_THAT(C(ii, jj, bb), Catch::Matchers::WithinRel(C_ref(ii, jj, bb), kRelTol) ||
+                                                Catch::Matchers::WithinAbs(C_ref(ii, jj, bb), reassociation_tol(C_mag(ii, jj, bb))));
             }
         }
     }
@@ -111,16 +147,20 @@ TEST_CASE("Batched multi-K: strided lead, batch axis mid-tensor", "[PackedGemm][
     auto C = create_zero_tensor<double>("C", NI, NJ, NB);
 
     auto C_ref = create_zero_tensor<double>("C_ref", NI, NJ, NB);
+    auto C_mag = create_zero_tensor<double>("C_mag", NI, NJ, NB); // sum|terms|, sets the reassociation bound
     for (size_t bb = 0; bb < NB; bb++) {
         for (size_t ii = 0; ii < NI; ii++) {
             for (size_t jj = 0; jj < NJ; jj++) {
-                double sum = 0.0;
+                double sum = 0.0, mag = 0.0;
                 for (size_t kk = 0; kk < NK; kk++) {
                     for (size_t ll = 0; ll < NL; ll++) {
-                        sum += A(kk, bb, ii, ll) * B(kk, bb, jj, ll);
+                        double const term = A(kk, bb, ii, ll) * B(kk, bb, jj, ll);
+                        sum += term;
+                        mag += std::abs(term);
                     }
                 }
                 C_ref(ii, jj, bb) = sum;
+                C_mag(ii, jj, bb) = mag;
             }
         }
     }
@@ -132,7 +172,8 @@ TEST_CASE("Batched multi-K: strided lead, batch axis mid-tensor", "[PackedGemm][
     for (size_t bb = 0; bb < NB; bb++) {
         for (size_t ii = 0; ii < NI; ii++) {
             for (size_t jj = 0; jj < NJ; jj++) {
-                REQUIRE_THAT(C(ii, jj, bb), Catch::Matchers::WithinRel(C_ref(ii, jj, bb), 1e-12));
+                REQUIRE_THAT(C(ii, jj, bb), Catch::Matchers::WithinRel(C_ref(ii, jj, bb), kRelTol) ||
+                                                Catch::Matchers::WithinAbs(C_ref(ii, jj, bb), reassociation_tol(C_mag(ii, jj, bb))));
             }
         }
     }
