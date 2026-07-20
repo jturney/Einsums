@@ -147,7 +147,7 @@ einsums_option(
 
 # Compiler related build options
 einsums_option(
-  EINSUMS_WITH_COMPILER_WARNINGS BOOL "Enable compiler warnings (default: ON)" ON ADVANCED
+  EINSUMS_WITH_COMPILER_WARNINGS BOOL "Enable compiler warnings (default: OFF)" OFF ADVANCED
   CATEGORY "Debugging"
 )
 
