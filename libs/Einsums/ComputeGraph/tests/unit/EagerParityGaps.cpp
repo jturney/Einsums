@@ -339,20 +339,20 @@ TEST_CASE("cg dispatch route - fast paths fire where intended", "[ComputeGraph][
     auto C = create_zero_tensor<double>("C", 4, 5);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- ik ; kj", &C, A, B);
-    CHECK(std::string_view{cgd::last_dispatch_route()} == "gemm_direct");
+    CHECK(std::string{cgd::last_dispatch_route()} == "gemm_direct");
 
     auto x = create_random_tensor<double>("x", 6);
     auto y = create_random_tensor<double>("y", 6);
     auto G = create_zero_tensor<double>("G", 6, 6);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- i ; j", &G, x, y);
-    CHECK(std::string_view{cgd::last_dispatch_route()} == "ger");
+    CHECK(std::string{cgd::last_dispatch_route()} == "ger");
 
     auto D  = create_random_tensor<double>("D", 4, 5);
     auto C2 = create_zero_tensor<double>("C2", 4, 5);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- ij ; ij", &C2, C, D);
-    CHECK(std::string_view{cgd::last_dispatch_route()} == "direct_product");
+    CHECK(std::string{cgd::last_dispatch_route()} == "direct_product");
 
     // Repeated letters must take the repeat-aware generic loop.
     auto H = create_zero_tensor<double>("H", 4, 4);
@@ -360,7 +360,7 @@ TEST_CASE("cg dispatch route - fast paths fire where intended", "[ComputeGraph][
     auto R = create_random_tensor<double>("R", 4, 4);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- ii ; jj", &H, S, R);
-    CHECK(std::string_view{cgd::last_dispatch_route()} == "generic_loop_repeated_indices");
+    CHECK(std::string{cgd::last_dispatch_route()} == "generic_loop_repeated_indices");
 
     // Zero-extent input: prefactor-only path. The explicit std::string keeps
     // the call unambiguous for GCC, which otherwise also considers the
@@ -370,7 +370,7 @@ TEST_CASE("cg dispatch route - fast paths fire where intended", "[ComputeGraph][
     auto Cz = create_zero_tensor<double>("Cz", 2, 3);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- ik ; kj", &Cz, Ez, Bz);
-    CHECK(std::string_view{cgd::last_dispatch_route()} == "empty_input_scale_only");
+    CHECK(std::string{cgd::last_dispatch_route()} == "empty_input_scale_only");
 }
 
 // ---------------------------------------------------------------------------
