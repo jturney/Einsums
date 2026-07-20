@@ -138,10 +138,10 @@ if(TARGET apiary)
   add_custom_command(
     OUTPUT "${_cppdocs_stamp}"
     DEPENDS apiary
-            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/gen_cpp_docs.py"
-            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/render_cpp_rst.py"
+            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_gen_cpp_docs.py"
+            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_render_cpp_rst.py"
     COMMAND ${Python_EXECUTABLE}
-            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/gen_cpp_docs.py"
+            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_gen_cpp_docs.py"
             --source-dir "${PROJECT_SOURCE_DIR}" --build-dir "${CMAKE_BINARY_DIR}"
             --tool $<TARGET_FILE:apiary> --out-dir "${EINSUMS_CPP_DOCS_DIR}"
             --modules ${EINSUMS_CPP_DOCS_MODULE_LIST}

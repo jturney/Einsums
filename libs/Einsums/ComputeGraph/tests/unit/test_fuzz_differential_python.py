@@ -834,10 +834,20 @@ def test_fuzz_free_lifecycle_parallel_stress(seed):
         assert kinds.count("Free") >= 1, f"no Free nodes in optimized graph; kinds={kinds}"
         assert kinds.count("Materialize") >= 1
 
+        # Use the file-wide differential tolerance, not a hand-tightened one.
+        # This compares a numpy oracle against a reordered, multithreaded-BLAS
+        # graph execution, so the reduction order differs from numpy's and
+        # varies per replay. A chain of up to `steps` matmuls of dimension
+        # `_FREE_N` produces values with a wide dynamic range (~1e6 here), whose
+        # float64 round-off floor is ~1e-9 in absolute terms - well past a
+        # 1e-10 tolerance. That made rep-to-rep fp noise (max abs err ~1.4e-9)
+        # read as a "divergence". A genuine free-lifecycle corruption (a read of
+        # freed/reused arena bytes) differs by O(1), still far outside 1e-5.
+        rtol, atol = _DTYPE_TOL["float64"]
         for rep in range(_FREE_REPS):
             g.execute(exec_cls())
             got = np.asarray(C)
-            if not np.allclose(got, oracle, rtol=1e-10, atol=1e-10):
+            if not np.allclose(got, oracle, rtol=rtol, atol=atol):
                 raise AssertionError(
                     f"{ex_name} rep {rep} diverged (seed {seed}, steps {steps}, rhs_pick {rhs_pick})\n"
                     f"max abs err = {np.abs(got - oracle).max()}"

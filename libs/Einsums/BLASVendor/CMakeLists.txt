@@ -54,7 +54,6 @@ set(BLASVendorSources
     trsyl.cpp
     trtrs.cpp
     trtri.cpp
-    direct_prod.c
     direct_prod.cpp
 )
 
@@ -75,8 +74,8 @@ einsums_add_module(
   CMAKE_SUBDIRS examples tests
 )
 
-# BLASVendor has C sources (.c) and assembly (.S) which are incompatible with
-# the C++ precompiled header. Disable PCH for this module.
+# BLASVendor has assembly (.S) sources which are incompatible with the C++
+# precompiled header. Disable PCH for this module.
 if(EINSUMS_WITH_PRECOMPILED_HEADERS)
   set_target_properties(Einsums_BLASVendor PROPERTIES DISABLE_PRECOMPILE_HEADERS ON)
 endif()
