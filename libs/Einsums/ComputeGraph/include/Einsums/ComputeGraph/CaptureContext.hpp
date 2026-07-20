@@ -150,6 +150,46 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      * existing TensorId. Otherwise, creates a new TensorHandle via make_handle()
      * and registers it with the graph.
      *
+     * @par Metadata does not cross the parent/body handle boundary (by design)
+     *
+     * Both lookups above are scoped to ``_graph``, the graph currently being
+     * captured. A loop body (and each conditional branch) is a *separate*
+     * ``Graph`` with its own ``tensors_map()``, so when a tensor already
+     * registered in the parent is first touched inside a body, neither lookup
+     * hits and control reaches the fallthrough below: the body gets a
+     * **fresh, default-constructed handle**. Everything the parent knew about
+     * that tensor is dropped on the body side - ``is_intermediate``, symmetry
+     * hints, stream assignment, residency, and distribution info. The reverse
+     * direction never propagates either: nothing copies body-side metadata
+     * back up to the parent handle.
+     *
+     * This loss is the **contract, not a bug**, and passes depend on it:
+     *
+     *  - ``FreeInsertion`` Part B, ``InplaceOptimization``, ``MemoryPlanning``,
+     *    and ``DeadNodeElimination`` all gate on the body-map
+     *    ``is_intermediate``. Because a parent-declared tensor arrives in the
+     *    body with ``is_intermediate == false`` (and no ``release_fn``), those
+     *    passes skip it - they are *conservative by loss*. A body-local pass
+     *    cannot see the parent's readers, so treating a parent tensor as a
+     *    body-owned intermediate would let it be freed, aliased, or
+     *    arena-overlapped while the parent still needs it.
+     *  - ``DeadNodeElimination``'s subtree walk is downward-only
+     *    (``DeadNodeElimination.cpp:44-45,82-97``). A body-created tensor read
+     *    by the parent or by a sibling loop is currently protected *only*
+     *    because parent-declared handles fail the ``is_intermediate`` gate.
+     *
+     * Consequently, **propagating metadata across this boundary is not a safe
+     * local fix**. Doing so unmasks the DNE cross-scope deletion above and
+     * removes the conservatism the other three passes lean on; each would need
+     * its own scope-aware liveness (the pattern ``FreeInsertion`` Part A
+     * already uses: subtree usage views via ``TensorUsage::last_use(...,
+     * include_subtree=true)``, which resolves a parent tensor's last use to the
+     * enclosing ``Loop`` node rather than to a body-internal position).
+     *
+     * Pinned by ``Tests.Unit.Modules.ComputeGraph.MetadataBoundary``. If you
+     * intend to change this, change that test deliberately and audit the four
+     * passes named above first.
+     *
      * @tparam TensorType Any type satisfying CoreBasicTensorConcept.
      * @param[in] tensor The tensor to look up or register.
      * @return The tensor's TensorId in the current graph.
@@ -172,7 +212,10 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
             }
         }
 
-        // New tensor, register it
+        // New tensor *to this graph*, register it. Inside a loop body or
+        // conditional branch this is also the path a parent-registered tensor
+        // takes: it gets a fresh default handle, deliberately dropping the
+        // parent's metadata. See the contract note above before "fixing" this.
         TensorId id     = _graph->register_tensor(make_handle(tensor, 0));
         _ptr_to_id[ptr] = id;
         return id;

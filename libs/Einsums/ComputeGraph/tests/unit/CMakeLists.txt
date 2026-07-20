@@ -38,6 +38,7 @@ set(ComputeGraphTests
     HardwareProfile.cpp
     LoopOptimizationCorrectness.cpp
     MemoryNodes.cpp
+    MetadataBoundary.cpp
     MixedOps.cpp
     OperationsCoverage.cpp
     ParallelForGraph.cpp
