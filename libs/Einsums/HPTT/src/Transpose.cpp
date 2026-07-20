@@ -452,13 +452,16 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
     constexpr int blocking_micro_ = einsums::simd::native_bits / 8 / sizeof(floatType);
     constexpr int blocking_       = blocking_micro_ * 4;
 
-    // Non-temporal SIMD stores (stream_store -> _mm{,256,512}_stream_p{s,d}) require the
-    // destination to be aligned to the vector width of the compiled rung: 16 B (SSE),
-    // 32 B (AVX/AVX2), 64 B (AVX-512). A hardcoded 32-byte check silently under-aligns the
-    // AVX-512 rung, which then #GP-faults (SEGV) or corrupts the result. Gate on the actual
-    // native width so each rung only streams to a sufficiently aligned B / row stride.
-    constexpr size_t stream_align       = einsums::simd::native_bits / 8;
-    bool const       useStreamingStores = useStreamingStores_ && betaIsZero && (blockingB * sizeof(floatType)) % stream_align == 0 &&
+    // The AVX-512 rung's non-temporal store (_mm512_stream_pd) needs 64-byte alignment, but
+    // the destination check was a hardcoded 32 B, so under the thread-sanitizer allocator an
+    // under-aligned B slipped through and #GP-faulted (SEGV) / corrupted results. Raise the B
+    // base and row-stride requirement to the rung's vector width, but never below the original
+    // 32 B floor: SSE/NEON (16 B native) and AVX2 (32 B) must keep streaming exactly where they
+    // did before - lowering their gate re-enables streaming paths that produce wrong results
+    // there. So only the AVX-512 rung tightens (32 -> 64); every other rung is unchanged. The
+    // blockingB (buffer-tile) predicate is not a store-alignment constraint and stays at 64 B.
+    constexpr size_t stream_align       = einsums::simd::native_bits / 8 < 32 ? 32 : einsums::simd::native_bits / 8;
+    bool const       useStreamingStores = useStreamingStores_ && betaIsZero && (blockingB * sizeof(floatType)) % 64 == 0 &&
                                     ((uint64_t)B) % stream_align == 0 && (ldb * sizeof(floatType)) % stream_align == 0;
 
     floatType *Btmp    = B;

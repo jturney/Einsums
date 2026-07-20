@@ -24,6 +24,13 @@
 // the naive formula and emits no libcall, so it links on every toolchain.
 // std::complex<T> and `_Complex T` share the same x86-64 ABI, so the AVX2
 // assembly kernels (Linux only) are called unchanged.
+//
+// The scalar fallbacks use EINSUMS_OMP_SIMD (a vectorize-only hint), NOT
+// EINSUMS_OMP_SIMD_PRAGMA(for): the latter expands to `#pragma omp for`
+// (worksharing) on clang/gcc, and these kernels run inside the caller's
+// `#pragma omp parallel for` over blocks - nesting worksharing regions
+// deadlocks. (The former .c file was built without -fopenmp, so its pragma
+// was inert; compiling here as C++ activates it.)
 // ---------------------------------------------------------------------------
 extern "C" {
 #if defined(__AVX2__) && defined(__FMA3__) && !defined(__ICC) && !defined(__INTEL_COMPILER)
@@ -53,14 +60,14 @@ void zdirprod_kernel(size_t n, std::complex<double> alpha, std::complex<double> 
 }
 #else
 void sdirprod_kernel(size_t n, float alpha, float const *__restrict x, float const *__restrict y, float *__restrict z) {
-    EINSUMS_OMP_SIMD_PRAGMA(for)
+    EINSUMS_OMP_SIMD
     for (size_t i = 0; i < n; i++) {
         z[i] = z[i] + alpha * x[i] * y[i];
     }
 }
 
 void ddirprod_kernel(size_t n, double alpha, double const *__restrict x, double const *__restrict y, double *__restrict z) {
-    EINSUMS_OMP_SIMD_PRAGMA(for)
+    EINSUMS_OMP_SIMD
     for (size_t i = 0; i < n; i++) {
         z[i] = z[i] + alpha * x[i] * y[i];
     }
@@ -68,7 +75,7 @@ void ddirprod_kernel(size_t n, double alpha, double const *__restrict x, double 
 
 void cdirprod_kernel(size_t n, std::complex<float> alpha, std::complex<float> const *__restrict x, std::complex<float> const *__restrict y,
                      std::complex<float> *__restrict z) {
-    EINSUMS_OMP_SIMD_PRAGMA(for)
+    EINSUMS_OMP_SIMD
     for (size_t i = 0; i < n; i++) {
         z[i] = z[i] + alpha * x[i] * y[i];
     }
@@ -76,7 +83,7 @@ void cdirprod_kernel(size_t n, std::complex<float> alpha, std::complex<float> co
 
 void zdirprod_kernel(size_t n, std::complex<double> alpha, std::complex<double> const *__restrict x,
                      std::complex<double> const *__restrict y, std::complex<double> *__restrict z) {
-    EINSUMS_OMP_SIMD_PRAGMA(for)
+    EINSUMS_OMP_SIMD
     for (size_t i = 0; i < n; i++) {
         z[i] = z[i] + alpha * x[i] * y[i];
     }
