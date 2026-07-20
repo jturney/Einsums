@@ -306,9 +306,21 @@ def test_truncated_svd_top_k_matches_numpy(dtype):
     tighter the bound. Even at ``m / (k+5) = 4`` (our setup) the worst-case
     relative error is a few percent. We assert order-of-magnitude agreement
     rather than tight numerical match.
+
+    Fixed-seed input, same rationale as test_pow_square_recovers_matmul. This
+    one is a latent flake by construction: the 25% gate is checked against a
+    worst-case-few-percent randomized projection, and the projection's own RNG
+    lives in C++ with no seed binding exposed to Python. Pinning the input at
+    least removes the input-draw half of the variance; an unseeded draw that
+    lands with a near-degenerate top-k spectrum can push the relative error
+    past the gate on its own. The 25% gate is a binding sanity check, so a
+    fixed input costs no meaningful coverage.
     """
     m, k = 40, 3
-    A = einsums.create_random_tensor("A", [m, m], dtype=dtype)
+    np_dtype = np.dtype(dtype)
+    rng = np.random.default_rng(1)
+    A = einsums.create_zero_tensor("A", [m, m], dtype=dtype)
+    np.copyto(np.asarray(A), rng.standard_normal((m, m)).astype(np_dtype))
     _, S, _ = einsums.linalg.truncated_svd(A, k)
     got = sorted(np.asarray(S), reverse=True)[:k]
     expected = sorted(np.linalg.svd(np.asarray(A), compute_uv=False), reverse=True)[:k]
