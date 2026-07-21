@@ -7,6 +7,9 @@
 #include <Einsums/TensorAlgebra/Permute.hpp>
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateIncrementedTensor.hpp>
+#include <Einsums/Utilities/TemporaryFilename.hpp>
+
+#include <cstdio>
 
 #include <Einsums/Testing.hpp>
 
@@ -291,7 +294,14 @@ TEST_CASE("Saving and loading permutes") {
 
     auto plan = einsums::tensor_algebra::compile_permute(0.0, Indices{j, k, i}, &B, 1.0, Indices{i, j, k}, A);
 
-    auto fp = std::fopen("saved_plan.hptt", "w+");
+    // Unique per-process scratch file. The SIMD-rung variants of this test
+    // (Sort.simd_baseline, Sort.simd_v2, ...) are the same binary launched
+    // concurrently by ctest -j; a shared fixed filename let them clobber each
+    // other's saved plan, so a process would read a half-written/foreign plan
+    // and permute wrong (an intermittent, ctest-scheduling-dependent failure).
+    auto const plan_path = einsums::make_temp_path().string();
+
+    auto fp = std::fopen(plan_path.c_str(), "w+");
 
     hptt::setup_file(fp);
 
@@ -299,9 +309,12 @@ TEST_CASE("Saving and loading permutes") {
 
     std::fclose(fp);
 
-    fp = std::fopen("saved_plan.hptt", "r");
+    fp = std::fopen(plan_path.c_str(), "r");
 
     auto plan2 = hptt::Transpose<double>::read_from_file(fp, 1.0, A.data(), 0.0, B.data());
+
+    std::fclose(fp);
+    std::remove(plan_path.c_str());
 
     permute(&B, A, plan2);
     for (int i = 0, ij = 1; i < A.dim(0); i++) {
