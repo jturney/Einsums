@@ -208,6 +208,30 @@ function(einsums_add_test_and_deps_test category subcategory name)
 endfunction(einsums_add_test_and_deps_test)
 
 #:
+#: einsums_sanitizer_test_environment
+#:
+#:    Single source of truth for the sanitizer runtime options every Einsums test
+#:    process needs, appended to ``<out_var>`` (a CMake list of ``VAR=value``
+#:    entries) in the caller's scope.
+#:
+#:    ctest's ENVIRONMENT property CLOBBERS rather than merges, so each
+#:    test-registration path has to bake these in itself. Defining them here keeps
+#:    the TSan/LSan suppression-file paths from drifting between the C++, SIMD-rung
+#:    and Python registrations - a drift that has already been fixed twice, once
+#:    per path. The options are inert on a non-sanitizer build (the runtimes just
+#:    ignore the env vars), so callers can append them unconditionally.
+#:
+#:    **Signature**
+#:    ``einsums_sanitizer_test_environment(<out_var>)``
+function(einsums_sanitizer_test_environment out_var)
+  set(${out_var}
+      "TSAN_OPTIONS=ignore_noninstrumented_modules=1:suppressions=${PROJECT_SOURCE_DIR}/devtools/sanitizers/tsan.supp"
+      "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/devtools/lsan.supp"
+      PARENT_SCOPE
+  )
+endfunction()
+
+#:
 #: einsums_set_test_properties
 #:
 #:    Apply standard Einsums labels and sanitizer/profiler environment to a test.
@@ -220,30 +244,28 @@ endfunction(einsums_add_test_and_deps_test)
 #:
 #:    **Behavior**
 #:    - Sets ``LABELS`` to the provided list/string.
-#:    - Sets ``ENVIRONMENT`` with:
-#:      ``LLVM_PROFILE_FILE=<name>.profraw``,
-#:      ``TSAN_OPTIONS=ignore_noninstrumented_modules=1``,
-#:      ``LSAN_OPTIONS=suppression=${PROJECT_SOURCE_DIR}/devtools/lsan.supp``.
+#:    - Sets ``ENVIRONMENT`` with ``LLVM_PROFILE_FILE=<name>.profraw`` plus the
+#:      shared sanitizer options from ``einsums_sanitizer_test_environment``.
 #:
 #:    **Example**
 #:    .. code-block:: cmake
 #:
 #:       einsums_set_test_properties(Tests.Unit.TensorOps "UNIT_ONLY")
 function(einsums_set_test_properties name labels)
-  # ENVIRONMENT clobbers the parent shell's env vars for the test, so we have
-  # to bake every per-test sanitizer option into this single string. The CI
-  # workflow's job-level TSAN_OPTIONS=...:suppressions=tsan.supp gets erased
-  # without the explicit suppressions= here. Include both the
-  # ignore_noninstrumented_modules=1 hint (libgomp/openblas etc.) AND the
-  # path to our suppression file so HPTT / einsums_main / CounterBackend
-  # false positives stay suppressed at every test invocation.
+  # ENVIRONMENT clobbers the parent shell's env vars for the test, so every
+  # per-test option is baked in here. The CI workflow's job-level
+  # TSAN_OPTIONS=...:suppressions=tsan.supp would otherwise be erased. The
+  # sanitizer options come from the shared helper so their suppression-file paths
+  # cannot drift from the SIMD-rung and Python test paths.
+  set(_san_env "") # out-param, populated by the helper below
+  einsums_sanitizer_test_environment(_san_env)
   set_tests_properties(
     ${name}
     PROPERTIES
       LABELS
       ${labels}
       ENVIRONMENT
-      "LLVM_PROFILE_FILE=${name}.profraw;TSAN_OPTIONS=ignore_noninstrumented_modules=1:suppressions=${PROJECT_SOURCE_DIR}/devtools/sanitizers/tsan.supp;LSAN_OPTIONS=suppression=${PROJECT_SOURCE_DIR}/devtools/lsan.supp"
+      "LLVM_PROFILE_FILE=${name}.profraw;${_san_env}"
   )
 endfunction()
 
@@ -320,21 +342,19 @@ function(einsums_add_python_unit_test subcategory name)
   # ctest's own hardened environment before it can reach the test process.
   if(EINSUMS_PYTEST_SANITIZER_PRELOAD)
     list(APPEND _pyt_env "${EINSUMS_PYTEST_SANITIZER_PRELOAD}")
+    # Deliver the same suppression files the C++ tests get. Without them the
+    # Python process runs the sanitizer with no suppressions, so the benign
+    # libomp/HPTT/spdlog false positives surface as 30+ warnings and bump the exit
+    # code - ctest then reports the (passing) pytest run as "Subprocess aborted".
+    # A genuine race/leak in our own code still fails, being uncovered by the
+    # suppression files. The TSan/LSan vars are inert under the other sanitizer.
+    set(_san_env "") # out-param, populated by the helper below
+    einsums_sanitizer_test_environment(_san_env)
+    list(APPEND _pyt_env ${_san_env})
     if(EINSUMS_WITH_SANITIZERS MATCHES "address")
       # CPython intentionally leaks at shutdown; LeakSanitizer would drown real
       # findings, so disable it for the Python test processes.
       list(APPEND _pyt_env "ASAN_OPTIONS=detect_leaks=0:abort_on_error=1")
-    endif()
-    if(EINSUMS_WITH_SANITIZERS MATCHES "thread")
-      # Deliver the same suppression file the C++ tests get (see
-      # einsums_set_test_properties). Without it the Python process runs TSan with
-      # no suppressions, so the benign libomp/HPTT/spdlog false positives surface
-      # as 30+ warnings and bump the exit code - ctest then reports the (passing)
-      # pytest run as "Subprocess aborted". A genuine race in our own code still
-      # fails because it is not covered by the suppression file.
-      list(APPEND _pyt_env
-           "TSAN_OPTIONS=ignore_noninstrumented_modules=1:suppressions=${PROJECT_SOURCE_DIR}/devtools/sanitizers/tsan.supp"
-      )
     endif()
   endif()
 
