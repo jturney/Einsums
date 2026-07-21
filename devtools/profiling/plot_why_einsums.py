@@ -55,7 +55,7 @@ SERIES = [
     ("hand-fused (no OpenMP)", "#8a8984", "--", 2),
     ("hand-fused (OpenMP)", "#52514e", "-", 3),
     ("einsum (eager)", "#2a78d6", "-", 4),
-    ("stream-fused graph (now)", "#1baf7a", "-", 6),
+    ("stream-fused graph", "#1baf7a", "-", 6),
 ]
 
 
