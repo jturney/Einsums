@@ -27,6 +27,14 @@ called_from_lib:libgomp.so
 race:libgomp
 race:GOMP_
 
+# --- LLVM OpenMP runtime (libomp): the clang/local counterpart of the libgomp
+# entries above. libomp implements barriers and `reduction(...)` combines in its
+# own uninstrumented runtime (__kmp_hyper_barrier_gather, __kmp_* worker/reduce
+# routines), so TSan flags the reduction/barrier combines it cannot see - e.g.
+# the reduction(+: sum) in LinearAlgebra dot.hpp. Same benign class as libgomp;
+# only reached on the clang toolchain, not the gcc CI leg.
+race:__kmp
+
 # --- OpenBLAS: its own thread pool, uninstrumented ---
 # Note: do NOT use `called_from_lib:libopenblas` here. conda's openblas
 # install presents the library at the same realpath twice (likely via
