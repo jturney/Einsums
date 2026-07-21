@@ -69,8 +69,13 @@ EINSUMS_EXPORT void add_Einsums_Tensor_arguments() {
         "The name of the HDF5 file for Einsums. Defaults to einsums.[pid].h5, where [pid] is the PID of the current process.",
         TensorCategory, cl::Location(global_string["hdf5-file-name"]), cl::Default(fmt::format("einsums.{}.h5", pid)));
 
+    // delete-hdf5-files drives cleanup in finalize_Einsums_Tensor. It must default
+    // to true so the per-process scratch file (einsums.<pid>.h5) is removed on exit;
+    // otherwise these files accumulate indefinitely in the scratch dir and, via PID
+    // reuse, a later process inherits a stale one. Passing --einsums:no-delete-hdf5-files
+    // sets it false to keep the files, matching the flag's name.
     static cl::Flag delete_files("einsums:no-delete-hdf5-files", {}, "Tells Einsums not to clean up HDF5 files on exit.", TensorCategory,
-                                 cl::Location(global_bool["delete-hdf5-files"]), cl::Default(false));
+                                 cl::Location(global_bool["delete-hdf5-files"]), cl::Default(true), cl::ImplicitValue(false));
 }
 
 static void create_complex_types() {
@@ -256,15 +261,20 @@ static void open_complex_types() {
     }
 }
 
-void open_hdf5_file(std::string const &fname) {
+bool open_hdf5_file(std::string const &fname) {
     auto &singleton     = einsums::detail::Einsums_Tensor_vars::get_singleton();
     auto &global_config = GlobalConfigMap::get_singleton();
 
     singleton.hdf5_file = H5Fopen(fname.c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
 
     if (singleton.hdf5_file == H5I_INVALID_HID) {
-        EINSUMS_LOG_ERROR("HDF5 file could not be opened!");
-        std::terminate();
+        // The file exists but is not a usable HDF5 file. This is not fatal: the
+        // scratch file is named einsums.<pid>.h5 and is not deleted by default,
+        // so a corrupt or truncated leftover from an earlier process whose PID
+        // has been reused would land here. Signal the caller to recreate it
+        // rather than terminating the whole process.
+        EINSUMS_LOG_WARN("Existing HDF5 file '{}' could not be opened (stale or corrupt); it will be recreated.", fname);
+        return false;
     }
 
     singleton.link_property_list = H5Pcreate(H5P_LINK_CREATE);
@@ -294,6 +304,7 @@ void open_hdf5_file(std::string const &fname) {
     }
 
     open_complex_types();
+    return true;
 }
 
 void create_hdf5_file(std::string const &fname) {
@@ -350,9 +361,10 @@ void initialize_Einsums_Tensor() {
         std::terminate();
     }
 
-    if (std::filesystem::exists(fname)) {
-        open_hdf5_file(fname.string());
-    } else {
+    // Open an existing file, but fall back to (re)creating it if the open fails -
+    // a stale or corrupt einsums.<pid>.h5 left by an earlier process whose PID was
+    // reused must not take the whole process down.
+    if (!std::filesystem::exists(fname) || !open_hdf5_file(fname.string())) {
         create_hdf5_file(fname.string());
     }
 }

@@ -29,7 +29,11 @@ EINSUMS_EXPORT void initialize_Einsums_Tensor();
 EINSUMS_EXPORT void finalize_Einsums_Tensor();
 // NOLINTEND
 
-EINSUMS_EXPORT void open_hdf5_file(std::string const &fname);
+/// Open an existing HDF5 file for read/write. Returns true on success; returns
+/// false (without terminating) when the file exists but is not a usable HDF5
+/// file - e.g. a stale or corrupt scratch file left by an earlier process whose
+/// PID has since been reused. Callers should recreate the file in that case.
+EINSUMS_EXPORT bool open_hdf5_file(std::string const &fname);
 EINSUMS_EXPORT void create_hdf5_file(std::string const &fname);
 
 namespace detail {
