@@ -110,6 +110,28 @@ jobs:
           if errorlevel 1 exit /b %ERRORLEVEL%
           cmake --build "%GITHUB_WORKSPACE%\build" --config ${{ matrix.build_type }}
 
+      # Diagnostic: ctest reports a bare 0xc0000135 (STATUS_DLL_NOT_FOUND) and
+      # hides which DLL. Run one test exe directly so the loader prints the
+      # missing DLL by name, and dump its import table as a reliable fallback.
+      # Never fails the job (exit /b 0) so the real Test step still runs.
+      - name: Diagnose missing DLL
+        shell: cmd
+        working-directory: ${{ github.workspace }}/build
+        run: |
+          call conda activate einsums-env
+          set "TESTEXE="
+          for /f "delims=" %%F in ('dir /b /s "RelWithDebInfo\*_test.exe" 2^>nul') do if not defined TESTEXE set "TESTEXE=%%F"
+          if not defined TESTEXE (echo No *_test.exe found under RelWithDebInfo & dir /b /s "RelWithDebInfo\*.exe" & exit /b 0)
+          echo ==== chosen: %TESTEXE% ====
+          echo ==== run directly (loader prints the missing DLL here) ====
+          "%TESTEXE%" --list-tests
+          echo direct-run exit code: %ERRORLEVEL%
+          echo ==== import table (fallback) ====
+          llvm-readobj --coff-imports "%TESTEXE%" 2>nul || dumpbin /dependents "%TESTEXE%" 2>nul || echo "(no llvm-readobj/dumpbin on PATH)"
+          echo ==== Einsums.dll imports ====
+          for /f "delims=" %%D in ('dir /b /s "RelWithDebInfo\Einsums.dll" 2^>nul') do llvm-readobj --coff-imports "%%D" 2>nul || dumpbin /dependents "%%D" 2>nul
+          exit /b 0
+
       - name: Test (CTest)
         shell: cmd
         working-directory: ${{ github.workspace }}/build
