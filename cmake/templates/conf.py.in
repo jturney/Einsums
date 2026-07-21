@@ -589,7 +589,7 @@ nitpick_ignore_regex = {(r"c(pp)?:identifier", r"size_t"),
     # Internal graph/optimizer helper types used in public signatures but not
     # documented, plus the bare ``einsums`` namespace when a signature renders it
     # as a cpp:class target.
-    (r"cpp:(identifier|class|type)", r"(\w+::)*(PassManager|EffectiveIoCache|einsums)$"),
+    (r"cpp:(identifier|class|type)", r"(\w+::)*(PassManager|EffectiveIoCache|ChainParenthesization|einsums)$"),
     # Python API reference: the allocator-templated C++ runtime-tensor types leak
     # into the generated pybind signatures as py:class cross-references, but Python
     # exposes only the per-dtype instantiations (RuntimeTensorF, RuntimeTensorViewD,
