@@ -585,10 +585,26 @@ nitpick_ignore_regex = {(r"c(pp)?:identifier", r"size_t"),
      r"FILE|basic_string_view|hip_catch)$"),
     # Public symbols referenced from prose but not (yet) documented anywhere, so
     # there is no declaration to resolve against (optionally namespace-qualified).
-    (r"cpp:(identifier|class|func)", r"(\w+::)*(subscript_tensor|EinsumDescriptor)$")
+    (r"cpp:(identifier|class|func)", r"(\w+::)*(subscript_tensor|EinsumDescriptor)$"),
+    # Internal graph/optimizer helper types used in public signatures but not
+    # documented, plus the bare ``einsums`` namespace when a signature renders it
+    # as a cpp:class target.
+    (r"cpp:(identifier|class|type)", r"(\w+::)*(PassManager|EffectiveIoCache|einsums)$"),
+    # Python API reference: the allocator-templated C++ runtime-tensor types leak
+    # into the generated pybind signatures as py:class cross-references, but Python
+    # exposes only the per-dtype instantiations (RuntimeTensorF, RuntimeTensorViewD,
+    # ...), so these base names are never importable classes and cannot resolve.
+    (r"py:class", r"(\w+\.)*(GeneralRuntimeTensor|RuntimeTensorView|TiledRuntimeTensorView)$")
     }
 
 suppress_warnings = [
     "duplicate_declaration.cpp"
 ]
+
+# Compiler-extension keywords that appear in generated signatures (e.g.
+# ``const T *__restrict Ap``). Sphinx's C/C++ domain parser does not know them
+# and aborts the whole declaration ("Error when parsing function declaration");
+# registering them as id-attributes makes the parser accept and skip them.
+c_id_attributes = ['__restrict', '__restrict__', '__forceinline', 'EINSUMS_EXPORT']
+cpp_id_attributes = ['__restrict', '__restrict__', '__forceinline', 'EINSUMS_EXPORT']
 
