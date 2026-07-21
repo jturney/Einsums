@@ -268,8 +268,19 @@ function(einsums_add_simd_rung_tests subcategory name)
              COMMAND simd_rung_guard ${_rung} $<TARGET_FILE:${name}_test> "--einsums:debug:no-install-signal-handlers"
                      "--einsums:debug:no-attach-debugger" "--einsums:profile:no-report"
     )
-    set_tests_properties(
-      ${_test_name} PROPERTIES ENVIRONMENT "EINSUMS_SIMD_ARCH=${_rung}" LABELS "UNIT_ONLY" SKIP_RETURN_CODE 77
+    # Reuse the standard per-test ENVIRONMENT (LLVM_PROFILE_FILE plus the
+    # TSAN/LSAN suppression-file paths) so a rung-pinned test is protected by the
+    # same suppressions as its base registration, then APPEND the rung override.
+    # ENVIRONMENT clobbers rather than merges: setting it to a bare
+    # EINSUMS_SIMD_ARCH=${_rung} here would erase the suppression paths, so every
+    # rung test on the sanitizer legs would fail on the benign libomp/HPTT/spdlog
+    # false positives that tsan.supp exists to silence.
+    einsums_set_test_properties(${_test_name} "UNIT_ONLY")
+    set_property(
+      TEST ${_test_name}
+      APPEND
+      PROPERTY ENVIRONMENT "EINSUMS_SIMD_ARCH=${_rung}"
     )
+    set_tests_properties(${_test_name} PROPERTIES SKIP_RETURN_CODE 77)
   endforeach()
 endfunction()

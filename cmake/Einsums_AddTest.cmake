@@ -325,6 +325,17 @@ function(einsums_add_python_unit_test subcategory name)
       # findings, so disable it for the Python test processes.
       list(APPEND _pyt_env "ASAN_OPTIONS=detect_leaks=0:abort_on_error=1")
     endif()
+    if(EINSUMS_WITH_SANITIZERS MATCHES "thread")
+      # Deliver the same suppression file the C++ tests get (see
+      # einsums_set_test_properties). Without it the Python process runs TSan with
+      # no suppressions, so the benign libomp/HPTT/spdlog false positives surface
+      # as 30+ warnings and bump the exit code - ctest then reports the (passing)
+      # pytest run as "Subprocess aborted". A genuine race in our own code still
+      # fails because it is not covered by the suppression file.
+      list(APPEND _pyt_env
+           "TSAN_OPTIONS=ignore_noninstrumented_modules=1:suppressions=${PROJECT_SOURCE_DIR}/devtools/sanitizers/tsan.supp"
+      )
+    endif()
   endif()
 
   # Python-side coverage gathering was removed: the pytest-cov + parallel-
