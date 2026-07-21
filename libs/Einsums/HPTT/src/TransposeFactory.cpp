@@ -63,7 +63,16 @@ Fn select_rung(Fn native, Fn baseline, Fn v2, Fn v3, Fn v4) {
     if (native != nullptr) {
         return native;
     }
-    return einsums::simd::select<Fn>(baseline, v2, v3, v4);
+    // v4 (AVX-512) is capped out of the HPTT transpose dispatch: the v4
+    // transpose kernel is numerically wrong on AVX-512 hardware (LargeTranspose
+    // fails only on the v4 rung; PackedGemm/Sort v4 are fine), a pre-existing
+    // bug that predates the streaming-store alignment fix and can't be validated
+    // without an AVX-512 box. Passing nullptr for the v4 slot makes select()
+    // fall through to v3 (AVX2), which AVX-512 CPUs execute natively and which
+    // is exercised on every AVX2 runner. Restore `v4` here once the v4 transpose
+    // kernel is fixed and verified on real AVX-512 hardware.
+    (void)v4;
+    return einsums::simd::select<Fn>(baseline, v2, v3, /*v4=*/nullptr);
 }
 
 // Resolve the per-rung entry points for one element type. The nullptr slots
