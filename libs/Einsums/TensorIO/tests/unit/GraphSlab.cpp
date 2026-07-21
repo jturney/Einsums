@@ -23,6 +23,7 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
 #include <cstdio>
+#include <filesystem>
 
 #include <Einsums/Testing.hpp>
 
@@ -32,7 +33,8 @@ using namespace einsums::tensor_io;
 namespace {
 struct TempFile {
     std::string path;
-    explicit TempFile(std::string name) : path("/tmp/einsums_graph_slab_" + std::move(name)) {}
+    explicit TempFile(std::string name)
+        : path((std::filesystem::temp_directory_path() / ("einsums_graph_slab_" + std::move(name))).string()) {}
     ~TempFile() { std::remove(path.c_str()); }
 };
 } // namespace

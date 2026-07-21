@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 
 #include <Einsums/Testing.hpp>
 
@@ -1007,7 +1008,7 @@ TEST_CASE("HardwareProfile - EINSUMS_HARDWARE_PROFILE overrides the built-in tab
     profile.source   = "calibrated";
     profile.cpu.name = "EnvOverrideTest CPU";
 
-    std::string const path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/einsums_hw_env_test.json";
+    std::string const path = (std::filesystem::temp_directory_path() / "einsums_hw_env_test.json").string();
     REQUIRE(profile.save_json(path));
 
     einsums::set_env_var("EINSUMS_HARDWARE_PROFILE", path.c_str());

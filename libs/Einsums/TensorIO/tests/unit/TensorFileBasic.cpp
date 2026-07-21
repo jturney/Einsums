@@ -13,6 +13,7 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
 #include <cstdio>
+#include <filesystem>
 
 #include <Einsums/Testing.hpp>
 
@@ -28,10 +29,10 @@ struct TempFile {
     TempFile(std::string const &name = "test.etn", bool dist = false) : distributed(dist) {
         if (dist) {
             // Shared path: all ranks use the same file
-            path = "/tmp/einsums_test_" + name;
+            path = (std::filesystem::temp_directory_path() / ("einsums_test_" + name)).string();
         } else {
             // Per-rank path to avoid contention
-            path = "/tmp/einsums_test_r" + std::to_string(comm::world_rank()) + "_" + name;
+            path = (std::filesystem::temp_directory_path() / ("einsums_test_r" + std::to_string(comm::world_rank()) + "_" + name)).string();
         }
     }
     ~TempFile() { std::remove(path.c_str()); }

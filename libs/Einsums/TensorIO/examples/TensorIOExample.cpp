@@ -24,6 +24,8 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <filesystem>
+
 using namespace einsums;
 using namespace einsums::index;
 namespace cg   = einsums::compute_graph;
@@ -33,6 +35,11 @@ namespace ckpt = einsums::tensor_io::checkpoint;
 int einsums_main() {
     constexpr size_t N = 20;
 
+    // Portable temp paths (no hardcoded /tmp, which does not exist on Windows).
+    auto const example_path    = (std::filesystem::temp_directory_path() / "einsums_example.etn").string();
+    auto const checkpoint_path = (std::filesystem::temp_directory_path() / "einsums_checkpoint.etn").string();
+    auto const result_path     = (std::filesystem::temp_directory_path() / "einsums_result.etn").string();
+
     // ── 1. Basic TensorFile I/O ──────────────────────────────────────────
     einsums::println("=== 1. Basic TensorFile I/O ===");
 
@@ -40,14 +47,14 @@ int einsums_main() {
     auto B = create_random_tensor<double>("B", N, N);
 
     {
-        tio::TensorFile out("/tmp/einsums_example.etn", tio::TensorFile::Mode::Write);
+        tio::TensorFile out(example_path, tio::TensorFile::Mode::Write);
         out.write("A", A);
         out.write("B", B);
-        einsums::println("  Wrote {} tensors to /tmp/einsums_example.etn", out.num_tensors());
+        einsums::println("  Wrote {} tensors to {}", out.num_tensors(), example_path);
     }
 
     {
-        tio::TensorFile in("/tmp/einsums_example.etn", tio::TensorFile::Mode::Read);
+        tio::TensorFile in(example_path, tio::TensorFile::Mode::Read);
         einsums::println("  File contains: {}", fmt::join(in.tensor_names(), ", "));
         einsums::println("  A dims: {}x{}", in.dims("A")[0], in.dims("A")[1]);
     }
@@ -57,7 +64,7 @@ int einsums_main() {
 
     auto slice = Tensor<double, 2>("slice", 5, 5);
     {
-        tio::TensorFile in("/tmp/einsums_example.etn", tio::TensorFile::Mode::Read);
+        tio::TensorFile in(example_path, tio::TensorFile::Mode::Read);
         in.read_slice<double, 2>("A", slice, {{{0, 5}, {0, 5}}});
     }
     einsums::println("  Read 5x5 slice of A: A(0,0) = {:.6f}, slice(0,0) = {:.6f}", A(0, 0), slice(0, 0));
@@ -78,7 +85,7 @@ int einsums_main() {
     einsums::println("  C(0,0) = {:.6f} (after compute)", C(0, 0));
 
     // Save checkpoint
-    ckpt::save("/tmp/einsums_checkpoint.etn", graph);
+    ckpt::save(checkpoint_path, graph);
     einsums::println("  Saved checkpoint");
 
     // Corrupt C, then restore
@@ -86,7 +93,7 @@ int einsums_main() {
     C.zero();
     einsums::println("  C(0,0) = {:.6f} (after zeroing)", C(0, 0));
 
-    ckpt::restore("/tmp/einsums_checkpoint.etn", graph);
+    ckpt::restore(checkpoint_path, graph);
     einsums::println("  C(0,0) = {:.6f} (after restore)", C(0, 0));
     einsums::println("  Restored correctly: {}", C(0, 0) == saved ? "YES" : "NO");
 
@@ -99,9 +106,9 @@ int einsums_main() {
     {
         cg::CaptureGuard const guard(graph2);
         // Read A from file → compute D = A * B → write D to file
-        tio::read_etn("/tmp/einsums_example.etn", "A", &A);
+        tio::read_etn(example_path, "A", &A);
         cg::einsum("ik;kj->ij", &D, A, B);
-        tio::write_etn("/tmp/einsums_result.etn", "D", &D);
+        tio::write_etn(result_path, "D", &D);
     }
     graph2.execute();
 
@@ -109,9 +116,9 @@ int einsums_main() {
     einsums::println("  D(0,0) = {:.6f}", D(0, 0));
 
     // Cleanup
-    std::remove("/tmp/einsums_example.etn");
-    std::remove("/tmp/einsums_checkpoint.etn");
-    std::remove("/tmp/einsums_result.etn");
+    std::remove(example_path.c_str());
+    std::remove(checkpoint_path.c_str());
+    std::remove(result_path.c_str());
 
     einsums::println("\nDone!");
     return 0;
