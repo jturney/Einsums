@@ -61,21 +61,21 @@ race:einsums_main
 race:CounterBackend.hpp
 race:cxa_at_exit_callback_installed_at
 
-# --- HPTT (vendored High-Performance Tensor Transpose) parallel kernels ---
-# HPTT's Transpose<T>::execute_expert and Transpose<T>::create_plans wrap
-# their hot loop in `#pragma omp parallel for`. The body reads class members
-# (this->_A, this->_B, this->_innerStrideA, this->_perm, this->_sizeA, ...)
-# which live on the caller's stack frame, and writes to disjoint regions
-# of the output buffer, one taskId per worker. The reads are immutable for
-# the duration of the parallel region and the writes do not alias, so there
-# is no real race. TSan can't see libgomp's barrier, so it flags more than
-# 1500 reports, the bulk of v5's non-RNG total, across execute_expert (line
-# 1165), create_plans (lines 2065-2098), axpy_1D (1054), and
-# macro_kernel_scalar (429). This is the same libgomp-invisibility pattern as
-# einsums_main and CounterBackend above. Scope to the HPTT source tree so
-# we don't suppress hypothetical races elsewhere.
-race:HPTT/src/Transpose.cpp
-race:hptt::Transpose
-race:hptt::axpy_1D
-race:hptt::transpose_int
-race:hptt::macro_kernel_scalar
+# --- HPTT (vendored High-Performance Tensor Transpose) EXECUTION kernels ---
+# The transpose EXECUTION wraps its hot loop in `#pragma omp parallel`: worker
+# threads read the plan's immutable ComputeNodes and write to disjoint regions
+# of the output, one taskId per worker, and the main thread reads/destroys the
+# plan after the region. The reads are immutable and the writes do not alias, so
+# there is no real race - but libomp's barrier is invisible to TSan, which flags
+# the worker access against the main-thread access. Suppress by execution
+# function name; the multi-rung build namespaces these as hptt::arch_<rung>::...,
+# so a bare-name substring is used (the older hptt:: prefixes no longer matched).
+#
+# Plan CONSTRUCTION (create_plans) is now serial and is deliberately NOT
+# suppressed here - a real race in it, or anywhere else in Transpose.cpp outside
+# these named execution kernels, will surface instead of being blanket-hidden.
+race:execute_expert
+race:transpose_int
+race:axpy_1D
+race:axpy_2D
+race:macro_kernel

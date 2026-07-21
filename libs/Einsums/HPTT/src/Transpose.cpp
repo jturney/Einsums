@@ -2074,9 +2074,13 @@ void TransposeImpl<floatType>::create_plans(std::vector<std::shared_ptr<Plan>> &
                 auto      plan             = std::make_shared<Plan>(loopOrder, numThreadsAtLoop);
                 int const numTasks         = plan->get_num_tasks();
 
-#ifdef _OPENMP
-#    pragma omp parallel for num_threads(_numThreads) if (_numThreads > 1)
-#endif
+                // Plan construction is serial: it fills numTasks (~= _numThreads)
+                // ComputeNode chains of trivial integer arithmetic, so an OMP
+                // team here (once per candidate plan, up to hundreds) costs more
+                // in fork/join than it saves. Serial also removes the only
+                // benign-but-noisy TSan reports HPTT emitted outside the actual
+                // transpose kernels. (Execution - execute_expert/axpy/macro_kernel
+                // - stays threaded; that is where the parallelism pays off.)
                 for (int taskId = 0; taskId < numTasks; taskId++) {
                     ComputeNode *currentNode = plan->get_root_node(taskId);
 
