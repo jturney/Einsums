@@ -282,3 +282,52 @@ def test_python_callback_among_parallel_nodes():
         g.execute(ExecCls())
         np.testing.assert_allclose(np.asarray(C), a0 @ b0, rtol=1e-5)
         np.testing.assert_allclose(np.asarray(D), -d0, rtol=1e-5)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Exception safety: a Python callback that raises mid-contraction must
+# propagate cleanly (no hang, no crash/abort) and leave the executor reusable,
+# on every backend. On the parallel executors the throw originates on a worker
+# thread, so this also exercises the worker->caller exception handoff. The
+# analog of numpy's DestructoBox test. Run under the sanitizer leg it further
+# guards against leaking the partially-built result on the unwind.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class _Boom(Exception):
+    pass
+
+
+def _raise_on_nth(n):
+    """A per-element callback that raises _Boom on its n-th invocation."""
+    state = {"count": 0}
+
+    def fn(x):
+        state["count"] += 1
+        if state["count"] == n:
+            raise _Boom(f"boom at element {n}")
+        return x
+
+    return fn
+
+
+@pytest.mark.parametrize("ExecCls", EXECUTORS)
+@pytest.mark.parametrize("nth", [1, 8], ids=["first-element", "mid-contraction"])
+def test_python_callback_exception_propagates(ExecCls, nth):
+    A = einsums.create_random_tensor("A", [4, 4])  # 16 elements
+    g = cg.Graph(f"raise-{ExecCls.__name__}-{nth}")
+    with cg.capture(g):
+        einsums.linalg.element_transform(A, _raise_on_nth(nth))
+
+    # Clean propagation (wrapped as RuntimeError), not a hang or an abort.
+    with pytest.raises(RuntimeError, match="callback raised"):
+        g.execute(ExecCls())
+
+    # The executor and a fresh graph must still work after the throw.
+    B = einsums.create_random_tensor("B", [3, 3])
+    b0 = np.asarray(B).copy()
+    g2 = cg.Graph(f"after-throw-{ExecCls.__name__}-{nth}")
+    with cg.capture(g2):
+        einsums.linalg.element_transform(B, lambda x: 2.0 * x)
+    g2.execute(ExecCls())
+    np.testing.assert_allclose(np.asarray(B), 2.0 * b0, rtol=1e-5)
