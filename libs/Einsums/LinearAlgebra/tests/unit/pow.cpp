@@ -16,6 +16,23 @@ using namespace einsums;
 
 TEMPLATE_TEST_CASE("pow", "[linear-algebra]", float, double) {
 
+    // pow() reconstructs A^p through an eigendecomposition, then this test
+    // compares it against an independent path (a direct gemm for integer
+    // powers, a hand-built reference otherwise). The two paths accumulate
+    // rounding differently, so a flat WithinAbs(1e-5) was ~1.7e-6 relative at
+    // these magnitudes - far too tight for float32 (it tripped under the
+    // sanitizer build's altered rounding). A pure WithinRel would not work
+    // either: A has entries in [-1, 1), so A@A off-diagonals are cancellation
+    // sums that land near zero, where WithinRel's eps*|target| tolerance
+    // collapses to ~0. The combined matcher below scales with magnitude for
+    // large entries and keeps an absolute floor at zero; one pair of
+    // tolerances covers both float and double (double satisfies both
+    // trivially). It is spelled inline at each check because Catch2's matcher
+    // operator|| holds its operands by reference - a helper returning the
+    // combined matcher would dangle.
+    auto const rel_tol = TestType{1e-4};
+    auto const abs_tol = TestType{1e-5};
+
     SECTION("Integer power") {
 
         Tensor A = create_random_tensor<TestType>("A", 10, 10);
@@ -35,7 +52,7 @@ TEMPLATE_TEST_CASE("pow", "[linear-algebra]", float, double) {
 
         for (int i = 0; i < A.dim(0); i++) {
             for (int j = 0; j < A.dim(1); j++) {
-                CHECK_THAT(B(i, j), Catch::Matchers::WithinAbs(C(i, j), TestType{1e-5}));
+                CHECK_THAT(B(i, j), Catch::Matchers::WithinRel(C(i, j), rel_tol) || Catch::Matchers::WithinAbs(C(i, j), abs_tol));
             }
         }
     }
@@ -122,9 +139,9 @@ TEMPLATE_TEST_CASE("pow", "[linear-algebra]", float, double) {
 
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
-                CHECK_THAT(B(i, j), Catch::Matchers::WithinAbs(C(i, j), TestType{1e-4}));
-                CHECK_THAT(C(j, i), Catch::Matchers::WithinAbs(C(i, j), TestType{1e-4}));
-                CHECK_THAT(B(j, i), Catch::Matchers::WithinAbs(B(i, j), TestType{1e-4}));
+                CHECK_THAT(B(i, j), Catch::Matchers::WithinRel(C(i, j), rel_tol) || Catch::Matchers::WithinAbs(C(i, j), abs_tol));
+                CHECK_THAT(C(j, i), Catch::Matchers::WithinRel(C(i, j), rel_tol) || Catch::Matchers::WithinAbs(C(i, j), abs_tol));
+                CHECK_THAT(B(j, i), Catch::Matchers::WithinRel(B(i, j), rel_tol) || Catch::Matchers::WithinAbs(B(i, j), abs_tol));
             }
         }
     }
@@ -154,7 +171,7 @@ TEMPLATE_TEST_CASE("pow", "[linear-algebra]", float, double) {
 
         for (int i = 0; i < A.dim(0); i++) {
             for (int j = 0; j < A.dim(1); j++) {
-                CHECK_THAT(B(i, j), Catch::Matchers::WithinAbs(C(i, j), TestType{1e-5}));
+                CHECK_THAT(B(i, j), Catch::Matchers::WithinRel(C(i, j), rel_tol) || Catch::Matchers::WithinAbs(C(i, j), abs_tol));
             }
         }
     }
@@ -176,7 +193,7 @@ TEMPLATE_TEST_CASE("pow", "[linear-algebra]", float, double) {
 
         for (int i = 0; i < A.dim(0); i++) {
             for (int j = 0; j < A.dim(1); j++) {
-                CHECK_THAT(B(i, j), Catch::Matchers::WithinAbs(C(i, j), TestType{1e-5}));
+                CHECK_THAT(B(i, j), Catch::Matchers::WithinRel(C(i, j), rel_tol) || Catch::Matchers::WithinAbs(C(i, j), abs_tol));
             }
         }
     }
