@@ -53,6 +53,7 @@ set(ComputeGraphTests
     Pass_InplaceOptimization.cpp
     Pass_LinearCombinationContractionFolding.cpp
     Pass_StreamContractionFusion.cpp
+    SymmetrizedAccumulationMatch.cpp
     Pass_LoopInvariantHoisting.cpp
     Pass_Materialization.cpp
     Pass_MemoryPlanning.cpp

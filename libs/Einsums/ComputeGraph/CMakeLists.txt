@@ -33,6 +33,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/InplaceOptimization.hpp
     Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp
     Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp
+    Einsums/ComputeGraph/Passes/SymmetrizedAccumulation.hpp
     Einsums/ComputeGraph/Passes/StreamKernel.hpp
     Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp
     Einsums/ComputeGraph/Passes/MemoryPlanning.hpp
@@ -96,6 +97,7 @@ set(ComputeGraphSources
     Passes/GPUPlacement.cpp
     Passes/ScaleAbsorption.cpp
     Passes/StreamAssignment.cpp
+    Passes/SymmetrizedAccumulation.cpp
     Passes/SymmetryPropagation.cpp
     Passes/TransferElimination.cpp
     Passes/TransferInsertion.cpp

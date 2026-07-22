@@ -112,6 +112,7 @@
 #include <Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamAssignment.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
+#include <Einsums/ComputeGraph/Passes/SymmetrizedAccumulation.hpp>
 #include <Einsums/ComputeGraph/Passes/SymmetryPropagation.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
