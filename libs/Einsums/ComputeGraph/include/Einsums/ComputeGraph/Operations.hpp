@@ -937,17 +937,33 @@ APIARY_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<double>>,
     auto [x_id, x_slot] = ctx.get_slot(X);
     auto [y_id, y_slot] = ctx.get_slot(*Y);
 
+    using T = typename XType::ValueType;
+
+    // Live-mutable scalars shared with the executor (single source of truth:
+    // a pass that folds a scale into this axpby writes beta through params and
+    // the executor honors it on replay). The descriptor keeps the at-capture
+    // snapshot for analysis passes.
+    auto params   = std::make_shared<AxpbyParams>();
+    params->alpha = PrefactorScalar{alpha};
+    params->beta  = PrefactorScalar{beta};
+
     auto label    = fmt::format("axpby(alpha={}, beta={})", alpha, beta);
-    auto executor = [alpha, x_slot, beta, y_slot]() {
+    auto executor = [params, x_slot, y_slot]() {
         LabeledSection("axpby execute");
-        linear_algebra::axpby(alpha, *static_cast<XType const *>(x_slot->ptr), beta, static_cast<YType *>(y_slot->ptr));
+        linear_algebra::axpby(as<T>(params->alpha), *static_cast<XType const *>(x_slot->ptr), as<T>(params->beta),
+                              static_cast<YType *>(y_slot->ptr));
     };
+
+    AxpbyDescriptor desc;
+    desc.alpha  = params->alpha;
+    desc.beta   = params->beta;
+    desc.params = params;
 
     // Y = alpha*X + beta*Y reads its destination when beta != 0; same
     // out-tensor-as-input convention as gemm/direct_product (see axpy).
     std::vector<TensorId> axpby_inputs =
         (beta != typename XType::ValueType{0}) ? std::vector<TensorId>{x_id, y_id} : std::vector<TensorId>{x_id};
-    ctx.record(OpKind::Axpby, std::move(label), std::move(axpby_inputs), {y_id}, std::move(executor));
+    ctx.record(OpKind::Axpby, std::move(label), std::move(axpby_inputs), {y_id}, std::move(executor), std::move(desc));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

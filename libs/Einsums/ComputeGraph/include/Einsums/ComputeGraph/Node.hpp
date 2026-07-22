@@ -95,6 +95,25 @@ struct EinsumDescriptor {
     std::shared_ptr<GemmHint> gemm_hint;
 };
 
+/// Live-mutable scalar state for axpby (Y = alpha*X + beta*Y), shared with the
+/// executor lambda - the same snapshot + shared-params pattern as EinsumParams.
+/// The executor reads alpha/beta from here on every call, so a pass that folds a
+/// scale into an axpby writes beta through this handle and the change takes
+/// effect on the next `graph.execute()`. A snapshot-only descriptor would leave
+/// the executor reading a baked value (the desync of bug-1002).
+struct AxpbyParams {
+    PrefactorScalar alpha{double{1}};
+    PrefactorScalar beta{double{0}};
+};
+
+/// Metadata for Axpby nodes (Y = alpha*X + beta*Y). Prefactors are type-erased
+/// (PrefactorScalar) so complex axpby folds exactly, matching EinsumDescriptor.
+struct AxpbyDescriptor {
+    PrefactorScalar              alpha{double{1}}; ///< alpha snapshot (at-capture value)
+    PrefactorScalar              beta{double{0}};  ///< beta snapshot (at-capture value)
+    std::shared_ptr<AxpbyParams> params;           ///< live values the executor reads each call
+};
+
 /**
  * @brief Metadata for conditional (if-then-else) nodes.
  *
@@ -200,7 +219,7 @@ struct WriteParamDescriptor {
  */
 using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
                             AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor,
-                            BatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor>;
+                            BatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.

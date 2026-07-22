@@ -29,6 +29,7 @@ set(ComputeGraphTests
     DependencyOrder.cpp
     DistributedIntegration.cpp
     DistributiveFactoring.cpp
+    AxpbyDescriptor.cpp
     EinsumSpec.cpp
     Executor.cpp
     GEMMBatching.cpp
