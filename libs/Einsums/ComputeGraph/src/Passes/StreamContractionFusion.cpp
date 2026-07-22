@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
+#include <Einsums/ComputeGraph/Passes/StreamKernel.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
@@ -213,6 +214,10 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
 
     T const *s_data = S->data();
 
+    // Resolve the SIMD inner-loop kernel for this element type once (cached in
+    // the dispatch TU); every thread reads the same const pointer.
+    StreamInnerFn<T> const stream_inner = stream_inner_entry<T>();
+
     std::vector<std::vector<std::vector<T>>> thread_priv; // [thread][out_slot][elem]
 
 #ifdef _OPENMP
@@ -302,25 +307,15 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
                 }
             }
 
+            int64_t const ds = s_delta[rank - 1];
             for (int64_t q = q0; q < q1; q++) {
-                // Innermost walk: constant per-step deltas.
-                int64_t  si = s_off;
-                T const *sp = s_data;
+                // Innermost walk: the resolved SIMD kernel branches on this
+                // member's (ds, dc, dw) triple, vectorizing the unit-stride
+                // patterns and taking a scalar strided loop otherwise.
                 for (size_t k = 0; k < plans.size(); k++) {
-                    auto const   &p  = plans[k];
-                    T            *cb = p.direct ? p.out : priv[p.out_slot].data();
-                    int64_t const dc = p.cdelta[rank - 1];
-                    int64_t const dw = p.wdelta[rank - 1];
-                    int64_t       co = c_off[k];
-                    int64_t       wo = w_off[k];
-                    si               = s_off;
-                    int64_t const ds = s_delta[rank - 1];
-                    for (int64_t i = 0; i < inner_n; i++) {
-                        cb[co] += p.alpha * sp[si] * p.w[wo];
-                        si += ds;
-                        co += dc;
-                        wo += dw;
-                    }
+                    auto const &p  = plans[k];
+                    T          *cb = p.direct ? p.out : priv[p.out_slot].data();
+                    stream_inner(cb, s_data, p.w, p.alpha, inner_n, c_off[k], s_off, w_off[k], ds, p.cdelta[rank - 1], p.wdelta[rank - 1]);
                 }
 
                 // Odometer: advance the outer coordinates (bases stay put:

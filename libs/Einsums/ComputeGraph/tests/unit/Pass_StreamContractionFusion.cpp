@@ -365,3 +365,200 @@ TEST_CASE("StreamContractionFusion - complex elements with real prefactors", "[C
         }
     }
 }
+
+// The remaining cases target the four branches of the SIMD inner kernel
+// (StreamKernelBody.hpp) directly, over both real dtypes. Streamed tensors are
+// column-major, so the innermost storage axis is physical axis 0 (label i); the
+// (ds, dc, dw) triple for that axis then depends only on whether i appears in
+// each member's output C and weight W:
+//   i in C, not W  -> (1,1,0) scaled AXPY
+//   i in C and W   -> (1,1,1) Hadamard FMA
+//   i in W, not C  -> (1,0,1) dot reduction
+//   i in neither   -> (1,0,0) scalar fallback (also the path complex takes)
+// n^3 = 8000 clears the stream threshold; the n^2 / n outputs stay privatized.
+
+namespace {
+constexpr int kM = 20;
+
+template <typename T>
+RemoveComplexT<T> stream_tol() {
+    using R = RemoveComplexT<T>;
+    return std::is_same_v<R, float> ? R{1e-3} : R{1e-9};
+}
+} // namespace
+
+TEMPLATE_TEST_CASE("StreamContractionFusion - scaled AXPY branch (1,1,0)", "[ComputeGraph][Passes][StreamFusion]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using T = TestType;
+    auto S  = create_random_tensor<T>("S", kM, kM, kM);
+    auto W1 = create_random_tensor<T>("W1", kM, kM);
+    auto W2 = create_random_tensor<T>("W2", kM, kM);
+
+    // C(i,j) = sum_k S(i,j,k) * W(j,k): i (unit-stride axis) is in C, not W.
+    Tensor<T, 2> C1_ref("C1_ref", kM, kM), C2_ref("C2_ref", kM, kM);
+    einsum(T{0}, Indices{i, j}, &C1_ref, T{1}, Indices{i, j, k}, S, Indices{j, k}, W1);
+    einsum(T{0}, Indices{i, j}, &C2_ref, T{1}, Indices{i, j, k}, S, Indices{j, k}, W2);
+
+    RuntimeTensor<T> S_rt(S), W1_rt(W1), W2_rt(W2);
+    RuntimeTensor<T> C1_rt("C1", std::vector<size_t>{kM, kM}), C2_rt("C2", std::vector<size_t>{kM, kM});
+    C1_rt.zero();
+    C2_rt.zero();
+
+    cg::Graph graph("stream_axpy");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,j,k ; j,k", T{0}, &C1_rt, T{1}, S_rt, W1_rt);
+        cg::einsum("i,j <- i,j,k ; j,k", T{0}, &C2_rt, T{1}, S_rt, W2_rt);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::StreamContractionFusion>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 1);
+
+    graph.execute();
+
+    for (size_t ii = 0; ii < kM; ii++) {
+        for (size_t jj = 0; jj < kM; jj++) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), static_cast<ptrdiff_t>(jj)};
+            REQUIRE(std::abs(C1_rt(idx) - C1_ref(ii, jj)) < stream_tol<T>());
+            REQUIRE(std::abs(C2_rt(idx) - C2_ref(ii, jj)) < stream_tol<T>());
+        }
+    }
+}
+
+TEMPLATE_TEST_CASE("StreamContractionFusion - Hadamard FMA branch (1,1,1)", "[ComputeGraph][Passes][StreamFusion]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using T = TestType;
+    auto S  = create_random_tensor<T>("S", kM, kM, kM);
+    auto W1 = create_random_tensor<T>("W1", kM, kM);
+    auto W2 = create_random_tensor<T>("W2", kM, kM);
+
+    // C(i,j) = W(i,j) * sum_k S(i,j,k): i is in both C and W. Hand-computed
+    // reference (this pattern has no A-B link index, so the eager einsum path
+    // is not a reliable oracle for it).
+    Tensor<T, 2> C1_ref("C1_ref", kM, kM), C2_ref("C2_ref", kM, kM);
+    for (int a = 0; a < kM; a++) {
+        for (int b = 0; b < kM; b++) {
+            T s{0};
+            for (int c = 0; c < kM; c++) {
+                s += S(a, b, c);
+            }
+            C1_ref(a, b) = s * W1(a, b);
+            C2_ref(a, b) = s * W2(a, b);
+        }
+    }
+
+    RuntimeTensor<T> S_rt(S), W1_rt(W1), W2_rt(W2);
+    RuntimeTensor<T> C1_rt("C1", std::vector<size_t>{kM, kM}), C2_rt("C2", std::vector<size_t>{kM, kM});
+    C1_rt.zero();
+    C2_rt.zero();
+
+    cg::Graph graph("stream_hadamard");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,j,k ; i,j", T{0}, &C1_rt, T{1}, S_rt, W1_rt);
+        cg::einsum("i,j <- i,j,k ; i,j", T{0}, &C2_rt, T{1}, S_rt, W2_rt);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::StreamContractionFusion>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 1);
+
+    graph.execute();
+
+    for (size_t ii = 0; ii < kM; ii++) {
+        for (size_t jj = 0; jj < kM; jj++) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), static_cast<ptrdiff_t>(jj)};
+            REQUIRE(std::abs(C1_rt(idx) - C1_ref(ii, jj)) < stream_tol<T>());
+            REQUIRE(std::abs(C2_rt(idx) - C2_ref(ii, jj)) < stream_tol<T>());
+        }
+    }
+}
+
+TEMPLATE_TEST_CASE("StreamContractionFusion - dot-reduction branch (1,0,1)", "[ComputeGraph][Passes][StreamFusion]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using T = TestType;
+    auto S  = create_random_tensor<T>("S", kM, kM, kM);
+    auto W1 = create_random_tensor<T>("W1", kM, kM);
+    auto W2 = create_random_tensor<T>("W2", kM, kM);
+
+    // C(j) = sum_{i,k} S(i,j,k) * W(i,k): i (unit-stride axis) is in W, not C.
+    Tensor<T, 1> C1_ref("C1_ref", kM), C2_ref("C2_ref", kM);
+    einsum(T{0}, Indices{j}, &C1_ref, T{1}, Indices{i, j, k}, S, Indices{i, k}, W1);
+    einsum(T{0}, Indices{j}, &C2_ref, T{1}, Indices{i, j, k}, S, Indices{i, k}, W2);
+
+    RuntimeTensor<T> S_rt(S), W1_rt(W1), W2_rt(W2);
+    RuntimeTensor<T> C1_rt("C1", std::vector<size_t>{kM}), C2_rt("C2", std::vector<size_t>{kM});
+    C1_rt.zero();
+    C2_rt.zero();
+
+    cg::Graph graph("stream_reduction");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("j <- i,j,k ; i,k", T{0}, &C1_rt, T{1}, S_rt, W1_rt);
+        cg::einsum("j <- i,j,k ; i,k", T{0}, &C2_rt, T{1}, S_rt, W2_rt);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::StreamContractionFusion>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 1);
+
+    graph.execute();
+
+    for (size_t jj = 0; jj < kM; jj++) {
+        std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(jj)};
+        REQUIRE(std::abs(C1_rt(idx) - C1_ref(jj)) < stream_tol<T>());
+        REQUIRE(std::abs(C2_rt(idx) - C2_ref(jj)) < stream_tol<T>());
+    }
+}
+
+TEMPLATE_TEST_CASE("StreamContractionFusion - scalar fallback branch (1,0,0)", "[ComputeGraph][Passes][StreamFusion]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using T = TestType;
+    auto S  = create_random_tensor<T>("S", kM, kM, kM);
+    auto W1 = create_random_tensor<T>("W1", kM, kM);
+    auto W2 = create_random_tensor<T>("W2", kM, kM);
+
+    // C(j,k) = W(j,k) * sum_i S(i,j,k): i (unit-stride axis) is in neither C nor
+    // W, so the innermost axis matches no vectorized triple - the real scalar
+    // fallback (the same path complex elements take) runs. Hand-computed
+    // reference (no A-B link index, so the eager einsum is not a reliable
+    // oracle here).
+    Tensor<T, 2> C1_ref("C1_ref", kM, kM), C2_ref("C2_ref", kM, kM);
+    for (int b = 0; b < kM; b++) {
+        for (int c = 0; c < kM; c++) {
+            T s{0};
+            for (int a = 0; a < kM; a++) {
+                s += S(a, b, c);
+            }
+            C1_ref(b, c) = s * W1(b, c);
+            C2_ref(b, c) = s * W2(b, c);
+        }
+    }
+
+    RuntimeTensor<T> S_rt(S), W1_rt(W1), W2_rt(W2);
+    RuntimeTensor<T> C1_rt("C1", std::vector<size_t>{kM, kM}), C2_rt("C2", std::vector<size_t>{kM, kM});
+    C1_rt.zero();
+    C2_rt.zero();
+
+    cg::Graph graph("stream_fallback");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("j,k <- i,j,k ; j,k", T{0}, &C1_rt, T{1}, S_rt, W1_rt);
+        cg::einsum("j,k <- i,j,k ; j,k", T{0}, &C2_rt, T{1}, S_rt, W2_rt);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::StreamContractionFusion>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 1);
+
+    graph.execute();
+
+    for (size_t jj = 0; jj < kM; jj++) {
+        for (size_t kk = 0; kk < kM; kk++) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(jj), static_cast<ptrdiff_t>(kk)};
+            REQUIRE(std::abs(C1_rt(idx) - C1_ref(jj, kk)) < stream_tol<T>());
+            REQUIRE(std::abs(C2_rt(idx) - C2_ref(jj, kk)) < stream_tol<T>());
+        }
+    }
+}

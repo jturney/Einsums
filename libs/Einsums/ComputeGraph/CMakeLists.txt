@@ -33,6 +33,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/InplaceOptimization.hpp
     Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp
     Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp
+    Einsums/ComputeGraph/Passes/StreamKernel.hpp
     Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp
     Einsums/ComputeGraph/Passes/MemoryPlanning.hpp
     Einsums/ComputeGraph/Passes/InputSlicing.hpp
@@ -82,6 +83,7 @@ set(ComputeGraphSources
     Passes/InplaceOptimization.cpp
     Passes/LinearCombinationContractionFolding.cpp
     Passes/StreamContractionFusion.cpp
+    Passes/StreamKernelDispatch.cpp
     Passes/LoopInvariantHoisting.cpp
     Passes/MemoryPlanning.cpp
     Passes/InputSlicing.cpp
@@ -98,6 +100,18 @@ set(ComputeGraphSources
     Passes/TransferElimination.cpp
     Passes/TransferInsertion.cpp
     Pipeline.cpp
+)
+
+# StreamKernelImpl.cpp is the arch-generic stream-fusion inner kernel: it is
+# compiled once per SIMD-dispatch rung (each copy in its own namespace) rather
+# than as a regular module source. StreamKernelDispatch.cpp (a normal source)
+# bridges the copies to a runtime-selected entry point. See
+# Einsums/SIMD/RuntimeFeatures.hpp and Einsums_AddSIMDDispatch.cmake. No `sme`
+# rung is requested: the kernel is a bandwidth-bound streaming FMA that gains
+# nothing from the matrix unit.
+include(Einsums_AddSIMDDispatch)
+einsums_add_simd_dispatch_sources(
+  ComputeGraphStreamKernelRungs IMPL src/Passes/StreamKernelImpl.cpp RUNGS baseline v2 v3 v4
 )
 
 include(Einsums_AddModule)
@@ -117,8 +131,14 @@ einsums_add_module(
     Einsums_Logging
     Einsums_PackedGemm
     Einsums_Profile
+    Einsums_SIMD
     Einsums_TaskPool
     Einsums_Tensor
     Einsums_TensorAlgebra
   CMAKE_SUBDIRS examples tests tools
 )
+
+# Attach the generated per-rung wrapper sources (and the EINSUMS_SIMD_HAS_RUNG_*
+# definitions StreamKernelDispatch.cpp keys off) to the module target.
+target_sources(Einsums_ComputeGraph PRIVATE ${ComputeGraphStreamKernelRungs})
+target_compile_definitions(Einsums_ComputeGraph PRIVATE ${ComputeGraphStreamKernelRungs_DEFINITIONS})
