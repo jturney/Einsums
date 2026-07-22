@@ -229,6 +229,20 @@ TEST_CASE("parse_einsum_spec - error: no semicolon", "[ComputeGraph][EinsumSpec]
     CHECK(result.error().kind == GraphError::Kind::Parse);
 }
 
+TEST_CASE("parse_einsum_spec - error: non-alphanumeric index character", "[ComputeGraph][EinsumSpec]") {
+    // A comma-less operand is char-split, so a stray '@' / '$' / '.' used to
+    // become a silent index label and run a malformed contraction. The runtime
+    // parser now rejects it, matching the constexpr validate_einsum_spec (which
+    // already rejects e.g. "... kj!"). Numbered indices (digits) stay valid.
+    for (auto const *bad : {"i@ <- ij ; jk", "ij <- i$ ; $j", "i.. <- ij ; jk"}) {
+        auto result = parse_einsum_spec(bad);
+        CHECK_FALSE(result.has_value());
+        if (!result.has_value()) {
+            CHECK(result.error().kind == GraphError::Kind::Parse);
+        }
+    }
+}
+
 // ─── Constexpr validation ───────────────────────────────────────────────────
 
 TEST_CASE("validate_einsum_spec - valid specs", "[ComputeGraph][EinsumSpec]") {

@@ -7,6 +7,8 @@
 
 #include <fmt/format.h>
 
+#include <cctype>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -123,6 +125,30 @@ expected<ParsedEinsumSpec, GraphError> parse_einsum_spec(std::string_view spec) 
     result.b_indices = parse_index_group(b_part, has_commas(b_part));
     result.conj_a    = conj_a;
     result.conj_b    = conj_b;
+
+    // Index labels must be alphanumeric (letters, plus digits for numbered
+    // names like "i1"/"i2"). A comma-less operand is char-split, so without
+    // this a stray '@' / '%' / '$' / '.' silently becomes an index label and
+    // the contraction runs on a malformed spec (the "valid characters"
+    // guarantee in the header). Reject with a clear message.
+    auto const first_bad_char = [](std::vector<std::string> const &group) -> std::optional<std::string> {
+        for (auto const &idx : group) {
+            for (unsigned char const ch : idx) {
+                if (std::isalnum(ch) == 0) {
+                    return idx;
+                }
+            }
+        }
+        return std::nullopt;
+    };
+    for (auto const &[group, which] :
+         {std::pair{std::cref(result.c_indices), "output"}, std::pair{std::cref(result.a_indices), "first operand"},
+          std::pair{std::cref(result.b_indices), "second operand"}}) {
+        if (auto const bad = first_bad_char(group)) {
+            return unexpected(
+                GraphError::parse(fmt::format("einsum spec '{}': {} index '{}' has a non-letter character", spec, which, *bad)));
+        }
+    }
 
     if (result.a_indices.empty()) {
         return unexpected(GraphError::parse(fmt::format("einsum spec '{}': first operand has no indices", spec)));
