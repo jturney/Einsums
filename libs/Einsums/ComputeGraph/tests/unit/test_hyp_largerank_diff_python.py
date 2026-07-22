@@ -5,8 +5,10 @@
 
 Pushes more indices per role (batch / M / N / K) than the baseline einsum harness
 -- operands up to ~rank 6-7 -- with permuted (transposed) orders, small extents
-(1..4, total size bounded), real/complex dtypes and accumulation. Exercises the
-multi-K flatten / batched-gather / pack paths at depth. numpy.einsum is the oracle.
+(1..4, total size bounded), real/complex dtypes and accumulation, optionally a
+lone reduction index summed in one operand only (weighted trace, empty link).
+Exercises the multi-K flatten / batched-gather / pack paths at depth, plus the
+lone-summed path at rank. numpy.einsum is the oracle.
 
 Clean when mined (2500 examples 0 failures); guards the deep-rank paths.
 """
@@ -15,11 +17,12 @@ from __future__ import annotations
 import itertools
 
 import numpy as np
-from hypothesis import HealthCheck, assume, given, settings
+from hypothesis import HealthCheck, assume, example, given, settings
 from hypothesis import strategies as st
 
 import einsums
 import einsums.graph as cg
+from einsums.testing import assert_exact, integer_data
 
 _ctr = itertools.count()
 _LETTERS = "ijklmnpqrs"
@@ -66,22 +69,40 @@ def _prob(draw):
     a = draw(st.permutations(batch + mids + kids))
     b = draw(st.permutations(batch + kids + nids))
     c = draw(st.permutations(batch + mids + nids))
+    # Lone reduction index ("weighted trace"): a fresh letter in exactly one
+    # operand, absent from the other operand and from C - summed with no shared
+    # link, the empty-link/summed-index shape the K-only role model cannot emit
+    # (see the note in test_hyp_einsum_diff). Exercised here at larger rank.
+    lone_pool = [x for x in draw(st.permutations(list(_LETTERS))) if x not in L[:tot]]
+    n_lone    = draw(st.integers(0, min(2, len(lone_pool))))
+    for li in range(n_lone):
+        ln = lone_pool[li]
+        ext[ln] = draw(st.integers(1, 4))
+        if draw(st.booleans()):
+            ins = draw(st.integers(0, len(a)))
+            a = a[:ins] + [ln] + a[ins:]
+        else:
+            ins = draw(st.integers(0, len(b)))
+            b = b[:ins] + [ln] + b[ins:]
     return (a, b, c, ext, draw(st.sampled_from(["float64", "complex128"])),
             draw(st.sampled_from([0.0, 1.0])), draw(st.sampled_from([1.0, -2.0])),
             draw(st.booleans()), draw(st.booleans()))
 
 
-@given(prob=_prob())
-@settings(max_examples=350, deadline=None,
-          suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
-def test_hyp_largerank_diff(prob):
+def _run_largerank(prob, exact):
+    """Execute one deep-rank contraction and compare to numpy.
+
+    largerank already draws only float64/complex128 with integer prefactors, so
+    exact mode simply swaps random floats for integer_data and compares with
+    assert_exact (bit-exact) instead of a tolerance.
+    """
     a_idx, b_idx, c_idx, ext, dt, c_pf, ab_pf, va, vb = prob
     cplx = (dt == "complex128")
     rng = np.random.default_rng(0)
     assume(int(np.prod([ext[x] for x in set(a_idx) | set(b_idx) | set(c_idx)])) <= 20000)
-    A0 = _rnd([ext[x] for x in a_idx], cplx, rng)
-    B0 = _rnd([ext[x] for x in b_idx], cplx, rng)
-    C0 = _rnd([ext[x] for x in c_idx], cplx, rng)
+    gen = (lambda idx: integer_data([ext[x] for x in idx], dt, rng)) if exact \
+        else (lambda idx: _rnd([ext[x] for x in idx], cplx, rng))
+    A0, B0, C0 = gen(a_idx), gen(b_idx), gen(c_idx)
     np_spec = f"{''.join(a_idx)},{''.join(b_idx)}->{''.join(c_idx)}"
     oracle = c_pf * C0 + ab_pf * np.einsum(np_spec, A0, B0)
     es = f"{''.join(c_idx)} <- {''.join(a_idx)} ; {''.join(b_idx)}"
@@ -92,5 +113,26 @@ def test_hyp_largerank_diff(prob):
     with cg.capture(g):
         einsums.einsum(es, Ct, At, Bt, c_pf=c_pf, ab_pf=ab_pf)
     g.execute()
-    np.testing.assert_allclose(np.asarray(Ct), oracle, rtol=1e-8, atol=1e-9,
-        err_msg=f"{es} ext={ext} dt={dt} c_pf={c_pf} ab_pf={ab_pf} va={va} vb={vb}")
+    if exact:
+        assert_exact(np.asarray(Ct), oracle)
+    else:
+        np.testing.assert_allclose(np.asarray(Ct), oracle, rtol=1e-8, atol=1e-9,
+            err_msg=f"{es} ext={ext} dt={dt} c_pf={c_pf} ab_pf={ab_pf} va={va} vb={vb}")
+
+
+@given(prob=_prob())
+@settings(max_examples=350, deadline=None,
+          suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
+@example(prob=(["i", "j", "l"], ["m", "i", "l", "k"], ["i", "j", "k"],
+               {"i": 2, "j": 3, "k": 2, "l": 4, "m": 5}, "float64", 0.0, 1.0, False, False))  # link (l) + lone summed (m in B only): fast path dropped m before the guard
+def test_hyp_largerank_diff(prob):
+    _run_largerank(prob, exact=False)
+
+
+@given(prob=_prob())
+@settings(max_examples=250, deadline=None,
+          suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
+@example(prob=(["i", "j", "l"], ["m", "i", "l", "k"], ["i", "j", "k"],
+               {"i": 2, "j": 3, "k": 2, "l": 4, "m": 5}, "float64", 0.0, 1.0, False, False))  # link + lone, exact
+def test_hyp_largerank_diff_exact(prob):
+    _run_largerank(prob, exact=True)

@@ -18,9 +18,9 @@
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
-using namespace einsums::tensor_algebra;
 using namespace einsums::index;
 namespace cg = einsums::compute_graph;
+namespace ta = einsums::tensor_algebra;
 
 namespace {
 
@@ -65,7 +65,7 @@ TEST_CASE("cg parity - Hadamard diagonal outer ij<-ii;jj", "[ComputeGraph][Eager
     auto             B = create_random_tensor<double>("B", N, N);
 
     auto C_eager = create_zero_tensor<double>("Ce", N, N);
-    REQUIRE_NOTHROW(einsum(Indices{i, j}, &C_eager, Indices{i, i}, A, Indices{j, j}, B));
+    REQUIRE_NOTHROW(ta::einsum(Indices{i, j}, &C_eager, Indices{i, i}, A, Indices{j, j}, B));
 
     auto      C_graph = create_zero_tensor<double>("Cg", N, N);
     cg::Graph graph("hadamard_ii_jj");
@@ -84,7 +84,7 @@ TEST_CASE("cg parity - Hadamard rank-3 operands ij<-iij;jji", "[ComputeGraph][Ea
     auto             B = create_random_tensor<double>("B", N, N, N);
 
     auto C_eager = create_zero_tensor<double>("Ce", N, N);
-    REQUIRE_NOTHROW(einsum(Indices{i, j}, &C_eager, Indices{i, i, j}, A, Indices{j, j, i}, B));
+    REQUIRE_NOTHROW(ta::einsum(Indices{i, j}, &C_eager, Indices{i, i, j}, A, Indices{j, j, i}, B));
 
     auto      C_graph = create_zero_tensor<double>("Cg", N, N);
     cg::Graph graph("hadamard_iij_jji");
@@ -103,7 +103,7 @@ TEST_CASE("cg parity - Hadamard repeated output index iji<-iji;jij", "[ComputeGr
     auto             B = create_random_tensor<double>("B", N, N, N);
 
     auto C_eager = create_zero_tensor<double>("Ce", N, N, N);
-    REQUIRE_NOTHROW(einsum(Indices{i, j, i}, &C_eager, Indices{i, j, i}, A, Indices{j, i, j}, B));
+    REQUIRE_NOTHROW(ta::einsum(Indices{i, j, i}, &C_eager, Indices{i, j, i}, A, Indices{j, i, j}, B));
 
     auto      C_graph = create_zero_tensor<double>("Cg", N, N, N);
     cg::Graph graph("hadamard_iji");
@@ -122,7 +122,7 @@ TEST_CASE("cg parity - Hadamard diagonal accumulation ii<-ijk;jik", "[ComputeGra
     auto             B = create_random_tensor<double>("B", N, N, N);
 
     auto C_eager = create_zero_tensor<double>("Ce", N, N);
-    REQUIRE_NOTHROW(einsum(Indices{i, i}, &C_eager, Indices{i, j, k}, A, Indices{j, i, k}, B));
+    REQUIRE_NOTHROW(ta::einsum(Indices{i, i}, &C_eager, Indices{i, j, k}, A, Indices{j, i, k}, B));
 
     auto      C_graph = create_zero_tensor<double>("Cg", N, N);
     cg::Graph graph("hadamard_ii_sum");
@@ -136,6 +136,109 @@ TEST_CASE("cg parity - Hadamard diagonal accumulation ii<-ijk;jik", "[ComputeGra
 }
 
 // ---------------------------------------------------------------------------
+// Lone summed index ("weighted trace"): a letter in exactly one operand,
+// absent from C AND from the shared link. The graph/string path handles it -
+// string_einsum's has_lone_summed_index guard routes it to the repeat-aware
+// generic loop, which sums it. The eager typed-Indices dispatcher
+// (TensorAlgebra Backends/Dispatch.hpp) still MIS-HANDLES it, in two modes:
+// the empty-link case computes a wrong value (the lone axis is not summed),
+// and the shared-link case throws std::out_of_range on a stride access. The
+// graph cases assert correctness (guarding the string_einsum fix); the eager
+// cases are tagged [!shouldfail] until the eager dispatcher gains the same
+// guard - when it does, the run turns red here as a reminder to drop the tag.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// C(i,j) = (sum_k S(i,j,k)) * W(i,j)  -- empty link, lone k summed in A (P1).
+Tensor<double, 2> lone_empty_link_reference(Tensor<double, 3> const &S, Tensor<double, 2> const &W) {
+    Tensor<double, 2> ref{"ref", S.dim(0), S.dim(1)};
+    for (size_t a = 0; a < S.dim(0); ++a)
+        for (size_t b = 0; b < S.dim(1); ++b) {
+            double s = 0.0;
+            for (size_t c = 0; c < S.dim(2); ++c)
+                s += S(a, b, c);
+            ref(a, b) = s * W(a, b);
+        }
+    return ref;
+}
+
+// C(j,k) = sum_l sum_p A(j,l) * B(p,l,k)  -- shared link l, lone p summed in B.
+Tensor<double, 2> link_plus_lone_reference(Tensor<double, 2> const &A, Tensor<double, 3> const &B) {
+    Tensor<double, 2> ref{"ref", A.dim(0), B.dim(2)};
+    for (size_t jj = 0; jj < A.dim(0); ++jj)
+        for (size_t kk = 0; kk < B.dim(2); ++kk) {
+            double s = 0.0;
+            for (size_t ll = 0; ll < A.dim(1); ++ll)
+                for (size_t pp = 0; pp < B.dim(0); ++pp)
+                    s += A(jj, ll) * B(pp, ll, kk);
+            ref(jj, kk) = s;
+        }
+    return ref;
+}
+
+} // namespace
+
+TEST_CASE("cg parity - lone summed index empty link ij<-ijk;ij", "[ComputeGraph][EagerParity][lone-summed]") {
+    auto S   = create_random_tensor<double>("S", 3, 4, 5);
+    auto W   = create_random_tensor<double>("W", 3, 4);
+    auto ref = lone_empty_link_reference(S, W);
+
+    auto      C_graph = create_zero_tensor<double>("Cg", 3, 4);
+    cg::Graph graph("lone_empty_link");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ijk ; ij", &C_graph, S, W);
+    }
+    graph.execute();
+
+    require_close(C_graph, ref);
+}
+
+TEST_CASE("cg parity - lone summed index with shared link jk<-jl;plk", "[ComputeGraph][EagerParity][lone-summed]") {
+    auto A   = create_random_tensor<double>("A", 3, 4);
+    auto B   = create_random_tensor<double>("B", 2, 4, 5);
+    auto ref = link_plus_lone_reference(A, B);
+
+    auto      C_graph = create_zero_tensor<double>("Cg", 3, 5);
+    cg::Graph graph("link_plus_lone");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("jk <- jl ; plk", &C_graph, A, B);
+    }
+    graph.execute();
+
+    require_close(C_graph, ref);
+}
+
+TEST_CASE("eager BUG - lone summed index dropped empty link ij<-ijk;ij", "[ComputeGraph][EagerParity][lone-summed][!shouldfail]") {
+    // Eager typed-Indices path does not sum the lone k: wrong value. Drop the
+    // [!shouldfail] once Backends/Dispatch.hpp gains a lone-summed guard.
+    auto S   = create_random_tensor<double>("S", 3, 4, 5);
+    auto W   = create_random_tensor<double>("W", 3, 4);
+    auto ref = lone_empty_link_reference(S, W);
+
+    auto C_eager = create_zero_tensor<double>("Ce", 3, 4);
+    ta::einsum(Indices{i, j}, &C_eager, Indices{i, j, k}, S, Indices{i, j}, W);
+
+    require_close(C_eager, ref);
+}
+
+TEST_CASE("eager BUG - lone summed index dropped with shared link jk<-jl;plk", "[ComputeGraph][EagerParity][lone-summed][!shouldfail]") {
+    // Eager typed-Indices path throws std::out_of_range on the lone p here
+    // (stride access past the operand rank). Drop the [!shouldfail] once the
+    // eager dispatcher handles lone summed indices.
+    auto A   = create_random_tensor<double>("A", 3, 4);
+    auto B   = create_random_tensor<double>("B", 2, 4, 5);
+    auto ref = link_plus_lone_reference(A, B);
+
+    auto C_eager = create_zero_tensor<double>("Ce", 3, 5);
+    ta::einsum(Indices{j, k}, &C_eager, Indices{j, l}, A, Indices{p, l, k}, B);
+
+    require_close(C_eager, ref);
+}
+
+// ---------------------------------------------------------------------------
 // Gap 3: Khatri-Rao pattern (TensorAlgebra/KhatriRao.cpp parity)
 // ---------------------------------------------------------------------------
 
@@ -146,7 +249,7 @@ TEMPLATE_TEST_CASE("cg parity - Khatri-Rao einsum imr<-ir;mr", "[ComputeGraph][E
     auto             U_op = create_random_tensor<TestType>("U", M_dim, R_dim);
 
     auto C_eager = create_zero_tensor<TestType>("Ce", I_dim, M_dim, R_dim);
-    einsum(Indices{I, M, r}, &C_eager, Indices{I, r}, T_op, Indices{M, r}, U_op);
+    ta::einsum(Indices{I, M, r}, &C_eager, Indices{I, r}, T_op, Indices{M, r}, U_op);
 
     auto      C_graph = create_zero_tensor<TestType>("Cg", I_dim, M_dim, R_dim);
     cg::Graph graph("khatri_rao");
@@ -193,7 +296,7 @@ TEST_CASE("cg parity - outer product contiguous control ijk<-ij;k", "[ComputeGra
     auto B = create_random_tensor<double>("B", 5);
 
     auto C_eager = create_zero_tensor<double>("Ce", 3, 4, 5);
-    einsum(Indices{i, j, k}, &C_eager, Indices{i, j}, A, Indices{k}, B);
+    ta::einsum(Indices{i, j, k}, &C_eager, Indices{i, j}, A, Indices{k}, B);
 
     auto      C_graph = create_zero_tensor<double>("Cg", 3, 4, 5);
     cg::Graph graph("outer_contig");
@@ -289,7 +392,7 @@ TEST_CASE("cg aliasing - A and B sharing a tensor is allowed", "[ComputeGraph][E
     auto A = create_random_tensor<double>("A", 3, 3);
 
     auto expected = create_zero_tensor<double>("E", 3, 3);
-    einsum(Indices{i, j}, &expected, Indices{i, k}, A, Indices{k, j}, A);
+    ta::einsum(Indices{i, j}, &expected, Indices{i, k}, A, Indices{k, j}, A);
 
     auto      C = create_zero_tensor<double>("C", 3, 3);
     cg::Graph graph("alias_ab");
@@ -307,7 +410,7 @@ TEST_CASE("eager aliasing - typed-Indices dispatcher matches the policy", "[Comp
     auto B = create_random_tensor<double>("B", 4, 4);
 
     // Contraction with C as an input: rejected.
-    REQUIRE_THROWS_AS(einsum(Indices{i, j}, &C, Indices{i, k}, C, Indices{k, j}, B), std::invalid_argument);
+    REQUIRE_THROWS_AS(ta::einsum(Indices{i, j}, &C, Indices{i, k}, C, Indices{k, j}, B), std::invalid_argument);
 
     // Elementwise in-place (identical index lists): allowed and correct.
     auto D        = create_random_tensor<double>("D", 4, 4);
@@ -315,13 +418,13 @@ TEST_CASE("eager aliasing - typed-Indices dispatcher matches the policy", "[Comp
     for (size_t a = 0; a < 4; ++a)
         for (size_t b = 0; b < 4; ++b)
             expected(a, b) = D(a, b) * B(a, b);
-    REQUIRE_NOTHROW(einsum(Indices{i, j}, &D, Indices{i, j}, D, Indices{i, j}, B));
+    REQUIRE_NOTHROW(ta::einsum(Indices{i, j}, &D, Indices{i, j}, D, Indices{i, j}, B));
     require_close(D, expected);
 
     // A and B sharing a tensor: always allowed.
     auto A  = create_random_tensor<double>("A", 4, 4);
     auto C2 = create_zero_tensor<double>("C2", 4, 4);
-    REQUIRE_NOTHROW(einsum(Indices{i, j}, &C2, Indices{i, k}, A, Indices{k, j}, A));
+    REQUIRE_NOTHROW(ta::einsum(Indices{i, j}, &C2, Indices{i, k}, A, Indices{k, j}, A));
 }
 
 // ---------------------------------------------------------------------------
@@ -385,7 +488,7 @@ TEST_CASE("cg parity - sort-gemm batch scrambled pilj<-pjki;plk", "[ComputeGraph
     auto         B = create_random_tensor<double>("B", dp, dl, dk);
 
     auto C_eager = create_zero_tensor<double>("Ce", dp, di, dl, dj);
-    einsum(Indices{p, i, l, j}, &C_eager, Indices{p, j, k, i}, A, Indices{p, l, k}, B);
+    ta::einsum(Indices{p, i, l, j}, &C_eager, Indices{p, j, k, i}, A, Indices{p, l, k}, B);
 
     auto      C_graph = create_zero_tensor<double>("Cg", dp, di, dl, dj);
     cg::Graph graph("sort_gemm_scrambled");
@@ -405,7 +508,7 @@ TEST_CASE("cg parity - sort-gemm combined conjugation ilj<-conj(jki);conj(lk)", 
     auto         B = create_random_tensor<T>("B", dl, dk);
 
     auto C_eager = create_zero_tensor<T>("Ce", di, dl, dj);
-    einsum<true, true>(T{0.0}, Indices{i, l, j}, &C_eager, T{1.0}, Indices{j, k, i}, A, Indices{l, k}, B);
+    ta::einsum<true, true>(T{0.0}, Indices{i, l, j}, &C_eager, T{1.0}, Indices{j, k, i}, A, Indices{l, k}, B);
 
     auto      C_graph = create_zero_tensor<T>("Cg", di, dl, dj);
     cg::Graph graph("sort_gemm_conj");
@@ -451,7 +554,7 @@ TEST_CASE("cg parity - smart-pointer operands are eager-only", "[ComputeGraph][E
 
     // Eager: smart-pointer operand works.
     auto C_eager = create_zero_tensor<double>("Ce", 3, 3);
-    REQUIRE_NOTHROW(einsum(Indices{i, j}, &C_eager, Indices{i, k}, sp, Indices{k, j}, B));
+    REQUIRE_NOTHROW(ta::einsum(Indices{i, j}, &C_eager, Indices{i, k}, sp, Indices{k, j}, B));
 
     // Graph: capture the DEREFERENCED tensor - the supported spelling.
     cg::Graph graph("smart_ptr_deref");

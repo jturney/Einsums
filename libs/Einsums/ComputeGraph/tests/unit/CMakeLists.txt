@@ -95,6 +95,7 @@ set(ComputeGraphTests
     test_element_transform_python.py
     test_error_reporting_python.py
     test_executor_python.py
+    test_einsum_rejection_python.py
     test_fuzz_differential_python.py
     test_fuzz_ergonomics_python.py
     test_gemm_views_python.py

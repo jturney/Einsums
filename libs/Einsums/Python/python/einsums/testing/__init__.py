@@ -36,6 +36,17 @@ REAL_DTYPES: list[str] = ["float32", "float64"]
 COMPLEX_DTYPES: list[str] = ["complex64", "complex128"]
 ALL_DTYPES: list[str] = REAL_DTYPES + COMPLEX_DTYPES
 
+# Dtypes whose mantissa keeps integer-valued contractions exact at the sizes the
+# differential fuzzers use (see :func:`integer_data` / :func:`assert_exact`).
+# float32/complex64 are excluded: their 24-bit mantissa (2**24) is too small once
+# extents grow, so a large-but-valid contraction would round and break exactness.
+EXACT_DTYPES: list[str] = ["float64", "complex128"]
+
+# Prefactors that keep an integer-valued contraction integer-valued (no 0.5 or
+# fractional/complex scales). Covers no-accumulate (0), plain add (1), and a
+# sign-and-scale (-2) so the accumulate/sign structure is still exercised.
+EXACT_PREFACTORS: list[float] = [0.0, 1.0, -2.0]
+
 
 # Default rtol/atol per dtype. Picked to match the values that test files
 # were already passing by hand: f32/c64 paths lose precision through BLAS,
@@ -138,10 +149,74 @@ def assert_close(
     np.testing.assert_allclose(a, e, rtol=rtol, atol=atol)
 
 
+def integer_data(shape: Any, dtype: str, rng: Any, radius: int = 4) -> np.ndarray:
+    """Integer-valued sample data for exact (rounding-free) differential tests.
+
+    Draws integers in ``[-radius, radius]`` (complex dtypes get an integer real
+    part and an integer imaginary part) as the requested floating dtype. A
+    contraction over such data is bit-exact in float64/complex128 as long as no
+    intermediate magnitude exceeds ``2**53``, so the result can be compared with
+    :func:`assert_exact` instead of a tolerance -- turning a dropped axis or a
+    transposed tail block into a guaranteed mismatch rather than a small error a
+    relative tolerance can hide. This mirrors the integer-dtype battery in
+    numpy's own einsum tests, which einsums cannot use directly (it has no
+    integer tensor dtype).
+
+    :param shape: The output shape (any iterable of non-negative ints).
+    :param dtype: A floating dtype name from :data:`EXACT_DTYPES`.
+    :param rng: A :class:`numpy.random.Generator`.
+    :param radius: Values are drawn from ``[-radius, radius]`` inclusive.
+    :returns: A :class:`numpy.ndarray` of ``dtype`` holding integer values.
+    """
+    dt = np.dtype(dtype)
+    sz = tuple(shape)
+
+    def ints() -> np.ndarray:
+        return rng.integers(-radius, radius + 1, size=sz).astype(np.float64)
+
+    if dt.kind == "c":
+        return (ints() + 1j * ints()).astype(dt)
+    return ints().astype(dt)
+
+
+def assert_exact(actual: Any, expected: Any) -> None:
+    """Assert two integer-valued arrays are bit-for-bit equal.
+
+    For use with :func:`integer_data`. First verifies ``expected`` is
+    integer-valued: if a contraction ever overflowed the ``2**53`` exact-integer
+    range the reference would carry a fractional part, so this raises a clear
+    design error (reduce the :func:`integer_data` ``radius`` or the extents)
+    instead of a misleading value mismatch. Otherwise asserts exact equality,
+    which every kernel accumulation order must satisfy for rounding-free integer
+    inputs.
+
+    :param actual: The value produced by the code under test (array-like or an
+        einsums tensor; passed through :func:`numpy.asarray`).
+    :param expected: The reference value to compare against.
+    :raises AssertionError: If ``expected`` is not integer-valued, or if the two
+        arrays are not exactly equal.
+    """
+    a = np.asarray(actual)
+    e = np.asarray(expected)
+    rounded = np.rint(e.real)
+    if np.iscomplexobj(e):
+        rounded = rounded + 1j * np.rint(e.imag)
+    if not np.array_equal(e, rounded):
+        raise AssertionError(
+            "assert_exact: reference is not integer-valued -- the contraction exceeded the "
+            "2**53 exact range; reduce the integer_data radius or the extents"
+        )
+    np.testing.assert_array_equal(a, e)
+
+
 __all__ = [
     "REAL_DTYPES",
     "COMPLEX_DTYPES",
     "ALL_DTYPES",
+    "EXACT_DTYPES",
+    "EXACT_PREFACTORS",
     "tolerance_for",
     "assert_close",
+    "integer_data",
+    "assert_exact",
 ]

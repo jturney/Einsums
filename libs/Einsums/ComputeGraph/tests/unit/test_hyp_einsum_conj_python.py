@@ -34,6 +34,9 @@ _SPECS = [
     ("ij <- ii ; jj", "ii,jj->ij"),      # repeated letters: diagonals x conj
     ("ij <- iij ; jji", "iij,jji->ij"),  # repeated letters in rank-3 operands x conj
     ("j <- iik ; kj", "iik,kj->j"),      # trace letter (self-contraction) x conj
+    ("ij <- ijk ; ij", "ijk,ij->ij"),    # lone summed index (k in A only, empty link) x conj
+    ("jk <- jl ; mlk", "jl,mlk->jk"),    # shared link (l) + lone summed (m in B only) x conj
+    ("ij <- ij ; ijm", "ij,ijm->ij"),    # lone summed index in B (m) x conj
 ]
 
 _DTYPES = ["float32", "float64", "complex64", "complex128"]

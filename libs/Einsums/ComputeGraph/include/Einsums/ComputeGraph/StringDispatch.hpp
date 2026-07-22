@@ -434,6 +434,36 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         return;
     }
 
+    // Lone summed index ("weighted trace"): a letter in exactly one operand,
+    // absent from C AND from the shared links (which hold A-and-B letters
+    // only). It is a single-operand reduction - "ijk <- ijl ; milk" sums B
+    // over m - and no BLAS/PackedGemm call can express it: every fast path
+    // below classifies on links.size() and builds a spec over target + link
+    // indices only, so a lone index is neither iterated nor summed (PackedGemm
+    // pins it to 0, silently dropping the reduction). Only the generic loop is
+    // correct here; it adds such letters as summed axes (see the trace-letter
+    // handling in generic_string_einsum). This runs before every fast path so
+    // the empty-link case (P1-style "ij <- ijk ; ij", already correct) and the
+    // link+lone case (previously miscomputed) both route here.
+    auto const has_lone_summed_index = [&] {
+        for (auto const *idx : {&a_idx, &b_idx}) {
+            for (auto const &s : *idx) {
+                bool const in_c    = std::find(c_idx.begin(), c_idx.end(), s) != c_idx.end();
+                bool const in_link = std::find(links.begin(), links.end(), s) != links.end();
+                if (!in_c && !in_link) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    if (has_lone_summed_index()) {
+        ProfileAnnotate("dispatch", "generic_loop_lone_summed");
+        last_dispatch_route() = "generic_loop_lone_summed";
+        generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
+        return;
+    }
+
     // ── Rank-1 special-case BLAS fast paths ─────────────────────────────────
     // These call helpers (string_gemv_mat_vec, linear_algebra::ger, etc.)
     // that are themselves rank-specific (MatrixConcept / VectorConcept), so
