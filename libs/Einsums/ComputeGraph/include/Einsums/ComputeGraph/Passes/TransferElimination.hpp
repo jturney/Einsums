@@ -14,12 +14,8 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief GPU-offload cleanup pass: removes redundant H2D/D2H transfers and inserts budget evictions.
  *
- * @rst
- * .. note::
- *
- *    GPU offload is a work in progress. This pass runs only on GPU-enabled (or mock)
- *    builds, and the transfer/execution backend it targets is not yet complete.
- * @endrst
+ * @note GPU offload is a work in progress. This pass runs only on GPU-enabled (or mock)
+ *       builds, and the transfer/execution backend it targets is not yet complete.
  *
  * Simulates execution in topological order, tracking per-tensor residency and device-memory use, and
  * deletes transfer nodes that are already satisfied:

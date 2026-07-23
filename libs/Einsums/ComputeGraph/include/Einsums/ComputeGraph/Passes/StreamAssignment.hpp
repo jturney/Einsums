@@ -14,12 +14,8 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief StreamAssignment pass: assign nodes to execution streams for potential async overlap.
  *
- * @rst
- * .. note::
- *
- *    GPU offload is a work in progress. This pass runs only on GPU-enabled (or mock)
- *    builds, and execution is still synchronous (the stream tags are not yet acted on).
- * @endrst
+ * @note GPU offload is a work in progress. This pass runs only on GPU-enabled (or mock)
+ *       builds, and execution is still synchronous (the stream tags are not yet acted on).
  *
  * Transfer nodes (HostToDevice, DeviceToHost) are assigned to the transfer stream (stream_id = 1); all
  * other nodes - GPU-targeted Einsum/BLAS compute and CPU nodes alike - stay on the compute stream

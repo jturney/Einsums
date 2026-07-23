@@ -12,12 +12,8 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief Distributed-execution pass: inserts collective communication where partial results need combining.
  *
- * @rst
- * .. note::
- *
- *    Distributed (MPI) execution is a work in progress. This pass runs only on
- *    MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
- * @endrst
+ * @note Distributed (MPI) execution is a work in progress. This pass runs only on
+ *       MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
  *
  * The distributed analogue of @ref TransferInsertion. Walks the graph and, for any compute node
  * (Einsum, Scale, Axpy, …) that reads a distributed (non-replicated) input but writes a replicated

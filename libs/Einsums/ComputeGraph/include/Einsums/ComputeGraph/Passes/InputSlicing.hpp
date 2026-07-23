@@ -14,12 +14,8 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief Distributed-execution pass: slices pre-allocated inputs to match a distributed output.
  *
- * @rst
- * .. note::
- *
- *    Distributed (MPI) execution is a work in progress. This pass runs only on
- *    MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
- * @endrst
+ * @note Distributed (MPI) execution is a work in progress. This pass runs only on
+ *       MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
  *
  * When an einsum (or permute) has a distributed output — say C distributed along dim 0 — any
  * pre-allocated, non-distributed input that shares that index must be presented to each rank as only

@@ -15,12 +15,8 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief GPU-offload placement pass: flags graph nodes to execute on a GPU.
  *
- * @rst
- * .. note::
- *
- *    GPU offload is a work in progress. This pass runs only on GPU-enabled (or mock)
- *    builds, and the transfer/execution backend it targets is not yet complete.
- * @endrst
+ * @note GPU offload is a work in progress. This pass runs only on GPU-enabled (or mock)
+ *       builds, and the transfer/execution backend it targets is not yet complete.
  *
  * Walks the whole graph tree (including loop bodies and conditional branches, so a hot
  * GEMM inside an SCF loop is a candidate) and marks profitable BLAS/LAPACK ops and

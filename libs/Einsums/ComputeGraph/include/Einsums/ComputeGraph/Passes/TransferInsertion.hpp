@@ -14,12 +14,8 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief GPU-offload transfer pass: inserts HostToDevice / DeviceToHost nodes around GPU-placed ops.
  *
- * @rst
- * .. note::
- *
- *    GPU offload is a work in progress. This pass runs only on GPU-enabled (or mock)
- *    builds, and the transfer/execution backend it targets is not yet complete.
- * @endrst
+ * @note GPU offload is a work in progress. This pass runs only on GPU-enabled (or mock)
+ *       builds, and the transfer/execution backend it targets is not yet complete.
  *
  * Consumes the `Target::GPU` placement that @ref GPUPlacement produced and makes the graph
  * self-contained by materializing the copies each device op needs. For every GPU-targeted node:

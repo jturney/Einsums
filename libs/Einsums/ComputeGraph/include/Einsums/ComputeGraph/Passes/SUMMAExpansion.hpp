@@ -14,12 +14,8 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief Distributed-execution pass: rewrites SUMMA-distributed einsums into broadcast+GEMM loops.
  *
- * @rst
- * .. note::
- *
- *    Distributed (MPI) execution is a work in progress. This pass runs only on
- *    MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
- * @endrst
+ * @note Distributed (MPI) execution is a work in progress. This pass runs only on
+ *       MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
  *
  * When both inputs of an einsum are fully 2D-distributed with their contraction (link) index on the
  * grid, each rank's local block lacks the data for a direct GEMM. For nodes whose output

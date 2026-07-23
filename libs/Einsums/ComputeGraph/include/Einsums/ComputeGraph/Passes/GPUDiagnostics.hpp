@@ -15,12 +15,8 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief GPU-offload diagnostic pass: summarizes placement and transfers without mutating the graph.
  *
- * @rst
- * .. note::
- *
- *    GPU offload is a work in progress. This pass runs only on GPU-enabled (or mock)
- *    builds, and the transfer/execution backend it targets is not yet complete.
- * @endrst
+ * @note GPU offload is a work in progress. This pass runs only on GPU-enabled (or mock)
+ *       builds, and the transfer/execution backend it targets is not yet complete.
  *
  * A read-only reporting pass. It walks the whole graph tree (loop bodies and conditional branches
  * included) and aggregates:

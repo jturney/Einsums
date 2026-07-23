@@ -12,12 +12,8 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief Distributed-execution cleanup pass: removes redundant communication nodes.
  *
- * @rst
- * .. note::
- *
- *    Distributed (MPI) execution is a work in progress. This pass runs only on
- *    MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
- * @endrst
+ * @note Distributed (MPI) execution is a work in progress. This pass runs only on
+ *       MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
  *
  * The distributed analogue of @ref TransferElimination. Walks the node list in order, tracking which
  * tensors have already been reduced, and deletes a second `Allreduce` of a tensor that has not been

@@ -14,12 +14,8 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief Distribution-planning pass: chooses a process-grid layout for each deferred tensor.
  *
- * @rst
- * .. note::
- *
- *    Distributed (MPI) execution is a work in progress. This pass runs only on
- *    MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
- * @endrst
+ * @note Distributed (MPI) execution is a work in progress. This pass runs only on
+ *       MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
  *
  * For every tensor with `AllocState::Deferred`, decides between replication and 2D block
  * distribution over the `comm::ProcessGrid`, then annotates its `TensorHandle`

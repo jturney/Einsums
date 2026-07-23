@@ -12,12 +12,8 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief Distributed-execution pass: overlaps collective communication with computation.
  *
- * @rst
- * .. note::
- *
- *    Distributed (MPI) execution is a work in progress. This pass runs only on
- *    MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
- * @endrst
+ * @note Distributed (MPI) execution is a work in progress. This pass runs only on
+ *       MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
  *
  * The distributed analogue of `IOPrefetch` for disk I/O. It converts each synchronous `Allreduce` into
  * a two-phase asynchronous node using the tensor handle's `iallreduce_sum_fn`: `async_start` fires a
