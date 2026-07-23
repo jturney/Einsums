@@ -18,7 +18,7 @@ import einsums.graph as cg
 from _fuzz_diff_common import *  # shared fuzz/differential harness
 
 
-@pytest.mark.parametrize("seed", range(400))
+@pytest.mark.parametrize("seed", fuzz_seeds(400))
 def test_fuzz_random_pipeline(seed):
     """Apply a random *permutation* of the individually-sound passes (rather than
     the curated default order) and demand the result still matches the oracle.
@@ -45,7 +45,7 @@ def test_fuzz_random_pipeline(seed):
            [np.asarray(x).copy() for x in r3])
     _assert_pools(got, oracle, prog, "RANDOM-PIPELINE", extra=f"  order={order}")
 
-@pytest.mark.parametrize("seed", range(300))
+@pytest.mark.parametrize("seed", fuzz_seeds(300))
 def test_fuzz_random_pipeline_replay(seed):
     """The meanest combination: optimize with a random pass order, then
     execute twice. A randomly-optimized graph must still replay correctly;

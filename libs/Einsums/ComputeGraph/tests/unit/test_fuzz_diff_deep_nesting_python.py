@@ -19,7 +19,7 @@ from _fuzz_diff_common import *  # shared fuzz/differential harness
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
-@pytest.mark.parametrize("seed", range(120))
+@pytest.mark.parametrize("seed", fuzz_seeds(120))
 def test_fuzz_deep_nesting(seed, dtype):
     rng = np.random.default_rng(50_000 + seed)
     prog = _gen_block(rng, depth=4, max_stmts=4)

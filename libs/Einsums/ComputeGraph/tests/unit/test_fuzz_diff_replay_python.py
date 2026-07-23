@@ -18,7 +18,7 @@ import einsums.graph as cg
 from _fuzz_diff_common import *  # shared fuzz/differential harness
 
 
-@pytest.mark.parametrize("seed", range(300))
+@pytest.mark.parametrize("seed", fuzz_seeds(300))
 def test_fuzz_reexecution(seed):
     """Execute the optimized graph twice without resetting inputs and compare to
     the oracle applied twice. Iterative solvers replay a graph repeatedly, so a
@@ -40,7 +40,7 @@ def test_fuzz_reexecution(seed):
            [np.asarray(x).copy() for x in r3])
     _assert_pools(got, oracle, prog, "REEXECUTED")
 
-@pytest.mark.parametrize("seed", range(200))
+@pytest.mark.parametrize("seed", fuzz_seeds(200))
 def test_fuzz_double_optimize(seed):
     """Apply the default pass manager twice before executing. A non-idempotent
     pass (one that doesn't reach a fixpoint, or that mis-handles its own prior

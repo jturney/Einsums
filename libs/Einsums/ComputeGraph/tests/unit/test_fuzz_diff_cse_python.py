@@ -118,7 +118,7 @@ def test_regression_cse_two_level_chain():
     _check_cse(prog, _sq_pool(np.random.default_rng(14), 8), [], [], "cse_two_level_chain", dead_m={4, 5})
 
 
-@pytest.mark.parametrize("seed", range(200))
+@pytest.mark.parametrize("seed", fuzz_seeds(200))
 def test_fuzz_cse_redundant(seed):
     """Randomized diamonds: a write-once duplicate (einsum/perm) plus a randomly
     chosen surviving consumer, over a square pool so all shapes are compatible.

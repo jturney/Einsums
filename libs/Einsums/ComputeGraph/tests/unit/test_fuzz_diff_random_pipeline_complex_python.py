@@ -18,7 +18,7 @@ import einsums.graph as cg
 from _fuzz_diff_common import *  # shared fuzz/differential harness
 
 
-@pytest.mark.parametrize("seed", range(250))
+@pytest.mark.parametrize("seed", fuzz_seeds(250))
 def test_fuzz_random_pipeline_complex(seed):
     """Random pass-pipeline permutation over complex128 tensors, the strongest
     interaction test on the complex paths through every pass."""

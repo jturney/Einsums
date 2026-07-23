@@ -197,7 +197,7 @@ def _check_scratch_program(prog, m_arrays, n_scratch, n, label):
                 )
 
 
-@pytest.mark.parametrize("seed", range(60))
+@pytest.mark.parametrize("seed", fuzz_seeds(60))
 def test_fuzz_graph_scratch_in_control_flow(seed):
     """Arm A: parent-declared scratch produced and consumed inside a loop /
     conditional body (default pipeline, Sequential + parallel executors)."""
@@ -211,7 +211,7 @@ def test_fuzz_graph_scratch_in_control_flow(seed):
     _check_scratch_program(prog, m_arrays, n_scratch, n, f"scr{seed}")
 
 
-@pytest.mark.parametrize("seed", range(60))
+@pytest.mark.parametrize("seed", fuzz_seeds(60))
 def test_fuzz_graph_scratch_after_conditional(seed):
     """Arm C: parent-declared scratch defined in both branches of a conditional
     and consumed after it (default pipeline, Sequential + parallel executors)."""

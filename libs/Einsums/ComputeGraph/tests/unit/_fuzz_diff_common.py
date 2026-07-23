@@ -66,12 +66,72 @@ Data-dependent branching is covered by the dedicated SCF/MP2 tests.
 
 from __future__ import annotations
 
+import ctypes
+import os
+import warnings
+
 import numpy as np
 import pytest
 
 import einsums
 import einsums.graph as cg
 import einsums._core.graph as _G  # pass classes / Workspace, re-exported for shards
+
+# ──────────────────────────────────────────────────────────────────────────
+# Sample-count scaling under sanitizers.
+#
+# Every fuzz case runs 30-50x slower under a sanitizer (ThreadSanitizer /
+# AddressSanitizer), so a shard's full seed sweep that is seconds on a normal
+# build becomes many minutes. A sanitizer run only needs SOME executions to
+# trip a race / leak / UB, not the whole sweep, so the shards cap their seed
+# range when a sanitizer runtime is active. The number of dtypes and the
+# structural coverage are unchanged; only the per-test seed COUNT shrinks.
+#
+# Detection keys on the sanitizer *runtime* being loaded (the thing that makes
+# it slow), not on a build flag: TSan/ASan export __tsan_init / __asan_init into
+# the global symbol table, so they resolve here whether the run came through
+# ctest or a manual preload. ``EINSUMS_FUZZ_MAX_SEEDS`` overrides the cap
+# explicitly (0 = no cap, i.e. always run the full sweep).
+# ──────────────────────────────────────────────────────────────────────────
+
+_SANITIZER_SEED_CAP = 24  # seeds per test under a sanitizer (was hundreds)
+
+
+def _sanitizer_runtime_active() -> bool:
+    try:
+        main = ctypes.CDLL(None)
+    except OSError:
+        return False
+    return any(hasattr(main, sym) for sym in ("__tsan_init", "__asan_init"))
+
+
+def _seed_cap() -> int | None:
+    """The per-test seed cap, or None for no cap. Env override wins; otherwise a
+    sanitizer run caps, a normal run does not."""
+    env = os.environ.get("EINSUMS_FUZZ_MAX_SEEDS")
+    if env is not None:
+        cap = int(env)
+        return None if cap <= 0 else cap
+    return _SANITIZER_SEED_CAP if _sanitizer_runtime_active() else None
+
+
+_ACTIVE_SEED_CAP = _seed_cap()
+if _ACTIVE_SEED_CAP is not None:
+    # Not silent: pytest surfaces this in its warnings summary, so a capped run
+    # always announces that it is not the full sweep.
+    warnings.warn(
+        f"fuzz seed sweeps capped at {_ACTIVE_SEED_CAP} per test under a sanitizer "
+        f"run; set EINSUMS_FUZZ_MAX_SEEDS=0 to run the full sweep",
+        stacklevel=2,
+    )
+
+
+def fuzz_seeds(n: int):
+    """``range`` of seeds for a fuzz test: the full ``range(n)`` normally, a
+    capped range under a sanitizer run (or an explicit ``EINSUMS_FUZZ_MAX_SEEDS``).
+    Evaluated at collection time, so the reduced set shows up in the item count."""
+    return range(n if _ACTIVE_SEED_CAP is None else min(n, _ACTIVE_SEED_CAP))
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Pool layout, fixed so the generator and the per-trial seed arrays agree.
@@ -702,6 +762,7 @@ def _assert_pools(got, oracle, prog, label, extra=""):
 
 
 __all__ = [
+    'fuzz_seeds',
     'DIMS',
     'R3_DIMS',
     'COPIES',

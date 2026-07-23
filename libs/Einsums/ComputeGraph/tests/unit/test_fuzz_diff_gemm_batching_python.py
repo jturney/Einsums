@@ -25,7 +25,7 @@ from _fuzz_diff_common import *  # shared fuzz/differential harness
 # ══════════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.parametrize("seed", range(100))
+@pytest.mark.parametrize("seed", fuzz_seeds(100))
 def test_fuzz_gemm_batching_with_consumers(seed):
     """N identical (batchable) contractions into distinct user-visible
     outputs, then a consumer reading a randomly chosen member's output, and

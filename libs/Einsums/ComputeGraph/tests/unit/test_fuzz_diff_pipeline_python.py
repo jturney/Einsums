@@ -88,7 +88,7 @@ def test_regression_pipeline_three_stage_chain():
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
-@pytest.mark.parametrize("seed", range(150))
+@pytest.mark.parametrize("seed", fuzz_seeds(150))
 def test_fuzz_pipeline(seed, dtype):
     rng = np.random.default_rng(160_000 + seed)
     n_stages = int(rng.integers(2, 5))

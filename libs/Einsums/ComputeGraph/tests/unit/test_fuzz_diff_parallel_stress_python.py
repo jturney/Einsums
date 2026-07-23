@@ -41,7 +41,7 @@ _STRESS_REPS = 30
 _PARALLEL_EXECUTORS = [("OpenMP", cg.OpenMPExecutor), ("Dataflow", cg.DataflowExecutor)]
 
 
-@pytest.mark.parametrize("seed", range(40))
+@pytest.mark.parametrize("seed", fuzz_seeds(40))
 def test_fuzz_parallel_executor_stress(seed):
     rng = np.random.default_rng(110_000 + seed)
     prog = _gen_block(rng, depth=2, max_stmts=12)
@@ -98,7 +98,7 @@ _FREE_N = 385  # 385*385*8 B = 1.13 MiB: over FreeInsertion's 1 MiB floor
 _FREE_REPS = 8
 
 
-@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("seed", fuzz_seeds(6))
 def test_fuzz_free_lifecycle_parallel_stress(seed):
     rng = np.random.default_rng(150_000 + seed)
     n = _FREE_N
@@ -205,7 +205,7 @@ def check_program_raises(prog, m_arrays, v_arrays, t_arrays, label):
     "Surfaced on Linux gcc+openblas CI as a mid-pytest subprocess abort. Tracked in "
     "alongside the control-flow variant."
 )
-@pytest.mark.parametrize("seed", range(120))
+@pytest.mark.parametrize("seed", fuzz_seeds(120))
 def test_fuzz_executor_propagates_exception(seed):
     rng = np.random.default_rng(60_000 + seed)
     prog = _gen_block(rng, depth=0, max_stmts=8)
@@ -219,7 +219,7 @@ def test_fuzz_executor_propagates_exception(seed):
     "EDEADLK that only triggers when this case cycles seq+omp+df in one process — a "
     "fuzz-only pattern; real callers pick one executor."
 )
-@pytest.mark.parametrize("seed", range(80))
+@pytest.mark.parametrize("seed", fuzz_seeds(80))
 def test_fuzz_executor_propagates_exception_control_flow(seed):
     rng = np.random.default_rng(65_000 + seed)
     prog = _gen_block(rng, depth=3, max_stmts=6)

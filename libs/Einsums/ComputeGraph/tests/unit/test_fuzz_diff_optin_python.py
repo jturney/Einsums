@@ -160,7 +160,7 @@ def _run_df(prog, m, v, t, name):
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
-@pytest.mark.parametrize("seed", range(100))
+@pytest.mark.parametrize("seed", fuzz_seeds(100))
 def test_fuzz_optin_lccf(seed, dtype):
     """Random program embedding an LCCF-foldable group plus random control-flow
     filler, run through LinearCombinationContractionFolding + the default
@@ -203,7 +203,7 @@ def test_fuzz_optin_lccf(seed, dtype):
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
-@pytest.mark.parametrize("seed", range(100))
+@pytest.mark.parametrize("seed", fuzz_seeds(100))
 def test_fuzz_optin_distributive_factoring(seed, dtype):
     """Random program embedding a DistributiveFactoring-factorable group plus
     random control-flow filler, run through DistributiveFactoring + the default

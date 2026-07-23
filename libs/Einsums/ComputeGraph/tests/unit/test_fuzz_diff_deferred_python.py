@@ -202,28 +202,28 @@ def test_regression_deferred_loop_accumulate_then_read():
     check_program_deferred(prog, *_square_seed_arrays(np.random.default_rng(31337)), "def_accum")
 
 
-@pytest.mark.parametrize("seed", range(250))
+@pytest.mark.parametrize("seed", fuzz_seeds(250))
 def test_fuzz_deferred(seed):
     rng = np.random.default_rng(120_000 + seed)
     prog = _gen_block(rng, depth=2, max_stmts=6)
     check_program_deferred(prog, *_seed_arrays(rng), f"def{seed}")
 
 
-@pytest.mark.parametrize("seed", range(150))
+@pytest.mark.parametrize("seed", fuzz_seeds(150))
 def test_fuzz_deferred_complex(seed):
     rng = np.random.default_rng(130_000 + seed)
     prog = _gen_block(rng, depth=2, max_stmts=6)
     check_program_deferred(prog, *_seed_arrays(rng, "complex128"), f"cdef{seed}")
 
 
-@pytest.mark.parametrize("seed", range(200))
+@pytest.mark.parametrize("seed", fuzz_seeds(200))
 def test_fuzz_deferred_replay(seed):
     rng = np.random.default_rng(140_000 + seed)
     prog = _gen_block(rng, depth=2, max_stmts=6)
     check_program_deferred_replay(prog, *_seed_arrays(rng), f"defr{seed}")
 
 
-@pytest.mark.parametrize("seed", range(150))
+@pytest.mark.parametrize("seed", fuzz_seeds(150))
 def test_fuzz_deferred_replay_complex(seed):
     rng = np.random.default_rng(150_000 + seed)
     prog = _gen_block(rng, depth=2, max_stmts=6)
