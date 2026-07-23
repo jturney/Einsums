@@ -251,7 +251,7 @@ TEST_CASE("ContractionPlanning - user-visible interior blocks restructuring", "[
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Runtime-tensor chain stays analysis-only (bug-1015 class)
+// Runtime-tensor chain stays analysis-only
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TEST_CASE("ContractionPlanning - runtime-tensor chain stays analysis-only", "[ComputeGraph][Passes][CP]") {

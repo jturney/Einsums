@@ -64,7 +64,7 @@ bool foldable_einsum_operand(Node const &node, TensorId tensor) {
     }
     auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
     if (desc == nullptr || desc->params == nullptr) {
-        return false; // no live params: folding into the descriptor alone would desync (bug-1002)
+        return false; // no live params: folding into the descriptor alone would desync
     }
     return std::ranges::count(node.inputs, tensor) == 1;
 }

@@ -23,8 +23,7 @@ They stress the read-modify-write hazards under capture plus the alias-aware
 scheduler that the optimization passes rely on.
 
 Seed range note: the committed range of 200 seeds is green on all four arms.
-It used to be capped at 80 to dodge bug-optimizer-scale-view-alias. A
-view-of-a-view such as ``(A.T)[1:]`` created inside capture took an eager
+A view-of-a-view such as ``(A.T)[1:]`` created inside capture took an eager
 raw-slice path with ``aliases == 0``, so the scheduler (Reorder) couldn't see
 that a reduction over it depended on an in-place ``Scale`` of the owning
 tensor and floated the read ahead of the write. The fix wired slicing a view

@@ -100,7 +100,7 @@ struct EinsumDescriptor {
 /// The executor reads alpha/beta from here on every call, so a pass that folds a
 /// scale into an axpby writes beta through this handle and the change takes
 /// effect on the next `graph.execute()`. A snapshot-only descriptor would leave
-/// the executor reading a baked value (the desync of bug-1002).
+/// the executor reading a baked value.
 struct AxpbyParams {
     PrefactorScalar alpha{double{1}};
     PrefactorScalar beta{double{0}};

@@ -487,7 +487,7 @@ APIARY_INSTANTIATE_AS("view", einsums::GeneralRuntimeTensor<std::complex<double>
 // parent-aliasing, or the slice falls back to a raw eager view with
 // aliases == 0, invisible to the scheduler's alias resolution, so a
 // reduction over it can be reordered ahead of an in-place write to the
-// owning tensor (bug-optimizer-scale-view-alias).
+// owning tensor.
 APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<std::complex<float>>)

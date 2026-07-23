@@ -1977,7 +1977,7 @@ def test_fuzz_gemm_batching_with_consumers(seed):
 # Both passes fold and EXECUTE correctly on the Python (runtime-tensor) path, so
 # both are fuzzed end-to-end below against the numpy oracle.
 #
-# --- Fixed: DistributiveFactoring runtime execution (bug-1201) -----------------
+# --- Fixed: DistributiveFactoring runtime execution ---------------------------
 # DF's rewrite used to build the "sum of non-shared operands" accumulator with
 # Graph::create_tensor_dynamic(), a COMPILE-TIME Tensor<T,Rank>; on a Python graph
 # whose tensors are GeneralRuntimeTensor<T> the axpy chain then added a runtime
@@ -1986,13 +1986,13 @@ def test_fuzz_gemm_batching_with_consumers(seed):
 # runtime, and dispatch_binary/dispatch_unary cast runtime handles correctly, so
 # the rewrite executes on runtime tensors and is fuzzed with full execution below.
 #
-# --- Fixed: DistributiveFactoring program order (bug-1200) --------------------
+# --- Fixed: DistributiveFactoring program order -------------------------------
 # DF used to APPEND the combined node; when a later op read a factored tensor the
 # replacement writer landed after the reader and the pass verifier rejected it. DF
 # now places the combined node at the first replaced node's slot (like GEMMBatching
 # / LCCF), so downstream readers observe the written result.
 #
-# --- Fixed: counter reset under recursion (bug-1202) --------------------------
+# --- Fixed: counter reset under recursion -------------------------------------
 # DF used to expose num_groups / num_eliminated as zero on control-flow graphs:
 # recurse_into_subgraphs() was true and run() reset the counters, so PassManager
 # recursion into subgraphs clobbered the top-level tally with the LAST subgraph's.
@@ -2188,7 +2188,7 @@ def test_fuzz_optin_distributive_factoring(seed, dtype):
 
 
 def test_distributive_factoring_preserves_program_order():
-    """Regression for bug-1200: DistributiveFactoring places its combined node at
+    """Regression: DistributiveFactoring places its combined node at
     the first replaced node's slot (like GEMMBatching / LCCF), so a later op that
     reads a factored tensor still observes the written result. The graph's own pass
     verifier (check_observed_writes) accepts the rewrite, and execution matches the
@@ -2228,7 +2228,7 @@ def test_distributive_factoring_preserves_program_order():
 
 
 def test_distributive_factoring_executes_on_runtime_tensor():
-    """Regression for bug-1201: DistributiveFactoring builds a RUNTIME accumulator
+    """Regression: DistributiveFactoring builds a RUNTIME accumulator
     when its operands are runtime tensors, so a DF-rewritten Python graph executes
     and matches the numpy oracle. Same (4,3)*(3,5)->(4,5) shape the C++ unit test
     uses. (Previously the axpy chain added a runtime source into a compile-time

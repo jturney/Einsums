@@ -54,7 +54,7 @@ bool DistributiveFactoring::run(Graph &graph) {
     // Own the recursion (like LoopInvariantHoisting): reset the counters once
     // here at the root, then descend ourselves. If we instead opted into
     // PassManager auto-recursion, run() would be re-invoked per subgraph and
-    // reset the top-level tally each time (bug-1202). recurse_into_subgraphs()
+    // reset the top-level tally each time. recurse_into_subgraphs()
     // returns false so the PassManager does not double-walk.
     _num_groups     = 0;
     _num_eliminated = 0;
@@ -223,7 +223,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         // any consumer of the factored output. Position IS program order in this
         // IR, so appending the writer would let a later reader of the output run
         // first and observe a stale buffer, and the PassManager's program-order
-        // verifier (check_observed_writes) would reject the rewrite (bug-1200).
+        // verifier (check_observed_writes) would reject the rewrite.
         // The slot move is only sound when no OTHER node between the first and last
         // member reads/writes the output (would observe/clobber the partial sum)
         // or writes the shared / non-shared operands (would change a factor
@@ -285,7 +285,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         // graph a Tensor<T, Rank>. Require every summed operand to share that kind
         // and build a matching accumulator, so make_zero/make_axpy dispatch
         // correctly - a compile-time accumulator fed runtime operands rank-errors
-        // at execute on any Python-captured graph (bug-1201).
+        // at execute on any Python-captured graph.
         bool const operands_runtime = ref_handle.is_runtime;
         bool       kinds_uniform    = true;
         for (auto const &c : available) {

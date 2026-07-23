@@ -92,7 +92,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      *
      * The validator in ``PassManager::run`` throws when a read that observed an
      * in-graph writer flips to observing the tensor's initial contents - the
-     * writer-removed-under-a-reader bug class (bug-1012). A pass that removes a
+     * writer-removed-under-a-reader bug class. A pass that removes a
      * writer and instead COMPENSATES the reader (e.g. ScaleAbsorption deleting a
      * ``scale`` and folding its factor into a downstream einsum's
      * ``ab_prefactor``, so the read is exact despite losing the writer) declares

@@ -153,11 +153,11 @@ def test_captured_mp2_iajb_via_slicing():
 
 def test_captured_slice_of_view_aliases_parent_chain():
     """Slicing a view (``(A.T)[1:]``) must route through cg.view too, so the
-    sub-view aliases the parent chain. Regression for
-    bug-optimizer-scale-view-alias: the slice used to take a raw eager path
-    with ``aliases == 0``, so a reduction over it had no dependency on an
-    in-place ``Scale`` of the owning tensor and the optimizer's Reorder pass
-    floated the read ahead of the write, reading unscaled data."""
+    sub-view aliases the parent chain. Regression: the slice used to take a
+    raw eager path with ``aliases == 0``, so a reduction over it had no
+    dependency on an in-place ``Scale`` of the owning tensor and the
+    optimizer's Reorder pass floated the read ahead of the write, reading
+    unscaled data."""
     A = einsums.create_random_tensor("A", [2, 3])
     ref = np.asarray(A).copy()
     factor = -1.84

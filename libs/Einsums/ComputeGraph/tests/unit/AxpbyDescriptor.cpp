@@ -6,7 +6,7 @@
 // AxpbyDescriptor: axpby (Y = alpha*X + beta*Y) now carries a descriptor so
 // passes can read its scalars, with a shared-params block the executor reads on
 // every call (single source of truth - a mutation through the descriptor takes
-// effect on replay, avoiding the bug-1002 snapshot/executor desync).
+// effect on replay, avoiding the snapshot/executor desync).
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>

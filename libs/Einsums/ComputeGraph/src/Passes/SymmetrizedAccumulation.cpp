@@ -201,7 +201,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
     for (auto const &s : sites) {
         // Runtime-tensor / uniform-dtype gate (typed captures fold-out; the
         // executor casts to GeneralRuntimeTensor<T>, which would be UB on a
-        // typed Tensor<T, Rank> - the bug-1015 class).
+        // typed Tensor<T, Rank>).
         auto const *th_tmp = graph.find_tensor(s.tmp);
         auto const *th_r2  = graph.find_tensor(s.r2);
         if (th_tmp == nullptr || th_r2 == nullptr || !th_tmp->is_runtime || !th_r2->is_runtime || th_tmp->dtype != th_r2->dtype) {
