@@ -13,8 +13,8 @@
 namespace einsums::compute_graph::passes {
 
 /**
- * @brief Detect the CCSD permutational-symmetrization idiom
- *        @f$r2 \mathrel{+}= s\,(t + P(t))@f$ (MATCHER-ONLY SLICE).
+ * @brief Fold the CCSD permutational-symmetrization idiom
+ *        @f$r2 \mathrel{+}= s\,(t + P(t))@f$.
  *
  * Chemistry residuals accumulate a tensor and its index-swapped transpose into
  * the same output. In the graph this appears as four nodes per site (the
@@ -22,28 +22,69 @@ namespace einsums::compute_graph::passes {
  * @code
  * einsum(spec, A, B)            -> tmp    // tmp = pf*(A(x)B)   (kept)
  * axpby(s, tmp,  1.0, r2)                 // r2 += s*tmp
- * permute("jiba <- ijab", tmp) -> tmpP    // tmpP = P(tmp)
+ * permute("jiba <- ijab", tmp) -> tmpP    // tmpP = P(tmp)   (an involution)
  * axpby(s, tmpP, 1.0, r2)                 // r2 += s*tmp^{jiba}
  * @endcode
- * The last three nodes fold to one node that makes a single sweep writing both
- * the element and its transposed partner, eliminating the @c tmpP buffer and
- * two of three O(o^2 v^2) sweeps per site.
  *
- * DETECTION: structural match + involutive permutation + accumulate gate +
- * interference guard. REWRITE (Level 1, permute reuse): for each safely-foldable
- * site over runtime tensors, rewrite the permute node to accumulate directly
- * into the output - @f$r2 = r2 + s_2\,P(t)@f$ via the existing string_permute
- * kernel with beta = 1 - and delete the second axpby and the @c tmpP buffer.
- * The first axpby (@f$r2 \mathrel{+}= s_1 t@f$) is left untouched. This drops the
- * O(o^2 v^2) @c tmpP storage and one full sweep per site with no new kernel or
- * OpKind. A later slice may fuse further to one sweep. See
+ * The pass detects each such site (structural match + involutive permutation +
+ * accumulate gate + interference guard) and rewrites it (Level 1, permute
+ * reuse): the permute node is made to accumulate DIRECTLY into the output -
+ * @f$r2 = r2 + s_2\,P(t)@f$ via the existing string_permute kernel with beta = 1
+ * - and the second axpby and the @c tmpP buffer are deleted. The first axpby
+ * (@f$r2 \mathrel{+}= s_1 t@f$) is untouched. This drops the O(o^2 v^2) @c tmpP
+ * storage and one full sweep per site with no new kernel or OpKind. See
  * @c docs/symmetrized_accumulation_design.md.
  *
- * Like LinearCombinationContractionFolding the rewrite fires only when the
- * operands are runtime tensors of one dtype (typed captures are left folded-out,
- * avoiding the typed-cast segfault class of bug-1015). Not registered in
- * @ref PassManager::create_default (workload-dependent). Recurses into loop
- * bodies - the CCSD residual is captured as a loop body.
+ * @par Example (C++)
+ * @code
+ * cg::Graph graph("symacc");
+ * {
+ *     cg::CaptureGuard const capture(graph);
+ *     cg::einsum("ijab <- ia ; jb", 0.0, &tmp, 1.0, A, B);  // tmp = A (x) B
+ *     cg::axpby(0.5, tmp, 1.0, &r2);                         // r2 += 0.5*tmp
+ *     cg::permute("jiba <- ijab", 0.0, &tmpP, 1.0, tmp);     // tmpP = P(tmp)
+ *     cg::axpby(0.5, tmpP, 1.0, &r2);                        // r2 += 0.5*P(tmp)
+ * }
+ * graph.apply(cg::PassManager::create_default());  // fires on RuntimeTensor operands
+ * // tmpP and the second axpby are gone; the permute now does r2 += 0.5*P(tmp).
+ * @endcode
+ *
+ * @par Example (Python)
+ * @code{.py}
+ * import einsums, einsums.graph as cg
+ * g = cg.Graph("symacc")
+ * with cg.capture(g):                                     # runtime tensors (the workload path)
+ *     einsums.einsum("i,j,a,b <- i,a ; j,b", tmp, A, B)   # tmp = A (x) B
+ *     einsums.linalg.axpby(0.5, tmp, 1.0, r2)             # r2 += 0.5*tmp
+ *     einsums.permute("j,i,b,a <- i,j,a,b", tmpP, tmp)    # tmpP = P(tmp)
+ *     einsums.linalg.axpby(0.5, tmpP, 1.0, r2)            # r2 += 0.5*P(tmp)
+ * sa = cg.SymmetrizedAccumulation()
+ * pm = cg.PassManager(); pm.add(sa)
+ * g.apply(pm)                                             # or cg.default_pass_manager()
+ * # sa.num_rewritten  -> 1   (getters are properties, not methods)
+ * @endcode
+ *
+ * In the default pipeline (after DeadNodeElimination, before ElementWiseFusion —
+ * which would otherwise compose the two axpby and hide the pattern). Recurses
+ * into loop bodies: the CCSD residual is captured as a loop body.
+ *
+ * @par Limitations
+ * - Fires only on RUNTIME tensors of one dtype; typed @c Tensor<T,Rank> captures
+ *   are left folded-out, and only when the matched permute's alpha == 1.
+ * - Level 1 keeps the transpose (the accumulating permute), so REPLAY TIME is
+ *   ~compute-neutral (a few %, transpose-bound). The win is eliminating the
+ *   O(o^2 v^2) @c tmpP buffer (peak memory), not compute.
+ * - Detection requires the exact structure: an involutive overwrite permute
+ *   whose output is sole-produced/sole-consumed by one accumulating axpby, plus
+ *   a sibling accumulating axpby reading the un-permuted source into the same
+ *   output; an interference guard rejects sites where another node observes the
+ *   half-symmetrized output.
+ *
+ * @par Future improvements
+ * - Level 2: a fused single-sweep @c SymmetrizedAxpby kernel
+ *   (@f$r2 \mathrel{+}= s_1 t + s_2 P(t)@f$ in one pass), profiling-gated — drops
+ *   the second sweep as well, not just the buffer.
+ * - Generalize beyond involutive permutations and allow @f$s_1 \neq s_2@f$.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT SymmetrizedAccumulation : public OptimizerPass {
   public:

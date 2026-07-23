@@ -13,16 +13,54 @@
 namespace einsums::compute_graph::passes {
 
 /**
- * @brief Non-mutating diagnostic pass that summarizes GPU placement and transfers.
+ * @brief GPU-offload diagnostic pass: summarizes placement and transfers without mutating the graph.
  *
- * Logs (and optionally prints) a report of:
- * - Nodes placed on GPU vs CPU
- * - Total H2D and D2H transfer nodes
- * - Total bytes transferred
- * - Peak estimated device memory usage
+ * @rst
+ * .. note::
  *
- * This pass does NOT modify the graph.
- * Should run after GPUPlacement, TransferInsertion, and TransferElimination.
+ *    GPU offload is a work in progress. This pass runs only on GPU-enabled (or mock)
+ *    builds, and the transfer/execution backend it targets is not yet complete.
+ * @endrst
+ *
+ * A read-only reporting pass. It walks the whole graph tree (loop bodies and conditional branches
+ * included) and aggregates:
+ * - nodes placed on GPU vs CPU,
+ * - HostToDevice and DeviceToHost transfer counts,
+ * - total bytes transferred, and
+ * - peak estimated device-memory usage (maxed across graphs; residency is not carried across a
+ *   loop boundary in this model).
+ *
+ * `run()` logs the summary and always returns `false` (no modification); `print_report()` renders the
+ * same figures to a stream. Getters expose each counter for tests and tooling.
+ *
+ * In `create_default()` this runs inside the GPU-enabled block
+ * (`if constexpr (gpu::has_gpu || gpu::is_mock)`), after GPUPlacement / TransferInsertion /
+ * TransferElimination so it observes the final placement; the block is compiled out on CPU-only builds.
+ *
+ * @par Example (C++)
+ * @code
+ * cg::Graph graph("gpu_diag");
+ * {
+ *     cg::CaptureGuard const capture(graph);
+ *     cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);
+ * }
+ * graph.apply(cg::PassManager::create_default());          // GPUDiagnostics is the last GPU pass
+ * // Counters are logged; call print_report(std::cout) for a formatted breakdown.
+ * @endcode
+ *
+ * @par Example (Python)
+ * No standalone Python entry point: not individually exposed; the summary is logged when the GPU
+ * pipeline runs via `g.apply(cg.default_pass_manager())` on a GPU-enabled build.
+ *
+ * @par Limitations
+ * - Purely informational — changes nothing and cannot influence placement.
+ * - Peak device memory is an estimate from tensor byte sizes and per-graph residency, not a measured
+ *   allocator high-water mark; it is maxed (not summed) across loop bodies.
+ * - Produces meaningful numbers only after the mutating GPU passes have run; on CPU-only builds the
+ *   GPU block is compiled out and the pass is never scheduled.
+ *
+ * @par Future improvements
+ * - Report measured (allocator-level) device usage once real device-shadow allocations exist.
  */
 class EINSUMS_EXPORT GPUDiagnostics : public OptimizerPass {
   public:

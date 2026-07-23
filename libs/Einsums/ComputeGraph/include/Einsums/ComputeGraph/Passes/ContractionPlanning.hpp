@@ -24,27 +24,71 @@ namespace einsums::compute_graph::passes {
  *   - GEMM shape efficiency (small/skinny GEMMs are slower per FLOP)
  *
  * This pass actually
- * restructures the graph: it creates intermediate tensors and rewrites
- * the contraction sequence to minimize estimated wall-clock time.
+ * restructures the graph: it declares deferred intermediate tensors and
+ * rewrites the contraction sequence (via a standard matrix-chain DP over the
+ * chain's leaf matrices) to minimize estimated wall-clock time.
  *
  * The cost model uses a HardwareProfile that can be auto-detected,
  * loaded from a JSON calibration file, or provided programmatically.
  *
- * @par Example
+ * In the default pipeline (planning phase, before GEMMBatching / Reorder and
+ * before DistributionPlanning / Materialization, which size and allocate the
+ * deferred intermediates it introduces; `create_default` passes the shared
+ * HardwareProfile).
+ *
+ * @par Example (C++)
  * @code
- * // With default hardware detection:
- * pm.add<cg::passes::ContractionPlanning>();
- *
- * // With calibrated profile:
- * pm.add<cg::passes::ContractionPlanning>(
- *     HardwareProfile::load_json("my_hardware.json"));
- *
- * // After running:
- * auto [modified, cp] = graph.apply<cg::passes::ContractionPlanning>();
- * for (auto const &r : cp.chain_reports()) {
- *     println("Chain of {} GEMMs: {:.1f}x speedup", r.chain_length, r.speedup);
+ * cg::Graph graph("contraction_planning");
+ * {
+ *     cg::CaptureGuard const capture(graph);
+ *     // A chain whose left-to-right order is not the cheapest parenthesization.
+ *     // T is a graph-owned intermediate consumed only by the second GEMM.
+ *     cg::einsum("il <- ik ; kl", 0.0, &T, 1.0, A, B);   // T = A * B
+ *     cg::einsum("in <- il ; ln", 0.0, &D, 1.0, T, C);   // D = (A*B) * C
  * }
+ * graph.apply(cg::PassManager::create_default());        // ContractionPlanning runs here
+ * // If (A*(B*C)) is cheaper, the chain is re-parenthesized and T's write is
+ * // replaced by a fresh deferred intermediate.
  * @endcode
+ *
+ * @par Example (Python)
+ * @code{.py}
+ * import einsums, einsums.graph as cg
+ * g = cg.Graph("contraction_planning")
+ * with cg.capture(g):
+ *     einsums.einsum("il <- ik ; kl", T, A, B)   # T = A * B
+ *     einsums.einsum("in <- il ; ln", D, T, C)   # D = (A*B) * C
+ * g.apply(cg.default_pass_manager())             # ContractionPlanning runs in the default pipeline
+ * # ContractionPlanning is not a standalone Python-constructible pass: it takes a
+ * # HardwareProfile and is applied only as part of the default manager.
+ * @endcode
+ *
+ * @par Limitations
+ * - Restructures only chains of **pure** contractions: each member must have
+ *   `c_prefactor == 0`, at least one link index, exactly one output and two
+ *   inputs, and each output must feed exactly one operand of the next member.
+ * - A chain must have >= 2 members and an estimated speedup > 1.05x; otherwise
+ *   it gets a cost report only (analysis, no rewrite).
+ * - Only **rank-2, non-runtime** chains are restructured. Higher-rank or
+ *   runtime-rank chains are analysis-only: the emitted Gemm executor casts
+ *   operands to `Tensor<T,2>*`, so a runtime tensor would be type confusion.
+ * - Leaf-orientation gate: the folded GEMMs run `gemm<false,false>` on each
+ *   leaf's physical layout, so a chain with a transposed operand
+ *   (e.g. `ik;jk->ij`, link not a contiguous prefix/suffix) is declined - it
+ *   would silently corrupt the result. The running product must enter each later
+ *   member as `input_a` (matrix-chain DP assumes left-to-right leaf order).
+ * - A squaring node (`OUT = T*T`) breaks the chain (`T` would be both link and
+ *   leaf), and unknown dtypes are analysis-only.
+ * - Interior outputs of the chain must be graph-owned, unaliased intermediates
+ *   read by no node outside the chain; a user-visible or externally-read interior
+ *   value makes the eliminated write observable, so the chain is declined.
+ *
+ * @par Future improvements
+ * - Derive per-operand transpose flags from each leaf's captured index order and
+ *   emit `gemm<transA,transB>`, lifting the canonical-orientation gate so
+ *   transposed and higher-rank chains can also be restructured (needs folding).
+ * - Restructure runtime-rank chains once the Gemm executor no longer assumes a
+ *   static `Tensor<T,2>` layout.
  */
 class EINSUMS_EXPORT ContractionPlanning : public OptimizerPass {
   public:

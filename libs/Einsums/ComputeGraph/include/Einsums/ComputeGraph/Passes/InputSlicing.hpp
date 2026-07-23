@@ -12,20 +12,59 @@
 namespace einsums::compute_graph::passes {
 
 /**
- * @brief Automatically slice pre-allocated inputs for distributed einsums.
+ * @brief Distributed-execution pass: slices pre-allocated inputs to match a distributed output.
  *
- * When an einsum has a distributed output (e.g., C distributed along dim 0),
- * any pre-allocated input that shares the same index dimension needs to be
- * temporarily "viewed" as a local slice for each rank.
+ * @rst
+ * .. note::
  *
- * This pass inserts BeginSlice / EndSlice nodes around the einsum that
- * modify the input tensor's data pointer and dimensions to present only
- * the local partition. After the einsum, the original state is restored.
+ *    Distributed (MPI) execution is a work in progress. This pass runs only on
+ *    MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
+ * @endrst
  *
- * Uses the EinsumDescriptor's ContractionSpec to determine which input
- * dimensions correspond to the distributed output dimension.
+ * When an einsum (or permute) has a distributed output — say C distributed along dim 0 — any
+ * pre-allocated, non-distributed input that shares that index must be presented to each rank as only
+ * its local partition. This pass brackets such a node with a `begin_slice` `Custom` node before and an
+ * `end_slice` `Custom` node after: `begin_slice` calls the tensor's `begin_local_view_fn` to retarget
+ * the input's data pointer and dims to the local range for this rank, and `end_slice` restores the
+ * original view via `end_local_view_fn`. The distributed output's `DistributionDescriptor` supplies the
+ * per-rank `local_range`, and the operand index lists identify which input dims carry the distributed
+ * index.
  *
- * Runs AFTER DistributionPlanning and Materialization.
+ * In `create_default()` this runs inside the distributed block
+ * (`if constexpr (comm::has_mpi || comm::is_mock)`), as the first distributed pass, after
+ * DistributionPlanning and Materialization have assigned layouts and allocated storage. It self-guards
+ * with `world_size() <= 1` and is a no-op on a single rank.
+ *
+ * @par Example (C++)
+ * @code
+ * // Run under MPI, e.g. `mpirun -np 4 ./my_app`.
+ * cg::Graph graph("input_slicing");
+ * {
+ *     cg::CaptureGuard const capture(graph);
+ *     cg::declare_tensor<double>("C", {N, N});             // deferred, distributed along i
+ *     cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);     // A pre-allocated, shares index i
+ * }
+ * graph.apply(cg::PassManager::create_default());          // begin_slice/end_slice wrap the einsum
+ * // Each rank's einsum now sees only its local i-range of A.
+ * @endcode
+ *
+ * @par Example (Python)
+ * No standalone Python entry point: not individually exposed; runs inside the distributed pipeline via
+ * `g.apply(cg.default_pass_manager())` and only fires on more than one MPI rank.
+ *
+ * @par Limitations
+ * - A no-op on a single rank; exercised only under real MPI (or the mock backend with `world_size() > 1`).
+ * - Slices only pre-allocated, non-distributed (or replicated) inputs — a deferred or already
+ *   block-distributed input is left alone.
+ * - Handles `Einsum` and `Permute`/`Transpose` only; other kinds (including `BatchedGemm`, whose
+ *   distributed form is unsupported) are skipped because they expose no index list to reason about.
+ * - Depends on the tensor providing `begin_local_view_fn` / `end_local_view_fn`; without those hooks the
+ *   slice nodes execute as no-ops.
+ * - Matching is positional (`inp_indices[d] == dist_index`), assuming operand dims line up with the
+ *   descriptor's dims.
+ *
+ * @par Future improvements
+ * - Cache/hoist the slice view across a loop so an invariant input is not re-sliced every iteration.
  */
 class EINSUMS_EXPORT InputSlicing : public OptimizerPass {
   public:

@@ -53,8 +53,49 @@ namespace einsums::compute_graph::passes {
  * axpy chain, and it adds a temporary allocation. Opt in per graph when
  * you know the pattern helps:
  * @code
- * auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+ * cg::PassManager pm; pm.add(std::make_shared<DistributiveFactoring>());
+ * graph.apply(pm);
+ * // or:  auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
  * @endcode
+ *
+ * @par Example (Python)
+ * @code{.py}
+ * import einsums, einsums.graph as cg
+ * g = cg.Graph("distributive_factoring")
+ * with cg.capture(g):
+ *     einsums.einsum("ia <- ik ; ka", R, A, B1, c_pf=1.0)   # R += A * B1
+ *     einsums.einsum("ia <- ik ; ka", R, A, B2, c_pf=1.0)   # R += A * B2
+ * df = cg.DistributiveFactoring()
+ * pm = cg.PassManager(); pm.add(df)
+ * g.apply(pm)
+ * # df.num_groups -> 1, df.num_eliminated -> 1  (getters are properties, not methods)
+ * @endcode
+ *
+ * @par Limitations
+ * - Members must be **einsum** nodes with exactly two inputs and one output,
+ *   accumulating (`c_prefactor != 0`) into the same output, sharing one operand
+ *   (same tensor id and index pattern) with the non-shared operands sharing the
+ *   other index pattern.
+ * - Non-shared operands must all be **distinct** tensors of identical shape and
+ *   dtype; the shared operand may not alias any non-shared operand (the
+ *   slot-redirect trick cannot separate two reads of one tensor).
+ * - The factoring math is real-valued: `conj_a`/`conj_b` einsums are skipped, and
+ *   a prefactor with a nonzero imaginary part declines the node.
+ * - Every summed operand must be the same tensor kind (all runtime, or all
+ *   compile-time) so the accumulator dispatches correctly - a mismatch rank-errors
+ *   at execute.
+ * - Placement/interference gate: the combined node takes the first member's slot,
+ *   so no node between the first and last member may read/write the output or
+ *   write a factor operand, and any `Loop`/`Conditional` in the span disqualifies
+ *   the group.
+ * - Profitability is a simple heuristic: factor whenever there are 2+ factorable
+ *   terms, without weighing the contraction cost against the extra axpy chain.
+ *
+ * @par Future improvements
+ * - Replace the "2+ terms" heuristic with a cost-model decision (compare the FLOPs
+ *   saved against the axpy chain plus the intermediate allocation).
+ * - Thread `conj_a`/`conj_b` and complex prefactors through the rewrite so
+ *   conjugated / complex-scaled contractions can also be factored.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT DistributiveFactoring : public OptimizerPass {
   public:

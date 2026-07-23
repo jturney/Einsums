@@ -10,31 +10,61 @@
 namespace einsums::compute_graph::passes {
 
 /**
- * @brief Common Subexpression Elimination (CSE) pass.
+ * @brief Common Subexpression Elimination (CSE): merges two nodes that compute the same value and redirects readers of the
+ *        duplicate onto the survivor's output.
  *
- * Detects pairs of nodes that compute the same expression, identical OpKind,
- * identical input TensorIds, and identical operation metadata (EinsumDescriptor,
- * ScaleDescriptor, etc.). The duplicate node is eliminated and all downstream
- * consumers of its outputs are redirected to the original node's outputs.
+ * Detects pairs of nodes with identical OpKind, identical input TensorIds (in order), identical OpData
+ * (EinsumDescriptor / ScaleDescriptor / PermuteDescriptor / BatchedGemmDescriptor prefactors, index patterns, conj flags), and
+ * the same number of outputs. The later duplicate is deleted; every downstream reader of its output is redirected -- in both the
+ * TensorId metadata (so liveness passes see the survivor's buffer as live) and via `Graph::redirect_slot` (so any already-baked
+ * executor lambda reads the survivor's result at execute time). Redirections propagate through all remaining nodes' input lists,
+ * so multi-level CSE resolves in a single pass.
  *
- * **Equivalence criteria:**
- * - Same OpKind
- * - Same input TensorIds (in order)
- * - Same OpData (prefactors, index patterns, flags must all match)
- * - Same number of outputs
+ * In the default pipeline (populate_default; also the O1 cleanup cluster in PassManager::create_for). Runs after PermuteFusion so
+ * duplicate permute->einsum patterns collapse into the same fused node first, and before DeadNodeElimination so the now-dead
+ * survivors of a redirect are swept.
  *
- * @par Example
+ * @par Example (C++)
  * @code
- * // Before CSE: two identical einsums
- * cg::einsum("ik;kj->ij", &C, A, B);
- * cg::einsum("ik;kj->ij", &D, A, B);
- *
- * // After CSE: second einsum removed, D's consumers use C's result
- * auto [modified, cse] = graph.apply<cg::passes::CSE>();
+ * cg::Graph graph("cse");
+ * {
+ *     cg::CaptureGuard const capture(graph);
+ *     cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);   // C = A·B
+ *     cg::einsum("ij <- ik ; kj", 0.0, &D, 1.0, A, B);   // D = A·B  -- identical subexpression
+ *     cg::einsum("ij <- ij ; ij", 0.0, &E, 1.0, C, D);   // reads both
+ * }
+ * cg::PassManager pm; pm.add<cg::passes::CSE>();
+ * graph.apply(pm);                                        // or PassManager::create_default()
+ * // The second einsum is gone; E now reads C for both operands.
  * @endcode
  *
- * @note Tensor ID redirections are propagated through all remaining nodes'
- *       input lists, so multi-level CSE works in a single pass.
+ * @par Example (Python)
+ * @code{.py}
+ * import einsums, einsums.graph as cg
+ * g = cg.Graph("cse")
+ * with cg.capture(g):
+ *     einsums.einsum("ij <- ik ; kj", C, A, B)           # C = A·B
+ *     einsums.einsum("ij <- ik ; kj", D, A, B)           # D = A·B  -- duplicate
+ * pm = cg.PassManager(); pm.add(cg.CSE())
+ * g.apply(pm)                                            # or cg.default_pass_manager()
+ * # CSE exposes no result counter; the duplicate node is simply removed from g.
+ * @endcode
+ *
+ * @par Limitations
+ * - Only **pure-overwrite** producers are eligible: einsum with `c_prefactor == 0`, permute with `beta == 0`, or batched-gemm
+ *   with `beta == 0`. Accumulating ops (nonzero destination prefactor) and scale/axpy/axpby/element-transform (whose scalar
+ *   coefficients are not carried in `op_data`, so equality can't be decided) are never merged.
+ * - The duplicate's outputs must be graph-owned intermediates that are **not** views (`is_intermediate && aliases == 0`); a
+ *   user-visible output is left in place because the user reads that tensor directly, not through an executor slot.
+ * - Every merged output buffer must have **exactly one writer** in the whole graph (Guard B), and the shared inputs must not be
+ *   overwritten by any node between the two candidates (Guard A); either condition would make the reused value stale.
+ * - Opt-out of PassManager auto-recursion (`recurse_into_subgraphs() == false`): never runs on loop bodies / conditional
+ *   branches, because redirecting a duplicate whose output is later written independently is unsound (the SCF-body case).
+ * - Matching is an O(n^2) pairwise scan over the node list.
+ *
+ * @par Future improvements
+ * - Fold user-visible duplicates behind an inserted copy node instead of skipping them (see Guard C).
+ * - Add a write-once precondition on the merged output so CSE can safely recurse into loop bodies / conditional branches.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT CSE : public OptimizerPass {
   public:

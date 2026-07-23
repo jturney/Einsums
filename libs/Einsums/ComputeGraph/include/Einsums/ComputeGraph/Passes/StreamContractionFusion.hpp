@@ -85,6 +85,49 @@ namespace einsums::compute_graph::passes {
  * cg::PassManager pm; pm.add(std::make_shared<StreamContractionFusion>());
  * graph.apply(pm);
  * @endcode
+ *
+ * @par Example (Python)
+ * @code{.py}
+ * import einsums, einsums.graph as cg
+ * g = cg.Graph("stream_fusion")
+ * with cg.capture(g):
+ *     # Two contractions streaming the same large TEI against the small density D.
+ *     einsums.einsum("mn <- mnls ; ls", J, TEI, D, c_pf=0.0, ab_pf=2.0)   # J += 2 * TEI * D
+ *     einsums.einsum("mn <- mlns ; ls", K, TEI, D, c_pf=0.0, ab_pf=-1.0)  # K -= 1 * (scrambled TEI) * D
+ * g.apply(cg.default_pass_manager())         # StreamContractionFusion runs in the default pipeline
+ * # You may also add cg.StreamContractionFusion() to a manual cg.PassManager, but
+ * # its num_groups / num_eliminated counters are not exposed as Python properties.
+ * @endcode
+ *
+ * @par Limitations
+ * - Members must be **einsum** nodes with two inputs and one output, no repeated
+ *   index in any of C/A/B (diagonal patterns decline), and non-conjugated
+ *   (`conj_a`/`conj_b` decline).
+ * - One operand is the streamed tensor @f$S@f$, the other the small @f$W@f$; every
+ *   C index and every W index must be drawn from @f$S@f$'s index pattern (the
+ *   GEMV-shaped class - each element of @f$S@f$ read exactly once).
+ * - @f$S@f$, @f$W@f$ and C must all be **runtime** tensors of one dtype; a
+ *   mixed-dtype member declines (the kernel casts all three to @f$S@f$'s element type).
+ * - On a real dtype, `ab_prefactor` and `c_prefactor` must be real-valued; complex
+ *   prefactors ride through only on complex dtypes.
+ * - Distributed operands decline (they belong to the InputSlicing / SUMMAExpansion
+ *   communication passes).
+ * - Size gates: @f$S@f$ needs >= `kMinStreamElems` (4096) elements and must be
+ *   >= `kMinSizeRatio` (8x) larger than each member's @f$W@f$ and output.
+ * - A group needs >= 2 members over the same @f$S@f$, and for a shared output only
+ *   the first member touching it may have `c_prefactor != 1` (contributions
+ *   interleave in the one stream). An interference guard also rejects the group if
+ *   any node between the first and last member touches an operand or reads an output.
+ * - Privatized members are held to `max_output_elems` (cache-derived with a profile,
+ *   a fixed fallback without); an over-cap member is only kept if an owner-computes
+ *   partition axis covers it, otherwise it drops out and stays an ordinary einsum.
+ *
+ * @par Future improvements
+ * - Admit conjugated members and repeated-index (diagonal) patterns, currently
+ *   declined outright.
+ * - Support statically-typed `Tensor<T,Rank>` captures, not only runtime tensors.
+ * - Coordinate with the communication passes so distributed streams can fuse
+ *   instead of declining.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT StreamContractionFusion : public OptimizerPass {
   public:

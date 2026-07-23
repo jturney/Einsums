@@ -42,6 +42,68 @@ namespace einsums::compute_graph::passes {
  * current tensor state; if strides differ across the group, the pass
  * falls through without rewriting (a future optimisation could split
  * the group into stride-compatible sub-batches).
+ *
+ * In the default pipeline (planning phase, after ContractionPlanning and before
+ * Reorder; `create_default` constructs it with the shared HardwareProfile so
+ * the profitability gate below is active).
+ *
+ * @par Example (C++)
+ * @code
+ * cg::Graph graph("gemm_batching");
+ * {
+ *     cg::CaptureGuard const capture(graph);
+ *     // Two independent, identically-shaped GEMMs at the same dependency level
+ *     // (no path between them). Same m,n,k, trans flags, dtype and prefactors:
+ *     cg::einsum("ij <- ik ; kj", 0.0, &C1, 1.0, A1, B1);   // C1 = A1 * B1
+ *     cg::einsum("ij <- ik ; kj", 0.0, &C2, 1.0, A2, B2);   // C2 = A2 * B2
+ * }
+ * graph.apply(cg::PassManager::create_default());           // GEMMBatching runs here
+ * // The two einsums are replaced by one BatchedGemm node backed by blas::gemm_batch.
+ * @endcode
+ *
+ * @par Example (Python)
+ * @code{.py}
+ * import einsums, einsums.graph as cg
+ * g = cg.Graph("gemm_batching")
+ * with cg.capture(g):
+ *     einsums.einsum("ij <- ik ; kj", C1, A1, B1)
+ *     einsums.einsum("ij <- ik ; kj", C2, A2, B2)
+ * g.apply(cg.default_pass_manager())                        # GEMMBatching runs in the default pipeline
+ * # GEMMBatching is not a standalone Python-constructible pass: it takes a
+ * # HardwareProfile and is applied only as part of the default manager.
+ * @endcode
+ *
+ * @par Limitations
+ * - Only groups **Einsum** nodes carrying a `gemm_hint` (2D x 2D -> 2D with
+ *   exactly one link index, populated at capture); other einsums are ignored.
+ * - Members must share dependency level and have bit-identical `m`, `n`, `k`,
+ *   `trans_a`, `trans_b`, `BlasScalar` dtype, and bit-equal `alpha`/`beta`
+ *   (no precision-drift matching: 1.0 never batches with 0.9999...).
+ * - Conjugated einsums (`conj_a`/`conj_b`) are skipped; conjugation is not
+ *   threaded through the batch rewrite.
+ * - `blas::gemm_batch` takes one scalar `lda`/`ldb`/`ldc`; a group with
+ *   non-uniform leading dimensions declines wholesale (no sub-batch split).
+ * - Placement/interference gate: the batch occupies the first member's slot, so
+ *   no outside node between the first and last member may read/write anything the
+ *   batch reads or writes, and any `Loop`/`Conditional` in that span (I/O hidden
+ *   in a sub-graph) disqualifies the group.
+ * - Profitability gate applies only when a profile is supplied: a group whose
+ *   estimated per-GEMM time exceeds `max_gemm_us` (default 100us) is left as
+ *   independent nodes so the Dataflow executor can spread it across workers. The
+ *   default-constructed pass has no gate and always batches.
+ * - Today `blas::gemm_batch` is an OpenMP loop over per-matrix `dgemm`, so the
+ *   win is batch-level parallelism amortizing per-node scheduling, not
+ *   vendor-native batched dispatch.
+ *
+ * @par Future improvements
+ * - Split a stride-mismatched group into stride-compatible sub-batches instead
+ *   of declining it.
+ * - Thread `conj_a`/`conj_b` through the rewrite so conjugated einsums batch.
+ * - Gate batching on the absence of a distribution requirement so einsums that
+ *   still need the distribution/GPU passes are not batched first (they do not
+ *   inspect BatchedGemm nodes).
+ * - Pick up a vendor-native batched GEMM (e.g. MKL's `cblas_dgemm_batch`) with
+ *   no change here once `blas::gemm_batch` dispatches to it.
  */
 class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
   public:
