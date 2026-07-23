@@ -99,18 +99,42 @@ def test_scale_absorption_no_fusion_when_different_tensors():
     assert g.num_nodes() == 2
 
 
-def test_scale_absorption_does_not_absorb_when_intervening_reader():
+def test_scale_absorption_folds_into_sole_einsum_operand():
+    # scale(3, C) read by one einsum as an operand, then C overwritten: fold 3
+    # into that einsum's ab_prefactor. Runs through pm.run so the program-order
+    # validator is active - the fold must declare its compensated read.
     A = einsums.create_random_tensor("A", [4, 3])
     B = einsums.create_random_tensor("B", [3, 5])
     C = einsums.create_random_tensor("C", [4, 5])
     D = einsums.create_zero_tensor("D", [4, 5])
     E = einsums.create_random_tensor("E", [4, 4])
 
-    g = cg.Graph("sa_intervening")
+    D_ref = 3.0 * (np.asarray(E) @ np.asarray(C))  # evaluated now, before execute overwrites C
+
+    g = cg.Graph("sa_fold_operand")
     with cg.capture(g):
         einsums.linalg.scale(3.0, C)
-        einsums.einsum("ij <- ik ; kj", D, E, C, c_pf=0.0, ab_pf=1.0)  # D reads scaled C
-        einsums.einsum("ij <- ik ; kj", C, A, B, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("ij <- ik ; kj", D, E, C, c_pf=0.0, ab_pf=1.0)  # sole reader of scaled C
+        einsums.einsum("ij <- ik ; kj", C, A, B, c_pf=0.0, ab_pf=1.0)  # C overwritten
+
+    pass_inst = cg.ScaleAbsorption()
+    assert _run(pass_inst, g)
+    assert pass_inst.num_absorbed == 1
+    g.execute()
+    assert_close(D, D_ref)
+
+
+def test_scale_absorption_keeps_scale_when_result_is_live():
+    # scale(3, C) read by an einsum but NOT overwritten afterward: C's scaled
+    # value is still observable (in-place scale), so the scale must be kept.
+    C = einsums.create_random_tensor("C", [4, 5])
+    E = einsums.create_random_tensor("E", [4, 4])
+    D = einsums.create_zero_tensor("D", [4, 5])
+
+    g = cg.Graph("sa_live")
+    with cg.capture(g):
+        einsums.linalg.scale(3.0, C)
+        einsums.einsum("ij <- ik ; kj", D, E, C, c_pf=0.0, ab_pf=1.0)  # C not overwritten after
 
     pass_inst = cg.ScaleAbsorption()
     assert not _run(pass_inst, g)

@@ -126,23 +126,94 @@ TEST_CASE("ScaleAbsorption - no fusion when different tensors", "[ComputeGraph][
     REQUIRE(graph.num_nodes() == 2);
 }
 
-TEST_CASE("ScaleAbsorption - does not absorb when intervening reader", "[ComputeGraph][Passes]") {
+TEST_CASE("ScaleAbsorption - folds scale into a sole einsum operand", "[ComputeGraph][Passes]") {
+    // scale(3, C) whose only reader (before C is overwritten) is an einsum using
+    // C as an operand: fold 3 into that einsum's ab_prefactor (einsum is linear
+    // in each operand) and drop the scale. D = 3 * (E · C).
     auto A = create_random_tensor<double>("A", 4, 3);
     auto B = create_random_tensor<double>("B", 3, 5);
     auto C = create_random_tensor<double>("C", 4, 5);
     auto D = create_zero_tensor<double>("D", 4, 5);
     auto E = create_random_tensor<double>("E", 4, 4);
 
-    cg::Graph graph("sa_intervening");
+    // Oracle computed eagerly (C is still its original value here).
+    auto D_ref = create_zero_tensor<double>("Dref", 4, 5);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &D_ref, 3.0, Indices{i, k}, E, Indices{k, j}, C);
+
+    cg::Graph graph("sa_fold_operand");
     {
         cg::CaptureGuard const guard(graph);
         cg::scale(3.0, &C);
-        cg::einsum("ik;kj->ij", 0.0, &D, 1.0, E, C); // D reads scaled C before next write
-        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &D, 1.0, E, C); // sole reader of the scaled C
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B); // C overwritten (closes C's live range)
+    }
+
+    // Applied through a PassManager so the program-order validator runs; the
+    // fold must declare its compensated read so the validator does not throw.
+    cg::PassManager pm;
+    pm.add<cg::passes::ScaleAbsorption>();
+    REQUIRE(graph.apply(pm));
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(D(ii, jj) - D_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("ScaleAbsorption - does not fold with two readers of the scaled tensor", "[ComputeGraph][Passes]") {
+    auto C  = create_random_tensor<double>("C", 4, 5);
+    auto E1 = create_random_tensor<double>("E1", 4, 4);
+    auto E2 = create_random_tensor<double>("E2", 4, 4);
+    auto D1 = create_zero_tensor<double>("D1", 4, 5);
+    auto D2 = create_zero_tensor<double>("D2", 4, 5);
+
+    cg::Graph graph("sa_two_readers");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(3.0, &C);
+        cg::einsum("ik;kj->ij", 0.0, &D1, 1.0, E1, C);
+        cg::einsum("ik;kj->ij", 0.0, &D2, 1.0, E2, C);
     }
 
     auto [modified, pass] = graph.apply<cg::passes::ScaleAbsorption>();
+    CHECK_FALSE(modified);
+}
 
+TEST_CASE("ScaleAbsorption - does not fold when the scaled value stays live", "[ComputeGraph][Passes]") {
+    // C read by an einsum but NOT overwritten afterward: its scaled value is
+    // still observable (in-place scale), so the scale must be kept.
+    auto C = create_random_tensor<double>("C", 4, 5);
+    auto E = create_random_tensor<double>("E", 4, 4);
+    auto D = create_zero_tensor<double>("D", 4, 5);
+
+    cg::Graph graph("sa_live");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(3.0, &C);
+        cg::einsum("ik;kj->ij", 0.0, &D, 1.0, E, C); // C not overwritten after
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::ScaleAbsorption>();
+    CHECK_FALSE(modified);
+}
+
+TEST_CASE("ScaleAbsorption - does not fold when the tensor is both einsum operands", "[ComputeGraph][Passes]") {
+    // C appears as both operands, so the scale contributes a**2, not a. Keep it.
+    auto C = create_random_tensor<double>("C", 4, 4);
+    auto D = create_zero_tensor<double>("D", 4, 4);
+    auto F = create_random_tensor<double>("F", 4, 4);
+
+    cg::Graph graph("sa_both_operands");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(3.0, &C);
+        cg::einsum("ik;kj->ij", 0.0, &D, 1.0, C, C); // C is both operands
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, F, F); // C overwritten
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::ScaleAbsorption>();
     CHECK_FALSE(modified);
 }
 
