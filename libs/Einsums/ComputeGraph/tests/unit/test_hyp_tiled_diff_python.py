@@ -18,6 +18,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -103,7 +104,7 @@ def _mask(grid, sparse, rng):
        rows=_axis(), cols=_axis(), kk=_axis(),
        dtype=st.sampled_from([np.float64, np.complex128, np.float32, np.complex64]),
        sparse=st.booleans(), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=350, deadline=None,
+@settings(max_examples=sanitizer_examples(350), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_hyp_tiled_diff(op, rows, cols, kk, dtype, sparse, seed):
     rng = np.random.default_rng(seed)

@@ -16,6 +16,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -78,7 +79,7 @@ def _tol(dt):
        dt=st.sampled_from(_DTYPES), mode=st.sampled_from(["eager", "graph", "graph_passes"]),
        via=st.sampled_from(["kwarg", "spec"]), va=st.booleans(), vb=st.booleans(),
        seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=800, deadline=None,
+@settings(max_examples=sanitizer_examples(800), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, dt, mode, via, va, vb, seed):
     spec, np_spec = spec_pair

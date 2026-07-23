@@ -36,6 +36,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, example, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -234,7 +235,7 @@ def _run_einsum_diff(prob, exact):
 
 
 @given(prob=_einsum_problem())
-@settings(max_examples=250, deadline=None,
+@settings(max_examples=sanitizer_examples(250), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 @example(prob=(["j", "l", "i"], ["l", "k", "i"], ["k", "j", "i"],
                {"i": 1, "j": 1, "k": 2, "l": 1}, False, "float64", 0.0, 1.0, False, False, False, False))  # batched transposed output (graph)
@@ -269,7 +270,7 @@ def test_hyp_einsum_diff(prob):
 
 
 @given(prob=_einsum_problem())
-@settings(max_examples=200, deadline=None,
+@settings(max_examples=sanitizer_examples(200), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 @example(prob=(["j", "l"], ["m", "l", "k"], ["j", "k"],
                {"j": 2, "l": 3, "k": 2, "m": 4}, False, "float64", 0.0, 1.0, False, False, True, False))     # link + lone summed, exact

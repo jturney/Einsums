@@ -22,6 +22,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, example, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -115,7 +116,7 @@ _LIH = {"mode": "loop", "n": 1, "ntens": 2, "niters": 2, "pred": False, "passes"
 
 
 @given(prog=_program())
-@settings(max_examples=300, deadline=None,
+@settings(max_examples=sanitizer_examples(300), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 @example(prog=_LIH)  # accumulating direct_product hoisted out of a loop
 def test_hyp_controlflow_diff(prog):

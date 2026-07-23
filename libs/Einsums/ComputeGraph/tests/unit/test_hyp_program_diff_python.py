@@ -25,6 +25,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, example, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -121,7 +122,7 @@ def _build_graph(tens, steps, g):
 
 
 @given(prog=_program())
-@settings(max_examples=300, deadline=None,
+@settings(max_examples=sanitizer_examples(300), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 @example(prog=(1, 2, [("axpby", 2.0, 0, 0.0, 0)]))                      # axpby self-alias -> (2+0)*A
 @example(prog=(2, 2, [("dirprod", 1.0, 0, 1, 0.0, 0)]))                 # in-place Hadamard A = A*B

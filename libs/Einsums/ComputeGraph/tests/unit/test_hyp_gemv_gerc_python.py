@@ -14,6 +14,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -56,7 +57,7 @@ _SZ = st.integers(1, 5)
 
 @given(ta=st.sampled_from("NTC"), p=_SZ, q=_SZ, cplx=st.booleans(), va=st.booleans(),
        graph=st.booleans(), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=400, deadline=None,
+@settings(max_examples=sanitizer_examples(400), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_hyp_gemv_transpose(ta, p, q, cplx, va, graph, seed):
     rng = np.random.default_rng(seed)
@@ -81,7 +82,7 @@ def test_hyp_gemv_transpose(ta, p, q, cplx, va, graph, seed):
 
 @given(m=_SZ, n=_SZ, alpha_re=st.sampled_from([1.0, -2.0, 0.5]), graph=st.booleans(),
        seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=250, deadline=None,
+@settings(max_examples=sanitizer_examples(250), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_hyp_gerc(m, n, alpha_re, graph, seed):
     rng = np.random.default_rng(seed)

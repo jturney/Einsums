@@ -67,6 +67,7 @@ import einsums
 einsums.rc.debug_no_attach_debugger = True
 
 import einsums.graph as cg
+from _sanitizer_scaling import fuzz_seeds  # seed-count scaling under sanitizers
 from einsums.testing import ALL_DTYPES
 
 _DIMS = (2, 3, 4)
@@ -193,7 +194,7 @@ def _as_flat(x):
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
-@pytest.mark.parametrize("seed", range(200))
+@pytest.mark.parametrize("seed", fuzz_seeds(200))
 def test_fuzz_ergonomics(seed, dtype):
     rng = np.random.default_rng(seed)
     real = not dtype.startswith("complex")

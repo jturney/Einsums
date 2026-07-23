@@ -17,6 +17,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -53,7 +54,7 @@ _DT = st.sampled_from(["float64", "complex128"])
 
 @given(m=_SZ, q=_SZ, ta=st.booleans(), tb=st.booleans(), dt=_DT, conj=st.booleans(),
        va=st.booleans(), vb=st.booleans(), vc=st.booleans(), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=350, deadline=None,
+@settings(max_examples=sanitizer_examples(350), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_hyp_symmgemm_diff(m, q, ta, tb, dt, conj, va, vb, vc, seed):
     rng = np.random.default_rng(seed)

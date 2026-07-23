@@ -17,6 +17,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, assume, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -114,7 +115,7 @@ def _run_largedim(op, m, n, k, p, dt, seed, exact):
 
 @given(op=st.sampled_from(_OPS),
        m=_SZ, n=_SZ, k=_SZK, p=st.sampled_from([1, 2, 3, 5, 7]), dt=_DT, seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=180, deadline=None,
+@settings(max_examples=sanitizer_examples(180), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_hyp_largedim_diff(op, m, n, k, p, dt, seed):
     _run_largedim(op, m, n, k, p, dt, seed, exact=False)
@@ -122,7 +123,7 @@ def test_hyp_largedim_diff(op, m, n, k, p, dt, seed):
 
 @given(op=st.sampled_from(_OPS),
        m=_SZ, n=_SZ, k=_SZK, p=st.sampled_from([1, 2, 3, 5, 7]), dt=_DT, seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=150, deadline=None,
+@settings(max_examples=sanitizer_examples(150), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_hyp_largedim_diff_exact(op, m, n, k, p, dt, seed):
     _run_largedim(op, m, n, k, p, dt, seed, exact=True)

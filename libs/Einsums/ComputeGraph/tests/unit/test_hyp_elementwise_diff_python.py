@@ -21,6 +21,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, example, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -66,7 +67,7 @@ def _shape(draw):
        shape=_shape(), alpha=st.sampled_from([1.0, -2.0, 0.5]), beta=st.sampled_from([0.0, 1.0, -1.5]),
        dt=st.sampled_from(["float64", "complex128"]),
        va=st.booleans(), vb=st.booleans(), vc=st.booleans(), passes=st.booleans())
-@settings(max_examples=300, deadline=None,
+@settings(max_examples=sanitizer_examples(300), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 @example(op="axpy", shape=(1, 2, 1), alpha=1.0, beta=0.0, dt="float64", va=False, vb=True, vc=False, passes=False)
 @example(op="direct_product", shape=(3, 3, 1), alpha=1.0, beta=0.0, dt="complex128", va=False, vb=False, vc=True, passes=False)

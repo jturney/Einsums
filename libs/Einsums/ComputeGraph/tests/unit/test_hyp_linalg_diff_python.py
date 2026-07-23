@@ -14,6 +14,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -58,7 +59,7 @@ _BV = st.booleans()
 @given(op=st.sampled_from(["gemm", "gemv", "ger"]), m=_D, n=_D, k=_D,
        alpha=st.sampled_from([1.0, -2.0, 0.5]), beta=_PF, dt=_DT,
        ta=_BV, tb=_BV, va=_BV, vb=_BV, passes=_BV)
-@settings(max_examples=300, deadline=None,
+@settings(max_examples=sanitizer_examples(300), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_hyp_linalg_diff(op, m, n, k, alpha, beta, dt, ta, tb, va, vb, passes):
     rng = np.random.default_rng(0)

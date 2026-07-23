@@ -18,6 +18,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, assume, example, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -121,7 +122,7 @@ def _run_largerank(prob, exact):
 
 
 @given(prob=_prob())
-@settings(max_examples=350, deadline=None,
+@settings(max_examples=sanitizer_examples(350), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 @example(prob=(["i", "j", "l"], ["m", "i", "l", "k"], ["i", "j", "k"],
                {"i": 2, "j": 3, "k": 2, "l": 4, "m": 5}, "float64", 0.0, 1.0, False, False))  # link (l) + lone summed (m in B only): fast path dropped m before the guard
@@ -130,7 +131,7 @@ def test_hyp_largerank_diff(prob):
 
 
 @given(prob=_prob())
-@settings(max_examples=250, deadline=None,
+@settings(max_examples=sanitizer_examples(250), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 @example(prob=(["i", "j", "l"], ["m", "i", "l", "k"], ["i", "j", "k"],
                {"i": 2, "j": 3, "k": 2, "l": 4, "m": 5}, "float64", 0.0, 1.0, False, False))  # link + lone, exact

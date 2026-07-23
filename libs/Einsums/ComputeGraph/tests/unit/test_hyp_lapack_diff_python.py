@@ -21,6 +21,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, example, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -55,7 +56,7 @@ def _dt(cplx):
 @given(op=st.sampled_from(["gesv", "invert", "det", "trace", "eig", "svd", "qr"]),
        n=st.integers(1, 5), m=st.integers(1, 5), nrhs=st.integers(1, 3),
        cplx=st.booleans(), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=300, deadline=None,
+@settings(max_examples=sanitizer_examples(300), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 @example(op="invert", n=1, m=1, nrhs=1, cplx=False, seed=0)   # degenerate 1x1 inverse
 @example(op="eig", n=1, m=1, nrhs=1, cplx=True, seed=0)       # degenerate 1x1 Hermitian eig

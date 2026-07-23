@@ -14,6 +14,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, given, settings
+from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
@@ -51,7 +52,7 @@ _SHAPE = st.lists(st.integers(1, 4), min_size=1, max_size=3)
 @given(op=st.sampled_from(["conj", "real", "imag", "abs"]),
        shape=_SHAPE, cplx=st.booleans(), view=st.booleans(), graph=st.booleans(),
        seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=400, deadline=None,
+@settings(max_examples=sanitizer_examples(400), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_hyp_conjugation(op, shape, cplx, view, graph, seed):
     rng = np.random.default_rng(seed)
