@@ -63,8 +63,7 @@ namespace einsums::compute_graph::passes {
  *   unified-memory (MPS) backends no separate device buffer exists, so the node is a sync point only.
  * - Loop-invariant inputs are re-transferred every iteration (the pass recurses into each body and
  *   makes it self-contained); hoisting invariant H2D out of the loop is not done here.
- * - Redundant transfers (e.g. an input already resident from a prior GPU op) are left for
- *   @ref TransferElimination to remove.
+ * - Redundant transfers (e.g. an input already resident from a prior GPU op) are left for @ref TransferElimination to remove.
  *
  * @par Future improvements
  * - Replace the placeholder executors with real `gpu::memcpy_host_to_device` / D2H copies once

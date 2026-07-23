@@ -41,7 +41,7 @@ namespace einsums::compute_graph::passes {
  * `g.apply(cg.default_pass_manager())`.
  *
  * @par Limitations
- * - Only eliminates redundant **Allreduce**s today; the "broadcast of an already-replicated tensor" and
+ * - Only eliminates redundant **Allreduce** nodes today; the "broadcast of an already-replicated tensor" and
  *   "allgather when everyone has the data" cases described for the family are not yet detected.
  * - Redundancy is decided by a single top-level forward walk with a write-invalidation set — no
  *   cross-loop-body or alias-aware reasoning.

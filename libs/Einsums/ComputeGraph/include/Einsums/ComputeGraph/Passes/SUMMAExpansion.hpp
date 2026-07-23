@@ -23,10 +23,9 @@ namespace einsums::compute_graph::passes {
  * pass replaces the einsum's executor with the SUMMA algorithm:
  *
  * 1. Apply the C prefactor (zero or scale `C_local`).
- * 2. For each of the `Pc` panels of the link dimension:
- *    - broadcast the A panel along `row_comm` (within the grid row),
- *    - broadcast the B panel along `col_comm` (within the grid column),
- *    - accumulate the local GEMM `C_local += A_panel * B_panel` via einsum dispatch.
+ * 2. For each of the `Pc` panels of the link dimension: broadcast the A panel along `row_comm` (within the grid
+ *    row), broadcast the B panel along `col_comm` (within the grid column), then accumulate the local GEMM
+ *    `C_local += A_panel * B_panel` via einsum dispatch.
  *
  * In `create_default()` this runs inside the distributed block
  * (`if constexpr (comm::has_mpi || comm::is_mock)`), after DistributionPlanning and Materialization and
