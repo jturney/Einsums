@@ -32,6 +32,7 @@
 #include <Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamAssignment.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
+#include <Einsums/ComputeGraph/Passes/SymmetrizedAccumulation.hpp>
 #include <Einsums/ComputeGraph/Passes/SymmetryPropagation.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
@@ -352,6 +353,10 @@ void PassManager::populate_default() {
     pm.add<passes::PermuteFusion>();
     pm.add<passes::CSE>();
     pm.add<passes::DeadNodeElimination>();
+    // Fold the CCSD symmetrization idiom (r2 += s*(tmp + P(tmp))) before
+    // ElementWiseFusion, which would otherwise compose the two axpby into one
+    // executor and hide the pattern. Recurses into loop bodies (the residual).
+    pm.add<passes::SymmetrizedAccumulation>();
     pm.add<passes::ElementWiseFusion>();
     pm.add<passes::LoopInvariantHoisting>();
 

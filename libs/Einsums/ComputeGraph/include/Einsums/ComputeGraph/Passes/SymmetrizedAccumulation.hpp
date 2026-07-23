@@ -45,9 +45,9 @@ namespace einsums::compute_graph::passes {
  * @ref PassManager::create_default (workload-dependent). Recurses into loop
  * bodies - the CCSD residual is captured as a loop body.
  */
-class EINSUMS_EXPORT SymmetrizedAccumulation : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT SymmetrizedAccumulation : public OptimizerPass {
   public:
-    SymmetrizedAccumulation() = default;
+    APIARY_EXPOSE SymmetrizedAccumulation() = default;
 
     [[nodiscard]] std::string name() const override { return "SymmetrizedAccumulation"; }
 
@@ -60,16 +60,16 @@ class EINSUMS_EXPORT SymmetrizedAccumulation : public OptimizerPass {
     /// sole-produced/sole-consumed source of an accumulating axpby into the same
     /// output that a sibling accumulating axpby also feeds from the un-permuted
     /// source.
-    [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
+    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
 
     /// Candidates that also pass the interference guard (no other node observes
     /// the half-symmetrized output or rewrites the source mid-fold) - the sites
     /// that are safe to fold.
-    [[nodiscard]] size_t num_matched() const { return _num_matched; }
+    APIARY_EXPOSE APIARY_GETTER("num_matched") [[nodiscard]] size_t num_matched() const { return _num_matched; }
 
     /// Sites actually rewritten (num_matched that also passed the runtime-tensor
     /// / uniform-dtype gate). Each eliminates one axpby and one tmpP buffer.
-    [[nodiscard]] size_t num_rewritten() const { return _num_rewritten; }
+    APIARY_EXPOSE APIARY_GETTER("num_rewritten") [[nodiscard]] size_t num_rewritten() const { return _num_rewritten; }
 
   private:
     size_t _num_candidates{0};
