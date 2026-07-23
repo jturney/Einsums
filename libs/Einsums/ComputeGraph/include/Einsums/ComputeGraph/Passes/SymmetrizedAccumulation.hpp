@@ -29,15 +29,21 @@ namespace einsums::compute_graph::passes {
  * the element and its transposed partner, eliminating the @c tmpP buffer and
  * two of three O(o^2 v^2) sweeps per site.
  *
- * This slice DETECTS and counts foldable sites (structural match + involutive
- * permutation + accumulate gate + interference guard); it performs NO rewrite.
- * It validates the pattern detection against real captured graphs before the
- * node model (@c OpKind::SymmetrizedAxpby) and the fused kernel are built. See
+ * DETECTION: structural match + involutive permutation + accumulate gate +
+ * interference guard. REWRITE (Level 1, permute reuse): for each safely-foldable
+ * site over runtime tensors, rewrite the permute node to accumulate directly
+ * into the output - @f$r2 = r2 + s_2\,P(t)@f$ via the existing string_permute
+ * kernel with beta = 1 - and delete the second axpby and the @c tmpP buffer.
+ * The first axpby (@f$r2 \mathrel{+}= s_1 t@f$) is left untouched. This drops the
+ * O(o^2 v^2) @c tmpP storage and one full sweep per site with no new kernel or
+ * OpKind. A later slice may fuse further to one sweep. See
  * @c docs/symmetrized_accumulation_design.md.
  *
- * Not registered in @ref PassManager::create_default (workload-dependent, and
- * inert until the rewrite lands). Recurses into loop bodies - the CCSD residual
- * is captured as a loop body, so the sites live in a subgraph.
+ * Like LinearCombinationContractionFolding the rewrite fires only when the
+ * operands are runtime tensors of one dtype (typed captures are left folded-out,
+ * avoiding the typed-cast segfault class of bug-1015). Not registered in
+ * @ref PassManager::create_default (workload-dependent). Recurses into loop
+ * bodies - the CCSD residual is captured as a loop body.
  */
 class EINSUMS_EXPORT SymmetrizedAccumulation : public OptimizerPass {
   public:
@@ -45,7 +51,6 @@ class EINSUMS_EXPORT SymmetrizedAccumulation : public OptimizerPass {
 
     [[nodiscard]] std::string name() const override { return "SymmetrizedAccumulation"; }
 
-    /// Matcher-only: never modifies the graph, always returns false.
     bool run(Graph &graph) override;
 
     /// The CCSD residual is a loop body; the sites live in the subgraph.
@@ -58,13 +63,18 @@ class EINSUMS_EXPORT SymmetrizedAccumulation : public OptimizerPass {
     [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
 
     /// Candidates that also pass the interference guard (no other node observes
-    /// the half-symmetrized output or rewrites the source mid-fold) - i.e. the
-    /// sites the rewrite slice will be able to fold safely.
+    /// the half-symmetrized output or rewrites the source mid-fold) - the sites
+    /// that are safe to fold.
     [[nodiscard]] size_t num_matched() const { return _num_matched; }
+
+    /// Sites actually rewritten (num_matched that also passed the runtime-tensor
+    /// / uniform-dtype gate). Each eliminates one axpby and one tmpP buffer.
+    [[nodiscard]] size_t num_rewritten() const { return _num_rewritten; }
 
   private:
     size_t _num_candidates{0};
     size_t _num_matched{0};
+    size_t _num_rewritten{0};
 };
 
 } // namespace einsums::compute_graph::passes
