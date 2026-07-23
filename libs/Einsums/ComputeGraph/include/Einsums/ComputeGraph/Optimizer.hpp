@@ -7,12 +7,14 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace einsums::compute_graph {
@@ -82,6 +84,24 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * required cross-graph reasoning.
      */
     [[nodiscard]] virtual bool recurse_into_subgraphs() const { return false; }
+
+    /**
+     * @brief Reads this pass intentionally redirected to a tensor's INITIAL
+     *        contents by compensating the reader, exempted from the
+     *        program-order validator.
+     *
+     * The validator in ``PassManager::run`` throws when a read that observed an
+     * in-graph writer flips to observing the tensor's initial contents - the
+     * writer-removed-under-a-reader bug class (bug-1012). A pass that removes a
+     * writer and instead COMPENSATES the reader (e.g. ScaleAbsorption deleting a
+     * ``scale`` and folding its factor into a downstream einsum's
+     * ``ab_prefactor``, so the read is exact despite losing the writer) declares
+     * the affected ``(reader NodeId, TensorId)`` pairs here; the validator skips
+     * exactly those. The pass owns the compensation's correctness — its own
+     * numeric tests must cover it, since the structural guard is waived. Return
+     * the pairs recorded during ``run()``; empty by default (no exemptions).
+     */
+    [[nodiscard]] virtual std::vector<std::pair<NodeId, TensorId>> compensated_reads() const { return {}; }
 
     /**
      * @brief Set the pass's introspection verbosity.

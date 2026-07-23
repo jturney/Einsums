@@ -41,9 +41,11 @@
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <set>
 #include <sstream>
+#include <utility>
 
 namespace einsums::compute_graph {
 
@@ -140,7 +142,7 @@ std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> observed_writes(G
 }
 
 void check_observed_writes(Graph const &graph, std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> const &before,
-                           std::string const &pass_name) {
+                           std::string const &pass_name, std::vector<std::pair<NodeId, TensorId>> const &compensated) {
     auto const after = observed_writes(graph);
     for (auto const &[nid, per_tid] : after) {
         auto const nit = before.find(nid);
@@ -151,6 +153,13 @@ void check_observed_writes(Graph const &graph, std::unordered_map<NodeId, std::u
             if (tit == nit->second.end())
                 continue; // input redirected by the pass: no baseline
             if (tit->second && !sees_writer) {
+                // The pass may declare a read whose writer it removed while
+                // compensating the reader (e.g. folding a deleted scale into
+                // this einsum's prefactor); the structural guard is waived for
+                // exactly those (reader, tensor) pairs.
+                if (std::ranges::find(compensated, std::pair{nid, tid}) != compensated.end()) {
+                    continue;
+                }
                 std::string node_label  = "?";
                 std::string tensor_name = "?";
                 for (auto const &node : graph.nodes()) {
@@ -222,7 +231,7 @@ bool PassManager::run(Graph &graph) {
 
             if (modified) {
                 any_modified = true;
-                check_observed_writes(graph, baseline, pass->name());
+                check_observed_writes(graph, baseline, pass->name(), pass->compensated_reads());
             }
             profile::annotate("modified", modified ? "true" : "false");
 
