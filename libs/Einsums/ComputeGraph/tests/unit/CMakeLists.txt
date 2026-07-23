@@ -191,5 +191,28 @@ foreach(test ${ComputeGraphTests})
       "Modules.ComputeGraph" "${_camel}Python"
       SCRIPT ${test}
     )
+
+    # The differential-fuzz shards (FuzzDiff*) each replay many parallel-executor
+    # sub-cases in one process. Under TSan the deadlock detector's lock-order
+    # graph accumulates per sub-case, and its exit-time traversal can overrun the
+    # worker stack (it did on the former single-file fuzzer). These shards do not
+    # carry the project's lock-order-inversion coverage anyway: the C++ executor /
+    # TaskPool tests and the other Python tests keep full TSan settings and cover
+    # that small, fixed scheduler lock set. So disable ONLY deadlock detection on
+    # the fuzz shards; the data-race engine that found the real scheduler bugs
+    # stays on. ctest's ENVIRONMENT clobbers per-variable rather than merging, so
+    # this second TSAN_OPTIONS restates the shared base opts (see
+    # einsums_sanitizer_test_environment) alongside detect_deadlocks=0.
+    if(EINSUMS_BUILD_PYTHON
+       AND EINSUMS_WITH_SANITIZERS
+       AND "${EINSUMS_WITH_SANITIZERS}" MATCHES "thread"
+       AND "${_camel}Python" MATCHES "^FuzzDiff"
+    )
+      set_property(
+        TEST "Tests.Unit.Modules.ComputeGraph.${_camel}Python"
+        APPEND PROPERTY ENVIRONMENT
+        "TSAN_OPTIONS=ignore_noninstrumented_modules=1:detect_deadlocks=0:suppressions=${PROJECT_SOURCE_DIR}/devtools/sanitizers/tsan.supp"
+      )
+    endif()
   endif ()
 endforeach()
