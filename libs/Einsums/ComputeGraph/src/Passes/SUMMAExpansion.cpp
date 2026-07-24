@@ -24,6 +24,71 @@ using namespace einsums::index;
 
 namespace einsums::compute_graph::passes {
 
+namespace {
+
+/// One process's SUMMA panel loop for element type @p T: prescale C by its
+/// prefactor, then for each panel broadcast the A block along the process row
+/// and the B block along the process column and accumulate the local GEMM via
+/// einsum (which routes through PackedGemm). Templating over T collapses what
+/// were two byte-identical double/float copies into a single body.
+template <typename T>
+void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, void *b_ptr, void *c_ptr, PrefactorScalar c_pf) {
+    auto *A_local = static_cast<Tensor<T, 2> *>(a_ptr);
+    auto *B_local = static_cast<Tensor<T, 2> *>(b_ptr);
+    auto *C_local = static_cast<Tensor<T, 2> *>(c_ptr);
+
+    size_t const local_m   = C_local->dim(0);
+    size_t const local_n   = C_local->dim(1);
+    size_t const local_k_a = A_local->dim(1); // K/Pc
+    size_t const local_k_b = B_local->dim(0); // K/Pr (== K/Pc for a square grid)
+
+    // Apply the C prefactor (typically 0 on the first call).
+    auto const c_pf_v = as<T>(c_pf);
+    if (c_pf_v == T{0}) {
+        C_local->zero();
+    } else if (c_pf_v != T{1}) {
+        linear_algebra::scale(c_pf_v, C_local);
+    }
+
+    int const my_col = grid.my_col();
+    int const my_row = grid.my_row();
+
+    // Temporary panel buffers (same size as the local blocks).
+    Tensor<T, 2> A_panel("A_panel", local_m, local_k_a);
+    Tensor<T, 2> B_panel("B_panel", local_k_b, local_n);
+
+    profile::Profiler::instance().push(fmt::format("SUMMA({}x{}x{}, {} panels)", local_m, local_k_a, local_n, panels));
+
+    for (int p = 0; p < panels; p++) {
+        // Step 1: broadcast the A panel along the process row.
+        profile::Profiler::instance().push("broadcast_A");
+        if (my_col == p) {
+            std::memcpy(A_panel.data(), A_local->data(), local_m * local_k_a * sizeof(T));
+        }
+        auto placeholder = comm::broadcast<T>(std::span<T>(A_panel.data(), A_panel.size()), p, grid.row_comm());
+        (void)placeholder;
+        profile::Profiler::instance().pop();
+
+        // Step 2: broadcast the B panel along the process column.
+        profile::Profiler::instance().push("broadcast_B");
+        if (my_row == p) {
+            std::memcpy(B_panel.data(), B_local->data(), local_k_b * local_n * sizeof(T));
+        }
+        placeholder = comm::broadcast<T>(std::span<T>(B_panel.data(), B_panel.size()), p, grid.col_comm());
+        (void)placeholder;
+        profile::Profiler::instance().pop();
+
+        // Step 3: local GEMM accumulate via einsum dispatch (enables PackedGemm).
+        profile::Profiler::instance().push("local_gemm");
+        tensor_algebra::einsum(T{1}, Indices{i, j}, C_local, T{1}, Indices{i, k}, A_panel, Indices{k, j}, B_panel);
+        profile::Profiler::instance().pop();
+    }
+
+    profile::Profiler::instance().pop(); // SUMMA
+}
+
+} // namespace
+
 bool SUMMAExpansion::run(Graph &graph) {
     _num_expanded = 0;
 
@@ -131,106 +196,9 @@ bool SUMMAExpansion::run(Graph &graph) {
 
         node.execute = [&grid, panels, a_ptr, b_ptr, c_ptr, dtype, c_pf, original_execute]() {
             if (dtype == packed_gemm::ScalarType::Float64) {
-                auto *A_local = static_cast<Tensor<double, 2> *>(a_ptr);
-                auto *B_local = static_cast<Tensor<double, 2> *>(b_ptr);
-                auto *C_local = static_cast<Tensor<double, 2> *>(c_ptr);
-
-                size_t       local_m   = C_local->dim(0);
-                size_t       local_n   = C_local->dim(1);
-                size_t       local_k_a = A_local->dim(1); // K/Pc
-                size_t const local_k_b = B_local->dim(0); // K/Pr (== K/Pc for square grid)
-
-                // Apply C prefactor (typically 0.0 for first call)
-                auto c_pf_d = as<double>(c_pf);
-                if (c_pf_d == 0.0) {
-                    C_local->zero();
-                } else if (c_pf_d != 1.0) {
-                    linear_algebra::scale(c_pf_d, C_local);
-                }
-
-                int const my_col = grid.my_col();
-                int const my_row = grid.my_row();
-
-                // Allocate temporary panel buffers (same size as local blocks)
-                Tensor<double, 2> A_panel("A_panel", local_m, local_k_a);
-                Tensor<double, 2> B_panel("B_panel", local_k_b, local_n);
-
-                profile::Profiler::instance().push(fmt::format("SUMMA({}x{}x{}, {} panels)", local_m, local_k_a, local_n, panels));
-
-                for (int p = 0; p < panels; p++) {
-                    // Step 1: Broadcast A panel along rows.
-                    profile::Profiler::instance().push("broadcast_A");
-                    if (my_col == p) {
-                        std::memcpy(A_panel.data(), A_local->data(), local_m * local_k_a * sizeof(double));
-                    }
-                    auto placeholder = comm::broadcast<double>(std::span<double>(A_panel.data(), A_panel.size()), p, grid.row_comm());
-                    (void)placeholder;
-                    profile::Profiler::instance().pop();
-
-                    // Step 2: Broadcast B panel along cols.
-                    profile::Profiler::instance().push("broadcast_B");
-                    if (my_row == p) {
-                        std::memcpy(B_panel.data(), B_local->data(), local_k_b * local_n * sizeof(double));
-                    }
-                    placeholder = comm::broadcast<double>(std::span<double>(B_panel.data(), B_panel.size()), p, grid.col_comm());
-                    (void)placeholder;
-                    profile::Profiler::instance().pop();
-
-                    // Step 3: Local GEMM accumulate via einsum dispatch (enables PackedGemm)
-                    profile::Profiler::instance().push("local_gemm");
-                    tensor_algebra::einsum(1.0, Indices{i, j}, C_local, 1.0, Indices{i, k}, A_panel, Indices{k, j}, B_panel);
-                    profile::Profiler::instance().pop();
-                }
-
-                profile::Profiler::instance().pop(); // SUMMA
+                run_summa_panels<double>(grid, panels, a_ptr, b_ptr, c_ptr, c_pf);
             } else if (dtype == packed_gemm::ScalarType::Float32) {
-                auto *A_local = static_cast<Tensor<float, 2> *>(a_ptr);
-                auto *B_local = static_cast<Tensor<float, 2> *>(b_ptr);
-                auto *C_local = static_cast<Tensor<float, 2> *>(c_ptr);
-
-                size_t       local_m   = C_local->dim(0);
-                size_t       local_n   = C_local->dim(1);
-                size_t       local_k_a = A_local->dim(1);
-                size_t const local_k_b = B_local->dim(0);
-
-                auto c_pf_f = as<float>(c_pf);
-                if (c_pf_f == 0.0F) {
-                    C_local->zero();
-                } else if (c_pf_f != 1.0F) {
-                    linear_algebra::scale(c_pf_f, C_local);
-                }
-
-                Tensor<float, 2> A_panel("A_panel", local_m, local_k_a);
-                Tensor<float, 2> B_panel("B_panel", local_k_b, local_n);
-
-                int const my_col = grid.my_col();
-                int const my_row = grid.my_row();
-
-                profile::Profiler::instance().push(fmt::format("SUMMA({}x{}x{}, {} panels, float)", local_m, local_k_a, local_n, panels));
-
-                for (int p = 0; p < panels; p++) {
-                    profile::Profiler::instance().push("broadcast_A");
-                    if (my_col == p) {
-                        std::memcpy(A_panel.data(), A_local->data(), local_m * local_k_a * sizeof(float));
-                    }
-                    auto placeholder = comm::broadcast<float>(std::span<float>(A_panel.data(), A_panel.size()), p, grid.row_comm());
-                    (void)placeholder;
-                    profile::Profiler::instance().pop();
-
-                    profile::Profiler::instance().push("broadcast_B");
-                    if (my_row == p) {
-                        std::memcpy(B_panel.data(), B_local->data(), local_k_b * local_n * sizeof(float));
-                    }
-                    placeholder = comm::broadcast<float>(std::span<float>(B_panel.data(), B_panel.size()), p, grid.col_comm());
-                    (void)placeholder;
-                    profile::Profiler::instance().pop();
-
-                    profile::Profiler::instance().push("local_gemm");
-                    tensor_algebra::einsum(1.0f, Indices{i, j}, C_local, 1.0f, Indices{i, k}, A_panel, Indices{k, j}, B_panel);
-                    profile::Profiler::instance().pop();
-                }
-
-                profile::Profiler::instance().pop(); // SUMMA
+                run_summa_panels<float>(grid, panels, a_ptr, b_ptr, c_ptr, c_pf);
             }
         };
 
