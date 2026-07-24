@@ -1471,6 +1471,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorScalar ab_pf);
 
   private:
+    /// Move every member from @p other into `this`. Shared by the move
+    /// constructor and move assignment so a newly added member cannot be
+    /// forgotten in one of the two. Does not touch the global graph registry;
+    /// callers handle unregister/register around it.
+    void move_members_from(Graph &&other) noexcept;
+
     std::string                                _name;
     std::string                                _pipeline_name;   ///< Parent pipeline name (empty if standalone)
     std::string                                _workspace_name;  ///< Parent workspace name (empty if none)

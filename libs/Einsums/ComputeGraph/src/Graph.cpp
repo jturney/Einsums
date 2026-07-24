@@ -498,17 +498,39 @@ void Graph::adopt(std::function<void()> deleter) {
         _adopted_cleanups.push_back(std::move(deleter));
 }
 
-Graph::Graph(Graph &&other) noexcept
-    : _name(std::move(other._name)), _pipeline_name(std::move(other._pipeline_name)), _workspace_name(std::move(other._workspace_name)),
-      _stage_name(std::move(other._stage_name)), _stage_type(std::move(other._stage_type)), _stage_index(other._stage_index),
-      _nodes(std::move(other._nodes)), _tensors(std::move(other._tensors)), _next_node_id(other._next_node_id),
-      _next_tensor_id(other._next_tensor_id), _sorted(other._sorted), _executed(other._executed), _deps(std::move(other._deps)),
-      _owned_tensors(std::move(other._owned_tensors)), _adopted_cleanups(std::move(other._adopted_cleanups)),
-      _params(std::move(other._params)), _slot_map(std::move(other._slot_map)), _timing_report(std::move(other._timing_report)),
-      _params_store(std::move(other._params_store)), _slot_redirects(std::move(other._slot_redirects)), _deps_valid(other._deps_valid),
-      _profile_strings(std::move(other._profile_strings)), _profile_strings_valid(other._profile_strings_valid),
-      _exec_zone_name(std::move(other._exec_zone_name)), _last_optimize_report(std::move(other._last_optimize_report)),
-      _analysis_version(other._analysis_version), _usage_version(other._usage_version), _usage(std::move(other._usage)) {
+void Graph::move_members_from(Graph &&other) noexcept {
+    _name                  = std::move(other._name);
+    _pipeline_name         = std::move(other._pipeline_name);
+    _workspace_name        = std::move(other._workspace_name);
+    _stage_name            = std::move(other._stage_name);
+    _stage_type            = std::move(other._stage_type);
+    _stage_index           = other._stage_index;
+    _nodes                 = std::move(other._nodes);
+    _tensors               = std::move(other._tensors);
+    _next_node_id          = other._next_node_id;
+    _next_tensor_id        = other._next_tensor_id;
+    _sorted                = other._sorted;
+    _executed              = other._executed;
+    _deps                  = std::move(other._deps);
+    _owned_tensors         = std::move(other._owned_tensors);
+    _adopted_cleanups      = std::move(other._adopted_cleanups);
+    _params                = std::move(other._params);
+    _slot_map              = std::move(other._slot_map);
+    _timing_report         = std::move(other._timing_report);
+    _params_store          = std::move(other._params_store);
+    _slot_redirects        = std::move(other._slot_redirects);
+    _deps_valid            = other._deps_valid;
+    _profile_strings       = std::move(other._profile_strings);
+    _profile_strings_valid = other._profile_strings_valid;
+    _exec_zone_name        = std::move(other._exec_zone_name);
+    _last_optimize_report  = std::move(other._last_optimize_report);
+    _analysis_version      = other._analysis_version;
+    _usage_version         = other._usage_version;
+    _usage                 = std::move(other._usage);
+}
+
+Graph::Graph(Graph &&other) noexcept {
+    move_members_from(std::move(other));
     // Invalidate moved-from so its destructor doesn't unregister
     other._executed = false;
     // Transfer registration from old address to new
@@ -521,34 +543,7 @@ Graph::Graph(Graph &&other) noexcept
 Graph &Graph::operator=(Graph &&other) noexcept {
     if (this != &other) {
         unregister_graph(this);
-        _name                  = std::move(other._name);
-        _pipeline_name         = std::move(other._pipeline_name);
-        _workspace_name        = std::move(other._workspace_name);
-        _stage_name            = std::move(other._stage_name);
-        _stage_type            = std::move(other._stage_type);
-        _stage_index           = other._stage_index;
-        _nodes                 = std::move(other._nodes);
-        _tensors               = std::move(other._tensors);
-        _next_node_id          = other._next_node_id;
-        _next_tensor_id        = other._next_tensor_id;
-        _sorted                = other._sorted;
-        _executed              = other._executed;
-        _deps                  = std::move(other._deps);
-        _owned_tensors         = std::move(other._owned_tensors);
-        _adopted_cleanups      = std::move(other._adopted_cleanups);
-        _params                = std::move(other._params);
-        _slot_map              = std::move(other._slot_map);
-        _timing_report         = std::move(other._timing_report);
-        _params_store          = std::move(other._params_store);
-        _slot_redirects        = std::move(other._slot_redirects);
-        _deps_valid            = other._deps_valid;
-        _profile_strings       = std::move(other._profile_strings);
-        _profile_strings_valid = other._profile_strings_valid;
-        _exec_zone_name        = std::move(other._exec_zone_name);
-        _last_optimize_report  = std::move(other._last_optimize_report);
-        _analysis_version      = other._analysis_version;
-        _usage_version         = other._usage_version;
-        _usage                 = std::move(other._usage);
+        move_members_from(std::move(other));
 
         // Invalidate moved-from so its destructor doesn't unregister
         other._executed = false;
