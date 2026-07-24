@@ -74,6 +74,7 @@ class EINSUMS_EXPORT TransferInsertion : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "TransferInsertion"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     /// Recurse into loop bodies / conditional branches. TransferInsertion
     /// is a per-graph transform: run on a body it inserts that body's H2D

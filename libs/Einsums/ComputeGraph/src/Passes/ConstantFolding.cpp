@@ -13,12 +13,20 @@
 
 namespace einsums::compute_graph::passes {
 
+void ConstantFolding::reset_stats() {
+    _num_folded = 0;
+}
+
 bool ConstantFolding::run(Graph &graph) {
+    // Per-apply counters: compare against entry values, not zero. The
+    // recursive driver calls run() once per subgraph and reset_stats() runs
+    // only once per apply, so `_num_x > 0` would report this graph as
+    // modified whenever ANY earlier subgraph changed something.
+    size_t const num_folded_at_entry = _num_folded;
     graph.topological_sort();
 
     auto &nodes = graph.nodes();
     if (nodes.empty()) {
-        _num_folded = 0;
         return false;
     }
 
@@ -73,7 +81,6 @@ bool ConstantFolding::run(Graph &graph) {
         return true;
     };
 
-    _num_folded = 0;
     std::vector<bool> folded(nodes.size(), false);
 
     for (size_t idx = 0; idx < nodes.size(); idx++) {
@@ -124,12 +131,12 @@ bool ConstantFolding::run(Graph &graph) {
         _num_folded++;
     }
 
-    if (_num_folded > 0) {
+    if (_num_folded > num_folded_at_entry) {
         graph.mark_sorted();
         report(1, fmt::format("folded {} constant node(s)", _num_folded));
     }
 
-    return _num_folded > 0;
+    return _num_folded > num_folded_at_entry;
 }
 
 } // namespace einsums::compute_graph::passes

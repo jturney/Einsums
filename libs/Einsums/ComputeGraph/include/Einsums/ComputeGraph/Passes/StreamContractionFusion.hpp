@@ -141,6 +141,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::string name() const override { return "StreamContractionFusion"; }
 
     bool run(Graph &graph) override;
+    void reset_stats() override;
 
     /// Safe on loop bodies / conditional branches: a local rewrite within the
     /// graph it is handed.

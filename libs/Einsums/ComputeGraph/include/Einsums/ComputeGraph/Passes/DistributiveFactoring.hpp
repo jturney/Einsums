@@ -104,6 +104,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::string name() const override { return "DistributiveFactoring"; }
 
     bool run(Graph &graph) override;
+    void reset_stats() override;
 
     /// Manages its own descent (like LoopInvariantHoisting): run() resets the
     /// counters once at the root and recurses into loop bodies / conditional

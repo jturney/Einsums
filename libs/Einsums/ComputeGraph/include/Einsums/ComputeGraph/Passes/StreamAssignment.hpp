@@ -67,6 +67,7 @@ class EINSUMS_EXPORT StreamAssignment : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "StreamAssignment"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     /// Safe on loop bodies / conditional branches: assigns a stream id to
     /// each node based purely on its kind, scoped to the graph it's

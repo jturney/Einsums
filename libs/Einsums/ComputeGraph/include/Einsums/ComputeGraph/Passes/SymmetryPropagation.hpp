@@ -94,6 +94,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     [[nodiscard]] std::string name() const override { return "SymmetryPropagation"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     /// Recurse into loop bodies / conditional branches. Safe: the pass only
     /// reads op structure (no execution, no node changes) and tags a tensor

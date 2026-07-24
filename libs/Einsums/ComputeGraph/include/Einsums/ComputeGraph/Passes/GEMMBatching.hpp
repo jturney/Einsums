@@ -122,6 +122,7 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
 
     [[nodiscard]] std::string name() const override { return "GEMMBatching"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     /// Safe on loop bodies / conditional branches: batches sibling GEMMs
     /// within the single graph it's handed (one iteration's worth of

@@ -99,11 +99,19 @@ comm::DistributionDescriptor build_descriptor(std::vector<std::string> const &te
 
 } // namespace
 
-bool DistributionPlanning::run(Graph &graph) {
+void DistributionPlanning::reset_stats() {
     _num_distributed = 0;
     _num_replicated  = 0;
+}
 
-    int num_ranks = comm::world_size();
+bool DistributionPlanning::run(Graph &graph) {
+    // Per-apply counters: compare against entry values, not zero. The
+    // recursive driver calls run() once per subgraph and reset_stats() runs
+    // only once per apply, so `_num_x > 0` would report this graph as
+    // modified whenever ANY earlier subgraph changed something.
+    size_t const num_distributed_at_entry = _num_distributed;
+    size_t const num_replicated_at_entry  = _num_replicated;
+    int          num_ranks                = comm::world_size();
 
     // Single rank: everything is replicated, nothing to plan.
     if (num_ranks <= 1) {
@@ -340,7 +348,7 @@ bool DistributionPlanning::run(Graph &graph) {
         report(2, fmt::format("distribute '{}' as [{}] on {}x{} grid", handle.name, axis_str, grid.rows(), grid.cols()));
     }
 
-    if (_num_distributed > 0 || _num_replicated > 0) {
+    if (_num_distributed > num_distributed_at_entry || _num_replicated > num_replicated_at_entry) {
         EINSUMS_LOG_INFO("DistributionPlanning: {} distributed, {} replicated ({}x{} grid, {} ranks)", _num_distributed, _num_replicated,
                          grid.rows(), grid.cols(), num_ranks);
     }

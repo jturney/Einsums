@@ -75,16 +75,22 @@ bool is_loop_tensor(std::vector<Node> const &nodes, TensorId tid) {
 
 } // namespace
 
+void TransferElimination::reset_stats() {
+    _num_eliminated = 0;
+}
+
 bool TransferElimination::run(Graph &graph) {
+    // Per-apply counters: compare against entry values, not zero. The
+    // recursive driver calls run() once per subgraph and reset_stats() runs
+    // only once per apply, so `_num_x > 0` would report this graph as
+    // modified whenever ANY earlier subgraph changed something.
+    size_t const num_eliminated_at_entry = _num_eliminated;
     graph.topological_sort();
 
     auto &nodes = graph.nodes();
     if (nodes.empty()) {
-        _num_eliminated = 0;
         return false;
     }
-
-    _num_eliminated = 0;
 
     // Build next-use map for Belady eviction decisions.
     auto next_use = build_next_use_map(nodes);
@@ -221,7 +227,7 @@ bool TransferElimination::run(Graph &graph) {
     }
 
     // Build the final node list: apply removals and insertions.
-    bool const modified = (_num_eliminated > 0 || !insertions.empty());
+    bool const modified = (_num_eliminated > num_eliminated_at_entry || !insertions.empty());
 
     if (!modified)
         return false;
@@ -263,7 +269,7 @@ bool TransferElimination::run(Graph &graph) {
 
     graph.mark_sorted();
 
-    if (_num_eliminated > 0 || !insertions.empty()) {
+    if (_num_eliminated > num_eliminated_at_entry || !insertions.empty()) {
         EINSUMS_LOG_INFO("TransferElimination: eliminated {} redundant transfers, inserted {} evictions", _num_eliminated,
                          insertions.size());
         report(1, fmt::format("eliminated {} redundant transfer(s), inserted {} eviction(s)", _num_eliminated, insertions.size()));

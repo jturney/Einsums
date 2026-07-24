@@ -77,6 +77,7 @@ class EINSUMS_EXPORT Materialization : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "Materialization"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     [[nodiscard]] size_t num_materialized() const { return _num_materialized; }
     [[nodiscard]] size_t num_initialized() const { return _num_initialized; }

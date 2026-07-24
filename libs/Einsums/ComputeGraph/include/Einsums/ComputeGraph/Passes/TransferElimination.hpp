@@ -73,6 +73,7 @@ class EINSUMS_EXPORT TransferElimination : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "TransferElimination"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     /// Recurse into loop bodies / conditional branches. Per-graph cleanup
     /// of redundant transfers within each body (its existing is_loop_tensor

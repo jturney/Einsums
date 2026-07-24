@@ -91,6 +91,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     [[nodiscard]] std::string name() const override { return "MemoryPlanning"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
     void                      print_report(std::ostream &os) const;
 
     /// Total bytes of all per-graph arenas planned in the last run.

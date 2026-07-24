@@ -60,6 +60,7 @@ class EINSUMS_EXPORT CommunicationScheduling : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "CommunicationScheduling"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     [[nodiscard]] size_t num_scheduled() const { return _num_scheduled; }
 

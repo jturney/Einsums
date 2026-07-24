@@ -72,6 +72,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     [[nodiscard]] std::string name() const override { return "ConstantFolding"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     /// Recurse into loop bodies / conditional branches. Safe now that
     /// run() only folds nodes whose tensors are materialized at pass time

@@ -14,9 +14,11 @@
 
 namespace einsums::compute_graph::passes {
 
-bool CommunicationScheduling::run(Graph &graph) {
+void CommunicationScheduling::reset_stats() {
     _num_scheduled = 0;
+}
 
+bool CommunicationScheduling::run(Graph &graph) {
     if (comm::world_size() <= 1)
         return false;
 

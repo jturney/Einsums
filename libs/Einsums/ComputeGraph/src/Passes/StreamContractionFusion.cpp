@@ -382,13 +382,15 @@ size_t StreamContractionFusion::max_output_elems(size_t elem_size) const {
     return std::max(kMinOutputElemsFloor, llc_bytes / threads / elem_size);
 }
 
+void StreamContractionFusion::reset_stats() {
+    _num_groups     = 0;
+    _num_eliminated = 0;
+}
+
 bool StreamContractionFusion::run(Graph &graph) {
     graph.topological_sort();
 
     auto &nodes = graph.nodes();
-
-    _num_groups     = 0;
-    _num_eliminated = 0;
 
     if (nodes.size() < 2) {
         return false;

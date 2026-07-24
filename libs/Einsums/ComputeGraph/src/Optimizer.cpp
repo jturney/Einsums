@@ -205,6 +205,11 @@ bool PassManager::run(Graph &graph) {
         size_t nodes_before = graph.num_nodes();
         auto   t0           = std::chrono::high_resolution_clock::now();
 
+        // Zero the pass's counters ONCE per apply. run() must not do this
+        // itself: the recursive driver calls it per subgraph, so a reset there
+        // would leave the getters reporting only the last subgraph visited.
+        pass->reset_stats();
+
         if (analyze) {
             // Analysis-only: save node list, run pass, log results, restore.
             // Sub-graph recursion is intentionally skipped here, we only

@@ -179,10 +179,18 @@ bool propagate_permute(Graph &graph, Node const &node, InferGuard const &guard) 
 
 } // namespace
 
+void SymmetryPropagation::reset_stats() {
+    _num_inferred = 0;
+}
+
 bool SymmetryPropagation::run(Graph &graph) {
+    // Per-apply counters: compare against entry values, not zero. The
+    // recursive driver calls run() once per subgraph and reset_stats() runs
+    // only once per apply, so `_num_x > 0` would report this graph as
+    // modified whenever ANY earlier subgraph changed something.
+    size_t const num_inferred_at_entry = _num_inferred;
     graph.topological_sort();
 
-    _num_inferred     = 0;
     auto const &nodes = graph.nodes();
 
     // Build the soundness guard for this graph: writer counts + the set of
@@ -214,7 +222,7 @@ bool SymmetryPropagation::run(Graph &graph) {
             ++_num_inferred;
     }
 
-    if (_num_inferred > 0) {
+    if (_num_inferred > num_inferred_at_entry) {
         EINSUMS_LOG_INFO("SymmetryPropagation: inferred symmetry on {} tensor(s)", _num_inferred);
         report(1, fmt::format("inferred symmetry on {} intermediate tensor(s) (enables rank-2 BLAS dispatch)", _num_inferred));
     }

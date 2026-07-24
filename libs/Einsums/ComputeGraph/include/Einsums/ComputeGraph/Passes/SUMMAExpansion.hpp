@@ -67,6 +67,7 @@ class EINSUMS_EXPORT SUMMAExpansion : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "SUMMAExpansion"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     [[nodiscard]] size_t num_expanded() const { return _num_expanded; }
 

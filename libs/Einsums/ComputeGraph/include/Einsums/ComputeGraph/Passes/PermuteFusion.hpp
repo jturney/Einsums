@@ -65,6 +65,7 @@ class EINSUMS_EXPORT PermuteFusion : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "PermuteFusion"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     /// Safe on loop bodies / conditional branches: a local fold of
     /// Permute→Einsum/Gemm pairs within the graph it's handed.

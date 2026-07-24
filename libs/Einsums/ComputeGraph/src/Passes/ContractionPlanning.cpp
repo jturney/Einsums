@@ -433,10 +433,14 @@ ContractionPlanning::ContractionPlanning() : _profile(HardwareProfile::detect_de
 ContractionPlanning::ContractionPlanning(HardwareProfile profile) : _profile(std::move(profile)) {
 }
 
-bool ContractionPlanning::run(Graph &graph) {
+void ContractionPlanning::reset_stats() {
     _chains_restructured   = 0;
     _intermediates_created = 0;
-    bool modified          = false;
+    _apply_reports.clear();
+}
+
+bool ContractionPlanning::run(Graph &graph) {
+    bool modified = false;
 
     // Restructuring a chain rebuilds the node vector, which invalidates every
     // OTHER chain's recorded absolute node_idx. So restructure at most one chain
@@ -740,6 +744,11 @@ bool ContractionPlanning::run(Graph &graph) {
         if (!restructured_this_scan)
             break;
     } // restructure-until-fixpoint
+
+    // Carry this graph's reports into the per-apply tally before returning:
+    // the recursive driver calls run() once per subgraph, and _reports is
+    // rebuilt from scratch each fixpoint iteration.
+    _apply_reports.insert(_apply_reports.end(), _reports.begin(), _reports.end());
 
     if (!_reports.empty()) {
         EINSUMS_LOG_INFO("ContractionPlanning: analyzed {} chains using CPU='{}' GPU='{}', restructured {}", _reports.size(),

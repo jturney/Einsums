@@ -43,8 +43,11 @@ void collect_own_node_ptrs(Graph const &g, std::unordered_set<void const *> &out
 
 } // namespace
 
-bool DeadNodeElimination::run(Graph &graph) {
+void DeadNodeElimination::reset_stats() {
     _num_eliminated = 0;
+}
+
+bool DeadNodeElimination::run(Graph &graph) {
     std::unordered_set<void const *> const no_external;
     return run_one(graph, no_external);
 }

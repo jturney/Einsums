@@ -200,10 +200,17 @@ TEST_CASE("CommunicationElimination - is idempotent", "[ComputeGraph][Comm][Comm
     size_t const after_first = graph.num_nodes();
     CHECK(after_first == 1);
 
-    // Second run finds nothing left to remove.
+    // Second run finds nothing left to remove. num_eliminated() is a per-APPLY
+    // total (zeroed by reset_stats(), which PassManager calls once before
+    // descending into subgraphs), so it stays at 2 rather than dropping to 0 --
+    // the second run simply adds nothing.
     CHECK_FALSE(pass.run(graph));
-    CHECK(pass.num_eliminated() == 0);
+    CHECK(pass.num_eliminated() == 2);
     CHECK(graph.num_nodes() == after_first);
+
+    // ...and reset_stats() puts it back to zero.
+    pass.reset_stats();
+    CHECK(pass.num_eliminated() == 0);
 }
 
 TEST_CASE("CommunicationElimination - survivor still executes after the duplicate is dropped",

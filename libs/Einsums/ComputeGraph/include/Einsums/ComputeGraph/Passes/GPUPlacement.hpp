@@ -102,6 +102,7 @@ class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
 
     [[nodiscard]] std::string name() const override { return "GPUPlacement"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     /// Number of nodes placed on GPU in the last run.
     [[nodiscard]] size_t num_placed() const { return _num_placed; }

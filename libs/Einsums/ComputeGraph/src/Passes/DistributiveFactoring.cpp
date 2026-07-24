@@ -51,14 +51,17 @@ struct FactorCandidate {
 
 } // namespace
 
+void DistributiveFactoring::reset_stats() {
+    _num_groups     = 0;
+    _num_eliminated = 0;
+}
+
 bool DistributiveFactoring::run(Graph &graph) {
     // Own the recursion (like LoopInvariantHoisting): reset the counters once
     // here at the root, then descend ourselves. If we instead opted into
     // PassManager auto-recursion, run() would be re-invoked per subgraph and
     // reset the top-level tally each time. recurse_into_subgraphs()
     // returns false so the PassManager does not double-walk.
-    _num_groups     = 0;
-    _num_eliminated = 0;
     _groups.clear();
     return run_recursive(graph);
 }

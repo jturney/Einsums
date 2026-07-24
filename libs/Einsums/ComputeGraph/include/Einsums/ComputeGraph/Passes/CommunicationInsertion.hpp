@@ -66,6 +66,7 @@ class EINSUMS_EXPORT CommunicationInsertion : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "CommunicationInsertion"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     [[nodiscard]] size_t num_inserted() const { return _num_inserted; }
 

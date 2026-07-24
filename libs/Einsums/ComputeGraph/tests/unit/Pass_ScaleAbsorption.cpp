@@ -345,3 +345,35 @@ TEST_CASE("ScaleAbsorption - rank-4 scale into permute", "[ComputeGraph][Passes]
         }
     }
 }
+
+// The operand fold removes a writer and compensates the reader, declaring the
+// exemption via compensated_reads() so PassManager's program-order validator
+// does not flag it. That list is per-APPLY state: the validator reads it once,
+// after the recursive descent, and observed_writes() only inspects top-level
+// nodes. Clearing it inside run() therefore let ANY subgraph -- even an empty
+// loop body, since the clear precedes the early return -- discard a top-level
+// exemption and make the validator throw on a legitimate fold.
+TEST_CASE("ScaleAbsorption - top-level compensation survives subgraph recursion", "[ComputeGraph][Passes]") {
+    auto A = create_random_tensor<double>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 3, 5);
+    auto C = create_random_tensor<double>("C", 4, 5);
+    auto D = create_random_tensor<double>("D", 4, 3);
+
+    cg::Graph graph("sa_compensation_with_subgraph");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(2.0, &A);                          // writer of A, folded away
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B); // sole operand read, compensated
+        cg::axpby(1.0, D, 0.0, &A);                  // A overwritten: scaled value dead
+    }
+    // Any subgraph at all is enough to re-enter run() after the top-level fold.
+    graph.add_loop("empty_body", 1, [](size_t) { return false; });
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::ScaleAbsorption>();
+    pm.add(pass);
+
+    REQUIRE_NOTHROW(graph.apply(pm));
+    CHECK(pass->num_absorbed() == 1);
+    CHECK(pass->compensated_reads().size() == 1);
+}

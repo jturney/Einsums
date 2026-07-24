@@ -82,6 +82,7 @@ class EINSUMS_EXPORT FreeInsertion : public OptimizerPass {
 
     [[nodiscard]] std::string name() const override { return "FreeInsertion"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     [[nodiscard]] size_t num_freed() const { return _num_freed; }
 

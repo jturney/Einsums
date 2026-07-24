@@ -13,9 +13,11 @@
 
 namespace einsums::compute_graph::passes {
 
-bool CommunicationElimination::run(Graph &graph) {
+void CommunicationElimination::reset_stats() {
     _num_eliminated = 0;
+}
 
+bool CommunicationElimination::run(Graph &graph) {
     auto &nodes = graph.nodes();
     if (nodes.empty())
         return false;
@@ -23,6 +25,10 @@ bool CommunicationElimination::run(Graph &graph) {
     // Track which tensors have already been allreduced.
     std::unordered_set<TensorId> already_reduced;
     std::vector<bool>            remove(nodes.size(), false);
+    // Count THIS graph's removals separately: _num_eliminated is a per-apply
+    // total that the recursive driver accumulates across subgraphs, so using it
+    // to size the filtered vector below would underflow on the second call.
+    size_t eliminated_here = 0;
 
     for (size_t idx = 0; idx < nodes.size(); idx++) {
         auto const &node = nodes[idx];
@@ -32,7 +38,8 @@ bool CommunicationElimination::run(Graph &graph) {
             if (desc && already_reduced.count(desc->tensor_id)) {
                 // Redundant: this tensor was already allreduced and hasn't been modified since.
                 remove[idx] = true;
-                _num_eliminated++;
+                ++eliminated_here;
+                ++_num_eliminated;
                 EINSUMS_LOG_INFO("CommunicationElimination: removed redundant Allreduce for tensor id={}", desc->tensor_id);
                 report(2, fmt::format("remove redundant Allreduce for tensor id={} (already reduced, unmodified since)", desc->tensor_id));
                 continue;
@@ -50,12 +57,12 @@ bool CommunicationElimination::run(Graph &graph) {
         }
     }
 
-    if (_num_eliminated == 0)
+    if (eliminated_here == 0)
         return false;
 
     // Remove marked nodes.
     std::vector<Node> filtered;
-    filtered.reserve(nodes.size() - _num_eliminated);
+    filtered.reserve(nodes.size() - eliminated_here);
     for (size_t idx = 0; idx < nodes.size(); idx++) {
         if (!remove[idx])
             filtered.push_back(std::move(nodes[idx]));

@@ -56,6 +56,7 @@ class EINSUMS_EXPORT CommunicationElimination : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "CommunicationElimination"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
 

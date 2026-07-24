@@ -14,6 +14,22 @@
 
 namespace einsums::compute_graph {
 
+// NOTE: this header holds only the descriptors expressible in the
+// ComputeGraphTypes tier -- inert data over Enums.hpp / Ids.hpp and std types,
+// with concrete scalars (`double`, `std::complex<double>`).
+//
+// Descriptors that reference a type defined further up the stack live in
+// `Einsums/ComputeGraph/Node.hpp` instead, and are NOT duplicated here:
+//
+//   EinsumDescriptor      needs packed_gemm::ContractionSpec (PackedGemm)
+//   AxpbyDescriptor       needs PrefactorScalar, plus a shared_ptr<AxpbyParams>
+//                         handle into live execution state
+//   Loop/ConditionalDescriptor  hold shared_ptr<Graph> and std::function
+//   ViewDescriptor        needs ViewAxis
+//
+// So a descriptor missing from this file has probably not been written yet --
+// check Node.hpp before concluding it does not exist.
+
 /**
  * @brief Metadata for Scale nodes.
  *

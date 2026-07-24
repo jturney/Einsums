@@ -64,14 +64,16 @@ struct FoldCandidate {
 
 } // namespace
 
+void LinearCombinationContractionFolding::reset_stats() {
+    _num_groups     = 0;
+    _num_eliminated = 0;
+}
+
 bool LinearCombinationContractionFolding::run(Graph &graph) {
     graph.topological_sort();
 
     auto       &nodes   = graph.nodes();
     auto const &tensors = graph.tensors_map();
-
-    _num_groups     = 0;
-    _num_eliminated = 0;
 
     if (nodes.size() < 2) {
         return false;

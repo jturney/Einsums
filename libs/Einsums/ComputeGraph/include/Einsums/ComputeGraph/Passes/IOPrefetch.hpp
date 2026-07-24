@@ -69,6 +69,7 @@ class EINSUMS_EXPORT IOPrefetch : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "IOPrefetch"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     /// Number of DiskRead nodes moved in the last run.
     [[nodiscard]] size_t num_prefetched() const { return _num_prefetched; }

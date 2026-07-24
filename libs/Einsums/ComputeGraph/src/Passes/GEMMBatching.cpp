@@ -93,16 +93,23 @@ std::uint64_t bits_of(double v) {
 
 } // namespace
 
+void GEMMBatching::reset_stats() {
+    _num_batches      = 0;
+    _total_batched    = 0;
+    _num_gate_skipped = 0;
+}
+
 bool GEMMBatching::run(Graph &graph) {
+    // Per-apply counters: compare against entry values, not zero. The
+    // recursive driver calls run() once per subgraph and reset_stats() runs
+    // only once per apply, so `_num_x > 0` would report this graph as
+    // modified whenever ANY earlier subgraph changed something.
+    size_t const num_batches_at_entry = _num_batches;
     graph.topological_sort();
 
     auto        &nodes   = graph.nodes();
     auto const  &deps    = graph.dependencies();
     size_t const n_nodes = nodes.size();
-
-    _num_batches      = 0;
-    _total_batched    = 0;
-    _num_gate_skipped = 0;
 
     if (n_nodes < 2)
         return false;
@@ -350,7 +357,7 @@ bool GEMMBatching::run(Graph &graph) {
         report(2, fmt::format("batch {} independent einsums ({}x{}x{}) into one gemm_batch", group.size(), key.m, key.k, key.n));
     }
 
-    if (_num_batches == 0)
+    if (_num_batches == num_batches_at_entry)
         return false;
     report(1, fmt::format("batched {} GEMM(s) into {} gemm_batch node(s)", _total_batched, _num_batches));
 

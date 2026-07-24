@@ -130,10 +130,12 @@ void collect_descendant_deferred(Graph &graph, std::vector<DeferredEntry> &out) 
 
 } // namespace
 
-bool Materialization::run(Graph &graph) {
+void Materialization::reset_stats() {
     _num_materialized = 0;
     _num_initialized  = 0;
+}
 
+bool Materialization::run(Graph &graph) {
     // ── 1. The parent graph's own deferred tensors ────────────────────────
     std::vector<TensorId> own_deferred;
     for (auto const &[tid, handle] : graph.tensors_map()) {

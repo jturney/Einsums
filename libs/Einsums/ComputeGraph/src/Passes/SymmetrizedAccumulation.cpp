@@ -55,13 +55,20 @@ bool is_involution(std::vector<std::string> const &a, std::vector<std::string> c
 
 } // namespace
 
-bool SymmetrizedAccumulation::run(Graph &graph) {
+void SymmetrizedAccumulation::reset_stats() {
     _num_candidates = 0;
     _num_matched    = 0;
     _num_rewritten  = 0;
+}
 
-    auto        &nodes = graph.nodes();
-    size_t const n     = nodes.size();
+bool SymmetrizedAccumulation::run(Graph &graph) {
+    // Per-apply counters: compare against entry values, not zero. The
+    // recursive driver calls run() once per subgraph and reset_stats() runs
+    // only once per apply, so `_num_x > 0` would report this graph as
+    // modified whenever ANY earlier subgraph changed something.
+    size_t const num_rewritten_at_entry = _num_rewritten;
+    auto        &nodes                  = graph.nodes();
+    size_t const n                      = nodes.size();
 
     auto const contains   = [](std::vector<TensorId> const &v, TensorId t) { return std::find(v.begin(), v.end(), t) != v.end(); };
     auto const writers_of = [&](TensorId tid) {
@@ -87,6 +94,18 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
     auto const is_accumulating_axpby = [&](Node const &node, TensorId src, TensorId dst) {
         return node.kind == OpKind::Axpby && node.outputs.size() == 1 && node.outputs[0] == dst && contains(node.inputs, src) &&
                contains(node.inputs, dst);
+    };
+    // The live beta of an axpby node, or null when the node carries no axpby
+    // descriptor (a pass-built node, say) and the scalar is therefore unknowable.
+    // Prefer the shared params over the descriptor snapshot: an earlier pass that
+    // folded a scale into this axpby wrote beta through the params handle, and
+    // that value -- not the at-capture snapshot -- is what the executor will read.
+    auto const axpby_beta = [](Node const &node) -> PrefactorScalar const * {
+        auto const *ad = std::get_if<AxpbyDescriptor>(&node.op_data);
+        if (ad == nullptr) {
+            return nullptr;
+        }
+        return ad->params ? &ad->params->beta : &ad->beta;
     };
 
     // A safely-foldable site (interference-clean). Collected in a first pass so
@@ -172,9 +191,19 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
             if (i == pi || i == static_cast<size_t>(a1) || i == a2) {
                 continue;
             }
-            bool const writes_tmp     = contains(nodes[i].outputs, tmp);
-            bool const touches_r2     = contains(nodes[i].inputs, r2) || contains(nodes[i].outputs, r2);
-            bool const additive_accum = nodes[i].kind == OpKind::Axpby && contains(nodes[i].inputs, r2) && contains(nodes[i].outputs, r2);
+            bool const writes_tmp = contains(nodes[i].outputs, tmp);
+            bool const touches_r2 = contains(nodes[i].inputs, r2) || contains(nodes[i].outputs, r2);
+            // Only a PURE accumulation (r2 += alpha*X, i.e. beta == 1) commutes
+            // with the fold. The rewrite moves the permuted contribution from
+            // axpby2's position back to the permute's, so anything in between
+            // that rescales the running r2 -- a damping/mixing step with
+            // beta not in {0, 1}, routine in SCF and DIIS codes -- would apply
+            // its beta to a contribution that had not been added yet.
+            // beta == 0 needs no check here: a pure overwrite does not list r2
+            // as an input, so it fails the inputs test and lands in touches_r2.
+            // An axpby with no readable beta is treated as non-commuting.
+            PrefactorScalar const *beta = nodes[i].kind == OpKind::Axpby ? axpby_beta(nodes[i]) : nullptr;
+            bool const additive_accum = beta != nullptr && is_one(*beta) && contains(nodes[i].inputs, r2) && contains(nodes[i].outputs, r2);
             if (writes_tmp || (touches_r2 && !additive_accum)) {
                 clean = false;
                 break;
@@ -246,7 +275,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         ++_num_rewritten;
     }
 
-    if (_num_rewritten == 0) {
+    if (_num_rewritten == num_rewritten_at_entry) {
         return false;
     }
 

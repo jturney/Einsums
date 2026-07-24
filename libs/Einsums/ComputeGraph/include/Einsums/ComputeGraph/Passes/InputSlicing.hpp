@@ -66,6 +66,7 @@ class EINSUMS_EXPORT InputSlicing : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "InputSlicing"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     [[nodiscard]] size_t num_sliced() const { return _num_sliced; }
 

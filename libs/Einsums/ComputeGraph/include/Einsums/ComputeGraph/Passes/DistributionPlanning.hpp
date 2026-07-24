@@ -76,6 +76,7 @@ class EINSUMS_EXPORT DistributionPlanning : public OptimizerPass {
 
     [[nodiscard]] std::string name() const override { return "DistributionPlanning"; }
     bool                      run(Graph &graph) override;
+    void                      reset_stats() override;
 
     [[nodiscard]] size_t num_distributed() const { return _num_distributed; }
     [[nodiscard]] size_t num_replicated() const { return _num_replicated; }

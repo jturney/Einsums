@@ -86,6 +86,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
     [[nodiscard]] virtual bool recurse_into_subgraphs() const { return false; }
 
     /**
+     * @brief Zero this pass's per-apply statistics.
+     *
+     * ``PassManager::run`` calls this ONCE per ``apply()``, before descending,
+     * so the counter getters report totals over the whole subgraph tree rather
+     * than whatever the last-visited subgraph happened to contribute.
+     *
+     * Any pass that maintains counters must override this and must NOT zero
+     * them inside ``run()``: with ``recurse_into_subgraphs() == true`` the
+     * driver calls ``run()`` once per subgraph, so a reset there discards every
+     * earlier level. That is silent for a single loop (the body is visited
+     * last, so its count survives) and wrong the moment a graph has a
+     * conditional -- the empty else-branch resets the counters to zero -- or
+     * more than one loop. ``graph.explain()`` reads these getters.
+     */
+    virtual void reset_stats() {}
+
+    /**
      * @brief Reads this pass intentionally redirected to a tensor's INITIAL
      *        contents by compensating the reader, exempted from the
      *        program-order validator.
