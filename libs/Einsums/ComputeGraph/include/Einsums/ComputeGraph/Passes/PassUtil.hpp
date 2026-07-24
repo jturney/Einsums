@@ -8,9 +8,13 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
+#include <Einsums/ComputeGraphTypes/Ids.hpp>
 
 #include <complex>
+#include <cstddef>
+#include <unordered_set>
 #include <variant>
+#include <vector>
 
 namespace einsums::compute_graph::passes {
 
@@ -63,6 +67,49 @@ namespace einsums::compute_graph::passes {
     }
     if (auto const *b = std::get_if<BatchedGemmDescriptor>(&nd.op_data)) {
         return b->beta != std::complex<double>{0.0, 0.0};
+    }
+    return false;
+}
+
+/**
+ * @brief Interference gate shared by the reassociation passes
+ *        (DistributiveFactoring, LinearCombinationContractionFolding).
+ *
+ * These passes move a combined op into the first member's slot, which is sound
+ * only if nothing between the first and last member disturbs the partial sum or
+ * a factor. Returns true when some node strictly between positions @p first and
+ * @p last (exclusive), other than the group members flagged in @p is_member:
+ *   - writes @p output_id or any tensor in @p operand_ids (clobbering the partial
+ *     sum or a factor mid-fold),
+ *   - reads @p output_id (observing the partial sum before it is complete), or
+ *   - when @p reject_control_flow is set, is a control-flow node whose hidden
+ *     sub-graph I/O cannot be inspected.
+ *
+ * @p reject_control_flow lets DistributiveFactoring disqualify a span containing
+ * a Loop/Conditional while LinearCombinationContractionFolding keeps its existing
+ * (control-flow-agnostic) behavior.
+ */
+[[nodiscard]] inline bool span_interferes(std::vector<Node> const &nodes, std::size_t first, std::size_t last,
+                                          std::vector<bool> const &is_member, TensorId output_id,
+                                          std::unordered_set<TensorId> const &operand_ids, bool reject_control_flow) {
+    for (std::size_t n = first + 1; n < last; ++n) {
+        if (is_member[n]) {
+            continue;
+        }
+        Node const &other = nodes[n];
+        if (reject_control_flow && is_control_flow(other.kind)) {
+            return true;
+        }
+        for (auto const out : other.outputs) {
+            if (out == output_id || operand_ids.count(out) != 0) {
+                return true;
+            }
+        }
+        for (auto const in : other.inputs) {
+            if (in == output_id) {
+                return true;
+            }
+        }
     }
     return false;
 }

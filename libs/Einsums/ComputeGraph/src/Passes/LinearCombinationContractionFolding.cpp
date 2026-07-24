@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Logging.hpp>
@@ -231,28 +232,8 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         for (auto const &m : members) {
             is_member[m.node_index] = true;
         }
-        bool interference = false;
-        for (size_t n = lo + 1; n < hi && !interference; n++) {
-            if (is_member[n]) {
-                continue;
-            }
-            auto const &nd = nodes[n];
-            for (auto const &out : nd.outputs) {
-                if (out == vg.key.output_id || out == vg.key.shared_id || out == vg.key.non_shared_id) {
-                    interference = true;
-                    break;
-                }
-            }
-            if (interference) {
-                break;
-            }
-            for (auto const &in : nd.inputs) {
-                if (in == vg.key.output_id) { // someone reads the partial sum
-                    interference = true;
-                    break;
-                }
-            }
-        }
+        std::unordered_set<TensorId> const operand_ids{vg.key.shared_id, vg.key.non_shared_id};
+        bool const interference = span_interferes(nodes, lo, hi, is_member, vg.key.output_id, operand_ids, /*reject_control_flow=*/false);
         if (interference) {
             if (_verbosity >= 3) {
                 auto on = tensors.find(vg.key.output_id);

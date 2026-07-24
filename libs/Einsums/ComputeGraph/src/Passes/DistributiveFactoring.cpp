@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributiveFactoring.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
@@ -237,32 +238,8 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
                 is_member[c.node_index] = true;
                 operand_ids.insert(c.non_shared_input);
             }
-            bool interference = false;
-            for (size_t n = first_pos + 1; n < last_pos && !interference; n++) {
-                if (is_member[n]) {
-                    continue;
-                }
-                Node const &other = nodes[n];
-                if (other.kind == OpKind::Loop || other.kind == OpKind::Conditional) {
-                    interference = true;
-                    break;
-                }
-                for (auto const out : other.outputs) {
-                    if (out == vg.key.output_id || operand_ids.count(out) != 0) { // clobbers the sum or a factor
-                        interference = true;
-                        break;
-                    }
-                }
-                if (interference) {
-                    break;
-                }
-                for (auto const in : other.inputs) {
-                    if (in == vg.key.output_id) { // observes the partial sum
-                        interference = true;
-                        break;
-                    }
-                }
-            }
+            bool const interference =
+                span_interferes(nodes, first_pos, last_pos, is_member, vg.key.output_id, operand_ids, /*reject_control_flow=*/true);
             if (interference) {
                 auto on = tensors.find(vg.key.output_id);
                 report(3, fmt::format("skip factoring into '{}': an intervening node reads/writes the output or a factor operand",
