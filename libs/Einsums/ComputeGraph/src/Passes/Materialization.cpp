@@ -278,15 +278,13 @@ bool Materialization::run(Graph &graph) {
         insertions.push_back({.position = r.position, .new_nodes = std::move(new_nodes)});
     }
 
-    // ── 5. Apply, descending so earlier positions don't shift ────────────
-    std::ranges::sort(insertions, [](Insertion const &a, Insertion const &b) { return a.position > b.position; });
-
+    // ── 5. Apply all insertions (Graph orders them descending and re-sorts) ─
+    std::vector<std::pair<std::size_t, std::vector<Node>>> groups;
+    groups.reserve(insertions.size());
     for (auto &ins : insertions) {
-        nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(ins.position), std::make_move_iterator(ins.new_nodes.begin()),
-                     std::make_move_iterator(ins.new_nodes.end()));
+        groups.emplace_back(ins.position, std::move(ins.new_nodes));
     }
-
-    graph.mark_sorted();
+    graph.insert_node_groups(std::move(groups));
 
     report(1, fmt::format("materialized {} deferred tensor(s) ({} initialized)", _num_materialized, _num_initialized));
     return true;

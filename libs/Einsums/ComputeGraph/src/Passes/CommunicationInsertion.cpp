@@ -107,12 +107,14 @@ bool CommunicationInsertion::run(Graph &graph) {
     if (insertions.empty())
         return false;
 
-    // Insert in reverse order so positions don't shift
-    for (auto &insertion : std::views::reverse(insertions)) {
-        nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(insertion.position + 1), std::move(insertion.node));
+    // Each allreduce goes immediately after its producer (position + 1); Graph
+    // applies them descending so positions don't shift and re-sorts.
+    std::vector<std::pair<std::size_t, std::vector<Node>>> groups;
+    groups.reserve(insertions.size());
+    for (auto &insertion : insertions) {
+        groups.emplace_back(insertion.position + 1, std::vector<Node>{std::move(insertion.node)});
     }
-
-    graph.mark_sorted();
+    graph.insert_node_groups(std::move(groups));
     return true;
 }
 

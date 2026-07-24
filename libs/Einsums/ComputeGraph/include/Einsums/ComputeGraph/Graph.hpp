@@ -415,6 +415,19 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     size_t erase_nodes(std::vector<bool> const &remove);
 
+    /**
+     * @brief Splice groups of nodes into the list. Each entry inserts its nodes
+     *        immediately BEFORE index @c first in the current numbering.
+     *
+     * The counterpart to erase_nodes for the passes that build new nodes and
+     * insert them at chosen positions. Applied in descending-position order
+     * internally so earlier indices stay valid while later ones are spliced, so
+     * callers pass positions in the ORIGINAL numbering and need not track shifts.
+     * An "insert after node k" is expressed as position @c k+1. Empty groups are
+     * skipped. Marks the graph sorted (the caller vouches for the chosen order).
+     */
+    void insert_node_groups(std::vector<std::pair<std::size_t, std::vector<Node>>> groups);
+
     /// Read-only access to the tensor registry (TensorId → TensorHandle map).
     [[nodiscard]] std::unordered_map<TensorId, TensorHandle> const &tensors_map() const { return _tensors; }
     /// Mutable access to the tensor registry (for testing / optimization passes).

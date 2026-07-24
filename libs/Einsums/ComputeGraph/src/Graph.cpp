@@ -559,6 +559,20 @@ size_t Graph::erase_nodes(std::vector<bool> const &remove) {
     return removed;
 }
 
+void Graph::insert_node_groups(std::vector<std::pair<std::size_t, std::vector<Node>>> groups) {
+    // Splice in descending position order so an earlier insertion doesn't shift
+    // the indices of later ones (positions are given in the original numbering).
+    std::ranges::sort(groups, [](auto const &a, auto const &b) { return a.first > b.first; });
+    for (auto &[at, nodes] : groups) {
+        if (nodes.empty()) {
+            continue;
+        }
+        _nodes.insert(_nodes.begin() + static_cast<std::ptrdiff_t>(at), std::make_move_iterator(nodes.begin()),
+                      std::make_move_iterator(nodes.end()));
+    }
+    mark_sorted();
+}
+
 TensorId Graph::register_tensor(TensorHandle handle) {
     TensorId id = _next_tensor_id++;
     handle.id   = id;
