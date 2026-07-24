@@ -33,7 +33,7 @@ int einsums_main() {
     // ═══════════════════════════════════════════════════════════════════════
     // 1. Basic string notation, arrow and NumPy styles
     // ═══════════════════════════════════════════════════════════════════════
-    println("=== 1. Basic Notation ===\n");
+    einsums::println("=== 1. Basic Notation ===\n");
     {
         auto A = create_random_tensor<double>("A", 4, 3);
         auto B = create_random_tensor<double>("B", 3, 5);
@@ -47,16 +47,16 @@ int einsums_main() {
         cg::einsum("ik;kj -> ij", &D, A, B);
 
         // Both produce the same result
-        println("Arrow notation C:");
-        println(C);
-        println("NumPy notation D (should match C):");
-        println(D);
+        einsums::println("Arrow notation C:");
+        einsums::println(C);
+        einsums::println("NumPy notation D (should match C):");
+        einsums::println(D);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 2. Multi-character index names
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== 2. Multi-Character Indices ===\n");
+    einsums::println("\n=== 2. Multi-Character Indices ===\n");
     {
         auto A = create_random_tensor<double>("A", 4, 3);
         auto B = create_random_tensor<double>("B", 3, 5);
@@ -64,92 +64,92 @@ int einsums_main() {
 
         // Commas separate multi-character index names
         cg::einsum("mu,nu <- mu,rho ; rho,nu", &C, A, B);
-        println("Result with Greek indices (mu,nu <- mu,rho ; rho,nu):");
-        println(C);
+        einsums::println("Result with Greek indices (mu,nu <- mu,rho ; rho,nu):");
+        einsums::println(C);
 
         // Numbered indices work too
         auto D = create_zero_tensor<double>("D", 4, 5);
         cg::einsum("i1,i2 <- i1,i3 ; i3,i2", &D, A, B);
-        println("Result with numbered indices (same computation):");
-        println(D);
+        einsums::println("Result with numbered indices (same computation):");
+        einsums::println(D);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 3. All dispatch patterns
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== 3. Dispatch Patterns ===\n");
+    einsums::println("\n=== 3. Dispatch Patterns ===\n");
     {
         // GEMM: matrix × matrix → matrix
         auto A = create_random_tensor<double>("A", 4, 3);
         auto B = create_random_tensor<double>("B", 3, 5);
         auto C = create_zero_tensor<double>("C", 4, 5);
         cg::einsum("ij <- ik ; kj", &C, A, B);
-        println("GEMM (4x3 * 3x5 -> 4x5): C[0,0] = {:.4f}", C(0, 0));
+        einsums::println("GEMM (4x3 * 3x5 -> 4x5): C[0,0] = {:.4f}", C(0, 0));
 
         // GEMM with transposed A: C[i,j] = A[k,i] * B[k,j]
         auto At = create_random_tensor<double>("At", 3, 4);
         auto Ct = create_zero_tensor<double>("Ct", 4, 5);
         cg::einsum("ij <- ki ; kj", &Ct, At, B);
-        println("GEMM transposed A: Ct[0,0] = {:.4f}", Ct(0, 0));
+        einsums::println("GEMM transposed A: Ct[0,0] = {:.4f}", Ct(0, 0));
 
         // GEMV: matrix × vector → vector
         auto x = create_random_tensor<double>("x", 3);
         auto y = create_zero_tensor<double>("y", 4);
         cg::einsum("i <- ik ; k", &y, A, x);
-        println("GEMV (4x3 * 3 -> 4): y[0] = {:.4f}", y(0));
+        einsums::println("GEMV (4x3 * 3 -> 4): y[0] = {:.4f}", y(0));
 
         // GER: vector × vector → matrix (outer product)
         auto u = create_random_tensor<double>("u", 4);
         auto v = create_random_tensor<double>("v", 5);
         auto G = create_zero_tensor<double>("G", 4, 5);
         cg::einsum("ij <- i ; j", &G, u, v);
-        println("GER (4 ⊗ 5 -> 4x5): G[0,0] = {:.4f}", G(0, 0));
+        einsums::println("GER (4 ⊗ 5 -> 4x5): G[0,0] = {:.4f}", G(0, 0));
 
         // DOT: vector · vector → scalar
         auto a = create_random_tensor<double>("a", 10);
         auto b = create_random_tensor<double>("b", 10);
         auto d = create_zero_tensor<double>("d", 1);
         cg::einsum(" <- i ; i", &d, a, b);
-        println("DOT (10 · 10 -> scalar): d = {:.4f}", d(0));
+        einsums::println("DOT (10 · 10 -> scalar): d = {:.4f}", d(0));
 
         // Direct product: element-wise multiplication
         auto P = create_random_tensor<double>("P", 3, 4);
         auto Q = create_random_tensor<double>("Q", 3, 4);
         auto R = create_zero_tensor<double>("R", 3, 4);
         cg::einsum("ij <- ij ; ij", &R, P, Q);
-        println("Direct product (3x4 ⊙ 3x4): R[0,0] = {:.4f}", R(0, 0));
+        einsums::println("Direct product (3x4 ⊙ 3x4): R[0,0] = {:.4f}", R(0, 0));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 4. Higher-rank contractions
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== 4. Higher-Rank Contractions ===\n");
+    einsums::println("\n=== 4. Higher-Rank Contractions ===\n");
     {
         // Rank-3 × rank-3 → rank-2: contract over j,k
         auto A = create_random_tensor<double>("A", 3, 4, 5);
         auto B = create_random_tensor<double>("B", 4, 5, 2);
         auto C = create_zero_tensor<double>("C", 3, 2);
         cg::einsum("il <- ijk ; jkl", &C, A, B);
-        println("Rank-3 contraction (3x4x5 * 4x5x2 -> 3x2): C[0,0] = {:.4f}", C(0, 0));
+        einsums::println("Rank-3 contraction (3x4x5 * 4x5x2 -> 3x2): C[0,0] = {:.4f}", C(0, 0));
 
         // Rank-3 × rank-2 → rank-2: contract over k, keep j as batch
         auto D = create_random_tensor<double>("D", 5, 4);
         auto E = create_zero_tensor<double>("E", 3, 4);
         cg::einsum("ij <- ijk ; kj", &E, A, D);
-        println("Rank-3 × rank-2 (3x4x5 * 5x4 -> 3x4): E[0,0] = {:.4f}", E(0, 0));
+        einsums::println("Rank-3 × rank-2 (3x4x5 * 5x4 -> 3x4): E[0,0] = {:.4f}", E(0, 0));
 
         // Rank-4 contraction
         auto F = create_random_tensor<double>("F", 2, 3, 4);
         auto G = create_random_tensor<double>("G", 2, 3, 4);
         auto H = create_zero_tensor<double>("H", 2, 3, 2, 3);
         cg::einsum("ijkl <- ijp ; klp", &H, F, G);
-        println("Rank-4 contraction (2x3x4 * 2x3x4 -> 2x3x2x3): H[0,0,0,0] = {:.4f}", H(0, 0, 0, 0));
+        einsums::println("Rank-4 contraction (2x3x4 * 2x3x4 -> 2x3x2x3): H[0,0,0,0] = {:.4f}", H(0, 0, 0, 0));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 5. With prefactors
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== 5. Prefactors ===\n");
+    einsums::println("\n=== 5. Prefactors ===\n");
     {
         auto A = create_random_tensor<double>("A", 3, 3);
         auto B = create_random_tensor<double>("B", 3, 3);
@@ -157,14 +157,14 @@ int einsums_main() {
 
         // C = 2.0 * C + 3.0 * A * B
         cg::einsum("ij <- ik ; kj", 2.0, &C, 3.0, A, B);
-        println("With prefactors (C = 2*C + 3*A*B):");
-        println(C);
+        einsums::println("With prefactors (C = 2*C + 3*A*B):");
+        einsums::println(C);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 6. Graph capture with string einsum
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== 6. Graph Capture ===\n");
+    einsums::println("\n=== 6. Graph Capture ===\n");
     {
         auto A = create_random_tensor<double>("A", 5, 3);
         auto B = create_random_tensor<double>("B", 3, 4);
@@ -180,7 +180,7 @@ int einsums_main() {
             cg::einsum("ij <- ij ; ij", &C, T, T); // C = T ⊙ T (element-wise square)
         }
 
-        println("Graph summary:");
+        einsums::println("Graph summary:");
         graph.print_summary(std::cout);
 
         // Apply ScaleAbsorption, the scale(2.0) + einsum(ij<-ij;ij) pattern
@@ -190,14 +190,14 @@ int einsums_main() {
 
         graph.execute();
 
-        println("\nResult C = (2*A*B) ⊙ (2*A*B):");
-        println(C);
+        einsums::println("\nResult C = (2*A*B) ⊙ (2*A*B):");
+        einsums::println(C);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 7. Pipeline with string einsum
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== 7. Pipeline ===\n");
+    einsums::println("\n=== 7. Pipeline ===\n");
     {
         auto A   = create_random_tensor<double>("A", 4, 4);
         auto B   = create_random_tensor<double>("B", 4, 4);
@@ -234,15 +234,15 @@ int einsums_main() {
 
         pipeline.execute();
 
-        println("Pipeline result (average of 3 accumulations of A*B):");
-        println(acc);
-        println("Iterations: {}", count);
+        einsums::println("Pipeline result (average of 3 accumulations of A*B):");
+        einsums::println(acc);
+        einsums::println("Iterations: {}", count);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 8. Mixed: string einsum + template-based einsum in same graph
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== 8. Mixed String + Template Einsum ===\n");
+    einsums::println("\n=== 8. Mixed String + Template Einsum ===\n");
     {
         auto A = create_random_tensor<double>("A", 4, 3);
         auto B = create_random_tensor<double>("B", 3, 5);
@@ -264,8 +264,8 @@ int einsums_main() {
 
         graph.execute();
 
-        println("Mixed graph (string + template einsum):");
-        println(E);
+        einsums::println("Mixed graph (string + template einsum):");
+        einsums::println(E);
     }
 
     finalize();

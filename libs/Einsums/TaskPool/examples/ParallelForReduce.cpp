@@ -29,7 +29,7 @@ int einsums_main() {
     constexpr size_t N    = 10'000'000;
 
     // ── 1. parallel_for: fill an array ───────────────────────────────────────
-    println("--- parallel_for: fill {} elements ---", N);
+    einsums::println("--- parallel_for: fill {} elements ---", N);
 
     std::vector<double> data(N);
 
@@ -38,7 +38,7 @@ int einsums_main() {
     auto t1 = std::chrono::high_resolution_clock::now();
 
     double par_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    println("  parallel_for: {:.1f} ms", par_ms);
+    einsums::println("  parallel_for: {:.1f} ms", par_ms);
 
     // Sequential comparison
     t0 = std::chrono::high_resolution_clock::now();
@@ -48,11 +48,11 @@ int einsums_main() {
     t1 = std::chrono::high_resolution_clock::now();
 
     double seq_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    println("  sequential:   {:.1f} ms", seq_ms);
-    println("  speedup:      {:.1f}x", seq_ms / par_ms);
+    einsums::println("  sequential:   {:.1f} ms", seq_ms);
+    einsums::println("  speedup:      {:.1f}x", seq_ms / par_ms);
 
     // ── 2. parallel_reduce: sum of squares ───────────────────────────────────
-    println("\n--- parallel_reduce: sum of squares ---");
+    einsums::println("\n--- parallel_reduce: sum of squares ---");
 
     t0             = std::chrono::high_resolution_clock::now();
     double par_sum = pool.parallel_reduce<double>(
@@ -72,15 +72,15 @@ int einsums_main() {
     auto t3 = std::chrono::high_resolution_clock::now();
     seq_ms  = std::chrono::duration<double, std::milli>(t3 - t2).count();
 
-    println("  parallel result:   {:.6f}", par_sum);
-    println("  sequential result: {:.6f}", seq_sum);
-    println("  match: {}", std::abs(par_sum - seq_sum) / std::abs(seq_sum) < 1e-10 ? "yes" : "NO");
-    println("  parallel:   {:.1f} ms", par_ms);
-    println("  sequential: {:.1f} ms", seq_ms);
-    println("  speedup:    {:.1f}x", seq_ms / par_ms);
+    einsums::println("  parallel result:   {:.6f}", par_sum);
+    einsums::println("  sequential result: {:.6f}", seq_sum);
+    einsums::println("  match: {}", std::abs(par_sum - seq_sum) / std::abs(seq_sum) < 1e-10 ? "yes" : "NO");
+    einsums::println("  parallel:   {:.1f} ms", par_ms);
+    einsums::println("  sequential: {:.1f} ms", seq_ms);
+    einsums::println("  speedup:    {:.1f}x", seq_ms / par_ms);
 
     // ── 3. parallel_reduce: dot product ──────────────────────────────────────
-    println("\n--- parallel_reduce: dot product ---");
+    einsums::println("\n--- parallel_reduce: dot product ---");
 
     std::vector<double> a(N), b(N);
     pool.parallel_for("init_ab", 0, N, [&a, &b](size_t i) {
@@ -97,9 +97,9 @@ int einsums_main() {
     for (size_t i = 0; i < N; i++)
         ref_dot += a[i] * b[i];
 
-    println("  parallel:   {:.6f}", dot);
-    println("  sequential: {:.6f}", ref_dot);
-    println("  match: {}", std::abs(dot - ref_dot) / std::abs(ref_dot) < 1e-10 ? "yes" : "NO");
+    einsums::println("  parallel:   {:.6f}", dot);
+    einsums::println("  sequential: {:.6f}", ref_dot);
+    einsums::println("  match: {}", std::abs(dot - ref_dot) / std::abs(ref_dot) < 1e-10 ? "yes" : "NO");
 
     return EXIT_SUCCESS;
 }

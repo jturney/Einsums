@@ -29,10 +29,10 @@ int einsums_main() {
     using namespace einsums;
     using namespace einsums::index;
 
-    println("=== ComputeGraph + TaskPool Integration ===\n");
+    einsums::println("=== ComputeGraph + TaskPool Integration ===\n");
 
     // ── 1. Graph with DataflowExecutor ───────────────────────────────────────
-    println("--- DataflowExecutor: concurrent graph nodes ---");
+    einsums::println("--- DataflowExecutor: concurrent graph nodes ---");
 
     auto A = create_random_tensor<double>("A", 100, 50);
     auto B = create_random_tensor<double>("B", 50, 80);
@@ -61,8 +61,8 @@ int einsums_main() {
     auto t1 = std::chrono::high_resolution_clock::now();
 
     double df_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    println("  DataflowExecutor: {:.2f} ms", df_ms);
-    println("  Graph has {} nodes", graph.num_nodes());
+    einsums::println("  DataflowExecutor: {:.2f} ms", df_ms);
+    einsums::println("  Graph has {} nodes", graph.num_nodes());
 
     // Compare with sequential
     C.zero();
@@ -72,10 +72,10 @@ int einsums_main() {
     t1 = std::chrono::high_resolution_clock::now();
 
     double seq_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    println("  SequentialExecutor: {:.2f} ms", seq_ms);
+    einsums::println("  SequentialExecutor: {:.2f} ms", seq_ms);
 
     // ── 2. TaskPool inside a graph node ──────────────────────────────────────
-    println("\n--- TaskPool inside graph nodes ---");
+    einsums::println("\n--- TaskPool inside graph nodes ---");
 
     // Simulate a Fock matrix build: each shell pair contributes to F
     constexpr size_t N_AO    = 50;
@@ -104,10 +104,10 @@ int einsums_main() {
     }
 
     fock_graph.execute();
-    println("  Fock build complete: F({},{}) = {:.6f}", 0, 0, F(0, 0));
+    einsums::println("  Fock build complete: F({},{}) = {:.6f}", 0, 0, F(0, 0));
 
     // ── 3. Demonstrate the power: graph sequencing + task parallelism ────────
-    println("\n--- Combined: graph ordering + intra-node parallelism ---");
+    einsums::println("\n--- Combined: graph ordering + intra-node parallelism ---");
 
     // Build a multi-step workflow
     auto X = create_random_tensor<double>("X", 200, 200);
@@ -142,20 +142,20 @@ int einsums_main() {
         [](double &g, double const &l) { g += l; });
     norm = std::sqrt(norm);
 
-    println("  ||Z||_F = {:.4f}", norm);
-    println("  Workflow: parallel_for -> graph einsum -> parallel_reduce");
+    einsums::println("  ||Z||_F = {:.4f}", norm);
+    einsums::println("  Workflow: parallel_for -> graph einsum -> parallel_reduce");
 
     // ── 4. Print timing report ───────────────────────────────────────────────
-    println("\n--- Timing reports ---");
+    einsums::println("\n--- Timing reports ---");
     graph.print_timing_report(std::cout);
 
     auto m = pool.snapshot_metrics();
-    println("\nTaskPool metrics:");
-    println("  Tasks submitted: {}", m.total_submitted);
-    println("  Tasks completed: {}", m.total_completed);
-    println("  Total steals:    {}", m.total_steals);
+    einsums::println("\nTaskPool metrics:");
+    einsums::println("  Tasks submitted: {}", m.total_submitted);
+    einsums::println("  Tasks completed: {}", m.total_completed);
+    einsums::println("  Total steals:    {}", m.total_steals);
 
-    println("\n=== Integration Demo Complete ===");
+    einsums::println("\n=== Integration Demo Complete ===");
     return EXIT_SUCCESS;
 }
 

@@ -17,9 +17,9 @@ int einsums_main() {
 
     double C = linear_algebra::dot(A, B);
 
-    println(A);
-    println(B);
-    println("C = {}", C);
+    einsums::println(A);
+    einsums::println(B);
+    einsums::println("C = {}", C);
 
     finalize();
     return EXIT_SUCCESS;

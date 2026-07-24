@@ -33,12 +33,12 @@ int einsums_main() {
 
     constexpr size_t N = 8;
 
-    println("=== Deferred Allocation Example ===\n");
+    einsums::println("=== Deferred Allocation Example ===\n");
 
     // ═══════════════════════════════════════════════════════════════════════
     // 1. Workspace: cross-computation tensors
     // ═══════════════════════════════════════════════════════════════════════
-    println("--- 1. Workspace Scoping ---\n");
+    einsums::println("--- 1. Workspace Scoping ---\n");
     {
         cg::Workspace ws("calculation");
 
@@ -46,8 +46,8 @@ int einsums_main() {
         auto &H = ws.declare_tensor<double, 2>(std::string("H"), N, N);
         auto &S = ws.declare_tensor<double, 2>(std::string("S"), N, N);
 
-        println("  H: {}x{}, materialized={}", H.dim(0), H.dim(1), H.is_materialized());
-        println("  S: {}x{}, materialized={}", S.dim(0), S.dim(1), S.is_materialized());
+        einsums::println("  H: {}x{}, materialized={}", H.dim(0), H.dim(1), H.is_materialized());
+        einsums::println("  S: {}x{}, materialized={}", S.dim(0), S.dim(1), S.is_materialized());
 
         // Materialize manually for this demo (normally done by passes)
         H.materialize();
@@ -55,7 +55,7 @@ int einsums_main() {
         H.zero();
         S.zero();
 
-        println("  After materialize: H materialized={}, S materialized={}", H.is_materialized(), S.is_materialized());
+        einsums::println("  After materialize: H materialized={}, S materialized={}", H.is_materialized(), S.is_materialized());
 
         // Use in a pipeline
         cg::Pipeline p1("pipeline_1");
@@ -74,16 +74,16 @@ int einsums_main() {
         C.zero();
 
         p1.execute();
-        println("  C[0,0] after pipeline_1: {:.4f}", C(0, 0));
+        einsums::println("  C[0,0] after pipeline_1: {:.4f}", C(0, 0));
 
         // H and S survive, Workspace owns them
-        println("  Workspace tensors still alive: {} declared", ws.size());
+        einsums::println("  Workspace tensors still alive: {} declared", ws.size());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 2. Pipeline: cross-stage tensors with create_default()
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n--- 2. Pipeline + create_default() ---\n");
+    einsums::println("\n--- 2. Pipeline + create_default() ---\n");
     {
         // These are regular (immediately allocated) tensors for inputs
         auto A = create_random_tensor<double>("A", N, N);
@@ -94,7 +94,7 @@ int einsums_main() {
         // Declare a pipeline-scoped tensor, deferred allocation
         auto &C = pipeline.declare_tensor<double, 2>(std::string("C"), N, N);
 
-        println("  Before apply: C materialized={}", C.is_materialized());
+        einsums::println("  Before apply: C materialized={}", C.is_materialized());
 
         // Stage 1: compute C = A * B
         {
@@ -117,14 +117,14 @@ int einsums_main() {
         // Execute: Materialize node runs first, then compute, then scale
         pipeline.execute();
 
-        println("  After execute: C materialized={}", C.is_materialized());
-        println("  C[0,0] = {:.4f}", C(0, 0));
+        einsums::println("  After execute: C materialized={}", C.is_materialized());
+        einsums::println("  C[0,0] = {:.4f}", C(0, 0));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 3. Graph: single-computation intermediates
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n--- 3. Graph Intermediates ---\n");
+    einsums::println("\n--- 3. Graph Intermediates ---\n");
     {
         auto A = create_random_tensor<double>("A", N, N);
         auto B = create_random_tensor<double>("B", N, N);
@@ -145,11 +145,11 @@ int einsums_main() {
         graph.apply(pm);
         graph.execute();
 
-        println("  T[0,0] = {:.4f}", T(0, 0));
-        println("  T materialized = {}", T.is_materialized());
+        einsums::println("  T[0,0] = {:.4f}", T(0, 0));
+        einsums::println("  T materialized = {}", T.is_materialized());
     }
 
-    println("\nDone.");
+    einsums::println("\nDone.");
     finalize();
     return EXIT_SUCCESS;
 }

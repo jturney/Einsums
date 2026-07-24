@@ -45,8 +45,8 @@ int einsums_main() {
 
     // ── Print grid info ─────────────────────────────────────────────────
     auto &grid = comm::ProcessGrid::default_grid();
-    println("Rank {}/{} at grid ({},{}) in {}x{} grid", comm::world_rank(), comm::world_size(), grid.my_row(), grid.my_col(), grid.rows(),
-            grid.cols());
+    einsums::println("Rank {}/{} at grid ({},{}) in {}x{} grid", comm::world_rank(), comm::world_size(), grid.my_row(), grid.my_col(),
+                     grid.rows(), grid.cols());
 
     // ── Create input data (pre-allocated, replicated on all ranks) ──────
     auto A = create_random_tensor<double>("A", M, K);
@@ -64,9 +64,9 @@ int einsums_main() {
     double ref_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
     if (comm::is_root()) {
-        println("\n--- Method 1: Direct einsum (serial) ---");
-        println("  Time: {:.2f} ms", ref_ms);
-        println("  C(0,0) = {:.8f}", C_ref(0, 0));
+        einsums::println("\n--- Method 1: Direct einsum (serial) ---");
+        einsums::println("  Time: {:.2f} ms", ref_ms);
+        einsums::println("  C(0,0) = {:.8f}", C_ref(0, 0));
     }
 
     // ── Method 2: ComputeGraph with automatic distribution ──────────────
@@ -95,7 +95,7 @@ int einsums_main() {
     t1             = std::chrono::high_resolution_clock::now();
     double dist_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-    println("Rank {}: C local dims = {}x{}, time = {:.2f} ms", comm::world_rank(), C.dim(0), C.dim(1), dist_ms);
+    einsums::println("Rank {}: C local dims = {}x{}, time = {:.2f} ms", comm::world_rank(), C.dim(0), C.dim(1), dist_ms);
 
     // ── Verify correctness ──────────────────────────────────────────────
     // Each rank checks its local partition against the reference.
@@ -123,18 +123,18 @@ int einsums_main() {
         }
     }
 
-    println("Rank {}: max error = {:.2e}", comm::world_rank(), max_diff);
+    einsums::println("Rank {}: max error = {:.2e}", comm::world_rank(), max_diff);
 
     if (comm::is_root()) {
-        println("\n--- Summary ---");
-        println("  Grid: {}x{} ({} ranks)", grid.rows(), grid.cols(), comm::world_size());
-        println("  Tensor dims: C[{},{}] = A[{},{}] * B[{},{}]", M, N, M, K, K, N);
-        println("  Serial: {:.2f} ms", ref_ms);
-        println("  Distributed: {:.2f} ms per rank", dist_ms);
+        einsums::println("\n--- Summary ---");
+        einsums::println("  Grid: {}x{} ({} ranks)", grid.rows(), grid.cols(), comm::world_size());
+        einsums::println("  Tensor dims: C[{},{}] = A[{},{}] * B[{},{}]", M, N, M, K, K, N);
+        einsums::println("  Serial: {:.2f} ms", ref_ms);
+        einsums::println("  Distributed: {:.2f} ms per rank", dist_ms);
         if (max_diff < 1e-10) {
-            println("  Correctness: PASS (max error {:.2e})", max_diff);
+            einsums::println("  Correctness: PASS (max error {:.2e})", max_diff);
         } else {
-            println("  Correctness: FAIL (max error {:.2e})", max_diff);
+            einsums::println("  Correctness: FAIL (max error {:.2e})", max_diff);
         }
     }
 

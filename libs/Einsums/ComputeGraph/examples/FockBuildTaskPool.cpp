@@ -35,7 +35,7 @@ int einsums_main() {
     constexpr size_t nbf     = 20;                  // Basis functions
     constexpr size_t n_pairs = nbf * (nbf + 1) / 2; // Unique shell pairs
 
-    println("=== Fock Build with TaskPool ({} basis functions, {} shell pairs) ===\n", nbf, n_pairs);
+    einsums::println("=== Fock Build with TaskPool ({} basis functions, {} shell pairs) ===\n", nbf, n_pairs);
 
     // ── Setup: create "integral" data and density matrix ─────────────────────
     // In a real code, these would come from an integral engine.
@@ -59,7 +59,7 @@ int einsums_main() {
     auto F_mat = create_zero_tensor<double>("F", nbf, nbf);
 
     // ── Method 1: Everything in one graph with cg::parallel_for ────────────
-    println("--- Method 1: cg::parallel_for + einsum in one graph ---");
+    einsums::println("--- Method 1: cg::parallel_for + einsum in one graph ---");
 
     auto &pool = tp::TaskPool::get_singleton();
 
@@ -114,12 +114,12 @@ int einsums_main() {
 
     fock_assembly.execute();
 
-    println("  F(0,0) = {:.6f}", F_mat(0, 0));
-    println("  F is symmetric: {}", std::abs(F_mat(0, 1) - F_mat(1, 0)) < 1e-12 ? "yes" : "no");
-    println("  Graph nodes: {} (parallel_for + permute + 2 axpy)", fock_assembly.num_nodes());
+    einsums::println("  F(0,0) = {:.6f}", F_mat(0, 0));
+    einsums::println("  F is symmetric: {}", std::abs(F_mat(0, 1) - F_mat(1, 0)) < 1e-12 ? "yes" : "no");
+    einsums::println("  Graph nodes: {} (parallel_for + permute + 2 axpy)", fock_assembly.num_nodes());
 
     // ── Method 2: DataflowExecutor for concurrent graph nodes ────────────────
-    println("\n--- Method 2: DataflowExecutor for independent operations ---");
+    einsums::println("\n--- Method 2: DataflowExecutor for independent operations ---");
 
     // Create a graph with independent branches that can run concurrently
     auto A_mat = create_random_tensor<double>("A", nbf, nbf);
@@ -144,11 +144,11 @@ int einsums_main() {
     cg::DataflowExecutor df_exec;
     parallel_graph.execute(df_exec);
 
-    println("  E(0,0) = {:.6f}", E_mat(0, 0));
-    println("  Graph nodes: {}", parallel_graph.num_nodes());
+    einsums::println("  E(0,0) = {:.6f}", E_mat(0, 0));
+    einsums::println("  Graph nodes: {}", parallel_graph.num_nodes());
 
     // ── Method 3: Full SCF-like iteration, entire loop in one graph ────────
-    println("\n--- Method 3: SCF iteration with cg::parallel_for in graph ---");
+    einsums::println("\n--- Method 3: SCF iteration with cg::parallel_for in graph ---");
 
     double energy     = 0.0;
     double energy_old = 1e10;
@@ -210,7 +210,7 @@ int einsums_main() {
         cg::scale(0.99, &D_mat);
     }
 
-    println("  SCF graph: {} nodes", scf_iter_graph.num_nodes());
+    einsums::println("  SCF graph: {} nodes", scf_iter_graph.num_nodes());
 
     // Replay the graph for each SCF iteration
     for (int iter = 0; iter < max_iter; iter++) {
@@ -221,18 +221,18 @@ int einsums_main() {
         scf_iter_graph.execute();
 
         double delta = std::abs(energy - energy_old);
-        println("  Iter {}: energy = {:.8f}, delta = {:.2e}", iter, energy, delta);
+        einsums::println("  Iter {}: energy = {:.8f}, delta = {:.2e}", iter, energy, delta);
         energy_old = energy;
     }
 
     // Print TaskPool metrics
-    println("\n--- TaskPool Metrics ---");
+    einsums::println("\n--- TaskPool Metrics ---");
     auto m = pool.snapshot_metrics();
-    println("  Tasks submitted: {}", m.total_submitted);
-    println("  Tasks completed: {}", m.total_completed);
-    println("  Work stealing:   {} steals across {} workers", m.total_steals, m.per_worker_executed.size());
+    einsums::println("  Tasks submitted: {}", m.total_submitted);
+    einsums::println("  Tasks completed: {}", m.total_completed);
+    einsums::println("  Work stealing:   {} steals across {} workers", m.total_steals, m.per_worker_executed.size());
 
-    println("\n=== Fock Build Demo Complete ===");
+    einsums::println("\n=== Fock Build Demo Complete ===");
     return EXIT_SUCCESS;
 }
 

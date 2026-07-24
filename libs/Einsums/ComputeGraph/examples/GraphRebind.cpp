@@ -28,7 +28,7 @@ int einsums_main() {
     // ═══════════════════════════════════════════════════════════════════════
     // 1. Basic rebind: same graph, different data
     // ═══════════════════════════════════════════════════════════════════════
-    println("=== Basic Rebind ===\n");
+    einsums::println("=== Basic Rebind ===\n");
     {
         auto A1 = create_random_tensor<double>("A1", 4, 3);
         auto A2 = create_random_tensor<double>("A2", 4, 3);
@@ -44,19 +44,19 @@ int einsums_main() {
 
         // Execute with A1
         graph.execute();
-        println("With A1: C[0,0] = {:.4f}", C(0, 0));
+        einsums::println("With A1: C[0,0] = {:.4f}", C(0, 0));
 
         // Rebind to A2, one line, no ID lookup needed!
         graph.rebind(A1, A2);
         C.zero();
         graph.execute();
-        println("With A2: C[0,0] = {:.4f} (different!)", C(0, 0));
+        einsums::println("With A2: C[0,0] = {:.4f} (different!)", C(0, 0));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 2. Update prefactors dynamically
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== Update Prefactors ===\n");
+    einsums::println("\n=== Update Prefactors ===\n");
     {
         auto A = create_random_tensor<double>("A", 3, 3);
         auto B = create_random_tensor<double>("B", 3, 3);
@@ -73,18 +73,18 @@ int einsums_main() {
 
         // Execute: C = A*B
         graph.execute();
-        println("c_pf=0, ab_pf=1: C[0,0] = {:.4f}", C(0, 0));
+        einsums::println("c_pf=0, ab_pf=1: C[0,0] = {:.4f}", C(0, 0));
 
         // Change to C = C + 2*A*B (accumulate with doubled product)
         graph.update_prefactors(einsum_id, 1.0, 2.0);
         graph.execute();
-        println("c_pf=1, ab_pf=2: C[0,0] = {:.4f} (accumulated)", C(0, 0));
+        einsums::println("c_pf=1, ab_pf=2: C[0,0] = {:.4f} (accumulated)", C(0, 0));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 3. Rebind in a loop: process multiple datasets with one graph
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== Rebind in Loop ===\n");
+    einsums::println("\n=== Rebind in Loop ===\n");
     {
         auto B = create_random_tensor<double>("B", 4, 4);
         auto C = create_zero_tensor<double>("C", 4, 4);
@@ -108,7 +108,7 @@ int einsums_main() {
             graph.rebind(inputs[idx - 1], inputs[idx]);
             C.zero();
             graph.execute();
-            println("Input {}: C[0,0] = {:.4f}", idx, C(0, 0));
+            einsums::println("Input {}: C[0,0] = {:.4f}", idx, C(0, 0));
         }
     }
 

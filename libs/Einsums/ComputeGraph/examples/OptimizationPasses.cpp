@@ -41,7 +41,7 @@ int einsums_main() {
     // ═══════════════════════════════════════════════════════════════════════
     // 1. ScaleAbsorption (einsum case)
     // ═══════════════════════════════════════════════════════════════════════
-    println("=== ScaleAbsorption (einsum) Pass ===\n");
+    einsums::println("=== ScaleAbsorption (einsum) Pass ===\n");
     {
         auto A = create_random_tensor<double>("A", 6, 4);
         auto B = create_random_tensor<double>("B", 4, 5);
@@ -57,24 +57,24 @@ int einsums_main() {
             cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
         }
 
-        println("Before fusion:");
+        einsums::println("Before fusion:");
         graph.print_summary(std::cout);
 
         auto [modified, _p] = graph.apply<cg::passes::ScaleAbsorption>();
 
-        println("\nAfter fusion (modified={}):", modified);
+        einsums::println("\nAfter fusion (modified={}):", modified);
         graph.print_summary(std::cout);
-        println("  -> Scale node absorbed into einsum: c_prefactor is now 3.0");
+        einsums::println("  -> Scale node absorbed into einsum: c_prefactor is now 3.0");
 
         graph.execute();
-        println("Result C:");
-        println(C);
+        einsums::println("Result C:");
+        einsums::println(C);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 2. MemoryPlanning
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== MemoryPlanning Pass ===\n");
+    einsums::println("\n=== MemoryPlanning Pass ===\n");
     {
         auto A  = create_random_tensor<double>("A", 100, 100);
         auto B  = create_random_tensor<double>("B", 100, 100);
@@ -97,14 +97,14 @@ int einsums_main() {
         auto [_m1, mem] = graph.apply<cg::passes::MemoryPlanning>();
 
         mem.print_report(std::cout);
-        println("  Total memory includes all 5 tensors ({} bytes each)", 100 * 100 * sizeof(double));
-        println("  Peak memory is lower because not all are live simultaneously");
+        einsums::println("  Total memory includes all 5 tensors ({} bytes each)", 100 * 100 * sizeof(double));
+        einsums::println("  Peak memory is lower because not all are live simultaneously");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 3. Reorder (memory-aware topological sort)
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== Reorder Pass ===\n");
+    einsums::println("\n=== Reorder Pass ===\n");
     {
         auto A = create_random_tensor<double>("A", 10, 10);
         auto B = create_random_tensor<double>("B", 10, 10);
@@ -120,12 +120,12 @@ int einsums_main() {
             cg::einsum("ik;kj->ij", &D, B, A);
         }
 
-        println("Before reorder:");
+        einsums::println("Before reorder:");
         graph.print_summary(std::cout);
 
         auto [modified, _p] = graph.apply<cg::passes::Reorder>();
 
-        println("\nAfter reorder (modified={}):", modified);
+        einsums::println("\nAfter reorder (modified={}):", modified);
         graph.print_summary(std::cout);
 
         graph.execute();
@@ -134,7 +134,7 @@ int einsums_main() {
     // ═══════════════════════════════════════════════════════════════════════
     // 4. CSE (Common Subexpression Elimination)
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== CSE Pass ===\n");
+    einsums::println("\n=== CSE Pass ===\n");
     {
         auto A = create_random_tensor<double>("A", 8, 6);
         auto B = create_random_tensor<double>("B", 6, 4);
@@ -154,14 +154,14 @@ int einsums_main() {
             cg::einsum("ik;kj->ij", &D, A, B);
         }
 
-        println("Before CSE: {} nodes", graph.num_nodes());
+        einsums::println("Before CSE: {} nodes", graph.num_nodes());
         graph.print_summary(std::cout);
 
         auto [modified, _p] = graph.apply<cg::passes::CSE>();
 
-        println("\nAfter CSE (modified={}): {} nodes", modified, graph.num_nodes());
+        einsums::println("\nAfter CSE (modified={}): {} nodes", modified, graph.num_nodes());
         graph.print_summary(std::cout);
-        println("  -> Duplicate einsum eliminated; D's computation reuses C's result");
+        einsums::println("  -> Duplicate einsum eliminated; D's computation reuses C's result");
 
         graph.execute();
     }
@@ -169,7 +169,7 @@ int einsums_main() {
     // ═══════════════════════════════════════════════════════════════════════
     // 5. ContractionPlanning (chain restructuring)
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== ContractionPlanning Pass ===\n");
+    einsums::println("\n=== ContractionPlanning Pass ===\n");
     {
         // Classic matrix chain example where parenthesization matters enormously:
         // A(100x1) * B(1x100) * C(100x1)
@@ -199,10 +199,11 @@ int einsums_main() {
 
         auto [modified5, chain] = graph.apply<cg::passes::ContractionPlanning>();
 
-        println("Matrix chain: A(100x1) * B(1x100) * C(100x1)");
-        println("  Chains restructured: {} ({} intermediates created)", chain.chains_restructured(), chain.intermediates_created());
+        einsums::println("Matrix chain: A(100x1) * B(1x100) * C(100x1)");
+        einsums::println("  Chains restructured: {} ({} intermediates created)", chain.chains_restructured(),
+                         chain.intermediates_created());
         for (auto const &rep : chain.chain_reports()) {
-            println("  Estimated: {:.1f}us -> {:.1f}us ({:.2f}x speedup)", rep.original_time_us, rep.optimal_time_us, rep.speedup);
+            einsums::println("  Estimated: {:.1f}us -> {:.1f}us ({:.2f}x speedup)", rep.original_time_us, rep.optimal_time_us, rep.speedup);
         }
         (void)modified5;
     }
@@ -210,7 +211,7 @@ int einsums_main() {
     // ═══════════════════════════════════════════════════════════════════════
     // Combined: multiple passes on one graph
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== Combined Passes ===\n");
+    einsums::println("\n=== Combined Passes ===\n");
     {
         auto A = create_random_tensor<double>("A", 20, 20);
         auto B = create_random_tensor<double>("B", 20, 20);
@@ -223,25 +224,25 @@ int einsums_main() {
             cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
         }
 
-        println("Before passes: {} nodes", graph.num_nodes());
+        einsums::println("Before passes: {} nodes", graph.num_nodes());
 
         cg::PassManager pm;
         pm.add<cg::passes::ScaleAbsorption>().add<cg::passes::Reorder>();
         graph.apply(pm);
         auto [_m3, mem2] = graph.apply<cg::passes::MemoryPlanning>();
 
-        println("After passes: {} nodes", graph.num_nodes());
+        einsums::println("After passes: {} nodes", graph.num_nodes());
         mem2.print_report(std::cout);
 
         graph.execute();
-        println("Result C (with profiling):");
-        println(C);
+        einsums::println("Result C (with profiling):");
+        einsums::println(C);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 6. ConstantFolding
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== ConstantFolding ===\n");
+    einsums::println("\n=== ConstantFolding ===\n");
     {
         // ConstantFolding only folds graph-owned intermediate tensors that are
         // never written by any node. User-owned tensors are NOT assumed constant
@@ -261,16 +262,16 @@ int einsums_main() {
         }
 
         auto [_m4, fold] = graph.apply<cg::passes::ConstantFolding>();
-        println("Folded {} constant nodes (0 expected: A and B are user-owned)", fold.num_folded());
+        einsums::println("Folded {} constant nodes (0 expected: A and B are user-owned)", fold.num_folded());
 
         graph.execute();
-        println("C[0,0] = {:.4f} (computed during execute, not during folding)", C(0, 0));
+        einsums::println("C[0,0] = {:.4f} (computed during execute, not during folding)", C(0, 0));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 7. ScaleAbsorption (generalized)
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== ScaleAbsorption ===\n");
+    einsums::println("\n=== ScaleAbsorption ===\n");
     {
         auto A = create_random_tensor<double>("A", 4, 6);
         auto C = create_random_tensor<double>("C", 6, 4);
@@ -282,15 +283,15 @@ int einsums_main() {
             cg::permute("ji <- ij", 0.0, &C, 1.0, A);
         }
 
-        println("Before: {} nodes", graph.num_nodes());
+        einsums::println("Before: {} nodes", graph.num_nodes());
         auto [_m5, absorb] = graph.apply<cg::passes::ScaleAbsorption>();
-        println("After: {} nodes (absorbed {} scale ops)", graph.num_nodes(), absorb.num_absorbed());
+        einsums::println("After: {} nodes (absorbed {} scale ops)", graph.num_nodes(), absorb.num_absorbed());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 8. GEMMBatching (analysis)
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== GEMMBatching ===\n");
+    einsums::println("\n=== GEMMBatching ===\n");
     {
         auto A1 = create_random_tensor<double>("A1", 10, 8);
         auto A2 = create_random_tensor<double>("A2", 10, 8);
@@ -311,13 +312,13 @@ int einsums_main() {
         }
 
         auto [_m6, batch] = graph.apply<cg::passes::GEMMBatching>();
-        println("Found {} batch groups with {} total batched GEMMs", batch.num_batches(), batch.total_batched());
+        einsums::println("Found {} batch groups with {} total batched GEMMs", batch.num_batches(), batch.total_batched());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 9. LoopInvariantHoisting
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== LoopInvariantHoisting ===\n");
+    einsums::println("\n=== LoopInvariantHoisting ===\n");
     {
         auto A = create_random_tensor<double>("A", 4, 4);
         auto B = create_random_tensor<double>("B", 4, 4);
@@ -333,13 +334,13 @@ int einsums_main() {
         }
 
         auto [_m7, hoist] = graph.apply<cg::passes::LoopInvariantHoisting>();
-        println("Hoisted {} invariant operations out of loop", hoist.num_hoisted());
+        einsums::println("Hoisted {} invariant operations out of loop", hoist.num_hoisted());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 10. DeadNodeElimination
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== DeadNodeElimination ===\n");
+    einsums::println("\n=== DeadNodeElimination ===\n");
     {
         auto A = create_random_tensor<double>("A", 4, 4);
         auto B = create_random_tensor<double>("B", 4, 4);
@@ -355,16 +356,16 @@ int einsums_main() {
             cg::einsum("ik;kj->ij", &C, A, B);
         }
 
-        println("Before: {} nodes", graph.num_nodes());
+        einsums::println("Before: {} nodes", graph.num_nodes());
         auto [_m10, dne] = graph.apply<cg::passes::DeadNodeElimination>();
-        println("After: {} nodes (eliminated {} dead nodes)", graph.num_nodes(), dne.num_eliminated());
-        println("  -> T is intermediate with no reader, so its producer was removed");
+        einsums::println("After: {} nodes (eliminated {} dead nodes)", graph.num_nodes(), dne.num_eliminated());
+        einsums::println("  -> T is intermediate with no reader, so its producer was removed");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 11. ElementWiseFusion
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== ElementWiseFusion ===\n");
+    einsums::println("\n=== ElementWiseFusion ===\n");
     {
         auto A = create_random_tensor<double>("A", 5, 5);
 
@@ -377,15 +378,15 @@ int einsums_main() {
             cg::scale(4.0, &A);
         }
 
-        println("Before: {} nodes (3 separate scale ops)", graph.num_nodes());
+        einsums::println("Before: {} nodes (3 separate scale ops)", graph.num_nodes());
         auto [_m11, ewf] = graph.apply<cg::passes::ElementWiseFusion>();
-        println("After: {} nodes (fused {} pairs → single scale by 24.0)", graph.num_nodes(), ewf.num_fused());
+        einsums::println("After: {} nodes (fused {} pairs → single scale by 24.0)", graph.num_nodes(), ewf.num_fused());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 12. DistributiveFactoring
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== DistributiveFactoring ===\n");
+    einsums::println("\n=== DistributiveFactoring ===\n");
     {
         // R += A*B1, R += A*B2 can be rewritten as R += A*(B1+B2)
         // Saves one matrix multiply when there are many terms sharing A.
@@ -401,16 +402,16 @@ int einsums_main() {
             cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B2);
         }
 
-        println("Before: {} nodes (2 einsums with shared operand A)", graph.num_nodes());
+        einsums::println("Before: {} nodes (2 einsums with shared operand A)", graph.num_nodes());
         auto [_m12, factor] = graph.apply<cg::passes::DistributiveFactoring>();
-        println("After: {} nodes (found {} factoring groups, eliminated {} nodes)", graph.num_nodes(), factor.num_groups(),
-                factor.num_eliminated());
+        einsums::println("After: {} nodes (found {} factoring groups, eliminated {} nodes)", graph.num_nodes(), factor.num_groups(),
+                         factor.num_eliminated());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 13. InplaceOptimization (analysis)
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== InplaceOptimization ===\n");
+    einsums::println("\n=== InplaceOptimization ===\n");
     {
         auto A = create_random_tensor<double>("A", 4, 3);
         auto B = create_random_tensor<double>("B", 3, 5);
@@ -427,13 +428,13 @@ int einsums_main() {
         }
 
         auto [_m13, inplace] = graph.apply<cg::passes::InplaceOptimization>();
-        println("In-place candidates: {} (intermediates with 1 writer + 1 reader)", inplace.num_candidates());
+        einsums::println("In-place candidates: {} (intermediates with 1 writer + 1 reader)", inplace.num_candidates());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 14. PermuteFusion (analysis)
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== PermuteFusion ===\n");
+    einsums::println("\n=== PermuteFusion ===\n");
     {
         auto A = create_random_tensor<double>("A", 4, 4);
         auto B = create_random_tensor<double>("B", 4, 4);
@@ -450,13 +451,13 @@ int einsums_main() {
         }
 
         auto [_m14, pf] = graph.apply<cg::passes::PermuteFusion>();
-        println("Permute-GEMM fusion candidates: {} (transpose can be absorbed into GEMM flags)", pf.num_candidates());
+        einsums::println("Permute-GEMM fusion candidates: {} (transpose can be absorbed into GEMM flags)", pf.num_candidates());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 15. PassManager::create_default(): all safe passes in one call
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== create_default() ===\n");
+    einsums::println("\n=== create_default() ===\n");
     {
         auto A = create_random_tensor<double>("A", 10, 8);
         auto B = create_random_tensor<double>("B", 8, 6);
@@ -470,7 +471,7 @@ int einsums_main() {
             cg::scale(3.0, &C);
         }
 
-        println("Before: {} nodes", graph.num_nodes());
+        einsums::println("Before: {} nodes", graph.num_nodes());
 
         // create_default() applies all safe optimization and analysis passes:
         //   ConstantFolding, ScaleAbsorption, CSE, DeadNodeElimination,
@@ -480,13 +481,13 @@ int einsums_main() {
         auto pm = cg::PassManager::create_default();
         graph.apply(pm);
 
-        println("After create_default(): {} nodes", graph.num_nodes());
-        println("  -> ScaleAbsorption removed the dead scale(2.0) the einsum overwrites");
-        println("  -> ConstantFolding is safe (only folds graph-owned intermediates)");
-        println("  -> GPU passes included but won't place double-precision ops on MPS");
+        einsums::println("After create_default(): {} nodes", graph.num_nodes());
+        einsums::println("  -> ScaleAbsorption removed the dead scale(2.0) the einsum overwrites");
+        einsums::println("  -> ConstantFolding is safe (only folds graph-owned intermediates)");
+        einsums::println("  -> GPU passes included but won't place double-precision ops on MPS");
 
         graph.execute();
-        println("Result C[0,0] = {:.4f}", C(0, 0));
+        einsums::println("Result C[0,0] = {:.4f}", C(0, 0));
     }
 
     finalize();

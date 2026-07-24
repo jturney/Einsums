@@ -12,7 +12,7 @@ int einsums_main() {
     using namespace einsums;
     using namespace einsums::index;
 
-    println("Hello world!");
+    einsums::println("Hello world!");
 
     auto A = create_random_tensor("A", 3, 3);
     auto B = create_random_tensor("B", 3, 3);

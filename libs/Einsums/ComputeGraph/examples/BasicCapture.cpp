@@ -53,23 +53,23 @@ int einsums_main() {
     workspace.materialize_all();
 
     // ── 4. Inspect the graph ───────────────────────────────────────────────
-    println("Graph captured:");
+    einsums::println("Graph captured:");
     if (auto *g = pipeline.stage_graph(0))
         g->print_summary(std::cout);
     std::cout << "\n";
 
     // ── 5. Execute the pipeline ────────────────────────────────────────────
     pipeline.execute();
-    println("After execute:");
-    println(C);
+    einsums::println("After execute:");
+    einsums::println(C);
 
     // ── 6. Replay: execute multiple times ──────────────────────────────────
     // Each execution re-runs the captured operations.
     // With c_pf=0 (default), each execution overwrites C.
     pipeline.execute();
     pipeline.execute();
-    println("After 2 more executions (same result — overwrites each time):");
-    println(C);
+    einsums::println("After 2 more executions (same result — overwrites each time):");
+    einsums::println(C);
 
     // ── 7. Accumulation example ────────────────────────────────────────────
     // To accumulate across executions, use c_pf=1:
@@ -88,16 +88,16 @@ int einsums_main() {
     accum_pipeline.execute();
     accum_pipeline.execute();
     accum_pipeline.execute();
-    println("D after 3 accumulations (3 * A * B):");
-    println(D);
+    einsums::println("D after 3 accumulations (3 * A * B):");
+    einsums::println(D);
 
     // ── 8. GraphViz DOT output ─────────────────────────────────────────────
-    println("\nGraphViz DOT output:");
+    einsums::println("\nGraphViz DOT output:");
     if (auto *g = pipeline.stage_graph(0))
         g->print_dot(std::cout);
 
     // ── 9. Timing report ───────────────────────────────────────────────────
-    println("\nTiming report:");
+    einsums::println("\nTiming report:");
     if (auto *g = pipeline.stage_graph(0))
         g->print_timing_report(std::cout);
 

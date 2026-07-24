@@ -37,7 +37,7 @@ int einsums_main() {
     // ═══════════════════════════════════════════════════════════════════════
     // 1. Constant-bound view, slice the first 2 rows of a 4×4 matrix
     // ═══════════════════════════════════════════════════════════════════════
-    println("=== Constant-bound view ===\n");
+    einsums::println("=== Constant-bound view ===\n");
     {
         Tensor<double, 2> A("A", 4, 4);
         for (size_t i = 0; i < 4; ++i)
@@ -59,10 +59,10 @@ int einsums_main() {
         }
         pipe.execute();
 
-        println("  A[0,:]      = [{}, {}, {}, {}]", A(0, 0), A(0, 1), A(0, 2), A(0, 3));
-        println("  A[1,:]      = [{}, {}, {}, {}]", A(1, 0), A(1, 1), A(1, 2), A(1, 3));
-        println("  top_two[0]  = [{}, {}, {}, {}]", top_two(0, 0), top_two(0, 1), top_two(0, 2), top_two(0, 3));
-        println("  top_two[1]  = [{}, {}, {}, {}]\n", top_two(1, 0), top_two(1, 1), top_two(1, 2), top_two(1, 3));
+        einsums::println("  A[0,:]      = [{}, {}, {}, {}]", A(0, 0), A(0, 1), A(0, 2), A(0, 3));
+        einsums::println("  A[1,:]      = [{}, {}, {}, {}]", A(1, 0), A(1, 1), A(1, 2), A(1, 3));
+        einsums::println("  top_two[0]  = [{}, {}, {}, {}]", top_two(0, 0), top_two(0, 1), top_two(0, 2), top_two(0, 3));
+        einsums::println("  top_two[1]  = [{}, {}, {}, {}]\n", top_two(1, 0), top_two(1, 1), top_two(1, 2), top_two(1, 3));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -72,7 +72,7 @@ int einsums_main() {
     // The HF case: ``C_occ = C[:, 0:n_occ]``. ``n_occ`` is decided once per
     // molecule (here once per outer loop) and never changes during the
     // execute, but should not be baked into the graph at capture time.
-    println("=== Pipeline-parameter view ===\n");
+    einsums::println("=== Pipeline-parameter view ===\n");
     {
         Tensor<double, 2> A("A", 4, 6);
         for (size_t i = 0; i < 4; ++i)
@@ -106,9 +106,9 @@ int einsums_main() {
             for (size_t j = 0; j < 6; ++j)
                 if (A(0, j) == 0.0)
                     ++zeros;
-            println("  n_occ = {}: row 0 has {} leading zeros (expected {})", trial, zeros, trial);
+            einsums::println("  n_occ = {}: row 0 has {} leading zeros (expected {})", trial, zeros, trial);
         }
-        println("");
+        einsums::println("");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -121,7 +121,7 @@ int einsums_main() {
     //
     // We zero the first ``n_occ`` columns of A on each pass; by iteration 4
     // all 4 columns of a 1×4 row should be zero.
-    println("=== Mid-loop write_param ===\n");
+    einsums::println("=== Mid-loop write_param ===\n");
     {
         Tensor<double, 2> A("A", 1, 4);
         for (size_t j = 0; j < 4; ++j)
@@ -149,8 +149,8 @@ int einsums_main() {
 
         pipe.execute();
 
-        println("  After 4 iterations, A = [{}, {}, {}, {}]", A(0, 0), A(0, 1), A(0, 2), A(0, 3));
-        println("  Final n_occ = {}\n", pipe.get_param("n_occ"));
+        einsums::println("  After 4 iterations, A = [{}, {}, {}, {}]", A(0, 0), A(0, 1), A(0, 2), A(0, 3));
+        einsums::println("  Final n_occ = {}\n", pipe.get_param("n_occ"));
     }
 
     finalize();

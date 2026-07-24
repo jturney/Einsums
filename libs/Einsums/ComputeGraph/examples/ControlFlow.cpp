@@ -33,7 +33,7 @@ int einsums_main() {
     // ═══════════════════════════════════════════════════════════════════════
     // 1. Conditional node, if-then-else based on tensor value
     // ═══════════════════════════════════════════════════════════════════════
-    println("=== Conditional Node ===\n");
+    einsums::println("=== Conditional Node ===\n");
     {
         auto value = Tensor<double, 1>("value", 1);
         value(0)   = 10.0;
@@ -49,7 +49,7 @@ int einsums_main() {
         // Execute repeatedly, value oscillates between halving and doubling
         for (int rep = 0; rep < 6; rep++) {
             graph.execute();
-            println("  After execute {}: value = {:.4f}", rep + 1, value(0));
+            einsums::println("  After execute {}: value = {:.4f}", rep + 1, value(0));
         }
         // 10 → 5 → 10 → 5 → 10 → 5
     }
@@ -57,7 +57,7 @@ int einsums_main() {
     // ═══════════════════════════════════════════════════════════════════════
     // 2. Loop node, convergence-based iteration
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== Loop Node ===\n");
+    einsums::println("\n=== Loop Node ===\n");
     {
         auto value = Tensor<double, 1>("value", 1);
         value(0)   = 1000.0;
@@ -71,19 +71,19 @@ int einsums_main() {
             "converge", 100,
             [&](size_t iter) {
                 iterations = iter + 1;
-                println("  Iteration {}: value = {:.4f}", iter + 1, value(0));
+                einsums::println("  Iteration {}: value = {:.4f}", iter + 1, value(0));
                 return value(0) >= 1.0;
             },
             [&]() { cg::scale(0.5, &value); });
 
         graph.execute();
-        println("Converged after {} iterations, value = {:.6f}", iterations, value(0));
+        einsums::println("Converged after {} iterations, value = {:.6f}", iterations, value(0));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 3. Mixed: regular ops + loop + regular ops in one graph
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== Mixed Operations + Loop ===\n");
+    einsums::println("\n=== Mixed Operations + Loop ===\n");
     {
         auto A = create_random_tensor<double>("A", 4, 4);
         auto B = create_random_tensor<double>("B", 4, 4);
@@ -117,7 +117,7 @@ int einsums_main() {
         for (size_t ii = 0; ii < 4; ii++)
             for (size_t jj = 0; jj < 4; jj++)
                 max_diff = std::max(max_diff, std::abs(C(ii, jj) - C_ref(ii, jj)));
-        println("Max difference from reference: {:.2e} (should be ~0)", max_diff);
+        einsums::println("Max difference from reference: {:.2e} (should be ~0)", max_diff);
     }
 
     finalize();

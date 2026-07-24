@@ -84,7 +84,7 @@ int einsums_main() {
         auto            &setup = pipeline.add_stage("setup");
         cg::CaptureGuard guard(setup);
         cg::permute("ij <- ij", 0.0, &F, 1.0, H);
-        println("Setup complete. X = S^{{-1/2}} computed.");
+        einsums::println("Setup complete. X = S^{{-1/2}} computed.");
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -108,12 +108,12 @@ int einsums_main() {
                 }
             rms_d = std::sqrt(rms_d / static_cast<double>(nbf * nbf));
 
-            println("  SCF iter {:3d}: E = {:16.10f}  dE = {:10.3e}  rms(dD) = {:10.3e}", scf_iter, energy, delta_e, rms_d);
+            einsums::println("  SCF iter {:3d}: E = {:16.10f}  dE = {:10.3e}  rms(dD) = {:10.3e}", scf_iter, energy, delta_e, rms_d);
             energy_old = energy;
 
             bool converged = (delta_e < 1e-8 && rms_d < 1e-6 && iter > 0);
             if (converged)
-                println("  SCF converged!");
+                einsums::println("  SCF converged!");
             return !converged;
         });
         cg::CaptureGuard guard(scf_body);
@@ -148,13 +148,13 @@ int einsums_main() {
     pipeline.apply(pm);
 
     // ── Execute ─────────────────────────────────────────────────────────────
-    println("\n--- Starting SCF Calculation ---\n");
+    einsums::println("\n--- Starting SCF Calculation ---\n");
     pipeline.execute();
 
-    println("\n--- SCF Complete ---");
-    println("Final SCF energy: {:16.10f}", energy);
-    println("Total iterations: {}", scf_iter);
-    println("\nRun with --einsums:profile:save=scf_profile.json to save profiling data.");
+    einsums::println("\n--- SCF Complete ---");
+    einsums::println("Final SCF energy: {:16.10f}", energy);
+    einsums::println("Total iterations: {}", scf_iter);
+    einsums::println("\nRun with --einsums:profile:save=scf_profile.json to save profiling data.");
 
     return EXIT_SUCCESS;
 }

@@ -37,7 +37,7 @@ int einsums_main() {
     // ═══════════════════════════════════════════════════════════════════════
     // 1. Graph with independent operations, parallelism detected automatically
     // ═══════════════════════════════════════════════════════════════════════
-    println("=== Independent Operations ===\n");
+    einsums::println("=== Independent Operations ===\n");
     {
         cg::Graph graph("parallel_demo");
         auto     &C = graph.create_zero_tensor<double, 2>("C", N, N);
@@ -54,7 +54,7 @@ int einsums_main() {
             cg::einsum("ik;kj->ij", &G, A, E);
         }
 
-        println("Graph has {} nodes", graph.num_nodes());
+        einsums::println("Graph has {} nodes", graph.num_nodes());
 
         // Check dependency structure
         auto const &deps         = graph.dependencies();
@@ -63,21 +63,21 @@ int einsums_main() {
             if (deps.predecessors[nd].empty())
                 level0_count++;
         }
-        println("Independent nodes (level 0): {} — these run in parallel", level0_count);
+        einsums::println("Independent nodes (level 0): {} — these run in parallel", level0_count);
 
         // Execute with OpenMP
         cg::OpenMPExecutor omp;
         graph.execute(omp);
 
-        println("C[0,0] = {:.4f}", C(0, 0));
-        println("F[0,0] = {:.4f}", F(0, 0));
-        println("G[0,0] = {:.4f}", G(0, 0));
+        einsums::println("C[0,0] = {:.4f}", C(0, 0));
+        einsums::println("F[0,0] = {:.4f}", F(0, 0));
+        einsums::println("G[0,0] = {:.4f}", G(0, 0));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 2. Dependent chain, still correct with parallel executor
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== Dependent Chain ===\n");
+    einsums::println("\n=== Dependent Chain ===\n");
     {
         cg::Graph graph("chain_demo");
         auto     &C = graph.create_zero_tensor<double, 2>("C", N, N);
@@ -95,13 +95,13 @@ int einsums_main() {
         cg::OpenMPExecutor omp;
         graph.execute(omp);
 
-        println("Chain result F[0,0] = {:.4f}", F(0, 0));
+        einsums::println("Chain result F[0,0] = {:.4f}", F(0, 0));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 3. Pipeline with executor
     // ═══════════════════════════════════════════════════════════════════════
-    println("\n=== Pipeline with OpenMP Executor ===\n");
+    einsums::println("\n=== Pipeline with OpenMP Executor ===\n");
     {
         auto acc = create_zero_tensor<double>("acc", N, N);
         auto C   = create_zero_tensor<double>("C", N, N);
@@ -128,7 +128,7 @@ int einsums_main() {
         cg::OpenMPExecutor omp;
         pipeline.execute(omp);
 
-        println("Pipeline with {} iterations, acc[0,0] = {:.4f}", count, acc(0, 0));
+        einsums::println("Pipeline with {} iterations, acc[0,0] = {:.4f}", count, acc(0, 0));
     }
 
     finalize();

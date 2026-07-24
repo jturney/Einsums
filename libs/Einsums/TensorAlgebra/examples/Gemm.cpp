@@ -19,9 +19,9 @@ int einsums_main() {
 
     tensor_algebra::einsum(Indices{index::i, index::j}, &C, Indices{index::i, index::k}, A, Indices{index::k, index::i}, B);
 
-    println(A);
-    println(B);
-    println(C);
+    einsums::println(A);
+    einsums::println(B);
+    einsums::println(C);
 
     finalize();
     return EXIT_SUCCESS;

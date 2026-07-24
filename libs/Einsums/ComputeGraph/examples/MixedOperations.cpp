@@ -77,13 +77,13 @@ int einsums_main() {
     pipeline.apply(pm);
     workspace.materialize_all();
 
-    println("Mixed operations pipeline:");
+    einsums::println("Mixed operations pipeline:");
     if (auto *g = pipeline.stage_graph(0))
         g->print_summary(std::cout);
 
     pipeline.execute();
-    println("\nResult D (squared elements of At*C*0.5 + 0.1*C*0.5):");
-    println(D);
+    einsums::println("\nResult D (squared elements of At*C*0.5 + 0.1*C*0.5):");
+    einsums::println(D);
 
     // ── Eigendecomposition (separate pipeline) ─────────────────────────────
     // S must be positive-definite for syev; create it outside workspace
@@ -97,11 +97,11 @@ int einsums_main() {
     }
     eigen_graph.execute();
 
-    println("\nEigenvalues of S (computed via pipeline execution):");
-    println(W);
+    einsums::println("\nEigenvalues of S (computed via pipeline execution):");
+    einsums::println(W);
 
     // ── Custom operations (raw Graph, custom ops don't need Pipeline) ────
-    println("\n--- Custom Operations ---");
+    einsums::println("\n--- Custom Operations ---");
     {
         auto M = create_random_tensor<double>("M", N, N);
         auto R = create_zero_tensor<double>("R", N, N);
@@ -128,7 +128,7 @@ int einsums_main() {
         }
 
         custom_graph.execute();
-        println("After custom ops: R[0,0] = {:.4f}", R(0, 0));
+        einsums::println("After custom ops: R[0,0] = {:.4f}", R(0, 0));
     }
 
     finalize();

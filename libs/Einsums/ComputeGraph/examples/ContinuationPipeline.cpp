@@ -34,14 +34,14 @@ int einsums_main() {
     auto            &pool = tp::TaskPool::get_singleton();
     constexpr size_t N    = 50;
 
-    println("=== Continuation Pipeline Demo ===\n");
+    einsums::println("=== Continuation Pipeline Demo ===\n");
 
     // ── Pipeline 1: async tensor norm computation ────────────────────────────
     // Step 1: Create and fill tensor (async)
     // Step 2: Compute squared elements (continuation)
     // Step 3: Sum all elements (continuation with reduce)
 
-    println("--- Pipeline: async tensor norm ---");
+    einsums::println("--- Pipeline: async tensor norm ---");
 
     auto norm_pipeline = pool.submit("create_tensor",
                                      [N]() {
@@ -55,12 +55,12 @@ int einsums_main() {
                                      })
                              .then("sqrt", [](double sum_sq) { return std::sqrt(sum_sq); })
                              .then("report", [](double norm) {
-                                 println("  Frobenius norm: {:.6f}", norm);
+                                 einsums::println("  Frobenius norm: {:.6f}", norm);
                                  return norm;
                              });
 
     // ── Pipeline 2: matrix chain multiplication ──────────────────────────────
-    println("--- Pipeline: matrix chain A*B*C ---");
+    einsums::println("--- Pipeline: matrix chain A*B*C ---");
 
     auto A   = create_random_tensor<double>("A", N, N);
     auto B   = create_random_tensor<double>("B", N, N);
@@ -83,7 +83,7 @@ int einsums_main() {
     });
 
     // ── Multiple independent computations with fan-in ────────────────────────
-    println("--- Multiple independent tasks with fan-in ---");
+    einsums::println("--- Multiple independent tasks with fan-in ---");
 
     // Launch 4 independent matrix operations concurrently
     std::vector<tp::TaskHandle<double>> independent_results;
@@ -110,7 +110,7 @@ int einsums_main() {
     auto final_result = all_traces.then("combine", [](std::vector<double> const &traces) {
         double sum = 0.0;
         for (size_t idx = 0; idx < traces.size(); idx++) {
-            println("  Batch {}: trace = {:.4f}", idx, traces[idx]);
+            einsums::println("  Batch {}: trace = {:.4f}", idx, traces[idx]);
             sum += traces[idx];
         }
         return sum;
@@ -121,13 +121,13 @@ int einsums_main() {
     double chain_trace    = trace_result.get();
     double combined_trace = final_result.get();
 
-    println("\n--- Results ---");
-    println("  Norm pipeline:      {:.6f}", norm_val);
-    println("  Chain trace (A*B*C): {:.4f}", chain_trace);
-    println("  Combined traces:    {:.4f}", combined_trace);
+    einsums::println("\n--- Results ---");
+    einsums::println("  Norm pipeline:      {:.6f}", norm_val);
+    einsums::println("  Chain trace (A*B*C): {:.4f}", chain_trace);
+    einsums::println("  Combined traces:    {:.4f}", combined_trace);
 
     // ── Show that ComputeGraph and TaskPool work in the same program ─────────
-    println("\n--- ComputeGraph replay while TaskPool is active ---");
+    einsums::println("\n--- ComputeGraph replay while TaskPool is active ---");
 
     auto D_mat = create_random_tensor<double>("D", N, N);
     auto E_mat = create_random_tensor<double>("E", N, N);
@@ -142,20 +142,20 @@ int einsums_main() {
 
     // Execute graph (sequential) while TaskPool workers are still alive
     graph.execute();
-    println("  F(0,0) = {:.6f} (graph result)", F_mat(0, 0));
+    einsums::println("  F(0,0) = {:.6f} (graph result)", F_mat(0, 0));
 
     // Replay with different data
     D_mat.set_all(1.0);
     F_mat.zero();
     graph.execute();
-    println("  F(0,0) = {:.6f} (replay with ones)", F_mat(0, 0));
+    einsums::println("  F(0,0) = {:.6f} (replay with ones)", F_mat(0, 0));
 
     // ── Metrics ──────────────────────────────────────────────────────────────
     auto m = pool.snapshot_metrics();
-    println("\n--- Metrics ---");
-    println("  Submitted: {}, Completed: {}, Steals: {}", m.total_submitted, m.total_completed, m.total_steals);
+    einsums::println("\n--- Metrics ---");
+    einsums::println("  Submitted: {}, Completed: {}, Steals: {}", m.total_submitted, m.total_completed, m.total_steals);
 
-    println("\n=== Continuation Pipeline Complete ===");
+    einsums::println("\n=== Continuation Pipeline Complete ===");
     return EXIT_SUCCESS;
 }
 

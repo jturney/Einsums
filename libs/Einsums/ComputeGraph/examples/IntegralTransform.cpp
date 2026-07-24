@@ -43,8 +43,8 @@ int einsums_main() {
     constexpr size_t nao = 20; // AO basis size
     constexpr size_t nmo = 20; // MO basis size (nmo <= nao)
 
-    println("=== AO->MO Integral Transformation ===");
-    println("  AO basis: {}, MO basis: {}\n", nao, nmo);
+    einsums::println("=== AO->MO Integral Transformation ===");
+    einsums::println("  AO basis: {}, MO basis: {}\n", nao, nmo);
 
     // MO coefficient matrix (nao x nmo)
     auto C_mo = create_random_tensor<double>("C", nao, nmo);
@@ -61,7 +61,7 @@ int einsums_main() {
     auto &pool = tp::TaskPool::get_singleton();
 
     // ── Method 1: Manual steps with TaskPool ─────────────────────────────────
-    println("--- Method 1: TaskPool parallel_for per transformation step ---");
+    einsums::println("--- Method 1: TaskPool parallel_for per transformation step ---");
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -127,11 +127,11 @@ int einsums_main() {
 
     auto   t1        = std::chrono::high_resolution_clock::now();
     double manual_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    println("  TaskPool manual: {:.2f} ms", manual_ms);
-    println("  (0,0|0,0) = {:.8f}", eri_mo(0, 0, 0, 0));
+    einsums::println("  TaskPool manual: {:.2f} ms", manual_ms);
+    einsums::println("  (0,0|0,0) = {:.8f}", eri_mo(0, 0, 0, 0));
 
     // ── Method 2: ComputeGraph einsum for each step ──────────────────────────
-    println("\n--- Method 2: ComputeGraph einsum with DataflowExecutor ---");
+    einsums::println("\n--- Method 2: ComputeGraph einsum with DataflowExecutor ---");
 
     // Only the final result is a user-owned tensor (it is read back after
     // execution). The half-transformed intermediates are DECLARED on the
@@ -161,7 +161,7 @@ int einsums_main() {
     // writer (visible in the graph summary below).
     auto pm = cg::PassManager::create_default();
     transform_graph.apply(pm);
-    println("  optimization report:\n{}", pm.explain());
+    einsums::println("  optimization report:\n{}", pm.explain());
 
     t0 = std::chrono::high_resolution_clock::now();
     cg::DataflowExecutor df;
@@ -169,8 +169,8 @@ int einsums_main() {
     t1 = std::chrono::high_resolution_clock::now();
 
     double cg_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    println("  ComputeGraph + DataflowExecutor: {:.2f} ms", cg_ms);
-    println("  (0,0|0,0) = {:.8f}", eri_mo_cg(0, 0, 0, 0));
+    einsums::println("  ComputeGraph + DataflowExecutor: {:.2f} ms", cg_ms);
+    einsums::println("  (0,0|0,0) = {:.8f}", eri_mo_cg(0, 0, 0, 0));
 
     // Verify both methods agree
     double max_diff = 0.0;
@@ -180,14 +180,14 @@ int einsums_main() {
                 for (size_t ss = 0; ss < nmo; ss++)
                     max_diff = std::max(max_diff, std::abs(eri_mo(pp, qq, rr, ss) - eri_mo_cg(pp, qq, rr, ss)));
 
-    println("\n  Max difference: {:.2e} ({})", max_diff, max_diff < 1e-10 ? "MATCH" : "MISMATCH");
+    einsums::println("\n  Max difference: {:.2e} ({})", max_diff, max_diff < 1e-10 ? "MATCH" : "MISMATCH");
 
     // Print graph info
-    println("\n--- Graph Summary ---");
+    einsums::println("\n--- Graph Summary ---");
     transform_graph.print_summary(std::cout);
     transform_graph.print_timing_report(std::cout);
 
-    println("\n=== Integral Transform Demo Complete ===");
+    einsums::println("\n=== Integral Transform Demo Complete ===");
     return EXIT_SUCCESS;
 }
 

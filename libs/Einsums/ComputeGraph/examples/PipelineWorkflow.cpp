@@ -87,7 +87,7 @@ int einsums_main() {
                                                         diff += d * d;
                                                     }
                                                 diff = std::sqrt(diff);
-                                                println("  Iteration {}: ||delta F|| = {:.2e}", iter + 1, diff);
+                                                einsums::println("  Iteration {}: ||delta F|| = {:.2e}", iter + 1, diff);
                                                 return diff >= convergence_threshold;
                                             });
         cg::CaptureGuard guard(loop_body);
@@ -142,7 +142,7 @@ int einsums_main() {
     }
 
     // ── Execute the pipeline ────────────────────────────────────────────────
-    println("\n=== Running Pipeline ===");
+    einsums::println("\n=== Running Pipeline ===");
     pipeline.execute();
 
     // ── Print timing ────────────────────────────────────────────────────────
@@ -155,9 +155,9 @@ int einsums_main() {
         g->print_timing_report(std::cout);
     }
 
-    println("\nPipeline completed after {} iterations", iteration_count);
-    println("Final F (scaled):");
-    println(F);
+    einsums::println("\nPipeline completed after {} iterations", iteration_count);
+    einsums::println("Final F (scaled):");
+    einsums::println(F);
 
     finalize();
     return EXIT_SUCCESS;
