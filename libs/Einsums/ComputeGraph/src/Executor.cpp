@@ -10,8 +10,11 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <exception>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #ifdef _OPENMP
@@ -246,6 +249,22 @@ void DataflowExecutor::execute(Graph &graph) {
         // submitting them (never blocks a worker; Frees are never gated,
         // so parked allocations always drain).
         if (state->budget > 0 && node.kind == OpKind::Materialize && node.estimated_bytes > 0) {
+            // A single materialization larger than the WHOLE budget can never be
+            // scheduled (drain_deferred only re-runs a node that fits). Parking it
+            // left it in the deferred queue forever, so completed never reached n
+            // and help_until() deadlocked the calling thread. Fail the run instead.
+            if (node.estimated_bytes > state->budget) {
+                {
+                    std::scoped_lock const lock(state->exc_mutex);
+                    if (!state->first_exc) {
+                        state->first_exc = std::make_exception_ptr(std::runtime_error("DataflowExecutor: node '" + node.label +
+                                                                                      "' requires more memory than the configured budget"));
+                    }
+                    state->failed.store(true, std::memory_order_release);
+                }
+                complete_node(i);
+                return;
+            }
             std::scoped_lock const lk(state->deferred_mutex);
             if (state->mem_current.load(std::memory_order_relaxed) + node.estimated_bytes > state->budget) {
                 state->deferred.push_back(i);

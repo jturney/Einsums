@@ -278,6 +278,26 @@ TEST_CASE("DataflowExecutor - empty graph", "[ComputeGraph][Executor]") {
     REQUIRE(graph.num_nodes() == 0);
 }
 
+TEST_CASE("DataflowExecutor - over-budget Materialize fails instead of deadlocking", "[ComputeGraph][Executor]") {
+    // Regression: a Materialize node whose estimated_bytes exceeds the ENTIRE
+    // memory budget can never be scheduled. The old code parked it in the
+    // deferred queue forever (drain_deferred only re-runs a node that fits), so
+    // completed never reached n and help_until blocked the calling thread
+    // permanently. The executor must FAIL the run (throw), not hang.
+    cg::Graph graph("h3_over_budget");
+    cg::Node  n;
+    n.kind            = cg::OpKind::Materialize;
+    n.label           = "big_materialize";
+    n.estimated_bytes = 1000;
+    n.execute         = []() {};
+    graph.add_node(std::move(n));
+
+    cg::DataflowExecutor df;
+    df.set_memory_budget(100); // strictly smaller than the single materialization
+
+    REQUIRE_THROWS(graph.execute(df));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Empty and single-node coverage
 // ═══════════════════════════════════════════════════════════════════════════════
