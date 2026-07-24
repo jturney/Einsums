@@ -163,6 +163,73 @@ TEST_CASE("ContractionPlanning - straight-line 4-GEMM chain restructured and cor
             CHECK(T4(ii, jj) == Catch::Approx(T4r(ii, jj)).margin(1e-8));
 }
 
+TEST_CASE("ContractionPlanning - two dependent chains both restructure correctly", "[ComputeGraph][Passes][CP]") {
+    // Regression for STALE NODE INDICES across multiple restructured chains.
+    // find_contraction_chains records absolute node positions once; restructuring
+    // the first chain rebuilds the node vector (nodes = std::move(result)),
+    // shifting every later position. The second chain then removed the wrong
+    // nodes and/or dropped its own emitted intermediates, silently corrupting
+    // its result. Two INDEPENDENT chains get interleaved by topological_sort and
+    // are never both detected, so the trigger is two chains separated by a
+    // non-einsum node (here a scale of the first chain's output X): topo order
+    // keeps them contiguous-but-separate, find returns two chains, and the first
+    // restructure invalidates the second's indices. Both must fold + stay exact.
+    auto A1 = create_random_tensor<double>("A1", 100, 1);
+    auto B1 = create_random_tensor<double>("B1", 1, 100);
+    auto C1 = create_random_tensor<double>("C1", 100, 100);
+    auto D1 = create_random_tensor<double>("D1", 100, 1);
+
+    auto G2 = create_random_tensor<double>("G2", 1, 100);
+    auto H2 = create_random_tensor<double>("H2", 100, 100);
+    auto I2 = create_random_tensor<double>("I2", 100, 1);
+    auto Y  = create_zero_tensor<double>("Y", 100, 1);
+
+    // Eager reference: chain 1 (A1.B1.C1.D1) -> X (100x1), scale(X) by 2, then
+    // chain 2 (X.G2.H2.I2) -> Y (100x1). Both left-to-right orders build a 100x100
+    // intermediate and hit a 100^3 contraction that a cheaper parenthesization
+    // avoids, so the DP folds BOTH.
+    auto X1r = create_zero_tensor<double>("X1r", 100, 100);
+    auto X2r = create_zero_tensor<double>("X2r", 100, 100);
+    auto Xr  = create_zero_tensor<double>("Xr", 100, 1);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &X1r, 1.0, Indices{i, k}, A1, Indices{k, j}, B1);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &X2r, 1.0, Indices{i, k}, X1r, Indices{k, j}, C1);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &Xr, 1.0, Indices{i, k}, X2r, Indices{k, j}, D1);
+    linear_algebra::scale(2.0, &Xr);
+    auto Y1r = create_zero_tensor<double>("Y1r", 100, 100);
+    auto Y2r = create_zero_tensor<double>("Y2r", 100, 100);
+    auto Yr  = create_zero_tensor<double>("Yr", 100, 1);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &Y1r, 1.0, Indices{i, k}, Xr, Indices{k, j}, G2);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &Y2r, 1.0, Indices{i, k}, Y1r, Indices{k, j}, H2);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &Yr, 1.0, Indices{i, k}, Y2r, Indices{k, j}, I2);
+
+    cg::Graph graph("cp_two_dep_chains");
+    auto     &X1 = graph.create_zero_tensor<double, 2>("X1", 100, 100);
+    auto     &X2 = graph.create_zero_tensor<double, 2>("X2", 100, 100);
+    auto     &X  = graph.create_zero_tensor<double, 2>("X", 100, 1);
+    auto     &Y1 = graph.create_zero_tensor<double, 2>("Y1", 100, 100);
+    auto     &Y2 = graph.create_zero_tensor<double, 2>("Y2", 100, 100);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &X1, 1.0, A1, B1);
+        cg::einsum("ik;kj->ij", 0.0, &X2, 1.0, X1, C1);
+        cg::einsum("ik;kj->ij", 0.0, &X, 1.0, X2, D1);
+        cg::scale(2.0, &X); // non-einsum separator: keeps the two chains ordered but distinct
+        cg::einsum("ik;kj->ij", 0.0, &Y1, 1.0, X, G2);
+        cg::einsum("ik;kj->ij", 0.0, &Y2, 1.0, Y1, H2);
+        cg::einsum("ik;kj->ij", 0.0, &Y, 1.0, Y2, I2);
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_profile());
+    bool const                      modified = pass.run(graph);
+
+    CHECK(modified);
+    CHECK(pass.chains_restructured() >= 2); // BOTH chains fold
+
+    graph.execute();
+    for (size_t ii = 0; ii < 100; ii++)
+        CHECK(Y(ii, 0) == Catch::Approx(Yr(ii, 0)).margin(1e-8)); // corrupted by the stale-index bug
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Contiguity conservatism: an interleaved node breaks chain recognition
 // ═══════════════════════════════════════════════════════════════════════════════

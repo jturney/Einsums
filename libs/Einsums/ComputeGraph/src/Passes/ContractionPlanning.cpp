@@ -434,295 +434,312 @@ ContractionPlanning::ContractionPlanning(HardwareProfile profile) : _profile(std
 }
 
 bool ContractionPlanning::run(Graph &graph) {
-    graph.topological_sort();
-
-    _reports.clear();
     _chains_restructured   = 0;
     _intermediates_created = 0;
+    bool modified          = false;
 
-    auto chains = find_contraction_chains(graph);
-    if (chains.empty())
-        return false;
+    // Restructuring a chain rebuilds the node vector, which invalidates every
+    // OTHER chain's recorded absolute node_idx. So restructure at most one chain
+    // per scan and re-find against the fresh vector. A folded chain becomes Gemm
+    // nodes (no longer an Einsum chain) and is not re-found, so this makes
+    // progress and terminates.
+    for (;;) {
+        graph.topological_sort();
+        _reports.clear();
 
-    // Determine element size and dtype from first chain
-    size_t                  element_size = 8;
-    packed_gemm::ScalarType dtype        = packed_gemm::ScalarType::Float64;
-    bool                    modified     = false;
-    {
-        auto const &tensors = graph.tensors_map();
-        auto        it      = tensors.find(chains[0][0].output_tid);
-        if (it != tensors.end()) {
-            element_size = it->second.element_size;
-            dtype        = it->second.dtype;
-        }
-    }
+        auto chains = find_contraction_chains(graph);
+        if (chains.empty())
+            break;
 
-    // Device memory budget
-    size_t device_budget = 0;
-    if (_profile.has_gpu()) {
-        device_budget = gpu::available_device_memory();
-        for (auto const &node : graph.nodes()) {
-            if (node.target == Target::GPU)
-                device_budget -= std::min(device_budget, node.estimated_bytes);
-        }
-    }
+        bool restructured_this_scan = false;
 
-    for (auto const &chain : chains) {
-        size_t n = chain.size(); // Number of GEMMs
-
-        // Extract leaf matrices: n+1 leaves from n GEMMs.
-        auto         leaves     = extract_leaves(chain);
-        size_t const num_leaves = leaves.size(); // n + 1
-
-        // Build dimension array p[0..num_leaves] (num_leaves+1 entries).
-        // Leaf matrix i has effective dimensions p[i] × p[i+1].
-        // p[0] = M of first GEMM (= rows of leaf 0)
-        // p[1] = K of first GEMM (= cols of leaf 0 = rows of leaf 1)
-        // p[i+1] for i>=1: N of GEMM i-1 (= cols of leaf i = rows of leaf i+1)
-        //
-        // Derivation:
-        //   leaf 0 = first input of GEMM 0 → dims: chain[0].M × chain[0].K
-        //   leaf 1 = second input of GEMM 0 → dims: chain[0].K × chain[0].N
-        //   leaf 2 = non-link input of GEMM 1 → dims: chain[1].K × chain[1].N
-        //   ...but chain[1].K == chain[0].N (chain link), so p flows correctly.
-        std::vector<size_t> p(num_leaves + 1);
-        p[0] = chain[0].M;
-        p[1] = chain[0].K;
-        for (size_t idx = 0; idx < n; idx++)
-            p[idx + 2] = chain[idx].N;
-
-        // ── Standard matrix chain DP on num_leaves matrices ────────────────
-        // m[i][j] = min cost to multiply leaf matrices i through j
-        // s[i][j] = split position k: (leaves i..k) * (leaves k+1..j)
-        std::vector<std::vector<double>> m(num_leaves, std::vector<double>(num_leaves, 0.0));
-        std::vector<std::vector<size_t>> s(num_leaves, std::vector<size_t>(num_leaves, 0));
-
-        for (size_t len = 2; len <= num_leaves; len++) {
-            for (size_t i_idx = 0; i_idx <= num_leaves - len; i_idx++) {
-                size_t const j_idx = i_idx + len - 1;
-                m[i_idx][j_idx]    = std::numeric_limits<double>::max();
-
-                for (size_t k_idx = i_idx; k_idx < j_idx; k_idx++) {
-                    // Multiply result of (i..k) [shape p[i] × p[k+1]]
-                    //       with result of (k+1..j) [shape p[k+1] × p[j+1]]
-                    // GEMM dimensions: M=p[i], K=p[k+1], N=p[j+1]
-                    Target const split_target = determine_target(_profile, p[i_idx], p[j_idx + 1], p[k_idx + 1], element_size);
-
-                    double const gemm_time =
-                        _profile.estimate_total_gemm_time_us(p[i_idx], p[j_idx + 1], p[k_idx + 1], element_size, split_target);
-
-                    double const cost = m[i_idx][k_idx] + m[k_idx + 1][j_idx] + gemm_time;
-
-                    if (cost < m[i_idx][j_idx]) {
-                        m[i_idx][j_idx] = cost;
-                        s[i_idx][j_idx] = k_idx;
-                    }
-                }
-            }
-        }
-
-        // ── Compute original (left-to-right) cost ──────────────────────────
-        double original_time = 0.0;
-        for (size_t idx = 0; idx < n; idx++) {
-            original_time +=
-                _profile.estimate_total_gemm_time_us(chain[idx].M, chain[idx].N, chain[idx].K, element_size, chain[idx].target);
-        }
-
-        double optimal_time = m[0][num_leaves - 1];
-
-        // Check if any tensor in the chain is distributed (non-replicated).
-        // If so, add allreduce communication cost to the total.
-        double      comm_cost = 0.0;
-        bool        has_dist  = false;
-        int const   num_ranks = comm::world_size();
-        auto const &tensors   = graph.tensors_map();
-
-        for (auto const &ci : chain) {
-            for (auto tid : {ci.input_a_tid, ci.input_b_tid, ci.output_tid}) {
-                auto it = tensors.find(tid);
-                if (it != tensors.end() && it->second.is_distributed && !it->second.is_replicated) {
-                    has_dist = true;
-                    // Each non-replicated contraction needs an allreduce of the result
-                    size_t const result_bytes = ci.M * ci.N * element_size;
-                    comm_cost += _profile.estimate_allreduce_time_us(result_bytes, num_ranks);
-                    break;
-                }
-            }
-        }
-
-        // Add communication cost to both original and optimal estimates
-        original_time += comm_cost;
-        optimal_time += comm_cost;
-
-        double speedup = (optimal_time > 0) ? original_time / optimal_time : 1.0;
-
-        ChainReport report;
-        report.chain_length          = n;
-        report.dimensions            = p;
-        report.original_time_us      = original_time;
-        report.optimal_time_us       = optimal_time;
-        report.speedup               = speedup;
-        report.intermediates_created = 0;
-        report.comm_cost_us          = comm_cost;
-        report.has_distributed       = has_dist;
-
-        if (speedup < 1.05) {
-            EINSUMS_LOG_DEBUG("ContractionPlanning: chain of {} contractions [eff. dims {}], speedup {:.2f}x — below threshold", n,
-                              fmt::join(p, "x"), speedup);
-            _reports.push_back(std::move(report));
-            continue;
-        }
-
-        // Check if all tensors in the chain are rank-2 (safe for direct GEMM restructuring).
-        // Higher-rank chains require folding which needs more careful validation.
-        // For now, only restructure rank-2 chains. Higher-rank gets analysis only.
-        // The restructured Gemm executor (make_einsum_executor's rank-2 path)
-        // casts operands to Tensor<T, 2>*, so runtime-rank tensors in the
-        // chain are type confusion (garbage ranks at execute) - decline them
-        // too, same gate LCCF grew for the identical hazard.
-        bool all_rank2 = true;
-        for (auto const &ci : chain) {
-            auto a_it = graph.tensors_map().find(ci.input_a_tid);
-            auto b_it = graph.tensors_map().find(ci.input_b_tid);
-            auto c_it = graph.tensors_map().find(ci.output_tid);
-            if ((a_it != graph.tensors_map().end() && (a_it->second.rank != 2 || a_it->second.is_runtime)) ||
-                (b_it != graph.tensors_map().end() && (b_it->second.rank != 2 || b_it->second.is_runtime)) ||
-                (c_it != graph.tensors_map().end() && c_it->second.is_runtime)) {
-                all_rank2 = false;
-                break;
-            }
-        }
-
-        if (!all_rank2) {
-            EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions [eff. dims {}], {:.1f}us → {:.1f}us ({:.2f}x speedup) — "
-                             "analysis only (higher-rank or runtime-rank, needs folding)",
-                             n, fmt::join(p, "x"), original_time, optimal_time, speedup);
-            _reports.push_back(std::move(report));
-            continue;
-        }
-
-        // Leaf-orientation gate (see chain_leaves_canonical): the rank-2 fold
-        // reads each leaf with gemm<false, false> on its physical layout, so a
-        // transposed operand ("ik;jk->ij") would be restructured into a GEMM
-        // that reads the leaf in the wrong orientation and silently corrupt the
-        // result. Decline non-canonical chains until the emitted GEMMs carry
-        // transpose flags.
-        if (!chain_leaves_canonical(chain, graph)) {
-            EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (non-canonical leaf orientation; a "
-                             "transposed operand would be folded into a wrong-orientation GEMM)",
-                             n);
-            _reports.push_back(std::move(report));
-            continue;
-        }
-
-        // Restructured intermediates are declared deferred with the chain's
-        // dtype; gate on the dtypes we can declare rather than discovering
-        // failure mid-rebuild.
-        if (dtype == packed_gemm::ScalarType::Unknown) {
-            EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (unknown dtype)", n);
-            _reports.push_back(std::move(report));
-            continue;
-        }
-
-        // restructuring re-parenthesizes the chain, so every INTERIOR output
-        // (all but the last member's) stops being computed. That is only
-        // legal when the interior tensor is a graph-owned intermediate no
-        // one else observes: a user-visible tensor keeps whatever it held
-        // before execute, and an outside reader would consume a value whose
-        // producer was deleted.
+        // Determine element size and dtype from first chain
+        size_t                  element_size = 8;
+        packed_gemm::ScalarType dtype        = packed_gemm::ScalarType::Float64;
         {
-            std::unordered_set<size_t>   member_indices;
-            std::unordered_set<TensorId> interior;
-            for (size_t ci = 0; ci < chain.size(); ci++) {
-                member_indices.insert(chain[ci].node_idx);
-                if (ci + 1 < chain.size())
-                    interior.insert(chain[ci].output_tid);
+            auto const &tensors = graph.tensors_map();
+            auto        it      = tensors.find(chains[0][0].output_tid);
+            if (it != tensors.end()) {
+                element_size = it->second.element_size;
+                dtype        = it->second.dtype;
             }
-            bool interior_observable = false;
-            for (auto const tid : interior) {
-                auto const it = graph.tensors_map().find(tid);
-                if (it == graph.tensors_map().end() || !it->second.is_intermediate || it->second.aliases != 0) {
-                    interior_observable = true; // user-visible (or aliased): the eliminated write is observable
-                    break;
-                }
+        }
+
+        // Device memory budget
+        size_t device_budget = 0;
+        if (_profile.has_gpu()) {
+            device_budget = gpu::available_device_memory();
+            for (auto const &node : graph.nodes()) {
+                if (node.target == Target::GPU)
+                    device_budget -= std::min(device_budget, node.estimated_bytes);
             }
-            if (!interior_observable) {
-                auto const &all_nodes = graph.nodes();
-                for (size_t idx = 0; idx < all_nodes.size() && !interior_observable; idx++) {
-                    if (member_indices.count(idx))
-                        continue;
-                    for (auto const tid : all_nodes[idx].inputs) {
-                        if (interior.count(tid)) {
-                            interior_observable = true; // outside reader of an interior value
-                            break;
+        }
+
+        for (auto const &chain : chains) {
+            size_t n = chain.size(); // Number of GEMMs
+
+            // Extract leaf matrices: n+1 leaves from n GEMMs.
+            auto         leaves     = extract_leaves(chain);
+            size_t const num_leaves = leaves.size(); // n + 1
+
+            // Build dimension array p[0..num_leaves] (num_leaves+1 entries).
+            // Leaf matrix i has effective dimensions p[i] × p[i+1].
+            // p[0] = M of first GEMM (= rows of leaf 0)
+            // p[1] = K of first GEMM (= cols of leaf 0 = rows of leaf 1)
+            // p[i+1] for i>=1: N of GEMM i-1 (= cols of leaf i = rows of leaf i+1)
+            //
+            // Derivation:
+            //   leaf 0 = first input of GEMM 0 → dims: chain[0].M × chain[0].K
+            //   leaf 1 = second input of GEMM 0 → dims: chain[0].K × chain[0].N
+            //   leaf 2 = non-link input of GEMM 1 → dims: chain[1].K × chain[1].N
+            //   ...but chain[1].K == chain[0].N (chain link), so p flows correctly.
+            std::vector<size_t> p(num_leaves + 1);
+            p[0] = chain[0].M;
+            p[1] = chain[0].K;
+            for (size_t idx = 0; idx < n; idx++)
+                p[idx + 2] = chain[idx].N;
+
+            // ── Standard matrix chain DP on num_leaves matrices ────────────────
+            // m[i][j] = min cost to multiply leaf matrices i through j
+            // s[i][j] = split position k: (leaves i..k) * (leaves k+1..j)
+            std::vector<std::vector<double>> m(num_leaves, std::vector<double>(num_leaves, 0.0));
+            std::vector<std::vector<size_t>> s(num_leaves, std::vector<size_t>(num_leaves, 0));
+
+            for (size_t len = 2; len <= num_leaves; len++) {
+                for (size_t i_idx = 0; i_idx <= num_leaves - len; i_idx++) {
+                    size_t const j_idx = i_idx + len - 1;
+                    m[i_idx][j_idx]    = std::numeric_limits<double>::max();
+
+                    for (size_t k_idx = i_idx; k_idx < j_idx; k_idx++) {
+                        // Multiply result of (i..k) [shape p[i] × p[k+1]]
+                        //       with result of (k+1..j) [shape p[k+1] × p[j+1]]
+                        // GEMM dimensions: M=p[i], K=p[k+1], N=p[j+1]
+                        Target const split_target = determine_target(_profile, p[i_idx], p[j_idx + 1], p[k_idx + 1], element_size);
+
+                        double const gemm_time =
+                            _profile.estimate_total_gemm_time_us(p[i_idx], p[j_idx + 1], p[k_idx + 1], element_size, split_target);
+
+                        double const cost = m[i_idx][k_idx] + m[k_idx + 1][j_idx] + gemm_time;
+
+                        if (cost < m[i_idx][j_idx]) {
+                            m[i_idx][j_idx] = cost;
+                            s[i_idx][j_idx] = k_idx;
                         }
                     }
                 }
             }
-            if (interior_observable) {
-                EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (interior output is user-visible or "
-                                 "read outside the chain; restructuring would elide an observable write)",
-                                 n);
-                this->report(3, fmt::format("skip chain of {} — interior output is observable", n));
+
+            // ── Compute original (left-to-right) cost ──────────────────────────
+            double original_time = 0.0;
+            for (size_t idx = 0; idx < n; idx++) {
+                original_time +=
+                    _profile.estimate_total_gemm_time_us(chain[idx].M, chain[idx].N, chain[idx].K, element_size, chain[idx].target);
+            }
+
+            double optimal_time = m[0][num_leaves - 1];
+
+            // Check if any tensor in the chain is distributed (non-replicated).
+            // If so, add allreduce communication cost to the total.
+            double      comm_cost = 0.0;
+            bool        has_dist  = false;
+            int const   num_ranks = comm::world_size();
+            auto const &tensors   = graph.tensors_map();
+
+            for (auto const &ci : chain) {
+                for (auto tid : {ci.input_a_tid, ci.input_b_tid, ci.output_tid}) {
+                    auto it = tensors.find(tid);
+                    if (it != tensors.end() && it->second.is_distributed && !it->second.is_replicated) {
+                        has_dist = true;
+                        // Each non-replicated contraction needs an allreduce of the result
+                        size_t const result_bytes = ci.M * ci.N * element_size;
+                        comm_cost += _profile.estimate_allreduce_time_us(result_bytes, num_ranks);
+                        break;
+                    }
+                }
+            }
+
+            // Add communication cost to both original and optimal estimates
+            original_time += comm_cost;
+            optimal_time += comm_cost;
+
+            double speedup = (optimal_time > 0) ? original_time / optimal_time : 1.0;
+
+            ChainReport report;
+            report.chain_length          = n;
+            report.dimensions            = p;
+            report.original_time_us      = original_time;
+            report.optimal_time_us       = optimal_time;
+            report.speedup               = speedup;
+            report.intermediates_created = 0;
+            report.comm_cost_us          = comm_cost;
+            report.has_distributed       = has_dist;
+
+            if (speedup < 1.05) {
+                EINSUMS_LOG_DEBUG("ContractionPlanning: chain of {} contractions [eff. dims {}], speedup {:.2f}x — below threshold", n,
+                                  fmt::join(p, "x"), speedup);
                 _reports.push_back(std::move(report));
                 continue;
             }
-        }
 
-        EINSUMS_LOG_INFO(
-            "ContractionPlanning: chain of {} contractions [eff. dims {}], {:.1f}us → {:.1f}us ({:.2f}x speedup) — restructuring", n,
-            fmt::join(p, "x"), original_time, optimal_time, speedup);
+            // Check if all tensors in the chain are rank-2 (safe for direct GEMM restructuring).
+            // Higher-rank chains require folding which needs more careful validation.
+            // For now, only restructure rank-2 chains. Higher-rank gets analysis only.
+            // The restructured Gemm executor (make_einsum_executor's rank-2 path)
+            // casts operands to Tensor<T, 2>*, so runtime-rank tensors in the
+            // chain are type confusion (garbage ranks at execute) - decline them
+            // too, same gate LCCF grew for the identical hazard.
+            bool all_rank2 = true;
+            for (auto const &ci : chain) {
+                auto a_it = graph.tensors_map().find(ci.input_a_tid);
+                auto b_it = graph.tensors_map().find(ci.input_b_tid);
+                auto c_it = graph.tensors_map().find(ci.output_tid);
+                if ((a_it != graph.tensors_map().end() && (a_it->second.rank != 2 || a_it->second.is_runtime)) ||
+                    (b_it != graph.tensors_map().end() && (b_it->second.rank != 2 || b_it->second.is_runtime)) ||
+                    (c_it != graph.tensors_map().end() && c_it->second.is_runtime)) {
+                    all_rank2 = false;
+                    break;
+                }
+            }
 
-        // ── Graph restructuring ────────────────────────────────────────────
-        // leaves and p are already computed above. Build optimal tree from DP.
-        {
-            size_t            inter_count = 0;
-            std::vector<Node> new_nodes;
-            TensorId const    final_tid = chain.back().output_tid;
+            if (!all_rank2) {
+                EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions [eff. dims {}], {:.1f}us → {:.1f}us ({:.2f}x speedup) — "
+                                 "analysis only (higher-rank or runtime-rank, needs folding)",
+                                 n, fmt::join(p, "x"), original_time, optimal_time, speedup);
+                _reports.push_back(std::move(report));
+                continue;
+            }
 
-            // reconstruct_tree indices are 0..num_leaves-1 (leaf indices)
-            reconstruct_tree(0, num_leaves - 1, s, leaves, p, graph, dtype, element_size, final_tid, new_nodes, inter_count);
+            // Leaf-orientation gate (see chain_leaves_canonical): the rank-2 fold
+            // reads each leaf with gemm<false, false> on its physical layout, so a
+            // transposed operand ("ik;jk->ij") would be restructured into a GEMM
+            // that reads the leaf in the wrong orientation and silently corrupt the
+            // result. Decline non-canonical chains until the emitted GEMMs carry
+            // transpose flags.
+            if (!chain_leaves_canonical(chain, graph)) {
+                EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (non-canonical leaf orientation; a "
+                                 "transposed operand would be folded into a wrong-orientation GEMM)",
+                                 n);
+                _reports.push_back(std::move(report));
+                continue;
+            }
 
-            if (!new_nodes.empty()) {
-                // Mark original chain nodes for removal
-                auto                      &nodes = graph.nodes();
-                std::unordered_set<size_t> remove_indices;
-                for (auto const &ci : chain)
-                    remove_indices.insert(ci.node_idx);
+            // Restructured intermediates are declared deferred with the chain's
+            // dtype; gate on the dtypes we can declare rather than discovering
+            // failure mid-rebuild.
+            if (dtype == packed_gemm::ScalarType::Unknown) {
+                EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (unknown dtype)", n);
+                _reports.push_back(std::move(report));
+                continue;
+            }
 
-                // Find insertion point (where first chain node was)
-                size_t const insert_pos = chain[0].node_idx;
-
-                // Build new node list
-                std::vector<Node> result;
-                result.reserve(nodes.size() - remove_indices.size() + new_nodes.size());
-
-                for (size_t idx = 0; idx < nodes.size(); idx++) {
-                    if (idx == insert_pos) {
-                        for (auto &nn : new_nodes)
-                            result.push_back(std::move(nn));
-                    }
-                    if (remove_indices.count(idx) == 0) {
-                        result.push_back(std::move(nodes[idx]));
+            // restructuring re-parenthesizes the chain, so every INTERIOR output
+            // (all but the last member's) stops being computed. That is only
+            // legal when the interior tensor is a graph-owned intermediate no
+            // one else observes: a user-visible tensor keeps whatever it held
+            // before execute, and an outside reader would consume a value whose
+            // producer was deleted.
+            {
+                std::unordered_set<size_t>   member_indices;
+                std::unordered_set<TensorId> interior;
+                for (size_t ci = 0; ci < chain.size(); ci++) {
+                    member_indices.insert(chain[ci].node_idx);
+                    if (ci + 1 < chain.size())
+                        interior.insert(chain[ci].output_tid);
+                }
+                bool interior_observable = false;
+                for (auto const tid : interior) {
+                    auto const it = graph.tensors_map().find(tid);
+                    if (it == graph.tensors_map().end() || !it->second.is_intermediate || it->second.aliases != 0) {
+                        interior_observable = true; // user-visible (or aliased): the eliminated write is observable
+                        break;
                     }
                 }
-
-                nodes = std::move(result);
-                graph.mark_sorted();
-
-                report.intermediates_created = inter_count;
-                _intermediates_created += inter_count;
-                _chains_restructured++;
-                modified = true;
-
-                EINSUMS_LOG_INFO("ContractionPlanning: restructured chain — {} new GEMM nodes, {} intermediates created", new_nodes.size(),
-                                 inter_count);
-                this->report(2, fmt::format("restructure GEMM chain into {} node(s), {} intermediate(s)", new_nodes.size(), inter_count));
+                if (!interior_observable) {
+                    auto const &all_nodes = graph.nodes();
+                    for (size_t idx = 0; idx < all_nodes.size() && !interior_observable; idx++) {
+                        if (member_indices.count(idx))
+                            continue;
+                        for (auto const tid : all_nodes[idx].inputs) {
+                            if (interior.count(tid)) {
+                                interior_observable = true; // outside reader of an interior value
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (interior_observable) {
+                    EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (interior output is user-visible or "
+                                     "read outside the chain; restructuring would elide an observable write)",
+                                     n);
+                    this->report(3, fmt::format("skip chain of {} — interior output is observable", n));
+                    _reports.push_back(std::move(report));
+                    continue;
+                }
             }
+
+            EINSUMS_LOG_INFO(
+                "ContractionPlanning: chain of {} contractions [eff. dims {}], {:.1f}us → {:.1f}us ({:.2f}x speedup) — restructuring", n,
+                fmt::join(p, "x"), original_time, optimal_time, speedup);
+
+            // ── Graph restructuring ────────────────────────────────────────────
+            // leaves and p are already computed above. Build optimal tree from DP.
+            {
+                size_t            inter_count = 0;
+                std::vector<Node> new_nodes;
+                TensorId const    final_tid = chain.back().output_tid;
+
+                // reconstruct_tree indices are 0..num_leaves-1 (leaf indices)
+                reconstruct_tree(0, num_leaves - 1, s, leaves, p, graph, dtype, element_size, final_tid, new_nodes, inter_count);
+
+                if (!new_nodes.empty()) {
+                    // Mark original chain nodes for removal
+                    auto                      &nodes = graph.nodes();
+                    std::unordered_set<size_t> remove_indices;
+                    for (auto const &ci : chain)
+                        remove_indices.insert(ci.node_idx);
+
+                    // Find insertion point (where first chain node was)
+                    size_t const insert_pos = chain[0].node_idx;
+
+                    // Build new node list
+                    std::vector<Node> result;
+                    result.reserve(nodes.size() - remove_indices.size() + new_nodes.size());
+
+                    for (size_t idx = 0; idx < nodes.size(); idx++) {
+                        if (idx == insert_pos) {
+                            for (auto &nn : new_nodes)
+                                result.push_back(std::move(nn));
+                        }
+                        if (remove_indices.count(idx) == 0) {
+                            result.push_back(std::move(nodes[idx]));
+                        }
+                    }
+
+                    nodes = std::move(result);
+                    graph.mark_sorted();
+
+                    report.intermediates_created = inter_count;
+                    _intermediates_created += inter_count;
+                    _chains_restructured++;
+                    modified               = true;
+                    restructured_this_scan = true;
+
+                    EINSUMS_LOG_INFO("ContractionPlanning: restructured chain — {} new GEMM nodes, {} intermediates created",
+                                     new_nodes.size(), inter_count);
+                    this->report(2,
+                                 fmt::format("restructure GEMM chain into {} node(s), {} intermediate(s)", new_nodes.size(), inter_count));
+                }
+            }
+
+            _reports.push_back(std::move(report));
+
+            if (restructured_this_scan)
+                break; // the remaining chains' node indices are now stale; re-find
         }
 
-        _reports.push_back(std::move(report));
-    }
+        if (!restructured_this_scan)
+            break;
+    } // restructure-until-fixpoint
 
     if (!_reports.empty()) {
         EINSUMS_LOG_INFO("ContractionPlanning: analyzed {} chains using CPU='{}' GPU='{}', restructured {}", _reports.size(),
