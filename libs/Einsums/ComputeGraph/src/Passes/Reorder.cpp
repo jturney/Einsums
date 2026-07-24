@@ -94,13 +94,18 @@ bool Reorder::run(Graph &graph) {
     // Compute "memory freed" for each node:
     // A tensor's last consumer is the last node that reads it.
     // When a node is the last consumer of a tensor, scheduling it frees that memory.
+    // Use the same effective-I/O + alias resolution as the hazard scan above:
+    // a raw inputs/outputs scan double-counts a view against its parent buffer
+    // and misses tensors a Loop/Conditional body touches, so the freed-bytes
+    // heuristic would attribute the wrong bytes to the wrong node.
     std::unordered_map<TensorId, size_t> last_consumer;
     for (size_t i = 0; i < n; i++) {
-        for (auto tid : nodes[i].inputs) {
-            last_consumer[tid] = i;
+        auto [eff_in, eff_out] = graph.effective_io(nodes[i]);
+        for (auto raw_tid : eff_in) {
+            last_consumer[graph.resolve_alias(raw_tid)] = i;
         }
-        for (auto tid : nodes[i].outputs) {
-            last_consumer[tid] = i; // Also counts as "using" it
+        for (auto raw_tid : eff_out) {
+            last_consumer[graph.resolve_alias(raw_tid)] = i; // Also counts as "using" it
         }
     }
 
