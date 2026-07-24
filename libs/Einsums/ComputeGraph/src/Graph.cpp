@@ -39,6 +39,19 @@ namespace {
 /// Returns true if dispatched, false if not applicable (caller should use CPU fallback).
 bool try_gpu_blas_dispatch(Node const &node, std::unordered_map<TensorId, TensorHandle> const &tensors, DeviceShadowMap &shadows);
 
+/// Resolve the device-visible pointer for one operand. On unified memory the GPU
+/// reads the host tensor's data directly; on a discrete device the data has been
+/// copied into a shadow buffer keyed by tensor id. Shared by every try_gpu_*
+/// helper below, which otherwise repeated this if-constexpr branch per operand.
+[[nodiscard]] inline void *resolve_device_ptr([[maybe_unused]] TensorHandle const &h, [[maybe_unused]] TensorId id,
+                                              [[maybe_unused]] DeviceShadowMap &shadows) {
+    if constexpr (gpu::has_unified_memory) {
+        return h.data_ptr;
+    } else {
+        return shadows.get(id);
+    }
+}
+
 /// Try GEMM dispatch: 2 target indices + 1 link index, rank-2 tensors.
 bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered_map<TensorId, TensorHandle> const &tensors,
                   DeviceShadowMap &shadows) {
@@ -87,20 +100,9 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
     if (ha.dtype != hb.dtype || ha.dtype != hc.dtype)
         return false;
 
-    // Get shadow pointers (data pointers have already been swapped to shadows).
-    // On unified memory: use tensor data pointers directly (GPU reads host memory).
-    // On discrete GPU: use shadow pointers (data was copied to device).
-    void *ptr_a, *ptr_b, *ptr_c;
-    if constexpr (gpu::has_unified_memory) {
-        ptr_a = ha.data_ptr;
-        ptr_b = hb.data_ptr;
-        ptr_c = hc.data_ptr;
-    } else {
-        ptr_a = shadows.get(a_id);
-        ptr_b = shadows.get(b_id);
-        ptr_c = shadows.get(c_id);
-    }
-
+    void *ptr_a = resolve_device_ptr(ha, a_id, shadows);
+    void *ptr_b = resolve_device_ptr(hb, b_id, shadows);
+    void *ptr_c = resolve_device_ptr(hc, c_id, shadows);
     if (!ptr_a || !ptr_b || !ptr_c)
         return false;
 
@@ -227,16 +229,9 @@ bool try_gpu_gemv(EinsumDescriptor const &desc, Node const &node, std::unordered
     if (ha.dtype != hx.dtype || ha.dtype != hy.dtype)
         return false;
 
-    void *ptr_a, *ptr_x, *ptr_y;
-    if constexpr (gpu::has_unified_memory) {
-        ptr_a = ha.data_ptr;
-        ptr_x = hx.data_ptr;
-        ptr_y = hy.data_ptr;
-    } else {
-        ptr_a = shadows.get(a_id);
-        ptr_x = shadows.get(x_id);
-        ptr_y = shadows.get(y_id);
-    }
+    void *ptr_a = resolve_device_ptr(ha, a_id, shadows);
+    void *ptr_x = resolve_device_ptr(hx, x_id, shadows);
+    void *ptr_y = resolve_device_ptr(hy, y_id, shadows);
 
     if (!ptr_a || !ptr_x || !ptr_y)
         return false;
@@ -304,12 +299,7 @@ bool try_gpu_scale(Node const &node, std::unordered_map<TensorId, TensorHandle> 
 
     auto const &handle = it->second;
 
-    void *ptr;
-    if constexpr (gpu::has_unified_memory) {
-        ptr = handle.data_ptr;
-    } else {
-        ptr = shadows.get(tid);
-    }
+    void *ptr = resolve_device_ptr(handle, tid, shadows);
     if (!ptr)
         return false;
 
@@ -348,14 +338,8 @@ bool try_gpu_axpy(Node const &node, std::unordered_map<TensorId, TensorHandle> c
     if (hx.dtype != hy.dtype)
         return false;
 
-    void *ptr_x, *ptr_y;
-    if constexpr (gpu::has_unified_memory) {
-        ptr_x = hx.data_ptr;
-        ptr_y = hy.data_ptr;
-    } else {
-        ptr_x = shadows.get(x_id);
-        ptr_y = shadows.get(y_id);
-    }
+    void *ptr_x = resolve_device_ptr(hx, x_id, shadows);
+    void *ptr_y = resolve_device_ptr(hy, y_id, shadows);
     if (!ptr_x || !ptr_y)
         return false;
 
@@ -401,16 +385,9 @@ bool try_gpu_batched_gemm(BatchedGemmDescriptor const &desc, Node const &node, s
     if (a_it == tensors.end() || b_it == tensors.end() || c_it == tensors.end())
         return false;
 
-    void *ptr_a, *ptr_b, *ptr_c;
-    if constexpr (gpu::has_unified_memory) {
-        ptr_a = a_it->second.data_ptr;
-        ptr_b = b_it->second.data_ptr;
-        ptr_c = c_it->second.data_ptr;
-    } else {
-        ptr_a = shadows.get(a_id);
-        ptr_b = shadows.get(b_id);
-        ptr_c = shadows.get(c_id);
-    }
+    void *ptr_a = resolve_device_ptr(a_it->second, a_id, shadows);
+    void *ptr_b = resolve_device_ptr(b_it->second, b_id, shadows);
+    void *ptr_c = resolve_device_ptr(c_it->second, c_id, shadows);
     if (!ptr_a || !ptr_b || !ptr_c)
         return false;
 
