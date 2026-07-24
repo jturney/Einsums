@@ -223,8 +223,11 @@ HardwareProfileDB HardwareProfileDB::load_defaults() {
     db._fallback_gpu.device_type  = DeviceType::GPU;
     db._fallback_gpu.brand_family = "none";
 
-    // ── Apple Silicon ──────────────────────────────────────────────────────
-    auto apple_base = [](std::string name, std::string family, std::vector<std::string> patterns, double fp64, double bw) {
+    // Shared CPU DeviceProfile builder: the vendor tables below differ only in
+    // the launch/alloc overheads and the gemm-efficiency curve, so everything
+    // else lives here once.
+    auto cpu_base = [](std::string name, std::string family, std::vector<std::string> patterns, double fp64, double bw, double launch_us,
+                       double alloc_us, std::vector<GemmEfficiencyPoint> gemm) {
         DeviceProfile p;
         p.name                      = std::move(name);
         p.device_type               = DeviceType::CPU;
@@ -234,13 +237,22 @@ HardwareProfileDB HardwareProfileDB::load_defaults() {
         p.peak_gflops_fp64          = fp64;
         p.peak_gflops_fp32          = fp64 * 2.0;
         p.mem_bandwidth_gbps        = bw;
-        p.kernel_launch_overhead_us = 0.3;
-        p.alloc_overhead_us         = 1.0;
-        p.gemm_efficiency = {{.M = 16, .N = 16, .K = 16, .gflops = fp64 * 0.08},      {.M = 32, .N = 32, .K = 32, .gflops = fp64 * 0.25},
-                             {.M = 64, .N = 64, .K = 64, .gflops = fp64 * 0.55},      {.M = 128, .N = 128, .K = 128, .gflops = fp64 * 0.80},
-                             {.M = 256, .N = 256, .K = 256, .gflops = fp64 * 0.92},   {.M = 512, .N = 512, .K = 512, .gflops = fp64 * 0.97},
-                             {.M = 1024, .N = 1024, .K = 1024, .gflops = fp64 * 0.99}};
+        p.kernel_launch_overhead_us = launch_us;
+        p.alloc_overhead_us         = alloc_us;
+        p.gemm_efficiency           = std::move(gemm);
         return p;
+    };
+
+    // ── Apple Silicon ──────────────────────────────────────────────────────
+    auto apple_base = [&](std::string name, std::string family, std::vector<std::string> patterns, double fp64, double bw) {
+        return cpu_base(std::move(name), std::move(family), std::move(patterns), fp64, bw, 0.3, 1.0,
+                        {{.M = 16, .N = 16, .K = 16, .gflops = fp64 * 0.08},
+                         {.M = 32, .N = 32, .K = 32, .gflops = fp64 * 0.25},
+                         {.M = 64, .N = 64, .K = 64, .gflops = fp64 * 0.55},
+                         {.M = 128, .N = 128, .K = 128, .gflops = fp64 * 0.80},
+                         {.M = 256, .N = 256, .K = 256, .gflops = fp64 * 0.92},
+                         {.M = 512, .N = 512, .K = 512, .gflops = fp64 * 0.97},
+                         {.M = 1024, .N = 1024, .K = 1024, .gflops = fp64 * 0.99}});
     };
 
     db._profiles.push_back(apple_base("Apple M1", "apple_m1", {"Apple M1"}, 60.0, 68.0));
@@ -256,24 +268,13 @@ HardwareProfileDB HardwareProfileDB::load_defaults() {
     db._profiles.push_back(apple_base("Apple M4 Pro", "apple_m4_pro", {"Apple M4 Pro"}, 120.0, 273.0));
     db._profiles.push_back(apple_base("Apple M4 Max", "apple_m4_max", {"Apple M4 Max"}, 120.0, 546.0));
 
-    // ── Intel ──────────────────────────────────────────────────────────────
-    auto intel_base = [](std::string name, std::string family, std::vector<std::string> patterns, double fp64, double bw) {
-        DeviceProfile p;
-        p.name                      = std::move(name);
-        p.device_type               = DeviceType::CPU;
-        p.brand_family              = std::move(family);
-        p.match_patterns            = std::move(patterns);
-        p.source                    = "default";
-        p.peak_gflops_fp64          = fp64;
-        p.peak_gflops_fp32          = fp64 * 2.0;
-        p.mem_bandwidth_gbps        = bw;
-        p.kernel_launch_overhead_us = 0.5;
-        p.alloc_overhead_us         = 2.0;
-        p.gemm_efficiency           = {{.M = 16, .N = 16, .K = 16, .gflops = fp64 * 0.10},
-                                       {.M = 64, .N = 64, .K = 64, .gflops = fp64 * 0.60},
-                                       {.M = 256, .N = 256, .K = 256, .gflops = fp64 * 0.90},
-                                       {.M = 1024, .N = 1024, .K = 1024, .gflops = fp64 * 0.98}};
-        return p;
+    // ── Intel / AMD ──────────────────────────────────────────────────────────
+    auto intel_base = [&](std::string name, std::string family, std::vector<std::string> patterns, double fp64, double bw) {
+        return cpu_base(std::move(name), std::move(family), std::move(patterns), fp64, bw, 0.5, 2.0,
+                        {{.M = 16, .N = 16, .K = 16, .gflops = fp64 * 0.10},
+                         {.M = 64, .N = 64, .K = 64, .gflops = fp64 * 0.60},
+                         {.M = 256, .N = 256, .K = 256, .gflops = fp64 * 0.90},
+                         {.M = 1024, .N = 1024, .K = 1024, .gflops = fp64 * 0.98}});
     };
 
     db._profiles.push_back(intel_base("Intel Skylake", "intel_skylake", {"Skylake", "i7-6", "i9-6", "E5-26"}, 50.0, 40.0));
