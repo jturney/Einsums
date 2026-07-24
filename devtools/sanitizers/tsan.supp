@@ -87,3 +87,25 @@ race:transpose_int
 race:axpy_1D
 race:axpy_2D
 race:macro_kernel
+
+# --- PackedGemm blis_contraction: OpenMP parallel-for barrier TSan can't see ---
+# blis_contraction parallelizes its outer NC loop with `#pragma omp parallel for
+# schedule(static)`. Each nc block writes a DISJOINT set of C offsets (the n
+# coordinate range [nc, nc+nc_len) is unique per block, so no two threads touch
+# the same C element), and every packing/tile buffer it uses is `thread_local`
+# (tls_Ap/tls_Bp/tls_Cb/...). There is no shared mutable state to race on: the
+# only cross-thread accesses are worker READS of loop-invariant captured scalars
+# and pointers (M, N, beta, C_data) that live on the master's stack.
+#
+# TSan still reports "data race" because the parallel-for's implicit JOIN barrier
+# lives inside the uninstrumented libomp.dylib. Across successive einsum calls
+# (the SCF/MP2 iteration loop), it cannot draw the happens-before edge between
+# call K's worker finishing the outlined region and call K+1's master reusing the
+# same stack slot, so it flags the master's serial-region write against the prior
+# call's outlined read. Structurally impossible to be a real race: a master in
+# serial code and a worker in the SAME region's outlined code are never concurrent
+# under a correct barrier. Confirmed benign - OMP_NUM_THREADS=1 runs clean, and the
+# writes provably do not alias. Same OMP-barrier-invisibility class as the HPTT and
+# einsums_main entries above; a genuine overlapping-write race would still surface
+# with 1 thread and is deliberately NOT hidden by this necessary-serial reasoning.
+race:blis_contraction

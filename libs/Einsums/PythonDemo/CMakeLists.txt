@@ -104,6 +104,12 @@ print('OK')
   set(_smoke_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib")
   if(EINSUMS_PYTEST_SANITIZER_PRELOAD)
     set(_smoke_env "${_smoke_env};${EINSUMS_PYTEST_SANITIZER_PRELOAD}")
+    # Deliver the same suppression files the unit tests get, so benign
+    # libomp-barrier false positives do not abort the smoke test (see
+    # einsums_add_python_unit_test and the ComputeGraph examples CMakeLists).
+    set(_san_env "")
+    einsums_sanitizer_test_environment(_san_env)
+    set(_smoke_env "${_smoke_env};${_san_env}")
     if(EINSUMS_WITH_SANITIZERS MATCHES "address")
       set(_smoke_env "${_smoke_env};ASAN_OPTIONS=detect_leaks=0:abort_on_error=1")
     endif()

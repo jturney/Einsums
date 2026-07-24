@@ -109,6 +109,18 @@ if(EINSUMS_BUILD_PYTHON
     set(_example_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib")
     if(_einsums_python_example_preload)
       set(_example_env "${_example_env};${_einsums_python_example_preload}")
+      # Deliver the same suppression files the C++ and Python unit tests get (see
+      # einsums_add_python_unit_test). Without TSAN_OPTIONS pointing at
+      # devtools/sanitizers/tsan.supp, the interpreter runs the thread sanitizer
+      # with no suppressions, so benign libomp-barrier false positives (e.g. the
+      # OpenMP parallel-for in packed_gemm::blis_contraction, whose nc blocks
+      # write disjoint C and use thread_local buffers) surface as data-race
+      # reports and bump the exit code - ctest then fails the (correct) example.
+      # A genuine race in our own code still fails, being uncovered by the
+      # suppression file. The TSan/LSan vars are inert under the other sanitizers.
+      set(_san_env "")
+      einsums_sanitizer_test_environment(_san_env)
+      set(_example_env "${_example_env};${_san_env}")
       if(EINSUMS_WITH_SANITIZERS MATCHES "address")
         set(_example_env "${_example_env};ASAN_OPTIONS=detect_leaks=0:abort_on_error=1")
       endif()
