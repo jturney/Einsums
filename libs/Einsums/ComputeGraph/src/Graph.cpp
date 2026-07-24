@@ -2075,12 +2075,16 @@ std::string Graph::to_json() const {
 
     // Dependency edges
     {
+        // Key by the owning buffer: a write through a view of T and a read of T
+        // (or of another view of it) share storage, so their dependency edge is
+        // only found once aliases resolve to the same id -- the same reason the
+        // schedulers resolve_alias before deriving edges.
         std::unordered_map<TensorId, std::vector<size_t>> writers, readers;
         for (size_t i = 0; i < _nodes.size(); i++) {
             for (auto in_tid : _nodes[i].inputs)
-                readers[in_tid].push_back(i);
+                readers[resolve_alias(in_tid)].push_back(i);
             for (auto out_tid : _nodes[i].outputs)
-                writers[out_tid].push_back(i);
+                writers[resolve_alias(out_tid)].push_back(i);
         }
 
         std::set<std::pair<size_t, size_t>> emitted;
