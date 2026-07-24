@@ -47,6 +47,19 @@
 
 namespace einsums::compute_graph {
 
+namespace detail {
+/// Guard for the returning-form ops (dot/svd/syev/qr/det/...), which build and
+/// return a fresh result tensor and therefore cannot run inside graph capture.
+/// Throws std::logic_error carrying @p message when a capture is active; a no-op
+/// otherwise. Centralizes the identical `if (is_capturing()) throw ...` guard
+/// that each returning-form overload would otherwise open-code.
+inline void reject_if_capturing(char const *message) {
+    if (CaptureContext::current().is_capturing()) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "{}", message);
+    }
+}
+} // namespace detail
+
 // ─────────────────────────────────────────────────────────────────────────────
 // einsum: graph-aware, runtime-string contraction spec
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1609,10 +1622,8 @@ APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,  
 APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::dot(A, B) returning scalar cannot be used during graph capture. "
-                                                  "Use cg::einsum(\" <- i ; i\", &result, A, B) instead.");
-    }
+    detail::reject_if_capturing("cg::dot(A, B) returning scalar cannot be used during graph capture. "
+                                "Use cg::einsum(\" <- i ; i\", &result, A, B) instead.");
     return linear_algebra::dot(A, B);
 }
 
@@ -2297,9 +2308,7 @@ APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<std::complex<float>,
 APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
     // clang-format on
     auto norm(linear_algebra::Norm norm_type, AType const &A) -> RemoveComplexT<typename AType::ValueType> {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::norm() returning scalar cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::norm() returning scalar cannot be used during graph capture.");
     return linear_algebra::norm(norm_type, A);
 }
 
@@ -2420,10 +2429,8 @@ APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocat
 
 template <MatrixConcept AType>
 auto trace(AType const &A) -> typename AType::ValueType {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::trace(A) returning scalar cannot be used during graph capture. "
-                                                  "Use cg::trace(&result, A) instead.");
-    }
+    detail::reject_if_capturing("cg::trace(A) returning scalar cannot be used during graph capture. "
+                                "Use cg::trace(&result, A) instead.");
     if (A.dim(0) != A.dim(1))
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
     using T = typename AType::ValueType;
@@ -2448,10 +2455,8 @@ APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<float>
 APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
     // clang-format on
     auto trace(AType const &A) -> typename AType::ValueType {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::trace(A) returning scalar cannot be used during graph capture. "
-                                                  "Use cg::trace(&result, A) instead.");
-    }
+    detail::reject_if_capturing("cg::trace(A) returning scalar cannot be used during graph capture. "
+                                "Use cg::trace(&result, A) instead.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::trace: input must be rank-2; got rank {}.", A.rank());
     }
@@ -2794,10 +2799,8 @@ APIARY_INSTANTIATE_BOOLS("syev", einsums::RuntimeTensorView<double>, einsums::Ge
 template <bool ComputeEigenvectors = true, MatrixConcept AType>
     requires(NotComplex<AType>)
 auto syev(AType const &A) -> std::tuple<RemoveViewT<AType>, BasicTensorLike<AType, typename AType::ValueType, 1>> {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::syev(A) returning form cannot be used during graph capture. "
-                                                  "Use the in-place form cg::syev(&A, &W) with pre-allocated tensors instead.");
-    }
+    detail::reject_if_capturing("cg::syev(A) returning form cannot be used during graph capture. "
+                                "Use the in-place form cg::syev(&A, &W) with pre-allocated tensors instead.");
     return linear_algebra::syev<ComputeEigenvectors>(A);
 }
 
@@ -2819,10 +2822,8 @@ APIARY_INSTANTIATE_BOOLS("syev_eig", einsums::GeneralRuntimeTensor<double, std::
     std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
                einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> syev_eig(AType const
                                                                                                                                  &A) {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::syev(A) returning form cannot be used during graph capture. "
-                                                  "Use the in-place form cg::syev(&A, &W) instead.");
-    }
+    detail::reject_if_capturing("cg::syev(A) returning form cannot be used during graph capture. "
+                                "Use the in-place form cg::syev(&A, &W) instead.");
     if (A.rank() != 2 || A.dim(0) != A.dim(1)) {
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::syev requires square rank-2 input; got dims ({}, {}).", A.rank() >= 1 ? A.dim(0) : 0,
                                 A.rank() >= 2 ? A.dim(1) : 0);
@@ -3137,9 +3138,7 @@ APIARY_INSTANTIATE_AS("invert", einsums::GeneralRuntimeTensor<std::complex<doubl
 
 template <MatrixConcept AType>
 auto svd(AType const &A) {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::svd(A) returning form cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::svd(A) returning form cannot be used during graph capture.");
     return linear_algebra::svd(A);
 }
 
@@ -3162,9 +3161,7 @@ APIARY_INSTANTIATE_AS("svd", einsums::GeneralRuntimeTensor<std::complex<double>,
         einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
         einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
         einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::svd(A) returning form cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::svd(A) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::svd requires rank-2 input; got rank {}.", A.rank());
     }
@@ -3190,9 +3187,7 @@ APIARY_INSTANTIATE_AS("svd", einsums::GeneralRuntimeTensor<std::complex<double>,
 
 template <MatrixConcept AType>
 auto svd_dd(AType const &A, linear_algebra::Vectors job = linear_algebra::Vectors::ALL) {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::svd_dd(A) returning form cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::svd_dd(A) returning form cannot be used during graph capture.");
     return linear_algebra::svd_dd(A, job);
 }
 
@@ -3216,9 +3211,7 @@ APIARY_INSTANTIATE_AS("svd_dd", einsums::GeneralRuntimeTensor<std::complex<doubl
         einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
         einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
         einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::svd_dd(A) returning form cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::svd_dd(A) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::svd_dd requires rank-2 input; got rank {}.", A.rank());
     }
@@ -3244,9 +3237,7 @@ APIARY_INSTANTIATE_AS("svd_dd", einsums::GeneralRuntimeTensor<std::complex<doubl
 
 template <MatrixConcept AType>
 auto truncated_svd(AType const &A, size_t k) {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::truncated_svd(A, k) returning form cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::truncated_svd(A, k) returning form cannot be used during graph capture.");
     return linear_algebra::truncated_svd(A, k);
 }
 
@@ -3274,9 +3265,7 @@ APIARY_INSTANTIATE_AS("truncated_svd", einsums::GeneralRuntimeTensor<std::comple
         einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
         einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
         einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::truncated_svd(A, k) returning form cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::truncated_svd(A, k) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::truncated_svd requires rank-2 input; got rank {}.", A.rank());
     }
@@ -3300,9 +3289,7 @@ APIARY_INSTANTIATE_AS("truncated_svd", einsums::GeneralRuntimeTensor<std::comple
 template <MatrixConcept AType>
     requires(NotComplex<AType>)
 auto truncated_syev(AType const &A, size_t k) {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::truncated_syev(A, k) returning form cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::truncated_syev(A, k) returning form cannot be used during graph capture.");
     return linear_algebra::truncated_syev(A, k);
 }
 
@@ -3330,9 +3317,7 @@ APIARY_INSTANTIATE_AS("truncated_syev", einsums::GeneralRuntimeTensor<double, st
     auto truncated_syev(AType const &A, size_t k)
         -> std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
                       einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::truncated_syev(A, k) returning form cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::truncated_syev(A, k) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::truncated_syev requires rank-2 input; got rank {}.", A.rank());
     }
@@ -3353,9 +3338,7 @@ APIARY_INSTANTIATE_AS("truncated_syev", einsums::GeneralRuntimeTensor<double, st
 
 template <MatrixConcept AType>
 auto qr(AType const &A) {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::qr(A) returning form cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::qr(A) returning form cannot be used during graph capture.");
     return linear_algebra::qr(A);
 }
 
@@ -3376,9 +3359,7 @@ APIARY_INSTANTIATE_AS("qr", einsums::GeneralRuntimeTensor<std::complex<double>, 
     auto qr(AType const &A)
         -> std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
                       einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::qr(A) returning form cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::qr(A) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::qr requires rank-2 input; got rank {}.", A.rank());
     }
@@ -3400,9 +3381,7 @@ APIARY_INSTANTIATE_AS("qr", einsums::GeneralRuntimeTensor<std::complex<double>, 
 template <MatrixConcept AType>
 auto pow(AType const &A, typename AType::ValueType alpha,
          typename AType::ValueType cutoff = std::numeric_limits<typename AType::ValueType>::epsilon()) -> RemoveViewT<AType> {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::pow(A, alpha) returning form cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::pow(A, alpha) returning form cannot be used during graph capture.");
     return linear_algebra::pow(A, alpha, cutoff);
 }
 
@@ -3424,9 +3403,7 @@ APIARY_INSTANTIATE_AS("pow", einsums::GeneralRuntimeTensor<double, std::allocato
     auto pow(AType const &A, typename AType::ValueType alpha,
              typename AType::ValueType cutoff = std::numeric_limits<typename AType::ValueType>::epsilon())
         -> einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>> {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::pow(A, alpha) returning form cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::pow(A, alpha) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::pow requires rank-2 input; got rank {}.", A.rank());
     }
@@ -3447,9 +3424,7 @@ APIARY_INSTANTIATE_AS("pow", einsums::GeneralRuntimeTensor<double, std::allocato
 
 template <MatrixConcept AType>
 auto det(AType const &A) -> typename AType::ValueType {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::det(A) returning scalar cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::det(A) returning scalar cannot be used during graph capture.");
     return linear_algebra::det(A);
 }
 
@@ -3468,9 +3443,7 @@ APIARY_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<std::complex<float>, 
 APIARY_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
     // clang-format on
     auto det(AType const &A) -> typename AType::ValueType {
-    if (CaptureContext::current().is_capturing()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::det(A) returning scalar cannot be used during graph capture.");
-    }
+    detail::reject_if_capturing("cg::det(A) returning scalar cannot be used during graph capture.");
     if (A.rank() != 2 || A.dim(0) != A.dim(1)) {
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::det requires square rank-2 input; got rank {}.", A.rank());
     }
