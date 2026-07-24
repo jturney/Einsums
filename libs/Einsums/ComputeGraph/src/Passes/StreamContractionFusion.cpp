@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
@@ -612,22 +613,8 @@ bool StreamContractionFusion::run(Graph &graph) {
 
         Graph *graph_ptr = &graph;
         auto   fused_fn  = [graph_ptr, s_id, members, unique_outs, dtype, allowed_axes]() {
-            switch (dtype) {
-            case packed_gemm::ScalarType::Float32:
-                run_stream<float>(graph_ptr, s_id, members, unique_outs, allowed_axes);
-                break;
-            case packed_gemm::ScalarType::Float64:
-                run_stream<double>(graph_ptr, s_id, members, unique_outs, allowed_axes);
-                break;
-            case packed_gemm::ScalarType::Complex64:
-                run_stream<std::complex<float>>(graph_ptr, s_id, members, unique_outs, allowed_axes);
-                break;
-            case packed_gemm::ScalarType::Complex128:
-                run_stream<std::complex<double>>(graph_ptr, s_id, members, unique_outs, allowed_axes);
-                break;
-            default:
-                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "StreamContractionFusion: unknown ScalarType");
-            }
+            detail::dispatch_scalar_type(dtype,
+                                            [&](auto tag) { run_stream<decltype(tag)>(graph_ptr, s_id, members, unique_outs, allowed_axes); });
         };
 
         Node fused;

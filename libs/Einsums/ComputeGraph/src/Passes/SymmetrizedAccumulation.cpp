@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -231,22 +232,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
                 auto *src = static_cast<RT *>(graph_ptr->tensor(tmp).tensor_ptr);
                 dispatch::string_permute<RT, RT>(pspec, T{1}, dst, as<T>(s2), *src); // r2 = 1*r2 + s2*P(tmp)
             };
-            switch (dtype) {
-            case packed_gemm::ScalarType::Float32:
-                build(float{});
-                break;
-            case packed_gemm::ScalarType::Float64:
-                build(double{});
-                break;
-            case packed_gemm::ScalarType::Complex64:
-                build(std::complex<float>{});
-                break;
-            case packed_gemm::ScalarType::Complex128:
-                build(std::complex<double>{});
-                break;
-            default:
-                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "SymmetrizedAccumulation: unknown ScalarType");
-            }
+            detail::dispatch_scalar_type(dtype, build);
         };
 
         Node &perm   = nodes[s.permute_idx];

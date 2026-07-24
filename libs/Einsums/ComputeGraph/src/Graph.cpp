@@ -5,6 +5,7 @@
 
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
@@ -1194,40 +1195,13 @@ void dispatch_binary(TensorHandle const &a, TensorHandle const &b, Fn &&fn) {
             fn(static_cast<RT *>(a.tensor_ptr), static_cast<RT *>(b.tensor_ptr));
             return;
         }
-        switch (a.rank) {
-        case 1:
-            fn(static_cast<Tensor<T, 1> *>(a.tensor_ptr), static_cast<Tensor<T, 1> *>(b.tensor_ptr));
-            break;
-        case 2:
-            fn(static_cast<Tensor<T, 2> *>(a.tensor_ptr), static_cast<Tensor<T, 2> *>(b.tensor_ptr));
-            break;
-        case 3:
-            fn(static_cast<Tensor<T, 3> *>(a.tensor_ptr), static_cast<Tensor<T, 3> *>(b.tensor_ptr));
-            break;
-        case 4:
-            fn(static_cast<Tensor<T, 4> *>(a.tensor_ptr), static_cast<Tensor<T, 4> *>(b.tensor_ptr));
-            break;
-        default:
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_binary: unsupported rank {}", a.rank);
-        }
+        detail::dispatch_by_rank(a.rank, [&](auto rank_tag) {
+            constexpr std::size_t K = decltype(rank_tag)::value;
+            fn(static_cast<Tensor<T, K> *>(a.tensor_ptr), static_cast<Tensor<T, K> *>(b.tensor_ptr));
+        });
     };
 
-    switch (a.dtype) {
-    case packed_gemm::ScalarType::Float32:
-        go(float{});
-        break;
-    case packed_gemm::ScalarType::Float64:
-        go(double{});
-        break;
-    case packed_gemm::ScalarType::Complex64:
-        go(std::complex<float>{});
-        break;
-    case packed_gemm::ScalarType::Complex128:
-        go(std::complex<double>{});
-        break;
-    default:
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_binary: unknown ScalarType");
-    }
+    detail::dispatch_scalar_type(a.dtype, go);
 }
 
 /// Dispatch a unary operation on one tensor.
@@ -1241,40 +1215,13 @@ void dispatch_unary(TensorHandle const &a, Fn &&fn) {
             fn(static_cast<RT *>(a.tensor_ptr));
             return;
         }
-        switch (a.rank) {
-        case 1:
-            fn(static_cast<Tensor<T, 1> *>(a.tensor_ptr));
-            break;
-        case 2:
-            fn(static_cast<Tensor<T, 2> *>(a.tensor_ptr));
-            break;
-        case 3:
-            fn(static_cast<Tensor<T, 3> *>(a.tensor_ptr));
-            break;
-        case 4:
-            fn(static_cast<Tensor<T, 4> *>(a.tensor_ptr));
-            break;
-        default:
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_unary: unsupported rank {}", a.rank);
-        }
+        detail::dispatch_by_rank(a.rank, [&](auto rank_tag) {
+            constexpr std::size_t K = decltype(rank_tag)::value;
+            fn(static_cast<Tensor<T, K> *>(a.tensor_ptr));
+        });
     };
 
-    switch (a.dtype) {
-    case packed_gemm::ScalarType::Float32:
-        go(float{});
-        break;
-    case packed_gemm::ScalarType::Float64:
-        go(double{});
-        break;
-    case packed_gemm::ScalarType::Complex64:
-        go(std::complex<float>{});
-        break;
-    case packed_gemm::ScalarType::Complex128:
-        go(std::complex<double>{});
-        break;
-    default:
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_unary: unknown ScalarType");
-    }
+    detail::dispatch_scalar_type(a.dtype, go);
 }
 
 } // namespace
@@ -1356,22 +1303,7 @@ std::function<void()> Graph::make_gemm_executor(TensorId a_id, TensorId b_id, Te
             linear_algebra::gemm<false, false>(static_cast<T>(alpha), *A, *B, static_cast<T>(beta), C);
         };
 
-        switch (a_h.dtype) {
-        case packed_gemm::ScalarType::Float32:
-            go(float{});
-            break;
-        case packed_gemm::ScalarType::Float64:
-            go(double{});
-            break;
-        case packed_gemm::ScalarType::Complex64:
-            go(std::complex<float>{});
-            break;
-        case packed_gemm::ScalarType::Complex128:
-            go(std::complex<double>{});
-            break;
-        default:
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "make_gemm_executor: unknown ScalarType");
-        }
+        detail::dispatch_scalar_type(a_h.dtype, go);
     };
 }
 
@@ -1479,22 +1411,7 @@ std::function<void()> Graph::make_einsum_executor(TensorId a_id, TensorId b_id, 
             }
         };
 
-        switch (a_h.dtype) {
-        case packed_gemm::ScalarType::Float32:
-            go(float{});
-            break;
-        case packed_gemm::ScalarType::Float64:
-            go(double{});
-            break;
-        case packed_gemm::ScalarType::Complex64:
-            go(std::complex<float>{});
-            break;
-        case packed_gemm::ScalarType::Complex128:
-            go(std::complex<double>{});
-            break;
-        default:
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "make_einsum_executor: unknown ScalarType");
-        }
+        detail::dispatch_scalar_type(a_h.dtype, go);
     };
 }
 
