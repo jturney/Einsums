@@ -21,11 +21,8 @@ namespace {
 // gives a PARENT graph Materialize/Free nodes that carry the parent tids of a
 // BODY's buffers, so counting them here would flag a genuinely dead body
 // producer's output as externally referenced and keep it alive. effective_io
-// skips the same kinds for the same reason (see Graph.cpp is_lifecycle).
+// skips the same kinds for the same reason (see is_lifecycle in Enums.hpp).
 void collect_own_node_ptrs(Graph const &g, std::unordered_set<void const *> &out) {
-    auto is_lifecycle = [](OpKind kind) {
-        return kind == OpKind::Alloc || kind == OpKind::Free || kind == OpKind::Materialize || kind == OpKind::Initialize;
-    };
     auto add = [&](TensorId tid) {
         if (auto const *h = g.find_tensor(g.resolve_alias(tid)); h != nullptr && h->tensor_ptr != nullptr) {
             out.insert(h->tensor_ptr);
@@ -103,7 +100,7 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
             auto const &node = nodes[idx];
 
             // Never eliminate control flow or memory nodes
-            if (node.kind == OpKind::Conditional || node.kind == OpKind::Loop || node.kind == OpKind::Alloc || node.kind == OpKind::Free) {
+            if (is_control_flow(node.kind) || node.kind == OpKind::Alloc || node.kind == OpKind::Free) {
                 continue;
             }
 

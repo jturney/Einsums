@@ -194,8 +194,7 @@ bool SymmetryPropagation::run(Graph &graph) {
         // as an output but don't write a *value* that could invalidate an
         // inferred symmetry, a freshly created/zeroed tensor is then filled
         // by exactly one real op. Count only value-producing nodes.
-        if (node.kind == OpKind::Alloc || node.kind == OpKind::Free || node.kind == OpKind::Materialize ||
-            node.kind == OpKind::Initialize) {
+        if (is_lifecycle(node.kind)) {
             continue;
         }
         for (auto tid : node.outputs) {

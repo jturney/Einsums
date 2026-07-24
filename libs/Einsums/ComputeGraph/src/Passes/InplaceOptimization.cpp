@@ -17,10 +17,6 @@ namespace einsums::compute_graph::passes {
 
 namespace {
 
-bool is_lifecycle(OpKind kind) {
-    return kind == OpKind::Alloc || kind == OpKind::Free || kind == OpKind::Materialize || kind == OpKind::Initialize;
-}
-
 /// Consumers whose output may safely alias a (dying) input: element-aligned
 /// elementwise ops, where out[i] depends only on the inputs' element i, so
 /// writing through the aliased buffer never corrupts a value still to be

@@ -683,10 +683,6 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node
         return {ins, outs};
     }
 
-    auto is_lifecycle = [](OpKind kind) {
-        return kind == OpKind::Alloc || kind == OpKind::Free || kind == OpKind::Materialize || kind == OpKind::Initialize;
-    };
-
     // Walk the node's subtree (body / branches, recursively) and collect the
     // buffer pointers it reads and writes, keeping one representative handle per
     // buffer. Each sub-graph resolves its own TensorIds, so we key on the stable

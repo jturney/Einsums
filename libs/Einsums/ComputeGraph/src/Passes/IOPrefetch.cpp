@@ -17,10 +17,6 @@ namespace einsums::compute_graph::passes {
 
 namespace {
 
-bool is_lifecycle(OpKind kind) {
-    return kind == OpKind::Alloc || kind == OpKind::Free || kind == OpKind::Materialize || kind == OpKind::Initialize;
-}
-
 /// Count real (non-lifecycle) writers of each tensor across @p g and every
 /// descendant sub-graph, keyed by the tensor's underlying pointer (stable
 /// across graphs, unlike per-graph TensorIds). A DiskRead is hoistable only

@@ -17,10 +17,6 @@ namespace einsums::compute_graph::passes {
 
 namespace {
 
-bool is_lifecycle(OpKind kind) {
-    return kind == OpKind::Alloc || kind == OpKind::Free || kind == OpKind::Materialize || kind == OpKind::Initialize;
-}
-
 /// A node that reads its own destination is self-modifying across iterations
 /// and must never be hoisted out of a loop, hoisting drops the per-iteration
 /// update. This covers the always-accumulating ops (scale/axpy/axpby/element-
@@ -153,8 +149,7 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             auto const &bnode = body_nodes[bi];
 
             // Skip control flow and memory nodes
-            if (bnode.kind == OpKind::Conditional || bnode.kind == OpKind::Loop || bnode.kind == OpKind::Alloc ||
-                bnode.kind == OpKind::Free) {
+            if (is_control_flow(bnode.kind) || bnode.kind == OpKind::Alloc || bnode.kind == OpKind::Free) {
                 continue;
             }
 

@@ -273,5 +273,43 @@ inline std::string_view op_kind_name(OpKind kind) {
     return "Unknown";
 }
 
+// ── OpKind classifier predicates ───────────────────────────────────────────
+// Shared vocabulary for pass pattern-matching. Kept here, next to the enum and
+// op_kind_name, so the membership of each category lives in ONE place: several
+// passes and Graph::effective_io must agree on these sets, and hand-copied
+// inline checks silently drift as new OpKinds are added.
+
+/// @brief Lifecycle/bookkeeping kinds that produce no value of their own
+///        (Alloc, Free, Materialize, Initialize). Passes counting value-producing
+///        nodes or resolving readers/writers skip these; must stay in lockstep
+///        with Graph::effective_io.
+[[nodiscard]] inline bool is_lifecycle(OpKind kind) {
+    return kind == OpKind::Alloc || kind == OpKind::Free || kind == OpKind::Materialize || kind == OpKind::Initialize;
+}
+
+/// @brief Control-flow kinds carrying subgraphs (Conditional, Loop).
+[[nodiscard]] inline bool is_control_flow(OpKind kind) {
+    return kind == OpKind::Conditional || kind == OpKind::Loop;
+}
+
+/// @brief Host<->device transfer kinds (HostToDevice, DeviceToHost).
+[[nodiscard]] inline bool is_transfer(OpKind kind) {
+    return kind == OpKind::HostToDevice || kind == OpKind::DeviceToHost;
+}
+
+/// @brief Distributed collective kinds (Allreduce, Broadcast, Allgather, Scatter, Barrier).
+[[nodiscard]] inline bool is_collective(OpKind kind) {
+    return kind == OpKind::Allreduce || kind == OpKind::Broadcast || kind == OpKind::Allgather || kind == OpKind::Scatter ||
+           kind == OpKind::Barrier;
+}
+
+/// @brief Infrastructure kinds that carry no einsum-style data dependency a
+///        distribution/communication pass should reason about: collectives plus
+///        materialize/initialize, host/device transfers, disk I/O, and control flow.
+[[nodiscard]] inline bool is_infrastructure(OpKind kind) {
+    return is_collective(kind) || is_transfer(kind) || is_control_flow(kind) || kind == OpKind::Materialize || kind == OpKind::Initialize ||
+           kind == OpKind::DiskRead || kind == OpKind::DiskWrite;
+}
+
 } // namespace APIARY_MODULE("graph")compute_graph
 } // namespace einsums

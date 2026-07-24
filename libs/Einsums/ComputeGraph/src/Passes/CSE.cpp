@@ -16,10 +16,6 @@ namespace einsums::compute_graph::passes {
 
 namespace {
 
-bool is_lifecycle(OpKind kind) {
-    return kind == OpKind::Alloc || kind == OpKind::Free || kind == OpKind::Materialize || kind == OpKind::Initialize;
-}
-
 /// Check if two EinsumDescriptors are equivalent.
 bool einsum_desc_equal(EinsumDescriptor const &a, EinsumDescriptor const &b) {
     return a.spec == b.spec && a.c_prefactor == b.c_prefactor && a.ab_prefactor == b.ab_prefactor && a.conj_a == b.conj_a &&
