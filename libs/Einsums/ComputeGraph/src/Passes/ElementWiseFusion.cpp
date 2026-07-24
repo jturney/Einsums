@@ -79,14 +79,7 @@ bool ElementWiseFusion::run(Graph &graph) {
         return false;
     report(1, fmt::format("fused {} element-wise op chain(s)", _num_fused));
 
-    std::vector<Node> filtered;
-    filtered.reserve(nodes.size());
-    for (size_t idx = 0; idx < nodes.size(); idx++) {
-        if (!remove[idx]) {
-            filtered.push_back(std::move(nodes[idx]));
-        }
-    }
-    nodes = std::move(filtered);
+    graph.erase_nodes(remove);
     graph.mark_sorted();
 
     return true;

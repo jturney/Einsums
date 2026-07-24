@@ -418,14 +418,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         return false;
 
     // Keep appended Alloc nodes (index >= orig_count); drop the subsumed originals.
-    std::vector<Node> filtered;
-    filtered.reserve(nodes.size());
-    for (size_t i = 0; i < nodes.size(); i++) {
-        if (i >= orig_count || !remove[i]) {
-            filtered.push_back(std::move(nodes[i]));
-        }
-    }
-    nodes = std::move(filtered);
+    graph.erase_nodes(remove);
 
     // Re-sort since we added/removed nodes
     graph.topological_sort();

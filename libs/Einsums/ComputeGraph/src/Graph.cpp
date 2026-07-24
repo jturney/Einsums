@@ -571,6 +571,21 @@ NodeId Graph::add_node(Node node) {
     return id;
 }
 
+size_t Graph::erase_nodes(std::vector<bool> const &remove) {
+    std::vector<Node> filtered;
+    filtered.reserve(_nodes.size());
+    size_t removed = 0;
+    for (size_t i = 0; i < _nodes.size(); ++i) {
+        if (i < remove.size() && remove[i]) {
+            ++removed;
+            continue;
+        }
+        filtered.push_back(std::move(_nodes[i]));
+    }
+    _nodes = std::move(filtered);
+    return removed;
+}
+
 TensorId Graph::register_tensor(TensorHandle handle) {
     TensorId id = _next_tensor_id++;
     handle.id   = id;

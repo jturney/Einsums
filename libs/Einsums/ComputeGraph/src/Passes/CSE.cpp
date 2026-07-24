@@ -282,14 +282,7 @@ bool CSE::run(Graph &graph) {
     }
 
     // Remove eliminated nodes
-    std::vector<Node> filtered;
-    filtered.reserve(nodes.size());
-    for (size_t i = 0; i < nodes.size(); i++) {
-        if (!remove[i]) {
-            filtered.push_back(std::move(nodes[i]));
-        }
-    }
-    nodes = std::move(filtered);
+    graph.erase_nodes(remove);
     graph.mark_sorted();
 
     return true;

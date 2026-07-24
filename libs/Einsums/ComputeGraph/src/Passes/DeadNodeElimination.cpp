@@ -152,14 +152,7 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
             _num_eliminated += eliminated_here;
             report(1, fmt::format("eliminated {} dead node(s)", eliminated_here));
 
-            std::vector<Node> filtered;
-            filtered.reserve(n - eliminated_here);
-            for (size_t idx = 0; idx < n; idx++) {
-                if (!dead[idx]) {
-                    filtered.push_back(std::move(nodes[idx]));
-                }
-            }
-            nodes = std::move(filtered);
+            graph.erase_nodes(dead);
             graph.mark_sorted();
             modified = true;
         }

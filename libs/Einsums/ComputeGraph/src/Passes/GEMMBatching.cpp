@@ -358,12 +358,7 @@ bool GEMMBatching::run(Graph &graph) {
     // dropping the other members preserves a valid program order; only the
     // position-keyed dependency lists are stale. topological_sort() sees the
     // node-count change and rebuilds them without re-deriving the order.
-    std::vector<Node> filtered;
-    filtered.reserve(nodes.size() - (_total_batched - _num_batches));
-    for (size_t i = 0; i < nodes.size(); ++i)
-        if (!remove[i])
-            filtered.push_back(std::move(nodes[i]));
-    nodes = std::move(filtered);
+    graph.erase_nodes(remove);
     graph.topological_sort();
     return true;
 }

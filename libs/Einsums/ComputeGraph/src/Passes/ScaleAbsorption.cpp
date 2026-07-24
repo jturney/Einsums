@@ -163,14 +163,7 @@ bool ScaleAbsorption::run(Graph &graph) {
     }
     report(1, fmt::format("eliminated {} scale(s) (dead-removed or folded into a consumer)", _num_absorbed));
 
-    std::vector<Node> filtered;
-    filtered.reserve(nodes.size());
-    for (size_t idx = 0; idx < nodes.size(); idx++) {
-        if (!remove[idx]) {
-            filtered.push_back(std::move(nodes[idx]));
-        }
-    }
-    nodes = std::move(filtered);
+    graph.erase_nodes(remove);
     graph.mark_sorted();
 
     return true;

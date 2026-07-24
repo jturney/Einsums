@@ -207,12 +207,7 @@ bool PermuteFusion::run(Graph &graph) {
 
     // Compact: drop marked-for-removal nodes. Same idiom as
     // ScaleAbsorption: cheap single-pass filter, preserves order.
-    std::vector<Node> filtered;
-    filtered.reserve(nodes.size());
-    for (size_t i = 0; i < nodes.size(); i++)
-        if (!remove[i])
-            filtered.push_back(std::move(nodes[i]));
-    nodes = std::move(filtered);
+    graph.erase_nodes(remove);
 
     graph.mark_sorted();
     return true;

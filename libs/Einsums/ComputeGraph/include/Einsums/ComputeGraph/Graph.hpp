@@ -397,6 +397,24 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_EXPOSE [[nodiscard]] size_t               num_nodes() const { return _nodes.size(); }     ///< Number of operation nodes.
     APIARY_EXPOSE [[nodiscard]] size_t               num_tensors() const { return _tensors.size(); } ///< Number of registered tensors.
 
+    /**
+     * @brief Drop nodes flagged for removal, preserving the survivors' order.
+     *
+     * @p remove is indexed by node position: position @c i is erased when
+     * @c i < remove.size() && remove[i]. Indices at or past @c remove.size()
+     * are always kept, so a caller may size the mask to a prefix (e.g. only the
+     * pre-existing nodes before it appended new ones) and keep the tail.
+     *
+     * Encapsulates the "rebuild a filtered node vector" idiom shared by the
+     * mutating passes. It does NOT resort or touch the sortedness flags: erasing
+     * while preserving order keeps an existing valid topological order valid, so
+     * a pass that only removed nodes should follow with mark_sorted(), while a
+     * pass that also appended nodes should follow with topological_sort().
+     *
+     * @return The number of nodes removed.
+     */
+    size_t erase_nodes(std::vector<bool> const &remove);
+
     /// Read-only access to the tensor registry (TensorId → TensorHandle map).
     [[nodiscard]] std::unordered_map<TensorId, TensorHandle> const &tensors_map() const { return _tensors; }
     /// Mutable access to the tensor registry (for testing / optimization passes).

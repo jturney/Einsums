@@ -264,14 +264,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         return false;
     }
 
-    std::vector<Node> filtered;
-    filtered.reserve(nodes.size());
-    for (size_t i = 0; i < nodes.size(); ++i) {
-        if (!remove[i]) {
-            filtered.push_back(std::move(nodes[i]));
-        }
-    }
-    nodes = std::move(filtered);
+    graph.erase_nodes(remove);
     graph.topological_sort();
     return true;
 }

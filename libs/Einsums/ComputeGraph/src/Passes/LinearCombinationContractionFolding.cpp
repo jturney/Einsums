@@ -458,14 +458,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
     }
 
     // Keep appended fused nodes (index >= orig_count); drop folded originals.
-    std::vector<Node> filtered;
-    filtered.reserve(nodes.size());
-    for (size_t i = 0; i < nodes.size(); i++) {
-        if (i >= orig_count || !remove[i]) {
-            filtered.push_back(std::move(nodes[i]));
-        }
-    }
-    nodes = std::move(filtered);
+    graph.erase_nodes(remove);
     graph.topological_sort();
 
     EINSUMS_LOG_INFO("LinearCombinationContractionFolding: folded {} groups, eliminated {} nodes", _num_groups, _num_eliminated);
