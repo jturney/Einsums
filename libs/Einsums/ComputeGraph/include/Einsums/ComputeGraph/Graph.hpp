@@ -1529,7 +1529,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void rebuild_profile_strings();
 
     /// Rebuild the position-keyed _deps lists for the current node order.
-    void           rebuild_deps(EffectiveIoCache &cache);
+    void rebuild_deps(EffectiveIoCache &cache);
+
+    /// Walk the node list once and invoke @p emit(producer_pos, consumer_pos)
+    /// for every RAW/WAW/WAR hazard edge, keyed by owner TensorId (alias-resolved)
+    /// and subtree-aware (effective I/O). The single source of truth for the
+    /// data-dependency scan shared by topological_sort (Kahn adjacency) and
+    /// rebuild_deps (successor/predecessor lists); defined in Graph.cpp because
+    /// both instantiations live there.
+    template <typename F>
+    void           for_each_hazard_edge(EffectiveIoCache &cache, F &&emit);
     bool           _executed{false}; ///< True after first successful execute (caching)
     DependencyInfo _deps;            ///< Populated by topological_sort()
 

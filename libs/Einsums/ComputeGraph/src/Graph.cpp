@@ -806,47 +806,54 @@ std::pair<std::span<TensorId const>, std::span<TensorId const>> Graph::effective
     return {it->second.first, it->second.second};
 }
 
-void Graph::rebuild_deps(EffectiveIoCache &cache) {
-    // Position-keyed dependency lists for the current node order. Same
-    // RAW/WAW/WAR hazard scan as the Kahn adjacency build, keyed by owner
-    // TensorId after view-alias resolution.
-    size_t const n = _nodes.size();
-    _deps.successors.assign(n, {});
-    _deps.predecessors.assign(n, {});
-
-    std::unordered_map<TensorId, size_t>              lw;
-    std::unordered_map<TensorId, std::vector<size_t>> lr;
-    for (size_t i2 = 0; i2 < n; i2++) {
-        auto [eff_in, eff_out] = effective_io_cached(_nodes[i2], cache);
+template <typename F>
+void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
+    // Owner-resolved (resolve_alias), subtree-aware (effective_io_cached)
+    // RAW/WAW/WAR scan. Every emitted edge points from an earlier to a later
+    // position, so program order remains a valid topological order.
+    std::unordered_map<TensorId, size_t>              last_writer;
+    std::unordered_map<TensorId, std::vector<size_t>> last_readers;
+    size_t const                                      n = _nodes.size();
+    for (size_t i = 0; i < n; i++) {
+        auto [eff_in, eff_out] = effective_io_cached(_nodes[i], cache);
         for (auto raw : eff_in) {
             TensorId const tid = resolve_alias(raw);
-            auto           it2 = lw.find(tid);
-            if (it2 != lw.end() && it2->second != i2) {
-                _deps.successors[it2->second].push_back(i2);
-                _deps.predecessors[i2].push_back(it2->second);
+            auto           it  = last_writer.find(tid);
+            if (it != last_writer.end() && it->second != i) {
+                emit(it->second, i); // RAW: writer -> reader
             }
-            lr[tid].push_back(i2);
+            last_readers[tid].push_back(i);
         }
         for (auto raw : eff_out) {
-            TensorId const tid = resolve_alias(raw);
-            auto           it2 = lw.find(tid);
-            if (it2 != lw.end() && it2->second != i2) {
-                _deps.successors[it2->second].push_back(i2);
-                _deps.predecessors[i2].push_back(it2->second);
+            TensorId const tid  = resolve_alias(raw);
+            auto           writ = last_writer.find(tid);
+            if (writ != last_writer.end() && writ->second != i) {
+                emit(writ->second, i); // WAW: prior writer -> this writer
             }
-            auto rdit = lr.find(tid);
-            if (rdit != lr.end()) {
+            auto rdit = last_readers.find(tid);
+            if (rdit != last_readers.end()) {
                 for (size_t const reader : rdit->second) {
-                    if (reader != i2) {
-                        _deps.successors[reader].push_back(i2);
-                        _deps.predecessors[i2].push_back(reader);
+                    if (reader != i) {
+                        emit(reader, i); // WAR: prior reader -> this writer
                     }
                 }
                 rdit->second.clear();
             }
-            lw[tid] = i2;
+            last_writer[tid] = i;
         }
     }
+}
+
+void Graph::rebuild_deps(EffectiveIoCache &cache) {
+    // Position-keyed dependency lists for the current node order.
+    size_t const n = _nodes.size();
+    _deps.successors.assign(n, {});
+    _deps.predecessors.assign(n, {});
+
+    for_each_hazard_edge(cache, [&](size_t producer, size_t consumer) {
+        _deps.successors[producer].push_back(consumer);
+        _deps.predecessors[consumer].push_back(producer);
+    });
 
     // Level partition for level-scheduling executors. Edges always point
     // from earlier to later positions (the scan above links prior
@@ -911,53 +918,18 @@ void Graph::topological_sort() {
     // register against the parent tensor. Without this, the scheduler would
     // treat ``GEMM(C_occ, …)`` and ``Syev(C, …)`` as independent, they're not,
     // since C_occ aliases C.
-    std::unordered_map<TensorId, size_t>              last_writer;
-    std::unordered_map<TensorId, std::vector<size_t>> last_readers;
-    std::vector<std::vector<size_t>>                  adj(n);
-    std::vector<size_t>                               in_degree(n, 0);
+    std::vector<std::vector<size_t>> adj(n);
+    std::vector<size_t>              in_degree(n, 0);
 
-    // Shared by both hazard scans; keyed by NodeId so it survives the move
-    // of nodes into their sorted positions below.
+    // eff_cache memoizes effective I/O across this scan and the rebuild_deps
+    // call further below; keyed by NodeId so it survives the move of nodes into
+    // their sorted positions.
     EffectiveIoCache eff_cache;
 
-    for (size_t i = 0; i < n; i++) {
-        // Control-flow nodes carry no SSA I/O of their own; use the effective
-        // (subtree-augmented) lists so a Loop/Conditional depends on producers
-        // of the tensors its body reads and precedes consumers of what it writes.
-        auto [eff_in, eff_out] = effective_io_cached(_nodes[i], eff_cache);
-        // Read-after-write: this node reads T → depends on last writer of T
-        for (auto raw : eff_in) {
-            TensorId const tid = resolve_alias(raw);
-            auto           it  = last_writer.find(tid);
-            if (it != last_writer.end() && it->second != i) {
-                adj[it->second].push_back(i);
-                in_degree[i]++;
-            }
-            last_readers[tid].push_back(i);
-        }
-        // Write-after-write + write-after-read: this node writes T
-        for (auto raw : eff_out) {
-            TensorId const tid = resolve_alias(raw);
-            // Write-after-write: depends on last writer
-            auto writ = last_writer.find(tid);
-            if (writ != last_writer.end() && writ->second != i) {
-                adj[writ->second].push_back(i);
-                in_degree[i]++;
-            }
-            // Write-after-read: depends on all previous readers
-            auto rdit = last_readers.find(tid);
-            if (rdit != last_readers.end()) {
-                for (size_t const reader : rdit->second) {
-                    if (reader != i) {
-                        adj[reader].push_back(i);
-                        in_degree[i]++;
-                    }
-                }
-                rdit->second.clear(); // Reset readers since we're writing
-            }
-            last_writer[tid] = i;
-        }
-    }
+    for_each_hazard_edge(eff_cache, [&](size_t producer, size_t consumer) {
+        adj[producer].push_back(consumer);
+        in_degree[consumer]++;
+    });
 
     // Kahn's algorithm
     std::queue<size_t> ready;
