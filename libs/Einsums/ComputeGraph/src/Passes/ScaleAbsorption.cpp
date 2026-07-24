@@ -5,6 +5,7 @@
 
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp>
 #include <Einsums/Logging.hpp>
 
@@ -20,24 +21,6 @@ namespace {
 /// Does `target` fully overwrite its output without reading its prior contents
 /// (c_prefactor / beta == 0)? If so, a Scale of that tensor immediately
 /// preceding it (with no intervening reader) is dead.
-bool overwrites_without_reading(Node const &target) {
-    switch (target.kind) {
-    case OpKind::Einsum: {
-        auto const *desc = std::get_if<EinsumDescriptor>(&target.op_data);
-        return desc != nullptr && is_zero(desc->c_prefactor);
-    }
-    case OpKind::Permute: {
-        auto const *desc = std::get_if<PermuteDescriptor>(&target.op_data);
-        return desc != nullptr && desc->beta == 0.0;
-    }
-    case OpKind::BatchedGemm: {
-        auto const *desc = std::get_if<BatchedGemmDescriptor>(&target.op_data);
-        return desc != nullptr && desc->beta == std::complex<double>{0.0, 0.0};
-    }
-    default:
-        return false;
-    }
-}
 
 /// pf * a, preserving the PrefactorScalar's element type (a is the real scale).
 PrefactorScalar scale_prefactor(PrefactorScalar const &pf, double a) {
@@ -128,7 +111,7 @@ bool ScaleAbsorption::run(Graph &graph) {
             }
         }
 
-        if (reader == -1 && writer >= 0 && overwrites_without_reading(nodes[writer])) {
+        if (reader == -1 && writer >= 0 && pure_overwrite(nodes[writer])) {
             // Dead scale: the next writer overwrites the tensor without reading
             // it, so the scale's result is discarded. Drop the Scale node.
             remove[sc] = true;

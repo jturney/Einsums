@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <unordered_map>
@@ -75,19 +76,6 @@ bool op_data_equal(OpData const &a, OpData const &b) {
 /// writing different buffers are not the same computation (they read different
 /// destinations), and their scalar coefficients may not even be represented in
 /// op_data, so op_data_equal cannot tell them apart.
-bool cse_eligible(Node const &nd) {
-    if (auto const *e = std::get_if<EinsumDescriptor>(&nd.op_data)) {
-        return is_zero(e->c_prefactor);
-    }
-    if (auto const *p = std::get_if<PermuteDescriptor>(&nd.op_data)) {
-        return p->beta == 0.0;
-    }
-    if (auto const *b = std::get_if<BatchedGemmDescriptor>(&nd.op_data)) {
-        return b->beta == 0.0;
-    }
-    return false;
-}
-
 /// Check if two nodes compute the same thing.
 bool nodes_equivalent(Node const &a, Node const &b) {
     if (a.kind != b.kind)
@@ -146,7 +134,7 @@ bool CSE::run(Graph &graph) {
 
         // Only pure-overwrite producers may be a CSE survivor/candidate. (Since
         // a matched pair must have equal op_data, checking node i covers j.)
-        if (!cse_eligible(nodes[i]))
+        if (!pure_overwrite(nodes[i]))
             continue;
 
         for (size_t j = i + 1; j < nodes.size(); j++) {

@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
@@ -23,28 +24,6 @@ namespace {
 /// transform) and any einsum/permute/batched-gemm with a *nonzero* destination
 /// prefactor (``C = c_pf*C + …`` reads the old C). A pure overwrite (prefactor
 /// zero) does not read its output and may still be hoisted.
-bool reads_its_output(Node const &nd) {
-    switch (nd.kind) {
-    case OpKind::Scale:
-    case OpKind::Axpy:
-    case OpKind::Axpby:
-    case OpKind::ElementTransform:
-        return true;
-    default:
-        break;
-    }
-    if (auto const *e = std::get_if<EinsumDescriptor>(&nd.op_data)) {
-        return !is_zero(e->c_prefactor);
-    }
-    if (auto const *p = std::get_if<PermuteDescriptor>(&nd.op_data)) {
-        return p->beta != 0.0;
-    }
-    if (auto const *b = std::get_if<BatchedGemmDescriptor>(&nd.op_data)) {
-        return b->beta != 0.0;
-    }
-    return false;
-}
-
 /// Count real (non-lifecycle) writers of each tensor across @p g and every
 /// descendant sub-graph, keyed by the tensor's underlying pointer (stable
 /// across graphs). A producer can only be hoisted out of a loop when each
@@ -155,11 +134,11 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
 
             // A node that reads the tensor it writes is self-modifying
             // (scale(C), or an accumulating gemm C = C + A·B). Never hoist
-            // these: the per-iteration update would be lost. ``reads_its_output``
+            // these: the per-iteration update would be lost. ``reads_destination``
             // covers the always-accumulating ops and nonzero-prefactor einsum/
             // permute/gemm; the explicit input==output scan catches any other op
             // that lists the same tensor as both an input and an output.
-            bool self_modifying = reads_its_output(bnode);
+            bool self_modifying = reads_destination(bnode);
             for (auto out_tid : bnode.outputs) {
                 if (self_modifying)
                     break;
