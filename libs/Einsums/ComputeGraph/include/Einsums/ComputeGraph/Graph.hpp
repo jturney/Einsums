@@ -28,6 +28,7 @@
 #include <functional>
 #include <iosfwd>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -253,8 +254,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     template <typename PassType>
     std::pair<bool, PassType> apply() {
-        PassType pass;
-        bool     modified = pass.run(*this);
+        std::scoped_lock const lock(*_content_mutex);
+        PassType               pass;
+        bool                   modified = pass.run(*this);
         return {modified, std::move(pass)};
     }
 
@@ -300,6 +302,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * print_timing_report() works correctly.
      */
     void record_node_timing(NodeId id, std::string const &label, OpKind kind, double duration_ms) {
+        std::scoped_lock const lock(*_content_mutex);
         _timing_report.push_back({.id = id, .label = label, .kind = kind, .duration_ms = duration_ms});
     }
 
@@ -1554,6 +1557,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void           for_each_hazard_edge(EffectiveIoCache &cache, F &&emit);
     bool           _executed{false}; ///< True after first successful execute (caching)
     DependencyInfo _deps;            ///< Populated by topological_sort()
+
+    /// Serializes structural reads/writes of _nodes / _tensors / _timing_report
+    /// so the profiler server thread's to_json() cannot observe a torn or
+    /// half-moved node vector while the owning thread mutates the graph. Locked
+    /// by to_json (reader) and by the mutating entry points -- add_node,
+    /// register_tensor, topological_sort, erase_nodes, insert_node_groups,
+    /// record_node_timing, and the pass runners apply(). RECURSIVE because a
+    /// locked pass runner calls the also-locked primitives. A unique_ptr because
+    /// Graph must stay movable (a mutex is not) and each Graph keeps its OWN
+    /// mutex across moves -- move_members_from never transfers it.
+    mutable std::unique_ptr<std::recursive_mutex> _content_mutex = std::make_unique<std::recursive_mutex>();
 
     /// Type-erased storage for graph-owned tensors (from create_tensor()).
     /// Each entry uses a typed deleter captured at creation time.

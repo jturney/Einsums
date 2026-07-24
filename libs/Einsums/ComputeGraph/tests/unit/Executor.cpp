@@ -1151,3 +1151,44 @@ TEST_CASE("DataflowExecutor - wide fan-out", "[ComputeGraph][Executor]") {
                 REQUIRE(std::abs(outputs[idx](r, c) - A_scaled(r, c)) < 1e-12);
     }
 }
+
+TEST_CASE("Graph - to_json is safe against concurrent graph mutation", "[ComputeGraph][Graph][Threads]") {
+    // Regression: the profiler server thread calls Graph::to_json() on a live
+    // graph while the owning thread mutates it. to_json read _nodes with no lock,
+    // so it could observe a torn or use-after-free node vector when add_node
+    // reallocated the buffer or topological_sort moved it out. The per-graph
+    // recursive mutex must serialize to_json against the mutating entry points.
+    // TSan (the tsan CI leg) flags the data race directly; here we assert no
+    // crash and that to_json always returns well-formed, non-empty JSON.
+    cg::Graph graph("json_race");
+
+    std::atomic<bool> stop{false};
+    std::atomic<int>  polls{0};
+    std::thread       poller([&]() {
+        while (!stop.load(std::memory_order_acquire)) {
+            std::string const j = graph.to_json();
+            REQUIRE(!j.empty());
+            REQUIRE(j.front() == '{');
+            polls.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+
+    // Grow and re-sort the graph while the poller reads it. add_node reallocates
+    // _nodes; topological_sort moves it wholesale -- both raced with to_json.
+    constexpr int iters = 2000;
+    for (int iter = 0; iter < iters; ++iter) {
+        cg::Node n;
+        n.kind    = cg::OpKind::Custom;
+        n.label   = "n" + std::to_string(iter);
+        n.execute = []() {};
+        graph.add_node(std::move(n));
+        if (iter % 16 == 0)
+            graph.topological_sort();
+    }
+
+    stop.store(true, std::memory_order_release);
+    poller.join();
+
+    CHECK(polls.load() > 0);
+    CHECK(graph.num_nodes() == iters);
+}

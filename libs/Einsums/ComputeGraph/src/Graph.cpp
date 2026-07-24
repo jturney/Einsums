@@ -533,6 +533,7 @@ Graph &Graph::operator=(Graph &&other) noexcept {
 }
 
 NodeId Graph::add_node(Node node) {
+    std::scoped_lock const lock(*_content_mutex);
     node.id         = _next_node_id++;
     NodeId const id = node.id;
     _nodes.push_back(std::move(node));
@@ -545,7 +546,8 @@ NodeId Graph::add_node(Node node) {
 }
 
 size_t Graph::erase_nodes(std::vector<bool> const &remove) {
-    std::vector<Node> filtered;
+    std::scoped_lock const lock(*_content_mutex);
+    std::vector<Node>      filtered;
     filtered.reserve(_nodes.size());
     size_t removed = 0;
     for (size_t i = 0; i < _nodes.size(); ++i) {
@@ -560,6 +562,7 @@ size_t Graph::erase_nodes(std::vector<bool> const &remove) {
 }
 
 void Graph::insert_node_groups(std::vector<std::pair<std::size_t, std::vector<Node>>> groups) {
+    std::scoped_lock const lock(*_content_mutex);
     // Splice in descending position order so an earlier insertion doesn't shift
     // the indices of later ones (positions are given in the original numbering).
     std::ranges::sort(groups, [](auto const &a, auto const &b) { return a.first > b.first; });
@@ -574,8 +577,9 @@ void Graph::insert_node_groups(std::vector<std::pair<std::size_t, std::vector<No
 }
 
 TensorId Graph::register_tensor(TensorHandle handle) {
-    TensorId id = _next_tensor_id++;
-    handle.id   = id;
+    std::scoped_lock const lock(*_content_mutex);
+    TensorId               id = _next_tensor_id++;
+    handle.id                 = id;
     _tensors.emplace(id, std::move(handle));
     return id;
 }
@@ -864,6 +868,7 @@ void Graph::rebuild_deps(EffectiveIoCache &cache) {
 }
 
 void Graph::topological_sort() {
+    std::scoped_lock const lock(*_content_mutex);
     // Defense in depth: a pass that mutates the node list without declaring
     // it (mark_sorted / add_node) leaves stale flags. A count mismatch is the
     // detectable symptom; downgrade to a full re-sort instead of letting a
@@ -1811,7 +1816,8 @@ UsageAnalysis const &Graph::usage() {
 }
 
 bool Graph::apply(PassManager &pm) {
-    bool const modified = pm.run(*this);
+    std::scoped_lock const lock(*_content_mutex);
+    bool const             modified = pm.run(*this);
     if (modified) {
         _executed = false;
     }
@@ -1965,6 +1971,7 @@ char const *scalar_type_str(packed_gemm::ScalarType dt) {
 } // namespace
 
 std::string Graph::to_json() const {
+    std::scoped_lock const lock(*_content_mutex);
     // Build a ComputeGraphData struct from internal state, then serialize it.
     // This is cleaner than manual JSON string building and uses the shared types
     // that the viewer also understands.
