@@ -224,23 +224,28 @@ bool process(Graph &graph, size_t &num_prefetched) {
     // reads bubble up into the body), then hoist the body's reads out.
     // Indices are re-read each step because hoisting mutates the node list.
     for (size_t idx = 0; idx < graph.nodes().size(); idx++) {
-        auto *loop = std::get_if<LoopDescriptor>(&graph.nodes()[idx].op_data);
-        if (loop == nullptr || !loop->body) {
-            auto *cond = std::get_if<ConditionalDescriptor>(&graph.nodes()[idx].op_data);
-            if (cond != nullptr) {
-                if (cond->then_branch) {
-                    modified |= process(*cond->then_branch, num_prefetched);
-                    modified |= hoist_reads_from_body(graph, idx, *cond->then_branch, num_prefetched);
-                }
-                if (cond->else_branch) {
-                    modified |= process(*cond->else_branch, num_prefetched);
-                    modified |= hoist_reads_from_body(graph, idx, *cond->else_branch, num_prefetched);
-                }
-            }
+        // hoist_reads_from_body inserts hoisted reads into THIS graph's node
+        // vector, which can reallocate and invalidate any pointer into
+        // graph.nodes()[idx].op_data. Resolve the sub-graph owners to stable
+        // Graph* BEFORE hoisting, or the second hoist reads a dangling descriptor.
+        if (auto *loop = std::get_if<LoopDescriptor>(&graph.nodes()[idx].op_data); loop != nullptr && loop->body) {
+            Graph *body = loop->body.get();
+            modified |= process(*body, num_prefetched);
+            modified |= hoist_reads_from_body(graph, idx, *body, num_prefetched);
             continue;
         }
-        modified |= process(*loop->body, num_prefetched);
-        modified |= hoist_reads_from_body(graph, idx, *loop->body, num_prefetched);
+        if (auto *cond = std::get_if<ConditionalDescriptor>(&graph.nodes()[idx].op_data); cond != nullptr) {
+            Graph *then_g = cond->then_branch.get();
+            Graph *else_g = cond->else_branch.get();
+            if (then_g != nullptr) {
+                modified |= process(*then_g, num_prefetched);
+                modified |= hoist_reads_from_body(graph, idx, *then_g, num_prefetched);
+            }
+            if (else_g != nullptr) {
+                modified |= process(*else_g, num_prefetched);
+                modified |= hoist_reads_from_body(graph, idx, *else_g, num_prefetched);
+            }
+        }
     }
 
     // Within-graph prefetch (sound) after any hoists landed here.

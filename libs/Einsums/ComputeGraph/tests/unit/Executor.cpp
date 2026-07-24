@@ -763,6 +763,67 @@ TEST_CASE("IOPrefetch - hoists a loop-invariant DiskRead out of the loop body", 
     }
 }
 
+TEST_CASE("IOPrefetch - hoists loop-invariant DiskReads from BOTH conditional branches", "[ComputeGraph][Passes][IO]") {
+    // Regression for a dangling ConditionalDescriptor*. process() held
+    // `cond = get_if<ConditionalDescriptor>(&graph.nodes()[idx].op_data)`, then
+    // hoisting from the THEN branch inserted a node into the parent node vector,
+    // which reallocated (and move-nulled) the Conditional node. The subsequent
+    // `cond->else_branch` then read the moved-from/freed pointer, so the ELSE
+    // branch was skipped and its hoistable DiskRead was never hoisted. Both
+    // branches' reads must be hoisted.
+    auto data_t = create_zero_tensor<double>("data_t", 4, 4); // eager (materialized)
+    auto data_e = create_zero_tensor<double>("data_e", 4, 4); // eager (materialized)
+    auto acc    = create_zero_tensor<double>("acc", 4, 4);
+
+    cg::Graph g("io_cond");
+    bool      take_then   = true;
+    auto [then_g, else_g] = g.add_conditional("branch", [&]() { return take_then; });
+    {
+        cg::CaptureGuard const guard(then_g);
+        cg::read("load_t", "fake.h5", "/t", &data_t, [&]() {
+            for (size_t k = 0; k < data_t.size(); ++k)
+                data_t.data()[k] = 1.0;
+        });
+        cg::axpy(1.0, data_t, &acc); // data_t is read-only here -> the read is hoistable
+    }
+    {
+        cg::CaptureGuard const guard(else_g);
+        cg::read("load_e", "fake.h5", "/e", &data_e, [&]() {
+            for (size_t k = 0; k < data_e.size(); ++k)
+                data_e.data()[k] = 1.0;
+        });
+        cg::axpy(1.0, data_e, &acc);
+    }
+
+    cg::passes::IOPrefetch ioprefetch;
+    bool const             modified = ioprefetch.run(g);
+    CHECK(modified);
+
+    // Functional contract: BOTH branches' loop-invariant reads are hoisted out.
+    // Hoisting from the then branch reallocates the parent node vector; before
+    // the fix the else branch was reached through the now-dangling `cond`
+    // pointer -- a heap-use-after-free that ASan (the asan CI leg) flags. On a
+    // clean-memory build the freed descriptor often still reads back, so this
+    // pins the observable outcome (both branches processed) as the deterministic
+    // guard, with ASan catching the memory-safety violation itself.
+    size_t then_reads = 0;
+    size_t else_reads = 0;
+    for (auto const &n : then_g.nodes())
+        if (n.kind == cg::OpKind::DiskRead)
+            then_reads++;
+    for (auto const &n : else_g.nodes())
+        if (n.kind == cg::OpKind::DiskRead)
+            else_reads++;
+    CHECK(then_reads == 0);
+    CHECK(else_reads == 0);
+
+    // Graph still executes correctly after both branches were rewritten.
+    take_then = false;
+    g.execute();
+    for (size_t k = 0; k < acc.size(); ++k)
+        CHECK(acc.data()[k] == Catch::Approx(1.0));
+}
+
 TEST_CASE("IOPrefetch - hoisted DiskRead is ordered before the loop under DataflowExecutor", "[ComputeGraph][Passes][IO][Loop][Dataflow]") {
     // Concurrent sibling of the sequential hoist test. The hoisted read must
     // not merely SIT before the Loop in the node list, it must be a dependency
