@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferElimination.hpp>
+#include <Einsums/ComputeGraph/Passes/TransferNode.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Logging.hpp>
 
@@ -161,20 +162,7 @@ bool TransferElimination::run(Graph &graph) {
                 // Insert a D2H eviction node.
                 auto &evict_handle = graph.tensor(evict_tid);
 
-                Node evict_node;
-                evict_node.kind   = OpKind::DeviceToHost;
-                evict_node.target = Target::CPU;
-                evict_node.label  = fmt::format("D2H_evict({})", evict_handle.name);
-
-                TransferDescriptor evict_desc;
-                evict_desc.tensor_id  = evict_tid;
-                evict_desc.size_bytes = evict_bytes;
-                evict_node.op_data    = evict_desc;
-
-                evict_node.inputs          = {evict_tid};
-                evict_node.outputs         = {evict_tid};
-                evict_node.estimated_bytes = evict_bytes;
-                evict_node.execute         = []() { gpu::device_synchronize(); };
+                Node evict_node = make_transfer_node(OpKind::DeviceToHost, evict_handle, "D2H_evict", evict_bytes);
 
                 insertions.push_back({.before_idx = idx, .node = std::move(evict_node)});
 

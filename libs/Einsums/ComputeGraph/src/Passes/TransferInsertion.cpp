@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
+#include <Einsums/ComputeGraph/Passes/TransferNode.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Logging.hpp>
 
@@ -59,52 +60,12 @@ bool cpu_node_reads_later(std::vector<Node> const &nodes, size_t start, TensorId
 
 /// Create a HostToDevice transfer node for a tensor.
 Node make_h2d_node(TensorHandle const &handle) {
-    Node n;
-    n.kind   = OpKind::HostToDevice;
-    n.target = Target::CPU; // transfer itself is a host-initiated operation
-    n.label  = fmt::format("H2D({})", handle.name);
-
-    TransferDescriptor desc;
-    desc.tensor_id  = handle.id;
-    desc.size_bytes = handle.total_bytes();
-    n.op_data       = desc;
-
-    n.inputs  = {handle.id};
-    n.outputs = {handle.id};
-
-    n.estimated_bytes = desc.size_bytes;
-
-    // Executor: synchronize and transfer.
-    // On mock backend: no separate device memory exists, so this is a synchronization
-    // point only. On real GPU: the graph executor will replace this lambda with one
-    // that calls gpu::memcpy_host_to_device(device_shadow.data(), host_tensor.data(), bytes)
-    // once device shadow allocations are implemented.
-    n.execute = []() { gpu::device_synchronize(); };
-
-    return n;
+    return make_transfer_node(OpKind::HostToDevice, handle, "H2D", handle.total_bytes());
 }
 
 /// Create a DeviceToHost transfer node for a tensor.
 Node make_d2h_node(TensorHandle const &handle) {
-    Node n;
-    n.kind   = OpKind::DeviceToHost;
-    n.target = Target::CPU;
-    n.label  = fmt::format("D2H({})", handle.name);
-
-    TransferDescriptor desc;
-    desc.tensor_id  = handle.id;
-    desc.size_bytes = handle.total_bytes();
-    n.op_data       = desc;
-
-    n.inputs  = {handle.id};
-    n.outputs = {handle.id};
-
-    n.estimated_bytes = desc.size_bytes;
-
-    // See make_h2d_node comment, same applies for D2H direction.
-    n.execute = []() { gpu::device_synchronize(); };
-
-    return n;
+    return make_transfer_node(OpKind::DeviceToHost, handle, "D2H", handle.total_bytes());
 }
 
 } // namespace
