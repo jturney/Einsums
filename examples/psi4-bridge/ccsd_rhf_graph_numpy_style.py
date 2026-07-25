@@ -94,7 +94,7 @@ oovv_ba = zt("oovv_ba", (nocc, nocc, nv, nv)); einsums.permute("i,j,b,a <- i,j,a
 
 NV2 = (nocc, nv); SH2 = (nocc, nocc, nv, nv); VV = (nv, nv); OO = (nocc, nocc)
 OOOO = (nocc, nocc, nocc, nocc); OVVO = (nocc, nv, nv, nocc); OVOV = (nocc, nv, nocc, nv)
-OVOO = (nocc, nv, nocc, nocc); HVVDF = (naux, nv, nocc, nocc, nv)  # DF ladder intermediate
+OVOO = (nocc, nv, nocc, nocc); HPAIR = (naux, nv, nv)  # DF ladder intermediate, ONE occupied pair
 t1 = einsums.zeros((nocc, nv), name="t1")
 t2 = E("i,j,a,b <- i,j,a,b ; i,j,a,b", G["oovv"], Dijab, SH2, 1.0, "t2init")  # placeholder, overwrite next
 # MP2 guess t2 = oovv / Dijab (eager)
@@ -116,7 +116,7 @@ S = {}
 for nm, sh in [("Tau", SH2), ("Taut", SH2), ("Fae", VV), ("Fmi", OO), ("Fme", NV2),
                ("Wmnij", OOOO), ("Wmbej", OVVO), ("Wmbje", OVOV), ("Zmbij", OVOO), ("jnfb", SH2),
                ("r1", NV2), ("r2", SH2), ("be", VV), ("jm", OO), ("imea", SH2), ("imeb", SH2),
-               ("tmp", SH2), ("tmpP", SH2), ("rd1", NV2), ("rd2", SH2), ("Hvvdf", HVVDF)]:
+               ("tmp", SH2), ("tmpP", SH2), ("rd1", NV2), ("rd2", SH2), ("Hpair", HPAIR)]:
     S[nm] = dz(nm, sh)
 # scalars stay eager: cg.dot validates its result size at capture, and the
 # predicate reads Ecorr between iterations; both need a live 1-element tensor.
@@ -200,9 +200,27 @@ with cg.capture(body):
     ein("ijab <- mnab ; mnij", Tau, Wmnij, r2, 1.0, True)
     # DF particle-ladder (replaces ein("ijab <- ijef ; abef", Tau, G["vvvv"], ...)):
     #   r2_ijab += Σ_ef Tau_ijef <ab|ef>,  <ab|ef> = (ae|bf) = Σ_Q Bvv_ae Bvv_bf
-    # two o²v³ steps via a DF intermediate H; never forms the v⁴ tensor.
-    ein("Q,a,i,j,f <- Q,a,e ; i,j,e,f", Bvv, Tau, S["Hvvdf"], 1.0, False)
-    ein("i,j,a,b <- Q,a,i,j,f ; Q,b,f", S["Hvvdf"], Bvv, r2, 1.0, True)
+    # PAIR-DRIVEN, the same idiom the DF-MP2 examples use: i and j are spectator
+    # indices here, summed in NEITHER step, so the contraction factorizes over
+    # them and the intermediate has no business carrying them. One reused
+    # (naux, v, v) buffer per pair instead of (naux, v, o, o, v) for all pairs at
+    # once - 30,324 elements against 758,100 at this geometry, 25x - with each
+    # pair accumulating straight into the r2[i,j] view. The arithmetic is
+    # identical either way (naux·o²v³ per step), and the v⁴ tensor is still never
+    # formed. Slicing a graph-owned DEFERRED tensor like this needs the view
+    # placeholder to read the parent's shell metadata; see
+    # test_view_python.py::test_view_of_deferred_tensor_has_real_dims_at_capture.
+    #
+    # Unrolling o² pairs at capture is fine at this size (25 pairs) but grows as
+    # o²; the scalable form wants a captured loop over pairs, or the planned
+    # SlicedContraction pass deriving this blocking automatically.
+    _FULL = (0, 0, 0)  # view_indexed axis kinds: 0 = full, 2 = drop (rank-reducing)
+    for _i in range(nocc):
+        for _j in range(nocc):
+            Tau_ij = cg.view_indexed(Tau, [(2, _i, 0), (2, _j, 0), _FULL, _FULL])
+            r2_ij  = cg.view_indexed(r2,  [(2, _i, 0), (2, _j, 0), _FULL, _FULL])
+            ein("Q,a,f <- Q,a,e ; e,f", Bvv, Tau_ij, S["Hpair"], 1.0, False)
+            ein("a,b <- Q,a,f ; Q,b,f", S["Hpair"], Bvv, r2_ij, 1.0, True)
     symacc("ijab <- ma ; mbij", t1, Zmbij, 1.0, -1.0)
     # ring 1: sym((t_imae - t_imea)·Wmbej)
     ein("ijab <- imae ; mbej", t2, Wmbej, S["tmp"], 1.0, False)

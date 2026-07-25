@@ -377,7 +377,16 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
         parent_dims.push_back(placeholder_dim(i, p));
         parent_strides.push_back(parent.stride(p));
     }
-    holder->view.emplace(::einsums::detail::TensorImpl<T>(const_cast<T *>(parent.data()) + ph_offset, parent_dims, parent_strides));
+    // Take the base pointer from the parent's IMPL, not from data(). For a
+    // DEFERRED parent (Graph::declare_*_tensor) data() returns the empty
+    // storage vector's pointer, i.e. nullptr, while impl() holds the shell's
+    // sentinel. TensorImpl::dim() reports 0 for every axis of a null-pointer
+    // tensor with nonzero size, so a nullptr base would give the placeholder
+    // all-zero dims -- and capture-time einsum validation then rejects any
+    // operation on a view of a deferred tensor ("index 'e' spans 0 elements").
+    // For a materialized parent the two are the same pointer. The real address
+    // is re-emplaced by the executor below once the parent is allocated.
+    holder->view.emplace(::einsums::detail::TensorImpl<T>(const_cast<T *>(parent.impl().data()) + ph_offset, parent_dims, parent_strides));
 
     auto *graph = ctx.graph();
     if (graph == nullptr)

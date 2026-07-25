@@ -214,3 +214,65 @@ def test_scf_density_via_view_and_block_copy_then_gemm():
     C_np = np.asarray(C)
     expected = 2.0 * C_np[:, :nocc] @ C_np[:, :nocc].T
     np.testing.assert_allclose(np.asarray(D), expected, rtol=1e-5)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Views over DEFERRED parents (Graph.declare_*_tensor).
+#
+# A deferred tensor is a shell: valid dims/strides, no storage until the
+# Materialization pass runs. The view placeholder built at capture must take
+# its base pointer from the parent's impl (which holds the shell's sentinel),
+# not from data() -- for a deferred parent data() returns the empty storage
+# vector's pointer, i.e. nullptr, and TensorImpl::dim() deliberately reports 0
+# for every axis of a null-pointer tensor with nonzero size. With a nullptr
+# base the view came out all-zero-dims and capture-time einsum validation
+# rejected it ("index 'e' spans 3 elements in operand A but 0 in operand B").
+#
+# This matters for any pass or workload that slices a graph-owned intermediate
+# -- i.e. exactly the tensors the memory passes manage.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_view_of_deferred_tensor_has_real_dims_at_capture():
+    g = cg.Graph("view-of-deferred")
+    D = g.declare_zero_tensor("D", [2, 2, 3, 4], dtype="float64", intermediate=True)
+    with cg.capture(g):
+        full = cg.view(D, [(-1, -1), (-1, -1), (-1, -1), (-1, -1)])
+        rng = cg.view(D, [(0, 1), (-1, -1), (-1, -1), (-1, -1)])
+        # kind 2 == drop (rank-reducing); kind 0 == full axis
+        drop = cg.view_indexed(D, [(2, 0, 0), (2, 1, 0), (0, 0, 0), (0, 0, 0)])
+        assert [full.dim(k) for k in range(4)] == [2, 2, 3, 4]
+        assert [rng.dim(k) for k in range(4)] == [1, 2, 3, 4]
+        assert [drop.dim(k) for k in range(2)] == [3, 4]
+
+
+def test_einsum_through_view_of_deferred_tensor_matches_numpy():
+    o, v, naux = 2, 3, 4
+    rng = np.random.default_rng(0)
+    B_np = rng.standard_normal((naux, v, v))
+    T_np = rng.standard_normal((o, o, v, v))
+    B = einsums.asarray(np.ascontiguousarray(B_np), name="B")
+    Tsrc = einsums.asarray(np.ascontiguousarray(T_np), name="Tsrc")
+
+    # r2[i,j,a,b] = sum_ef T[i,j,e,f] * sum_Q B[Q,a,e] B[Q,b,f], pair-driven:
+    # both the sliced operand and the accumulated output are deferred.
+    g4 = np.einsum("Qae,Qbf->abef", B_np, B_np)
+    expected = np.einsum("ijef,abef->ijab", T_np, g4)
+
+    g = cg.Graph("pair-driven-deferred")
+    T = g.declare_zero_tensor("T", [o, o, v, v], dtype="float64", intermediate=True)
+    r2 = g.declare_zero_tensor("r2", [o, o, v, v], dtype="float64", intermediate=True)
+    H = g.declare_zero_tensor("H", [naux, v, v], dtype="float64", intermediate=True)
+    FULL = (0, 0, 0)
+    with cg.capture(g):
+        einsums.linalg.axpby(1.0, Tsrc, 0.0, T)
+        for i in range(o):
+            for j in range(o):
+                Tij = cg.view_indexed(T, [(2, i, 0), (2, j, 0), FULL, FULL])
+                rij = cg.view_indexed(r2, [(2, i, 0), (2, j, 0), FULL, FULL])
+                einsums.einsum("Q,a,f <- Q,a,e ; e,f", H, B, Tij, c_pf=0.0, ab_pf=1.0)
+                einsums.einsum("a,b <- Q,a,f ; Q,b,f", rij, H, B, c_pf=1.0, ab_pf=1.0)
+
+    g.apply(cg.default_pass_manager())
+    g.execute()
+    np.testing.assert_allclose(np.asarray(r2), expected, rtol=1e-10, atol=1e-12)
