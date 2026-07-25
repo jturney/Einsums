@@ -104,6 +104,21 @@ struct TensorHandle {
     /// Null means "assume materialized".
     std::function<bool()> is_materialized_fn;
 
+    /// Live pointer to the tensor's rank-erased ``detail::TensorImpl<T>``,
+    /// type-erased to ``void *``. Cast it to ``TensorImpl<T>*`` once the element
+    /// type is known (from @ref dtype).
+    ///
+    /// This is how a pass reaches a tensor's CURRENT data pointer, dims, and
+    /// strides without knowing its static rank -- ``TensorImpl`` carries all
+    /// three as runtime values, so one dtype dispatch covers every rank. The
+    /// @ref data_ptr / @ref dims / @ref strides fields above are registration-time
+    /// snapshots that nothing refreshes (``data_ptr`` is even null for a tensor
+    /// that was deferred when registered), so they must not be used to build an
+    /// executor; read through here instead, at call time.
+    ///
+    /// Null for tile-wise sparse tensors, which have no single impl. Gate on it.
+    std::function<void *()> impl_fn;
+
     /// Attach caller-provided storage instead of allocating (type-erased
     /// Tensor::materialize_into). Set only for owning tensor types that
     /// support external storage; the MemoryPlanning arena requires it.
@@ -265,17 +280,26 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id) {
     } else {
         h.data_ptr = const_cast<void *>(static_cast<void const *>(tensor.data()));
     }
-    h.id           = id;
-    h.is_runtime   = std::is_base_of_v<tensor_base::RuntimeTensorNoType, std::remove_cvref_t<TensorType>>;
-    h.name         = tensor.name();
-    h.rank         = detail::tensor_rank(tensor);
-    h.element_size = sizeof(typename std::remove_cvref_t<TensorType>::ValueType);
-    h.dtype        = packed_gemm::get_scalar_type<typename std::remove_cvref_t<TensorType>::ValueType>();
+    using CleanTensorEarly = std::remove_cvref_t<TensorType>;
+    h.id                   = id;
+    h.is_runtime           = std::is_base_of_v<tensor_base::RuntimeTensorNoType, CleanTensorEarly>;
+    h.name                 = tensor.name();
+    h.rank                 = detail::tensor_rank(tensor);
+    h.element_size         = sizeof(typename std::remove_cvref_t<TensorType>::ValueType);
+    h.dtype                = packed_gemm::get_scalar_type<typename std::remove_cvref_t<TensorType>::ValueType>();
     h.dims.resize(h.rank);
     h.strides.resize(h.rank);
     for (size_t i = 0; i < h.rank; i++) {
         h.dims[i]    = tensor.dim(i);
         h.strides[i] = tensor.stride(i);
+    }
+
+    // Live rank-erased geometry accessor. make_handle knows T and Rank, so it can
+    // bake the lookup that a pass cannot express; tiled tensors have no single
+    // impl and are left null.
+    if constexpr (requires(CleanTensorEarly &t) { t.impl(); }) {
+        auto *impl_owner = const_cast<CleanTensorEarly *>(&tensor);
+        h.impl_fn        = [impl_owner]() -> void        *{ return static_cast<void *>(&impl_owner->impl()); };
     }
 
     // Tile-wise sparse tensors (TiledRuntimeTensor) advertise themselves so the

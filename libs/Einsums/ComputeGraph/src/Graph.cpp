@@ -1276,15 +1276,17 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     auto const &b_h = tensor(b_id);
     auto const &c_h = tensor(c_id);
 
-    // Runtime tensors of a single dtype: the executor below type-erases through
-    // GeneralRuntimeTensor, so a typed operand would be type confusion (bug-1015).
-    // A pass that gets here without gating has a bug, hence throw rather than
-    // silently emit something that segfaults at execute.
-    if (!a_h.is_runtime || !b_h.is_runtime || !c_h.is_runtime) {
+    // Every operand must expose a rank-erased TensorImpl. That covers runtime
+    // tensors AND statically typed Tensor<T, Rank>: the impl carries data, dims and
+    // strides as runtime values, so one dtype dispatch serves every rank and no
+    // static-rank cast is needed -- which is what used to restrict this to runtime
+    // tensors. Only tile-wise sparse tensors lack an impl; they have no single
+    // buffer to contract over, so a pass must not route them here.
+    if (!a_h.impl_fn || !b_h.impl_fn || !c_h.impl_fn) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                "Graph::make_einsum_node: all operands must be runtime tensors (a={} b={} c={}); gate on "
-                                "TensorHandle::is_runtime before calling",
-                                a_h.is_runtime, b_h.is_runtime, c_h.is_runtime);
+                                "Graph::make_einsum_node: every operand needs a rank-erased impl (a={} b={} c={}); tile-wise sparse "
+                                "tensors have none and cannot be contracted through this path",
+                                static_cast<bool>(a_h.impl_fn), static_cast<bool>(b_h.impl_fn), static_cast<bool>(c_h.impl_fn));
     }
     if (a_h.dtype != c_h.dtype || b_h.dtype != c_h.dtype) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph::make_einsum_node: operand dtypes disagree; mixed-precision einsum is not "
@@ -1346,14 +1348,14 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     if (a_h.rank == 2 && b_h.rank == 2 && c_h.rank == 2 && spec.a_indices.size() == 2 && spec.b_indices.size() == 2 &&
         spec.c_indices.size() == 2 && desc.spec.link_indices.size() == 1) {
         detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-            using RT      = GeneralRuntimeTensor<T, std::allocator<T>>;
-            auto const *A = static_cast<RT const *>(a_h.tensor_ptr);
-            auto const *B = static_cast<RT const *>(b_h.tensor_ptr);
-            auto const *C = static_cast<RT const *>(c_h.tensor_ptr);
+            using Impl    = ::einsums::detail::TensorImpl<T>;
+            auto const *A = static_cast<Impl const *>(a_h.impl_fn());
+            auto const *B = static_cast<Impl const *>(b_h.impl_fn());
+            auto const *C = static_cast<Impl const *>(c_h.impl_fn());
             if (A == nullptr || B == nullptr || C == nullptr) {
                 return;
             }
-            if (!layout_matches_flag(A->impl()) || !layout_matches_flag(B->impl()) || !layout_matches_flag(C->impl())) {
+            if (!layout_matches_flag(*A) || !layout_matches_flag(*B) || !layout_matches_flag(*C)) {
                 return;
             }
 
@@ -1377,16 +1379,16 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
 
             Graph *g        = this;
             hint->extract_a = [g, a_id]() -> std::pair<void const *, int> {
-                auto const &r = *static_cast<RT const *>(g->tensor(a_id).tensor_ptr);
-                return {static_cast<void const *>(r.data()), static_cast<int>(r.impl().get_lda())};
+                auto const *i = static_cast<Impl const *>(g->tensor(a_id).impl_fn());
+                return {static_cast<void const *>(i->data()), static_cast<int>(i->get_lda())};
             };
             hint->extract_b = [g, b_id]() -> std::pair<void const *, int> {
-                auto const &r = *static_cast<RT const *>(g->tensor(b_id).tensor_ptr);
-                return {static_cast<void const *>(r.data()), static_cast<int>(r.impl().get_lda())};
+                auto const *i = static_cast<Impl const *>(g->tensor(b_id).impl_fn());
+                return {static_cast<void const *>(i->data()), static_cast<int>(i->get_lda())};
             };
             hint->extract_c = [g, c_id]() -> std::pair<void *, int> {
-                auto *r = static_cast<RT *>(g->tensor(c_id).tensor_ptr);
-                return {static_cast<void *>(r->data()), static_cast<int>(r->impl().get_lda())};
+                auto *i = static_cast<Impl *>(g->tensor(c_id).impl_fn());
+                return {static_cast<void *>(i->data()), static_cast<int>(i->get_lda())};
             };
             desc.gemm_hint = std::move(hint);
         });
@@ -1407,15 +1409,19 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     Graph *self  = this;
     node.execute = [self, a_id, b_id, c_id, params, indices, dtype]() {
         detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-            using RT      = GeneralRuntimeTensor<T, std::allocator<T>>;
-            auto const *A = static_cast<RT const *>(self->tensor(a_id).tensor_ptr);
-            auto const *B = static_cast<RT const *>(self->tensor(b_id).tensor_ptr);
-            auto       *C = static_cast<RT *>(self->tensor(c_id).tensor_ptr);
+            using Impl = ::einsums::detail::TensorImpl<T>;
+            // Re-view each operand through its LIVE impl: aliasing, so writes to C
+            // land in the real tensor, and current, so rebind(), Materialization and
+            // the MemoryPlanning arena are all honored. Works for a typed
+            // Tensor<T, Rank> as well, since the impl is rank-erased.
+            RuntimeTensorView<T> const A{*static_cast<Impl *>(self->tensor(a_id).impl_fn())};
+            RuntimeTensorView<T> const B{*static_cast<Impl *>(self->tensor(b_id).impl_fn())};
+            RuntimeTensorView<T>       C{*static_cast<Impl *>(self->tensor(c_id).impl_fn())};
             // Rebuild the parsed spec from the LIVE index lists each call so an
             // index rewrite (PermuteFusion) is honored, matching the capture-time
             // executor in Operations.hpp.
             ParsedEinsumSpec live{indices->c_indices, indices->a_indices, indices->b_indices, /*raw*/ std::string{}};
-            dispatch::string_einsum(live, as<T>(params->c_pf), C, as<T>(params->ab_pf), *A, *B, params->conj_a, params->conj_b,
+            dispatch::string_einsum(live, as<T>(params->c_pf), &C, as<T>(params->ab_pf), A, B, params->conj_a, params->conj_b,
                                     &indices->link_indices);
         });
     };

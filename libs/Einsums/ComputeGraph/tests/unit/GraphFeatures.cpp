@@ -825,3 +825,82 @@ TEST_CASE("make_einsum_node - no GemmHint for a higher-rank contraction", "[Comp
     // Rank-4 operand: not a GEMM, so no hint and GEMMBatching leaves it alone.
     CHECK(desc->gemm_hint == nullptr);
 }
+
+// Statically typed operands. This was impossible while the executor cast
+// tensor_ptr to GeneralRuntimeTensor: a Tensor<T, Rank> would have been type
+// confusion. Re-viewing through the handle's rank-erased impl removes the
+// restriction, so a pass can synthesize a contraction over typed captures --
+// which is what ContractionPlanning needs, since it only restructures typed
+// rank-2 chains.
+TEST_CASE("make_einsum_node - works on statically typed operands", "[ComputeGraph][Graph]") {
+    namespace cg = einsums::compute_graph;
+
+    auto A = create_random_tensor<double>("A", 3, 4);
+    auto B = create_random_tensor<double>("B", 4, 2);
+    auto C = create_zero_tensor<double>("C", 3, 2);
+
+    cg::Graph  graph("mk_einsum_typed");
+    auto const a_id = graph.register_tensor(cg::make_handle(A, 0));
+    auto const b_id = graph.register_tensor(cg::make_handle(B, 0));
+    auto const c_id = graph.register_tensor(cg::make_handle(C, 0));
+
+    // Typed captures, not runtime tensors.
+    CHECK_FALSE(graph.tensor(a_id).is_runtime);
+    REQUIRE(graph.tensor(a_id).impl_fn != nullptr);
+
+    auto        node = graph.make_einsum_node(a_id, b_id, c_id, matmul_spec(), 0.0, 1.0);
+    auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    REQUIRE(desc != nullptr);
+    CHECK(node.kind == cg::OpKind::Einsum);
+    CHECK(desc->gemm_hint != nullptr); // rank-2 typed operands still qualify
+
+    graph.add_node(std::move(node));
+    graph.execute();
+
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 2; ++j) {
+            double ref = 0.0;
+            for (size_t k = 0; k < 4; ++k) {
+                ref += A(i, k) * B(k, j);
+            }
+            CHECK(C(i, j) == Catch::Approx(ref));
+        }
+    }
+}
+
+TEST_CASE("make_einsum_node - typed rank-4 operand, no static-rank cast needed", "[ComputeGraph][Graph]") {
+    namespace cg = einsums::compute_graph;
+
+    // "a,e <- m,f ; m,a,f,e": the CCSD spin-adaptation shape, on TYPED tensors of
+    // two different ranks. One dtype dispatch handles both because the impl is
+    // rank-erased.
+    auto A = create_random_tensor<double>("A", 2, 3);
+    auto B = create_random_tensor<double>("B", 2, 4, 3, 3);
+    auto C = create_zero_tensor<double>("C", 4, 3);
+
+    cg::ParsedEinsumSpec spec;
+    spec.c_indices = {"a", "e"};
+    spec.a_indices = {"m", "f"};
+    spec.b_indices = {"m", "a", "f", "e"};
+    spec.raw       = "a,e <- m,f ; m,a,f,e";
+
+    cg::Graph  graph("mk_einsum_typed_rank4");
+    auto const a_id = graph.register_tensor(cg::make_handle(A, 0));
+    auto const b_id = graph.register_tensor(cg::make_handle(B, 0));
+    auto const c_id = graph.register_tensor(cg::make_handle(C, 0));
+
+    graph.add_node(graph.make_einsum_node(a_id, b_id, c_id, spec, 0.0, 1.0));
+    graph.execute();
+
+    for (size_t a = 0; a < 4; ++a) {
+        for (size_t e = 0; e < 3; ++e) {
+            double ref = 0.0;
+            for (size_t m = 0; m < 2; ++m) {
+                for (size_t f = 0; f < 3; ++f) {
+                    ref += A(m, f) * B(m, a, f, e);
+                }
+            }
+            CHECK(C(a, e) == Catch::Approx(ref));
+        }
+    }
+}

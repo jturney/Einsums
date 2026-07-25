@@ -1201,12 +1201,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *   that was bug-1009).
      *
      * @par Limits
-     * RUNTIME tensors of one dtype only: at pass time the operands are type-erased,
-     * so the executor dispatches on the handle's dtype and casts to
-     * ``GeneralRuntimeTensor``. A typed ``Tensor<T, Rank>`` operand would be type
-     * confusion (bug-1015), so all three ids must be runtime tensors of the same
-     * dtype -- this throws otherwise, since a pass reaching here without gating has
-     * a bug.
+     * One dtype across the three operands. Rank and static tensor type are NOT
+     * restricted: each operand is re-viewed through its rank-erased
+     * ``TensorHandle::impl_fn``, which carries data, dims and strides as runtime
+     * values, so a statically typed ``Tensor<T, Rank>`` works alongside a runtime
+     * tensor and a single dtype dispatch covers every rank -- no static-rank cast,
+     * so none of the type confusion of bug-1015. Tile-wise sparse tensors have no
+     * single impl and are rejected; so is a dtype mismatch. Both throw, since a
+     * pass reaching here without gating has a bug.
      *
      * A @ref GemmHint IS built when the shapes qualify (three rank-2 operands,
      * exactly one link index, strides agreeing with each declared layout), so
