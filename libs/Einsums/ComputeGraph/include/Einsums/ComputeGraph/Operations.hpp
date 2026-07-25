@@ -874,7 +874,14 @@ APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<double>>,
             LabeledSection("axpy execute");
             detail::tiled_axpy<T>(alpha, *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
         };
-        ctx.record(OpKind::Custom, std::move(label), {x_id}, {y_id}, std::move(executor));
+        // Y is listed as an INPUT as well as an output: tiled_axpy computes
+        // Y += alpha*X, so it reads its destination. Omitting it hides the
+        // accumulation from the scheduler and the liveness passes -- Reorder could
+        // move this past another writer of Y, and DeadNodeElimination could treat
+        // the value being accumulated onto as dead. This is the convention the
+        // dense axpy already uses (bug-1009); the tiled overload was written later
+        // and missed it.
+        ctx.record(OpKind::Custom, std::move(label), {x_id, y_id}, {y_id}, std::move(executor));
     } else {
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {

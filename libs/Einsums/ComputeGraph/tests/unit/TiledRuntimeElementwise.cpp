@@ -9,8 +9,10 @@
 // tile layout.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -137,6 +139,84 @@ TEST_CASE("TiledRuntimeTensor - tiled axpy (eager + captured)", "[ComputeGraph][
     for (int i = 0; i < 5; ++i) {
         for (int j = 0; j < 9; ++j) {
             REQUIRE(std::abs(Y2g[i][j] - (yf(i, j) - 2.0 * xf(i, j))) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("TiledRuntimeTensor - tiled axpy declares its read of the destination", "[ComputeGraph][TiledRuntime]") {
+    // tiled_axpy computes Y += alpha*X, so Y is read as well as written and must
+    // appear in the node's INPUTS (the RMW convention the dense axpy follows).
+    // Listing only X made the node look like a pure overwrite, which is what the
+    // loop test below turns into a wrong answer.
+    TiledRuntimeTensor<double> X("X", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<double> Y("Y", Grid{{2, 3}, {4, 5}});
+    fill_tiled(X, [](int r, int c) { return 1.0 + r - c; });
+    fill_tiled(Y, [](int r, int c) { return 3.0 - r + 2 * c; });
+
+    cg::Graph g("tiled_axpy_rmw");
+    {
+        cg::CaptureGuard const guard(g);
+        cg::axpy(1.5, X, &Y);
+    }
+
+    REQUIRE(g.num_nodes() == 1);
+    auto const &node = g.nodes()[0];
+    REQUIRE(node.outputs.size() == 1);
+    REQUIRE(std::ranges::find(node.inputs, node.outputs[0]) != node.inputs.end());
+}
+
+TEST_CASE("TiledRuntimeTensor - tiled axpy in a loop is not hoisted", "[ComputeGraph][TiledRuntime]") {
+    // A tiled accumulation in a loop body with a loop-invariant X. LIH decides
+    // "self-modifying" from reads_destination() plus an input==output scan; a
+    // tiled axpy is an OpKind::Custom node with no descriptor, so it fails the
+    // first check and used to fail the second as well by omitting Y from its
+    // inputs. The node then looked invariant and was hoisted OUT of the loop,
+    // accumulating once instead of once per iteration.
+    //
+    // Checked differentially against the identical dense loop rather than a
+    // hand-computed trip count, so the test does not encode add_loop's
+    // iteration semantics.
+    auto xf = [](int r, int c) { return 1.0 + r - c; };
+    auto yf = [](int r, int c) { return 3.0 - r + 2 * c; };
+
+    auto build_loop = [](cg::Graph &g, auto &X, auto &Y) {
+        auto                  &body = g.add_loop("loop", 4, [](size_t iter) { return iter < 3; });
+        cg::CaptureGuard const guard(body);
+        cg::axpy(1.5, X, &Y);
+    };
+
+    // Dense oracle: OpKind::Axpy, which reads_destination() already protects.
+    Tensor<double, 2> Xd("Xd", 5, 9);
+    Tensor<double, 2> Yd("Yd", 5, 9);
+    for (int i = 0; i < 5; ++i) {
+        for (int j = 0; j < 9; ++j) {
+            Xd(i, j) = xf(i, j);
+            Yd(i, j) = yf(i, j);
+        }
+    }
+    cg::Graph gd("dense_axpy_loop");
+    build_loop(gd, Xd, Yd);
+    auto [dense_modified, dense_pass] = gd.apply<cg::passes::LoopInvariantHoisting>();
+    CHECK(dense_pass.num_hoisted() == 0);
+    gd.execute();
+
+    // The loop must run more than once, or the comparison below is vacuous.
+    REQUIRE(std::abs(Yd(0, 0) - (yf(0, 0) + 1.5 * xf(0, 0))) > 1e-12);
+
+    TiledRuntimeTensor<double> Xt("Xt", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<double> Yt("Yt", Grid{{2, 3}, {4, 5}});
+    fill_tiled(Xt, xf);
+    fill_tiled(Yt, yf);
+    cg::Graph gt("tiled_axpy_loop");
+    build_loop(gt, Xt, Yt);
+    auto [tiled_modified, tiled_pass] = gt.apply<cg::passes::LoopInvariantHoisting>();
+    REQUIRE(tiled_pass.num_hoisted() == 0);
+    gt.execute();
+
+    auto Ytg = gather(Yt, 5, 9);
+    for (int i = 0; i < 5; ++i) {
+        for (int j = 0; j < 9; ++j) {
+            REQUIRE(std::abs(Ytg[i][j] - Yd(i, j)) < 1e-12);
         }
     }
 }
