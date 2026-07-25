@@ -333,3 +333,48 @@ def test_tiled_operands_survive_the_default_pipeline():
     g.execute()
     # 2*AB - AB == AB
     assert_close(_gather(C, 5, 7), aref @ bref)
+
+
+def test_tiled_operands_are_never_gpu_placed():
+    """A tiled tensor must never be handed to GPUPlacement.
+
+    It has no single contiguous buffer -- data_ptr is null, storage is one dense
+    tensor per tile -- so the H2D/D2H nodes placement inserts have nothing to
+    move, and TransferInsertion would emit a copy from a null pointer.
+
+    This was a live bug, not a hypothetical: `dot` is in is_gpu_capable_op, and
+    TensorHandle::total_bytes reports the honest GLOBAL size regardless of tile
+    sparsity, so a tiled dot over min_bytes (65536) was a valid candidate and did
+    get placed. It went unnoticed because gpu::has_unified_memory makes the
+    transfers no-ops on Apple Silicon and on the mock backend; a discrete
+    CUDA/HIP build would memcpy from nullptr.
+
+    float32 on purpose: the MPS backend's backend_supports_dtype accepts Float32
+    ONLY, so a float64 graph is rejected at the dtype gate and would pass this
+    test without ever exercising placement.
+    """
+    import json
+
+    import einsums.graph as cg
+
+    # 128x128 float32 = 65536 bytes per operand, at/over GPUPlacement's min_bytes.
+    tile = 64
+    grid = [[tile, tile], [tile, tile]]
+    A = _make(np.float32, "A_gpu", grid, fill=lambda r, c: 1.0)
+    B = _make(np.float32, "B_gpu", grid, fill=lambda r, c: 2.0)
+    out = einsums.create_zero_tensor("out_gpu", [1], dtype="float32")
+
+    g = cg.Graph("tiled_dot_gpu")
+    with cg.capture(g):
+        einsums.linalg.dot(out, A, B)
+
+    g.apply(cg.default_pass_manager())
+
+    nodes = json.loads(g.to_json())["nodes"]
+    kinds = [n["kind"] for n in nodes]
+    assert not [k for k in kinds if "HostToDevice" in k or "DeviceToHost" in k], kinds
+    assert all(n.get("target", "CPU") == "CPU" for n in nodes), nodes
+
+    g.execute()
+    # 128*128 elements of 1.0 * 2.0
+    assert_close(np.asarray(out), np.array([2.0 * 128 * 128], dtype=np.float32))

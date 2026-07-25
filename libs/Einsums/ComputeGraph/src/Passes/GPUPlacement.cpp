@@ -88,6 +88,31 @@ bool node_dtypes_supported(Node const &node, Graph const &graph) {
     return true;
 }
 
+/// True when any tensor the node touches is tile-wise sparse.
+///
+/// A tiled tensor has no single contiguous buffer -- its ``data_ptr`` is null and
+/// its storage is one dense tensor per populated tile -- so the H2D/D2H transfer
+/// nodes that placement inserts have nothing to move. Placing such a node makes
+/// TransferInsertion emit a copy from a null pointer.
+///
+/// This is NOT hypothetical: a float32 tiled ``dot`` over ``min_bytes`` is
+/// otherwise a valid candidate, since ``dot`` is in @ref is_gpu_capable_op and
+/// ``TensorHandle::total_bytes`` reports the honest GLOBAL size regardless of tile
+/// sparsity. It goes unnoticed on Apple Silicon only because
+/// ``gpu::has_unified_memory`` makes the transfers no-ops there; on a discrete
+/// CUDA or HIP build the same graph memcpys from nullptr.
+bool node_touches_tiled(Node const &node, Graph const &graph) {
+    for (auto tid : node.inputs) {
+        if (graph.tensor(tid).is_tiled)
+            return true;
+    }
+    for (auto tid : node.outputs) {
+        if (graph.tensor(tid).is_tiled)
+            return true;
+    }
+    return false;
+}
+
 /// Compute estimated bytes from a node's input/output tensor handles.
 size_t compute_bytes_from_tensors(Node const &node, Graph const &graph) {
     size_t bytes = 0;
@@ -156,6 +181,11 @@ bool GPUPlacement::run(Graph &graph) {
 
             if (!node_dtypes_supported(node, g)) {
                 EINSUMS_LOG_DEBUG("GPUPlacement: skipping node {} — unsupported dtype for GPU backend", node.id);
+                continue;
+            }
+
+            if (node_touches_tiled(node, g)) {
+                EINSUMS_LOG_DEBUG("GPUPlacement: skipping node {} — tile-wise sparse operand has no single buffer to transfer", node.id);
                 continue;
             }
 
