@@ -94,7 +94,18 @@ std::optional<MergePlan> find_merge(Graph &graph) {
 
     auto mergeable_intermediate = [&](TensorId tid) {
         auto it = tensors.find(tid);
-        return it != tensors.end() && it->second.is_intermediate && it->second.aliases == 0 && !view_targets.contains(tid);
+        // Tile-wise sparse tensors are excluded explicitly rather than by accident.
+        // A merge redirects one TensorId at another tensor's storage, which assumes
+        // a single buffer; a tiled tensor is a map of per-tile buffers, and two
+        // tiled tensors with different grids are not interchangeable at all.
+        //
+        // Today this is unreachable -- tiled ops record as OpKind::Custom, and the
+        // whitelist below only admits DirectProduct / DirectDivision / Axpby -- but
+        // that is incidental. Binding axpby for tiled operands (currently
+        // unimplemented, and on the roadmap) would make a tiled node land in the
+        // whitelist with nothing else stopping it.
+        return it != tensors.end() && it->second.is_intermediate && it->second.aliases == 0 && !it->second.is_tiled &&
+               !view_targets.contains(tid);
     };
 
     for (size_t idx = 0; idx < nodes.size(); idx++) {
