@@ -19,6 +19,25 @@
 namespace einsums::compute_graph::passes {
 
 /**
+ * @brief The live ``beta`` of an Axpby node, or null when @p nd is not an Axpby
+ *        or carries no descriptor (a pass-built node) and beta is unknowable.
+ *
+ * Prefer the shared params over the descriptor snapshot: a pass that folded a
+ * scale into this axpby wrote beta through the params handle, and that is the
+ * value the executor will read.
+ */
+[[nodiscard]] inline PrefactorScalar const *axpby_beta(Node const &nd) {
+    if (nd.kind != OpKind::Axpby) {
+        return nullptr;
+    }
+    auto const *ad = std::get_if<AxpbyDescriptor>(&nd.op_data);
+    if (ad == nullptr) {
+        return nullptr;
+    }
+    return ad->params ? &ad->params->beta : &ad->beta;
+}
+
+/**
  * @brief True when @p nd overwrites its destination without reading it.
  *
  * A prefactor-bearing op (Einsum/Permute/BatchedGemm) whose destination
@@ -27,6 +46,10 @@ namespace einsums::compute_graph::passes {
  * (only a pure-overwrite result is a safe common-subexpression survivor).
  */
 [[nodiscard]] inline bool pure_overwrite(Node const &nd) {
+    // Axpby: Y = alpha*X + beta*Y overwrites Y exactly when beta == 0.
+    if (auto const *beta = axpby_beta(nd)) {
+        return is_zero(*beta);
+    }
     if (auto const *e = std::get_if<EinsumDescriptor>(&nd.op_data)) {
         return is_zero(e->c_prefactor);
     }
@@ -53,11 +76,21 @@ namespace einsums::compute_graph::passes {
     switch (nd.kind) {
     case OpKind::Scale:
     case OpKind::Axpy:
-    case OpKind::Axpby:
     case OpKind::ElementTransform:
         return true;
     default:
         break;
+    }
+    // Axpby reads its destination only when beta != 0. It used to be lumped in
+    // with the always-accumulating ops above, which predates AxpbyDescriptor
+    // carrying beta and made a pure-overwrite `Y = alpha*X` look self-modifying.
+    // LoopInvariantHoisting then refused to hoist it, even though the identical
+    // pure-overwrite Permute (checked precisely below) hoists fine -- so an
+    // invariant `L = alpha*g` rebuilt every iteration stayed in the loop.
+    // A pass-built Axpby with no descriptor stays conservative (true).
+    if (nd.kind == OpKind::Axpby) {
+        auto const *beta = axpby_beta(nd);
+        return beta == nullptr || !is_zero(*beta);
     }
     if (auto const *e = std::get_if<EinsumDescriptor>(&nd.op_data)) {
         return !is_zero(e->c_prefactor);

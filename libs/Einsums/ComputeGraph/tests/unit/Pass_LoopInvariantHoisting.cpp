@@ -399,3 +399,67 @@ TEST_CASE("LoopInvariantHoisting - does NOT hoist out of a conditional branch in
         CHECK(acc.data()[idx] == Catch::Approx(2.0 * AA.data()[idx]));
     }
 }
+
+// An axpby with beta == 0 overwrites its destination; it does NOT read it, so
+// it is not self-modifying and is hoistable when its source is invariant.
+// reads_destination() used to lump every Axpby in with the always-accumulating
+// ops (Scale/Axpy/ElementTransform), which predates AxpbyDescriptor carrying
+// beta. The identical pure-overwrite Permute hoisted fine, so an invariant
+// `L = alpha*g` written with axpby was silently rebuilt every iteration --
+// exactly the shape an integral-combination intermediate takes.
+TEST_CASE("LoopInvariantHoisting - hoists a pure-overwrite axpby", "[ComputeGraph][Passes]") {
+    auto A   = create_random_tensor<double>("A", 3, 3);
+    auto L   = create_zero_tensor<double>("L", 3, 3);
+    auto acc = create_zero_tensor<double>("acc", 3, 3);
+    auto d   = create_random_tensor<double>("d", 3, 3);
+
+    cg::Graph graph("lih_overwrite_axpby");
+    {
+        auto                  &body = graph.add_loop("loop", 3, [](size_t iter) { return iter < 2; });
+        cg::CaptureGuard const guard(body);
+        cg::axpby(2.0, A, 0.0, &L); // L = 2*A -- invariant, pure overwrite
+        cg::axpy(1.0, L, &acc);     // acc += L -- varies (accumulates)
+        cg::axpy(1.0, d, &acc);     // keep the body non-trivial
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::LoopInvariantHoisting>();
+
+    CHECK(modified);
+    CHECK(pass.num_hoisted() == 1);
+
+    cg::LoopDescriptor const *loop_desc = nullptr;
+    for (auto const &n : graph.nodes())
+        if (auto const *dsc = std::get_if<cg::LoopDescriptor>(&n.op_data))
+            loop_desc = dsc;
+    REQUIRE(loop_desc != nullptr);
+    CHECK(loop_desc->body->num_nodes() == 2); // the two accumulations remain
+    CHECK(graph.num_nodes() == 2);            // hoisted axpby + the loop
+
+    // 3 iterations: acc = 3*(2*A + d).
+    acc.zero();
+    graph.execute();
+    for (size_t idx = 0; idx < acc.size(); ++idx) {
+        CHECK(acc.data()[idx] == Catch::Approx(3.0 * (2.0 * A.data()[idx] + d.data()[idx])));
+    }
+}
+
+// The converse must still hold: beta != 0 accumulates, so the per-iteration
+// update would be lost if it were hoisted.
+TEST_CASE("LoopInvariantHoisting - refuses an accumulating axpby", "[ComputeGraph][Passes]") {
+    auto A   = create_random_tensor<double>("A", 3, 3);
+    auto L   = create_zero_tensor<double>("L", 3, 3);
+    auto acc = create_zero_tensor<double>("acc", 3, 3);
+
+    cg::Graph graph("lih_accumulating_axpby");
+    {
+        auto                  &body = graph.add_loop("loop", 3, [](size_t iter) { return iter < 2; });
+        cg::CaptureGuard const guard(body);
+        cg::axpby(2.0, A, 1.0, &L); // L += 2*A -- reads its destination
+        cg::axpy(1.0, L, &acc);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::LoopInvariantHoisting>();
+
+    CHECK_FALSE(modified);
+    CHECK(pass.num_hoisted() == 0);
+}
