@@ -96,3 +96,6 @@ benchmark_report.html
 
 # CTest scratch output (test costs, logs) written next to the test binaries
 testing/Temporary/
+
+# Lavish Editor review artifacts (local review surfaces, not project sources)
+.lavish/
