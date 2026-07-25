@@ -10,6 +10,7 @@
 // output tiles, and the tile-partition alignment guard.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 
 #include <cmath>
@@ -168,4 +169,73 @@ TEST_CASE("TiledRuntimeTensor - misaligned contracted partition throws", "[Compu
     fill_tiled(B, [](int, int) { return 1.0; });
 
     REQUIRE_THROWS(cg::einsum("ik;kj->ij", &C, A, B));
+}
+
+TEST_CASE("TiledRuntimeTensor - accumulating tiled einsum in a loop is not hoisted", "[ComputeGraph][TiledRuntime]") {
+    // C += A*B with A and B loop-invariant: the CCSD residual shape. A tiled
+    // einsum is an OpKind::Custom node carrying a TiledEinsumDescriptor, so
+    // LoopInvariantHoisting cannot read its destination prefactor the way it
+    // reads a dense EinsumDescriptor's, and its inputs are {A,B} by the same
+    // descriptor-driven convention the dense einsum uses. Both self-modifying
+    // checks therefore miss it, and the accumulation gets hoisted out of the
+    // loop to run once.
+    //
+    // Compared differentially against the identical dense loop so the test does
+    // not encode add_loop's iteration semantics.
+    auto af = [](int r, int c) { return 1.0 + 0.5 * r - 0.25 * c; };
+    auto bf = [](int r, int c) { return 0.75 - 0.5 * r + c; };
+
+    auto build_loop = [](cg::Graph &g, auto &A, auto &B, auto &C) {
+        auto                  &body = g.add_loop("loop", 4, [](size_t iter) { return iter < 3; });
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", 1.0, &C, 1.0, A, B); // C += A*B
+    };
+
+    // Dense oracle: OpKind::Einsum with a nonzero c_prefactor, which
+    // reads_destination() already recognizes.
+    Tensor<double, 2> Ad("Ad", 3, 3);
+    Tensor<double, 2> Bd("Bd", 3, 2);
+    Tensor<double, 2> Cd("Cd", 3, 2);
+    for (int i = 0; i < 3; ++i) {
+        for (int k = 0; k < 3; ++k) {
+            Ad(i, k) = af(i, k);
+        }
+    }
+    for (int k = 0; k < 3; ++k) {
+        for (int j = 0; j < 2; ++j) {
+            Bd(k, j) = bf(k, j);
+        }
+    }
+    Cd.zero();
+    cg::Graph gd("dense_accum_loop");
+    build_loop(gd, Ad, Bd, Cd);
+    auto [dense_modified, dense_pass] = gd.apply<cg::passes::LoopInvariantHoisting>();
+    CHECK(dense_pass.num_hoisted() == 0);
+    gd.execute();
+
+    // One pass of A*B at (0,0), to confirm the loop ran more than once.
+    double single = 0.0;
+    for (int k = 0; k < 3; ++k) {
+        single += af(0, k) * bf(k, 0);
+    }
+    REQUIRE(std::abs(Cd(0, 0) - single) > 1e-12);
+
+    TiledRuntimeTensor<double> At("At", Grid{{1, 2}, {2, 1}});
+    TiledRuntimeTensor<double> Bt("Bt", Grid{{2, 1}, {1, 1}});
+    TiledRuntimeTensor<double> Ct("Ct", Grid{{1, 2}, {1, 1}});
+    fill_tiled(At, af);
+    fill_tiled(Bt, bf);
+    fill_tiled(Ct, [](int, int) { return 0.0; });
+    cg::Graph gt("tiled_accum_loop");
+    build_loop(gt, At, Bt, Ct);
+    auto [tiled_modified, tiled_pass] = gt.apply<cg::passes::LoopInvariantHoisting>();
+    REQUIRE(tiled_pass.num_hoisted() == 0);
+    gt.execute();
+
+    auto Ctg = gather(Ct, 3, 2);
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 2; ++j) {
+            REQUIRE(std::abs(Ctg[i][j] - Cd(i, j)) < 1e-12);
+        }
+    }
 }

@@ -53,6 +53,13 @@ namespace einsums::compute_graph::passes {
     if (auto const *e = std::get_if<EinsumDescriptor>(&nd.op_data)) {
         return is_zero(e->c_prefactor);
     }
+    // A tiled einsum keeps its destination prefactor in the shared params rather
+    // than in an EinsumDescriptor, so it needs its own arm. Without one it fell
+    // through to `false` here and in reads_destination below, and an op that
+    // answers "no" to both looks neither overwriting nor accumulating.
+    if (auto const *t = std::get_if<TiledEinsumDescriptor>(&nd.op_data)) {
+        return t->params && is_zero(t->params->c_pf);
+    }
     if (auto const *p = std::get_if<PermuteDescriptor>(&nd.op_data)) {
         return p->beta == 0.0;
     }
@@ -94,6 +101,12 @@ namespace einsums::compute_graph::passes {
     }
     if (auto const *e = std::get_if<EinsumDescriptor>(&nd.op_data)) {
         return !is_zero(e->c_prefactor);
+    }
+    // Tiled einsum: same rule as the dense one, read through the shared params.
+    // A descriptor with no params is unknowable, so assume it accumulates; that
+    // only costs a missed hoist, where the other answer loses the accumulation.
+    if (auto const *t = std::get_if<TiledEinsumDescriptor>(&nd.op_data)) {
+        return t->params == nullptr || !is_zero(t->params->c_pf);
     }
     if (auto const *p = std::get_if<PermuteDescriptor>(&nd.op_data)) {
         return p->beta != 0.0;
