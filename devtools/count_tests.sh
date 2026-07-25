@@ -70,14 +70,32 @@ fi
 # override it (and restrict to the test_*_python.py convention).
 # --------------------------------------------------------------------------
 py_actual="n/a"
-if [ -f "${BUILD_DIR}/lib/einsums/__init__.py" ]; then
-    collected=$(PYTHONPATH="${BUILD_DIR}/lib" python -m pytest libs \
+
+# Use the interpreter the build was configured with, not whatever `python` the
+# caller happens to have on PATH. The einsums module under <build>/lib is an
+# extension built against one specific interpreter, and pytest lives in that
+# environment -- a bare `python` outside the conda env has neither, collection
+# fails, and the count silently reads 0. $PYTHON overrides; otherwise take it
+# from CMakeCache (FindPython's internal entry, then pybind11's), then fall back.
+py_exe="${PYTHON:-}"
+if [ -z "${py_exe}" ] && [ -f "${BUILD_DIR}/CMakeCache.txt" ]; then
+    py_exe=$(sed -n 's/^_Python_EXECUTABLE:INTERNAL=//p'              "${BUILD_DIR}/CMakeCache.txt" | head -1)
+    [ -n "${py_exe}" ] || \
+    py_exe=$(sed -n 's/^PYBIND11_PYTHON_EXECUTABLE_LAST:INTERNAL=//p' "${BUILD_DIR}/CMakeCache.txt" | head -1)
+fi
+[ -n "${py_exe}" ] || py_exe=$(command -v python3 || command -v python || true)
+
+if [ -f "${BUILD_DIR}/lib/einsums/__init__.py" ] && [ -n "${py_exe}" ] && [ -x "${py_exe}" ]; then
+    collected=$(PYTHONPATH="${BUILD_DIR}/lib" "${py_exe}" -m pytest libs \
         -p no:cacheprovider \
         --override-ini="norecursedirs=.git .hypothesis __pycache__ build *.egg-info" \
         --override-ini="python_files=test_*_python.py" \
         --collect-only -q 2>/dev/null \
         | grep -oE '[0-9]+ tests? collected' | grep -oE '^[0-9]+' || true)
-    py_actual="${collected:-0}"
+    # Leave "n/a" when collection produced nothing. Reporting 0 makes a broken
+    # interpreter or an import error indistinguishable from "there are no python
+    # tests", which is how this silently under-reported before.
+    [ -n "${collected}" ] && py_actual="${collected}"
 fi
 
 # --------------------------------------------------------------------------
@@ -94,11 +112,11 @@ total_src=$(sum "${cpp_src}" "${py_src}")
 total_actual=$(sum "${cpp_actual}" "${py_actual}")
 
 printf '%s\n' "Einsums test inventory   (build: ${BUILD_DIR})"
-printf '%s\n' "============================================"
+printf '%s\n' "============================================="
 printf '%-18s %8s %8s %8s\n' "" "files" "source" "actual"
 printf '%-18s %8s %8s %8s\n' "C++ (Catch2)"    "${cpp_files}" "${cpp_src}" "${cpp_actual}"
 printf '%-18s %8s %8s %8s\n' "Python (pytest)" "${py_files}"  "${py_src}"  "${py_actual}"
-printf '%s\n' "--------------------------------------------"
+printf '%s\n' "---------------------------------------------"
 printf '%-18s %8s %8s %8s\n' "Total" "${total_files}" "${total_src}" "${total_actual}"
 printf '\n'
 printf '%s\n' "source = macros / def test_ in source"
