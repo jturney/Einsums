@@ -23,6 +23,7 @@
 #include <Einsums/ComputeGraph/Passes/IOPrefetch.hpp>
 #include <Einsums/ComputeGraph/Passes/InplaceOptimization.hpp>
 #include <Einsums/ComputeGraph/Passes/InputSlicing.hpp>
+#include <Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/Passes/MemoryPlanning.hpp>
@@ -372,6 +373,15 @@ void PassManager::populate_default() {
     // executor and hide the pattern. Recurses into loop bodies (the residual).
     pm.add<passes::SymmetrizedAccumulation>();
     pm.add<passes::ElementWiseFusion>();
+    // Fold transpose-paired contractions (the CCSD 2J-K idiom) into one
+    // contraction against L = sum_k a_k P_k(B), and do it BEFORE
+    // LoopInvariantHoisting: LCCF emits the L construction as its own node, whose
+    // only input is the paired operand, so when that operand is loop-invariant --
+    // the common case, an integral block from one-time setup -- LIH lifts the
+    // builder out of the loop and L is built once instead of every replay. Ordered
+    // after ElementWiseFusion for the same reason CSE/DNE precede it: match on a
+    // deduplicated, canonical node set.
+    pm.add<passes::LinearCombinationContractionFolding>();
     pm.add<passes::LoopInvariantHoisting>();
 
     // Chain restructuring belongs in the planning phase: it rewrites GEMM

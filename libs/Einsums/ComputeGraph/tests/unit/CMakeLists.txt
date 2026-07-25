@@ -147,6 +147,7 @@ set(ComputeGraphTests
     test_pass_dead_node_elimination_python.py
     test_pass_element_wise_fusion_python.py
     test_pass_inplace_optimization_python.py
+    test_pass_linear_combination_contraction_folding_python.py
     test_pass_loop_invariant_hoisting_python.py
     test_pass_memory_planning_python.py
     test_pass_reorder_python.py

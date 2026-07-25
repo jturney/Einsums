@@ -45,8 +45,11 @@ def test_folds_transpose_pair():
     assert _count_kind(g, "Einsum") == 2
 
     assert _run(g)
-    # both contractions fold into one Custom node (L/T scratch get one-time Allocs).
-    assert _count_kind(g, "Einsum") == 0
+    # The pair folds to ONE contraction. That contraction is a real Einsum node
+    # (Graph.make_einsum_node) so the descriptor-reading passes can still see it;
+    # the separate Custom node builds L. L/T scratch get one-time Allocs.
+    assert _count_kind(g, "Einsum") == 1
+    assert _count_kind(g, "Custom") == 1
     assert _count_kind(g, "Custom") == 1
 
     g.execute()
@@ -121,7 +124,8 @@ def test_fold_three_terms():
     assert _count_kind(g, "Einsum") == 3
 
     assert _run(g)
-    assert _count_kind(g, "Einsum") == 0
+    # One fused contraction (a real Einsum node) plus the Custom L builder.
+    assert _count_kind(g, "Einsum") == 1
     assert _count_kind(g, "Custom") == 1
 
     g.execute()
@@ -175,3 +179,58 @@ def test_fold_inside_loop_body():
 
     # out is overwritten each iteration (first term c_pf=0), so last iter wins.
     assert_close(out, one_iter)
+
+
+def _kinds(graph):
+    return [n["kind"] for n in json.loads(graph.to_json())["nodes"]]
+
+
+def test_default_pipeline_folds_and_hoists_the_l_builder():
+    """LCCF is in populate_default, ordered before LoopInvariantHoisting.
+
+    The two together are the point: LCCF emits the L construction as its own
+    node whose only input is the paired operand, so when that operand is
+    loop-invariant -- an integral block from one-time setup, the common case --
+    LIH lifts the builder out of the loop and L is built once rather than
+    rebuilt on every replay. Before the split, L lived inside the fused
+    contraction's executor and nothing could see that half was invariant.
+    """
+    o, v, niters = 2, 3, 4
+    rng = np.random.default_rng(7)
+    g_np = rng.standard_normal((o, v, v, v))   # loop-invariant integral
+    d_np = rng.standard_normal((o, v))         # per-iteration t1 increment
+
+    integral = einsums.asarray(np.ascontiguousarray(g_np), name="g")
+    incr = einsums.asarray(np.ascontiguousarray(d_np), name="d")
+    t1 = einsums.create_zero_tensor("t1", [o, v], dtype="float64")
+    Fae = einsums.create_zero_tensor("Fae", [v, v], dtype="float64")
+
+    # Oracle: t1 gains d AFTER each iteration's contraction.
+    t1_ref, ref = np.zeros((o, v)), np.zeros((v, v))
+    for _ in range(niters):
+        ref = ref + 2.0 * np.einsum("mf,mafe->ae", t1_ref, g_np)
+        ref = ref - 1.0 * np.einsum("mf,maef->ae", t1_ref, g_np)
+        t1_ref = t1_ref + d_np
+
+    g = cg.Graph("ccsd_spin_adaptation")
+    body = g.add_loop("iter", niters, lambda it, N=niters: it < N - 1)
+    with cg.capture(body):
+        einsums.einsum("a,e <- m,f ; m,a,f,e", Fae, t1, integral, c_pf=1.0, ab_pf=2.0)
+        einsums.einsum("a,e <- m,f ; m,a,e,f", Fae, t1, integral, c_pf=1.0, ab_pf=-1.0)
+        einsums.linalg.axpby(1.0, incr, 1.0, t1)
+
+    assert _kinds(body).count("Einsum") == 2, _kinds(body)
+
+    g.apply(cg.default_pass_manager())
+
+    body_kinds, parent_kinds = _kinds(body), _kinds(g)
+    # The pair folded to a single contraction, and it is a REAL Einsum node --
+    # built via Graph.make_einsum_node -- not an opaque Custom blob, so the
+    # descriptor-reading passes can still see it.
+    assert body_kinds.count("Einsum") == 1, body_kinds
+    assert body_kinds.count("Custom") == 0, body_kinds
+    # The L builder is the Custom node, now sitting in the parent before the loop.
+    assert parent_kinds.count("Custom") == 1, parent_kinds
+
+    g.execute()
+    assert_close(Fae, ref)
