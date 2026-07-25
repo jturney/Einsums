@@ -211,22 +211,24 @@ TEST_CASE("LCCF - the L builder is a separate node that LIH hoists out of a loop
     REQUIRE(graph.apply(pm_lccf));
     REQUIRE(lccf->num_groups() == 1);
 
-    // Count Custom nodes in the loop body. Re-resolves the loop descriptor on
-    // every call on purpose: it is a pointer into a Node's op_data, and any pass
-    // that inserts into the parent's node vector (LIH hoisting does) reallocates
-    // it and dangles a cached one.
-    auto body_customs = [&graph]() -> size_t {
+    // Count body nodes of a given kind. Re-resolves the loop descriptor on every
+    // call on purpose: it is a pointer into a Node's op_data, and any pass that
+    // inserts into the parent's node vector (LIH hoisting does) reallocates it and
+    // dangles a cached one.
+    auto body_kind = [&graph](cg::OpKind want) -> size_t {
         for (auto const &n : graph.nodes()) {
             if (auto const *d = std::get_if<cg::LoopDescriptor>(&n.op_data); d != nullptr && d->body) {
-                return static_cast<size_t>(
-                    std::ranges::count_if(d->body->nodes(), [](cg::Node const &bn) { return bn.kind == cg::OpKind::Custom; }));
+                return static_cast<size_t>(std::ranges::count_if(d->body->nodes(), [want](cg::Node const &bn) { return bn.kind == want; }));
             }
         }
         return 0;
     };
 
-    // Two nodes now stand where the pair was: the L builder and the contraction.
-    CHECK(body_customs() == 2);
+    // Two nodes now stand where the pair was: the Custom L builder, and the
+    // contraction as a REAL Einsum node (via Graph::make_einsum_node) so the
+    // descriptor-reading passes can see it rather than skipping an opaque blob.
+    CHECK(body_kind(cg::OpKind::Custom) == 1);
+    CHECK(body_kind(cg::OpKind::Einsum) == 1);
 
     // LIH lifts the builder: invariant input, single writer, destination unread.
     cg::PassManager pm_lih;
@@ -234,8 +236,10 @@ TEST_CASE("LCCF - the L builder is a separate node that LIH hoists out of a loop
     pm_lih.add(lih);
     CHECK(graph.apply(pm_lih));
     CHECK(lih->num_hoisted() == 1);
-    // The builder left the body and now sits in the parent, before the loop.
-    CHECK(body_customs() == 1);
+    // The builder left the body and now sits in the parent, before the loop; the
+    // contraction stays behind as a visible Einsum.
+    CHECK(body_kind(cg::OpKind::Custom) == 0);
+    CHECK(body_kind(cg::OpKind::Einsum) == 1);
     CHECK(std::ranges::any_of(graph.nodes(), [](cg::Node const &n) { return n.kind == cg::OpKind::Custom; }));
 
     graph.execute();

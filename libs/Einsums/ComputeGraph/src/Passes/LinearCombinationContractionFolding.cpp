@@ -391,18 +391,6 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
             });
         };
 
-        auto contract = [einspec = std::move(einspec), c_pf0, ab0, shared_first, graph_ptr, shared_id, out_id, l_id, dtype]() {
-            detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-                using RT      = GeneralRuntimeTensor<T, std::allocator<T>>;
-                auto     *L   = static_cast<RT *>(graph_ptr->tensor(l_id).tensor_ptr);
-                auto     *out = static_cast<RT *>(graph_ptr->tensor(out_id).tensor_ptr);
-                auto     *sh  = static_cast<RT *>(graph_ptr->tensor(shared_id).tensor_ptr);
-                RT const *Aop = shared_first ? sh : L;
-                RT const *Bop = shared_first ? L : sh;
-                dispatch::string_einsum<RT, RT, RT>(einspec, as<T>(c_pf0), out, as<T>(ab0), *Aop, *Bop);
-            });
-        };
-
         // Node A. Writes L (and the T scratch) and reads neither, so it is a pure
         // producer as far as the hoisting and liveness analyses are concerned.
         Node lbuild;
@@ -413,26 +401,30 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         lbuild.outputs = {l_id, t_id};
         lbuild.id      = graph.reserve_node_id();
 
-        // Node B, the contraction. It no longer lists the non-shared operand as an
-        // input -- node A consumes it -- and lists L instead, which is what orders
-        // it after A.
-        Node fused;
-        fused.kind    = OpKind::Custom;
-        fused.label   = fmt::format("lccf({} terms via _lccf_L_{})", members.size(), _num_groups);
-        fused.execute = std::move(contract);
-        fused.inputs  = {vg.key.shared_id, l_id};
-        // When node-0 accumulates (c_pf != 0) the fused op is a read-modify-write of
-        // the output: declare the output as an input too, so the scheduler keeps it
-        // ordered after the seed and the other accumulations into that tensor.
-        if (!members[0].c_pf_is_zero) {
-            fused.inputs.push_back(vg.key.output_id);
-        }
-        fused.outputs = {vg.key.output_id};
+        // Node B, the contraction: node-0's einsum with its non-shared operand
+        // replaced by L, so the index lists and prefactors are unchanged and the
+        // spec carries over verbatim. Built through make_einsum_node rather than as
+        // a baked closure so it stays a REAL OpKind::Einsum with a live descriptor,
+        // which is what lets CSE, DeadNodeElimination, ScaleAbsorption,
+        // PermuteFusion, StreamContractionFusion and the placement passes see it
+        // instead of stepping over an opaque Custom node. The factory also applies
+        // the RMW input convention for the accumulating case.
+        //
+        // Operand ORDER matters now: a real einsum node's descriptor implies
+        // inputs[0] is operand A, so L has to land in the slot the non-shared
+        // operand occupied.
+        TensorId const a_operand = shared_first ? shared_id : l_id;
+        TensorId const b_operand = shared_first ? l_id : shared_id;
+        Node           fused     = graph.make_einsum_node(a_operand, b_operand, out_id, einspec, c_pf0, ab0, /*conj_a=*/false,
+                                                          /*conj_b=*/false, fmt::format("lccf({} terms via _lccf_L_{})", members.size(), _num_groups));
+        // Keep node-0's id: state keyed by NodeId (profiler payload strings, the
+        // program-order validator's observed-writes map) refers to it, and node-0 is
+        // the node being replaced, so no duplicate arises.
+        fused.id = nodes[members[0].node_index].id;
         // Place the fused node AT node-0's vector position (not appended). The
         // topological sort derives RAW/WAR/WAW edges from scan order, so the fused
         // node must occupy node-0's slot to remain the last writer of the output
         // before its consumer (appending would schedule it after the consumer).
-        fused.id                     = nodes[members[0].node_index].id;
         nodes[members[0].node_index] = std::move(fused);
         used[members[0].node_index]  = true; // kept (now the fused node)
         // A goes immediately before it; collected and spliced after the removal
