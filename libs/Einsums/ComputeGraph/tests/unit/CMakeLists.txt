@@ -61,6 +61,7 @@ set(ComputeGraphTests
     Pass_MemoryPlanning.cpp
     Pass_Reorder.cpp
     Pass_ScaleAbsorption.cpp
+    Pass_TiledExpansion.cpp
     Pass_SymmetryPropagation.cpp
     PassManager.cpp
     PermuteFusion.cpp
