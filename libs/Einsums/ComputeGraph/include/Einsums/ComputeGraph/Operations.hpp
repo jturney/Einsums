@@ -4054,11 +4054,20 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
                                         *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
     };
 
-    // Opaque Custom node: participates in dependency ordering + lifecycle but is
-    // invisible to the einsum-rewriting passes (chain parenthesization /
-    // contraction planning), which would otherwise synthesize *dense*
-    // intermediates. Tier B1 = no cross-tile graph optimization.
-    ctx.record(OpKind::Custom, std::move(label), {a_id, b_id}, {c_id}, std::move(executor));
+    // OpKind::Custom on purpose: the node participates in dependency ordering and
+    // lifecycle, but stays invisible to the einsum-rewriting passes (contraction
+    // planning, GEMM batching, stream fusion), which would otherwise synthesize
+    // *dense* intermediates for operands that have no single buffer.
+    //
+    // It DOES carry a TiledEinsumDescriptor holding the same live indices/params
+    // the executor reads, so a pass that explicitly asks for a tiled einsum can
+    // inspect and rewrite it -- the tile-expansion pass needs the spec and the
+    // prefactors, and a bare closure hides both. The descriptor type is distinct
+    // from EinsumDescriptor precisely so that no dense-einsum pass picks it up.
+    TiledEinsumDescriptor tdesc;
+    tdesc.indices = indices;
+    tdesc.params  = params;
+    ctx.record(OpKind::Custom, std::move(label), {a_id, b_id}, {c_id}, std::move(executor), std::move(tdesc));
 }
 
 /**

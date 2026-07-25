@@ -116,6 +116,34 @@ struct AxpbyDescriptor {
 };
 
 /**
+ * @brief Metadata for a TILED einsum node.
+ *
+ * A tiled contraction records as ``OpKind::Custom`` and executes per tile through
+ * ``detail::tiled_runtime_einsum``. This carries the live state that executor
+ * reads, so a pass can inspect and rewrite the operation instead of treating the
+ * node as an opaque closure.
+ *
+ * Deliberately a DISTINCT type from @ref EinsumDescriptor rather than a reuse of
+ * it. A whole-tiled contraction is not a dense one -- its operands have no single
+ * contiguous buffer -- and several passes probe ``get_if<EinsumDescriptor>``
+ * without first checking the node kind, so handing the tiled node an
+ * EinsumDescriptor would expose it to passes that assume one buffer per tensor.
+ * With its own type it stays invisible to all of them, and only a pass that
+ * explicitly asks for a tiled einsum finds it.
+ *
+ * The operand and output TensorIds are on the node itself; the element type comes
+ * from the tensor handles.
+ */
+struct TiledEinsumDescriptor {
+    /// Live index lists, shared with the executor: a pass that rewrites these
+    /// changes what the next ``graph.execute()`` contracts.
+    std::shared_ptr<EinsumIndices> indices;
+    /// Live prefactors, shared with the executor. Same contract as
+    /// @ref EinsumDescriptor::params.
+    std::shared_ptr<EinsumParams> params;
+};
+
+/**
  * @brief Metadata for conditional (if-then-else) nodes.
  *
  * Contains a predicate function and two subgraphs. The predicate is evaluated
@@ -245,7 +273,7 @@ inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, 
  */
 using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
                             AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor,
-                            BatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor>;
+                            BatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, TiledEinsumDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.
