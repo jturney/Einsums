@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp>
@@ -206,7 +207,11 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
     size_t const      orig_count = nodes.size(); // appended Alloc nodes (>= this) are always kept
     std::vector<bool> used(orig_count, false);
     std::vector<bool> remove(orig_count, false);
-    bool              modified = false;
+    // (position in the ORIGINAL numbering, nodes to splice immediately before it).
+    // Collected while folding and applied after erase_nodes, with the positions
+    // remapped for the erased nodes below each one.
+    std::vector<std::pair<std::size_t, std::vector<Node>>> pending_inserts;
+    bool                                                   modified = false;
 
     for (auto &vg : valid) {
         std::vector<FoldCandidate> members;
@@ -353,15 +358,27 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // Captured for the verbosity report below, before einspec is moved into the lambda.
         std::string const fold_out_indices = fmt::format("{}", fmt::join(einspec.c_indices, ","));
 
-        auto combined = [contribs = std::move(contribs), einspec = std::move(einspec), c_pf0, ab0, shared_first, graph_ptr, nonshared_id,
-                         shared_id, out_id, l_id, t_id, dtype]() {
-            auto build = [&]<typename T>(T /*tag*/) {
-                using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
-                auto *L  = static_cast<RT *>(graph_ptr->tensor(l_id).tensor_ptr);
-                auto *B  = static_cast<RT *>(graph_ptr->tensor(nonshared_id).tensor_ptr);
-                auto *Tt = static_cast<RT *>(graph_ptr->tensor(t_id).tensor_ptr);
-                L->zero();
+        // Emit TWO nodes, not one fused blob:
+        //
+        //   A: L = sum_k (ab_k/ab0) * P_k(B)      -- reads only the non-shared operand
+        //   B: out = c_pf0*out + ab0 * (shared op L)
+        //
+        // Building L inside the contraction's executor made it invisible: the
+        // combined node reads the varying shared operand, so nothing could tell
+        // that the L half depends only on B. In a loop that meant L was rebuilt
+        // from scratch on every replay even when B was loop-invariant, which is
+        // the common case (B is an integral block, one-time setup). Split out,
+        // node A has invariant inputs, a single writer, and a destination it does
+        // not read, so LoopInvariantHoisting's existing criteria lift it out of
+        // the loop with no changes to that pass.
+        auto build_l = [contribs = std::move(contribs), ab0, graph_ptr, nonshared_id, l_id, t_id, dtype]() {
+            detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
+                using RT      = GeneralRuntimeTensor<T, std::allocator<T>>;
+                auto   *L     = static_cast<RT *>(graph_ptr->tensor(l_id).tensor_ptr);
+                auto   *B     = static_cast<RT *>(graph_ptr->tensor(nonshared_id).tensor_ptr);
+                auto   *Tt    = static_cast<RT *>(graph_ptr->tensor(t_id).tensor_ptr);
                 T const ab0_t = as<T>(ab0);
+                L->zero();
                 for (auto const &c : contribs) {
                     T const scale = as<T>(c.ab) / ab0_t; // exact in T, complex included
                     if (c.is_permute) {
@@ -371,43 +388,46 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
                         linear_algebra::axpy(scale, *B, L); // L += scale * B
                     }
                 }
-                // Single fused contraction: out = c_pf0*out + ab0 * (shared op L).
+            });
+        };
+
+        auto contract = [einspec = std::move(einspec), c_pf0, ab0, shared_first, graph_ptr, shared_id, out_id, l_id, dtype]() {
+            detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
+                using RT      = GeneralRuntimeTensor<T, std::allocator<T>>;
+                auto     *L   = static_cast<RT *>(graph_ptr->tensor(l_id).tensor_ptr);
                 auto     *out = static_cast<RT *>(graph_ptr->tensor(out_id).tensor_ptr);
                 auto     *sh  = static_cast<RT *>(graph_ptr->tensor(shared_id).tensor_ptr);
                 RT const *Aop = shared_first ? sh : L;
                 RT const *Bop = shared_first ? L : sh;
-                dispatch::string_einsum<RT, RT, RT>(einspec, as<T>(c_pf0), out, ab0_t, *Aop, *Bop);
-            };
-            switch (dtype) {
-            case packed_gemm::ScalarType::Float32:
-                build(float{});
-                break;
-            case packed_gemm::ScalarType::Float64:
-                build(double{});
-                break;
-            case packed_gemm::ScalarType::Complex64:
-                build(std::complex<float>{});
-                break;
-            case packed_gemm::ScalarType::Complex128:
-                build(std::complex<double>{});
-                break;
-            default:
-                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "LinearCombinationContractionFolding: unknown ScalarType");
-            }
+                dispatch::string_einsum<RT, RT, RT>(einspec, as<T>(c_pf0), out, as<T>(ab0), *Aop, *Bop);
+            });
         };
 
+        // Node A. Writes L (and the T scratch) and reads neither, so it is a pure
+        // producer as far as the hoisting and liveness analyses are concerned.
+        Node lbuild;
+        lbuild.kind    = OpKind::Custom;
+        lbuild.label   = fmt::format("lccf_build_L({} terms -> _lccf_L_{})", members.size(), _num_groups);
+        lbuild.execute = std::move(build_l);
+        lbuild.inputs  = {nonshared_id};
+        lbuild.outputs = {l_id, t_id};
+        lbuild.id      = graph.reserve_node_id();
+
+        // Node B, the contraction. It no longer lists the non-shared operand as an
+        // input -- node A consumes it -- and lists L instead, which is what orders
+        // it after A.
         Node fused;
         fused.kind    = OpKind::Custom;
         fused.label   = fmt::format("lccf({} terms via _lccf_L_{})", members.size(), _num_groups);
-        fused.execute = std::move(combined);
-        fused.inputs  = {vg.key.shared_id, nonshared_id};
+        fused.execute = std::move(contract);
+        fused.inputs  = {vg.key.shared_id, l_id};
         // When node-0 accumulates (c_pf != 0) the fused op is a read-modify-write of
         // the output: declare the output as an input too, so the scheduler keeps it
         // ordered after the seed and the other accumulations into that tensor.
         if (!members[0].c_pf_is_zero) {
             fused.inputs.push_back(vg.key.output_id);
         }
-        fused.outputs = {vg.key.output_id, l_id, t_id};
+        fused.outputs = {vg.key.output_id};
         // Place the fused node AT node-0's vector position (not appended). The
         // topological sort derives RAW/WAR/WAW edges from scan order, so the fused
         // node must occupy node-0's slot to remain the last writer of the output
@@ -415,6 +435,9 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         fused.id                     = nodes[members[0].node_index].id;
         nodes[members[0].node_index] = std::move(fused);
         used[members[0].node_index]  = true; // kept (now the fused node)
+        // A goes immediately before it; collected and spliced after the removal
+        // bookkeeping so the recorded indices stay in the original numbering.
+        pending_inserts.emplace_back(members[0].node_index, std::vector<Node>{std::move(lbuild)});
 
         for (size_t mi = 1; mi < members.size(); mi++) { // members[0] reused for the fused node
             remove[members[mi].node_index] = true;
@@ -442,6 +465,22 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
 
     // Keep appended fused nodes (index >= orig_count); drop folded originals.
     graph.erase_nodes(remove);
+
+    // Splice each L-builder immediately before its contraction. The recorded
+    // positions are in the pre-erase numbering, so shift each one down by the
+    // number of erased nodes that sat below it. A contraction's own slot is never
+    // erased (it took over node-0's), so the shifted position still points at it
+    // and inserting "before" lands the builder directly ahead of its consumer.
+    if (!pending_inserts.empty()) {
+        std::vector<size_t> erased_below(remove.size() + 1, 0);
+        for (size_t i = 0; i < remove.size(); ++i) {
+            erased_below[i + 1] = erased_below[i] + (remove[i] ? 1 : 0);
+        }
+        for (auto &[pos, group] : pending_inserts) {
+            pos -= erased_below[pos];
+        }
+        graph.insert_node_groups(std::move(pending_inserts));
+    }
     graph.topological_sort();
 
     EINSUMS_LOG_INFO("LinearCombinationContractionFolding: folded {} groups, eliminated {} nodes", _num_groups, _num_eliminated);

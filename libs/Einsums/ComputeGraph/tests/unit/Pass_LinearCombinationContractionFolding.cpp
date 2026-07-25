@@ -171,3 +171,98 @@ TEST_CASE("LCCF - statically-typed captures are not folded (and stay correct)", 
         }
     }
 }
+
+// LCCF emits the L construction as its OWN node, separate from the contraction.
+// That is what lets LoopInvariantHoisting lift it: L depends only on the
+// non-shared operand, so when that operand is loop-invariant -- the common case,
+// it is an integral block from one-time setup -- L is built once before the loop
+// instead of rebuilt on every replay. While the two halves lived in a single
+// fused executor, nothing could see that the L half was invariant, because the
+// combined node also read the varying shared operand.
+TEST_CASE("LCCF - the L builder is a separate node that LIH hoists out of a loop", "[ComputeGraph][Passes][LCCF]") {
+    size_t const o = 2, v = 3, niter = 4;
+
+    auto g_typed = create_random_tensor<double>("g", o, v, v, v); // loop-INVARIANT integral
+    auto d_typed = create_random_tensor<double>("d", o, v);       // per-iteration t1 increment
+
+    RuntimeTensor<double> const g_rt(g_typed), d_rt(d_typed);
+    RuntimeTensor<double>       t1("t1", std::vector<size_t>{o, v});
+    RuntimeTensor<double>       Fae("Fae", std::vector<size_t>{v, v});
+    t1.zero();
+    Fae.zero();
+
+    // The CCSD spin-adaptation pair: the same integral read with transposed
+    // indices, against a shared operand that changes each iteration.
+    cg::Graph graph("lccf_hoist");
+    {
+        auto                  &body = graph.add_loop("iter", niter, [niter](size_t it) { return it + 1 < niter; });
+        cg::CaptureGuard const guard(body);
+        cg::einsum("a,e <- m,f ; m,a,f,e", 1.0, &Fae, 2.0, t1, g_rt);
+        cg::einsum("a,e <- m,f ; m,a,e,f", 1.0, &Fae, -1.0, t1, g_rt);
+        cg::axpy(1.0, d_rt, &t1); // t1 varies -> the contraction is NOT invariant
+    }
+
+    // Must go through a PassManager, not Graph::apply<PassType>(): the latter
+    // calls pass.run(graph) directly with no subgraph descent, so a pass that
+    // needs to be handed the loop BODY never sees the pair.
+    cg::PassManager pm_lccf;
+    auto            lccf = std::make_shared<cg::passes::LinearCombinationContractionFolding>();
+    pm_lccf.add(lccf);
+    REQUIRE(graph.apply(pm_lccf));
+    REQUIRE(lccf->num_groups() == 1);
+
+    // Count Custom nodes in the loop body. Re-resolves the loop descriptor on
+    // every call on purpose: it is a pointer into a Node's op_data, and any pass
+    // that inserts into the parent's node vector (LIH hoisting does) reallocates
+    // it and dangles a cached one.
+    auto body_customs = [&graph]() -> size_t {
+        for (auto const &n : graph.nodes()) {
+            if (auto const *d = std::get_if<cg::LoopDescriptor>(&n.op_data); d != nullptr && d->body) {
+                return static_cast<size_t>(
+                    std::ranges::count_if(d->body->nodes(), [](cg::Node const &bn) { return bn.kind == cg::OpKind::Custom; }));
+            }
+        }
+        return 0;
+    };
+
+    // Two nodes now stand where the pair was: the L builder and the contraction.
+    CHECK(body_customs() == 2);
+
+    // LIH lifts the builder: invariant input, single writer, destination unread.
+    cg::PassManager pm_lih;
+    auto            lih = std::make_shared<cg::passes::LoopInvariantHoisting>();
+    pm_lih.add(lih);
+    CHECK(graph.apply(pm_lih));
+    CHECK(lih->num_hoisted() == 1);
+    // The builder left the body and now sits in the parent, before the loop.
+    CHECK(body_customs() == 1);
+    CHECK(std::ranges::any_of(graph.nodes(), [](cg::Node const &n) { return n.kind == cg::OpKind::Custom; }));
+
+    graph.execute();
+
+    // Oracle: t1 gains d AFTER each iteration's contraction, so iteration k
+    // contracts k*d.
+    Tensor<double, 2> ref("ref", v, v);
+    ref.zero();
+    for (size_t it = 0; it < niter; ++it) {
+        for (size_t a = 0; a < v; ++a) {
+            for (size_t e = 0; e < v; ++e) {
+                double acc = 0.0;
+                for (size_t m = 0; m < o; ++m) {
+                    for (size_t f = 0; f < v; ++f) {
+                        double const t = static_cast<double>(it) * d_typed(m, f);
+                        acc += t * (2.0 * g_typed(m, a, f, e) - g_typed(m, a, e, f));
+                    }
+                }
+                ref(a, e) += acc;
+            }
+        }
+    }
+
+    for (size_t a = 0; a < v; ++a) {
+        for (size_t e = 0; e < v; ++e) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(a), static_cast<ptrdiff_t>(e)};
+            REQUIRE(std::abs(Fae(idx) - ref(a, e)) < 1e-11);
+        }
+    }
+}
