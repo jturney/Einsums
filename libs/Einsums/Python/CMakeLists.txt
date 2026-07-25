@@ -32,6 +32,7 @@ einsums_add_module(
   HEADERS ${PythonHeaders}
   DEPENDENCIES
   MODULE_DEPENDENCIES
+  CMAKE_SUBDIRS tests
 )
 
 if(EINSUMS_BUILD_PYTHON)

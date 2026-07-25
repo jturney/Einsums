@@ -32,9 +32,38 @@ on first use if nothing was configured.
 
 import importlib as _importlib
 import numbers as _numbers
+import sys as _sys
 
 from . import rc  # noqa: F401  (exposed as einsums.rc)
 from .rc import LogLevel  # noqa: F401  (exposed as einsums.LogLevel)
+
+# ----------------------------------------------------------------------
+# Command-line options
+# ----------------------------------------------------------------------
+# A C++ program forwards its argv to einsums::initialize, so ``--einsums:*``
+# flags work out of the box. A Python process has no such handoff: the runtime
+# is started from einsums.rc (see PyEinsumsMain.cpp::argv_from_rc), so a flag
+# typed on the python command line used to be silently ignored -- including
+# ``--einsums:debug:no-attach-debugger``, whose absence turns a crash into a
+# process that hangs forever waiting for a debugger.
+#
+# Claim the ``--einsums:`` namespace here, at IMPORT time, and hand the flags to
+# the runtime at init. Import time is deliberate: it is deterministic and
+# happens before the script parses its own arguments, whereas runtime startup is
+# lazy (first real use) and could land either side of an argparse call.
+#
+# The flags are REMOVED from sys.argv so scripts using argparse do not fail on
+# unrecognized arguments; read einsums.cli_options if you need to see them.
+def _extract_cli_options(argv: list[str]) -> list[str]:
+    """Pull ``--einsums:*`` tokens out of *argv* (mutating it) and return them."""
+    taken = [a for a in argv[1:] if a.startswith("--einsums:")]
+    if taken:
+        argv[:] = [argv[0]] + [a for a in argv[1:] if not a.startswith("--einsums:")]
+    return taken
+
+
+#: ``--einsums:*`` flags claimed from the command line at import, in order.
+cli_options: list[str] = _extract_cli_options(_sys.argv)
 
 # Eager-load the compiled extension so its bindings are registered as soon as
 # the package is imported. This only registers types and functions; _core's
@@ -50,8 +79,12 @@ def _ensure_initialized() -> None:
     running. Called lazily rather than at import time so that ``einsums.rc``
     settings made after ``import einsums`` but before the first compute still
     take effect.
+
+    Any ``--einsums:*`` flags claimed from the command line at import
+    (:data:`cli_options`) are appended after the rc-derived flags, so an
+    explicit command-line flag overrides the same setting made through rc.
     """
-    _core._initialize_from_rc()
+    _core._initialize_from_rc(cli_options)
 
 
 # ----------------------------------------------------------------------

@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>
+#include <pybind11/stl.h> // std::vector<std::string> caster for the cli_options argument
 #include <string>
 #include <vector>
 
@@ -174,7 +175,7 @@ PYBIND11_MODULE(_core, m) {
     // "the runtime is up", which must wait until after einsums.rc is configured.
     m.def(
         "_initialize_from_rc",
-        []() {
+        [](std::vector<std::string> const &cli_options) {
             // Idempotent: no-op once the runtime is already running. Reads the
             // user's einsums.rc settings, falling back to defaults if rc was
             // never touched. einsums.rc is a pure-Python sibling; importing it
@@ -183,12 +184,20 @@ PYBIND11_MODULE(_core, m) {
                 return;
             }
             py::module_ const rc = py::module_::import("einsums.rc");
-            apply_threads_from_rc(rc);                              // OMP_NUM_THREADS env var
-            std::vector<std::string> const argv = argv_from_rc(rc); // CLI flags
+            apply_threads_from_rc(rc);                        // OMP_NUM_THREADS env var
+            std::vector<std::string> argv = argv_from_rc(rc); // CLI flags
+            // ``--einsums:*`` flags the Python package claimed from the command
+            // line at import (einsums.cli_options). Appended AFTER the
+            // rc-derived flags so a flag given explicitly on the command line
+            // wins over the same setting made through rc.
+            argv.insert(argv.end(), cli_options.begin(), cli_options.end());
             einsums::initialize(argv);
             Py_AtExit(&einsums_python_atexit);
         },
-        "Start the einsums runtime from einsums.rc if it is not already running.");
+        py::arg("cli_options") = std::vector<std::string>{},
+        "Start the einsums runtime from einsums.rc if it is not already running.\n"
+        "cli_options: extra ``--einsums:*`` flags, appended after the rc-derived\n"
+        "ones so they take precedence.");
 
     m.def(
         "_is_initialized", []() { return einsums::is_running(); }, "Returns True if the einsums runtime has been initialized.");
