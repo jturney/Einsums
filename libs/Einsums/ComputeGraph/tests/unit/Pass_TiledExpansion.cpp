@@ -86,6 +86,74 @@ std::vector<double> gather(TiledRuntimeTensor<double> const &T, size_t R, size_t
     return M;
 }
 
+/// Every tile coordinate of a grid, in a deterministic order (the unordered_map
+/// behind tiles() must never drive anything two instances have to agree on).
+std::vector<std::vector<int>> enumerate_coords(Grid const &grid) {
+    std::vector<std::vector<int>> out{{}};
+    for (auto const &axis : grid) {
+        std::vector<std::vector<int>> next;
+        for (auto const &prefix : out) {
+            for (int t = 0; t < static_cast<int>(axis.size()); ++t) {
+                auto c = prefix;
+                c.push_back(t);
+                next.push_back(std::move(c));
+            }
+        }
+        out = std::move(next);
+    }
+    return out;
+}
+
+/// Build a tiled tensor of any rank, populating the listed coords.
+TiledRuntimeTensor<double> make_ndim(std::string name, Grid const &grid, std::vector<std::vector<int>> const &coords) {
+    TiledRuntimeTensor<double> t(std::move(name), grid);
+    for (auto const &c : coords) {
+        t.tile(c).materialize();
+    }
+    return t;
+}
+
+/// Fill deterministically from the tile coordinate and the element's offset, so
+/// two independently built copies hold identical data.
+void fill_det(TiledRuntimeTensor<double> &T, double salt) {
+    for (auto const &coord : enumerate_coords(T.tile_sizes())) {
+        if (!T.has_tile(coord)) {
+            continue;
+        }
+        auto &tile = T.tile(coord);
+        tile.materialize();
+        double seed = salt;
+        for (int c : coord) {
+            seed = seed * 3.0 + static_cast<double>(c);
+        }
+        for (size_t i = 0; i < tile.size(); ++i) {
+            tile.data()[i] = std::sin(seed + static_cast<double>(i) * 0.25);
+        }
+    }
+}
+
+/// Same populated tile set and identical contents. Compares every element of
+/// every tile, which is stronger than gathering to a dense picture and works at
+/// any rank.
+void require_tiles_match(TiledRuntimeTensor<double> const &got, TiledRuntimeTensor<double> const &want) {
+    // Guard against a vacuous pass: if the contraction produced no output tiles at
+    // all, every comparison below is trivially satisfied and proves nothing.
+    REQUIRE(want.num_filled_tiles() > 0);
+    REQUIRE(got.num_filled_tiles() == want.num_filled_tiles());
+    for (auto const &coord : enumerate_coords(want.tile_sizes())) {
+        REQUIRE(got.has_tile(coord) == want.has_tile(coord));
+        if (!want.has_tile(coord)) {
+            continue;
+        }
+        auto const &g = got.tile(coord);
+        auto const &w = want.tile(coord);
+        REQUIRE(g.size() == w.size());
+        for (size_t i = 0; i < w.size(); ++i) {
+            REQUIRE(std::abs(g.data()[i] - w.data()[i]) < 1e-11);
+        }
+    }
+}
+
 size_t nodes_of_kind(cg::Graph const &g, cg::OpKind k) {
     return static_cast<size_t>(std::ranges::count_if(g.nodes(), [k](cg::Node const &n) { return n.kind == k; }));
 }
@@ -274,4 +342,142 @@ TEST_CASE("TiledExpansion - declines over the node budget and leaves the graph a
     graph.execute();
     auto const got = gather(C, 6, 6);
     CHECK(std::abs(got[0]) > 0.0);
+}
+
+// ── Higher rank ───────────────────────────────────────────────────────────
+// The enumeration is rank-general by construction (it walks the unique-index
+// grid exactly as detail::tiled_runtime_einsum does), so these are coverage
+// rather than a separate code path. Both compare against the opaque path
+// element-by-element rather than a hand-derived answer.
+
+TEST_CASE("TiledExpansion - rank-3 contraction matches the opaque path", "[ComputeGraph][Passes][Tiled]") {
+    // C[i,j,k] = sum_l A[i,j,l] B[l,k]; the contracted l partition must align.
+    Grid const gA{{2, 3}, {2}, {3, 4}};
+    Grid const gB{{3, 4}, {2, 3}};
+    Grid const gC{{2, 3}, {2}, {2, 3}};
+
+    auto A_ref = make_ndim("A", gA, enumerate_coords(gA));
+    auto B_ref = make_ndim("B", gB, enumerate_coords(gB));
+    auto C_ref = make_ndim("C", gC, {});
+    fill_det(A_ref, 1.0);
+    fill_det(B_ref, 2.0);
+    {
+        cg::Graph              gref("r3_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::einsum("ijk <- ijl ; lk", &C_ref, A_ref, B_ref);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    auto A = make_ndim("A2", gA, enumerate_coords(gA));
+    auto B = make_ndim("B2", gB, enumerate_coords(gB));
+    auto C = make_ndim("C2", gC, {});
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+
+    cg::Graph graph("r3_expand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ijk <- ijl ; lk", &C, A, B);
+    }
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>();
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+    CHECK(pass->num_expanded() == 1);
+    CHECK(pass->num_declined() == 0);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Custom) == 0);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Einsum) > 0);
+
+    graph.execute();
+    require_tiles_match(C, C_ref);
+}
+
+TEST_CASE("TiledExpansion - CCSD-shaped rank-4 contraction matches the opaque path", "[ComputeGraph][Passes][Tiled]") {
+    // C[i,j,a,b] = sum_{c,d} A[i,j,c,d] B[c,d,a,b] -- the particle-ladder shape,
+    // with two contracted indices rather than one.
+    std::vector<int> const ip{2, 3}, jp{2}, ap{3}, bp{2, 2}, cp{2, 3}, dp{3};
+    Grid const             gA{ip, jp, cp, dp};
+    Grid const             gB{cp, dp, ap, bp};
+    Grid const             gC{ip, jp, ap, bp};
+
+    auto A_ref = make_ndim("A", gA, enumerate_coords(gA));
+    auto B_ref = make_ndim("B", gB, enumerate_coords(gB));
+    auto C_ref = make_ndim("C", gC, {});
+    fill_det(A_ref, 0.5);
+    fill_det(B_ref, 1.5);
+    {
+        cg::Graph              gref("r4_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::einsum("ijab <- ijcd ; cdab", &C_ref, A_ref, B_ref);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    auto A = make_ndim("A2", gA, enumerate_coords(gA));
+    auto B = make_ndim("B2", gB, enumerate_coords(gB));
+    auto C = make_ndim("C2", gC, {});
+    fill_det(A, 0.5);
+    fill_det(B, 1.5);
+
+    cg::Graph graph("r4_expand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ijab <- ijcd ; cdab", &C, A, B);
+    }
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>();
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+    CHECK(pass->num_expanded() == 1);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Custom) == 0);
+
+    graph.execute();
+    require_tiles_match(C, C_ref);
+}
+
+TEST_CASE("TiledExpansion - sparse rank-3 operands still match", "[ComputeGraph][Passes][Tiled]") {
+    // Drop half of A's tiles so a large share of the rank-3 combinations are
+    // structural zeros; the expanded graph must agree with the opaque path on
+    // both the surviving values AND which output tiles come into existence.
+    Grid const gA{{2, 3}, {2}, {3, 4}};
+    Grid const gB{{3, 4}, {2, 3}};
+    Grid const gC{{2, 3}, {2}, {2, 3}};
+
+    std::vector<std::vector<int>> sparse_a;
+    for (auto const &c : enumerate_coords(gA)) {
+        if ((c[0] + c[2]) % 2 == 0) {
+            sparse_a.push_back(c);
+        }
+    }
+    REQUIRE(sparse_a.size() < enumerate_coords(gA).size());
+
+    auto A_ref = make_ndim("A", gA, sparse_a);
+    auto B_ref = make_ndim("B", gB, enumerate_coords(gB));
+    auto C_ref = make_ndim("C", gC, {});
+    fill_det(A_ref, 3.0);
+    fill_det(B_ref, 4.0);
+    {
+        cg::Graph              gref("r3s_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::einsum("ijk <- ijl ; lk", &C_ref, A_ref, B_ref);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    auto A = make_ndim("A2", gA, sparse_a);
+    auto B = make_ndim("B2", gB, enumerate_coords(gB));
+    auto C = make_ndim("C2", gC, {});
+    fill_det(A, 3.0);
+    fill_det(B, 4.0);
+
+    cg::Graph graph("r3s_expand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ijk <- ijl ; lk", &C, A, B);
+    }
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>();
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+
+    graph.execute();
+    require_tiles_match(C, C_ref);
 }
