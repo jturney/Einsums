@@ -649,3 +649,179 @@ TEST_CASE("deferred tensor materialized by hand - no false positive", "[ComputeG
     tmp.zero();
     REQUIRE_NOTHROW(graph.execute());
 }
+
+// ── Graph::make_einsum_node ────────────────────────────────────────────────
+// The factory a pass uses to synthesize a contraction. The point is that the
+// node it produces behaves like a captured one rather than an opaque closure:
+// it carries a real EinsumDescriptor other passes can read, and its executor
+// reads the LIVE params/indices so a pass that edits the descriptor is honored
+// instead of silently ignored.
+namespace {
+einsums::compute_graph::ParsedEinsumSpec matmul_spec() {
+    einsums::compute_graph::ParsedEinsumSpec s;
+    s.c_indices = {"i", "j"};
+    s.a_indices = {"i", "k"};
+    s.b_indices = {"k", "j"};
+    s.raw       = "i,j <- i,k ; k,j";
+    return s;
+}
+} // namespace
+
+TEST_CASE("make_einsum_node - produces a real Einsum node with a descriptor", "[ComputeGraph][Graph]") {
+    namespace cg = einsums::compute_graph;
+
+    auto A_t = create_random_tensor<double>("A", 3, 4);
+    auto B_t = create_random_tensor<double>("B", 4, 2);
+
+    RuntimeTensor<double> A(A_t), B(B_t);
+    RuntimeTensor<double> C("C", std::vector<size_t>{3, 2});
+    C.zero();
+
+    cg::Graph graph("mk_einsum");
+    // register_tensor via the capture-free path: slots come from the handles.
+    auto const a_id = graph.register_tensor(cg::make_handle(A, 0));
+    auto const b_id = graph.register_tensor(cg::make_handle(B, 0));
+    auto const c_id = graph.register_tensor(cg::make_handle(C, 0));
+
+    auto node = graph.make_einsum_node(a_id, b_id, c_id, matmul_spec(), /*c_pf=*/0.0, /*ab_pf=*/2.0);
+
+    CHECK(node.kind == cg::OpKind::Einsum);
+    auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    REQUIRE(desc != nullptr);
+    CHECK(desc->params != nullptr);
+    CHECK(desc->indices != nullptr);
+    CHECK(desc->spec.link_indices == std::vector<std::string>{"k"});
+    // c_pf == 0 is a pure overwrite, so the output must NOT be listed as an input.
+    CHECK(node.inputs.size() == 2);
+    CHECK(node.outputs == std::vector<cg::TensorId>{c_id});
+
+    graph.add_node(std::move(node));
+    graph.execute();
+
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 2; ++j) {
+            double ref = 0.0;
+            for (size_t k = 0; k < 4; ++k) {
+                ref += A_t(i, k) * B_t(k, j);
+            }
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(i), static_cast<ptrdiff_t>(j)};
+            CHECK(C(idx) == Catch::Approx(2.0 * ref));
+        }
+    }
+}
+
+TEST_CASE("make_einsum_node - executor honors a later prefactor edit", "[ComputeGraph][Graph]") {
+    namespace cg = einsums::compute_graph;
+
+    auto A_t = create_random_tensor<double>("A", 3, 4);
+    auto B_t = create_random_tensor<double>("B", 4, 2);
+
+    RuntimeTensor<double> A(A_t), B(B_t);
+    RuntimeTensor<double> C("C", std::vector<size_t>{3, 2});
+    C.zero();
+
+    cg::Graph  graph("mk_einsum_live");
+    auto const a_id = graph.register_tensor(cg::make_handle(A, 0));
+    auto const b_id = graph.register_tensor(cg::make_handle(B, 0));
+    auto const c_id = graph.register_tensor(cg::make_handle(C, 0));
+
+    graph.add_node(graph.make_einsum_node(a_id, b_id, c_id, matmul_spec(), 0.0, 1.0));
+    graph.execute();
+    double const first = C(std::vector<ptrdiff_t>{0, 0});
+
+    // A pass folding a scale writes ab_pf through the shared params handle. A
+    // baked-closure node would ignore this; a first-class one must not.
+    auto *desc = std::get_if<cg::EinsumDescriptor>(&graph.nodes()[0].op_data);
+    REQUIRE(desc != nullptr);
+    desc->ab_prefactor  = 3.0;
+    desc->params->ab_pf = 3.0;
+
+    C.zero();
+    graph.execute();
+    CHECK(C(std::vector<ptrdiff_t>{0, 0}) == Catch::Approx(3.0 * first));
+}
+
+TEST_CASE("make_einsum_node - accumulating form lists its output as an input", "[ComputeGraph][Graph]") {
+    namespace cg = einsums::compute_graph;
+
+    auto                  A_t = create_random_tensor<double>("A", 2, 2);
+    RuntimeTensor<double> A(A_t), B(A_t);
+    RuntimeTensor<double> C("C", std::vector<size_t>{2, 2});
+    C.zero();
+
+    cg::Graph  graph("mk_einsum_rmw");
+    auto const a_id = graph.register_tensor(cg::make_handle(A, 0));
+    auto const b_id = graph.register_tensor(cg::make_handle(B, 0));
+    auto const c_id = graph.register_tensor(cg::make_handle(C, 0));
+
+    auto node = graph.make_einsum_node(a_id, b_id, c_id, matmul_spec(), /*c_pf=*/1.0, /*ab_pf=*/1.0);
+    CHECK(node.inputs.size() == 3);
+    CHECK(std::ranges::find(node.inputs, c_id) != node.inputs.end());
+}
+
+TEST_CASE("make_einsum_node - builds a GemmHint when the shapes qualify", "[ComputeGraph][Graph]") {
+    namespace cg = einsums::compute_graph;
+
+    auto A_t = create_random_tensor<double>("A", 3, 4);
+    auto B_t = create_random_tensor<double>("B", 4, 2);
+
+    RuntimeTensor<double> A(A_t), B(B_t);
+    RuntimeTensor<double> C("C", std::vector<size_t>{3, 2});
+    C.zero();
+
+    cg::Graph  graph("mk_einsum_hint");
+    auto const a_id = graph.register_tensor(cg::make_handle(A, 0));
+    auto const b_id = graph.register_tensor(cg::make_handle(B, 0));
+    auto const c_id = graph.register_tensor(cg::make_handle(C, 0));
+
+    auto        node = graph.make_einsum_node(a_id, b_id, c_id, matmul_spec(), 0.0, 1.0);
+    auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    REQUIRE(desc != nullptr);
+    REQUIRE(desc->gemm_hint != nullptr); // "i,j <- i,k ; k,j" is a plain GEMM
+
+    auto const &h = *desc->gemm_hint;
+    CHECK(h.scalar == cg::BlasScalar::Double);
+    // link is "k": A's k is axis 1 (not 0) so no transpose; B's k is axis 0 (not 1) likewise.
+    CHECK(h.trans_a == 'N');
+    CHECK(h.trans_b == 'N');
+    CHECK(h.m == 3);
+    CHECK(h.n == 2);
+    CHECK(h.k == 4);
+
+    // Extractors resolve through the graph at call time, so they hand back the
+    // live buffer rather than a pointer cached at construction.
+    auto const [a_ptr, lda] = h.extract_a();
+    CHECK(a_ptr == static_cast<void const *>(A.data()));
+    CHECK(lda > 0);
+    auto const [c_ptr, ldc] = h.extract_c();
+    CHECK(c_ptr == static_cast<void *>(C.data()));
+    CHECK(ldc > 0);
+}
+
+TEST_CASE("make_einsum_node - no GemmHint for a higher-rank contraction", "[ComputeGraph][Graph]") {
+    namespace cg = einsums::compute_graph;
+
+    auto A_t = create_random_tensor<double>("A", 2, 3);
+    auto B_t = create_random_tensor<double>("B", 2, 4, 3, 3);
+
+    RuntimeTensor<double> A(A_t), B(B_t);
+    RuntimeTensor<double> C("C", std::vector<size_t>{4, 3});
+    C.zero();
+
+    cg::ParsedEinsumSpec spec;
+    spec.c_indices = {"a", "e"};
+    spec.a_indices = {"m", "f"};
+    spec.b_indices = {"m", "a", "f", "e"};
+    spec.raw       = "a,e <- m,f ; m,a,f,e";
+
+    cg::Graph  graph("mk_einsum_nohint");
+    auto const a_id = graph.register_tensor(cg::make_handle(A, 0));
+    auto const b_id = graph.register_tensor(cg::make_handle(B, 0));
+    auto const c_id = graph.register_tensor(cg::make_handle(C, 0));
+
+    auto        node = graph.make_einsum_node(a_id, b_id, c_id, spec, 0.0, 1.0);
+    auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    REQUIRE(desc != nullptr);
+    // Rank-4 operand: not a GEMM, so no hint and GEMMBatching leaves it alone.
+    CHECK(desc->gemm_hint == nullptr);
+}

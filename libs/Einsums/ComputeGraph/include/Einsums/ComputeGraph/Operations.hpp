@@ -3510,22 +3510,8 @@ void validate_einsum_dims(ParsedEinsumSpec const &parsed, AType const &A, BType 
     scan(parsed.c_indices, C, 'C');
 }
 
-inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, PrefactorScalar c_pf, PrefactorScalar ab_pf,
-                                                bool conj_a = false, bool conj_b = false) {
-    EinsumDescriptor desc;
-    desc.c_prefactor         = c_pf;
-    desc.ab_prefactor        = ab_pf;
-    desc.conj_a              = conj_a;
-    desc.conj_b              = conj_b;
-    desc.spec.c_indices      = parsed.c_indices;
-    desc.spec.a_indices      = parsed.a_indices;
-    desc.spec.b_indices      = parsed.b_indices;
-    desc.spec.link_indices   = parsed.link_indices();
-    desc.spec.target_indices = parsed.target_indices();
-    desc.spec.all_indices    = desc.spec.target_indices;
-    desc.spec.all_indices.insert(desc.spec.all_indices.end(), desc.spec.link_indices.begin(), desc.spec.link_indices.end());
-    return desc;
-}
+// build_einsum_descriptor now lives in Node.hpp so Graph::make_einsum_node can
+// share it; see einsums::compute_graph::detail there.
 
 } // namespace detail
 

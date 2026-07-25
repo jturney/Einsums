@@ -1270,6 +1270,160 @@ std::function<void()> Graph::make_gemm_executor(TensorId a_id, TensorId b_id, Te
     };
 }
 
+Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, ParsedEinsumSpec const &spec, PrefactorScalar c_pf,
+                             PrefactorScalar ab_pf, bool conj_a, bool conj_b, std::string label) {
+    auto const &a_h = tensor(a_id);
+    auto const &b_h = tensor(b_id);
+    auto const &c_h = tensor(c_id);
+
+    // Runtime tensors of a single dtype: the executor below type-erases through
+    // GeneralRuntimeTensor, so a typed operand would be type confusion (bug-1015).
+    // A pass that gets here without gating has a bug, hence throw rather than
+    // silently emit something that segfaults at execute.
+    if (!a_h.is_runtime || !b_h.is_runtime || !c_h.is_runtime) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "Graph::make_einsum_node: all operands must be runtime tensors (a={} b={} c={}); gate on "
+                                "TensorHandle::is_runtime before calling",
+                                a_h.is_runtime, b_h.is_runtime, c_h.is_runtime);
+    }
+    if (a_h.dtype != c_h.dtype || b_h.dtype != c_h.dtype) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph::make_einsum_node: operand dtypes disagree; mixed-precision einsum is not "
+                                                       "expressible through one runtime dispatch");
+    }
+    auto const dtype = c_h.dtype;
+
+    // Live state, shared with the executor. Passes mutate these; the executor
+    // dereferences them on every call, so a rewrite lands on the next execute.
+    auto params    = std::make_shared<EinsumParams>();
+    params->c_pf   = c_pf;
+    params->ab_pf  = ab_pf;
+    params->conj_a = conj_a;
+    params->conj_b = conj_b;
+
+    auto indices          = std::make_shared<EinsumIndices>();
+    indices->c_indices    = spec.c_indices;
+    indices->a_indices    = spec.a_indices;
+    indices->b_indices    = spec.b_indices;
+    indices->link_indices = spec.link_indices();
+
+    auto desc    = detail::build_einsum_descriptor(spec, c_pf, ab_pf, conj_a, conj_b);
+    desc.params  = params;
+    desc.indices = indices;
+
+    // BLAS batching hint, same gate and same derivation as the capture path in
+    // Operations.hpp: three rank-2 operands, exactly one link index, and strides
+    // that agree with each tensor's declared layout flag.
+    //
+    // Building this at pass time is no weaker than building it at capture. The
+    // dims come from the same place either way, and GEMMBatching consumes the
+    // hint BEFORE DistributionPlanning and Materialization run, so a captured
+    // hint on graph-owned scratch is derived from the same shell geometry this
+    // is. (A deferred shell carries valid dims and strides; only data() is null.)
+    // The extractors are strictly better than the capture path's: resolving by
+    // TensorId at call time follows rebind() and survives MemoryPlanning
+    // repointing storage through materialize_into, which is exactly why they read
+    // data() lazily instead of caching a pointer.
+    auto const layout_matches_flag = [](auto const &impl) {
+        bool const   row_major = impl.is_row_major();
+        size_t const rank      = impl.rank();
+        size_t       prev      = 0;
+        bool         first     = true;
+        for (size_t n = 0; n < rank; ++n) {
+            size_t const d = row_major ? rank - 1 - n : n;
+            if (impl.dim(d) <= 1) {
+                continue; // extent-1 axes are never traversed; ignore their strides
+            }
+            size_t const st = impl.stride(d);
+            if (!first && st < prev) {
+                return false;
+            }
+            prev  = st;
+            first = false;
+        }
+        return true;
+    };
+
+    if (a_h.rank == 2 && b_h.rank == 2 && c_h.rank == 2 && spec.a_indices.size() == 2 && spec.b_indices.size() == 2 &&
+        spec.c_indices.size() == 2 && desc.spec.link_indices.size() == 1) {
+        detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
+            using RT      = GeneralRuntimeTensor<T, std::allocator<T>>;
+            auto const *A = static_cast<RT const *>(a_h.tensor_ptr);
+            auto const *B = static_cast<RT const *>(b_h.tensor_ptr);
+            auto const *C = static_cast<RT const *>(c_h.tensor_ptr);
+            if (A == nullptr || B == nullptr || C == nullptr) {
+                return;
+            }
+            if (!layout_matches_flag(A->impl()) || !layout_matches_flag(B->impl()) || !layout_matches_flag(C->impl())) {
+                return;
+            }
+
+            auto hint = std::make_shared<GemmHint>();
+            if constexpr (std::is_same_v<T, float>) {
+                hint->scalar = BlasScalar::Float;
+            } else if constexpr (std::is_same_v<T, double>) {
+                hint->scalar = BlasScalar::Double;
+            } else if constexpr (std::is_same_v<T, std::complex<float>>) {
+                hint->scalar = BlasScalar::ComplexFloat;
+            } else {
+                hint->scalar = BlasScalar::ComplexDouble;
+            }
+
+            std::string const &link = desc.spec.link_indices[0];
+            hint->trans_a           = (spec.a_indices[0] == link) ? 'T' : 'N';
+            hint->trans_b           = (spec.b_indices[1] == link) ? 'T' : 'N';
+            hint->m                 = static_cast<int>(C->dim(0));
+            hint->n                 = static_cast<int>(C->dim(1));
+            hint->k                 = static_cast<int>(hint->trans_a == 'N' ? A->dim(1) : A->dim(0));
+
+            Graph *g        = this;
+            hint->extract_a = [g, a_id]() -> std::pair<void const *, int> {
+                auto const &r = *static_cast<RT const *>(g->tensor(a_id).tensor_ptr);
+                return {static_cast<void const *>(r.data()), static_cast<int>(r.impl().get_lda())};
+            };
+            hint->extract_b = [g, b_id]() -> std::pair<void const *, int> {
+                auto const &r = *static_cast<RT const *>(g->tensor(b_id).tensor_ptr);
+                return {static_cast<void const *>(r.data()), static_cast<int>(r.impl().get_lda())};
+            };
+            hint->extract_c = [g, c_id]() -> std::pair<void *, int> {
+                auto *r = static_cast<RT *>(g->tensor(c_id).tensor_ptr);
+                return {static_cast<void *>(r->data()), static_cast<int>(r->impl().get_lda())};
+            };
+            desc.gemm_hint = std::move(hint);
+        });
+    }
+
+    Node node;
+    node.id    = reserve_node_id();
+    node.kind  = OpKind::Einsum;
+    node.label = label.empty() ? fmt::format("einsum({} <- {} ; {})", fmt::join(spec.c_indices, ","), fmt::join(spec.a_indices, ","),
+                                             fmt::join(spec.b_indices, ","))
+                               : std::move(label);
+    // RMW convention: a nonzero output prefactor means the node READS its output,
+    // so the output must appear as an input too or the schedulers and the liveness
+    // passes cannot see the accumulation ordering (bug-1009).
+    node.inputs  = is_zero(c_pf) ? std::vector<TensorId>{a_id, b_id} : std::vector<TensorId>{a_id, b_id, c_id};
+    node.outputs = {c_id};
+
+    Graph *self  = this;
+    node.execute = [self, a_id, b_id, c_id, params, indices, dtype]() {
+        detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
+            using RT      = GeneralRuntimeTensor<T, std::allocator<T>>;
+            auto const *A = static_cast<RT const *>(self->tensor(a_id).tensor_ptr);
+            auto const *B = static_cast<RT const *>(self->tensor(b_id).tensor_ptr);
+            auto       *C = static_cast<RT *>(self->tensor(c_id).tensor_ptr);
+            // Rebuild the parsed spec from the LIVE index lists each call so an
+            // index rewrite (PermuteFusion) is honored, matching the capture-time
+            // executor in Operations.hpp.
+            ParsedEinsumSpec live{indices->c_indices, indices->a_indices, indices->b_indices, /*raw*/ std::string{}};
+            dispatch::string_einsum(live, as<T>(params->c_pf), C, as<T>(params->ab_pf), *A, *B, params->conj_a, params->conj_b,
+                                    &indices->link_indices);
+        });
+    };
+
+    node.op_data = std::move(desc);
+    return node;
+}
+
 std::function<void()> Graph::make_einsum_executor(TensorId a_id, TensorId b_id, TensorId c_id, ParsedEinsumSpec const &spec, double alpha,
                                                   double beta) {
     // For chain restructuring: the intermediates are rank-2 but the leaf

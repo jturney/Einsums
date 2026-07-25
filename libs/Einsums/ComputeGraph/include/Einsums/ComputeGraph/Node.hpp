@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
+#include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/TensorSlot.hpp>
 #include <Einsums/ComputeGraphTypes/Descriptors.hpp>
@@ -209,6 +210,31 @@ struct WriteParamDescriptor {
     TensorId                      source_id{0}; ///< Scalar tensor to read (0 if using @ref source_fn).
     std::function<std::int64_t()> source_fn;    ///< Optional: compute the value directly.
 };
+
+namespace detail {
+
+/// Fill an EinsumDescriptor's snapshot fields from a parsed spec. Does NOT set
+/// the live @c params / @c indices handles or the gemm hint; callers that need a
+/// self-contained node should use @ref Graph::make_einsum_node instead of
+/// assembling those by hand.
+inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, PrefactorScalar c_pf, PrefactorScalar ab_pf,
+                                                bool conj_a = false, bool conj_b = false) {
+    EinsumDescriptor desc;
+    desc.c_prefactor         = c_pf;
+    desc.ab_prefactor        = ab_pf;
+    desc.conj_a              = conj_a;
+    desc.conj_b              = conj_b;
+    desc.spec.c_indices      = parsed.c_indices;
+    desc.spec.a_indices      = parsed.a_indices;
+    desc.spec.b_indices      = parsed.b_indices;
+    desc.spec.link_indices   = parsed.link_indices();
+    desc.spec.target_indices = parsed.target_indices();
+    desc.spec.all_indices    = desc.spec.target_indices;
+    desc.spec.all_indices.insert(desc.spec.all_indices.end(), desc.spec.link_indices.begin(), desc.spec.link_indices.end());
+    return desc;
+}
+
+} // namespace detail
 
 /**
  * @brief Type-erased operation metadata variant.

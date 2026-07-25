@@ -1179,6 +1179,56 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
                                                double alpha = 1.0, double beta = 0.0);
 
     /**
+     * @brief Build a FIRST-CLASS einsum node for a pass that synthesizes a contraction.
+     *
+     * Unlike @ref make_einsum_executor (which hands back a bare closure with the
+     * dims, spec, and scalars all baked at pass time, paired with a descriptor-less
+     * ``OpKind::Gemm`` node), this returns a complete ``OpKind::Einsum`` node that
+     * behaves like a captured one:
+     *
+     * - a full @ref EinsumDescriptor, so every pass that reads the descriptor or
+     *   the contraction spec (CSE, DeadNodeElimination, ScaleAbsorption,
+     *   PermuteFusion, StreamContractionFusion, Reorder, the distribution and GPU
+     *   passes) can see the node instead of stepping over an opaque blob;
+     * - freshly allocated *shared* @ref EinsumParams and @ref EinsumIndices, with an
+     *   executor that reads THROUGH those handles on every call. A pass that folds a
+     *   scale into ``ab_prefactor`` or rewrites the index lists therefore takes
+     *   effect on the next execute, rather than being silently ignored the way a
+     *   baked closure would ignore it (the desync class of bug-1002);
+     * - operands resolved by @ref TensorId at call time, so ``rebind()`` and
+     *   Materialization are honored, and the RMW input convention applied for you
+     *   (the output is declared as an input when @p c_pf is nonzero, the omission
+     *   that was bug-1009).
+     *
+     * @par Limits
+     * RUNTIME tensors of one dtype only: at pass time the operands are type-erased,
+     * so the executor dispatches on the handle's dtype and casts to
+     * ``GeneralRuntimeTensor``. A typed ``Tensor<T, Rank>`` operand would be type
+     * confusion (bug-1015), so all three ids must be runtime tensors of the same
+     * dtype -- this throws otherwise, since a pass reaching here without gating has
+     * a bug.
+     *
+     * A @ref GemmHint IS built when the shapes qualify (three rank-2 operands,
+     * exactly one link index, strides agreeing with each declared layout), so
+     * GEMMBatching can batch these nodes. Its extractors resolve by @ref TensorId
+     * at call time, which follows ``rebind()`` and survives MemoryPlanning
+     * repointing storage via ``materialize_into``.
+     *
+     * @param a_id  First operand.
+     * @param b_id  Second operand. Must match @p spec.b_indices.
+     * @param c_id  Output.
+     * @param spec  Index lists for the contraction.
+     * @param c_pf  Output prefactor. Nonzero means accumulate (read-modify-write).
+     * @param ab_pf Product prefactor.
+     * @param conj_a Conjugate the first operand.
+     * @param conj_b Conjugate the second operand.
+     * @param label Node label; a default is generated from the spec when empty.
+     * @return A node ready to splice in, with a reserved id and inputs/outputs set.
+     */
+    Node make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, ParsedEinsumSpec const &spec, PrefactorScalar c_pf,
+                          PrefactorScalar ab_pf, bool conj_a = false, bool conj_b = false, std::string label = {});
+
+    /**
      * @brief Create an executor lambda that zeros a tensor.
      *
      * @param[in] tensor_id TensorId of the tensor to zero.
