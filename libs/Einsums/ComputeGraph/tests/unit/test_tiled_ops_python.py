@@ -284,3 +284,52 @@ def test_tiled_heev_block_diagonal(dtype):
     W = DTYPE_TO_TRT[rdtype]("W", [[2, 3]])  # eigenvalues are real -> real tiled tensor
     einsums.linalg.heev(A, W)
     assert_close(np.sort(_gather_vec(W, 5, rdtype)), np.linalg.eigvalsh(_block_diag_full([b0, b1])))
+
+
+# ── Pipeline compatibility ────────────────────────────────────────────────
+# A tiled tensor is a tile container, not a dense buffer, so no buffer-level
+# pass may treat it as one. Three independent things keep that true, and this
+# pins the outcome rather than any single mechanism:
+#
+#   1. a tiled einsum records as OpKind::Custom, so every pass that filters on
+#      OpKind::Einsum (LCCF, GEMMBatching, StreamContractionFusion,
+#      DistributionPlanning) skips it structurally;
+#   2. TiledRuntimeTensor does not derive from RuntimeTensorNoType, so the
+#      is_runtime gate that guards GeneralRuntimeTensor casts rejects it;
+#   3. it exposes no rank-erased impl, so TensorHandle::impl_fn is null and
+#      Graph::make_einsum_node refuses it outright.
+def test_tiled_operands_survive_the_default_pipeline():
+    import json
+
+    aref = (1.0 + np.arange(45, dtype=np.float64)).reshape(5, 9)
+    bref = (2.0 - np.arange(63, dtype=np.float64)).reshape(9, 7)
+    A = _make(np.float64, "A", [[2, 3], [4, 5]], fill=lambda r, c: aref[r, c])
+    B = _make(np.float64, "B", [[4, 5], [3, 4]], fill=lambda r, c: bref[r, c])
+    C = _make(np.float64, "C", [[2, 3], [3, 4]])
+
+    import einsums.graph as cg
+
+    # Two accumulating contractions into one output reading the same operands:
+    # exactly the shape LinearCombinationContractionFolding hunts for. On dense
+    # operands it would fold them; on tiled ones it must decline.
+    g = cg.Graph("tiled_pipeline")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", C, A, B, c_pf=0.0, ab_pf=2.0)
+        einsums.einsum("ij <- ik ; kj", C, A, B, c_pf=1.0, ab_pf=-1.0)
+
+    kinds_before = [n["kind"] for n in json.loads(g.to_json())["nodes"]]
+    assert kinds_before == ["Custom", "Custom"], kinds_before
+
+    lccf = cg.LinearCombinationContractionFolding()
+    pm = cg.PassManager()
+    pm.add(lccf)
+    g.apply(pm)
+    assert lccf.num_groups == 0, "LCCF folded tiled operands"
+
+    # The whole default pipeline (which now includes LCCF) must leave it alone.
+    g.apply(cg.default_pass_manager())
+    assert [n["kind"] for n in json.loads(g.to_json())["nodes"]] == kinds_before
+
+    g.execute()
+    # 2*AB - AB == AB
+    assert_close(_gather(C, 5, 7), aref @ bref)
