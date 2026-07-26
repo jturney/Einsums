@@ -288,8 +288,7 @@ def test_tiled_heev_block_diagonal(dtype):
 
 # ── Pipeline compatibility ────────────────────────────────────────────────
 # A tiled tensor is a tile container, not a dense buffer, so no buffer-level
-# pass may treat it as one. Three independent things keep that true, and this
-# pins the outcome rather than any single mechanism:
+# pass may treat it as one. Three independent things keep that true:
 #
 #   1. a tiled einsum records as OpKind::Custom, so every pass that filters on
 #      OpKind::Einsum (LCCF, GEMMBatching, StreamContractionFusion,
@@ -298,7 +297,13 @@ def test_tiled_heev_block_diagonal(dtype):
 #      is_runtime gate that guards GeneralRuntimeTensor casts rejects it;
 #   3. it exposes no rank-erased impl, so TensorHandle::impl_fn is null and
 #      Graph::make_einsum_node refuses it outright.
-def test_tiled_operands_survive_the_default_pipeline():
+#
+# The default pipeline now LOWERS tiled ops instead of skipping them:
+# TiledExpansion replaces each with one dense node per tile, and those tiles are
+# ordinary dense RuntimeTensors, so the passes above act on them legitimately.
+# The three guards still matter -- they are what keeps a WHOLE tiled operand out
+# of those passes, including on every path expansion declines.
+def test_tiled_operands_are_lowered_by_the_default_pipeline():
     import json
 
     aref = (1.0 + np.arange(45, dtype=np.float64)).reshape(5, 9)
@@ -326,12 +331,18 @@ def test_tiled_operands_survive_the_default_pipeline():
     g.apply(pm)
     assert lccf.num_groups == 0, "LCCF folded tiled operands"
 
-    # The whole default pipeline (which now includes LCCF) must leave it alone.
+    # The default pipeline lowers both contractions into per-tile dense nodes.
+    # Nothing opaque may survive, and no whole-tiled operand may reach a
+    # buffer-level pass -- which is exactly what expanding first guarantees.
     g.apply(cg.default_pass_manager())
-    assert [n["kind"] for n in json.loads(g.to_json())["nodes"]] == kinds_before
+    kinds_after = [n["kind"] for n in json.loads(g.to_json())["nodes"]]
+    assert "Custom" not in kinds_after, kinds_after
+    assert kinds_after.count("Einsum") > len(kinds_before), kinds_after
 
     g.execute()
-    # 2*AB - AB == AB
+    # 2*AB - AB == AB. The prefactors have to survive the lowering: the first
+    # contraction overwrites (c_pf=0) and the second accumulates (c_pf=1), and
+    # each applies exactly once per tile no matter how many k-tiles contribute.
     assert_close(_gather(C, 5, 7), aref @ bref)
 
 

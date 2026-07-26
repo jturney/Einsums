@@ -806,3 +806,43 @@ TEST_CASE("TiledExpansion - the emitted tile GEMMs are batchable", "[ComputeGrap
     graph.execute();
     require_tiles_match(C, C_ref);
 }
+
+TEST_CASE("TiledExpansion - the default pipeline lowers and batches a tiled contraction", "[ComputeGraph][Passes][Tiled]") {
+    // End to end through populate_default: nothing opaque survives, the tile GEMMs
+    // reach gemm_batch, and the answer is unchanged.
+    Grid const g{{2, 2}, {2, 2}};
+
+    auto A_ref = make_tiled("A", g, full_coords(g));
+    auto B_ref = make_tiled("B", g, full_coords(g));
+    auto C_ref = make_tiled("C", g, {});
+    fill_det(A_ref, 1.0);
+    fill_det(B_ref, 2.0);
+    {
+        cg::Graph              gref("pipeline_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::einsum("ij <- ik ; kj", &C_ref, A_ref, B_ref);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    auto A = make_tiled("A2", g, full_coords(g));
+    auto B = make_tiled("B2", g, full_coords(g));
+    auto C = make_tiled("C2", g, {});
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+
+    cg::Graph graph("pipeline_expand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+    }
+    REQUIRE(nodes_of_kind(graph, cg::OpKind::Custom) == 1);
+
+    auto pm = cg::PassManager::create_default();
+    REQUIRE(graph.apply(pm));
+
+    CHECK(nodes_of_kind(graph, cg::OpKind::Custom) == 0);
+    CHECK(nodes_of_kind(graph, cg::OpKind::BatchedGemm) > 0);
+
+    graph.execute();
+    require_tiles_match(C, C_ref);
+}

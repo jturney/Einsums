@@ -35,6 +35,7 @@
 #include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
 #include <Einsums/ComputeGraph/Passes/SymmetrizedAccumulation.hpp>
 #include <Einsums/ComputeGraph/Passes/SymmetryPropagation.hpp>
+#include <Einsums/ComputeGraph/Passes/TiledExpansion.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
 #include <Einsums/Config/Types.hpp>
@@ -357,6 +358,15 @@ void PassManager::populate_default() {
 
     // Detect hardware once and share the profile across cost-model passes.
     auto profile = HardwareProfile::detect_default();
+
+    // Lowering, so it comes before everything: a tiled op is one opaque Custom
+    // node that no pass below can read, and expanding it into per-tile DENSE nodes
+    // is what puts those tiles in front of CSE, ContractionPlanning, GEMMBatching,
+    // InplaceOptimization and MemoryPlanning. Running it after any of them would
+    // just mean those passes saw the unreadable form. Self-gating: it declines
+    // above its node budget, and declines rather than guessing whenever tile
+    // sparsity is not decidable, so a graph with no tiled operands is untouched.
+    pm.add<passes::TiledExpansion>();
 
     // Graph-transforming passes (reduce node count first).
     // Order matters: PermuteFusion runs before CSE/DNE so duplicate

@@ -97,14 +97,15 @@ namespace einsums::compute_graph::passes {
  * the runtime applies ``c_pf`` on the path that ends up not expanding.
  *
  * @par Limits
- * - Opt-in: not in @ref PassManager::populate_default.
+ * - Runs FIRST in @ref PassManager::populate_default: it is a lowering step, so
+ *   every pass below should see the per-tile form rather than the opaque node.
  * - **Node budget.** Expansion produces up to (tiles of A) x (tiles of B) nodes,
  *   and per-node graph bookkeeping is on the order of microseconds, so a large
  *   grid can cost more in overhead than the contraction saves. The pass declines
  *   above @p max_nodes rather than guessing. A gate cannot be subtly wrong the way
  *   a cost heuristic can.
  * - **Sparsity is decided at pass time.** For an operand written earlier in the
- *   same graph that means a prediction (see below), which holds only while every
+ *   same graph that means a prediction (see above), which holds only while every
  *   writer is one this pass understands.
  * - Creating the predicted output tiles is a side effect of ``apply()`` on user
  *   data, earlier than the execute-time infer-and-create it replaces.
@@ -116,9 +117,14 @@ namespace einsums::compute_graph::passes {
  *     cg::CaptureGuard const capture(graph);
  *     cg::einsum("ij <- ik ; kj", &C_tiled, A_tiled, B_tiled);  // one Custom node
  * }
+ * graph.optimize();   // now one dense Einsum per contributing tile pair,
+ *                     // and GEMMBatching has collapsed them into gemm_batch
+ * @endcode
+ * Add it explicitly only to run it apart from the default pipeline:
+ * @code
  * cg::PassManager pm;
  * pm.add(std::make_shared<cg::passes::TiledExpansion>());
- * graph.apply(pm);   // now one dense Einsum per contributing tile pair
+ * graph.apply(pm);
  * @endcode
  */
 class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
