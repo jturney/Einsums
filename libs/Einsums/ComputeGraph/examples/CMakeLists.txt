@@ -80,6 +80,7 @@ if(EINSUMS_BUILD_PYTHON
   set(_einsums_python_example_preload "${EINSUMS_PYTEST_SANITIZER_PRELOAD}")
 
   set(python_example_scripts
+      ccsd_tiled.py
       mp2_simulation.py
       scf_simulation.py
   )
