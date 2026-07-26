@@ -904,3 +904,40 @@ TEST_CASE("make_einsum_node - typed rank-4 operand, no static-rank cast needed",
         }
     }
 }
+
+TEST_CASE("Graph - insert_node_groups keeps two groups at one position in order", "[ComputeGraph]") {
+    // A pass replacing a run of ADJACENT nodes shifts every replacement group onto
+    // the same post-erase index. Splicing runs in descending position order, so
+    // without a tiebreak on equal positions the second group lands ahead of the
+    // first. For a producer followed by its consumer that means the consumer runs
+    // first and reads unwritten storage.
+    cg::Graph graph("insert_ties");
+
+    auto make = [&graph](std::string label) {
+        cg::Node nd;
+        nd.id      = graph.reserve_node_id();
+        nd.kind    = cg::OpKind::Custom;
+        nd.label   = std::move(label);
+        nd.execute = []() {};
+        return nd;
+    };
+
+    std::vector<std::pair<std::size_t, std::vector<cg::Node>>> groups;
+    groups.emplace_back(0, [&] {
+        std::vector<cg::Node> g;
+        g.push_back(make("first_a"));
+        g.push_back(make("first_b"));
+        return g;
+    }());
+    groups.emplace_back(0, [&] {
+        std::vector<cg::Node> g;
+        g.push_back(make("second_a"));
+        return g;
+    }());
+    graph.insert_node_groups(std::move(groups));
+
+    REQUIRE(graph.num_nodes() == 3);
+    CHECK(graph.nodes()[0].label == "first_a");
+    CHECK(graph.nodes()[1].label == "first_b");
+    CHECK(graph.nodes()[2].label == "second_a");
+}

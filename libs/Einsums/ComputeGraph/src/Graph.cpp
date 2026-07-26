@@ -565,8 +565,23 @@ void Graph::insert_node_groups(std::vector<std::pair<std::size_t, std::vector<No
     std::scoped_lock const lock(*_content_mutex);
     // Splice in descending position order so an earlier insertion doesn't shift
     // the indices of later ones (positions are given in the original numbering).
-    std::ranges::sort(groups, [](auto const &a, auto const &b) { return a.first > b.first; });
-    for (auto &[at, nodes] : groups) {
+    //
+    // Two groups can legitimately share a position: when a caller replaces a run of
+    // adjacent nodes, every position between them is erased and they collapse onto
+    // the same index. Ties must then splice the LATER group first, so the earlier
+    // one lands in front of it. Without the tiebreak the groups come out reversed,
+    // which for a producer followed by its consumer means the consumer runs first
+    // and reads unwritten storage.
+    std::vector<std::size_t> order(groups.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::ranges::sort(order, [&groups](std::size_t a, std::size_t b) {
+        if (groups[a].first != groups[b].first) {
+            return groups[a].first > groups[b].first;
+        }
+        return a > b;
+    });
+    for (auto idx : order) {
+        auto &[at, nodes] = groups[idx];
         if (nodes.empty()) {
             continue;
         }
