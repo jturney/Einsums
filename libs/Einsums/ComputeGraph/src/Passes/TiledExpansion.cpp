@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -36,6 +37,10 @@ struct TiledView {
     std::function<bool(std::vector<int> const &)>     has_tile;
     std::function<std::vector<std::vector<int>>()>    coords;
     std::function<TensorId(std::vector<int> const &)> tile_id;
+    /// Frobenius norm of a stored, materialized tile. Empty when there is nothing
+    /// to measure -- absent, or not yet materialized, since planning must not
+    /// allocate. An unmeasurable tile is never screened.
+    std::function<std::optional<double>(std::vector<int> const &)> tile_norm;
 };
 
 /// Row-major strides over a grid, so one linear index enumerates every combination.
@@ -50,13 +55,14 @@ std::vector<size_t> grid_strides(std::vector<int> const &grid) {
 
 } // namespace
 
-TiledExpansion::TiledExpansion(size_t max_nodes) : _max_nodes(max_nodes) {
+TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance) : _max_nodes(max_nodes), _zero_tolerance(zero_tile_tolerance) {
 }
 
 void TiledExpansion::reset_stats() {
     _num_expanded   = 0;
     _num_tile_nodes = 0;
     _num_declined   = 0;
+    _num_screened   = 0;
 }
 
 bool TiledExpansion::run(Graph &graph) {
@@ -69,6 +75,15 @@ bool TiledExpansion::run(Graph &graph) {
     size_t const n     = nodes.size();
     if (n == 0) {
         return false;
+    }
+
+    // Tensors some node in this graph writes. Their tile CONTENTS are whatever was
+    // there before execution, so they must never be screened on value.
+    std::unordered_set<TensorId> produced;
+    for (auto const &node : nodes) {
+        for (auto tid : node.outputs) {
+            produced.insert(tid);
+        }
     }
 
     // One TensorId per (tiled tensor, tile coord). Registering a tile twice would
@@ -96,6 +111,26 @@ bool TiledExpansion::run(Graph &graph) {
         return it->second;
     };
 
+    // Operand tiles that screen out as zero, computed once per tensor. Screening a
+    // tensor the graph writes would read values the graph has not computed yet, so
+    // those are skipped outright rather than measured.
+    std::unordered_map<TensorId, std::set<std::vector<int>>> screened;
+    auto screened_tiles = [&](TensorId tid, TiledView const &v) -> std::set<std::vector<int>> const & {
+        auto it = screened.find(tid);
+        if (it != screened.end()) {
+            return it->second;
+        }
+        std::set<std::vector<int>> s;
+        if (_zero_tolerance >= 0.0 && !produced.contains(tid)) {
+            for (auto const &co : v.coords()) {
+                if (auto const nrm = v.tile_norm(co); nrm && *nrm <= _zero_tolerance) {
+                    s.insert(co);
+                }
+            }
+        }
+        return screened.emplace(tid, std::move(s)).first->second;
+    };
+
     // Bind a type-erased view of one tiled operand: grid, presence test, stored
     // coords, and a memoized per-tile TensorId minter that infer-and-creates the
     // tile exactly as the runtime does.
@@ -117,6 +152,16 @@ bool TiledExpansion::run(Graph &graph) {
                     cs.push_back(kv.first);
                 }
                 return cs;
+            };
+            out.tile_norm = [t](std::vector<int> const &co) -> std::optional<double> {
+                if (!t->has_tile(co)) {
+                    return std::nullopt;
+                }
+                auto const &tile = std::as_const(*t).tile(co);
+                if (!tile.is_materialized()) {
+                    return std::nullopt;
+                }
+                return static_cast<double>(linear_algebra::norm(linear_algebra::Norm::FROBENIUS, tile));
             };
             out.tile_id = [t, owner, &tile_ids, &graph](std::vector<int> const &co) {
                 auto key = std::make_pair(owner, co);
@@ -465,6 +510,8 @@ bool TiledExpansion::run(Graph &graph) {
         auto const &pa = tiles_of(a_id, av);
         auto const &pb = tiles_of(b_id, bv);
         auto const  pc = tiles_of(c_id, cv); // by value: the pre-node set
+        auto const &sa = screened_tiles(a_id, av);
+        auto const &sb = screened_tiles(b_id, bv);
 
         ParsedEinsumSpec per_tile;
         per_tile.c_indices = cidx;
@@ -490,6 +537,14 @@ bool TiledExpansion::run(Graph &graph) {
             }
             if (!pa.contains(acoord) || !pb.contains(bcoord)) {
                 continue; // structural zero
+            }
+            if (sa.contains(acoord) || sb.contains(bcoord)) {
+                // Numerically zero operand: contributes nothing. Treated exactly
+                // like an absent tile, so if this leaves the output tile with no
+                // contribution at all it is simply never created, and the next
+                // contraction sees it as absent.
+                ++_num_screened;
+                continue;
             }
             for (size_t ax = 0; ax < cidx.size(); ++ax) {
                 ccoord[ax] = ucoord[c_tab[ax]];

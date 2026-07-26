@@ -57,6 +57,30 @@ namespace einsums::compute_graph::passes {
  *   alone. A tile-grid mismatch makes the runtime throw, so this pass declines
  *   and lets the surviving opaque node throw.
  *
+ * @par Tile sparsity
+ * Structural sparsity is free: an absent operand tile is a rigorous zero, so no
+ * node is emitted for it and an output tile exists only if some contribution
+ * reaches it. What that misses is a tile that is STORED but zero, which still
+ * gets a full GEMM. @p zero_tile_tolerance screens those, and screening is done
+ * here rather than as a pass over the expanded graph on purpose: a screened tile
+ * is simply treated as absent, so the prefactor and output-existence rules above
+ * apply unchanged instead of being re-derived against already-emitted nodes.
+ *
+ * Sparsity then propagates on its own. An output tile whose every contribution
+ * screened out is never created, so it is absent to the next contraction, which
+ * screens further work without being told anything.
+ *
+ * Two origins, per the chemistry roadmap, and the tolerance covers both: symmetry
+ * blocking is EXACT (a block is zero unless the irrep product contains the
+ * totally symmetric representation) and wants tolerance 0, while integral
+ * screening and local-correlation domains are approximate and want a real
+ * threshold.
+ *
+ * Only operands that NOTHING in the graph writes are screened. A produced
+ * tensor's tiles hold whatever was in them before execution, so inspecting them
+ * would screen on values the graph has not computed yet. Non-materialized tiles
+ * are likewise left alone, since planning must not allocate.
+ *
  * @par Emission order is what makes the tile GEMMs batchable
  * Contracted indices are enumerated SLOWEST and output indices fastest, so every
  * tile GEMM at the same accumulation step is emitted as one contiguous run.
@@ -130,7 +154,12 @@ namespace einsums::compute_graph::passes {
 class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
   public:
     /// @param max_nodes Decline to expand when the projected node count exceeds this.
-    explicit TiledExpansion(size_t max_nodes = 4096);
+    /// @param zero_tile_tolerance Screen a contraction's operand tiles out when
+    ///        their Frobenius norm is ``<=`` this. Negative, the default, disables
+    ///        screening: no tile is inspected and the emitted node set is
+    ///        unchanged. Zero prunes only exactly-zero tiles. A positive value is
+    ///        a numerical approximation and an accuracy knob.
+    explicit TiledExpansion(size_t max_nodes = 4096, double zero_tile_tolerance = -1.0);
 
     [[nodiscard]] std::string name() const override { return "TiledExpansion"; }
     bool                      run(Graph &graph) override;
@@ -147,12 +176,16 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     /// Candidates left alone: misaligned partitions, produced operands, over
     /// budget, or sharing a tiled tensor with a node that cannot expand.
     [[nodiscard]] size_t num_declined() const { return _num_declined; }
+    /// Tile contractions not emitted because an operand tile screened as zero.
+    [[nodiscard]] size_t num_screened() const { return _num_screened; }
 
   private:
     size_t _max_nodes;
+    double _zero_tolerance;
     size_t _num_expanded{0};
     size_t _num_tile_nodes{0};
     size_t _num_declined{0};
+    size_t _num_screened{0};
 };
 
 } // namespace einsums::compute_graph::passes

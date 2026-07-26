@@ -846,3 +846,227 @@ TEST_CASE("TiledExpansion - the default pipeline lowers and batches a tiled cont
     graph.execute();
     require_tiles_match(C, C_ref);
 }
+
+namespace {
+
+/// Zero one stored tile in place, leaving it present but numerically zero -- the
+/// symmetry-forbidden block case: stored because the grid is uniform, exactly zero
+/// because the irrep product does not contain the totally symmetric rep.
+void zero_tile(TiledRuntimeTensor<double> &T, std::vector<int> const &coord) {
+    auto &tile = T.tile(coord);
+    tile.materialize();
+    for (size_t i = 0; i < tile.size(); ++i) {
+        tile.data()[i] = 0.0;
+    }
+}
+
+/// Scale one stored tile down to a small but nonzero magnitude.
+void shrink_tile(TiledRuntimeTensor<double> &T, std::vector<int> const &coord, double factor) {
+    auto &tile = T.tile(coord);
+    tile.materialize();
+    for (size_t i = 0; i < tile.size(); ++i) {
+        tile.data()[i] *= factor;
+    }
+}
+
+} // namespace
+
+TEST_CASE("TiledExpansion - a stored-but-zero operand tile is screened out", "[ComputeGraph][Passes][Tiled]") {
+    Grid const g{{2, 2}, {2, 2}};
+
+    auto build = [&](std::string tag, TiledRuntimeTensor<double> &C) {
+        auto A = make_tiled("A" + tag, g, full_coords(g));
+        auto B = make_tiled("B" + tag, g, full_coords(g));
+        fill_det(A, 1.0);
+        fill_det(B, 2.0);
+        zero_tile(A, {0, 0}); // present, exactly zero
+        return std::make_pair(std::move(A), std::move(B));
+    };
+
+    // Reference: no screening, so every present tile pair gets a node.
+    auto C_ref    = make_tiled("C", g, {});
+    auto [Ar, Br] = build("r", C_ref);
+    {
+        cg::Graph              gref("screen_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::einsum("ij <- ik ; kj", &C_ref, Ar, Br);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    auto C      = make_tiled("C2", g, {});
+    auto [A, B] = build("2", C);
+    cg::Graph graph("screen_expand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+    }
+
+    cg::PassManager pm;
+    // Tolerance 0: exact. Only tiles that are identically zero are pruned, so the
+    // numbers must match the unscreened reference exactly.
+    auto pass = std::make_shared<cg::passes::TiledExpansion>(4096, 0.0);
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+
+    // A(0,0) pairs with B(0,j) for j in {0,1}: two contributions pruned.
+    CHECK(pass->num_screened() == 2);
+    CHECK(pass->num_tile_nodes() == 6);
+
+    graph.execute();
+    // Compare gathered values, not tile sets: screening is allowed to leave an
+    // output tile uncreated, which is the whole point.
+    CHECK(gather(C, 4, 4) == gather(C_ref, 4, 4));
+}
+
+TEST_CASE("TiledExpansion - screening is off unless a tolerance is given", "[ComputeGraph][Passes][Tiled]") {
+    Grid const g{{2, 2}, {2, 2}};
+    auto       A = make_tiled("A", g, full_coords(g));
+    auto       B = make_tiled("B", g, full_coords(g));
+    auto       C = make_tiled("C", g, {});
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+    zero_tile(A, {0, 0});
+
+    cg::Graph graph("screen_default_off");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(); // default ctor
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+
+    // No tile inspected, no contribution dropped: the default must not silently
+    // change the emitted node set, since screening is a numerical decision.
+    CHECK(pass->num_screened() == 0);
+    CHECK(pass->num_tile_nodes() == 8);
+}
+
+TEST_CASE("TiledExpansion - a positive tolerance screens small tiles approximately", "[ComputeGraph][Passes][Tiled]") {
+    Grid const g{{2, 2}, {2, 2}};
+    auto       A = make_tiled("A", g, full_coords(g));
+    auto       B = make_tiled("B", g, full_coords(g));
+    auto       C = make_tiled("C", g, {});
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+    shrink_tile(A, {1, 1}, 1e-14); // small but not zero
+
+    cg::Graph graph("screen_threshold");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, 1e-10);
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+
+    CHECK(pass->num_screened() == 2); // A(1,1) x B(1,j), j in {0,1}
+    CHECK(pass->num_tile_nodes() == 6);
+}
+
+TEST_CASE("TiledExpansion - a produced operand is never screened on value", "[ComputeGraph][Passes][Tiled]") {
+    // C is written by the first contraction, so at pass time its tiles hold
+    // whatever was in them beforehand -- here, deliberately zeros. Screening on
+    // that would prune the second contraction's work against values the graph has
+    // not computed yet.
+    Grid const g{{2, 2}, {2, 2}};
+    auto       A = make_tiled("A", g, full_coords(g));
+    auto       B = make_tiled("B", g, full_coords(g));
+    auto       E = make_tiled("E", g, full_coords(g));
+    auto       C = make_tiled("C", g, full_coords(g)); // pre-created AND zero
+    auto       D = make_tiled("D", g, {});
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+    fill_det(E, 3.0);
+    for (auto const &co : full_coords(g)) {
+        zero_tile(C, co);
+    }
+
+    auto C_ref = make_tiled("Cr", g, full_coords(g));
+    auto D_ref = make_tiled("Dr", g, {});
+    auto A_ref = make_tiled("Ar", g, full_coords(g));
+    auto B_ref = make_tiled("Br", g, full_coords(g));
+    auto E_ref = make_tiled("Er", g, full_coords(g));
+    fill_det(A_ref, 1.0);
+    fill_det(B_ref, 2.0);
+    fill_det(E_ref, 3.0);
+    for (auto const &co : full_coords(g)) {
+        zero_tile(C_ref, co);
+    }
+    {
+        cg::Graph              gref("produced_screen_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::einsum("ij <- ik ; kj", &C_ref, A_ref, B_ref);
+        cg::einsum("il <- ij ; jl", &D_ref, C_ref, E_ref);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    cg::Graph graph("produced_screen");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+        cg::einsum("il <- ij ; jl", &D, C, E);
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, 0.0);
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+
+    CHECK(pass->num_expanded() == 2);
+    CHECK(pass->num_screened() == 0); // C is written here, so it is never measured
+
+    graph.execute();
+    CHECK(gather(D, 4, 4) == gather(D_ref, 4, 4));
+}
+
+TEST_CASE("TiledExpansion - screened sparsity propagates to the next contraction", "[ComputeGraph][Passes][Tiled]") {
+    // Every contribution to one C tile screens out, so that tile is never created.
+    // The second contraction then sees it as ABSENT and skips its work too, without
+    // being told anything: the propagation falls out of the predicted tile sets.
+    Grid const g{{2, 2}, {2, 2}};
+    auto       A = make_tiled("A", g, full_coords(g));
+    auto       B = make_tiled("B", g, full_coords(g));
+    auto       E = make_tiled("E", g, full_coords(g));
+    auto       C = make_tiled("C", g, {}); // empty: infer-and-create
+    auto       D = make_tiled("D", g, {});
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+    fill_det(E, 3.0);
+    // Zero the whole first row of A, so C(0,*) receives nothing at all.
+    zero_tile(A, {0, 0});
+    zero_tile(A, {0, 1});
+
+    cg::Graph graph("propagate");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+        cg::einsum("il <- ij ; jl", &D, C, E);
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, 0.0);
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+
+    graph.execute();
+
+    // C's first tile row was never created.
+    CHECK_FALSE(C.has_tile({0, 0}));
+    CHECK_FALSE(C.has_tile({0, 1}));
+    CHECK(C.has_tile({1, 0}));
+
+    // And D's first tile row is zero as a result, whether or not it was created.
+    auto const d = gather(D, 4, 4);
+    for (size_t r = 0; r < 2; ++r) {
+        for (size_t c = 0; c < 4; ++c) {
+            CHECK(d[r * 4 + c] == 0.0);
+        }
+    }
+    // The rest is real work, not an accidentally empty graph.
+    CHECK(std::ranges::any_of(d, [](double v) { return v != 0.0; }));
+}
