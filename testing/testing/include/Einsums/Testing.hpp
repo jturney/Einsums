@@ -29,7 +29,7 @@
 #define EINSUMS_TEST_CASE2_(impl_name, ...)                                                                                                \
     static void impl_name();                                                                                                               \
     TEST_CASE(__VA_ARGS__) {                                                                                                               \
-        LabeledSection(fmt::runtime(Catch::getResultCapture().getCurrentTestName()));                                                       \
+        LabeledSectionRuntime((Catch::getResultCapture().getCurrentTestName()));                                                       \
         impl_name();                                                                                                                       \
     }                                                                                                                                      \
     static void impl_name()

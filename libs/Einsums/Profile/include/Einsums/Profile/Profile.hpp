@@ -370,24 +370,30 @@ struct EINSUMS_EXPORT Profiler {
  * @ref LabeledSection declares one of these as a function-local static, paying
  * that once per site for the life of the process.
  *
- * The name is deliberately NOT cached here: a zone name may be built per call
- * (``LabeledSection("tiled axpy({})", x)``) or come from a runtime format string
- * (``LabeledSection(fmt::runtime(desc))``), and freezing the first one would
- * mislabel every later entry.
+ * The name is cached too, which is what makes a plain zone entry take no locks at
+ * all: @ref StringTable::intern is the only mutex on this path (the event ring
+ * buffer itself never blocks a producer), so interning nothing means locking
+ * nothing. That holds only because @ref LabeledSection's name is a literal. A
+ * name built per call keeps its own path: with format arguments the formatted
+ * string is interned per entry, and a name computed at runtime uses
+ * @ref LabeledSectionRuntime.
  *
  * The views are kept for the Tracy backend, which wants the characters; they
  * point at the literals the macro passes, which outlive the site.
  */
 struct ZoneSite {
-    ZoneSite(char const *file_, int line_, char const *func_) : file{file_}, func{func_}, line{line_} {
+    ZoneSite(std::string_view name_, char const *file_, int line_, char const *func_) : name{name_}, file{file_}, func{func_}, line{line_} {
         auto &st = Profiler::instance().string_table();
+        name_id  = st.intern(name);
         file_id  = st.intern(file);
         func_id  = st.intern(func);
     }
 
+    std::string_view name;
     std::string_view file;
     std::string_view func;
     int              line{0};
+    uint32_t         name_id{0};
     uint32_t         file_id{0};
     uint32_t         func_id{0};
 };
@@ -404,24 +410,22 @@ struct ScopedZone {
      * - anything else (notably ``fmt::runtime``) is formatted per call too, which
      *   is what keeps a runtime-named zone correctly labelled.
      */
-    template <typename NameT>
-    explicit ScopedZone(ZoneSite const &site, NameT &&name) {
+    /// Enter a zone whose name is fixed at the call site. Nothing is interned, so
+    /// nothing is locked: the site already holds every id, and the event ring
+    /// buffer is lock-free.
+    explicit ScopedZone(ZoneSite const &site) {
+        Profiler::instance().push_interned(site.name_id, site.file_id, site.func_id, site.line, site.name, site.file, site.func);
+    }
+
+    /// Enter a zone whose name is built per call (format arguments, or a name
+    /// computed at runtime). Only the name is interned; the location comes from
+    /// the site.
+    ScopedZone(ZoneSite const &site, std::string const &name) {
         auto &prof = Profiler::instance();
         if (!prof.enabled()) {
             return;
         }
-        if constexpr (std::is_convertible_v<NameT &&, std::string_view>) {
-            // A bare literal, or the std::string the macro already formatted when
-            // the call had arguments. Interned straight from its characters, so a
-            // no-argument zone allocates nothing.
-            std::string_view const nm{std::forward<NameT>(name)};
-            prof.push_interned(prof.string_table().intern(nm), site.file_id, site.func_id, site.line, nm, site.file, site.func);
-        } else {
-            // A runtime format string (fmt::runtime). Formatting must happen per
-            // call or every later entry would carry the first call's label.
-            std::string const nm = fmt::format(std::forward<NameT>(name));
-            prof.push_interned(prof.string_table().intern(nm), site.file_id, site.func_id, site.line, nm, site.file, site.func);
-        }
+        prof.push_interned(prof.string_table().intern(name), site.file_id, site.func_id, site.line, name, site.file, site.func);
     }
 
     explicit ScopedZone(std::string const &name, std::string const &file = "", int line = 0, std::string const &func = "") {
@@ -585,26 +589,34 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 // literal itself and nothing is formatted; with arguments the name is built per
 // call and only it is interned. Expands to TWO declarations, so it must be used
 // at statement scope (as every call site does).
-// The location is interned once per call site via a function-local static; the
-// name is forwarded to ScopedZone, which decides at compile time whether it needs
-// formatting. Expands to TWO declarations, so use it at statement scope.
-// With format arguments this expands to fmt::format(name, args...); with none it
-// expands to just (name), so a literal is never formatted and never allocates.
-// The format call has to live here, not inside ScopedZone: fmt validates format
-// strings with a consteval constructor, and a forwarded template parameter is no
-// longer a constant expression.
-#    define EINSUMS_PROFILE_ZONE_NAME(name_format, ...) __VA_OPT__(fmt::format)(name_format __VA_OPT__(, ) __VA_ARGS__)
-
+// The site interns name, file and func once per call site (a function-local
+// static). Without format arguments, entry then interns NOTHING and so takes no
+// lock. With arguments the name must be built per call, so only it is interned.
+// The fmt::format call stays here rather than inside ScopedZone because fmt
+// validates format strings with a consteval constructor, and a format string
+// forwarded through a template parameter is no longer a constant expression.
+//
+// @p name_format must be a compile-time literal. For a name computed at runtime
+// use @ref LabeledSectionRuntime, which cannot cache it.
+//
+// Expands to TWO declarations, so use it at statement scope.
 #    define LabeledSection(name_format, ...)                                                                                               \
-        static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){__FILE__, __LINE__, __func__};                     \
+        static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};        \
         ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(                                                 \
-            EINSUMS_PP_CAT(_zone_site_, __LINE__), EINSUMS_PROFILE_ZONE_NAME(name_format __VA_OPT__(, ) __VA_ARGS__))
+            EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__(, fmt::format(name_format, __VA_ARGS__)))
+
+/// A zone whose name is only known at runtime. The name is interned on every
+/// entry, which is one lock; prefer @ref LabeledSection wherever the label can be
+/// a literal.
+#    define LabeledSectionRuntime(name_expr)                                                                                               \
+        static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){"", __FILE__, __LINE__, __func__};                 \
+        ::einsums::profile::ScopedZone const EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(EINSUMS_PP_CAT(_zone_site_, __LINE__), (name_expr))
 #    define LabeledSection0() LabeledSection(__func__)
 #    if defined(EINSUMS_WITH_PROFILER_INTERNAL)
 #        define LabeledSectionInternal(name_format, ...)                                                                                   \
-            static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){__FILE__, __LINE__, __func__};                 \
+            static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};    \
             ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(                                             \
-                EINSUMS_PP_CAT(_zone_site_, __LINE__), EINSUMS_PROFILE_ZONE_NAME(name_format __VA_OPT__(, ) __VA_ARGS__))
+                EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__(, fmt::format(name_format, __VA_ARGS__)))
 #        define LabeledSectionInternal0() LabeledSectionInternal(__func__)
 #    else
 #        define LabeledSectionInternal(...)
@@ -619,6 +631,7 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 #else
 #    define LabeledSection(...)
 #    define LabeledSection0()
+#    define LabeledSectionRuntime(...)
 #    define LabeledSectionInternal(...)
 #    define LabeledSectionInternal0()
 #    define ProfileAnnotate(key, value)

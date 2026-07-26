@@ -340,7 +340,7 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
                                   ? fmt::format(R"(permute: "{}"{} = {} "{}"{} + {} "{}"{})", C->name(), C_indices, UA_prefactor, A.name(),
                                                 A_indices, UC_prefactor, C->name(), C_indices)
                                   : fmt::format(R"(permute: "{}"{} = {} "{}"{})", C->name(), C_indices, UA_prefactor, A.name(), A_indices);
-    LabeledSection(fmt::runtime(description));
+    LabeledSectionRuntime(description);
 
     T const C_prefactor = UC_prefactor;
     T const A_prefactor = UA_prefactor;
