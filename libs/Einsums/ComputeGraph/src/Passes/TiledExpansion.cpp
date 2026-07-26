@@ -233,6 +233,29 @@ bool TiledExpansion::run(Graph &graph) {
         return nd;
     };
 
+    // One dense `c_tile = alpha*(a_tile/b_tile) + beta*c_tile`.
+    auto emit_tile_divide = [&graph](TensorId at, TensorId bt, TensorId ct, PrefactorScalar alpha, PrefactorScalar beta,
+                                     packed_gemm::ScalarType dt, std::string label) {
+        Node nd;
+        nd.id    = graph.reserve_node_id();
+        nd.kind  = OpKind::DirectDivision;
+        nd.label = std::move(label);
+        // Same RMW convention as the dense op: beta != 0 reads the destination.
+        nd.inputs  = is_zero(beta) ? std::vector<TensorId>{at, bt} : std::vector<TensorId>{at, bt, ct};
+        nd.outputs = {ct};
+        Graph *g   = &graph;
+        nd.execute = [g, at, bt, ct, alpha, beta, dt]() {
+            detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
+                using Dense      = GeneralRuntimeTensor<T, std::allocator<T>>;
+                auto const *aptr = static_cast<Dense const *>(g->tensor(at).tensor_ptr);
+                auto const *bptr = static_cast<Dense const *>(g->tensor(bt).tensor_ptr);
+                auto       *cptr = static_cast<Dense *>(g->tensor(ct).tensor_ptr);
+                linear_algebra::direct_division(as<T>(alpha), *aptr, *bptr, as<T>(beta), cptr);
+            });
+        };
+        return nd;
+    };
+
     std::vector<std::pair<size_t, std::vector<Node>>> inserts;
     std::vector<bool>                                 remove(n, false);
     bool                                              modified = false;
@@ -243,14 +266,14 @@ bool TiledExpansion::run(Graph &graph) {
     // planned. Deciding first and creating second keeps a rejected candidate from
     // leaving new tiles behind, which would change how the runtime applies c_pf.
     struct Plan {
-        enum class Kind : std::uint8_t { Einsum, Scale, Axpy };
+        enum class Kind : std::uint8_t { Einsum, Scale, Axpy, Divide };
 
         size_t                  index{0};
         Kind                    kind{Kind::Scale};
         std::vector<TensorId>   touched; ///< whole-tensor tiled ids this node uses
         packed_gemm::ScalarType dtype{};
-        /// Source views. Einsum uses all three; Scale uses `dst`; Axpy uses `src_a`
-        /// for X and `dst` for Y.
+        /// Source views. Einsum and Divide use all three; Scale uses `dst`; Axpy
+        /// uses `src_a` for X and `dst` for Y.
         TiledView src_a, src_b, dst;
         // Einsum
         ParsedEinsumSpec              spec;
@@ -259,8 +282,9 @@ bool TiledExpansion::run(Graph &graph) {
         std::vector<PrefactorScalar>  c_pfs;
         std::vector<std::vector<int>> leftover; ///< output tiles that are only scaled
         PrefactorScalar               leftover_pf{double{0}};
-        // Scale / Axpy
+        // Scale / Axpy / Divide
         PrefactorScalar               alpha{double{1}};
+        PrefactorScalar               beta{double{0}}; ///< Divide only
         std::vector<std::vector<int>> coords;
     };
     std::vector<Plan> plans;
@@ -316,6 +340,75 @@ bool TiledExpansion::run(Graph &graph) {
                 p.alpha   = alpha;
                 p.coords  = coords;
                 plans.push_back(std::move(p));
+                continue;
+            }
+
+            if (edesc->op == TiledElementwiseOp::Divide) {
+                // C = alpha*(A/B) + beta*C, one dense divide per tile STORED IN A.
+                // An absent A tile is a rigorous zero, so C keeps beta*C there --
+                // which is the leftover-scale rule again, reused verbatim below.
+                if (src.outputs.size() != 1 || src.inputs.size() < 2) {
+                    continue;
+                }
+                TensorId const a_id = src.inputs[0];
+                TensorId const b_id = src.inputs[1];
+                TensorId const c_id = src.outputs[0];
+                auto const    &a_h  = graph.tensor(a_id);
+                auto const    &b_h  = graph.tensor(b_id);
+                auto const    &c_h  = graph.tensor(c_id);
+                if (!a_h.is_tiled || !b_h.is_tiled || !c_h.is_tiled) {
+                    continue;
+                }
+                if (a_h.dtype != c_h.dtype || b_h.dtype != c_h.dtype) {
+                    continue;
+                }
+                TiledView av, bv, cv;
+                if (!bind_tiled(a_h, a_id, av) || !bind_tiled(b_h, b_id, bv) || !bind_tiled(c_h, c_id, cv)) {
+                    decline("an operand has no backing tiled object");
+                    continue;
+                }
+                if (*av.sizes != *bv.sizes || *av.sizes != *cv.sizes) {
+                    // The runtime throws; declining leaves the opaque node to throw.
+                    decline("A, B and C do not share a tile grid");
+                    continue;
+                }
+                auto const &pa = tiles_of(a_id, av);
+                auto const &pb = tiles_of(b_id, bv);
+                auto const  pc = tiles_of(c_id, cv); // pre-node set, by value
+                if (!std::ranges::all_of(pa, [&pb](auto const &co) { return pb.contains(co); })) {
+                    // A numerator block with no denominator block. The runtime
+                    // throws rather than producing infinities; let it.
+                    decline("a numerator tile has no denominator tile");
+                    continue;
+                }
+                auto const coords = std::vector<std::vector<int>>(pa.begin(), pa.end());
+                if (coords.empty() && pc.empty()) {
+                    continue;
+                }
+                if (coords.size() + pc.size() > _max_nodes) {
+                    decline(fmt::format("projected {} tiles exceeds the {}-node budget", coords.size() + pc.size(), _max_nodes));
+                    continue;
+                }
+                Plan p;
+                p.index   = ni;
+                p.kind    = Plan::Kind::Divide;
+                p.touched = {a_id, b_id, c_id};
+                p.dtype   = c_h.dtype;
+                p.src_a   = av;
+                p.src_b   = bv;
+                p.dst     = cv;
+                p.alpha   = alpha;
+                p.beta    = edesc->params->beta;
+                p.coords  = coords;
+                // C tiles the numerator never reaches are still scaled by beta.
+                for (auto const &co : pc) {
+                    if (!pa.contains(co)) {
+                        p.leftover.push_back(co);
+                    }
+                }
+                p.leftover_pf = edesc->params->beta;
+                plans.push_back(std::move(p));
+                tiles_of(c_id, cv).insert(coords.begin(), coords.end());
                 continue;
             }
 
@@ -685,6 +778,17 @@ bool TiledExpansion::run(Graph &graph) {
             for (auto const &coord : pl.coords) {
                 emitted.push_back(emit_tile_axpy(pl.src_a.tile_id(coord), pl.dst.tile_id(coord), pl.alpha, pl.dtype,
                                                  fmt::format("tile_axpy({})", fmt::join(coord, ","))));
+            }
+            break;
+        case Plan::Kind::Divide:
+            emitted.reserve(pl.coords.size() + pl.leftover.size());
+            for (auto const &coord : pl.coords) {
+                emitted.push_back(emit_tile_divide(pl.src_a.tile_id(coord), pl.src_b.tile_id(coord), pl.dst.tile_id(coord), pl.alpha,
+                                                   pl.beta, pl.dtype, fmt::format("tile_divide({})", fmt::join(coord, ","))));
+            }
+            for (auto const &coord : pl.leftover) {
+                emitted.push_back(
+                    emit_tile_scale(pl.dst.tile_id(coord), pl.leftover_pf, pl.dtype, fmt::format("tile_scale({})", fmt::join(coord, ","))));
             }
             break;
         }

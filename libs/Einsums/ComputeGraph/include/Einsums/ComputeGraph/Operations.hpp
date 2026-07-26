@@ -2107,31 +2107,70 @@ APIARY_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::RuntimeT
 APIARY_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+// tiled: all three operands tiled (mixed tiled/dense is rejected by static_assert)
+APIARY_INSTANTIATE_AS("direct_division", float, einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>)
+APIARY_INSTANTIATE_AS("direct_division", double, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
+APIARY_INSTANTIATE_AS("direct_division", std::complex<float>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("direct_division eager");
-        linear_algebra::direct_division(alpha, A, B, beta, C);
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>> || IsTiledTensorV<std::remove_cvref_t<BType>> ||
+                  IsTiledTensorV<std::remove_cvref_t<CType>>) {
+        static_assert(IsTiledTensorV<std::remove_cvref_t<AType>> && IsTiledTensorV<std::remove_cvref_t<BType>> &&
+                          IsTiledTensorV<std::remove_cvref_t<CType>>,
+                      "cg::direct_division with a tiled operand requires all of A, B, C to be TiledRuntimeTensor");
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("direct_division eager");
+            detail::tiled_direct_division<T>(alpha, A, B, beta, C);
+            return;
+        }
+        LabeledSection("direct_division capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [b_id, b_slot] = ctx.get_slot(B);
+        auto [c_id, c_slot] = ctx.get_slot(*C);
+        auto label          = fmt::format("tiled direct_division({}, {})", A.name(), C->name());
+        auto params         = std::make_shared<TiledElementwiseParams>();
+        params->alpha       = PrefactorScalar{alpha};
+        params->beta        = PrefactorScalar{beta};
+        auto executor       = [params, a_slot, b_slot, c_slot]() {
+            LabeledSection("direct_division execute");
+            detail::tiled_direct_division<T>(as<T>(params->alpha), *static_cast<AType const *>(a_slot->ptr),
+                                             *static_cast<BType const *>(b_slot->ptr), as<T>(params->beta),
+                                             static_cast<CType *>(c_slot->ptr));
+        };
+        TiledElementwiseDescriptor edesc;
+        edesc.op     = TiledElementwiseOp::Divide;
+        edesc.params = params;
+        // beta != 0 reads the destination, same RMW convention as the dense path.
+        std::vector<TensorId> ids = (beta != T{0}) ? std::vector<TensorId>{a_id, b_id, c_id} : std::vector<TensorId>{a_id, b_id};
+        ctx.record(OpKind::DirectDivision, std::move(label), std::move(ids), {c_id}, std::move(executor), std::move(edesc));
         return;
+    } else {
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("direct_division eager");
+            linear_algebra::direct_division(alpha, A, B, beta, C);
+            return;
+        }
+
+        LabeledSection("direct_division capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [b_id, b_slot] = ctx.get_slot(B);
+        auto [c_id, c_slot] = ctx.get_slot(*C);
+
+        auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
+            LabeledSection("direct_division execute");
+            ProfileAnnotate("size", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->size()));
+            linear_algebra::direct_division(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), beta,
+                                            static_cast<CType *>(c_slot->ptr));
+        };
+
+        // beta != 0 reads the destination (C = alpha*A/B + beta*C) -- list C as an
+        // input so dependency-based passes see the read (see direct_product).
+        std::vector<TensorId> dd_inputs = (beta != T{0}) ? std::vector<TensorId>{a_id, b_id, c_id} : std::vector<TensorId>{a_id, b_id};
+        ctx.record(OpKind::DirectDivision, "direct_division", std::move(dd_inputs), {c_id}, std::move(executor));
     }
-
-    LabeledSection("direct_division capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(B);
-    auto [c_id, c_slot] = ctx.get_slot(*C);
-
-    auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
-        LabeledSection("direct_division execute");
-        ProfileAnnotate("size", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->size()));
-        linear_algebra::direct_division(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), beta,
-                                        static_cast<CType *>(c_slot->ptr));
-    };
-
-    // beta != 0 reads the destination (C = alpha*A/B + beta*C) -- list C as an
-    // input so dependency-based passes see the read (see direct_product).
-    std::vector<TensorId> dd_inputs = (beta != T{0}) ? std::vector<TensorId>{a_id, b_id, c_id} : std::vector<TensorId>{a_id, b_id};
-    ctx.record(OpKind::DirectDivision, "direct_division", std::move(dd_inputs), {c_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

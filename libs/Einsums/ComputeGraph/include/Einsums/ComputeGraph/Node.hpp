@@ -145,13 +145,15 @@ struct TiledEinsumDescriptor {
 
 /// Which elementwise operation a @ref TiledElementwiseDescriptor describes.
 enum class TiledElementwiseOp : std::uint8_t {
-    Scale, ///< ``A = alpha * A``
-    Axpy,  ///< ``Y = Y + alpha * X``
+    Scale,  ///< ``A = alpha * A``
+    Axpy,   ///< ``Y = Y + alpha * X``
+    Divide, ///< ``C = alpha * (A / B) + beta * C``
 };
 
-/// Live scalar for a tiled elementwise node, shared with its executor.
+/// Live scalars for a tiled elementwise node, shared with its executor.
 struct TiledElementwiseParams {
     PrefactorScalar alpha{double{1}};
+    PrefactorScalar beta{double{0}}; ///< Divide only; unused by Scale and Axpy.
 };
 
 /**
@@ -169,7 +171,8 @@ struct TiledElementwiseParams {
  *
  * The operand TensorIds are on the node itself. A Scale reads and writes one
  * tensor, listed in both @ref Node::inputs and @ref Node::outputs; an Axpy
- * reads X and Y and writes Y, so Y appears in both lists too.
+ * reads X and Y and writes Y, so Y appears in both lists too. A Divide reads A
+ * and B, writes C, and additionally reads C when ``beta != 0``.
  */
 struct TiledElementwiseDescriptor {
     TiledElementwiseOp op{TiledElementwiseOp::Scale};

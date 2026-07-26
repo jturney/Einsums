@@ -220,3 +220,60 @@ TEST_CASE("TiledRuntimeTensor - tiled axpy in a loop is not hoisted", "[ComputeG
         }
     }
 }
+
+TEST_CASE("TiledRuntimeTensor - tiled direct_division (eager + captured)", "[ComputeGraph][TiledRuntime]") {
+    auto af = [](int r, int c) { return 1.0 + r - c; };
+    auto bf = [](int r, int c) { return 2.5 + 0.5 * r + c; }; // never zero
+    auto cf = [](int r, int c) { return 0.25 * r - c; };
+
+    // Eager, with beta != 0 so the destination is read.
+    TiledRuntimeTensor<double> A("A", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<double> B("B", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<double> C("C", Grid{{2, 3}, {4, 5}});
+    fill_tiled(A, af);
+    fill_tiled(B, bf);
+    fill_tiled(C, cf);
+    cg::direct_division(2.0, A, B, 0.5, &C);
+    auto Cg = gather(C, 5, 9);
+    for (int i = 0; i < 5; ++i) {
+        for (int j = 0; j < 9; ++j) {
+            REQUIRE(std::abs(Cg[i][j] - (2.0 * af(i, j) / bf(i, j) + 0.5 * cf(i, j))) < 1e-12);
+        }
+    }
+
+    // Captured.
+    TiledRuntimeTensor<double> A2("A2", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<double> B2("B2", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<double> C2("C2", Grid{{2, 3}, {4, 5}});
+    fill_tiled(A2, af);
+    fill_tiled(B2, bf);
+    fill_tiled(C2, cf);
+    cg::Graph g("tiled_divide");
+    {
+        cg::CaptureGuard const guard(g);
+        cg::direct_division(2.0, A2, B2, 0.5, &C2);
+    }
+    // beta != 0 reads C, so C must appear among the inputs.
+    REQUIRE(g.num_nodes() == 1);
+    REQUIRE(std::ranges::find(g.nodes()[0].inputs, g.nodes()[0].outputs[0]) != g.nodes()[0].inputs.end());
+
+    g.execute();
+    auto C2g = gather(C2, 5, 9);
+    for (int i = 0; i < 5; ++i) {
+        for (int j = 0; j < 9; ++j) {
+            REQUIRE(std::abs(C2g[i][j] - Cg[i][j]) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("TiledRuntimeTensor - tiled direct_division rejects a missing denominator tile", "[ComputeGraph][TiledRuntime]") {
+    // An absent denominator block is a structurally zero divisor. The dense op
+    // would produce infinities; the tiled one says so instead.
+    TiledRuntimeTensor<double> A("A", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<double> B("B", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<double> C("C", Grid{{2, 3}, {4, 5}});
+    fill_tiled(A, [](int r, int c) { return 1.0 + r - c; });
+    // B gets only one tile, so most of A's tiles have no denominator.
+    B.tile({0, 0}).materialize();
+    REQUIRE_THROWS(cg::direct_division(1.0, A, B, 0.0, &C));
+}

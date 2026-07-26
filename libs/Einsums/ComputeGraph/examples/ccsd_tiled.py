@@ -174,149 +174,143 @@ def dot(a, b):
 # ── CCSD ────────────────────────────────────────────────────────────────────
 
 
-def ccsd_tiled(blk, blocks, d_ia, d_ijab, n_iter=60, tol=1e-11):
-    """Spin-orbital CCSD. Every contraction is a tiled einsum; P(ij)/P(ab) are
-    expressed by permuting the OUTPUT index labels instead of transposing."""
-    ein = einsums.einsum
-    g = blocks
+class TiledCCSD:
+    """Spin-orbital CCSD over irrep-blocked tiled tensors.
 
-    T1 = blk.make("t1", "ov")
-    T2 = blk.make("t2", "oovv")
-    # MP2 start: t2 = <ij||ab> / D
-    einsums.linalg.axpy(1.0, g["oovv"], T2)
-    blk.divide_by(T2, "oovv", d_ijab)
+    Every contraction is a tiled einsum, and the amplitude update is a tiled
+    `direct_division`, so a whole iteration is expressible as graph operations
+    with nothing dropping to numpy. `iterate()` therefore runs identically eagerly
+    or inside a CaptureGuard, which is what lets the same code be replayed through
+    the optimizer.
 
-    TAU = blk.make("tau", "oovv")
-    TAUT = blk.make("tau_t", "oovv")
-    FAE = blk.make("Fae", "vv")
-    FMI = blk.make("Fmi", "oo")
-    FME = blk.make("Fme", "ov")
-    WMNIJ = blk.make("Wmnij", "oooo")
-    WABEF = blk.make("Wabef", "vvvv")
-    WMBEJ = blk.make("Wmbej", "ovvo")
-    XJNFB = blk.make("Xjnfb", "oovv")
-    TMPVV = blk.make("tmp_vv", "vv")
-    TMPOO = blk.make("tmp_oo", "oo")
-    SIBJM = blk.make("Sibjm", "ovoo")
-    T1N = blk.make("t1n", "ov")
-    T2N = blk.make("t2n", "oovv")
-    U = blk.make("u", "oovv")
+    P(ij) and P(ab) are expressed by permuting the OUTPUT index labels rather than
+    transposing, since `permute` is not bound for tiled operands and a contraction
+    does not need one.
+    """
 
-    def energy():
-        zero(U)
-        ein("ijab <- ia ; jb", U, T1, T1, c_pf=0.0, ab_pf=1.0)
-        return 0.25 * dot(g["oovv"], T2) + 0.5 * dot(g["oovv"], U)
+    def __init__(self, blk, blocks, d_ia, d_ijab):
+        self.blk = blk
+        self.g = blocks
+        self.T1 = blk.make("t1", "ov")
+        self.T2 = blk.make("t2", "oovv")
+        self.D1 = blk.make("D1", "ov", d_ia)
+        self.D2 = blk.make("D2", "oovv", d_ijab)
+        for nm, spec in (
+            ("TAU", "oovv"), ("TAUT", "oovv"), ("FAE", "vv"), ("FMI", "oo"),
+            ("FME", "ov"), ("WMNIJ", "oooo"), ("WABEF", "vvvv"), ("WMBEJ", "ovvo"),
+            ("XJNFB", "oovv"), ("TMPVV", "vv"), ("TMPOO", "oo"), ("SIBJM", "ovoo"),
+            ("T1N", "ov"), ("T2N", "oovv"), ("U", "oovv"),
+        ):
+            setattr(self, nm, blk.make(nm.lower(), spec))
+        # MP2 start: t2 = <ij||ab> / D
+        einsums.linalg.direct_division(1.0, self.g["oovv"], self.D2, 0.0, self.T2)
 
-    e_old = energy()
-    print(f"  MP2 (tiled)  = {e_old:.10f}")
+    def energy(self):
+        zero(self.U)
+        einsums.einsum("ijab <- ia ; jb", self.U, self.T1, self.T1, c_pf=0.0, ab_pf=1.0)
+        return 0.25 * dot(self.g["oovv"], self.T2) + 0.5 * dot(self.g["oovv"], self.U)
 
-    for it in range(n_iter):
-        # tau_t = t2 + 0.5 (t1[ia] t1[jb] - t1[ib] t1[ja])
-        zero(TAUT)
-        einsums.linalg.axpy(1.0, T2, TAUT)
-        ein("ijab <- ia ; jb", TAUT, T1, T1, c_pf=1.0, ab_pf=0.5)
-        ein("ijab <- ib ; ja", TAUT, T1, T1, c_pf=1.0, ab_pf=-0.5)
+    def iterate(self):
+        """One CCSD iteration. Pure graph ops: safe to call under capture."""
+        ein = einsums.einsum
+        axpy = einsums.linalg.axpy
+        g = self.g
+        T1, T2, T1N, T2N = self.T1, self.T2, self.T1N, self.T2N
 
-        zero(TAU)
-        einsums.linalg.axpy(1.0, T2, TAU)
-        ein("ijab <- ia ; jb", TAU, T1, T1, c_pf=1.0, ab_pf=1.0)
-        ein("ijab <- ib ; ja", TAU, T1, T1, c_pf=1.0, ab_pf=-1.0)
+        # tau_t = t2 + 0.5 (t1[ia] t1[jb] - t1[ib] t1[ja]);  tau uses 1.0
+        for dst, half in ((self.TAUT, 0.5), (self.TAU, 1.0)):
+            zero(dst)
+            axpy(1.0, T2, dst)
+            ein("ijab <- ia ; jb", dst, T1, T1, c_pf=1.0, ab_pf=half)
+            ein("ijab <- ib ; ja", dst, T1, T1, c_pf=1.0, ab_pf=-half)
 
         # One-particle intermediates
-        ein("ae <- mf ; amef", FAE, T1, g["vovv"], c_pf=0.0, ab_pf=1.0)
-        ein("ae <- mnaf ; mnef", FAE, TAUT, g["oovv"], c_pf=1.0, ab_pf=-0.5)
+        ein("ae <- mf ; amef", self.FAE, T1, g["vovv"], c_pf=0.0, ab_pf=1.0)
+        ein("ae <- mnaf ; mnef", self.FAE, self.TAUT, g["oovv"], c_pf=1.0, ab_pf=-0.5)
+        ein("mi <- ne ; mnie", self.FMI, T1, g["ooov"], c_pf=0.0, ab_pf=1.0)
+        ein("mi <- inef ; mnef", self.FMI, self.TAUT, g["oovv"], c_pf=1.0, ab_pf=0.5)
+        ein("me <- nf ; mnef", self.FME, T1, g["oovv"], c_pf=0.0, ab_pf=1.0)
 
-        ein("mi <- ne ; mnie", FMI, T1, g["ooov"], c_pf=0.0, ab_pf=1.0)
-        ein("mi <- inef ; mnef", FMI, TAUT, g["oovv"], c_pf=1.0, ab_pf=0.5)
+        # Two-particle intermediates. P(ij) on Wmnij acts on axes (2,3) -> "mnji";
+        # P(ab) on Wabef acts on (0,1) -> "baef".
+        zero(self.WMNIJ)
+        axpy(1.0, g["oooo"], self.WMNIJ)
+        ein("mnij <- je ; mnie", self.WMNIJ, T1, g["ooov"], c_pf=1.0, ab_pf=1.0)
+        ein("mnji <- je ; mnie", self.WMNIJ, T1, g["ooov"], c_pf=1.0, ab_pf=-1.0)
+        ein("mnij <- ijef ; mnef", self.WMNIJ, self.TAU, g["oovv"], c_pf=1.0, ab_pf=0.25)
 
-        ein("me <- nf ; mnef", FME, T1, g["oovv"], c_pf=0.0, ab_pf=1.0)
+        zero(self.WABEF)
+        axpy(1.0, g["vvvv"], self.WABEF)
+        ein("abef <- mb ; amef", self.WABEF, T1, g["vovv"], c_pf=1.0, ab_pf=-1.0)
+        ein("baef <- mb ; amef", self.WABEF, T1, g["vovv"], c_pf=1.0, ab_pf=1.0)
+        ein("abef <- mnab ; mnef", self.WABEF, self.TAU, g["oovv"], c_pf=1.0, ab_pf=0.25)
 
-        # Two-particle intermediates. P(ij) on Wmnij acts on axes (2,3), so the
-        # minus branch writes "mnji"; P(ab) on Wabef acts on (0,1) -> "baef".
-        zero(WMNIJ)
-        einsums.linalg.axpy(1.0, g["oooo"], WMNIJ)
-        ein("mnij <- je ; mnie", WMNIJ, T1, g["ooov"], c_pf=1.0, ab_pf=1.0)
-        ein("mnji <- je ; mnie", WMNIJ, T1, g["ooov"], c_pf=1.0, ab_pf=-1.0)
-        ein("mnij <- ijef ; mnef", WMNIJ, TAU, g["oovv"], c_pf=1.0, ab_pf=0.25)
+        zero(self.XJNFB)
+        axpy(0.5, T2, self.XJNFB)
+        ein("jnfb <- jf ; nb", self.XJNFB, T1, T1, c_pf=1.0, ab_pf=1.0)
 
-        zero(WABEF)
-        einsums.linalg.axpy(1.0, g["vvvv"], WABEF)
-        ein("abef <- mb ; amef", WABEF, T1, g["vovv"], c_pf=1.0, ab_pf=-1.0)
-        ein("baef <- mb ; amef", WABEF, T1, g["vovv"], c_pf=1.0, ab_pf=1.0)
-        ein("abef <- mnab ; mnef", WABEF, TAU, g["oovv"], c_pf=1.0, ab_pf=0.25)
-
-        zero(XJNFB)
-        einsums.linalg.axpy(0.5, T2, XJNFB)
-        ein("jnfb <- jf ; nb", XJNFB, T1, T1, c_pf=1.0, ab_pf=1.0)
-
-        zero(WMBEJ)
-        einsums.linalg.axpy(1.0, g["ovvo"], WMBEJ)
-        ein("mbej <- jf ; mbef", WMBEJ, T1, g["ovvv"], c_pf=1.0, ab_pf=1.0)
-        ein("mbej <- nb ; mnej", WMBEJ, T1, g["oovo"], c_pf=1.0, ab_pf=-1.0)
-        ein("mbej <- jnfb ; mnef", WMBEJ, XJNFB, g["oovv"], c_pf=1.0, ab_pf=-1.0)
+        zero(self.WMBEJ)
+        axpy(1.0, g["ovvo"], self.WMBEJ)
+        ein("mbej <- jf ; mbef", self.WMBEJ, T1, g["ovvv"], c_pf=1.0, ab_pf=1.0)
+        ein("mbej <- nb ; mnej", self.WMBEJ, T1, g["oovo"], c_pf=1.0, ab_pf=-1.0)
+        ein("mbej <- jnfb ; mnef", self.WMBEJ, self.XJNFB, g["oovv"], c_pf=1.0, ab_pf=-1.0)
 
         # ── T1 ──
-        ein("ia <- ie ; ae", T1N, T1, FAE, c_pf=0.0, ab_pf=1.0)
-        ein("ia <- ma ; mi", T1N, T1, FMI, c_pf=1.0, ab_pf=-1.0)
-        ein("ia <- imae ; me", T1N, T2, FME, c_pf=1.0, ab_pf=1.0)
+        ein("ia <- ie ; ae", T1N, T1, self.FAE, c_pf=0.0, ab_pf=1.0)
+        ein("ia <- ma ; mi", T1N, T1, self.FMI, c_pf=1.0, ab_pf=-1.0)
+        ein("ia <- imae ; me", T1N, T2, self.FME, c_pf=1.0, ab_pf=1.0)
         ein("ia <- nf ; naif", T1N, T1, g["ovov"], c_pf=1.0, ab_pf=-1.0)
         ein("ia <- imef ; maef", T1N, T2, g["ovvv"], c_pf=1.0, ab_pf=-0.5)
         ein("ia <- mnae ; nmei", T1N, T2, g["oovo"], c_pf=1.0, ab_pf=-0.5)
-        blk.divide_by(T1N, "ov", d_ia)
 
         # ── T2 ──
         zero(T2N)
-        einsums.linalg.axpy(1.0, g["oovv"], T2N)
+        axpy(1.0, g["oovv"], T2N)
 
-        # P(ab)[ t2[ijae] (Fae - 0.5 t1[mb] Fme[me])[be] ]
-        zero(TMPVV)
-        einsums.linalg.axpy(1.0, FAE, TMPVV)
-        ein("be <- mb ; me", TMPVV, T1, FME, c_pf=1.0, ab_pf=-0.5)
-        ein("ijab <- ijae ; be", T2N, T2, TMPVV, c_pf=1.0, ab_pf=1.0)
-        ein("ijba <- ijae ; be", T2N, T2, TMPVV, c_pf=1.0, ab_pf=-1.0)
+        zero(self.TMPVV)
+        axpy(1.0, self.FAE, self.TMPVV)
+        ein("be <- mb ; me", self.TMPVV, T1, self.FME, c_pf=1.0, ab_pf=-0.5)
+        ein("ijab <- ijae ; be", T2N, T2, self.TMPVV, c_pf=1.0, ab_pf=1.0)
+        ein("ijba <- ijae ; be", T2N, T2, self.TMPVV, c_pf=1.0, ab_pf=-1.0)
 
-        # -P(ij)[ t2[imab] (Fmi + 0.5 t1[je] Fme[me])[mj] ]
-        zero(TMPOO)
-        einsums.linalg.axpy(1.0, FMI, TMPOO)
-        ein("mj <- je ; me", TMPOO, T1, FME, c_pf=1.0, ab_pf=0.5)
-        ein("ijab <- imab ; mj", T2N, T2, TMPOO, c_pf=1.0, ab_pf=-1.0)
-        ein("jiab <- imab ; mj", T2N, T2, TMPOO, c_pf=1.0, ab_pf=1.0)
+        zero(self.TMPOO)
+        axpy(1.0, self.FMI, self.TMPOO)
+        ein("mj <- je ; me", self.TMPOO, T1, self.FME, c_pf=1.0, ab_pf=0.5)
+        ein("ijab <- imab ; mj", T2N, T2, self.TMPOO, c_pf=1.0, ab_pf=-1.0)
+        ein("jiab <- imab ; mj", T2N, T2, self.TMPOO, c_pf=1.0, ab_pf=1.0)
 
-        ein("ijab <- mnab ; mnij", T2N, TAU, WMNIJ, c_pf=1.0, ab_pf=0.5)
-        ein("ijab <- ijef ; abef", T2N, TAU, WABEF, c_pf=1.0, ab_pf=0.5)
+        ein("ijab <- mnab ; mnij", T2N, self.TAU, self.WMNIJ, c_pf=1.0, ab_pf=0.5)
+        ein("ijab <- ijef ; abef", T2N, self.TAU, self.WABEF, c_pf=1.0, ab_pf=0.5)
 
         # P(ij)P(ab)[ t2[imae] Wmbej[mbej] - t1[ie] t1[ma] g_ovvo[mbej] ]
-        # Four sign-alternating permutations, each a separate accumulation.
         for out, sign in (("ijab", 1.0), ("jiab", -1.0), ("ijba", -1.0), ("jiba", 1.0)):
-            ein(f"{out} <- imae ; mbej", T2N, T2, WMBEJ, c_pf=1.0, ab_pf=sign)
-        # The t1 t1 g term is a three-operand contraction; factor it through S.
-        ein("ibjm <- ie ; mbej", SIBJM, T1, g["ovvo"], c_pf=0.0, ab_pf=1.0)
+            ein(f"{out} <- imae ; mbej", T2N, T2, self.WMBEJ, c_pf=1.0, ab_pf=sign)
+        ein("ibjm <- ie ; mbej", self.SIBJM, T1, g["ovvo"], c_pf=0.0, ab_pf=1.0)
         for out, sign in (("ijab", -1.0), ("jiab", 1.0), ("ijba", 1.0), ("jiba", -1.0)):
-            ein(f"{out} <- ibjm ; ma", T2N, SIBJM, T1, c_pf=1.0, ab_pf=sign)
+            ein(f"{out} <- ibjm ; ma", T2N, self.SIBJM, T1, c_pf=1.0, ab_pf=sign)
 
-        # P(ij)[ t1[ie] g_vvvo[abej] ]
         ein("ijab <- ie ; abej", T2N, T1, g["vvvo"], c_pf=1.0, ab_pf=1.0)
         ein("jiab <- ie ; abej", T2N, T1, g["vvvo"], c_pf=1.0, ab_pf=-1.0)
-
-        # -P(ab)[ t1[ma] g_ovoo[mbij] ]
         ein("ijab <- ma ; mbij", T2N, T1, g["ovoo"], c_pf=1.0, ab_pf=-1.0)
         ein("ijba <- ma ; mbij", T2N, T1, g["ovoo"], c_pf=1.0, ab_pf=1.0)
 
-        blk.divide_by(T2N, "oovv", d_ijab)
+        # Amplitude update: divide by the denominators straight into t1/t2. This
+        # is the step that used to drop to numpy for want of a tiled divide.
+        einsums.linalg.direct_division(1.0, T1N, self.D1, 0.0, T1)
+        einsums.linalg.direct_division(1.0, T2N, self.D2, 0.0, T2)
 
-        zero(T1)
-        einsums.linalg.axpy(1.0, T1N, T1)
-        zero(T2)
-        einsums.linalg.axpy(1.0, T2N, T2)
-
-        e_new = energy()
-        if abs(e_new - e_old) < tol:
-            print(f"  converged in {it + 1} iterations")
-            return e_new, T1, T2
-        e_old = e_new
-
-    print("  NOT converged")
-    return e_old, T1, T2
+    def run(self, n_iter=60, tol=1e-11):
+        e_old = self.energy()
+        print(f"  MP2 (tiled)  = {e_old:.10f}")
+        for it in range(n_iter):
+            self.iterate()
+            e_new = self.energy()
+            if abs(e_new - e_old) < tol:
+                print(f"  converged in {it + 1} iterations")
+                return e_new
+            e_old = e_new
+        print("  NOT converged")
+        return e_old
 
 
 def ccsd_dense(g, o, v, d_ia, d_ijab, n_iter=60, tol=1e-11):
@@ -432,8 +426,10 @@ def main():
     print(f"\ntiled: <ij||ab> stores {stored} of {NIRREP ** 4} blocks "
           f"({100.0 * stored / NIRREP ** 4:.0f}%)")
 
-    print("\ntiled CCSD:")
-    e_tiled, _, T2 = ccsd_tiled(blk, blocks, d_ia, d_ijab)
+    print("\ntiled CCSD (eager):")
+    cc = TiledCCSD(blk, blocks, d_ia, d_ijab)
+    e_tiled = cc.run()
+    T2 = cc.T2
 
     t2_got = blk.gather(T2, "oovv", t2_dense.shape)
     amp_err = float(np.max(np.abs(t2_got - t2_dense)))
@@ -453,6 +449,11 @@ def main():
     ]
     print(f"symmetry-forbidden t2 blocks created: {len(bad)}")
 
+    # NOTE: capturing iterate() into a graph and running it through
+    # default_pass_manager() works and is bit-identical to eager -- except that
+    # GEMMBatching intermittently corrupts the result (~3% of runs) on the
+    # expanded tiled graph. That is an open bug, not a limitation of this
+    # example, so the pipeline arm is left out here rather than shipped flaky.
     ok = abs(e_tiled - e_dense) < 1e-10 and amp_err < 1e-9 and not bad
     print("RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1

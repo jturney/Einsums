@@ -118,6 +118,48 @@ void tiled_axpy(T alpha, TiledRuntimeTensor<T> const &X, TiledRuntimeTensor<T> *
     }
 }
 
+/**
+ * @brief Tiled `C = alpha * (A / B) + beta * C`, tile by tile.
+ *
+ * All three operands must share an identical tile grid. Only the tiles stored in
+ * A are divided: an absent A tile is a rigorous zero and `0/B` is zero, so such a
+ * tile contributes nothing and C keeps `beta * C` there. Pre-existing C tiles
+ * that A never reaches are therefore still scaled by @p beta, exactly as the
+ * dense op would leave them.
+ *
+ * A tile present in A whose B counterpart is ABSENT is an error rather than an
+ * infinity: an absent denominator block is a structurally missing divisor, which
+ * in practice means the caller built the denominator with the wrong sparsity.
+ * The dense op would silently produce infinities.
+ */
+template <typename T>
+void tiled_direct_division(T alpha, TiledRuntimeTensor<T> const &A, TiledRuntimeTensor<T> const &B, T beta, TiledRuntimeTensor<T> *C) {
+    if (A.tile_sizes() != B.tile_sizes() || A.tile_sizes() != C->tile_sizes()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::direct_division (tiled): A, B and C must share the same tile grid");
+    }
+    std::vector<std::vector<int>> written;
+    for (auto const &kv : A.tiles()) {
+        auto const &coord = kv.first;
+        if (!B.has_tile(coord)) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::direct_division (tiled): numerator tile is present but the denominator tile is absent, so the "
+                                    "divisor is structurally zero");
+        }
+        auto &c_tile = C->tile(coord); // infer-and-create (zeroed)
+        c_tile.materialize();
+        linear_algebra::direct_division(alpha, kv.second, B.tile(coord), beta, &c_tile);
+        written.push_back(coord);
+    }
+    // C tiles the numerator never reached still take their beta scaling.
+    for (auto &kv : C->tiles()) {
+        if (std::ranges::find(written, kv.first) != written.end()) {
+            continue;
+        }
+        kv.second.materialize();
+        linear_algebra::scale(beta, &kv.second);
+    }
+}
+
 // ── Scalar reductions ────────────────────────────────────────────────────────
 
 /// Tiled dot: sum over shared tiles of the dense per-tile dot (non-conjugated,

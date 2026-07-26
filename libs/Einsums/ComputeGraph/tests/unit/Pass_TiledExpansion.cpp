@@ -1070,3 +1070,65 @@ TEST_CASE("TiledExpansion - screened sparsity propagates to the next contraction
     // The rest is real work, not an accidentally empty graph.
     CHECK(std::ranges::any_of(d, [](double v) { return v != 0.0; }));
 }
+
+TEST_CASE("TiledExpansion - tiled direct_division expands per tile", "[ComputeGraph][Passes][Tiled]") {
+    // The amplitude update. It has to expand, not merely run: an unexpandable
+    // node sharing the amplitudes would strand them and decline the whole graph.
+    Grid const                          g{{2, 2}, {2, 2}};
+    std::vector<std::vector<int>> const num{{0, 0}, {1, 1}};
+    std::vector<std::vector<int>> const den = full_coords(g);
+    std::vector<std::vector<int>> const dst = full_coords(g);
+
+    auto A_ref = make_tiled("A", g, num);
+    auto B_ref = make_tiled("B", g, den);
+    auto C_ref = make_tiled("C", g, dst);
+    fill_det(A_ref, 1.0);
+    fill_det(B_ref, 7.0); // fill_det uses sin(); shift below keeps it away from 0
+    fill_det(C_ref, 2.0);
+    for (auto const &co : den) {
+        auto &t = B_ref.tile(co);
+        for (size_t i = 0; i < t.size(); ++i) {
+            t.data()[i] += 3.0;
+        }
+    }
+    {
+        cg::Graph              gref("divide_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::direct_division(1.5, A_ref, B_ref, 0.25, &C_ref);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    auto A = make_tiled("A2", g, num);
+    auto B = make_tiled("B2", g, den);
+    auto C = make_tiled("C2", g, dst);
+    fill_det(A, 1.0);
+    fill_det(B, 7.0);
+    fill_det(C, 2.0);
+    for (auto const &co : den) {
+        auto &t = B.tile(co);
+        for (size_t i = 0; i < t.size(); ++i) {
+            t.data()[i] += 3.0;
+        }
+    }
+
+    cg::Graph graph("divide_expand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::direct_division(1.5, A, B, 0.25, &C);
+    }
+    REQUIRE(nodes_of_kind(graph, cg::OpKind::Custom) == 0); // records as DirectDivision
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>();
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+
+    CHECK(pass->num_expanded() == 1);
+    // Two numerator tiles divide; the other two destination tiles are only scaled
+    // by beta, which is the same leftover rule the contraction path uses.
+    CHECK(nodes_of_kind(graph, cg::OpKind::DirectDivision) == num.size());
+    CHECK(nodes_of_kind(graph, cg::OpKind::Scale) == dst.size() - num.size());
+
+    graph.execute();
+    require_tiles_match(C, C_ref);
+}
