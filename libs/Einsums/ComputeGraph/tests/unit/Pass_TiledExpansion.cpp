@@ -481,3 +481,52 @@ TEST_CASE("TiledExpansion - sparse rank-3 operands still match", "[ComputeGraph]
     graph.execute();
     require_tiles_match(C, C_ref);
 }
+
+TEST_CASE("TiledExpansion - declines when an unexpandable node shares the tiled tensor", "[ComputeGraph][Passes][Tiled]") {
+    // A tiled element_transform has no descriptor and can never expand, so it goes
+    // on naming C's whole-tensor id. Expanding the einsum would replace every write
+    // of C with writes to per-tile ids, leaving that reader with no writer at all
+    // and free to be scheduled before the tiles are filled.
+    Grid const gA{{2, 3}, {4, 5}};
+    Grid const gB{{4, 5}, {3, 4}};
+    Grid const gC{{2, 3}, {3, 4}};
+
+    auto square = [](double x) { return x * x; };
+
+    auto A_ref = make_tiled("A", gA, full_coords(gA));
+    auto B_ref = make_tiled("B", gB, full_coords(gB));
+    auto C_ref = make_tiled("C", gC, {});
+    fill_det(A_ref, 1.0);
+    fill_det(B_ref, 2.0);
+    {
+        cg::Graph              gref("strand_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::einsum("ij <- ik ; kj", &C_ref, A_ref, B_ref);
+        cg::element_transform(&C_ref, square);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    auto A = make_tiled("A2", gA, full_coords(gA));
+    auto B = make_tiled("B2", gB, full_coords(gB));
+    auto C = make_tiled("C2", gC, {});
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+
+    cg::Graph graph("strand_expand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+        cg::element_transform(&C, square);
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>();
+    pm.add(pass);
+    CHECK_FALSE(graph.apply(pm));
+
+    CHECK(pass->num_expanded() == 0);
+    CHECK(pass->num_declined() == 1);
+
+    graph.execute();
+    require_tiles_match(C, C_ref);
+}

@@ -48,6 +48,17 @@ namespace einsums::compute_graph::passes {
  *   difference, so this pass emits a scale (or a zero when ``c_pf == 0``) for
  *   them.
  *
+ * @par Whole-tensor references must not be stranded
+ * Expanding a node replaces its whole-tensor reads and writes with per-tile ones,
+ * so the whole-tensor TensorId loses every reference that node owned. A node left
+ * behind that still names that id would have its dependency edge silently
+ * dropped, and with no writer a reader can be scheduled before the tiles are
+ * filled. A candidate therefore expands only when EVERY node touching its tiled
+ * tensors also expands; since rejecting one candidate can strand another, this
+ * iterates to a fixpoint. Deciding this before any tile is created matters,
+ * because minting a per-tile id creates the tile, and a spurious tile changes how
+ * the runtime applies ``c_pf`` on the path that ends up not expanding.
+ *
  * @par Limits
  * - Opt-in: not in @ref PassManager::populate_default.
  * - **Node budget.** Expansion produces up to (tiles of A) x (tiles of B) nodes,
@@ -91,7 +102,8 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     [[nodiscard]] size_t num_expanded() const { return _num_expanded; }
     /// Dense per-tile nodes emitted, contractions and scales together.
     [[nodiscard]] size_t num_tile_nodes() const { return _num_tile_nodes; }
-    /// Candidates left alone: misaligned partitions, produced operands, or over budget.
+    /// Candidates left alone: misaligned partitions, produced operands, over
+    /// budget, or sharing a tiled tensor with a node that cannot expand.
     [[nodiscard]] size_t num_declined() const { return _num_declined; }
 
   private:
