@@ -407,9 +407,35 @@ bool TiledExpansion::run(Graph &graph) {
             continue;
         }
 
-        // Enumerate the unique-index grid exactly as the runtime does.
-        auto const   stride = grid_strides(grid);
-        size_t const total  = stride.empty() ? 0 : stride[0] * static_cast<size_t>(grid[0]);
+        // Enumeration order: CONTRACTED indices slowest, output indices fastest, so
+        // every tile GEMM at the same accumulation step is emitted as one contiguous
+        // run. GEMMBatching only batches a group whose span contains no outside node
+        // touching the same buffers, and letting the contracted index vary fastest
+        // drops each output tile's later accumulations in between the first writes,
+        // which disqualifies every group. Ordering it this way is what makes the
+        // tile GEMMs batchable at all.
+        //
+        // Per output tile the contracted steps stay in ascending order, so each tile
+        // accumulates in exactly the order the runtime uses and the result is
+        // bit-identical; only independent tiles move relative to each other.
+        //
+        // `unique` holds the C letters first (add_unique(cidx) ran first), so the
+        // positions from cidx.size() up are exactly the contracted ones.
+        std::vector<size_t> perm;
+        perm.reserve(nu);
+        for (size_t u = cidx.size(); u < nu; ++u) {
+            perm.push_back(u);
+        }
+        for (size_t u = 0; u < cidx.size(); ++u) {
+            perm.push_back(u);
+        }
+        std::vector<int> pgrid(nu);
+        for (size_t t = 0; t < nu; ++t) {
+            pgrid[t] = grid[perm[t]];
+        }
+
+        auto const   stride = grid_strides(pgrid);
+        size_t const total  = stride.empty() ? 0 : stride[0] * static_cast<size_t>(pgrid[0]);
         if (total == 0) {
             continue;
         }
@@ -451,9 +477,9 @@ bool TiledExpansion::run(Graph &graph) {
         for (size_t s = 0; s < total; ++s) {
             size_t           rem = s;
             std::vector<int> ucoord(nu);
-            for (size_t u = 0; u < nu; ++u) {
-                ucoord[u] = static_cast<int>(rem / stride[u]);
-                rem %= stride[u];
+            for (size_t t = 0; t < nu; ++t) {
+                ucoord[perm[t]] = static_cast<int>(rem / stride[t]);
+                rem %= stride[t];
             }
             std::vector<int> acoord(aidx.size()), bcoord(bidx.size()), ccoord(cidx.size());
             for (size_t ax = 0; ax < aidx.size(); ++ax) {

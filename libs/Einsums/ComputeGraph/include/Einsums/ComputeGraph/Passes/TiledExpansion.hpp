@@ -57,6 +57,17 @@ namespace einsums::compute_graph::passes {
  *   alone. A tile-grid mismatch makes the runtime throw, so this pass declines
  *   and lets the surviving opaque node throw.
  *
+ * @par Emission order is what makes the tile GEMMs batchable
+ * Contracted indices are enumerated SLOWEST and output indices fastest, so every
+ * tile GEMM at the same accumulation step is emitted as one contiguous run.
+ * GEMMBatching only batches a group whose span contains no outside node touching
+ * the same buffers; letting the contracted index vary fastest drops each output
+ * tile's later accumulations in between the first writes, which disqualifies every
+ * group and leaves the expansion paying node-count cost for nothing. Per output
+ * tile the contracted steps stay ascending, so each tile accumulates in the order
+ * the runtime uses and the result is bit-identical -- only independent tiles move
+ * relative to one another.
+ *
  * @par Predicted tile sets
  * A tiled tensor produced inside the graph has none of its tiles yet at pass
  * time, so its sparsity cannot be read off the object -- and reading the empty

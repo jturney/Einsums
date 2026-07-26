@@ -756,3 +756,53 @@ TEST_CASE("TiledExpansion - declines a tiled axpy over mismatched tile grids", "
     CHECK(nodes_of_kind(graph, cg::OpKind::Custom) == 1);
     REQUIRE_THROWS(graph.execute());
 }
+
+TEST_CASE("TiledExpansion - the emitted tile GEMMs are batchable", "[ComputeGraph][Passes][Tiled]") {
+    // The measurable payoff of expanding. A uniform tile grid makes every tile
+    // GEMM the same shape, and the ones writing distinct C tiles are independent,
+    // so GEMMBatching can collapse them into gemm_batch calls. If this ever stops
+    // firing, expansion is paying node-count cost for nothing.
+    Grid const g{{2, 2}, {2, 2}}; // 4 x 4, every tile 2 x 2
+
+    auto A_ref = make_tiled("A", g, full_coords(g));
+    auto B_ref = make_tiled("B", g, full_coords(g));
+    auto C_ref = make_tiled("C", g, {});
+    fill_det(A_ref, 1.0);
+    fill_det(B_ref, 2.0);
+    {
+        cg::Graph              gref("batch_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::einsum("ij <- ik ; kj", &C_ref, A_ref, B_ref);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    auto A = make_tiled("A2", g, full_coords(g));
+    auto B = make_tiled("B2", g, full_coords(g));
+    auto C = make_tiled("C2", g, {});
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+
+    cg::Graph graph("batch_expand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+    }
+
+    cg::PassManager pm;
+    auto            expand = std::make_shared<cg::passes::TiledExpansion>();
+    auto            batch  = std::make_shared<cg::passes::GEMMBatching>(cg::HardwareProfile::detect_default());
+    pm.add(expand);
+    pm.add(batch);
+    REQUIRE(graph.apply(pm));
+
+    CHECK(expand->num_expanded() == 1);
+    // Two batches: the first write to each of the 4 output tiles (c_pf=0), then the
+    // second accumulation into each (c_pf=1). All 8 tile GEMMs are absorbed.
+    CHECK(batch->num_batches() == 2);
+    CHECK(batch->total_batched() == 8);
+    CHECK(nodes_of_kind(graph, cg::OpKind::BatchedGemm) == 2);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Einsum) == 0);
+
+    graph.execute();
+    require_tiles_match(C, C_ref);
+}
