@@ -306,6 +306,18 @@ bool GEMMBatching::run(Graph &graph) {
             batched_outputs.push_back(nodes[idx].outputs[0]);
         }
 
+        // beta != 0 means gemm_batch READS every destination before writing it.
+        // Only A and B are copied above, so without this the batched node claims
+        // to overwrite each C without reading it, and the RAW edge from whoever
+        // produced that C is gone. The members carried those reads themselves --
+        // an accumulating einsum lists its output among its inputs (bug-1009) --
+        // and collapsing them must not drop the convention. The failure is a
+        // scheduling race, so it shows up intermittently as a destination read
+        // before it is written.
+        if (d.beta != std::complex<double>{0.0, 0.0}) {
+            batched_inputs.insert(batched_inputs.end(), batched_outputs.begin(), batched_outputs.end());
+        }
+
         // Batched executor: pack pointers on every call (rebind may
         // have changed them), then dispatch to the typed gemm_batch.
         auto executor = [d, a_exs = std::move(a_exs), b_exs = std::move(b_exs), c_exs = std::move(c_exs)]() {
