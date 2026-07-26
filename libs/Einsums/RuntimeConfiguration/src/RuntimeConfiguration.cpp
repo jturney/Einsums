@@ -221,8 +221,11 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
                                                     cl::Default(std::string("[%Y-%m-%d %H:%M:%S.%F] [%n] [%^%-8l%$] [%s:%#/%!] %v")));
 
         static cl::OptionCategory profileCategory("Profile");
-        static cl::Flag const     noProfileReport("einsums:profile:no-report", {}, "Don't generate profile report", profileCategory,
-                                                  cl::Location(global_bools["profiler-report"]), cl::Default(true), cl::ImplicitValue(false));
+        static cl::Flag const     profileDisable(
+            "einsums:profile:disable", {}, "Do not record profiling zones or annotations (large speedup for small operations)",
+            profileCategory, cl::Location(global_bools["profile-disable"]), cl::Default(false), cl::ImplicitValue(true));
+        static cl::Flag const noProfileReport("einsums:profile:no-report", {}, "Don't generate profile report", profileCategory,
+                                              cl::Location(global_bools["profiler-report"]), cl::Default(true), cl::ImplicitValue(false));
 
         static cl::Opt<std::string> const profileFilename("einsums:profile:filename", {}, "Generate profile filename", profileCategory,
                                                           cl::Location(global_strings["profiler-filename"]),

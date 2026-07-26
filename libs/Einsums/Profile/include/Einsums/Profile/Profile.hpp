@@ -70,21 +70,44 @@ namespace einsums::profile {
 struct EINSUMS_EXPORT Profiler {
     static auto instance() -> Profiler &;
 
+    /// Whether zones and annotations are recorded. Checked first in every
+    /// instrumentation entry point so a disabled profiler costs one relaxed load.
+    [[nodiscard]] bool enabled() const { return _enabled.load(std::memory_order_relaxed); }
+    void               set_enabled(bool on) { _enabled.store(on, std::memory_order_relaxed); }
+
     // Start a timer region. Optionally provide file/line/func (if available).
+    // Interns on every call; prefer the pre-interned overload below, which is what
+    // LabeledSection uses.
     void push(std::string const &name, std::string const &file = "", int line = 0, std::string const &func = "") {
+        if (!enabled()) {
+            return;
+        }
+        push_interned(_strings.intern(name), _strings.intern(file), _strings.intern(func), line, name, file, func);
+    }
+
+    /// Start a timer region from ALREADY INTERNED ids.
+    ///
+    /// A zone's name, file and function are compile-time constants at the call
+    /// site, so interning them per entry means hashing and ``memcmp``-ing the same
+    /// strings (including a long absolute ``__FILE__`` path) under a shared mutex
+    /// millions of times. @ref ZoneSite interns once per site and hands the ids
+    /// here. The trailing string views are only read by the Tracy backend.
+    void push_interned(uint32_t name_id, uint32_t file_id, uint32_t func_id, int line, std::string_view name = {},
+                       std::string_view file = {}, std::string_view func = {}) {
+        if (!enabled()) {
+            return;
+        }
         auto overhead_start = Clock::now();
         auto now            = overhead_start;
 
 #    ifdef EINSUMS_HAVE_TRACY
-        auto z =
-            std::make_unique<tracy::ScopedZone>(line, file.c_str(), file.size(), func.c_str(), func.size(), name.c_str(), name.size(), 1);
+        auto z = std::make_unique<tracy::ScopedZone>(line, file.data(), file.size(), func.data(), func.size(), name.data(), name.size(), 1);
         thread_tracy_zones().push_back(std::move(z));
+#    else
+        (void)name;
+        (void)file;
+        (void)func;
 #    endif
-
-        // Intern strings
-        uint32_t const name_id = _strings.intern(name);
-        uint32_t const file_id = _strings.intern(file);
-        uint32_t const func_id = _strings.intern(func);
 
         // Ensure thread is registered with consumer
         auto &rb = thread_ring_buffer();
@@ -118,6 +141,9 @@ struct EINSUMS_EXPORT Profiler {
 
     // Stop timer region
     void pop() {
+        if (!enabled()) {
+            return;
+        }
         auto overhead_start = Clock::now();
         auto now            = overhead_start;
 
@@ -215,6 +241,10 @@ struct EINSUMS_EXPORT Profiler {
         try {
             auto &gc = GlobalConfigMap::get_singleton();
             port     = static_cast<uint16_t>(gc.get_int("profiler-port", 19216));
+            // --einsums:profile:disable. Recording every zone and annotation is not
+            // free: on small operations it dominates, so a run that does not want a
+            // profile should be able to say so and pay one relaxed load per zone.
+            _enabled.store(!gc.get_bool("profile-disable", false), std::memory_order_relaxed);
         } catch (...) { // NOLINT
         }
         _server = std::make_unique<Server>(*_consumer, _strings, "127.0.0.1", port);
@@ -320,6 +350,10 @@ struct EINSUMS_EXPORT Profiler {
     std::unique_ptr<Server>   _server;
 
     // Overhead measurement counters
+    /// Recording switch. On by default so the default report keeps working;
+    /// --einsums:profile:disable turns it off, which reduces every zone and
+    /// annotation to one relaxed load.
+    std::atomic<bool>     _enabled{true};
     std::atomic<uint64_t> _push_overhead_ns{0};
     std::atomic<uint64_t> _pop_overhead_ns{0};
     std::atomic<uint64_t> _push_count{0};
@@ -327,7 +361,69 @@ struct EINSUMS_EXPORT Profiler {
 };
 
 // ---------------------- Scoped helper ----------------------
+/**
+ * @brief The interned identity of one instrumentation site's location.
+ *
+ * ``__FILE__`` and ``__func__`` are compile-time constants where a zone is
+ * written, so interning them on every entry re-hashes and re-``memcmp``s the same
+ * strings under a shared mutex - and ``__FILE__`` is a long absolute path.
+ * @ref LabeledSection declares one of these as a function-local static, paying
+ * that once per site for the life of the process.
+ *
+ * The name is deliberately NOT cached here: a zone name may be built per call
+ * (``LabeledSection("tiled axpy({})", x)``) or come from a runtime format string
+ * (``LabeledSection(fmt::runtime(desc))``), and freezing the first one would
+ * mislabel every later entry.
+ *
+ * The views are kept for the Tracy backend, which wants the characters; they
+ * point at the literals the macro passes, which outlive the site.
+ */
+struct ZoneSite {
+    ZoneSite(char const *file_, int line_, char const *func_) : file{file_}, func{func_}, line{line_} {
+        auto &st = Profiler::instance().string_table();
+        file_id  = st.intern(file);
+        func_id  = st.intern(func);
+    }
+
+    std::string_view file;
+    std::string_view func;
+    int              line{0};
+    uint32_t         file_id{0};
+    uint32_t         func_id{0};
+};
+
 struct ScopedZone {
+    /**
+     * @brief Enter a zone at @p site named by @p name (plus any format arguments).
+     *
+     * One constructor covers the three ways a name arrives, chosen at compile
+     * time so the common case does no work it does not need:
+     * - a literal with no arguments is interned straight from its ``string_view``,
+     *   with no ``fmt::format`` call and so no allocation;
+     * - a literal with arguments is formatted per call, as it must be;
+     * - anything else (notably ``fmt::runtime``) is formatted per call too, which
+     *   is what keeps a runtime-named zone correctly labelled.
+     */
+    template <typename NameT>
+    explicit ScopedZone(ZoneSite const &site, NameT &&name) {
+        auto &prof = Profiler::instance();
+        if (!prof.enabled()) {
+            return;
+        }
+        if constexpr (std::is_convertible_v<NameT &&, std::string_view>) {
+            // A bare literal, or the std::string the macro already formatted when
+            // the call had arguments. Interned straight from its characters, so a
+            // no-argument zone allocates nothing.
+            std::string_view const nm{std::forward<NameT>(name)};
+            prof.push_interned(prof.string_table().intern(nm), site.file_id, site.func_id, site.line, nm, site.file, site.func);
+        } else {
+            // A runtime format string (fmt::runtime). Formatting must happen per
+            // call or every later entry would carry the first call's label.
+            std::string const nm = fmt::format(std::forward<NameT>(name));
+            prof.push_interned(prof.string_table().intern(nm), site.file_id, site.func_id, site.line, nm, site.file, site.func);
+        }
+    }
+
     explicit ScopedZone(std::string const &name, std::string const &file = "", int line = 0, std::string const &func = "") {
         Profiler::instance().push(name, file, line, func);
     }
@@ -339,7 +435,10 @@ struct ScopedZone {
 /// Attach a string annotation to the current profiling zone.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate(std::string_view key, std::string_view value) {
     auto &prof = Profiler::instance();
-    auto &st   = prof.string_table();
+    if (!prof.enabled()) {
+        return;
+    }
+    auto &st = prof.string_table();
 
     Event evt{};
     evt.type       = EventType::Annotate;
@@ -354,7 +453,10 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate(std::string_view key
 /// Attach an integer annotation to the current profiling zone.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate(std::string_view key, int64_t value) {
     auto &prof = Profiler::instance();
-    auto &st   = prof.string_table();
+    if (!prof.enabled()) {
+        return;
+    }
+    auto &st = prof.string_table();
 
     Event evt{};
     evt.type       = EventType::Annotate;
@@ -369,7 +471,10 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate(std::string_view key
 /// Attach a floating-point annotation to the current profiling zone.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate(std::string_view key, double value) {
     auto &prof = Profiler::instance();
-    auto &st   = prof.string_table();
+    if (!prof.enabled()) {
+        return;
+    }
+    auto &st = prof.string_table();
 
     Event evt{};
     evt.type       = EventType::Annotate;
@@ -475,14 +580,31 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
     return Profiler::instance().total_pop_count();
 }
 
+// The site is a function-local static, so name/file/func are interned once per
+// call site rather than on every entry. With no format arguments the name is the
+// literal itself and nothing is formatted; with arguments the name is built per
+// call and only it is interned. Expands to TWO declarations, so it must be used
+// at statement scope (as every call site does).
+// The location is interned once per call site via a function-local static; the
+// name is forwarded to ScopedZone, which decides at compile time whether it needs
+// formatting. Expands to TWO declarations, so use it at statement scope.
+// With format arguments this expands to fmt::format(name, args...); with none it
+// expands to just (name), so a literal is never formatted and never allocates.
+// The format call has to live here, not inside ScopedZone: fmt validates format
+// strings with a consteval constructor, and a forwarded template parameter is no
+// longer a constant expression.
+#    define EINSUMS_PROFILE_ZONE_NAME(name_format, ...) __VA_OPT__(fmt::format)(name_format __VA_OPT__(, ) __VA_ARGS__)
+
 #    define LabeledSection(name_format, ...)                                                                                               \
-        ::einsums::profile::ScopedZone const EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(fmt::format(name_format __VA_OPT__(, ) __VA_ARGS__),  \
-                                                                                     __FILE__, __LINE__, __func__)
+        static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){__FILE__, __LINE__, __func__};                     \
+        ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(                                                 \
+            EINSUMS_PP_CAT(_zone_site_, __LINE__), EINSUMS_PROFILE_ZONE_NAME(name_format __VA_OPT__(, ) __VA_ARGS__))
 #    define LabeledSection0() LabeledSection(__func__)
 #    if defined(EINSUMS_WITH_PROFILER_INTERNAL)
 #        define LabeledSectionInternal(name_format, ...)                                                                                   \
-            ::einsums::profile::ScopedZone const EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(                                                  \
-                fmt::format(name_format __VA_OPT__(, ) __VA_ARGS__), __FILE__, __LINE__, __func__)
+            static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){__FILE__, __LINE__, __func__};                 \
+            ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(                                             \
+                EINSUMS_PP_CAT(_zone_site_, __LINE__), EINSUMS_PROFILE_ZONE_NAME(name_format __VA_OPT__(, ) __VA_ARGS__))
 #        define LabeledSectionInternal0() LabeledSectionInternal(__func__)
 #    else
 #        define LabeledSectionInternal(...)
