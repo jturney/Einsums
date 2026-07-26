@@ -482,6 +482,152 @@ TEST_CASE("TiledExpansion - sparse rank-3 operands still match", "[ComputeGraph]
     require_tiles_match(C, C_ref);
 }
 
+TEST_CASE("TiledExpansion - tiled scale expands to one dense scale per tile", "[ComputeGraph][Passes][Tiled]") {
+    Grid const                          g{{2, 3}, {4, 5}};
+    std::vector<std::vector<int>> const populated{{0, 0}, {1, 1}, {0, 1}};
+
+    // Reference: the opaque per-tile path.
+    auto A_ref = make_tiled("A", g, populated);
+    fill_det(A_ref, 1.5);
+    {
+        cg::Graph              gref("scale_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::scale(-2.25, &A_ref);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    auto A = make_tiled("A2", g, populated);
+    fill_det(A, 1.5);
+
+    cg::Graph graph("scale_expand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(-2.25, &A);
+    }
+    REQUIRE(nodes_of_kind(graph, cg::OpKind::Custom) == 1);
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>();
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+
+    CHECK(pass->num_expanded() == 1);
+    CHECK(pass->num_tile_nodes() == populated.size());
+    CHECK(nodes_of_kind(graph, cg::OpKind::Custom) == 0);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Scale) == populated.size());
+
+    graph.execute();
+    require_tiles_match(A, A_ref);
+}
+
+TEST_CASE("TiledExpansion - tiled axpy expands to one dense axpy per stored X tile", "[ComputeGraph][Passes][Tiled]") {
+    Grid const g{{2, 3}, {4, 5}};
+    // (0,1) is in X but not Y, so Y must infer-and-create it; (1,0) is in Y but
+    // not X, so it must be left exactly as it was.
+    std::vector<std::vector<int>> const x_tiles{{0, 0}, {0, 1}};
+    std::vector<std::vector<int>> const y_tiles{{0, 0}, {1, 0}};
+
+    auto X_ref = make_tiled("X", g, x_tiles);
+    auto Y_ref = make_tiled("Y", g, y_tiles);
+    fill_det(X_ref, 0.5);
+    fill_det(Y_ref, 2.5);
+    {
+        cg::Graph              gref("axpy_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::axpy(1.75, X_ref, &Y_ref);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    auto X = make_tiled("X2", g, x_tiles);
+    auto Y = make_tiled("Y2", g, y_tiles);
+    fill_det(X, 0.5);
+    fill_det(Y, 2.5);
+
+    cg::Graph graph("axpy_expand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpy(1.75, X, &Y);
+    }
+    REQUIRE(nodes_of_kind(graph, cg::OpKind::Custom) == 1);
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>();
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+
+    CHECK(pass->num_expanded() == 1);
+    CHECK(pass->num_tile_nodes() == x_tiles.size());
+    CHECK(nodes_of_kind(graph, cg::OpKind::Axpy) == x_tiles.size());
+
+    // Every emitted node must declare its read of the destination, or the
+    // accumulation is invisible to the scheduler.
+    for (auto const &nd : graph.nodes()) {
+        if (nd.kind != cg::OpKind::Axpy) {
+            continue;
+        }
+        REQUIRE(nd.outputs.size() == 1);
+        REQUIRE(std::ranges::find(nd.inputs, nd.outputs[0]) != nd.inputs.end());
+    }
+
+    graph.execute();
+    require_tiles_match(Y, Y_ref);
+}
+
+TEST_CASE("TiledExpansion - declines a tiled scale whose tensor another node writes", "[ComputeGraph][Passes][Tiled]") {
+    // The runtime scales whichever tiles exist when it runs. Here the einsum
+    // creates C's tiles, so freezing C's tile set at pass time would scale the
+    // wrong set. The scale must stay opaque, and the answer must be unchanged.
+    Grid const gA{{2, 3}, {4, 5}};
+    Grid const gB{{4, 5}, {3, 4}};
+    Grid const gC{{2, 3}, {3, 4}};
+
+    auto A_ref = make_tiled("A", gA, full_coords(gA));
+    auto B_ref = make_tiled("B", gB, full_coords(gB));
+    auto C_ref = make_tiled("C", gC, {});
+    fill_det(A_ref, 1.0);
+    fill_det(B_ref, 2.0);
+    {
+        cg::Graph              gref("scale_after_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::einsum("ij <- ik ; kj", &C_ref, A_ref, B_ref);
+        cg::scale(3.0, &C_ref);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    auto A = make_tiled("A2", gA, full_coords(gA));
+    auto B = make_tiled("B2", gB, full_coords(gB));
+    auto C = make_tiled("C2", gC, {});
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+
+    cg::Graph graph("scale_after_expand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+        cg::scale(3.0, &C);
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>();
+    pm.add(pass);
+    CHECK_FALSE(graph.apply(pm));
+
+    // The scale declines because the einsum may add tiles to C. That leaves a node
+    // still naming C's whole-tensor id, which in turn strands the einsum: expanding
+    // it would move every write of C down to per-tile ids and drop the edge the
+    // scale depends on. Both decline and the graph is untouched.
+    //
+    // Expanding BOTH would be valid and is the better answer, but it needs the
+    // scale to enumerate the tiles the einsum is going to create, which is not
+    // known until emission. Left as future work; declining is the honest outcome.
+    CHECK(pass->num_expanded() == 0);
+    CHECK(pass->num_declined() == 2);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Custom) == 2);
+
+    graph.execute();
+    require_tiles_match(C, C_ref);
+}
+
 TEST_CASE("TiledExpansion - declines when an unexpandable node shares the tiled tensor", "[ComputeGraph][Passes][Tiled]") {
     // A tiled element_transform has no descriptor and can never expand, so it goes
     // on naming C's whole-tensor id. Expanding the einsum would replace every write
@@ -529,4 +675,28 @@ TEST_CASE("TiledExpansion - declines when an unexpandable node shares the tiled 
 
     graph.execute();
     require_tiles_match(C, C_ref);
+}
+
+TEST_CASE("TiledExpansion - declines a tiled axpy over mismatched tile grids", "[ComputeGraph][Passes][Tiled]") {
+    // Same 5 x 9 shape, different partitions. The runtime throws; declining keeps
+    // the opaque node so it still throws rather than expanding to something that
+    // silently pairs up mismatched tiles.
+    auto X = make_tiled("X", Grid{{2, 3}, {4, 5}}, full_coords(Grid{{2, 3}, {4, 5}}));
+    auto Y = make_tiled("Y", Grid{{5}, {9}}, full_coords(Grid{{5}, {9}}));
+
+    cg::Graph graph("axpy_mismatch");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpy(1.0, X, &Y);
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>();
+    pm.add(pass);
+    graph.apply(pm);
+
+    CHECK(pass->num_expanded() == 0);
+    CHECK(pass->num_declined() == 1);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Custom) == 1);
+    REQUIRE_THROWS(graph.execute());
 }

@@ -69,9 +69,14 @@ bool TiledExpansion::run(Graph &graph) {
     // rather than pre-built has a tile set that is not known until execution, so we
     // cannot decide output sparsity for it at pass time and must decline.
     std::unordered_set<TensorId> produced;
+    // How many nodes write each tensor. The elementwise cases below need to tell
+    // "written only by the node being expanded" from "written by someone else",
+    // which a set cannot express.
+    std::unordered_map<TensorId, size_t> writers;
     for (auto const &node : nodes) {
         for (auto tid : node.outputs) {
             produced.insert(tid);
+            ++writers[tid];
         }
     }
 
@@ -149,6 +154,28 @@ bool TiledExpansion::run(Graph &graph) {
         return sc;
     };
 
+    // One dense `y_tile += alpha * x_tile`. Recorded as a real OpKind::Axpy with
+    // the destination among its inputs, so the liveness and hoisting passes read
+    // it as the accumulation it is.
+    auto emit_tile_axpy = [&graph](TensorId xt, TensorId yt, PrefactorScalar alpha, packed_gemm::ScalarType dt, std::string label) {
+        Node nd;
+        nd.id      = graph.reserve_node_id();
+        nd.kind    = OpKind::Axpy;
+        nd.label   = std::move(label);
+        nd.inputs  = {xt, yt};
+        nd.outputs = {yt};
+        Graph *g   = &graph;
+        nd.execute = [g, xt, yt, alpha, dt]() {
+            detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
+                using Dense      = GeneralRuntimeTensor<T, std::allocator<T>>;
+                auto const *xptr = static_cast<Dense const *>(g->tensor(xt).tensor_ptr);
+                auto       *yptr = static_cast<Dense *>(g->tensor(yt).tensor_ptr);
+                linear_algebra::axpy(as<T>(alpha), *xptr, yptr);
+            });
+        };
+        return nd;
+    };
+
     std::vector<std::pair<size_t, std::vector<Node>>> inserts;
     std::vector<bool>                                 remove(n, false);
     bool                                              modified = false;
@@ -159,17 +186,25 @@ bool TiledExpansion::run(Graph &graph) {
     // planned. Deciding first and creating second keeps a rejected candidate from
     // leaving new tiles behind, which would change how the runtime applies c_pf.
     struct Plan {
+        enum class Kind : std::uint8_t { Einsum, Scale, Axpy };
+
         size_t                  index{0};
+        Kind                    kind{Kind::Scale};
         std::vector<TensorId>   touched; ///< whole-tensor tiled ids this node uses
         packed_gemm::ScalarType dtype{};
-        TiledView               src_a, src_b, dst;
-
+        /// Source views. Einsum uses all three; Scale uses `dst`; Axpy uses `src_a`
+        /// for X and `dst` for Y.
+        TiledView src_a, src_b, dst;
+        // Einsum
         ParsedEinsumSpec              spec;
         PrefactorScalar               ab_pf{double{1}};
         std::vector<std::vector<int>> a_coords, b_coords, c_coords;
         std::vector<PrefactorScalar>  c_pfs;
         std::vector<std::vector<int>> leftover; ///< output tiles that are only scaled
         PrefactorScalar               leftover_pf{double{0}};
+        // Scale / Axpy
+        PrefactorScalar               alpha{double{1}};
+        std::vector<std::vector<int>> coords;
     };
     std::vector<Plan> plans;
 
@@ -181,6 +216,103 @@ bool TiledExpansion::run(Graph &graph) {
             report(2, fmt::format("declining '{}': {}", src.label, why));
             EINSUMS_LOG_DEBUG("TiledExpansion: declining node {} - {}", src.id, why);
         };
+
+        // ── Elementwise: tiled scale and tiled axpy ──────────────────────────
+        if (auto const *edesc = std::get_if<TiledElementwiseDescriptor>(&src.op_data)) {
+            if (!edesc->params) {
+                continue;
+            }
+            PrefactorScalar const alpha = edesc->params->alpha;
+
+            if (edesc->op == TiledElementwiseOp::Scale) {
+                if (src.inputs.size() != 1 || src.outputs.size() != 1 || src.inputs[0] != src.outputs[0]) {
+                    continue;
+                }
+                TensorId const a_id = src.outputs[0];
+                auto const    &a_h  = graph.tensor(a_id);
+                if (!a_h.is_tiled) {
+                    continue;
+                }
+                // tiled_scale scales whichever tiles exist AT EXECUTION. Expanding
+                // freezes that set now, so another writer that could add tiles later
+                // would leave those tiles unscaled.
+                if (writers[a_id] > 1) {
+                    decline("the scaled tensor is written by another node, so its tile set is not final at pass time");
+                    continue;
+                }
+                TiledView av;
+                if (!bind_tiled(a_h, a_id, av)) {
+                    decline("the operand has no backing tiled object");
+                    continue;
+                }
+                auto const coords = av.coords();
+                if (coords.empty()) {
+                    continue; // no stored tiles: the op is a no-op, leave it alone
+                }
+                if (coords.size() > _max_nodes) {
+                    decline(fmt::format("projected {} tiles exceeds the {}-node budget", coords.size(), _max_nodes));
+                    continue;
+                }
+                Plan p;
+                p.index   = ni;
+                p.kind    = Plan::Kind::Scale;
+                p.touched = {a_id};
+                p.dtype   = a_h.dtype;
+                p.dst     = av;
+                p.alpha   = alpha;
+                p.coords  = coords;
+                plans.push_back(std::move(p));
+                continue;
+            }
+
+            // Axpy: Y += alpha*X, one dense axpy per tile STORED IN X. A tile absent
+            // from X contributes nothing; a tile present in X but not in Y is created
+            // zeroed, so the accumulation is still correct.
+            if (src.inputs.size() != 2 || src.outputs.size() != 1) {
+                continue;
+            }
+            TensorId const x_id = src.inputs[0];
+            TensorId const y_id = src.outputs[0];
+            auto const    &x_h  = graph.tensor(x_id);
+            auto const    &y_h  = graph.tensor(y_id);
+            if (!x_h.is_tiled || !y_h.is_tiled || x_h.dtype != y_h.dtype) {
+                continue;
+            }
+            if (writers[x_id] > 0) {
+                decline("the axpy source is produced by another node, so its tile set is unknown at pass time");
+                continue;
+            }
+            TiledView xv, yv;
+            if (!bind_tiled(x_h, x_id, xv) || !bind_tiled(y_h, y_id, yv)) {
+                decline("an operand has no backing tiled object");
+                continue;
+            }
+            if (*xv.sizes != *yv.sizes) {
+                // The runtime throws on a grid mismatch. Declining preserves that:
+                // the opaque node stays and still throws at execute time.
+                decline("X and Y do not share a tile grid");
+                continue;
+            }
+            auto const coords = xv.coords();
+            if (coords.empty()) {
+                continue;
+            }
+            if (coords.size() > _max_nodes) {
+                decline(fmt::format("projected {} tiles exceeds the {}-node budget", coords.size(), _max_nodes));
+                continue;
+            }
+            Plan p;
+            p.index   = ni;
+            p.kind    = Plan::Kind::Axpy;
+            p.touched = {x_id, y_id};
+            p.dtype   = y_h.dtype;
+            p.src_a   = xv;
+            p.dst     = yv;
+            p.alpha   = alpha;
+            p.coords  = coords;
+            plans.push_back(std::move(p));
+            continue;
+        }
 
         // ── Contraction ──────────────────────────────────────────────────────
         auto const *tdesc = std::get_if<TiledEinsumDescriptor>(&src.op_data);
@@ -360,6 +492,7 @@ bool TiledExpansion::run(Graph &graph) {
         }
 
         plan.index       = ni;
+        plan.kind        = Plan::Kind::Einsum;
         plan.touched     = {a_id, b_id, c_id};
         plan.dtype       = c_h.dtype;
         plan.src_a       = av;
@@ -432,16 +565,35 @@ bool TiledExpansion::run(Graph &graph) {
         }
         Plan             &pl = plans[p];
         std::vector<Node> emitted;
-        emitted.reserve(pl.a_coords.size() + pl.leftover.size());
-        for (size_t i = 0; i < pl.a_coords.size(); ++i) {
-            emitted.push_back(graph.make_einsum_node(pl.src_a.tile_id(pl.a_coords[i]), pl.src_b.tile_id(pl.b_coords[i]),
-                                                     pl.dst.tile_id(pl.c_coords[i]), pl.spec, pl.c_pfs[i], pl.ab_pf,
-                                                     /*conj_a=*/false, /*conj_b=*/false,
-                                                     fmt::format("tile_einsum({})", fmt::join(pl.c_coords[i], ","))));
-        }
-        for (auto const &coord : pl.leftover) {
-            emitted.push_back(
-                emit_tile_scale(pl.dst.tile_id(coord), pl.leftover_pf, pl.dtype, fmt::format("tile_scale({})", fmt::join(coord, ","))));
+
+        switch (pl.kind) {
+        case Plan::Kind::Einsum:
+            emitted.reserve(pl.a_coords.size() + pl.leftover.size());
+            for (size_t i = 0; i < pl.a_coords.size(); ++i) {
+                emitted.push_back(graph.make_einsum_node(pl.src_a.tile_id(pl.a_coords[i]), pl.src_b.tile_id(pl.b_coords[i]),
+                                                         pl.dst.tile_id(pl.c_coords[i]), pl.spec, pl.c_pfs[i], pl.ab_pf,
+                                                         /*conj_a=*/false, /*conj_b=*/false,
+                                                         fmt::format("tile_einsum({})", fmt::join(pl.c_coords[i], ","))));
+            }
+            for (auto const &coord : pl.leftover) {
+                emitted.push_back(
+                    emit_tile_scale(pl.dst.tile_id(coord), pl.leftover_pf, pl.dtype, fmt::format("tile_scale({})", fmt::join(coord, ","))));
+            }
+            break;
+        case Plan::Kind::Scale:
+            emitted.reserve(pl.coords.size());
+            for (auto const &coord : pl.coords) {
+                emitted.push_back(
+                    emit_tile_scale(pl.dst.tile_id(coord), pl.alpha, pl.dtype, fmt::format("tile_scale({})", fmt::join(coord, ","))));
+            }
+            break;
+        case Plan::Kind::Axpy:
+            emitted.reserve(pl.coords.size());
+            for (auto const &coord : pl.coords) {
+                emitted.push_back(emit_tile_axpy(pl.src_a.tile_id(coord), pl.dst.tile_id(coord), pl.alpha, pl.dtype,
+                                                 fmt::format("tile_axpy({})", fmt::join(coord, ","))));
+            }
+            break;
         }
 
         _num_tile_nodes += emitted.size();

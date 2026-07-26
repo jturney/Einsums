@@ -12,7 +12,7 @@
 namespace einsums::compute_graph::passes {
 
 /**
- * @brief Lower a tiled einsum into per-tile DENSE nodes.
+ * @brief Lower tiled operations into per-tile DENSE nodes.
  *
  * A tiled contraction captures as one opaque ``OpKind::Custom`` node executed
  * tile-by-tile by ``detail::tiled_runtime_einsum``. Nothing can optimize it: the
@@ -26,6 +26,10 @@ namespace einsums::compute_graph::passes {
  * GEMMs are same-shape so GEMMBatching can batch them, CSE deduplicates repeated
  * tile work, MemoryPlanning can pack per-tile buffers (each tile IS a dense
  * ``RuntimeTensor``, so it has ``materialize_into``), and Reorder schedules them.
+ *
+ * Tiled ``scale`` and ``axpy`` lower the same way, into one dense ``OpKind::Scale``
+ * or ``OpKind::Axpy`` per stored tile. They are trivially per-tile; the point is
+ * that afterwards the tile buffers are visible to CSE and InplaceOptimization.
  *
  * @par Semantics it must reproduce exactly
  * Ground truth is ``detail::tiled_runtime_einsum``:
@@ -47,6 +51,11 @@ namespace einsums::compute_graph::passes {
  *   contributing pairs would leave them untouched, which is a silent numerical
  *   difference, so this pass emits a scale (or a zero when ``c_pf == 0``) for
  *   them.
+ * - **A tiled axpy visits the tiles stored in X**, creating the matching Y tile
+ *   when absent (it starts zeroed, so the accumulation is still right). A tile
+ *   absent from X contributes nothing and a Y tile with no X counterpart is left
+ *   alone. A tile-grid mismatch makes the runtime throw, so this pass declines
+ *   and lets the surviving opaque node throw.
  *
  * @par Whole-tensor references must not be stranded
  * Expanding a node replaces its whole-tensor reads and writes with per-tile ones,
@@ -98,9 +107,9 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     /// is handed, and the nodes it emits stay in that graph.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
-    /// Tiled einsum nodes replaced by per-tile nodes.
+    /// Tiled nodes replaced by per-tile nodes.
     [[nodiscard]] size_t num_expanded() const { return _num_expanded; }
-    /// Dense per-tile nodes emitted, contractions and scales together.
+    /// Dense per-tile nodes emitted, contractions and elementwise ops together.
     [[nodiscard]] size_t num_tile_nodes() const { return _num_tile_nodes; }
     /// Candidates left alone: misaligned partitions, produced operands, over
     /// budget, or sharing a tiled tensor with a node that cannot expand.

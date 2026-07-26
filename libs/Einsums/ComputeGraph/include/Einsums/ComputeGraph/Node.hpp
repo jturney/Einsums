@@ -143,6 +143,41 @@ struct TiledEinsumDescriptor {
     std::shared_ptr<EinsumParams> params;
 };
 
+/// Which elementwise operation a @ref TiledElementwiseDescriptor describes.
+enum class TiledElementwiseOp : std::uint8_t {
+    Scale, ///< ``A = alpha * A``
+    Axpy,  ///< ``Y = Y + alpha * X``
+};
+
+/// Live scalar for a tiled elementwise node, shared with its executor.
+struct TiledElementwiseParams {
+    PrefactorScalar alpha{double{1}};
+};
+
+/**
+ * @brief Metadata for a TILED elementwise node (scale or axpy).
+ *
+ * Like @ref TiledEinsumDescriptor, these record as ``OpKind::Custom`` and run
+ * per tile, so without a descriptor the operation and its scalar are sealed
+ * inside a closure. Carrying them lets TiledExpansion lower the node into one
+ * dense op per populated tile.
+ *
+ * A distinct type from @ref ScaleDescriptor and @ref AxpbyDescriptor for the
+ * same reason the tiled einsum has its own: passes probe ``get_if<...>`` for
+ * those without checking the node kind, and a tiled operand has no single
+ * buffer for them to work on.
+ *
+ * The operand TensorIds are on the node itself. A Scale reads and writes one
+ * tensor, listed in both @ref Node::inputs and @ref Node::outputs; an Axpy
+ * reads X and Y and writes Y, so Y appears in both lists too.
+ */
+struct TiledElementwiseDescriptor {
+    TiledElementwiseOp op{TiledElementwiseOp::Scale};
+    /// Live scalar, shared with the executor: a pass that rewrites this changes
+    /// what the next ``graph.execute()`` computes.
+    std::shared_ptr<TiledElementwiseParams> params;
+};
+
 /**
  * @brief Metadata for conditional (if-then-else) nodes.
  *
@@ -271,9 +306,10 @@ inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, 
  * for use by optimization passes. Nodes with no special metadata use
  * std::monostate.
  */
-using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
-                            AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor,
-                            BatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, TiledEinsumDescriptor>;
+using OpData =
+    std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
+                 AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor, BatchedGemmDescriptor,
+                 ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, TiledEinsumDescriptor, TiledElementwiseDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.

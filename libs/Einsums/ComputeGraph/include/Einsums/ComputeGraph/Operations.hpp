@@ -106,11 +106,19 @@ APIARY_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<std::complex<double>>
         LabeledSection("scale capture");
         auto [a_id, a_slot] = ctx.get_slot(*A);
         auto label          = fmt::format("tiled scale({})", A->name());
-        auto executor       = [factor, a_slot]() {
+        auto params         = std::make_shared<TiledElementwiseParams>();
+        params->alpha       = PrefactorScalar{factor};
+        auto executor       = [params, a_slot]() {
             LabeledSection("scale execute");
-            detail::tiled_scale<T>(factor, static_cast<AType *>(a_slot->ptr));
+            detail::tiled_scale<T>(as<T>(params->alpha), static_cast<AType *>(a_slot->ptr));
         };
-        ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor));
+        // Carries a descriptor so TiledExpansion can lower it per tile; the
+        // executor reads the scalar back out of the same params the descriptor
+        // exposes, so a pass that rewrites it is actually obeyed.
+        TiledElementwiseDescriptor edesc;
+        edesc.op     = TiledElementwiseOp::Scale;
+        edesc.params = params;
+        ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor), std::move(edesc));
     } else {
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
@@ -870,10 +878,15 @@ APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<double>>,
         auto [x_id, x_slot] = ctx.get_slot(X);
         auto [y_id, y_slot] = ctx.get_slot(*Y);
         auto label          = fmt::format("tiled axpy({}, {})", X.name(), Y->name());
-        auto executor       = [alpha, x_slot, y_slot]() {
+        auto params         = std::make_shared<TiledElementwiseParams>();
+        params->alpha       = PrefactorScalar{alpha};
+        auto executor       = [params, x_slot, y_slot]() {
             LabeledSection("axpy execute");
-            detail::tiled_axpy<T>(alpha, *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
+            detail::tiled_axpy<T>(as<T>(params->alpha), *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
         };
+        TiledElementwiseDescriptor edesc;
+        edesc.op     = TiledElementwiseOp::Axpy;
+        edesc.params = params;
         // Y is listed as an INPUT as well as an output: tiled_axpy computes
         // Y += alpha*X, so it reads its destination. Omitting it hides the
         // accumulation from the scheduler and the liveness passes -- Reorder could
@@ -881,7 +894,7 @@ APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<double>>,
         // the value being accumulated onto as dead. This is the convention the
         // dense axpy already uses (bug-1009); the tiled overload was written later
         // and missed it.
-        ctx.record(OpKind::Custom, std::move(label), {x_id, y_id}, {y_id}, std::move(executor));
+        ctx.record(OpKind::Custom, std::move(label), {x_id, y_id}, {y_id}, std::move(executor), std::move(edesc));
     } else {
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
