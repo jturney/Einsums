@@ -34,6 +34,7 @@ Run:
 from __future__ import annotations
 
 import itertools
+import time
 
 import numpy as np
 
@@ -383,6 +384,14 @@ def ccsd_dense(g, o, v, d_ia, d_ijab, n_iter=60, tol=1e-11):
     return e_old, t1, t2
 
 
+def _kind_counts(graph):
+    import collections
+    import json
+
+    c = collections.Counter(n["kind"] for n in json.loads(graph.to_json())["nodes"])
+    return dict(sorted(c.items(), key=lambda kv: -kv[1]))
+
+
 def main():
     n_occ = [2, 1, 1, 1]
     n_vir = [2, 2, 2, 2]
@@ -449,12 +458,46 @@ def main():
     ]
     print(f"symmetry-forbidden t2 blocks created: {len(bad)}")
 
-    # NOTE: capturing iterate() into a graph and running it through
-    # default_pass_manager() works and is bit-identical to eager -- except that
-    # GEMMBatching intermittently corrupts the result (~3% of runs) on the
-    # expanded tiled graph. That is an open bug, not a limitation of this
-    # example, so the pipeline arm is left out here rather than shipped flaky.
-    ok = abs(e_tiled - e_dense) < 1e-10 and amp_err < 1e-9 and not bad
+    # ── the same iteration, captured and put through the optimizer ──────────
+    # Two CCSD objects seeded identically at MP2. One steps eagerly, the other
+    # captures the identical call into a graph, optimizes it (which lowers every
+    # tiled op into per-tile dense nodes) and replays it. They must agree.
+    print("\nsame iteration through the ComputeGraph pipeline:")
+    import einsums.graph as cg
+
+    eager = TiledCCSD(blk, blocks, d_ia, d_ijab)
+    eager.iterate()
+
+    graphed = TiledCCSD(blk, blocks, d_ia, d_ijab)
+    gr = cg.Graph("ccsd_residual")
+    with cg.capture(gr):
+        graphed.iterate()
+    n_before = gr.num_nodes()
+    kinds_before = _kind_counts(gr)
+    t0 = time.perf_counter()
+    gr.apply(cg.default_pass_manager())
+    t_opt = time.perf_counter() - t0
+    n_after = gr.num_nodes()
+    kinds_after = _kind_counts(gr)
+    t0 = time.perf_counter()
+    gr.execute()
+    t_exec = time.perf_counter() - t0
+
+    d_t1 = float(np.max(np.abs(blk.gather(graphed.T1, "ov", (n_o, n_so - n_o))
+                               - blk.gather(eager.T1, "ov", (n_o, n_so - n_o)))))
+    d_t2 = float(np.max(np.abs(blk.gather(graphed.T2, "oovv", t2_dense.shape)
+                               - blk.gather(eager.T2, "oovv", t2_dense.shape))))
+
+    print(f"  captured   : {n_before:5d} nodes  {kinds_before}")
+    print(f"  optimized  : {n_after:5d} nodes  {kinds_after}")
+    print(f"  optimize   : {t_opt:.2f} s   (one-time, per capture)")
+    print(f"  replay     : {t_exec:.2f} s   (per iteration)")
+    print(f"  max |t1 graph - eager| = {d_t1:.3e}")
+    print(f"  max |t2 graph - eager| = {d_t2:.3e}")
+
+    graph_ok = d_t1 < 1e-12 and d_t2 < 1e-12 and "Custom" not in kinds_after
+
+    ok = abs(e_tiled - e_dense) < 1e-10 and amp_err < 1e-9 and not bad and graph_ok
     print("RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

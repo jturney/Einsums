@@ -13,6 +13,8 @@
 #include <Einsums/ComputeGraph/Passes/TiledExpansion.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 
+#include <fmt/format.h>
+
 #include <cmath>
 #include <memory>
 #include <tuple>
@@ -1129,6 +1131,116 @@ TEST_CASE("TiledExpansion - tiled direct_division expands per tile", "[ComputeGr
     CHECK(nodes_of_kind(graph, cg::OpKind::DirectDivision) == num.size());
     CHECK(nodes_of_kind(graph, cg::OpKind::Scale) == dst.size() - num.size());
 
+    graph.execute();
+    require_tiles_match(C, C_ref);
+}
+
+TEST_CASE("TiledExpansion - a batched group writes every element of every destination", "[ComputeGraph][Passes][Tiled]") {
+    // Non-uniform occupied blocks with uniform virtual blocks: the (1,1),(2,2),(3,3)
+    // output tiles are all 2x4, so GEMMBatching groups them while (0,0) at 4x4
+    // stays alone. The destinations are poisoned first, so any element the batch
+    // fails to write stays poisoned instead of depending on what the heap held.
+    Grid const                          ov{{4, 2, 2, 2}, {4, 4, 4, 4}};
+    Grid const                          vv{{4, 4, 4, 4}, {4, 4, 4, 4}};
+    std::vector<std::vector<int>> const diag{{0, 0}, {1, 1}, {2, 2}, {3, 3}};
+
+    auto poison = [](TiledRuntimeTensor<double> &T) {
+        for (auto const &kv : T.tiles()) {
+            auto &t = const_cast<RuntimeTensor<double> &>(kv.second);
+            t.materialize();
+            for (size_t i = 0; i < t.size(); ++i) {
+                t.data()[i] = 1.0e30;
+            }
+        }
+    };
+
+    auto A     = make_tiled("A", ov, diag);
+    auto F     = make_tiled("F", vv, diag);
+    auto C_ref = make_tiled("Cr", ov, diag);
+    auto C     = make_tiled("C", ov, diag);
+    fill_det(A, 1.0);
+    fill_det(F, 2.0);
+
+    poison(C_ref);
+    {
+        cg::Graph              gref("batch_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::einsum("ia <- ie ; ae", &C_ref, A, F);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    poison(C);
+    cg::Graph graph("batch_poison");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ia <- ie ; ae", &C, A, F);
+    }
+
+    cg::PassManager pm;
+    auto            expand = std::make_shared<cg::passes::TiledExpansion>();
+    auto            batch  = std::make_shared<cg::passes::GEMMBatching>(cg::HardwareProfile::detect_default());
+    pm.add(expand);
+    pm.add(batch);
+    REQUIRE(graph.apply(pm));
+    REQUIRE(batch->num_batches() > 0);
+
+    graph.execute();
+    require_tiles_match(C, C_ref);
+}
+
+TEST_CASE("TiledExpansion - an overwrite batch followed by an accumulate batch", "[ComputeGraph][Passes][Tiled]") {
+    // The T1 residual shape: one contraction overwrites the destination tiles
+    // (c_pf=0) and a second accumulates into them (c_pf=1). Both expand into
+    // groups of three 2x4 tiles, so both batch, and the second reads what the
+    // first wrote. Destinations are poisoned so an unwritten element is visible.
+    Grid const                          ov{{4, 2, 2, 2}, {4, 4, 4, 4}};
+    Grid const                          vv{{4, 4, 4, 4}, {4, 4, 4, 4}};
+    Grid const                          oo{{4, 2, 2, 2}, {4, 2, 2, 2}};
+    std::vector<std::vector<int>> const diag{{0, 0}, {1, 1}, {2, 2}, {3, 3}};
+
+    auto poison = [](TiledRuntimeTensor<double> &T) {
+        for (auto const &kv : T.tiles()) {
+            auto &t = const_cast<RuntimeTensor<double> &>(kv.second);
+            t.materialize();
+            for (size_t i = 0; i < t.size(); ++i) {
+                t.data()[i] = 1.0e30;
+            }
+        }
+    };
+
+    auto A     = make_tiled("A", ov, diag);
+    auto F     = make_tiled("F", vv, diag);
+    auto M     = make_tiled("M", oo, diag);
+    auto C_ref = make_tiled("Cr", ov, diag);
+    auto C     = make_tiled("C", ov, diag);
+    fill_det(A, 1.0);
+    fill_det(F, 2.0);
+    fill_det(M, 3.0);
+
+    poison(C_ref);
+    {
+        cg::Graph              gref("chain_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::einsum("ia <- ie ; ae", 0.0, &C_ref, 1.0, A, F);
+        cg::einsum("ia <- ma ; mi", 1.0, &C_ref, -1.0, A, M);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    poison(C);
+    cg::Graph graph("chain_poison");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ia <- ie ; ae", 0.0, &C, 1.0, A, F);
+        cg::einsum("ia <- ma ; mi", 1.0, &C, -1.0, A, M);
+    }
+
+    cg::PassManager pm;
+    auto            expand = std::make_shared<cg::passes::TiledExpansion>();
+    auto            batch  = std::make_shared<cg::passes::GEMMBatching>(cg::HardwareProfile::detect_default());
+    pm.add(expand);
+    pm.add(batch);
+    REQUIRE(graph.apply(pm));
+    REQUIRE(batch->num_batches() > 0);
     graph.execute();
     require_tiles_match(C, C_ref);
 }

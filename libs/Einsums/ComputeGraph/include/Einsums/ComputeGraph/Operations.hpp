@@ -3712,8 +3712,22 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     };
 
     if (detail::tensor_rank(A) == 2 && detail::tensor_rank(B) == 2 && detail::tensor_rank(*C) == 2) {
+        // C = op(A) * op(B) requires C's FIRST index to be the one A contributes
+        // and its SECOND the one B contributes. "ia <- ma ; mi" has them swapped,
+        // and the m/n/k below would describe a different matrix product. The
+        // generic kernel never reads the hint, so a wrong one only surfaces once
+        // GEMMBatching batches the node. See Graph::make_einsum_node, same gate.
+        auto const roles_match = [&]() {
+            if (parsed.a_indices.size() != 2 || parsed.b_indices.size() != 2 || parsed.c_indices.size() != 2 ||
+                desc.spec.link_indices.size() != 1) {
+                return false;
+            }
+            auto const &lnk  = desc.spec.link_indices[0];
+            auto const  free = [&lnk](std::vector<std::string> const &idx) { return idx[0] == lnk ? idx[1] : idx[0]; };
+            return parsed.c_indices[0] == free(parsed.a_indices) && parsed.c_indices[1] == free(parsed.b_indices);
+        };
         if (parsed.a_indices.size() == 2 && parsed.b_indices.size() == 2 && parsed.c_indices.size() == 2 &&
-            desc.spec.link_indices.size() == 1 && layout_matches_flag(A.impl()) && layout_matches_flag(B.impl()) &&
+            desc.spec.link_indices.size() == 1 && roles_match() && layout_matches_flag(A.impl()) && layout_matches_flag(B.impl()) &&
             layout_matches_flag(C->impl())) {
             auto hint = std::make_shared<GemmHint>();
             if constexpr (std::is_same_v<T, float>)

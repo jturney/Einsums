@@ -1360,8 +1360,24 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
         return true;
     };
 
+    // The batched form is C = op(A) * op(B), so C's FIRST index must be the one
+    // the einsum's A operand contributes and its SECOND the one B contributes.
+    // "ia <- ma ; mi" has them swapped -- i comes from B -- and m/n/k would then
+    // describe a matrix product this einsum does not perform. The generic kernel
+    // contracts correctly either way and never consults the hint, so a wrong hint
+    // stays invisible until GEMMBatching forms a batch and calls gemm_batch with
+    // it. Emit no hint rather than a wrong one.
+    auto const gemm_roles_match = [&]() {
+        if (spec.a_indices.size() != 2 || spec.b_indices.size() != 2 || spec.c_indices.size() != 2 || desc.spec.link_indices.size() != 1) {
+            return false;
+        }
+        auto const &lnk  = desc.spec.link_indices[0];
+        auto const  free = [&lnk](std::vector<std::string> const &idx) { return idx[0] == lnk ? idx[1] : idx[0]; };
+        return spec.c_indices[0] == free(spec.a_indices) && spec.c_indices[1] == free(spec.b_indices);
+    };
+
     if (a_h.rank == 2 && b_h.rank == 2 && c_h.rank == 2 && spec.a_indices.size() == 2 && spec.b_indices.size() == 2 &&
-        spec.c_indices.size() == 2 && desc.spec.link_indices.size() == 1) {
+        spec.c_indices.size() == 2 && desc.spec.link_indices.size() == 1 && gemm_roles_match()) {
         detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
             using Impl    = ::einsums::detail::TensorImpl<T>;
             auto const *A = static_cast<Impl const *>(a_h.impl_fn());
