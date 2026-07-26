@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -59,30 +60,41 @@ void TiledExpansion::reset_stats() {
 }
 
 bool TiledExpansion::run(Graph &graph) {
+    // Planning below walks the nodes in order and carries each tiled tensor's tile
+    // set forward across them, so the vector has to be in an order the executor
+    // will actually use.
+    graph.topological_sort();
+
     auto        &nodes = graph.nodes();
     size_t const n     = nodes.size();
     if (n == 0) {
         return false;
     }
 
-    // Tensors written by some node in THIS graph. A tiled operand that is produced
-    // rather than pre-built has a tile set that is not known until execution, so we
-    // cannot decide output sparsity for it at pass time and must decline.
-    std::unordered_set<TensorId> produced;
-    // How many nodes write each tensor. The elementwise cases below need to tell
-    // "written only by the node being expanded" from "written by someone else",
-    // which a set cannot express.
-    std::unordered_map<TensorId, size_t> writers;
-    for (auto const &node : nodes) {
-        for (auto tid : node.outputs) {
-            produced.insert(tid);
-            ++writers[tid];
-        }
-    }
-
     // One TensorId per (tiled tensor, tile coord). Registering a tile twice would
     // give one buffer two ids and defeat every aliasing analysis downstream.
     std::map<std::pair<TensorId, std::vector<int>>, TensorId> tile_ids;
+
+    // Which tiles each tiled tensor will hold at this point in the program, given
+    // the expansions planned so far. A tensor produced by an earlier node does not
+    // have its tiles yet at pass time, so its sparsity cannot be read off the
+    // object; it has to be carried forward from whoever writes it. Seeded from the
+    // stored tiles and updated as each producer is planned.
+    //
+    // Sound despite being computed before the stranding fixpoint runs: if a
+    // producer ends up rejected it stays in the graph still naming its output, so
+    // that tensor is stranded and every consumer whose prediction depended on it is
+    // rejected too. Nothing is created from a prediction either, since minting
+    // happens only during emission.
+    std::unordered_map<TensorId, std::set<std::vector<int>>> predicted;
+    auto tiles_of = [&predicted](TensorId tid, TiledView const &v) -> std::set<std::vector<int>> & {
+        auto it = predicted.find(tid);
+        if (it == predicted.end()) {
+            auto const cs = v.coords();
+            it            = predicted.emplace(tid, std::set<std::vector<int>>(cs.begin(), cs.end())).first;
+        }
+        return it->second;
+    };
 
     // Bind a type-erased view of one tiled operand: grid, presence test, stored
     // coords, and a memoized per-tile TensorId minter that infer-and-creates the
@@ -233,19 +245,16 @@ bool TiledExpansion::run(Graph &graph) {
                 if (!a_h.is_tiled) {
                     continue;
                 }
-                // tiled_scale scales whichever tiles exist AT EXECUTION. Expanding
-                // freezes that set now, so another writer that could add tiles later
-                // would leave those tiles unscaled.
-                if (writers[a_id] > 1) {
-                    decline("the scaled tensor is written by another node, so its tile set is not final at pass time");
-                    continue;
-                }
                 TiledView av;
                 if (!bind_tiled(a_h, a_id, av)) {
                     decline("the operand has no backing tiled object");
                     continue;
                 }
-                auto const coords = av.coords();
+                // tiled_scale scales whichever tiles exist AT EXECUTION, which is the
+                // predicted set here, not merely the ones stored now: an earlier
+                // producer in this graph may still be about to add more.
+                auto const &pa     = tiles_of(a_id, av);
+                auto const  coords = std::vector<std::vector<int>>(pa.begin(), pa.end());
                 if (coords.empty()) {
                     continue; // no stored tiles: the op is a no-op, leave it alone
                 }
@@ -278,10 +287,6 @@ bool TiledExpansion::run(Graph &graph) {
             if (!x_h.is_tiled || !y_h.is_tiled || x_h.dtype != y_h.dtype) {
                 continue;
             }
-            if (writers[x_id] > 0) {
-                decline("the axpy source is produced by another node, so its tile set is unknown at pass time");
-                continue;
-            }
             TiledView xv, yv;
             if (!bind_tiled(x_h, x_id, xv) || !bind_tiled(y_h, y_id, yv)) {
                 decline("an operand has no backing tiled object");
@@ -293,7 +298,8 @@ bool TiledExpansion::run(Graph &graph) {
                 decline("X and Y do not share a tile grid");
                 continue;
             }
-            auto const coords = xv.coords();
+            auto const &px     = tiles_of(x_id, xv);
+            auto const  coords = std::vector<std::vector<int>>(px.begin(), px.end());
             if (coords.empty()) {
                 continue;
             }
@@ -311,6 +317,9 @@ bool TiledExpansion::run(Graph &graph) {
             p.alpha   = alpha;
             p.coords  = coords;
             plans.push_back(std::move(p));
+            // Y gains every tile X has: tiled_axpy creates the matching Y tile when
+            // it is absent.
+            tiles_of(y_id, yv).insert(coords.begin(), coords.end());
             continue;
         }
 
@@ -333,13 +342,6 @@ bool TiledExpansion::run(Graph &graph) {
             continue; // mixed operands are rejected at capture; nothing to do here
         }
         if (a_h.dtype != c_h.dtype || b_h.dtype != c_h.dtype) {
-            continue;
-        }
-
-        // Operand tile sets must be known now. An output produced elsewhere in this
-        // graph is fine to WRITE into, but a produced *input* is not analyzable.
-        if (produced.contains(a_id) || produced.contains(b_id)) {
-            decline("a tiled operand is produced by another node, so its tile set is unknown at pass time");
             continue;
         }
 
@@ -427,10 +429,16 @@ bool TiledExpansion::run(Graph &graph) {
             c_tab[ax] = pos(cidx[ax]);
         }
 
-        // Which output tiles already exist decides how c_pf is applied, so snapshot
-        // it BEFORE tile_id() starts creating tiles.
         auto const c_pf  = tdesc->params->c_pf;
         auto const ab_pf = tdesc->params->ab_pf;
+
+        // Operand sparsity and, crucially, which output tiles ALREADY EXIST when
+        // this node runs. The latter decides whether the first write to a tile
+        // carries c_pf or overwrites, so it must be the predicted set at this point
+        // in the program, copied before the loop starts adding to it.
+        auto const &pa = tiles_of(a_id, av);
+        auto const &pb = tiles_of(b_id, bv);
+        auto const  pc = tiles_of(c_id, cv); // by value: the pre-node set
 
         ParsedEinsumSpec per_tile;
         per_tile.c_indices = cidx;
@@ -454,7 +462,7 @@ bool TiledExpansion::run(Graph &graph) {
             for (size_t ax = 0; ax < bidx.size(); ++ax) {
                 bcoord[ax] = ucoord[b_tab[ax]];
             }
-            if (!av.has_tile(acoord) || !bv.has_tile(bcoord)) {
+            if (!pa.contains(acoord) || !pb.contains(bcoord)) {
                 continue; // structural zero
             }
             for (size_t ax = 0; ax < cidx.size(); ++ax) {
@@ -463,9 +471,9 @@ bool TiledExpansion::run(Graph &graph) {
 
             bool const first = !written[ccoord];
             // First write to a PRE-EXISTING tile carries the real c_pf (the runtime's
-            // up-front scale); first write to a tile we are about to create carries 0,
-            // a pure overwrite, so this does not rely on the new tile being zeroed.
-            PrefactorScalar const node_c_pf = first ? (cv.has_tile(ccoord) ? c_pf : PrefactorScalar{double{0}}) //
+            // up-front scale); first write to a tile that does not exist yet carries
+            // 0, a pure overwrite, so this does not rely on the new tile being zeroed.
+            PrefactorScalar const node_c_pf = first ? (pc.contains(ccoord) ? c_pf : PrefactorScalar{double{0}}) //
                                                     : PrefactorScalar{double{1}};
 
             plan.a_coords.push_back(acoord);
@@ -478,7 +486,7 @@ bool TiledExpansion::run(Graph &graph) {
         // Pre-existing output tiles that received NO contribution are still scaled by
         // c_pf in the runtime. Emitting only the contributing nodes would leave them
         // untouched - a silent numerical difference - so scale them explicitly.
-        for (auto const &coord : cv.coords()) {
+        for (auto const &coord : pc) {
             if (!written.contains(coord)) {
                 plan.leftover.push_back(coord);
             }
@@ -501,6 +509,10 @@ bool TiledExpansion::run(Graph &graph) {
         plan.spec        = per_tile;
         plan.ab_pf       = ab_pf;
         plan.leftover_pf = c_pf;
+        // C now holds everything it held before plus every tile this contraction
+        // writes, which is what a later consumer of C must see.
+        auto &pc_live = tiles_of(c_id, cv);
+        pc_live.insert(plan.c_coords.begin(), plan.c_coords.end());
         plans.push_back(std::move(plan));
     }
 

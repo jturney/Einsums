@@ -15,6 +15,7 @@
 
 #include <cmath>
 #include <memory>
+#include <tuple>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -573,10 +574,10 @@ TEST_CASE("TiledExpansion - tiled axpy expands to one dense axpy per stored X ti
     require_tiles_match(Y, Y_ref);
 }
 
-TEST_CASE("TiledExpansion - declines a tiled scale whose tensor another node writes", "[ComputeGraph][Passes][Tiled]") {
-    // The runtime scales whichever tiles exist when it runs. Here the einsum
-    // creates C's tiles, so freezing C's tile set at pass time would scale the
-    // wrong set. The scale must stay opaque, and the answer must be unchanged.
+TEST_CASE("TiledExpansion - expands a tiled tensor that is produced then scaled", "[ComputeGraph][Passes][Tiled]") {
+    // C is created by the einsum and then scaled. The scale cannot read C's tile
+    // set off the object at pass time, because those tiles do not exist yet; it
+    // reads the set the einsum is predicted to write. Both expand.
     Grid const gA{{2, 3}, {4, 5}};
     Grid const gB{{4, 5}, {3, 4}};
     Grid const gC{{2, 3}, {3, 4}};
@@ -610,22 +611,77 @@ TEST_CASE("TiledExpansion - declines a tiled scale whose tensor another node wri
     cg::PassManager pm;
     auto            pass = std::make_shared<cg::passes::TiledExpansion>();
     pm.add(pass);
-    CHECK_FALSE(graph.apply(pm));
+    REQUIRE(graph.apply(pm));
 
-    // The scale declines because the einsum may add tiles to C. That leaves a node
-    // still naming C's whole-tensor id, which in turn strands the einsum: expanding
-    // it would move every write of C down to per-tile ids and drop the edge the
-    // scale depends on. Both decline and the graph is untouched.
-    //
-    // Expanding BOTH would be valid and is the better answer, but it needs the
-    // scale to enumerate the tiles the einsum is going to create, which is not
-    // known until emission. Left as future work; declining is the honest outcome.
-    CHECK(pass->num_expanded() == 0);
-    CHECK(pass->num_declined() == 2);
-    CHECK(nodes_of_kind(graph, cg::OpKind::Custom) == 2);
+    CHECK(pass->num_expanded() == 2);
+    CHECK(pass->num_declined() == 0);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Custom) == 0);
+    // One scale per C tile, and the contraction did not degenerate into scales.
+    CHECK(nodes_of_kind(graph, cg::OpKind::Scale) == C_ref.num_filled_tiles());
+    CHECK(nodes_of_kind(graph, cg::OpKind::Einsum) > 0);
 
     graph.execute();
     require_tiles_match(C, C_ref);
+}
+
+TEST_CASE("TiledExpansion - expands a chain where one contraction feeds the next", "[ComputeGraph][Passes][Tiled]") {
+    // D = (A*B)*E. C is both an output and an input, so the second contraction has
+    // to take C's sparsity from what the first is predicted to write.
+    Grid const gA{{2, 3}, {4, 5}};
+    Grid const gB{{4, 5}, {3, 4}};
+    Grid const gC{{2, 3}, {3, 4}};
+    Grid const gE{{3, 4}, {2, 2}};
+    Grid const gD{{2, 3}, {2, 2}};
+
+    auto build = [&](char const *tag, TiledRuntimeTensor<double> &C_out, TiledRuntimeTensor<double> &D_out) {
+        auto A = make_tiled(std::string("A") + tag, gA, full_coords(gA));
+        auto B = make_tiled(std::string("B") + tag, gB, full_coords(gB));
+        auto E = make_tiled(std::string("E") + tag, gE, full_coords(gE));
+        fill_det(A, 1.0);
+        fill_det(B, 2.0);
+        fill_det(E, 3.0);
+        return std::make_tuple(std::move(A), std::move(B), std::move(E), &C_out, &D_out);
+    };
+
+    auto C_ref = make_tiled("C", gC, {});
+    auto D_ref = make_tiled("D", gD, {});
+    {
+        auto [A, B, E, Cp, Dp] = build("r", C_ref, D_ref);
+        cg::Graph              gref("chain_ref");
+        cg::CaptureGuard const guard(gref);
+        cg::einsum("ij <- ik ; kj", Cp, A, B);
+        cg::einsum("il <- ij ; jl", Dp, *Cp, E);
+        const_cast<cg::Graph &>(gref).execute();
+    }
+
+    auto C = make_tiled("C2", gC, {});
+    auto D = make_tiled("D2", gD, {});
+    auto A = make_tiled("A2", gA, full_coords(gA));
+    auto B = make_tiled("B2", gB, full_coords(gB));
+    auto E = make_tiled("E2", gE, full_coords(gE));
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+    fill_det(E, 3.0);
+
+    cg::Graph graph("chain_expand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+        cg::einsum("il <- ij ; jl", &D, C, E);
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>();
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+
+    CHECK(pass->num_expanded() == 2);
+    CHECK(pass->num_declined() == 0);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Custom) == 0);
+
+    graph.execute();
+    require_tiles_match(C, C_ref);
+    require_tiles_match(D, D_ref);
 }
 
 TEST_CASE("TiledExpansion - declines when an unexpandable node shares the tiled tensor", "[ComputeGraph][Passes][Tiled]") {

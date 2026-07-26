@@ -57,6 +57,23 @@ namespace einsums::compute_graph::passes {
  *   alone. A tile-grid mismatch makes the runtime throw, so this pass declines
  *   and lets the surviving opaque node throw.
  *
+ * @par Predicted tile sets
+ * A tiled tensor produced inside the graph has none of its tiles yet at pass
+ * time, so its sparsity cannot be read off the object -- and reading the empty
+ * object would make a consumer expand into nothing. Planning therefore walks the
+ * nodes in execution order carrying a predicted tile set per tensor, seeded from
+ * the stored tiles and extended by each producer it plans. That is what lets a
+ * contraction feed another, or feed a scale, and still expand.
+ *
+ * The prediction is also what decides whether the first write to an output tile
+ * carries ``c_pf`` or overwrites, so it must be the set as of THIS point in the
+ * program, not the final one.
+ *
+ * It is computed before the stranding fixpoint has settled, which is sound: a
+ * producer that ends up rejected stays in the graph still naming its output, so
+ * that tensor is stranded and every consumer whose prediction depended on it is
+ * rejected too.
+ *
  * @par Whole-tensor references must not be stranded
  * Expanding a node replaces its whole-tensor reads and writes with per-tile ones,
  * so the whole-tensor TensorId loses every reference that node owned. A node left
@@ -75,10 +92,9 @@ namespace einsums::compute_graph::passes {
  *   grid can cost more in overhead than the contraction saves. The pass declines
  *   above @p max_nodes rather than guessing. A gate cannot be subtly wrong the way
  *   a cost heuristic can.
- * - **Operand tiles must already exist.** Sparsity is decided at pass time, so a
- *   tiled operand written by another node in the same graph is declined: its tile
- *   set is not known until execution. Tiled tensors built before capture, the
- *   normal usage, are fine.
+ * - **Sparsity is decided at pass time.** For an operand written earlier in the
+ *   same graph that means a prediction (see below), which holds only while every
+ *   writer is one this pass understands.
  * - Creating the predicted output tiles is a side effect of ``apply()`` on user
  *   data, earlier than the execute-time infer-and-create it replaces.
  *
