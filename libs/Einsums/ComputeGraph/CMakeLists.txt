@@ -131,6 +131,7 @@ einsums_add_module(
     Einsums_Config
     Einsums_CXX23
     Einsums_GPU
+    Einsums_Hardware
     Einsums_LinearAlgebra
     Einsums_Logging
     Einsums_PackedGemm

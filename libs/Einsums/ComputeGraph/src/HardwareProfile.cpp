@@ -7,6 +7,7 @@
 #include <Einsums/Errors.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <fmt/format.h>
@@ -53,86 +54,19 @@ std::string HardwareProfileDB::detect_gpu_name() {
 
 namespace {
 
-/// Detect the CPU data-cache hierarchy at runtime. Returns detected levels
-/// in L1 -> L3 order (only those that report a positive size); empty when
-/// the platform offers no query. Bandwidth/latency stay unmeasured (zero) -
-/// consumers key off size_bytes.
+/// The CPU data-cache hierarchy, in L1 -> L3 order, taken from the one detector
+/// (Einsums_Hardware). This used to run its own sysctl/sysfs query, which is how
+/// it and PackedGemm ended up disagreeing about which L2 to report on Apple
+/// Silicon. Bandwidth and latency stay unmeasured (zero) - consumers key off
+/// size_bytes.
 std::vector<CacheLevel> detect_cpu_caches() {
+    auto const             &cache = einsums::hardware::cpu_info().cache;
     std::vector<CacheLevel> levels;
-
-#if defined(__APPLE__)
-    auto sysctl_size = [](char const *name) -> size_t {
-        int64_t val = 0;
-        size_t  len = sizeof(val);
-        if (sysctlbyname(name, &val, &len, nullptr, 0) == 0 && val > 0) {
-            return static_cast<size_t>(val);
-        }
-        return 0;
-    };
-    // Plain hw.l2cachesize reports the efficiency cluster on Apple Silicon;
-    // hw.perflevel0.l2cachesize is the performance-cluster L2 the compute
-    // threads actually see, so take the larger of the two.
-    if (size_t const bytes = sysctl_size("hw.l1dcachesize"); bytes > 0) {
-        levels.push_back({.size_bytes = bytes});
-    }
-    if (size_t const bytes = std::max(sysctl_size("hw.perflevel0.l2cachesize"), sysctl_size("hw.l2cachesize")); bytes > 0) {
-        levels.push_back({.size_bytes = bytes});
-    }
-    if (size_t const bytes = sysctl_size("hw.l3cachesize"); bytes > 0) {
-        levels.push_back({.size_bytes = bytes});
-    }
-#elif defined(__linux__)
-    // sysfs: /sys/devices/system/cpu/cpu0/cache/index*/ carries one entry
-    // per cache; keep the largest data/unified cache seen per level.
-    size_t by_level[4] = {0, 0, 0, 0}; // NOLINT
-    for (int idx = 0; idx <= 4; idx++) {
-        std::string const base = "/sys/devices/system/cpu/cpu0/cache/index" + std::to_string(idx) + "/";
-
-        std::ifstream type_file(base + "type");
-        std::string   type_str;
-        if (type_file.is_open()) {
-            std::getline(type_file, type_str);
-        }
-        if (type_str == "Instruction") {
-            continue;
-        }
-
-        int           level = 0;
-        std::ifstream level_file(base + "level");
-        if (!level_file.is_open() || !(level_file >> level) || level < 1 || level > 3) {
-            continue;
-        }
-
-        std::ifstream size_file(base + "size");
-        std::string   size_str;
-        if (!size_file.is_open()) {
-            continue;
-        }
-        std::getline(size_file, size_str);
-        if (size_str.empty()) {
-            continue;
-        }
-        size_t     bytes = 0;
-        char const unit  = size_str.back();
-        try {
-            bytes = static_cast<size_t>(std::stoll(size_str));
-        } catch (std::exception const &) {
-            continue;
-        }
-        if (unit == 'K' || unit == 'k') {
-            bytes *= 1024;
-        } else if (unit == 'M' || unit == 'm') {
-            bytes *= 1024 * 1024;
-        }
-        by_level[level] = std::max(by_level[level], bytes);
-    }
-    for (int level = 1; level <= 3; level++) {
-        if (by_level[level] > 0) {
-            levels.push_back({.size_bytes = by_level[level]});
+    for (std::int64_t const bytes : {cache.l1, cache.l2, cache.l3}) {
+        if (bytes > 0) {
+            levels.push_back({.size_bytes = static_cast<size_t>(bytes)});
         }
     }
-#endif
-
     return levels;
 }
 

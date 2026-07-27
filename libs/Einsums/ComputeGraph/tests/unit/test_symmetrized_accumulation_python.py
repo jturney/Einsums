@@ -171,7 +171,18 @@ def test_symacc_loop_body_with_loop_carried_operand(o, v, s, niters, dtype, use_
 
     # Iteration k contracts A_k = A_0 + k*dA (the update lands AFTER both
     # accumulations, so iteration 0 still sees the original A).
-    oracle = sum(_oracle(A_np + k * dA_np, B_np, s) for k in range(niters))
+    #
+    # The oracle builds A_k by the SAME repeated addition the graph performs,
+    # rather than the algebraically equal A_0 + k*dA. Those differ by O(k) ULPs in
+    # floating point, and the contraction that follows is a cancelling one, so the
+    # discrepancy lands in the result at the magnitude of the intermediates rather
+    # than of the answer. Comparing against a closed form here was asking the graph
+    # to be more accurate than the arithmetic it was told to do.
+    oracle = np.zeros((o, o, v, v), dtype=dtype)
+    A_k = A_np.copy()
+    for _ in range(niters):
+        oracle = oracle + _oracle(A_k, B_np, s)
+        A_k = A_k + dA_np
 
     A = einsums.asarray(A_np.copy())
     B = einsums.asarray(B_np)
