@@ -26,6 +26,10 @@
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
+#ifdef _OPENMP
+#    include <omp.h>
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <string>
@@ -168,4 +172,71 @@ TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_
                      "\n  setup amortized away                    : {:5.1f}x",
                      NT, t_per_call * 1e6, flops / t_per_call / 1e9, t_per_call * 1e6 / static_cast<double>(NT), NT, t_batched * 1e6,
                      flops / t_batched / 1e9, t_batched * 1e6 / static_cast<double>(NT), t_per_call / t_batched));
+}
+
+// What an OpenMP parallel region costs, against what a small contraction is
+// worth. blis_contraction parallelizes the NC loop for any contraction without a
+// batch dimension (EinsumPackedGemm.hpp:753), shrinking NC_blk so every thread
+// gets a block -- correct for tall N, ruinous for a tile whose whole contraction
+// is a couple of KFLOP. This measures the region cost so a work threshold can be
+// derived from it rather than guessed, and so the crossover can be re-measured on
+// other hardware, where both the barrier cost and the achievable rate differ.
+TEST_CASE("OpenMP region cost vs small-contraction work", "[performance][packed_gemm][threading]") {
+    int const maxt = omp_get_max_threads();
+
+    auto bench = [](int trials, size_t reps, auto &&fn) {
+        for (size_t i = 0; i < reps; ++i)
+            fn();
+        double best = 1e300;
+        for (int t = 0; t < trials; ++t) {
+            auto const t0 = std::chrono::steady_clock::now();
+            for (size_t i = 0; i < reps; ++i)
+                fn();
+            auto const t1 = std::chrono::steady_clock::now();
+            best          = std::min(best, std::chrono::duration<double>(t1 - t0).count() / static_cast<double>(reps));
+        }
+        return best;
+    };
+
+    std::string out = fmt::format("\n  omp_get_max_threads = {}\n", maxt);
+
+    // Cost of entering/leaving a parallel region that does nothing, warm team.
+    int volatile sink = 0;
+    for (int nt : {1, 2, 4, 8}) {
+        if (nt > maxt)
+            continue;
+        double const t = bench(7, 20000, [&] {
+#pragma omp parallel for schedule(static) num_threads(nt)
+            for (int i = 0; i < nt; ++i) {
+                sink = i;
+            }
+        });
+        out += fmt::format("  empty parallel region, {} threads : {:8.3f} us\n", nt, t * 1e6);
+    }
+
+    // Same, but the team sleeps in between (a serial gap), which is what an
+    // interleaved graph replay does.
+    for (int nt : {8}) {
+        if (nt > maxt)
+            continue;
+        double const t = bench(7, 2000, [&] {
+            for (volatile int spin = 0; spin < 20000; ++spin) {
+            }
+#pragma omp parallel for schedule(static) num_threads(nt)
+            for (int i = 0; i < nt; ++i) {
+                sink = i;
+            }
+        });
+        double const gap = bench(7, 2000, [&] {
+            for (volatile int spin = 0; spin < 20000; ++spin) {
+            }
+        });
+        out +=
+            fmt::format("  region after a serial gap, {} threads : {:8.3f} us  (gap alone {:8.3f} us)\n", nt, (t - gap) * 1e6, gap * 1e6);
+    }
+    // Break-even: a region only pays for itself once the work it distributes takes
+    // longer than entering it. At ~20 GFLOP/s achievable on one core, a 20 us
+    // region needs ~400 KFLOP of work to break even -- three orders of magnitude
+    // more than a CCSD tile contraction (~2 KFLOP).
+    WARN(out);
 }
