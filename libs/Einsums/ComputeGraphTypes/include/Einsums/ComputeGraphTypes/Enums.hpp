@@ -104,6 +104,10 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     Scatter,   ///< Root distributes pieces to ranks
     Barrier,   ///< Synchronization point across ranks
 
+    // Tiled lowering
+    TileGather,  ///< Copy a tiled tensor's tiles into one dense buffer
+    TileScatter, ///< Copy a dense buffer back into a tiled tensor's tiles
+
     // User-defined
     Custom, ///< User-registered custom operation
 };
@@ -269,6 +273,10 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "Barrier";
     case OpKind::Custom:
         return "Custom";
+    case OpKind::TileGather:
+        return "TileGather";
+    case OpKind::TileScatter:
+        return "TileScatter";
     }
     return "Unknown";
 }

@@ -120,9 +120,57 @@ namespace einsums::compute_graph::passes {
  * because minting a per-tile id creates the tile, and a spurious tile changes how
  * the runtime applies ``c_pf`` on the path that ends up not expanding.
  *
+ * @par Densifying small tiles
+ * Expanding per tile only pays when a tile contraction is worth a dispatch. It
+ * often is not. A symmetry-blocked CCSD residual on a small model expands to
+ * nearly 4000 einsum nodes carrying 1.3 MFLOP between them - a mean of 330 flops
+ * per node, which is less work than the call costs. Blocking saves real
+ * arithmetic there (roughly 10x, by never touching symmetry-forbidden blocks) and
+ * then spends the whole saving dispatching it.
+ *
+ * So below @p min_tile_flops of arithmetic per tile contraction, the pass lowers
+ * the contraction differently: gather each tiled operand into a dense buffer, run
+ * ONE dense einsum, and scatter the result back into exactly the output tiles the
+ * per-tile path would have written. Absent tiles gather as zeros and forbidden
+ * output tiles are still never created, so the answer is the same up to floating
+ * point summation order. Measured on the particle-particle ladder of that model,
+ * this replaces 256 nodes taking 0.595 ms with 3 nodes taking 0.214 ms - faster
+ * despite doing strictly more arithmetic, because the dense form reaches
+ * ~61 GFLOP/s and 256 tiny contractions reach ~2.
+ *
+ * The trade is arithmetic for throughput, so it is gated twice: on per-tile work
+ * (@p min_tile_flops), and on how much extra arithmetic densifying would cost
+ * (@p max_densify_inflation). A genuinely sparse tiled tensor fails the second
+ * gate and keeps its per-tile lowering, which is the right answer - there the
+ * blocking is skipping work worth skipping.
+ *
+ * @warning **Off by default (@p min_tile_flops is 0), because those two gates are
+ * not sufficient to decide it.** Measured on the same CCSD residual at two model
+ * sizes, replay with the profiler disabled:
+ *
+ * | inflation cap | 26 spin-orbitals | 50 spin-orbitals |
+ * |---------------|------------------|------------------|
+ * | 16            | 11.0 ms (from 19.0) | 103.1 ms (from 71.5) |
+ * | 4             | never fires      | never fires      |
+ *
+ * Those contractions inflate by between 4x and 16x, so the setting that wins 1.8x
+ * on the small model is the same one that loses 1.4x on the larger one, and no
+ * threshold on the flop RATIO separates them. What actually differs is achievable
+ * throughput: the small model's tiles run at ~2 GFLOP/s where dense runs at ~60,
+ * and the larger model's tiles are already fast enough that buying throughput with
+ * extra arithmetic is a bad trade. Deciding this needs an estimate of TIME on each
+ * side - tile-shape-dependent rate against dense rate, plus the gather/scatter
+ * traffic - which is what @ref CostModel::estimate_gemm_time_us exists to provide.
+ * Wiring that in is the work that would make this safe to default on. Until then
+ * it is opt-in, and worth opting into only where tiles are measurably tiny.
+ *
  * @par Limits
  * - Runs FIRST in @ref PassManager::populate_default: it is a lowering step, so
  *   every pass below should see the per-tile form rather than the opaque node.
+ * - **Densification ignores tile screening.** @p zero_tile_tolerance prunes
+ *   near-zero operand tiles from the per-tile enumeration; the densified path
+ *   gathers them anyway. It contributes their (near-zero) value rather than
+ *   dropping it, so the densified answer is the more accurate of the two.
  * - **Node budget.** Expansion produces up to (tiles of A) x (tiles of B) nodes,
  *   and per-node graph bookkeeping is on the order of microseconds, so a large
  *   grid can cost more in overhead than the contraction saves. The pass declines
@@ -159,7 +207,15 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     ///        screening: no tile is inspected and the emitted node set is
     ///        unchanged. Zero prunes only exactly-zero tiles. A positive value is
     ///        a numerical approximation and an accuracy knob.
-    explicit TiledExpansion(size_t max_nodes = 4096, double zero_tile_tolerance = -1.0);
+    /// @param min_tile_flops Below this much arithmetic per emitted tile
+    ///        contraction, densify instead of expanding per tile (see the class
+    ///        documentation). Zero disables densification entirely, restoring the
+    ///        always-expand behaviour.
+    /// @param max_densify_inflation Refuse to densify when doing so would multiply
+    ///        the arithmetic by more than this. Guards the sparse case, where the
+    ///        tiled form is skipping most of the work and is right to.
+    explicit TiledExpansion(size_t max_nodes = 4096, double zero_tile_tolerance = -1.0, double min_tile_flops = 0.0,
+                            double max_densify_inflation = 16.0);
 
     [[nodiscard]] std::string name() const override { return "TiledExpansion"; }
     bool                      run(Graph &graph) override;
@@ -178,14 +234,20 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     [[nodiscard]] size_t num_declined() const { return _num_declined; }
     /// Tile contractions not emitted because an operand tile screened as zero.
     [[nodiscard]] size_t num_screened() const { return _num_screened; }
+    /// Contractions lowered to gather + one dense einsum + scatter rather than to
+    /// per-tile nodes, because their tiles were too small to be worth dispatching.
+    [[nodiscard]] size_t num_densified() const { return _num_densified; }
 
   private:
     size_t _max_nodes;
     double _zero_tolerance;
+    double _min_tile_flops;
+    double _max_inflation;
     size_t _num_expanded{0};
     size_t _num_tile_nodes{0};
     size_t _num_declined{0};
     size_t _num_screened{0};
+    size_t _num_densified{0};
 };
 
 } // namespace einsums::compute_graph::passes

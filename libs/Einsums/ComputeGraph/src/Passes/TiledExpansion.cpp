@@ -55,7 +55,8 @@ std::vector<size_t> grid_strides(std::vector<int> const &grid) {
 
 } // namespace
 
-TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance) : _max_nodes(max_nodes), _zero_tolerance(zero_tile_tolerance) {
+TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance, double min_tile_flops, double max_densify_inflation)
+    : _max_nodes(max_nodes), _zero_tolerance(zero_tile_tolerance), _min_tile_flops(min_tile_flops), _max_inflation(max_densify_inflation) {
 }
 
 void TiledExpansion::reset_stats() {
@@ -63,6 +64,7 @@ void TiledExpansion::reset_stats() {
     _num_tile_nodes = 0;
     _num_declined   = 0;
     _num_screened   = 0;
+    _num_densified  = 0;
 }
 
 bool TiledExpansion::run(Graph &graph) {
@@ -282,6 +284,12 @@ bool TiledExpansion::run(Graph &graph) {
         std::vector<PrefactorScalar>  c_pfs;
         std::vector<std::vector<int>> leftover; ///< output tiles that are only scaled
         PrefactorScalar               leftover_pf{double{0}};
+        /// Arithmetic the per-tile lowering would do, summed over emitted tile
+        /// contractions, against what ONE dense contraction over the same index
+        /// extents would do. Their ratio is how much densifying costs; the first
+        /// divided by the node count is how much work a dispatch is buying.
+        double tiled_flops{0.0};
+        double dense_flops{0.0};
         // Scale / Axpy / Divide
         PrefactorScalar               alpha{double{1}};
         PrefactorScalar               beta{double{0}}; ///< Divide only
@@ -650,11 +658,31 @@ bool TiledExpansion::run(Graph &graph) {
             PrefactorScalar const node_c_pf = first ? (pc.contains(ccoord) ? c_pf : PrefactorScalar{double{0}}) //
                                                     : PrefactorScalar{double{1}};
 
+            // Work for one tile contraction is the product of EVERY unique index's
+            // extent at this grid point -- M*N*K with the target and link factors
+            // spelled out per index rather than pre-multiplied.
+            double tile_flops = 2.0;
+            for (size_t u = 0; u < nu; ++u) {
+                tile_flops *= static_cast<double>(part[u][static_cast<size_t>(ucoord[u])]);
+            }
+            plan.tiled_flops += tile_flops;
+
             plan.a_coords.push_back(acoord);
             plan.b_coords.push_back(bcoord);
             plan.c_coords.push_back(ccoord);
             plan.c_pfs.push_back(node_c_pf);
             written[ccoord] = true;
+        }
+
+        // One dense contraction over the full extents, for the densify gate to
+        // compare against plan.tiled_flops.
+        plan.dense_flops = 2.0;
+        for (size_t u = 0; u < nu; ++u) {
+            double extent = 0.0;
+            for (int const sz : part[u]) {
+                extent += static_cast<double>(sz);
+            }
+            plan.dense_flops *= extent;
         }
 
         // Pre-existing output tiles that received NO contribution are still scaled by
@@ -744,6 +772,160 @@ bool TiledExpansion::run(Graph &graph) {
         }
     }
 
+    // ── Densified lowering ───────────────────────────────────────────────────
+    // Gather each tiled operand into a dense buffer, contract once, scatter the
+    // result back. Chosen when the tiles are too small to be worth a dispatch
+    // each; see the gate at the emit site.
+    //
+    // The buffers are plain heap tensors whose lifetime is handed to the graph via
+    // adopt(), because they must outlive this pass and be alive for every replay.
+    // They are registered as ordinary tensors so the dense contraction is a normal
+    // Einsum node that later passes can reason about, rather than an opaque blob.
+    auto emit_densified = [&graph](Plan const &pl, std::vector<Node> &out) -> bool {
+        size_t const ra = pl.src_a.rank, rb = pl.src_b.rank, rc = pl.dst.rank;
+
+        // Dense extent of an operand axis is the sum of its tile sizes; a tile's
+        // offset along that axis is the prefix sum below its grid coordinate.
+        auto dense_dims = [](TiledView const &v) {
+            std::vector<size_t> d(v.rank, 0);
+            for (size_t ax = 0; ax < v.rank; ++ax) {
+                for (int const sz : (*v.sizes)[ax]) {
+                    d[ax] += static_cast<size_t>(sz);
+                }
+            }
+            return d;
+        };
+        auto offsets_of = [](TiledView const &v, std::vector<int> const &co) {
+            std::vector<size_t> off(v.rank, 0);
+            for (size_t ax = 0; ax < v.rank; ++ax) {
+                for (int k = 0; k < co[ax]; ++k) {
+                    off[ax] += static_cast<size_t>((*v.sizes)[ax][static_cast<size_t>(k)]);
+                }
+            }
+            return off;
+        };
+
+        std::vector<size_t> const da = dense_dims(pl.src_a), db = dense_dims(pl.src_b), dc = dense_dims(pl.dst);
+
+        // Distinct output tiles, each with the prefactor its FIRST write carried.
+        // The dense contraction produces the whole sum, so the scatter applies that
+        // prefactor once: C_tile = c_pf * C_tile + dense_slice.
+        std::vector<std::vector<int>> c_tiles;
+        std::vector<PrefactorScalar>  c_tile_pf;
+        {
+            std::map<std::vector<int>, size_t> seen;
+            for (size_t i = 0; i < pl.c_coords.size(); ++i) {
+                if (auto const it = seen.find(pl.c_coords[i]); it == seen.end()) {
+                    seen.emplace(pl.c_coords[i], c_tiles.size());
+                    c_tiles.push_back(pl.c_coords[i]);
+                    c_tile_pf.push_back(pl.c_pfs[i]);
+                }
+            }
+        }
+
+        bool ok = true;
+        detail::dispatch_scalar_type(pl.dtype, [&]<typename T>(T /*tag*/) {
+            using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
+
+            auto *ba = new Dense("densify_a", da);
+            auto *bb = new Dense("densify_b", db);
+            auto *bc = new Dense("densify_c", dc);
+            graph.adopt([ba, bb, bc]() {
+                delete ba;
+                delete bb;
+                delete bc;
+            });
+            TensorId const ida = graph.register_tensor(make_handle(*ba, 0));
+            TensorId const idb = graph.register_tensor(make_handle(*bb, 0));
+            TensorId const idc = graph.register_tensor(make_handle(*bc, 0));
+
+            // Copy one tile into (or out of) its window in a dense buffer.
+            // dims comes from BufferVector<size_t>, not std::vector, so stay generic.
+            auto window = [](Dense *dense, std::vector<size_t> const &off, auto const &dims) {
+                std::vector<einsums::SliceSpec> specs(dims.size());
+                for (size_t ax = 0; ax < dims.size(); ++ax) {
+                    specs[ax] = einsums::SliceSpec{einsums::SliceSpec::Kind::Range, 0, static_cast<std::int64_t>(off[ax]),
+                                                   static_cast<std::int64_t>(off[ax] + dims[ax]), 1};
+                }
+                return dense->at_view(specs);
+            };
+
+            // Gather: zero, then copy every tile that exists. An absent tile is a
+            // structural zero, which is exactly what the zeroed buffer already holds.
+            auto make_gather = [&](TiledView const &v, Dense *buf, TensorId buf_id, char const *what) {
+                std::vector<std::pair<TensorId, std::vector<size_t>>> srcs;
+                std::vector<TensorId>                                 ins;
+                for (auto const &co : v.coords()) {
+                    srcs.emplace_back(v.tile_id(co), offsets_of(v, co));
+                    ins.push_back(srcs.back().first);
+                }
+                Node g;
+                g.id      = graph.reserve_node_id();
+                g.kind    = OpKind::TileGather;
+                g.label   = fmt::format("tile_gather({})", what);
+                g.inputs  = std::move(ins);
+                g.outputs = {buf_id};
+                Graph *gp = &graph;
+                g.execute = [gp, buf, srcs = std::move(srcs), window]() {
+                    buf->zero();
+                    for (auto const &[tid, off] : srcs) {
+                        auto *tile = static_cast<Dense *>(gp->tensor(tid).tensor_ptr);
+                        auto  w    = window(buf, off, tile->dims());
+                        w          = *tile;
+                    }
+                };
+                return g;
+            };
+
+            out.push_back(make_gather(pl.src_a, ba, ida, "A"));
+            out.push_back(make_gather(pl.src_b, bb, idb, "B"));
+
+            // One dense contraction. c_pf is 0 because the scatter applies the real
+            // one per output tile; ab_pf rides along here as it would per tile.
+            out.push_back(graph.make_einsum_node(ida, idb, idc, pl.spec, PrefactorScalar{double{0}}, pl.ab_pf,
+                                                 /*conj_a=*/false, /*conj_b=*/false, "densified_einsum"));
+
+            // Scatter into exactly the tiles the per-tile path would have written,
+            // so symmetry-forbidden output blocks are still never created.
+            std::vector<std::pair<TensorId, std::vector<size_t>>> dsts;
+            std::vector<PrefactorScalar>                          pfs;
+            std::vector<TensorId>                                 outs;
+            for (size_t i = 0; i < c_tiles.size(); ++i) {
+                dsts.emplace_back(pl.dst.tile_id(c_tiles[i]), offsets_of(pl.dst, c_tiles[i]));
+                pfs.push_back(c_tile_pf[i]);
+                outs.push_back(dsts.back().first);
+            }
+            Node sc;
+            sc.id     = graph.reserve_node_id();
+            sc.kind   = OpKind::TileScatter;
+            sc.label  = "tile_scatter(C)";
+            sc.inputs = {idc};
+            // A nonzero prefactor reads the destination, so declare it an input too
+            // (bug-1009's RMW convention) or a later pass may reorder past the read.
+            for (size_t i = 0; i < outs.size(); ++i) {
+                if (!is_zero(pfs[i])) {
+                    sc.inputs.push_back(outs[i]);
+                }
+            }
+            sc.outputs = outs;
+            Graph *gp  = &graph;
+            sc.execute = [gp, bc, dsts = std::move(dsts), pfs = std::move(pfs), window]() {
+                for (size_t i = 0; i < dsts.size(); ++i) {
+                    auto *tile = static_cast<Dense *>(gp->tensor(dsts[i].first).tensor_ptr);
+                    auto  w    = window(bc, dsts[i].second, tile->dims());
+                    if (is_zero(pfs[i])) {
+                        *tile = w;
+                    } else {
+                        *tile *= as<T>(pfs[i]);
+                        linear_algebra::axpy(T{1}, w, tile);
+                    }
+                }
+            };
+            out.push_back(std::move(sc));
+        });
+        return ok;
+    };
+
     // ── Emit ─────────────────────────────────────────────────────────────────
     for (size_t p = 0; p < plans.size(); ++p) {
         if (!alive[p]) {
@@ -753,7 +935,22 @@ bool TiledExpansion::run(Graph &graph) {
         std::vector<Node> emitted;
 
         switch (pl.kind) {
-        case Plan::Kind::Einsum:
+        case Plan::Kind::Einsum: {
+            // Densify when a dispatch is buying too little arithmetic, unless doing
+            // so would inflate the arithmetic past what the throughput gain repays.
+            double const per_tile = pl.a_coords.empty() ? 0.0 : pl.tiled_flops / static_cast<double>(pl.a_coords.size());
+            bool const   densify  = _min_tile_flops > 0.0 && !pl.a_coords.empty() && per_tile < _min_tile_flops &&
+                                 pl.dense_flops <= _max_inflation * std::max(pl.tiled_flops, 1.0);
+            if (densify && emit_densified(pl, emitted)) {
+                ++_num_densified;
+                report(2, fmt::format("densified '{}': {} tile contractions -> gather+einsum+scatter ({:.0f} flops/tile, {:.1f}x work)",
+                                      nodes[pl.index].label, pl.a_coords.size(), per_tile, pl.dense_flops / std::max(pl.tiled_flops, 1.0)));
+                for (auto const &coord : pl.leftover) {
+                    emitted.push_back(emit_tile_scale(pl.dst.tile_id(coord), pl.leftover_pf, pl.dtype,
+                                                      fmt::format("tile_scale({})", fmt::join(coord, ","))));
+                }
+                break;
+            }
             emitted.reserve(pl.a_coords.size() + pl.leftover.size());
             for (size_t i = 0; i < pl.a_coords.size(); ++i) {
                 emitted.push_back(graph.make_einsum_node(pl.src_a.tile_id(pl.a_coords[i]), pl.src_b.tile_id(pl.b_coords[i]),
@@ -766,6 +963,7 @@ bool TiledExpansion::run(Graph &graph) {
                     emit_tile_scale(pl.dst.tile_id(coord), pl.leftover_pf, pl.dtype, fmt::format("tile_scale({})", fmt::join(coord, ","))));
             }
             break;
+        }
         case Plan::Kind::Scale:
             emitted.reserve(pl.coords.size());
             for (auto const &coord : pl.coords) {
