@@ -721,3 +721,90 @@ TEMPLATE_TEST_CASE("View-Scalar", "[tensor]", float, double, int) {
         }
     }
 }
+
+// A dense block copied into a WINDOW of a larger buffer. Every stride differs
+// except the innermost, which the two share -- the case impl_copy answers with a
+// run of copies rather than an element-by-element walk. What must hold is that
+// each element lands at its own index and that nothing outside the window moves.
+TEMPLATE_TEST_CASE("Block into a window", "[tensor]", float, double, int) {
+    using T = std::remove_cv_t<TestType>;
+
+    constexpr size_t D0 = 5, D1 = 6, D2 = 7; // buffer
+    constexpr size_t B0 = 2, B1 = 3, B2 = 2; // block
+    constexpr size_t O0 = 1, O1 = 2, O2 = 3; // where the block goes
+
+    BufferVector<T> block_data(B0 * B1 * B2);
+    for (size_t i = 0; i < block_data.size(); i++) {
+        block_data[i] = static_cast<T>(i + 1);
+    }
+
+    SECTION("Column-major") {
+        BufferVector<T>           buffer(D0 * D1 * D2, T{0});
+        std::vector<size_t> const bstride{1, D0, D0 * D1};
+        size_t const              base = O0 * bstride[0] + O1 * bstride[1] + O2 * bstride[2];
+
+        detail::TensorImpl<T> const block(block_data.data(), {B0, B1, B2}, false);
+        detail::TensorImpl<T>       window(buffer.data() + base, std::vector<size_t>{B0, B1, B2}, bstride);
+        detail::copy_to(block, window);
+
+        for (size_t k = 0; k < D2; k++) {
+            for (size_t j = 0; j < D1; j++) {
+                for (size_t i = 0; i < D0; i++) {
+                    bool const inside = i >= O0 && i < O0 + B0 && j >= O1 && j < O1 + B1 && k >= O2 && k < O2 + B2;
+                    T const    want   = inside ? block.subscript(i - O0, j - O1, k - O2) : T{0};
+                    REQUIRE(buffer[i + j * D0 + k * D0 * D1] == want);
+                }
+            }
+        }
+    }
+
+    SECTION("Row-major") {
+        BufferVector<T>           buffer(D0 * D1 * D2, T{0});
+        std::vector<size_t> const bstride{D1 * D2, D2, 1};
+        size_t const              base = O0 * bstride[0] + O1 * bstride[1] + O2 * bstride[2];
+
+        detail::TensorImpl<T> const block(block_data.data(), {B0, B1, B2}, true);
+        detail::TensorImpl<T>       window(buffer.data() + base, std::vector<size_t>{B0, B1, B2}, bstride);
+        detail::copy_to(block, window);
+
+        for (size_t i = 0; i < D0; i++) {
+            for (size_t j = 0; j < D1; j++) {
+                for (size_t k = 0; k < D2; k++) {
+                    bool const inside = i >= O0 && i < O0 + B0 && j >= O1 && j < O1 + B1 && k >= O2 && k < O2 + B2;
+                    T const    want   = inside ? block.subscript(i - O0, j - O1, k - O2) : T{0};
+                    REQUIRE(buffer[i * D1 * D2 + j * D2 + k] == want);
+                }
+            }
+        }
+    }
+
+    // The two layouts disagree about which axis is innermost, so there is no
+    // shared run to exploit and the element-by-element walk has to answer it.
+    SECTION("Column-major into row-major") {
+        BufferVector<T>             out_data(B0 * B1 * B2, T{0});
+        detail::TensorImpl<T> const block(block_data.data(), {B0, B1, B2}, false);
+        detail::TensorImpl<T>       out(out_data.data(), {B0, B1, B2}, true);
+        detail::copy_to(block, out);
+
+        for (size_t i = 0; i < B0; i++) {
+            for (size_t j = 0; j < B1; j++) {
+                for (size_t k = 0; k < B2; k++) {
+                    REQUIRE(out.subscript(i, j, k) == block.subscript(i, j, k));
+                }
+            }
+        }
+    }
+
+    // Strides that differ by a constant factor: the whole walk is one strided
+    // vector on both sides, so no axis is left to loop over.
+    SECTION("Into every other element") {
+        BufferVector<T>             out_data(2 * B0 * B1 * B2, T{0});
+        detail::TensorImpl<T> const block(block_data.data(), {B0, B1, B2}, false);
+        detail::TensorImpl<T>       out(out_data.data(), std::vector<size_t>{B0, B1, B2}, std::vector<size_t>{2, 2 * B0, 2 * B0 * B1});
+        detail::copy_to(block, out);
+
+        for (size_t i = 0; i < out_data.size(); i++) {
+            REQUIRE(out_data[i] == (i % 2 == 0 ? block_data[i / 2] : T{0}));
+        }
+    }
+}
