@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 
 #include <cstddef>
@@ -128,7 +129,7 @@ namespace einsums::compute_graph::passes {
  * arithmetic there (roughly 10x, by never touching symmetry-forbidden blocks) and
  * then spends the whole saving dispatching it.
  *
- * So below @p min_tile_flops of arithmetic per tile contraction, the pass lowers
+ * So when a tile contraction is not worth its dispatch, the pass lowers
  * the contraction differently: gather each tiled operand into a dense buffer, run
  * ONE dense einsum, and scatter the result back into exactly the output tiles the
  * per-tile path would have written. Absent tiles gather as zeros and forbidden
@@ -138,31 +139,29 @@ namespace einsums::compute_graph::passes {
  * despite doing strictly more arithmetic, because the dense form reaches
  * ~61 GFLOP/s and 256 tiny contractions reach ~2.
  *
- * The trade is arithmetic for throughput, so it is gated twice: on per-tile work
- * (@p min_tile_flops), and on how much extra arithmetic densifying would cost
- * (@p max_densify_inflation). A genuinely sparse tiled tensor fails the second
- * gate and keeps its per-tile lowering, which is the right answer - there the
- * blocking is skipping work worth skipping.
+ * The trade is arithmetic for throughput, so which lowering wins is a question
+ * about TIME, not about either quantity alone. @ref Densify::Auto asks the shared
+ * @ref CostModel: sum @ref CostModel::estimate_total_gemm_time_us over the tile
+ * contractions that would be emitted (that estimate already carries the per-call
+ * launch and allocation overhead, which is the whole point at this size), against
+ * one dense contraction of the same indices plus the gather and scatter traffic at
+ * memory bandwidth. Densify only when the second is smaller.
  *
- * @warning **Off by default (@p min_tile_flops is 0), because those two gates are
- * not sufficient to decide it.** Measured on the same CCSD residual at two model
- * sizes, replay with the profiler disabled:
+ * A flop-based gate was tried first and does not work. Measured on one CCSD
+ * residual at two model sizes, replay with the profiler disabled:
  *
  * | inflation cap | 26 spin-orbitals | 50 spin-orbitals |
  * |---------------|------------------|------------------|
- * | 16            | 11.0 ms (from 19.0) | 103.1 ms (from 71.5) |
+ * | 16            | 19.0 -> 11.0 ms  | 71.5 -> 103.1 ms |
  * | 4             | never fires      | never fires      |
  *
- * Those contractions inflate by between 4x and 16x, so the setting that wins 1.8x
- * on the small model is the same one that loses 1.4x on the larger one, and no
- * threshold on the flop RATIO separates them. What actually differs is achievable
- * throughput: the small model's tiles run at ~2 GFLOP/s where dense runs at ~60,
- * and the larger model's tiles are already fast enough that buying throughput with
- * extra arithmetic is a bad trade. Deciding this needs an estimate of TIME on each
- * side - tile-shape-dependent rate against dense rate, plus the gather/scatter
- * traffic - which is what @ref CostModel::estimate_gemm_time_us exists to provide.
- * Wiring that in is the work that would make this safe to default on. Until then
- * it is opt-in, and worth opting into only where tiles are measurably tiny.
+ * Those contractions inflate the arithmetic by between 4x and 16x either way, so
+ * no threshold on the ratio separates the case that wants densifying from the one
+ * that does not. What differs is achievable throughput: the small model's tiles
+ * run at ~2 GFLOP/s where dense reaches ~60, while the larger model's tiles are
+ * already fast enough that buying throughput with extra arithmetic is a bad trade.
+ * Only a time comparison sees that, because only it knows the shape-dependent
+ * rate.
  *
  * @par Limits
  * - Runs FIRST in @ref PassManager::populate_default: it is a lowering step, so
@@ -199,6 +198,13 @@ namespace einsums::compute_graph::passes {
  * graph.apply(pm);
  * @endcode
  */
+/// When to lower a tiled contraction by densifying rather than per tile.
+enum class Densify : std::uint8_t {
+    Never,  ///< Always emit one node per contributing tile combination.
+    Auto,   ///< Let the @ref CostModel decide, per contraction. The default.
+    Always, ///< Densify whenever the lowering is structurally possible. For tests.
+};
+
 class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
   public:
     /// @param max_nodes Decline to expand when the projected node count exceeds this.
@@ -207,15 +213,14 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     ///        screening: no tile is inspected and the emitted node set is
     ///        unchanged. Zero prunes only exactly-zero tiles. A positive value is
     ///        a numerical approximation and an accuracy knob.
-    /// @param min_tile_flops Below this much arithmetic per emitted tile
-    ///        contraction, densify instead of expanding per tile (see the class
-    ///        documentation). Zero disables densification entirely, restoring the
-    ///        always-expand behaviour.
-    /// @param max_densify_inflation Refuse to densify when doing so would multiply
-    ///        the arithmetic by more than this. Guards the sparse case, where the
-    ///        tiled form is skipping most of the work and is right to.
-    explicit TiledExpansion(size_t max_nodes = 4096, double zero_tile_tolerance = -1.0, double min_tile_flops = 0.0,
-                            double max_densify_inflation = 16.0);
+    /// @param densify Whether small-tile contractions are lowered by densifying.
+    ///        @ref Densify::Auto, the default, compares estimated time both ways
+    ///        per contraction and picks the cheaper.
+    explicit TiledExpansion(size_t max_nodes = 4096, double zero_tile_tolerance = -1.0, Densify densify = Densify::Auto);
+
+    /// As above, with an explicit cost model rather than a detected one. The
+    /// default pipeline uses this so every cost-model pass shares one profile.
+    TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Densify densify, CostModel cost_model);
 
     [[nodiscard]] std::string name() const override { return "TiledExpansion"; }
     bool                      run(Graph &graph) override;
@@ -239,15 +244,15 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     [[nodiscard]] size_t num_densified() const { return _num_densified; }
 
   private:
-    size_t _max_nodes;
-    double _zero_tolerance;
-    double _min_tile_flops;
-    double _max_inflation;
-    size_t _num_expanded{0};
-    size_t _num_tile_nodes{0};
-    size_t _num_declined{0};
-    size_t _num_screened{0};
-    size_t _num_densified{0};
+    size_t    _max_nodes;
+    double    _zero_tolerance;
+    Densify   _densify;
+    CostModel _cost_model;
+    size_t    _num_expanded{0};
+    size_t    _num_tile_nodes{0};
+    size_t    _num_declined{0};
+    size_t    _num_screened{0};
+    size_t    _num_densified{0};
 };
 
 } // namespace einsums::compute_graph::passes

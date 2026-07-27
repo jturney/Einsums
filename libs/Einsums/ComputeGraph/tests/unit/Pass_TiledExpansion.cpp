@@ -30,7 +30,7 @@ namespace cg = einsums::compute_graph;
 /// is testing the PER-TILE lowering -- node counts, screening, batching -- on tiles
 /// deliberately too small to be worth dispatching, which is exactly what the
 /// densify gate exists to catch. So these cases pin it off rather than fight it.
-constexpr double kPerTile = 0.0;
+constexpr auto kPerTile = cg::passes::Densify::Never;
 
 namespace {
 
@@ -816,10 +816,11 @@ TEST_CASE("TiledExpansion - the emitted tile GEMMs are batchable", "[ComputeGrap
     require_tiles_match(C, C_ref);
 }
 
-TEST_CASE("TiledExpansion - the default pipeline lowers and batches a tiled contraction", "[ComputeGraph][Passes][Tiled]") {
-    // End to end through populate_default: nothing opaque survives, the tile GEMMs
-    // reach gemm_batch, and the answer is unchanged. Densification is off by
-    // default, so this is the per-tile lowering.
+TEST_CASE("TiledExpansion - the default pipeline lowers a tiled contraction", "[ComputeGraph][Passes][Tiled]") {
+    // End to end through populate_default: nothing opaque survives and the answer is
+    // unchanged. These tiles are 2x2, so the shared cost model prices four 2x2 GEMMs
+    // above one gather/contract/scatter and the default pipeline densifies. Batching
+    // of the per-tile form is covered by the cases that pin densification off.
     Grid const g{{2, 2}, {2, 2}};
 
     auto A_ref = make_tiled("A", g, full_coords(g));
@@ -851,7 +852,9 @@ TEST_CASE("TiledExpansion - the default pipeline lowers and batches a tiled cont
     REQUIRE(graph.apply(pm));
 
     CHECK(nodes_of_kind(graph, cg::OpKind::Custom) == 0);
-    CHECK(nodes_of_kind(graph, cg::OpKind::BatchedGemm) > 0);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Einsum) == 1);
+    CHECK(nodes_of_kind(graph, cg::OpKind::TileGather) == 2);
+    CHECK(nodes_of_kind(graph, cg::OpKind::TileScatter) == 1);
 
     graph.execute();
     require_tiles_match(C, C_ref);
@@ -1266,7 +1269,7 @@ TEST_CASE("TiledExpansion - densified result matches the per-tile lowering", "[C
     auto aval = [](int r, int c) { return 1.0 + static_cast<double>(r * 9 + c); };
     auto bval = [](int r, int c) { return 2.0 - static_cast<double>(r * 7 + c); };
 
-    auto run = [&](double min_tile_flops, size_t &n_einsum, size_t &n_gather) {
+    auto run = [&](cg::passes::Densify densify, size_t &n_einsum, size_t &n_gather) {
         auto A = make_tiled("A", gA, full_coords(gA));
         auto B = make_tiled("B", gB, full_coords(gB));
         auto C = make_tiled("C", gC, {});
@@ -1278,7 +1281,7 @@ TEST_CASE("TiledExpansion - densified result matches the per-tile lowering", "[C
             cg::einsum("ij <- ik ; kj", &C, A, B);
         }
         cg::PassManager pm;
-        pm.add(std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, min_tile_flops));
+        pm.add(std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, densify));
         REQUIRE(graph.apply(pm));
         n_einsum = nodes_of_kind(graph, cg::OpKind::Einsum);
         n_gather = nodes_of_kind(graph, cg::OpKind::TileGather);
@@ -1288,7 +1291,7 @@ TEST_CASE("TiledExpansion - densified result matches the per-tile lowering", "[C
 
     size_t     per_tile_einsums = 0, per_tile_gathers = 0, dense_einsums = 0, dense_gathers = 0;
     auto const reference = run(kPerTile, per_tile_einsums, per_tile_gathers);
-    auto const densified = run(/*min_tile_flops=*/1e9, dense_einsums, dense_gathers);
+    auto const densified = run(cg::passes::Densify::Always, dense_einsums, dense_gathers);
 
     // The lowering really did change: many einsums and no marshalling, versus one
     // einsum fed by two gathers.
@@ -1327,7 +1330,7 @@ TEST_CASE("TiledExpansion - densifying creates no tile the per-tile path would n
         cg::einsum("ij <- ik ; kj", &C, A, B);
     }
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, /*min_tile_flops=*/1e9);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, cg::passes::Densify::Always);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
     REQUIRE(pass->num_densified() == 1);
@@ -1339,32 +1342,32 @@ TEST_CASE("TiledExpansion - densifying creates no tile the per-tile path would n
     CHECK_FALSE(C.has_tile({1, 0}));
 }
 
-TEST_CASE("TiledExpansion - densification declines when it would inflate the work", "[ComputeGraph][Passes][Tiled]") {
-    // Same sparse operands, but now the inflation gate is tight. Densifying would
-    // multiply the arithmetic (the dense form contracts blocks the tiled form skips
-    // entirely), so the pass must keep the per-tile lowering even though the tiles
-    // are small.
-    Grid const gA{{2, 3}, {4, 5}};
-    Grid const gB{{4, 5}, {3, 4}};
-    Grid const gC{{2, 3}, {3, 4}};
+TEST_CASE("TiledExpansion - Auto keeps the per-tile lowering for large sparse tiles", "[ComputeGraph][Passes][Tiled]") {
+    // The other side of the cost comparison. Only the diagonal blocks are stored, so
+    // densifying would contract the off-diagonal blocks the tiled form skips
+    // entirely -- and at this tile size the per-tile contractions are already large
+    // enough to run near peak, so there is no throughput left to buy with that extra
+    // arithmetic. Auto must decline. Small tiles reverse this (see above), which is
+    // precisely why the decision is a time comparison and not a size threshold.
+    Grid const g{{64, 64}, {64, 64}};
 
-    auto A = make_tiled("A", gA, {{0, 0}, {1, 1}});
-    auto B = make_tiled("B", gB, {{0, 0}, {1, 1}});
-    auto C = make_tiled("C", gC, {});
-    fill(A, [](int r, int c) { return 1.0 + static_cast<double>(r + c); });
-    fill(B, [](int r, int c) { return 2.0 - static_cast<double>(r + c); });
+    auto A = make_tiled("A", g, {{0, 0}, {1, 1}});
+    auto B = make_tiled("B", g, {{0, 0}, {1, 1}});
+    auto C = make_tiled("C", g, {});
+    fill(A, [](int r, int c) { return 1.0 + static_cast<double>((r + c) % 7); });
+    fill(B, [](int r, int c) { return 2.0 - static_cast<double>((r * 3 + c) % 5); });
 
-    cg::Graph graph("sparse_gated");
+    cg::Graph graph("large_sparse");
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ij <- ik ; kj", &C, A, B);
     }
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, /*min_tile_flops=*/1e9,
-                                                             /*max_densify_inflation=*/1.05);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, cg::passes::Densify::Auto);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
     CHECK(pass->num_densified() == 0);
     CHECK(pass->num_expanded() == 1);
     CHECK(nodes_of_kind(graph, cg::OpKind::TileGather) == 0);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Einsum) > 1);
 }

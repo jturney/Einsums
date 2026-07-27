@@ -366,7 +366,9 @@ void PassManager::populate_default() {
     // just mean those passes saw the unreadable form. Self-gating: it declines
     // above its node budget, and declines rather than guessing whenever tile
     // sparsity is not decidable, so a graph with no tiled operands is untouched.
-    pm.add<passes::TiledExpansion>();
+    // Shares the detected cost model with the passes below, so the densify
+    // decision and their planning are made against one profile.
+    pm.add<passes::TiledExpansion>(4096, -1.0, passes::Densify::Auto, cost_model);
 
     // Graph-transforming passes (reduce node count first).
     // Order matters: PermuteFusion runs before CSE/DNE so duplicate

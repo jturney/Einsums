@@ -55,8 +55,12 @@ std::vector<size_t> grid_strides(std::vector<int> const &grid) {
 
 } // namespace
 
-TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance, double min_tile_flops, double max_densify_inflation)
-    : _max_nodes(max_nodes), _zero_tolerance(zero_tile_tolerance), _min_tile_flops(min_tile_flops), _max_inflation(max_densify_inflation) {
+TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Densify densify)
+    : TiledExpansion(max_nodes, zero_tile_tolerance, densify, CostModel::detect_default()) {
+}
+
+TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Densify densify, CostModel cost_model)
+    : _max_nodes(max_nodes), _zero_tolerance(zero_tile_tolerance), _densify(densify), _cost_model(std::move(cost_model)) {
 }
 
 void TiledExpansion::reset_stats() {
@@ -284,12 +288,13 @@ bool TiledExpansion::run(Graph &graph) {
         std::vector<PrefactorScalar>  c_pfs;
         std::vector<std::vector<int>> leftover; ///< output tiles that are only scaled
         PrefactorScalar               leftover_pf{double{0}};
-        /// Arithmetic the per-tile lowering would do, summed over emitted tile
-        /// contractions, against what ONE dense contraction over the same index
-        /// extents would do. Their ratio is how much densifying costs; the first
-        /// divided by the node count is how much work a dispatch is buying.
-        double tiled_flops{0.0};
-        double dense_flops{0.0};
+        /// Estimated microseconds for each lowering, from the shared CostModel.
+        /// The per-tile figure sums one estimate per emitted contraction, so it
+        /// carries that many launch and allocation overheads - which is exactly
+        /// what makes small tiles lose. The dense figure is one contraction plus
+        /// the gather/scatter traffic.
+        double est_tiled_us{0.0};
+        double est_dense_us{0.0};
         // Scale / Axpy / Divide
         PrefactorScalar               alpha{double{1}};
         PrefactorScalar               beta{double{0}}; ///< Divide only
@@ -620,6 +625,17 @@ bool TiledExpansion::run(Graph &graph) {
         per_tile.b_indices = bidx;
         per_tile.raw       = fmt::format("{} <- {} ; {}", fmt::join(cidx, ","), fmt::join(aidx, ","), fmt::join(bidx, ","));
 
+        // Index roles, so each tile contraction can be priced as a GEMM: an index
+        // in C came from A or from B (M or N); one absent from C is contracted (K).
+        std::vector<bool> in_c(nu, false), in_a(nu, false);
+        for (auto const &nm : cidx) {
+            in_c[pos(nm)] = true;
+        }
+        for (auto const &nm : aidx) {
+            in_a[pos(nm)] = true;
+        }
+        size_t const elem_size = c_h.element_size;
+
         Plan                             plan;
         std::map<std::vector<int>, bool> written; // output coord -> already written once
         for (size_t s = 0; s < total; ++s) {
@@ -658,14 +674,19 @@ bool TiledExpansion::run(Graph &graph) {
             PrefactorScalar const node_c_pf = first ? (pc.contains(ccoord) ? c_pf : PrefactorScalar{double{0}}) //
                                                     : PrefactorScalar{double{1}};
 
-            // Work for one tile contraction is the product of EVERY unique index's
-            // extent at this grid point -- M*N*K with the target and link factors
-            // spelled out per index rather than pre-multiplied.
-            double tile_flops = 2.0;
+            // This tile contraction's GEMM shape, so the cost model can price it:
+            // M over output indices from A, N over output indices from B, K over the
+            // contracted ones.
+            size_t tM = 1, tN = 1, tK = 1;
             for (size_t u = 0; u < nu; ++u) {
-                tile_flops *= static_cast<double>(part[u][static_cast<size_t>(ucoord[u])]);
+                auto const ext = static_cast<size_t>(part[u][static_cast<size_t>(ucoord[u])]);
+                if (in_c[u]) {
+                    (in_a[u] ? tM : tN) *= ext;
+                } else {
+                    tK *= ext;
+                }
             }
-            plan.tiled_flops += tile_flops;
+            plan.est_tiled_us += _cost_model.estimate_total_gemm_time_us(tM, tN, tK, elem_size, Target::CPU);
 
             plan.a_coords.push_back(acoord);
             plan.b_coords.push_back(bcoord);
@@ -674,15 +695,27 @@ bool TiledExpansion::run(Graph &graph) {
             written[ccoord] = true;
         }
 
-        // One dense contraction over the full extents, for the densify gate to
-        // compare against plan.tiled_flops.
-        plan.dense_flops = 2.0;
-        for (size_t u = 0; u < nu; ++u) {
-            double extent = 0.0;
-            for (int const sz : part[u]) {
-                extent += static_cast<double>(sz);
+        // The densified alternative: one contraction over the FULL extents, plus the
+        // cost of marshalling every operand in and the result back out. The gather
+        // and scatter are pure memory traffic, so they are priced at bandwidth.
+        {
+            size_t dM = 1, dN = 1, dK = 1;
+            for (size_t u = 0; u < nu; ++u) {
+                size_t extent = 0;
+                for (int const sz : part[u]) {
+                    extent += static_cast<size_t>(sz);
+                }
+                if (in_c[u]) {
+                    (in_a[u] ? dM : dN) *= extent;
+                } else {
+                    dK *= extent;
+                }
             }
-            plan.dense_flops *= extent;
+            // A is M x K, B is K x N, C is M x N; C is touched twice, read out of the
+            // dense buffer and accumulated into its tiles.
+            size_t const bytes = elem_size * (dM * dK + dK * dN + 2 * dM * dN);
+            plan.est_dense_us  = _cost_model.estimate_total_gemm_time_us(dM, dN, dK, elem_size, Target::CPU) +
+                                _cost_model.estimate_memory_time_us(bytes, Target::CPU);
         }
 
         // Pre-existing output tiles that received NO contribution are still scaled by
@@ -936,15 +969,16 @@ bool TiledExpansion::run(Graph &graph) {
 
         switch (pl.kind) {
         case Plan::Kind::Einsum: {
-            // Densify when a dispatch is buying too little arithmetic, unless doing
-            // so would inflate the arithmetic past what the throughput gain repays.
-            double const per_tile = pl.a_coords.empty() ? 0.0 : pl.tiled_flops / static_cast<double>(pl.a_coords.size());
-            bool const   densify  = _min_tile_flops > 0.0 && !pl.a_coords.empty() && per_tile < _min_tile_flops &&
-                                 pl.dense_flops <= _max_inflation * std::max(pl.tiled_flops, 1.0);
+            // Whichever lowering the cost model prices lower. Densifying does more
+            // arithmetic but pays one launch instead of thousands, so the comparison
+            // has to be in time; the class documentation records why a gate on the
+            // flop RATIO cannot decide it.
+            bool const densify =
+                !pl.a_coords.empty() && (_densify == Densify::Always || (_densify == Densify::Auto && pl.est_dense_us < pl.est_tiled_us));
             if (densify && emit_densified(pl, emitted)) {
                 ++_num_densified;
-                report(2, fmt::format("densified '{}': {} tile contractions -> gather+einsum+scatter ({:.0f} flops/tile, {:.1f}x work)",
-                                      nodes[pl.index].label, pl.a_coords.size(), per_tile, pl.dense_flops / std::max(pl.tiled_flops, 1.0)));
+                report(2, fmt::format("densified '{}': {} tile contractions -> gather+einsum+scatter (est {:.1f} us vs {:.1f} us)",
+                                      nodes[pl.index].label, pl.a_coords.size(), pl.est_dense_us, pl.est_tiled_us));
                 for (auto const &coord : pl.leftover) {
                     emitted.push_back(emit_tile_scale(pl.dst.tile_id(coord), pl.leftover_pf, pl.dtype,
                                                       fmt::format("tile_scale({})", fmt::join(coord, ","))));

@@ -331,13 +331,19 @@ def test_tiled_operands_are_lowered_by_the_default_pipeline():
     g.apply(pm)
     assert lccf.num_groups == 0, "LCCF folded tiled operands"
 
-    # The default pipeline lowers both contractions into per-tile dense nodes.
-    # Nothing opaque may survive, and no whole-tiled operand may reach a
-    # buffer-level pass -- which is exactly what expanding first guarantees.
+    # The default pipeline lowers both contractions to dense nodes. Nothing opaque
+    # may survive, and no whole-tiled operand may reach a buffer-level pass -- which
+    # is exactly what expanding first guarantees.
+    #
+    # Which dense form it picks is the cost model's call. These tiles are tiny, so it
+    # densifies: gather + one einsum + scatter per contraction rather than one einsum
+    # per tile pair. Assert the invariant that matters -- everything lowered --
+    # rather than a node count that encodes one of the two lowerings.
     g.apply(cg.default_pass_manager())
     kinds_after = [n["kind"] for n in json.loads(g.to_json())["nodes"]]
     assert "Custom" not in kinds_after, kinds_after
-    assert kinds_after.count("Einsum") > len(kinds_before), kinds_after
+    assert kinds_after.count("Einsum") >= len(kinds_before), kinds_after
+    assert "TileGather" in kinds_after and "TileScatter" in kinds_after, kinds_after
 
     g.execute()
     # 2*AB - AB == AB. The prefactors have to survive the lowering: the first
