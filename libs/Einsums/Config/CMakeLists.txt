@@ -13,10 +13,11 @@ set(ConfigHeaders
     Einsums/Config/Debug.hpp
     Einsums/Config/ExportDefinitions.hpp
     Einsums/Config/ForceInline.hpp
+    Einsums/Config/ParallelThreshold.hpp
     Einsums/Config/Types.hpp
 )
 
-set(ConfigSources Version.cpp Types.cpp)
+set(ConfigSources Version.cpp Types.cpp ParallelThreshold.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(

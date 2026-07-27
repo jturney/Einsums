@@ -4,8 +4,10 @@
 //----------------------------------------------------------------------------------------------
 
 #pragma once
+
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLASVendor.hpp>
+#include <Einsums/Config/ParallelThreshold.hpp>
 #include <Einsums/LinearAlgebra/Bases/sum_square.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
@@ -77,7 +79,7 @@ auto impl_max_abs_norm(einsums::detail::TensorImpl<T> const &A) -> RemoveComplex
         if (col_stride < row_stride) {
             RemoveComplexT<T> out{0.0};
 
-            EINSUMS_OMP_PARALLEL_FOR
+            EINSUMS_OMP_PARALLEL_FOR_IF(m >= ::einsums::omp_min_parallel_elements())
             for (size_t i = 0; i < m; i++) {
                 RemoveComplexT<T> temp_max{0.0};
                 T const          *A_base = A_data + i * row_stride;
@@ -99,7 +101,7 @@ auto impl_max_abs_norm(einsums::detail::TensorImpl<T> const &A) -> RemoveComplex
         } else {
             RemoveComplexT<T> out{0.0};
 
-            EINSUMS_OMP_PARALLEL_FOR
+            EINSUMS_OMP_PARALLEL_FOR_IF(n >= ::einsums::omp_min_parallel_elements())
             for (size_t i = 0; i < n; i++) {
                 RemoveComplexT<T> temp_max{0.0};
                 T const          *A_base = A_data + i * col_stride;
@@ -143,7 +145,7 @@ auto impl_infinity_norm(einsums::detail::TensorImpl<T> const &A) -> RemoveComple
 
         RemoveComplexT<T> out{0.0};
 
-        EINSUMS_OMP_PARALLEL_FOR
+        EINSUMS_OMP_PARALLEL_FOR_IF(rows >= ::einsums::omp_min_parallel_elements())
         for (size_t i = 0; i < rows; i++) {
             auto curr = blas::sum1(cols, A_data + i * row_stride, incx);
 
@@ -177,7 +179,7 @@ auto impl_one_norm(einsums::detail::TensorImpl<T> const &A) -> RemoveComplexT<T>
 
         RemoveComplexT<T> out{0.0};
 
-        EINSUMS_OMP_PARALLEL_FOR
+        EINSUMS_OMP_PARALLEL_FOR_IF(cols >= ::einsums::omp_min_parallel_elements())
         for (size_t i = 0; i < cols; i++) {
             auto curr = blas::sum1(rows, A_data + i * col_stride, incx);
 

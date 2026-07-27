@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/ParallelThreshold.hpp>
 #include <Einsums/Logging.hpp>
 
 #ifdef _OPENMP
@@ -155,44 +156,6 @@ CacheSizes detect_cache_sizes() {
 
 } // anonymous namespace
 
-namespace {
-
-/// Time entering and leaving an empty parallel region, warm team, best of a few
-/// trials. The team is warmed first so this measures steady-state fork/join and
-/// not one-off thread creation.
-double measure_omp_region_cost_ns() {
-#ifdef _OPENMP
-    int const nthreads = omp_get_max_threads();
-    if (nthreads <= 1) {
-        return 0.0;
-    }
-    constexpr int kReps   = 200;
-    constexpr int kTrials = 5;
-    int volatile sink     = 0;
-    auto        once      = [&sink]() {
-#    pragma omp parallel
-        { sink = omp_get_thread_num(); }
-    };
-    for (int i = 0; i < kReps; ++i) {
-        once();
-    }
-    double best = 1e30;
-    for (int t = 0; t < kTrials; ++t) {
-        auto const t0 = std::chrono::steady_clock::now();
-        for (int i = 0; i < kReps; ++i) {
-            once();
-        }
-        auto const t1 = std::chrono::steady_clock::now();
-        best          = std::min(best, std::chrono::duration<double, std::nano>(t1 - t0).count() / kReps);
-    }
-    return best;
-#else
-    return 0.0;
-#endif
-}
-
-} // namespace
-
 CpuConfig const &cpu_config() {
     static CpuConfig const cfg = []() -> CpuConfig {
         CpuConfig c{};
@@ -212,7 +175,8 @@ CpuConfig const &cpu_config() {
         c.l2_cache_size = cs.l2;
         c.l3_cache_size = cs.l3;
 
-        c.omp_region_cost_ns = measure_omp_region_cost_ns();
+        // Single measured source, shared with the elementwise kernels (Config).
+        c.omp_region_cost_ns = einsums::omp_region_cost_ns();
         // Convert the measured region cost into a work threshold: a region pays for
         // itself once the work it distributes takes longer than entering it, so the
         // break-even is region_cost x rate.
