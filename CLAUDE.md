@@ -67,7 +67,8 @@ libs/Einsums/<Name>/
 ```
 
 The dependency-ordered module list lives in `libs/Einsums/CMakeLists.txt`; new modules are created via `libs/create_module_skeleton.py`.
-`CMAKE_MODULE_PATH` additions inside a module directory are directory-scoped; export with `set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" PARENT_SCOPE)` so later sibling modules can `include()` them.
+Build helpers shared by more than one module belong in the top-level `cmake/`, which is on `CMAKE_MODULE_PATH` from the root scope and so imposes no ordering constraint.
+Putting one under `libs/Einsums/<Module>/cmake/` instead requires exporting the directory-scoped append with `set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" PARENT_SCOPE)`, and then every consumer must be configured after that module - avoid it.
 
 ### Key Module Dependency Chain
 
@@ -106,7 +107,7 @@ Repeated letters within one operand mean diagonal access; a letter in only one i
 ### SIMD Runtime Dispatch
 
 The SIMD module (`libs/Einsums/SIMD/`) provides compile-time intrinsics wrappers plus a runtime feature ladder (`RuntimeFeatures.hpp`): psABI rungs Baseline/V2/V3/V4, `cpu_features()` (CPUID + XCR0 OS-state gated), `selected_arch()`, and the `EINSUMS_SIMD_ARCH` env override (lower-only, clamps).
-Kernel TUs compile once per rung via `einsums_add_simd_dispatch_sources()` (see `SIMD/cmake/Einsums_AddSIMDDispatch.cmake`); HPTT is the reference consumer, dispatching at plan creation.
+Kernel TUs compile once per rung via `einsums_add_simd_dispatch_sources()` (see `cmake/Einsums_AddSIMDDispatch.cmake`); HPTT is the reference consumer, dispatching at plan creation.
 `EINSUMS_WITH_SIMD_DISPATCH=OFF`, non-x86 targets, or the `EINSUMS_SIMD_NATIVE_ARCH`/`EINSUMS_SIMD_TARGET_CPU` pins collapse to a single native TU.
 `einsums_add_simd_rung_tests()` re-registers a test per rung; unsupported rungs report ctest "Skipped" via the `simd_rung_guard` launcher.
 MSVC ABI note: classes with out-of-line members need `EINSUMS_EXPORT` on the explicit instantiation DEFINITIONS, not just on the class template or extern declarations.

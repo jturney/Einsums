@@ -3,12 +3,6 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-# CMAKE_MODULE_PATH is directory-scoped; export the append so sibling modules
-# configured after this one (HPTT and other dispatch consumers) can
-# include(Einsums_AddSIMDDispatch).
-set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" PARENT_SCOPE)
-
 set(SIMDHeaders
     Einsums/SIMD/Platform.hpp
     Einsums/SIMD/Vec.hpp
