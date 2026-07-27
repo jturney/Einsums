@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,11 @@ using namespace einsums;
 namespace pg = einsums::packed_gemm;
 
 namespace {
+
+size_t env_size(char const *name, size_t fallback) {
+    char const *v = std::getenv(name);
+    return (v != nullptr) ? static_cast<size_t>(std::strtoull(v, nullptr, 10)) : fallback;
+}
 
 RuntimeTensor<double> make(std::string name, std::vector<size_t> const &dims, double salt) {
     RuntimeTensor<double> t(std::move(name), dims);
@@ -84,7 +90,13 @@ TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_
     // The particle-particle ladder, per tile: C[i,j,a,b] += A[i,j,e,f] B[e,f,a,b]
     // with an occupied block of 2 and a virtual block of 4 -- the shape tiled
     // expansion emits for a symmetry-blocked CCSD.
-    size_t const NT   = 64; // tiles in one group
+    size_t const NT = 64; // tiles in one group
+    // Block sizes are overridable so the same arms can be read at a toy tile and
+    // at a realistic one. The ratio between them is NOT scale-free: setup cost is
+    // per-call while the contraction is O(ob^2 * vb^4), so a 4-wide block flatters
+    // batching enormously and a 16-wide one may not justify it at all.
+    size_t const ob   = env_size("EINSUMS_BENCH_OBLK", 2);
+    size_t const vb   = env_size("EINSUMS_BENCH_VBLK", 4);
     auto const   spec = make_spec({"i", "j", "a", "b"}, {"i", "j", "e", "f"}, {"e", "f", "a", "b"});
 
     std::vector<RuntimeTensor<double>> As, Bs, Cs, Cs2, Cs3, Cs4;
@@ -95,12 +107,12 @@ TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_
     Cs3.reserve(NT);
     Cs4.reserve(NT);
     for (size_t n = 0; n < NT; ++n) {
-        As.push_back(make("A" + std::to_string(n), {2, 2, 4, 4}, 1.0 + 0.01 * static_cast<double>(n)));
-        Bs.push_back(make("B" + std::to_string(n), {4, 4, 4, 4}, 2.0 + 0.01 * static_cast<double>(n)));
-        Cs.push_back(make("C" + std::to_string(n), {2, 2, 4, 4}, 0.0));
-        Cs2.push_back(make("D" + std::to_string(n), {2, 2, 4, 4}, 0.0));
-        Cs3.push_back(make("E" + std::to_string(n), {2, 2, 4, 4}, 0.0));
-        Cs4.push_back(make("F" + std::to_string(n), {2, 2, 4, 4}, 0.0));
+        As.push_back(make("A" + std::to_string(n), {ob, ob, vb, vb}, 1.0 + 0.01 * static_cast<double>(n)));
+        Bs.push_back(make("B" + std::to_string(n), {vb, vb, vb, vb}, 2.0 + 0.01 * static_cast<double>(n)));
+        Cs.push_back(make("C" + std::to_string(n), {ob, ob, vb, vb}, 0.0));
+        Cs2.push_back(make("D" + std::to_string(n), {ob, ob, vb, vb}, 0.0));
+        Cs3.push_back(make("E" + std::to_string(n), {ob, ob, vb, vb}, 0.0));
+        Cs4.push_back(make("F" + std::to_string(n), {ob, ob, vb, vb}, 0.0));
     }
 
     // ── Baseline: what expansion produces today, one full call per tile ──────
@@ -246,17 +258,18 @@ TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_
     }
 
     // 2*M*N*K per tile with M=(i,j)=4, N=(a,b)=16, K=(e,f)=16.
-    double const flops = static_cast<double>(NT) * 2.0 * 4.0 * 16.0 * 16.0;
+    double const flops =
+        static_cast<double>(NT) * 2.0 * static_cast<double>(ob * ob) * static_cast<double>(vb * vb) * static_cast<double>(vb * vb);
 
     auto const line = [&](char const *label, double t) {
         return fmt::format("\n  {:<40}: {:8.1f} us  ({:6.2f} GFLOP/s, {:5.2f} us/tile, {:5.1f}x)", label, t * 1e6, flops / t / 1e9,
                            t * 1e6 / static_cast<double>(NT), t_per_call / t);
     };
 
-    WARN(fmt::format("{} tiles per group{}{}{}{}"
+    WARN(fmt::format("{} tiles per group, occ block {}, vir block {}{}{}{}{}"
                      "\n\n  prepared-vs-topology cache (A0 -> A)     : {:5.2f}x on the plan-preparation step"
                      "\n  A captures {:4.1f}% of the gap B closes; B's remaining edge over A is {:4.1f}x",
-                     NT, line("today: one full try_packed_gemm each", t_per_call),
+                     NT, ob, vb, line("today: one full try_packed_gemm each", t_per_call),
                      line("A0: per-call key, topology plan re-prepared", t_topology),
                      line("A: per-call key, fully prepared plan", t_prepared), line("B: one shared plan, blis_contraction only", t_batched),
                      t_topology / t_prepared, 100.0 * (t_per_call - t_prepared) / (t_per_call - t_batched), t_prepared / t_batched));
