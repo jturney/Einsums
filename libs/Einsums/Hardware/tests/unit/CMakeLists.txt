@@ -1,0 +1,78 @@
+#----------------------------------------------------------------------------------------------
+# Copyright (c) The Einsums Developers. All rights reserved.
+# Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+#----------------------------------------------------------------------------------------------
+
+#
+# Add test sources to HardwareTests below. C++ tests use a .cpp, .hip, or
+# .cu extension. Python tests use the name test_<snake>_python.py and run through
+# pytest. For example, Example1.cpp registers as a C++ unit test and
+# test_mixed_ops_python.py registers as the Python test MixedOpsPython.
+#
+# Per-test options follow the same convention, for example
+# set(Example1_cpp_FLAGS DEPENDENCIES SomeOtherGreatLibrary)
+# set(Example2_hip_PARAMETERS THREADS 1)
+#
+
+# Derive a CamelCase name from the <snake> part of a test_<snake>_python.py
+# filename so Python tests do not need a separate name list. mixed_ops becomes
+# MixedOps.
+function(_einsums_snake_to_camel out_var snake)
+  set(_camel "")
+  string(REPLACE "_" ";" _parts "${snake}")
+  foreach(_part IN LISTS _parts)
+    if(_part STREQUAL "")
+      continue()
+    endif()
+    string(SUBSTRING "${_part}" 0 1 _head)
+    string(TOUPPER "${_head}" _head)
+    string(SUBSTRING "${_part}" 1 -1 _tail)
+    string(APPEND _camel "${_head}${_tail}")
+  endforeach()
+  set(${out_var} "${_camel}" PARENT_SCOPE)
+endfunction()
+
+set(HardwareTests)
+
+foreach(test ${HardwareTests})
+  get_filename_component(TestName ${test} NAME_WE)
+  get_filename_component(Extension ${test} EXT)
+
+  if(Extension STREQUAL ".py")
+    # test_<snake>_python.py -> <Camel>Python, registered as
+    # Tests.Unit.Modules.Einsums.Hardware.<Camel>Python.
+    string(REGEX REPLACE "^test_" "" _stem "${TestName}")
+    string(REGEX REPLACE "_python$" "" _stem "${_stem}")
+    _einsums_snake_to_camel(_camel "${_stem}")
+    einsums_add_python_unit_test(
+      "Modules.Einsums.Hardware" "${_camel}Python"
+      SCRIPT ${test}
+    )
+    continue()
+  endif()
+
+  # Remove the leading dot and replace any periods with underscores.
+  string(SUBSTRING ${Extension} 1 -1 EXT_NO_DOT)
+  string(REPLACE "." "_" TestExtension ${EXT_NO_DOT})
+
+  # Skip GPU tests when GPU support is off.
+  if(NOT EINSUMS_WITH_GPU_SUPPORT AND (TestExtension STREQUAL "cu" OR TestExtension STREQUAL "hip"))
+    continue()
+  endif()
+
+  set(Sources ${test})
+
+  source_group("Source Files" FILES ${Sources})
+
+  einsums_add_executable(
+    ${TestName}_test
+    INTERNAL_FLAGS
+    SOURCES ${Sources}
+    ${${TestName}_${TestExtension}_FLAGS}
+    NOINSTALL
+  )
+
+  einsums_add_unit_test(
+    "Modules.Einsums.Hardware" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS}
+  )
+endforeach()

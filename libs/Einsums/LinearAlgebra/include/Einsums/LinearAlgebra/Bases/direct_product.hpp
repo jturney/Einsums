@@ -7,7 +7,7 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLASVendor.hpp>
-#include <Einsums/Config/ParallelThreshold.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
@@ -41,7 +41,7 @@ void impl_direct_product_contiguous(CType alpha, einsums::detail::TensorImpl<ATy
 
         size_t const inca = a.get_incx(), incb = b.get_incx(), incc = c->get_incx(), elems = a.size();
 
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(elems >= ::einsums::omp_min_parallel_elements())
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(elems >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < elems; i++) {
             c_data[i * incc] = c_data[i * incc] * beta + alpha * a_data[i * inca] * b_data[i * incb];
         }

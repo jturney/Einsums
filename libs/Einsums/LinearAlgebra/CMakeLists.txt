@@ -28,6 +28,7 @@ einsums_add_module(
     Einsums_BLAS
     Einsums_Concepts
     Einsums_Errors
+    Einsums_Hardware
     Einsums_Print
     Einsums_Profile
     Einsums_Tensor

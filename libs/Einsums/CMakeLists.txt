@@ -18,6 +18,7 @@ set(_Einsums_modules
   CommandLine
   Concepts
   Config
+  Hardware
   CXX23
   Debugging
   Errors

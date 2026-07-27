@@ -7,7 +7,7 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLASVendor.hpp>
-#include <Einsums/Config/ParallelThreshold.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
@@ -37,7 +37,7 @@ void impl_direct_division_contiguous(CType alpha, einsums::detail::TensorImpl<AT
 
     size_t const inca = a.get_incx(), incb = b.get_incx(), incc = c->get_incx(), elems = a.size();
 
-    EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(elems >= ::einsums::omp_min_parallel_elements())
+    EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(elems >= ::einsums::hardware::omp_min_parallel_elements())
     for (size_t i = 0; i < elems; i++) {
         c_data[i * incc] = c_data[i * incc] * beta + alpha * a_data[i * inca] / b_data[i * incb];
     }
@@ -49,7 +49,7 @@ void impl_direct_division_noncontiguous_vectorable(int depth, int hard_rank, siz
                                                    BStrides const &b_strides, size_t incb, CType beta, CType *c_data,
                                                    CStrides const &c_strides, size_t incc) {
     if (depth == hard_rank) {
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::omp_min_parallel_elements())
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < easy_size; i++) {
             c_data[i * incc] = c_data[i * incc] * beta + alpha * a_data[i * inca] / b_data[i * incb];
         }

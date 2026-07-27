@@ -37,6 +37,7 @@ einsums_add_module(
   MODULE_DEPENDENCIES
     Einsums_BLAS
     Einsums_Config
+    Einsums_Hardware
     Einsums_Concepts
     Einsums_Logging
     Einsums_Profile
