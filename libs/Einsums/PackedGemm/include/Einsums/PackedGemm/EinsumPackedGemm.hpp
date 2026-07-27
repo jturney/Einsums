@@ -1313,12 +1313,21 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // these; the only question is policy.
         bool const needs_scatter = multi_m || multi_n || (plan.c_m_dims[0].tensor_stride != 1 && plan.c_n_dims[0].tensor_stride != 1);
 
-        // Outer products (no link indices, K synthesized to 1): the packed
-        // pass structure wins only once the output is large enough to make
-        // the generic loop's scattered writes hurt - measured 1.5x faster at
-        // ~19M output elements, 4x slower at ~300k. Below the threshold the
-        // generic/GER paths keep the shape.
-        if (outer_shaped && plan.M_total * plan.N_total < (int64_t{1} << 22)) {
+        // Outer products (no link indices, K synthesized to 1) pay a fixed ~3.4 us
+        // to set the packed passes up, and beat the generic nested loop above
+        // roughly 4k output elements. Measured on both CCSD t1*t1 shapes
+        // (BenchmarkOuterProduct, Apple M4 Pro, packed vs generic):
+        //
+        //   elements     256    2.3k    9.2k     230k     922k    14.7M
+        //   speedup     0.42x   0.99x   1.51x    4.05x    6.51x    5.25x
+        //
+        // The two shapes agree to within noise, so one threshold covers both.
+        //
+        // Note for anyone re-deriving this: what the loser is matters. Below
+        // rank-3 output an outer product never reaches here - StringDispatch's
+        // GER path takes it first - so the alternative being measured against is
+        // always the generic loop, which runs at a flat ~2.2 ns an element.
+        if (outer_shaped && plan.M_total * plan.N_total < (int64_t{1} << 12)) {
             ProfileAnnotate("packed_gemm_skip", "defer_small_outer_to_generic");
             return false;
         }

@@ -6,6 +6,7 @@
 set(ComputeGraphPerfTests
     BenchmarkExecutors.cpp
     BenchmarkGraphOverhead.cpp
+    BenchmarkOuterProduct.cpp
 )
 
 foreach(test ${ComputeGraphPerfTests})
