@@ -420,11 +420,20 @@ struct ScopedZone {
     /// Enter a zone whose name is built per call (format arguments, or a name
     /// computed at runtime). Only the name is interned; the location comes from
     /// the site.
-    ScopedZone(ZoneSite const &site, std::string const &name) {
+    ///
+    /// The name arrives as a CALLABLE so that building it is skipped entirely when
+    /// recording is off. Passing the string directly would evaluate it as an
+    /// argument, i.e. before this constructor could check: PackedGemm's zone name
+    /// formats three fmt::join views on every contraction, pure waste in a run that
+    /// is not profiling.
+    template <typename MakeName>
+        requires std::invocable<MakeName>
+    ScopedZone(ZoneSite const &site, MakeName &&make_name) {
         auto &prof = Profiler::instance();
         if (!prof.enabled()) {
             return;
         }
+        std::string const name = make_name();
         prof.push_interned(prof.string_table().intern(name), site.file_id, site.func_id, site.line, name, site.file, site.func);
     }
 
@@ -603,20 +612,21 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 #    define LabeledSection(name_format, ...)                                                                                               \
         static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};        \
         ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(                                                 \
-            EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__(, fmt::format(name_format, __VA_ARGS__)))
+            EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__(, [&] { return fmt::format(name_format, __VA_ARGS__); }))
 
 /// A zone whose name is only known at runtime. The name is interned on every
 /// entry, which is one lock; prefer @ref LabeledSection wherever the label can be
 /// a literal.
 #    define LabeledSectionRuntime(name_expr)                                                                                               \
         static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){"", __FILE__, __LINE__, __func__};                 \
-        ::einsums::profile::ScopedZone const EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(EINSUMS_PP_CAT(_zone_site_, __LINE__), (name_expr))
+        ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(EINSUMS_PP_CAT(_zone_site_, __LINE__),           \
+                                                                                     [&] { return fmt::format("{}", name_expr); })
 #    define LabeledSection0() LabeledSection(__func__)
 #    if defined(EINSUMS_WITH_PROFILER_INTERNAL)
 #        define LabeledSectionInternal(name_format, ...)                                                                                   \
             static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};    \
             ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(                                             \
-                EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__(, fmt::format(name_format, __VA_ARGS__)))
+                EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__(, [&] { return fmt::format(name_format, __VA_ARGS__); }))
 #        define LabeledSectionInternal0() LabeledSectionInternal(__func__)
 #    else
 #        define LabeledSectionInternal(...)
