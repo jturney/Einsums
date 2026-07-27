@@ -2195,8 +2195,12 @@ typename AType::ValueType det(AType const &A) {
         }
     }
 
-    // Calculate the contribution of the diagonal elements.
-#pragma omp parallel for simd reduction(* : ret)
+    // Calculate the contribution of the diagonal elements. Deliberately serial:
+    // this is n multiplies trailing an O(n^3) getrf, so a parallel region costs
+    // far more than the loop, and a multiplicative float reduction cannot
+    // vectorize without reassociation anyway - the `simd` clause this used to
+    // carry only ever produced a "loop not vectorized" warning in every
+    // translation unit that included this header.
     for (int i = 0; i < A.dim(0); i++) {
         ret *= temp(i, i);
     }

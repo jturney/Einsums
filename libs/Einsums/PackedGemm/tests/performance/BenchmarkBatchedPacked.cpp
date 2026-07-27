@@ -220,7 +220,8 @@ TEST_CASE("OpenMP region cost vs small-contraction work", "[performance][packed_
         if (nt > maxt)
             continue;
         double const t = bench(7, 2000, [&] {
-            for (volatile int spin = 0; spin < 20000; ++spin) {
+            for (int spin = 0; spin < 20000; ++spin) {
+                sink = spin;
             }
 #pragma omp parallel for schedule(static) num_threads(nt)
             for (int i = 0; i < nt; ++i) {
@@ -228,7 +229,8 @@ TEST_CASE("OpenMP region cost vs small-contraction work", "[performance][packed_
             }
         });
         double const gap = bench(7, 2000, [&] {
-            for (volatile int spin = 0; spin < 20000; ++spin) {
+            for (int spin = 0; spin < 20000; ++spin) {
+                sink = spin;
             }
         });
         out +=
