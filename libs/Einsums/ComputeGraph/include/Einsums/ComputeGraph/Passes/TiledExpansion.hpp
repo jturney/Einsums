@@ -31,6 +31,8 @@ namespace einsums::compute_graph::passes {
  * Tiled ``scale`` and ``axpy`` lower the same way, into one dense ``OpKind::Scale``
  * or ``OpKind::Axpy`` per stored tile. They are trivially per-tile; the point is
  * that afterwards the tile buffers are visible to CSE and InplaceOptimization.
+ * When the tiles are too small for that to pay, they instead collapse into a
+ * single ``OpKind::TileElementwise`` node covering every tile; see @ref FuseTiles.
  *
  * @par Semantics it must reproduce exactly
  * Ground truth is ``detail::tiled_runtime_einsum``:
@@ -147,6 +149,35 @@ namespace einsums::compute_graph::passes {
  * one dense contraction of the same indices plus the gather and scatter traffic at
  * memory bandwidth. Densify only when the second is smaller.
  *
+ * @par Fusing small elementwise tiles
+ * The elementwise ops have the same node-count problem and none of the tension.
+ * A densified CCSD residual is 82% tiled ``scale`` and ``axpy`` nodes -- 1152 of
+ * 1404 -- each scaling or accumulating a handful of kilobytes, which is less work
+ * than dispatching it. Unlike a contraction there is nothing to trade: running the
+ * same tiles from inside one node does exactly the same arithmetic and touches
+ * exactly the same memory, so fusing is never slower.
+ *
+ * What per-tile nodes buy is optimizer exposure -- CSE can drop a repeated tile
+ * scale, InplaceOptimization can see the buffers -- and no cost model can price
+ * that. So the gate asks the question it CAN answer: is a tile's own memory
+ * traffic worth the dispatch it costs? @ref FuseTiles::Auto compares the tiles'
+ * total traffic at memory bandwidth against @ref CostModel::node_overhead_us per
+ * tile, and fuses when the dispatches dominate. Declining to expand at all is not
+ * an alternative: the leftover opaque node still names the whole tiled tensor, so
+ * it would strand every contraction sharing that tensor (see below) and cost far
+ * more than it saves.
+ *
+ * The same gate covers the scales this pass emits for output tiles a contraction
+ * or a divide never reaches, since those are elementwise and just as small.
+ *
+ * What it is worth: on that residual the graph falls from 1404 nodes to 209 and
+ * replay from 10.1 to 9.9 ms. The node count is the larger prize. Timing the
+ * nodes individually puts all 1152 elementwise ops at 0.17 ms of a 9.8 ms replay,
+ * because the executor's own per-node cost is about 0.2 us -- well under the
+ * ``kernel_launch_overhead_us + alloc_overhead_us`` the model charges. Fusing is
+ * still right, since it buys those nodes back for nothing, but the replay time
+ * this recovers is a few percent and not the fifth that the node count suggests.
+ *
  * A flop-based gate was tried first and does not work. Measured on one CCSD
  * residual at two model sizes, replay with the profiler disabled:
  *
@@ -205,6 +236,14 @@ enum class Densify : std::uint8_t {
     Always, ///< Densify whenever the lowering is structurally possible. For tests.
 };
 
+/// When to collapse a tiled elementwise op into one node over all its tiles
+/// instead of one node per tile.
+enum class FuseTiles : std::uint8_t {
+    Never,  ///< Always emit one dense node per tile.
+    Auto,   ///< Fuse when the tiles cost more to dispatch than to touch. The default.
+    Always, ///< Fuse every group of two or more tiles. For tests.
+};
+
 class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
   public:
     /// @param max_nodes Decline to expand when the projected node count exceeds this.
@@ -216,11 +255,15 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     /// @param densify Whether small-tile contractions are lowered by densifying.
     ///        @ref Densify::Auto, the default, compares estimated time both ways
     ///        per contraction and picks the cheaper.
-    explicit TiledExpansion(size_t max_nodes = 4096, double zero_tile_tolerance = -1.0, Densify densify = Densify::Auto);
+    /// @param fuse Whether small-tile elementwise ops collapse into one node.
+    ///        @ref FuseTiles::Auto, the default, fuses a group whose tiles cost
+    ///        more to dispatch than the memory traffic they do.
+    explicit TiledExpansion(size_t max_nodes = 4096, double zero_tile_tolerance = -1.0, Densify densify = Densify::Auto,
+                            FuseTiles fuse = FuseTiles::Auto);
 
     /// As above, with an explicit cost model rather than a detected one. The
     /// default pipeline uses this so every cost-model pass shares one profile.
-    TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Densify densify, CostModel cost_model);
+    TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Densify densify, FuseTiles fuse, CostModel cost_model);
 
     [[nodiscard]] std::string name() const override { return "TiledExpansion"; }
     bool                      run(Graph &graph) override;
@@ -242,17 +285,22 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     /// Contractions lowered to gather + one dense einsum + scatter rather than to
     /// per-tile nodes, because their tiles were too small to be worth dispatching.
     [[nodiscard]] size_t num_densified() const { return _num_densified; }
+    /// Groups of elementwise tile ops collapsed into a single node, for the same
+    /// reason.
+    [[nodiscard]] size_t num_fused() const { return _num_fused; }
 
   private:
     size_t    _max_nodes;
     double    _zero_tolerance;
     Densify   _densify;
+    FuseTiles _fuse;
     CostModel _cost_model;
     size_t    _num_expanded{0};
     size_t    _num_tile_nodes{0};
     size_t    _num_declined{0};
     size_t    _num_screened{0};
     size_t    _num_densified{0};
+    size_t    _num_fused{0};
 };
 
 } // namespace einsums::compute_graph::passes

@@ -31,6 +31,11 @@ namespace cg = einsums::compute_graph;
 /// deliberately too small to be worth dispatching, which is exactly what the
 /// densify gate exists to catch. So these cases pin it off rather than fight it.
 constexpr auto kPerTile = cg::passes::Densify::Never;
+/// Likewise for the elementwise ops: these tiles are far too small for a dispatch
+/// to pay for itself, so the fusion gate would collapse every scale, axpy and
+/// divide group into one node. The per-tile cases below pin it off; the fusion
+/// cases at the end of this file turn it back on.
+constexpr auto kNoFuse = cg::passes::FuseTiles::Never;
 
 namespace {
 
@@ -207,7 +212,7 @@ TEST_CASE("TiledExpansion - expanded result matches the opaque path", "[ComputeG
     REQUIRE(nodes_of_kind(graph, cg::OpKind::Einsum) == 0);
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -257,7 +262,7 @@ TEST_CASE("TiledExpansion - absent operand tiles emit no node", "[ComputeGraph][
         cg::einsum("ij <- ik ; kj", &C, A, B);
     }
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -309,7 +314,7 @@ TEST_CASE("TiledExpansion - a pre-existing output tile with no contribution is s
         cg::einsum("ij <- ik ; kj", 0.5, &C, 1.0, A, B);
     }
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
     // At least one Scale node, for the untouched pre-existing tile (1,1).
@@ -340,7 +345,7 @@ TEST_CASE("TiledExpansion - declines over the node budget and leaves the graph a
     }
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(/*max_nodes=*/4, -1.0, kPerTile); // 3x3x3 = 27 combinations
+    auto pass = std::make_shared<cg::passes::TiledExpansion>(/*max_nodes=*/4, -1.0, kPerTile, kNoFuse); // 3x3x3 = 27 combinations
     pm.add(pass);
     CHECK_FALSE(graph.apply(pm));
 
@@ -390,7 +395,7 @@ TEST_CASE("TiledExpansion - rank-3 contraction matches the opaque path", "[Compu
         cg::einsum("ijk <- ijl ; lk", &C, A, B);
     }
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
     CHECK(pass->num_expanded() == 1);
@@ -434,7 +439,7 @@ TEST_CASE("TiledExpansion - CCSD-shaped rank-4 contraction matches the opaque pa
         cg::einsum("ijab <- ijcd ; cdab", &C, A, B);
     }
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
     CHECK(pass->num_expanded() == 1);
@@ -484,7 +489,7 @@ TEST_CASE("TiledExpansion - sparse rank-3 operands still match", "[ComputeGraph]
         cg::einsum("ijk <- ijl ; lk", &C, A, B);
     }
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -517,7 +522,7 @@ TEST_CASE("TiledExpansion - tiled scale expands to one dense scale per tile", "[
     REQUIRE(nodes_of_kind(graph, cg::OpKind::Custom) == 1);
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -561,7 +566,7 @@ TEST_CASE("TiledExpansion - tiled axpy expands to one dense axpy per stored X ti
     REQUIRE(nodes_of_kind(graph, cg::OpKind::Custom) == 1);
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -618,7 +623,7 @@ TEST_CASE("TiledExpansion - expands a tiled tensor that is produced then scaled"
     }
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -680,7 +685,7 @@ TEST_CASE("TiledExpansion - expands a chain where one contraction feeds the next
     }
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -731,7 +736,7 @@ TEST_CASE("TiledExpansion - declines when an unexpandable node shares the tiled 
     }
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     CHECK_FALSE(graph.apply(pm));
 
@@ -756,7 +761,7 @@ TEST_CASE("TiledExpansion - declines a tiled axpy over mismatched tile grids", "
     }
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     graph.apply(pm);
 
@@ -798,7 +803,7 @@ TEST_CASE("TiledExpansion - the emitted tile GEMMs are batchable", "[ComputeGrap
     }
 
     cg::PassManager pm;
-    auto            expand = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            expand = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     auto            batch  = std::make_shared<cg::passes::GEMMBatching>(cg::CostModel::detect_default());
     pm.add(expand);
     pm.add(batch);
@@ -917,7 +922,7 @@ TEST_CASE("TiledExpansion - a stored-but-zero operand tile is screened out", "[C
     cg::PassManager pm;
     // Tolerance 0: exact. Only tiles that are identically zero are pruned, so the
     // numbers must match the unscreened reference exactly.
-    auto pass = std::make_shared<cg::passes::TiledExpansion>(4096, 0.0, kPerTile);
+    auto pass = std::make_shared<cg::passes::TiledExpansion>(4096, 0.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -947,7 +952,7 @@ TEST_CASE("TiledExpansion - screening is off unless a tolerance is given", "[Com
     }
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile); // default ctor
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse); // default ctor
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -973,7 +978,7 @@ TEST_CASE("TiledExpansion - a positive tolerance screens small tiles approximate
     }
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, 1e-10, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, 1e-10, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -1026,7 +1031,7 @@ TEST_CASE("TiledExpansion - a produced operand is never screened on value", "[Co
     }
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, 0.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, 0.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -1062,7 +1067,7 @@ TEST_CASE("TiledExpansion - screened sparsity propagates to the next contraction
     }
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, 0.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, 0.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -1132,7 +1137,7 @@ TEST_CASE("TiledExpansion - tiled direct_division expands per tile", "[ComputeGr
     REQUIRE(nodes_of_kind(graph, cg::OpKind::Custom) == 0); // records as DirectDivision
 
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
 
@@ -1188,7 +1193,7 @@ TEST_CASE("TiledExpansion - a batched group writes every element of every destin
     }
 
     cg::PassManager pm;
-    auto            expand = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            expand = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     auto            batch  = std::make_shared<cg::passes::GEMMBatching>(cg::CostModel::detect_default());
     pm.add(expand);
     pm.add(batch);
@@ -1246,7 +1251,7 @@ TEST_CASE("TiledExpansion - an overwrite batch followed by an accumulate batch",
     }
 
     cg::PassManager pm;
-    auto            expand = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile);
+    auto            expand = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
     auto            batch  = std::make_shared<cg::passes::GEMMBatching>(cg::CostModel::detect_default());
     pm.add(expand);
     pm.add(batch);
@@ -1281,7 +1286,7 @@ TEST_CASE("TiledExpansion - densified result matches the per-tile lowering", "[C
             cg::einsum("ij <- ik ; kj", &C, A, B);
         }
         cg::PassManager pm;
-        pm.add(std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, densify));
+        pm.add(std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, densify, kNoFuse));
         REQUIRE(graph.apply(pm));
         n_einsum = nodes_of_kind(graph, cg::OpKind::Einsum);
         n_gather = nodes_of_kind(graph, cg::OpKind::TileGather);
@@ -1330,7 +1335,7 @@ TEST_CASE("TiledExpansion - densifying creates no tile the per-tile path would n
         cg::einsum("ij <- ik ; kj", &C, A, B);
     }
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, cg::passes::Densify::Always);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, cg::passes::Densify::Always, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
     REQUIRE(pass->num_densified() == 1);
@@ -1363,11 +1368,240 @@ TEST_CASE("TiledExpansion - Auto keeps the per-tile lowering for large sparse ti
         cg::einsum("ij <- ik ; kj", &C, A, B);
     }
     cg::PassManager pm;
-    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, cg::passes::Densify::Auto);
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, cg::passes::Densify::Auto, kNoFuse);
     pm.add(pass);
     REQUIRE(graph.apply(pm));
     CHECK(pass->num_densified() == 0);
     CHECK(pass->num_expanded() == 1);
     CHECK(nodes_of_kind(graph, cg::OpKind::TileGather) == 0);
     CHECK(nodes_of_kind(graph, cg::OpKind::Einsum) > 1);
+}
+
+// ── Fused elementwise lowering ──────────────────────────────────────────────
+// The tiled scale, axpy and divide collapse into a single TileElementwise node
+// when their tiles are too small to be worth dispatching one at a time. The cases
+// above pin that off with kNoFuse; these exercise it.
+
+TEST_CASE("TiledExpansion - a fused scale matches the per-tile lowering", "[ComputeGraph][Passes][Tiled]") {
+    Grid const                          g{{2, 3}, {4, 5}};
+    std::vector<std::vector<int>> const populated{{0, 0}, {0, 1}, {1, 1}};
+
+    auto run = [&](cg::passes::FuseTiles fuse, TiledRuntimeTensor<double> &A) {
+        cg::Graph graph("scale_fuse");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::scale(-2.25, &A);
+        }
+        cg::PassManager pm;
+        auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, fuse);
+        pm.add(pass);
+        REQUIRE(graph.apply(pm));
+        graph.execute();
+        return std::make_tuple(pass->num_fused(), nodes_of_kind(graph, cg::OpKind::Scale),
+                               nodes_of_kind(graph, cg::OpKind::TileElementwise));
+    };
+
+    auto A_ref = make_tiled("A", g, populated);
+    fill_det(A_ref, 1.5);
+    auto const [ref_fused, ref_scales, ref_tile_ew] = run(kNoFuse, A_ref);
+    CHECK(ref_fused == 0);
+    CHECK(ref_scales == populated.size());
+    CHECK(ref_tile_ew == 0);
+
+    auto A = make_tiled("A2", g, populated);
+    fill_det(A, 1.5);
+    auto const [fused, scales, tile_ew] = run(cg::passes::FuseTiles::Always, A);
+    CHECK(fused == 1);
+    CHECK(scales == 0);
+    CHECK(tile_ew == 1);
+
+    // Same operation on the same tiles, so this is bit-for-bit, not merely close.
+    require_tiles_match(A, A_ref);
+}
+
+TEST_CASE("TiledExpansion - a fused axpy matches the per-tile lowering and declares its destination", "[ComputeGraph][Passes][Tiled]") {
+    Grid const g{{2, 3}, {4, 5}};
+    // (0,1) is in X but not Y, so Y must infer-and-create it; (1,0) is in Y but not
+    // X, so the fused node must leave it exactly as it was.
+    std::vector<std::vector<int>> const x_tiles{{0, 0}, {0, 1}};
+    std::vector<std::vector<int>> const y_tiles{{0, 0}, {1, 0}};
+
+    auto run = [&](cg::passes::FuseTiles fuse, TiledRuntimeTensor<double> &X, TiledRuntimeTensor<double> &Y, cg::Graph &graph) {
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::axpy(1.75, X, &Y);
+        }
+        cg::PassManager pm;
+        auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, fuse);
+        pm.add(pass);
+        REQUIRE(graph.apply(pm));
+        graph.execute();
+        return pass->num_fused();
+    };
+
+    auto      X_ref = make_tiled("X", g, x_tiles);
+    auto      Y_ref = make_tiled("Y", g, y_tiles);
+    cg::Graph gref("axpy_per_tile");
+    fill_det(X_ref, 0.5);
+    fill_det(Y_ref, 2.5);
+    CHECK(run(kNoFuse, X_ref, Y_ref, gref) == 0);
+
+    auto      X = make_tiled("X2", g, x_tiles);
+    auto      Y = make_tiled("Y2", g, y_tiles);
+    cg::Graph graph("axpy_fused");
+    fill_det(X, 0.5);
+    fill_det(Y, 2.5);
+    CHECK(run(cg::passes::FuseTiles::Always, X, Y, graph) == 1);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Axpy) == 0);
+    REQUIRE(nodes_of_kind(graph, cg::OpKind::TileElementwise) == 1);
+
+    // The accumulation reads every tile it writes. Dropping that from the fused
+    // node would let the scheduler move a producer of Y past it.
+    for (auto const &nd : graph.nodes()) {
+        if (nd.kind != cg::OpKind::TileElementwise) {
+            continue;
+        }
+        CHECK(nd.outputs.size() == x_tiles.size());
+        for (auto out : nd.outputs) {
+            CHECK(std::ranges::find(nd.inputs, out) != nd.inputs.end());
+        }
+    }
+
+    require_tiles_match(Y, Y_ref);
+}
+
+TEST_CASE("TiledExpansion - a fused divide matches the per-tile lowering, leftovers included", "[ComputeGraph][Passes][Tiled]") {
+    Grid const                          g{{2, 2}, {2, 2}};
+    std::vector<std::vector<int>> const num{{0, 0}, {1, 1}};
+    std::vector<std::vector<int>> const den = full_coords(g);
+    std::vector<std::vector<int>> const dst = full_coords(g);
+
+    auto build = [&](TiledRuntimeTensor<double> &A, TiledRuntimeTensor<double> &B, TiledRuntimeTensor<double> &C) {
+        fill_det(A, 1.0);
+        fill_det(B, 7.0); // fill_det uses sin(); the shift below keeps it away from 0
+        fill_det(C, 2.0);
+        for (auto const &co : den) {
+            auto &t = B.tile(co);
+            for (size_t i = 0; i < t.size(); ++i) {
+                t.data()[i] += 3.0;
+            }
+        }
+    };
+
+    auto A_ref = make_tiled("A", g, num);
+    auto B_ref = make_tiled("B", g, den);
+    auto C_ref = make_tiled("C", g, dst);
+    build(A_ref, B_ref, C_ref);
+    {
+        cg::Graph graph("divide_per_tile");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::direct_division(1.5, A_ref, B_ref, 0.25, &C_ref);
+        }
+        cg::PassManager pm;
+        pm.add(std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse));
+        REQUIRE(graph.apply(pm));
+        graph.execute();
+    }
+
+    auto A = make_tiled("A2", g, num);
+    auto B = make_tiled("B2", g, den);
+    auto C = make_tiled("C2", g, dst);
+    build(A, B, C);
+    cg::Graph graph("divide_fused");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::direct_division(1.5, A, B, 0.25, &C);
+    }
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, cg::passes::FuseTiles::Always);
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+
+    // The divides became one node and the two leftover beta-scales another.
+    CHECK(pass->num_fused() == 2);
+    CHECK(nodes_of_kind(graph, cg::OpKind::DirectDivision) == 0);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Scale) == 0);
+    CHECK(nodes_of_kind(graph, cg::OpKind::TileElementwise) == 2);
+
+    graph.execute();
+    require_tiles_match(C, C_ref);
+}
+
+TEST_CASE("TiledExpansion - Auto fuses tiles too small to dispatch and leaves large ones alone", "[ComputeGraph][Passes][Tiled]") {
+    // Decided against an explicit cost model rather than the detected one, so the
+    // threshold this pins is the modelled one and not the host's bandwidth. With
+    // the default profile a node costs 2.5 us to enter and memory runs at 40 GB/s,
+    // so an in-place scale pays for its own dispatch at about 50 KB per tile.
+    cg::CostModel const model;
+
+    auto run = [&model](Grid const &g) {
+        auto A = make_tiled("A", g, full_coords(g));
+        fill_det(A, 1.5);
+        cg::Graph graph("auto_fuse");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::scale(-2.25, &A);
+        }
+        cg::PassManager pm;
+        auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, cg::passes::FuseTiles::Auto, model);
+        pm.add(pass);
+        REQUIRE(graph.apply(pm));
+        return pass->num_fused();
+    };
+
+    CHECK(run(Grid{{8, 8}, {8, 8}}) == 1);         // 512 B a tile: all dispatch
+    CHECK(run(Grid{{256}, {256}}) == 0);           // 512 KB in one tile: nothing to fuse anyway
+    CHECK(run(Grid{{256, 256}, {256, 256}}) == 0); // 512 KB a tile: the dispatch is noise
+}
+
+TEST_CASE("TiledExpansion - a contraction's leftover scales fuse", "[ComputeGraph][Passes][Tiled]") {
+    // C holds four tiles but only the diagonal ones receive a contribution, so the
+    // other two are merely scaled by the output prefactor. Those are elementwise and
+    // just as small as any other tile op, so they collapse the same way.
+    Grid const gA{{2, 3}, {4, 5}};
+    Grid const gB{{4, 5}, {3, 4}};
+    Grid const gC{{2, 3}, {3, 4}};
+
+    auto A_ref = make_tiled("A", gA, {{0, 0}, {1, 1}});
+    auto B_ref = make_tiled("B", gB, {{0, 0}, {1, 1}});
+    auto C_ref = make_tiled("C", gC, full_coords(gC));
+    fill_det(A_ref, 1.0);
+    fill_det(B_ref, 2.0);
+    fill_det(C_ref, 3.0);
+    {
+        cg::Graph graph("leftover_per_tile");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ij <- ik ; kj", 0.5, &C_ref, 1.0, A_ref, B_ref);
+        }
+        cg::PassManager pm;
+        pm.add(std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse));
+        REQUIRE(graph.apply(pm));
+        graph.execute();
+    }
+
+    auto A = make_tiled("A2", gA, {{0, 0}, {1, 1}});
+    auto B = make_tiled("B2", gB, {{0, 0}, {1, 1}});
+    auto C = make_tiled("C2", gC, full_coords(gC));
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+    fill_det(C, 3.0);
+    cg::Graph graph("leftover_fused");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", 0.5, &C, 1.0, A, B);
+    }
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, cg::passes::FuseTiles::Always);
+    pm.add(pass);
+    REQUIRE(graph.apply(pm));
+
+    CHECK(pass->num_fused() == 1);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Scale) == 0);
+    CHECK(nodes_of_kind(graph, cg::OpKind::TileElementwise) == 1);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Einsum) > 0);
+
+    graph.execute();
+    require_tiles_match(C, C_ref);
 }

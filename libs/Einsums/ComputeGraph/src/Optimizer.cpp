@@ -368,7 +368,7 @@ void PassManager::populate_default() {
     // sparsity is not decidable, so a graph with no tiled operands is untouched.
     // Shares the detected cost model with the passes below, so the densify
     // decision and their planning are made against one profile.
-    pm.add<passes::TiledExpansion>(4096, -1.0, passes::Densify::Auto, cost_model);
+    pm.add<passes::TiledExpansion>(4096, -1.0, passes::Densify::Auto, passes::FuseTiles::Auto, cost_model);
 
     // Graph-transforming passes (reduce node count first).
     // Order matters: PermuteFusion runs before CSE/DNE so duplicate

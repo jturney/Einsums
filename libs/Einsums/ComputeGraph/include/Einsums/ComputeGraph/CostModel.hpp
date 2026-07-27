@@ -152,6 +152,19 @@ struct EINSUMS_EXPORT CostModel {
         return device(target).estimate_total_gemm_time_us(M, N, K, element_size);
     }
 
+    /**
+     * @brief What it costs merely to BE a node, before any work happens.
+     *
+     * The dispatch plus the per-call allocation the executor pays whatever the
+     * operation is. It is the figure a lowering weighs when deciding how finely
+     * to split work: below it, an operation spends more getting invoked than
+     * running.
+     */
+    [[nodiscard]] double node_overhead_us(Target target) const {
+        auto const &d = device(target);
+        return d.kernel_launch_overhead_us + d.alloc_overhead_us;
+    }
+
     // ── Distributed communication cost estimation ────────────────────────
 
     /**

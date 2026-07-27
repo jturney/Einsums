@@ -55,12 +55,12 @@ std::vector<size_t> grid_strides(std::vector<int> const &grid) {
 
 } // namespace
 
-TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Densify densify)
-    : TiledExpansion(max_nodes, zero_tile_tolerance, densify, CostModel::detect_default()) {
+TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Densify densify, FuseTiles fuse)
+    : TiledExpansion(max_nodes, zero_tile_tolerance, densify, fuse, CostModel::detect_default()) {
 }
 
-TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Densify densify, CostModel cost_model)
-    : _max_nodes(max_nodes), _zero_tolerance(zero_tile_tolerance), _densify(densify), _cost_model(std::move(cost_model)) {
+TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Densify densify, FuseTiles fuse, CostModel cost_model)
+    : _max_nodes(max_nodes), _zero_tolerance(zero_tile_tolerance), _densify(densify), _fuse(fuse), _cost_model(std::move(cost_model)) {
 }
 
 void TiledExpansion::reset_stats() {
@@ -69,6 +69,7 @@ void TiledExpansion::reset_stats() {
     _num_declined   = 0;
     _num_screened   = 0;
     _num_densified  = 0;
+    _num_fused      = 0;
 }
 
 bool TiledExpansion::run(Graph &graph) {
@@ -262,6 +263,121 @@ bool TiledExpansion::run(Graph &graph) {
         return nd;
     };
 
+    // ── Fused elementwise lowering ───────────────────────────────────────────
+    // One node that runs the same elementwise operation over a whole list of
+    // tiles, emitted instead of one node per tile when the tiles are too small to
+    // be worth dispatching separately. The work is identical either way; only the
+    // number of times the executor is entered differs.
+
+    // Bytes one tile holds, read off the grid alone -- no tile object is touched,
+    // so this is valid for predicted tiles that do not exist yet.
+    auto tile_bytes = [](TiledView const &v, std::vector<int> const &co, size_t elem_size) {
+        size_t bytes = elem_size;
+        for (size_t ax = 0; ax < v.rank; ++ax) {
+            bytes *= static_cast<size_t>((*v.sizes)[ax][static_cast<size_t>(co[ax])]);
+        }
+        return bytes;
+    };
+
+    // Should a group of elementwise tile ops become ONE node? Unlike densifying a
+    // contraction this is not a choice between two amounts of work -- fusing does
+    // the same arithmetic and the same memory traffic, so it is never slower. What
+    // per-tile nodes buy is visibility to CSE and InplaceOptimization, which no
+    // cost model can price. So the question asked is the one that can be answered:
+    // are the dispatches those nodes cost amortized by the traffic they do?
+    //
+    // @p streams is how many times each tile's bytes cross the bus: 1 to fill with
+    // zeros, 2 for an in-place scale, 3 for an axpy or a divide.
+    auto should_fuse = [&](TiledView const &v, std::vector<std::vector<int>> const &coords, size_t elem_size, size_t streams) {
+        if (coords.size() < 2 || _fuse == FuseTiles::Never) {
+            return false;
+        }
+        if (_fuse == FuseTiles::Always) {
+            return true;
+        }
+        size_t bytes = 0;
+        for (auto const &co : coords) {
+            bytes += tile_bytes(v, co, elem_size);
+        }
+        double const traffic_us = _cost_model.estimate_memory_time_us(bytes * streams, Target::CPU);
+        return traffic_us < static_cast<double>(coords.size()) * _cost_model.node_overhead_us(Target::CPU);
+    };
+
+    auto emit_fused_scale = [&graph](std::vector<TensorId> tids, PrefactorScalar pf, packed_gemm::ScalarType dt, std::string label) {
+        Node sc;
+        sc.id      = graph.reserve_node_id();
+        sc.kind    = OpKind::TileElementwise;
+        sc.label   = std::move(label);
+        sc.inputs  = tids;
+        sc.outputs = tids;
+        Graph *g   = &graph;
+        sc.execute = [g, tids = std::move(tids), pf, dt]() {
+            detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
+                bool const zero = is_zero(pf);
+                for (TensorId const tid : tids) {
+                    auto *t = static_cast<GeneralRuntimeTensor<T, std::allocator<T>> *>(g->tensor(tid).tensor_ptr);
+                    if (zero) {
+                        t->zero();
+                    } else {
+                        *t *= as<T>(pf);
+                    }
+                }
+            });
+        };
+        return sc;
+    };
+
+    auto emit_fused_axpy = [&graph](std::vector<TensorId> xs, std::vector<TensorId> ys, PrefactorScalar alpha, packed_gemm::ScalarType dt,
+                                    std::string label) {
+        Node nd;
+        nd.id     = graph.reserve_node_id();
+        nd.kind   = OpKind::TileElementwise;
+        nd.label  = std::move(label);
+        nd.inputs = xs;
+        nd.inputs.insert(nd.inputs.end(), ys.begin(), ys.end());
+        nd.outputs = ys;
+        Graph *g   = &graph;
+        nd.execute = [g, xs = std::move(xs), ys = std::move(ys), alpha, dt]() {
+            detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
+                using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
+                for (size_t i = 0; i < xs.size(); ++i) {
+                    auto const *xptr = static_cast<Dense const *>(g->tensor(xs[i]).tensor_ptr);
+                    auto       *yptr = static_cast<Dense *>(g->tensor(ys[i]).tensor_ptr);
+                    linear_algebra::axpy(as<T>(alpha), *xptr, yptr);
+                }
+            });
+        };
+        return nd;
+    };
+
+    auto emit_fused_divide = [&graph](std::vector<TensorId> as_, std::vector<TensorId> bs, std::vector<TensorId> cs, PrefactorScalar alpha,
+                                      PrefactorScalar beta, packed_gemm::ScalarType dt, std::string label) {
+        Node nd;
+        nd.id     = graph.reserve_node_id();
+        nd.kind   = OpKind::TileElementwise;
+        nd.label  = std::move(label);
+        nd.inputs = as_;
+        nd.inputs.insert(nd.inputs.end(), bs.begin(), bs.end());
+        // Same RMW convention as the dense op: beta != 0 reads the destination.
+        if (!is_zero(beta)) {
+            nd.inputs.insert(nd.inputs.end(), cs.begin(), cs.end());
+        }
+        nd.outputs = cs;
+        Graph *g   = &graph;
+        nd.execute = [g, as_ = std::move(as_), bs = std::move(bs), cs = std::move(cs), alpha, beta, dt]() {
+            detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
+                using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
+                for (size_t i = 0; i < as_.size(); ++i) {
+                    auto const *aptr = static_cast<Dense const *>(g->tensor(as_[i]).tensor_ptr);
+                    auto const *bptr = static_cast<Dense const *>(g->tensor(bs[i]).tensor_ptr);
+                    auto       *cptr = static_cast<Dense *>(g->tensor(cs[i]).tensor_ptr);
+                    linear_algebra::direct_division(as<T>(alpha), *aptr, *bptr, as<T>(beta), cptr);
+                }
+            });
+        };
+        return nd;
+    };
+
     std::vector<std::pair<size_t, std::vector<Node>>> inserts;
     std::vector<bool>                                 remove(n, false);
     bool                                              modified = false;
@@ -278,6 +394,7 @@ bool TiledExpansion::run(Graph &graph) {
         Kind                    kind{Kind::Scale};
         std::vector<TensorId>   touched; ///< whole-tensor tiled ids this node uses
         packed_gemm::ScalarType dtype{};
+        size_t                  elem_size{0}; ///< bytes per element, for the fusion gate
         /// Source views. Einsum and Divide use all three; Scale uses `dst`; Axpy
         /// uses `src_a` for X and `dst` for Y.
         TiledView src_a, src_b, dst;
@@ -345,13 +462,14 @@ bool TiledExpansion::run(Graph &graph) {
                     continue;
                 }
                 Plan p;
-                p.index   = ni;
-                p.kind    = Plan::Kind::Scale;
-                p.touched = {a_id};
-                p.dtype   = a_h.dtype;
-                p.dst     = av;
-                p.alpha   = alpha;
-                p.coords  = coords;
+                p.index     = ni;
+                p.kind      = Plan::Kind::Scale;
+                p.touched   = {a_id};
+                p.dtype     = a_h.dtype;
+                p.elem_size = a_h.element_size;
+                p.dst       = av;
+                p.alpha     = alpha;
+                p.coords    = coords;
                 plans.push_back(std::move(p));
                 continue;
             }
@@ -403,16 +521,17 @@ bool TiledExpansion::run(Graph &graph) {
                     continue;
                 }
                 Plan p;
-                p.index   = ni;
-                p.kind    = Plan::Kind::Divide;
-                p.touched = {a_id, b_id, c_id};
-                p.dtype   = c_h.dtype;
-                p.src_a   = av;
-                p.src_b   = bv;
-                p.dst     = cv;
-                p.alpha   = alpha;
-                p.beta    = edesc->params->beta;
-                p.coords  = coords;
+                p.index     = ni;
+                p.kind      = Plan::Kind::Divide;
+                p.touched   = {a_id, b_id, c_id};
+                p.dtype     = c_h.dtype;
+                p.elem_size = c_h.element_size;
+                p.src_a     = av;
+                p.src_b     = bv;
+                p.dst       = cv;
+                p.alpha     = alpha;
+                p.beta      = edesc->params->beta;
+                p.coords    = coords;
                 // C tiles the numerator never reaches are still scaled by beta.
                 for (auto const &co : pc) {
                     if (!pa.contains(co)) {
@@ -459,14 +578,15 @@ bool TiledExpansion::run(Graph &graph) {
                 continue;
             }
             Plan p;
-            p.index   = ni;
-            p.kind    = Plan::Kind::Axpy;
-            p.touched = {x_id, y_id};
-            p.dtype   = y_h.dtype;
-            p.src_a   = xv;
-            p.dst     = yv;
-            p.alpha   = alpha;
-            p.coords  = coords;
+            p.index     = ni;
+            p.kind      = Plan::Kind::Axpy;
+            p.touched   = {x_id, y_id};
+            p.dtype     = y_h.dtype;
+            p.elem_size = y_h.element_size;
+            p.src_a     = xv;
+            p.dst       = yv;
+            p.alpha     = alpha;
+            p.coords    = coords;
             plans.push_back(std::move(p));
             // Y gains every tile X has: tiled_axpy creates the matching Y tile when
             // it is absent.
@@ -738,6 +858,7 @@ bool TiledExpansion::run(Graph &graph) {
         plan.kind        = Plan::Kind::Einsum;
         plan.touched     = {a_id, b_id, c_id};
         plan.dtype       = c_h.dtype;
+        plan.elem_size   = elem_size;
         plan.src_a       = av;
         plan.src_b       = bv;
         plan.dst         = cv;
@@ -959,6 +1080,29 @@ bool TiledExpansion::run(Graph &graph) {
         return ok;
     };
 
+    // Scales of a set of output tiles, fused or one per tile. Every leftover set --
+    // a contraction's, a divide's -- goes through here too, since scaling a tile
+    // the operation never reached is the same elementwise op at the same size.
+    auto append_scales = [&](TiledView const &v, std::vector<std::vector<int>> const &coords, PrefactorScalar pf,
+                             packed_gemm::ScalarType dt, size_t elem_size, std::vector<Node> &out) {
+        if (coords.empty()) {
+            return;
+        }
+        if (should_fuse(v, coords, elem_size, /*streams=*/is_zero(pf) ? 1 : 2)) {
+            std::vector<TensorId> tids;
+            tids.reserve(coords.size());
+            for (auto const &co : coords) {
+                tids.push_back(v.tile_id(co));
+            }
+            out.push_back(emit_fused_scale(std::move(tids), pf, dt, fmt::format("tile_scale(x{})", coords.size())));
+            ++_num_fused;
+            return;
+        }
+        for (auto const &co : coords) {
+            out.push_back(emit_tile_scale(v.tile_id(co), pf, dt, fmt::format("tile_scale({})", fmt::join(co, ","))));
+        }
+    };
+
     // ── Emit ─────────────────────────────────────────────────────────────────
     for (size_t p = 0; p < plans.size(); ++p) {
         if (!alive[p]) {
@@ -979,10 +1123,7 @@ bool TiledExpansion::run(Graph &graph) {
                 ++_num_densified;
                 report(2, fmt::format("densified '{}': {} tile contractions -> gather+einsum+scatter (est {:.1f} us vs {:.1f} us)",
                                       nodes[pl.index].label, pl.a_coords.size(), pl.est_dense_us, pl.est_tiled_us));
-                for (auto const &coord : pl.leftover) {
-                    emitted.push_back(emit_tile_scale(pl.dst.tile_id(coord), pl.leftover_pf, pl.dtype,
-                                                      fmt::format("tile_scale({})", fmt::join(coord, ","))));
-                }
+                append_scales(pl.dst, pl.leftover, pl.leftover_pf, pl.dtype, pl.elem_size, emitted);
                 break;
             }
             emitted.reserve(pl.a_coords.size() + pl.leftover.size());
@@ -992,21 +1133,28 @@ bool TiledExpansion::run(Graph &graph) {
                                                          /*conj_a=*/false, /*conj_b=*/false,
                                                          fmt::format("tile_einsum({})", fmt::join(pl.c_coords[i], ","))));
             }
-            for (auto const &coord : pl.leftover) {
-                emitted.push_back(
-                    emit_tile_scale(pl.dst.tile_id(coord), pl.leftover_pf, pl.dtype, fmt::format("tile_scale({})", fmt::join(coord, ","))));
-            }
+            append_scales(pl.dst, pl.leftover, pl.leftover_pf, pl.dtype, pl.elem_size, emitted);
             break;
         }
         case Plan::Kind::Scale:
             emitted.reserve(pl.coords.size());
-            for (auto const &coord : pl.coords) {
-                emitted.push_back(
-                    emit_tile_scale(pl.dst.tile_id(coord), pl.alpha, pl.dtype, fmt::format("tile_scale({})", fmt::join(coord, ","))));
-            }
+            append_scales(pl.dst, pl.coords, pl.alpha, pl.dtype, pl.elem_size, emitted);
             break;
         case Plan::Kind::Axpy:
             emitted.reserve(pl.coords.size());
+            if (should_fuse(pl.dst, pl.coords, pl.elem_size, /*streams=*/3)) {
+                std::vector<TensorId> xs, ys;
+                xs.reserve(pl.coords.size());
+                ys.reserve(pl.coords.size());
+                for (auto const &coord : pl.coords) {
+                    xs.push_back(pl.src_a.tile_id(coord));
+                    ys.push_back(pl.dst.tile_id(coord));
+                }
+                emitted.push_back(
+                    emit_fused_axpy(std::move(xs), std::move(ys), pl.alpha, pl.dtype, fmt::format("tile_axpy(x{})", pl.coords.size())));
+                ++_num_fused;
+                break;
+            }
             for (auto const &coord : pl.coords) {
                 emitted.push_back(emit_tile_axpy(pl.src_a.tile_id(coord), pl.dst.tile_id(coord), pl.alpha, pl.dtype,
                                                  fmt::format("tile_axpy({})", fmt::join(coord, ","))));
@@ -1014,14 +1162,26 @@ bool TiledExpansion::run(Graph &graph) {
             break;
         case Plan::Kind::Divide:
             emitted.reserve(pl.coords.size() + pl.leftover.size());
-            for (auto const &coord : pl.coords) {
-                emitted.push_back(emit_tile_divide(pl.src_a.tile_id(coord), pl.src_b.tile_id(coord), pl.dst.tile_id(coord), pl.alpha,
-                                                   pl.beta, pl.dtype, fmt::format("tile_divide({})", fmt::join(coord, ","))));
+            if (should_fuse(pl.dst, pl.coords, pl.elem_size, /*streams=*/is_zero(pl.beta) ? 3 : 4)) {
+                std::vector<TensorId> as_, bs, cs;
+                as_.reserve(pl.coords.size());
+                bs.reserve(pl.coords.size());
+                cs.reserve(pl.coords.size());
+                for (auto const &coord : pl.coords) {
+                    as_.push_back(pl.src_a.tile_id(coord));
+                    bs.push_back(pl.src_b.tile_id(coord));
+                    cs.push_back(pl.dst.tile_id(coord));
+                }
+                emitted.push_back(emit_fused_divide(std::move(as_), std::move(bs), std::move(cs), pl.alpha, pl.beta, pl.dtype,
+                                                    fmt::format("tile_divide(x{})", pl.coords.size())));
+                ++_num_fused;
+            } else {
+                for (auto const &coord : pl.coords) {
+                    emitted.push_back(emit_tile_divide(pl.src_a.tile_id(coord), pl.src_b.tile_id(coord), pl.dst.tile_id(coord), pl.alpha,
+                                                       pl.beta, pl.dtype, fmt::format("tile_divide({})", fmt::join(coord, ","))));
+                }
             }
-            for (auto const &coord : pl.leftover) {
-                emitted.push_back(
-                    emit_tile_scale(pl.dst.tile_id(coord), pl.leftover_pf, pl.dtype, fmt::format("tile_scale({})", fmt::join(coord, ","))));
-            }
+            append_scales(pl.dst, pl.leftover, pl.leftover_pf, pl.dtype, pl.elem_size, emitted);
             break;
         }
 
@@ -1053,8 +1213,8 @@ bool TiledExpansion::run(Graph &graph) {
 
     EINSUMS_LOG_INFO("TiledExpansion: expanded {} tiled einsum(s) into {} per-tile nodes ({} declined)", _num_expanded, _num_tile_nodes,
                      _num_declined);
-    report(1,
-           fmt::format("expanded {} tiled einsum(s) into {} per-tile node(s), declined {}", _num_expanded, _num_tile_nodes, _num_declined));
+    report(1, fmt::format("expanded {} tiled op(s) into {} node(s) ({} densified, {} elementwise group(s) fused), declined {}",
+                          _num_expanded, _num_tile_nodes, _num_densified, _num_fused, _num_declined));
     return true;
 }
 
