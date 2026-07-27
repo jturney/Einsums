@@ -17,6 +17,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <mutex>
@@ -78,6 +79,29 @@ struct CacheSizes {
 CacheSizes detect_cache_sizes() {
     CacheSizes cs;
 
+    // Diagnostic override, so a blocking change can be measured against the old
+    // sizes from ONE binary. Comparing across rebuilds is not reliable for these
+    // benchmarks. Format: "L1,L2,L3" in bytes; any field <= 0 keeps the detected
+    // value.
+    auto const apply_override = [&cs]() {
+        char const *env = std::getenv("EINSUMS_CACHE_SIZES");
+        if (env == nullptr) {
+            return;
+        }
+        long long a = 0, b = 0, c = 0;
+        if (std::sscanf(env, "%lld,%lld,%lld", &a, &b, &c) >= 1) {
+            if (a > 0) {
+                cs.l1 = static_cast<int64_t>(a);
+            }
+            if (b > 0) {
+                cs.l2 = static_cast<int64_t>(b);
+            }
+            if (c > 0) {
+                cs.l3 = static_cast<int64_t>(c);
+            }
+        }
+    };
+
 #if defined(__APPLE__)
     auto sysctl_i64 = [](char const *name, int64_t fallback) -> int64_t {
         int64_t val = 0;
@@ -88,7 +112,13 @@ CacheSizes detect_cache_sizes() {
         return fallback;
     };
     cs.l1 = sysctl_i64("hw.l1dcachesize", cs.l1);
-    cs.l2 = sysctl_i64("hw.l2cachesize", cs.l2);
+    // Plain hw.l2cachesize reports the EFFICIENCY cluster on Apple Silicon, which
+    // is not where this work runs: on an M-series machine it reads 4 MB against
+    // the performance cluster's 16 MB, so blocking derived from it sized the A
+    // panel a quarter of what the cores actually have. hw.perflevel0 is the
+    // performance cluster. Same rule ComputeGraph's HardwareProfile already used;
+    // the two detectors disagreeing is exactly why they should be one.
+    cs.l2 = std::max(sysctl_i64("hw.perflevel0.l2cachesize", 0), sysctl_i64("hw.l2cachesize", cs.l2));
     cs.l3 = sysctl_i64("hw.l3cachesize", cs.l3);
     // Apple Silicon may report L3 as 0; fall back to a reasonable default.
     if (cs.l3 <= 0) {
@@ -151,6 +181,7 @@ CacheSizes detect_cache_sizes() {
     }
 #endif
 
+    apply_override();
     return cs;
 }
 

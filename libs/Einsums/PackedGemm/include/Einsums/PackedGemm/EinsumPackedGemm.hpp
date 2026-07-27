@@ -708,7 +708,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         if (kc_hint == 0 && shape.block_gemm && scatter_c) {
             kc_hint = 4096;
         }
-        int64_t const KC_blk = (kc_hint > 0) ? std::min<int64_t>(std::max<int64_t>(kc_hint, blk.KC), K) : blk.KC;
+        // Clamped to K on BOTH branches: a K-block larger than K is never useful,
+        // and the packing buffers below are sized from KC_blk, so an unclamped
+        // cache-derived blk.KC inflates the panels for a small contraction. That
+        // stayed hidden while the L2 was being under-detected; correcting the L2
+        // made blk.KC bigger and the small shapes paid for it.
+        int64_t const KC_blk = std::min<int64_t>((kc_hint > 0) ? std::max<int64_t>(kc_hint, blk.KC) : blk.KC, K);
         int64_t       MC_blk = blk.MC;
         if (KC_blk > blk.KC) {
             int64_t const mc_cap = (int64_t{4} << 20) / (KC_blk * static_cast<int64_t>(sizeof(ValueType)));
@@ -752,7 +757,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // cache-derived maxima - with a deep KC_blk, sizing from blk.NC would
         // allocate NC/NC_blk times more B-panel memory than any iteration
         // touches.
-        int64_t const mc_panels_max = (MC_blk + MR - 1) / MR;
+        // Panel counts follow the work actually done, not the cache-derived maxima:
+        // a contraction narrower than its block gets a buffer its own size.
+        int64_t const mc_panels_max = (std::min(MC_blk, M) + MR - 1) / MR;
         int64_t const nc_panels_max = (std::min(NC_blk, N) + NR - 1) / NR;
         auto const    ap_buf_elems  = static_cast<size_t>(mc_panels_max * MR * KC_blk);
         auto const    bp_buf_elems  = static_cast<size_t>(nc_panels_max * NR * KC_blk);
