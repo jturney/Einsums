@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <Einsums/ComputeGraph/HardwareProfile.hpp>
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 
 #include <string>
@@ -28,13 +28,13 @@ namespace einsums::compute_graph::passes {
  * rewrites the contraction sequence (via a standard matrix-chain DP over the
  * chain's leaf matrices) to minimize estimated wall-clock time.
  *
- * The cost model uses a HardwareProfile that can be auto-detected,
+ * The cost model uses a CostModel that can be auto-detected,
  * loaded from a JSON calibration file, or provided programmatically.
  *
  * In the default pipeline (planning phase, before GEMMBatching / Reorder and
  * before DistributionPlanning / Materialization, which size and allocate the
  * deferred intermediates it introduces; `create_default` passes the shared
- * HardwareProfile).
+ * CostModel).
  *
  * @par Example (C++)
  * @code
@@ -60,7 +60,7 @@ namespace einsums::compute_graph::passes {
  *     einsums.einsum("in <- il ; ln", D, T, C)   # D = (A*B) * C
  * g.apply(cg.default_pass_manager())             # ContractionPlanning runs in the default pipeline
  * # ContractionPlanning is not a standalone Python-constructible pass: it takes a
- * # HardwareProfile and is applied only as part of the default manager.
+ * # CostModel and is applied only as part of the default manager.
  * @endcode
  *
  * @par Limitations
@@ -92,11 +92,11 @@ namespace einsums::compute_graph::passes {
  */
 class EINSUMS_EXPORT ContractionPlanning : public OptimizerPass {
   public:
-    /// Construct with auto-detected hardware profile.
+    /// Construct with auto-detected hardware cost_model.
     ContractionPlanning();
 
-    /// Construct with a specific hardware profile.
-    explicit ContractionPlanning(HardwareProfile profile);
+    /// Construct with a specific hardware cost_model.
+    explicit ContractionPlanning(CostModel cost_model);
 
     [[nodiscard]] std::string name() const override { return "ContractionPlanning"; }
     bool                      run(Graph &graph) override;
@@ -132,7 +132,7 @@ class EINSUMS_EXPORT ContractionPlanning : public OptimizerPass {
     [[nodiscard]] size_t                          intermediates_created() const { return _intermediates_created; }
 
   private:
-    HardwareProfile _profile;
+    CostModel _cost_model;
     /// Reports for the CURRENT graph's last fixpoint iteration; cleared per
     /// iteration because restructuring invalidates the chains it describes.
     std::vector<ChainReport> _reports;

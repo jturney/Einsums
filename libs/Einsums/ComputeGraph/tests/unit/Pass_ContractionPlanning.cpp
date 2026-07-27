@@ -5,7 +5,7 @@
 
 /// @file Pass_ContractionPlanning.cpp
 /// @brief Dedicated unit coverage for the ContractionPlanning pass. The cost
-///        model and residency behavior live in HardwareProfile.cpp; this file
+///        model and residency behavior live in CostModel.cpp; this file
 ///        pins the graph-restructuring contract: which chains get folded into a
 ///        cheaper parenthesization, which stay analysis-only, and that a folded
 ///        chain stays numerically identical to the eager reference. The
@@ -29,12 +29,12 @@ using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 namespace {
-/// A profile that makes restructuring profitable and is machine-independent:
+/// A cost_model that makes restructuring profitable and is machine-independent:
 /// a fast CPU whose GEMM time is dominated by FLOP count, so the DP prefers
-/// the cheap parenthesization. Constructing the pass with an explicit profile
+/// the cheap parenthesization. Constructing the pass with an explicit cost_model
 /// mirrors how populate_default drives it.
-cg::HardwareProfile skewed_profile() {
-    cg::HardwareProfile p;
+cg::CostModel skewed_model() {
+    cg::CostModel p;
     p.cpu.peak_gflops_fp64          = 100.0;
     p.cpu.mem_bandwidth_gbps        = 40.0;
     p.cpu.kernel_launch_overhead_us = 0.1;
@@ -93,7 +93,7 @@ TEST_CASE("ContractionPlanning - transposed interior leaf is NOT restructured", 
         cg::einsum("ik;kj->ij", 0.0, &T4, 1.0, T3, E);
     }
 
-    cg::passes::ContractionPlanning pass(skewed_profile());
+    cg::passes::ContractionPlanning pass(skewed_model());
     pass.run(graph);
 
     // The chain is detected (a cost report exists) but declined for folding.
@@ -147,7 +147,7 @@ TEST_CASE("ContractionPlanning - straight-line 4-GEMM chain restructured and cor
         cg::einsum("ik;kj->ij", 0.0, &T4, 1.0, T3, E);
     }
 
-    cg::passes::ContractionPlanning pass(skewed_profile());
+    cg::passes::ContractionPlanning pass(skewed_model());
     bool const                      modified = pass.run(graph);
 
     CHECK(modified);
@@ -219,7 +219,7 @@ TEST_CASE("ContractionPlanning - two dependent chains both restructure correctly
         cg::einsum("ik;kj->ij", 0.0, &Y, 1.0, Y2, I2);
     }
 
-    cg::passes::ContractionPlanning pass(skewed_profile());
+    cg::passes::ContractionPlanning pass(skewed_model());
     bool const                      modified = pass.run(graph);
 
     CHECK(modified);
@@ -265,7 +265,7 @@ TEST_CASE("ContractionPlanning - interleaved node prevents chain recognition", "
         cg::einsum("ik;kj->ij", 0.0, &T2, 1.0, T1, C);
     }
 
-    cg::passes::ContractionPlanning pass(skewed_profile());
+    cg::passes::ContractionPlanning pass(skewed_model());
     bool const                      modified = pass.run(graph);
 
     CHECK_FALSE(modified);
@@ -279,7 +279,7 @@ TEST_CASE("ContractionPlanning - interleaved node prevents chain recognition", "
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Observable interior: gate refuses (light version; full regression in
-// HardwareProfile.cpp - "user-visible interior blocks restructuring" and
+// CostModel.cpp - "user-visible interior blocks restructuring" and
 // "outside reader of interior blocks restructuring").
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -306,7 +306,7 @@ TEST_CASE("ContractionPlanning - user-visible interior blocks restructuring", "[
         cg::einsum("ik;kj->ij", 0.0, &T2, 1.0, T1, C);
     }
 
-    cg::passes::ContractionPlanning pass(skewed_profile());
+    cg::passes::ContractionPlanning pass(skewed_model());
     pass.run(graph);
     CHECK(pass.chains_restructured() == 0);
 
@@ -345,7 +345,7 @@ TEST_CASE("ContractionPlanning - runtime-tensor chain stays analysis-only", "[Co
         cg::einsum("ik;kj->ij", 0.0, &T2, 1.0, T1, C);
     }
 
-    cg::passes::ContractionPlanning pass(skewed_profile());
+    cg::passes::ContractionPlanning pass(skewed_model());
     pass.run(graph);
 
     // Detected but declined: no fold, no emitted Gemm nodes.
@@ -404,7 +404,7 @@ TEST_CASE("ContractionPlanning - second run is a no-op", "[ComputeGraph][Passes]
         cg::einsum("ik;kj->ij", 0.0, &T4, 1.0, T3, E);
     }
 
-    cg::passes::ContractionPlanning first(skewed_profile());
+    cg::passes::ContractionPlanning first(skewed_model());
     REQUIRE(first.run(graph));
     REQUIRE(first.chains_restructured() >= 1);
 
@@ -412,7 +412,7 @@ TEST_CASE("ContractionPlanning - second run is a no-op", "[ComputeGraph][Passes]
     size_t const gemms_after_first       = count_kind(graph, cg::OpKind::Gemm);
     size_t const materialize_after_first = count_kind(graph, cg::OpKind::Materialize);
 
-    cg::passes::ContractionPlanning second(skewed_profile());
+    cg::passes::ContractionPlanning second(skewed_model());
     bool const                      modified_second = second.run(graph);
 
     CHECK_FALSE(modified_second);

@@ -5,14 +5,16 @@
 Hardware Profiles
 ==================
 
-The ``HardwareProfile`` system provides architecture-specific performance data
-for cost-model-based optimization. The ``ContractionPlanning`` and ``GPUPlacement``
-passes use this data to estimate execution time and make informed decisions.
+Passes that must choose between alternatives - ``ContractionPlanning`` and
+``GPUPlacement`` among them - estimate execution time through a ``CostModel``.
+That model is only as good as the machine measurements behind it, and this page
+covers where those measurements come from: the built-in table, the calibration
+tool, and the ``EINSUMS_HARDWARE_PROFILE`` override.
 
 Profile Structure
 ==================
 
-A ``HardwareProfile`` contains two ``DeviceProfile`` entries (CPU and GPU):
+A ``CostModel`` holds two ``DeviceProfile`` entries (CPU and GPU):
 
 .. code-block:: cpp
 
@@ -40,7 +42,7 @@ large ones).
 Auto-Detection
 ===============
 
-``HardwareProfile::detect_default()`` matches the current hardware against
+``CostModel::detect_default()`` matches the current hardware against
 a built-in database of 25+ device profiles:
 
 **CPU profiles**: Apple M1/M2/M3/M4 (Pro/Max), Intel Skylake/Ice Lake/Sapphire
@@ -62,7 +64,7 @@ Cost Estimation
 
 .. code-block:: cpp
 
-   auto profile = HardwareProfile::detect_default();
+   auto profile = CostModel::detect_default();
 
    // GEMM time with shape-dependent efficiency
    double us = profile.estimate_gemm_time_us(256, 128, 512, Target::CPU);
@@ -90,7 +92,7 @@ and BLAS kernel overhead. Output is a JSON file loadable by:
 
 .. code-block:: cpp
 
-   auto profile = HardwareProfile::load_json("my_hardware.json");
+   auto profile = CostModel::load_json("my_hardware.json");
    pm.add<cg::passes::ContractionPlanning>(profile);
 
 Shared Profile in create_default()
@@ -102,7 +104,7 @@ across ``GPUPlacement`` and ``ContractionPlanning``:
 .. code-block:: cpp
 
    // Internally:
-   auto profile = HardwareProfile::detect_default();
+   auto profile = CostModel::detect_default();
    pm.add<passes::GPUPlacement>(profile);
    pm.add<passes::ContractionPlanning>(profile);
 

@@ -76,7 +76,7 @@ CacheSizes detect_cache_sizes() {
     // is not where this work runs: on an M-series machine it reads 4 MB against
     // the performance cluster's 16 MB, so blocking derived from it sized the A
     // panel a quarter of what the cores actually have. hw.perflevel0 is the
-    // performance cluster. Same rule ComputeGraph's HardwareProfile already used;
+    // performance cluster. Same rule ComputeGraph's CostModel already used;
     // the two detectors disagreeing is exactly why they should be one.
     cs.l2 = std::max(sysctl_i64("hw.perflevel0.l2cachesize", 0), sysctl_i64("hw.l2cachesize", cs.l2));
     cs.l3 = sysctl_i64("hw.l3cachesize", cs.l3);

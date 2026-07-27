@@ -355,7 +355,7 @@ TEST_CASE("GEMMBatching: replay produces consistent results across execute() cal
 TEST_CASE("GEMMBatching - profitability gate leaves large GEMMs unbatched", "[ComputeGraph][GEMMBatching][Gate]") {
     // Two independent 400x400x400 GEMMs: ~big enough that one gemm each on
     // its own Dataflow worker beats a single serialized gemm_batch node.
-    // With a profile and a tight threshold they must stay separate; the
+    // With a cost_model and a tight threshold they must stay separate; the
     // ungated pass still batches them.
     constexpr size_t N  = 400;
     auto             A1 = create_random_tensor<double>("A1", N, N);
@@ -374,7 +374,7 @@ TEST_CASE("GEMMBatching - profitability gate leaves large GEMMs unbatched", "[Co
     {
         cg::Graph graph("gate_large");
         build(graph);
-        cg::passes::GEMMBatching gated(cg::HardwareProfile::detect_default(), /*max_gemm_us=*/50.0);
+        cg::passes::GEMMBatching gated(cg::CostModel::detect_default(), /*max_gemm_us=*/50.0);
         bool const               modified = gated.run(graph);
         CHECK_FALSE(modified);
         CHECK(gated.num_batches() == 0);
@@ -405,7 +405,7 @@ TEST_CASE("GEMMBatching - profitability gate still batches small GEMMs", "[Compu
         cg::einsum("ik;kj->ij", &C2, A2, B2);
     }
 
-    cg::passes::GEMMBatching gated(cg::HardwareProfile::detect_default(), /*max_gemm_us=*/100.0);
+    cg::passes::GEMMBatching gated(cg::CostModel::detect_default(), /*max_gemm_us=*/100.0);
     REQUIRE(gated.run(graph));
     CHECK(gated.num_batches() == 1);
     CHECK(gated.num_gate_skipped() == 0);

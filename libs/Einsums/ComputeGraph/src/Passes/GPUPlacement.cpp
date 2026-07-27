@@ -3,8 +3,8 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
-#include <Einsums/ComputeGraph/HardwareProfile.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/GPUPlacement.hpp>
 #include <Einsums/Config/Types.hpp>
@@ -21,13 +21,12 @@ namespace einsums::compute_graph::passes {
 GPUPlacement::GPUPlacement(size_t min_flops, size_t min_bytes) : _min_flops(min_flops), _min_bytes(min_bytes) {
 }
 
-GPUPlacement::GPUPlacement(HardwareProfile const &profile, size_t min_flops, size_t min_bytes)
-    : _min_flops(min_flops), _min_bytes(min_bytes) {
-    cpu_throughput_gflops = profile.cpu.peak_gflops_fp64;
-    if (profile.has_gpu()) {
-        gpu_throughput_gflops  = profile.gpu.peak_gflops_fp64;
-        pcie_bandwidth_gbs     = profile.gpu.pcie_bandwidth_gbps;
-        gpu_launch_overhead_us = profile.gpu.gpu_launch_latency_us;
+GPUPlacement::GPUPlacement(CostModel const &cost_model, size_t min_flops, size_t min_bytes) : _min_flops(min_flops), _min_bytes(min_bytes) {
+    cpu_throughput_gflops = cost_model.cpu.peak_gflops_fp64;
+    if (cost_model.has_gpu()) {
+        gpu_throughput_gflops  = cost_model.gpu.peak_gflops_fp64;
+        pcie_bandwidth_gbs     = cost_model.gpu.pcie_bandwidth_gbps;
+        gpu_launch_overhead_us = cost_model.gpu.gpu_launch_latency_us;
     }
 }
 

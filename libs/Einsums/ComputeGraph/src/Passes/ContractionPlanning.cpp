@@ -406,15 +406,15 @@ TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> c
     return out_id;
 }
 
-Target determine_target(HardwareProfile const &profile, size_t M, size_t N, size_t K, size_t elem_size) {
-    if (!profile.has_gpu())
+Target determine_target(CostModel const &cost_model, size_t M, size_t N, size_t K, size_t elem_size) {
+    if (!cost_model.has_gpu())
         return Target::CPU;
-    double const cpu_time = profile.estimate_total_gemm_time_us(M, N, K, elem_size, Target::CPU);
-    double const gpu_time = profile.estimate_total_gemm_time_us(M, N, K, elem_size, Target::GPU) + profile.gpu.gpu_launch_latency_us;
+    double const cpu_time = cost_model.estimate_total_gemm_time_us(M, N, K, elem_size, Target::CPU);
+    double const gpu_time = cost_model.estimate_total_gemm_time_us(M, N, K, elem_size, Target::GPU) + cost_model.gpu.gpu_launch_latency_us;
     return (gpu_time < cpu_time * 0.8) ? Target::GPU : Target::CPU;
 }
 
-double transfer_cost_us(HardwareProfile const &profile, size_t bytes, Residency current, Target needed) {
+double transfer_cost_us(CostModel const &cost_model, size_t bytes, Residency current, Target needed) {
     if (needed == Target::GPU) {
         if (current == Residency::Device || current == Residency::Both)
             return 0.0;
@@ -422,15 +422,15 @@ double transfer_cost_us(HardwareProfile const &profile, size_t bytes, Residency 
         if (current == Residency::Host || current == Residency::Both)
             return 0.0;
     }
-    return profile.estimate_transfer_time_us(bytes);
+    return cost_model.estimate_transfer_time_us(bytes);
 }
 
 } // namespace
 
-ContractionPlanning::ContractionPlanning() : _profile(HardwareProfile::detect_default()) {
+ContractionPlanning::ContractionPlanning() : _cost_model(CostModel::detect_default()) {
 }
 
-ContractionPlanning::ContractionPlanning(HardwareProfile profile) : _profile(std::move(profile)) {
+ContractionPlanning::ContractionPlanning(CostModel cost_model) : _cost_model(std::move(cost_model)) {
 }
 
 void ContractionPlanning::reset_stats() {
@@ -471,7 +471,7 @@ bool ContractionPlanning::run(Graph &graph) {
 
         // Device memory budget
         size_t device_budget = 0;
-        if (_profile.has_gpu()) {
+        if (_cost_model.has_gpu()) {
             device_budget = gpu::available_device_memory();
             for (auto const &node : graph.nodes()) {
                 if (node.target == Target::GPU)
@@ -518,10 +518,10 @@ bool ContractionPlanning::run(Graph &graph) {
                         // Multiply result of (i..k) [shape p[i] × p[k+1]]
                         //       with result of (k+1..j) [shape p[k+1] × p[j+1]]
                         // GEMM dimensions: M=p[i], K=p[k+1], N=p[j+1]
-                        Target const split_target = determine_target(_profile, p[i_idx], p[j_idx + 1], p[k_idx + 1], element_size);
+                        Target const split_target = determine_target(_cost_model, p[i_idx], p[j_idx + 1], p[k_idx + 1], element_size);
 
                         double const gemm_time =
-                            _profile.estimate_total_gemm_time_us(p[i_idx], p[j_idx + 1], p[k_idx + 1], element_size, split_target);
+                            _cost_model.estimate_total_gemm_time_us(p[i_idx], p[j_idx + 1], p[k_idx + 1], element_size, split_target);
 
                         double const cost = m[i_idx][k_idx] + m[k_idx + 1][j_idx] + gemm_time;
 
@@ -537,7 +537,7 @@ bool ContractionPlanning::run(Graph &graph) {
             double original_time = 0.0;
             for (size_t idx = 0; idx < n; idx++) {
                 original_time +=
-                    _profile.estimate_total_gemm_time_us(chain[idx].M, chain[idx].N, chain[idx].K, element_size, chain[idx].target);
+                    _cost_model.estimate_total_gemm_time_us(chain[idx].M, chain[idx].N, chain[idx].K, element_size, chain[idx].target);
             }
 
             double optimal_time = m[0][num_leaves - 1];
@@ -556,7 +556,7 @@ bool ContractionPlanning::run(Graph &graph) {
                         has_dist = true;
                         // Each non-replicated contraction needs an allreduce of the result
                         size_t const result_bytes = ci.M * ci.N * element_size;
-                        comm_cost += _profile.estimate_allreduce_time_us(result_bytes, num_ranks);
+                        comm_cost += _cost_model.estimate_allreduce_time_us(result_bytes, num_ranks);
                         break;
                     }
                 }
@@ -752,7 +752,7 @@ bool ContractionPlanning::run(Graph &graph) {
 
     if (!_reports.empty()) {
         EINSUMS_LOG_INFO("ContractionPlanning: analyzed {} chains using CPU='{}' GPU='{}', restructured {}", _reports.size(),
-                         _profile.cpu.name, _profile.gpu.name, _chains_restructured);
+                         _cost_model.cpu.name, _cost_model.gpu.name, _chains_restructured);
         this->report(1, fmt::format("analyzed {} GEMM chain(s), restructured {}", _reports.size(), _chains_restructured));
     }
 

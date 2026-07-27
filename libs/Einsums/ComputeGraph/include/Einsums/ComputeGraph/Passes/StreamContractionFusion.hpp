@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <Einsums/ComputeGraph/HardwareProfile.hpp>
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 
 #include <cstddef>
@@ -51,7 +51,7 @@ namespace einsums::compute_graph::passes {
  * @par Output handling: privatization, with owner-computes chunking above the cap
  * Outputs are normally accumulated in thread-private buffers and reduced at
  * the end, which requires them to stay cache-resident: with a
- * @ref HardwareProfile carrying cache sizes the cap is derived as
+ * @ref CostModel carrying cache sizes the cap is derived as
  * last-level-cache / threads bytes per output (so the aggregate private
  * buffers fit in cache); without one a fixed fallback applies. When a
  * member's output exceeds the cap, the group switches to owner-computes
@@ -118,7 +118,7 @@ namespace einsums::compute_graph::passes {
  *   the first member touching it may have `c_prefactor != 1` (contributions
  *   interleave in the one stream). An interference guard also rejects the group if
  *   any node between the first and last member touches an operand or reads an output.
- * - Privatized members are held to `max_output_elems` (cache-derived with a profile,
+ * - Privatized members are held to `max_output_elems` (cache-derived with a cost_model,
  *   a fixed fallback without); an over-cap member is only kept if an owner-computes
  *   partition axis covers it, otherwise it drops out and stays an ordinary einsum.
  *
@@ -136,7 +136,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Profile-aware construction: the output-size cap is derived from the
     /// CPU cache hierarchy (see @ref max_output_elems) instead of the fixed
     /// fallback. The default-constructed pass keeps the fallback cap.
-    explicit StreamContractionFusion(HardwareProfile profile) : _profile(std::move(profile)), _has_profile(true) {}
+    explicit StreamContractionFusion(CostModel cost_model) : _cost_model(std::move(cost_model)), _has_cost_model(true) {}
 
     [[nodiscard]] std::string name() const override { return "StreamContractionFusion"; }
 
@@ -158,11 +158,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// The fused kernel gives every thread a private copy of each output, so
     /// the transient footprint is threads x output bytes. The privatized
     /// accumulators only stay cheap while each thread's copy is
-    /// cache-resident, so with a profile carrying cache sizes the cap is
+    /// cache-resident, so with a cost_model carrying cache sizes the cap is
     ///     (last-level cache bytes / threads) / elem_size
     /// i.e. the aggregate private buffers fill at most the last-level cache.
     /// Clamped below by kMinOutputElemsFloor so implausibly small detected
-    /// caches cannot disable the pass outright. Without a profile (or
+    /// caches cannot disable the pass outright. Without a cost_model (or
     /// without cache data) returns kMaxOutputElemsFallback.
     [[nodiscard]] size_t max_output_elems(size_t elem_size) const;
 
@@ -175,11 +175,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// trivial streams where either path is measurement noise.
     static constexpr size_t kMinStreamElems = size_t{1} << 12;
 
-    /// Output-size cap used when no hardware profile (or no cache data) is
+    /// Output-size cap used when no hardware cost_model (or no cache data) is
     /// available; members writing larger outputs stay unfused.
     static constexpr size_t kMaxOutputElemsFallback = size_t{1} << 22;
 
-    /// Lower clamp on the profile-derived cap: outputs up to this many
+    /// Lower clamp on the cost_model-derived cap: outputs up to this many
     /// elements (8 KB at fp64) are always eligible, whatever the detected
     /// cache hierarchy claims.
     static constexpr size_t kMinOutputElemsFloor = size_t{1} << 10;
@@ -189,10 +189,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// argument to hold.
     static constexpr size_t kMinSizeRatio = 8;
 
-    HardwareProfile _profile{};
-    bool            _has_profile{false};
-    size_t          _num_groups{0};
-    size_t          _num_eliminated{0};
+    CostModel _cost_model{};
+    bool      _has_cost_model{false};
+    size_t    _num_groups{0};
+    size_t    _num_eliminated{0};
 };
 
 } // namespace einsums::compute_graph::passes

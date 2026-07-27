@@ -107,13 +107,19 @@ struct DeviceProfile {
 };
 
 /**
- * @brief Composite hardware profile holding CPU and GPU device profiles.
+ * @brief Target-aware cost model built from CPU and GPU device profiles.
  *
- * Provides target-aware cost estimation methods that dispatch to the
- * appropriate device profile. Used by GPUPlacement and ContractionPlanning
- * to share a single consistent cost model.
+ * Every estimate dispatches to the profile for the requested @ref Target, so
+ * GPUPlacement and ContractionPlanning compare CPU and GPU alternatives against
+ * one consistent model rather than each inventing its own constants.
+ *
+ * The measured hardware facts this is built from live elsewhere: cache sizes and
+ * OpenMP region cost come from @ref einsums::hardware::cpu_info, and the
+ * per-device performance table from @ref DeviceProfileDB or a calibration file.
+ * What this type adds is the modelling on top - roofline GEMM time, ring
+ * allreduce, binomial-tree broadcast.
  */
-struct EINSUMS_EXPORT HardwareProfile {
+struct EINSUMS_EXPORT CostModel {
     DeviceProfile cpu;
     DeviceProfile gpu;
     std::string   source{"default"};
@@ -192,29 +198,29 @@ struct EINSUMS_EXPORT HardwareProfile {
     // ── Factory methods ────────────────────────────────────────────────────
 
     /// Auto-detect hardware and load profile from shipped database.
-    [[nodiscard]] static HardwareProfile detect_default();
+    [[nodiscard]] static CostModel detect_default();
 
     /// Load from a JSON file. Returns error if file cannot be read or parsed.
-    [[nodiscard]] static expected<HardwareProfile, GraphError> load_json(std::string const &path);
+    [[nodiscard]] static expected<CostModel, GraphError> load_json(std::string const &path);
 
     /// Save to a JSON file. Returns error if file cannot be written.
     [[nodiscard]] expected<void, GraphError> save_json(std::string const &path) const;
 };
 
 /**
- * @brief Database of hardware profiles for known CPUs and GPUs.
+ * @brief Database of device profiles for known CPUs and GPUs.
  *
  * At runtime, the database matches the detected CPU brand string and GPU
  * device name against stored profiles to select the best match. This avoids
  * requiring every user to run the calibration tool.
  */
-class EINSUMS_EXPORT HardwareProfileDB {
+class EINSUMS_EXPORT DeviceProfileDB {
   public:
     /// Load the shipped database from a JSON file.
-    [[nodiscard]] static expected<HardwareProfileDB, GraphError> load_json(std::string const &path);
+    [[nodiscard]] static expected<DeviceProfileDB, GraphError> load_json(std::string const &path);
 
     /// Create a database with built-in default entries.
-    static HardwareProfileDB load_defaults();
+    static DeviceProfileDB load_defaults();
 
     /// Match the detected CPU brand against database entries.
     [[nodiscard]] DeviceProfile const &match_cpu() const;
@@ -222,8 +228,8 @@ class EINSUMS_EXPORT HardwareProfileDB {
     /// Match the detected GPU name against database entries.
     [[nodiscard]] DeviceProfile const &match_gpu() const;
 
-    /// Build a HardwareProfile from the best-matching CPU and GPU entries.
-    [[nodiscard]] HardwareProfile build_profile() const;
+    /// Build a CostModel from the best-matching CPU and GPU entries.
+    [[nodiscard]] CostModel build_cost_model() const;
 
     /// Add or replace a profile entry (matched by brand_family).
     void upsert(DeviceProfile profile);

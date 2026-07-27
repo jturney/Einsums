@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <Einsums/ComputeGraph/HardwareProfile.hpp>
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 
 namespace einsums::compute_graph::passes {
@@ -44,7 +44,7 @@ namespace einsums::compute_graph::passes {
  * the group into stride-compatible sub-batches).
  *
  * In the default pipeline (planning phase, after ContractionPlanning and before
- * Reorder; `create_default` constructs it with the shared HardwareProfile so
+ * Reorder; `create_default` constructs it with the shared CostModel so
  * the profitability gate below is active).
  *
  * @par Example (C++)
@@ -70,7 +70,7 @@ namespace einsums::compute_graph::passes {
  *     einsums.einsum("ij <- ik ; kj", C2, A2, B2)
  * g.apply(cg.default_pass_manager())                        # GEMMBatching runs in the default pipeline
  * # GEMMBatching is not a standalone Python-constructible pass: it takes a
- * # HardwareProfile and is applied only as part of the default manager.
+ * # CostModel and is applied only as part of the default manager.
  * @endcode
  *
  * @par Limitations
@@ -87,7 +87,7 @@ namespace einsums::compute_graph::passes {
  *   no outside node between the first and last member may read/write anything the
  *   batch reads or writes, and any `Loop`/`Conditional` in that span (I/O hidden
  *   in a sub-graph) disqualifies the group.
- * - Profitability gate applies only when a profile is supplied: a group whose
+ * - Profitability gate applies only when a cost_model is supplied: a group whose
  *   estimated per-GEMM time exceeds `max_gemm_us` (default 100us) is left as
  *   independent nodes so the Dataflow executor can spread it across workers. The
  *   default-constructed pass has no gate and always batches.
@@ -112,13 +112,13 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
     /// Profitability-gated batching. gemm_batch runs as ONE node - and on
     /// TaskPool workers BLAS is single-threaded - so collapsing large GEMMs
     /// that the Dataflow executor would otherwise spread across workers is a
-    /// pessimization. With a profile, a group is only batched when the
+    /// pessimization. With a cost_model, a group is only batched when the
     /// estimated single-GEMM time is at most @p max_gemm_us (default 100us,
     /// i.e. batching amortizes per-node scheduling for small GEMMs and stays
     /// away from work that deserves its own node). The default-constructed
     /// pass keeps the ungated always-batch behavior.
-    explicit GEMMBatching(HardwareProfile profile, double max_gemm_us = 100.0)
-        : _profile(std::move(profile)), _has_profile(true), _max_gemm_us(max_gemm_us) {}
+    explicit GEMMBatching(CostModel cost_model, double max_gemm_us = 100.0)
+        : _cost_model(std::move(cost_model)), _has_cost_model(true), _max_gemm_us(max_gemm_us) {}
 
     [[nodiscard]] std::string name() const override { return "GEMMBatching"; }
     bool                      run(Graph &graph) override;
@@ -140,12 +140,12 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
     [[nodiscard]] size_t num_gate_skipped() const { return _num_gate_skipped; }
 
   private:
-    HardwareProfile _profile{};
-    bool            _has_profile{false};
-    double          _max_gemm_us{100.0};
-    size_t          _num_batches{0};
-    size_t          _total_batched{0};
-    size_t          _num_gate_skipped{0};
+    CostModel _cost_model{};
+    bool      _has_cost_model{false};
+    double    _max_gemm_us{100.0};
+    size_t    _num_batches{0};
+    size_t    _total_batched{0};
+    size_t    _num_gate_skipped{0};
 };
 
 } // namespace einsums::compute_graph::passes

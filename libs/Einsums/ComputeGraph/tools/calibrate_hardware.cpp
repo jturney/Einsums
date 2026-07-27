@@ -7,7 +7,7 @@
 /// @brief Hardware calibration tool for the ContractionPlanning pass.
 ///
 /// Measures GEMM performance across a range of matrix shapes and memory
-/// bandwidth, then saves the results as a JSON HardwareProfile that the
+/// bandwidth, then saves the results as a JSON CostModel that the
 /// ContractionPlanning pass can load for architecture-specific optimization.
 ///
 /// Usage:
@@ -19,7 +19,7 @@
 /// measuring sustained GFLOPS at each point. It also measures memory
 /// bandwidth via a STREAM-like copy benchmark.
 
-#include <Einsums/ComputeGraph/HardwareProfile.hpp>
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/TensorAlgebra.hpp>
@@ -224,12 +224,12 @@ int einsums_main() {
     einsums::println("Size range: {} to {} ({} points)", cfg.min_size, cfg.max_size, cfg.num_points);
     einsums::println("Warmup: {}, Repeats: {}", cfg.warmup, cfg.repeats);
 
-    // Start from auto-detected profile
-    cg::HardwareProfile profile = cg::HardwareProfile::detect_default();
-    profile.source              = "calibrated";
+    // Start from auto-detected cost_model
+    cg::CostModel cost_model = cg::CostModel::detect_default();
+    cost_model.source        = "calibrated";
 
     // Detect CPU brand
-    std::string cpu_brand = cg::HardwareProfileDB::detect_cpu_brand();
+    std::string cpu_brand = cg::DeviceProfileDB::detect_cpu_brand();
     einsums::println("Detected CPU: {}", cpu_brand);
 
     // Generate measurement sizes
@@ -237,7 +237,7 @@ int einsums_main() {
 
     // Measure GEMM efficiency
     einsums::println("\n--- GEMM Benchmark ---\n");
-    profile.cpu.gemm_efficiency.clear();
+    cost_model.cpu.gemm_efficiency.clear();
 
     double peak_gflops = 0.0;
     for (size_t const N : sizes) {
@@ -249,35 +249,35 @@ int einsums_main() {
         }
 
         peak_gflops = std::max(peak_gflops, gflops);
-        profile.cpu.gemm_efficiency.push_back({.M = N, .N = N, .K = N, .gflops = gflops});
+        cost_model.cpu.gemm_efficiency.push_back({.M = N, .N = N, .K = N, .gflops = gflops});
 
         einsums::println("  {} x {} x {}: {:.1f} GFLOPS", N, N, N, gflops);
     }
 
     if (cfg.dtype == "float") {
-        profile.cpu.peak_gflops_fp32 = peak_gflops;
+        cost_model.cpu.peak_gflops_fp32 = peak_gflops;
     } else {
-        profile.cpu.peak_gflops_fp64 = peak_gflops;
+        cost_model.cpu.peak_gflops_fp64 = peak_gflops;
     }
 
     // Measure memory bandwidth
     einsums::println("\n--- Memory Bandwidth ---\n");
-    double const bw                = measure_bandwidth_gbps();
-    profile.cpu.mem_bandwidth_gbps = bw;
+    double const bw                   = measure_bandwidth_gbps();
+    cost_model.cpu.mem_bandwidth_gbps = bw;
     einsums::println("  Sustained copy bandwidth: {:.1f} GB/s", bw);
 
     // Measure kernel overhead
     einsums::println("\n--- Kernel Overhead ---\n");
-    double const overhead                 = measure_overhead_us();
-    profile.cpu.kernel_launch_overhead_us = overhead;
+    double const overhead                    = measure_overhead_us();
+    cost_model.cpu.kernel_launch_overhead_us = overhead;
     einsums::println("  DGEMM(1x1x1) overhead: {:.2f} us", overhead);
 
-    // Update profile name
-    profile.cpu.name   = fmt::format("{} (calibrated)", cpu_brand);
-    profile.cpu.source = "calibrated";
+    // Update cost_model name
+    cost_model.cpu.name   = fmt::format("{} (calibrated)", cpu_brand);
+    cost_model.cpu.source = "calibrated";
 
     // Save
-    auto save_result = profile.save_json(cfg.output);
+    auto save_result = cost_model.save_json(cfg.output);
     if (!save_result) {
         einsums::println("ERROR: {}", save_result.error().message);
         return EXIT_FAILURE;

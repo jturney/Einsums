@@ -94,13 +94,13 @@ unexpected(E) -> unexpected<E>;
  *
  * @par Example
  * @code
- * einsums::expected<HardwareProfile, std::string> load_profile(path) {
+ * einsums::expected<Settings, std::string> load_settings(path) {
  *     if (!file_exists(path))
  *         return einsums::unexpected("file not found: " + path);
- *     return HardwareProfile{...};
+ *     return Settings{...};
  * }
  *
- * auto result = load_profile("hw.json");
+ * auto result = load_settings("settings.json");
  * if (result) {
  *     use(result.value());
  * } else {

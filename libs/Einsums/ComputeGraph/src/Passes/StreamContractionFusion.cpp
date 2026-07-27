@@ -364,11 +364,11 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
 } // namespace
 
 size_t StreamContractionFusion::max_output_elems(size_t elem_size) const {
-    if (!_has_profile || _profile.cpu.caches.empty() || elem_size == 0) {
+    if (!_has_cost_model || _cost_model.cpu.caches.empty() || elem_size == 0) {
         return kMaxOutputElemsFallback;
     }
     size_t llc_bytes = 0;
-    for (auto const &level : _profile.cpu.caches) {
+    for (auto const &level : _cost_model.cpu.caches) {
         llc_bytes = std::max(llc_bytes, level.size_bytes);
     }
     if (llc_bytes == 0) {

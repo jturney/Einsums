@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/ComputeGraph/HardwareProfile.hpp>
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/Errors.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
@@ -25,10 +25,10 @@
 namespace einsums::compute_graph {
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HardwareProfileDB: runtime detection
+// DeviceProfileDB: runtime detection
 // ═══════════════════════════════════════════════════════════════════════════════
 
-std::string HardwareProfileDB::detect_cpu_brand() {
+std::string DeviceProfileDB::detect_cpu_brand() {
 #ifdef __APPLE__
     char   buf[256] = {}; // NOLINT
     size_t len      = sizeof(buf);
@@ -48,7 +48,7 @@ std::string HardwareProfileDB::detect_cpu_brand() {
     return "Unknown CPU";
 }
 
-std::string HardwareProfileDB::detect_gpu_name() {
+std::string DeviceProfileDB::detect_gpu_name() {
     return gpu::device_name();
 }
 
@@ -72,7 +72,7 @@ std::vector<CacheLevel> detect_cpu_caches() {
 
 } // namespace
 
-std::string HardwareProfileDB::normalize(std::string const &s) {
+std::string DeviceProfileDB::normalize(std::string const &s) {
     std::string result;
     result.reserve(s.size());
     for (char const c : s) {
@@ -83,7 +83,7 @@ std::string HardwareProfileDB::normalize(std::string const &s) {
     return result;
 }
 
-DeviceProfile const *HardwareProfileDB::find_best_match(std::string const &brand, DeviceType type) const {
+DeviceProfile const *DeviceProfileDB::find_best_match(std::string const &brand, DeviceType type) const {
     std::string const    norm_brand = normalize(brand);
     DeviceProfile const *best       = nullptr;
     size_t               best_len   = 0;
@@ -102,13 +102,13 @@ DeviceProfile const *HardwareProfileDB::find_best_match(std::string const &brand
     return best;
 }
 
-DeviceProfile const &HardwareProfileDB::match_cpu() const {
+DeviceProfile const &DeviceProfileDB::match_cpu() const {
     std::string const brand = detect_cpu_brand();
     auto             *match = find_best_match(brand, DeviceType::CPU);
     return match ? *match : _fallback_cpu;
 }
 
-DeviceProfile const &HardwareProfileDB::match_gpu() const {
+DeviceProfile const &DeviceProfileDB::match_gpu() const {
     std::string const name = detect_gpu_name();
     if (name.empty())
         return _fallback_gpu;
@@ -116,15 +116,15 @@ DeviceProfile const &HardwareProfileDB::match_gpu() const {
     return match ? *match : _fallback_gpu;
 }
 
-HardwareProfile HardwareProfileDB::build_profile() const {
-    HardwareProfile p;
+CostModel DeviceProfileDB::build_cost_model() const {
+    CostModel p;
     p.cpu    = match_cpu();
     p.gpu    = match_gpu();
     p.source = "database";
     return p;
 }
 
-void HardwareProfileDB::upsert(DeviceProfile profile) {
+void DeviceProfileDB::upsert(DeviceProfile profile) {
     for (auto &p : _profiles) {
         if (p.brand_family == profile.brand_family && p.device_type == profile.device_type) {
             p = std::move(profile);
@@ -138,8 +138,8 @@ void HardwareProfileDB::upsert(DeviceProfile profile) {
 // Built-in default profiles
 // ═══════════════════════════════════════════════════════════════════════════════
 
-HardwareProfileDB HardwareProfileDB::load_defaults() {
-    HardwareProfileDB db;
+DeviceProfileDB DeviceProfileDB::load_defaults() {
+    DeviceProfileDB db;
 
     // ── Fallbacks ──────────────────────────────────────────────────────────
     db._fallback_cpu.name               = "Generic CPU";
@@ -278,10 +278,10 @@ HardwareProfileDB HardwareProfileDB::load_defaults() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HardwareProfile factory
+// CostModel factory
 // ═══════════════════════════════════════════════════════════════════════════════
 
-HardwareProfile HardwareProfile::detect_default() {
+CostModel CostModel::detect_default() {
     // A calibrated profile (written by the calibrate_hardware tool) takes
     // precedence over the built-in table: point EINSUMS_HARDWARE_PROFILE at
     // its JSON and every profile consumer (ContractionPlanning's chain DP,
@@ -293,25 +293,25 @@ HardwareProfile HardwareProfile::detect_default() {
     // Cache sizes are pure topology, so runtime detection beats any table or
     // calibration file that omits them; a profile that DOES carry cache data
     // (a calibrated JSON) keeps its own numbers.
-    auto const with_detected_caches = [](HardwareProfile profile) {
-        if (profile.cpu.caches.empty()) {
-            profile.cpu.caches = detect_cpu_caches();
+    auto const with_detected_caches = [](CostModel model) {
+        if (model.cpu.caches.empty()) {
+            model.cpu.caches = detect_cpu_caches();
         }
-        return profile;
+        return model;
     };
 
     if (char const *env_path = std::getenv("EINSUMS_HARDWARE_PROFILE"); env_path != nullptr && *env_path != '\0') {
         auto loaded = load_json(env_path);
         if (loaded) {
-            EINSUMS_LOG_INFO("HardwareProfile: using calibrated profile from EINSUMS_HARDWARE_PROFILE={}", env_path);
+            EINSUMS_LOG_INFO("CostModel: using calibrated profile from EINSUMS_HARDWARE_PROFILE={}", env_path);
             return with_detected_caches(*loaded);
         }
-        EINSUMS_LOG_WARN("HardwareProfile: EINSUMS_HARDWARE_PROFILE={} could not be loaded ({}); falling back to the built-in table",
-                         env_path, loaded.error().message);
+        EINSUMS_LOG_WARN("CostModel: EINSUMS_HARDWARE_PROFILE={} could not be loaded ({}); falling back to the built-in table", env_path,
+                         loaded.error().message);
     }
 
-    auto db = HardwareProfileDB::load_defaults();
-    return with_detected_caches(db.build_profile());
+    auto db = DeviceProfileDB::load_defaults();
+    return with_detected_caches(db.build_cost_model());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -471,10 +471,10 @@ DeviceProfile parse_device_profile_json(std::string const &obj) {
 
 } // namespace
 
-expected<void, GraphError> HardwareProfile::save_json(std::string const &path) const {
+expected<void, GraphError> CostModel::save_json(std::string const &path) const {
     std::ofstream f(path);
     if (!f) {
-        return unexpected(GraphError::io(fmt::format("HardwareProfile::save_json: cannot open '{}'", path)));
+        return unexpected(GraphError::io(fmt::format("CostModel::save_json: cannot open '{}'", path)));
     }
 
     f << "{\n";
@@ -488,14 +488,14 @@ expected<void, GraphError> HardwareProfile::save_json(std::string const &path) c
     return {};
 }
 
-expected<HardwareProfile, GraphError> HardwareProfile::load_json(std::string const &path) {
+expected<CostModel, GraphError> CostModel::load_json(std::string const &path) {
     std::ifstream f(path);
     if (!f) {
-        return unexpected(GraphError::io(fmt::format("HardwareProfile::load_json: cannot open '{}'", path)));
+        return unexpected(GraphError::io(fmt::format("CostModel::load_json: cannot open '{}'", path)));
     }
     std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
-    HardwareProfile p;
+    CostModel p;
 
     // Extract source
     auto src_pos = content.find("\"source\"");
@@ -540,10 +540,10 @@ expected<HardwareProfile, GraphError> HardwareProfile::load_json(std::string con
     return p;
 }
 
-expected<void, GraphError> HardwareProfileDB::save_json(std::string const &path) const {
+expected<void, GraphError> DeviceProfileDB::save_json(std::string const &path) const {
     std::ofstream f(path);
     if (!f) {
-        return unexpected(GraphError::io(fmt::format("HardwareProfileDB::save_json: cannot open '{}'", path)));
+        return unexpected(GraphError::io(fmt::format("DeviceProfileDB::save_json: cannot open '{}'", path)));
     }
 
     f << "{\n";
@@ -558,14 +558,14 @@ expected<void, GraphError> HardwareProfileDB::save_json(std::string const &path)
     return {};
 }
 
-expected<HardwareProfileDB, GraphError> HardwareProfileDB::load_json(std::string const &path) {
+expected<DeviceProfileDB, GraphError> DeviceProfileDB::load_json(std::string const &path) {
     std::ifstream f(path);
     if (!f) {
-        return unexpected(GraphError::io(fmt::format("HardwareProfileDB::load_json: cannot open '{}'", path)));
+        return unexpected(GraphError::io(fmt::format("DeviceProfileDB::load_json: cannot open '{}'", path)));
     }
     std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
-    HardwareProfileDB db = load_defaults(); // Start with defaults, overlay from file
+    DeviceProfileDB db = load_defaults(); // Start with defaults, overlay from file
 
     // Find "profiles" array
     auto arr_pos = content.find("\"profiles\"");

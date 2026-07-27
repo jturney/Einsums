@@ -4,8 +4,8 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/Comm/Platform.hpp>
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
-#include <Einsums/ComputeGraph/HardwareProfile.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationElimination.hpp>
@@ -356,8 +356,8 @@ std::string PassManager::explain() const {
 void PassManager::populate_default() {
     auto &pm = *this;
 
-    // Detect hardware once and share the profile across cost-model passes.
-    auto profile = HardwareProfile::detect_default();
+    // Detect hardware once and share the cost_model across cost-model passes.
+    auto cost_model = CostModel::detect_default();
 
     // Lowering, so it comes before everything: a tiled op is one opaque Custom
     // node that no pass below can read, and expanding it into per-tile DENSE nodes
@@ -401,7 +401,7 @@ void PassManager::populate_default() {
     // allocate the intermediates it introduces). It used to run dead-last,
     // where its restructured nodes got no placement or memory management and
     // its eagerly-created intermediates leaked for the graph's lifetime.
-    pm.add<passes::ContractionPlanning>(profile);
+    pm.add<passes::ContractionPlanning>(cost_model);
     // GEMMBatching collapses groups of independent, shape-compatible
     // 2D×2D→2D einsums into a single BatchedGemm node backed by
     // blas::gemm_batch. Runs after CSE/DNE so duplicates/unused nodes
@@ -412,7 +412,7 @@ void PassManager::populate_default() {
     // that need those optimizations should not be batched first. A
     // future commit can gate GEMMBatching on the absence of a
     // distribution requirement.
-    pm.add<passes::GEMMBatching>(profile);
+    pm.add<passes::GEMMBatching>(cost_model);
     pm.add<passes::Reorder>();
     pm.add<passes::IOPrefetch>();
 
@@ -434,15 +434,15 @@ void PassManager::populate_default() {
     // einsums it may consume), and before GPU placement and the liveness
     // passes, which treat the fused Custom node as one unit. Declines
     // distributed operands; measured >= 1.5x on every qualifying shape
-    // (thresholds gate the rest to no-ops). The shared profile derives the
+    // (thresholds gate the rest to no-ops). The shared cost_model derives the
     // output-size cap from the cache hierarchy (thread-private accumulators
     // must stay cache-resident).
-    pm.add<passes::StreamContractionFusion>(profile);
+    pm.add<passes::StreamContractionFusion>(cost_model);
 
     // GPU passes, only included when a GPU backend (or mock) is available.
-    // GPUPlacement uses the shared HardwareProfile for its cost model.
+    // GPUPlacement uses the shared CostModel for its cost model.
     if constexpr (gpu::has_gpu || gpu::is_mock) {
-        pm.add<passes::GPUPlacement>(profile);
+        pm.add<passes::GPUPlacement>(cost_model);
         pm.add<passes::TransferInsertion>();
         pm.add<passes::TransferElimination>();
         pm.add<passes::GPUDiagnostics>();

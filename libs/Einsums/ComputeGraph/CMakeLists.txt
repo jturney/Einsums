@@ -13,7 +13,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/DeviceShadowMap.hpp
     Einsums/ComputeGraph/Error.hpp
     Einsums/ComputeGraph/Graph.hpp
-    Einsums/ComputeGraph/HardwareProfile.hpp
+    Einsums/ComputeGraph/CostModel.hpp
     Einsums/ComputeGraph/Node.hpp
     Einsums/ComputeGraph/Operations.hpp
     Einsums/ComputeGraph/Optimizer.hpp
@@ -67,7 +67,7 @@ set(ComputeGraphSources
     Executor.cpp
     Graph.cpp
     UsageAnalysis.cpp
-    HardwareProfile.cpp
+    CostModel.cpp
     Node.cpp
     Optimizer.cpp
     Passes/CommunicationElimination.cpp

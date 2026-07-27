@@ -36,7 +36,7 @@ set(ComputeGraphTests
     GPUPasses.cpp
     GraphCapture.cpp
     GraphFeatures.cpp
-    HardwareProfile.cpp
+    CostModel.cpp
     LoopOptimizationCorrectness.cpp
     MemoryNodes.cpp
     MetadataBoundary.cpp

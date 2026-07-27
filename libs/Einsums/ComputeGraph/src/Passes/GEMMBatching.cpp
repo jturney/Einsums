@@ -165,13 +165,13 @@ bool GEMMBatching::run(Graph &graph) {
         // Dataflow executor would spread across workers. Only worth it when
         // each member is small enough that per-node scheduling overhead is a
         // meaningful fraction of its runtime.
-        if (_has_profile) {
+        if (_has_cost_model) {
             size_t const elem_size = key.scalar == BlasScalar::Float          ? sizeof(float)
                                      : key.scalar == BlasScalar::Double       ? sizeof(double)
                                      : key.scalar == BlasScalar::ComplexFloat ? sizeof(std::complex<float>)
                                                                               : sizeof(std::complex<double>);
-            double const gemm_us   = _profile.estimate_total_gemm_time_us(static_cast<size_t>(key.m), static_cast<size_t>(key.n),
-                                                                          static_cast<size_t>(key.k), elem_size, Target::CPU);
+            double const gemm_us   = _cost_model.estimate_total_gemm_time_us(static_cast<size_t>(key.m), static_cast<size_t>(key.n),
+                                                                             static_cast<size_t>(key.k), elem_size, Target::CPU);
             if (gemm_us > _max_gemm_us) {
                 _num_gate_skipped++;
                 EINSUMS_LOG_INFO("GEMMBatching: group of {} GEMMs ({}x{}x{}, ~{:.1f}us each) exceeds the {:.0f}us batching "

@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <Einsums/ComputeGraph/HardwareProfile.hpp>
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 
 #include <cstddef>
@@ -30,7 +30,7 @@ namespace einsums::compute_graph::passes {
  *      - `cpu_time = flops / cpu_gflops`
  *      - `gpu_time = flops / gpu_gflops + bytes / pcie_bandwidth + launch_overhead`
  *    and places the node only when `gpu_time < cpu_time`. Constructing with a
- *    @ref HardwareProfile replaces the hardcoded throughput/bandwidth constants.
+ *    @ref CostModel replaces the hardcoded throughput/bandwidth constants.
  *
  * 2. **Size threshold** (fallback when `estimated_flops == 0`): places the node only
  *    when its estimated memory traffic reaches `min_bytes`.
@@ -40,7 +40,7 @@ namespace einsums::compute_graph::passes {
  *
  * In `create_default()` this is the first pass inside the GPU-enabled block
  * (`if constexpr (gpu::has_gpu || gpu::is_mock)`), constructed with the shared
- * `HardwareProfile`; the whole block is compiled out on CPU-only builds.
+ * `CostModel`; the whole block is compiled out on CPU-only builds.
  *
  * @par Example (C++)
  * @code
@@ -75,7 +75,7 @@ namespace einsums::compute_graph::passes {
  *   larger than the remaining budget is skipped even if reordering could have fit it.
  * - The budget accounting double-counts residency — a tensor shared by several placed nodes
  *   is charged its bytes per node, so the effective budget is conservative.
- * - The default throughput/PCIe/launch constants are coarse; without a `HardwareProfile` they
+ * - The default throughput/PCIe/launch constants are coarse; without a `CostModel` they
  *   are placeholders rather than measured device numbers.
  *
  * @par Future improvements
@@ -93,12 +93,12 @@ class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
     explicit GPUPlacement(size_t min_flops = 100000, size_t min_bytes = 65536);
 
     /**
-     * @brief Construct with a HardwareProfile for cost model parameters.
+     * @brief Construct with a CostModel for cost model parameters.
      *
-     * The profile's CPU and GPU device data replace the hardcoded cost
+     * The cost_model's CPU and GPU device data replace the hardcoded cost
      * model parameters (cpu_throughput_gflops, gpu_throughput_gflops, etc.).
      */
-    explicit GPUPlacement(HardwareProfile const &profile, size_t min_flops = 100000, size_t min_bytes = 65536);
+    explicit GPUPlacement(CostModel const &cost_model, size_t min_flops = 100000, size_t min_bytes = 65536);
 
     [[nodiscard]] std::string name() const override { return "GPUPlacement"; }
     bool                      run(Graph &graph) override;
@@ -107,8 +107,8 @@ class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
     /// Number of nodes placed on GPU in the last run.
     [[nodiscard]] size_t num_placed() const { return _num_placed; }
 
-    /// Cost model parameters. When constructed with a HardwareProfile,
-    /// these are populated from the profile. Otherwise, sensible defaults.
+    /// Cost model parameters. When constructed with a CostModel,
+    /// these are populated from the cost_model. Otherwise, sensible defaults.
     double cpu_throughput_gflops{50.0};   ///< Estimated CPU throughput (GFLOP/s)
     double gpu_throughput_gflops{5000.0}; ///< Estimated GPU throughput (GFLOP/s)
     double pcie_bandwidth_gbs{12.0};      ///< PCIe bandwidth (GB/s) for transfer overhead

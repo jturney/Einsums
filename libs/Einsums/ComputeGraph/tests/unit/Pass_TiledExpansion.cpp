@@ -792,7 +792,7 @@ TEST_CASE("TiledExpansion - the emitted tile GEMMs are batchable", "[ComputeGrap
 
     cg::PassManager pm;
     auto            expand = std::make_shared<cg::passes::TiledExpansion>();
-    auto            batch  = std::make_shared<cg::passes::GEMMBatching>(cg::HardwareProfile::detect_default());
+    auto            batch  = std::make_shared<cg::passes::GEMMBatching>(cg::CostModel::detect_default());
     pm.add(expand);
     pm.add(batch);
     REQUIRE(graph.apply(pm));
@@ -1178,7 +1178,7 @@ TEST_CASE("TiledExpansion - a batched group writes every element of every destin
 
     cg::PassManager pm;
     auto            expand = std::make_shared<cg::passes::TiledExpansion>();
-    auto            batch  = std::make_shared<cg::passes::GEMMBatching>(cg::HardwareProfile::detect_default());
+    auto            batch  = std::make_shared<cg::passes::GEMMBatching>(cg::CostModel::detect_default());
     pm.add(expand);
     pm.add(batch);
     REQUIRE(graph.apply(pm));
@@ -1236,7 +1236,7 @@ TEST_CASE("TiledExpansion - an overwrite batch followed by an accumulate batch",
 
     cg::PassManager pm;
     auto            expand = std::make_shared<cg::passes::TiledExpansion>();
-    auto            batch  = std::make_shared<cg::passes::GEMMBatching>(cg::HardwareProfile::detect_default());
+    auto            batch  = std::make_shared<cg::passes::GEMMBatching>(cg::CostModel::detect_default());
     pm.add(expand);
     pm.add(batch);
     REQUIRE(graph.apply(pm));

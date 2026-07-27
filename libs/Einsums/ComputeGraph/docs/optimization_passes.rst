@@ -374,14 +374,14 @@ ContractionPlanning
 Replaces the analysis-only ``ChainParenthesization`` with a multi-objective pass
 that considers:
 
-- **FLOPs**: shape-dependent GEMM efficiency from HardwareProfile
+- **FLOPs**: shape-dependent GEMM efficiency from CostModel
 - **Memory traffic**: roofline model (bandwidth-limited vs compute-limited)
 - **Transfer costs**: host↔device when tensors cross GPU boundaries
 - **Communication costs**: allreduce for distributed contractions
 - **Device memory budget**: spill penalty when GPU memory is tight
 
 Works with arbitrary-rank tensors, not just rank-2 matrices. Uses the
-HardwareProfile database for architecture-specific cost estimation.
+CostModel database for architecture-specific cost estimation.
 
 Reports per-chain: ``original_time_us``, ``optimal_time_us``, ``speedup``,
 ``comm_cost_us``, ``has_distributed``.

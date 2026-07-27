@@ -3,8 +3,8 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-/// @file HardwareProfile.cpp
-/// @brief Tests for HardwareProfile, HardwareProfileDB, and ContractionPlanning.
+/// @file CostModel.cpp
+/// @brief Tests for CostModel, DeviceProfileDB, and ContractionPlanning.
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/GPU/Runtime.hpp>
@@ -29,7 +29,7 @@ namespace cg = einsums::compute_graph;
 // DeviceProfile cost estimation
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("DeviceProfile - GEMM GFLOPS estimation with empty table", "[ComputeGraph][HardwareProfile]") {
+TEST_CASE("DeviceProfile - GEMM GFLOPS estimation with empty table", "[ComputeGraph][CostModel]") {
     cg::DeviceProfile p;
     p.peak_gflops_fp64 = 100.0;
     // No gemm_efficiency entries → uses heuristic
@@ -42,7 +42,7 @@ TEST_CASE("DeviceProfile - GEMM GFLOPS estimation with empty table", "[ComputeGr
     CHECK(large <= 100.0); // Cannot exceed peak
 }
 
-TEST_CASE("DeviceProfile - GEMM GFLOPS with efficiency table", "[ComputeGraph][HardwareProfile]") {
+TEST_CASE("DeviceProfile - GEMM GFLOPS with efficiency table", "[ComputeGraph][CostModel]") {
     cg::DeviceProfile p;
     p.peak_gflops_fp64 = 100.0;
     p.gemm_efficiency  = {{.M = 16, .N = 16, .K = 16, .gflops = 10.0},
@@ -61,7 +61,7 @@ TEST_CASE("DeviceProfile - GEMM GFLOPS with efficiency table", "[ComputeGraph][H
     CHECK(at_64 > 0);
 }
 
-TEST_CASE("DeviceProfile - estimate_gemm_time_us", "[ComputeGraph][HardwareProfile]") {
+TEST_CASE("DeviceProfile - estimate_gemm_time_us", "[ComputeGraph][CostModel]") {
     cg::DeviceProfile p;
     p.peak_gflops_fp64          = 100.0;
     p.kernel_launch_overhead_us = 1.0;
@@ -74,7 +74,7 @@ TEST_CASE("DeviceProfile - estimate_gemm_time_us", "[ComputeGraph][HardwareProfi
     CHECK(time < 30000.0); // < 30ms
 }
 
-TEST_CASE("DeviceProfile - memory time estimation", "[ComputeGraph][HardwareProfile]") {
+TEST_CASE("DeviceProfile - memory time estimation", "[ComputeGraph][CostModel]") {
     cg::DeviceProfile p;
     p.mem_bandwidth_gbps = 40.0;
 
@@ -86,69 +86,69 @@ TEST_CASE("DeviceProfile - memory time estimation", "[ComputeGraph][HardwareProf
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HardwareProfile composite
+// CostModel composite
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("HardwareProfile - target dispatch", "[ComputeGraph][HardwareProfile]") {
-    cg::HardwareProfile profile;
-    profile.cpu.peak_gflops_fp64 = 50.0;
-    profile.cpu.name             = "Test CPU";
-    profile.gpu.peak_gflops_fp64 = 500.0;
-    profile.gpu.name             = "Test GPU";
+TEST_CASE("CostModel - target dispatch", "[ComputeGraph][CostModel]") {
+    cg::CostModel cost_model;
+    cost_model.cpu.peak_gflops_fp64 = 50.0;
+    cost_model.cpu.name             = "Test CPU";
+    cost_model.gpu.peak_gflops_fp64 = 500.0;
+    cost_model.gpu.name             = "Test GPU";
 
-    CHECK(profile.has_gpu());
-    CHECK(&profile.device(cg::Target::CPU) == &profile.cpu);
-    CHECK(&profile.device(cg::Target::GPU) == &profile.gpu);
+    CHECK(cost_model.has_gpu());
+    CHECK(&cost_model.device(cg::Target::CPU) == &cost_model.cpu);
+    CHECK(&cost_model.device(cg::Target::GPU) == &cost_model.gpu);
 }
 
-TEST_CASE("HardwareProfile - no GPU fallback", "[ComputeGraph][HardwareProfile]") {
-    cg::HardwareProfile profile;
-    profile.cpu.name = "Test CPU";
-    profile.gpu.name = ""; // No GPU
+TEST_CASE("CostModel - no GPU fallback", "[ComputeGraph][CostModel]") {
+    cg::CostModel cost_model;
+    cost_model.cpu.name = "Test CPU";
+    cost_model.gpu.name = ""; // No GPU
 
-    CHECK_FALSE(profile.has_gpu());
+    CHECK_FALSE(cost_model.has_gpu());
     // GPU target falls back to CPU
-    CHECK(&profile.device(cg::Target::GPU) == &profile.cpu);
+    CHECK(&cost_model.device(cg::Target::GPU) == &cost_model.cpu);
 }
 
-TEST_CASE("HardwareProfile - transfer time estimation", "[ComputeGraph][HardwareProfile]") {
-    cg::HardwareProfile profile;
-    profile.gpu.pcie_bandwidth_gbps = 12.0;
-    profile.gpu.name                = "GPU";
+TEST_CASE("CostModel - transfer time estimation", "[ComputeGraph][CostModel]") {
+    cg::CostModel cost_model;
+    cost_model.gpu.pcie_bandwidth_gbps = 12.0;
+    cost_model.gpu.name                = "GPU";
 
     // 1 GB at 12 GB/s ≈ 83.3ms
-    double const time = profile.estimate_transfer_time_us(static_cast<long>(1024 * 1024) * 1024);
+    double const time = cost_model.estimate_transfer_time_us(static_cast<long>(1024 * 1024) * 1024);
     CHECK(time > 80000.0);
     CHECK(time < 90000.0);
 }
 
-TEST_CASE("HardwareProfile - detect_default produces valid profile", "[ComputeGraph][HardwareProfile]") {
-    auto profile = cg::HardwareProfile::detect_default();
+TEST_CASE("CostModel - detect_default produces valid cost_model", "[ComputeGraph][CostModel]") {
+    auto cost_model = cg::CostModel::detect_default();
 
-    CHECK_FALSE(profile.cpu.name.empty());
-    CHECK(profile.cpu.peak_gflops_fp64 > 0);
-    CHECK(profile.cpu.mem_bandwidth_gbps > 0);
-    CHECK_FALSE(profile.cpu.gemm_efficiency.empty());
+    CHECK_FALSE(cost_model.cpu.name.empty());
+    CHECK(cost_model.cpu.peak_gflops_fp64 > 0);
+    CHECK(cost_model.cpu.mem_bandwidth_gbps > 0);
+    CHECK_FALSE(cost_model.cpu.gemm_efficiency.empty());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HardwareProfileDB
+// DeviceProfileDB
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("HardwareProfileDB - load_defaults has entries", "[ComputeGraph][HardwareProfile]") {
-    auto db = cg::HardwareProfileDB::load_defaults();
+TEST_CASE("DeviceProfileDB - load_defaults has entries", "[ComputeGraph][CostModel]") {
+    auto db = cg::DeviceProfileDB::load_defaults();
 
     CHECK(db.profiles().size() > 10); // Should have many entries
 }
 
-TEST_CASE("HardwareProfileDB - CPU brand detection", "[ComputeGraph][HardwareProfile]") {
-    std::string brand = cg::HardwareProfileDB::detect_cpu_brand();
+TEST_CASE("DeviceProfileDB - CPU brand detection", "[ComputeGraph][CostModel]") {
+    std::string brand = cg::DeviceProfileDB::detect_cpu_brand();
     CHECK_FALSE(brand.empty());
     CHECK(brand != "Unknown CPU"); // Should detect something on any real machine
 }
 
-TEST_CASE("HardwareProfileDB - match_cpu finds a profile", "[ComputeGraph][HardwareProfile]") {
-    auto        db    = cg::HardwareProfileDB::load_defaults();
+TEST_CASE("DeviceProfileDB - match_cpu finds a cost_model", "[ComputeGraph][CostModel]") {
+    auto        db    = cg::DeviceProfileDB::load_defaults();
     auto const &match = db.match_cpu();
 
     CHECK_FALSE(match.name.empty());
@@ -156,8 +156,8 @@ TEST_CASE("HardwareProfileDB - match_cpu finds a profile", "[ComputeGraph][Hardw
     CHECK(match.peak_gflops_fp64 > 0);
 }
 
-TEST_CASE("HardwareProfileDB - upsert replaces existing", "[ComputeGraph][HardwareProfile]") {
-    auto         db     = cg::HardwareProfileDB::load_defaults();
+TEST_CASE("DeviceProfileDB - upsert replaces existing", "[ComputeGraph][CostModel]") {
+    auto         db     = cg::DeviceProfileDB::load_defaults();
     size_t const before = db.profiles().size();
 
     cg::DeviceProfile custom;
@@ -181,8 +181,8 @@ TEST_CASE("HardwareProfileDB - upsert replaces existing", "[ComputeGraph][Hardwa
     CHECK(found);
 }
 
-TEST_CASE("HardwareProfileDB - upsert adds new", "[ComputeGraph][HardwareProfile]") {
-    auto         db     = cg::HardwareProfileDB::load_defaults();
+TEST_CASE("DeviceProfileDB - upsert adds new", "[ComputeGraph][CostModel]") {
+    auto         db     = cg::DeviceProfileDB::load_defaults();
     size_t const before = db.profiles().size();
 
     cg::DeviceProfile custom;
@@ -199,8 +199,8 @@ TEST_CASE("HardwareProfileDB - upsert adds new", "[ComputeGraph][HardwareProfile
 // JSON round-trip
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("HardwareProfile - save and load JSON", "[ComputeGraph][HardwareProfile]") {
-    cg::HardwareProfile original;
+TEST_CASE("CostModel - save and load JSON", "[ComputeGraph][CostModel]") {
+    cg::CostModel original;
     original.source                    = "test";
     original.cpu.name                  = "Test CPU";
     original.cpu.peak_gflops_fp64      = 42.0;
@@ -214,7 +214,7 @@ TEST_CASE("HardwareProfile - save and load JSON", "[ComputeGraph][HardwareProfil
     auto              save_result = original.save_json(path);
     REQUIRE(save_result.has_value());
 
-    auto load_result = cg::HardwareProfile::load_json(path);
+    auto load_result = cg::CostModel::load_json(path);
     REQUIRE(load_result.has_value());
     auto &loaded = load_result.value();
 
@@ -279,7 +279,7 @@ TEST_CASE("ContractionPlanning - empty graph", "[ComputeGraph][Passes]") {
     CHECK(pass.chain_reports().empty());
 }
 
-TEST_CASE("ContractionPlanning - uses hardware profile", "[ComputeGraph][Passes]") {
+TEST_CASE("ContractionPlanning - uses hardware cost_model", "[ComputeGraph][Passes]") {
     auto A       = create_random_tensor<double>("A", 100, 1);
     auto B       = create_random_tensor<double>("B", 1, 100);
     auto C       = create_random_tensor<double>("C", 100, 1);
@@ -288,11 +288,11 @@ TEST_CASE("ContractionPlanning - uses hardware profile", "[ComputeGraph][Passes]
     auto T1_fast = create_zero_tensor<double>("T1_fast", 100, 100);
     auto T2_fast = create_zero_tensor<double>("T2_fast", 100, 1);
 
-    // Custom profile with extreme parameters to verify it's used
-    cg::HardwareProfile slow_profile;
-    slow_profile.cpu.peak_gflops_fp64          = 1.0;
-    slow_profile.cpu.mem_bandwidth_gbps        = 1.0;
-    slow_profile.cpu.kernel_launch_overhead_us = 100.0;
+    // Custom cost_model with extreme parameters to verify it's used
+    cg::CostModel slow_model;
+    slow_model.cpu.peak_gflops_fp64          = 1.0;
+    slow_model.cpu.mem_bandwidth_gbps        = 1.0;
+    slow_model.cpu.kernel_launch_overhead_us = 100.0;
 
     cg::Graph graph_slow("cp_slow");
     {
@@ -301,13 +301,13 @@ TEST_CASE("ContractionPlanning - uses hardware profile", "[ComputeGraph][Passes]
         cg::einsum("ik;kj->ij", 0.0, &T2_slow, 1.0, T1_slow, C);
     }
 
-    cg::passes::ContractionPlanning pass_slow(slow_profile);
+    cg::passes::ContractionPlanning pass_slow(slow_model);
     pass_slow.run(graph_slow);
 
-    cg::HardwareProfile fast_profile;
-    fast_profile.cpu.peak_gflops_fp64          = 1000.0;
-    fast_profile.cpu.mem_bandwidth_gbps        = 1000.0;
-    fast_profile.cpu.kernel_launch_overhead_us = 0.001;
+    cg::CostModel fast_model;
+    fast_model.cpu.peak_gflops_fp64          = 1000.0;
+    fast_model.cpu.mem_bandwidth_gbps        = 1000.0;
+    fast_model.cpu.kernel_launch_overhead_us = 0.001;
 
     cg::Graph graph_fast("cp_fast");
     {
@@ -316,7 +316,7 @@ TEST_CASE("ContractionPlanning - uses hardware profile", "[ComputeGraph][Passes]
         cg::einsum("ik;kj->ij", 0.0, &T2_fast, 1.0, T1_fast, C);
     }
 
-    cg::passes::ContractionPlanning pass_fast(fast_profile);
+    cg::passes::ContractionPlanning pass_fast(fast_model);
     pass_fast.run(graph_fast);
 
     // Both should find the chain, but estimated times should differ
@@ -613,88 +613,88 @@ TEST_CASE("ContractionPlanning - rank-3 chain analysis only (not restructured)",
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HardwareProfile communication cost estimation
+// CostModel communication cost estimation
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("HardwareProfile - estimate_allreduce_time_us", "[ComputeGraph][HardwareProfile]") {
-    cg::HardwareProfile profile;
-    profile.cpu.inter_node_bandwidth_gbps = 25.0; // 25 Gbps InfiniBand
-    profile.cpu.inter_node_latency_us     = 2.0;
+TEST_CASE("CostModel - estimate_allreduce_time_us", "[ComputeGraph][CostModel]") {
+    cg::CostModel cost_model;
+    cost_model.cpu.inter_node_bandwidth_gbps = 25.0; // 25 Gbps InfiniBand
+    cost_model.cpu.inter_node_latency_us     = 2.0;
 
     // Single rank: should return 0
-    CHECK(profile.estimate_allreduce_time_us(1000, 1) == 0.0);
+    CHECK(cost_model.estimate_allreduce_time_us(1000, 1) == 0.0);
 
     // Zero bytes: should be near-zero (just latency)
-    double const t_zero = profile.estimate_allreduce_time_us(0, 4);
+    double const t_zero = cost_model.estimate_allreduce_time_us(0, 4);
     CHECK(t_zero >= 0.0);
 
     // Larger message, more ranks
-    double const t = profile.estimate_allreduce_time_us(static_cast<long>(1024) * 1024, 4); // 1MB, 4 ranks
+    double const t = cost_model.estimate_allreduce_time_us(static_cast<long>(1024) * 1024, 4); // 1MB, 4 ranks
     CHECK(t > 0.0);
     CHECK(t < 1e6); // Should be reasonable (< 1 second)
 
     // More ranks should increase time (latency component)
-    double const t8 = profile.estimate_allreduce_time_us(static_cast<long>(1024) * 1024, 8);
+    double const t8 = cost_model.estimate_allreduce_time_us(static_cast<long>(1024) * 1024, 8);
     CHECK(t8 >= t); // More ranks → more latency
 }
 
-TEST_CASE("HardwareProfile - estimate_broadcast_time_us", "[ComputeGraph][HardwareProfile]") {
-    cg::HardwareProfile profile;
-    profile.cpu.inter_node_bandwidth_gbps = 25.0;
-    profile.cpu.inter_node_latency_us     = 2.0;
+TEST_CASE("CostModel - estimate_broadcast_time_us", "[ComputeGraph][CostModel]") {
+    cg::CostModel cost_model;
+    cost_model.cpu.inter_node_bandwidth_gbps = 25.0;
+    cost_model.cpu.inter_node_latency_us     = 2.0;
 
-    CHECK(profile.estimate_broadcast_time_us(1000, 1) == 0.0);
+    CHECK(cost_model.estimate_broadcast_time_us(1000, 1) == 0.0);
 
-    double const t = profile.estimate_broadcast_time_us(static_cast<long>(1024) * 1024, 8);
+    double const t = cost_model.estimate_broadcast_time_us(static_cast<long>(1024) * 1024, 8);
     CHECK(t > 0.0);
 }
 
-TEST_CASE("HardwareProfile - estimate_allgather_time_us", "[ComputeGraph][HardwareProfile]") {
-    cg::HardwareProfile profile;
-    profile.cpu.inter_node_bandwidth_gbps = 25.0;
-    profile.cpu.inter_node_latency_us     = 2.0;
+TEST_CASE("CostModel - estimate_allgather_time_us", "[ComputeGraph][CostModel]") {
+    cg::CostModel cost_model;
+    cost_model.cpu.inter_node_bandwidth_gbps = 25.0;
+    cost_model.cpu.inter_node_latency_us     = 2.0;
 
-    CHECK(profile.estimate_allgather_time_us(1000, 1) == 0.0);
+    CHECK(cost_model.estimate_allgather_time_us(1000, 1) == 0.0);
 
-    double const t = profile.estimate_allgather_time_us(static_cast<long>(1024) * 1024, 4);
+    double const t = cost_model.estimate_allgather_time_us(static_cast<long>(1024) * 1024, 4);
     CHECK(t > 0.0);
 }
 
-TEST_CASE("HardwareProfile - zero bandwidth fallback", "[ComputeGraph][HardwareProfile]") {
-    cg::HardwareProfile profile;
-    profile.cpu.inter_node_bandwidth_gbps = 0.0; // Unset: should fallback to 1.0
+TEST_CASE("CostModel - zero bandwidth fallback", "[ComputeGraph][CostModel]") {
+    cg::CostModel cost_model;
+    cost_model.cpu.inter_node_bandwidth_gbps = 0.0; // Unset: should fallback to 1.0
 
-    double const t = profile.estimate_allreduce_time_us(1024, 4);
+    double const t = cost_model.estimate_allreduce_time_us(1024, 4);
     CHECK(t > 0.0); // Should not divide by zero
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HardwareProfileDB
+// DeviceProfileDB
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("HardwareProfileDB - detect_cpu_brand non-empty", "[ComputeGraph][HardwareProfile]") {
-    auto brand = cg::HardwareProfileDB::detect_cpu_brand();
+TEST_CASE("DeviceProfileDB - detect_cpu_brand non-empty", "[ComputeGraph][CostModel]") {
+    auto brand = cg::DeviceProfileDB::detect_cpu_brand();
     CHECK_FALSE(brand.empty());
     CHECK(brand != "Unknown CPU");
 }
 
-TEST_CASE("HardwareProfileDB - detect_gpu_name", "[ComputeGraph][HardwareProfile]") {
+TEST_CASE("DeviceProfileDB - detect_gpu_name", "[ComputeGraph][CostModel]") {
     auto name = einsums::gpu::device_name();
     // Just verify it doesn't crash. Content depends on backend.
     (void)name;
 }
 
-TEST_CASE("HardwareProfileDB - fallback for unknown brand", "[ComputeGraph][HardwareProfile]") {
-    auto db = cg::HardwareProfileDB::load_defaults();
+TEST_CASE("DeviceProfileDB - fallback for unknown brand", "[ComputeGraph][CostModel]") {
+    auto db = cg::DeviceProfileDB::load_defaults();
 
-    // Build profile, should always succeed even with unknown hardware
-    auto profile = db.build_profile();
-    CHECK_FALSE(profile.cpu.name.empty());
-    CHECK(profile.cpu.peak_gflops_fp64 > 0);
+    // Build cost_model, should always succeed even with unknown hardware
+    auto cost_model = db.build_cost_model();
+    CHECK_FALSE(cost_model.cpu.name.empty());
+    CHECK(cost_model.cpu.peak_gflops_fp64 > 0);
 }
 
-TEST_CASE("HardwareProfile - JSON round-trip preserves network params", "[ComputeGraph][HardwareProfile]") {
-    cg::HardwareProfile original;
+TEST_CASE("CostModel - JSON round-trip preserves network params", "[ComputeGraph][CostModel]") {
+    cg::CostModel original;
     original.source                        = "test";
     original.cpu.name                      = "Test CPU";
     original.cpu.peak_gflops_fp64          = 42.0;
@@ -706,7 +706,7 @@ TEST_CASE("HardwareProfile - JSON round-trip preserves network params", "[Comput
     std::string const path        = "test_hw_roundtrip.json";
     auto              save_result = original.save_json(path);
     REQUIRE(save_result.has_value());
-    auto load_result = cg::HardwareProfile::load_json(path);
+    auto load_result = cg::CostModel::load_json(path);
     REQUIRE(load_result.has_value());
     auto &loaded = load_result.value();
 
@@ -771,15 +771,15 @@ TEST_CASE("Materialization - single deferred tensor", "[ComputeGraph][Passes]") 
     CHECK(pass.num_materialized() == 1);
 }
 
-TEST_CASE("HardwareProfile - load_json returns error for missing file", "[ComputeGraph][HardwareProfile]") {
-    auto result = cg::HardwareProfile::load_json("/nonexistent/path/does_not_exist.json");
+TEST_CASE("CostModel - load_json returns error for missing file", "[ComputeGraph][CostModel]") {
+    auto result = cg::CostModel::load_json("/nonexistent/path/does_not_exist.json");
     CHECK_FALSE(result.has_value());
     CHECK(result.error().kind == cg::GraphError::Kind::IO);
     CHECK(result.error().message.find("cannot open") != std::string::npos);
 }
 
-TEST_CASE("HardwareProfile - save_json returns error for bad path", "[ComputeGraph][HardwareProfile]") {
-    cg::HardwareProfile p;
+TEST_CASE("CostModel - save_json returns error for bad path", "[ComputeGraph][CostModel]") {
+    cg::CostModel p;
     p.cpu.name  = "test";
     auto result = p.save_json("/nonexistent/directory/file.json");
     CHECK_FALSE(result.has_value());
@@ -814,14 +814,14 @@ TEST_CASE("ContractionPlanning - reports comm_cost for distributed tensors", "[C
         }
     }
 
-    // Use a profile with network params so comm_cost > 0
-    cg::HardwareProfile profile;
-    profile.cpu.peak_gflops_fp64          = 100.0;
-    profile.cpu.mem_bandwidth_gbps        = 40.0;
-    profile.cpu.inter_node_bandwidth_gbps = 25.0;
-    profile.cpu.inter_node_latency_us     = 2.0;
+    // Use a cost_model with network params so comm_cost > 0
+    cg::CostModel cost_model;
+    cost_model.cpu.peak_gflops_fp64          = 100.0;
+    cost_model.cpu.mem_bandwidth_gbps        = 40.0;
+    cost_model.cpu.inter_node_bandwidth_gbps = 25.0;
+    cost_model.cpu.inter_node_latency_us     = 2.0;
 
-    cg::passes::ContractionPlanning pass(profile);
+    cg::passes::ContractionPlanning pass(cost_model);
     pass.run(graph);
 
     REQUIRE(pass.chain_reports().size() == 1);
@@ -999,27 +999,27 @@ TEST_CASE("gpu::device_name returns string", "[ComputeGraph][GPU]") {
     CHECK(name.size() >= 0); // Always true, but exercises the function
 }
 
-TEST_CASE("HardwareProfile - EINSUMS_HARDWARE_PROFILE overrides the built-in table", "[ComputeGraph][HardwareProfile]") {
-    // Write a minimal calibrated profile, point the env var at it, and
+TEST_CASE("CostModel - EINSUMS_HARDWARE_PROFILE overrides the built-in table", "[ComputeGraph][CostModel]") {
+    // Write a minimal calibrated cost_model, point the env var at it, and
     // detect_default() must load it instead of the database. A bogus path
-    // must fall back to the table instead of failing (the profile shapes
+    // must fall back to the table instead of failing (the cost_model shapes
     // optimization choices, never correctness).
-    auto profile     = cg::HardwareProfile::detect_default();
-    profile.source   = "calibrated";
-    profile.cpu.name = "EnvOverrideTest CPU";
+    auto cost_model     = cg::CostModel::detect_default();
+    cost_model.source   = "calibrated";
+    cost_model.cpu.name = "EnvOverrideTest CPU";
 
     std::string const path = (std::filesystem::temp_directory_path() / "einsums_hw_env_test.json").string();
-    REQUIRE(profile.save_json(path));
+    REQUIRE(cost_model.save_json(path));
 
     einsums::set_env_var("EINSUMS_HARDWARE_PROFILE", path.c_str());
-    auto loaded = cg::HardwareProfile::detect_default();
+    auto loaded = cg::CostModel::detect_default();
     einsums::unset_env_var("EINSUMS_HARDWARE_PROFILE");
 
     CHECK(loaded.source == "calibrated");
     CHECK(loaded.cpu.name == "EnvOverrideTest CPU");
 
     einsums::set_env_var("EINSUMS_HARDWARE_PROFILE", "/nonexistent/einsums_hw.json");
-    auto fallback = cg::HardwareProfile::detect_default();
+    auto fallback = cg::CostModel::detect_default();
     einsums::unset_env_var("EINSUMS_HARDWARE_PROFILE");
 
     CHECK(fallback.source == "database");

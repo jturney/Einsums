@@ -660,18 +660,18 @@ See ``ComputeGraph/docs/distributed.rst`` for full details.
 Hardware-Aware Optimization
 ============================
 
-The ``ContractionPlanning`` pass uses a ``HardwareProfile`` database to make
+The ``ContractionPlanning`` pass uses a ``CostModel`` database to make
 architecture-specific decisions. The database includes 25+ pre-filled profiles
 for common CPUs and GPUs, auto-detected at runtime:
 
 .. code-block:: cpp
 
     // Automatic detection (runs inside create_default()):
-    auto profile = HardwareProfile::detect_default();
+    auto profile = CostModel::detect_default();
     // → "Apple M4 Pro" on your machine
 
     // Or provide calibrated data:
-    auto profile = HardwareProfile::load_json("calibrated.json");
+    auto profile = CostModel::load_json("calibrated.json");
 
 Run the calibration tool for precise measurements:
 

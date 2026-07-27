@@ -191,7 +191,7 @@ TEST_CASE("StreamContractionFusion - complex prefactors on complex tensors", "[C
     }
 }
 
-TEST_CASE("StreamContractionFusion - profile-derived output cap", "[ComputeGraph][Passes][StreamFusion]") {
+TEST_CASE("StreamContractionFusion - cost_model-derived output cap", "[ComputeGraph][Passes][StreamFusion]") {
     auto TEI = create_random_tensor<double>("TEI", kN, kN, kN, kN);
     auto D   = create_random_tensor<double>("D", kN, kN);
 
@@ -207,8 +207,8 @@ TEST_CASE("StreamContractionFusion - profile-derived output cap", "[ComputeGraph
         // kN x kN = 1600-element outputs exceed the privatization cap - but
         // physical axis 0 carries output label i for BOTH members, so the
         // chunked kernel writes disjoint output slices directly.
-        cg::HardwareProfile profile{};
-        profile.cpu.caches = {cg::CacheLevel{.size_bytes = 4096}};
+        cg::CostModel cost_model{};
+        cost_model.cpu.caches = {cg::CacheLevel{.size_bytes = 4096}};
 
         Tensor<double, 2> J_ref("J_ref", kN, kN), K_ref("K_ref", kN, kN);
         einsum(0.0, Indices{i, j}, &J_ref, 2.0, Indices{i, j, k, l}, TEI, Indices{k, l}, D);
@@ -222,7 +222,7 @@ TEST_CASE("StreamContractionFusion - profile-derived output cap", "[ComputeGraph
         cg::Graph graph("stream_tiny_cache");
         capture(graph, TEI_rt, D_rt, J_rt, K_rt);
 
-        cg::passes::StreamContractionFusion pass(profile);
+        cg::passes::StreamContractionFusion pass(cost_model);
         REQUIRE(pass.max_output_elems(sizeof(double)) < static_cast<size_t>(kN) * kN);
         REQUIRE(pass.run(graph));
         REQUIRE(pass.num_groups() == 1);
@@ -241,8 +241,8 @@ TEST_CASE("StreamContractionFusion - profile-derived output cap", "[ComputeGraph
         // J(i,j) needs a chunk axis from {i,j}, X(k,l) needs one from {k,l};
         // no axis covers both over-cap outputs, so both drop and no group
         // survives.
-        cg::HardwareProfile profile{};
-        profile.cpu.caches = {cg::CacheLevel{.size_bytes = 4096}};
+        cg::CostModel cost_model{};
+        cost_model.cpu.caches = {cg::CacheLevel{.size_bytes = 4096}};
 
         RuntimeTensor<double> TEI_rt(TEI), D_rt(D);
         RuntimeTensor<double> J_rt("J", std::vector<size_t>{kN, kN}), X_rt("X", std::vector<size_t>{kN, kN});
@@ -256,7 +256,7 @@ TEST_CASE("StreamContractionFusion - profile-derived output cap", "[ComputeGraph
             cg::einsum("k,l <- i,j,k,l ; i,j", 0.0, &X_rt, 1.0, TEI_rt, D_rt);
         }
 
-        cg::passes::StreamContractionFusion pass(profile);
+        cg::passes::StreamContractionFusion pass(cost_model);
         REQUIRE_FALSE(pass.run(graph));
         REQUIRE(pass.num_groups() == 0);
     }
@@ -266,8 +266,8 @@ TEST_CASE("StreamContractionFusion - profile-derived output cap", "[ComputeGraph
         // (the kernel picks the higher-stride j); Y(k) does not contain the
         // chunk label but is far under the cap, so it keeps thread-private
         // accumulators inside the same fused stream.
-        cg::HardwareProfile profile{};
-        profile.cpu.caches = {cg::CacheLevel{.size_bytes = 4096}};
+        cg::CostModel cost_model{};
+        cost_model.cpu.caches = {cg::CacheLevel{.size_bytes = 4096}};
 
         auto W3 = create_random_tensor<double>("W3", kN, kN, kN);
 
@@ -288,7 +288,7 @@ TEST_CASE("StreamContractionFusion - profile-derived output cap", "[ComputeGraph
             cg::einsum("k <- i,j,k,l ; i,j,l", 0.0, &Y_rt, 0.5, TEI_rt, W3_rt);
         }
 
-        cg::passes::StreamContractionFusion pass(profile);
+        cg::passes::StreamContractionFusion pass(cost_model);
         REQUIRE(pass.run(graph));
         REQUIRE(pass.num_groups() == 1);
 
@@ -304,8 +304,8 @@ TEST_CASE("StreamContractionFusion - profile-derived output cap", "[ComputeGraph
     }
 
     SECTION("a generous cache fuses") {
-        cg::HardwareProfile profile{};
-        profile.cpu.caches = {cg::CacheLevel{.size_bytes = size_t{1} << 30}};
+        cg::CostModel cost_model{};
+        cost_model.cpu.caches = {cg::CacheLevel{.size_bytes = size_t{1} << 30}};
 
         RuntimeTensor<double> TEI_rt(TEI), D_rt(D);
         RuntimeTensor<double> J_rt("J", std::vector<size_t>{kN, kN}), K_rt("K", std::vector<size_t>{kN, kN});
@@ -315,16 +315,16 @@ TEST_CASE("StreamContractionFusion - profile-derived output cap", "[ComputeGraph
         cg::Graph graph("stream_big_cache");
         capture(graph, TEI_rt, D_rt, J_rt, K_rt);
 
-        cg::passes::StreamContractionFusion pass(profile);
+        cg::passes::StreamContractionFusion pass(cost_model);
         REQUIRE(pass.max_output_elems(sizeof(double)) >= static_cast<size_t>(kN) * kN);
         REQUIRE(pass.run(graph));
         REQUIRE(pass.num_groups() == 1);
     }
 
     SECTION("no cache data keeps the fallback cap") {
-        cg::passes::StreamContractionFusion const with_empty_profile{cg::HardwareProfile{}};
+        cg::passes::StreamContractionFusion const with_empty_model{cg::CostModel{}};
         cg::passes::StreamContractionFusion const without_profile{};
-        REQUIRE(with_empty_profile.max_output_elems(sizeof(double)) == without_profile.max_output_elems(sizeof(double)));
+        REQUIRE(with_empty_model.max_output_elems(sizeof(double)) == without_profile.max_output_elems(sizeof(double)));
     }
 }
 
