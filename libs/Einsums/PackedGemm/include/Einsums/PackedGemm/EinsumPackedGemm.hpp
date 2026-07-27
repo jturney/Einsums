@@ -71,12 +71,27 @@ inline std::vector<std::string> compute_link_indices(std::vector<std::string> co
 template <einsums::BasicTensorConcept TensorType>
 TensorDescriptor tensor_descriptor(TensorType const &t) {
     TensorDescriptor td;
-    if constexpr (requires { std::remove_cvref_t<TensorType>::Rank; }) {
-        td.rank = std::remove_cvref_t<TensorType>::Rank;
+    // TensorType::Rank exists for BOTH compile-time tensors (Rank = K >= 0) and
+    // runtime-rank ones (Rank = dynamic_rank = -1, a sentinel), so it is only a
+    // real rank when non-negative. Taking the sentinel at face value gave every
+    // runtime-rank operand a descriptor rank of (size_t)-1 - which went unnoticed
+    // while rank was merely hashed and compared, since they all shared the same
+    // wrong value and the dims vectors did the real disambiguating.
+    using TT = std::remove_cvref_t<TensorType>;
+    if constexpr (requires { TT::Rank; }) {
+        if constexpr (TT::Rank >= 0) {
+            td.rank = static_cast<size_t>(TT::Rank);
+        } else {
+            td.rank = t.rank();
+        }
     } else {
         td.rank = t.rank();
     }
     td.dtype = get_scalar_type<typename TensorType::ValueType>();
+    td.strides.resize(td.rank);
+    for (size_t i = 0; i < td.rank; ++i) {
+        td.strides[i] = static_cast<int64_t>(t.stride(i));
+    }
     return td;
 }
 
@@ -1263,22 +1278,32 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     // -------------------------------------------------------------------------
     // Pack-A / Pack-B path (BLIS-style, with optional batch dims).
     // -------------------------------------------------------------------------
-    PackingPlan const *cached_topo = PackingPlanCache::instance().lookup(key);
-    PackingPlan        plan;
-    if (cached_topo) {
-        plan = *cached_topo;
-        ProfileAnnotate("packed_gemm_plan", "cached");
-    } else {
-        plan = compute_packing_topology(key);
-        if (plan.valid) {
-            PackingPlanCache::instance().insert(key, plan);
+    // The cache stores plans that are already filled, k-sorted and coalesced, so
+    // a hit is a lookup and nothing else. That is sound because the key pins the
+    // strides (TensorDescriptor::strides) and those three steps read nothing
+    // else - they never look at an operand pointer. It matters because tiled
+    // expansion drives thousands of same-shape contractions through here, where
+    // redoing the preparation dominated the arithmetic.
+    //
+    // The pointer outlives the shared lock deliberately: entries are never
+    // erased, and unordered_map is node-based, so rehashing does not invalidate
+    // references to mapped values. Nothing is copied on the hot path.
+    PackingPlan const *cached = PackingPlanCache::instance().lookup(key);
+    PackingPlan        computed;
+    if (cached == nullptr) {
+        computed = compute_packing_topology(key);
+        if (computed.valid) {
+            fill_strides(computed, A, B, *C);
+            sort_k_dims_for_packing(computed);
+            coalesce_plan(computed);
+            PackingPlanCache::instance().insert(key, computed);
             ProfileAnnotate("packed_gemm_plan", "computed");
         }
+    } else {
+        ProfileAnnotate("packed_gemm_plan", "cached");
     }
+    PackingPlan const &plan = (cached != nullptr) ? *cached : computed;
     if (plan.valid) {
-        fill_strides(plan, A, B, *C);
-        sort_k_dims_for_packing(plan);
-        coalesce_plan(plan);
 
         bool const multi_m = (plan.c_m_dims.size() > 1);
         bool const multi_n = (plan.c_n_dims.size() > 1);

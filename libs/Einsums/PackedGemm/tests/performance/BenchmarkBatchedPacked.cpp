@@ -87,16 +87,20 @@ TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_
     size_t const NT   = 64; // tiles in one group
     auto const   spec = make_spec({"i", "j", "a", "b"}, {"i", "j", "e", "f"}, {"e", "f", "a", "b"});
 
-    std::vector<RuntimeTensor<double>> As, Bs, Cs, Cs2;
+    std::vector<RuntimeTensor<double>> As, Bs, Cs, Cs2, Cs3, Cs4;
     As.reserve(NT);
     Bs.reserve(NT);
     Cs.reserve(NT);
     Cs2.reserve(NT);
+    Cs3.reserve(NT);
+    Cs4.reserve(NT);
     for (size_t n = 0; n < NT; ++n) {
         As.push_back(make("A" + std::to_string(n), {2, 2, 4, 4}, 1.0 + 0.01 * static_cast<double>(n)));
         Bs.push_back(make("B" + std::to_string(n), {4, 4, 4, 4}, 2.0 + 0.01 * static_cast<double>(n)));
         Cs.push_back(make("C" + std::to_string(n), {2, 2, 4, 4}, 0.0));
         Cs2.push_back(make("D" + std::to_string(n), {2, 2, 4, 4}, 0.0));
+        Cs3.push_back(make("E" + std::to_string(n), {2, 2, 4, 4}, 0.0));
+        Cs4.push_back(make("F" + std::to_string(n), {2, 2, 4, 4}, 0.0));
     }
 
     // ── Baseline: what expansion produces today, one full call per tile ──────
@@ -151,27 +155,111 @@ TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_
         }
     };
 
-    // Same answer both ways, or the comparison is meaningless.
+    // ── Middle arm: what a fully-prepared plan cache would buy on its own ────
+    // Today a cache HIT still copies the plan and re-runs fill_strides,
+    // sort_k_dims_for_packing and coalesce_plan. None of those look at operand
+    // pointers - only at strides - so a key that included the strides could
+    // store the post-coalesce plan and skip all three. That change is
+    // transparent (it needs no new node kind and helps eager callers too), so
+    // it matters whether it captures most of the gap or only a sliver.
+    //
+    // This arm pays everything a real call pays except those three: it rebuilds
+    // the spec and key per tile, hashes, hits the cache, copies the plan, then
+    // contracts.
+    // Seed the cache with the already-prepared plan so the lookup below hits.
+    pg::PackingPlanCache::instance().insert(key, plan);
+
+    // ── Control arm: the cache semantics that preceded the prepared plan ─────
+    // The cache used to store a bare topology, so every hit copied it and re-ran
+    // fill_strides + sort_k_dims_for_packing + coalesce_plan. Emulating that here
+    // rather than comparing against an older build keeps the comparison inside
+    // one binary and one run - these numbers move by tens of percent with
+    // unrelated machine load, so across-run deltas of this size mean nothing.
+    pg::PackingPlan const topology = pg::compute_packing_topology(key);
+    REQUIRE(topology.valid);
+
+    // Both A0 and A build the key per tile and hit the cache, exactly as a real
+    // call does. The ONLY difference between them is what the hit yields: a bare
+    // topology that must then be copied and prepared (A0, the old semantics), or
+    // a prepared plan usable in place (A, the new ones). Anything else in common
+    // cancels in the ratio.
+    auto const build_key = [&](size_t n, RuntimeTensor<double> const &Cn) {
+        pg::ContractionKey k;
+        k.spec                = spec;
+        k.spec.target_indices = pg::unique_ordered(k.spec.c_indices);
+        k.spec.link_indices   = pg::compute_link_indices(k.spec.a_indices, k.spec.b_indices, k.spec.target_indices);
+        k.a_desc              = pg::tensor_descriptor(As[n]);
+        k.b_desc              = pg::tensor_descriptor(Bs[n]);
+        k.c_desc              = pg::tensor_descriptor(Cn);
+        k.target_dims         = key.target_dims;
+        k.link_dims           = key.link_dims;
+        return k;
+    };
+
+    auto const per_call_topology = [&] {
+        for (size_t n = 0; n < NT; ++n) {
+            pg::ContractionKey const k = build_key(n, Cs4[n]);
+            // The old path paid for the lookup too; the hit is discarded because
+            // what it used to yield is exactly `topology`.
+            [[maybe_unused]] auto const *hit = pg::PackingPlanCache::instance().lookup(k);
+            pg::PackingPlan              p   = topology;
+            pg::fill_strides(p, As[n], Bs[n], Cs4[n]);
+            pg::sort_k_dims_for_packing(p);
+            pg::coalesce_plan(p);
+            pg::blis_contraction<double>(p, Cs4[n], As[n], Bs[n], 1.0, 1.0);
+        }
+    };
+
+    auto const per_call_prepared = [&] {
+        for (size_t n = 0; n < NT; ++n) {
+            pg::ContractionKey const k   = build_key(n, Cs3[n]);
+            pg::PackingPlan const   *hit = pg::PackingPlanCache::instance().lookup(k);
+            pg::PackingPlan const   &p   = (hit != nullptr) ? *hit : plan; // new: used in place, no copy
+            pg::blis_contraction<double>(p, Cs3[n], As[n], Bs[n], 1.0, 1.0);
+        }
+    };
+
+    // Same answer all three ways, or the comparison is meaningless.
     per_call();
     batched();
+    per_call_prepared();
+    per_call_topology();
     for (size_t n = 0; n < NT; ++n) {
         REQUIRE(Cs[n].size() == Cs2[n].size());
+        REQUIRE(Cs[n].size() == Cs3[n].size());
+        REQUIRE(Cs[n].size() == Cs4[n].size());
         for (size_t i = 0; i < Cs[n].size(); ++i) {
             REQUIRE_THAT(Cs2[n].data()[i], Catch::Matchers::WithinRel(Cs[n].data()[i], 1e-12));
+            REQUIRE_THAT(Cs3[n].data()[i], Catch::Matchers::WithinRel(Cs[n].data()[i], 1e-12));
+            REQUIRE_THAT(Cs4[n].data()[i], Catch::Matchers::WithinRel(Cs[n].data()[i], 1e-12));
         }
     }
 
-    double const t_per_call = best_of(7, 20, per_call);
-    double const t_batched  = best_of(7, 20, batched);
+    // Alternate the arms so a drift in machine state during the run cannot be
+    // mistaken for a difference between them.
+    double t_per_call = 1e300, t_topology = 1e300, t_prepared = 1e300, t_batched = 1e300;
+    for (int round = 0; round < 3; ++round) {
+        t_per_call = std::min(t_per_call, best_of(3, 20, per_call));
+        t_topology = std::min(t_topology, best_of(3, 20, per_call_topology));
+        t_prepared = std::min(t_prepared, best_of(3, 20, per_call_prepared));
+        t_batched  = std::min(t_batched, best_of(3, 20, batched));
+    }
 
     // 2*M*N*K per tile with M=(i,j)=4, N=(a,b)=16, K=(e,f)=16.
     double const flops = static_cast<double>(NT) * 2.0 * 4.0 * 16.0 * 16.0;
 
-    WARN(fmt::format("\n  {} tiles, one full try_packed_gemm each : {:8.1f} us  ({:6.2f} GFLOP/s, {:5.2f} us/tile)"
-                     "\n  {} tiles, one shared plan               : {:8.1f} us  ({:6.2f} GFLOP/s, {:5.2f} us/tile)"
-                     "\n  setup amortized away                    : {:5.1f}x",
-                     NT, t_per_call * 1e6, flops / t_per_call / 1e9, t_per_call * 1e6 / static_cast<double>(NT), NT, t_batched * 1e6,
-                     flops / t_batched / 1e9, t_batched * 1e6 / static_cast<double>(NT), t_per_call / t_batched));
+    auto const line = [&](char const *label, double t) {
+        return fmt::format("\n  {:<40}: {:8.1f} us  ({:6.2f} GFLOP/s, {:5.2f} us/tile, {:5.1f}x)", label, t * 1e6, flops / t / 1e9,
+                           t * 1e6 / static_cast<double>(NT), t_per_call / t);
+    };
+
+    WARN(fmt::format("{} tiles per group{}{}{}{}"
+                     "\n\n  prepared-vs-topology cache (A0 -> A)     : {:5.2f}x on the plan-preparation step"
+                     "\n  A captures {:4.1f}% of the gap B closes; B's remaining edge over A is {:4.1f}x",
+                     NT, line("today: one full try_packed_gemm each", t_per_call),
+                     line("A0: per-call key, topology plan re-prepared", t_topology),
+                     line("A: per-call key, fully prepared plan", t_prepared), line("B: one shared plan, blis_contraction only", t_batched),
+                     t_topology / t_prepared, 100.0 * (t_per_call - t_prepared) / (t_per_call - t_batched), t_prepared / t_batched));
 }
 
 // What an OpenMP parallel region costs, against what a small contraction is

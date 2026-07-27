@@ -77,7 +77,18 @@ struct TensorDescriptor {
     size_t     rank{0};
     ScalarType dtype{ScalarType::Unknown};
 
-    bool operator==(TensorDescriptor const &o) const { return rank == o.rank && dtype == o.dtype; }
+    /// Element strides, in index order.
+    ///
+    /// Present so a cached plan can be stored fully prepared rather than as a
+    /// bare topology. fill_strides, sort_k_dims_for_packing and coalesce_plan
+    /// read nothing but the strides, so once the key pins them down the result
+    /// of all three is a property of the key and can be cached with it. Without
+    /// this field, two contractions with the same indices and dims but different
+    /// layouts - a dense tensor and a strided view - would collide, and the
+    /// stored plan would be wrong for one of them.
+    std::vector<int64_t> strides;
+
+    bool operator==(TensorDescriptor const &o) const { return rank == o.rank && dtype == o.dtype && strides == o.strides; }
 };
 
 /// @brief Full cache key uniquely identifying a contraction topology.

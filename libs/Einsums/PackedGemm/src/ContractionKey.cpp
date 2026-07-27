@@ -177,6 +177,9 @@ size_t std::hash<einsums::packed_gemm::ContractionKey>::operator()(einsums::pack
     hash_combine(h, key.b_desc.rank);
     hash_combine(h, key.c_desc.rank);
     hash_combine(h, static_cast<int>(key.a_desc.dtype));
+    hash_combine(h, hash_vec_i64(key.a_desc.strides));
+    hash_combine(h, hash_vec_i64(key.b_desc.strides));
+    hash_combine(h, hash_vec_i64(key.c_desc.strides));
     hash_combine(h, hash_vec_i64(key.target_dims));
     hash_combine(h, hash_vec_i64(key.link_dims));
     return h;
