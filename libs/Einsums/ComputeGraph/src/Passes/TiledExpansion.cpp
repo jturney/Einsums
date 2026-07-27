@@ -64,12 +64,13 @@ TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Den
 }
 
 void TiledExpansion::reset_stats() {
-    _num_expanded   = 0;
-    _num_tile_nodes = 0;
-    _num_declined   = 0;
-    _num_screened   = 0;
-    _num_densified  = 0;
-    _num_fused      = 0;
+    _num_expanded       = 0;
+    _num_tile_nodes     = 0;
+    _num_declined       = 0;
+    _num_screened       = 0;
+    _num_densified      = 0;
+    _num_fused          = 0;
+    _num_gathers_reused = 0;
 }
 
 bool TiledExpansion::run(Graph &graph) {
@@ -935,7 +936,26 @@ bool TiledExpansion::run(Graph &graph) {
     // adopt(), because they must outlive this pass and be alive for every replay.
     // They are registered as ordinary tensors so the dense contraction is a normal
     // Einsum node that later passes can reason about, rather than an opaque blob.
-    auto emit_densified = [&graph](Plan const &pl, std::vector<Node> &out) -> bool {
+    // A dense gather already emitted and still valid at this point in the emission.
+    // One tiled operand is typically contracted many times in a row -- the CCSD
+    // residual gathers t1 into a dense buffer 33 times and t2 eleven times -- and
+    // re-copying it for each is pure waste while nothing has written it.
+    //
+    // The key is the exact list of tile ids gathered, which is what makes this safe
+    // in both directions: a tensor that has since GAINED a tile produces a
+    // different list and misses, and an entry is dropped outright as soon as any
+    // emitted node writes a tile it covers. Entries can only be invalidated by
+    // nodes this pass emits, because a candidate whose tiled operands are touched
+    // by a node that does not expand is rejected by the stranding fixpoint above.
+    struct GatheredBuffer {
+        std::vector<size_t>          dims;
+        std::vector<TensorId>        sources;
+        std::unordered_set<TensorId> source_set;
+        TensorId                     buffer{0};
+    };
+    std::vector<GatheredBuffer> gathered;
+
+    auto emit_densified = [&graph, &gathered, this](Plan const &pl, std::vector<Node> &out) -> bool {
         size_t const ra = pl.src_a.rank, rb = pl.src_b.rank, rc = pl.dst.rank;
 
         // Dense extent of an operand axis is the sum of its tile sizes; a tile's
@@ -981,16 +1001,8 @@ bool TiledExpansion::run(Graph &graph) {
         detail::dispatch_scalar_type(pl.dtype, [&]<typename T>(T /*tag*/) {
             using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
 
-            auto *ba = new Dense("densify_a", da);
-            auto *bb = new Dense("densify_b", db);
             auto *bc = new Dense("densify_c", dc);
-            graph.adopt([ba, bb, bc]() {
-                delete ba;
-                delete bb;
-                delete bc;
-            });
-            TensorId const ida = graph.register_tensor(make_handle(*ba, 0));
-            TensorId const idb = graph.register_tensor(make_handle(*bb, 0));
+            graph.adopt([bc]() { delete bc; });
             TensorId const idc = graph.register_tensor(make_handle(*bc, 0));
 
             // Copy one tile into (or out of) its window in a dense buffer.
@@ -1006,18 +1018,31 @@ bool TiledExpansion::run(Graph &graph) {
 
             // Gather: zero, then copy every tile that exists. An absent tile is a
             // structural zero, which is exactly what the zeroed buffer already holds.
-            auto make_gather = [&](TiledView const &v, Dense *buf, TensorId buf_id, char const *what) {
+            // Reuses a buffer already holding this exact tile set if one is still
+            // valid, in which case no node is emitted at all.
+            auto make_gather = [&](TiledView const &v, std::vector<size_t> const &dims, char const *what) {
                 std::vector<std::pair<TensorId, std::vector<size_t>>> srcs;
                 std::vector<TensorId>                                 ins;
                 for (auto const &co : v.coords()) {
                     srcs.emplace_back(v.tile_id(co), offsets_of(v, co));
                     ins.push_back(srcs.back().first);
                 }
+                for (auto const &have : gathered) {
+                    if (have.dims == dims && have.sources == ins) {
+                        ++_num_gathers_reused;
+                        return have.buffer;
+                    }
+                }
+
+                auto *buf = new Dense(fmt::format("densify_{}", what), dims);
+                graph.adopt([buf]() { delete buf; });
+                TensorId const buf_id = graph.register_tensor(make_handle(*buf, 0));
+
                 Node g;
                 g.id      = graph.reserve_node_id();
                 g.kind    = OpKind::TileGather;
                 g.label   = fmt::format("tile_gather({})", what);
-                g.inputs  = std::move(ins);
+                g.inputs  = ins;
                 g.outputs = {buf_id};
                 Graph *gp = &graph;
                 g.execute = [gp, buf, srcs = std::move(srcs), window]() {
@@ -1028,11 +1053,14 @@ bool TiledExpansion::run(Graph &graph) {
                         w          = *tile;
                     }
                 };
-                return g;
+                out.push_back(std::move(g));
+                gathered.push_back(
+                    {.dims = dims, .sources = ins, .source_set = std::unordered_set<TensorId>(ins.begin(), ins.end()), .buffer = buf_id});
+                return buf_id;
             };
 
-            out.push_back(make_gather(pl.src_a, ba, ida, "A"));
-            out.push_back(make_gather(pl.src_b, bb, idb, "B"));
+            TensorId const ida = make_gather(pl.src_a, da, "a");
+            TensorId const idb = make_gather(pl.src_b, db, "b");
 
             // One dense contraction. c_pf is 0 because the scatter applies the real
             // one per output tile; ab_pf rides along here as it would per tile.
@@ -1185,6 +1213,15 @@ bool TiledExpansion::run(Graph &graph) {
             break;
         }
 
+        // Anything this group writes invalidates every gathered copy covering it.
+        // Done after the whole group so a contraction that reads a tensor it also
+        // writes still gathers the pre-write contents, exactly as it did before.
+        for (auto const &nd : emitted) {
+            for (TensorId const written : nd.outputs) {
+                std::erase_if(gathered, [written](GatheredBuffer const &g) { return g.source_set.contains(written); });
+            }
+        }
+
         _num_tile_nodes += emitted.size();
         ++_num_expanded;
         remove[pl.index] = true;
@@ -1213,8 +1250,9 @@ bool TiledExpansion::run(Graph &graph) {
 
     EINSUMS_LOG_INFO("TiledExpansion: expanded {} tiled einsum(s) into {} per-tile nodes ({} declined)", _num_expanded, _num_tile_nodes,
                      _num_declined);
-    report(1, fmt::format("expanded {} tiled op(s) into {} node(s) ({} densified, {} elementwise group(s) fused), declined {}",
-                          _num_expanded, _num_tile_nodes, _num_densified, _num_fused, _num_declined));
+    report(1, fmt::format("expanded {} tiled op(s) into {} node(s) ({} densified, {} elementwise group(s) fused, {} gather(s) reused), "
+                          "declined {}",
+                          _num_expanded, _num_tile_nodes, _num_densified, _num_fused, _num_gathers_reused, _num_declined));
     return true;
 }
 

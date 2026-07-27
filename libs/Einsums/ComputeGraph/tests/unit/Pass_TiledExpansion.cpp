@@ -1605,3 +1605,107 @@ TEST_CASE("TiledExpansion - a contraction's leftover scales fuse", "[ComputeGrap
     graph.execute();
     require_tiles_match(C, C_ref);
 }
+
+// ── Gather reuse ────────────────────────────────────────────────────────────
+// Densifying gathers each tiled operand into a dense buffer. One operand is
+// typically contracted many times in a row, and re-copying it each time is waste
+// while nothing has written it.
+
+TEST_CASE("TiledExpansion - an operand gathered twice is gathered once", "[ComputeGraph][Passes][Tiled]") {
+    Grid const gA{{2, 3}, {4, 5}};
+    Grid const gB{{4, 5}, {3, 4}};
+    Grid const gC{{2, 3}, {3, 4}};
+
+    auto aval = [](int r, int c) { return 1.0 + static_cast<double>(r * 9 + c); };
+    auto bval = [](int r, int c) { return 2.0 - static_cast<double>(r * 7 + c); };
+
+    // Two contractions over the same operands into different outputs. Nothing
+    // writes A or B in between, so both gathers of each may be shared.
+    auto run = [&](cg::passes::Densify densify, size_t &n_gather, size_t &reused) {
+        auto A = make_tiled("A", gA, full_coords(gA));
+        auto B = make_tiled("B", gB, full_coords(gB));
+        auto C = make_tiled("C", gC, {});
+        auto D = make_tiled("D", gC, {});
+        fill(A, aval);
+        fill(B, bval);
+        cg::Graph graph("reuse");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ij <- ik ; kj", &C, A, B);
+            cg::einsum("ij <- ik ; kj", 2.0, &D, 1.0, A, B);
+        }
+        cg::PassManager pm;
+        auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, densify, kNoFuse);
+        pm.add(pass);
+        REQUIRE(graph.apply(pm));
+        n_gather = nodes_of_kind(graph, cg::OpKind::TileGather);
+        reused   = pass->num_gathers_reused();
+        graph.execute();
+        return std::make_pair(gather(C, 5, 7), gather(D, 5, 7));
+    };
+
+    size_t     per_tile_gathers = 0, per_tile_reused = 0, dense_gathers = 0, dense_reused = 0;
+    auto const reference = run(kPerTile, per_tile_gathers, per_tile_reused);
+    auto const densified = run(cg::passes::Densify::Always, dense_gathers, dense_reused);
+
+    CHECK(per_tile_gathers == 0);
+    CHECK(per_tile_reused == 0);
+    // Four operand gathers were called for; two were served from the first pair.
+    CHECK(dense_gathers == 2);
+    CHECK(dense_reused == 2);
+
+    REQUIRE(reference.first.size() == densified.first.size());
+    for (size_t i = 0; i < reference.first.size(); ++i) {
+        REQUIRE_THAT(densified.first[i], Catch::Matchers::WithinRel(reference.first[i], 1e-12));
+        REQUIRE_THAT(densified.second[i], Catch::Matchers::WithinRel(reference.second[i], 1e-12));
+    }
+}
+
+TEST_CASE("TiledExpansion - a gathered operand that is written is gathered again", "[ComputeGraph][Passes][Tiled]") {
+    // The invalidation that makes the reuse above safe. A is scaled between the two
+    // contractions, so the second must see the scaled values -- reusing the first
+    // gather would silently contract the stale copy.
+    Grid const gA{{2, 3}, {4, 5}};
+    Grid const gB{{4, 5}, {3, 4}};
+    Grid const gC{{2, 3}, {3, 4}};
+
+    auto aval = [](int r, int c) { return 1.0 + static_cast<double>(r * 9 + c); };
+    auto bval = [](int r, int c) { return 2.0 - static_cast<double>(r * 7 + c); };
+
+    auto run = [&](cg::passes::Densify densify, size_t &n_gather, size_t &reused) {
+        auto A = make_tiled("A", gA, full_coords(gA));
+        auto B = make_tiled("B", gB, full_coords(gB));
+        auto C = make_tiled("C", gC, {});
+        auto D = make_tiled("D", gC, {});
+        fill(A, aval);
+        fill(B, bval);
+        cg::Graph graph("invalidate");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ij <- ik ; kj", &C, A, B);
+            cg::scale(-3.0, &A);
+            cg::einsum("ij <- ik ; kj", &D, A, B);
+        }
+        cg::PassManager pm;
+        auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, densify, kNoFuse);
+        pm.add(pass);
+        REQUIRE(graph.apply(pm));
+        n_gather = nodes_of_kind(graph, cg::OpKind::TileGather);
+        reused   = pass->num_gathers_reused();
+        graph.execute();
+        return gather(D, 5, 7);
+    };
+
+    size_t     per_tile_gathers = 0, per_tile_reused = 0, dense_gathers = 0, dense_reused = 0;
+    auto const reference = run(kPerTile, per_tile_gathers, per_tile_reused);
+    auto const densified = run(cg::passes::Densify::Always, dense_gathers, dense_reused);
+
+    // A is gathered twice; only B is shared.
+    CHECK(dense_gathers == 3);
+    CHECK(dense_reused == 1);
+
+    REQUIRE(reference.size() == densified.size());
+    for (size_t i = 0; i < reference.size(); ++i) {
+        REQUIRE_THAT(densified[i], Catch::Matchers::WithinRel(reference[i], 1e-12));
+    }
+}

@@ -178,6 +178,26 @@ namespace einsums::compute_graph::passes {
  * still right, since it buys those nodes back for nothing, but the replay time
  * this recovers is a few percent and not the fifth that the node count suggests.
  *
+ * @par Gathering an operand once
+ * A densified contraction copies each tiled operand into a dense buffer, and the
+ * same operand is usually contracted several times running: the CCSD residual
+ * gathers the singles amplitudes 33 times and the doubles eleven. Those copies
+ * are identical while nothing has written the tiles between them, so the pass
+ * keys each gather on the exact list of tile ids it covers and reuses the buffer
+ * when that list is already in hand.
+ *
+ * Two things keep it honest. A tensor that has GAINED a tile since produces a
+ * different list, so it misses and is gathered afresh rather than silently
+ * contracting a copy that is missing a block. And an entry is dropped as soon as
+ * any emitted node writes a tile it covers -- which catches every writer, because
+ * a candidate whose tiled operands are touched by a node that does not expand has
+ * already been rejected by the stranding fixpoint. Reuse is safe across
+ * scheduling too: the dependency scan tracks write-after-read, so a later writer
+ * of those tiles cannot be hoisted above the gather that reads them.
+ *
+ * It is worth more than the densification that creates it. On the residual the
+ * gathers fall from 92 nodes to 23 and from 2.20 ms to 0.71 of a 10 ms replay.
+ *
  * A flop-based gate was tried first and does not work. Measured on one CCSD
  * residual at two model sizes, replay with the profiler disabled:
  *
@@ -288,6 +308,9 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     /// Groups of elementwise tile ops collapsed into a single node, for the same
     /// reason.
     [[nodiscard]] size_t num_fused() const { return _num_fused; }
+    /// Gathers not emitted because a dense copy of exactly those tiles was already
+    /// available and nothing had written them since.
+    [[nodiscard]] size_t num_gathers_reused() const { return _num_gathers_reused; }
 
   private:
     size_t    _max_nodes;
@@ -301,6 +324,7 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     size_t    _num_screened{0};
     size_t    _num_densified{0};
     size_t    _num_fused{0};
+    size_t    _num_gathers_reused{0};
 };
 
 } // namespace einsums::compute_graph::passes
