@@ -4,11 +4,19 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/Logging.hpp>
+
+#ifdef _OPENMP
+#    include <omp.h>
+#endif
+
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 
 #include <algorithm>
+#include <cerrno>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -147,6 +155,44 @@ CacheSizes detect_cache_sizes() {
 
 } // anonymous namespace
 
+namespace {
+
+/// Time entering and leaving an empty parallel region, warm team, best of a few
+/// trials. The team is warmed first so this measures steady-state fork/join and
+/// not one-off thread creation.
+double measure_omp_region_cost_ns() {
+#ifdef _OPENMP
+    int const nthreads = omp_get_max_threads();
+    if (nthreads <= 1) {
+        return 0.0;
+    }
+    constexpr int kReps   = 200;
+    constexpr int kTrials = 5;
+    int volatile sink     = 0;
+    auto        once      = [&sink]() {
+#    pragma omp parallel
+        { sink = omp_get_thread_num(); }
+    };
+    for (int i = 0; i < kReps; ++i) {
+        once();
+    }
+    double best = 1e30;
+    for (int t = 0; t < kTrials; ++t) {
+        auto const t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kReps; ++i) {
+            once();
+        }
+        auto const t1 = std::chrono::steady_clock::now();
+        best          = std::min(best, std::chrono::duration<double, std::nano>(t1 - t0).count() / kReps);
+    }
+    return best;
+#else
+    return 0.0;
+#endif
+}
+
+} // namespace
+
 CpuConfig const &cpu_config() {
     static CpuConfig const cfg = []() -> CpuConfig {
         CpuConfig c{};
@@ -166,8 +212,38 @@ CpuConfig const &cpu_config() {
         c.l2_cache_size = cs.l2;
         c.l3_cache_size = cs.l3;
 
-        EINSUMS_LOG_INFO("cpu_config: VL={}, MR={}, NR={}, L1={}K, L2={}K, L3={}K", c.VL, c.MR, c.NR, cs.l1 / 1024, cs.l2 / 1024,
-                         cs.l3 / 1024);
+        c.omp_region_cost_ns = measure_omp_region_cost_ns();
+        // Convert the measured region cost into a work threshold: a region pays for
+        // itself once the work it distributes takes longer than entering it, so the
+        // break-even is region_cost x rate.
+        //
+        // The rate is the one SMALL contractions actually achieve -- measured at
+        // ~1 GFLOP/s for the per-call path in BenchmarkBatchedPacked -- not the
+        // peak. Using peak would put the break-even 20x too high and exclude
+        // contractions that genuinely benefit from threads. Erring permissive is
+        // deliberate: the target workload is insensitive to the exact value (a
+        // tiled CCSD replay is 0.03 s per iteration at every threshold from 20k
+        // flops upward, against 0.09 s with none), so the only thing a higher
+        // threshold can buy is regressions on shapes that should parallelize.
+        constexpr double kNominalFlopsPerNs = 1.0; // ~1 GFLOP/s, measured for small shapes
+        c.min_parallel_flops                = static_cast<int64_t>(c.omp_region_cost_ns * kNominalFlopsPerNs);
+
+        // Diagnostic override, so the threshold can be measured against the
+        // unthresholded behaviour in ONE process. Comparing across rebuilds is
+        // unreliable: these benchmarks swing by >50% at moderate machine load, so
+        // a same-run A/B is the only trustworthy way to attribute a change.
+        // Setting it to 0 restores "always parallelize".
+        if (char const *env = std::getenv("EINSUMS_PACKED_MIN_PARALLEL_FLOPS"); env != nullptr) {
+            errno           = 0;
+            char     *end   = nullptr;
+            long long value = std::strtoll(env, &end, 10);
+            if (errno == 0 && end != env && value >= 0) {
+                c.min_parallel_flops = static_cast<int64_t>(value);
+            }
+        }
+
+        EINSUMS_LOG_INFO("cpu_config: VL={}, MR={}, NR={}, L1={}K, L2={}K, L3={}K, omp_region={:.2f}us, min_parallel_flops={}", c.VL, c.MR,
+                         c.NR, cs.l1 / 1024, cs.l2 / 1024, cs.l3 / 1024, c.omp_region_cost_ns / 1000.0, c.min_parallel_flops);
         return c;
     }();
     return cfg;

@@ -719,14 +719,26 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // the multi-dim C elements are non-contiguous in memory.
         bool const needs_c_scatter = scatter_c;
 
-        // The NC loop is the parallel loop: shrink the NC block below the
-        // cache-derived blk.NC when needed so every thread gets at least one
-        // block. The cost is re-packing A once per extra NC block, which is a
-        // bandwidth-trivial price next to leaving all but one core idle on
-        // tall-N contractions (N <= blk.NC previously ran fully serial).
+        // The NC loop is the parallel loop, but only when there is enough work to
+        // pay for the region. Entering and leaving one costs a fork/join barrier
+        // -- measured at init into cpu_config().min_parallel_flops -- and for a
+        // small contraction that is orders of magnitude more than the arithmetic
+        // it distributes. A tiled CCSD contraction is ~2 KFLOP against a ~20 us
+        // region; expanding a tiled einsum into thousands of such nodes made the
+        // replay several times SLOWER with more threads.
+        double const work_flops    = 2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K);
+        bool const   worth_threads = work_flops >= static_cast<double>(cpu_config().min_parallel_flops);
+        bool const   parallel_nc   = !parallel_batch && worth_threads;
+
+        // Shrink the NC block below the cache-derived blk.NC so every thread gets
+        // at least one block. The cost is re-packing A once per extra NC block, a
+        // bandwidth-trivial price next to leaving all but one core idle on tall-N
+        // contractions (N <= blk.NC previously ran fully serial). Only worth doing
+        // when the loop is actually going to run in parallel: otherwise it buys
+        // extra re-packing for nothing.
         int64_t NC_blk = blk.NC;
 #ifdef _OPENMP
-        if (!parallel_batch) {
+        if (parallel_nc) {
             int const nthreads = omp_get_max_threads();
             if (nthreads > 1) {
                 int64_t const per_thread = (N + nthreads - 1) / nthreads;
@@ -748,9 +760,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         {
             LabeledSection("C++ packing and kernel");
 #ifdef _OPENMP
-            // Only parallelize the NC loop if the batch loop is NOT parallel
-            // (to avoid nested parallelism / oversubscription).
-#    pragma omp parallel for schedule(static) if (!parallel_batch)
+            // Only parallelize the NC loop if the batch loop is NOT parallel (to
+            // avoid nested parallelism / oversubscription) AND the contraction is
+            // big enough to pay for the region.
+#    pragma omp parallel for schedule(static) if (parallel_nc)
 #endif
             for (int64_t nc = 0; nc < N; nc += NC_blk) {
                 static thread_local std::vector<ValueType> tls_Ap, tls_Bp, tls_Ct;

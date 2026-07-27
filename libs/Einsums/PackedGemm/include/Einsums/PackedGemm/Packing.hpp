@@ -104,6 +104,21 @@ struct CpuConfig {
     int64_t l1_cache_size; ///< L1 data cache size in bytes (per core)
     int64_t l2_cache_size; ///< L2 cache size in bytes (per core)
     int64_t l3_cache_size; ///< L3 cache size in bytes (shared)
+
+    /// Cost in nanoseconds of entering and leaving an OpenMP parallel region at
+    /// the default thread count, measured once at init. Zero without OpenMP or on
+    /// a single thread.
+    double omp_region_cost_ns;
+
+    /// Work, in flops, below which parallelizing is a net loss.
+    ///
+    /// A parallel region only pays for itself once the work it distributes takes
+    /// longer than entering it, and on this machine an EMPTY region costs ~20 us
+    /// at the default thread count while a tiled CCSD contraction is ~2 KFLOP of
+    /// arithmetic. Derived from the measured region cost rather than hardcoded,
+    /// because the cost differs by an order of magnitude across thread counts and
+    /// OpenMP runtimes.
+    int64_t min_parallel_flops;
 };
 
 // ---------------------------------------------------------------------------
