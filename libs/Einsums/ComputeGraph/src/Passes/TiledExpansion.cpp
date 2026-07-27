@@ -15,6 +15,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <optional>
 #include <set>
@@ -42,6 +43,53 @@ struct TiledView {
     /// allocate. An unmeasurable tile is never screened.
     std::function<std::optional<double>(std::vector<int> const &)> tile_norm;
 };
+
+/// Odometer depth the gather/scatter executors walk on the stack. Densification
+/// declines above it rather than allocating scratch per replay; a tiled tensor of
+/// rank 12 is far outside anything the library is used for.
+constexpr size_t kMaxWindowRank = 12;
+
+/**
+ * @brief Where one tile sits inside a densified operand's buffer, resolved at
+ *        PASS time.
+ *
+ * Both sides are dense column-major and share their fastest axis, so the copy is
+ * a run of `run` contiguous elements repeated `runs` times, with an odometer over
+ * the remaining axes stepping the buffer side. The tile side needs no odometer at
+ * all: it is contiguous, so run @p r starts at `r * run`.
+ *
+ * The point of precomputing it is what the executor then does NOT do. Building a
+ * ``std::vector<SliceSpec>`` and an ``at_view`` per tile per replay put the
+ * allocator on the hot path - malloc and free were about a tenth of the replay's
+ * samples - to rediscover offsets planning already knew.
+ */
+struct TileWindow {
+    TensorId            id{0};   ///< the tile, resolved through the graph at execute time
+    size_t              base{0}; ///< element offset of the window's origin in the buffer
+    size_t              run{1};  ///< contiguous elements per run
+    size_t              runs{1}; ///< how many runs
+    std::vector<size_t> extent;  ///< tile extents of axes 1.., outermost last
+    std::vector<size_t> step;    ///< what one step along each of those moves in the buffer
+};
+
+/// Call `body(buffer_offset, tile_offset)` once per contiguous run.
+template <typename Body>
+void for_each_run(TileWindow const &w, Body &&body) {
+    std::array<size_t, kMaxWindowRank> index{};
+    size_t                             buffer_offset = w.base;
+    size_t const                       axes          = w.extent.size();
+    for (size_t r = 0; r < w.runs; ++r) {
+        body(buffer_offset, r * w.run);
+        for (size_t k = 0; k < axes; ++k) {
+            buffer_offset += w.step[k];
+            if (++index[k] < w.extent[k]) {
+                break;
+            }
+            buffer_offset -= w.step[k] * w.extent[k]; // wrapped; carry outward
+            index[k] = 0;
+        }
+    }
+}
 
 /// Row-major strides over a grid, so one linear index enumerates every combination.
 std::vector<size_t> grid_strides(std::vector<int> const &grid) {
@@ -958,6 +1006,13 @@ bool TiledExpansion::run(Graph &graph) {
     auto emit_densified = [&graph, &gathered, this](Plan const &pl, std::vector<Node> &out) -> bool {
         size_t const ra = pl.src_a.rank, rb = pl.src_b.rank, rc = pl.dst.rank;
 
+        // The executors walk their odometer on the stack; decline rather than
+        // grow it per replay. Checked before anything is emitted, so declining
+        // leaves the per-tile lowering a clean slate.
+        if (ra > kMaxWindowRank || rb > kMaxWindowRank || rc > kMaxWindowRank) {
+            return false;
+        }
+
         // Dense extent of an operand axis is the sum of its tile sizes; a tile's
         // offset along that axis is the prefix sum below its grid coordinate.
         auto dense_dims = [](TiledView const &v) {
@@ -969,14 +1024,34 @@ bool TiledExpansion::run(Graph &graph) {
             }
             return d;
         };
-        auto offsets_of = [](TiledView const &v, std::vector<int> const &co) {
-            std::vector<size_t> off(v.rank, 0);
-            for (size_t ax = 0; ax < v.rank; ++ax) {
-                for (int k = 0; k < co[ax]; ++k) {
-                    off[ax] += static_cast<size_t>((*v.sizes)[ax][static_cast<size_t>(k)]);
-                }
+
+        // Where one tile lands in the dense buffer, as runs the executor can copy
+        // without consulting anything. Both sides are column-major, so the buffer's
+        // axis 0 and the tile's are equally contiguous and a run is the tile's
+        // extent along it.
+        auto window_of = [](TiledView const &v, std::vector<int> const &co, std::vector<size_t> const &dims) {
+            std::vector<size_t> stride(v.rank, 1);
+            for (size_t ax = 1; ax < v.rank; ++ax) {
+                stride[ax] = stride[ax - 1] * dims[ax - 1];
             }
-            return off;
+            auto extent_at = [&](size_t ax) { return static_cast<size_t>((*v.sizes)[ax][static_cast<size_t>(co[ax])]); };
+
+            TileWindow w;
+            w.id = v.tile_id(co);
+            for (size_t ax = 0; ax < v.rank; ++ax) {
+                size_t offset = 0;
+                for (int k = 0; k < co[ax]; ++k) {
+                    offset += static_cast<size_t>((*v.sizes)[ax][static_cast<size_t>(k)]);
+                }
+                w.base += offset * stride[ax];
+            }
+            w.run = extent_at(0);
+            for (size_t ax = 1; ax < v.rank; ++ax) {
+                w.extent.push_back(extent_at(ax));
+                w.step.push_back(stride[ax]);
+                w.runs *= extent_at(ax);
+            }
+            return w;
         };
 
         std::vector<size_t> const da = dense_dims(pl.src_a), db = dense_dims(pl.src_b), dc = dense_dims(pl.dst);
@@ -1005,27 +1080,16 @@ bool TiledExpansion::run(Graph &graph) {
             graph.adopt([bc]() { delete bc; });
             TensorId const idc = graph.register_tensor(make_handle(*bc, 0));
 
-            // Copy one tile into (or out of) its window in a dense buffer.
-            // dims comes from BufferVector<size_t>, not std::vector, so stay generic.
-            auto window = [](Dense *dense, std::vector<size_t> const &off, auto const &dims) {
-                std::vector<einsums::SliceSpec> specs(dims.size());
-                for (size_t ax = 0; ax < dims.size(); ++ax) {
-                    specs[ax] = einsums::SliceSpec{einsums::SliceSpec::Kind::Range, 0, static_cast<std::int64_t>(off[ax]),
-                                                   static_cast<std::int64_t>(off[ax] + dims[ax]), 1};
-                }
-                return dense->at_view(specs);
-            };
-
             // Gather: zero, then copy every tile that exists. An absent tile is a
             // structural zero, which is exactly what the zeroed buffer already holds.
             // Reuses a buffer already holding this exact tile set if one is still
             // valid, in which case no node is emitted at all.
             auto make_gather = [&](TiledView const &v, std::vector<size_t> const &dims, char const *what) {
-                std::vector<std::pair<TensorId, std::vector<size_t>>> srcs;
-                std::vector<TensorId>                                 ins;
+                std::vector<TileWindow> windows;
+                std::vector<TensorId>   ins;
                 for (auto const &co : v.coords()) {
-                    srcs.emplace_back(v.tile_id(co), offsets_of(v, co));
-                    ins.push_back(srcs.back().first);
+                    windows.push_back(window_of(v, co, dims));
+                    ins.push_back(windows.back().id);
                 }
                 for (auto const &have : gathered) {
                     if (have.dims == dims && have.sources == ins) {
@@ -1045,12 +1109,18 @@ bool TiledExpansion::run(Graph &graph) {
                 g.inputs  = ins;
                 g.outputs = {buf_id};
                 Graph *gp = &graph;
-                g.execute = [gp, buf, srcs = std::move(srcs), window]() {
+                g.execute = [gp, buf, windows = std::move(windows)]() {
                     buf->zero();
-                    for (auto const &[tid, off] : srcs) {
-                        auto *tile = static_cast<Dense *>(gp->tensor(tid).tensor_ptr);
-                        auto  w    = window(buf, off, tile->dims());
-                        w          = *tile;
+                    T *dest = buf->data();
+                    for (auto const &w : windows) {
+                        T const *tile = static_cast<Dense const *>(gp->tensor(w.id).tensor_ptr)->data();
+                        for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
+                            T       *d = dest + buffer_offset;
+                            T const *s = tile + tile_offset;
+                            for (size_t i = 0; i < w.run; ++i) {
+                                d[i] = s[i];
+                            }
+                        });
                     }
                 };
                 out.push_back(std::move(g));
@@ -1069,13 +1139,13 @@ bool TiledExpansion::run(Graph &graph) {
 
             // Scatter into exactly the tiles the per-tile path would have written,
             // so symmetry-forbidden output blocks are still never created.
-            std::vector<std::pair<TensorId, std::vector<size_t>>> dsts;
-            std::vector<PrefactorScalar>                          pfs;
-            std::vector<TensorId>                                 outs;
+            std::vector<TileWindow>      dsts;
+            std::vector<PrefactorScalar> pfs;
+            std::vector<TensorId>        outs;
             for (size_t i = 0; i < c_tiles.size(); ++i) {
-                dsts.emplace_back(pl.dst.tile_id(c_tiles[i]), offsets_of(pl.dst, c_tiles[i]));
+                dsts.push_back(window_of(pl.dst, c_tiles[i], dc));
                 pfs.push_back(c_tile_pf[i]);
-                outs.push_back(dsts.back().first);
+                outs.push_back(dsts.back().id);
             }
             Node sc;
             sc.id     = graph.reserve_node_id();
@@ -1091,15 +1161,28 @@ bool TiledExpansion::run(Graph &graph) {
             }
             sc.outputs = outs;
             Graph *gp  = &graph;
-            sc.execute = [gp, bc, dsts = std::move(dsts), pfs = std::move(pfs), window]() {
+            sc.execute = [gp, bc, dsts = std::move(dsts), pfs = std::move(pfs)]() {
+                T const *source = bc->data();
                 for (size_t i = 0; i < dsts.size(); ++i) {
-                    auto *tile = static_cast<Dense *>(gp->tensor(dsts[i].first).tensor_ptr);
-                    auto  w    = window(bc, dsts[i].second, tile->dims());
+                    auto const &w    = dsts[i];
+                    T          *tile = static_cast<Dense *>(gp->tensor(w.id).tensor_ptr)->data();
                     if (is_zero(pfs[i])) {
-                        *tile = w;
+                        for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
+                            T const *s = source + buffer_offset;
+                            T       *d = tile + tile_offset;
+                            for (size_t k = 0; k < w.run; ++k) {
+                                d[k] = s[k];
+                            }
+                        });
                     } else {
-                        *tile *= as<T>(pfs[i]);
-                        linear_algebra::axpy(T{1}, w, tile);
+                        T const pf = as<T>(pfs[i]);
+                        for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
+                            T const *s = source + buffer_offset;
+                            T       *d = tile + tile_offset;
+                            for (size_t k = 0; k < w.run; ++k) {
+                                d[k] = pf * d[k] + s[k];
+                            }
+                        });
                     }
                 }
             };
