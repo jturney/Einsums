@@ -4,6 +4,7 @@
 #----------------------------------------------------------------------------------------------
 
 set(PackedGemmPerfTests
+    BenchmarkBatchedPacked.cpp
     BenchmarkContraction.cpp
     BenchmarkMultiMN.cpp
     BenchmarkSortGemm.cpp
