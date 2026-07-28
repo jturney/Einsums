@@ -14,11 +14,12 @@ iteration, amplitudes t1/t2 update in place, and a convergence predicate reads
 the energy tensor. Integrals from the bridge, the Fock matrix, and the
 denominators are one-time eager setup.
 
-Convergence is DIIS-accelerated (27 -> 15 iterations here). The extrapolation
-runs eagerly in the loop predicate - the natural graph/host seam: the body
-already computes the error vectors (the update steps rd1/rd2), the host solves
-the K-sized B system between replays, and the extrapolated amplitudes are
-written back in place so the captured aliasing stays valid.
+Convergence is DIIS-accelerated via cg.diis (27 -> 15 iterations here). The
+accelerator wraps the loop predicate - the natural graph/host seam: the body
+already computes the error vectors (the update steps rd1/rd2, kept eager so
+the host can read them), the K-sized B system solves on the host between
+replays, and the extrapolated amplitudes are written back in place so the
+captured aliasing stays valid.
 
 Hybrid DF: the v⁴ particle-ladder integral <ab|ef> = (ae|bf) is the only block
 taken from density fitting, <ab|ef> = Σ_Q B^Q_ae B^Q_bf with B = J^{-1/2}(Q|vv)
@@ -62,52 +63,6 @@ Bvv = dft.Qvv_einsums()   # B^Q_{ab} = J^{-1/2}(Q|ab), einsums RuntimeTensor (na
 
 def to_t(name, a): return einsums.asarray(np.ascontiguousarray(a), name=name)
 def zt(name, shape): return einsums.create_zero_tensor(name, list(shape), dtype="float64")
-
-
-class DIIS:
-    """Pulay DIIS over flattened (t1, t2) amplitude vectors.
-
-    Error vector = the update step (r/D), the standard CC choice; the body
-    already computes it (rd1/rd2). Holds at most `k` (T, e) pairs and
-    extrapolates once two are available; an ill-conditioned B drops the
-    oldest pair and retries. Runs EAGERLY in the loop predicate: the graph
-    replays an unchanged body while the host solves the K-sized system and
-    writes the extrapolated amplitudes back between iterations.
-    """
-
-    def __init__(self, k=8):
-        self.k = k
-        self.T, self.E = [], []
-
-    def push(self, t_vec, e_vec):
-        self.T.append(t_vec)
-        self.E.append(e_vec)
-        if len(self.T) > self.k:
-            self.T.pop(0)
-            self.E.pop(0)
-
-    def extrapolate(self):
-        while len(self.T) >= 2:
-            m = len(self.T)
-            B = np.empty((m + 1, m + 1))
-            B[m, :] = B[:, m] = -1.0
-            B[m, m] = 0.0
-            for p in range(m):
-                for q in range(p, m):
-                    B[p, q] = B[q, p] = self.E[p] @ self.E[q]
-            scale = np.abs(B[:m, :m]).max()
-            if scale > 0:
-                B[:m, :m] /= scale
-            rhs = np.zeros(m + 1)
-            rhs[m] = -1.0
-            try:
-                c = np.linalg.solve(B, rhs)[:m]
-            except np.linalg.LinAlgError:
-                self.T.pop(0)
-                self.E.pop(0)
-                continue
-            return sum(ci * Ti for ci, Ti in zip(c, self.T))
-        return None
 
 # ── one-time eager setup: integrals from the bridge, Fock, denominators ──────
 HT = {("o", "o"): mints.mo_bra_half_transform_einsums(Co, Co),
@@ -187,26 +142,17 @@ def symacc(spec, A, B, pf, sign=1.0):                # r2 += sign * sym(pf*(A⊗
     la.axpby(sign, S["tmpP"], 1.0, S["r2"])
 
 # ── CCSD iteration as a graph loop ───────────────────────────────────────────
-# The predicate is the graph/host seam: the body replays unchanged while the
-# host reads the converged-energy scalar AND runs DIIS - pushing (t, r/D)
-# into the history, solving the small B system, and writing the extrapolated
-# amplitudes back IN PLACE (the graph captured t1/t2 by pointer, so element
-# assignment through np.asarray keeps the aliasing valid). 27 -> 15
-# iterations at this geometry for ~1 ms/iteration of host work.
+# cg.diis wraps the convergence predicate - the graph/host seam: the body
+# replays unchanged while, between replays, the accelerator pushes (t, r/D)
+# into its history, solves the K-sized B system on the host, and writes the
+# extrapolated amplitudes back IN PLACE (the graph captured t1/t2 by
+# pointer). 27 -> 15 iterations at this geometry for ~1 ms/iteration.
 e_prev = [1e9]
-diis = DIIS()
 def cont(it):
     e = float(np.asarray(Ecorr)[0]); d = abs(e - e_prev[0]); e_prev[0] = e
-    diis.push(np.concatenate([np.asarray(t1).ravel(), np.asarray(t2).ravel()]),
-              np.concatenate([np.asarray(S["rd1"]).ravel(), np.asarray(S["rd2"]).ravel()]))
-    ext = diis.extrapolate()
-    if ext is not None:
-        n1 = nocc * nv
-        np.asarray(t1)[...] = ext[:n1].reshape(nocc, nv)
-        np.asarray(t2)[...] = ext[n1:].reshape(nocc, nocc, nv, nv)
     return (d > 1e-11) and (it < 99)
 
-body = g.add_loop("ccsd_iter", 100, cont)
+body = g.add_loop("ccsd_iter", 100, cg.diis([(t1, S["rd1"]), (t2, S["rd2"])]).wrap(cont))
 with cg.capture(body):
     Tau, Taut = S["Tau"], S["Taut"]
     ein("i,j,a,b <- i,a ; j,b", t1, t1, Tau, 1.0); la.axpby(1.0, t2, 1.0, Tau)

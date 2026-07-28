@@ -14,6 +14,8 @@ does not by itself fire ``einsums::initialize()``.
 import contextlib as _contextlib
 import importlib as _importlib
 
+import numpy as _np
+
 
 def _core():
     """Resolve and cache the compiled ``einsums._core.graph`` submodule.
@@ -83,6 +85,121 @@ def current_graph():
     eager process-owned allocation is correct.
     """
     return _capture_graph_stack[-1] if _capture_graph_stack else None
+
+
+class DIISAccelerator:
+    """Pulay DIIS extrapolation for fixed-point iterations captured as graph loops.
+
+    Accelerates the ``t <- t + step`` update a loop body performs by keeping a
+    short history of (amplitude, step) snapshots and replacing the amplitudes
+    with the least-squares extrapolant between replays. The error vector is
+    the update step itself, the standard coupled-cluster choice; iterations
+    whose update the body computes anyway get DIIS for the cost of a K-sized
+    host-side solve.
+
+    Construct via :func:`diis` and install with :meth:`wrap`::
+
+        acc = cg.diis([(t1, rd1), (t2, rd2)], k=8)
+        body = g.add_loop("iter", 100, acc.wrap(converged))
+
+    Every ``(amplitude, step)`` tensor must be readable between replays: the
+    user-visible amplitudes qualify, and the step tensors must be EAGER
+    (process-owned), not graph-owned intermediates, which are invisible
+    outside the graph. Extrapolated amplitudes are written back IN PLACE
+    through ``numpy.asarray`` views, so the pointers the graph captured stay
+    valid. Complex dtypes use the conjugated inner product; coefficients are
+    real. An ill-conditioned B matrix drops the oldest history pair and
+    retries; B is normalized by its largest element before the solve.
+    """
+
+    def __init__(self, pairs, k=8):
+        if k < 2:
+            raise ValueError(f"DIIS needs a history of at least 2, got k={k}")
+        self._pairs = list(pairs)
+        if not self._pairs:
+            raise ValueError("DIIS needs at least one (amplitude, step) pair")
+        self._k = k
+        self._T = []
+        self._E = []
+
+    def wrap(self, condition=None):
+        """Return a loop predicate: evaluate ``condition``, then take a DIIS step.
+
+        The returned callable has the ``add_loop`` condition signature
+        (iteration index -> bool). ``condition=None`` always continues, i.e.
+        the loop runs to its max_iterations. The DIIS step is skipped once
+        the condition reports convergence - the loop is over, extrapolating
+        would only perturb the converged amplitudes.
+        """
+
+        def predicate(it):
+            keep_going = condition(it) if condition is not None else True
+            if keep_going:
+                self.step()
+            return keep_going
+
+        return predicate
+
+    def step(self):
+        """Push the current (amplitudes, steps) and extrapolate in place."""
+        self._push(
+            _np.concatenate([_np.asarray(t).ravel() for t, _ in self._pairs]),
+            _np.concatenate([_np.asarray(e).ravel() for _, e in self._pairs]),
+        )
+        ext = self._extrapolate()
+        if ext is None:
+            return
+        offset = 0
+        for t, _ in self._pairs:
+            view = _np.asarray(t)
+            view[...] = ext[offset : offset + view.size].reshape(view.shape)
+            offset += view.size
+
+    def _push(self, t_vec, e_vec):
+        self._T.append(t_vec)
+        self._E.append(e_vec)
+        if len(self._T) > self._k:
+            self._T.pop(0)
+            self._E.pop(0)
+
+    def _extrapolate(self):
+        while len(self._T) >= 2:
+            m = len(self._T)
+            B = _np.empty((m + 1, m + 1))
+            B[m, :] = B[:, m] = -1.0
+            B[m, m] = 0.0
+            for p in range(m):
+                for q in range(p, m):
+                    B[p, q] = B[q, p] = _np.vdot(self._E[p], self._E[q]).real
+            scale = _np.abs(B[:m, :m]).max()
+            if scale > 0:
+                B[:m, :m] /= scale
+            rhs = _np.zeros(m + 1)
+            rhs[m] = -1.0
+            try:
+                c = _np.linalg.solve(B, rhs)[:m]
+            except _np.linalg.LinAlgError:
+                self._T.pop(0)
+                self._E.pop(0)
+                continue
+            return sum(ci * Ti for ci, Ti in zip(c, self._T))
+        return None
+
+
+def diis(pairs, k=8):
+    """DIIS-accelerate a graph loop's fixed-point iteration.
+
+    ``pairs`` is a list of ``(amplitude, step)`` tensor pairs the loop body
+    updates as ``amplitude += step`` each replay; ``k`` is the history depth.
+    Returns a :class:`DIISAccelerator` whose :meth:`~DIISAccelerator.wrap`
+    produces the loop predicate::
+
+        acc = cg.diis([(t1, rd1), (t2, rd2)])
+        body = g.add_loop("ccsd_iter", 100, acc.wrap(converged))
+        with cg.capture(body):
+            ...  # residuals; rd = r/D; t += rd
+    """
+    return DIISAccelerator(pairs, k)
 
 
 @_contextlib.contextmanager
