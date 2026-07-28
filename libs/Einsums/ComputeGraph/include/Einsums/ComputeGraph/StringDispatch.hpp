@@ -770,12 +770,38 @@ void string_permute(ParsedPermuteSpec const &parsed, typename AType::ValueType b
         return;
     }
 
-    // Contiguous tensors take HPTT through the shared plan cache; the scalar
-    // loop below exists for strided views only. HPTT computes
+    // Canonically dense tensors take HPTT through the shared plan cache; the
+    // scalar loop below exists for strided views only. HPTT computes
     // C = beta*C + alpha*perm(A) natively, so beta/alpha need no pre-pass.
     // The string overload of compile_permute matches indices character by
     // character, so multi-character labels are re-encoded onto 'a'..'z'.
-    if (rank >= 2 && C->impl().is_contiguous() && A.impl().is_contiguous()) {
+    // Contiguity alone is NOT enough: a permute_view spans the whole buffer
+    // but presents reordered strides, and the stride-ratio outerSize
+    // derivation assumes strides monotone in the layout flag's direction
+    // (the same trap the gemm_hint's layout_matches_flag guards).
+    auto const canonical_dense = [](auto const &impl) {
+        if (!impl.is_contiguous()) {
+            return false;
+        }
+        bool const   row_major = impl.is_row_major();
+        size_t const irank     = impl.rank();
+        size_t       prev      = 0;
+        bool         first     = true;
+        for (size_t n = 0; n < irank; ++n) {
+            size_t const d = row_major ? irank - 1 - n : n;
+            if (impl.dim(d) <= 1) {
+                continue; // extent-1 axes are never traversed; ignore their strides
+            }
+            size_t const st = impl.stride(d);
+            if (!first && st < prev) {
+                return false;
+            }
+            prev  = st;
+            first = false;
+        }
+        return true;
+    };
+    if (rank >= 2 && canonical_dense(C->impl()) && canonical_dense(A.impl())) {
         std::string a_chars(rank, ' ');
         std::string c_chars(rank, ' ');
         for (size_t j = 0; j < rank; j++) {

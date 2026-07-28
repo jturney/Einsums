@@ -202,7 +202,12 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
             offsetC[i0]    = 0;
         }
 
-        find_char_with_position(A_indices, C_indices, &perms);
+        // perms[i] = position of C's i-th index in A, matching the tuple
+        // overload's find_type_with_position(C_indices, A_indices). The
+        // argument order used to be swapped, producing the INVERSE
+        // permutation - invisible for involutions (self-inverse), wrong for
+        // any cyclic permutation.
+        find_char_with_position(C_indices, A_indices, &perms);
         auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(),
                                                        offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
                                                        innerStrideC, true, method);
@@ -225,7 +230,7 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
             outerSizeC[i0] = C_swap.stride(i0 - 1) / (C_swap.stride(i0) * innerStrideC);
             offsetC[i0]    = 0;
         }
-        find_char_with_position(A_indices, reverse(C_indices), &perms);
+        find_char_with_position(reverse(C_indices), A_indices, &perms);
         auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(),
                                                        offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
                                                        innerStrideC, true, method);
@@ -248,7 +253,7 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
             offsetC[i0]    = 0;
         }
 
-        find_char_with_position(A_indices, C_indices, &perms);
+        find_char_with_position(C_indices, A_indices, &perms);
         auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(),
                                                        offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
                                                        innerStrideC, false, method);
@@ -271,7 +276,7 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
             outerSizeC[i0] = C_swap.stride(i0 + 1) / (C_swap.stride(i0) * innerStrideC);
             offsetC[i0]    = 0;
         }
-        find_char_with_position(A_indices, C_indices, &perms);
+        find_char_with_position(reverse(C_indices), A_indices, &perms);
         auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(),
                                                        offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
                                                        innerStrideC, false, method);
