@@ -165,6 +165,7 @@ set(ComputeGraphTests
     test_tensor_conj_methods_python.py
     test_tiled_conj_python.py
     test_tiled_ops_python.py
+    test_tiled_parity_python.py
     test_view_lifetime_python.py
     test_view_python.py
 )

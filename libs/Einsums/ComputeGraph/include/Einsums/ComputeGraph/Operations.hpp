@@ -405,8 +405,12 @@ APIARY_INSTANTIATE_AS("abs", einsums::TiledRuntimeTensor<double>, einsums::Tiled
 /// cg::permute("kji <- ijk", 0.0, &D, 1.0, T);      // rank-3 transpose
 /// cg::permute("mu,nu <- nu,mu", 0.0, &C, 1.0, A);  // multi-char indices
 /// @endcode
-template <BasicTensorConcept AType, BasicTensorConcept CType>
-    requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>
+template <typename AType, typename CType>
+    requires requires {
+        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
+        requires(BasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
+        requires(BasicTensorConcept<CType> || IsTiledTensorV<std::remove_cvref_t<CType>>);
+    }
 void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C, typename AType::ValueType alpha, AType const &A) {
     using T = typename AType::ValueType;
 
@@ -416,43 +420,73 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
     }
     auto &parsed = parse_result.value();
 
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("permute eager");
-        dispatch::string_permute(parsed, beta, C, alpha, A);
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>> || IsTiledTensorV<std::remove_cvref_t<CType>>) {
+        static_assert(IsTiledTensorV<std::remove_cvref_t<AType>> && IsTiledTensorV<std::remove_cvref_t<CType>>,
+                      "cg::permute with a tiled operand requires both A and C to be TiledRuntimeTensor");
+        auto &tctx = CaptureContext::current();
+        if (!tctx.is_capturing()) {
+            LabeledSection("permute eager");
+            detail::tiled_permute(parsed, beta, C, alpha, A);
+            return;
+        }
+        LabeledSection("permute capture");
+        auto [a_id, a_slot] = tctx.get_slot(A);
+        auto [c_id, c_slot] = tctx.get_slot(*C);
+        auto label    = fmt::format("tiled permute: C[{}] = A[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","));
+        auto executor = [parsed, beta, alpha, a_slot, c_slot]() {
+            LabeledSection("permute execute");
+            detail::tiled_permute(parsed, static_cast<T>(beta), static_cast<CType *>(c_slot->ptr), static_cast<T>(alpha),
+                                  *static_cast<AType const *>(a_slot->ptr));
+        };
+        // Recorded as an opaque Custom (no PermuteDescriptor): the permute-
+        // rewriting passes assume a single dense buffer, and the tiled dot /
+        // conj precedent is opaque nodes. RMW convention: beta != 0 reads C.
+        std::vector<TensorId> permute_inputs = (beta != T{0}) ? std::vector<TensorId>{a_id, c_id} : std::vector<TensorId>{a_id};
+        tctx.record(OpKind::Custom, std::move(label), std::move(permute_inputs), {c_id}, std::move(executor));
         return;
-    }
-
-    LabeledSection("permute capture");
-    // Capture mode with slots
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [c_id, c_slot] = ctx.get_slot(*C);
-
-    PermuteDescriptor desc;
-    if constexpr (IsComplexV<T>) {
-        desc.alpha = static_cast<double>(alpha.real());
-        desc.beta  = static_cast<double>(beta.real());
     } else {
-        desc.alpha = static_cast<double>(alpha);
-        desc.beta  = static_cast<double>(beta);
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("permute eager");
+            dispatch::string_permute(parsed, beta, C, alpha, A);
+            return;
+        }
+
+        LabeledSection("permute capture");
+        // Capture mode with slots
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [c_id, c_slot] = ctx.get_slot(*C);
+
+        PermuteDescriptor desc;
+        if constexpr (IsComplexV<T>) {
+            desc.alpha = static_cast<double>(alpha.real());
+            desc.beta  = static_cast<double>(beta.real());
+        } else {
+            desc.alpha = static_cast<double>(alpha);
+            desc.beta  = static_cast<double>(beta);
+        }
+        desc.c_indices = parsed.c_indices;
+        desc.a_indices = parsed.a_indices;
+
+        auto label = fmt::format("permute: C[{}] = A[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","));
+
+        auto executor = [parsed, beta, alpha, a_slot, c_slot]() {
+            LabeledSection("permute execute");
+            dispatch::string_permute<AType, CType>(parsed, static_cast<T>(beta), static_cast<CType *>(c_slot->ptr), static_cast<T>(alpha),
+                                                   *static_cast<AType const *>(a_slot->ptr));
+        };
+
+        ctx.record(OpKind::Permute, std::move(label), {a_id}, {c_id}, std::move(executor), std::move(desc));
     }
-    desc.c_indices = parsed.c_indices;
-    desc.a_indices = parsed.a_indices;
-
-    auto label = fmt::format("permute: C[{}] = A[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","));
-
-    auto executor = [parsed, beta, alpha, a_slot, c_slot]() {
-        LabeledSection("permute execute");
-        dispatch::string_permute<AType, CType>(parsed, static_cast<T>(beta), static_cast<CType *>(c_slot->ptr), static_cast<T>(alpha),
-                                               *static_cast<AType const *>(a_slot->ptr));
-    };
-
-    ctx.record(OpKind::Permute, std::move(label), {a_id}, {c_id}, std::move(executor), std::move(desc));
 }
 
 /// String-based permute with default prefactors (beta=0, alpha=1): C = permute(A).
-template <BasicTensorConcept AType, BasicTensorConcept CType>
-    requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>
+template <typename AType, typename CType>
+    requires requires {
+        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
+        requires(BasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
+        requires(BasicTensorConcept<CType> || IsTiledTensorV<std::remove_cvref_t<CType>>);
+    }
 void permute(PermuteFormatString spec, CType *C, AType const &A) {
     using T = typename AType::ValueType;
     permute(spec, T{0}, C, T{1}, A);
@@ -464,14 +498,22 @@ void permute(PermuteFormatString spec, CType *C, AType const &A) {
 /// or ``"kji <- ijk"`` (rank-3 reorder). Computes ``C = c_pf * C + a_pf
 /// * permute(A)`` according to ``spec``. ``c_pf`` defaults to 0 and
 /// ``a_pf`` to 1, i.e. ``C = permute(A)``.
-template <BasicTensorConcept AType, BasicTensorConcept CType>
-    requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>
+template <typename AType, typename CType>
+    requires requires {
+        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
+        requires(BasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
+        requires(BasicTensorConcept<CType> || IsTiledTensorV<std::remove_cvref_t<CType>>);
+    }
 // clang-format off
 APIARY_EXPOSE
 APIARY_INSTANTIATE_AS("permute", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
 APIARY_INSTANTIATE_AS("permute", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_AS("permute", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("permute", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("permute", einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>)
+APIARY_INSTANTIATE_AS("permute", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
+APIARY_INSTANTIATE_AS("permute", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("permute", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void string_permute(std::string const &spec, CType *C, AType const &A, typename CType::ValueType c_pf = typename CType::ValueType{0},
                         typename AType::ValueType a_pf = typename AType::ValueType{1}) {

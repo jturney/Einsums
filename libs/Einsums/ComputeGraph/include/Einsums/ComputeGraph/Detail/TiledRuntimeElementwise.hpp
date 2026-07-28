@@ -7,6 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
@@ -177,6 +179,69 @@ T tiled_dot(TiledRuntimeTensor<T> const &A, TiledRuntimeTensor<T> const &B) {
         }
     }
     return acc;
+}
+
+/**
+ * @brief Tiled ``C = beta*C + alpha*P(A)``, tile by tile.
+ *
+ * The permutation acts on the tile GRID and within each tile alike: C's grid
+ * along axis ``i`` must equal A's grid along the axis C's ``i``-th index names,
+ * and each stored A tile lands in exactly one C tile (its coordinates permuted
+ * the same way its axes are). ``beta`` applies exactly once to every stored C
+ * tile - including tiles the permutation never reaches - and an absent A tile
+ * is a rigorous zero, so its target keeps ``beta*C`` there. The same sparsity
+ * discipline as @ref tiled_direct_division. Each dense per-tile permute goes
+ * through @ref dispatch::string_permute, i.e. HPTT.
+ */
+template <typename T>
+void tiled_permute(ParsedPermuteSpec const &parsed, T beta, TiledRuntimeTensor<T> *C, T alpha, TiledRuntimeTensor<T> const &A) {
+    size_t const rank = parsed.c_indices.size();
+    if (rank != parsed.a_indices.size() || rank != static_cast<size_t>(A.rank()) || rank != static_cast<size_t>(C->rank())) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::permute (tiled): spec rank does not match the operand ranks");
+    }
+
+    // perm[i] = the A axis that C's axis i takes its extent and tile grid from.
+    std::vector<size_t> perm(rank);
+    for (size_t i = 0; i < rank; ++i) {
+        auto it = std::find(parsed.a_indices.begin(), parsed.a_indices.end(), parsed.c_indices[i]);
+        if (it == parsed.a_indices.end()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::permute (tiled): output index '{}' not found in the input indices",
+                                    parsed.c_indices[i]);
+        }
+        perm[i] = static_cast<size_t>(it - parsed.a_indices.begin());
+    }
+
+    auto const &a_sizes = A.tile_sizes();
+    auto const &c_sizes = C->tile_sizes();
+    for (size_t i = 0; i < rank; ++i) {
+        if (c_sizes[i] != a_sizes[perm[i]]) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::permute (tiled): C's tile grid along axis {} must match A's along the permuted axis {}", i,
+                                    perm[i]);
+        }
+    }
+
+    // beta applies exactly once to every stored C tile, up front; the
+    // contribution pass below then accumulates (each target is written by at
+    // most one A tile, the permutation being a bijection on coordinates).
+    for (auto &kv : C->tiles()) {
+        kv.second.materialize();
+        if (beta == T{0}) {
+            kv.second.zero();
+        } else if (beta != T{1}) {
+            linear_algebra::scale(beta, &kv.second);
+        }
+    }
+
+    for (auto const &kv : A.tiles()) {
+        std::vector<int> target(rank);
+        for (size_t i = 0; i < rank; ++i) {
+            target[i] = kv.first[perm[i]];
+        }
+        auto &c_tile = C->tile(target); // infer-and-create (zeroed)
+        c_tile.materialize();
+        dispatch::string_permute(parsed, T{1}, &c_tile, alpha, kv.second);
+    }
 }
 
 /// Tiled conjugated dot `sum conj(A) * B`: per-tile ``true_dot`` over shared

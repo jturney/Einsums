@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 import einsums
+import einsums.graph as cg
 from einsums.testing import ALL_DTYPES, assert_close
 
 DTYPE_TO_TRT = {
@@ -135,6 +136,79 @@ def test_tiled_zeros_like_preserves_structure(dtype):
     assert np.asarray(z.tile_view([0, 0])).max() == 0.0
     assert z.dtype == t.dtype  # the minimal tiled ergonomics layer
     assert z.shape == t.shape
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_tiled_permute_transpose(dtype):
+    # C[j,i] = A[i,j]: C's grid is A's grid permuted the same way its axes are.
+    aref = (1.0 + np.arange(45, dtype=dtype)).reshape(5, 9)
+    A = _make(dtype, "A", [[2, 3], [4, 5]], fill=lambda r, c: aref[r, c])
+    C = DTYPE_TO_TRT[np.dtype(dtype).type]("C", [[4, 5], [2, 3]])
+    einsums.permute("j,i <- i,j", C, A)
+    assert_close(_gather(C, 9, 5), aref.T)
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_tiled_permute_accumulates_with_prefactors(dtype):
+    aref = (1.0 + np.arange(45, dtype=dtype)).reshape(5, 9)
+    cref = (2.0 - np.arange(45, dtype=dtype)).reshape(9, 5)
+    A = _make(dtype, "A", [[2, 3], [4, 5]], fill=lambda r, c: aref[r, c])
+    C = _make(dtype, "C", [[4, 5], [2, 3]], fill=lambda r, c: cref[r, c])
+    einsums.permute("j,i <- i,j", C, A, c_pf=0.5, a_pf=2.0)
+    assert_close(_gather(C, 9, 5), 0.5 * cref + 2.0 * aref.T)
+
+
+def test_tiled_permute_sparsity_rules():
+    # An absent A tile is a rigorous zero: its target C tile keeps beta*C, and
+    # a stored C tile the permutation never reaches is still scaled by beta.
+    A = einsums.TiledRuntimeTensorD("A", [[2, 3], [4, 5]])
+    A.add_tile([0, 0])
+    A.materialize()
+    np.asarray(A.tile_view([0, 0]))[...] = 3.0
+
+    C = einsums.TiledRuntimeTensorD("C", [[4, 5], [2, 3]])
+    C.add_tile([1, 1])  # never a permutation target of A's stored tiles
+    C.materialize()
+    np.asarray(C.tile_view([1, 1]))[...] = 8.0
+
+    einsums.permute("j,i <- i,j", C, A, c_pf=0.5, a_pf=1.0)
+
+    assert C.has_tile([0, 0])  # created by A[0,0]'s contribution
+    np.testing.assert_allclose(np.asarray(C.tile_view([0, 0])), 3.0)
+    np.testing.assert_allclose(np.asarray(C.tile_view([1, 1])), 4.0)  # 0.5 * 8
+    assert not C.has_tile([0, 1]) and not C.has_tile([1, 0])  # zeros stay absent
+
+
+def test_tiled_permute_rank4_symmetrizer():
+    # The CC symmetrizer shape: C[j,i,b,a] = A[i,j,a,b] on a rank-4 grid.
+    rng = np.random.default_rng(3)
+    aref = rng.standard_normal((4, 4, 5, 5))
+    grid = [[2, 2], [2, 2], [2, 3], [2, 3]]
+    A = _make_nd("float64", "A", grid, ref=aref)
+    C = einsums.TiledRuntimeTensorD("C", [[2, 2], [2, 2], [2, 3], [2, 3]])
+    einsums.permute("j,i,b,a <- i,j,a,b", C, A)
+    assert_close(_gather_nd(C, (4, 4, 5, 5), "float64"), aref.transpose(1, 0, 3, 2))
+
+
+def test_tiled_permute_grid_mismatch_throws():
+    A = einsums.TiledRuntimeTensorD("A", [[2, 3], [4, 5]])
+    C = einsums.TiledRuntimeTensorD("C", [[2, 3], [4, 5]])  # NOT permuted: wrong for a transpose
+    with pytest.raises(ValueError):
+        einsums.permute("j,i <- i,j", C, A)
+
+
+def test_tiled_permute_captured():
+    aref = (1.0 + np.arange(45)).reshape(5, 9).astype("float64")
+    A = _make("float64", "A", [[2, 3], [4, 5]], fill=lambda r, c: aref[r, c])
+    C = DTYPE_TO_TRT[np.float64]("C", [[4, 5], [2, 3]])
+
+    g = cg.Graph("tiled_permute")
+    with cg.capture(g):
+        einsums.permute("j,i <- i,j", C, A)
+    g.execute()
+    assert_close(_gather(C, 9, 5), aref.T)
+    g.execute()  # replay: beta=0 overwrite, same result
+    assert_close(_gather(C, 9, 5), aref.T)
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
