@@ -14,8 +14,6 @@ does not by itself fire ``einsums::initialize()``.
 import contextlib as _contextlib
 import importlib as _importlib
 
-import numpy as _np
-
 
 def _core():
     """Resolve and cache the compiled ``einsums._core.graph`` submodule.
@@ -105,11 +103,14 @@ class DIISAccelerator:
     Every ``(amplitude, step)`` tensor must be readable between replays: the
     user-visible amplitudes qualify, and the step tensors must be EAGER
     (process-owned), not graph-owned intermediates, which are invisible
-    outside the graph. Extrapolated amplitudes are written back IN PLACE
-    through ``numpy.asarray`` views, so the pointers the graph captured stay
-    valid. Complex dtypes use the conjugated inner product; coefficients are
-    real. An ill-conditioned B matrix drops the oldest history pair and
-    retries; B is normalized by its largest element before the solve.
+    outside the graph. The whole engine runs on einsums operations - history
+    snapshots and the extrapolation are ``axpby`` (the amplitudes update IN
+    PLACE, so the pointers the graph captured stay valid), the B matrix is
+    built from ``dotc`` inner products (conjugated, so complex dtypes are
+    exact; coefficients are real), and the K-sized system solves with
+    ``gesv``. Only scalar reads cross to Python. A singular B drops the
+    oldest history pair and retries; B is normalized by its largest element
+    before the solve.
     """
 
     def __init__(self, pairs, k=8):
@@ -121,6 +122,7 @@ class DIISAccelerator:
         self._k = k
         self._T = []
         self._E = []
+        self._dots = None  # lazily-created per-pair scalar workspaces for dotc
 
     def wrap(self, condition=None):
         """Return a loop predicate: evaluate ``condition``, then take a DIIS step.
@@ -142,48 +144,67 @@ class DIISAccelerator:
 
     def step(self):
         """Push the current (amplitudes, steps) and extrapolate in place."""
-        self._push(
-            _np.concatenate([_np.asarray(t).ravel() for t, _ in self._pairs]),
-            _np.concatenate([_np.asarray(e).ravel() for _, e in self._pairs]),
-        )
-        ext = self._extrapolate()
-        if ext is None:
-            return
-        offset = 0
-        for t, _ in self._pairs:
-            view = _np.asarray(t)
-            view[...] = ext[offset : offset + view.size].reshape(view.shape)
-            offset += view.size
+        ein = _importlib.import_module("einsums")
+        la  = ein.linalg
 
-    def _push(self, t_vec, e_vec):
-        self._T.append(t_vec)
-        self._E.append(e_vec)
+        if self._dots is None:
+            self._dots = [ein.zeros((1,), dtype=str(e.dtype)) for _, e in self._pairs]
+
+        # Snapshot the current state: einsums copies, one per pair component.
+        snap_t, snap_e = [], []
+        for t, e in self._pairs:
+            st = ein.zeros_like(t)
+            la.axpby(1.0, t, 0.0, st)
+            se = ein.zeros_like(e)
+            la.axpby(1.0, e, 0.0, se)
+            snap_t.append(st)
+            snap_e.append(se)
+        self._T.append(snap_t)
+        self._E.append(snap_e)
         if len(self._T) > self._k:
             self._T.pop(0)
             self._E.pop(0)
 
-    def _extrapolate(self):
         while len(self._T) >= 2:
             m = len(self._T)
-            B = _np.empty((m + 1, m + 1))
-            B[m, :] = B[:, m] = -1.0
-            B[m, m] = 0.0
+            # B[p,q] = sum over components of Re<e_p, e_q> (dotc conjugates,
+            # so this is exact for complex amplitudes). Coefficients are real,
+            # so B itself is a real matrix regardless of amplitude dtype.
+            B     = ein.zeros((m + 1, m + 1), dtype="float64")
+            scale = 0.0
             for p in range(m):
                 for q in range(p, m):
-                    B[p, q] = B[q, p] = _np.vdot(self._E[p], self._E[q]).real
-            scale = _np.abs(B[:m, :m]).max()
-            if scale > 0:
-                B[:m, :m] /= scale
-            rhs = _np.zeros(m + 1)
+                    v = 0.0
+                    for c, work in enumerate(self._dots):
+                        la.dotc(work, self._E[p][c], self._E[q][c])
+                        v += complex(work[0]).real
+                    B[p, q] = v
+                    B[q, p] = v
+                    scale = max(scale, abs(v))
+            if scale > 0.0:
+                for p in range(m):
+                    for q in range(m):
+                        B[p, q] = float(B[p, q]) / scale
+            for p in range(m):
+                B[p, m] = -1.0
+                B[m, p] = -1.0
+            rhs = ein.zeros((m + 1,), dtype="float64")
             rhs[m] = -1.0
+
             try:
-                c = _np.linalg.solve(B, rhs)[:m]
-            except _np.linalg.LinAlgError:
+                la.gesv(B, rhs)
+            except RuntimeError:
+                # Singular subspace: forget the oldest pair and retry.
                 self._T.pop(0)
                 self._E.pop(0)
                 continue
-            return sum(ci * Ti for ci, Ti in zip(c, self._T))
-        return None
+
+            # t <- sum_s c_s T_s, in place on the live amplitude tensors.
+            for c, (t, _) in enumerate(self._pairs):
+                la.axpby(float(rhs[0]), self._T[0][c], 0.0, t)
+                for s in range(1, m):
+                    la.axpby(float(rhs[s]), self._T[s][c], 1.0, t)
+            return
 
 
 def diis(pairs, k=8):
