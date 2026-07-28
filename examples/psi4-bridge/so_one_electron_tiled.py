@@ -3,22 +3,17 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""Runtime check: Matrix.to_einsums_tiled() exposes a symmetry-blocked psi4
-Matrix as an einsums TiledRuntimeTensor that aliases the irrep blocks zero-copy,
-mapping block h to tile (h, h^symmetry).
+"""Runtime check: einsums.interop.psi4.from_matrix copies a symmetry-blocked
+psi4 Matrix into an einsums TiledRuntimeTensor, mapping the per-irrep block h
+to tile (h, h^symmetry).
 
 Verifies two things for the SO overlap/kinetic/potential matrices:
   1. each tile equals the corresponding per-irrep block, and
-  2. the tile and the Matrix share storage: mutating the Matrix block shows
-     through the tile, since no copy was made.
-
-Run with einsums + psi4 on PYTHONPATH. Importing einsums first registers the
-TiledRuntimeTensorD pybind type so psi4 can hand one back.
+  2. the tensor owns its storage: mutating the Matrix block afterwards does
+     NOT show through the tile (the bridge exchanges buffers, not aliases).
 """
 import numpy as np
-import einsums          # loads einsums._core (registers the pybind types) so
-                        # psi4 can hand back a TiledRuntimeTensor; the runtime
-                        # itself initializes lazily on first compute use.
+from einsums.interop import psi4 as interop
 import psi4
 
 psi4.core.set_output_file("/tmp/psi4_so_tiled.out", False)
@@ -43,7 +38,7 @@ cases = [
 all_ok = True
 for name, mat_fn in cases:
     S = mat_fn()                       # symmetry-blocked Matrix
-    St = S.to_einsums_tiled()          # zero-copy alias: block h -> tile (h, h^symmetry)
+    St = interop.from_matrix(S)        # copy: block h -> tile (h, h^symmetry)
     print(f"{name}: type={type(St).__name__} rank={St.rank()} dims={list(St.dims())} "
           f"nirrep={S.nirrep()} filled_tiles={St.num_filled_tiles()}")
     for h in range(S.nirrep()):
@@ -54,18 +49,18 @@ for name, mat_fn in cases:
         tile = np.asarray(St.tile_view([h, h]))    # einsums view over that tile
         match = tile.shape == blk.shape and np.allclose(tile, blk)
 
-        # Zero-copy proof: mutate the Matrix block, see it through the tile.
+        # Copy proof: mutate the Matrix block; the tile must NOT change.
         sv = np.asarray(S.nph[h])
         orig = sv[0, 0]
         sv[0, 0] = orig + 1.0
-        aliased = np.asarray(St.tile_view([h, h]))[0, 0] == orig + 1.0
+        independent = np.asarray(St.tile_view([h, h]))[0, 0] == orig
         sv[0, 0] = orig                            # restore
 
-        if match and aliased:
-            print(f"  irrep {h}: match + zero-copy aliased {blk.shape}")
+        if match and independent:
+            print(f"  irrep {h}: match + independent storage {blk.shape}")
         else:
             all_ok = False
-            print(f"  MISMATCH irrep {h}: match={match} aliased={aliased}")
+            print(f"  MISMATCH irrep {h}: match={match} independent={independent}")
 
-print("ALL TILED 1e INTEGRALS MATCH (zero-copy alias)" if all_ok else "FAILURES DETECTED")
+print("ALL TILED 1e INTEGRALS MATCH (copied via interop)" if all_ok else "FAILURES DETECTED")
 assert all_ok

@@ -69,6 +69,7 @@ if _args.profile is not None:
 
 from einsums import linalg as la  # touching linalg initializes the runtime (reads einsums.rc)
 import psi4
+from einsums.interop import psi4 as interop
 
 psi4.core.set_output_file("/tmp/psi4_df_mp2.out", False)
 psi4.set_options({
@@ -94,7 +95,7 @@ eps = np.asarray(wfn.epsilon_a())
 eo = eps[:nocc]                                  # occupied orbital energies (scalars)
 
 dft = psi4.core.DFTensor(primary, aux, C, nocc, nvir)
-B = dft.Qov_einsums()                                       # dense rank-3 RuntimeTensor
+B = interop.df_tensor(dft.Qov(), nocc, nvir, name="DF (Q|ia) OV")  # (naux, nocc, nvir)
                                                             # (naux, nocc, nvir) -- sliceable
 ev = einsums.create_zero_tensor("ev", [nvir], dtype="float64")
 np.asarray(ev)[:] = eps[nocc:]                              # virtual orbital energies

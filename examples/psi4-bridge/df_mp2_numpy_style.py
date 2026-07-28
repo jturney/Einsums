@@ -77,6 +77,7 @@ if _args.profile is not None:
 
 from einsums import linalg as la  # touching linalg initializes the runtime (reads einsums.rc)
 import psi4
+from einsums.interop import psi4 as interop
 
 psi4.core.set_output_file("/tmp/psi4_df_mp2.out", False)
 psi4.set_options({
@@ -103,7 +104,7 @@ eo = eps[:nocc]                                  # occupied orbital energies (sc
 ev_np = eps[nocc:]                               # virtual orbital energies (numpy, scalars)
 
 dft = psi4.core.DFTensor(primary, aux, C, nocc, nvir)
-B = dft.Qov_einsums()                            # dense rank-3 RuntimeTensor (naux, nocc, nvir)
+B = interop.df_tensor(dft.Qov(), nocc, nvir, name="DF (Q|ia) OV")  # (naux, nocc, nvir)
 print(f"B (Q|ov) shape = {B.shape}   nocc = {nocc}  nvir = {nvir}")
 
 # Constant denominator base D_ab = -e_a - e_b, ingested with einsums.asarray from

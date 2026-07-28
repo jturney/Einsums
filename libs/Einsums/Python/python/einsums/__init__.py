@@ -1216,6 +1216,13 @@ def __getattr__(name):
     if name.startswith("_"):
         raise AttributeError(f"module 'einsums' has no attribute {name!r}")
 
+    # Pure-python subpackages with no _core counterpart resolve by import.
+    # (graph deliberately falls through to _core.graph below; see _alloc_output.)
+    if name == "interop":
+        mod = _importlib.import_module("einsums.interop")
+        globals()[name] = mod
+        return mod
+
     # _core is already loaded (eager import above); touching a compiled symbol
     # is the first "real use", so bring the runtime up now (honoring einsums.rc).
     _bootstrap()

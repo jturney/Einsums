@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""Timing harness for MintsHelper.mo_bra_half_transform_einsums.
+"""Timing harness for MintsHelper.mo_bra_half_transform (psi4-side, buffer-level).
 
 Baseline + speedup tracker for the integral-direct bra half-transform. Times the
 two half-transforms that feed the exact CC blocks:
@@ -103,8 +103,8 @@ def main():
         print(f"  {label:18} best {best:8.3f} s   (||.||={chk:.6e})")
         return best
 
-    bench("HT_oo (o,o,n,n)", lambda: mints.mo_bra_half_transform_einsums(Co, Co))
-    bench("HT_ov (o,v,n,n)", lambda: mints.mo_bra_half_transform_einsums(Co, Cv))
+    bench("HT_oo (o,o,n,n)", lambda: mints.mo_bra_half_transform(Co, Co))
+    bench("HT_ov (o,v,n,n)", lambda: mints.mo_bra_half_transform(Co, Cv))
 
 
 if __name__ == "__main__":

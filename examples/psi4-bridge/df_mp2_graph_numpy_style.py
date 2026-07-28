@@ -62,6 +62,7 @@ import einsums.graph as cg   # the graph.py shell (capture/default_pass_manager)
                              # `from einsums import graph`, which resolves to the bare
                              # _core.graph submodule and lacks the `capture` helper.
 import psi4
+from einsums.interop import psi4 as interop
 
 _argp = argparse.ArgumentParser(description="DF-MP2 in numpy-style einsums via ComputeGraph.")
 _argp.add_argument(
@@ -134,7 +135,7 @@ eo = eps[:nocc]                                          # occupied energies (sc
 ev_np = eps[nocc:]                                       # virtual energies (numpy, scalars)
 
 dft = psi4.core.DFTensor(primary, aux, C, nocc, nvir)
-B = dft.Qov_einsums()                                    # (naux, nocc, nvir)
+B = interop.df_tensor(dft.Qov(), nocc, nvir, name="DF (Q|ia) OV")  # (naux, nocc, nvir)
 print(f"B (Q|ov) shape = {B.shape}")
 
 # D_ab = -e_a - e_b, ingested with einsums.asarray (one-time setup, not loop math).

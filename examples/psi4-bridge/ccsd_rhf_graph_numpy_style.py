@@ -36,6 +36,7 @@ CCSD.
 import numpy as np
 import psi4
 import einsums
+from einsums.interop import psi4 as interop
 import einsums._core
 import einsums.graph as cg
 from einsums import linalg as la
@@ -59,15 +60,17 @@ Co = psi4.core.Matrix.from_array(Co_np); Cv = psi4.core.Matrix.from_array(Cv_np)
 aux = psi4.core.BasisSet.build(mol, "DF_BASIS_MP2", "", "RIFIT", wfn.basisset().name())
 naux = aux.nbf()
 dft = psi4.core.DFTensor(wfn.basisset(), aux, wfn.Ca(), nocc, nv)
-Bvv = dft.Qvv_einsums()   # B^Q_{ab} = J^{-1/2}(Q|ab), einsums RuntimeTensor (naux, nv, nv)
+Bvv = interop.df_tensor(dft.Qvv(), nv, nv, name="DF (Q|ab) VV")  # B^Q_{ab} = J^{-1/2}(Q|ab), (naux, nv, nv)
 
 def to_t(name, a): return einsums.asarray(np.ascontiguousarray(a), name=name)
 def zt(name, shape): return einsums.create_zero_tensor(name, list(shape), dtype="float64")
 
 # ── one-time eager setup: integrals from the bridge, Fock, denominators ──────
-HT = {("o", "o"): mints.mo_bra_half_transform_einsums(Co, Co),
-      ("o", "v"): mints.mo_bra_half_transform_einsums(Co, Cv),
-      ("v", "v"): mints.mo_bra_half_transform_einsums(Cv, Cv)}
+def bra_half(C1, C2, n1, n2):  # psi4 returns the flat (n1*n2, nbf*nbf) Matrix
+    return interop.mo_bra_half_transform(mints.mo_bra_half_transform(C1, C2), n1, n2)
+HT = {("o", "o"): bra_half(Co, Co, nocc, nocc),
+      ("o", "v"): bra_half(Co, Cv, nocc, nv),
+      ("v", "v"): bra_half(Cv, Cv, nv, nv)}
 Ct = {"o": to_t("Co", Co_np), "v": to_t("Cv", Cv_np)}; nsp = {"o": nocc, "v": nv}
 
 def E(spec, A, B, shape, pf=1.0, name="x"):  # eager helper for one-time setup

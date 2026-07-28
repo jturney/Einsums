@@ -8,7 +8,7 @@
 Builds the four "exact" coupled-cluster integral classes that are kept as
 conventional, non-DF integrals, namely ``oooo``, ``ooov``, ``oovv``, ``ovov``,
 as a single einsums ComputeGraph capture, starting from the dense AO ERIs
-``MintsHelper.ao_eri_einsums()``.
+``mints.ao_eri()`` via ``einsums.interop.psi4.dense``.
 
 Integral strategy (see project memory project_native_cc_integral_strategy):
 DF introduces error in the final energy, so DF is reserved for ``vvvv``, plus
@@ -55,6 +55,7 @@ Python::
 import numpy as np
 import psi4
 import einsums
+from einsums.interop import psi4 as interop
 import einsums._core            # force pybind type registration (bug-916: _core is lazy)
 import einsums.graph as cg      # the graph.py shell (capture/PassManager); NOT
                                 # `from einsums import graph` (that lacks capture).
@@ -71,7 +72,7 @@ nvir = nbf - nocc
 print(f"nbf={nbf} nocc={nocc} nvir={nvir}")
 
 # ---- ingest: AO ERIs as an Einsums tensor (the only "integral generation") ----
-I_ao = mints.ao_eri_einsums()    # dense RuntimeTensorD, chemist (mu,nu,lam,sig)
+I_ao = interop.dense(mints.ao_eri(), (nbf, nbf, nbf, nbf), name="AO ERI")  # chemist (mu,nu,lam,sig)
 
 # ---- ingest: MO coefficient blocks via numpy (C1 -> plain dense tensors) ----
 # np.asarray(create_zero_tensor(...)) yields a WRITABLE view of the buffer

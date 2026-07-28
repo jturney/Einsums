@@ -3,8 +3,12 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""Validate MintsHelper.so_eri_tiled(), an einsums rank-4 TiledRuntimeTensor of
-SO ERIs, against psi4's own integrals.
+"""Validate the buffer-level SO ERI bridge against psi4's own integrals.
+
+psi4's ``MintsHelper.so_eri_blocked()`` returns plain psi4 Matrices (one per
+symmetry-allowed irrep quadruple) and ``einsums.interop.psi4.so_eri``
+assembles them into a rank-4 TiledRuntimeTensor; neither library links the
+other, so this also exercises the ABI-free contract end to end.
 
 Two checks:
   1. C1 symmetry: SO basis == AO basis, so the single tile (0,0,0,0) must equal
@@ -14,7 +18,7 @@ Two checks:
      (pq|rs) must hold within the totally-symmetric (0,0,0,0) block.
 """
 import numpy as np
-import einsums          # registers the pybind types; runtime inits lazily
+from einsums.interop import psi4 as interop
 import psi4
 
 psi4.core.set_output_file("/tmp/psi4_so_eri.out", False)
@@ -23,24 +27,28 @@ psi4.core.set_output_file("/tmp/psi4_so_eri.out", False)
 def build(symmetry):
     mol = psi4.geometry(f"O\nH 1 0.96\nH 1 0.96 2 104.5\nsymmetry {symmetry}\n")
     basis = psi4.core.BasisSet.build(mol, "ORBITAL", "STO-3G")
-    return psi4.core.MintsHelper(basis), basis
+    mints = psi4.core.MintsHelper(basis)
+    # SO-per-irrep dimensions, read off the SO overlap's per-irrep blocks
+    # (block h is sopi[h] x sopi[h] for the totally-symmetric operator).
+    sopi = [blk.shape[0] for blk in mints.so_overlap().nph]
+    return mints, basis, sopi
 
 
 # ---- 1) C1: exact match to ao_eri ---------------------------------------
-mints, basis = build("c1")
+mints, basis, sopi = build("c1")
 nbf = basis.nbf()
 ao = np.asarray(mints.ao_eri()).reshape(nbf, nbf, nbf, nbf)  # (pq|rs), chemists'
-T = mints.so_eri_tiled()
+T = interop.so_eri(mints.so_eri_blocked(), sopi)
 print(f"C1: rank={T.rank()} dims={list(T.dims())} filled_tiles={T.num_filled_tiles()}")
 assert T.has_tile([0, 0, 0, 0]), "C1 must have the single (0,0,0,0) tile"
 so = np.asarray(T.tile_view([0, 0, 0, 0]))
 assert so.shape == ao.shape, f"shape {so.shape} != {ao.shape}"
 assert np.allclose(so, ao), f"C1 SO ERI != AO ERI (max diff {np.abs(so-ao).max():.3e})"
-print(f"  C1 so_eri_tiled matches ao_eri  (max|Δ|={np.abs(so-ao).max():.2e})")
+print(f"  C1 so_eri matches ao_eri  (max|Δ|={np.abs(so-ao).max():.2e})")
 
 # ---- 2) C2v: structure + permutational symmetry -------------------------
-mints, basis = build("c2v")
-T = mints.so_eri_tiled()
+mints, basis, sopi = build("c2v")
+T = interop.so_eri(mints.so_eri_blocked(), sopi)
 nirrep = 4
 print(f"C2v: dims={list(T.dims())} filled_tiles={T.num_filled_tiles()}")
 
@@ -68,4 +76,4 @@ diag = np.einsum("pppp->p", b)
 assert np.all(diag > 0), "diagonal (pp|pp) must be positive"
 print(f"  diagonal (pp|pp) all positive  (min={diag.min():.4f})")
 
-print("ALL SO ERI TILED CHECKS PASS")
+print("ALL SO ERI BLOCKED-BRIDGE CHECKS PASS")

@@ -46,6 +46,7 @@ import einsums.graph as cg   # the graph.py shell (capture/default_pass_manager)
                              # `from einsums import graph`, which resolves to the bare
                              # _core.graph submodule and lacks the `capture` helper.
 import psi4
+from einsums.interop import psi4 as interop
 
 _argp = argparse.ArgumentParser(description="DF-MP2 in einsums via ComputeGraph.")
 _argp.add_argument(
@@ -117,7 +118,7 @@ eps = np.asarray(wfn.epsilon_a())
 eo = eps[:nocc]                                          # occupied energies (scalars)
 
 dft = psi4.core.DFTensor(primary, aux, C, nocc, nvir)
-B = dft.Qov_einsums()                                    # (naux, nocc, nvir)
+B = interop.df_tensor(dft.Qov(), nocc, nvir, name="DF (Q|ia) OV")  # (naux, nocc, nvir)
 # Per-i (naux, nvir) slabs, sliced eagerly (integer-index slicing isn't recorded
 # by the capture-aware __getitem__); the captured einsums read these views.
 Bslab = [B[:, i, :] for i in range(nocc)]

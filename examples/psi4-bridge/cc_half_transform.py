@@ -5,9 +5,9 @@
 
 """Validate the integral-direct half-transform bridge against the in-core blocks.
 
-`MintsHelper.mo_bra_half_transform_einsums(C1, C2)` returns the first-half (bra)
-MO transform of the AO ERIs, computed integral-direct so the N^4 AO tensor is
-never formed:
+psi4's `MintsHelper.mo_bra_half_transform(C1, C2)` computes the first-half (bra)
+MO transform of the AO ERIs integral-direct (no N^4 AO tensor) and returns the
+flat (n1*n2, nbf*nbf) Matrix; einsums.interop.psi4 reshapes it to rank 4:
 
     (pq|λσ) = Σ_{μν} C1[μ,p] C2[ν,q] (μν|λσ)        dense (n1, n2, nbf, nbf)
 
@@ -33,6 +33,7 @@ Python::
 import numpy as np
 import psi4
 import einsums
+from einsums.interop import psi4 as interop
 import einsums._core            # force pybind type registration (bug-916: _core is lazy)
 import einsums.graph as cg
 
@@ -54,11 +55,11 @@ Co_psi = psi4.core.Matrix.from_array(Co_np)
 Cv_psi = psi4.core.Matrix.from_array(Cv_np)
 
 # ---- the bridge: integral-direct bra half-transforms (no N^4 AO tensor) ----
-HT_oo = mints.mo_bra_half_transform_einsums(Co_psi, Co_psi)   # (ij|λσ)  (o, o, nbf, nbf)
-HT_ov = mints.mo_bra_half_transform_einsums(Co_psi, Cv_psi)   # (ia|λσ)  (o, v, nbf, nbf)
+HT_oo = interop.mo_bra_half_transform(mints.mo_bra_half_transform(Co_psi, Co_psi), nocc, nocc)  # (ij|λσ)
+HT_ov = interop.mo_bra_half_transform(mints.mo_bra_half_transform(Co_psi, Cv_psi), nocc, nvir)  # (ia|λσ)
 
 # ---- (1) half-transforms vs numpy reference ----
-Iao = np.asarray(mints.ao_eri_einsums())   # (μν|λσ); only to build the reference
+Iao = np.asarray(mints.ao_eri()).reshape(nbf, nbf, nbf, nbf)   # (μν|λσ); only for the reference
 ref_HToo = np.einsum("mi,nj,mnls->ijls", Co_np, Co_np, Iao, optimize=True)
 ref_HTov = np.einsum("mi,na,mnls->ials", Co_np, Cv_np, Iao, optimize=True)
 for name, got, ref in [("HT_oo (ij|λσ)", HT_oo, ref_HToo), ("HT_ov (ia|λσ)", HT_ov, ref_HTov)]:
