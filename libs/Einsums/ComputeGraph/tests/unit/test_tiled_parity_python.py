@@ -22,13 +22,16 @@ and storage substrate; parity here means the USER-FACING surface, not a
 parallel implementation of every pass.
 
 Known-open items tracked toward full workflow parity, not yet asserted here:
-  * graph-owned tiled scratch (declare_zero_tensor / Materialization /
-    FreeInsertion / the MemoryPlanning arena are dense-only, and
-    InplaceOptimization gates on !is_tiled),
   * tiled views registered in capture (cg.view_indexed / permute_view and the
     disjointness-aware scheduling are dense-only; eager IndexSpace views are
     not graph-registered),
-  * GPU placement and the distribution passes skip tiled-touching nodes.
+  * GPU placement and the distribution passes skip tiled-touching nodes,
+  * MemoryPlanning's arena and InplaceOptimization stay dense-only BY DESIGN
+    (a tile-wise tensor has no single buffer to place or merge).
+
+Graph-owned tiled scratch landed via Graph::declare_zero_tiled_tensor
+(deferred lifecycle, Materialization hoisting, FreeInsertion-compatible
+release); asserted below alongside zeros_like.
 """
 
 import pytest
@@ -119,6 +122,16 @@ def test_dense_only_op_is_still_dense_only(name):
 def test_contract_lists_are_disjoint():
     overlap = set(WORKFLOW_OPS) & set(DENSE_ONLY_OPS)
     assert not overlap, f"ops cannot be in both lists: {sorted(overlap)}"
+
+
+def test_graph_owned_tiled_scratch_is_declarable():
+    """Part of the contract: tiled scratch must be declarable graph-owned with
+    the deferred lifecycle, same as dense (behavioral coverage lives in
+    test_tiled_ops_python.py's loop-body test)."""
+    g = cg.Graph("parity_scratch")
+    t = g.declare_zero_tiled_tensor("s", [[2], [3]], dtype="float64", intermediate=True)
+    assert type(t).__name__ == "TiledRuntimeTensorD"
+    assert t.tile_sizes() == [[2], [3]]
 
 
 def test_zeros_like_is_structure_preserving():

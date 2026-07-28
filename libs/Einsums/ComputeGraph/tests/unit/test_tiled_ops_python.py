@@ -197,6 +197,35 @@ def test_tiled_permute_grid_mismatch_throws():
         einsums.permute("j,i <- i,j", C, A)
 
 
+def test_graph_owned_tiled_scratch_in_loop_body():
+    """The CCSD loop idiom on tiled operands: scratch declared DEFERRED on the
+    graph (no populated tiles until ops create them), overwritten with c_pf=0
+    and consumed every replay. Materialization hoists the lifecycle pair to
+    the parent; einsum's leftover-scale rule zeroes stale tiles, so reuse
+    across replays is exact."""
+    rng = np.random.default_rng(11)
+    aref = rng.standard_normal((6, 6))
+    bref = rng.standard_normal((6, 6))
+    grid = [[3, 3], [3, 3]]
+    A = _make_nd("float64", "A", grid, ref=aref)
+    B = _make_nd("float64", "B", grid, ref=bref)
+    acc = _make_nd("float64", "acc", grid, ref=np.zeros((6, 6)))
+
+    g = cg.Graph("tiled_scratch")
+    tmp = g.declare_zero_tiled_tensor("tmp", grid, dtype="float64", intermediate=True)
+    body = g.add_loop("it", 3, lambda i: True)
+    with cg.capture(body):
+        einsums.einsum("ij <- ik ; kj", tmp, A, B, c_pf=0.0, ab_pf=1.0)  # overwrite scratch
+        einsums.linalg.axpy(1.0, tmp, acc)                               # consume it
+
+    g.apply(cg.default_pass_manager())
+    g.execute()
+    assert_close(_gather_nd(acc, (6, 6), "float64"), 3.0 * (aref @ bref))
+
+    g.execute()  # replay: hoisted Materialize/Initialize rerun after any Free
+    assert_close(_gather_nd(acc, (6, 6), "float64"), 6.0 * (aref @ bref))
+
+
 def test_tiled_permute_captured():
     aref = (1.0 + np.arange(45)).reshape(5, 9).astype("float64")
     A = _make("float64", "A", [[2, 3], [4, 5]], fill=lambda r, c: aref[r, c])

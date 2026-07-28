@@ -22,6 +22,7 @@
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 
 #include <fmt/format.h>
 
@@ -924,6 +925,45 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }
         t.set_pending_init(PendingInit::Zero);
         return t;
+    }
+
+    /// Tiled analog of declare_zero_runtime_tensor(): a graph-owned
+    /// TiledRuntimeTensor shell over @p tile_sizes with DEFERRED lifecycle.
+    /// The shell starts with no populated tiles - ops create tiles on demand
+    /// (infer-and-create, zeroed) - so Materialize and Initialize are cheap,
+    /// but registering the handle as Deferred puts the tensor under the same
+    /// lifecycle machinery as dense scratch: Materialization hoists the pair
+    /// to the loop's parent, and FreeInsertion can release the tile storage
+    /// after the last consumer (release() keeps the sparsity pattern, so a
+    /// later replay re-materializes into the same structure). MemoryPlanning
+    /// leaves tiled scratch alone by construction: the arena requires
+    /// materialize_into, and a tile-wise tensor has no single buffer to
+    /// place. Scratch REUSE per replay is safe for the ops with the
+    /// leftover-scale rule (einsum's c_pf, direct_division's and permute's
+    /// beta apply to every stored tile, so stale tiles from a previous
+    /// iteration are zeroed, not kept).
+    template <typename T>
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = float)
+        APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = double)
+            APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = std::complex<float>)
+                APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = std::complex<double>)
+                    TiledRuntimeTensor<T> &declare_zero_tiled_tensor(std::string name, std::vector<std::vector<int>> tile_sizes,
+                                                                     bool intermediate = false) {
+        using TensorType = TiledRuntimeTensor<T>;
+        auto *ptr        = new TensorType(std::move(name), std::move(tile_sizes));
+        _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
+
+        auto handle            = make_handle(*ptr, 0);
+        handle.is_intermediate = intermediate;
+        handle.alloc_state     = AllocState::Deferred; // empty shell reads as vacuously materialized; force the lifecycle
+        handle.init_kind       = InitKind::Zero;
+        handle.zero_fn         = [ptr]() {
+            ptr->materialize();
+            ptr->zero();
+        };
+        register_tensor(std::move(handle));
+        // No Alloc node, MaterializationPass inserts Materialize + Initialize.
+        return *ptr;
     }
 
     // ── Deferred tensor declaration ─────────────────────────────────────────
