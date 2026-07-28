@@ -113,11 +113,12 @@ struct CpuConfig {
     /// Work, in flops, below which parallelizing is a net loss.
     ///
     /// A parallel region only pays for itself once the work it distributes takes
-    /// longer than entering it, and on this machine an EMPTY region costs ~20 us
-    /// at the default thread count while a tiled CCSD contraction is ~2 KFLOP of
-    /// arithmetic. Derived from the measured region cost rather than hardcoded,
-    /// because the cost differs by an order of magnitude across thread counts and
-    /// OpenMP runtimes.
+    /// longer than entering it, and an EMPTY region costs tens of microseconds at
+    /// the default thread count while a per-tile CCSD contraction is a few hundred
+    /// KFLOP. Derived from the measured region cost times the flop rate achieved
+    /// at that size (see @ref einsums::hardware::omp_min_parallel_flops) rather
+    /// than hardcoded, because the region cost differs by an order of magnitude
+    /// across thread counts and OpenMP runtimes.
     int64_t min_parallel_flops;
 };
 

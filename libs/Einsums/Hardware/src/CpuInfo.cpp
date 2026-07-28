@@ -238,11 +238,45 @@ std::size_t omp_min_parallel_elements() {
 
 std::int64_t omp_min_parallel_flops() {
     static std::int64_t const threshold = []() -> std::int64_t {
-        // The rate is the one SMALL contractions actually achieve, measured at
-        // ~1 GFLOP/s, not the peak. Using peak would put the break-even 20x too
-        // high and exclude contractions that genuinely benefit from threads.
-        constexpr double kNominalFlopsPerNs = 1.0;
-        auto             value              = static_cast<std::int64_t>(omp_region_cost_ns() * kNominalFlopsPerNs);
+        // Work is worth a parallel region once it takes longer than entering one,
+        // so the break-even scales with the measured region cost. This constant is
+        // what that cost is multiplied by, in flops per nanosecond, and it is a
+        // CALIBRATION rather than a flop rate - see below.
+        //
+        // It had been 1.0, on the reasoning that the smallest contractions manage
+        // about 1 GFLOP/s. That rate is real but it is the rate of work far below
+        // the break-even, which never decides anything; using it dragged the
+        // threshold down to a few tens of KFLOP and handed a region to everything.
+        // A tiled CCSD residual at 50 spin orbitals expands to 3751 contractions
+        // of ~295 KFLOP each, and forking for every one of them cost 71 ms of that
+        // replay's 72 ms einsum time, against 32 ms with the regions declined.
+        //
+        // The rate achieved AT the break-even is what a straight calculation would
+        // want, and BenchmarkParallelGate measures it on a `ijab <- ijcd ; cdab`
+        // ladder:
+        //
+        //   flops     8k    295k    524k    2.7M     13M
+        //   GFLOP/s  4.2    34.3    23.8    60.2    61.1
+        //
+        // But ~32 over-excludes. Measured end to end on two tiled CCSD residuals,
+        // same binary, threshold forced by the environment override:
+        //
+        //   threshold      26 spin-orb     50 spin-orb
+        //   26k (old)      3.9-4.1 ms      66.9-68.7 ms
+        //   300k           4.0-4.1 ms      33.6-34.3 ms
+        //   835k (=32x)    4.2-4.3 ms      33.5-33.6 ms
+        //
+        // 300k keeps the whole win on the large residual and costs the small one
+        // nothing, where 835k costs it ~6% for no further gain. The gap is that a
+        // region does not cost the full isolated figure when it is entered from a
+        // stream that keeps the team hot, so the naive break-even is too
+        // conservative. 12 is the multiplier that lands on the measured optimum;
+        // it is not a claim about achieved GFLOP/s.
+        //
+        // Measured on arm64 (Apple M4 Pro, 10 threads) only - x86 wants the same
+        // sweep before this is trusted there.
+        constexpr double kBreakEvenFlopsPerNs = 12.0;
+        auto             value                = static_cast<std::int64_t>(omp_region_cost_ns() * kBreakEvenFlopsPerNs);
 
         if (char const *env = std::getenv("EINSUMS_PACKED_MIN_PARALLEL_FLOPS"); env != nullptr) {
             errno                  = 0;
