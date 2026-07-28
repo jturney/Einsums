@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/TiledExpansion.hpp>
+#include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
@@ -289,6 +290,72 @@ bool TiledExpansion::run(Graph &graph) {
         return nd;
     };
 
+    // One dense `c_tile = beta*c_tile + alpha*P(a_tile)` through string_permute
+    // (HPTT). Attaches a real PermuteDescriptor only when the scalars are
+    // representable in its plain doubles, the same honesty rule as the scale.
+    auto emit_tile_permute = [&graph](TensorId at, TensorId ct, ParsedPermuteSpec const &pspec, PrefactorScalar alpha, PrefactorScalar beta,
+                                      packed_gemm::ScalarType dt, std::string label) {
+        Node nd;
+        nd.id    = graph.reserve_node_id();
+        nd.kind  = OpKind::Permute;
+        nd.label = std::move(label);
+        // Same RMW convention as the dense op: beta != 0 reads the destination.
+        nd.inputs  = is_zero(beta) ? std::vector<TensorId>{at} : std::vector<TensorId>{at, ct};
+        nd.outputs = {ct};
+        Graph *g   = &graph;
+        nd.execute = [g, at, ct, pspec, alpha, beta, dt]() {
+            detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
+                using Dense      = GeneralRuntimeTensor<T, std::allocator<T>>;
+                auto const *aptr = static_cast<Dense const *>(g->tensor(at).tensor_ptr);
+                auto       *cptr = static_cast<Dense *>(g->tensor(ct).tensor_ptr);
+                dispatch::string_permute(pspec, as<T>(beta), cptr, as<T>(alpha), *aptr);
+            });
+        };
+        if (is_real_valued(alpha) && is_real_valued(beta)) {
+            PermuteDescriptor pd;
+            pd.alpha     = as_real<double>(alpha);
+            pd.beta      = as_real<double>(beta);
+            pd.c_indices = pspec.c_indices;
+            pd.a_indices = pspec.a_indices;
+            nd.op_data   = pd;
+        }
+        return nd;
+    };
+
+    // One dense reduction over per-tile pairs: r[0] = sum_i dot(a_i, b_i),
+    // true_dot when conjugated. A single node whose inputs are the PER-TILE
+    // ids, which is what frees the whole-tensor tiled ids from the stranding
+    // fixpoint - the entire reason a tiled dot used to poison expansion.
+    auto emit_tiled_dot = [&graph](std::vector<TensorId> as_, std::vector<TensorId> bs, TensorId r, bool conj, packed_gemm::ScalarType dt,
+                                   std::string label) {
+        Node nd;
+        nd.id = graph.reserve_node_id();
+        // Custom, not Dot: OpKind::Dot is in is_gpu_capable_op and GPUPlacement
+        // would target this node, but it is an N-pair reduction whose CPU
+        // executor cannot run with its operands swapped to device shadows.
+        nd.kind  = OpKind::Custom;
+        nd.label = std::move(label);
+        nd.inputs.reserve(as_.size() * 2);
+        nd.inputs.insert(nd.inputs.end(), as_.begin(), as_.end());
+        nd.inputs.insert(nd.inputs.end(), bs.begin(), bs.end());
+        nd.outputs = {r};
+        Graph *g   = &graph;
+        nd.execute = [g, as_ = std::move(as_), bs = std::move(bs), r, conj, dt]() {
+            detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
+                using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
+                T acc{0};
+                for (size_t i = 0; i < as_.size(); ++i) {
+                    auto const *ap = static_cast<Dense const *>(g->tensor(as_[i]).tensor_ptr);
+                    auto const *bp = static_cast<Dense const *>(g->tensor(bs[i]).tensor_ptr);
+                    acc += conj ? linear_algebra::true_dot(*ap, *bp) : linear_algebra::dot(*ap, *bp);
+                }
+                auto *rp      = static_cast<Dense *>(g->tensor(r).tensor_ptr);
+                rp->data()[0] = acc;
+            });
+        };
+        return nd;
+    };
+
     // One dense `c_tile = alpha*(a_tile/b_tile) + beta*c_tile`.
     auto emit_tile_divide = [&graph](TensorId at, TensorId bt, TensorId ct, PrefactorScalar alpha, PrefactorScalar beta,
                                      packed_gemm::ScalarType dt, std::string label) {
@@ -437,7 +504,7 @@ bool TiledExpansion::run(Graph &graph) {
     // planned. Deciding first and creating second keeps a rejected candidate from
     // leaving new tiles behind, which would change how the runtime applies c_pf.
     struct Plan {
-        enum class Kind : std::uint8_t { Einsum, Scale, Axpy, Divide };
+        enum class Kind : std::uint8_t { Einsum, Scale, Axpy, Divide, Permute, Dot };
 
         size_t                  index{0};
         Kind                    kind{Kind::Scale};
@@ -461,10 +528,17 @@ bool TiledExpansion::run(Graph &graph) {
         /// the gather/scatter traffic.
         double est_tiled_us{0.0};
         double est_dense_us{0.0};
-        // Scale / Axpy / Divide
+        // Scale / Axpy / Divide / Permute
         PrefactorScalar               alpha{double{1}};
-        PrefactorScalar               beta{double{0}}; ///< Divide only
+        PrefactorScalar               beta{double{0}}; ///< Divide / Permute
         std::vector<std::vector<int>> coords;
+        // Permute: the parsed spec for the per-tile dense permutes. Source and
+        // target coordinates ride in a_coords / c_coords (bijective pairing).
+        ParsedPermuteSpec pspec;
+        // Dot: shared coordinates ride in a_coords; the dense scalar result and
+        // whether the reduction conjugates its first operand.
+        TensorId result_id{0};
+        bool     conj{false};
     };
     std::vector<Plan> plans;
 
@@ -640,6 +714,156 @@ bool TiledExpansion::run(Graph &graph) {
             // Y gains every tile X has: tiled_axpy creates the matching Y tile when
             // it is absent.
             tiles_of(y_id, yv).insert(coords.begin(), coords.end());
+            continue;
+        }
+
+        // ── Tiled permute: C = beta*C + alpha*P(A) ───────────────────────────
+        // The permutation acts on the tile grid and within each tile alike:
+        // each stored A tile contributes to exactly one C tile (coordinates
+        // permuted the same way the axes are), so the lowering is one dense
+        // per-tile permute per stored A tile, each carrying (alpha, beta), plus
+        // the leftover-scale rule for stored C tiles the permutation never
+        // reaches - mirroring detail::tiled_permute's runtime semantics.
+        if (auto const *pdesc = std::get_if<TiledPermuteDescriptor>(&src.op_data)) {
+            if (src.outputs.size() != 1 || src.inputs.empty()) {
+                continue;
+            }
+            TensorId const a_id = src.inputs[0];
+            TensorId const c_id = src.outputs[0];
+            auto const    &a_h  = graph.tensor(a_id);
+            auto const    &c_h  = graph.tensor(c_id);
+            if (!a_h.is_tiled || !c_h.is_tiled || a_h.dtype != c_h.dtype) {
+                continue;
+            }
+            TiledView av, cv;
+            if (!bind_tiled(a_h, a_id, av) || !bind_tiled(c_h, c_id, cv)) {
+                decline("an operand has no backing tiled object");
+                continue;
+            }
+            size_t const rank = pdesc->c_indices.size();
+            if (rank != pdesc->a_indices.size() || rank != av.rank || rank != cv.rank) {
+                decline("spec rank does not match the operand ranks");
+                continue;
+            }
+            std::vector<size_t> perm(rank);
+            bool                perm_ok = true;
+            for (size_t i = 0; i < rank && perm_ok; ++i) {
+                auto it = std::ranges::find(pdesc->a_indices, pdesc->c_indices[i]);
+                perm_ok = it != pdesc->a_indices.end();
+                if (perm_ok) {
+                    perm[i] = static_cast<size_t>(it - pdesc->a_indices.begin());
+                }
+            }
+            if (!perm_ok) {
+                decline("output index missing from the input indices");
+                continue;
+            }
+            bool grids_ok = true;
+            for (size_t i = 0; i < rank; ++i) {
+                if ((*cv.sizes)[i] != (*av.sizes)[perm[i]]) {
+                    grids_ok = false;
+                    break;
+                }
+            }
+            if (!grids_ok) {
+                // The runtime throws on a grid mismatch; declining preserves that.
+                decline("C's tile grid is not A's grid permuted like the axes");
+                continue;
+            }
+
+            auto const                   &pa = tiles_of(a_id, av);
+            auto const                    pc = tiles_of(c_id, cv); // pre-node set, by value
+            std::vector<std::vector<int>> sources(pa.begin(), pa.end());
+            std::vector<std::vector<int>> targets;
+            std::set<std::vector<int>>    targeted;
+            targets.reserve(sources.size());
+            for (auto const &co : sources) {
+                std::vector<int> tk(rank);
+                for (size_t i = 0; i < rank; ++i) {
+                    tk[i] = co[perm[i]];
+                }
+                targeted.insert(tk);
+                targets.push_back(std::move(tk));
+            }
+
+            Plan p;
+            p.index           = ni;
+            p.kind            = Plan::Kind::Permute;
+            p.touched         = {a_id, c_id};
+            p.dtype           = c_h.dtype;
+            p.elem_size       = c_h.element_size;
+            p.src_a           = av;
+            p.dst             = cv;
+            p.alpha           = pdesc->alpha;
+            p.beta            = pdesc->beta;
+            p.pspec.c_indices = pdesc->c_indices;
+            p.pspec.a_indices = pdesc->a_indices;
+            p.pspec.raw       = fmt::format("{} <- {}", fmt::join(pdesc->c_indices, ","), fmt::join(pdesc->a_indices, ","));
+            p.a_coords        = std::move(sources);
+            p.c_coords        = std::move(targets);
+            // Stored C tiles the permutation never reaches still take beta.
+            for (auto const &co : pc) {
+                if (!targeted.contains(co)) {
+                    p.leftover.push_back(co);
+                }
+            }
+            p.leftover_pf = pdesc->beta;
+            if (p.a_coords.empty() && p.leftover.empty()) {
+                continue; // nothing stored anywhere: a no-op, leave it alone
+            }
+            if (p.a_coords.size() + p.leftover.size() > _max_nodes) {
+                decline(fmt::format("projected {} tiles exceeds the {}-node budget", p.a_coords.size() + p.leftover.size(), _max_nodes));
+                continue;
+            }
+            tiles_of(c_id, cv).insert(p.c_coords.begin(), p.c_coords.end());
+            plans.push_back(std::move(p));
+            continue;
+        }
+
+        // ── Tiled dot / dotc: dense scalar = sum over shared tiles ───────────
+        if (auto const *ddesc = std::get_if<TiledDotDescriptor>(&src.op_data)) {
+            if (src.inputs.size() != 2 || src.outputs.size() != 1) {
+                continue;
+            }
+            TensorId const a_id = src.inputs[0];
+            TensorId const b_id = src.inputs[1];
+            TensorId const r_id = src.outputs[0];
+            auto const    &a_h  = graph.tensor(a_id);
+            auto const    &b_h  = graph.tensor(b_id);
+            auto const    &r_h  = graph.tensor(r_id);
+            if (!a_h.is_tiled || !b_h.is_tiled || r_h.is_tiled || a_h.dtype != b_h.dtype) {
+                continue;
+            }
+            TiledView av, bv;
+            if (!bind_tiled(a_h, a_id, av) || !bind_tiled(b_h, b_id, bv)) {
+                decline("an operand has no backing tiled object");
+                continue;
+            }
+            if (*av.sizes != *bv.sizes) {
+                // The runtime throws on a grid mismatch; declining preserves that.
+                decline("operands do not share a tile grid");
+                continue;
+            }
+            auto const &pa = tiles_of(a_id, av);
+            auto const &pb = tiles_of(b_id, bv);
+            Plan        p;
+            p.index     = ni;
+            p.kind      = Plan::Kind::Dot;
+            p.touched   = {a_id, b_id};
+            p.dtype     = a_h.dtype;
+            p.elem_size = a_h.element_size;
+            p.src_a     = av;
+            p.src_b     = bv;
+            p.result_id = r_id;
+            p.conj      = ddesc->conjugated;
+            for (auto const &co : pa) {
+                if (pb.contains(co)) {
+                    p.a_coords.push_back(co);
+                }
+            }
+            // No shared tiles is a valid reduction over nothing: the emitted
+            // node writes exactly the 0 the runtime would.
+            plans.push_back(std::move(p));
             continue;
         }
 
@@ -1271,6 +1495,26 @@ bool TiledExpansion::run(Graph &graph) {
                                                  fmt::format("tile_axpy({})", fmt::join(coord, ","))));
             }
             break;
+        case Plan::Kind::Permute:
+            emitted.reserve(pl.a_coords.size() + pl.leftover.size());
+            for (size_t i = 0; i < pl.a_coords.size(); ++i) {
+                emitted.push_back(emit_tile_permute(pl.src_a.tile_id(pl.a_coords[i]), pl.dst.tile_id(pl.c_coords[i]), pl.pspec, pl.alpha,
+                                                    pl.beta, pl.dtype, fmt::format("tile_permute({})", fmt::join(pl.c_coords[i], ","))));
+            }
+            append_scales(pl.dst, pl.leftover, pl.leftover_pf, pl.dtype, pl.elem_size, emitted);
+            break;
+        case Plan::Kind::Dot: {
+            std::vector<TensorId> as_, bs;
+            as_.reserve(pl.a_coords.size());
+            bs.reserve(pl.a_coords.size());
+            for (auto const &co : pl.a_coords) {
+                as_.push_back(pl.src_a.tile_id(co));
+                bs.push_back(pl.src_b.tile_id(co));
+            }
+            emitted.push_back(emit_tiled_dot(std::move(as_), std::move(bs), pl.result_id, pl.conj, pl.dtype,
+                                             fmt::format("tile_dot(x{})", pl.a_coords.size())));
+            break;
+        }
         case Plan::Kind::Divide:
             emitted.reserve(pl.coords.size() + pl.leftover.size());
             if (should_fuse(pl.dst, pl.coords, pl.elem_size, /*streams=*/is_zero(pl.beta) ? 3 : 4)) {

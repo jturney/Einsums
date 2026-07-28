@@ -438,11 +438,19 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
             detail::tiled_permute(parsed, static_cast<T>(beta), static_cast<CType *>(c_slot->ptr), static_cast<T>(alpha),
                                   *static_cast<AType const *>(a_slot->ptr));
         };
-        // Recorded as an opaque Custom (no PermuteDescriptor): the permute-
-        // rewriting passes assume a single dense buffer, and the tiled dot /
-        // conj precedent is opaque nodes. RMW convention: beta != 0 reads C.
+        // Recorded as Custom with a TiledPermuteDescriptor - NOT the dense
+        // PermuteDescriptor, which passes probe without checking the node kind
+        // and then reason about a single dense buffer. The tiled descriptor is
+        // what lets TiledExpansion lower this node into per-tile dense
+        // permutes instead of stranding every tensor it touches out of
+        // expansion. RMW convention: beta != 0 reads C.
+        TiledPermuteDescriptor tdesc;
+        tdesc.c_indices                      = parsed.c_indices;
+        tdesc.a_indices                      = parsed.a_indices;
+        tdesc.alpha                          = PrefactorScalar{alpha};
+        tdesc.beta                           = PrefactorScalar{beta};
         std::vector<TensorId> permute_inputs = (beta != T{0}) ? std::vector<TensorId>{a_id, c_id} : std::vector<TensorId>{a_id};
-        tctx.record(OpKind::Custom, std::move(label), std::move(permute_inputs), {c_id}, std::move(executor));
+        tctx.record(OpKind::Custom, std::move(label), std::move(permute_inputs), {c_id}, std::move(executor), std::move(tdesc));
         return;
     } else {
         auto &ctx = CaptureContext::current();
@@ -1836,7 +1844,15 @@ APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>,
         auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
         r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
     };
-    ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor));
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        // The descriptor lets TiledExpansion lower this node onto per-tile
+        // ids instead of stranding its whole-tensor tiled operands.
+        TiledDotDescriptor td;
+        td.conjugated = false;
+        ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor), std::move(td));
+    } else {
+        ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor));
+    }
 }
 
 /// Graph-aware Hermitian inner product: ``result := sum_i conj(A_i) * B_i``.
@@ -1925,7 +1941,14 @@ APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<double>
         auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
         r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
     };
-    ctx.record(OpKind::Dot, "dotc", {a_id, b_id}, {r_id}, std::move(executor));
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        // Same expansion hook as dot_python's, with the conjugation recorded.
+        TiledDotDescriptor td;
+        td.conjugated = true;
+        ctx.record(OpKind::Dot, "dotc", {a_id, b_id}, {r_id}, std::move(executor), std::move(td));
+    } else {
+        ctx.record(OpKind::Dot, "dotc", {a_id, b_id}, {r_id}, std::move(executor));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

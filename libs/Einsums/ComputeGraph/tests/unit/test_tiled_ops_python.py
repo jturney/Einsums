@@ -198,6 +198,86 @@ def test_tiled_permute_grid_mismatch_throws():
         einsums.permute("j,i <- i,j", C, A)
 
 
+def _node_labels(g):
+    import json
+    return [n.get("label", "") for n in json.loads(g.to_json()).get("nodes", [])]
+
+
+def test_tiled_permute_expands_in_pipeline():
+    """TiledExpansion lowers a captured tiled permute into per-tile dense
+    Permute nodes (one per stored A tile, targets bijectively permuted), with
+    the leftover-scale rule for stored C tiles the permutation never reaches.
+    Before the TiledPermuteDescriptor existed the node was opaque and its
+    cannot-expand contagion stranded every tensor it touched."""
+    aref = (1.0 + np.arange(45)).reshape(5, 9).astype("float64")
+    cref = (2.0 - np.arange(45)).reshape(9, 5).astype("float64")
+    A = _make("float64", "A", [[2, 3], [4, 5]], fill=lambda r, c: aref[r, c])
+    C = _make("float64", "C", [[4, 5], [2, 3]], fill=lambda r, c: cref[r, c])
+
+    g = cg.Graph("tiled_permute_expand")
+    with cg.capture(g):
+        einsums.permute("j,i <- i,j", C, A, c_pf=0.5, a_pf=2.0)
+
+    g.apply(cg.default_pass_manager())
+    labels = _node_labels(g)
+    assert any(l.startswith("tile_permute") for l in labels), labels
+    assert not any(l.startswith("tiled permute") for l in labels), labels
+
+    g.execute()
+    assert_close(_gather(C, 9, 5), 0.5 * cref + 2.0 * aref.T)
+    g.execute()  # replay: 0.5*(previous) + 2*A^T again
+    assert_close(_gather(C, 9, 5), 0.5 * (0.5 * cref + 2.0 * aref.T) + 2.0 * aref.T)
+
+
+def test_tiled_permute_expansion_no_longer_strands_einsums():
+    """The motivating fix: a permute sharing tensors with tiled einsums used to
+    poison the whole body out of expansion. Now both expand together and the
+    result is exact."""
+    rng = np.random.default_rng(31)
+    aref = rng.standard_normal((6, 6))
+    grid = [[3, 3], [3, 3]]
+    A = _make_nd("float64", "A", grid, ref=aref)
+    T = einsums.TiledRuntimeTensorD("T", grid)
+    C = einsums.TiledRuntimeTensorD("C", grid)
+
+    g = cg.Graph("permute_plus_einsum")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", T, A, A, c_pf=0.0, ab_pf=1.0)  # T = A@A
+        einsums.permute("j,i <- i,j", C, T)                            # C = T^T
+        einsums.einsum("ij <- ik ; kj", T, C, A, c_pf=0.0, ab_pf=1.0)  # T = C@A
+
+    g.apply(cg.default_pass_manager())
+    labels = _node_labels(g)
+    assert not any(l.startswith("tiled einsum") or l.startswith("tiled permute") for l in labels), labels
+
+    g.execute()
+    assert_close(_gather_nd(T, (6, 6), "float64"), (aref @ aref).T @ aref)
+
+
+def test_tiled_permute_expansion_sparsity():
+    """Expanded form must keep the runtime's sparsity semantics: absent A
+    tiles contribute nothing (their targets keep beta*C), untargeted stored C
+    tiles are scaled by beta, and zeros stay absent."""
+    A = einsums.TiledRuntimeTensorD("A", [[2, 3], [4, 5]])
+    A.add_tile([0, 0])
+    A.materialize()
+    np.asarray(A.tile_view([0, 0]))[...] = 3.0
+    C = einsums.TiledRuntimeTensorD("C", [[4, 5], [2, 3]])
+    C.add_tile([1, 1])
+    C.materialize()
+    np.asarray(C.tile_view([1, 1]))[...] = 8.0
+
+    g = cg.Graph("tiled_permute_expand_sparse")
+    with cg.capture(g):
+        einsums.permute("j,i <- i,j", C, A, c_pf=0.5, a_pf=1.0)
+    g.apply(cg.default_pass_manager())
+    g.execute()
+
+    np.testing.assert_allclose(np.asarray(C.tile_view([0, 0])), 3.0)
+    np.testing.assert_allclose(np.asarray(C.tile_view([1, 1])), 4.0)  # 0.5 * 8
+    assert not C.has_tile([0, 1]) and not C.has_tile([1, 0])
+
+
 def test_tile_view_per_block_contractions():
     """The tiled ladder idiom: capture dense contractions per tile block via
     cg.tile_view, writing disjoint tiles of one tiled output. Sequential and

@@ -143,6 +143,40 @@ struct TiledEinsumDescriptor {
     std::shared_ptr<EinsumParams> params;
 };
 
+/**
+ * @brief Metadata for a TILED permute node (``OpKind::Custom``).
+ *
+ * A tiled ``C = beta*C + alpha*P(A)`` records as Custom and executes through
+ * ``detail::tiled_permute``; this descriptor is what lets TiledExpansion lower
+ * it into per-tile dense Permute nodes instead of treating the node as an
+ * opaque closure (which strands every tensor it touches out of expansion).
+ *
+ * A distinct type from @ref PermuteDescriptor for the same reason the tiled
+ * einsum has its own: passes probe ``get_if<PermuteDescriptor>`` without
+ * checking the node kind and then reason about a single dense buffer, which a
+ * tiled operand does not have. The scalars are snapshots matching the baked
+ * executor, exactly as the dense permute capture stores them.
+ */
+struct TiledPermuteDescriptor {
+    std::vector<std::string> c_indices;        ///< Output index names
+    std::vector<std::string> a_indices;        ///< Input index names
+    PrefactorScalar          alpha{double{1}}; ///< Source prefactor
+    PrefactorScalar          beta{double{0}};  ///< Destination prefactor (0 = overwrite)
+};
+
+/**
+ * @brief Metadata for a TILED dot / dotc node (``OpKind::Dot``).
+ *
+ * A tiled scalar reduction sums per-tile dense dots over the operands' shared
+ * tiles into a dense 1-element result. Without a descriptor the node is an
+ * opaque closure whose whole-tensor tiled reads strand every tensor it
+ * touches out of TiledExpansion; with it, the pass can lower the node into a
+ * single reduction over PER-TILE ids, freeing the whole-tensor ids entirely.
+ */
+struct TiledDotDescriptor {
+    bool conjugated{false}; ///< true for dotc (sum conj(A)*B), false for dot
+};
+
 /// Which elementwise operation a @ref TiledElementwiseDescriptor describes.
 enum class TiledElementwiseOp : std::uint8_t {
     Scale,  ///< ``A = alpha * A``
@@ -309,10 +343,10 @@ inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, 
  * for use by optimization passes. Nodes with no special metadata use
  * std::monostate.
  */
-using OpData =
-    std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
-                 AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor, BatchedGemmDescriptor,
-                 ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, TiledEinsumDescriptor, TiledElementwiseDescriptor>;
+using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
+                            AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor,
+                            BatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, TiledEinsumDescriptor,
+                            TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.
