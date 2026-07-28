@@ -12,7 +12,8 @@ in ccsd_rhf_oracle.py. This is the einsums realization, honoring two goals:
     plus a ket-finish in einsums and a chemist->physicist permute. No ao_eri.
   * einsums, not numpy. Every contraction and transform is einsums: einsum specs,
     operators, the '/' denominator, and permute for the closed-shell symmetrizer.
-    numpy only ingests psi4 C/eps and reads the scalar energy.
+    numpy only ingests psi4 C/eps, reads the scalar energy, and solves the
+    K-sized DIIS system (27 -> 15 iterations here; error vector = r/D).
 
 Hybrid DF: the v⁴ particle-ladder integral <ab|ef> = (ae|bf) is the only block
 from density fitting, <ab|ef> = Σ_Q B^Q_ae B^Q_bf with B = J^{-1/2}(Q|vv) from
@@ -74,6 +75,49 @@ def sym(t):  # closed-shell symmetrizer r_ijab + r_jiba
 
 def to_t(name, a): return einsums.asarray(np.ascontiguousarray(a), name=name)
 
+
+class DIIS:
+    """Pulay DIIS over flattened (t1, t2) amplitude vectors.
+
+    Error vector = the update step (r/D), the standard CC choice. Holds at
+    most `k` (T, e) pairs and extrapolates once two are available; an
+    ill-conditioned B drops the oldest pair and retries.
+    """
+
+    def __init__(self, k=8):
+        self.k = k
+        self.T, self.E = [], []
+
+    def push(self, t_vec, e_vec):
+        self.T.append(t_vec)
+        self.E.append(e_vec)
+        if len(self.T) > self.k:
+            self.T.pop(0)
+            self.E.pop(0)
+
+    def extrapolate(self):
+        while len(self.T) >= 2:
+            m = len(self.T)
+            B = np.empty((m + 1, m + 1))
+            B[m, :] = B[:, m] = -1.0
+            B[m, m] = 0.0
+            for p in range(m):
+                for q in range(p, m):
+                    B[p, q] = B[q, p] = self.E[p] @ self.E[q]
+            scale = np.abs(B[:m, :m]).max()
+            if scale > 0:
+                B[:m, :m] /= scale
+            rhs = np.zeros(m + 1)
+            rhs[m] = -1.0
+            try:
+                c = np.linalg.solve(B, rhs)[:m]
+            except np.linalg.LinAlgError:
+                self.T.pop(0)
+                self.E.pop(0)
+                continue
+            return sum(ci * Ti for ci, Ti in zip(c, self.T))
+        return None
+
 # ── integrals from the bridge: physicist <pq|rs> = (pr|qs)_chem ──────────────
 HT = {("o", "o"): mints.mo_bra_half_transform_einsums(Co, Co),
       ("o", "v"): mints.mo_bra_half_transform_einsums(Co, Cv),
@@ -121,6 +165,7 @@ def energy():
 
 e_old = energy()
 print(f"MP2 (closed-shell einsums) = {e_old:.10f}")
+diis = DIIS()
 for it in range(100):
     Tau, Taut = tau(), taut()
     Fae = Fvv * 1.0 \
@@ -189,8 +234,18 @@ for it in range(100):
     r2 = r2 + sym(E("ijab <- ie ; abej", t1, g["vvvo"], SH2, 1.0, "t2j"))
     r2 = r2 - sym(E("ijab <- ma ; mbij", t1, g["ovoo"], SH2, 1.0, "t2k"))
 
-    t1 = t1 + r1 / Dia
-    t2 = t2 + r2 / Dijab
+    d1 = r1 / Dia
+    d2 = r2 / Dijab
+    t1 = t1 + d1
+    t2 = t2 + d2
+    # DIIS: push (amplitudes, update step) and replace t with the extrapolant.
+    diis.push(np.concatenate([np.asarray(t1).ravel(), np.asarray(t2).ravel()]),
+              np.concatenate([np.asarray(d1).ravel(), np.asarray(d2).ravel()]))
+    ext = diis.extrapolate()
+    if ext is not None:
+        n1 = nocc * nv
+        t1 = to_t("t1", ext[:n1].reshape(nocc, nv))
+        t2 = to_t("t2", ext[n1:].reshape(nocc, nocc, nv, nv))
     e_new = energy()
     if abs(e_new - e_old) < 1e-11:
         print(f"converged in {it+1} iters"); break
