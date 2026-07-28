@@ -195,6 +195,31 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     APIARY_EXPOSE APIARY_RELEASE_GIL void execute(Executor &executor);
 
+    /**
+     * @brief Choose the executor plain execute() uses for THIS graph.
+     *
+     * The stored executor applies wherever this graph is executed without an
+     * explicit executor argument - most importantly loop bodies, which are
+     * replayed by the loop node via the argument-less execute() and had no
+     * other way to run on a parallel backend:
+     *
+     * @code{.py}
+     * body = g.add_loop("iter", 100, cont)
+     * body.set_executor(cg.DataflowExecutor())   # replays overlap independent nodes
+     * @endcode
+     *
+     * Pass nullptr/None to restore the built-in sequential path. The custom
+     * executors dispatch every node's CPU lambda directly, so graphs with
+     * GPU-placed nodes should keep the default (it performs the device
+     * shadow bookkeeping; the executors do not).
+     *
+     * @param[in] executor Shared ownership of the executor, or nullptr to reset.
+     */
+    APIARY_EXPOSE void set_executor(std::shared_ptr<Executor> executor) { _executor = std::move(executor); }
+
+    /// The executor plain execute() will use, or nullptr for the built-in sequential path.
+    [[nodiscard]] std::shared_ptr<Executor> const &executor() const { return _executor; }
+
     // Note: execute() always instruments with the profiler (no separate execute_profiled variant).
 
     /**
@@ -1652,6 +1677,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /// Per-node timing from last execute() call.
     std::vector<NodeTiming> _timing_report;
+
+    /// Executor plain execute() delegates to (see set_executor); nullptr means
+    /// the built-in sequential path. Loop bodies replay through this.
+    std::shared_ptr<Executor> _executor;
 
     /// Mutable einsum parameters (kept alive by shared_ptr in lambdas + this list).
     std::vector<std::shared_ptr<EinsumParams>>  _params_store;

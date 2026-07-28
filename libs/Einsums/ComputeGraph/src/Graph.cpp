@@ -821,35 +821,155 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     // Owner-resolved (resolve_alias), subtree-aware (effective_io_cached)
     // RAW/WAW/WAR scan. Every emitted edge points from an earlier to a later
     // position, so program order remains a valid topological order.
-    std::unordered_map<TensorId, size_t>              last_writer;
-    std::unordered_map<TensorId, std::vector<size_t>> last_readers;
-    size_t const                                      n = _nodes.size();
+    //
+    // Accesses through views with STATICALLY DISJOINT extents do not conflict:
+    // per-slice writes like the CCSD ladder's ``r2[i,j] += ...`` touch
+    // provably different elements of one parent, and serializing them (the old
+    // owner-only scan) chained every slice of a tensor behind every other,
+    // leaving parallel executors no width. Each eligible view (identity axis
+    // order, every bound a compile-time constant) gets a per-parent-axis
+    // interval box; two accesses conflict only when their boxes may overlap.
+    // Anything unprovable - a runtime bound, a permuted view, a view of a
+    // view, a whole-tensor access - keeps a null box, which overlaps
+    // everything (the previous behavior). Element-disjoint writes commute
+    // bitwise, so relaxing the order cannot change results.
+    using Box = std::vector<std::pair<std::int64_t, std::int64_t>>; // per parent axis: [lo, hi)
+
+    std::unordered_map<TensorId, Box>      view_box;    // view tid -> box in parent axis space
+    std::unordered_map<TensorId, TensorId> view_parent; // view tid -> immediate parent tid
+    for (auto const &nd : _nodes) {
+        auto const *vd = std::get_if<ViewDescriptor>(&nd.op_data);
+        if (vd == nullptr || nd.kind != OpKind::View || nd.outputs.size() != 1 || !vd->permutation.empty()) {
+            continue;
+        }
+        // The box lives in the immediate parent's axis space; a view of a view
+        // would need composing, so require the parent to be the owner.
+        if (resolve_alias(vd->parent_id) != vd->parent_id) {
+            continue;
+        }
+        auto const *ph = find_tensor(vd->parent_id);
+        if (ph == nullptr || ph->dims.size() != vd->axes.size()) {
+            continue;
+        }
+        Box box;
+        box.reserve(vd->axes.size());
+        bool constant = true;
+        for (size_t d = 0; d < vd->axes.size() && constant; ++d) {
+            auto const        &ax  = vd->axes[d];
+            std::int64_t const dim = static_cast<std::int64_t>(ph->dims[d]);
+            switch (ax.kind) {
+            case ViewAxis::Kind::Full:
+                box.emplace_back(0, dim);
+                break;
+            case ViewAxis::Kind::Drop:
+                constant = ax.lo.is_const();
+                if (constant) {
+                    box.emplace_back(ax.lo.const_value(), ax.lo.const_value() + 1);
+                }
+                break;
+            case ViewAxis::Kind::Range:
+                constant = ax.lo.is_const() && ax.hi.is_const();
+                if (constant) {
+                    box.emplace_back(ax.lo.const_value(), ax.hi.const_value());
+                }
+                break;
+            }
+        }
+        if (!constant) {
+            continue;
+        }
+        view_parent.emplace(nd.outputs[0], vd->parent_id);
+        view_box.emplace(nd.outputs[0], std::move(box));
+    }
+
+    auto const may_overlap = [](Box const *a, Box const *b) {
+        if (a == nullptr || b == nullptr || a->size() != b->size()) {
+            return true; // unprovable -> conservative
+        }
+        for (size_t d = 0; d < a->size(); ++d) {
+            if (std::max((*a)[d].first, (*b)[d].first) >= std::min((*a)[d].second, (*b)[d].second)) {
+                return false; // some axis with empty intersection -> disjoint
+            }
+        }
+        return true;
+    };
+
+    // a fully inside b. A retired reader may only be dropped when the write
+    // COVERS it: an overlapped-but-uncovered reader still needs WAR edges
+    // against later writers that touch its uncovered part.
+    auto const covered_by = [](Box const *a, Box const *b) {
+        if (b == nullptr) {
+            return true; // whole-tensor write covers everything
+        }
+        if (a == nullptr || a->size() != b->size()) {
+            return false;
+        }
+        for (size_t d = 0; d < a->size(); ++d) {
+            if ((*a)[d].first < (*b)[d].first || (*a)[d].second > (*b)[d].second) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // Box of an access through @p raw against owner @p tid; null = whole tensor.
+    // A View node's own read/write of its parent is the METADATA rebind of the
+    // slice it describes, so it carries that slice's box - a whole-tensor read
+    // here would re-serialize every consumer of every other slice through it.
+    auto const box_of = [&](Node const &nd, TensorId raw, TensorId tid) -> Box const * {
+        if (auto it = view_box.find(raw); it != view_box.end() && resolve_alias(view_parent.at(raw)) == tid) {
+            return &it->second;
+        }
+        if (nd.kind == OpKind::View && nd.outputs.size() == 1) {
+            if (auto it = view_box.find(nd.outputs[0]); it != view_box.end() && view_parent.at(nd.outputs[0]) == raw) {
+                return &it->second;
+            }
+        }
+        return nullptr;
+    };
+
+    struct Access {
+        size_t     pos;
+        Box const *box;
+    };
+    std::unordered_map<TensorId, std::vector<Access>> writers;
+    std::unordered_map<TensorId, std::vector<Access>> readers;
+
+    size_t const n = _nodes.size();
     for (size_t i = 0; i < n; i++) {
         auto [eff_in, eff_out] = effective_io_cached(_nodes[i], cache);
         for (auto raw : eff_in) {
             TensorId const tid = resolve_alias(raw);
-            auto           it  = last_writer.find(tid);
-            if (it != last_writer.end() && it->second != i) {
-                emit(it->second, i); // RAW: writer -> reader
+            Box const     *box = box_of(_nodes[i], raw, tid);
+            for (auto const &w : writers[tid]) {
+                if (w.pos != i && may_overlap(w.box, box)) {
+                    emit(w.pos, i); // RAW: writer -> reader
+                }
             }
-            last_readers[tid].push_back(i);
+            readers[tid].push_back({.pos = i, .box = box});
         }
         for (auto raw : eff_out) {
-            TensorId const tid  = resolve_alias(raw);
-            auto           writ = last_writer.find(tid);
-            if (writ != last_writer.end() && writ->second != i) {
-                emit(writ->second, i); // WAW: prior writer -> this writer
-            }
-            auto rdit = last_readers.find(tid);
-            if (rdit != last_readers.end()) {
-                for (size_t const reader : rdit->second) {
-                    if (reader != i) {
-                        emit(reader, i); // WAR: prior reader -> this writer
-                    }
+            TensorId const tid = resolve_alias(raw);
+            Box const     *box = box_of(_nodes[i], raw, tid);
+            auto          &wl  = writers[tid];
+            for (auto const &w : wl) {
+                if (w.pos != i && may_overlap(w.box, box)) {
+                    emit(w.pos, i); // WAW: prior writer -> this writer
                 }
-                rdit->second.clear();
             }
-            last_writer[tid] = i;
+            auto &rl = readers[tid];
+            for (auto const &r : rl) {
+                if (r.pos != i && may_overlap(r.box, box)) {
+                    emit(r.pos, i); // WAR: prior reader -> this writer
+                }
+            }
+            // Ordered readers are consumed; anything not fully covered must
+            // stay visible to future writers of its uncovered part.
+            std::erase_if(rl, [&](Access const &r) { return covered_by(r.box, box); });
+            if (box == nullptr) {
+                wl.clear(); // a whole-tensor write dominates all prior writers
+            }
+            wl.push_back({.pos = i, .box = box});
         }
     }
 }
@@ -1756,6 +1876,14 @@ void Graph::rebuild_profile_strings() {
 }
 
 void Graph::execute() {
+    // An installed executor (set_executor) takes over the whole run. This is
+    // how loop bodies get a parallel backend: the loop node replays its body
+    // via this argument-less execute().
+    if (_executor) {
+        execute(*_executor);
+        return;
+    }
+
     // Rebuild when the order is unknown OR a pass vouched for the order via
     // mark_sorted() but left the position-keyed _deps stale (_deps_valid
     // false). topological_sort() takes the cheap rebuild_deps path in that

@@ -61,7 +61,7 @@ struct DependencyInfo {
  * in parallel via threads, on GPU streams, etc. The graph structure,
  * optimization passes, and capture mechanism are executor-agnostic.
  */
-class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Executor {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HOLDER(std::shared_ptr) Executor {
   public:
     virtual ~Executor() = default;
 
@@ -84,7 +84,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Executor 
  * This is the default execution strategy. Nodes run one at a time
  * in dependency order. Zero overhead, no thread safety concerns.
  */
-class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT SequentialExecutor : public Executor {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT SequentialExecutor
+    : public Executor {
   public:
     APIARY_EXPOSE SequentialExecutor() = default;
 
@@ -103,7 +104,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
  *       For small graphs, the sequential executor may be faster due
  *       to reduced thread management overhead.
  */
-class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT OpenMPExecutor : public Executor {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT OpenMPExecutor
+    : public Executor {
   public:
     APIARY_EXPOSE OpenMPExecutor() = default;
 
@@ -130,7 +132,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
  * graph.execute(df_exec);  // Maximum overlap via TaskPool
  * @endcode
  */
-class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT DataflowExecutor : public Executor {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT DataflowExecutor
+    : public Executor {
   public:
     APIARY_EXPOSE DataflowExecutor() = default;
 

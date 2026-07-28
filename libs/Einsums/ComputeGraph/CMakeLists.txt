@@ -47,6 +47,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/GPUDiagnostics.hpp
     Einsums/ComputeGraph/Passes/GPUPlacement.hpp
     Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp
+    Einsums/ComputeGraph/Passes/ScratchPrivatization.hpp
     Einsums/ComputeGraph/Passes/StreamAssignment.hpp
     Einsums/ComputeGraph/Passes/SymmetryPropagation.hpp
     Einsums/ComputeGraph/Passes/TransferElimination.hpp
@@ -97,6 +98,7 @@ set(ComputeGraphSources
     Passes/GPUDiagnostics.cpp
     Passes/GPUPlacement.cpp
     Passes/ScaleAbsorption.cpp
+    Passes/ScratchPrivatization.cpp
     Passes/StreamAssignment.cpp
     Passes/SymmetrizedAccumulation.cpp
     Passes/TiledExpansion.cpp

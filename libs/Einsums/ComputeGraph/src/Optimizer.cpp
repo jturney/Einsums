@@ -31,6 +31,7 @@
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
 #include <Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp>
 #include <Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp>
+#include <Einsums/ComputeGraph/Passes/ScratchPrivatization.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamAssignment.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
 #include <Einsums/ComputeGraph/Passes/SymmetrizedAccumulation.hpp>
@@ -317,6 +318,9 @@ std::string PassManager::explain() const {
             line(fmt::format("ElementWiseFusion: fused {} elementwise pair(s)", ewf->num_fused()));
         } else if (auto const *lih = dynamic_cast<passes::LoopInvariantHoisting const *>(p.get()); lih && lih->num_hoisted() > 0) {
             line(fmt::format("LoopInvariantHoisting: hoisted {} node(s) out of loops", lih->num_hoisted()));
+        } else if (auto const *sp = dynamic_cast<passes::ScratchPrivatization const *>(p.get()); sp && sp->num_tensors_privatized() > 0) {
+            line(fmt::format("ScratchPrivatization: {} scratch tensor(s) split onto {} clone(s), {} node(s) rebuilt",
+                             sp->num_tensors_privatized(), sp->num_copies_created(), sp->num_nodes_rebuilt()));
         } else if (auto const *cp = dynamic_cast<passes::ContractionPlanning const *>(p.get()); cp && !cp->chain_reports().empty()) {
             line(fmt::format("ContractionPlanning: restructured {} of {} GEMM chain(s), {} intermediate(s)", cp->chains_restructured(),
                              cp->chain_reports().size(), cp->intermediates_created()));
@@ -395,6 +399,13 @@ void PassManager::populate_default() {
     // deduplicated, canonical node set.
     pm.add<passes::LinearCombinationContractionFolding>();
     pm.add<passes::LoopInvariantHoisting>();
+    // After the structural rewrites above have settled and hoisting has thinned
+    // the bodies: rename reused scratch onto per-generation clones so false
+    // WAR/WAW chains stop serializing otherwise independent work. Before the
+    // planning cluster so ContractionPlanning/GEMMBatching/Reorder see the
+    // widened dependency structure, and before Materialization so the clones
+    // are allocated with everything else.
+    pm.add<passes::ScratchPrivatization>();
 
     // Chain restructuring belongs in the planning phase: it rewrites GEMM
     // chains using the shared cost model and declares DEFERRED intermediates,
