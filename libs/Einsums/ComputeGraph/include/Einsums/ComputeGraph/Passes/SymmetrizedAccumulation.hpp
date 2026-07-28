@@ -75,9 +75,12 @@ namespace einsums::compute_graph::passes {
  *   ~compute-neutral (a few %, transpose-bound). The win is eliminating the
  *   O(o^2 v^2) @c tmpP buffer (peak memory), not compute.
  * - Detection requires the exact structure: an involutive overwrite permute
- *   whose output is sole-produced/sole-consumed by one accumulating axpby, plus
- *   a sibling accumulating axpby reading the un-permuted source into the same
- *   output; an interference guard rejects sites where another node observes the
+ *   whose output is consumed, within the generation this permute starts (up to
+ *   the buffer's next overwrite), by exactly one accumulating axpby, plus a
+ *   sibling accumulating axpby reading the un-permuted source into the same
+ *   output from the source's own generation. Scratch REUSED across sites (the
+ *   CCSD body recycles one tmp/tmpP for every term) matches per generation; an
+ *   interference guard rejects sites where another node observes the
  *   half-symmetrized output.
  *
  * @par Future improvements
@@ -98,10 +101,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// The CCSD residual is a loop body; the sites live in the subgraph.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
-    /// Structural matches: permute (involutive, overwrite) whose output is the
-    /// sole-produced/sole-consumed source of an accumulating axpby into the same
-    /// output that a sibling accumulating axpby also feeds from the un-permuted
-    /// source.
+    /// Structural matches: permute (involutive, overwrite) whose output feeds,
+    /// within the generation this permute starts, exactly one accumulating
+    /// axpby into an output that a sibling accumulating axpby also feeds from
+    /// the un-permuted source's generation.
     APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
 
     /// Candidates that also pass the interference guard (no other node observes

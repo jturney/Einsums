@@ -321,3 +321,119 @@ def test_symacc_inside_conditional_in_loop(o, v, s, niters, take, dtype, seed):
 
     g.execute()
     assert_close(r2, oracle)
+
+
+@pytest.mark.parametrize("dtype", ["float64", "complex128"])
+@pytest.mark.parametrize("nsites", [2, 4])
+def test_symacc_sites_sharing_one_scratch_pair(dtype, nsites):
+    """The CCSD body's real shape: ONE tmp/tmpP recycled by every symacc site
+    (graph-owned scratch reused in place). Whole-graph writer/reader-uniqueness
+    used to reject all of them; generation-scoped matching folds each site and
+    the folded graph must still match the oracle."""
+    o, v = 2, 3
+    rng = np.random.default_rng(7)
+    ops = []
+    for _ in range(nsites):
+        A_np = rng.standard_normal((o, v)).astype(dtype)
+        B_np = rng.standard_normal((o, v)).astype(dtype)
+        if dtype.startswith("complex"):
+            A_np = A_np + 1j * rng.standard_normal((o, v))
+            B_np = B_np + 1j * rng.standard_normal((o, v))
+        ops.append((A_np, B_np))
+    s = 0.5
+
+    tensors = [(einsums.asarray(A_np), einsums.asarray(B_np)) for A_np, B_np in ops]
+    r2 = einsums.zeros((o, o, v, v), dtype=dtype)
+
+    g = cg.Graph("symacc-shared")
+    tmp = g.declare_zero_tensor("tmp", [o, o, v, v], dtype=dtype, intermediate=True)
+    tmpP = g.declare_zero_tensor("tmpP", [o, o, v, v], dtype=dtype, intermediate=True)
+    with cg.capture(g):
+        for A, B in tensors:
+            einsums.einsum("i,j,a,b <- i,a ; j,b", tmp, A, B)
+            einsums.linalg.axpby(s, tmp, 1.0, r2)
+            einsums.permute("j,i,b,a <- i,j,a,b", tmpP, tmp)
+            einsums.linalg.axpby(s, tmpP, 1.0, r2)
+
+    pm = cg.PassManager()
+    pass_obj = cg.SymmetrizedAccumulation()
+    pm.add(pass_obj)
+    g.apply(pm)
+    assert pass_obj.num_matched == nsites
+    assert pass_obj.num_rewritten == nsites
+
+    g.apply(cg.default_pass_manager())  # materialize the (now partly unused) scratch
+    g.execute()
+    oracle = sum(_oracle(A_np, B_np, s) for A_np, B_np in ops)
+    assert_close(r2, oracle)
+
+
+def _capture_site_with_interloper(interloper):
+    """One symacc site with `interloper(r2_view)` captured BETWEEN axpby1 and
+    the permute, i.e. inside the interference-guard window, touching r2 only
+    through a constant-index view (the DF-ladder shape)."""
+    o, v = 2, 3
+    rng = np.random.default_rng(11)
+    A_np = rng.standard_normal((o, v))
+    B_np = rng.standard_normal((o, v))
+    S_np = rng.standard_normal((v, v))
+
+    A = einsums.asarray(A_np)
+    B = einsums.asarray(B_np)
+    Sm = einsums.asarray(S_np)
+    r2 = einsums.zeros((o, o, v, v), dtype="float64")
+    tmp = einsums.zeros((o, o, v, v), dtype="float64")
+    tmpP = einsums.zeros((o, o, v, v), dtype="float64")
+
+    g = cg.Graph("symacc-interloper")
+    _FULL = (0, 0, 0)
+    with cg.capture(g):
+        einsums.einsum("i,j,a,b <- i,a ; j,b", tmp, A, B)
+        einsums.linalg.axpby(1.0, tmp, 1.0, r2)
+        r2_00 = cg.view_indexed(r2, [(2, 0, 0), (2, 0, 0), _FULL, _FULL])
+        interloper(r2_00, Sm)
+        einsums.permute("j,i,b,a <- i,j,a,b", tmpP, tmp)
+        einsums.linalg.axpby(1.0, tmpP, 1.0, r2)
+
+    sa = cg.SymmetrizedAccumulation()
+    pm = cg.PassManager()
+    pm.add(sa)
+    g.apply(pm)
+    # The graph references these; hand them back so they outlive execute().
+    keepalive = (A, B, Sm, tmp, tmpP)
+    return sa, g, r2, (A_np, B_np, S_np), keepalive
+
+
+def test_additive_view_accumulation_in_window_does_not_block():
+    """r2[0,0] += S@S between the halves is a pure accumulation through a view;
+    it commutes with the fold, so the site must still fold - and exactly."""
+    def interloper(r2_00, Sm):
+        einsums.einsum("a,b <- a,c ; c,b", r2_00, Sm, Sm, c_pf=1.0, ab_pf=1.0)
+
+    sa, g, r2, (A_np, B_np, S_np), _keep = _capture_site_with_interloper(interloper)
+    assert sa.num_candidates == 1
+    assert sa.num_rewritten == 1
+
+    g.execute()
+    oracle = _oracle(A_np, B_np, 1.0)
+    oracle[0, 0] += S_np @ S_np
+    assert_close(r2, oracle)
+
+
+def test_view_overwrite_in_window_blocks_the_fold():
+    """r2[0,0] = S@S (c_pf=0 OVERWRITE through the view) discards the first
+    half's contribution to that slice; moving the permuted half across it would
+    change what the overwrite clobbers, so the guard must reject. This used to
+    be invisible to the raw-id guard (the write targets the view id, not r2)."""
+    def interloper(r2_00, Sm):
+        einsums.einsum("a,b <- a,c ; c,b", r2_00, Sm, Sm, c_pf=0.0, ab_pf=1.0)
+
+    sa, g, r2, (A_np, B_np, S_np), _keep = _capture_site_with_interloper(interloper)
+    assert sa.num_rewritten == 0
+
+    g.execute()
+    tmp_np = np.einsum("ia,jb->ijab", A_np, B_np)
+    oracle = tmp_np.copy()
+    oracle[0, 0] = S_np @ S_np                      # overwrite clobbers the first half
+    oracle += np.transpose(tmp_np, (1, 0, 3, 2))    # permuted half lands after
+    assert_close(r2, oracle)

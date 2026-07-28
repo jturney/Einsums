@@ -70,24 +70,27 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
     auto        &nodes                  = graph.nodes();
     size_t const n                      = nodes.size();
 
-    auto const contains   = [](std::vector<TensorId> const &v, TensorId t) { return std::find(v.begin(), v.end(), t) != v.end(); };
-    auto const writers_of = [&](TensorId tid) {
-        std::vector<size_t> w;
-        for (size_t i = 0; i < n; ++i) {
+    auto const contains = [](std::vector<TensorId> const &v, TensorId t) { return std::find(v.begin(), v.end(), t) != v.end(); };
+    // Generation bounds for scratch that is REUSED across sites (the CCSD body
+    // recycles one tmp/tmpP for every symacc term, so whole-graph
+    // writer/reader-uniqueness rejected every site of a shared buffer). A
+    // write's value is live exactly until the tensor's next write; matching
+    // within that window pairs each producer with its own consumers.
+    auto const next_write_after = [&](TensorId tid, size_t pos) {
+        for (size_t i = pos + 1; i < n; ++i) {
             if (contains(nodes[i].outputs, tid)) {
-                w.push_back(i);
+                return i;
             }
         }
-        return w;
+        return n;
     };
-    auto const readers_of = [&](TensorId tid) {
-        std::vector<size_t> r;
-        for (size_t i = 0; i < n; ++i) {
-            if (contains(nodes[i].inputs, tid)) {
-                r.push_back(i);
+    auto const generation_begin = [&](TensorId tid, size_t pos) -> size_t {
+        for (size_t i = pos; i-- > 0;) {
+            if (contains(nodes[i].outputs, tid)) {
+                return i + 1;
             }
         }
-        return r;
+        return 0;
     };
     // An accumulating axpby reads its destination: `dst` in BOTH inputs and
     // outputs (Operations.hpp records inputs = {src, dst} only when beta != 0).
@@ -143,15 +146,25 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         TensorId const tmp  = permute.inputs[0];
         TensorId const tmpP = permute.outputs[0];
 
-        // tmpP must be sole-produced by this permute and sole-consumed by one axpby.
-        if (writers_of(tmpP).size() != 1) {
+        // This permute's tmpP value is live until tmpP's next overwrite; it
+        // must be consumed by exactly one reader in that window, an
+        // accumulating axpby. Readers outside the window belong to other
+        // generations of a reused buffer and are irrelevant here.
+        size_t const tmpP_gen_end = next_write_after(tmpP, pi);
+        long         a2_found     = -1;
+        for (size_t i = pi + 1; i < tmpP_gen_end; ++i) {
+            if (contains(nodes[i].inputs, tmpP)) {
+                if (a2_found != -1) {
+                    a2_found = -2; // second consumer of this generation
+                    break;
+                }
+                a2_found = static_cast<long>(i);
+            }
+        }
+        if (a2_found < 0) {
             continue;
         }
-        auto const tmpP_readers = readers_of(tmpP);
-        if (tmpP_readers.size() != 1) {
-            continue;
-        }
-        size_t const a2     = tmpP_readers[0];
+        size_t const a2     = static_cast<size_t>(a2_found);
         Node const  &axpby2 = nodes[a2];
         if (axpby2.outputs.size() != 1) {
             continue;
@@ -161,11 +174,17 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
             continue;
         }
 
-        // Sibling accumulating axpby reading the UN-permuted tmp into the same r2.
-        long a1 = -1;
-        for (size_t const ri : readers_of(tmp)) {
-            if (ri == pi) {
-                continue; // the permute itself
+        // Sibling accumulating axpby reading the UN-permuted tmp into the same
+        // r2, scoped to tmp's generation containing the permute (from tmp's
+        // most recent write before pi to its next write after): every read in
+        // that window observes the value the permute transposes, and reads of
+        // other generations of a reused tmp cannot masquerade as the sibling.
+        size_t const tmp_gen_begin = generation_begin(tmp, pi);
+        size_t const tmp_gen_end   = next_write_after(tmp, pi);
+        long         a1            = -1;
+        for (size_t ri = tmp_gen_begin; ri < tmp_gen_end; ++ri) {
+            if (ri == pi || !contains(nodes[ri].inputs, tmp)) {
+                continue; // the permute itself / not a reader
             }
             if (is_accumulating_axpby(nodes[ri], tmp, r2)) {
                 if (a1 != -1) {
@@ -184,6 +203,29 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         // Interference guard: over [first, last] of the three matched nodes, no
         // OTHER node may write tmp or touch r2 except an additive accumulation
         // (which commutes). See docs/symmetrized_accumulation_design.md.
+        //
+        // ALIAS-AWARE: touches are resolved to the owning tensor, so a node
+        // reading or writing r2 THROUGH A VIEW (the DF ladder accumulates into
+        // r2[i,j] slices, and a topological sort may interleave those nodes
+        // with a symacc site) is seen by the guard. The raw-id check missed
+        // them entirely and only tripped, incidentally, on the View-creation
+        // node's parent input - which is a metadata rebind, not a value read,
+        // and is exempted below.
+        TensorId const r2_owner      = graph.resolve_alias(r2);
+        TensorId const tmp_owner     = graph.resolve_alias(tmp);
+        auto const     touches_owner = [&](std::vector<TensorId> const &ids, TensorId owner) {
+            return std::any_of(ids.begin(), ids.end(), [&](TensorId raw) { return graph.resolve_alias(raw) == owner; });
+        };
+        // The live destination prefactor of an einsum, through the shared
+        // params when present (a pass that rewrote c_pf wrote it there).
+        auto const einsum_c_pf = [](Node const &node) -> PrefactorScalar const * {
+            auto const *ed = std::get_if<EinsumDescriptor>(&node.op_data);
+            if (ed == nullptr) {
+                return nullptr;
+            }
+            return ed->params ? &ed->params->c_pf : &ed->c_prefactor;
+        };
+
         size_t const first = std::min({static_cast<size_t>(a1), pi, a2});
         size_t const last  = std::max({static_cast<size_t>(a1), pi, a2});
         bool         clean = true;
@@ -191,20 +233,44 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
             if (i == pi || i == static_cast<size_t>(a1) || i == a2) {
                 continue;
             }
-            bool const writes_tmp = contains(nodes[i].outputs, tmp);
-            bool const touches_r2 = contains(nodes[i].inputs, r2) || contains(nodes[i].outputs, r2);
-            // Only a PURE accumulation (r2 += alpha*X, i.e. beta == 1) commutes
-            // with the fold. The rewrite moves the permuted contribution from
-            // axpby2's position back to the permute's, so anything in between
-            // that rescales the running r2 -- a damping/mixing step with
-            // beta not in {0, 1}, routine in SCF and DIIS codes -- would apply
-            // its beta to a contribution that had not been added yet.
+            // A View node only rebinds slice metadata; it observes no values.
+            // Its consumers read/write through the view id and are classified
+            // below via alias resolution.
+            if (nodes[i].kind == OpKind::View) {
+                continue;
+            }
+            bool const writes_tmp = touches_owner(nodes[i].outputs, tmp_owner);
+            bool const touches_r2 = touches_owner(nodes[i].inputs, r2_owner) || touches_owner(nodes[i].outputs, r2_owner);
+            // Only a PURE accumulation into r2 (or a slice of it) commutes with
+            // the fold: an axpby with beta == 1, or an einsum with a live
+            // destination prefactor of exactly 1 (the ladder's r2[i,j] += ...).
+            // The rewrite moves the permuted contribution from axpby2's
+            // position back to the permute's, so anything in between that
+            // rescales the running r2 -- a damping/mixing step with beta not
+            // in {0, 1}, routine in SCF and DIIS codes -- would apply its
+            // scale to a contribution that had not been added yet.
             // beta == 0 needs no check here: a pure overwrite does not list r2
             // as an input, so it fails the inputs test and lands in touches_r2.
-            // An axpby with no readable beta is treated as non-commuting.
-            PrefactorScalar const *beta = nodes[i].kind == OpKind::Axpby ? axpby_beta(nodes[i]) : nullptr;
-            bool const additive_accum = beta != nullptr && is_one(*beta) && contains(nodes[i].inputs, r2) && contains(nodes[i].outputs, r2);
+            // A node with no readable scalar is treated as non-commuting.
+            // Both exemptions require r2 to appear ONLY as the accumulated
+            // destination: an op that also reads r2 as a SOURCE operand
+            // (axpby's x, an einsum's A or B) consumes the half-symmetrized
+            // values and does not commute.
+            PrefactorScalar const *beta           = nodes[i].kind == OpKind::Axpby ? axpby_beta(nodes[i]) : nullptr;
+            bool                   additive_accum = beta != nullptr && is_one(*beta) && nodes[i].inputs.size() == 2 &&
+                                  graph.resolve_alias(nodes[i].inputs[0]) != r2_owner && touches_owner(nodes[i].outputs, r2_owner) &&
+                                  touches_owner(nodes[i].inputs, r2_owner);
+            if (!additive_accum && nodes[i].kind == OpKind::Einsum) {
+                PrefactorScalar const *c_pf = einsum_c_pf(nodes[i]);
+                additive_accum = c_pf != nullptr && is_one(*c_pf) && nodes[i].inputs.size() >= 2 && nodes[i].outputs.size() == 1 &&
+                                 graph.resolve_alias(nodes[i].inputs[0]) != r2_owner &&
+                                 graph.resolve_alias(nodes[i].inputs[1]) != r2_owner && touches_owner(nodes[i].outputs, r2_owner);
+            }
             if (writes_tmp || (touches_r2 && !additive_accum)) {
+                if (_verbosity >= 3) {
+                    report(3, fmt::format("candidate at permute #{} rejected: node #{} '{}' {} inside [{}..{}]", pi, i, nodes[i].label,
+                                          writes_tmp ? "rewrites the source" : "observes the half-symmetrized output", first, last));
+                }
                 clean = false;
                 break;
             }

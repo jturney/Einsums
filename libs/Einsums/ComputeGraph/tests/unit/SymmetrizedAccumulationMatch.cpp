@@ -76,6 +76,34 @@ TEST_CASE("SymmetrizedAccumulation matcher - multiple sites into one output", "[
     CHECK(pass->num_matched() == 3);
 }
 
+TEST_CASE("SymmetrizedAccumulation matcher - sites sharing one scratch pair match per generation",
+          "[ComputeGraph][SymmetrizedAccumulation]") {
+    // The CCSD body's actual shape: ONE tmp/tmpP recycled by every site. Each
+    // overwrite of tmpP starts a new generation, and the matcher pairs each
+    // permute with the consumer of ITS generation instead of demanding
+    // whole-graph writer/reader uniqueness (which rejected every site).
+    auto A  = create_random_tensor<double>("A", 2, 3);
+    auto B  = create_random_tensor<double>("B", 2, 3);
+    auto r2 = create_zero_tensor<double>("r2", 2, 2, 3, 3);
+
+    cg::Graph graph("symacc-shared-scratch");
+    auto     &tmp  = graph.declare_tensor<double, 4>("tmp", 2, 2, 3, 3);
+    auto     &tmpP = graph.declare_tensor<double, 4>("tmpP", 2, 2, 3, 3);
+    {
+        cg::CaptureGuard const guard(graph);
+        for (int site = 0; site < 3; ++site) {
+            cg::einsum("i,j,a,b <- i,a ; j,b", &tmp, A, B);
+            cg::axpby(1.0, tmp, 1.0, &r2);
+            cg::permute("j,i,b,a <- i,j,a,b", &tmpP, tmp);
+            cg::axpby(1.0, tmpP, 1.0, &r2);
+        }
+    }
+
+    auto pass = match(graph);
+    CHECK(pass->num_candidates() == 3);
+    CHECK(pass->num_matched() == 3);
+}
+
 TEST_CASE("SymmetrizedAccumulation matcher - a lone permute+axpby is not a site", "[ComputeGraph][SymmetrizedAccumulation]") {
     // Only the permuted branch (no sibling axpby over the un-permuted tmp): not
     // the symmetrization idiom, so nothing matches.
