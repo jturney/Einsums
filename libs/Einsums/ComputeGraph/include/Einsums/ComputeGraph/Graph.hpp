@@ -1517,11 +1517,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     std::shared_ptr<EinsumIndices> create_indices(std::vector<std::string> a, std::vector<std::string> b, std::vector<std::string> c,
                                                   std::vector<std::string> link) {
-        auto idx          = std::make_shared<EinsumIndices>();
-        idx->a_indices    = std::move(a);
-        idx->b_indices    = std::move(b);
-        idx->c_indices    = std::move(c);
-        idx->link_indices = std::move(link);
+        auto idx            = std::make_shared<EinsumIndices>();
+        idx->spec.a_indices = std::move(a);
+        idx->spec.b_indices = std::move(b);
+        idx->spec.c_indices = std::move(c);
+        idx->link_indices   = std::move(link);
         _indices_store.push_back(idx);
         return idx;
     }

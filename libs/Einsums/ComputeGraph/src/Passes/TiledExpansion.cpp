@@ -665,9 +665,9 @@ bool TiledExpansion::run(Graph &graph) {
             continue;
         }
 
-        auto const &cidx = tdesc->indices->c_indices;
-        auto const &aidx = tdesc->indices->a_indices;
-        auto const &bidx = tdesc->indices->b_indices;
+        auto const &cidx = tdesc->indices->spec.c_indices;
+        auto const &aidx = tdesc->indices->spec.a_indices;
+        auto const &bidx = tdesc->indices->spec.b_indices;
         if (cidx.empty()) {
             decline("scalar output (full reduction) over tiled operands is unsupported");
             continue;

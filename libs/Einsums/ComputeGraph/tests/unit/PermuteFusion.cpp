@@ -75,9 +75,9 @@ TEST_CASE("PermuteFusion: 2D transpose absorbed into einsum A slot", "[ComputeGr
     auto *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
     REQUIRE(desc != nullptr);
     REQUIRE(desc->indices != nullptr);
-    REQUIRE(desc->indices->a_indices == std::vector<std::string>{"i", "j"});
-    REQUIRE(desc->indices->b_indices == std::vector<std::string>{"j", "k"});
-    REQUIRE(desc->indices->c_indices == std::vector<std::string>{"i", "k"});
+    REQUIRE(desc->indices->spec.a_indices == std::vector<std::string>{"i", "j"});
+    REQUIRE(desc->indices->spec.b_indices == std::vector<std::string>{"j", "k"});
+    REQUIRE(desc->indices->spec.c_indices == std::vector<std::string>{"i", "k"});
 
     graph.execute();
     require_close(C, C_ref);
@@ -114,7 +114,7 @@ TEST_CASE("PermuteFusion: 2D transpose absorbed into einsum B slot", "[ComputeGr
 
     auto const &node = graph.nodes()[0];
     auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
-    REQUIRE(desc->indices->b_indices == std::vector<std::string>{"j", "k"});
+    REQUIRE(desc->indices->spec.b_indices == std::vector<std::string>{"j", "k"});
 
     graph.execute();
     require_close(C, C_ref);
@@ -188,7 +188,7 @@ TEST_CASE("PermuteFusion: 3D permute on A slot (rank-3 × matrix)", "[ComputeGra
     REQUIRE(graph.num_nodes() == 1);
 
     auto const *desc = std::get_if<cg::EinsumDescriptor>(&graph.nodes()[0].op_data);
-    REQUIRE(desc->indices->a_indices == std::vector<std::string>{"p", "q", "r"});
+    REQUIRE(desc->indices->spec.a_indices == std::vector<std::string>{"p", "q", "r"});
 
     graph.execute();
     require_close(C, C_ref);
@@ -225,7 +225,7 @@ TEST_CASE("PermuteFusion: identity permute is still fused (no-op removal)", "[Co
 
     auto const *desc = std::get_if<cg::EinsumDescriptor>(&graph.nodes()[0].op_data);
     // Identity permute → subscript unchanged.
-    REQUIRE(desc->indices->a_indices == std::vector<std::string>{"i", "j"});
+    REQUIRE(desc->indices->spec.a_indices == std::vector<std::string>{"i", "j"});
 
     graph.execute();
     require_close(C, C_ref);

@@ -1318,9 +1318,7 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     params->conj_b = conj_b;
 
     auto indices          = std::make_shared<EinsumIndices>();
-    indices->c_indices    = spec.c_indices;
-    indices->a_indices    = spec.a_indices;
-    indices->b_indices    = spec.b_indices;
+    indices->spec         = spec;
     indices->link_indices = spec.link_indices();
 
     auto desc    = detail::build_einsum_descriptor(spec, c_pf, ab_pf, conj_a, conj_b);
@@ -1448,11 +1446,11 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
             RuntimeTensorView<T> const A{*static_cast<Impl *>(self->tensor(a_id).impl_fn())};
             RuntimeTensorView<T> const B{*static_cast<Impl *>(self->tensor(b_id).impl_fn())};
             RuntimeTensorView<T>       C{*static_cast<Impl *>(self->tensor(c_id).impl_fn())};
-            // Rebuild the parsed spec from the LIVE index lists each call so an
-            // index rewrite (PermuteFusion) is honored, matching the capture-time
-            // executor in Operations.hpp.
-            ParsedEinsumSpec live{indices->c_indices, indices->a_indices, indices->b_indices, /*raw*/ std::string{}};
-            dispatch::string_einsum(live, as<T>(params->c_pf), &C, as<T>(params->ab_pf), A, B, params->conj_a, params->conj_b,
+            // The spec is passed BY REFERENCE, so an index rewrite (PermuteFusion)
+            // is honored without rebuilding it: the pass writes into this very
+            // object. Rebuilding it per call copied three vector<string> for
+            // nothing, which a per-tile expansion pays thousands of times a replay.
+            dispatch::string_einsum(indices->spec, as<T>(params->c_pf), &C, as<T>(params->ab_pf), A, B, params->conj_a, params->conj_b,
                                     &indices->link_indices);
         });
     };

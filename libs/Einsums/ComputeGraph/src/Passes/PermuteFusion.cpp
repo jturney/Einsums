@@ -81,7 +81,7 @@ bool try_fuse(Graph &graph, std::vector<Node> &nodes, size_t perm_idx, size_t ei
         return false;
 
     // Old subscript: the slot's view of the permute's output.
-    auto &slot_indices = (slot == 0) ? ein_desc->indices->a_indices : ein_desc->indices->b_indices;
+    auto &slot_indices = (slot == 0) ? ein_desc->indices->spec.a_indices : ein_desc->indices->spec.b_indices;
     auto &slot_spec    = (slot == 0) ? ein_desc->spec.a_indices : ein_desc->spec.b_indices;
 
     // Sanity: slot rank must match permute output rank. A mismatch means

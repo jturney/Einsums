@@ -31,6 +31,7 @@
  * @endcode
  */
 
+#include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 
@@ -83,11 +84,18 @@ struct EinsumParams {
  *
  * Holds @ref ParsedEinsumSpec plus the precomputed link indices so
  * dispatch::string_einsum doesn't have to recompute them per call.
+ *
+ * The spec is stored WHOLE rather than as its three index vectors so the
+ * executors can hand it to the dispatch by reference. Assembling one per call
+ * copies three ``vector<string>`` -- about fifteen allocations for a rank-4
+ * contraction -- and a tiled einsum expanded per tile turns that into tens of
+ * thousands per replay: measured at 2.1 us a node, 8 ms of a 33 ms CCSD replay,
+ * more than the tile bookkeeping the graph exists to avoid. A pass that rewrites
+ * indices writes into this spec and the next execute() sees it, which is the
+ * property the per-call rebuild was there to provide.
  */
 struct EinsumIndices {
-    std::vector<std::string> c_indices;    ///< Output tensor indices
-    std::vector<std::string> a_indices;    ///< First input indices
-    std::vector<std::string> b_indices;    ///< Second input indices
+    ParsedEinsumSpec         spec;         ///< Live index lists, passed straight to the dispatch
     std::vector<std::string> link_indices; ///< Contracted (shared A/B, not in C) indices
 };
 
