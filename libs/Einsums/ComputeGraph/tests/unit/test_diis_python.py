@@ -112,6 +112,80 @@ def test_diis_argument_validation():
         cg.diis([(x, rd)], k=1)
 
 
+def _make_tiled(name, grid, arr):
+    """Fully-populated 2-D TiledRuntimeTensorD over ``grid`` filled from ``arr``."""
+    t = einsums.TiledRuntimeTensorD(name, grid)
+    for i in range(len(grid[0])):
+        for j in range(len(grid[1])):
+            t.add_tile([i, j])
+    t.materialize()
+    off, sz = t.tile_offsets(), t.tile_sizes()
+    for i in range(len(grid[0])):
+        for j in range(len(grid[1])):
+            a = np.asarray(t.tile_view([i, j]))
+            a[...] = arr[off[0][i] : off[0][i] + sz[0][i], off[1][j] : off[1][j] + sz[1][j]]
+    return t
+
+
+def _gather_tiled(t, R, C):
+    off, sz = t.tile_offsets(), t.tile_sizes()
+    M = np.zeros((R, C))
+    for i in range(len(sz[0])):
+        for j in range(len(sz[1])):
+            if t.has_tile([i, j]):
+                M[off[0][i] : off[0][i] + sz[0][i], off[1][j] : off[1][j] + sz[1][j]] = np.asarray(t.tile_view([i, j]))
+    return M
+
+
+def test_diis_on_tiled_amplitudes():
+    """The full accelerator on TiledRuntimeTensor amplitudes, in a captured
+    loop: X_{k+1} = C + q M X_k, a matrix fixed point whose iteration operator
+    has spectral radius ~0.9, so plain replay converges slowly and DIIS must
+    reach the same fixed point in a fraction of the replays. Exercises the
+    tiled zeros_like snapshots, tiled axpby (captured, decomposing into
+    scale+axpy nodes), tiled dotc, and the in-place tiled extrapolation."""
+    n = 6
+    grid = [[3, 3], [3, 3]]
+    rng = np.random.default_rng(9)
+    M_np = rng.standard_normal((n, n))
+    M_np *= 0.9 / np.abs(np.linalg.eigvals(M_np)).max()
+    C_np = rng.standard_normal((n, n))
+    X_ref = np.linalg.solve(np.eye(n) - M_np, C_np)  # fixed point of X = C + M X
+
+    def run(use_diis):
+        M = _make_tiled("M", grid, M_np)
+        Cm = _make_tiled("C", grid, C_np)
+        X = _make_tiled("X", grid, np.zeros((n, n)))
+        R = _make_tiled("R", grid, np.zeros((n, n)))
+        res = einsums.zeros((1,), dtype="float64")
+
+        g = cg.Graph("tiled_fixed_point")
+        iters = [0]
+
+        def converged(it):
+            iters[0] = it + 1
+            return float(np.asarray(res)[0]) > 1e-20
+
+        predicate = cg.diis([(X, R)], k=8).wrap(converged) if use_diis else converged
+        body = g.add_loop("it", 400, predicate)
+        with cg.capture(body):
+            einsums.einsum("ij <- ik ; kj", R, M, X, c_pf=0.0, ab_pf=1.0)  # R = M X
+            la.axpy(1.0, Cm, R)                                            # R += C
+            la.axpby(-1.0, X, 1.0, R)                                      # R = (C + M X) - X  (the step)
+            la.axpby(1.0, R, 1.0, X)                                       # X += step
+            la.dot(res, R, R)
+        g.execute()
+        return _gather_tiled(X, n, n), iters[0]
+
+    x_plain, it_plain = run(use_diis=False)
+    x_diis, it_diis = run(use_diis=True)
+
+    np.testing.assert_allclose(x_plain, X_ref, atol=1e-8)
+    np.testing.assert_allclose(x_diis, X_ref, atol=1e-8)
+    assert it_plain > 80
+    assert it_diis * 2 < it_plain
+
+
 def test_wrap_without_condition_runs_to_max_iterations():
     A_np, b_np, d = _jacobi_problem(12, "float64")
     A = einsums.asarray(np.ascontiguousarray(A_np))

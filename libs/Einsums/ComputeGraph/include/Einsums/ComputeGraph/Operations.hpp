@@ -957,46 +957,64 @@ APIARY_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<std::complex<double
 APIARY_INSTANTIATE_AS("axpby", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("axpby", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>)
+APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
+APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void axpby(typename XType::ValueType alpha, XType const &X, typename XType::ValueType beta, YType *Y) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("axpby eager");
-        linear_algebra::axpby(alpha, X, beta, Y);
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<XType>> || IsTiledTensorV<std::remove_cvref_t<YType>>) {
+        static_assert(IsTiledTensorV<std::remove_cvref_t<XType>> && IsTiledTensorV<std::remove_cvref_t<YType>>,
+                      "cg::axpby with a tiled operand requires both X and Y to be TiledRuntimeTensor");
+        // Y = alpha*X + beta*Y decomposes into the two tiled primitives the
+        // graph already executes, captures, and lowers (TiledExpansion):
+        // scale the destination, then accumulate. Grid agreement and
+        // absent-tile semantics are those ops' own rules: a tile absent from
+        // Y stays absent under the scale (it is a rigorous zero), and a tile
+        // present only in X is created zeroed by the accumulate.
+        scale(beta, Y);
+        axpy(alpha, X, Y);
         return;
+    } else {
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("axpby eager");
+            linear_algebra::axpby(alpha, X, beta, Y);
+            return;
+        }
+
+        LabeledSection("axpby capture");
+        auto [x_id, x_slot] = ctx.get_slot(X);
+        auto [y_id, y_slot] = ctx.get_slot(*Y);
+
+        using T = typename XType::ValueType;
+
+        // Live-mutable scalars shared with the executor (single source of truth:
+        // a pass that folds a scale into this axpby writes beta through params and
+        // the executor honors it on replay). The descriptor keeps the at-capture
+        // snapshot for analysis passes.
+        auto params   = std::make_shared<AxpbyParams>();
+        params->alpha = PrefactorScalar{alpha};
+        params->beta  = PrefactorScalar{beta};
+
+        auto label    = fmt::format("axpby(alpha={}, beta={})", alpha, beta);
+        auto executor = [params, x_slot, y_slot]() {
+            LabeledSection("axpby execute");
+            linear_algebra::axpby(as<T>(params->alpha), *static_cast<XType const *>(x_slot->ptr), as<T>(params->beta),
+                                  static_cast<YType *>(y_slot->ptr));
+        };
+
+        AxpbyDescriptor desc;
+        desc.alpha  = params->alpha;
+        desc.beta   = params->beta;
+        desc.params = params;
+
+        // Y = alpha*X + beta*Y reads its destination when beta != 0; same
+        // out-tensor-as-input convention as gemm/direct_product (see axpy).
+        std::vector<TensorId> axpby_inputs =
+            (beta != typename XType::ValueType{0}) ? std::vector<TensorId>{x_id, y_id} : std::vector<TensorId>{x_id};
+        ctx.record(OpKind::Axpby, std::move(label), std::move(axpby_inputs), {y_id}, std::move(executor), std::move(desc));
     }
-
-    LabeledSection("axpby capture");
-    auto [x_id, x_slot] = ctx.get_slot(X);
-    auto [y_id, y_slot] = ctx.get_slot(*Y);
-
-    using T = typename XType::ValueType;
-
-    // Live-mutable scalars shared with the executor (single source of truth:
-    // a pass that folds a scale into this axpby writes beta through params and
-    // the executor honors it on replay). The descriptor keeps the at-capture
-    // snapshot for analysis passes.
-    auto params   = std::make_shared<AxpbyParams>();
-    params->alpha = PrefactorScalar{alpha};
-    params->beta  = PrefactorScalar{beta};
-
-    auto label    = fmt::format("axpby(alpha={}, beta={})", alpha, beta);
-    auto executor = [params, x_slot, y_slot]() {
-        LabeledSection("axpby execute");
-        linear_algebra::axpby(as<T>(params->alpha), *static_cast<XType const *>(x_slot->ptr), as<T>(params->beta),
-                              static_cast<YType *>(y_slot->ptr));
-    };
-
-    AxpbyDescriptor desc;
-    desc.alpha  = params->alpha;
-    desc.beta   = params->beta;
-    desc.params = params;
-
-    // Y = alpha*X + beta*Y reads its destination when beta != 0; same
-    // out-tensor-as-input convention as gemm/direct_product (see axpy).
-    std::vector<TensorId> axpby_inputs =
-        (beta != typename XType::ValueType{0}) ? std::vector<TensorId>{x_id, y_id} : std::vector<TensorId>{x_id};
-    ctx.record(OpKind::Axpby, std::move(label), std::move(axpby_inputs), {y_id}, std::move(executor), std::move(desc));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1784,10 +1802,12 @@ APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>,
 /// The conjugating counterpart of ``dot``, the bilinear ``sum A_i B_i``. For real
 /// dtypes this coincides with ``dot``. Backed by ``true_dot``, which uses BLAS
 /// dotc on the contiguous complex path.
-template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
+template <CoreBasicTensorConcept ResultType, typename AType, typename BType>
     requires requires {
         requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>;
         requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
+        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
+        requires(CoreBasicTensorConcept<BType> || IsTiledTensorV<std::remove_cvref_t<BType>>);
     }
 // clang-format off
 APIARY_EXPOSE
@@ -1828,13 +1848,23 @@ APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<std::complex<double>>, 
 APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>,  einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("dotc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void dotc_python(ResultType *result, AType const &A, BType const &B) {
     using T = typename AType::ValueType;
     if (result->size() < 1) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dotc: result tensor must have at least one element");
     }
-    auto compute = [](AType const &a, BType const &b) -> T { return linear_algebra::true_dot(a, b); };
+    auto compute = [](AType const &a, BType const &b) -> T {
+        if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+            return detail::tiled_dotc<T>(a, b);
+        } else {
+            return linear_algebra::true_dot(a, b);
+        }
+    };
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {

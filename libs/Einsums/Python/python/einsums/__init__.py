@@ -31,6 +31,7 @@ on first use if nothing was configured.
 """
 
 import importlib as _importlib
+import itertools as _itertools
 import numbers as _numbers
 import sys as _sys
 
@@ -406,7 +407,12 @@ def _tiled_getitem(self, key):
 
 
 def _patch_tiled_tensor_getitem(core):
-    """Install ``__getitem__`` -> ``view`` on each TiledRuntimeTensor class."""
+    """Install ``__getitem__`` -> ``view`` on each TiledRuntimeTensor class,
+    plus the minimal numpy-parity attributes that make sense for a tiled
+    tensor (``shape``/``ndim``/``dtype``, all derivable from rank()/dim()
+    and the class-name suffix). The rest of the dense ergonomics layer
+    (``.T``, ``__array__``, ``copy``, ...) needs a single dense buffer and
+    is deliberately NOT installed."""
     global _tiled_tensor_getitem_patched
     if _tiled_tensor_getitem_patched:
         return
@@ -415,6 +421,9 @@ def _patch_tiled_tensor_getitem(core):
         if cls is None:
             continue
         cls.__getitem__ = _tiled_getitem
+        cls.shape = property(_tensor_shape)
+        cls.ndim = property(_tensor_ndim)
+        cls.dtype = property(_tensor_dtype)
     _tiled_tensor_getitem_patched = True
 
 
@@ -1153,7 +1162,22 @@ def _dtype_str_of(t, dtype):
 
 
 def zeros_like(t, dtype=None, name=None):
-    """Zero tensor matching ``t``'s shape (and dtype unless overridden)."""
+    """Zero tensor matching ``t``'s shape (and dtype unless overridden).
+
+    A ``TiledRuntimeTensor`` input yields a STRUCTURE-PRESERVING tiled clone:
+    same tile grid, same populated-tile set, every tile zeroed. Densifying it
+    would silently discard the sparsity that is the whole point of the type.
+    """
+    if type(t).__name__ in _TILED_TENSOR_CLASS_NAMES:
+        if dtype is not None and _np().dtype(dtype) != _dtype_for_class(type(t)):
+            raise TypeError("zeros_like on a tiled tensor does not support a dtype override")
+        out = type(t)(name or "zeros_like", t.tile_sizes())
+        counts = [len(sizes) for sizes in t.tile_sizes()]
+        for coord in _itertools.product(*(range(c) for c in counts)):
+            if t.has_tile(list(coord)):
+                out.add_tile(list(coord))
+        out.materialize()
+        return out
     return zeros(_tensor_shape(t), dtype=_dtype_str_of(t, dtype), name=name or "zeros_like")
 
 

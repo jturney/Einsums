@@ -179,6 +179,23 @@ T tiled_dot(TiledRuntimeTensor<T> const &A, TiledRuntimeTensor<T> const &B) {
     return acc;
 }
 
+/// Tiled conjugated dot `sum conj(A) * B`: per-tile ``true_dot`` over shared
+/// tiles, matching @ref tiled_dot's grid and sparsity rules. For real T this
+/// coincides with tiled_dot, exactly as the dense pair does.
+template <typename T>
+T tiled_dotc(TiledRuntimeTensor<T> const &A, TiledRuntimeTensor<T> const &B) {
+    if (A.tile_sizes() != B.tile_sizes()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dotc (tiled): operands must share the same tile grid");
+    }
+    T acc{0};
+    for (auto const &kv : A.tiles()) {
+        if (B.has_tile(kv.first)) {
+            acc += linear_algebra::true_dot(kv.second, B.tile(kv.first));
+        }
+    }
+    return acc;
+}
+
 /// Tiled trace: sum the diagonals of the diagonal tiles. Requires a rank-2
 /// tensor whose two axes share the same tile partition (so each (i,i) tile is
 /// square and the global diagonal is exactly the union of their diagonals).

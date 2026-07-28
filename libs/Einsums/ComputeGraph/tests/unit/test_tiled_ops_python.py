@@ -93,6 +93,51 @@ def test_tiled_axpy(dtype):
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_tiled_axpby(dtype):
+    xref = (1.0 + np.arange(45, dtype=dtype)).reshape(5, 9)
+    yref = (3.0 - np.arange(45, dtype=dtype)).reshape(5, 9)
+    X = _make(dtype, "X", [[2, 3], [4, 5]], fill=lambda r, c: xref[r, c])
+    Y = _make(dtype, "Y", [[2, 3], [4, 5]], fill=lambda r, c: yref[r, c])
+    einsums.linalg.axpby(1.5, X, -0.5, Y)
+    assert_close(_gather(Y, 5, 9), 1.5 * xref - 0.5 * yref)
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_tiled_dotc(dtype):
+    xref = (1.0 + np.arange(45)).reshape(5, 9).astype(dtype)
+    yref = (3.0 - np.arange(45)).reshape(5, 9).astype(dtype)
+    if np.dtype(dtype).kind == "c":
+        xref = xref + 1j * np.arange(45, dtype="float64").reshape(5, 9).astype(dtype)
+    X = _make(dtype, "X", [[2, 3], [4, 5]], fill=lambda r, c: xref[r, c])
+    Y = _make(dtype, "Y", [[2, 3], [4, 5]], fill=lambda r, c: yref[r, c])
+    s = einsums.zeros((1,), dtype=dtype)
+    einsums.linalg.dotc(s, X, Y)
+    expected = np.vdot(xref, yref)  # conjugated inner product
+    assert_close(np.asarray(s).reshape(1), np.array([expected], dtype=dtype))
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_tiled_zeros_like_preserves_structure(dtype):
+    # A sparse tile set must survive zeros_like: densifying would silently
+    # discard the sparsity that is the point of the tiled type.
+    t = DTYPE_TO_TRT[np.dtype(dtype).type]("t", [[2, 3], [4, 5]])
+    t.add_tile([0, 0])
+    t.add_tile([1, 1])
+    t.materialize()
+    np.asarray(t.tile_view([0, 0]))[...] = 7.0
+
+    z = einsums.zeros_like(t)
+    assert type(z) is type(t)
+    assert z.tile_sizes() == t.tile_sizes()
+    for i in range(2):
+        for j in range(2):
+            assert z.has_tile([i, j]) == t.has_tile([i, j])
+    assert np.asarray(z.tile_view([0, 0])).max() == 0.0
+    assert z.dtype == t.dtype  # the minimal tiled ergonomics layer
+    assert z.shape == t.shape
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
 def test_tiled_einsum_gemm(dtype):
     # C[i,j] = sum_k A[i,k] B[k,j]; contracted k partition {4,5} matches in A and B.
     aref = (1.0 + np.arange(45, dtype=dtype)).reshape(5, 9)
