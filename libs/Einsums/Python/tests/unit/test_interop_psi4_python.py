@@ -171,6 +171,55 @@ def test_interop_attribute_on_package():
     assert ein.interop.psi4 is interop
 
 
+# ---- opportunistic real-psi4 cross-checks ----------------------------------
+# Skipped whenever psi4 is not importable (the normal ctest environment, CI).
+# On machines where psi4 IS on PYTHONPATH these catch drift in the documented
+# psi4-side contract (block layouts, flat shapes, numpy-shape hints) that the
+# FakeMatrix tests cannot see.
+
+def _psi4_water_mints(symmetry):
+    psi4 = pytest.importorskip("psi4")
+    import os
+
+    psi4.core.set_output_file(os.devnull, False)
+    mol = psi4.geometry(f"O\nH 1 0.96\nH 1 0.96 2 104.5\nsymmetry {symmetry}\n")
+    basis = psi4.core.BasisSet.build(mol, "ORBITAL", "STO-3G")
+    return psi4, psi4.core.MintsHelper(basis), basis.nbf()
+
+
+def test_psi4_so_overlap_round_trip():
+    _, mints, _ = _psi4_water_mints("c2v")
+    S = mints.so_overlap()
+    T = interop.from_matrix(S)
+    for h in range(S.nirrep()):
+        blk = np.asarray(S.nph[h])
+        if blk.size == 0:
+            assert not T.has_tile([h, h])
+            continue
+        np.testing.assert_allclose(tile_array(T, (h, h)), blk)
+
+
+def test_psi4_so_eri_blocked_matches_ao_eri():
+    _, mints, nbf = _psi4_water_mints("c1")
+    ao = np.asarray(mints.ao_eri()).reshape(nbf, nbf, nbf, nbf)
+    sopi = [b.shape[0] for b in mints.so_overlap().nph]
+    T = interop.so_eri(mints.so_eri_blocked(), sopi)
+    np.testing.assert_allclose(tile_array(T, (0, 0, 0, 0)), ao, atol=1e-12)
+
+
+def test_psi4_mo_bra_half_transform_matches_einsum():
+    psi4, mints, nbf = _psi4_water_mints("c1")
+    rng = np.random.default_rng(37)
+    C1 = rng.standard_normal((nbf, 2))
+    C2 = rng.standard_normal((nbf, 3))
+    flat = mints.mo_bra_half_transform(psi4.core.Matrix.from_array(C1), psi4.core.Matrix.from_array(C2))
+    H = interop.mo_bra_half_transform(flat, 2, 3)
+    ao = np.asarray(mints.ao_eri()).reshape(nbf, nbf, nbf, nbf)
+    ref = np.einsum("mp,nq,mnls->pqls", C1, C2, ao)
+    # atol absorbs the engine's Schwarz screening of negligible quartets
+    np.testing.assert_allclose(np.array(H), ref, atol=1e-10)
+
+
 def test_assembled_tensors_work_in_compute_graph():
     # The adapter's outputs are ordinary einsums tensors: capture a contraction
     # over an assembled tiled matrix to prove there is no psi4 residue.
