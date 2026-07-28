@@ -170,10 +170,7 @@ template <bool ConjA = false, typename T>
 std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C_indices, einsums::detail::TensorImpl<T> *C, T alpha,
                                                     std::string const &A_indices, einsums::detail::TensorImpl<T> const &A,
                                                     hptt::SelectionMethod method = hptt::ESTIMATE) {
-    LabeledSection((std::abs(beta) > EINSUMS_ZERO)
-                       ? fmt::format(R"(permute: "{}"{} = {} "{}"{} + {} "{}"{})", C->name(), C_indices, alpha, A.name(), A_indices, beta,
-                                     C->name(), C_indices)
-                       : fmt::format(R"(permute: "{}"{} = {} "{}"{})", C->name(), C_indices, alpha, A.name(), A_indices));
+    LabeledSection("permute: {} <- {}", C_indices, A_indices);
 
     // Error check:  If there are any remaining indices then we cannot perform a permute
     auto check = difference(A_indices, C_indices);

@@ -21,6 +21,7 @@
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
 #include <Einsums/Profile.hpp>
+#include <Einsums/TensorAlgebra/Permute.hpp>
 
 #include <fmt/format.h>
 
@@ -760,6 +761,33 @@ void string_permute(ParsedPermuteSpec const &parsed, typename AType::ValueType b
         }
     }
 
+    // Zero-extent: nothing to permute, but the beta prefactor still applies
+    // to the (empty) C. Handled here so the HPTT path never sees a zero dim.
+    size_t total = 1;
+    for (size_t d = 0; d < rank; d++)
+        total *= C->dim(d);
+    if (total == 0) {
+        return;
+    }
+
+    // Contiguous tensors take HPTT through the shared plan cache; the scalar
+    // loop below exists for strided views only. HPTT computes
+    // C = beta*C + alpha*perm(A) natively, so beta/alpha need no pre-pass.
+    // The string overload of compile_permute matches indices character by
+    // character, so multi-character labels are re-encoded onto 'a'..'z'.
+    if (rank >= 2 && C->impl().is_contiguous() && A.impl().is_contiguous()) {
+        std::string a_chars(rank, ' ');
+        std::string c_chars(rank, ' ');
+        for (size_t j = 0; j < rank; j++) {
+            a_chars[j] = static_cast<char>('a' + j);
+        }
+        for (size_t i = 0; i < rank; i++) {
+            c_chars[i] = static_cast<char>('a' + perm[i]);
+        }
+        tensor_algebra::detail::permute<false, T>(beta, c_chars, &C->impl(), alpha, a_chars, A.impl());
+        return;
+    }
+
     // Scale C by beta
     if (beta == T{0}) {
         C->zero();
@@ -770,11 +798,6 @@ void string_permute(ParsedPermuteSpec const &parsed, typename AType::ValueType b
     // If alpha is zero, nothing more to do
     if (alpha == T{0})
         return;
-
-    // Iterate over all elements via C's index space
-    size_t total = 1;
-    for (size_t d = 0; d < rank; d++)
-        total *= C->dim(d);
 
     std::vector<size_t> c_coords(rank, 0);
 
