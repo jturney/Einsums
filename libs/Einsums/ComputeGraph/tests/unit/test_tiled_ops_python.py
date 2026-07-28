@@ -19,6 +19,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
+from einsums import linalg as la
 from einsums.testing import ALL_DTYPES, assert_close
 
 DTYPE_TO_TRT = {
@@ -195,6 +196,70 @@ def test_tiled_permute_grid_mismatch_throws():
     C = einsums.TiledRuntimeTensorD("C", [[2, 3], [4, 5]])  # NOT permuted: wrong for a transpose
     with pytest.raises(ValueError):
         einsums.permute("j,i <- i,j", C, A)
+
+
+def test_tile_view_per_block_contractions():
+    """The tiled ladder idiom: capture dense contractions per tile block via
+    cg.tile_view, writing disjoint tiles of one tiled output. Sequential and
+    Dataflow executors must agree exactly (the tile-coordinate boxes prove the
+    per-tile writes disjoint, so the Dataflow replay may run them wide)."""
+    rng = np.random.default_rng(21)
+    aref = rng.standard_normal((6, 4))
+    grid_a = [[3, 3], [4]]
+    A = _make_nd("float64", "A", grid_a, ref=aref)
+    B = einsums.asarray(np.ascontiguousarray(rng.standard_normal((4, 4))), name="B")
+    C = einsums.TiledRuntimeTensorD("C", grid_a)
+
+    g = cg.Graph("tile_view_ladder")
+    with cg.capture(g):
+        for i in range(2):
+            a_i = cg.tile_view(A, [i, 0])
+            c_i = cg.tile_view(C, [i, 0])
+            einsums.einsum("ij <- ik ; kj", c_i, a_i, B, c_pf=0.0, ab_pf=1.0)
+
+    g.execute()
+    ref = aref @ np.asarray(B)
+    assert_close(_gather_nd(C, (6, 4), "float64"), ref)
+
+    g.set_executor(cg.DataflowExecutor())
+    g.execute()
+    assert_close(_gather_nd(C, (6, 4), "float64"), ref)
+
+
+def test_tile_view_of_deferred_scratch_parent():
+    """tile_view over a graph-owned DEFERRED tiled scratch: the tile's storage
+    does not exist at capture (dims come from the grid through the deferred
+    sentinel), and each replay re-resolves the tile from the live parent."""
+    rng = np.random.default_rng(22)
+    aref = rng.standard_normal((3, 3))
+    A = einsums.asarray(np.ascontiguousarray(aref), name="A")
+    out = einsums.zeros((3, 3), dtype="float64")
+
+    g = cg.Graph("tile_view_scratch")
+    scr = g.declare_zero_tiled_tensor("scr", [[3], [3]], dtype="float64", intermediate=True)
+    body = g.add_loop("it", 2, lambda i: True)
+    with cg.capture(body):
+        s = cg.tile_view(scr, [0, 0])
+        einsums.einsum("ij <- ik ; kj", s, A, A, c_pf=0.0, ab_pf=1.0)  # scratch tile = A@A
+        la.axpby(1.0, s, 1.0, out)                                     # accumulate into dense out
+
+    g.apply(cg.default_pass_manager())
+    g.execute()
+    assert_close(np.asarray(out).copy(), 2.0 * (aref @ aref))
+    g.execute()
+    assert_close(np.asarray(out).copy(), 4.0 * (aref @ aref))
+
+
+def test_tile_view_validation():
+    A = einsums.TiledRuntimeTensorD("A", [[2, 3], [4]])
+    with pytest.raises(RuntimeError):
+        cg.tile_view(A, [0, 0])  # outside capture
+    g = cg.Graph("tv")
+    with cg.capture(g):
+        with pytest.raises(ValueError):
+            cg.tile_view(A, [0])  # wrong rank
+        with pytest.raises(IndexError):
+            cg.tile_view(A, [5, 0])  # off the grid
 
 
 def test_graph_owned_tiled_scratch_in_loop_body():

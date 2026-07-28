@@ -14,6 +14,7 @@
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 
 #include <fmt/format.h>
 
@@ -607,6 +608,131 @@ APIARY_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<std::complex<do
     }
     std::vector<ViewAxis> axes(parent.rank(), ViewAxis::full());
     return view_runtime(parent, axes, perm);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// tile_view: graph-registered DENSE view of one tile of a TiledRuntimeTensor.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Record a dense, parent-aliasing view of a single tile.
+///
+/// The tiled capture-view primitive. A tile is a full-rank dense block, so
+/// the returned ``RuntimeTensorView`` feeds the ENTIRE dense op surface -
+/// einsum, gemm, permute, axpby, ... - inside capture, which is exactly how
+/// tiled workflows iterate (per tile block, the shape TiledExpansion itself
+/// lowers to). Element-granular slicing of a tiled tensor is deliberately
+/// not offered: a slice crossing tile boundaries has no single buffer.
+///
+/// The tile is created (deferred, dims fixed by the grid) at capture if
+/// absent - value-equivalent, since absent tiles are rigorous zeros and a
+/// created tile materializes zeroed. Each replay the executor re-resolves
+/// the tile from the LIVE parent and re-emplaces the view, so parents whose
+/// storage moves between replays (graph-owned deferred scratch released by
+/// FreeInsertion and re-materialized) stay correct.
+///
+/// The recorded ViewDescriptor carries one constant ``[c, c+1)`` range per
+/// axis IN TILE UNITS: the disjointness-aware hazard scan then proves views
+/// of distinct tiles non-conflicting, so per-tile writes to one output can
+/// be scheduled concurrently. Units stay consistent because element-unit
+/// boxes cannot appear on a tiled parent (the dense view entry points do
+/// not accept one).
+///
+/// @code
+///   with cg.capture(g):
+///       for i in range(2):
+///           a = cg.tile_view(A, [i, 0])
+///           c = cg.tile_view(C, [i, 0])
+///           einsums.einsum("ij <- ik ; kj", c, a, B, c_pf=0.0, ab_pf=1.0)
+/// @endcode
+template <typename ParentT>
+    requires IsTiledTensorV<std::remove_cvref_t<ParentT>>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("graph")
+APIARY_RVP(reference)
+APIARY_INSTANTIATE_AS("tile_view", einsums::TiledRuntimeTensor<float>)
+APIARY_INSTANTIATE_AS("tile_view", einsums::TiledRuntimeTensor<double>)
+APIARY_INSTANTIATE_AS("tile_view", einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("tile_view", einsums::TiledRuntimeTensor<std::complex<double>>)
+    // clang-format on
+    RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &tile_view_python(ParentT &parent, std::vector<int> const &coord) {
+    using T      = typename std::remove_cvref_t<ParentT>::ValueType;
+    using Holder = detail::RuntimeViewHolder<T>;
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::tile_view called outside of capture (use tensor.tile_view(coord) for eager access)");
+    }
+
+    size_t const rank = parent.rank();
+    if (coord.size() != rank) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::tile_view: coord length ({}) must equal parent rank ({})", coord.size(), rank);
+    }
+    auto const &sizes = parent.tile_sizes();
+    for (size_t i = 0; i < rank; ++i) {
+        if (coord[i] < 0 || coord[i] >= static_cast<int>(sizes[i].size())) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::tile_view: coord[{}] = {} outside the {}-tile grid axis", i, coord[i],
+                                    sizes[i].size());
+        }
+    }
+
+    // Register the parent BEFORE creating the tile: make_handle derives the
+    // handle's AllocState from is_materialized(), and adding a deferred tile
+    // first would flip a perfectly usable parent (empty = vacuously
+    // materialized; executors materialize tiles per replay) into "Deferred",
+    // which execute()'s validation then rejects without a Materialization run.
+    auto [parent_id, parent_slot] = ctx.get_slot(parent);
+
+    // Fix the tile's existence and dims now: a deferred tile keeps its shape
+    // through a sentinel pointer, exactly the placeholder capture-time
+    // validation needs (the same trick the dense deferred-parent path uses).
+    auto &tile = parent.tile(coord);
+
+    auto *holder = new Holder();
+    holder->view.emplace(tile.impl());
+
+    auto *graph = ctx.graph();
+    if (graph == nullptr) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::tile_view: no active graph");
+    }
+    graph->adopt([holder]() { delete holder; });
+
+    RuntimeTensorView<T> &slice_ref = holder->view.value();
+    auto                  handle    = make_handle(slice_ref, 0);
+    handle.is_intermediate          = true;
+    handle.name                     = fmt::format("tile_view({})", parent.name());
+    handle.aliases                  = parent_id;
+
+    TensorId const slice_id = graph->register_tensor(std::move(handle));
+    auto          *slot     = ctx.create_slot_for(slice_ref, slice_id);
+
+    // One constant [c, c+1) range per axis, in TILE units: the hazard scan's
+    // disjointness boxes prove distinct tiles non-conflicting.
+    ViewDescriptor desc;
+    desc.parent_id   = parent_id;
+    desc.result_rank = rank;
+    desc.axes.reserve(rank);
+    for (size_t i = 0; i < rank; ++i) {
+        desc.axes.push_back(ViewAxis::range(coord[i], coord[i] + 1));
+    }
+
+    auto label = fmt::format("tile_view [{}] <- {}", fmt::join(coord, ","), parent.name());
+
+    using ParentType = std::remove_cvref_t<ParentT>;
+    auto executor    = [holder, coord, parent_slot, slot]() {
+        auto *parent_ptr = static_cast<ParentType *>(parent_slot->ptr);
+        if (parent_ptr == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::tile_view executor: parent slot is null");
+        }
+        auto &t = parent_ptr->tile(coord);
+        t.materialize();
+        holder->view.emplace(t.impl());
+        slot->ptr = &holder->view.value();
+    };
+
+    ctx.record(OpKind::View, std::move(label), {parent_id}, {slice_id}, std::move(executor), std::move(desc));
+
+    return slice_ref;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

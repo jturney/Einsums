@@ -22,16 +22,18 @@ and storage substrate; parity here means the USER-FACING surface, not a
 parallel implementation of every pass.
 
 Known-open items tracked toward full workflow parity, not yet asserted here:
-  * tiled views registered in capture (cg.view_indexed / permute_view and the
-    disjointness-aware scheduling are dense-only; eager IndexSpace views are
-    not graph-registered),
   * GPU placement and the distribution passes skip tiled-touching nodes,
   * MemoryPlanning's arena and InplaceOptimization stay dense-only BY DESIGN
-    (a tile-wise tensor has no single buffer to place or merge).
+    (a tile-wise tensor has no single buffer to place or merge),
+  * element-granular capture views of tiled tensors stay unsupported BY
+    DESIGN (a slice crossing tile boundaries has no single buffer); the
+    tiled capture-view primitive is cg.tile_view, at tile granularity.
 
 Graph-owned tiled scratch landed via Graph::declare_zero_tiled_tensor
 (deferred lifecycle, Materialization hoisting, FreeInsertion-compatible
-release); asserted below alongside zeros_like.
+release), and capture-registered tiled views via cg.tile_view (a dense,
+parent-aliasing view of one tile, with tile-coordinate disjointness boxes
+for the scheduler); both asserted below alongside zeros_like.
 """
 
 import pytest
@@ -132,6 +134,12 @@ def test_graph_owned_tiled_scratch_is_declarable():
     t = g.declare_zero_tiled_tensor("s", [[2], [3]], dtype="float64", intermediate=True)
     assert type(t).__name__ == "TiledRuntimeTensorD"
     assert t.tile_sizes() == [[2], [3]]
+
+
+def test_tile_view_is_capture_registered():
+    """Part of the contract: the tiled capture-view primitive must exist and
+    be tiled-aware (behavioral coverage in test_tiled_ops_python.py)."""
+    assert _has_tiled_overload(cg.tile_view)
 
 
 def test_zeros_like_is_structure_preserving():
