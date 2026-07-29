@@ -273,6 +273,6 @@ Where to go from here
   :ref:`tutorial-einsum`, :ref:`tutorial-compute-graph`,
   :ref:`tutorial-linalg`, :ref:`tutorial-views`.
 * For a tour of the public API by module, see the
-  :ref:`Developer's Guide <modules_overview>`.
+  :ref:`library modules overview <modules_overview>`.
 * For performance trade-offs (when each backend fires, how to read a
   PackedGemm log message), see :ref:`tutorial-performance`.

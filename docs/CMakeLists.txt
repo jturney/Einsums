@@ -135,6 +135,13 @@ if(TARGET apiary)
   list(APPEND sphinx_source_files_build "${_cppdocs_stamp}")
 endif()
 
+# Optional announcement banner shown at the top of every page (pydata theme).
+# Empty (the default) renders no banner.
+set(EINSUMS_DOCS_ANNOUNCEMENT
+    ""
+    CACHE STRING "Announcement banner text for the documentation site (empty for none)."
+)
+
 # Configure Sphinx conf.py
 set(EINSUMS_CONF_DOCUMENTATION_SHORT_VERSION "${EINSUMS_VERSION}")
 if(EINSUMS_WITH_GIT_TAG)
@@ -189,7 +196,7 @@ file(
   "${PROJECT_SOURCE_DIR}/libs/*/*/docs/*"
 )
 
-list(APPEND sphinx_libs_source_files "index.rst" "overview.rst")
+list(APPEND sphinx_libs_source_files "overview.rst")
 
 foreach(lib IN LISTS EINSUMS_LIBS PYTHON_LIBS)
   file(

@@ -38,18 +38,6 @@ details are found in the reference. Follow the links below to find more informat
     tutorial_compute_graph
     tutorial_performance
 
-.. toctree::
-    :caption: User's Reference
-    :maxdepth: 1
-
-    /libs/overview
-    ../reference/python_module
-
-.. toctree::
-    :caption: Extras
-
-    ../license
-
 ============
 Design Goals
 ============

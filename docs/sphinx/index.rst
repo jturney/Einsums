@@ -15,9 +15,16 @@ Einsums's Documentation
    :hidden:
 
    User Guide <user/index>
-   Building from source <building/index>
-   Developers' Guide </libs/overview>
-   Changelog <changelogs/index>
+   Installation <building/index>
+   API Reference <api/index>
+   Developer Guide <contributors/index>
+   Release Notes <changelogs/index>
+
+.. toctree::
+   :caption: About
+   :hidden:
+
+   license
 
 **Version**: |release|
 
@@ -105,35 +112,32 @@ compile time:
       :img-top: _static/index-images/api.svg
       :class-img-top: icon
 
-      Developer's Guide
-      ^^^^^^^^^^^^^^^^^
+      API Reference
+      ^^^^^^^^^^^^^
 
-      Per-module documentation and the auto-generated API reference for the
-      Einsums C++ surface. Start here when you need to know what a particular
-      module does, how the dispatch layers fit together, or what symbols a
-      header exposes.
+      The reference for the C++ and Python APIs. Start here when you need
+      to know what a particular class does, what symbols a header exposes,
+      or which functions the Python package binds.
 
-      .. image:: https://codecov.io/github/Einsums/Einsums/graph/badge.svg?token=Z8WA6CEGQA
-         :target: https://codecov.io/github/Einsums/Einsums
-         :class: dark-light
       +++
 
-      .. button-ref:: /libs/overview
+      .. button-ref:: api/index
          :expand:
          :color: primary
          :click-parent:
 
-         To the developer's guide
+         To the API reference
 
    .. grid-item-card::
       :img-top: _static/index-images/contributor.svg
       :class-img-top: icon
 
-      Contributor's Guide
-      ^^^^^^^^^^^^^^^^^^^
+      Developer Guide
+      ^^^^^^^^^^^^^^^
 
-      Want to add to the codebase? The contributing guidelines will guide you
-      through the process of improving Einsums.
+      Want to add to the codebase? The developer guide covers the coding
+      and documentation guidelines, the per-module internals, and the
+      tooling for improving Einsums.
 
       +++
 
@@ -142,7 +146,7 @@ compile time:
          :color: primary
          :click-parent:
 
-         To the contributor's guide
+         To the developer guide
 
 .. Indices and tables
 .. ==================
