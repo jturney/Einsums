@@ -18,10 +18,6 @@ set(ProfileHeaders
 
 set(ProfileSources Profile.cpp Consumer.cpp CounterBackend.cpp Server.cpp)
 
-if(EINSUMS_WITH_OMP_TOOLS_H)
-  list(APPEND ProfileSource OMPT.cpp)
-endif()
-
 set(ProfileDeps)
 if(TARGET Tracy::TracyClient)
   list(APPEND ProfileDeps Tracy::TracyClient)
