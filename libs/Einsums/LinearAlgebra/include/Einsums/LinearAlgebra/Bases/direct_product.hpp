@@ -169,17 +169,18 @@ void impl_direct_product(CType alpha, einsums::detail::TensorImpl<AType> const &
     }
 }
 
-extern template EINSUMS_EXPORT void impl_direct_product<float, float, float>(float alpha, einsums::detail::TensorImpl<float> const &A,
-                                                                             einsums::detail::TensorImpl<float> const &B, float beta,
-                                                                             einsums::detail::TensorImpl<float> *C);
-extern template EINSUMS_EXPORT void impl_direct_product<double, double, double>(double alpha, einsums::detail::TensorImpl<double> const &A,
-                                                                                einsums::detail::TensorImpl<double> const &B, double beta,
-                                                                                einsums::detail::TensorImpl<double> *C);
-extern template EINSUMS_EXPORT void impl_direct_product<std::complex<float>, std::complex<float>, std::complex<float>>(
+extern template EINSUMS_EXTERN_TEMPLATE_EXPORT void
+impl_direct_product<float, float, float>(float alpha, einsums::detail::TensorImpl<float> const &A,
+                                         einsums::detail::TensorImpl<float> const &B, float beta, einsums::detail::TensorImpl<float> *C);
+extern template EINSUMS_EXTERN_TEMPLATE_EXPORT void
+impl_direct_product<double, double, double>(double alpha, einsums::detail::TensorImpl<double> const &A,
+                                            einsums::detail::TensorImpl<double> const &B, double beta,
+                                            einsums::detail::TensorImpl<double> *C);
+extern template EINSUMS_EXTERN_TEMPLATE_EXPORT void impl_direct_product<std::complex<float>, std::complex<float>, std::complex<float>>(
     std::complex<float> alpha, einsums::detail::TensorImpl<std::complex<float>> const &A,
     einsums::detail::TensorImpl<std::complex<float>> const &B, std::complex<float> beta,
     einsums::detail::TensorImpl<std::complex<float>> *C);
-extern template EINSUMS_EXPORT void impl_direct_product<std::complex<double>, std::complex<double>, std::complex<double>>(
+extern template EINSUMS_EXTERN_TEMPLATE_EXPORT void impl_direct_product<std::complex<double>, std::complex<double>, std::complex<double>>(
     std::complex<double> alpha, einsums::detail::TensorImpl<std::complex<double>> const &A,
     einsums::detail::TensorImpl<std::complex<double>> const &B, std::complex<double> beta,
     einsums::detail::TensorImpl<std::complex<double>> *C);

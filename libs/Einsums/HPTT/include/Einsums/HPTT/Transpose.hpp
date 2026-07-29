@@ -158,17 +158,17 @@ class Transpose {
     static std::shared_ptr<Transpose> read_from_file(std::FILE *fp, floatType alpha, floatType const *A, floatType beta, floatType *B);
 };
 
-extern template class EINSUMS_EXPORT Transpose<float>;
-extern template class EINSUMS_EXPORT Transpose<double>;
-extern template class EINSUMS_EXPORT Transpose<FloatComplex>;
-extern template class EINSUMS_EXPORT Transpose<DoubleComplex>;
+extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<float>;
+extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<double>;
+extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<FloatComplex>;
+extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<DoubleComplex>;
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-extern template class EINSUMS_EXPORT Transpose<einsums::simd::half_t>;
+extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<einsums::simd::half_t>;
 #endif
 
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
-extern template class EINSUMS_EXPORT Transpose<einsums::simd::bfloat16_t>;
+extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<einsums::simd::bfloat16_t>;
 #endif
 
 } // namespace hptt

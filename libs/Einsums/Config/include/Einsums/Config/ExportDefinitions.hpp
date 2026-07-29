@@ -54,6 +54,24 @@
 #endif
 
 ///////////////////////////////////////////////////////////////////////////////
+#if defined(EINSUMS_EXPORTS) && (defined(_WIN32) || defined(__WIN32__) || defined(WIN32))
+/// Marks an explicit instantiation *declaration* (@c extern @c template ) as
+/// exported or imported.
+///
+/// This is deliberately not @ref EINSUMS_EXPORT. Such a declaration promises the
+/// instantiation lives in some other translation unit, which contradicts
+/// @c dllexport ; clang rejects the combination with
+/// @c -Wdllexport-explicit-instantiation-decl and the export has to sit on the
+/// instantiation definition instead. A consumer does still want the
+/// @c dllimport , and ELF wants default visibility in both directions, so only
+/// the exporting Windows build drops the attribute.
+/// @versionadded{1.1.0}
+#    define EINSUMS_EXTERN_TEMPLATE_EXPORT /* the definition carries the export */
+#else
+#    define EINSUMS_EXTERN_TEMPLATE_EXPORT EINSUMS_EXPORT
+#endif
+
+///////////////////////////////////////////////////////////////////////////////
 // helper macro for symbols which have to be exported from the runtime and all
 // components
 #define EINSUMS_ALWAYS_EXPORT EINSUMS_SYMBOL_EXPORT
