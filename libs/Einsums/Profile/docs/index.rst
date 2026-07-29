@@ -17,11 +17,6 @@ details.
 Public Symbols
 --------------
 
-.. cpp:function:: void einsums::profile::report(std::string const &fname, bool append)
-
-    Print the timer report to the file with the given name. The file will be created if it does not exist.
-    If :code:`append` is true, then the report will be appended to the end of the file. If not, then the
-    file will be cleared, and then filled with the timer report.
-
-    :param fname: The name of the file.
-    :param append: Whether to append or overwrite the timer information.
+- :cpp:func:`~einsums::profile::print_report` - print the compact (or detailed) profiling report to standard output.
+- :cpp:func:`~einsums::profile::export_json` - write the aggregated profile to a JSON file.
+- :cpp:func:`~einsums::profile::flush` - drain the per-thread ring buffers so that recent events are visible in reports.

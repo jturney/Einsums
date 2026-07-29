@@ -48,13 +48,17 @@ namespace einsums::compute_graph {
 /// passes (Alloc, Free, lifetime, in-place fusion, scheduling) can treat
 /// reads/writes through the slice as touching the parent.
 ///
-/// v1 limitations, intentional and documented for follow-up:
-///   - Only @ref ViewAxis::Kind::Full and @ref ViewAxis::Kind::Range are
-///     supported. ``Drop`` (rank-reducing index) will be added later;
-///     calling ``cg::view`` with a Drop axis throws at capture.
-///   - Only rank-preserving slices: ``ResultRank == parent.rank()``.
-///   - Constant strides: the slice inherits the parent's strides, with no
-///     stride remapping or transpose-via-view.
+/// Current limitations, intentional and documented for follow-up:
+///   - Slices are contiguous (step == 1); strided slicing is not supported.
+///   - The typed, compile-time-rank ``cg::view<T, Rank>`` supports only
+///     @ref ViewAxis::Kind::Full and @ref ViewAxis::Kind::Range axes and is
+///     rank-preserving; calling it with a ``Drop`` axis throws at capture.
+///     ``Drop`` (rank-reducing index) is supported on the runtime-rank path
+///     (@ref view_runtime, or the Python ``view_indexed``), where the result
+///     rank is the parent rank minus the number of Drop axes.
+///   - Axis permutations (transpose-via-view) are available on both the typed
+///     and runtime-rank paths via ``cg::permute_view``; a Drop axis and a
+///     permutation cannot be combined in one call (chain two views instead).
 ///   - Single-node assumption: distributed-tensor parents work only if
 ///     the slice doesn't straddle a partition boundary; otherwise the
 ///     view's data pointer is undefined. This is enforced lazily; the
@@ -82,17 +86,6 @@ struct RuntimeViewHolder {
 
 } // namespace detail
 
-/// @brief Record a non-owning slice of a tensor.
-///
-/// @tparam T          Element type.
-/// @tparam Rank       Rank of the resulting view (currently must match parent's rank).
-/// @tparam ParentT    Parent tensor type (any ``CoreBasicTensorConcept`` value).
-/// @tparam Axes       Pack of @ref ViewAxis. Use ``ViewAxis::full()`` and
-///                    ``ViewAxis::range(lo, hi)`` to construct.
-/// @param[in] parent  The tensor being sliced.
-/// @param[in] axes    One ViewAxis per parent rank.
-/// @return Reference to a graph-owned ``TensorView<T, Rank>`` that subsequent
-///         ``cg::*`` calls (einsum, gemm, …) can consume by value/reference.
 namespace detail {
 
 /// Shared body for the typed @ref cg::view and @ref cg::permute_view.
@@ -247,6 +240,20 @@ TensorView<T, Rank> &record_typed_view(ParentT &parent, std::vector<ViewAxis> co
 
 } // namespace detail
 
+/// @brief Record a non-owning slice of a tensor.
+///
+/// Records a @ref OpKind::View node and returns a graph-owned slice that
+/// downstream operations can consume. @p parent must outlive the graph.
+///
+/// @tparam T          Element type.
+/// @tparam Rank       Rank of the resulting view (currently must match parent's rank).
+/// @tparam ParentT    Parent tensor type (any ``CoreBasicTensorConcept`` value).
+/// @tparam Axes       Pack of @ref ViewAxis. Use ``ViewAxis::full()`` and
+///                    ``ViewAxis::range(lo, hi)`` to construct.
+/// @param[in] parent  The tensor being sliced.
+/// @param[in] axes    One ViewAxis per parent rank.
+/// @return Reference to a graph-owned ``TensorView<T, Rank>`` that subsequent
+///         ``cg::*`` calls (einsum, gemm, …) can consume by value/reference.
 template <typename T, size_t Rank, CoreBasicTensorConcept ParentT, typename... Axes>
 TensorView<T, Rank> &view(ParentT &parent, Axes &&...axes) {
     static_assert(sizeof...(Axes) == Rank, "cg::view requires one ViewAxis per parent rank (rank-preserving slices only in v1)");
@@ -293,9 +300,15 @@ TensorView<typename std::remove_cvref_t<ParentT>::ValueType, Rank> &permute_view
 /// @brief Runtime-rank counterpart to cg::view: record a non-owning slice
 ///        of a RuntimeTensor parent.
 ///
-/// Same v1 limitations as the typed view (rank-preserving, no Drop axis,
-/// constant strides inherited from parent). The slice's rank is read from
-/// the parent at capture time; the executor rebuilds the slice each
+/// Unlike the typed ``cg::view``, this path honors ``Drop`` axes
+/// (rank-reducing integer index): the result rank is the parent rank minus
+/// the number of Drop axes. The optional trailing @p perm vector applies an
+/// axis permutation (result axis i aliases parent axis ``perm[i]``); this is
+/// the runtime-rank counterpart of ``cg::permute_view``, and the Python
+/// binding ``einsums.graph.permute_view`` takes it as a list. A Drop axis
+/// and a permutation cannot be combined in one call (chain two views
+/// instead). Strides are inherited from the parent. The slice's rank is read
+/// from the parent at capture time; the executor rebuilds the slice each
 /// iteration by re-emplacing a heap-stored RuntimeTensorView with new
 /// pointer / dims / strides.
 template <RuntimeRankTensorConcept ParentT>
@@ -748,11 +761,14 @@ APIARY_INSTANTIATE_AS("tile_view", einsums::TiledRuntimeTensor<std::complex<doub
 //      and stores its return value. Useful when the value is computed by
 //      external (non-graph) code; no graph dependency is created.
 
-/// Write a parameter from a scalar tensor produced by the graph.
+/// Write a parameter from a scalar variable produced by the graph.
 ///
-/// The scalar's value is read at execute time and stored in
-/// ``params[name]``. Adds an explicit dataflow edge from @p source's
-/// producer to all downstream View ops that read ``Param(name)``.
+/// The value of @p source (an arithmetic scalar variable) is read at execute
+/// time and stored in ``params[name]``. The graph captures ``&source``, so
+/// any upstream op that registers the same address as a scalar input (via
+/// ``ctx.get_or_register_scalar``) becomes a true dataflow predecessor: the
+/// scheduler orders the producer before ``write_param``, and ``write_param``
+/// before any downstream View op that reads ``Param(name)``.
 template <typename T>
     requires std::is_arithmetic_v<T>
 void write_param(std::string name, T &source) {

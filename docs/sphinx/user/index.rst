@@ -192,7 +192,7 @@ As of right now, Einsums is capable of the following:
 * General contractions between two tensors of the form :math:`C_{ijk\cdots} = \alpha C_{ijk\cdots} + \beta A_{abc\cdots} B_{xyz\cdots}`.
 * Generalized transpositions of the form :math:`C_{ijk\cdots} = \alpha C_{ijk\cdots} + \beta A_{abc\cdots}`.
 * Linear algebra on tensors using BLAS and LAPACK as a backend.
-* Taking advantage of tensor layout. If the tensor is block diagonal or has blocks of zeros, the :cpp:class:`BlockTensor` and :cpp:class:`TiledTensor`
+* Taking advantage of tensor layout. If the tensor is block diagonal or has blocks of zeros, the :cpp:any:`~einsums::BlockTensor` and :cpp:any:`~einsums::TiledTensor`
   classes can parallelize certain operations.
 * Mapping operations over all of a tensor's indices.
 * A PackedGemm backend that applies BLIS-style cache-blocked packing for high-rank
@@ -211,7 +211,7 @@ As of right now, Einsums is capable of the following:
 
 The following is not supported, but may be supported in the future.
 
-* When calling :cpp:func:`~einsums::einsum`, there is no transposing of the indices. If a call can not be optimized without transpositions,
+* When calling :cpp:func:`~einsums::tensor_algebra::einsum`, there is no transposing of the indices. If a call can not be optimized without transpositions,
   it will use the generic algorithm rather than transpose indices until it can optimize the call.
 * Most simple arithmetic does not work on :cpp:class:`einsums::BlockTensor`, :cpp:class:`einsums::TiledTensor`,
   :cpp:class:`einsums::tensor_base::FunctionTensor`, or any tensor for the GPU.

@@ -88,11 +88,31 @@ struct Indent {
  * @struct ordinal
  *
  * Wraps an integer. When the ordinal is printed, it will add the appropriate ordinal
- * suffix to that integer.
+ * suffix to that integer, such as 1st, 2nd, etc. Here is an example.
+ *
+ * @code
+ * fmt::format("Error with the {} argument", print::ordinal{arg_num});
+ * @endcode
+ *
+ * This might give a string like <tt>Error with the 3rd argument</tt>, if the value passed was 3.
+ *
+ * This class puts the correct ordinal abbreviation after the number based on its value. It can also
+ * handle negative numbers. To make things easier for users, there are also a few basic operations that
+ * are defined to allow these to act like normal numbers, such as in-place arithmetic. Ordinals can also
+ * be specified with the @c _th suffix.
+ *
+ * @code
+ * fmt::format("Error with the {} argument", 3_th);
+ * @endcode
+ *
+ * This will give <tt>Error with the 3rd argument</tt>.
  *
  * @tparam IntType The integer type the ordinal will wrap.
  *
  * @versionadded{1.0.0}
+ * @versionchangeddesc{2.0.0}
+ *      Added the literal suffix operator.
+ * @endversion
  */
 template <std::integral IntType>
 struct ordinal {

@@ -273,6 +273,7 @@ class EINSUMS_EXPORT TaskPool {
         std::vector<size_t> per_worker_stolen;
     };
 
+    /// @brief Take a snapshot of the pool's aggregate metrics.
     [[nodiscard]] Metrics snapshot_metrics() const;
 
     ~TaskPool();

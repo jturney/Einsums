@@ -11,7 +11,7 @@ copy. Slice bounds can be statically known, runtime-resolvable from a named
 :cpp:class:`Pipeline parameter <einsums::compute_graph::ParamTable>`, or
 arbitrary callbacks evaluated at execute time.
 
-This page also covers :cpp:func:`cg::write_param` for graph-driven parameter
+This page also covers :cpp:func:`cg::write_param <einsums::compute_graph::write_param>` for graph-driven parameter
 updates between iterations.
 
 When to use ``cg::view``
@@ -103,7 +103,7 @@ Mid-iteration parameter updates: ``cg::write_param``
 
 When the parameter must change during the loop, as in the Maximum Overlap
 Method (MOM), level shifting, or integer-occupation excited-state SCF, use
-:cpp:func:`cg::write_param`:
+:cpp:func:`cg::write_param <einsums::compute_graph::write_param>`:
 
 .. code-block:: cpp
 
@@ -201,7 +201,7 @@ and drop axes (rank-reducing integer index). Both are zero-copy: the result
 aliases the parent with reordered dims/strides and, for a drop, an added
 pointer offset.
 
-- **Permute**: :cpp:func:`cg::permute_view` reorders the axes, so result axis
+- **Permute**: :cpp:func:`cg::permute_view <einsums::compute_graph::permute_view>` reorders the axes, so result axis
   ``k`` aliases parent axis ``perm[k]``. The full-reversal case is an ordinary
   transpose. Available on both the typed and runtime-rank paths.
 
@@ -292,53 +292,9 @@ permutation cannot be combined in a single call; chain two views instead.
 Reference
 =========
 
-.. cpp:class:: einsums::compute_graph::BoundExpr
-
-   Scalar integer expression resolved at execute time. Variants ``Const``,
-   ``Param``, ``Callback``. Constructible from any integral type, ``char
-   const *`` or ``std::string`` (Param), or ``std::function<int64_t()>``
-   (Callback).
-
-.. cpp:class:: einsums::compute_graph::ParamTable
-
-   Mutable name → ``int64_t`` table held by ``Pipeline``. ``View`` executors
-   read it; ``cg::write_param`` and ``Pipeline::set_param`` write to it.
-
-.. cpp:struct:: einsums::compute_graph::ViewAxis
-
-   Per-axis spec for a ``cg::view`` call. Static factories:
-
-   - ``ViewAxis::full()``: keep entire axis.
-   - ``ViewAxis::range(lo, hi)``: keep ``[lo, hi)``.
-   - ``ViewAxis::drop(i)``: pick single index ``i``, removing the axis from
-     the result (rank-reducing). Honored by the runtime-rank ``view_runtime``;
-     the typed ``cg::view`` throws on it.
-
-.. cpp:function:: template<typename T, size_t Rank, typename ParentT, typename ...Axes> \
-                  TensorView<T, Rank>& cg::view(ParentT &parent, Axes &&...axes)
-
-   Record a ``View`` node and return a graph-owned slice ``TensorView`` that
-   downstream operations can consume. ``parent`` must outlive the graph. One
-   axis spec per parent axis; ``Rank`` is the result rank (``parent.rank()``
-   minus the number of ``Drop`` axes).
-
-.. cpp:function:: template<typename ParentT, size_t Rank> \
-                  auto cg::permute_view(ParentT &parent, std::array<size_t, Rank> const &perm)
-
-   Record a transpose / axis-permutation View: result axis ``k`` aliases
-   parent axis ``perm[k]`` (``perm`` a permutation of ``[0, Rank)``).
-   Runtime-rank counterpart: ``cg::view_runtime`` accepts a trailing
-   ``perm`` vector, and the Python binding ``einsums.graph.permute_view``
-   takes a list.
-
-.. cpp:function:: template<typename T> void cg::write_param(std::string name, T &source)
-
-   Record a ``WriteParam`` node that reads ``source`` (an arithmetic
-   scalar variable) at execute time and stores its value in
-   ``params[name]``. The graph captures ``&source``, so any upstream op
-   that registers the same address as a scalar input becomes a true
-   dataflow predecessor.
-
-.. cpp:function:: void cg::write_param(std::string name, std::function<int64_t()> source_fn)
-
-   Variant taking a free-standing callback; no graph dependency is created.
+- :cpp:class:`~einsums::compute_graph::BoundExpr` - scalar integer expression resolved at execute time, with ``Const``, ``Param``, and ``Callback`` variants.
+- :cpp:class:`~einsums::compute_graph::ParamTable` - mutable name-keyed ``int64_t`` table held by ``Pipeline``; ``View`` executors read it, ``cg::write_param`` and ``Pipeline::set_param`` write to it.
+- :cpp:class:`~einsums::compute_graph::ViewAxis` - per-axis spec for a ``cg::view`` call, built with the ``full()``, ``range(lo, hi)``, and ``drop(i)`` factories.
+- :cpp:func:`~einsums::compute_graph::view` - record a ``View`` node and return a graph-owned slice ``TensorView`` that downstream operations can consume.
+- :cpp:func:`~einsums::compute_graph::permute_view` - record a transpose / axis-permutation View whose result axis ``k`` aliases parent axis ``perm[k]``.
+- :cpp:func:`~einsums::compute_graph::write_param` - record a ``WriteParam`` node that stores a scalar variable's value (dataflow-tracked) or a callback's result into ``params[name]``.

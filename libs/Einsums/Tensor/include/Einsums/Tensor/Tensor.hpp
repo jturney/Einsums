@@ -63,6 +63,8 @@ void fprintln(Output &fp, AType const &A, TensorPrintOptions options = {});
 /**
  * @brief Represents a general tensor
  *
+ * The data is stored contiguously in memory.
+ *
  * @tparam T data type of the underlying tensor data
  * @tparam Rank the rank of the tensor
  */
@@ -1689,7 +1691,7 @@ struct GeneralTensor<T, 0, Alloc> final : tensor_base::CoreTensor,
 /**
  * @struct TensorView
  *
- * @brief Represents a view of a tensor, which may have different dimensions and start at a different index.
+ * @brief Represents a view of a tensor, which may have a different rank and different dimensions and start at a different index.
  *
  * @tparam T The data type being stored.
  * @tparam Rank The rank of the view.

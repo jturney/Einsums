@@ -873,8 +873,7 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
  * @brief Represents a view of a DiskTensor.
  *
  * @tparam T The data type stored by the tensor.
- * @tparam ViewRank The rank of the view.
- * @tparam Rank The rank of the DiskTensor being viewed.
+ * @tparam Rank The rank of the view.
  */
 template <typename T, size_t rank>
 struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recursive_mutex> {

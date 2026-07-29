@@ -1160,6 +1160,9 @@ struct TiledTensor : public TiledTensorNoExtra, design_pats::Lockable<std::recur
  * @brief Holds a tile-wise sparse tensor.
  *
  * Tensors of this class have large blocks that are rigorously zero. These blocks need to line up on a grid.
+ * Tiles that are rigorously zero are not stored. This is similar to a BlockTensor, but the tiles do not have
+ * to lie on the diagonal, and the grid can be arbitrary on each dimension, rather than needing to be the same
+ * across all dimensions.
  */
 template <typename T, size_t Rank>
 struct TiledTensor final : tensor_base::TiledTensor<T, Rank, einsums::Tensor<T, Rank>>, tensor_base::CoreTensor {
@@ -1260,8 +1263,9 @@ struct TiledTensor final : tensor_base::TiledTensor<T, Rank, einsums::Tensor<T, 
  *
  * @brief Tensors of this class hold views of the tiles of a tiled tensor.
  *
- * Since views of block tensors are not guaranteed to be truly block diagonal, TiledTensorViews also hold
- * views of BlockTensors when the view is not hypersquare.
+ * Conceptually, this is a view of a TiledTensor. Practically, it stores a view of each of the tiles, allowing
+ * different slices to be taken from each. Since views of block tensors are not guaranteed to be truly block
+ * diagonal, TiledTensorViews also hold views of BlockTensors when the view is not hypersquare.
  */
 template <typename T, size_t Rank>
 struct TiledTensorView final : tensor_base::TiledTensor<T, Rank, einsums::TensorView<T, Rank>>, tensor_base::CoreTensor {

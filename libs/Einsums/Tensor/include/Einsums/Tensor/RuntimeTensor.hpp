@@ -41,7 +41,8 @@ namespace einsums {
  * @brief Represents a tensor whose properties can be determined at runtime but not compile time.
  *
  * This kind of tensor is unable to be used in many of the same ways as a tensor with compile-time rank. It is mostly used for communication
- * with the Python interface.
+ * with the Python interface. To use it with rank-templated Einsums calls, convert it into a TensorView so that the rank can be coerced at
+ * compile time.
  *
  * @tparam T The data type stored by the tensor.
  * @tparam Alloc The allocator used for the internal data.
@@ -1325,6 +1326,10 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
  * @class RuntimeTensorView
  *
  * @brief Represents a view of a tensor whose properties can be determined at runtime but not compile time.
+ *
+ * Like GeneralRuntimeTensor, this kind of view is unable to be used in many of the same ways as a tensor with compile-time rank, and is
+ * mostly used for communication with the Python interface. To use it with rank-templated Einsums calls, convert it into a TensorView so
+ * that the rank can be coerced at compile time.
  */
 template <typename T>
 struct APIARY_EXPOSE

@@ -81,7 +81,7 @@ static inline auto rtrim_copy(std::string s) -> std::string {
  *
  * @param[in] s The string to trim.
  *
- * @return The string without leading or tailing whitespace.
+ * @return The string without leading or trailing whitespace.
  *
  * @versionadded{1.0.0}
  */

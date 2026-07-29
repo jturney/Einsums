@@ -250,6 +250,10 @@ EINSUMS_EXPORT void initialize(std::function<int(int, char const *const *)> f, s
 /**
  * \brief Initialize the runtime.
  *
+ * The runtime must be initialized early on, before other Einsums facilities are
+ * used. The entry point \p f is executed as if it were `main`, and the
+ * initialization parameters are passed on to the initialization routine.
+ *
  * \param f entry point of the first task on the einsums runtime
  * \param argv array of arguments. The first element is ignored.
  * \param params The initialization parameters.
@@ -295,6 +299,11 @@ inline void initialize(std::vector<std::string> const &argv, InitParams const &p
 /**
  * \brief Initialize the runtime.
  *
+ * The runtime must be initialized early on, before other Einsums facilities are
+ * used. The entry point \p f is executed as if it were `main`, receiving the
+ * command-line arguments not consumed by Einsums, and the initialization
+ * parameters are passed on to the initialization routine.
+ *
  * \param f entry point of the first task on the einsums runtime
  * \param argc The number of arguments.
  * \param argv array of arguments. The first element is ignored.
@@ -310,6 +319,11 @@ EINSUMS_EXPORT void initialize(std::function<int(int, char **)> f, int argc, cha
 /**
  * \brief Initialize the runtime.
  *
+ * The runtime must be initialized early on, before other Einsums facilities are
+ * used. The entry point \p f is executed as if it were `main`, receiving the
+ * command-line arguments not consumed by Einsums, and the initialization
+ * parameters are passed on to the initialization routine.
+ *
  * \param f entry point of the first task on the einsums runtime
  * \param argc The number of arguments.
  * \param argv array of arguments. The first element is ignored.
@@ -324,6 +338,10 @@ EINSUMS_EXPORT void initialize(std::function<int(int, char const *const *)> f, i
                                InitParams const &params = InitParams());
 /**
  * \brief Initialize the runtime.
+ *
+ * The runtime must be initialized early on, before other Einsums facilities are
+ * used. Since the entry point is the null pointer, no function is called and the
+ * initialization routine exits once it is finished.
  *
  * \param argc The number of arguments.
  * \param argv array of arguments. The first element is ignored.

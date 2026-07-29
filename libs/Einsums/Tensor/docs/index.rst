@@ -17,91 +17,23 @@ details.
 Public Reference
 ----------------
 
-.. cpp:class:: template<typename T, size_t Rank> Tensor
+- :cpp:type:`~einsums::Tensor` - the standard in-core tensor; the data is stored contiguously.
+- :cpp:class:`~einsums::TensorView` - a view of a tensor, which may have a different rank and different dimensions.
+- :cpp:class:`~einsums::DiskTensor` - a tensor whose data is stored on disk.
+- :cpp:class:`~einsums::DiskView` - a view of a :cpp:class:`~einsums::DiskTensor`.
+- :cpp:class:`~einsums::BlockTensor` - a tensor with square blocks of entries along its main diagonal.
+- :cpp:class:`~einsums::TiledTensor` - a tile-wise sparse tensor; tiles that are rigorously zero are not stored.
+- :cpp:class:`~einsums::TiledTensorView` - a view of a :cpp:class:`~einsums::TiledTensor`, holding a view of each tile.
+- :cpp:class:`~einsums::tensor_base::FunctionTensor` - optional public base class for tensors that pass indices on to a function.
+- :cpp:class:`~einsums::FuncPointerTensor` - a function tensor that wraps a function pointer.
+- :cpp:class:`~einsums::FunctionTensorView` - acts as a view of a function tensor by applying an offset to the indices.
+- :cpp:class:`~einsums::KroneckerDelta` - a function tensor that evaluates the Kronecker delta; usable in einsum calls.
+- :cpp:type:`~einsums::RuntimeTensor` - a runtime-rank tensor, mostly for interacting with the Python module.
+- :cpp:class:`~einsums::RuntimeTensorView` - a runtime-rank view, mostly for interacting with the Python module.
 
-    Represents a tensor. The data is stored contiguously
-
-.. cpp:class:: template<typename T, size_t Rank> TensorView
-
-    Holds a view of a :cpp:class:`Tensor`, which may have a different rank and different dimensions.
-
-.. cpp:class:: template<typename T, size_t Rank> DeviceTensor
-
-    A tensor that makes data available to the GPU. These should be used when more permanent occupancy is desired.
-    If you want to map/copy a tensor into GPU memory temporarily, but have it live in core most of the time, consider using 
-    a :cpp:class::`DeviceTensorView` instead.
-
-.. cpp:class:: template<typename T, size_t Rank> DeviceTensorView
-
-    Holds a view of data that is available to the GPU. This may be a view of a :cpp:class:`DeviceTensor`, or it may
-    be a mapping of a :cpp:class:`Tensor` or :cpp:class:`TensorView`.
-
-.. cpp:class:: template<typename T, size_t Rank> DiskTensor
-
-    A tensor whose data is stored on disk.
-
-.. cpp:class:: template<typename T, size_t ViewRank, size_t Rank> DiskView
-
-    A view of a :cpp:class:`DiskTensor`.
-
-.. cpp:class:: template<typename T, size_t Rank> BlockTensor
-
-    A tensor that has square blocks of entries along its main diagonal. The rank must be at least 2, since
-    rank-1 and rank-0 tensors don't have diagonals.
-
-.. cpp:class:: template<typename T, size_t Rank> BlockDeviceTensor
-
-    Similar to :cpp:class:`BlockTensor`, but the data is available to the GPU.
-
-.. cpp:class:: template<typename T, size_t Rank> TiledTensor
-
-    A tensor that can be split up into a grid of smaller tensors. The assumption is that
-    most of these smaller tensors are rigorously zero, and so are not stored. This is similar
-    to a :cpp:class:`BlockTensor`, but the tiles do not have to lie on the diagonal,
-    and the grid can be arbitrary on all dimensions, rather than needing to be the same across
-    all dimensions.
-
-.. cpp:class:: template<typename T, size_t Rank> TiledTensorView
-
-    Conceptually, this is a view of a :cpp:class:`TiledTensor`. Practically,
-    this stores views of each of the tiles, allowing different slices to be taken from each.
-
-.. cpp:class:: template<typename T, size_t Rank> TiledDeviceTensor
-
-    Same as :cpp:class:`TiledTensor`, but available to the GPU.
-
-.. cpp:class:: template<typename T, size_t Rank> TiledDeviceTensorView
-
-    Same as :cpp:class:`TiledTensorView`, but available to the GPU.
-
-.. cpp:class:: template<typename T, size_t Rank> tensor_base::FunctionTensor
-
-    This is the base class for tensors which pass indices onto a different function. Users may wish to 
-    use these, so this is really the only base class that is here in the public API.
-
-.. cpp:class:: template<typename T, size_t Rank> FuncPointerTensor
-
-    This is one specialization of the :cpp:class:`tensor_base::FunctionTensor` that wraps a
-    function pointer, and passes arguments to that function pointer.
-
-.. cpp:class:: template<typename T, size_t Rank> FunctionTensorView
-
-    Applies an offset to the arguments passed to a function tensor. In essence, acting like a view.
-
-.. cpp:class:: template<typename T> KroneckerDelta
-
-    This is an example implementation of a function tensor that evaluates the Kronecker delta. Some may find it useful,
-    so it is provided in the public API, rather than just being an example.
-
-.. cpp:class:: template<typename T> RuntimeTensor
-
-    This is a convenience class for interacting with the Python module. It will never work with many Einsums calls. Instead,
-    it should be converted into a :cpp:class:`TensorView` so that the rank can be coerced at compile time.
-
-.. cpp:class:: template<typename T> RuntimeTensorView
-
-    This is a convenience class for interacting with the Python module. It will never work with many Einsums calls. Instead,
-    it should be converted into a :cpp:class:`TensorView` so that the rank can be coerced at compile time.
+GPU-resident storage is no longer a separate family of device tensor classes.
+It is provided through allocator-based aliases such as
+:cpp:type:`~einsums::GPUTensor` and :cpp:type:`~einsums::RuntimeGPUTensor`.
 
 Symmetry Metadata
 -----------------

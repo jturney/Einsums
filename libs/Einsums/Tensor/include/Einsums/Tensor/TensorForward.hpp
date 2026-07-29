@@ -40,6 +40,8 @@ struct TensorPrintOptions {
 template <typename T, size_t Rank, typename Alloc>
 struct GeneralTensor;
 
+/// The standard in-core tensor: GeneralTensor with the standard allocator.
+/// The data is stored contiguously in memory.
 template <typename T, size_t Rank>
 using Tensor = GeneralTensor<T, Rank, std::allocator<T>>;
 
@@ -73,6 +75,8 @@ struct DiskTensor;
 template <typename T, typename Alloc>
 struct GeneralRuntimeTensor;
 
+/// Runtime-rank in-core tensor: GeneralRuntimeTensor with the standard
+/// allocator. Mostly used for communication with the Python interface.
 template <typename T>
 using RuntimeTensor = GeneralRuntimeTensor<T, std::allocator<T>>;
 

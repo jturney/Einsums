@@ -42,6 +42,9 @@ namespace einsums::linear_algebra {
  *
  * Under the hood the LAPACK routine `lassq` is used.
  *
+ * On exit, the value of @p scale will normally be 1. However, it may differ if the result of the sum would have caused
+ * either an overflow or an underflow.
+ *
  * @tparam AType The type of the tensor.
  * @param[in] a The tensor to compute the sum of squares for.
  * @param[inout] scale scale_in and scale_out for the equation provided.
@@ -78,6 +81,15 @@ void sum_square(AType const &a, RemoveComplexT<typename AType::ValueType> *scale
  *
  * einsums::linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C);
  * @endcode
+ *
+ * All operands must share the same stored type, one of `float`, `double`, `std::complex<float>`, or
+ * `std::complex<double>`; the type of the scale factors may differ and will be converted to match. The following
+ * tensor type combinations are supported.
+ *
+ * - `BasicTensor * BasicTensor = BasicTensor`
+ * - `BlockTensor * BlockTensor = BlockTensor`
+ * - `TiledTensor * TiledTensor = TiledTensor`
+ * - `OtherTensor * OtherTensor = OtherTensor`
  *
  * @tparam TransA Tranpose A? true or false
  * @tparam TransB Tranpose B? true or false
@@ -128,6 +140,15 @@ void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C)
  *
  * einsums::linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C);
  * @endcode
+ *
+ * All operands must share the same stored type, one of `float`, `double`, `std::complex<float>`, or
+ * `std::complex<double>`; the type of the scale factors may differ and will be converted to match. The following
+ * tensor type combinations are supported.
+ *
+ * - `BasicTensor * BasicTensor = BasicTensor`
+ * - `BlockTensor * BlockTensor = BlockTensor`
+ * - `TiledTensor * TiledTensor = TiledTensor`
+ * - `OtherTensor * OtherTensor = OtherTensor`
  *
  * @tparam AType The tensor type of A.
  * @tparam BType The tensor type of B.
@@ -189,7 +210,9 @@ void gemm(char transA, char transB, U const alpha, AType const &A, BType const &
 /**
  * @brief General matrix multiplication. Returns new tensor.
  *
- * Takes two rank-2 tensors performs the multiplication and returns the result
+ * Takes two rank-2 tensors performs the multiplication and returns the result. This is a wrapper around the in-place
+ * gemm and supports the same tensor type combinations; when passed views, the result is the corresponding non-view
+ * tensor type.
  *
  * @code
  * auto A = einsums::create_random_tensor("A", 3, 3);
@@ -236,8 +259,10 @@ template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, ty
  *
  * Computes @f$ C = OP(B)^T OP(A) OP(B) @f$.
  *
+ * It supports the same operand types as gemm, since it is normally implemented with gemm calls in the back.
+ *
  * @tparam TransA Whether to transpose the A matrix.
- * @tparam TransB Whether to tranpsose the B matrix.
+ * @tparam TransB Whether to transpose the second instance of the B matrix. The first instance is always the opposite.
  * @tparam AType The tensor type of A.
  * @tparam BType The tensor type of B.
  * @tparam CType The tensor type of C.
@@ -350,6 +375,17 @@ void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
  * where alpha and beta are scalars, z and y are vectors and A is an
  * \f$m\f$ by \f$n\f$ matrix.
  *
+ * All operands must share the same stored type, one of `float`, `double`, `std::complex<float>`, or
+ * `std::complex<double>`. The following tensor type combinations are supported.
+ *
+ * - `BasicTensor * BasicTensor = BasicTensor`
+ * - `BlockTensor * BasicTensor = BasicTensor`
+ * - `TiledTensor * BasicTensor = BasicTensor`
+ * - `TiledTensor * TiledTensor = BasicTensor`
+ * - `TiledTensor * BasicTensor = TiledTensor`
+ * - `TiledTensor * TiledTensor = TiledTensor`
+ * - `OtherTensor * OtherTensor = OtherTensor`
+ *
  * @tparam TransA Transpose matrix A? true or false
  * @tparam AType The type of the matrix A
  * @tparam XType The type of the vector z
@@ -446,6 +482,11 @@ void gemv(char transA, U const alpha, AType const &A, XType const &z, U const be
  *
  * This routines assumes the upper triangle of A is stored. The lower triangle is not referenced if the eigenvectors are not computed.
  *
+ * The stored types of @p A and @p W must match and be real. The following tensor types are supported.
+ *
+ * - `BasicTensor` matrix with `BasicTensor` eigenvalue vector
+ * - `BlockTensor` matrix with `BasicTensor` eigenvalue vector
+ *
  * @code
  * // Create tensors A and b.
  * auto A = einsums::create_tensor("A", 3, 3);
@@ -509,6 +550,19 @@ void syev(AType *A, WType *W) {
 /**
  * @brief Compute the general eigendecomposition of a matrix.
  *
+ * If a real input matrix has a complex eigenvalue, it will always come in a conjugate pair. In this case, the columns
+ * of the eigenvector output act as the real and imaginary parts: the first column of the pair is the real part and the
+ * second column is the imaginary part of the first eigenvector of the pair, and the imaginary part of the second
+ * eigenvector is the negative of that column. This only applies to real inputs; if the input is complex, the
+ * eigenvectors are stored as normal.
+ *
+ * @p W must store complex values, while @p A may be real or complex. The stored types must match in precision, so a
+ * `std::complex<float>` eigenvalue vector pairs with either a `float` or `std::complex<float>` matrix. The following
+ * tensor types are supported.
+ *
+ * - `BasicTensor` input with `BasicTensor` outputs
+ * - `BlockTensor` input with `BasicTensor` eigenvalues and `BlockTensor` eigenvectors
+ *
  * @tparam AType The tensor type of A.
  * @tparam WType The tensor type of W.
  * @param[inout] A The tensor to decompose. On exit, it will be overwritten with values used for the computation.
@@ -554,6 +608,12 @@ void geev(AType *A, WType *W, LVecPtr lvecs, RVecPtr rvecs) {
  * Computes all eigenvalues and, optionally, eigenvectors of a complex Hermitian matrix.
  *
  * This routines assumes the upper triangle of A is stored. The lower triangle is not referenced if the eigenvectors are not computed.
+ *
+ * The stored type of @p A must be complex and the stored type of @p W must be the matching real type; for instance,
+ * `std::complex<float>` pairs with `float`. The following tensor types are supported.
+ *
+ * - `BasicTensor` matrix with `BasicTensor` eigenvalue vector
+ * - `BlockTensor` matrix with `BasicTensor` eigenvalue vector
  *
  * @code
  * // Create tensors A and b.
@@ -811,10 +871,13 @@ void scale_column(size_t col, typename AType::ValueType scale, AType *A) {
 /**
  * @brief Computes the matrix power of a to alpha.  Return a new tensor, does not destroy a.
  *
+ * This is equivalent to diagonalizing the matrix, raising its eigenvalues to the given power, then recombining the
+ * matrix.
+ *
  * @tparam AType
  * @param[in] a Matrix to take power of
  * @param[in] alpha The power to take
- * @param[in] cutoff Values below cutoff are considered zero.
+ * @param[in] cutoff If an eigenvalue is below this value after exponentiation, it is set to zero.
  *
  * @return The matrix power.
  *
@@ -2103,7 +2166,8 @@ template <MatrixConcept AType>
 }
 
 /**
- * Compute the direct product between two tensors and accumulate them into another.
+ * Compute the direct product between two tensors and accumulate them into another. This is the element-wise (Hadamard)
+ * product of the two tensors.
  *
  * @f[
  *  c_i := \alpha a_i b_i + \beta c_i

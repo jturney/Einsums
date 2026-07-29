@@ -313,6 +313,14 @@ void permute(T beta, std::string const &C_indices, einsums::detail::TensorImpl<T
 /**
  * @brief Permutes the elements of a tensor and puts it into an output tensor.
  *
+ * The same index letters must appear in both index specifications, though their
+ * orders can obviously differ. The prefactors allow something like
+ * @f[
+ *     C_{abc\cdots} = \alpha C_{abc\cdots} + \beta A_{cba\cdots},
+ * @f]
+ * where the original value of the output tensor is scaled and added back into
+ * the output.
+ *
  * This function uses HPTT, which can only handle out-of-place tensor transpositions. The tensors passed in should not
  * have overlapping storage.
  *
@@ -323,6 +331,10 @@ void permute(T beta, std::string const &C_indices, einsums::detail::TensorImpl<T
  * @param A_indices The indices for the input tensor.
  * @param A The input tensor.
  * @tparam ConjA If true, conjugate the values of A as it is being permuted.
+ *
+ * @versionchangeddesc{1.0.3}
+ *      This function now works with TensorView inputs and outputs.
+ * @endversion
  */
 template <bool ConjA = false, CoreTensorConcept AType, CoreTensorConcept CType, typename... CIndices, typename... AIndices, typename U>
     requires requires {

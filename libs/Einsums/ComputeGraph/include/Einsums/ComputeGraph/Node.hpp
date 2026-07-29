@@ -261,7 +261,9 @@ struct LoopDescriptor {
  * - Full: keep the entire axis (the result preserves this dimension).
  * - Range: half-open ``[lo, hi)`` slice; the result keeps this dimension
  *               with extent ``hi - lo``.
- * - Drop: pick a single index; the result loses this dimension.
+ * - Drop: pick a single index; the result loses this dimension
+ *               (rank-reducing). Honored by the runtime-rank ``view_runtime``;
+ *               the typed ``cg::view`` throws on it.
  *
  * Bounds are @ref BoundExpr values, so they may be compile-time constants
  * (``0``, ``5``), references to a Pipeline parameter (``"n_occ"``), or

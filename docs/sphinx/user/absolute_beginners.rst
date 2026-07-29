@@ -18,7 +18,7 @@ suggestions, please do not hesitate to `reach out <https://discord.gg/8GvtkyWZUv
 Welcome to Einsums!
 ===================
 
-Einsums is an open-source C++ library. It provides :cpp:class:`Tensor`, a homogeneous n-dimensional
+Einsums is an open-source C++ library. It provides :cpp:any:`~einsums::Tensor`, a homogeneous n-dimensional
 tensor object, with methods to efficiently operate on it. Einsums can be used to perform
 a wide variety of mathematical operations on tensors.
 
@@ -140,7 +140,7 @@ How to create a Tensor
 ======================
 
 To create an Einsums Tensor, you can use the constructors for the tensor class
-:cpp:class:`Tensor`.
+:cpp:any:`~einsums::Tensor`.
 
 All you need to do to create a basic tensor is pass a name for the tensor and the
 dimensionality of each index.
@@ -186,18 +186,18 @@ Different Tensor Layouts
 ------------------------
 
 Einsums also provides several different tensor layouts. For a tensor that only has elements along
-a block diagonal, there is the :cpp:class:`BlockTensor`. When a tensor is blockwise sparse,
+a block diagonal, there is the :cpp:any:`~einsums::BlockTensor`. When a tensor is blockwise sparse,
 but has blocks that are not on the diagonal, or have axes of varying dimensions, there is the
-:cpp:class:`TiledTensor`, which can be viewed by a :cpp:class:`TiledTensorView`.
+:cpp:any:`~einsums::TiledTensor`, which can be viewed by a :cpp:any:`~einsums::TiledTensorView`.
 
 Different Tensor Storage
 ------------------------
 
 Einsums intends to provide tensors that are compatible with GPU and CPU operations, as well as tensors stored on disk.
 These are intended to be drop-in replacements, though there may be some variability in the interfaces for these tensors.
-The disk tensor class is :cpp:class:`DiskTensor`, which can be viewed by a :cpp:class:`DiskView`.
-For GPU tensors, there are :cpp:class:`DeviceTensor` and :cpp:class:`DeviceTensorView`, as well as
-:cpp:class:`BlockDeviceTensor`, :cpp:class:`TiledDeviceTensor`, and :cpp:class:`TiledDeviceTensorView`. 
+The disk tensor class is :cpp:any:`~einsums::DiskTensor`, which can be viewed by a :cpp:any:`~einsums::DiskView`.
+GPU storage is selected through the allocator: the :cpp:any:`~einsums::GPUTensor` and
+:cpp:any:`~einsums::RuntimeGPUTensor` aliases store their data on the device. 
 
 Basic Tensor operations
 =======================
@@ -351,7 +351,7 @@ transpositions, element mapping, and more. Here are some useful things we can do
 Permuting elements
 ------------------
 
-To permute the axes of a tensor, you can use the :cpp:func:`~einsums::permute` function. This takes an input tensor and an output tensor,
+To permute the axes of a tensor, you can use the :cpp:func:`~einsums::tensor_algebra::permute` function. This takes an input tensor and an output tensor,
 and it permutes the input tensor, scales it, scales the output tensor, then adds them together.
 
 .. code:: C++

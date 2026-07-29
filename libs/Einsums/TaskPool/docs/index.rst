@@ -352,60 +352,8 @@ The current design prepares for this by:
 API Reference
 =============
 
-TaskPool
---------
-
-.. cpp:class:: einsums::task_pool::TaskPool
-
-   Singleton work-stealing thread pool.
-
-   .. cpp:function:: static TaskPool& get_singleton()
-   .. cpp:function:: size_t num_workers() const
-   .. cpp:function:: template<typename F> auto submit(std::string name, F&& callable) -> TaskHandle<R>
-   .. cpp:function:: TaskGroup submit_group(std::string name, std::vector<std::function<void()>> tasks)
-   .. cpp:function:: template<typename F> void parallel_for(std::string name, size_t begin, size_t end, F&& body)
-   .. cpp:function:: template<typename Acc, typename Body, typename Combine> Acc parallel_reduce(std::string name, size_t begin, size_t end, Acc init, Body body, Combine combine)
-   .. cpp:function:: template<typename F, typename... Ts> auto dataflow(std::string name, F&& callable, TaskHandle<Ts>... inputs)
-   .. cpp:function:: Metrics snapshot_metrics() const
-   .. cpp:function:: void shutdown()
-
-TaskHandle
-----------
-
-.. cpp:class:: template<typename T> einsums::task_pool::TaskHandle
-
-   Future with continuation support.
-
-   .. cpp:function:: T get()
-   .. cpp:function:: void wait()
-   .. cpp:function:: bool ready() const
-   .. cpp:function:: template<typename F> auto then(F&& fn) -> TaskHandle<R>
-   .. cpp:function:: template<typename F> auto then(std::string name, F&& fn) -> TaskHandle<R>
-
-TaskGroup
----------
-
-.. cpp:class:: einsums::task_pool::TaskGroup
-
-   Collective barrier for a group of submitted tasks.
-
-   .. cpp:function:: void wait_all()
-   .. cpp:function:: bool ready() const
-   .. cpp:function:: size_t size() const
-   .. cpp:function:: size_t remaining() const
-
-Free Functions
---------------
-
-.. cpp:function:: template<typename T> TaskHandle<std::vector<T>> when_all(std::vector<TaskHandle<T>>)
-
-   Fan-in for homogeneous handles: completes when all are ready.
-
-.. cpp:function:: template<typename... Ts> TaskHandle<std::tuple<Ts...>> when_all(TaskHandle<Ts>...)
-
-   Fan-in for heterogeneous handles: completes when all are ready.
-   Returns a tuple of results in the same order as the inputs.
-
-.. cpp:function:: template<typename T> TaskHandle<T> make_ready_handle(T value)
-
-   Create an immediately-ready handle.
+- :cpp:class:`~einsums::task_pool::TaskPool` - singleton work-stealing thread pool with ``submit``, ``submit_group``, ``parallel_for``, ``parallel_reduce``, and ``dataflow``.
+- :cpp:class:`~einsums::task_pool::TaskHandle` - future with continuation support: ``get``/``wait``/``ready`` plus ``then()`` chaining.
+- :cpp:class:`~einsums::task_pool::TaskGroup` - collective barrier for a group of submitted tasks.
+- :cpp:func:`~einsums::task_pool::when_all` - fan-in that completes when all inputs are ready; homogeneous handles return a vector, the variadic heterogeneous form returns a tuple of results in input order.
+- :cpp:func:`~einsums::task_pool::make_ready_handle` - create an immediately-ready handle.

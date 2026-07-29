@@ -35,8 +35,47 @@ AlgorithmChoice einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices.
                        std::tuple<AIndices...> const & /*As*/, AType const &A, std::tuple<BIndices...> const & /*Bs*/, BType const &B);
 } // namespace detail
 
-/*
- * Dispatchers for einsum.
+/**
+ * @brief The einsum call. It is the reason this package exists.
+ *
+ * Computes the tensor contraction
+ * @f[
+ *     C_{abc\cdots} = \alpha C_{abc\cdots} + \beta A_{def\cdots} B_{ghi\cdots},
+ * @f]
+ * where @f$\alpha@f$ is the C prefactor and @f$\beta@f$ is the AB prefactor.
+ * The indices must be known at compile time, as well as the ranks of the
+ * tensors. The C tensor may also be a scalar if its index tuple is empty.
+ * The tensor parameters may be any combination of smart pointers. The
+ * prefactors may also be left off: if the first prefactor is left off, it
+ * defaults to zero, and if the second is left off, it defaults to one. Most
+ * combinations of kinds of tensors are accepted. However, for best results,
+ * avoid using FunctionTensor, RuntimeTensor, or ArithmeticTensor, as these
+ * can't be used with LAPACK or BLAS calls.
+ *
+ * This function analyzes the indices it is given to determine whether the
+ * contraction can be turned into a BLAS call. As of the current version, it
+ * will not perform any major transpositions to force it into a BLAS call.
+ * The only transpositions it does are the ones that can be specified as
+ * parameters to those BLAS calls. For instance, if it can call `gemm` for a
+ * matrix multiplication, it determines whether it needs to tell `gemm` to
+ * transpose the arguments or not. It will not, however, try to swap the
+ * indices of a tensor around to coerce the contraction into a `gemm` call if
+ * one is not seen immediately. This is up to the user to perform. We have
+ * plans to make this a feature in the future, though, so feel free to write
+ * your code as if it did do this transposition (we are always looking for
+ * help, if you feel inclined to make this a reality).
+ *
+ * @tparam ConjA If true, use the complex conjugate of the elements of A.
+ * @tparam ConjB If true, use the complex conjugate of the elements of B.
+ * @param C_prefactor The prefactor for mixing in the original value of the output tensor.
+ * @param Cs The indices for the output tensor.
+ * @param C The output tensor. May be a scalar when its index tuple is empty.
+ * @param UAB_prefactor The prefactor for the contraction of A with B.
+ * @param As The indices for the A tensor.
+ * @param A The first input tensor.
+ * @param Bs The indices for the B tensor.
+ * @param B The second input tensor.
+ * @param algorithm_choice If non-null, receives the algorithm the dispatcher selected.
  */
 template <bool ConjA = false, bool ConjB = false, TensorConcept AType, TensorConcept BType, typename CType, typename U,
           typename... CIndices, typename... AIndices, typename... BIndices>

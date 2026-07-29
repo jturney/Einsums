@@ -122,8 +122,8 @@ Miscellaneous
     a tensor's elements in order. If you are skipping around, it is better to use something else for better readability.
   * Using :cpp:func:`~einsums::sentinel_to_sentinels` and :code:`tensor.data()[index]`. This should be faster than subscripting tensors,
     but be careful, since it can only be used on certain kinds of tensors. As with the previous method, it can be used when iterating
-    over a tensor's elements in order. It is still readable even when skipping around, but it will only work on :cpp:class:`Tensor`\ s
-    and :cpp:class:`TensorView`\ s.
+    over a tensor's elements in order. It is still readable even when skipping around, but it will only work on :cpp:any:`~einsums::Tensor`\ s
+    and :cpp:any:`~einsums::TensorView`\ s.
   * Using :cpp:func:`~einsums::sentinel_to_indices` and :cpp:func:`subscript_tensor`. This will make the choice between 
     the :code:`subscript` method and the function call syntax, using the :code:`subscript` method as the primary
     and the function call syntax as a fallback. This is the most general way, and it should be preferred unless

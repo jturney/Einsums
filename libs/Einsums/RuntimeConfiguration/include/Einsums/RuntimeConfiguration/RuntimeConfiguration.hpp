@@ -27,6 +27,27 @@ namespace einsums {
 /**
  * @brief Add a function to the list of startup functions to add module-specific command line arguments.
  *
+ * This should be called before Einsums is initialized. During initialization, the function given to
+ * this will be called, allowing it to set up command line arguments. These arguments will then be
+ * processed. This is an example of what can be done with this, taken from the BufferAllocator module.
+ *
+ * @code
+ * void add_Einsums_BufferAllocator_arguments() {
+ *     // Get the config maps for making the options available to the program.
+ *     auto &global_config = GlobalConfigMap::get_singleton();
+ *     auto &global_string = global_config.get_string_map()->get_value();
+ *
+ *     // Add the argument.
+ *     static cl::OptionCategory   bufferCategory("Buffer Allocator");
+ *     static cl::Opt<std::string> bufferSize("einsums:buffer-size", {}, "Total size of buffers allocated for tensor contractions",
+ *                                            bufferCategory, cl::Location(global_string["buffer-size"]),
+ *                                            cl::Default(std::string("4MB")));
+ *
+ *     // Attach an observer to look for changes to this argument.
+ *     global_config.attach(detail::Einsums_BufferAllocator_vars::update_max_size);
+ * }
+ * @endcode
+ *
  * @versionadded{1.0.0}
  * @versionchanged{2.0.0} parameter changed to const&
  */

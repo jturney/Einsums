@@ -1157,6 +1157,9 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
  *
  * Represents a block-diagonal tensor in core memory.
  *
+ * The blocks are square and lie along the main diagonal. The rank must be at least 2, since rank-1 and rank-0
+ * tensors do not have diagonals.
+ *
  * @tparam T The type of data stored in the tensor.
  * @tparam Rank The rank of the tensor.
  *
