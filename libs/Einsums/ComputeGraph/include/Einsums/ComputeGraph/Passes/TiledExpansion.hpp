@@ -12,6 +12,21 @@
 
 namespace einsums::compute_graph::passes {
 
+/// When to lower a tiled contraction by densifying rather than per tile.
+enum class Densify : std::uint8_t {
+    Never,  ///< Always emit one node per contributing tile combination.
+    Auto,   ///< Let the @ref CostModel decide, per contraction. The default.
+    Always, ///< Densify whenever the lowering is structurally possible. For tests.
+};
+
+/// When to collapse a tiled elementwise op into one node over all its tiles
+/// instead of one node per tile.
+enum class FuseTiles : std::uint8_t {
+    Never,  ///< Always emit one dense node per tile.
+    Auto,   ///< Fuse when the tiles cost more to dispatch than to touch. The default.
+    Always, ///< Fuse every group of two or more tiles. For tests.
+};
+
 /**
  * @brief Lower tiled operations into per-tile DENSE nodes.
  *
@@ -247,21 +262,6 @@ namespace einsums::compute_graph::passes {
  * graph.apply(pm);
  * @endcode
  */
-/// When to lower a tiled contraction by densifying rather than per tile.
-enum class Densify : std::uint8_t {
-    Never,  ///< Always emit one node per contributing tile combination.
-    Auto,   ///< Let the @ref CostModel decide, per contraction. The default.
-    Always, ///< Densify whenever the lowering is structurally possible. For tests.
-};
-
-/// When to collapse a tiled elementwise op into one node over all its tiles
-/// instead of one node per tile.
-enum class FuseTiles : std::uint8_t {
-    Never,  ///< Always emit one dense node per tile.
-    Auto,   ///< Fuse when the tiles cost more to dispatch than to touch. The default.
-    Always, ///< Fuse every group of two or more tiles. For tests.
-};
-
 class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
   public:
     /// @param max_nodes Decline to expand when the projected node count exceeds this.

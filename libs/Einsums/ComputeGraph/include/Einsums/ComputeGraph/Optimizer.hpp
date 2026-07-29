@@ -151,6 +151,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
 };
 
 /**
+ * @brief Optimization level for Graph::optimize(), compiler-style.
+ *
+ * - O0: no passes; the graph runs exactly as captured.
+ * - O1: node-count cleanup only (constant folding, dead-scale removal,
+ *       permute fusion, CSE, dead-node elimination, elementwise fusion) -
+ *       cheap, no restructuring, no memory planning.
+ * - O2: the full default pipeline (cleanup + loop hoisting + cost-model
+ *       chain restructuring + batching + reorder + distribution/GPU when
+ *       available + in-place merging + free insertion + the memory arena).
+ */
+enum class APIARY_EXPOSE OptLevel : std::uint8_t {
+    O0 = 0,
+    O1 = 1,
+    O2 = 2,
+};
+
+/**
  * @brief Manages an ordered sequence of optimization passes.
  *
  * The PassManager collects passes and runs them in order on a graph.
@@ -177,24 +194,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
  *
  * @see Graph::apply(PassManager&)
  * @see Pipeline::apply(PassManager&)
+ * @see create_for(OptLevel)
  */
-/**
- * @brief Optimization level for Graph::optimize(), compiler-style.
- *
- * - O0: no passes; the graph runs exactly as captured.
- * - O1: node-count cleanup only (constant folding, dead-scale removal,
- *       permute fusion, CSE, dead-node elimination, elementwise fusion) -
- *       cheap, no restructuring, no memory planning.
- * - O2: the full default pipeline (cleanup + loop hoisting + cost-model
- *       chain restructuring + batching + reorder + distribution/GPU when
- *       available + in-place merging + free insertion + the memory arena).
- */
-enum class APIARY_EXPOSE OptLevel : std::uint8_t {
-    O0 = 0,
-    O1 = 1,
-    O2 = 2,
-};
-
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT PassManager {
   public:
     /// Default-construct an empty PassManager. Explicit (rather than

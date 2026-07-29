@@ -45,16 +45,21 @@ namespace einsums::compute_graph::passes {
  * // Fae[a,e]  += t1[m,f] * L[m,a,f,e]              (single einsum)
  * @endcode
  *
- * @par Opt-in
- * Not registered in @ref PassManager::create_default, like DistributiveFactoring
- * it is a workload-dependent rewrite. Apply it
- * explicitly:
+ * @par In the default pipeline
+ * Registered in @ref PassManager::create_default, after ElementWiseFusion and
+ * BEFORE LoopInvariantHoisting: the fold emits the @f$L@f$ build as its own node
+ * whose only input is the paired operand, so when that operand is loop-invariant
+ * -- the common case, an integral block from one-time setup -- hoisting lifts the
+ * builder out of the loop and @f$L@f$ is built once instead of every replay. The
+ * structural gates below make it a no-op on graphs without the pattern. Add it
+ * explicitly only to run it apart from the default pipeline:
  * @code
  * cg::PassManager pm; pm.add(std::make_shared<LinearCombinationContractionFolding>());
  * graph.apply(pm);
  * @endcode
- * The fold's @f$L@f$ build is loop-invariant when @f$B@f$ is a constant integral,
- * so a subsequent LoopInvariantHoisting can lift it out of an iteration loop.
+ * @ref StreamContractionFusion serves the same 2J-K algebra with a single stream
+ * of the shared operand and runs first, consuming the pattern this pass would
+ * otherwise fold.
  *
  * @par Example (Python)
  * @code{.py}

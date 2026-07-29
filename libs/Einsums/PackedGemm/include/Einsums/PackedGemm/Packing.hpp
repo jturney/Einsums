@@ -37,6 +37,17 @@ struct DimSpec {
 /// marks entries that must never be used to index a real tensor axis.
 inline constexpr size_t kSyntheticDimPos = static_cast<size_t>(-1);
 
+/// @brief Describes a batch dimension with positions and strides in all three tensors.
+struct BatchDimSpec {
+    int64_t size{0};
+    size_t  a_pos{0}; ///< Position of this dim in A's raw index list
+    size_t  b_pos{0}; ///< Position of this dim in B's raw index list
+    size_t  c_pos{0}; ///< Position of this dim in C's raw index list
+    int64_t a_stride{0};
+    int64_t b_stride{0};
+    int64_t c_stride{0};
+};
+
 /// @brief Describes how a contraction can be packed as a flat BLIS-style GEMM.
 ///
 /// For a contraction C[m,n] = beta*C[m,n] + alpha * Sum_k A[m,k] * B[k,n]
@@ -50,17 +61,6 @@ inline constexpr size_t kSyntheticDimPos = static_cast<size_t>(-1);
 ///   c_n_dims    : n_dims as seen in C
 ///
 /// `valid` is true only when all validity conditions are met.
-/// @brief Describes a batch dimension with positions and strides in all three tensors.
-struct BatchDimSpec {
-    int64_t size{0};
-    size_t  a_pos{0}; ///< Position of this dim in A's raw index list
-    size_t  b_pos{0}; ///< Position of this dim in B's raw index list
-    size_t  c_pos{0}; ///< Position of this dim in C's raw index list
-    int64_t a_stride{0};
-    int64_t b_stride{0};
-    int64_t c_stride{0};
-};
-
 struct PackingPlan {
     bool                 valid{false};
     std::vector<DimSpec> m_dims;      ///< Target dims in A only (M group)

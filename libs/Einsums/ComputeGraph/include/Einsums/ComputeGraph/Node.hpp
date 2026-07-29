@@ -31,17 +31,6 @@ class Graph; // Forward declaration for ConditionalDescriptor/LoopDescriptor
 // and <Einsums/ComputeGraphTypes/Descriptors.hpp>.
 
 /**
- * @brief Metadata for Einsum nodes, enabling optimization passes.
- *
- * Stores the contraction pattern (which indices belong to A, B, C, which are
- * link/target indices) and the scalar prefactors. This metadata is used by:
- * - ScaleAbsorption to spot dead scales (einsum with c_prefactor == 0 overwrites them)
- * - CSE to detect duplicate computations
- * - ContractionPlanning to detect and restructure GEMM chains
- *
- * @see packed_gemm::ContractionSpec for the contraction topology format
- */
-/**
  * @brief BLAS-level batching hint for 2D×2D→2D einsums.
  *
  * Populated at capture time when a contraction matches the GEMM
@@ -67,6 +56,17 @@ struct GemmHint {
     std::function<std::pair<void *, int>()>       extract_c;    ///< Returns (data_ptr, ldc) at call time.
 };
 
+/**
+ * @brief Metadata for Einsum nodes, enabling optimization passes.
+ *
+ * Stores the contraction pattern (which indices belong to A, B, C, which are
+ * link/target indices) and the scalar prefactors. This metadata is used by:
+ * - ScaleAbsorption to spot dead scales (einsum with c_prefactor == 0 overwrites them)
+ * - CSE to detect duplicate computations
+ * - ContractionPlanning to detect and restructure GEMM chains
+ *
+ * @see packed_gemm::ContractionSpec for the contraction topology format
+ */
 struct EinsumDescriptor {
     packed_gemm::ContractionSpec spec;                    ///< Contraction topology: index lists, link/target classification
     PrefactorScalar              c_prefactor{double{0}};  ///< C prefactor (snapshot of EinsumParams::c_pf at capture time)
