@@ -105,7 +105,7 @@ void RuntimeConfiguration::pre_initialize() {
     std::vector<std::string> const lines = {
         // clang-format off
         "system:",
-        "    pid: " + std::to_string(getpid()),
+        "    pid: " + std::to_string(current_process_id()),
         "    executable_prefix: " + get_executable_prefix(),
         "einsums:",
         "    master_yaml_file: ${system.executable_prefix}",
@@ -136,7 +136,7 @@ void RuntimeConfiguration::pre_initialize() {
 
     // For now set the values to their default values.
     global_strings["executable-prefix"] = get_executable_prefix();
-    global_ints["pid"]                  = getpid();
+    global_ints["pid"]                  = current_process_id();
 
     // Silence unused-variable warnings for the references we only kept around
     // for symmetry with the rest of the module.

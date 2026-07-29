@@ -38,7 +38,7 @@ void spdlog_format_thread_id(int pid, spdlog::details::log_msg const &, std::tm 
 
 struct ThreadIdFormatterFlag : spdlog::custom_flag_formatter {
     void format(spdlog::details::log_msg const &msg, std::tm const &tm_time, spdlog::memory_buf_t &dest) override {
-        spdlog_format_thread_id(getpid(), msg, tm_time, dest);
+        spdlog_format_thread_id(current_process_id(), msg, tm_time, dest);
     }
 
     [[nodiscard]] std::unique_ptr<custom_flag_formatter> clone() const override {

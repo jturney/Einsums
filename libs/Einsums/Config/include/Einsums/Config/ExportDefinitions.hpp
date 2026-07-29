@@ -65,7 +65,7 @@
 /// instantiation definition instead. A consumer does still want the
 /// @c dllimport , and ELF wants default visibility in both directions, so only
 /// the exporting Windows build drops the attribute.
-/// @versionadded{1.1.0}
+/// @versionadded{2.0.0}
 #    define EINSUMS_EXTERN_TEMPLATE_EXPORT /* the definition carries the export */
 #else
 #    define EINSUMS_EXTERN_TEMPLATE_EXPORT EINSUMS_EXPORT

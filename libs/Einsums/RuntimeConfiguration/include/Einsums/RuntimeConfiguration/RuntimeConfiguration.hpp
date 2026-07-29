@@ -25,6 +25,26 @@
 namespace einsums {
 
 /**
+ * @brief Returns the id of the calling process.
+ *
+ * Wraps the two spellings the platforms disagree on: @c getpid is the POSIX
+ * name, which the Windows CRT deprecates in favour of @c _getpid . Calling
+ * either directly means a deprecation warning on one platform or a missing
+ * declaration on the other.
+ *
+ * @return The process id.
+ *
+ * @versionadded{2.0.0}
+ */
+inline int current_process_id() {
+#if defined(EINSUMS_WINDOWS)
+    return _getpid();
+#else
+    return getpid();
+#endif
+}
+
+/**
  * @brief Add a function to the list of startup functions to add module-specific command line arguments.
  *
  * This should be called before Einsums is initialized. During initialization, the function given to

@@ -49,7 +49,7 @@ int setup_Einsums_Tensor() {
 
 EINSUMS_EXPORT void add_Einsums_Tensor_arguments() {
 
-    auto pid = getpid();
+    auto pid = current_process_id();
 
     auto &global_config = GlobalConfigMap::get_singleton();
     auto &global_string = global_config.get_string_map()->get_value();
