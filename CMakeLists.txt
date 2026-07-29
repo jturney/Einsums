@@ -168,25 +168,6 @@ einsums_option(
   CATEGORY "Build Targets"
 )
 
-if(EINSUMS_WITH_DOCUMENTATION)
-  set(valid_output_formats html)
-  einsums_option(
-    EINSUMS_WITH_DOCUMENTATION_OUTPUT_FORMATS
-    STRING
-    "List of documentation output formats to generate. Valid options are ${valid_output_formats}. Multiple values can be separated with semicolons. (default html)."
-    "html"
-    CATEGORY "Build Targets"
-  )
-
-  foreach(output_format ${EINSUMS_WITH_DOCUMENTATION_OUTPUT_FORMATS})
-    if(NOT ${output_format} IN_LIST valid_output_formats)
-      einsums_error(
-        "${output_format} is not a valid value for EINSUMS_WITH_DOCUMENTATION_OUTPUT_FORMATS. Valid output format are: ${valid_output_formats}."
-      )
-    endif()
-  endforeach()
-endif()
-
 einsums_option(
   EINSUMS_WITH_BINARY_DIR
   PATH

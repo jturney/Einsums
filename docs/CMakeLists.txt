@@ -3,29 +3,12 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-# used while generating sphinx config file
-set(doxygen_definition_list
-    "DOXYGEN:=1"
-    "EINSUMS_EXPORT="
-    "EINSUMS_FORCEINLINE="
-    "__HIP__="
-    "__device_ptr__="
-    "__host_ptr__="
-    "EINSUMS_HOST="
-    "EINSUMS_DEVICE="
-    "EINSUMS_HOSTDEV="
-)
-
 # EINSUMS_BUILD_PYTHON wires up the per-module apiary codegen commands
 # that produce the API-reference JSON the docs are generated from, so it is
 # required even though the docs never build/import the compiled extension.
 if (NOT EINSUMS_BUILD_PYTHON)
   einsums_error("Building documentation requires Python to be enabled")
 endif()
-
-foreach(doxygen_predef ${doxygen_definition_list})
-  set(doxygen_definitions "${doxygen_definitions} \"${doxygen_predef}\"")
-endforeach()
 
 # Generate rst files with CMake variables and toolchains
 set(EINSUMS_CMAKE_OPTIONS_RST "")
@@ -301,68 +284,28 @@ create_symbolic_link("${PROJECT_SOURCE_DIR}/libs" "${CMAKE_CURRENT_BINARY_DIR}/l
 
 add_custom_target(docs)
 add_custom_target(docs-html)
-add_custom_target(docs-singlehtml)
-add_custom_target(docs-latexpdf)
-add_custom_target(docs-man)
 
-set(SPHINX_DOCS_HTML_OUTPUT_FILE "index.html")
-set(SPHINX_DOCS_SINGLEHTML_OUTPUT_FILE "index.html")
-set(SPHINX_DOCS_PDF_OUTPUT_FILE "latex/Einsums.pdf")
-set(SPHINX_DOCS_MAN_OUTPUT_FILE "Einsums.1")
+set(SPHINX_DOCS_OUTPUT_DIR "${PROJECT_BINARY_DIR}/share/Einsums/docs/html")
+set(SPHINX_DOCS_OUTPUT_FILE "${SPHINX_DOCS_OUTPUT_DIR}/index.html")
 
-foreach(output_format ${EINSUMS_WITH_DOCUMENTATION_OUTPUT_FORMATS})
-  string(TOUPPER ${output_format} output_format_upper_case)
-  set(SPHINX_DOCS_OUTPUT_DIR "${PROJECT_BINARY_DIR}/share/Einsums/docs/${output_format}")
-  set(SPHINX_DOCS_OUTPUT_FILE
-      "${SPHINX_DOCS_OUTPUT_DIR}/${SPHINX_DOCS_${output_format_upper_case}_OUTPUT_FILE}"
-  )
-
-  # NOTE: The PDF does not build without errors but still produces a reasonable PDF. If there are
-  # real errors this will ignore them. Fixing the errors is at the moment not worth the effort.
-  if(${output_format} STREQUAL "latexpdf")
-    set(SPHINX_DOCS_BUILD_COMMAND
-        ${Sphinx_EXECUTABLE} -M ${output_format} "${CMAKE_CURRENT_BINARY_DIR}/sphinx"
-        "${SPHINX_DOCS_OUTPUT_DIR}" || (exit 0)
-    )
-  else()
-    # -n  nitpicky (every dangling cross-reference is a warning)
-    # -W  treat warnings as errors  --keep-going  report them all, not just the first
-    set(SPHINX_DOCS_BUILD_COMMAND
-        ${Sphinx_EXECUTABLE} -b ${output_format} -n -W --keep-going -d
-        "${CMAKE_CURRENT_BINARY_DIR}/doctree" "${CMAKE_CURRENT_BINARY_DIR}/sphinx"
-        "${SPHINX_DOCS_OUTPUT_DIR}"
-    )
-  endif()
-
-  # The reference is generated statically from headers by apiary, so the
-  # docs depend on the codegen stamps in ``sphinx_source_files_build`` (which pull
-  # in the apiary tool and PyEinsumsDocs) — NOT on the compiled Einsums
-  # library or the PyEinsums (_core) extension. Depending on those would force a
-  # full library + extension build for no reason.
-  add_custom_command(
-    OUTPUT "${SPHINX_DOCS_OUTPUT_FILE}"
-    DEPENDS "${sphinx_source_files_build}"
-    COMMAND ${SPHINX_DOCS_BUILD_COMMAND}
-  )
-
-  add_custom_target(docs-${output_format}-file ALL DEPENDS ${SPHINX_DOCS_OUTPUT_FILE})
-  add_dependencies(docs-${output_format} docs-${output_format}-file)
-
-  add_dependencies(docs docs-${output_format})
-endforeach()
-
-
-add_custom_target(
-  git_docs
-  COMMAND
-    "${CMAKE_COMMAND}" -DEINSUMS_BINARY_DIR:PATH=${PROJECT_BINARY_DIR}
-    -DEINSUMS_VERSION:STRING=${EINSUMS_VERSION}
-    -DEINSUMS_WITH_GIT_BRANCH=${EINSUMS_WITH_GIT_BRANCH}
-    -DEINSUMS_WITH_GIT_TAG=${EINSUMS_WITH_GIT_TAG}
-    -DEINSUMS_WITH_DOCUMENTATION_OUTPUT_FORMATS="${EINSUMS_WITH_DOCUMENTATION_OUTPUT_FORMATS}" -P
-    "${PROJECT_SOURCE_DIR}/cmake/Einsums_UpdateGitDocs.cmake"
+# -n  nitpicky (every dangling cross-reference is a warning)
+# -W  treat warnings as errors  --keep-going  report them all, not just the first
+set(SPHINX_DOCS_BUILD_COMMAND
+    ${Sphinx_EXECUTABLE} -b html -n -W --keep-going -d "${CMAKE_CURRENT_BINARY_DIR}/doctree"
+    "${CMAKE_CURRENT_BINARY_DIR}/sphinx" "${SPHINX_DOCS_OUTPUT_DIR}"
 )
 
-set_target_properties(git_docs PROPERTIES FOLDER "Documentation/")
+# The reference is generated statically from headers by apiary, so the
+# docs depend on the codegen stamps in ``sphinx_source_files_build`` (which pull
+# in the apiary tool and PyEinsumsDocs) - NOT on the compiled Einsums
+# library or the PyEinsums (_core) extension. Depending on those would force a
+# full library + extension build for no reason.
+add_custom_command(
+  OUTPUT "${SPHINX_DOCS_OUTPUT_FILE}"
+  DEPENDS "${sphinx_source_files_build}"
+  COMMAND ${SPHINX_DOCS_BUILD_COMMAND}
+)
 
-add_dependencies(git_docs docs)
+add_custom_target(docs-html-file ALL DEPENDS ${SPHINX_DOCS_OUTPUT_FILE})
+add_dependencies(docs-html docs-html-file)
+add_dependencies(docs docs-html)
