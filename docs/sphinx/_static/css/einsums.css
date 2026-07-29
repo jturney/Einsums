@@ -46,6 +46,12 @@ nav.bd-links p.caption {
   text-transform: uppercase;
 }
 
+/* Header links must never wrap mid-label ("User / Guide" stacking doubles
+   the header height). */
+.bd-header .navbar-nav .nav-link {
+  white-space: nowrap;
+}
+
 /* Dark theme tweaking */
 html[data-theme=dark] img[src*='.svg'].icon {
   filter: invert(0.82) brightness(0.8) contrast(1.2);

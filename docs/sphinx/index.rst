@@ -20,18 +20,13 @@ Einsums's Documentation
    Developer Guide <contributors/index>
    Release Notes <changelogs/index>
 
-.. toctree::
-   :caption: About
-   :hidden:
-
-   license
-
 **Version**: |release|
 
 **Useful links**:
 `Source Repository <https://github.com/Einsums/Einsums>`_ |
 `Issue Tracker <https://github.com/Einsums/Einsums/issues>`_ |
-`Discord <https://discord.gg/8GvtkyWZUv>`_
+`Discord <https://discord.gg/8GvtkyWZUv>`_ |
+:doc:`License <license>`
 
 
 Einsums is a C++23 tensor algebra library for scientific computing. It provides:

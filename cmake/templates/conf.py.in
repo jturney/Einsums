@@ -324,6 +324,9 @@ html_theme_options = {
         },
     ],
     "navbar_end": ["theme-switcher", "navbar-icon-links"],
+    # The compact search icon instead of the wide input field; the field plus
+    # the version dropdown forces the icon links onto a second header row.
+    "navbar_persistent": ["search-button"],
     # The sidebar starts at the section level; deeper levels expand as the
     # reader descends. page-toc alone keeps the right sidebar to the local
     # outline (source links are disabled anyway).
