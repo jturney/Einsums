@@ -17,9 +17,14 @@ apiary libclang tool, so they always track the sources.
 C++ API
 =======
 
-The C++ reference is organized per module. Each page in the
-:ref:`library modules overview <modules_overview>` describes what the
-module does and links to the generated reference for its public headers.
+The C++ reference has one page per class, concept, and function overload
+set, organized per module. The :ref:`library modules overview
+<modules_overview>` holds the narrative documentation of each module.
+
+.. toctree::
+    :maxdepth: 1
+
+    cpp/index
 
 Python API
 ==========

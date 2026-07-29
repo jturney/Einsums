@@ -105,7 +105,7 @@ set(EINSUMS_CPP_DOCS_MODULE_LIST
     Einsums/Assertion Einsums/BLASBase Einsums/BlockManager
     Einsums/BufferAllocator Einsums/Comm Einsums/CommandLine
     Einsums/ComputeGraphTypes Einsums/Config Einsums/CXX23
-    Einsums/Debugging Einsums/FFT Einsums/GPU Einsums/HPTT
+    Einsums/Debugging Einsums/FFT Einsums/GPU Einsums/Hardware Einsums/HPTT
     Einsums/Iterator Einsums/PackedGemm Einsums/Preprocessor
     Einsums/Profile Einsums/Python Einsums/PythonDemo
     Einsums/RuntimeConfiguration Einsums/SIMD Einsums/TaskPool
@@ -123,16 +123,34 @@ if(TARGET apiary)
     DEPENDS apiary
             "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_gen_cpp_docs.py"
             "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_render_cpp_rst.py"
+            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_render_cpp_site.py"
     COMMAND ${Python_EXECUTABLE}
             "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_gen_cpp_docs.py"
             --source-dir "${PROJECT_SOURCE_DIR}" --build-dir "${CMAKE_BINARY_DIR}"
             --tool $<TARGET_FILE:apiary> --out-dir "${EINSUMS_CPP_DOCS_DIR}"
+            --layout entity --backlink-label-template "modules_{lib}_{module}"
             --modules ${EINSUMS_CPP_DOCS_MODULE_LIST}
     COMMAND ${CMAKE_COMMAND} -E touch "${_cppdocs_stamp}"
-    COMMENT "Generating C++ API reference (Option 2) for: ${EINSUMS_CPP_DOCS_MODULES}"
+    COMMENT "Generating C++ API reference (per-entity) for: ${EINSUMS_CPP_DOCS_MODULES}"
     VERBATIM
   )
-  list(APPEND sphinx_source_files_build "${_cppdocs_stamp}")
+
+  # Copy the generated pages into the Sphinx tree. ``rm -rf`` + copy of the
+  # whole subtree guarantees no stale page survives an entity or module
+  # rename; the copy re-runs only when generation re-ran (the stamp), so
+  # unchanged builds keep stable mtimes for Sphinx's incremental rebuild.
+  set(_cppdocs_copy_stamp "${CMAKE_CURRENT_BINARY_DIR}/.cppdocs_copy.stamp")
+  add_custom_command(
+    OUTPUT "${_cppdocs_copy_stamp}"
+    DEPENDS "${_cppdocs_stamp}"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_CURRENT_BINARY_DIR}/sphinx/api/cpp"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${EINSUMS_CPP_DOCS_DIR}/rst"
+            "${CMAKE_CURRENT_BINARY_DIR}/sphinx/api/cpp"
+    COMMAND ${CMAKE_COMMAND} -E touch "${_cppdocs_copy_stamp}"
+    COMMENT "docs: copying generated C++ API reference into the Sphinx tree"
+    VERBATIM
+  )
+  list(APPEND sphinx_source_files_build "${_cppdocs_copy_stamp}")
 endif()
 
 # Optional announcement banner shown at the top of every page (pydata theme).
@@ -155,6 +173,9 @@ endif()
 
 set(SPHINX_CONF_PY_DEST "${CMAKE_CURRENT_BINARY_DIR}/sphinx/conf.py")
 configure_file("${PROJECT_SOURCE_DIR}/cmake/templates/conf.py.in" ${SPHINX_CONF_PY_DEST} @ONLY)
+# conf.py is (re)written at configure time; without this dependency a
+# conf-only change never re-runs Sphinx.
+list(APPEND sphinx_source_files_build "${SPHINX_CONF_PY_DEST}")
 
 # Copy the Sphinx source files to build directory.
 #
@@ -167,9 +188,6 @@ file(
   RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/"
   "sphinx/*"
 )
-
-# exclude api.rst...
-list(FILTER sphinx_source_files EXCLUDE REGEX "sphinx/api/full_api.rst")
 
 foreach(sphinx_source_file ${sphinx_source_files})
   add_custom_command(
