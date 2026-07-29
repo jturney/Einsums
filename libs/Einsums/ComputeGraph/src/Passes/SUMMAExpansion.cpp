@@ -57,34 +57,35 @@ void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, vo
     Tensor<T, 2> A_panel("A_panel", local_m, local_k_a);
     Tensor<T, 2> B_panel("B_panel", local_k_b, local_n);
 
-    profile::Profiler::instance().push(fmt::format("SUMMA({}x{}x{}, {} panels)", local_m, local_k_a, local_n, panels));
+    LabeledSection("SUMMA({}x{}x{}, {} panels)", local_m, local_k_a, local_n, panels);
 
     for (int p = 0; p < panels; p++) {
         // Step 1: broadcast the A panel along the process row.
-        profile::Profiler::instance().push("broadcast_A");
-        if (my_col == p) {
-            std::memcpy(A_panel.data(), A_local->data(), local_m * local_k_a * sizeof(T));
+        {
+            LabeledSection("broadcast_A");
+            if (my_col == p) {
+                std::memcpy(A_panel.data(), A_local->data(), local_m * local_k_a * sizeof(T));
+            }
+            auto const placeholder = comm::broadcast<T>(std::span<T>(A_panel.data(), A_panel.size()), p, grid.row_comm());
+            (void)placeholder;
         }
-        auto placeholder = comm::broadcast<T>(std::span<T>(A_panel.data(), A_panel.size()), p, grid.row_comm());
-        (void)placeholder;
-        profile::Profiler::instance().pop();
 
         // Step 2: broadcast the B panel along the process column.
-        profile::Profiler::instance().push("broadcast_B");
-        if (my_row == p) {
-            std::memcpy(B_panel.data(), B_local->data(), local_k_b * local_n * sizeof(T));
+        {
+            LabeledSection("broadcast_B");
+            if (my_row == p) {
+                std::memcpy(B_panel.data(), B_local->data(), local_k_b * local_n * sizeof(T));
+            }
+            auto const placeholder = comm::broadcast<T>(std::span<T>(B_panel.data(), B_panel.size()), p, grid.col_comm());
+            (void)placeholder;
         }
-        placeholder = comm::broadcast<T>(std::span<T>(B_panel.data(), B_panel.size()), p, grid.col_comm());
-        (void)placeholder;
-        profile::Profiler::instance().pop();
 
         // Step 3: local GEMM accumulate via einsum dispatch (enables PackedGemm).
-        profile::Profiler::instance().push("local_gemm");
-        tensor_algebra::einsum(T{1}, Indices{i, j}, C_local, T{1}, Indices{i, k}, A_panel, Indices{k, j}, B_panel);
-        profile::Profiler::instance().pop();
+        {
+            LabeledSection("local_gemm");
+            tensor_algebra::einsum(T{1}, Indices{i, j}, C_local, T{1}, Indices{i, k}, A_panel, Indices{k, j}, B_panel);
+        }
     }
-
-    profile::Profiler::instance().pop(); // SUMMA
 }
 
 } // namespace

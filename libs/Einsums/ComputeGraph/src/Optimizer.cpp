@@ -189,7 +189,7 @@ void check_observed_writes(Graph const &graph, std::unordered_map<NodeId, std::u
 } // namespace
 
 bool PassManager::run(Graph &graph) {
-    profile::Profiler::instance().push(fmt::format("PassManager::run({})", graph.name()));
+    LabeledSection("PassManager::run({})", graph.name());
 
     auto       disabled = parse_disabled_passes();
     bool const analyze  = get_pass_flag("pass-analyze", false);
@@ -203,7 +203,7 @@ bool PassManager::run(Graph &graph) {
             continue;
         }
 
-        profile::Profiler::instance().push(fmt::format("pass:{}", pass->name()));
+        LabeledSection("pass:{}", pass->name());
 
         size_t nodes_before = graph.num_nodes();
         auto   t0           = std::chrono::high_resolution_clock::now();
@@ -241,7 +241,7 @@ bool PassManager::run(Graph &graph) {
                 any_modified = true;
                 check_observed_writes(graph, baseline, pass->name(), pass->compensated_reads());
             }
-            profile::annotate("modified", modified ? "true" : "false");
+            ProfileAnnotate("modified", modified ? "true" : "false");
 
             if (verbose || modified) {
                 EINSUMS_LOG_INFO("PassManager: pass '{}' {} ({} -> {} nodes, {:.2f} ms)", pass->name(), modified ? "MODIFIED" : "no change",
@@ -254,11 +254,8 @@ bool PassManager::run(Graph &graph) {
                            nodes_before, graph.num_nodes(), ms);
             }
         }
-
-        profile::Profiler::instance().pop();
     }
 
-    profile::Profiler::instance().pop();
     return any_modified;
 }
 

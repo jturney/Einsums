@@ -53,7 +53,7 @@ void Pipeline::run() {
 }
 
 void Pipeline::execute() {
-    profile::Profiler::instance().push(fmt::format("Pipeline::execute({})", _name));
+    LabeledSection("Pipeline::execute({})", _name);
 
     // Propagate hierarchy metadata to child graphs for the profiler viewer
     std::string ws_name = _workspace ? _workspace->name() : "";
@@ -75,30 +75,29 @@ void Pipeline::execute() {
 
     for (auto &stage : _stages) {
         if (auto *graph = std::get_if<Graph>(&stage.content)) {
-            profile::Profiler::instance().push(fmt::format("stage:{}", stage.name));
+            LabeledSection("stage:{}", stage.name);
             graph->execute();
-            profile::Profiler::instance().pop();
         } else if (auto *loop = std::get_if<LoopNode>(&stage.content)) {
-            profile::Profiler::instance().push(fmt::format("loop:{}", stage.name));
+            LabeledSection("loop:{}", stage.name);
             loop->last_iteration_count = 0;
             for (size_t iter = 0; iter < loop->max_iterations; iter++) {
-                profile::Profiler::instance().push(fmt::format("iteration:{}", iter));
-                loop->body.execute();
-                profile::Profiler::instance().pop();
+                // The iteration zone closes before the bookkeeping below, which
+                // is what the manual push/pop pair it replaces did.
+                {
+                    LabeledSection("iteration:{}", iter);
+                    loop->body.execute();
+                }
                 loop->last_iteration_count = iter + 1;
                 if (loop->condition && !loop->condition(iter)) {
                     break;
                 }
             }
-            profile::Profiler::instance().pop();
         }
     }
-
-    profile::Profiler::instance().pop();
 }
 
 void Pipeline::execute(Executor &executor) {
-    profile::Profiler::instance().push(fmt::format("Pipeline::execute({}, executor={})", _name, executor.name()));
+    LabeledSection("Pipeline::execute({}, executor={})", _name, executor.name());
 
     // Propagate hierarchy metadata to child graphs for the profiler viewer
     std::string ws_name = _workspace ? _workspace->name() : "";
@@ -120,26 +119,23 @@ void Pipeline::execute(Executor &executor) {
 
     for (auto &stage : _stages) {
         if (auto *graph = std::get_if<Graph>(&stage.content)) {
-            profile::Profiler::instance().push(fmt::format("stage:{}", stage.name));
+            LabeledSection("stage:{}", stage.name);
             graph->execute(executor);
-            profile::Profiler::instance().pop();
         } else if (auto *loop = std::get_if<LoopNode>(&stage.content)) {
-            profile::Profiler::instance().push(fmt::format("loop:{}", stage.name));
+            LabeledSection("loop:{}", stage.name);
             loop->last_iteration_count = 0;
             for (size_t iter = 0; iter < loop->max_iterations; iter++) {
-                profile::Profiler::instance().push(fmt::format("iteration:{}", iter));
-                loop->body.execute(executor);
-                profile::Profiler::instance().pop();
+                {
+                    LabeledSection("iteration:{}", iter);
+                    loop->body.execute(executor);
+                }
                 loop->last_iteration_count = iter + 1;
                 if (loop->condition && !loop->condition(iter)) {
                     break;
                 }
             }
-            profile::Profiler::instance().pop();
         }
     }
-
-    profile::Profiler::instance().pop();
 }
 
 bool Pipeline::apply(PassManager &pm) {
