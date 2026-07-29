@@ -1,6 +1,8 @@
 .. Copyright (c) The Einsums Developers. All rights reserved.
    Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
+.. _computegraph_hardware_profiles:
+
 ==================
 Hardware Profiles
 ==================
@@ -98,14 +100,20 @@ and BLAS kernel overhead. Output is a JSON file loadable by:
 Shared Profile in create_default()
 ====================================
 
-``PassManager::create_default()`` detects hardware once and shares the profile
-across ``GPUPlacement`` and ``ContractionPlanning``:
+``PassManager::create_default()`` detects hardware once and shares that one
+profile across every cost-model pass:
 
 .. code-block:: cpp
 
    // Internally:
-   auto profile = CostModel::detect_default();
-   pm.add<passes::GPUPlacement>(profile);
-   pm.add<passes::ContractionPlanning>(profile);
+   auto cost_model = CostModel::detect_default();
+   pm.add<passes::TiledExpansion>(4096, -1.0, Densify::Auto, FuseTiles::Auto, cost_model);
+   pm.add<passes::ContractionPlanning>(cost_model);
+   pm.add<passes::GEMMBatching>(cost_model);
+   pm.add<passes::StreamContractionFusion>(cost_model);
+   pm.add<passes::GPUPlacement>(cost_model);   // GPU builds only
 
-Both passes use the same cost model for consistent decisions.
+Sharing matters beyond saving a detection: these passes make interlocking
+decisions, and a densify-or-not choice priced against one profile while the
+batching gate is priced against another can leave the graph in a shape neither
+pass would have picked on its own.

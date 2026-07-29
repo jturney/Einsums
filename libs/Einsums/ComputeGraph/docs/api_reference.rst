@@ -21,6 +21,11 @@ Pipeline
 
 :cpp:class:`einsums::compute_graph::Pipeline`
 
+Workspace
+---------
+
+:cpp:class:`einsums::compute_graph::Workspace`
+
 CaptureGuard
 -------------
 
@@ -49,10 +54,20 @@ OpenMPExecutor
 
 :cpp:class:`einsums::compute_graph::OpenMPExecutor`
 
+DataflowExecutor
+----------------
+
+:cpp:class:`einsums::compute_graph::DataflowExecutor`
+
+MPIExecutor
+-----------
+
+:cpp:class:`einsums::compute_graph::MPIExecutor`
+
 DependencyInfo
 --------------
 
-:cpp:class:`einsums::compute_graph::DependencyInfo`
+:cpp:struct:`einsums::compute_graph::DependencyInfo`
 
 Data Types
 ==========
@@ -141,72 +156,72 @@ Type Aliases
 Optimization Passes
 ===================
 
-OptimizerPass (base class)
----------------------------
+See :ref:`the pass catalog <computegraph_optimization_passes>` for what each one
+matches, what it reports, and where it sits in the default pipeline.
 
-:cpp:class:`einsums::compute_graph::OptimizerPass`
-
-CSE
----
-
-:cpp:class:`einsums::compute_graph::passes::CSE`
-
-Reorder
--------
-
-:cpp:class:`einsums::compute_graph::passes::Reorder`
-
-MemoryPlanning
+Infrastructure
 --------------
 
-:cpp:class:`einsums::compute_graph::passes::MemoryPlanning`
+- :cpp:class:`einsums::compute_graph::OptimizerPass` - the base class every pass derives from.
+- :cpp:class:`einsums::compute_graph::PassManager` - ordered pass list; ``create_default()``, ``create_for(OptLevel)``, ``explain()``.
+- :cpp:enum:`einsums::compute_graph::OptLevel` - ``O0`` / ``O1`` / ``O2``.
 
-ChainParenthesization
-----------------------
-
-:cpp:class:`einsums::compute_graph::passes::ChainParenthesization`
-
-ConstantFolding
-----------------
-
-:cpp:class:`einsums::compute_graph::passes::ConstantFolding`
-
-DeadNodeElimination
+Lowering and cleanup
 --------------------
 
-:cpp:class:`einsums::compute_graph::passes::DeadNodeElimination`
+- :cpp:class:`einsums::compute_graph::passes::TiledExpansion`
+- :cpp:class:`einsums::compute_graph::passes::ConstantFolding`
+- :cpp:class:`einsums::compute_graph::passes::ScaleAbsorption`
+- :cpp:class:`einsums::compute_graph::passes::PermuteFusion`
+- :cpp:class:`einsums::compute_graph::passes::CSE`
+- :cpp:class:`einsums::compute_graph::passes::DeadNodeElimination`
+- :cpp:class:`einsums::compute_graph::passes::ElementWiseFusion`
 
-ScaleAbsorption
-----------------
+Algebraic rewrites
+------------------
 
-:cpp:class:`einsums::compute_graph::passes::ScaleAbsorption`
+- :cpp:class:`einsums::compute_graph::passes::SymmetrizedAccumulation`
+- :cpp:class:`einsums::compute_graph::passes::LinearCombinationContractionFolding`
+- :cpp:class:`einsums::compute_graph::passes::StreamContractionFusion`
+- :cpp:class:`einsums::compute_graph::passes::DistributiveFactoring` - opt-in.
 
-LoopInvariantHoisting
-----------------------
+Scheduling and planning
+-----------------------
 
-:cpp:class:`einsums::compute_graph::passes::LoopInvariantHoisting`
+- :cpp:class:`einsums::compute_graph::passes::LoopInvariantHoisting`
+- :cpp:class:`einsums::compute_graph::passes::ScratchPrivatization`
+- :cpp:class:`einsums::compute_graph::passes::ContractionPlanning`
+- :cpp:class:`einsums::compute_graph::passes::GEMMBatching`
+- :cpp:class:`einsums::compute_graph::passes::Reorder`
+- :cpp:class:`einsums::compute_graph::passes::IOPrefetch`
 
-InplaceOptimization
---------------------
+Memory and symmetry
+-------------------
 
-:cpp:class:`einsums::compute_graph::passes::InplaceOptimization`
+- :cpp:class:`einsums::compute_graph::passes::DistributionPlanning` - always runs; a no-op on one rank.
+- :cpp:class:`einsums::compute_graph::passes::Materialization`
+- :cpp:class:`einsums::compute_graph::passes::SymmetryPropagation` - see :doc:`symmetry` for the user-facing guide.
+- :cpp:class:`einsums::compute_graph::passes::InplaceOptimization`
+- :cpp:class:`einsums::compute_graph::passes::FreeInsertion`
+- :cpp:class:`einsums::compute_graph::passes::MemoryPlanning`
 
-GEMMBatching
--------------
+GPU (GPU builds only)
+---------------------
 
-:cpp:class:`einsums::compute_graph::passes::GEMMBatching`
+- :cpp:class:`einsums::compute_graph::passes::GPUPlacement`
+- :cpp:class:`einsums::compute_graph::passes::TransferInsertion`
+- :cpp:class:`einsums::compute_graph::passes::TransferElimination`
+- :cpp:class:`einsums::compute_graph::passes::GPUDiagnostics`
+- :cpp:class:`einsums::compute_graph::passes::StreamAssignment`
 
-PermuteFusion
---------------
+Distributed (MPI builds only)
+-----------------------------
 
-:cpp:class:`einsums::compute_graph::passes::PermuteFusion`
-
-SymmetryPropagation
---------------------
-
-:cpp:class:`einsums::compute_graph::passes::SymmetryPropagation`
-
-See :doc:`symmetry` for the user-facing guide.
+- :cpp:class:`einsums::compute_graph::passes::InputSlicing`
+- :cpp:class:`einsums::compute_graph::passes::SUMMAExpansion`
+- :cpp:class:`einsums::compute_graph::passes::CommunicationInsertion`
+- :cpp:class:`einsums::compute_graph::passes::CommunicationElimination`
+- :cpp:class:`einsums::compute_graph::passes::CommunicationScheduling`
 
 Free Functions
 ==============

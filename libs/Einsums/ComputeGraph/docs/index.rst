@@ -28,6 +28,7 @@ computing.
    performance_tuning
    gemm_batching
    symmetry
+   tiled
    tensor_lifetime
    views
    rebind

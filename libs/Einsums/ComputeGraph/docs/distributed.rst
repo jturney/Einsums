@@ -1,9 +1,16 @@
 .. Copyright (c) The Einsums Developers. All rights reserved.
    Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
+.. _computegraph_distributed:
+
 =======================
 Distributed Computing
 =======================
+
+.. important::
+
+   This feature is experimental and under active development. The API may change
+   in future releases.
 
 Einsums supports transparent distributed computing across MPI ranks. The user
 writes ``einsum(C, A, B)`` unchanged; the ComputeGraph passes handle tensor

@@ -45,7 +45,7 @@ Disable specific passes via runtime config:
 
 .. code-block:: bash
 
-   ./my_program --einsums:pass-disable "ContractionPlanning,GEMMBatching"
+   ./my_program --einsums:pass:disable "ContractionPlanning,GEMMBatching"
 
 Or in code:
 
@@ -66,7 +66,7 @@ See what each pass does:
 
 .. code-block:: bash
 
-   ./my_program --einsums:pass-verbose
+   ./my_program --einsums:pass:verbose
 
 This logs which passes modify the graph, how many nodes change, and timing.
 
@@ -77,7 +77,7 @@ Run passes without applying changes (dry run):
 
 .. code-block:: bash
 
-   ./my_program --einsums:pass-analyze
+   ./my_program --einsums:pass:analyze
 
 Distribution Tuning
 ====================
@@ -222,14 +222,14 @@ Enable detailed profiling to find bottlenecks:
 
 .. code-block:: bash
 
-   # Text report
-   ./my_program --einsums:profiler-report --einsums:profiler-detailed
+   # Detailed text report (the report is on by default; --einsums:profile:no-report suppresses it)
+   ./my_program --einsums:profile:detailed
 
    # JSON export (for visualization)
-   ./my_program --einsums:profiler-save profile.json
+   ./my_program --einsums:profile:save profile.json
 
    # TCP server (for live monitoring)
-   ./my_program --einsums:profiler-port 19216
+   ./my_program --einsums:profile:port 19216
 
 What to look for
 ----------------

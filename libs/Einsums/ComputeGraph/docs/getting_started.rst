@@ -46,6 +46,9 @@ Basic Workflow
    auto B = create_random_tensor<double>("B", 5, 8);
 
    // 2. Create a graph and an owned output tensor. This records an Alloc node.
+   //    For a tensor that only carries a value between nodes, prefer
+   //    graph.scratch<double, 2>("tmp", ...): it defers allocation and the
+   //    memory passes can then free, merge, or arena-place it.
    cg::Graph graph("my_graph");
    auto &C = graph.create_zero_tensor<double, 2>("C", 10, 8);
 

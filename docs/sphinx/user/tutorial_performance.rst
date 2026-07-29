@@ -197,8 +197,8 @@ If ``try_packed_gemm`` rejects a contraction, an INFO-level log explains why:
     [info] PackedGemm: skipping -- no N-dims (all C indices come from A).
            Consider rewriting as GEMV or transposing.
 
-Set ``--einsums:log-level 2`` (INFO) to see the PackedGemm reasons, or
-``--einsums:log-level 3`` (WARN) to see only the final GENERIC fallback.
+Set ``--einsums:log:level 2`` (INFO) to see the PackedGemm reasons, or
+``--einsums:log:level 3`` (WARN) to see only the final GENERIC fallback.
 
 Understanding PackedGemm
 =========================

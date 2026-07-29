@@ -101,30 +101,57 @@ The graph can be optimized before execution:
     graph.apply(pm);
     graph.execute();
 
-The default pipeline includes 11 passes:
+The default pipeline runs the passes below, in this order. The GPU and MPI
+passes join it only when the corresponding backend (or its mock) is built in:
 
+``TiledExpansion``
+    Lower tiled operations into per-tile dense nodes so every pass below can read them.
 ``ConstantFolding``
     Pre-compute constant subexpressions.
 ``ScaleAbsorption``
     Absorb ``scale`` into adjacent ``einsum`` prefactors.
+``PermuteFusion``
+    Fold a pure axis reorder into the subscript of the einsum that reads it.
 ``CSE``
     Common subexpression elimination.
 ``DeadNodeElimination``
     Remove unused computations.
+``SymmetrizedAccumulation``
+    Fold the ``r += s*(t + P(t))`` symmetrization idiom.
+``ElementWiseFusion``
+    Merge consecutive element-wise operations on one tensor.
+``LinearCombinationContractionFolding``
+    Fold transpose-paired contractions over one operand into a single contraction.
 ``LoopInvariantHoisting``
     Hoist invariant ops out of loops.
+``ScratchPrivatization``
+    Rename reused scratch onto clones so false dependencies stop serializing the graph.
+``ContractionPlanning``
+    Cost-model-driven contraction ordering.
+``GEMMBatching``
+    Batch independent GEMM calls into ``blas::gemm_batch``.
 ``Reorder``
     Minimize peak memory via node reordering.
-``MemoryPlanning``
-    Analyze tensor lifetime intervals.
-``ChainParenthesization``
-    Optimal GEMM chain ordering.
+``IOPrefetch``
+    Move ``DiskRead`` nodes early for I/O-compute overlap.
+``DistributionPlanning``
+    Decide replicate vs. distribute per tensor.
+``Materialization``
+    Insert allocation nodes for deferred tensors.
+``SymmetryPropagation``
+    Tag intermediates whose symmetry is provable from their inputs.
+``StreamContractionFusion``
+    Fuse contractions that stream one large tensor into a single pass over it.
 ``InplaceOptimization``
     Reuse buffers for in-place operations.
-``GEMMBatching``
-    Batch independent GEMM calls.
-``PermuteFusion``
-    Fuse adjacent permute operations.
+``FreeInsertion``
+    Release large intermediates after their last consumer.
+``MemoryPlanning``
+    Analyze tensor lifetime intervals and pack non-overlapping intermediates
+    into one shared arena.
+
+See the :ref:`pass catalog <computegraph_optimization_passes>` for what each one
+matches and what it reports.
 
 You can also apply a single pass:
 
@@ -360,13 +387,13 @@ Disable GPU offloading at runtime:
 
 .. code-block:: bash
 
-    ./my_program --einsums:disable-gpu
+    ./my_program --einsums:gpu:disable
 
 Disable a specific pass:
 
 .. code-block:: bash
 
-    ./my_program --einsums:pass-disable=GPUPlacement
+    ./my_program --einsums:pass:disable=GPUPlacement
 
 Or build a custom pass manager without GPU passes:
 
@@ -631,7 +658,7 @@ Three scoping levels:
 - ``Pipeline`` holds tensors shared across stages, such as the Fock and density matrices.
 - ``Graph`` holds single-computation intermediates.
 
-See ``ComputeGraph/docs/workspace.rst`` for full details.
+See :ref:`Workspace and deferred allocation <computegraph_workspace>` for full details.
 
 Distributed Computing
 ======================
@@ -655,7 +682,7 @@ the ComputeGraph passes handle distribution and communication:
 Without MPI, the mock backend runs everything on a single rank, meaning the
 same code works in both serial and distributed modes.
 
-See ``ComputeGraph/docs/distributed.rst`` for full details.
+See :ref:`Distributed computing <computegraph_distributed>` for full details.
 
 Hardware-Aware Optimization
 ============================
@@ -679,7 +706,7 @@ Run the calibration tool for precise measurements:
 
     ./calibrate_hardware --output calibrated.json
 
-See ``ComputeGraph/docs/hardware_profiles.rst`` for full details.
+See :ref:`Hardware profiles <computegraph_hardware_profiles>` for full details.
 
 What's Next
 ===========

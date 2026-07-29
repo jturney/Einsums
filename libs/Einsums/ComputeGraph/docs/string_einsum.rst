@@ -104,16 +104,3 @@ For runtime-constructed strings (e.g., from Python):
 
    std::string spec = build_spec_from_python();
    cg::einsum(cg::EinsumFormatString(spec), &C, A, B);  // Validated at runtime
-
-Mixing with Template-Based Einsum
-==================================
-
-Both styles work in the same graph:
-
-.. code-block:: cpp
-
-   cg::Graph graph("mixed");
-   { cg::CaptureGuard g(graph);
-     cg::einsum("ij <- ik ; kj", &T, A, B);                              // String
-     cg::einsum("ik;kj->ij", &C, T, D);    // Template
-   }

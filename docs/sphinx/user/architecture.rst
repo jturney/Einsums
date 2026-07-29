@@ -113,7 +113,7 @@ tile. The user wrote one expression, which was then optimized away by the
 compiler before runtime.
 
 If you want to see the dispatch decision for a specific call, raise the
-log level to INFO (``--einsums:log-level 2``) and PackedGemm prints
+log level to INFO (``--einsums:log:level 2``) and PackedGemm prints
 either the chosen plan or the reason it rejected the contraction.
 
 The ComputeGraph layer
