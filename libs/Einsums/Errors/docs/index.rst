@@ -102,7 +102,7 @@ this is still a work in progress.
 
     This exception, along with the :cpp:class:`not_implemented` exception, indicates that the action you requested
     is not yet implemented. If you get this error, come tell us 
-    `on our discussion page <https://github.com/Einsums/Einsums/discussions>`_ or `our Discord server <https://discord.gg/8GvtkyWZUv>`_, and we will try to focus some energy
+    `on our issue tracker <https://github.com/Einsums/Einsums/issues>`_ or `our Discord server <https://discord.gg/8GvtkyWZUv>`_, and we will try to focus some energy
     to filling it out. If you are an experienced C++ programmer, we would appreciate your assistance if you think you
     have a solution.
 

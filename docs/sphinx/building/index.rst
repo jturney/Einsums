@@ -69,9 +69,9 @@ other system-level dependencies to build it on your system.
 
     * BLAS and LAPACK libraries. `OpenBLAS <https://github.com/OpenMathLib/OpenBLAS/>`__
       is the Einsums default; other variants include Apple Accelerate,
-      `MKL <https://software.intel.com/en-us/intel-mkl>`__,
-      `ATLAS <https://math-atlas.sourceforce.net/>`__ and
-      `Netlib <https://www.netlib.org/lapack/index.hmtl>`__ ( or "Reference")
+      `MKL <https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl.html>`__,
+      `ATLAS <https://math-atlas.sourceforge.net/>`__ and
+      `Netlib <https://www.netlib.org/lapack/>`__ ( or "Reference")
       BLAS and LAPACK.
 
     * CMake
@@ -172,4 +172,4 @@ Customizing builds
 
    compilers_and_options
 
-.. _Condaforge: https://github.com/conda-forge/miniforge#condaforge
+.. _Condaforge: https://github.com/conda-forge/miniforge
