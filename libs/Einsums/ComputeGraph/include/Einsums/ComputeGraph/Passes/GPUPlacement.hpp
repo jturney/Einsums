@@ -67,7 +67,7 @@ namespace einsums::compute_graph::passes {
  * @endcode
  *
  * @par Limitations
- * - Compiled out entirely on CPU-only builds; a no-op when `--einsums:disable-gpu` is set,
+ * - Compiled out entirely on CPU-only builds; a no-op when `--einsums:gpu:disable` is set,
  *   so on the CI default (no GPU, no mock) the pass never fires.
  * - The **MPS** backend supports only `float32`; `float64`/complex nodes are rejected by the
  *   dtype guard and left on CPU. CUDA/HIP/mock accept `float32`/`float64`/complex64/complex128.

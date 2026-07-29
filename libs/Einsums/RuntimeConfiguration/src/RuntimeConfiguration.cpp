@@ -265,6 +265,13 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
         static cl::Flag const passVerbose("einsums:pass:verbose", {}, "Log node count and timing before/after each optimization pass",
                                           passCategory, cl::Location(global_bools["pass-verbose"]), cl::Default(false),
                                           cl::ImplicitValue(true));
+
+        // GPUPlacement has always read this key, but nothing registered it, so
+        // passing the documented flag was an unknown-argument error.
+        static cl::OptionCategory gpuCategory("GPU");
+        static cl::Flag const     gpuDisable("einsums:gpu:disable", {}, "Keep every node on the host (GPUPlacement becomes a no-op)",
+                                             gpuCategory, cl::Location(global_bools["disable-gpu"]), cl::Default(false),
+                                             cl::ImplicitValue(true));
     }
 
     {

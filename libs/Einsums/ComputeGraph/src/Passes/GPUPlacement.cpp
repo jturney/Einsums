@@ -141,11 +141,11 @@ bool GPUPlacement::run(Graph &graph) {
         return false;
     }
 
-    // Check --einsums:disable-gpu runtime flag.
+    // Check --einsums:gpu:disable runtime flag.
     try {
         auto &gc = GlobalConfigMap::get_singleton();
         if (gc.get_bool("disable-gpu", false)) {
-            EINSUMS_LOG_INFO("GPUPlacement: disabled via --einsums:disable-gpu");
+            EINSUMS_LOG_INFO("GPUPlacement: disabled via --einsums:gpu:disable");
             return false;
         }
     } catch (...) { // NOLINT
