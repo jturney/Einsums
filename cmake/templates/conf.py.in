@@ -418,15 +418,34 @@ html_theme = 'pydata_sphinx_theme'
 # further.  For a list of options available for each theme, see the
 # documentation.
 html_theme_options = {
-    # "home_page_in_toc": True,
-    # "repository_url": "https://github.com/Einsums/Einsums",
-    # "use_repository_button": True,
-    # "use_issues_button": True,
     "logo": {
         "image_light": "einsums-logo.png",
         "image_dark": "einsums-logo.png",
         "text": "Einsums",
     },
+    "icon_links": [
+        {
+            "name": "GitHub",
+            "url": "https://github.com/Einsums/Einsums",
+            "icon": "fa-brands fa-github",
+        },
+        {
+            "name": "Discord",
+            "url": "https://discord.gg/8GvtkyWZUv",
+            "icon": "fa-brands fa-discord",
+        },
+    ],
+    "navbar_end": ["theme-switcher", "navbar-icon-links"],
+    # The sidebar starts at the section level; deeper levels expand as the
+    # reader descends. page-toc alone keeps the right sidebar to the local
+    # outline (source links are disabled anyway).
+    "show_nav_level": 1,
+    "navigation_depth": 3,
+    "secondary_sidebar_items": ["page-toc"],
+    "header_links_before_dropdown": 6,
+    # Set via the EINSUMS_DOCS_ANNOUNCEMENT CMake cache variable; empty
+    # renders no banner.
+    "announcement": "@EINSUMS_DOCS_ANNOUNCEMENT@",
 }
 
 # Add any paths that contain custom static files (such as style sheets) here,
@@ -467,8 +486,9 @@ html_domain_indices = True
 # If false, no index is generated.
 html_use_index = True
 
-# If true, the index is split into individual pages for each letter.
-html_split_index = True
+# Keep the general index on one page; per-letter pages are noise next to
+# the search box.
+html_split_index = False
 
 # If true, links to the reST sources are added to the pages.
 html_show_sourcelink = False
