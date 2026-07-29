@@ -147,17 +147,20 @@ bool TiledExpansion::run(Graph &graph) {
     // give one buffer two ids and defeat every aliasing analysis downstream.
     std::map<std::pair<TensorId, std::vector<int>>, TensorId> tile_ids;
 
-    // Which tiles each tiled tensor will hold at this point in the program, given
-    // the expansions planned so far. A tensor produced by an earlier node does not
-    // have its tiles yet at pass time, so its sparsity cannot be read off the
-    // object; it has to be carried forward from whoever writes it. Seeded from the
-    // stored tiles and updated as each producer is planned.
+    // Which tiles each tiled tensor holds. Seeded from the stored tiles and
+    // advanced across the walk by each op's runtime tile-creation rule (a tensor
+    // produced by an earlier node does not have its tiles yet at pass time, so
+    // its sparsity cannot be read off the object). After the first sweep below
+    // this holds each tensor's FINAL set -- everything one full execution leaves
+    // stored -- which is the state every REPLAY starts from, because tiles are
+    // only ever added and the expanded graph is the tensors' only mutator.
     //
-    // Sound despite being computed before the stranding fixpoint runs: if a
-    // producer ends up rejected it stays in the graph still naming its output, so
-    // that tensor is stranded and every consumer whose prediction depended on it is
-    // rejected too. Nothing is created from a prediction either, since minting
-    // happens only during emission.
+    // Sound despite being computed before the stranding fixpoint runs: the sets
+    // mirror the RUNTIME's tile creation, which is the same whether a node is
+    // expanded or left opaque; and if a node ends up rejected it stays in the
+    // graph still naming its tensors, so they are stranded and every plan that
+    // depended on them is rejected too. Nothing is created from a prediction
+    // either, since minting happens only during emission.
     std::unordered_map<TensorId, std::set<std::vector<int>>> predicted;
     auto tiles_of = [&predicted](TensorId tid, TiledView const &v) -> std::set<std::vector<int>> & {
         auto it = predicted.find(tid);
@@ -542,43 +545,183 @@ bool TiledExpansion::run(Graph &graph) {
     };
     std::vector<Plan> plans;
 
-    for (size_t ni = 0; ni < n; ++ni) {
-        Node const &src = nodes[ni];
+    // Two sweeps over the same walk. Sweep 0 only advances the tile sets, so by
+    // its end `predicted` holds each tensor's final set. Sweep 1 re-walks and
+    // builds the plans against those final sets (its own inserts are no-ops).
+    // Planning against the final set instead of the position's set is what makes
+    // the expansion correct on replay 2+, where every tensor enters holding what
+    // the previous execution left: leftover scales must cover tiles a later node
+    // creates, a first write must carry c_pf because the tile exists by then, and
+    // a scratch-zeroing scale whose tiles are all created later is load-bearing
+    // rather than a no-op. It stays correct on the first execution because a
+    // final-set tile not yet created is minted zero at emission, and scaling or
+    // contracting a zero tile matches the runtime's absent-tile semantics.
+    for (int sweep = 0; sweep < 2; ++sweep) {
+        bool const planning = sweep == 1;
 
-        auto decline = [&](std::string_view why) {
-            ++_num_declined;
-            report(2, fmt::format("declining '{}': {}", src.label, why));
-            EINSUMS_LOG_DEBUG("TiledExpansion: declining node {} - {}", src.id, why);
-        };
+        for (size_t ni = 0; ni < n; ++ni) {
+            Node const &src = nodes[ni];
 
-        // ── Elementwise: tiled scale and tiled axpy ──────────────────────────
-        if (auto const *edesc = std::get_if<TiledElementwiseDescriptor>(&src.op_data)) {
-            if (!edesc->params) {
-                continue;
-            }
-            PrefactorScalar const alpha = edesc->params->alpha;
+            auto decline = [&](std::string_view why) {
+                if (!planning) {
+                    return; // sweep 0 tracks tile sets only; sweep 1 repeats the walk and reports
+                }
+                ++_num_declined;
+                report(2, fmt::format("declining '{}': {}", src.label, why));
+                EINSUMS_LOG_DEBUG("TiledExpansion: declining node {} - {}", src.id, why);
+            };
 
-            if (edesc->op == TiledElementwiseOp::Scale) {
-                if (src.inputs.size() != 1 || src.outputs.size() != 1 || src.inputs[0] != src.outputs[0]) {
+            // ── Elementwise: tiled scale and tiled axpy ──────────────────────────
+            if (auto const *edesc = std::get_if<TiledElementwiseDescriptor>(&src.op_data)) {
+                if (!edesc->params) {
                     continue;
                 }
-                TensorId const a_id = src.outputs[0];
-                auto const    &a_h  = graph.tensor(a_id);
-                if (!a_h.is_tiled) {
+                PrefactorScalar const alpha = edesc->params->alpha;
+
+                if (edesc->op == TiledElementwiseOp::Scale) {
+                    if (src.inputs.size() != 1 || src.outputs.size() != 1 || src.inputs[0] != src.outputs[0]) {
+                        continue;
+                    }
+                    TensorId const a_id = src.outputs[0];
+                    auto const    &a_h  = graph.tensor(a_id);
+                    if (!a_h.is_tiled) {
+                        continue;
+                    }
+                    TiledView av;
+                    if (!bind_tiled(a_h, a_id, av)) {
+                        decline("the operand has no backing tiled object");
+                        continue;
+                    }
+                    // tiled_scale scales whichever tiles exist AT EXECUTION: the final
+                    // set, since even tiles a LATER node creates exist here from the
+                    // second execution on (and are zero the first time, when scaling
+                    // them is a no-op). A loop body's scratch-zeroing scale is the
+                    // load-bearing case: positionally it sees no tiles at all.
+                    auto const &pa     = tiles_of(a_id, av);
+                    auto const  coords = std::vector<std::vector<int>>(pa.begin(), pa.end());
+                    if (coords.empty()) {
+                        continue; // no tiles on any execution: the op is a no-op, leave it alone
+                    }
+                    if (coords.size() > _max_nodes) {
+                        decline(fmt::format("projected {} tiles exceeds the {}-node budget", coords.size(), _max_nodes));
+                        continue;
+                    }
+                    if (!planning) {
+                        continue;
+                    }
+                    Plan p;
+                    p.index     = ni;
+                    p.kind      = Plan::Kind::Scale;
+                    p.touched   = {a_id};
+                    p.dtype     = a_h.dtype;
+                    p.elem_size = a_h.element_size;
+                    p.dst       = av;
+                    p.alpha     = alpha;
+                    p.coords    = coords;
+                    plans.push_back(std::move(p));
                     continue;
                 }
-                TiledView av;
-                if (!bind_tiled(a_h, a_id, av)) {
-                    decline("the operand has no backing tiled object");
+
+                if (edesc->op == TiledElementwiseOp::Divide) {
+                    // C = alpha*(A/B) + beta*C, one dense divide per tile STORED IN A.
+                    // An absent A tile is a rigorous zero, so C keeps beta*C there --
+                    // which is the leftover-scale rule again, reused verbatim below.
+                    if (src.outputs.size() != 1 || src.inputs.size() < 2) {
+                        continue;
+                    }
+                    TensorId const a_id = src.inputs[0];
+                    TensorId const b_id = src.inputs[1];
+                    TensorId const c_id = src.outputs[0];
+                    auto const    &a_h  = graph.tensor(a_id);
+                    auto const    &b_h  = graph.tensor(b_id);
+                    auto const    &c_h  = graph.tensor(c_id);
+                    if (!a_h.is_tiled || !b_h.is_tiled || !c_h.is_tiled) {
+                        continue;
+                    }
+                    if (a_h.dtype != c_h.dtype || b_h.dtype != c_h.dtype) {
+                        continue;
+                    }
+                    TiledView av, bv, cv;
+                    if (!bind_tiled(a_h, a_id, av) || !bind_tiled(b_h, b_id, bv) || !bind_tiled(c_h, c_id, cv)) {
+                        decline("an operand has no backing tiled object");
+                        continue;
+                    }
+                    if (*av.sizes != *bv.sizes || *av.sizes != *cv.sizes) {
+                        // The runtime throws; declining leaves the opaque node to throw.
+                        decline("A, B and C do not share a tile grid");
+                        continue;
+                    }
+                    auto const &pa = tiles_of(a_id, av);
+                    auto const &pb = tiles_of(b_id, bv);
+                    auto const  pc = tiles_of(c_id, cv); // final set, by value
+                    if (!std::ranges::all_of(pa, [&pb](auto const &co) { return pb.contains(co); })) {
+                        // A numerator block with no denominator block. The runtime
+                        // throws rather than producing infinities; let it.
+                        decline("a numerator tile has no denominator tile");
+                        continue;
+                    }
+                    auto const coords = std::vector<std::vector<int>>(pa.begin(), pa.end());
+                    if (coords.empty() && pc.empty()) {
+                        continue;
+                    }
+                    if (coords.size() + pc.size() > _max_nodes) {
+                        decline(fmt::format("projected {} tiles exceeds the {}-node budget", coords.size() + pc.size(), _max_nodes));
+                        continue;
+                    }
+                    Plan p;
+                    p.index     = ni;
+                    p.kind      = Plan::Kind::Divide;
+                    p.touched   = {a_id, b_id, c_id};
+                    p.dtype     = c_h.dtype;
+                    p.elem_size = c_h.element_size;
+                    p.src_a     = av;
+                    p.src_b     = bv;
+                    p.dst       = cv;
+                    p.alpha     = alpha;
+                    p.beta      = edesc->params->beta;
+                    p.coords    = coords;
+                    // C tiles the numerator never reaches are still scaled by beta.
+                    for (auto const &co : pc) {
+                        if (!pa.contains(co)) {
+                            p.leftover.push_back(co);
+                        }
+                    }
+                    p.leftover_pf = edesc->params->beta;
+                    if (planning) {
+                        plans.push_back(std::move(p));
+                    }
+                    tiles_of(c_id, cv).insert(coords.begin(), coords.end());
                     continue;
                 }
-                // tiled_scale scales whichever tiles exist AT EXECUTION, which is the
-                // predicted set here, not merely the ones stored now: an earlier
-                // producer in this graph may still be about to add more.
-                auto const &pa     = tiles_of(a_id, av);
-                auto const  coords = std::vector<std::vector<int>>(pa.begin(), pa.end());
+
+                // Axpy: Y += alpha*X, one dense axpy per tile STORED IN X. A tile absent
+                // from X contributes nothing; a tile present in X but not in Y is created
+                // zeroed, so the accumulation is still correct.
+                if (src.inputs.size() != 2 || src.outputs.size() != 1) {
+                    continue;
+                }
+                TensorId const x_id = src.inputs[0];
+                TensorId const y_id = src.outputs[0];
+                auto const    &x_h  = graph.tensor(x_id);
+                auto const    &y_h  = graph.tensor(y_id);
+                if (!x_h.is_tiled || !y_h.is_tiled || x_h.dtype != y_h.dtype) {
+                    continue;
+                }
+                TiledView xv, yv;
+                if (!bind_tiled(x_h, x_id, xv) || !bind_tiled(y_h, y_id, yv)) {
+                    decline("an operand has no backing tiled object");
+                    continue;
+                }
+                if (*xv.sizes != *yv.sizes) {
+                    // The runtime throws on a grid mismatch. Declining preserves that:
+                    // the opaque node stays and still throws at execute time.
+                    decline("X and Y do not share a tile grid");
+                    continue;
+                }
+                auto const &px     = tiles_of(x_id, xv);
+                auto const  coords = std::vector<std::vector<int>>(px.begin(), px.end());
                 if (coords.empty()) {
-                    continue; // no stored tiles: the op is a no-op, leave it alone
+                    continue;
                 }
                 if (coords.size() > _max_nodes) {
                     decline(fmt::format("projected {} tiles exceeds the {}-node budget", coords.size(), _max_nodes));
@@ -586,563 +729,463 @@ bool TiledExpansion::run(Graph &graph) {
                 }
                 Plan p;
                 p.index     = ni;
-                p.kind      = Plan::Kind::Scale;
-                p.touched   = {a_id};
-                p.dtype     = a_h.dtype;
-                p.elem_size = a_h.element_size;
-                p.dst       = av;
+                p.kind      = Plan::Kind::Axpy;
+                p.touched   = {x_id, y_id};
+                p.dtype     = y_h.dtype;
+                p.elem_size = y_h.element_size;
+                p.src_a     = xv;
+                p.dst       = yv;
                 p.alpha     = alpha;
                 p.coords    = coords;
-                plans.push_back(std::move(p));
+                if (planning) {
+                    plans.push_back(std::move(p));
+                }
+                // Y gains every tile X has: tiled_axpy creates the matching Y tile when
+                // it is absent.
+                tiles_of(y_id, yv).insert(coords.begin(), coords.end());
                 continue;
             }
 
-            if (edesc->op == TiledElementwiseOp::Divide) {
-                // C = alpha*(A/B) + beta*C, one dense divide per tile STORED IN A.
-                // An absent A tile is a rigorous zero, so C keeps beta*C there --
-                // which is the leftover-scale rule again, reused verbatim below.
-                if (src.outputs.size() != 1 || src.inputs.size() < 2) {
+            // ── Tiled permute: C = beta*C + alpha*P(A) ───────────────────────────
+            // The permutation acts on the tile grid and within each tile alike:
+            // each stored A tile contributes to exactly one C tile (coordinates
+            // permuted the same way the axes are), so the lowering is one dense
+            // per-tile permute per stored A tile, each carrying (alpha, beta), plus
+            // the leftover-scale rule for stored C tiles the permutation never
+            // reaches - mirroring detail::tiled_permute's runtime semantics.
+            if (auto const *pdesc = std::get_if<TiledPermuteDescriptor>(&src.op_data)) {
+                if (src.outputs.size() != 1 || src.inputs.empty()) {
+                    continue;
+                }
+                TensorId const a_id = src.inputs[0];
+                TensorId const c_id = src.outputs[0];
+                auto const    &a_h  = graph.tensor(a_id);
+                auto const    &c_h  = graph.tensor(c_id);
+                if (!a_h.is_tiled || !c_h.is_tiled || a_h.dtype != c_h.dtype) {
+                    continue;
+                }
+                TiledView av, cv;
+                if (!bind_tiled(a_h, a_id, av) || !bind_tiled(c_h, c_id, cv)) {
+                    decline("an operand has no backing tiled object");
+                    continue;
+                }
+                size_t const rank = pdesc->c_indices.size();
+                if (rank != pdesc->a_indices.size() || rank != av.rank || rank != cv.rank) {
+                    decline("spec rank does not match the operand ranks");
+                    continue;
+                }
+                std::vector<size_t> perm(rank);
+                bool                perm_ok = true;
+                for (size_t i = 0; i < rank && perm_ok; ++i) {
+                    auto it = std::ranges::find(pdesc->a_indices, pdesc->c_indices[i]);
+                    perm_ok = it != pdesc->a_indices.end();
+                    if (perm_ok) {
+                        perm[i] = static_cast<size_t>(it - pdesc->a_indices.begin());
+                    }
+                }
+                if (!perm_ok) {
+                    decline("output index missing from the input indices");
+                    continue;
+                }
+                bool grids_ok = true;
+                for (size_t i = 0; i < rank; ++i) {
+                    if ((*cv.sizes)[i] != (*av.sizes)[perm[i]]) {
+                        grids_ok = false;
+                        break;
+                    }
+                }
+                if (!grids_ok) {
+                    // The runtime throws on a grid mismatch; declining preserves that.
+                    decline("C's tile grid is not A's grid permuted like the axes");
+                    continue;
+                }
+
+                auto const                   &pa = tiles_of(a_id, av);
+                auto const                    pc = tiles_of(c_id, cv); // final set, by value
+                std::vector<std::vector<int>> sources(pa.begin(), pa.end());
+                std::vector<std::vector<int>> targets;
+                std::set<std::vector<int>>    targeted;
+                targets.reserve(sources.size());
+                for (auto const &co : sources) {
+                    std::vector<int> tk(rank);
+                    for (size_t i = 0; i < rank; ++i) {
+                        tk[i] = co[perm[i]];
+                    }
+                    targeted.insert(tk);
+                    targets.push_back(std::move(tk));
+                }
+
+                Plan p;
+                p.index           = ni;
+                p.kind            = Plan::Kind::Permute;
+                p.touched         = {a_id, c_id};
+                p.dtype           = c_h.dtype;
+                p.elem_size       = c_h.element_size;
+                p.src_a           = av;
+                p.dst             = cv;
+                p.alpha           = pdesc->alpha;
+                p.beta            = pdesc->beta;
+                p.pspec.c_indices = pdesc->c_indices;
+                p.pspec.a_indices = pdesc->a_indices;
+                p.pspec.raw       = fmt::format("{} <- {}", fmt::join(pdesc->c_indices, ","), fmt::join(pdesc->a_indices, ","));
+                p.a_coords        = std::move(sources);
+                p.c_coords        = std::move(targets);
+                // Stored C tiles the permutation never reaches still take beta.
+                for (auto const &co : pc) {
+                    if (!targeted.contains(co)) {
+                        p.leftover.push_back(co);
+                    }
+                }
+                p.leftover_pf = pdesc->beta;
+                if (p.a_coords.empty() && p.leftover.empty()) {
+                    continue; // nothing stored anywhere: a no-op, leave it alone
+                }
+                if (p.a_coords.size() + p.leftover.size() > _max_nodes) {
+                    decline(
+                        fmt::format("projected {} tiles exceeds the {}-node budget", p.a_coords.size() + p.leftover.size(), _max_nodes));
+                    continue;
+                }
+                tiles_of(c_id, cv).insert(p.c_coords.begin(), p.c_coords.end());
+                if (planning) {
+                    plans.push_back(std::move(p));
+                }
+                continue;
+            }
+
+            // ── Tiled dot / dotc: dense scalar = sum over shared tiles ───────────
+            if (auto const *ddesc = std::get_if<TiledDotDescriptor>(&src.op_data)) {
+                if (src.inputs.size() != 2 || src.outputs.size() != 1) {
                     continue;
                 }
                 TensorId const a_id = src.inputs[0];
                 TensorId const b_id = src.inputs[1];
-                TensorId const c_id = src.outputs[0];
+                TensorId const r_id = src.outputs[0];
                 auto const    &a_h  = graph.tensor(a_id);
                 auto const    &b_h  = graph.tensor(b_id);
-                auto const    &c_h  = graph.tensor(c_id);
-                if (!a_h.is_tiled || !b_h.is_tiled || !c_h.is_tiled) {
+                auto const    &r_h  = graph.tensor(r_id);
+                if (!a_h.is_tiled || !b_h.is_tiled || r_h.is_tiled || a_h.dtype != b_h.dtype) {
                     continue;
                 }
-                if (a_h.dtype != c_h.dtype || b_h.dtype != c_h.dtype) {
-                    continue;
-                }
-                TiledView av, bv, cv;
-                if (!bind_tiled(a_h, a_id, av) || !bind_tiled(b_h, b_id, bv) || !bind_tiled(c_h, c_id, cv)) {
+                TiledView av, bv;
+                if (!bind_tiled(a_h, a_id, av) || !bind_tiled(b_h, b_id, bv)) {
                     decline("an operand has no backing tiled object");
                     continue;
                 }
-                if (*av.sizes != *bv.sizes || *av.sizes != *cv.sizes) {
-                    // The runtime throws; declining leaves the opaque node to throw.
-                    decline("A, B and C do not share a tile grid");
+                if (*av.sizes != *bv.sizes) {
+                    // The runtime throws on a grid mismatch; declining preserves that.
+                    decline("operands do not share a tile grid");
                     continue;
                 }
                 auto const &pa = tiles_of(a_id, av);
                 auto const &pb = tiles_of(b_id, bv);
-                auto const  pc = tiles_of(c_id, cv); // pre-node set, by value
-                if (!std::ranges::all_of(pa, [&pb](auto const &co) { return pb.contains(co); })) {
-                    // A numerator block with no denominator block. The runtime
-                    // throws rather than producing infinities; let it.
-                    decline("a numerator tile has no denominator tile");
-                    continue;
-                }
-                auto const coords = std::vector<std::vector<int>>(pa.begin(), pa.end());
-                if (coords.empty() && pc.empty()) {
-                    continue;
-                }
-                if (coords.size() + pc.size() > _max_nodes) {
-                    decline(fmt::format("projected {} tiles exceeds the {}-node budget", coords.size() + pc.size(), _max_nodes));
-                    continue;
-                }
-                Plan p;
+                Plan        p;
                 p.index     = ni;
-                p.kind      = Plan::Kind::Divide;
-                p.touched   = {a_id, b_id, c_id};
-                p.dtype     = c_h.dtype;
-                p.elem_size = c_h.element_size;
+                p.kind      = Plan::Kind::Dot;
+                p.touched   = {a_id, b_id};
+                p.dtype     = a_h.dtype;
+                p.elem_size = a_h.element_size;
                 p.src_a     = av;
                 p.src_b     = bv;
-                p.dst       = cv;
-                p.alpha     = alpha;
-                p.beta      = edesc->params->beta;
-                p.coords    = coords;
-                // C tiles the numerator never reaches are still scaled by beta.
-                for (auto const &co : pc) {
-                    if (!pa.contains(co)) {
-                        p.leftover.push_back(co);
+                p.result_id = r_id;
+                p.conj      = ddesc->conjugated;
+                for (auto const &co : pa) {
+                    if (pb.contains(co)) {
+                        p.a_coords.push_back(co);
                     }
                 }
-                p.leftover_pf = edesc->params->beta;
-                plans.push_back(std::move(p));
-                tiles_of(c_id, cv).insert(coords.begin(), coords.end());
-                continue;
-            }
-
-            // Axpy: Y += alpha*X, one dense axpy per tile STORED IN X. A tile absent
-            // from X contributes nothing; a tile present in X but not in Y is created
-            // zeroed, so the accumulation is still correct.
-            if (src.inputs.size() != 2 || src.outputs.size() != 1) {
-                continue;
-            }
-            TensorId const x_id = src.inputs[0];
-            TensorId const y_id = src.outputs[0];
-            auto const    &x_h  = graph.tensor(x_id);
-            auto const    &y_h  = graph.tensor(y_id);
-            if (!x_h.is_tiled || !y_h.is_tiled || x_h.dtype != y_h.dtype) {
-                continue;
-            }
-            TiledView xv, yv;
-            if (!bind_tiled(x_h, x_id, xv) || !bind_tiled(y_h, y_id, yv)) {
-                decline("an operand has no backing tiled object");
-                continue;
-            }
-            if (*xv.sizes != *yv.sizes) {
-                // The runtime throws on a grid mismatch. Declining preserves that:
-                // the opaque node stays and still throws at execute time.
-                decline("X and Y do not share a tile grid");
-                continue;
-            }
-            auto const &px     = tiles_of(x_id, xv);
-            auto const  coords = std::vector<std::vector<int>>(px.begin(), px.end());
-            if (coords.empty()) {
-                continue;
-            }
-            if (coords.size() > _max_nodes) {
-                decline(fmt::format("projected {} tiles exceeds the {}-node budget", coords.size(), _max_nodes));
-                continue;
-            }
-            Plan p;
-            p.index     = ni;
-            p.kind      = Plan::Kind::Axpy;
-            p.touched   = {x_id, y_id};
-            p.dtype     = y_h.dtype;
-            p.elem_size = y_h.element_size;
-            p.src_a     = xv;
-            p.dst       = yv;
-            p.alpha     = alpha;
-            p.coords    = coords;
-            plans.push_back(std::move(p));
-            // Y gains every tile X has: tiled_axpy creates the matching Y tile when
-            // it is absent.
-            tiles_of(y_id, yv).insert(coords.begin(), coords.end());
-            continue;
-        }
-
-        // ── Tiled permute: C = beta*C + alpha*P(A) ───────────────────────────
-        // The permutation acts on the tile grid and within each tile alike:
-        // each stored A tile contributes to exactly one C tile (coordinates
-        // permuted the same way the axes are), so the lowering is one dense
-        // per-tile permute per stored A tile, each carrying (alpha, beta), plus
-        // the leftover-scale rule for stored C tiles the permutation never
-        // reaches - mirroring detail::tiled_permute's runtime semantics.
-        if (auto const *pdesc = std::get_if<TiledPermuteDescriptor>(&src.op_data)) {
-            if (src.outputs.size() != 1 || src.inputs.empty()) {
-                continue;
-            }
-            TensorId const a_id = src.inputs[0];
-            TensorId const c_id = src.outputs[0];
-            auto const    &a_h  = graph.tensor(a_id);
-            auto const    &c_h  = graph.tensor(c_id);
-            if (!a_h.is_tiled || !c_h.is_tiled || a_h.dtype != c_h.dtype) {
-                continue;
-            }
-            TiledView av, cv;
-            if (!bind_tiled(a_h, a_id, av) || !bind_tiled(c_h, c_id, cv)) {
-                decline("an operand has no backing tiled object");
-                continue;
-            }
-            size_t const rank = pdesc->c_indices.size();
-            if (rank != pdesc->a_indices.size() || rank != av.rank || rank != cv.rank) {
-                decline("spec rank does not match the operand ranks");
-                continue;
-            }
-            std::vector<size_t> perm(rank);
-            bool                perm_ok = true;
-            for (size_t i = 0; i < rank && perm_ok; ++i) {
-                auto it = std::ranges::find(pdesc->a_indices, pdesc->c_indices[i]);
-                perm_ok = it != pdesc->a_indices.end();
-                if (perm_ok) {
-                    perm[i] = static_cast<size_t>(it - pdesc->a_indices.begin());
+                // No shared tiles is a valid reduction over nothing: the emitted
+                // node writes exactly the 0 the runtime would.
+                if (planning) {
+                    plans.push_back(std::move(p));
                 }
-            }
-            if (!perm_ok) {
-                decline("output index missing from the input indices");
-                continue;
-            }
-            bool grids_ok = true;
-            for (size_t i = 0; i < rank; ++i) {
-                if ((*cv.sizes)[i] != (*av.sizes)[perm[i]]) {
-                    grids_ok = false;
-                    break;
-                }
-            }
-            if (!grids_ok) {
-                // The runtime throws on a grid mismatch; declining preserves that.
-                decline("C's tile grid is not A's grid permuted like the axes");
                 continue;
             }
 
-            auto const                   &pa = tiles_of(a_id, av);
-            auto const                    pc = tiles_of(c_id, cv); // pre-node set, by value
-            std::vector<std::vector<int>> sources(pa.begin(), pa.end());
-            std::vector<std::vector<int>> targets;
-            std::set<std::vector<int>>    targeted;
-            targets.reserve(sources.size());
-            for (auto const &co : sources) {
-                std::vector<int> tk(rank);
-                for (size_t i = 0; i < rank; ++i) {
-                    tk[i] = co[perm[i]];
-                }
-                targeted.insert(tk);
-                targets.push_back(std::move(tk));
-            }
-
-            Plan p;
-            p.index           = ni;
-            p.kind            = Plan::Kind::Permute;
-            p.touched         = {a_id, c_id};
-            p.dtype           = c_h.dtype;
-            p.elem_size       = c_h.element_size;
-            p.src_a           = av;
-            p.dst             = cv;
-            p.alpha           = pdesc->alpha;
-            p.beta            = pdesc->beta;
-            p.pspec.c_indices = pdesc->c_indices;
-            p.pspec.a_indices = pdesc->a_indices;
-            p.pspec.raw       = fmt::format("{} <- {}", fmt::join(pdesc->c_indices, ","), fmt::join(pdesc->a_indices, ","));
-            p.a_coords        = std::move(sources);
-            p.c_coords        = std::move(targets);
-            // Stored C tiles the permutation never reaches still take beta.
-            for (auto const &co : pc) {
-                if (!targeted.contains(co)) {
-                    p.leftover.push_back(co);
-                }
-            }
-            p.leftover_pf = pdesc->beta;
-            if (p.a_coords.empty() && p.leftover.empty()) {
-                continue; // nothing stored anywhere: a no-op, leave it alone
-            }
-            if (p.a_coords.size() + p.leftover.size() > _max_nodes) {
-                decline(fmt::format("projected {} tiles exceeds the {}-node budget", p.a_coords.size() + p.leftover.size(), _max_nodes));
+            // ── Contraction ──────────────────────────────────────────────────────
+            auto const *tdesc = std::get_if<TiledEinsumDescriptor>(&src.op_data);
+            if (tdesc == nullptr || !tdesc->indices || !tdesc->params) {
                 continue;
             }
-            tiles_of(c_id, cv).insert(p.c_coords.begin(), p.c_coords.end());
-            plans.push_back(std::move(p));
-            continue;
-        }
-
-        // ── Tiled dot / dotc: dense scalar = sum over shared tiles ───────────
-        if (auto const *ddesc = std::get_if<TiledDotDescriptor>(&src.op_data)) {
             if (src.inputs.size() != 2 || src.outputs.size() != 1) {
                 continue;
             }
             TensorId const a_id = src.inputs[0];
             TensorId const b_id = src.inputs[1];
-            TensorId const r_id = src.outputs[0];
-            auto const    &a_h  = graph.tensor(a_id);
-            auto const    &b_h  = graph.tensor(b_id);
-            auto const    &r_h  = graph.tensor(r_id);
-            if (!a_h.is_tiled || !b_h.is_tiled || r_h.is_tiled || a_h.dtype != b_h.dtype) {
+            TensorId const c_id = src.outputs[0];
+
+            auto const &a_h = graph.tensor(a_id);
+            auto const &b_h = graph.tensor(b_id);
+            auto const &c_h = graph.tensor(c_id);
+            if (!a_h.is_tiled || !b_h.is_tiled || !c_h.is_tiled) {
+                continue; // mixed operands are rejected at capture; nothing to do here
+            }
+            if (a_h.dtype != c_h.dtype || b_h.dtype != c_h.dtype) {
                 continue;
             }
-            TiledView av, bv;
-            if (!bind_tiled(a_h, a_id, av) || !bind_tiled(b_h, b_id, bv)) {
+
+            auto const &cidx = tdesc->indices->spec.c_indices;
+            auto const &aidx = tdesc->indices->spec.a_indices;
+            auto const &bidx = tdesc->indices->spec.b_indices;
+            if (cidx.empty()) {
+                decline("scalar output (full reduction) over tiled operands is unsupported");
+                continue;
+            }
+
+            // Unique index letters, in the same stable order the runtime uses (C, then
+            // new from A, then new from B) so the enumeration matches exactly.
+            std::vector<std::string> unique;
+            auto                     add_unique = [&unique](std::vector<std::string> const &v) {
+                for (auto const &s : v) {
+                    if (std::ranges::find(unique, s) == unique.end()) {
+                        unique.push_back(s);
+                    }
+                }
+            };
+            add_unique(cidx);
+            add_unique(aidx);
+            add_unique(bidx);
+            size_t const nu = unique.size();
+            auto pos = [&unique](std::string const &s) { return static_cast<size_t>(std::ranges::find(unique, s) - unique.begin()); };
+
+            // Per-index grid extent and partition, validated for alignment across every
+            // operand carrying that index. The runtime throws here; we decline.
+            std::vector<int>              grid(nu, -1);
+            std::vector<std::vector<int>> part(nu);
+            bool                          aligned = true;
+            auto                          absorb  = [&](std::vector<std::string> const &idx, std::vector<std::vector<int>> const &sizes) {
+                if (idx.size() != sizes.size()) {
+                    aligned = false;
+                    return;
+                }
+                for (size_t ax = 0; ax < idx.size() && aligned; ++ax) {
+                    size_t const u = pos(idx[ax]);
+                    auto const  &p = sizes[ax];
+                    if (grid[u] < 0) {
+                        grid[u] = static_cast<int>(p.size());
+                        part[u] = p;
+                    } else if (grid[u] != static_cast<int>(p.size()) || part[u] != p) {
+                        aligned = false;
+                    }
+                }
+            };
+
+            // Reach the concrete tiled objects to read grids, test tile presence, and
+            // mint per-tile TensorIds. Everything type-dependent happens in here.
+            TiledView av, bv, cv;
+            if (!bind_tiled(a_h, a_id, av) || !bind_tiled(b_h, b_id, bv) || !bind_tiled(c_h, c_id, cv)) {
                 decline("an operand has no backing tiled object");
                 continue;
             }
-            if (*av.sizes != *bv.sizes) {
-                // The runtime throws on a grid mismatch; declining preserves that.
-                decline("operands do not share a tile grid");
+
+            absorb(aidx, *av.sizes);
+            absorb(bidx, *bv.sizes);
+            absorb(cidx, *cv.sizes);
+            if (!aligned || std::ranges::any_of(grid, [](int g) { return g <= 0; })) {
+                decline("tile partitions for a shared index disagree across operands");
                 continue;
             }
-            auto const &pa = tiles_of(a_id, av);
-            auto const &pb = tiles_of(b_id, bv);
-            Plan        p;
-            p.index     = ni;
-            p.kind      = Plan::Kind::Dot;
-            p.touched   = {a_id, b_id};
-            p.dtype     = a_h.dtype;
-            p.elem_size = a_h.element_size;
-            p.src_a     = av;
-            p.src_b     = bv;
-            p.result_id = r_id;
-            p.conj      = ddesc->conjugated;
-            for (auto const &co : pa) {
-                if (pb.contains(co)) {
-                    p.a_coords.push_back(co);
-                }
+
+            // Enumeration order: CONTRACTED indices slowest, output indices fastest, so
+            // every tile GEMM at the same accumulation step is emitted as one contiguous
+            // run. GEMMBatching only batches a group whose span contains no outside node
+            // touching the same buffers, and letting the contracted index vary fastest
+            // drops each output tile's later accumulations in between the first writes,
+            // which disqualifies every group. Ordering it this way is what makes the
+            // tile GEMMs batchable at all.
+            //
+            // Per output tile the contracted steps stay in ascending order, so each tile
+            // accumulates in exactly the order the runtime uses and the result is
+            // bit-identical; only independent tiles move relative to each other.
+            //
+            // `unique` holds the C letters first (add_unique(cidx) ran first), so the
+            // positions from cidx.size() up are exactly the contracted ones.
+            std::vector<size_t> perm;
+            perm.reserve(nu);
+            for (size_t u = cidx.size(); u < nu; ++u) {
+                perm.push_back(u);
             }
-            // No shared tiles is a valid reduction over nothing: the emitted
-            // node writes exactly the 0 the runtime would.
-            plans.push_back(std::move(p));
-            continue;
-        }
-
-        // ── Contraction ──────────────────────────────────────────────────────
-        auto const *tdesc = std::get_if<TiledEinsumDescriptor>(&src.op_data);
-        if (tdesc == nullptr || !tdesc->indices || !tdesc->params) {
-            continue;
-        }
-        if (src.inputs.size() != 2 || src.outputs.size() != 1) {
-            continue;
-        }
-        TensorId const a_id = src.inputs[0];
-        TensorId const b_id = src.inputs[1];
-        TensorId const c_id = src.outputs[0];
-
-        auto const &a_h = graph.tensor(a_id);
-        auto const &b_h = graph.tensor(b_id);
-        auto const &c_h = graph.tensor(c_id);
-        if (!a_h.is_tiled || !b_h.is_tiled || !c_h.is_tiled) {
-            continue; // mixed operands are rejected at capture; nothing to do here
-        }
-        if (a_h.dtype != c_h.dtype || b_h.dtype != c_h.dtype) {
-            continue;
-        }
-
-        auto const &cidx = tdesc->indices->spec.c_indices;
-        auto const &aidx = tdesc->indices->spec.a_indices;
-        auto const &bidx = tdesc->indices->spec.b_indices;
-        if (cidx.empty()) {
-            decline("scalar output (full reduction) over tiled operands is unsupported");
-            continue;
-        }
-
-        // Unique index letters, in the same stable order the runtime uses (C, then
-        // new from A, then new from B) so the enumeration matches exactly.
-        std::vector<std::string> unique;
-        auto                     add_unique = [&unique](std::vector<std::string> const &v) {
-            for (auto const &s : v) {
-                if (std::ranges::find(unique, s) == unique.end()) {
-                    unique.push_back(s);
-                }
+            for (size_t u = 0; u < cidx.size(); ++u) {
+                perm.push_back(u);
             }
-        };
-        add_unique(cidx);
-        add_unique(aidx);
-        add_unique(bidx);
-        size_t const nu  = unique.size();
-        auto         pos = [&unique](std::string const &s) { return static_cast<size_t>(std::ranges::find(unique, s) - unique.begin()); };
-
-        // Per-index grid extent and partition, validated for alignment across every
-        // operand carrying that index. The runtime throws here; we decline.
-        std::vector<int>              grid(nu, -1);
-        std::vector<std::vector<int>> part(nu);
-        bool                          aligned = true;
-        auto                          absorb  = [&](std::vector<std::string> const &idx, std::vector<std::vector<int>> const &sizes) {
-            if (idx.size() != sizes.size()) {
-                aligned = false;
-                return;
-            }
-            for (size_t ax = 0; ax < idx.size() && aligned; ++ax) {
-                size_t const u = pos(idx[ax]);
-                auto const  &p = sizes[ax];
-                if (grid[u] < 0) {
-                    grid[u] = static_cast<int>(p.size());
-                    part[u] = p;
-                } else if (grid[u] != static_cast<int>(p.size()) || part[u] != p) {
-                    aligned = false;
-                }
-            }
-        };
-
-        // Reach the concrete tiled objects to read grids, test tile presence, and
-        // mint per-tile TensorIds. Everything type-dependent happens in here.
-        TiledView av, bv, cv;
-        if (!bind_tiled(a_h, a_id, av) || !bind_tiled(b_h, b_id, bv) || !bind_tiled(c_h, c_id, cv)) {
-            decline("an operand has no backing tiled object");
-            continue;
-        }
-
-        absorb(aidx, *av.sizes);
-        absorb(bidx, *bv.sizes);
-        absorb(cidx, *cv.sizes);
-        if (!aligned || std::ranges::any_of(grid, [](int g) { return g <= 0; })) {
-            decline("tile partitions for a shared index disagree across operands");
-            continue;
-        }
-
-        // Enumeration order: CONTRACTED indices slowest, output indices fastest, so
-        // every tile GEMM at the same accumulation step is emitted as one contiguous
-        // run. GEMMBatching only batches a group whose span contains no outside node
-        // touching the same buffers, and letting the contracted index vary fastest
-        // drops each output tile's later accumulations in between the first writes,
-        // which disqualifies every group. Ordering it this way is what makes the
-        // tile GEMMs batchable at all.
-        //
-        // Per output tile the contracted steps stay in ascending order, so each tile
-        // accumulates in exactly the order the runtime uses and the result is
-        // bit-identical; only independent tiles move relative to each other.
-        //
-        // `unique` holds the C letters first (add_unique(cidx) ran first), so the
-        // positions from cidx.size() up are exactly the contracted ones.
-        std::vector<size_t> perm;
-        perm.reserve(nu);
-        for (size_t u = cidx.size(); u < nu; ++u) {
-            perm.push_back(u);
-        }
-        for (size_t u = 0; u < cidx.size(); ++u) {
-            perm.push_back(u);
-        }
-        std::vector<int> pgrid(nu);
-        for (size_t t = 0; t < nu; ++t) {
-            pgrid[t] = grid[perm[t]];
-        }
-
-        auto const   stride = grid_strides(pgrid);
-        size_t const total  = stride.empty() ? 0 : stride[0] * static_cast<size_t>(pgrid[0]);
-        if (total == 0) {
-            continue;
-        }
-        if (total > _max_nodes) {
-            decline(fmt::format("projected {} tile combinations exceeds the {}-node budget", total, _max_nodes));
-            continue;
-        }
-
-        std::vector<size_t> a_tab(aidx.size()), b_tab(bidx.size()), c_tab(cidx.size());
-        for (size_t ax = 0; ax < aidx.size(); ++ax) {
-            a_tab[ax] = pos(aidx[ax]);
-        }
-        for (size_t ax = 0; ax < bidx.size(); ++ax) {
-            b_tab[ax] = pos(bidx[ax]);
-        }
-        for (size_t ax = 0; ax < cidx.size(); ++ax) {
-            c_tab[ax] = pos(cidx[ax]);
-        }
-
-        auto const c_pf  = tdesc->params->c_pf;
-        auto const ab_pf = tdesc->params->ab_pf;
-
-        // Operand sparsity and, crucially, which output tiles ALREADY EXIST when
-        // this node runs. The latter decides whether the first write to a tile
-        // carries c_pf or overwrites, so it must be the predicted set at this point
-        // in the program, copied before the loop starts adding to it.
-        auto const &pa = tiles_of(a_id, av);
-        auto const &pb = tiles_of(b_id, bv);
-        auto const  pc = tiles_of(c_id, cv); // by value: the pre-node set
-        auto const &sa = screened_tiles(a_id, av);
-        auto const &sb = screened_tiles(b_id, bv);
-
-        ParsedEinsumSpec per_tile;
-        per_tile.c_indices = cidx;
-        per_tile.a_indices = aidx;
-        per_tile.b_indices = bidx;
-        per_tile.raw       = fmt::format("{} <- {} ; {}", fmt::join(cidx, ","), fmt::join(aidx, ","), fmt::join(bidx, ","));
-
-        // Index roles, so each tile contraction can be priced as a GEMM: an index
-        // in C came from A or from B (M or N); one absent from C is contracted (K).
-        std::vector<bool> in_c(nu, false), in_a(nu, false);
-        for (auto const &nm : cidx) {
-            in_c[pos(nm)] = true;
-        }
-        for (auto const &nm : aidx) {
-            in_a[pos(nm)] = true;
-        }
-        size_t const elem_size = c_h.element_size;
-
-        Plan                             plan;
-        std::map<std::vector<int>, bool> written; // output coord -> already written once
-        for (size_t s = 0; s < total; ++s) {
-            size_t           rem = s;
-            std::vector<int> ucoord(nu);
+            std::vector<int> pgrid(nu);
             for (size_t t = 0; t < nu; ++t) {
-                ucoord[perm[t]] = static_cast<int>(rem / stride[t]);
-                rem %= stride[t];
+                pgrid[t] = grid[perm[t]];
             }
-            std::vector<int> acoord(aidx.size()), bcoord(bidx.size()), ccoord(cidx.size());
+
+            auto const   stride = grid_strides(pgrid);
+            size_t const total  = stride.empty() ? 0 : stride[0] * static_cast<size_t>(pgrid[0]);
+            if (total == 0) {
+                continue;
+            }
+            if (total > _max_nodes) {
+                decline(fmt::format("projected {} tile combinations exceeds the {}-node budget", total, _max_nodes));
+                continue;
+            }
+
+            std::vector<size_t> a_tab(aidx.size()), b_tab(bidx.size()), c_tab(cidx.size());
             for (size_t ax = 0; ax < aidx.size(); ++ax) {
-                acoord[ax] = ucoord[a_tab[ax]];
+                a_tab[ax] = pos(aidx[ax]);
             }
             for (size_t ax = 0; ax < bidx.size(); ++ax) {
-                bcoord[ax] = ucoord[b_tab[ax]];
-            }
-            if (!pa.contains(acoord) || !pb.contains(bcoord)) {
-                continue; // structural zero
-            }
-            if (sa.contains(acoord) || sb.contains(bcoord)) {
-                // Numerically zero operand: contributes nothing. Treated exactly
-                // like an absent tile, so if this leaves the output tile with no
-                // contribution at all it is simply never created, and the next
-                // contraction sees it as absent.
-                ++_num_screened;
-                continue;
+                b_tab[ax] = pos(bidx[ax]);
             }
             for (size_t ax = 0; ax < cidx.size(); ++ax) {
-                ccoord[ax] = ucoord[c_tab[ax]];
+                c_tab[ax] = pos(cidx[ax]);
             }
 
-            bool const first = !written[ccoord];
-            // First write to a PRE-EXISTING tile carries the real c_pf (the runtime's
-            // up-front scale); first write to a tile that does not exist yet carries
-            // 0, a pure overwrite, so this does not rely on the new tile being zeroed.
-            PrefactorScalar const node_c_pf = first ? (pc.contains(ccoord) ? c_pf : PrefactorScalar{double{0}}) //
-                                                    : PrefactorScalar{double{1}};
+            auto const c_pf  = tdesc->params->c_pf;
+            auto const ab_pf = tdesc->params->ab_pf;
 
-            // This tile contraction's GEMM shape, so the cost model can price it:
-            // M over output indices from A, N over output indices from B, K over the
-            // contracted ones.
-            size_t tM = 1, tN = 1, tK = 1;
-            for (size_t u = 0; u < nu; ++u) {
-                auto const ext = static_cast<size_t>(part[u][static_cast<size_t>(ucoord[u])]);
-                if (in_c[u]) {
-                    (in_a[u] ? tM : tN) *= ext;
-                } else {
-                    tK *= ext;
+            // Operand sparsity and which output tiles exist when this node runs --
+            // all FINAL sets in this sweep. For inputs that is required, not merely
+            // safe: a tile some later node creates already holds data here on every
+            // execution after the first, so its combinations must be emitted (they
+            // contract zeros the first time). For the output it decides c_pf below.
+            auto const &pa = tiles_of(a_id, av);
+            auto const &pb = tiles_of(b_id, bv);
+            auto const  pc = tiles_of(c_id, cv); // by value: the loop below adds to the live set
+            auto const &sa = screened_tiles(a_id, av);
+            auto const &sb = screened_tiles(b_id, bv);
+
+            ParsedEinsumSpec per_tile;
+            per_tile.c_indices = cidx;
+            per_tile.a_indices = aidx;
+            per_tile.b_indices = bidx;
+            per_tile.raw       = fmt::format("{} <- {} ; {}", fmt::join(cidx, ","), fmt::join(aidx, ","), fmt::join(bidx, ","));
+
+            // Index roles, so each tile contraction can be priced as a GEMM: an index
+            // in C came from A or from B (M or N); one absent from C is contracted (K).
+            std::vector<bool> in_c(nu, false), in_a(nu, false);
+            for (auto const &nm : cidx) {
+                in_c[pos(nm)] = true;
+            }
+            for (auto const &nm : aidx) {
+                in_a[pos(nm)] = true;
+            }
+            size_t const elem_size = c_h.element_size;
+
+            Plan                             plan;
+            std::map<std::vector<int>, bool> written; // output coord -> already written once
+            for (size_t s = 0; s < total; ++s) {
+                size_t           rem = s;
+                std::vector<int> ucoord(nu);
+                for (size_t t = 0; t < nu; ++t) {
+                    ucoord[perm[t]] = static_cast<int>(rem / stride[t]);
+                    rem %= stride[t];
+                }
+                std::vector<int> acoord(aidx.size()), bcoord(bidx.size()), ccoord(cidx.size());
+                for (size_t ax = 0; ax < aidx.size(); ++ax) {
+                    acoord[ax] = ucoord[a_tab[ax]];
+                }
+                for (size_t ax = 0; ax < bidx.size(); ++ax) {
+                    bcoord[ax] = ucoord[b_tab[ax]];
+                }
+                if (!pa.contains(acoord) || !pb.contains(bcoord)) {
+                    continue; // structural zero
+                }
+                if (sa.contains(acoord) || sb.contains(bcoord)) {
+                    // Numerically zero operand: contributes nothing. Treated exactly
+                    // like an absent tile, so if this leaves the output tile with no
+                    // contribution at all it is simply never created, and the next
+                    // contraction sees it as absent.
+                    if (planning) {
+                        ++_num_screened;
+                    }
+                    continue;
+                }
+                for (size_t ax = 0; ax < cidx.size(); ++ax) {
+                    ccoord[ax] = ucoord[c_tab[ax]];
+                }
+
+                bool const first = !written[ccoord];
+                // The first write to a tile carries the real c_pf (the runtime's
+                // up-front scale of an existing tile). Against the final set every
+                // written tile "pre-exists": minted zero for the first execution,
+                // where c_pf*0 degenerates to the overwrite, and holding the previous
+                // execution's value on every replay, where c_pf is load-bearing --
+                // an overwrite there would drop the accumulation semantics.
+                PrefactorScalar const node_c_pf = first ? (pc.contains(ccoord) ? c_pf : PrefactorScalar{double{0}}) //
+                                                        : PrefactorScalar{double{1}};
+
+                // This tile contraction's GEMM shape, so the cost model can price it:
+                // M over output indices from A, N over output indices from B, K over the
+                // contracted ones.
+                size_t tM = 1, tN = 1, tK = 1;
+                for (size_t u = 0; u < nu; ++u) {
+                    auto const ext = static_cast<size_t>(part[u][static_cast<size_t>(ucoord[u])]);
+                    if (in_c[u]) {
+                        (in_a[u] ? tM : tN) *= ext;
+                    } else {
+                        tK *= ext;
+                    }
+                }
+                plan.est_tiled_us += _cost_model.estimate_total_gemm_time_us(tM, tN, tK, elem_size, Target::CPU);
+
+                plan.a_coords.push_back(acoord);
+                plan.b_coords.push_back(bcoord);
+                plan.c_coords.push_back(ccoord);
+                plan.c_pfs.push_back(node_c_pf);
+                written[ccoord] = true;
+            }
+
+            // The densified alternative: one contraction over the FULL extents, plus the
+            // cost of marshalling every operand in and the result back out. The gather
+            // and scatter are pure memory traffic, so they are priced at bandwidth.
+            {
+                size_t dM = 1, dN = 1, dK = 1;
+                for (size_t u = 0; u < nu; ++u) {
+                    size_t extent = 0;
+                    for (int const sz : part[u]) {
+                        extent += static_cast<size_t>(sz);
+                    }
+                    if (in_c[u]) {
+                        (in_a[u] ? dM : dN) *= extent;
+                    } else {
+                        dK *= extent;
+                    }
+                }
+                // A is M x K, B is K x N, C is M x N; C is touched twice, read out of the
+                // dense buffer and accumulated into its tiles.
+                size_t const bytes = elem_size * (dM * dK + dK * dN + 2 * dM * dN);
+                plan.est_dense_us  = _cost_model.estimate_total_gemm_time_us(dM, dN, dK, elem_size, Target::CPU) +
+                                    _cost_model.estimate_memory_time_us(bytes, Target::CPU);
+            }
+
+            // Pre-existing output tiles that received NO contribution are still scaled by
+            // c_pf in the runtime. Emitting only the contributing nodes would leave them
+            // untouched - a silent numerical difference - so scale them explicitly.
+            for (auto const &coord : pc) {
+                if (!written.contains(coord)) {
+                    plan.leftover.push_back(coord);
                 }
             }
-            plan.est_tiled_us += _cost_model.estimate_total_gemm_time_us(tM, tN, tK, elem_size, Target::CPU);
 
-            plan.a_coords.push_back(acoord);
-            plan.b_coords.push_back(bcoord);
-            plan.c_coords.push_back(ccoord);
-            plan.c_pfs.push_back(node_c_pf);
-            written[ccoord] = true;
-        }
-
-        // The densified alternative: one contraction over the FULL extents, plus the
-        // cost of marshalling every operand in and the result back out. The gather
-        // and scatter are pure memory traffic, so they are priced at bandwidth.
-        {
-            size_t dM = 1, dN = 1, dK = 1;
-            for (size_t u = 0; u < nu; ++u) {
-                size_t extent = 0;
-                for (int const sz : part[u]) {
-                    extent += static_cast<size_t>(sz);
-                }
-                if (in_c[u]) {
-                    (in_a[u] ? dM : dN) *= extent;
-                } else {
-                    dK *= extent;
-                }
+            if (plan.a_coords.empty() && plan.leftover.empty()) {
+                // Every tile pair was a structural zero and nothing pre-existed: the
+                // original node is a no-op, but leave it rather than silently changing
+                // what the graph contains.
+                continue;
             }
-            // A is M x K, B is K x N, C is M x N; C is touched twice, read out of the
-            // dense buffer and accumulated into its tiles.
-            size_t const bytes = elem_size * (dM * dK + dK * dN + 2 * dM * dN);
-            plan.est_dense_us  = _cost_model.estimate_total_gemm_time_us(dM, dN, dK, elem_size, Target::CPU) +
-                                _cost_model.estimate_memory_time_us(bytes, Target::CPU);
-        }
 
-        // Pre-existing output tiles that received NO contribution are still scaled by
-        // c_pf in the runtime. Emitting only the contributing nodes would leave them
-        // untouched - a silent numerical difference - so scale them explicitly.
-        for (auto const &coord : pc) {
-            if (!written.contains(coord)) {
-                plan.leftover.push_back(coord);
+            plan.index       = ni;
+            plan.kind        = Plan::Kind::Einsum;
+            plan.touched     = {a_id, b_id, c_id};
+            plan.dtype       = c_h.dtype;
+            plan.elem_size   = elem_size;
+            plan.src_a       = av;
+            plan.src_b       = bv;
+            plan.dst         = cv;
+            plan.spec        = per_tile;
+            plan.ab_pf       = ab_pf;
+            plan.leftover_pf = c_pf;
+            // C now holds everything it held before plus every tile this contraction
+            // writes, which is what a later consumer of C must see.
+            auto &pc_live = tiles_of(c_id, cv);
+            pc_live.insert(plan.c_coords.begin(), plan.c_coords.end());
+            if (planning) {
+                plans.push_back(std::move(plan));
             }
         }
-
-        if (plan.a_coords.empty() && plan.leftover.empty()) {
-            // Every tile pair was a structural zero and nothing pre-existed: the
-            // original node is a no-op, but leave it rather than silently changing
-            // what the graph contains.
-            continue;
-        }
-
-        plan.index       = ni;
-        plan.kind        = Plan::Kind::Einsum;
-        plan.touched     = {a_id, b_id, c_id};
-        plan.dtype       = c_h.dtype;
-        plan.elem_size   = elem_size;
-        plan.src_a       = av;
-        plan.src_b       = bv;
-        plan.dst         = cv;
-        plan.spec        = per_tile;
-        plan.ab_pf       = ab_pf;
-        plan.leftover_pf = c_pf;
-        // C now holds everything it held before plus every tile this contraction
-        // writes, which is what a later consumer of C must see.
-        auto &pc_live = tiles_of(c_id, cv);
-        pc_live.insert(plan.c_coords.begin(), plan.c_coords.end());
-        plans.push_back(std::move(plan));
     }
 
     // ── Stranding fixpoint ───────────────────────────────────────────────────

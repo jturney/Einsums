@@ -688,3 +688,116 @@ def test_tiled_operands_are_never_gpu_placed():
     g.execute()
     # 128*128 elements of 1.0 * 2.0
     assert_close(np.asarray(out), np.array([2.0 * 128 * 128], dtype=np.float32))
+
+
+# ── Two-sweep planning: expansion against FINAL predicted tile sets ─────────
+# A replay starts from the previous execution's final tile sets (tiles are only
+# ever added), so plans built from the position's set alone are wrong from the
+# second execution on. These tests pin the three failure modes the final-set
+# model fixes; each compares the expanded graph against running the same op
+# sequence eagerly, replay by replay.
+
+
+def test_scratch_zeroing_scale_expands_and_replays():
+    """The CCSD loop idiom: scale(0) on graph-owned DEFERRED scratch, then an
+    ACCUMULATING einsum into it. Positionally the scale sees zero tiles, took
+    the silent no-op path, stayed opaque, and its contagion stranded the whole
+    body. Against the final set it expands - and its per-tile zeroing is
+    load-bearing on replay 2+, clearing iteration-1 values."""
+    import json
+
+    rng = np.random.default_rng(11)
+    aref = rng.standard_normal((6, 6))
+    bref = rng.standard_normal((6, 6))
+    grid = [[3, 3], [3, 3]]
+    A = _make("float64", "A", grid, fill=lambda r, c: aref[r, c])
+    B = _make("float64", "B", grid, fill=lambda r, c: bref[r, c])
+    acc = _make("float64", "acc", grid, fill=lambda r, c: 0.0)
+
+    g = cg.Graph("scratch_zeroing")
+    tmp = g.declare_zero_tiled_tensor("tmp", grid, dtype="float64", intermediate=True)
+    body = g.add_loop("it", 2, lambda i: True)
+    with cg.capture(body):
+        einsums.linalg.scale(0.0, tmp)                                   # zero the scratch
+        einsums.einsum("ij <- ik ; kj", tmp, A, B, c_pf=1.0, ab_pf=1.0)  # accumulate into it
+        einsums.linalg.axpy(1.0, tmp, acc)
+
+    g.apply(cg.default_pass_manager())
+    labels = [n.get("label", "") for n in json.loads(body.to_json()).get("nodes", [])]
+    assert not any(l.startswith("tiled ") for l in labels), labels  # nothing left opaque
+
+    g.execute()
+    assert_close(_gather(acc, 6, 6), 2.0 * (aref @ bref))
+    g.execute()  # replay: the expanded scale must re-zero iteration-1 scratch
+    assert_close(_gather(acc, 6, 6), 4.0 * (aref @ bref))
+
+
+def test_accumulating_einsum_first_write_carries_c_pf_on_replay():
+    """einsum with c_pf=0.5 into an initially-EMPTY tiled output. The
+    positional model called the first write an overwrite (the tile 'did not
+    exist yet'), which is right once: on replay 2+ the tile holds the previous
+    execution's value and the runtime scales it by c_pf. Eager is the oracle,
+    replay by replay."""
+    rng = np.random.default_rng(13)
+    aref = rng.standard_normal((6, 6))
+    bref = rng.standard_normal((6, 6))
+    grid = [[3, 3], [3, 3]]
+    A = _make("float64", "A", grid, fill=lambda r, c: aref[r, c])
+    B = _make("float64", "B", grid, fill=lambda r, c: bref[r, c])
+    Cg = DTYPE_TO_TRT[np.float64]("Cg", grid)  # empty: tiles created by the op
+    Ce = DTYPE_TO_TRT[np.float64]("Ce", grid)
+
+    g = cg.Graph("accumulating_einsum")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", Cg, A, B, c_pf=0.5, ab_pf=1.0)
+
+    g.apply(cg.default_pass_manager())
+    for _ in range(3):
+        g.execute()
+        einsums.einsum("ij <- ik ; kj", Ce, A, B, c_pf=0.5, ab_pf=1.0)  # eager oracle
+        assert_close(_gather(Cg, 6, 6), _gather(Ce, 6, 6))
+
+
+def test_leftover_scales_cover_tiles_created_later_in_the_graph():
+    """A permute's beta must also hit output tiles a LATER node creates: they
+    exist (with data) at the permute from the second execution on. The
+    positional pre-node set missed them. Sequence: permute writes C(0,0) with
+    beta=0.5; an einsum then creates C(1,1) accumulating with c_pf=1. Eager,
+    run replay by replay, is the oracle."""
+    rng = np.random.default_rng(17)
+    grid = [[2, 2], [2, 2]]
+
+    def sparse(name, coords, ref):
+        t = DTYPE_TO_TRT[np.float64](name, grid)
+        for co in coords:
+            t.add_tile(list(co))
+        t.materialize()
+        off = t.tile_offsets()
+        for co in coords:
+            a = np.asarray(t.tile_view(list(co)))
+            r0, c0 = off[0][co[0]], off[1][co[1]]
+            a[...] = ref[r0 : r0 + a.shape[0], c0 : c0 + a.shape[1]]
+        return t
+
+    aref = rng.standard_normal((4, 4))
+    dref = rng.standard_normal((4, 4))
+    eref = rng.standard_normal((4, 4))
+    mk = lambda tag: {
+        "A": sparse(f"A{tag}", [(0, 0)], aref),        # permute source: only (0,0)
+        "D": sparse(f"D{tag}", [(1, 0)], dref),        # einsum operands hit only C(1,1)
+        "E": sparse(f"E{tag}", [(0, 1)], eref),
+        "C": DTYPE_TO_TRT[np.float64](f"C{tag}", grid),
+    }
+    tg, te = mk("g"), mk("e")
+
+    g = cg.Graph("leftover_replay")
+    with cg.capture(g):
+        einsums.permute("j,i <- i,j", tg["C"], tg["A"], c_pf=0.5, a_pf=1.0)
+        einsums.einsum("ij <- ik ; kj", tg["C"], tg["D"], tg["E"], c_pf=1.0, ab_pf=1.0)
+
+    g.apply(cg.default_pass_manager())
+    for _ in range(3):
+        g.execute()
+        einsums.permute("j,i <- i,j", te["C"], te["A"], c_pf=0.5, a_pf=1.0)  # eager oracle
+        einsums.einsum("ij <- ik ; kj", te["C"], te["D"], te["E"], c_pf=1.0, ab_pf=1.0)
+        assert_close(_gather(tg["C"], 4, 4), _gather(te["C"], 4, 4))
