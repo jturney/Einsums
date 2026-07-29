@@ -845,6 +845,44 @@ bool TiledExpansion::run(Graph &graph) {
                         fmt::format("projected {} tiles exceeds the {}-node budget", p.a_coords.size() + p.leftover.size(), _max_nodes));
                     continue;
                 }
+
+                // Price both lowerings for the emit-site gate. A permute is pure
+                // memory traffic, so per-tile is a per-dispatch overhead on a tiny
+                // move -- the cost that made a blocked rank-4 permute explode into
+                // hundreds of near-free nodes -- while densified pays gather + one
+                // whole-tensor permute + scatter.
+                {
+                    double const overhead = _cost_model.node_overhead_us(Target::CPU);
+                    size_t const elem     = c_h.element_size;
+                    double       tiled    = 0.0;
+                    for (size_t i = 0; i < p.a_coords.size(); ++i) {
+                        size_t const bytes = tile_bytes(av, p.a_coords[i], elem) //
+                                             + (is_zero(p.beta) ? 1 : 2) * tile_bytes(cv, p.c_coords[i], elem);
+                        tiled += _cost_model.estimate_memory_time_us(bytes, Target::CPU) + overhead;
+                    }
+                    for (auto const &co : p.leftover) {
+                        tiled += _cost_model.estimate_memory_time_us(2 * tile_bytes(cv, co, elem), Target::CPU) + overhead;
+                    }
+                    p.est_tiled_us = tiled;
+
+                    size_t dense_elems = 1;
+                    for (auto const &axis : *cv.sizes) {
+                        size_t ext = 0;
+                        for (int const s : axis) {
+                            ext += static_cast<size_t>(s);
+                        }
+                        dense_elems *= ext;
+                    }
+                    size_t const dense_bytes = dense_elems * elem;
+                    // Gather reads the A tiles and writes the buffer; the permute
+                    // reads and writes whole buffers; the scatter reads the result
+                    // and writes (for beta != 0 also reads) the C tiles.
+                    p.est_dense_us = _cost_model.estimate_memory_time_us(2 * dense_bytes, Target::CPU)                           //
+                                     + _cost_model.estimate_memory_time_us(2 * dense_bytes, Target::CPU)                         //
+                                     + _cost_model.estimate_memory_time_us((is_zero(p.beta) ? 2 : 3) * dense_bytes, Target::CPU) //
+                                     + 4 * overhead;
+                }
+
                 tiles_of(c_id, cv).insert(p.c_coords.begin(), p.c_coords.end());
                 if (planning) {
                     plans.push_back(std::move(p));
@@ -1270,7 +1308,159 @@ bool TiledExpansion::run(Graph &graph) {
     };
     std::vector<GatheredBuffer> gathered;
 
-    auto emit_densified = [&graph, &gathered, this](Plan const &pl, std::vector<Node> &out) -> bool {
+    // Dense extent of an operand axis is the sum of its tile sizes; a tile's
+    // offset along that axis is the prefix sum below its grid coordinate.
+    auto dense_dims = [](TiledView const &v) {
+        std::vector<size_t> d(v.rank, 0);
+        for (size_t ax = 0; ax < v.rank; ++ax) {
+            for (int const sz : (*v.sizes)[ax]) {
+                d[ax] += static_cast<size_t>(sz);
+            }
+        }
+        return d;
+    };
+
+    // Where one tile lands in the dense buffer, as runs the executor can copy
+    // without consulting anything. Both sides are column-major, so the buffer's
+    // axis 0 and the tile's are equally contiguous and a run is the tile's
+    // extent along it.
+    auto window_of = [](TiledView const &v, std::vector<int> const &co, std::vector<size_t> const &dims) {
+        std::vector<size_t> stride(v.rank, 1);
+        for (size_t ax = 1; ax < v.rank; ++ax) {
+            stride[ax] = stride[ax - 1] * dims[ax - 1];
+        }
+        auto extent_at = [&](size_t ax) { return static_cast<size_t>((*v.sizes)[ax][static_cast<size_t>(co[ax])]); };
+
+        TileWindow w;
+        w.id = v.tile_id(co);
+        for (size_t ax = 0; ax < v.rank; ++ax) {
+            size_t offset = 0;
+            for (int k = 0; k < co[ax]; ++k) {
+                offset += static_cast<size_t>((*v.sizes)[ax][static_cast<size_t>(k)]);
+            }
+            w.base += offset * stride[ax];
+        }
+        w.run = extent_at(0);
+        for (size_t ax = 1; ax < v.rank; ++ax) {
+            w.extent.push_back(extent_at(ax));
+            w.step.push_back(stride[ax]);
+            w.runs *= extent_at(ax);
+        }
+        return w;
+    };
+
+    // Gather one tiled operand into a fresh dense buffer: zero, then copy every
+    // stored tile (an absent tile is a structural zero, which is exactly what the
+    // zeroed buffer already holds). Reuses a buffer already holding this exact
+    // tile set if one is still valid, in which case no node is emitted at all.
+    // Shared by the densified einsum and densified permute lowerings.
+    auto make_dense_gather = [&]<typename T>(T /*tag*/, TiledView const &v, std::vector<size_t> const &dims, char const *what,
+                                             std::vector<Node> &out) -> TensorId {
+        using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
+
+        std::vector<TileWindow> windows;
+        std::vector<TensorId>   ins;
+        for (auto const &co : v.coords()) {
+            windows.push_back(window_of(v, co, dims));
+            ins.push_back(windows.back().id);
+        }
+        for (auto const &have : gathered) {
+            if (have.dims == dims && have.sources == ins) {
+                ++_num_gathers_reused;
+                return have.buffer;
+            }
+        }
+
+        auto *buf = new Dense(fmt::format("densify_{}", what), dims);
+        graph.adopt([buf]() { delete buf; });
+        TensorId const buf_id = graph.register_tensor(make_handle(*buf, 0));
+
+        Node g;
+        g.id      = graph.reserve_node_id();
+        g.kind    = OpKind::TileGather;
+        g.label   = fmt::format("tile_gather({})", what);
+        g.inputs  = ins;
+        g.outputs = {buf_id};
+        Graph *gp = &graph;
+        g.execute = [gp, buf, windows = std::move(windows)]() {
+            buf->zero();
+            T *dest = buf->data();
+            for (auto const &w : windows) {
+                T const *tile = static_cast<Dense const *>(gp->tensor(w.id).tensor_ptr)->data();
+                for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
+                    T       *d = dest + buffer_offset;
+                    T const *s = tile + tile_offset;
+                    for (size_t i = 0; i < w.run; ++i) {
+                        d[i] = s[i];
+                    }
+                });
+            }
+        };
+        out.push_back(std::move(g));
+        gathered.push_back(
+            {.dims = dims, .sources = ins, .source_set = std::unordered_set<TensorId>(ins.begin(), ins.end()), .buffer = buf_id});
+        return buf_id;
+    };
+
+    // Scatter a dense result buffer back into the given output tiles, each as
+    // C_tile = pf * C_tile + dense_slice (pf == 0 is a pure overwrite). Shared by
+    // the densified einsum and densified permute lowerings.
+    auto make_dense_scatter = [&]<typename T>(T /*tag*/, GeneralRuntimeTensor<T, std::allocator<T>> *bc, TensorId idc, TiledView const &dst,
+                                              std::vector<size_t> const &dc, std::vector<std::vector<int>> const &c_tiles,
+                                              std::vector<PrefactorScalar> const &c_tile_pf, std::vector<Node> &out) {
+        using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
+
+        std::vector<TileWindow>      dsts;
+        std::vector<PrefactorScalar> pfs;
+        std::vector<TensorId>        outs;
+        for (size_t i = 0; i < c_tiles.size(); ++i) {
+            dsts.push_back(window_of(dst, c_tiles[i], dc));
+            pfs.push_back(c_tile_pf[i]);
+            outs.push_back(dsts.back().id);
+        }
+        Node sc;
+        sc.id     = graph.reserve_node_id();
+        sc.kind   = OpKind::TileScatter;
+        sc.label  = "tile_scatter(C)";
+        sc.inputs = {idc};
+        // A nonzero prefactor reads the destination, so declare it an input too
+        // (bug-1009's RMW convention) or a later pass may reorder past the read.
+        for (size_t i = 0; i < outs.size(); ++i) {
+            if (!is_zero(pfs[i])) {
+                sc.inputs.push_back(outs[i]);
+            }
+        }
+        sc.outputs = outs;
+        Graph *gp  = &graph;
+        sc.execute = [gp, bc, dsts = std::move(dsts), pfs = std::move(pfs)]() {
+            T const *source = bc->data();
+            for (size_t i = 0; i < dsts.size(); ++i) {
+                auto const &w    = dsts[i];
+                T          *tile = static_cast<Dense *>(gp->tensor(w.id).tensor_ptr)->data();
+                if (is_zero(pfs[i])) {
+                    for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
+                        T const *s = source + buffer_offset;
+                        T       *d = tile + tile_offset;
+                        for (size_t k = 0; k < w.run; ++k) {
+                            d[k] = s[k];
+                        }
+                    });
+                } else {
+                    T const pf = as<T>(pfs[i]);
+                    for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
+                        T const *s = source + buffer_offset;
+                        T       *d = tile + tile_offset;
+                        for (size_t k = 0; k < w.run; ++k) {
+                            d[k] = pf * d[k] + s[k];
+                        }
+                    });
+                }
+            }
+        };
+        out.push_back(std::move(sc));
+    };
+
+    auto emit_densified = [&](Plan const &pl, std::vector<Node> &out) -> bool {
         size_t const ra = pl.src_a.rank, rb = pl.src_b.rank, rc = pl.dst.rank;
 
         // The executors walk their odometer on the stack; decline rather than
@@ -1279,47 +1469,6 @@ bool TiledExpansion::run(Graph &graph) {
         if (ra > kMaxWindowRank || rb > kMaxWindowRank || rc > kMaxWindowRank) {
             return false;
         }
-
-        // Dense extent of an operand axis is the sum of its tile sizes; a tile's
-        // offset along that axis is the prefix sum below its grid coordinate.
-        auto dense_dims = [](TiledView const &v) {
-            std::vector<size_t> d(v.rank, 0);
-            for (size_t ax = 0; ax < v.rank; ++ax) {
-                for (int const sz : (*v.sizes)[ax]) {
-                    d[ax] += static_cast<size_t>(sz);
-                }
-            }
-            return d;
-        };
-
-        // Where one tile lands in the dense buffer, as runs the executor can copy
-        // without consulting anything. Both sides are column-major, so the buffer's
-        // axis 0 and the tile's are equally contiguous and a run is the tile's
-        // extent along it.
-        auto window_of = [](TiledView const &v, std::vector<int> const &co, std::vector<size_t> const &dims) {
-            std::vector<size_t> stride(v.rank, 1);
-            for (size_t ax = 1; ax < v.rank; ++ax) {
-                stride[ax] = stride[ax - 1] * dims[ax - 1];
-            }
-            auto extent_at = [&](size_t ax) { return static_cast<size_t>((*v.sizes)[ax][static_cast<size_t>(co[ax])]); };
-
-            TileWindow w;
-            w.id = v.tile_id(co);
-            for (size_t ax = 0; ax < v.rank; ++ax) {
-                size_t offset = 0;
-                for (int k = 0; k < co[ax]; ++k) {
-                    offset += static_cast<size_t>((*v.sizes)[ax][static_cast<size_t>(k)]);
-                }
-                w.base += offset * stride[ax];
-            }
-            w.run = extent_at(0);
-            for (size_t ax = 1; ax < v.rank; ++ax) {
-                w.extent.push_back(extent_at(ax));
-                w.step.push_back(stride[ax]);
-                w.runs *= extent_at(ax);
-            }
-            return w;
-        };
 
         std::vector<size_t> const da = dense_dims(pl.src_a), db = dense_dims(pl.src_b), dc = dense_dims(pl.dst);
 
@@ -1340,64 +1489,15 @@ bool TiledExpansion::run(Graph &graph) {
         }
 
         bool ok = true;
-        detail::dispatch_scalar_type(pl.dtype, [&]<typename T>(T /*tag*/) {
+        detail::dispatch_scalar_type(pl.dtype, [&]<typename T>(T tag) {
             using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
 
             auto *bc = new Dense("densify_c", dc);
             graph.adopt([bc]() { delete bc; });
             TensorId const idc = graph.register_tensor(make_handle(*bc, 0));
 
-            // Gather: zero, then copy every tile that exists. An absent tile is a
-            // structural zero, which is exactly what the zeroed buffer already holds.
-            // Reuses a buffer already holding this exact tile set if one is still
-            // valid, in which case no node is emitted at all.
-            auto make_gather = [&](TiledView const &v, std::vector<size_t> const &dims, char const *what) {
-                std::vector<TileWindow> windows;
-                std::vector<TensorId>   ins;
-                for (auto const &co : v.coords()) {
-                    windows.push_back(window_of(v, co, dims));
-                    ins.push_back(windows.back().id);
-                }
-                for (auto const &have : gathered) {
-                    if (have.dims == dims && have.sources == ins) {
-                        ++_num_gathers_reused;
-                        return have.buffer;
-                    }
-                }
-
-                auto *buf = new Dense(fmt::format("densify_{}", what), dims);
-                graph.adopt([buf]() { delete buf; });
-                TensorId const buf_id = graph.register_tensor(make_handle(*buf, 0));
-
-                Node g;
-                g.id      = graph.reserve_node_id();
-                g.kind    = OpKind::TileGather;
-                g.label   = fmt::format("tile_gather({})", what);
-                g.inputs  = ins;
-                g.outputs = {buf_id};
-                Graph *gp = &graph;
-                g.execute = [gp, buf, windows = std::move(windows)]() {
-                    buf->zero();
-                    T *dest = buf->data();
-                    for (auto const &w : windows) {
-                        T const *tile = static_cast<Dense const *>(gp->tensor(w.id).tensor_ptr)->data();
-                        for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
-                            T       *d = dest + buffer_offset;
-                            T const *s = tile + tile_offset;
-                            for (size_t i = 0; i < w.run; ++i) {
-                                d[i] = s[i];
-                            }
-                        });
-                    }
-                };
-                out.push_back(std::move(g));
-                gathered.push_back(
-                    {.dims = dims, .sources = ins, .source_set = std::unordered_set<TensorId>(ins.begin(), ins.end()), .buffer = buf_id});
-                return buf_id;
-            };
-
-            TensorId const ida = make_gather(pl.src_a, da, "a");
-            TensorId const idb = make_gather(pl.src_b, db, "b");
+            TensorId const ida = make_dense_gather(tag, pl.src_a, da, "a", out);
+            TensorId const idb = make_dense_gather(tag, pl.src_b, db, "b", out);
 
             // One dense contraction. c_pf is 0 because the scatter applies the real
             // one per output tile; ab_pf rides along here as it would per tile.
@@ -1406,56 +1506,43 @@ bool TiledExpansion::run(Graph &graph) {
 
             // Scatter into exactly the tiles the per-tile path would have written,
             // so symmetry-forbidden output blocks are still never created.
-            std::vector<TileWindow>      dsts;
-            std::vector<PrefactorScalar> pfs;
-            std::vector<TensorId>        outs;
-            for (size_t i = 0; i < c_tiles.size(); ++i) {
-                dsts.push_back(window_of(pl.dst, c_tiles[i], dc));
-                pfs.push_back(c_tile_pf[i]);
-                outs.push_back(dsts.back().id);
-            }
-            Node sc;
-            sc.id     = graph.reserve_node_id();
-            sc.kind   = OpKind::TileScatter;
-            sc.label  = "tile_scatter(C)";
-            sc.inputs = {idc};
-            // A nonzero prefactor reads the destination, so declare it an input too
-            // (bug-1009's RMW convention) or a later pass may reorder past the read.
-            for (size_t i = 0; i < outs.size(); ++i) {
-                if (!is_zero(pfs[i])) {
-                    sc.inputs.push_back(outs[i]);
-                }
-            }
-            sc.outputs = outs;
-            Graph *gp  = &graph;
-            sc.execute = [gp, bc, dsts = std::move(dsts), pfs = std::move(pfs)]() {
-                T const *source = bc->data();
-                for (size_t i = 0; i < dsts.size(); ++i) {
-                    auto const &w    = dsts[i];
-                    T          *tile = static_cast<Dense *>(gp->tensor(w.id).tensor_ptr)->data();
-                    if (is_zero(pfs[i])) {
-                        for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
-                            T const *s = source + buffer_offset;
-                            T       *d = tile + tile_offset;
-                            for (size_t k = 0; k < w.run; ++k) {
-                                d[k] = s[k];
-                            }
-                        });
-                    } else {
-                        T const pf = as<T>(pfs[i]);
-                        for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
-                            T const *s = source + buffer_offset;
-                            T       *d = tile + tile_offset;
-                            for (size_t k = 0; k < w.run; ++k) {
-                                d[k] = pf * d[k] + s[k];
-                            }
-                        });
-                    }
-                }
-            };
-            out.push_back(std::move(sc));
+            make_dense_scatter(tag, bc, idc, pl.dst, dc, c_tiles, c_tile_pf, out);
         });
         return ok;
+    };
+
+    // Densified permute: gather A into a dense buffer, permute ONCE, scatter into
+    // C. The gathered buffer holds zeros wherever A has no tile, so the permuted
+    // buffer is zero over every C tile the permutation never reaches -- scattering
+    // C_tile = beta*C_tile + slice over targets AND leftovers alike therefore
+    // reproduces the leftover-scale rule with no separate scale nodes.
+    auto emit_densified_permute = [&](Plan const &pl, std::vector<Node> &out) -> bool {
+        if (pl.src_a.rank > kMaxWindowRank || pl.dst.rank > kMaxWindowRank) {
+            return false;
+        }
+
+        std::vector<size_t> const da = dense_dims(pl.src_a), dc = dense_dims(pl.dst);
+
+        std::vector<std::vector<int>> c_tiles = pl.c_coords;
+        c_tiles.insert(c_tiles.end(), pl.leftover.begin(), pl.leftover.end());
+        std::vector<PrefactorScalar> const c_tile_pf(c_tiles.size(), pl.beta);
+
+        detail::dispatch_scalar_type(pl.dtype, [&]<typename T>(T tag) {
+            using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
+
+            auto *bc = new Dense("densify_c", dc);
+            graph.adopt([bc]() { delete bc; });
+            TensorId const idc = graph.register_tensor(make_handle(*bc, 0));
+
+            TensorId const ida = make_dense_gather(tag, pl.src_a, da, "a", out);
+
+            // One dense permute carrying alpha; beta is 0 here because the scatter
+            // applies the real beta per output tile.
+            out.push_back(emit_tile_permute(ida, idc, pl.pspec, pl.alpha, PrefactorScalar{double{0}}, pl.dtype, "densified_permute"));
+
+            make_dense_scatter(tag, bc, idc, pl.dst, dc, c_tiles, c_tile_pf, out);
+        });
+        return true;
     };
 
     // Scales of a set of output tiles, fused or one per tile. Every leftover set --
@@ -1538,7 +1625,17 @@ bool TiledExpansion::run(Graph &graph) {
                                                  fmt::format("tile_axpy({})", fmt::join(coord, ","))));
             }
             break;
-        case Plan::Kind::Permute:
+        case Plan::Kind::Permute: {
+            // Same time-based gate as the contraction: per-tile pays a dispatch
+            // per tiny move, densified pays gather + one permute + scatter.
+            bool const densify =
+                !pl.a_coords.empty() && (_densify == Densify::Always || (_densify == Densify::Auto && pl.est_dense_us < pl.est_tiled_us));
+            if (densify && emit_densified_permute(pl, emitted)) {
+                ++_num_densified;
+                report(2, fmt::format("densified '{}': {} tile permutes -> gather+permute+scatter (est {:.1f} us vs {:.1f} us)",
+                                      nodes[pl.index].label, pl.a_coords.size(), pl.est_dense_us, pl.est_tiled_us));
+                break;
+            }
             emitted.reserve(pl.a_coords.size() + pl.leftover.size());
             for (size_t i = 0; i < pl.a_coords.size(); ++i) {
                 emitted.push_back(emit_tile_permute(pl.src_a.tile_id(pl.a_coords[i]), pl.dst.tile_id(pl.c_coords[i]), pl.pspec, pl.alpha,
@@ -1546,6 +1643,7 @@ bool TiledExpansion::run(Graph &graph) {
             }
             append_scales(pl.dst, pl.leftover, pl.leftover_pf, pl.dtype, pl.elem_size, emitted);
             break;
+        }
         case Plan::Kind::Dot: {
             std::vector<TensorId> as_, bs;
             as_.reserve(pl.a_coords.size());

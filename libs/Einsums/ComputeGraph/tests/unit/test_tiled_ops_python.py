@@ -801,3 +801,53 @@ def test_leftover_scales_cover_tiles_created_later_in_the_graph():
         einsums.permute("j,i <- i,j", te["C"], te["A"], c_pf=0.5, a_pf=1.0)  # eager oracle
         einsums.einsum("ij <- ik ; kj", te["C"], te["D"], te["E"], c_pf=1.0, ab_pf=1.0)
         assert_close(_gather(tg["C"], 4, 4), _gather(te["C"], 4, 4))
+
+
+def test_many_tile_permute_densifies():
+    """A permute over many small tiles must take the densified lowering
+    (gather + one dense permute + scatter), not one node per tile: per-tile
+    permutes on tiny blocks are pure dispatch overhead (the toy CCSD's blocked
+    config spent 96% of its nodes on them). The scatter's uniform beta also
+    covers leftover C tiles, so the numerics keep the leftover-scale rule.
+    Eager, replay by replay, is the oracle."""
+    import itertools
+    import json
+
+    rng = np.random.default_rng(19)
+    grid = [[2] * 8, [2] * 8]  # 64 tiles of 2x2: firmly in densify territory
+
+    def sparse(name, coords, ref):
+        t = DTYPE_TO_TRT[np.float64](name, grid)
+        for co in coords:
+            t.add_tile(list(co))
+        t.materialize()
+        off = t.tile_offsets()
+        for co in coords:
+            a = np.asarray(t.tile_view(list(co)))
+            r0, c0 = off[0][co[0]], off[1][co[1]]
+            a[...] = ref[r0 : r0 + a.shape[0], c0 : c0 + a.shape[1]]
+        return t
+
+    a_coords = [(i, j) for i, j in itertools.product(range(8), range(8)) if (i + j) % 2 == 0]
+    c_extra = [(0, 1), (3, 4)]  # stored C tiles the transpose never targets: leftover
+    aref = rng.standard_normal((16, 16))
+    cref = rng.standard_normal((16, 16))
+    mk = lambda tag: {
+        "A": sparse(f"A{tag}", a_coords, aref),
+        "C": sparse(f"C{tag}", c_extra, cref),
+    }
+    tg, te = mk("g"), mk("e")
+
+    g = cg.Graph("permute_densify")
+    with cg.capture(g):
+        einsums.permute("j,i <- i,j", tg["C"], tg["A"], c_pf=0.5, a_pf=2.0)
+
+    g.apply(cg.default_pass_manager())
+    labels = [n.get("label", "") for n in json.loads(g.to_json()).get("nodes", [])]
+    assert any(l == "densified_permute" for l in labels), labels
+    assert not any(l.startswith("tile_permute(") for l in labels), labels
+
+    for _ in range(3):
+        g.execute()
+        einsums.permute("j,i <- i,j", te["C"], te["A"], c_pf=0.5, a_pf=2.0)  # eager oracle
+        assert_close(_gather(tg["C"], 16, 16), _gather(te["C"], 16, 16))

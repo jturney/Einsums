@@ -34,14 +34,13 @@ a convergence scalar drives the predicate. Per-tile-block work via cg.tile_view
 is not needed at this size (the v^4 ladder is tiny); it becomes the blocking
 tool when a real system outgrows whole-tensor contractions.
 
-Known state of the tiled-blocked column: it currently measures the PER-TILE
-engine, not densified replay. TiledExpansion declines to densify this body
-because the tiled permute and tiled dot nodes are opaque to it (no expandable
-descriptor), and its correctness rule excludes every tensor an inexpandable
-node touches - which cascades through the whole iteration. Teaching
-TiledExpansion to expand Permute and Dot is the recorded follow-up; when it
-lands, the blocked column should drop toward the dense one at this size, the
-way the original residual-only toy did (140 densified nodes, ~4 ms replay).
+Known state of the tiled-blocked column: the body fully expands and mostly
+densifies (~160 nodes; permutes and contractions lower to gather + one dense
+op + scatter under the cost gate, elementwise ops stay per-tile or fuse), so
+at this size it replays within ~2x of dense. The residual gap is the
+gather/scatter traffic and per-tile-block bookkeeping the one-tile configs
+never pay; it shrinks as tiles grow and would invert if real block sparsity
+let expansion skip work the dense path cannot.
 
 Run with the Einsums build on PYTHONPATH, using the conda-env Python::
 
