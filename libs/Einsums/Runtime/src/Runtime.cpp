@@ -303,7 +303,9 @@ int Runtime::run(std::function<EinsumsMainFunctionType> const &func) {
     // Set the state to running.
     state(RuntimeState::Running);
 
-    // Wait for profiler viewer to connect if requested
+    // Wait for profiler viewer to connect if requested. Compiled out with the
+    // profiler: there is no Profiler type to ask, and nothing to wait for.
+#if defined(EINSUMS_HAVE_PROFILER)
     {
         auto &gc          = GlobalConfigMap::get_singleton();
         bool  wait_viewer = gc.get_bool("profiler-wait-for-viewer", false);
@@ -323,6 +325,7 @@ int Runtime::run(std::function<EinsumsMainFunctionType> const &func) {
             }
         }
     }
+#endif
 
     // Once we start using a thread pool / threading manager we can
     // pass the function to the pool and have the manager handle it.

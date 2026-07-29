@@ -21,12 +21,16 @@ function(_einsums_snake_to_camel out_var snake)
   set(${out_var} "${_camel}" PARENT_SCOPE)
 endfunction()
 
-set(profile_tests
-    ProfileRingBuffer.cpp
-    ProfileConsumer.cpp
-    ProfileAnnotations.cpp
-    test_profile_python.py
-)
+# The C++ suites drive the recording machinery directly (ring buffers, the
+# aggregating consumer, the annotation tree), none of which is compiled when the
+# profiler is off. The Python suite runs either way: it covers the binding
+# surface, which stays in place as no-ops, and skips the assertions that need
+# something to have been recorded.
+set(profile_tests test_profile_python.py)
+
+if(EINSUMS_WITH_PROFILER)
+  list(PREPEND profile_tests ProfileRingBuffer.cpp ProfileConsumer.cpp ProfileAnnotations.cpp)
+endif()
 
 foreach(test ${profile_tests})
   # Extract base name of test Example1.cpp -> Example1, Example.2.hip -> Example

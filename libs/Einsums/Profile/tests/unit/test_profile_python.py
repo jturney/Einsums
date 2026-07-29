@@ -21,6 +21,12 @@ suites cover, but through the pybind surface:
   * ``set_thread_name`` does not raise.
   * Overhead and counter accessors return non-negative values that increase
     monotonically across push/pop pairs.
+
+A build with ``EINSUMS_WITH_PROFILER=OFF`` keeps the whole surface callable but
+records nothing, so the cases that read something back are skipped there and
+replaced by ``test_disabled_build_records_nothing``. Everything else runs in
+both configurations: that the API stays callable is the point of the no-op
+build, not an accident of it.
 """
 
 from __future__ import annotations
@@ -30,12 +36,18 @@ import pytest
 
 import einsums.profile as prof
 
+recording = pytest.mark.skipif(
+    not prof.available(),
+    reason="requires EINSUMS_WITH_PROFILER=ON; this build records nothing",
+)
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # section() context manager
 # ──────────────────────────────────────────────────────────────────────────
 
 
+@recording
 def test_section_push_pop_balance():
     """A single section must increment push and pop counts by exactly one."""
     push_before = prof.total_push_count()
@@ -46,6 +58,7 @@ def test_section_push_pop_balance():
     assert prof.total_pop_count() == pop_before + 1
 
 
+@recording
 def test_section_nesting_balance():
     """Nested sections push/pop in LIFO order."""
     push_before = prof.total_push_count()
@@ -64,6 +77,7 @@ class _Sentinel(Exception):
     pass
 
 
+@recording
 def test_section_pops_on_exception():
     """contextmanager.__exit__ must call pop() even when the body raises."""
     push_before = prof.total_push_count()
@@ -132,6 +146,7 @@ def test_flush_is_idempotent():
     prof.flush()
 
 
+@recording
 def test_print_report_runs(capfd):
     with prof.section("report-target"):
         prof.annotate("kind", "gemm")
@@ -141,6 +156,7 @@ def test_print_report_runs(capfd):
     assert "report-target" in out
 
 
+@recording
 def test_print_report_detailed_runs(capfd):
     with prof.section("detailed-target"):
         pass
@@ -150,6 +166,7 @@ def test_print_report_detailed_runs(capfd):
     assert "detailed-target" in out
 
 
+@recording
 def test_export_json_round_trip(tmp_path):
     with prof.section("export"):
         prof.annotate("M", 8)
@@ -179,10 +196,13 @@ def test_export_json_round_trip(tmp_path):
 
 def test_current_thread_id_stable():
     """Two calls on the same thread return the same id."""
-    a = prof.current_thread_id()
-    b = prof.current_thread_id()
-    assert a == b
-    assert a > 0  # platform-specific but never zero in practice
+    assert prof.current_thread_id() == prof.current_thread_id()
+
+
+@recording
+def test_current_thread_id_is_registered():
+    """A recording build hands every thread a real id."""
+    assert prof.current_thread_id() > 0  # platform-specific but never zero
 
 
 def test_set_thread_name_does_not_raise():
@@ -194,6 +214,7 @@ def test_set_thread_name_does_not_raise():
 # ──────────────────────────────────────────────────────────────────────────
 
 
+@recording
 def test_counters_are_monotone_and_nonnegative():
     p_before = prof.total_push_count()
     q_before = prof.total_pop_count()
@@ -203,3 +224,36 @@ def test_counters_are_monotone_and_nonnegative():
     assert prof.total_pop_count() >= q_before + 1
     assert prof.avg_push_overhead_ns() >= 0.0
     assert prof.avg_pop_overhead_ns() >= 0.0
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# EINSUMS_WITH_PROFILER=OFF
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(prof.available(), reason="requires EINSUMS_WITH_PROFILER=OFF")
+def test_disabled_build_records_nothing(tmp_path, capfd):
+    """The readers stay callable and stay empty, rather than raising.
+
+    Everything above already established that the writers are callable here;
+    this pins down what the readers say afterwards, so that a build with the
+    profiler compiled out degrades to silence instead of to an error.
+    """
+    with prof.section("nothing"):
+        prof.annotate("kind", "gemm")
+        prof.mem_alloc(1024)
+    prof.flush()
+
+    assert prof.total_push_count() == 0
+    assert prof.total_pop_count() == 0
+    assert prof.avg_push_overhead_ns() == 0.0
+    assert prof.avg_pop_overhead_ns() == 0.0
+    assert prof.current_thread_id() == 0
+
+    out_path = tmp_path / "profile.json"
+    assert prof.export_json(str(out_path)) is None
+    assert not out_path.exists()
+
+    prof.print_report(detailed=True)
+    out, _ = capfd.readouterr()
+    assert out == ""

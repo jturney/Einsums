@@ -11,8 +11,6 @@
 #include <sstream>
 #include <thread>
 
-#if defined(EINSUMS_HAVE_PROFILER)
-
 using namespace einsums::profile;
 
 // Helper: recursively search the AggNode tree for a node with a given name.
@@ -117,5 +115,3 @@ TEST_CASE("ProfileAnnotate macro works", "[profiler][annotations]") {
     REQUIRE(node->annotations.count("key") > 0);
     REQUIRE(node->annotations.at("key") == "value");
 }
-
-#endif

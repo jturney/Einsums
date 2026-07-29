@@ -11,8 +11,6 @@
 #include <sstream>
 #include <thread>
 
-#if defined(EINSUMS_HAVE_PROFILER)
-
 using namespace einsums::profile;
 
 // Helper: recursively search the AggNode tree for a node with a given name.
@@ -128,5 +126,3 @@ TEST_CASE("LabeledSection macro works", "[profiler][consumer]") {
     auto const *node = find_node_any_thread(thread_map, "labeled_macro_42");
     REQUIRE(node != nullptr);
 }
-
-#endif

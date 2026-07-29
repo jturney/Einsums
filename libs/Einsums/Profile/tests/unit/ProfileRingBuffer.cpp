@@ -13,8 +13,6 @@
 #include <thread>
 #include <vector>
 
-#if defined(EINSUMS_HAVE_PROFILER)
-
 using namespace einsums::profile;
 
 TEST_CASE("RingBuffer basic push/pop", "[profiler][ringbuffer]") {
@@ -121,5 +119,3 @@ TEST_CASE("RingBuffer with Event struct", "[profiler][ringbuffer]") {
     REQUIRE(pop_evt.name_id == 42);
     REQUIRE(pop_evt.line == 100);
 }
-
-#endif

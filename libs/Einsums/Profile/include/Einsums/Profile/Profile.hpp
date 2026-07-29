@@ -530,6 +530,14 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void mem_free(int64_t bytes) {
 // having to bind the Profiler class itself (which holds non-copyable
 // unique_ptrs and exposes an ostream& on print()).
 
+/// Whether this build records anything at all. ``False`` means einsums was
+/// compiled with ``EINSUMS_WITH_PROFILER=OFF``: the whole API below is still
+/// callable and still does nothing, so instrumented code needs no branch of its
+/// own, but no report, session or counter will ever be non-empty.
+APIARY_EXPOSE APIARY_MODULE("profile") constexpr bool available() {
+    return true;
+}
+
 /// Begin a profile region. Pair it with ``pop()``, usually through the
 /// ``einsums.profile.section(name)`` context manager.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void push(std::string const &name, std::string const &file = "", int line = 0,
@@ -639,6 +647,154 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 #    define ProfileMemFree(bytes)          ::einsums::profile::mem_free(static_cast<int64_t>(bytes))
 
 #else
+
+// ---------------------- Disabled-profiler shims ----------------------
+//
+// With EINSUMS_WITH_PROFILER=OFF the instrumentation API still exists and does
+// nothing, so an instrumented call site needs no preprocessor guard of its own.
+// Every entry point below is an empty inline function, which an optimizing build
+// erases along with the call.
+//
+// What does not survive is the profiler's machinery: the ring buffers, the
+// aggregating consumer and the TCP server have no stand-in, because a caller
+// that wants a Server wants to talk to something. The handful of sites that
+// reach for @ref Profiler::server, a Consumer or a BenchmarkResultEntry stay
+// guarded by EINSUMS_HAVE_PROFILER, and so does any surrounding work (reading
+// profiler-* options, opening a report file) that only exists to feed them.
+
+/// Stand-in for the recording profiler. Mirrors the recording type's
+/// instrumentation and lifecycle entry points; the reporting and transport ones
+/// (``server``, ``consumer``, ``export_json``, the overhead counters) are absent
+/// on purpose.
+struct Profiler {
+    static Profiler &instance() {
+        static Profiler p;
+        return p;
+    }
+
+    [[nodiscard]] bool enabled() const { return false; }
+    void               set_enabled(bool /*on*/) {}
+
+    void push(std::string const & /*name*/, std::string const & /*file*/ = "", int /*line*/ = 0, std::string const & /*func*/ = "") {}
+    void push_interned(uint32_t /*name_id*/, uint32_t /*file_id*/, uint32_t /*func_id*/, int /*line*/, std::string_view /*name*/ = {},
+                       std::string_view /*file*/ = {}, std::string_view /*func*/ = {}) {}
+    void pop() {}
+
+    void set_thread_name(std::string const & /*name*/) {}
+    void flush() {}
+    void shutdown() {}
+    void print(bool /*detailed*/ = false, std::ostream & /*os*/ = std::cout) {}
+
+    static uint32_t current_thread_id() { return 0; }
+};
+
+/// Stand-in for an interned call site. Interns nothing, so it holds nothing.
+struct ZoneSite {
+    constexpr ZoneSite(std::string_view /*name*/, char const * /*file*/, int /*line*/, char const * /*func*/) {}
+};
+
+/// Stand-in for a zone. Note that the name still has to be *built* by the caller
+/// unless it arrives through @ref LabeledSection, which drops the whole
+/// expression at preprocessing time.
+struct ScopedZone {
+    explicit ScopedZone(ZoneSite const & /*site*/) {}
+
+    template <typename MakeName>
+        requires std::invocable<MakeName>
+    ScopedZone(ZoneSite const & /*site*/, MakeName && /*make_name*/) {}
+
+    explicit ScopedZone(std::string const & /*name*/, std::string const & /*file*/ = "", int /*line*/ = 0,
+                        std::string const & /*func*/ = "") {}
+};
+
+// The einsums.profile Python surface stays intact so that an instrumented script
+// still runs against a build with the profiler compiled out, the same way an
+// instrumented translation unit still compiles. Parameters keep their names
+// because those names are the keyword arguments the bindings expose.
+
+/// Whether this build records anything at all. Always ``False`` here.
+APIARY_EXPOSE APIARY_MODULE("profile") constexpr bool available() {
+    return false;
+}
+
+/// Discard a string annotation. This build records nothing to attach it to.
+APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate([[maybe_unused]] std::string_view key,
+                                                            [[maybe_unused]] std::string_view value) {
+}
+
+/// Discard an integer annotation.
+APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate([[maybe_unused]] std::string_view key, [[maybe_unused]] int64_t value) {
+}
+
+/// Discard a floating-point annotation.
+APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate([[maybe_unused]] std::string_view key, [[maybe_unused]] double value) {
+}
+
+/// Discard a vector of dimension sizes.
+inline void annotate_dims([[maybe_unused]] std::string_view key, [[maybe_unused]] std::span<int64_t const> dims) {
+}
+
+/// Discard a memory allocation record.
+APIARY_EXPOSE APIARY_MODULE("profile") inline void mem_alloc([[maybe_unused]] int64_t bytes) {
+}
+
+/// Discard a memory deallocation record.
+APIARY_EXPOSE APIARY_MODULE("profile") inline void mem_free([[maybe_unused]] int64_t bytes) {
+}
+
+/// Begin a profile region that is not recorded.
+APIARY_EXPOSE APIARY_MODULE("profile") inline void push([[maybe_unused]] std::string const &name,
+                                                        [[maybe_unused]] std::string const &file = "", [[maybe_unused]] int line = 0,
+                                                        [[maybe_unused]] std::string const &func = "") {
+}
+
+/// End the innermost profile region.
+APIARY_EXPOSE APIARY_MODULE("profile") inline void pop() {
+}
+
+/// Drain the per-thread ring buffers, of which there are none.
+APIARY_EXPOSE APIARY_MODULE("profile") inline void flush() {
+}
+
+/// Print nothing: this build aggregates no report.
+APIARY_EXPOSE APIARY_MODULE("profile") inline void print_report([[maybe_unused]] bool detailed = false) {
+}
+
+/// Always ``None``: this build has no aggregated profile to write.
+APIARY_EXPOSE APIARY_MODULE("profile") inline std::optional<std::string> export_json(
+    [[maybe_unused]] std::string const &path = "einsums_profile.json") {
+    return std::nullopt;
+}
+
+/// Discard a thread name. No report names the calling thread.
+APIARY_EXPOSE APIARY_MODULE("profile") inline void set_thread_name([[maybe_unused]] std::string const &name) {
+}
+
+/// Always ``0``: threads are never registered with a profiler that is not there.
+APIARY_EXPOSE APIARY_MODULE("profile") inline uint32_t current_thread_id() {
+    return Profiler::current_thread_id();
+}
+
+/// Always ``0``: recording nothing costs nothing.
+APIARY_EXPOSE APIARY_MODULE("profile") inline double avg_push_overhead_ns() {
+    return 0.0;
+}
+
+/// Always ``0``: recording nothing costs nothing.
+APIARY_EXPOSE APIARY_MODULE("profile") inline double avg_pop_overhead_ns() {
+    return 0.0;
+}
+
+/// Always ``0``: pushes are not counted.
+APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_push_count() {
+    return 0;
+}
+
+/// Always ``0``: pops are not counted.
+APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
+    return 0;
+}
+
 #    define LabeledSection(...)
 #    define LabeledSection0()
 #    define LabeledSectionRuntime(...)

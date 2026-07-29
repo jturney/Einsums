@@ -20,6 +20,7 @@
 #     ./devtools/docker/run-ci-leg.sh gcc-openblas         # Linux/default/openblas RelWithDebInfo
 #     ./devtools/docker/run-ci-leg.sh gcc-mkl              # Linux/default/mkl RelWithDebInfo
 #     ./devtools/docker/run-ci-leg.sh clang-openblas       # Linux/clang/openblas RelWithDebInfo
+#     ./devtools/docker/run-ci-leg.sh no-profiler          # EINSUMS_WITH_PROFILER=OFF (BUILD_PYTHON=ON)
 #     ./devtools/docker/run-ci-leg.sh tsan                 # Sanitizers/thread (Debug, BUILD_PYTHON=ON)
 #     ./devtools/docker/run-ci-leg.sh asan                 # Sanitizers/address,leak,undefined (Debug)
 #
@@ -139,6 +140,16 @@ leg_settings() {
             BUILD_TYPE=RelWithDebInfo
             EXTRA=("-DEINSUMS_BUILD_PYTHON=ON")
             ;;
+        no-profiler)
+            # EINSUMS_WITH_PROFILER=OFF replaces the instrumentation API with
+            # no-op shims. Python stays ON: the einsums.profile bindings are
+            # generated from the shims, so leaving it OFF would skip the half
+            # of the configuration most likely to break.
+            COMPILER=clang
+            BLAS=openblas
+            BUILD_TYPE=RelWithDebInfo
+            EXTRA=("-DEINSUMS_WITH_PROFILER=OFF" "-DEINSUMS_BUILD_PYTHON=ON")
+            ;;
         tsan)
             COMPILER=default
             BLAS=openblas
@@ -164,7 +175,7 @@ leg_settings() {
             ;;
         *)
             echo "Unknown leg: $1" >&2
-            echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], intel, tsan, tsan-nopy, asan, windows-cross" >&2
+            echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], intel, no-profiler, tsan, tsan-nopy, asan, windows-cross" >&2
             echo "       (append -arm64 to any of the above for native arm64)" >&2
             exit 1
             ;;

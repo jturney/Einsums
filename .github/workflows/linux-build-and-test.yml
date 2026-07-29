@@ -37,6 +37,15 @@ jobs:
           - compiler: default
             cmake_extra: >
               -DEINSUMS_WITH_COVERAGE=ON
+          # EINSUMS_WITH_PROFILER=OFF swaps the whole instrumentation API for
+          # no-op shims, so nothing in the default matrix compiles that branch.
+          # One leg is enough to keep it from rotting again.
+          - compiler: clang
+            blas: openblas
+            build_type: RelWithDebInfo
+            variant: no-profiler
+            cmake_extra: >
+              -DEINSUMS_WITH_PROFILER=OFF
         exclude:
           # clang leg is openblas-only (mkl pairs with the intel toolchain).
           - compiler: clang
