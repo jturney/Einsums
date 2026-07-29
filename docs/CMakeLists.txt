@@ -171,6 +171,15 @@ else()
   set(EINSUMS_CONF_DOCUMENTATION_VERSION "${EINSUMS_VERSION_FULL}")
 endif()
 
+# The published site is versioned: tags deploy to /vX.Y.Z/, everything else
+# (main, local builds) identifies as /latest/. Drives html_baseurl and the
+# pydata theme's version switcher.
+if(EINSUMS_WITH_GIT_TAG MATCHES "^v[0-9]")
+  set(EINSUMS_DOCS_SWITCHER_VERSION "${EINSUMS_WITH_GIT_TAG}")
+else()
+  set(EINSUMS_DOCS_SWITCHER_VERSION "latest")
+endif()
+
 set(SPHINX_CONF_PY_DEST "${CMAKE_CURRENT_BINARY_DIR}/sphinx/conf.py")
 configure_file("${PROJECT_SOURCE_DIR}/cmake/templates/conf.py.in" ${SPHINX_CONF_PY_DEST} @ONLY)
 # conf.py is (re)written at configure time; without this dependency a

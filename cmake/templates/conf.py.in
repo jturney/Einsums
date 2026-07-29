@@ -323,10 +323,18 @@ html_theme_options = {
             "icon": "fa-brands fa-discord",
         },
     ],
-    "navbar_end": ["theme-switcher", "navbar-icon-links"],
+    "navbar_end": ["theme-switcher", "version-switcher", "navbar-icon-links"],
     # The compact search icon instead of the wide input field; the field plus
     # the version dropdown forces the icon links onto a second header row.
     "navbar_persistent": ["search-button"],
+    # The switcher is fetched client-side at page view, so local builds and
+    # the first deploy work before the file exists; check_switcher stays off
+    # so offline -W builds cannot fail on it.
+    "switcher": {
+        "json_url": "https://einsums.github.io/Einsums/switcher.json",
+        "version_match": "@EINSUMS_DOCS_SWITCHER_VERSION@",
+    },
+    "check_switcher": False,
     # The sidebar starts at the section level; deeper levels expand as the
     # reader descends. page-toc alone keeps the right sidebar to the local
     # outline (source links are disabled anyway).
@@ -338,6 +346,9 @@ html_theme_options = {
     # renders no banner.
     "announcement": "@EINSUMS_DOCS_ANNOUNCEMENT@",
 }
+
+# Canonical URL of this build's version directory on the published site.
+html_baseurl = 'https://einsums.github.io/Einsums/@EINSUMS_DOCS_SWITCHER_VERSION@/'
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,

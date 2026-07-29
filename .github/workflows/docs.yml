@@ -17,6 +17,10 @@ on:
       build_configure_extra_args:
         type: string
         required: false
+  # Manual rehearsal: builds and deploys a full miniature site (version dir,
+  # root redirect, switcher) under /dev-preview/ without touching the real
+  # versions or the site root.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -86,9 +90,55 @@ jobs:
           mkdir -p ${{ github.workspace }}/share/Einsums/docs/html
           cp -rv ${{ github.workspace }}/build/share/Einsums/docs/html/* ${{ github.workspace }}/share/Einsums/docs/html
 
-      - name: GitHub Pages Deploy
+      # The site is versioned: main deploys to /latest/, tags to /vX.Y.Z/, and
+      # the root gets a redirect page plus a switcher.json regenerated from
+      # every version directory present on gh-pages. A workflow_dispatch run
+      # rehearses the whole layout under /dev-preview/ instead.
+      - name: Compute deploy target
+        id: target
+        if: github.repository == 'Einsums/Einsums' && ( github.event_name == 'workflow_dispatch' || ( github.event_name == 'push' && ( startsWith( github.ref, 'refs/tags/' ) || github.ref == 'refs/heads/main' ) ) )
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "version=latest" >> "$GITHUB_OUTPUT"
+            echo "html_folder=dev-preview/latest" >> "$GITHUB_OUTPUT"
+            echo "root_folder=dev-preview" >> "$GITHUB_OUTPUT"
+          else
+            if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+              echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+              echo "html_folder=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            else
+              echo "version=latest" >> "$GITHUB_OUTPUT"
+              echo "html_folder=latest" >> "$GITHUB_OUTPUT"
+            fi
+            echo "root_folder=." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Assemble site root (redirect + switcher)
+        if: steps.target.outputs.version
+        run: |
+          git fetch origin gh-pages --depth 1 || true
+          mkdir -p site-root
+          python .github/scripts/generate_switcher.py \
+            --deploying "${{ steps.target.outputs.version }}" \
+            --out site-root/switcher.json
+          cp .github/pages-root/index.html site-root/index.html
+          touch site-root/.nojekyll
+
+      - name: Deploy version directory
         uses: JamesIves/github-pages-deploy-action@v4
-        if: github.event_name == 'push' && github.repository == 'Einsums/Einsums' && ( startsWith( github.ref, 'refs/tags/' ) || github.ref == 'refs/heads/main' )
+        if: steps.target.outputs.version
         with:
           branch: gh-pages
           folder: ${{ github.workspace }}/share/Einsums/docs/html
+          target-folder: ${{ steps.target.outputs.html_folder }}
+
+      # clean: false so this touches only the three root files and never
+      # deletes the other version directories.
+      - name: Deploy site root
+        uses: JamesIves/github-pages-deploy-action@v4
+        if: steps.target.outputs.version
+        with:
+          branch: gh-pages
+          folder: site-root
+          target-folder: ${{ steps.target.outputs.root_folder }}
+          clean: false
