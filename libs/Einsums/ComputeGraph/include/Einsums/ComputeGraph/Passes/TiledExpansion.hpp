@@ -199,12 +199,10 @@ namespace einsums::compute_graph::passes {
  * gathers fall from 92 nodes to 23 and from 2.20 ms to 0.71 of a 10 ms replay.
  *
  * A flop-based gate was tried first and does not work. Measured on one CCSD
- * residual at two model sizes, replay with the profiler disabled:
- *
- * | inflation cap | 26 spin-orbitals | 50 spin-orbitals |
- * |---------------|------------------|------------------|
- * | 16            | 19.0 -> 11.0 ms  | 71.5 -> 103.1 ms |
- * | 4             | never fires      | never fires      |
+ * residual at two model sizes, replay with the profiler disabled: an inflation
+ * cap of 16 takes the 26 spin-orbital model from 19.0 to 11.0 ms but the
+ * 50 spin-orbital model from 71.5 to 103.1 ms, and a cap of 4 never fires at
+ * either size.
  *
  * Those contractions inflate the arithmetic by between 4x and 16x either way, so
  * no threshold on the ratio separates the case that wants densifying from the one
