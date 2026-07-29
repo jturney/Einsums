@@ -116,6 +116,28 @@ set(EINSUMS_CPP_DOCS_MODULE_LIST
     # adding — likely a specific cross-reference with a missing parent scope.
 set(EINSUMS_CPP_DOCS_DIR "${CMAKE_CURRENT_BINARY_DIR}/cppdocs")
 string(REPLACE ";" " " EINSUMS_CPP_DOCS_MODULES "${EINSUMS_CPP_DOCS_MODULE_LIST}")
+
+# The headers the generation actually reads. Without these in DEPENDS the
+# stamp is newer than every doc-comment edit, so the API reference silently
+# serves whatever was true the last time the apiary TOOL changed - and the
+# 0-warning gate then measures a stale snapshot rather than the tree. That is
+# not hypothetical: it hid four entities whose doc comment had drifted onto the
+# next declaration, leaving them undocumented and unreferenceable.
+#
+# CONFIGURE_DEPENDS re-globs each build so a NEW header also re-triggers, the
+# same guarantee the .rst copy rules below rely on. The cost is that touching
+# any public header re-runs a multi-minute libclang sweep; that is the price of
+# the reference being true, and it is only paid when documentation is enabled.
+set(_cppdocs_header_deps)
+foreach(_mod IN LISTS EINSUMS_CPP_DOCS_MODULE_LIST)
+  file(
+    GLOB_RECURSE _mod_headers
+    LIST_DIRECTORIES false CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/libs/${_mod}/include/*.hpp"
+  )
+  list(APPEND _cppdocs_header_deps ${_mod_headers})
+endforeach()
+
 if(TARGET apiary)
   set(_cppdocs_stamp "${CMAKE_CURRENT_BINARY_DIR}/.cppdocs.stamp")
   add_custom_command(
@@ -124,6 +146,7 @@ if(TARGET apiary)
             "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_gen_cpp_docs.py"
             "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_render_cpp_rst.py"
             "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_render_cpp_site.py"
+            ${_cppdocs_header_deps}
     COMMAND ${Python_EXECUTABLE}
             "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_gen_cpp_docs.py"
             --source-dir "${PROJECT_SOURCE_DIR}" --build-dir "${CMAKE_BINARY_DIR}"
@@ -135,19 +158,28 @@ if(TARGET apiary)
     VERBATIM
   )
 
-  # Copy the generated pages into the Sphinx tree. ``rm -rf`` + copy of the
-  # whole subtree guarantees no stale page survives an entity or module
-  # rename; the copy re-runs only when generation re-ran (the stamp), so
-  # unchanged builds keep stable mtimes for Sphinx's incremental rebuild.
+  # Sync the generated pages into the Sphinx tree.
+  #
+  # This used to be ``rm -rf`` + ``copy_directory``, which prunes correctly but
+  # resets every mtime -- and Sphinx keys its incremental rebuild off mtimes, so
+  # it then re-read the whole API reference. That was survivable only while the
+  # stamp above depended on nothing but the apiary binary, so the copy almost
+  # never fired; once the stamp tracks the headers (as it must, or the reference
+  # goes stale), every header edit would have cost a full re-read.
+  #
+  # ``apiary_io.py`` does both halves: writes a file only when its content
+  # changed, and deletes anything in the destination the generator no longer
+  # produces. Correct after a rename, incremental otherwise.
   set(_cppdocs_copy_stamp "${CMAKE_CURRENT_BINARY_DIR}/.cppdocs_copy.stamp")
   add_custom_command(
     OUTPUT "${_cppdocs_copy_stamp}"
     DEPENDS "${_cppdocs_stamp}"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_CURRENT_BINARY_DIR}/sphinx/api/cpp"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${EINSUMS_CPP_DOCS_DIR}/rst"
-            "${CMAKE_CURRENT_BINARY_DIR}/sphinx/api/cpp"
+            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_io.py"
+    COMMAND ${Python_EXECUTABLE}
+            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_io.py"
+            "${EINSUMS_CPP_DOCS_DIR}/rst" "${CMAKE_CURRENT_BINARY_DIR}/sphinx/api/cpp"
     COMMAND ${CMAKE_COMMAND} -E touch "${_cppdocs_copy_stamp}"
-    COMMENT "docs: copying generated C++ API reference into the Sphinx tree"
+    COMMENT "docs: syncing generated C++ API reference into the Sphinx tree"
     VERBATIM
   )
   list(APPEND sphinx_source_files_build "${_cppdocs_copy_stamp}")
@@ -302,9 +334,14 @@ if(TARGET PyEinsumsDocs)
     OUTPUT "${_gen_py_docs_stamp}"
     DEPENDS PyEinsumsDocs "${_render_stamp}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_gen_py_docs_dst}"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${_gen_py_docs_src}" "${_gen_py_docs_dst}"
+    # Sync rather than copy, for the reason spelled out at the C++ reference
+    # above: copy_directory resets every mtime, which costs Sphinx a full
+    # re-read of these pages whenever the render re-runs.
+    COMMAND ${Python_EXECUTABLE}
+            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_io.py"
+            "${_gen_py_docs_src}" "${_gen_py_docs_dst}"
     COMMAND ${CMAKE_COMMAND} -E touch "${_gen_py_docs_stamp}"
-    COMMENT "docs: copying generated Python API reference into the Sphinx tree"
+    COMMENT "docs: syncing generated Python API reference into the Sphinx tree"
   )
   list(APPEND sphinx_source_files_build "${_gen_py_docs_stamp}")
 endif()
