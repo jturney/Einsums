@@ -477,6 +477,58 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         return;
     }
 
+    // ── Scalar-output full contraction, any rank ────────────────────────────
+    // Every index of A is contracted against the SAME index of B and nothing
+    // survives into C, so this is a plain dot product over the whole element
+    // space however the elements are shaped. linear_algebra::dot takes any
+    // rank and handles non-unit strides, so no contiguity requirement is
+    // needed; matching index ORDER is the real precondition, since dot pairs
+    // elements by position in the logical index space.
+    //
+    // This sits AHEAD of the !conj_a && !conj_b gate below because it is the
+    // one BLAS shape with a conjugating form: PackedGemm rejects a rank-0
+    // output, so without this a conjugated full contraction had nowhere to go
+    // but the serial generic loop.
+    // dot() needs SameRank, which for two typed operands is a compile-time
+    // property and for two runtime-rank ones is automatic (their static Rank is
+    // the same dynamic sentinel), so the guard is constexpr and the runtime
+    // rank equality is re-checked below. A mixed typed/runtime pair is left to
+    // the paths further down.
+    if constexpr ((HasCompileTimeRank<AType> && HasCompileTimeRank<BType> &&
+                   std::remove_cvref_t<AType>::Rank == std::remove_cvref_t<BType>::Rank) ||
+                  (!HasCompileTimeRank<AType> && !HasCompileTimeRank<BType>)) {
+        if (c_idx.empty() && a_idx == b_idx && links.size() == a_idx.size() && detail::tensor_rank(A) == detail::tensor_rank(B)) {
+            T temp;
+            if constexpr (IsComplexV<T>) {
+                // true_dot(X, Y) is sum conj(X) * Y.
+                if (conj_a && conj_b) {
+                    temp = std::conj(linear_algebra::dot(A, B));
+                } else if (conj_a) {
+                    temp = linear_algebra::true_dot(A, B);
+                } else if (conj_b) {
+                    temp = linear_algebra::true_dot(B, A);
+                } else {
+                    temp = linear_algebra::dot(A, B);
+                }
+            } else {
+                // Conjugation is the identity on a real type, so the flags
+                // carry no meaning here and plain dot is already correct.
+                temp = linear_algebra::dot(A, B);
+            }
+
+            bool const conjugating = IsComplexV<T> && (conj_a || conj_b);
+            if constexpr (HasCompileTimeRank<AType>) {
+                ProfileAnnotate("dispatch", conjugating ? "true_dot" : "dot");
+                last_dispatch_route() = conjugating ? "true_dot" : "dot";
+            } else {
+                ProfileAnnotate("dispatch", conjugating ? "true_dot_runtime" : "dot_runtime");
+                last_dispatch_route() = conjugating ? "true_dot_runtime" : "dot_runtime";
+            }
+            C->data()[0] = c_pf * C->data()[0] + ab_pf * temp;
+            return;
+        }
+    }
+
     // ── Rank-1 special-case BLAS fast paths ─────────────────────────────────
     // These call helpers (string_gemv_mat_vec, linear_algebra::ger, etc.)
     // that are themselves rank-specific (MatrixConcept / VectorConcept), so
@@ -484,8 +536,8 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // behind HasCompileTimeRank. PackedGemm (below) handles the rank-2+
     // GEMM-shaped cases and works uniformly for typed and runtime-rank
     // tensors via the runtime ContractionSpec entry point.
-    // Conjugation skips the non-conj BLAS fast paths below: those helpers (dot,
-    // gemv, ger, string_gemm, direct_product) don't conjugate. Conjugated
+    // Conjugation skips the non-conj BLAS fast paths below: those helpers
+    // (gemv, ger, string_gemm, direct_product) don't conjugate. Conjugated
     // contractions go to PackedGemm (native via spec.conj_a/conj_b) for
     // gemm-shaped cases, else the conj-aware generic loop.
     if (!conj_a && !conj_b) {
@@ -556,7 +608,14 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                     string_gemm(parsed, links[0], c_pf, C, ab_pf, A, B);
                     return;
                 }
-                // Direct product: same indices on all tensors, no links
+            }
+
+            // ── Direct product: same indices on all three, no links ─────────
+            // Elementwise at ANY rank, not just rank 2 - the gate used to sit
+            // inside the rank-2 block above, so "i <- i ; i" and
+            // "ijk <- ijk ; ijk" fell all the way to the serial generic loop
+            // even though linear_algebra::direct_product takes any rank.
+            if constexpr (a_rank == b_rank && b_rank == c_rank) {
                 if (links.empty() && a_idx == b_idx && a_idx == c_idx) {
                     ProfileAnnotate("dispatch", "direct_product");
                     last_dispatch_route() = "direct_product";
@@ -665,15 +724,20 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                     string_gemm(parsed, links[0], c_pf, &cv, ab_pf, av, bv);
                     return;
                 }
-                if (links.empty() && a_idx == b_idx && a_idx == c_idx) {
-                    ProfileAnnotate("dispatch", "direct_product_runtime");
-                    last_dispatch_route() = "direct_product_runtime";
-                    auto av               = upcast(A, std::integral_constant<std::size_t, 2>{});
-                    auto bv               = upcast(B, std::integral_constant<std::size_t, 2>{});
-                    auto cv               = upcast(*C, std::integral_constant<std::size_t, 2>{});
-                    linear_algebra::direct_product(ab_pf, av, bv, c_pf, &cv);
-                    return;
-                }
+            }
+
+            // ── Direct product at ANY rank ───────────────────────────────
+            // No upcast to a fixed K is needed: direct_product wants
+            // SameRank<A, B, C>, which three runtime-rank operands satisfy
+            // statically, so the runtime ranks are simply checked here. This
+            // used to sit inside the rank-2 block above, matching the typed
+            // ladder's old gate and sending every other rank to the generic
+            // loop.
+            if (a_rank == b_rank && b_rank == c_rank && links.empty() && a_idx == b_idx && a_idx == c_idx) {
+                ProfileAnnotate("dispatch", "direct_product_runtime");
+                last_dispatch_route() = "direct_product_runtime";
+                linear_algebra::direct_product(ab_pf, A, B, c_pf, C);
+                return;
             }
         }
     } // end of the !conj_a && !conj_b BLAS fast-path gate

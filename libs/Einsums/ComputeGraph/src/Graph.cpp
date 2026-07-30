@@ -1800,7 +1800,15 @@ void Graph::validate_shapes_at_capture() const {
             if (it != _tensors.end()) {
                 auto const &handle        = it->second;
                 size_t      expected_rank = desc->spec.c_indices.size();
-                if (handle.rank != 0 && handle.rank != expected_rank) {
+                // Scalar output ("<- ij ; ij") carries no indices, and the
+                // dispatch writes the result through C->data()[0]. The sink
+                // for that is a one-element rank-1 tensor, which is the
+                // convention every scalar-writing op here uses, so a rank
+                // ABOVE the index count is allowed when the whole output holds
+                // one element. Without this the contraction ran eagerly but
+                // could not be captured.
+                bool const scalar_sink = expected_rank == 0 && handle.total_elems() == 1;
+                if (handle.rank != 0 && handle.rank != expected_rank && !scalar_sink) {
                     EINSUMS_THROW_EXCEPTION(std::runtime_error,
                                             "Graph '{}': shape mismatch in node '{}': "
                                             "output tensor '{}' has rank {} but {} indices specified",

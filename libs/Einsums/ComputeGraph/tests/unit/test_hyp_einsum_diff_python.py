@@ -82,10 +82,47 @@ def _rnd(shape, dt, rng):
 
 @st.composite
 def _einsum_problem(draw):
+    # Three shape classes. The GEMM role model below is the general one, but it
+    # structurally cannot emit two whole families, because it gives C at least
+    # one M and one N index:
+    #   * "hadamard": the same index list on all three operands, no links -
+    #     the direct_product route, which exists at every rank;
+    #   * "full_contraction": every index of A contracted against the SAME
+    #     index of B with nothing surviving into C - the scalar-output dot
+    #     route, which likewise exists at every rank.
+    # Both used to fall through to the serial generic loop at ranks other than
+    # the one BLAS could reach directly, so neither was drawn while the bug
+    # class they cover was live.
+    shape_kind = draw(st.sampled_from(["general", "general", "general", "hadamard", "full_contraction"]))
+    if shape_kind in ("hadamard", "full_contraction"):
+        n_h    = draw(st.integers(1, 3))
+        hl     = draw(st.permutations(list(_LETTERS)))[:n_h]
+        extent = {ix: draw(st.sampled_from([0, 1, 1, 2, 2, 3])) for ix in hl}
+        a_idx  = list(hl)
+        b_idx  = list(hl)
+        c_idx  = list(hl) if shape_kind == "hadamard" else []
+        dt = draw(st.sampled_from(["float64", "complex128", "float32", "complex64"]))
+        if dt == "complex128":
+            c_pf  = draw(st.sampled_from([0.0, 1.0, 1.0 + 2.0j]))
+            ab_pf = draw(st.sampled_from([1.0, -2.0, 0.5 - 1.0j]))
+        else:
+            c_pf  = draw(st.sampled_from([0.0, 1.0]))
+            ab_pf = draw(st.sampled_from([1.0, -2.0]))
+        return (a_idx, b_idx, c_idx, extent, draw(st.booleans()),
+                dt, c_pf, ab_pf,
+                draw(st.booleans()), draw(st.booleans()), draw(st.booleans()), draw(st.booleans()))
+
     n_batch = draw(st.integers(0, 1))
-    n_m = draw(st.integers(1, 2))
-    n_n = draw(st.integers(1, 2))
+    # 0 is drawable for both: an absent M or N is a GEMV- or batch-dot-shaped
+    # contraction, and with neither the output is a scalar.
+    n_m = draw(st.integers(0, 2))
+    n_n = draw(st.integers(0, 2))
     n_k = draw(st.integers(0, 2))
+    # Both OPERANDS must carry at least one index (A is batch+M+K, B is
+    # batch+K+N); a scalar operand is rejected at the API boundary. A single
+    # link satisfies both at once.
+    if n_batch + n_m + n_k == 0 or n_batch + n_k + n_n == 0:
+        n_k = 1
     total = n_batch + n_m + n_n + n_k
     letters = draw(st.permutations(list(_LETTERS)))[:total]
     pos = 0
@@ -203,7 +240,10 @@ def _run_einsum_diff(prob, exact):
         gen = lambda shape: _rnd(shape, dt, rng)
     A0 = gen([extent[x] for x in a_idx])
     B0 = A0 if alias_ab else gen([extent[x] for x in b_idx])
-    C0 = gen([extent[x] for x in c_idx])
+    # An empty index list on C means a scalar result. numpy returns a 0-d
+    # array for it; einsums writes through C->data()[0], so the sink here is a
+    # one-element rank-1 tensor and the oracle broadcasts onto it.
+    C0 = gen([extent[x] for x in c_idx] if c_idx else [1])
     np_spec = f"{''.join(a_idx)},{''.join(b_idx)}->{''.join(c_idx)}"
     oracle  = c_pf * C0 + ab_pf * np.einsum(np_spec, A0, B0)
     es_spec = f"{''.join(c_idx)} <- {''.join(a_idx)} ; {''.join(b_idx)}"

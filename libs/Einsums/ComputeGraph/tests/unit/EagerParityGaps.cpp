@@ -622,6 +622,121 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         CHECK(route() == "packed_gemm");
     }
 
+    // ── Shapes with a BLAS mapping that used to land on the generic loop ────
+    // Every one of these was measured falling through to the serial odometer
+    // loop before the routes below existed; they are the phase-2.2 additions.
+    SECTION("scalar-output full contraction, rank 2") {
+        auto A = create_random_tensor<double>("A", 4, 5);
+        auto B = create_random_tensor<double>("B", 4, 5);
+        auto s = create_zero_tensor<double>("s", 1);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("<- ij ; ij", &s, A, B);
+        CHECK(route() == "dot");
+
+        double want = 0.0;
+        for (size_t n = 0; n < A.size(); n++) {
+            want += A.data()[n] * B.data()[n];
+        }
+        CHECK(std::abs(s.data()[0] - want) <= 1e-12 * (1.0 + std::abs(want)));
+    }
+
+    SECTION("scalar-output full contraction, runtime rank") {
+        auto                  A_t = create_random_tensor<double>("A", 4, 5);
+        auto                  B_t = create_random_tensor<double>("B", 4, 5);
+        auto                  s_t = create_zero_tensor<double>("s", 1);
+        RuntimeTensor<double> A(A_t), B(B_t), s(s_t);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("<- ij ; ij", &s, A, B);
+        CHECK(route() == "dot_runtime");
+    }
+
+    SECTION("elementwise at rank 1") {
+        auto A = create_random_tensor<double>("A", 7);
+        auto B = create_random_tensor<double>("B", 7);
+        auto C = create_zero_tensor<double>("C", 7);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("i <- i ; i", &C, A, B);
+        CHECK(route() == "direct_product");
+        for (size_t n = 0; n < C.size(); n++) {
+            CHECK(std::abs(C.data()[n] - A.data()[n] * B.data()[n]) <= 1e-12);
+        }
+    }
+
+    SECTION("elementwise at rank 3") {
+        auto A = create_random_tensor<double>("A", 3, 4, 5);
+        auto B = create_random_tensor<double>("B", 3, 4, 5);
+        auto C = create_zero_tensor<double>("C", 3, 4, 5);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ijk <- ijk ; ijk", &C, A, B);
+        CHECK(route() == "direct_product");
+        for (size_t n = 0; n < C.size(); n++) {
+            CHECK(std::abs(C.data()[n] - A.data()[n] * B.data()[n]) <= 1e-12);
+        }
+    }
+
+    SECTION("elementwise at rank 3, runtime rank") {
+        auto                  A_t = create_random_tensor<double>("A", 3, 4, 5);
+        auto                  B_t = create_random_tensor<double>("B", 3, 4, 5);
+        auto                  C_t = create_zero_tensor<double>("C", 3, 4, 5);
+        RuntimeTensor<double> A(A_t), B(B_t), C(C_t);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ijk <- ijk ; ijk", &C, A, B);
+        CHECK(route() == "direct_product_runtime");
+    }
+
+    SECTION("conjugated full contraction") {
+        auto x = create_random_tensor<std::complex<double>>("x", 6);
+        auto y = create_random_tensor<std::complex<double>>("y", 6);
+
+        auto s = create_zero_tensor<std::complex<double>>("s", 1);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("<- conj(i) ; i", &s, x, y);
+        CHECK(route() == "true_dot");
+
+        std::complex<double> want{};
+        for (size_t n = 0; n < x.size(); n++) {
+            want += std::conj(x.data()[n]) * y.data()[n];
+        }
+        CHECK(std::abs(s.data()[0] - want) <= 1e-12 * (1.0 + std::abs(want)));
+
+        // conj on B instead: sum A * conj(B).
+        auto s2 = create_zero_tensor<std::complex<double>>("s2", 1);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("<- i ; conj(i)", &s2, x, y);
+        CHECK(route() == "true_dot");
+
+        std::complex<double> want2{};
+        for (size_t n = 0; n < x.size(); n++) {
+            want2 += x.data()[n] * std::conj(y.data()[n]);
+        }
+        CHECK(std::abs(s2.data()[0] - want2) <= 1e-12 * (1.0 + std::abs(want2)));
+
+        // Both conjugated: conj of the plain dot.
+        auto s3 = create_zero_tensor<std::complex<double>>("s3", 1);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("<- conj(i) ; conj(i)", &s3, x, y);
+        CHECK(route() == "true_dot");
+
+        std::complex<double> want3{};
+        for (size_t n = 0; n < x.size(); n++) {
+            want3 += std::conj(x.data()[n]) * std::conj(y.data()[n]);
+        }
+        CHECK(std::abs(s3.data()[0] - want3) <= 1e-12 * (1.0 + std::abs(want3)));
+    }
+
+    SECTION("conjugated gemv already reaches PackedGemm") {
+        // Not a gap: the conjugating gate skips the BLAS ladder, but PackedGemm
+        // conjugates natively during packing, so gemm- and gemv-shaped
+        // conjugated contractions never saw the generic loop. Pinned so a
+        // future change to the conj gate cannot quietly send them there.
+        auto A = create_random_tensor<std::complex<double>>("A", 4, 3);
+        auto v = create_random_tensor<std::complex<double>>("v", 3);
+        auto w = create_zero_tensor<std::complex<double>>("w", 4);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("i <- conj(ij) ; j", &w, A, v);
+        CHECK(route() == "packed_gemm");
+    }
+
     SECTION("generic_loop") {
         // A small rank-3 outer product: no link indices, and below the ~4k
         // output elements where PackedGemm's fixed setup starts to pay off, so
