@@ -14,6 +14,7 @@
 #endif
 
 #include <chrono>
+#include <optional>
 #include <random>
 #include <thread>
 #include <utility>
@@ -170,12 +171,27 @@ void TaskPool::worker_loop(size_t worker_id) {
             continue;
         }
 
-        // 2. Check external queue (tasks from non-worker threads)
+        // 2. Check external queue (tasks from non-worker threads).
+        //
+        // Take a SHARE of what is queued, not one task: a scheduler seeding a
+        // wide graph drops n tasks in here at once, and popping them one at a
+        // time made every worker round-trip this mutex per task, so the
+        // workers spent the ramp-up contending instead of computing. One task
+        // is run directly and the rest go on our own deque, where other
+        // workers can still steal them if we fall behind.
         {
             std::scoped_lock const lock(_external_mutex);
             if (!_external_queue.empty()) {
                 task = std::move(_external_queue.front());
                 _external_queue.pop();
+
+                // Leave the remainder for the other workers and for the
+                // submitting thread, which helps out through help_until().
+                size_t const share = _external_queue.size() / (nw + 1);
+                for (size_t k = 0; k < share; k++) {
+                    my_deque.push(std::move(_external_queue.front()));
+                    _external_queue.pop();
+                }
             }
         }
         if (task) {
@@ -215,7 +231,7 @@ void TaskPool::worker_loop(size_t worker_id) {
     }
 }
 
-void TaskPool::enqueue(std::function<void()> task) {
+void TaskPool::ensure_started() {
     // Lazy start: create worker threads on first enqueue.
     // Also register shutdown function so workers are joined during
     // einsums::finalize(), BEFORE the OMP parallel region's barrier.
@@ -231,6 +247,10 @@ void TaskPool::enqueue(std::function<void()> task) {
         } catch (...) { // NOLINT
         }
     });
+}
+
+void TaskPool::enqueue(std::function<void()> task) {
+    ensure_started();
 
     _total_submitted.fetch_add(1, std::memory_order_relaxed);
 
@@ -255,6 +275,38 @@ void TaskPool::enqueue(std::function<void()> task) {
     }
 }
 
+void TaskPool::submit_bare_batch(std::vector<std::function<void()>> &tasks) {
+    if (tasks.empty()) {
+        return;
+    }
+    ensure_started();
+
+    _total_submitted.fetch_add(tasks.size(), std::memory_order_relaxed);
+
+    if (tls_worker_id >= 0 && std::cmp_less(tls_worker_id, _workers.size())) {
+        auto &deque = _workers[static_cast<size_t>(tls_worker_id)]->deque;
+        for (auto &task : tasks) {
+            deque.push(std::move(task));
+        }
+    } else {
+        // One lock for the whole batch. Submitting a graph's roots one at a
+        // time took this mutex and signalled the condition variable per root,
+        // and on a wide graph that cost more than the tasks themselves.
+        std::scoped_lock const lock(_external_mutex);
+        for (auto &task : tasks) {
+            _external_queue.push(std::move(task));
+        }
+    }
+    tasks.clear();
+
+    // notify_all is right HERE (and wrong in enqueue): a batch really can feed
+    // every parked worker at once, so waking them one at a time just serializes
+    // the ramp-up.
+    if (_parked_count.load(std::memory_order_relaxed) > 0) {
+        _notify_cv.notify_all();
+    }
+}
+
 void TaskPool::help_until(std::function<bool()> const &predicate) {
     // Calling thread participates in work-stealing while waiting.
     // Also wakes parked workers to ensure all enqueued work gets processed.
@@ -267,6 +319,25 @@ void TaskPool::help_until(std::function<bool()> const &predicate) {
         // the 1ms park timeout backstops any missed signal).
         if (_parked_count.load(std::memory_order_relaxed) > 0) {
             _notify_cv.notify_one();
+        }
+
+        // Drain the external queue first. This thread is usually the one that
+        // filled it - help_until()'s callers submit their roots from here, and
+        // an external submission cannot go to a worker deque - so leaving that
+        // work for a worker to notice meant the submitting thread slept
+        // through its own backlog while every worker was busy elsewhere.
+        std::optional<std::function<void()>> external;
+        {
+            std::scoped_lock const lock(_external_mutex);
+            if (!_external_queue.empty()) {
+                external = std::move(_external_queue.front());
+                _external_queue.pop();
+            }
+        }
+        if (external) {
+            (*external)();
+            _total_completed.fetch_add(1, std::memory_order_relaxed);
+            continue;
         }
 
         // Try to steal work ourselves

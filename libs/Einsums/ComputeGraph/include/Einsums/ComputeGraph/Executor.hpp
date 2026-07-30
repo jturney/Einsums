@@ -29,6 +29,8 @@
 
 #include <Einsums/Python/Annotations.hpp>
 
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -135,7 +137,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HO
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT DataflowExecutor
     : public Executor {
   public:
-    APIARY_EXPOSE DataflowExecutor() = default;
+    APIARY_EXPOSE DataflowExecutor();
+    ~DataflowExecutor() override;
 
     [[nodiscard]] std::string name() const override { return "Dataflow"; }
     void                      execute(Graph &graph) override;
@@ -156,6 +159,27 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HO
 
   private:
     size_t _memory_budget{0};
+
+    /// Per-run scheduling state (counters, timing slots, deferred queue,
+    /// interned zone names), defined in Executor.cpp.
+    struct Scaffold;
+
+    /// Pool of scaffolds to reuse across replays.
+    ///
+    /// A replay of an unchanged graph rebuilt all of this from scratch: a
+    /// shared_ptr control block, a vector<atomic<int>> of counters, a timing
+    /// vector, and a heap-allocated std::function per node. An SCF/CC loop
+    /// replays the same graph hundreds of times, so all of it is allocation
+    /// churn that buys nothing.
+    ///
+    /// It is a POOL rather than one cached scaffold because execute() must
+    /// stay reentrant and thread-safe: one executor instance can be installed
+    /// on several loop bodies (set_executor takes a shared_ptr), and a Loop
+    /// node replaying its body nests one execute() inside another. A run takes
+    /// a scaffold for its duration and returns it, so concurrent and nested
+    /// runs get their own. The mutex is taken twice per RUN, not per node.
+    std::mutex                             _scaffold_mutex;
+    std::vector<std::unique_ptr<Scaffold>> _scaffolds;
 };
 
 /**

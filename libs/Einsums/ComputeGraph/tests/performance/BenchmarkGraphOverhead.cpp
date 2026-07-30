@@ -196,3 +196,50 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: dataflow replay of 100-node chain", "[Co
     publish_benchmark_result("GraphOverhead dataflow replay 100n", "t_sequential", static_cast<int>(2 * kChainLen), t_seq);
     publish_benchmark_result("GraphOverhead dataflow replay 100n", "t_dataflow", static_cast<int>(2 * kChainLen), t_df);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Dataflow SUBMISSION cost, isolated. The nodes here do nothing at all and
+// none of them depends on another, so what is measured is purely: submit a
+// task, run an empty body, decrement counters, complete. The chain benchmark
+// above cannot separate this from hand-off LATENCY (a chain has one runnable
+// task at a time, so the number it reports is dominated by threads passing a
+// single task around); this one keeps every worker fed and reports what a
+// submission costs.
+//
+// Its job is to keep the per-task scaffold honest: the executor reuses its
+// scheduling state across replays and submits closures small enough to live in
+// std::function's inline buffer, so a replay of an unchanged graph should
+// allocate nothing per node. A regression here means that stopped being true.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+EINSUMS_TEST_CASE("Bench GraphOverhead: dataflow submission of 200 independent no-op nodes", "[ComputeGraph][Overhead][benchmark]") {
+    LabeledSection0();
+    constexpr size_t kNoopNodes = 200;
+
+    cg::Graph graph("df_submit_bench");
+    for (size_t n = 0; n < kNoopNodes; n++) {
+        // No inputs and no outputs means no dependency edges, so every one of
+        // these is a root and all of them are runnable at once.
+        cg::Node node;
+        node.kind    = cg::OpKind::Custom;
+        node.label   = fmt::format("noop{}", n);
+        node.execute = []() {};
+        graph.add_node(std::move(node));
+    }
+    graph.execute(); // sort once
+
+    cg::SequentialExecutor seq;
+    cg::DataflowExecutor   df;
+
+    auto t_seq = time_us(
+        "sequential", [&]() { graph.execute(seq); }, kReps);
+    auto t_df = time_us(
+        "dataflow", [&]() { graph.execute(df); }, kReps);
+
+    double const submit_per_node_us = (t_df.avg - t_seq.avg) / static_cast<double>(kNoopNodes);
+    fmt::println("[GraphOverhead dataflow submit 200n] seq: {:.2f} us  df: {:.2f} us  submit: {:.3f} us/node", t_seq.avg, t_df.avg,
+                 submit_per_node_us);
+    ProfileAnnotate("nodes", int64_t(kNoopNodes));
+    publish_benchmark_result("GraphOverhead dataflow submit 200n", "t_sequential", static_cast<int>(kNoopNodes), t_seq);
+    publish_benchmark_result("GraphOverhead dataflow submit 200n", "t_dataflow", static_cast<int>(kNoopNodes), t_df);
+}

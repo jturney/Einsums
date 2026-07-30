@@ -113,6 +113,34 @@ class EINSUMS_EXPORT TaskPool {
         });
     }
 
+    /// @brief Submit a bare callable: no name, no wrapper, no handle.
+    ///
+    /// The leanest submission the pool offers, for callers that already own
+    /// their naming and their error handling. @ref submit_detached wraps every
+    /// task in a closure that carries a copied name string and pushes a
+    /// profiler zone, so the wrapper AND the wrapped callable each heap-
+    /// allocate; a scheduler submitting one task per graph node per replay
+    /// pays that per node. A callable small enough for std::function's inline
+    /// buffer (a `this` pointer and an index, say) goes through here with no
+    /// allocation at all.
+    ///
+    /// The callable MUST NOT throw: there is no handle to carry an exception
+    /// and no wrapper to catch it, so anything that escapes reaches the worker
+    /// loop. Take a profiler zone inside the callable if you want one.
+    void submit_bare(std::function<void()> task) { enqueue(std::move(task)); }
+
+    /// @brief Submit several bare callables at once, same contract as
+    ///        @ref submit_bare.
+    ///
+    /// The external queue's mutex is taken ONCE for the whole batch and the
+    /// workers are woken once. Submitting n tasks back to back from a
+    /// non-worker thread otherwise pays a lock and a condition-variable signal
+    /// per task, which for a scheduler seeding a wide graph's roots costs more
+    /// than running them.
+    ///
+    /// @p tasks is emptied.
+    void submit_bare_batch(std::vector<std::function<void()>> &tasks);
+
     /// @brief Submit a group of tasks with a collective barrier.
     TaskGroup submit_group(std::string name, std::vector<std::function<void()>> tasks);
 
@@ -300,6 +328,9 @@ class EINSUMS_EXPORT TaskPool {
     friend class TaskHandle;
 
     void enqueue(std::function<void()> task);
+
+    /// Start the worker threads on first use (idempotent).
+    void ensure_started();
 
     /// Create a wrapped task with profiler instrumentation.
     template <typename F, typename R>

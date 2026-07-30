@@ -5,14 +5,17 @@
 
 #include <Einsums/ComputeGraph/Executor.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/Profile/Profile.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -137,209 +140,380 @@ void OpenMPExecutor::execute(Graph &graph) {
 
 // ─── DataflowExecutor ──────────────────────────────────────────────────────
 
+/// Per-run scheduling state, pooled and reused across replays.
+///
+/// Everything here is either reset per run (the counters, the timing slots) or
+/// reused verbatim (the allocations behind them, the interned zone names). The
+/// graph pointers are refreshed at the top of every run, so a scaffold never
+/// outlives its knowledge of a graph: it is a bag of buffers, not a cache of
+/// graph structure, which is what makes reuse safe without an identity check.
+struct DataflowExecutor::Scaffold {
+    /// One node's wall-clock time, padded to its own cache line.
+    ///
+    /// A contiguous vector<double> put eight nodes' slots on one line, so every
+    /// worker writing a completed node's time invalidated the line under seven
+    /// others - false sharing on a value nobody reads until the run is over.
+    struct alignas(64) PaddedMs {
+        double ms{-1.0};
+    };
+
+    // ── Refreshed per run ───────────────────────────────────────────────────
+    std::vector<Node>    *nodes{nullptr};
+    DependencyInfo const *deps{nullptr};
+    task_pool::TaskPool  *pool{nullptr};
+    size_t                n{0};
+    size_t                budget{0};
+    bool                  recording{false}; ///< profiler state, read once per run
+
+    // ── Reset per run, allocation reused ────────────────────────────────────
+    std::vector<std::atomic<int>> remaining; ///< preds left per node
+    std::atomic<size_t>           completed{0};
+    std::atomic<bool>             failed{false};
+    std::exception_ptr            first_exc;
+    std::mutex                    exc_mutex;
+
+    /// Per-node timing slots: each task writes only its own index, so no lock
+    /// is needed. Slot writes happen-before the task's completed increment
+    /// (release), and the merge runs after help_until observes completed == n
+    /// (acquire).
+    std::vector<PaddedMs> node_ms;
+
+    // Memory budget: Materialize nodes that would exceed the budget wait in
+    // `deferred` (instead of blocking a worker) and are resubmitted when a
+    // Free node returns bytes.
+    std::atomic<size_t> mem_current{0};
+    std::mutex          deferred_mutex;
+    std::vector<size_t> deferred;
+
+    /// Scratch for the root-seeding batch, reused across replays.
+    std::vector<std::function<void()>> root_batch;
+
+    /// Interned zone name per node, so a profiled run does not intern a label
+    /// per task. Only filled while recording; keyed to the graph and node list
+    /// it was built for, since a wrong name is cosmetic but a stale one is
+    /// confusing.
+    std::vector<uint32_t> zone_ids;
+    Graph const          *zone_graph{nullptr};
+    std::uint64_t         zone_version{0};
+
+    /// Size the reused buffers for an n-node run and clear the per-run state.
+    void reset(Graph &graph, size_t node_count);
+
+    /// Rebuild zone_ids if this graph's labels are not the ones cached.
+    void refresh_zone_ids(Graph const &graph);
+
+    /// Submit node @p i. With @p batch non-null the closure is appended there
+    /// instead of enqueued, for the caller to hand to the pool in one go.
+    void submit(size_t i, std::vector<std::function<void()>> *batch = nullptr);
+    void complete(size_t i);
+    void drain_deferred();
+    void run_node(size_t i);
+    void run_async_start(size_t i);
+    void run_async_finish(size_t i);
+
+    /// Record @p e as the run's failure if it is the first one.
+    void fail(std::exception_ptr e) {
+        std::scoped_lock const lock(exc_mutex);
+        if (!first_exc) {
+            first_exc = std::move(e);
+        }
+        failed.store(true, std::memory_order_release);
+    }
+};
+
+namespace {
+
+/// The one call site every dataflow task's zone reports; the NAME comes from
+/// the node and is interned once per graph in Scaffold::zone_ids.
+profile::ZoneSite const &dataflow_task_site() {
+    static profile::ZoneSite const site{"dataflow task", __FILE__, __LINE__, __func__};
+    return site;
+}
+
+} // namespace
+
+void DataflowExecutor::Scaffold::reset(Graph &graph, size_t node_count) {
+    nodes = &graph.nodes();
+    deps  = &graph.dependencies();
+    pool  = &task_pool::TaskPool::get_singleton();
+    n     = node_count;
+
+    // atomic<int> is neither movable nor copyable, so the counter vector can
+    // only be resized by rebuilding it; same-size replays skip that.
+    if (remaining.size() != n) {
+        remaining = std::vector<std::atomic<int>>(n);
+    }
+    for (size_t i = 0; i < n; i++) {
+        remaining[i].store(static_cast<int>(deps->predecessors[i].size()), std::memory_order_relaxed);
+    }
+
+    node_ms.assign(n, PaddedMs{});
+    completed.store(0, std::memory_order_relaxed);
+    failed.store(false, std::memory_order_relaxed);
+    first_exc = nullptr;
+    mem_current.store(0, std::memory_order_relaxed);
+    deferred.clear();
+}
+
+void DataflowExecutor::Scaffold::refresh_zone_ids(Graph const &graph) {
+    if (zone_graph == &graph && zone_version == graph.analysis_version() && zone_ids.size() == n) {
+        return;
+    }
+    zone_ids.resize(n);
+    for (size_t i = 0; i < n; i++) {
+        zone_ids[i] = profile::intern_string((*nodes)[i].label);
+    }
+    zone_graph   = &graph;
+    zone_version = graph.analysis_version();
+}
+
+void DataflowExecutor::Scaffold::complete(size_t i) {
+    // A successor submission that throws (an allocation failure in the pool,
+    // say) must not skip the counter: help_until() waits for completed == n and
+    // would never return.
+    try {
+        for (size_t const succ : (*deps).successors[i]) {
+            if (remaining[succ].fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                submit(succ);
+            }
+        }
+    } catch (...) {
+        fail(std::current_exception());
+    }
+    completed.fetch_add(1, std::memory_order_release);
+}
+
+void DataflowExecutor::Scaffold::drain_deferred() {
+    // Called after a Free returns bytes: resubmit deferred Materialize nodes
+    // that now fit, charging them under the lock so concurrent drains don't
+    // double-book the budget.
+    std::vector<size_t> runnable;
+    {
+        std::scoped_lock const lk(deferred_mutex);
+        for (auto it = deferred.begin(); it != deferred.end();) {
+            size_t const bytes = (*nodes)[*it].estimated_bytes;
+            if (mem_current.load(std::memory_order_relaxed) + bytes <= budget) {
+                mem_current.fetch_add(bytes, std::memory_order_relaxed);
+                runnable.push_back(*it);
+                it = deferred.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (size_t const i : runnable) {
+        submit(i);
+    }
+}
+
+void DataflowExecutor::Scaffold::run_node(size_t i) {
+    Node &node = (*nodes)[i];
+
+    bool const   is_free    = budget > 0 && node.kind == OpKind::Free;
+    size_t const free_bytes = is_free ? node.estimated_bytes : 0;
+
+    // After any failure the remaining nodes are drained without executing
+    // (execute() rethrows the first exception; partial results are unspecified
+    // either way).
+    if (!failed.load(std::memory_order_acquire)) {
+        std::optional<profile::ScopedZone> zone;
+        if (recording) {
+            zone.emplace(dataflow_task_site(), zone_ids[i], node.label);
+        }
+        try {
+            auto t0 = std::chrono::steady_clock::now();
+            execute_node(node);
+            auto t1 = std::chrono::steady_clock::now();
+
+            node_ms[i].ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        } catch (...) {
+            fail(std::current_exception());
+        }
+    }
+
+    if (is_free && free_bytes > 0) {
+        mem_current.fetch_sub(free_bytes, std::memory_order_relaxed);
+        drain_deferred();
+    }
+    complete(i);
+}
+
+void DataflowExecutor::Scaffold::run_async_start(size_t i) {
+    Node &node = (*nodes)[i];
+    if (!failed.load(std::memory_order_acquire)) {
+        std::optional<profile::ScopedZone> zone;
+        if (recording) {
+            zone.emplace(dataflow_task_site(), zone_ids[i], node.label);
+        }
+        try {
+            node.async_start();
+        } catch (...) {
+            fail(std::current_exception());
+        }
+    }
+    // The finish half is a second task so other ready nodes can interleave
+    // between them, which is the whole point of splitting an async node.
+    try {
+        pool->submit_bare([this, i]() { run_async_finish(i); });
+    } catch (...) {
+        fail(std::current_exception());
+        complete(i);
+    }
+}
+
+void DataflowExecutor::Scaffold::run_async_finish(size_t i) {
+    Node &node = (*nodes)[i];
+    if (!failed.load(std::memory_order_acquire)) {
+        std::optional<profile::ScopedZone> zone;
+        if (recording) {
+            zone.emplace(dataflow_task_site(), zone_ids[i], node.label);
+        }
+        try {
+            auto t0 = std::chrono::steady_clock::now();
+            node.async_finish();
+            auto t1 = std::chrono::steady_clock::now();
+
+            node_ms[i].ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        } catch (...) {
+            fail(std::current_exception());
+        }
+    }
+    complete(i);
+}
+
+void DataflowExecutor::Scaffold::submit(size_t i, std::vector<std::function<void()>> *batch) {
+    Node &node = (*nodes)[i];
+
+    // Budget gate: park over-budget Materialize nodes instead of submitting
+    // them (never blocks a worker; Frees are never gated, so parked
+    // allocations always drain).
+    if (budget > 0 && node.kind == OpKind::Materialize && node.estimated_bytes > 0) {
+        // A single materialization larger than the WHOLE budget can never be
+        // scheduled (drain_deferred only re-runs a node that fits). Parking it
+        // left it in the deferred queue forever, so completed never reached n
+        // and help_until() deadlocked the calling thread. Fail the run instead.
+        if (node.estimated_bytes > budget) {
+            fail(std::make_exception_ptr(
+                std::runtime_error("DataflowExecutor: node '" + node.label + "' requires more memory than the configured budget")));
+            complete(i);
+            return;
+        }
+        std::scoped_lock const lk(deferred_mutex);
+        if (mem_current.load(std::memory_order_relaxed) + node.estimated_bytes > budget) {
+            deferred.push_back(i);
+            return;
+        }
+        mem_current.fetch_add(node.estimated_bytes, std::memory_order_relaxed);
+    }
+
+    // Both closures capture exactly a pointer and an index, which fits inside
+    // std::function's inline buffer - so submitting a node allocates nothing.
+    // The old path went through submit_detached(node.label, lambda), which
+    // copied the label into a wrapper closure and heap-allocated the wrapper
+    // AND the wrapped callable, per node per replay. The zone that wrapper
+    // provided is now taken inside the run_* bodies from a pre-interned name.
+    //
+    // `batch` is passed only by the root-seeding loop, which runs on the
+    // calling thread and so would otherwise take the pool's external-queue
+    // mutex and signal its condition variable once per root. Successors are
+    // submitted from worker threads (own-deque push, no lock) and from
+    // drain_deferred, which can run concurrently with the seeding loop - hence
+    // an explicit parameter rather than scaffold state those paths could race
+    // on.
+    if (node.async_start && node.async_finish) {
+        if (batch != nullptr) {
+            batch->emplace_back([this, i]() { run_async_start(i); });
+        } else {
+            pool->submit_bare([this, i]() { run_async_start(i); });
+        }
+    } else {
+        if (batch != nullptr) {
+            batch->emplace_back([this, i]() { run_node(i); });
+        } else {
+            pool->submit_bare([this, i]() { run_node(i); });
+        }
+    }
+}
+
+DataflowExecutor::DataflowExecutor()  = default;
+DataflowExecutor::~DataflowExecutor() = default;
+
 void DataflowExecutor::execute(Graph &graph) {
-    auto        &nodes = graph.nodes();
-    auto const  &deps  = graph.dependencies();
-    size_t const n     = nodes.size();
+    size_t const n = graph.nodes().size();
 
     if (n == 0)
         return;
 
-    auto &pool = task_pool::TaskPool::get_singleton();
-
-    // Counter-based dataflow scheduling. The old implementation rebuilt a
-    // full TaskHandle/when_all scaffold per execute (per-node handle vectors,
-    // combined shared states, "/start"+"/finish" label concatenations) and
-    // submitted every node from this thread - each submission taking the
-    // pool's external mutex and waking every worker. Here only the
-    // dependency-free roots are submitted externally; every other node is
-    // submitted by the worker that completed its last predecessor (an
-    // own-deque push, no lock), and readiness is tracked with plain atomic
-    // countdowns taken from the graph's cached dependency lists.
-    struct RunState {
-        std::vector<std::atomic<int>> remaining; ///< preds left per node
-        std::atomic<size_t>           completed{0};
-        std::atomic<bool>             failed{false};
-        std::exception_ptr            first_exc;
-        std::mutex                    exc_mutex;
-
-        /// Per-node timing slots: each task writes only its own index, so no
-        /// lock is needed. Slot writes happen-before the task's completed
-        /// increment (release), and the merge below runs after help_until
-        /// observes completed == n (acquire).
-        std::vector<double> node_ms;
-
-        // Memory budget: Materialize nodes that would exceed the budget wait
-        // in `deferred` (instead of blocking a worker) and are resubmitted
-        // when a Free node returns bytes.
-        size_t              budget{0};
-        std::atomic<size_t> mem_current{0};
-        std::mutex          deferred_mutex;
-        std::vector<size_t> deferred;
-    };
-    auto state       = std::make_shared<RunState>();
-    state->budget    = _memory_budget;
-    state->remaining = std::vector<std::atomic<int>>(n);
-    state->node_ms.assign(n, -1.0);
-    for (size_t i = 0; i < n; i++) {
-        state->remaining[i].store(static_cast<int>(deps.predecessors[i].size()), std::memory_order_relaxed);
+    // Counter-based dataflow scheduling. Only the dependency-free roots are
+    // submitted from this thread; every other node is submitted by the worker
+    // that completed its last predecessor (an own-deque push, no lock), and
+    // readiness is tracked with plain atomic countdowns taken from the graph's
+    // cached dependency lists.
+    //
+    // Take a scaffold for the duration of the run so nested and concurrent
+    // runs never share one (see the pool's comment in Executor.hpp).
+    std::unique_ptr<Scaffold> scaffold;
+    {
+        std::scoped_lock const lk(_scaffold_mutex);
+        if (!_scaffolds.empty()) {
+            scaffold = std::move(_scaffolds.back());
+            _scaffolds.pop_back();
+        }
+    }
+    if (!scaffold) {
+        scaffold = std::make_unique<Scaffold>();
     }
 
-    // The scheduling callables live on this frame: help_until() below does
-    // not return until every task has completed, and no task touches them
-    // after its final completed-counter increment, so reference captures
-    // into task bodies are safe and avoid shared_ptr cycles.
-    std::function<void(size_t)> submit_node;
+    Scaffold &s = *scaffold;
+    s.reset(graph, n);
+    s.budget    = _memory_budget;
+    s.recording = profile::Profiler::instance().enabled();
+    if (s.recording) {
+        s.refresh_zone_ids(graph);
+    }
 
-    auto record_failure = [state]() {
-        std::scoped_lock const lock(state->exc_mutex);
-        if (!state->first_exc) {
-            state->first_exc = std::current_exception();
-        }
-        state->failed.store(true, std::memory_order_release);
-    };
+    auto const &deps = *s.deps;
+    auto       &pool = *s.pool;
 
-    auto complete_node = [state, &deps, &submit_node](size_t i) {
-        for (size_t const succ : deps.successors[i]) {
-            if (state->remaining[succ].fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                submit_node(succ);
-            }
-        }
-        state->completed.fetch_add(1, std::memory_order_release);
-    };
-
-    auto drain_deferred = [state, &submit_node, &nodes]() {
-        // Called after a Free returns bytes: resubmit deferred Materialize
-        // nodes that now fit, charging them under the lock so concurrent
-        // drains don't double-book the budget.
-        std::vector<size_t> runnable;
-        {
-            std::scoped_lock const lk(state->deferred_mutex);
-            for (auto it = state->deferred.begin(); it != state->deferred.end();) {
-                size_t const bytes = nodes[*it].estimated_bytes;
-                if (state->mem_current.load(std::memory_order_relaxed) + bytes <= state->budget) {
-                    state->mem_current.fetch_add(bytes, std::memory_order_relaxed);
-                    runnable.push_back(*it);
-                    it = state->deferred.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-        }
-        for (size_t const i : runnable) {
-            submit_node(i);
-        }
-    };
-
-    auto run_body = [state](size_t i, auto &&body) {
-        // After any failure the remaining nodes are drained without
-        // executing (execute() rethrows the first exception; partial
-        // results are unspecified either way).
-        if (state->failed.load(std::memory_order_acquire)) {
-            return;
-        }
-        try {
-            auto t0 = std::chrono::steady_clock::now();
-            body();
-            auto t1 = std::chrono::steady_clock::now();
-
-            state->node_ms[i] = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        } catch (...) {
-            std::scoped_lock const lock(state->exc_mutex);
-            if (!state->first_exc) {
-                state->first_exc = std::current_exception();
-            }
-            state->failed.store(true, std::memory_order_release);
-        }
-    };
-
-    submit_node = [state, &submit_node, &complete_node, &drain_deferred, &run_body, &record_failure, &pool, &nodes](size_t i) {
-        Node &node = nodes[i];
-
-        // Budget gate: park over-budget Materialize nodes instead of
-        // submitting them (never blocks a worker; Frees are never gated,
-        // so parked allocations always drain).
-        if (state->budget > 0 && node.kind == OpKind::Materialize && node.estimated_bytes > 0) {
-            // A single materialization larger than the WHOLE budget can never be
-            // scheduled (drain_deferred only re-runs a node that fits). Parking it
-            // left it in the deferred queue forever, so completed never reached n
-            // and help_until() deadlocked the calling thread. Fail the run instead.
-            if (node.estimated_bytes > state->budget) {
-                {
-                    std::scoped_lock const lock(state->exc_mutex);
-                    if (!state->first_exc) {
-                        state->first_exc = std::make_exception_ptr(std::runtime_error("DataflowExecutor: node '" + node.label +
-                                                                                      "' requires more memory than the configured budget"));
-                    }
-                    state->failed.store(true, std::memory_order_release);
-                }
-                complete_node(i);
-                return;
-            }
-            std::scoped_lock const lk(state->deferred_mutex);
-            if (state->mem_current.load(std::memory_order_relaxed) + node.estimated_bytes > state->budget) {
-                state->deferred.push_back(i);
-                return;
-            }
-            state->mem_current.fetch_add(node.estimated_bytes, std::memory_order_relaxed);
-        }
-
-        bool const has_async = static_cast<bool>(node.async_start) && static_cast<bool>(node.async_finish);
-        if (has_async) {
-            // Two chained tasks: start when ready, finish afterwards (other
-            // ready nodes can interleave between them for real overlap).
-            pool.submit_detached(node.label, [state, &complete_node, &run_body, &record_failure, &pool, &node, i]() {
-                if (!state->failed.load(std::memory_order_acquire)) {
-                    try {
-                        node.async_start();
-                    } catch (...) {
-                        record_failure();
-                    }
-                }
-                pool.submit_detached(node.label, [&complete_node, &run_body, &node, i]() {
-                    run_body(i, [&node]() { node.async_finish(); });
-                    complete_node(i);
-                });
-            });
-            return;
-        }
-
-        bool const   is_free    = state->budget > 0 && node.kind == OpKind::Free;
-        size_t const free_bytes = is_free ? node.estimated_bytes : 0;
-
-        pool.submit_detached(node.label, [state, &complete_node, &drain_deferred, &run_body, &node, i, is_free, free_bytes]() {
-            run_body(i, [&node]() { execute_node(node); });
-            if (is_free && free_bytes > 0) {
-                state->mem_current.fetch_sub(free_bytes, std::memory_order_relaxed);
-                drain_deferred();
-            }
-            complete_node(i);
-        });
-    };
-
-    // Seed the dependency-free roots; everything else self-schedules.
+    // Seed the dependency-free roots in one batch; everything else
+    // self-schedules. Submitting them one at a time cost a lock and a
+    // condition-variable signal each, which on a wide graph was most of the
+    // scheduling time.
+    s.root_batch.clear();
     for (size_t i = 0; i < n; i++) {
         if (deps.predecessors[i].empty()) {
-            submit_node(i);
+            s.submit(i, &s.root_batch);
         }
     }
+    pool.submit_bare_batch(s.root_batch);
 
     // The calling thread work-steals while waiting instead of parking.
-    pool.help_until([&]() { return state->completed.load(std::memory_order_acquire) == n; });
+    pool.help_until([&s]() { return s.completed.load(std::memory_order_acquire) == s.n; });
 
     // Serial merge in deterministic node order (the mutex-per-node this
     // replaces produced completion order, which was nondeterministic anyway).
+    auto                                &nodes = graph.nodes();
     std::vector<Graph::NodeTimingSample> samples;
     samples.reserve(n);
     for (size_t i = 0; i < n; i++) {
-        if (state->node_ms[i] >= 0.0) {
-            samples.push_back({.id = nodes[i].id, .kind = nodes[i].kind, .duration_ms = state->node_ms[i]});
+        if (s.node_ms[i].ms >= 0.0) {
+            samples.push_back({.id = nodes[i].id, .kind = nodes[i].kind, .duration_ms = s.node_ms[i].ms});
         }
     }
     graph.record_node_timings(std::move(samples));
 
-    if (state->first_exc) {
-        std::rethrow_exception(state->first_exc);
+    std::exception_ptr const exc = s.first_exc;
+
+    // Return the scaffold whether or not the run failed; every task has
+    // completed by now (help_until only returns at completed == n), so nothing
+    // still refers to it.
+    {
+        std::scoped_lock const lk(_scaffold_mutex);
+        _scaffolds.push_back(std::move(scaffold));
+    }
+
+    if (exc) {
+        std::rethrow_exception(exc);
     }
 }
 

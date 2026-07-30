@@ -643,6 +643,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     [[nodiscard]] UsageAnalysis const &usage();
 
+    /// Mutation counter, bumped at every mutation-declaration point (add_node,
+    /// mark_sorted, topological_sort, rebind). Anything caching a derived
+    /// property of the node list - UsageAnalysis, an executor's per-node
+    /// scratch - can stamp itself with this and rebuild when it goes stale.
+    [[nodiscard]] std::uint64_t analysis_version() const { return _analysis_version; }
+
     /**
      * @brief Add a conditional (if-then-else) node to the graph.
      *
