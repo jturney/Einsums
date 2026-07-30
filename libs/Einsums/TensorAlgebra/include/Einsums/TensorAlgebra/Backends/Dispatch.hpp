@@ -59,9 +59,6 @@ void einsum_runtime_check(ValueTypeT<CType> const C_prefactor, std::tuple<CIndic
                           BiggestTypeT<typename AType::ValueType, typename BType::ValueType> const AB_prefactor,
                           std::tuple<AIndices...> const &A_indices, AType const &A, std::tuple<BIndices...> const &B_indices,
                           BType const &B) {
-    using ADataType        = AType::ValueType;
-    using BDataType        = BType::ValueType;
-    using CDataType        = ValueTypeT<CType>;
     constexpr size_t ARank = AType::Rank;
     constexpr size_t BRank = BType::Rank;
     constexpr size_t CRank = TensorRank<CType>;

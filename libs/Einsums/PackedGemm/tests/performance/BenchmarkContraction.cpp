@@ -45,14 +45,14 @@ struct ProgressListener : Catch::EventListenerBase {
     int total_ = 0;
     int done_  = 0;
 
-    void testRunStarting(Catch::TestRunInfo const &info) override {
+    void testRunStarting(Catch::TestRunInfo const & /*info*/) override {
         // Count total test cases at the start
         auto const &tests = Catch::getAllTestCasesSorted(*m_config);
         total_            = static_cast<int>(tests.size());
         done_             = 0;
     }
 
-    void testCaseEnded(Catch::TestCaseStats const &stats) override {
+    void testCaseEnded(Catch::TestCaseStats const & /*stats*/) override {
         ++done_;
         if (total_ > 0) {
             int pct    = done_ * 100 / total_;

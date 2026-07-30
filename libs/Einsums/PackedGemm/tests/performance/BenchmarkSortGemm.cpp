@@ -3,13 +3,13 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Performance benchmark: Sort (permute) + BLAS GEMM vs. MLIR JIT vs. generic.
+// Performance benchmark: Sort (permute) + BLAS GEMM vs. PackedGemm vs. generic.
 //
 // Many tensor contractions in quantum chemistry have scrambled index orderings
 // that prevent einsum() from dispatching to BLAS GEMM directly.  Two strategies
 // exist to accelerate these:
 //
-//   (a) MLIR JIT backend: compiles a custom kernel for the contraction topology.
+//   (a) PackedGemm backend: compiles a custom kernel for the contraction topology.
 //   (b) Sort + GEMM: permute (sort) the input tensors so that target indices
 //       are contiguous and link indices are contiguous in the same order,
 //       enabling einsum() to dispatch to BLAS GEMM.
@@ -17,7 +17,7 @@
 // This benchmark compares three (or four) paths for each contraction:
 //
 //   1. t_generic: OpenMP generic algorithm (OnlyUseGenericAlgorithm=true).
-//   2. t_packed: MLIR JIT backend called directly.
+//   2. t_packed: PackedGemm backend called directly.
 //   3. t_sort_gemm: permute A and B, then einsum() → BLAS GEMM.
 //   4. t_einsum: full einsum() dispatch (shows which path it chose).
 //
@@ -50,13 +50,13 @@ struct ProgressListener : Catch::EventListenerBase {
     int total_ = 0;
     int done_  = 0;
 
-    void testRunStarting(Catch::TestRunInfo const &info) override {
+    void testRunStarting(Catch::TestRunInfo const & /*info*/) override {
         auto const &tests = Catch::getAllTestCasesSorted(*m_config);
         total_            = static_cast<int>(tests.size());
         done_             = 0;
     }
 
-    void testCaseEnded(Catch::TestCaseStats const &stats) override {
+    void testCaseEnded(Catch::TestCaseStats const & /*stats*/) override {
         ++done_;
         if (total_ > 0) {
             int pct    = done_ * 100 / total_;
@@ -76,7 +76,7 @@ CATCH_REGISTER_LISTENER(ProgressListener)
 
 namespace {
 
-/// Call the MLIR JIT backend directly.
+/// Call the PackedGemm backend directly.
 template <typename... CI, typename... AI, typename... BI, size_t CR, size_t AR, size_t BR>
 bool run_packed_gemm(double beta, std::tuple<CI...> c_idx, einsums::Tensor<double, CR> &C, double alpha, std::tuple<AI...> a_idx,
                      einsums::Tensor<double, AR> const &A, std::tuple<BI...> b_idx, einsums::Tensor<double, BR> const &B) {
@@ -95,7 +95,7 @@ einsums::tensor_algebra::detail::AlgorithmChoice run_einsum(double beta, std::tu
     return alg;
 }
 
-/// Force the generic OpenMP algorithm, bypassing both BLAS and MLIR.
+/// Force the generic OpenMP algorithm, bypassing both BLAS and PackedGemm.
 template <typename... CI, typename... AI, typename... BI, size_t CR, size_t AR, size_t BR>
 void run_generic(double beta, std::tuple<CI...> c_idx, einsums::Tensor<double, CR> &C, double alpha, std::tuple<AI...> a_idx,
                  einsums::Tensor<double, AR> const &A, std::tuple<BI...> b_idx, einsums::Tensor<double, BR> const &B) {
@@ -132,7 +132,7 @@ void report_paths(char const *label, int N, TimingStats const &s_generic, Timing
 //   C[i,l] += A_s[i,j,k] * B_s[l,j,k]  →  BLAS GEMM
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=32", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=32", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
     ProfileAnnotate("rank", int64_t(3));
     ProfileAnnotate("pattern", "C[i,l]+=A[i,k,j]*B[l,j,k]");
@@ -157,7 +157,7 @@ TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=32", "[mlir][benchmark]
                 for (size_t kk = 0; kk < N; ++kk)
                     ref(ii, ll) += A(ii, kk, jj) * B(ll, jj, kk);
 
-    // --- Correctness: MLIR path ---
+    // --- Correctness: PackedGemm path ---
     C.zero();
     bool ok = run_packed_gemm(0.0, Indices{i, l}, C, 1.0, Indices{i, k, j}, A, Indices{l, j, k}, B);
     REQUIRE(ok);
@@ -199,7 +199,7 @@ TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=32", "[mlir][benchmark]
     REQUIRE(t_packed.avg > 0.0);
 }
 
-TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=64", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=64", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
     ProfileAnnotate("rank", int64_t(3));
     ProfileAnnotate("pattern", "C[i,l]+=A[i,k,j]*B[l,j,k]");
@@ -217,7 +217,7 @@ TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=64", "[mlir][benchmark]
 
     Tensor<double, 3> A_s{"A_s", N, N, N};
 
-    // Warmup MLIR JIT.
+    // Warmup PackedGemm.
     C.zero();
     bool ok = run_packed_gemm(0.0, Indices{i, l}, C, 1.0, Indices{i, k, j}, A, Indices{l, j, k}, B);
     REQUIRE(ok);
@@ -254,7 +254,7 @@ TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=64", "[mlir][benchmark]
 //   C[i,j] += A_s[i,k,l,m] * B_s[j,k,l,m]  →  BLAS GEMM
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=8", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=8", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
     ProfileAnnotate("rank", int64_t(4));
     ProfileAnnotate("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
@@ -280,7 +280,7 @@ TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=8", "[mlir][benchma
                     for (size_t mm = 0; mm < N; ++mm)
                         ref(ii, jj) += A(ii, ll, kk, mm) * B(mm, ll, jj, kk);
 
-    // --- Correctness: MLIR ---
+    // --- Correctness: PackedGemm ---
     C.zero();
     bool ok = run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, l, k, m}, A, Indices{m, l, j, k}, B);
     REQUIRE(ok);
@@ -322,7 +322,7 @@ TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=8", "[mlir][benchma
     REQUIRE(t_packed.avg > 0.0);
 }
 
-TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=16", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=16", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
     ProfileAnnotate("rank", int64_t(4));
     ProfileAnnotate("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
@@ -341,7 +341,7 @@ TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=16", "[mlir][benchm
     Tensor<double, 4> A_s{"A_s", N, N, N, N};
     Tensor<double, 4> B_s{"B_s", N, N, N, N};
 
-    // Warmup MLIR JIT.
+    // Warmup PackedGemm.
     C.zero();
     bool ok = run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, l, k, m}, A, Indices{m, l, j, k}, B);
     REQUIRE(ok);
@@ -380,7 +380,7 @@ TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=16", "[mlir][benchm
 //   C[i,j] += A_s[i,k,l,m] * B_s[j,k,l,m]  →  BLAS GEMM
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Sort+GEMM: rank-4 rectangular C[i,j]+=A[i,k,l,m]*B[j,m,k,l]", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-4 rectangular C[i,j]+=A[i,k,l,m]*B[j,m,k,l]", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
     ProfileAnnotate("rank", int64_t(4));
     ProfileAnnotate("pattern", "C[i,j]+=A[i,k,l,m]*B[j,m,k,l]");
@@ -406,7 +406,7 @@ TEST_CASE("Sort+GEMM: rank-4 rectangular C[i,j]+=A[i,k,l,m]*B[j,m,k,l]", "[mlir]
                     for (size_t mm = 0; mm < Nm; ++mm)
                         ref(ii, jj) += A(ii, kk, ll, mm) * B(jj, mm, kk, ll);
 
-    // --- Correctness: MLIR ---
+    // --- Correctness: PackedGemm ---
     C.zero();
     bool ok = run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m}, A, Indices{j, m, k, l}, B);
     REQUIRE(ok);
@@ -460,7 +460,7 @@ TEST_CASE("Sort+GEMM: rank-4 rectangular C[i,j]+=A[i,k,l,m]*B[j,m,k,l]", "[mlir]
 //   permute C_s[i,j] → C[j,i]
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=32", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=32", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
     ProfileAnnotate("rank", int64_t(3));
     ProfileAnnotate("pattern", "C[j,i]+=A[k,i,l]*B[l,j,k]");
@@ -485,7 +485,7 @@ TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=32", "[mlir][
                 for (size_t ll = 0; ll < N; ++ll)
                     ref(jj, ii) += A(kk, ii, ll) * B(ll, jj, kk);
 
-    // --- Correctness: MLIR ---
+    // --- Correctness: PackedGemm ---
     C.zero();
     bool ok = run_packed_gemm(0.0, Indices{j, i}, C, 1.0, Indices{k, i, l}, A, Indices{l, j, k}, B);
     REQUIRE(ok);
@@ -531,7 +531,7 @@ TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=32", "[mlir][
     REQUIRE(t_packed.avg > 0.0);
 }
 
-TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=64", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=64", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
     ProfileAnnotate("rank", int64_t(3));
     ProfileAnnotate("pattern", "C[j,i]+=A[k,i,l]*B[l,j,k]");
@@ -551,7 +551,7 @@ TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=64", "[mlir][
     Tensor<double, 3> B_s{"B_s", N, N, N};
     Tensor<double, 2> C_s{"C_s", N, N};
 
-    // Warmup MLIR JIT.
+    // Warmup PackedGemm.
     C.zero();
     bool ok = run_packed_gemm(0.0, Indices{j, i}, C, 1.0, Indices{k, i, l}, A, Indices{l, j, k}, B);
     REQUIRE(ok);
@@ -582,7 +582,7 @@ TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=64", "[mlir][
 // Larger N sizes for rank-3 and rank-4
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=128", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=128", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
     ProfileAnnotate("rank", int64_t(3));
     ProfileAnnotate("pattern", "C[i,l]+=A[i,k,j]*B[l,j,k]");
@@ -624,7 +624,7 @@ TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=128", "[mlir][benchmark
     REQUIRE(t_packed.avg > 0.0);
 }
 
-TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=128", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=128", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
     ProfileAnnotate("rank", int64_t(3));
     ProfileAnnotate("pattern", "C[j,i]+=A[k,i,l]*B[l,j,k]");
@@ -670,7 +670,7 @@ TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=128", "[mlir]
     REQUIRE(t_packed.avg > 0.0);
 }
 
-TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=32", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=32", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
     ProfileAnnotate("rank", int64_t(4));
     ProfileAnnotate("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
@@ -720,7 +720,7 @@ TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=32", "[mlir][benchm
 // Dimensions: i=64, j=64, k=32, l=16, m=8
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Sort+GEMM: rank-4 rect C[i,j]+=A[i,k,l,m]*B[j,m,k,l] (64x64x32x16x8)", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-4 rect C[i,j]+=A[i,k,l,m]*B[j,m,k,l] (64x64x32x16x8)", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
     ProfileAnnotate("rank", int64_t(4));
     ProfileAnnotate("pattern", "C[i,j]+=A[i,k,l,m]*B[j,m,k,l]");
@@ -773,7 +773,7 @@ TEST_CASE("Sort+GEMM: rank-4 rect C[i,j]+=A[i,k,l,m]*B[j,m,k,l] (64x64x32x16x8)"
 //   C[i,j] += A[i,k,l,m,n] * B_s[j,k,l,m,n]  →  BLAS GEMM
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=8", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=8", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
     ProfileAnnotate("rank", int64_t(5));
     ProfileAnnotate("pattern", "C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k]");
@@ -800,7 +800,7 @@ TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=8", "[mlir][ben
                         for (size_t nn = 0; nn < N; ++nn)
                             ref(ii, jj) += A(ii, kk, ll, mm, nn) * B(jj, nn, mm, ll, kk);
 
-    // --- Correctness: MLIR ---
+    // --- Correctness: PackedGemm ---
     C.zero();
     bool ok = run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B);
     REQUIRE(ok);
@@ -847,7 +847,7 @@ TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=8", "[mlir][ben
     REQUIRE(t_packed.avg > 0.0);
 }
 
-TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=16", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=16", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
 
     constexpr size_t N = 16;
@@ -898,7 +898,7 @@ TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=16", "[mlir][be
 // Dimensions: i=32, j=32, k=16, l=8, m=8, n=4
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Sort+GEMM: rank-5 rect C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] (32x32x16x8x8x4)", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-5 rect C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] (32x32x16x8x8x4)", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
 
     constexpr size_t Ni = 32, Nj = 32, Nk = 16, Nl = 8, Nm = 8, Nn = 4;
@@ -921,7 +921,7 @@ TEST_CASE("Sort+GEMM: rank-5 rect C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] (32x32x16x8x
                         for (size_t nn = 0; nn < Nn; ++nn)
                             ref(ii, jj) += A(ii, kk, ll, mm, nn) * B(jj, nn, mm, ll, kk);
 
-    // --- Correctness: MLIR ---
+    // --- Correctness: PackedGemm ---
     C.zero();
     bool ok = run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B);
     REQUIRE(ok);
@@ -980,7 +980,7 @@ TEST_CASE("Sort+GEMM: rank-5 rect C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] (32x32x16x8x
 //   permute C_s[i,j] → C[j,i]
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Sort+GEMM: rank-5 scrambled C[j,i]+=A[l,i,k,m,n]*B[n,j,m,l,k] N=8", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-5 scrambled C[j,i]+=A[l,i,k,m,n]*B[n,j,m,l,k] N=8", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
 
     constexpr size_t N = 8;
@@ -1003,7 +1003,7 @@ TEST_CASE("Sort+GEMM: rank-5 scrambled C[j,i]+=A[l,i,k,m,n]*B[n,j,m,l,k] N=8", "
                         for (size_t nn = 0; nn < N; ++nn)
                             ref(jj, ii) += A(ll, ii, kk, mm, nn) * B(nn, jj, mm, ll, kk);
 
-    // --- Correctness: MLIR ---
+    // --- Correctness: PackedGemm ---
     C.zero();
     bool ok = run_packed_gemm(0.0, Indices{j, i}, C, 1.0, Indices{l, i, k, m, n}, A, Indices{n, j, m, l, k}, B);
     REQUIRE(ok);
@@ -1057,7 +1057,7 @@ TEST_CASE("Sort+GEMM: rank-5 scrambled C[j,i]+=A[l,i,k,m,n]*B[n,j,m,l,k] N=8", "
 //   C[i,j] += A[i,k,l,m,n,o] * B_s[j,k,l,m,n,o]  →  BLAS GEMM
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=6", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=6", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
 
     constexpr size_t N = 6;
@@ -1081,7 +1081,7 @@ TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=6", "[mlir]
                             for (size_t oo = 0; oo < N; ++oo)
                                 ref(ii, jj) += A(ii, kk, ll, mm, nn, oo) * B(jj, oo, nn, mm, ll, kk);
 
-    // --- Correctness: MLIR ---
+    // --- Correctness: PackedGemm ---
     C.zero();
     bool ok = run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
     REQUIRE(ok);
@@ -1132,7 +1132,7 @@ TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=6", "[mlir]
     REQUIRE(t_packed.avg > 0.0);
 }
 
-TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=8", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=8", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
 
     constexpr size_t N = 8;
@@ -1187,7 +1187,7 @@ TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=8", "[mlir]
 // Dimensions: i=16, j=16, k=8, l=8, m=4, n=4, o=4
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Sort+GEMM: rank-6 rect C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] (16x16x8x8x4x4x4)", "[mlir][benchmark][sort]") {
+TEST_CASE("Sort+GEMM: rank-6 rect C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] (16x16x8x8x4x4x4)", "[packed-gemm][benchmark][sort]") {
     LabeledSection0();
 
     constexpr size_t Ni = 16, Nj = 16, Nk = 8, Nl = 8, Nm = 4, Nn = 4, No = 4;
@@ -1211,7 +1211,7 @@ TEST_CASE("Sort+GEMM: rank-6 rect C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] (16x16x8
                             for (size_t oo = 0; oo < No; ++oo)
                                 ref(ii, jj) += A(ii, kk, ll, mm, nn, oo) * B(jj, oo, nn, mm, ll, kk);
 
-    // --- Correctness: MLIR ---
+    // --- Correctness: PackedGemm ---
     C.zero();
     bool ok = run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
     REQUIRE(ok);

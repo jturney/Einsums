@@ -43,7 +43,7 @@ constexpr bool pair_matches_unique_v =
 // Helper: For each (IndexType, Position) pair in `positions` that matches the unique index at position I
 // in `unique`, set `indices[position]` to the loop variable `i`.
 template <size_t I, typename UniqueTuple, typename PairTuple, typename IndexArray>
-void scatter_index(UniqueTuple const &unique, PairTuple const &positions, IndexArray &indices, size_t i) {
+void scatter_index(UniqueTuple const & /*unique*/, PairTuple const &positions, IndexArray &indices, size_t i) {
     for_sequence<std::tuple_size_v<std::remove_cvref_t<PairTuple>> / 2>([&](auto n) {
         if constexpr (pair_matches_unique_v<decltype(n)::value, I, PairTuple, UniqueTuple>) {
             indices[pair_position<decltype(n)::value>(positions)] = i;
@@ -154,10 +154,11 @@ template <bool ConjA, bool ConjB, typename... CUniqueIndices, typename... AUniqu
     }
 void einsum_generic_algorithm(std::tuple<CUniqueIndices...> const &C_unique, std::tuple<AUniqueIndices...> const & /*A_unique*/,
                               std::tuple<BUniqueIndices...> const & /*B_unique*/, std::tuple<LinkUniqueIndices...> const &link_unique,
-                              std::tuple<CIndices...> const &C_indices, std::tuple<AIndices...> const &A_indices,
+                              std::tuple<CIndices...> const & /*C_indices*/, std::tuple<AIndices...> const               &A_indices,
                               std::tuple<BIndices...> const &B_indices, std::tuple<TargetDims...> const &target_dims,
                               std::tuple<LinkDims...> const &link_dims, std::tuple<TargetPositionInC...> const &target_position_in_C,
-                              std::tuple<LinkPositionInLink...> const &link_position_in_link, ValueTypeT<CType> const C_prefactor, CType *C,
+                              std::tuple<LinkPositionInLink...> const & /*link_position_in_link*/, ValueTypeT<CType> const C_prefactor,
+                              CType                                                                         *C,
                               std::conditional_t<(sizeof(typename AType::ValueType) > sizeof(typename BType::ValueType)),
                                                  typename AType::ValueType, typename BType::ValueType> const AB_prefactor,
                               AType const &A, BType const &B) {

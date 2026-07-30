@@ -1460,7 +1460,7 @@ namespace detail {
  */
 template <typename NewT, size_t NewRank, template <typename, size_t> typename TensorType, typename T, size_t Rank>
     requires(TensorConcept<TensorType<T, Rank>>)
-TensorType<NewT, NewRank> create_tensor_of_same_type(TensorType<T, Rank> const &tensor) {
+TensorType<NewT, NewRank> create_tensor_of_same_type([[maybe_unused]] TensorType<T, Rank> const &tensor) {
     return TensorType<NewT, NewRank>();
 }
 
@@ -1475,7 +1475,7 @@ TensorType<NewT, NewRank> create_tensor_of_same_type(TensorType<T, Rank> const &
  * @versionadded{1.0.0}
  */
 template <typename NewT, size_t NewRank, CoreTensorConcept TensorType>
-GeneralTensor<NewT, NewRank, std::allocator<NewT>> create_basic_tensor_like(TensorType const &tensor) {
+GeneralTensor<NewT, NewRank, std::allocator<NewT>> create_basic_tensor_like([[maybe_unused]] TensorType const &tensor) {
     return GeneralTensor<NewT, NewRank, std::allocator<NewT>>();
 }
 

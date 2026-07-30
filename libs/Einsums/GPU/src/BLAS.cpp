@@ -482,7 +482,7 @@ EINSUMS_EXPORT void gemm_strided_batched<std::complex<double>>(char transa, char
 // ===========================================================================
 
 void hgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, float alpha, half_t const *a, int64_t lda, half_t const *b,
-           int64_t ldb, float beta, float *c, int64_t ldc) {
+           int64_t ldb, float beta, float *c, [[maybe_unused]] int64_t ldc) {
 #if defined(EINSUMS_HAVE_CUDA)
     // TODO: Use cublasGemmEx with CUDA_R_16F input and CUBLAS_COMPUTE_32F
     (void)transa;

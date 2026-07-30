@@ -66,7 +66,7 @@ struct ParentThreadIdFormatterFlag : spdlog::custom_flag_formatter {
  * "hostname/rank".
  */
 struct HostnameFormatterFlag : spdlog::custom_flag_formatter {
-    void format(spdlog::details::log_msg const &msg, std::tm const &tm_time, spdlog::memory_buf_t &dest) override {
+    void format(spdlog::details::log_msg const & /*msg*/, std::tm const & /*tm_time*/, spdlog::memory_buf_t &dest) override {
         dest.append(std::string("localhost"));
     }
 
@@ -75,7 +75,7 @@ struct HostnameFormatterFlag : spdlog::custom_flag_formatter {
     }
 };
 
-void init_logging(RuntimeConfiguration &config) {
+void init_logging(RuntimeConfiguration & /*config*/) {
     auto &global_config = GlobalConfigMap::get_singleton();
     // Set log destination
     auto &sinks = get_einsums_logger().sinks();

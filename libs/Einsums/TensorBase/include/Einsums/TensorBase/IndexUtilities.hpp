@@ -236,7 +236,7 @@ void sentinel_to_indices(size_t sentinel, StorageType1 const &unique_strides, St
     }
 }
 
-EINSUMS_HOSTDEV inline void sentinel_to_indices_mult_imp(size_t ordinal, size_t index) {
+EINSUMS_HOSTDEV inline void sentinel_to_indices_mult_imp(size_t /*ordinal*/, size_t /*index*/) {
 }
 
 template <typename Extra>
@@ -366,7 +366,7 @@ void sentinel_to_indices(size_t sentinel, StorageType const &index_strides, Stri
     }
 }
 
-EINSUMS_HOSTDEV inline void sentinel_to_sentinels_mult_imp(size_t, size_t index) {
+EINSUMS_HOSTDEV inline void sentinel_to_sentinels_mult_imp(size_t, size_t /*index*/) {
 }
 
 template <typename Extra>

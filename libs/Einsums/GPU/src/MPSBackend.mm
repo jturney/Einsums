@@ -152,7 +152,7 @@ std::string device_name() {
 /// Wrap a pointer in an MTLBuffer. If the pointer comes from device_malloc,
 /// we already have a buffer in g_buffer_map. Otherwise, try newBufferWithBytesNoCopy
 /// (requires page-aligned pointer). If alignment fails, copy into a new buffer.
-id<MTLBuffer> wrap_or_copy(void const *ptr, size_t bytes, bool is_const) {
+id<MTLBuffer> wrap_or_copy(void const *ptr, size_t bytes, bool /*is_const*/) {
     id<MTLBuffer> buf = find_buffer(ptr);
     if (buf)
         return buf;

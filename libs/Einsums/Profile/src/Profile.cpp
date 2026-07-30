@@ -230,7 +230,7 @@ void Profiler::write_node_json(std::ostream &ofs, AggNode const &n, int indent) 
 }
 
 // NOLINTNEXTLINE
-void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double thread_total_ms, int depth, bool detailed) {
+void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /*thread_total_ms*/, int depth, bool detailed) {
     // The name is misleading \u2014 this prints `n` and its descendants but does
     // it ITERATIVELY with an explicit stack. The original recursive
     // implementation overflowed the 8 MB Linux stack under TSan

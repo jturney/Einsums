@@ -1992,12 +1992,12 @@ template <typename T>
 void lacgv(int_t n, T *x, int_t incx);
 
 template <>
-inline void lacgv<float>(int_t n, float *x, int_t incx) {
+inline void lacgv<float>([[maybe_unused]] int_t n, [[maybe_unused]] float *x, [[maybe_unused]] int_t incx) {
     // Conjugating real values does nothing.
 }
 
 template <>
-inline void lacgv<double>(int_t n, double *x, int_t incx) {
+inline void lacgv<double>([[maybe_unused]] int_t n, [[maybe_unused]] double *x, [[maybe_unused]] int_t incx) {
     // Conjugating real values does nothing.
 }
 

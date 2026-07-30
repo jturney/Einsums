@@ -892,7 +892,7 @@ void shrink_tile(TiledRuntimeTensor<double> &T, std::vector<int> const &coord, d
 TEST_CASE("TiledExpansion - a stored-but-zero operand tile is screened out", "[ComputeGraph][Passes][Tiled]") {
     Grid const g{{2, 2}, {2, 2}};
 
-    auto build = [&](std::string tag, TiledRuntimeTensor<double> &C) {
+    auto build = [&](std::string tag, TiledRuntimeTensor<double> & /*C*/) {
         auto A = make_tiled("A" + tag, g, full_coords(g));
         auto B = make_tiled("B" + tag, g, full_coords(g));
         fill_det(A, 1.0);

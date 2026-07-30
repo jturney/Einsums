@@ -700,7 +700,7 @@ void impl_eig_sort(einsums::detail::TensorImpl<T> *Q, RemoveComplexT<T> *work) {
 }
 
 template <NotComplex T>
-size_t impl_syev_get_work_length(char jobz, einsums::detail::TensorImpl<T> const *A, einsums::detail::TensorImpl<T> const *W) {
+size_t impl_syev_get_work_length(char jobz, einsums::detail::TensorImpl<T> const *A, einsums::detail::TensorImpl<T> const * /*W*/) {
     size_t const dim = A->dim(0);
 
     if (dim <= 1) {
@@ -719,7 +719,7 @@ size_t impl_syev_get_work_length(char jobz, einsums::detail::TensorImpl<T> const
 
 template <Complex T>
 size_t impl_heev_get_work_length(char jobz, einsums::detail::TensorImpl<T> const *A,
-                                 einsums::detail::TensorImpl<RemoveComplexT<T>> const *W) {
+                                 einsums::detail::TensorImpl<RemoveComplexT<T>> const * /*W*/) {
     size_t const dim = A->dim(0);
 
     if (dim <= 1) {

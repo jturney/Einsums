@@ -1570,7 +1570,7 @@ struct GeneralTensor<T, 0, Alloc> final : tensor_base::CoreTensor,
      * Create a new zero-rank tensor with the given dimensions. Since it is zero-rank,
      * the dimensions will be empty, and are ignored.
      */
-    explicit GeneralTensor(Dim<0> _ignore) {}
+    explicit GeneralTensor(Dim<0> /*_ignore*/) {}
 
     /**
      * Get the pointer to the data stored by this tensor.

@@ -79,7 +79,7 @@ template <bool TransA, BlockTensorConcept AType, VectorConcept XType, VectorConc
         requires SameUnderlying<AType, XType, YType>;
         requires std::convertible_to<U, typename AType::ValueType>;
     }
-void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
+void gemv(U const alpha, AType const &A, XType const &x, U const beta, YType *y) {
     using T = typename AType::ValueType;
     if (beta == U(0.0)) {
         y->zero();
@@ -102,7 +102,7 @@ template <BlockTensorConcept AType, VectorConcept XType, VectorConcept YType, ty
         requires SameUnderlying<AType, XType, YType>;
         requires std::convertible_to<U, typename AType::ValueType>;
     }
-void gemv(char transA, U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
+void gemv(char transA, U const alpha, AType const &A, XType const &x, U const beta, YType *y) {
     using T = typename AType::ValueType;
     if (beta == U(0.0)) {
         y->zero();

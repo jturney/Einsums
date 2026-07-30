@@ -66,8 +66,11 @@ double conj(double x) {
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
 /// @copydoc conj<floatType>(floatType)
+///
+/// Marked maybe-unused because the primary is static: a translation unit that
+/// transposes no half-precision tensor gets its own unreferenced copy.
 template <>
-einsums::simd::half_t conj(einsums::simd::half_t x) {
+[[maybe_unused]] einsums::simd::half_t conj(einsums::simd::half_t x) {
     return x;
 }
 #endif
