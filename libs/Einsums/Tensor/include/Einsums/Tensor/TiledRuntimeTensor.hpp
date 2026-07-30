@@ -474,10 +474,10 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
 // with hidden visibility, so it must not re-instantiate these. The extern
 // template declaration makes it link against libEinsums's copies instead.
 #if !defined(EINSUMS_WINDOWS)
-extern template class EINSUMS_EXPORT TiledRuntimeTensor<float>;
-extern template class EINSUMS_EXPORT TiledRuntimeTensor<double>;
-extern template class EINSUMS_EXPORT TiledRuntimeTensor<std::complex<float>>;
-extern template class EINSUMS_EXPORT TiledRuntimeTensor<std::complex<double>>;
+extern template struct EINSUMS_EXPORT TiledRuntimeTensor<float>;
+extern template struct EINSUMS_EXPORT TiledRuntimeTensor<double>;
+extern template struct EINSUMS_EXPORT TiledRuntimeTensor<std::complex<float>>;
+extern template struct EINSUMS_EXPORT TiledRuntimeTensor<std::complex<double>>;
 #endif
 
 /**
@@ -601,10 +601,10 @@ TiledRuntimeTensorView<T> TiledRuntimeTensor<T>::view(std::vector<IndexSpace> co
 }
 
 #if !defined(EINSUMS_WINDOWS)
-extern template class EINSUMS_EXPORT TiledRuntimeTensorView<float>;
-extern template class EINSUMS_EXPORT TiledRuntimeTensorView<double>;
-extern template class EINSUMS_EXPORT TiledRuntimeTensorView<std::complex<float>>;
-extern template class EINSUMS_EXPORT TiledRuntimeTensorView<std::complex<double>>;
+extern template struct EINSUMS_EXPORT TiledRuntimeTensorView<float>;
+extern template struct EINSUMS_EXPORT TiledRuntimeTensorView<double>;
+extern template struct EINSUMS_EXPORT TiledRuntimeTensorView<std::complex<float>>;
+extern template struct EINSUMS_EXPORT TiledRuntimeTensorView<std::complex<double>>;
 #endif
 
 } // namespace einsums

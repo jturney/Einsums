@@ -37,15 +37,15 @@ TENSOR_DEFINE(TiledTensor)
 TENSOR_DEFINE(TiledTensorView)
 
 #ifndef EINSUMS_WINDOWS
-template class GeneralRuntimeTensor<float, std::allocator<float>>;
-template class GeneralRuntimeTensor<double, std::allocator<double>>;
-template class GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>;
-template class GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>;
+template struct GeneralRuntimeTensor<float, std::allocator<float>>;
+template struct GeneralRuntimeTensor<double, std::allocator<double>>;
+template struct GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>;
+template struct GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>;
 
-template class GeneralRuntimeTensor<float, BufferAllocator<float>>;
-template class GeneralRuntimeTensor<double, BufferAllocator<double>>;
-template class GeneralRuntimeTensor<std::complex<float>, BufferAllocator<std::complex<float>>>;
-template class GeneralRuntimeTensor<std::complex<double>, BufferAllocator<std::complex<double>>>;
+template struct GeneralRuntimeTensor<float, BufferAllocator<float>>;
+template struct GeneralRuntimeTensor<double, BufferAllocator<double>>;
+template struct GeneralRuntimeTensor<std::complex<float>, BufferAllocator<std::complex<float>>>;
+template struct GeneralRuntimeTensor<std::complex<double>, BufferAllocator<std::complex<double>>>;
 
 // NB: no explicit instantiations for gpu::DeviceAllocator; the device
 // runtime variant has host-only members gated with static_assert /
@@ -53,20 +53,20 @@ template class GeneralRuntimeTensor<std::complex<double>, BufferAllocator<std::c
 // those bodies and fail. Code that uses RuntimeGPUTensor<T> picks it
 // up via implicit instantiation, mirroring GeneralTensor's pattern.
 
-template class RuntimeTensorView<float>;
-template class RuntimeTensorView<double>;
-template class RuntimeTensorView<std::complex<float>>;
-template class RuntimeTensorView<std::complex<double>>;
+template struct RuntimeTensorView<float>;
+template struct RuntimeTensorView<double>;
+template struct RuntimeTensorView<std::complex<float>>;
+template struct RuntimeTensorView<std::complex<double>>;
 
-template class TiledRuntimeTensor<float>;
-template class TiledRuntimeTensor<double>;
-template class TiledRuntimeTensor<std::complex<float>>;
-template class TiledRuntimeTensor<std::complex<double>>;
+template struct TiledRuntimeTensor<float>;
+template struct TiledRuntimeTensor<double>;
+template struct TiledRuntimeTensor<std::complex<float>>;
+template struct TiledRuntimeTensor<std::complex<double>>;
 
-template class TiledRuntimeTensorView<float>;
-template class TiledRuntimeTensorView<double>;
-template class TiledRuntimeTensorView<std::complex<float>>;
-template class TiledRuntimeTensorView<std::complex<double>>;
+template struct TiledRuntimeTensorView<float>;
+template struct TiledRuntimeTensorView<double>;
+template struct TiledRuntimeTensorView<std::complex<float>>;
+template struct TiledRuntimeTensorView<std::complex<double>>;
 #endif
 
 namespace {

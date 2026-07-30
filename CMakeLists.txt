@@ -669,7 +669,7 @@ if(EINSUMS_WITH_COMPILER_WARNINGS)
 endif()
 
 # Configure compiler warnings as errors
-if(EINSUMS_WITH_COMPILER_WARNINGS_AS_ERRORS)
+if(EINSUMS_WITH_COMPILER_WARNINGS_AS_ERROR)
   if(MSVC)
     einsums_add_compile_flag(-WX)
   else()

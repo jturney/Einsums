@@ -112,7 +112,7 @@ using VectorData = BufferVector<T>;
  * @param type The type held by that tensor.
  * @param rank The rank of the tensor.
  */
-#    define TENSOR_EXPORT_TR(tensortype, type, rank) extern template class EINSUMS_EXPORT tensortype<type, rank>;
+#    define TENSOR_EXPORT_TR(tensortype, type, rank) extern template struct EINSUMS_EXPORT tensortype<type, rank>;
 
 /**
  * @def TENSOR_EXPORT_RANK
@@ -152,7 +152,7 @@ using VectorData = BufferVector<T>;
  * @param type The type held by that tensor.
  * @param rank The rank of the tensor.
  */
-#    define TENSOR_DEFINE_TR(tensortype, type, rank) template class tensortype<type, rank>;
+#    define TENSOR_DEFINE_TR(tensortype, type, rank) template struct tensortype<type, rank>;
 
 /**
  * @def TENSOR_DEFINE_RANK
@@ -192,7 +192,7 @@ using VectorData = BufferVector<T>;
  * @param type The type held by that tensor.
  * @param rank The rank of the tensor.
  */
-#    define TENSOR_EXPORT_ALLOC_TR(tensortype, type, rank, alloc) extern template class EINSUMS_EXPORT tensortype<type, rank, alloc<type>>;
+#    define TENSOR_EXPORT_ALLOC_TR(tensortype, type, rank, alloc) extern template struct EINSUMS_EXPORT tensortype<type, rank, alloc<type>>;
 
 /**
  * @def TENSOR_EXPORT_ALLOC_RANK
@@ -232,7 +232,7 @@ using VectorData = BufferVector<T>;
  * @param type The type held by that tensor.
  * @param rank The rank of the tensor.
  */
-#    define TENSOR_DEFINE_ALLOC_TR(tensortype, type, rank, alloc) template class tensortype<type, rank, alloc<type>>;
+#    define TENSOR_DEFINE_ALLOC_TR(tensortype, type, rank, alloc) template struct tensortype<type, rank, alloc<type>>;
 
 /**
  * @def TENSOR_DEFINE_RANK
@@ -274,7 +274,7 @@ using VectorData = BufferVector<T>;
  * @param rank The rank of the base tensor.
  */
 #    define TENSOR_EXPORT_TR_DISK_VIEW(tensortype, type, view_rank, rank)                                                                  \
-        extern template class EINSUMS_EXPORT tensortype<type, view_rank, rank>;
+        extern template struct EINSUMS_EXPORT tensortype<type, view_rank, rank>;
 
 /**
  * @def TENSOR_EXPORT_RANK_DISK_VIEW
@@ -331,7 +331,7 @@ using VectorData = BufferVector<T>;
  * @param view_rank The rank of the view
  * @param rank The rank of the tensor.
  */
-#    define TENSOR_DEFINE_TR_DISK_VIEW(tensortype, type, view_rank, rank) template class tensortype<type, view_rank, rank>;
+#    define TENSOR_DEFINE_TR_DISK_VIEW(tensortype, type, view_rank, rank) template struct tensortype<type, view_rank, rank>;
 
 /**
  * @def TENSOR_DEFINE_RANK_DISK_VIEW
