@@ -24,6 +24,13 @@ namespace einsums::compute_graph::passes {
  * Rewrites by summing the non-shared operands into an intermediate, then
  * performing a single einsum with the shared operand and the sum.
  *
+ * The lowering is ordinary nodes, not one fused node: a Scale that zeros the
+ * intermediate, one Axpy per summed operand carrying that member's product
+ * prefactor, and one Einsum with ``ab_pf = 1``. An earlier version fused all of
+ * it into an ``OpKind::Custom`` node that swapped a slot pointer so the first
+ * member's baked executor read the intermediate. That ran correctly but hid the
+ * intermediate from every other pass, so nothing could share or hoist it.
+ *
  * @par Example (CCSD-like pattern)
  * Before:
  * @code
@@ -34,8 +41,11 @@ namespace einsums::compute_graph::passes {
  *
  * After:
  * @code
- * // T[k,a] = B1[k,a] + B2[k,a] + B3[k,a]  (axpy chain)
- * // R[i,a] += A[i,k] * T[k,a]               (single einsum)
+ * // T[k,a]  = 0                            (Scale by zero)
+ * // T[k,a] += B1[k,a]                       (Axpy)
+ * // T[k,a] += B2[k,a]                       (Axpy)
+ * // T[k,a] += B3[k,a]                       (Axpy)
+ * // R[i,a] += A[i,k] * T[k,a]               (single Einsum)
  * @endcode
  *
  * This reduces N contractions to 1 contraction + (N-1) additions, saving
@@ -76,6 +86,16 @@ namespace einsums::compute_graph::passes {
  *   accumulating (`c_prefactor != 0`) into the same output, sharing one operand
  *   (same tensor id and index pattern) with the non-shared operands sharing the
  *   other index pattern.
+ * - Every member after the first must accumulate with `c_prefactor == 1`. The
+ *   combined contraction applies the output prefactor once, so a member that
+ *   rescales the partial sum its predecessors wrote cannot be folded:
+ *   `R = 2*(R + A*B1) + A*B2` is not `R = 2*R + A*(B1 + B2)`. Such a group
+ *   declines rather than silently computing the second form.
+ * - Each factoring group builds its own intermediate. Two groups that would sum
+ *   the same operands do not share one, and CSE cannot merge the chains for
+ *   them: an accumulation buffer has several writers, which its single-writer
+ *   guard rejects. A CCSD tau consumed by four terms is therefore built four
+ *   times.
  * - Non-shared operands must all be **distinct** tensors of identical shape and
  *   dtype; the shared operand may not alias any non-shared operand (the
  *   slot-redirect trick cannot separate two reads of one tensor).
@@ -96,6 +116,12 @@ namespace einsums::compute_graph::passes {
  *   saved against the axpy chain plus the intermediate allocation).
  * - Thread `conj_a`/`conj_b` and complex prefactors through the rewrite so
  *   conjugated / complex-scaled contractions can also be factored.
+ * - Reuse an intermediate across groups that sum the same operands with the same
+ *   prefactors, which is what makes a hand-derived quantity like CCSD's tau one
+ *   tensor rather than one per consumer. Soundness needs the earlier build to
+ *   precede the later use with no intervening write to any summed operand.
+ * - Fold the zeroing Scale into the first Axpy once an Axpby node factory exists,
+ *   saving a node per group.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT DistributiveFactoring : public OptimizerPass {
   public:

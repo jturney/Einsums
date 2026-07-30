@@ -49,6 +49,17 @@ struct FactorCandidate {
     double   ab_prefactor;
 };
 
+/// A real prefactor exactly equal to one.
+///
+/// The factored form applies the output prefactor ONCE, so every member after
+/// the first has to be a pure accumulation. A member with ``c_pf != 1`` rescales
+/// the partial sum its predecessors already wrote, which the single combined
+/// contraction cannot reproduce: `W = 2*(W + A*B0) + A*B1` is not
+/// `W = 2*W + A*(B0 + B1)`.
+bool is_unit_real(PrefactorScalar const &p) {
+    return is_real_valued(p) && as_real<double>(p) == 1.0;
+}
+
 } // namespace
 
 void DistributiveFactoring::reset_stats() {
@@ -206,6 +217,9 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
     std::vector<bool> remove(orig_count, false);
     bool              modified = false;
 
+    // Replacement nodes, keyed by the pre-erase position they belong at.
+    std::vector<std::pair<std::size_t, std::vector<Node>>> inserts;
+
     for (auto &vg : valid_groups) {
         std::vector<FactorCandidate> available;
         for (auto const &c : vg.candidates) {
@@ -221,6 +235,28 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         // member and available.back() the latest.
         size_t const first_pos = available.front().node_index;
         size_t const last_pos  = available.back().node_index;
+
+        // --- Pure-accumulation gate ---
+        // Only the first member's output prefactor survives into the combined
+        // contraction, so the rest must accumulate with exactly 1. See
+        // @ref is_unit_real for why anything else changes the result.
+        {
+            bool unit_accumulate = true;
+            for (size_t ci = 1; ci < available.size(); ci++) {
+                auto const *d = std::get_if<EinsumDescriptor>(&nodes[available[ci].node_index].op_data);
+                if (d == nullptr || !is_unit_real(d->c_prefactor)) {
+                    unit_accumulate = false;
+                    break;
+                }
+            }
+            if (!unit_accumulate) {
+                auto on = tensors.find(vg.key.output_id);
+                report(3, fmt::format("skip factoring into '{}': a member accumulates with a prefactor other than 1, which would rescale "
+                                      "the partial sum",
+                                      on != tensors.end() ? on->second.name : "?"));
+                continue;
+            }
+        }
 
         // --- Placement / interference gate (mirrors GEMMBatching / LCCF) ---
         // The combined node takes the FIRST member's slot so it stays scan-before
@@ -287,94 +323,84 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             continue; // Skip this factoring group if tensor creation fails
         auto [t_id, t_ptr] = create_result.value();
 
-        // Build a single Custom node that:
-        // 1. Zeros T
-        // 2. Axpy each non-shared operand into T: T = sum(alpha_i * Bi)
-        // 3. Runs the original einsum with T substituted for the non-shared input
+        // Emit the factorization as ORDINARY nodes: zero T, accumulate each
+        // non-shared operand into it, contract once against the shared operand.
         //
-        // We capture the first einsum's original executor and the original non-shared
-        // input's slot. By updating the slot to point to T before calling the executor,
-        // the einsum reads from T.
-        Node combined_node;
-        combined_node.kind    = OpKind::Custom;
-        combined_node.label   = fmt::format("df_factored({} terms via {})", available.size(), t_name);
-        combined_node.outputs = {vg.key.output_id, t_id};
+        // An earlier version fused all of that into one OpKind::Custom node whose
+        // executor swapped a slot pointer so the first member's baked einsum
+        // executor would read T. That worked, but it made the factorization opaque:
+        // T's construction was invisible to every other pass, so two consumers of
+        // the same sum each built their own copy (CSE has no nodes to match) and a
+        // sum that is loop-invariant could not be hoisted out of a CC iteration.
+        // Explicit nodes cost nothing at execute and let those passes do their job.
+        auto const *first_desc = std::get_if<EinsumDescriptor>(&nodes[first_pos].op_data);
+        if (first_desc == nullptr) {
+            continue;
+        }
+        // make_einsum_node wants the parsed form; the descriptor keeps the
+        // PackedGemm topology. Only the raw index lists carry over, which is all
+        // that changes here: T takes the non-shared operand's place, so the
+        // contraction's indices are exactly the ones the members already used.
+        ParsedEinsumSpec spec;
+        spec.c_indices = first_desc->spec.c_indices;
+        spec.a_indices = first_desc->spec.a_indices;
+        spec.b_indices = first_desc->spec.b_indices;
+        spec.raw =
+            fmt::format("{} <- {} ; {}", fmt::join(spec.c_indices, ","), fmt::join(spec.a_indices, ","), fmt::join(spec.b_indices, ","));
+        auto const c_pf = first_desc->c_prefactor;
+
+        std::vector<Node> emitted;
+        emitted.reserve(available.size() + 2);
+
+        // T = 0. Recorded as a Scale by zero, which is what it means, so the
+        // algebraic passes can reason about it; the executor is a true zero-fill
+        // rather than a multiply, so a freshly allocated T holding garbage cannot
+        // turn into a NaN here.
         {
-            auto zero_exec = graph.make_zero_executor(t_id);
-
-            // Build axpy executors for each non-shared operand.
-            // Scale by (c.ab_prefactor / first_ab_prefactor) so the original einsum's
-            // baked-in ab_prefactor produces the correct combined result.
-            double first_ab = available[0].ab_prefactor;
-            if (first_ab == 0.0)
-                first_ab = 1.0; // Avoid division by zero
-
-            std::vector<std::function<void()>> axpy_execs;
-            for (auto const &c : available) {
-                double const scale = c.ab_prefactor / first_ab;
-                axpy_execs.push_back(graph.make_axpy_executor(scale, c.non_shared_input, t_id));
-            }
-
-            // Capture the first einsum's executor and its slot
-            auto           original_executor = nodes[available[0].node_index].execute;
-            TensorId const non_shared_id     = available[0].non_shared_input;
-            bool const     shared_is_first   = vg.key.shared_is_first;
-
-            Graph *graph_ptr = &graph;
-            // NOLINTNEXTLINE
-            auto combined_executor = [zero_exec, axpy_execs = std::move(axpy_execs), original_executor, graph_ptr, t_id, non_shared_id,
-                                      shared_is_first]() {
-                // 1. Zero T
-                zero_exec();
-
-                // 2. Sum all non-shared operands into T
-                for (auto const &axpy : axpy_execs) {
-                    axpy();
-                }
-
-                // 3. Redirect the slot so the original einsum reads from T
-                auto *slot         = graph_ptr->find_slot(non_shared_id);
-                void *original_ptr = nullptr;
-                if (slot) {
-                    original_ptr = slot->ptr;
-                    slot->ptr    = graph_ptr->tensor(t_id).tensor_ptr;
-                }
-
-                // 4. Run the original einsum (now reads T instead of B1)
-                original_executor();
-
-                // 5. Restore the slot (so other operations that read B1 still work)
-                if (slot) {
-                    slot->ptr = original_ptr;
-                }
-            };
-
-            // Collect all input TensorIds for dependency tracking
-            std::vector<TensorId> all_inputs;
-            all_inputs.push_back(vg.key.shared_input_id);
-            for (auto const &c : available) {
-                all_inputs.push_back(c.non_shared_input);
-            }
-
-            combined_node.execute = std::move(combined_executor);
-            combined_node.inputs  = std::move(all_inputs);
+            Node nd;
+            nd.id      = graph.reserve_node_id();
+            nd.kind    = OpKind::Scale;
+            nd.label   = fmt::format("zero({})", t_name);
+            nd.inputs  = {t_id};
+            nd.outputs = {t_id};
+            nd.op_data = ScaleDescriptor{.factor = 0.0};
+            nd.execute = graph.make_zero_executor(t_id);
+            emitted.push_back(std::move(nd));
         }
 
-        // Occupy the first member's slot (reusing its id) instead of appending, so
-        // the combined writer stays scan-before every consumer of the output; see
-        // the placement gate above for why appending is unsound.
-        combined_node.id     = nodes[first_pos].id;
-        nodes[first_pos]     = std::move(combined_node);
-        node_used[first_pos] = true;
-
-        // The remaining members are subsumed by the combined node; drop them.
+        // T += ab_i * B_i, carrying each member's own product prefactor, so the
+        // combined contraction needs no prefactor of its own.
         for (auto const &c : available) {
-            if (c.node_index != first_pos) {
-                remove[c.node_index] = true;
-                _num_eliminated++;
-            }
+            auto nit = tensors.find(c.non_shared_input);
+            Node nd;
+            nd.id      = graph.reserve_node_id();
+            nd.kind    = OpKind::Axpy;
+            nd.label   = fmt::format("axpy({} -> {}, alpha={})", nit != tensors.end() ? nit->second.name : "?", t_name, c.ab_prefactor);
+            nd.inputs  = {c.non_shared_input, t_id};
+            nd.outputs = {t_id};
+            nd.execute = graph.make_axpy_executor(c.ab_prefactor, c.non_shared_input, t_id);
+            emitted.push_back(std::move(nd));
+        }
+
+        // One contraction, with T in the position the non-shared operand held, so
+        // the spec is unchanged. ab_pf is 1: the prefactors moved into the axpys.
+        {
+            TensorId const a_id = vg.key.shared_is_first ? vg.key.shared_input_id : t_id;
+            TensorId const b_id = vg.key.shared_is_first ? t_id : vg.key.shared_input_id;
+            emitted.push_back(graph.make_einsum_node(a_id, b_id, vg.key.output_id, spec, c_pf, PrefactorScalar{double{1}},
+                                                     /*conj_a=*/false, /*conj_b=*/false,
+                                                     fmt::format("df_factored({} terms via {})", available.size(), t_name)));
+        }
+
+        // Splice in at the first member's position so the combined writer stays
+        // scan-before every consumer of the output, and drop all the members; see
+        // the placement gate above for why a later position is unsound.
+        inserts.emplace_back(first_pos, std::move(emitted));
+        for (auto const &c : available) {
+            remove[c.node_index]    = true;
             node_used[c.node_index] = true;
         }
+        _num_eliminated += available.size() - 1;
 
         // Record the group for reporting
         FactoringGroup fg;
@@ -397,8 +423,25 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
     if (!modified)
         return false;
 
-    // Keep appended Alloc nodes (index >= orig_count); drop the subsumed originals.
+    // create_*_tensor_dynamic appended Alloc nodes past orig_count; pad the mask so
+    // it covers them (always kept) and so the shift table below is complete.
+    remove.resize(nodes.size(), false);
+
+    // Keep the appended Alloc nodes; drop the subsumed originals.
     graph.erase_nodes(remove);
+
+    // Positions were recorded pre-erase; shift each down by the number of erased
+    // nodes below it. A group's own first-member slot IS erased, so the shifted
+    // position lands exactly where it used to be and the replacements take its
+    // place (same accounting as TiledExpansion).
+    std::vector<size_t> erased_below(remove.size() + 1, 0);
+    for (size_t i = 0; i < remove.size(); i++) {
+        erased_below[i + 1] = erased_below[i] + (remove[i] ? 1 : 0);
+    }
+    for (auto &[position, group] : inserts) {
+        position -= erased_below[position];
+    }
+    graph.insert_node_groups(std::move(inserts));
 
     // Re-sort since we added/removed nodes
     graph.topological_sort();

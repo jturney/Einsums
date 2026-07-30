@@ -310,3 +310,85 @@ TEST_CASE("DistributiveFactoring - replay factored graph", "[ComputeGraph][Distr
         for (size_t jj = 0; jj < 4; jj++)
             REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
 }
+
+TEST_CASE("DistributiveFactoring - declines a member accumulating with c_pf != 1", "[ComputeGraph][DistributiveFactoring]") {
+    // The factored form applies the output prefactor once, so a member whose
+    // c_pf is not 1 rescales the partial sum its predecessors wrote. Folding it
+    // silently produced a wrong answer before this was gated.
+    auto A  = create_random_tensor<double>("A", 4, 3);
+    auto B1 = create_random_tensor<double>("B1", 3, 5);
+    auto B2 = create_random_tensor<double>("B2", 3, 5);
+    auto R0 = create_random_tensor<double>("R0", 4, 5);
+
+    // R_ref = 2*(R0 + A*B1) + A*B2, the sequential meaning of the two nodes.
+    auto R_ref = Tensor<double, 2>(R0);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
+    tensor_algebra::einsum(2.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+
+    auto      R = Tensor<double, 2>(R0);
+    cg::Graph graph("non_unit_accumulate");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B1);
+        cg::einsum("ik;kj->ij", 2.0, &R, 1.0, A, B2);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    REQUIRE_FALSE(modified);
+    REQUIRE(pass.num_groups() == 0);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+        }
+    }
+}
+
+TEST_CASE("DistributiveFactoring - emits ordinary nodes, not one opaque node", "[ComputeGraph][DistributiveFactoring]") {
+    // The rewrite used to fuse the sum and the contraction into a single
+    // OpKind::Custom node whose executor swapped a slot pointer. That hid the
+    // intermediate from every other pass. Keep the lowering visible: one zeroing
+    // Scale, one Axpy per summed operand, one Einsum.
+    auto A  = create_random_tensor<double>("A", 4, 3);
+    auto B1 = create_random_tensor<double>("B1", 3, 5);
+    auto B2 = create_random_tensor<double>("B2", 3, 5);
+    auto B3 = create_random_tensor<double>("B3", 3, 5);
+    auto R  = create_zero_tensor<double>("R", 4, 5);
+
+    cg::Graph graph("explicit_nodes");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B1);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B2);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B3);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 1);
+
+    size_t num_custom = 0, num_scale = 0, num_axpy = 0, num_einsum = 0;
+    for (auto const &node : graph.nodes()) {
+        switch (node.kind) {
+        case cg::OpKind::Custom:
+            num_custom++;
+            break;
+        case cg::OpKind::Scale:
+            num_scale++;
+            break;
+        case cg::OpKind::Axpy:
+            num_axpy++;
+            break;
+        case cg::OpKind::Einsum:
+            num_einsum++;
+            break;
+        default:
+            break;
+        }
+    }
+    REQUIRE(num_custom == 0);
+    REQUIRE(num_scale == 1);
+    REQUIRE(num_axpy == 3);
+    REQUIRE(num_einsum == 1);
+}
