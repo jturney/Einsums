@@ -382,4 +382,12 @@ bool GEMMBatching::run(Graph &graph) {
     return true;
 }
 
+std::vector<std::string> GEMMBatching::explain() const {
+    if (num_batches() == 0 && num_gate_skipped() == 0) {
+        return {};
+    }
+    return {fmt::format("GEMMBatching: {} batch(es) absorbing {} GEMM(s); {} group(s) left parallel by the profitability gate",
+                        num_batches(), total_batched(), num_gate_skipped())};
+}
+
 } // namespace einsums::compute_graph::passes

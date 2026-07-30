@@ -89,10 +89,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     ///        and the plan are still computed and inspectable).
     APIARY_EXPOSE explicit MemoryPlanning(bool apply_arena) : _apply_arena(apply_arena) {}
 
-    [[nodiscard]] std::string name() const override { return "MemoryPlanning"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
-    void                      print_report(std::ostream &os) const;
+    [[nodiscard]] std::string              name() const override { return "MemoryPlanning"; }
+    bool                                   run(Graph &graph) override;
+    [[nodiscard]] std::vector<std::string> explain() const override;
+    void                                   reset_stats() override;
+    void                                   print_report(std::ostream &os) const;
 
     /// Total bytes of all per-graph arenas planned in the last run.
     APIARY_EXPOSE APIARY_GETTER("planned_arena_bytes") [[nodiscard]] size_t planned_arena_bytes() const { return _planned_arena_bytes; }

@@ -165,4 +165,11 @@ bool ScaleAbsorption::run(Graph &graph) {
     return true;
 }
 
+std::vector<std::string> ScaleAbsorption::explain() const {
+    if (_num_absorbed == 0) {
+        return {};
+    }
+    return {fmt::format("ScaleAbsorption: removed {} dead scale(s)", _num_absorbed)};
+}
+
 } // namespace einsums::compute_graph::passes

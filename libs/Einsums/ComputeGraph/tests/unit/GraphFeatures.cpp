@@ -941,3 +941,74 @@ TEST_CASE("Graph - insert_node_groups keeps two groups at one position in order"
     CHECK(graph.nodes()[1].label == "first_b");
     CHECK(graph.nodes()[2].label == "second_a");
 }
+
+namespace {
+
+/// A pass defined outside the library, to show that explain() is open to
+/// extension. Before OptimizerPass::explain existed, PassManager::explain was a
+/// type switch over the built-in passes and a pass like this was invisible to it
+/// no matter what it counted.
+class CountingUserPass : public cg::OptimizerPass {
+  public:
+    [[nodiscard]] std::string name() const override { return "CountingUserPass"; }
+
+    bool run(cg::Graph &graph) override {
+        _seen = graph.num_nodes();
+        return false; // observes only
+    }
+
+    void reset_stats() override { _seen = 0; }
+
+    [[nodiscard]] std::vector<std::string> explain() const override {
+        if (_seen == 0) {
+            return {};
+        }
+        return {fmt::format("CountingUserPass: saw {} node(s)", _seen)};
+    }
+
+  private:
+    size_t _seen{0};
+};
+
+} // namespace
+
+TEST_CASE("explain - a user-defined pass reports itself", "[ComputeGraph][Optimize]") {
+    auto A   = create_random_tensor<double>("A", 8, 6);
+    auto B   = create_random_tensor<double>("B", 6, 5);
+    auto out = create_zero_tensor<double>("out", 8, 5);
+
+    cg::Graph graph("user_pass_explain");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &out, A, B);
+    }
+
+    auto            user = std::make_shared<CountingUserPass>();
+    cg::PassManager pm;
+    pm.add(user);
+    pm.run(graph);
+
+    auto const report = pm.explain();
+    INFO(report);
+    CHECK(report.find("CountingUserPass: saw") != std::string::npos);
+}
+
+TEST_CASE("explain - a pass that did nothing stays silent", "[ComputeGraph][Optimize]") {
+    // A quiet report has to mean a quiet pipeline, so a pass with nothing to say
+    // contributes no line rather than one reporting zeros.
+    auto A   = create_random_tensor<double>("A", 4, 3);
+    auto B   = create_random_tensor<double>("B", 3, 2);
+    auto out = create_zero_tensor<double>("out", 4, 2);
+
+    cg::Graph graph("quiet_explain");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &out, A, B);
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::DeadNodeElimination>(); // nothing is dead here
+    pm.run(graph);
+
+    CHECK(pm.explain() == "  (no optimizations applied)\n");
+}

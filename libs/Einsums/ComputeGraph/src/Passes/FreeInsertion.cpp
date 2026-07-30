@@ -295,4 +295,11 @@ bool FreeInsertion::run(Graph &graph) {
     return _num_freed > num_freed_at_entry;
 }
 
+std::vector<std::string> FreeInsertion::explain() const {
+    if (num_freed() == 0) {
+        return {};
+    }
+    return {fmt::format("FreeInsertion: {} intermediate(s) freed after their last consumer", num_freed())};
+}
+
 } // namespace einsums::compute_graph::passes

@@ -77,9 +77,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Setting this false privatizes unconditionally (tests, custom drivers).
     APIARY_EXPOSE void set_require_executor(bool require) { _require_executor = require; }
 
-    [[nodiscard]] std::string name() const override { return "ScratchPrivatization"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+    [[nodiscard]] std::string              name() const override { return "ScratchPrivatization"; }
+    bool                                   run(Graph &graph) override;
+    [[nodiscard]] std::vector<std::string> explain() const override;
+    void                                   reset_stats() override;
 
     APIARY_EXPOSE APIARY_GETTER("num_tensors_privatized") [[nodiscard]] size_t num_tensors_privatized() const {
         return _num_tensors_privatized;

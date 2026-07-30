@@ -221,4 +221,11 @@ bool PermuteFusion::run(Graph &graph) {
     return true;
 }
 
+std::vector<std::string> PermuteFusion::explain() const {
+    if (num_rewrites() == 0) {
+        return {};
+    }
+    return {fmt::format("PermuteFusion: folded {} permute(s) into contractions", num_rewrites())};
+}
+
 } // namespace einsums::compute_graph::passes

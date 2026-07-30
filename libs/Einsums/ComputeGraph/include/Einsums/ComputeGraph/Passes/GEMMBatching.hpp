@@ -120,9 +120,10 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
     explicit GEMMBatching(CostModel cost_model, double max_gemm_us = 100.0)
         : _cost_model(std::move(cost_model)), _has_cost_model(true), _max_gemm_us(max_gemm_us) {}
 
-    [[nodiscard]] std::string name() const override { return "GEMMBatching"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+    [[nodiscard]] std::string              name() const override { return "GEMMBatching"; }
+    bool                                   run(Graph &graph) override;
+    [[nodiscard]] std::vector<std::string> explain() const override;
+    void                                   reset_stats() override;
 
     /// Safe on loop bodies / conditional branches: batches sibling GEMMs
     /// within the single graph it's handed (one iteration's worth of

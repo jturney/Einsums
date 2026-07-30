@@ -88,9 +88,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
   public:
     APIARY_EXPOSE InplaceOptimization() = default;
 
-    [[nodiscard]] std::string name() const override { return "InplaceOptimization"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+    [[nodiscard]] std::string              name() const override { return "InplaceOptimization"; }
+    bool                                   run(Graph &graph) override;
+    [[nodiscard]] std::vector<std::string> explain() const override;
+    void                                   reset_stats() override;
 
     APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
 

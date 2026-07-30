@@ -70,9 +70,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
   public:
     APIARY_EXPOSE LoopInvariantHoisting() = default;
 
-    [[nodiscard]] std::string name() const override { return "LoopInvariantHoisting"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+    [[nodiscard]] std::string              name() const override { return "LoopInvariantHoisting"; }
+    bool                                   run(Graph &graph) override;
+    [[nodiscard]] std::vector<std::string> explain() const override;
+    void                                   reset_stats() override;
 
     APIARY_EXPOSE APIARY_GETTER("num_hoisted") [[nodiscard]] size_t num_hoisted() const { return _num_hoisted; }
 

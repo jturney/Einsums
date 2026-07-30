@@ -759,4 +759,19 @@ bool ContractionPlanning::run(Graph &graph) {
     return modified;
 }
 
+std::vector<std::string> ContractionPlanning::explain() const {
+    if (chain_reports().empty()) {
+        return {};
+    }
+    std::vector<std::string> out{fmt::format("ContractionPlanning: restructured {} of {} GEMM chain(s), {} intermediate(s)",
+                                             chains_restructured(), chain_reports().size(), intermediates_created())};
+    for (auto const &rep : chain_reports()) {
+        if (rep.speedup > 1.05) {
+            out.push_back(fmt::format("    chain of {}: est. {:.1f}us -> {:.1f}us ({:.2f}x)", rep.chain_length, rep.original_time_us,
+                                      rep.optimal_time_us, rep.speedup));
+        }
+    }
+    return out;
+}
+
 } // namespace einsums::compute_graph::passes

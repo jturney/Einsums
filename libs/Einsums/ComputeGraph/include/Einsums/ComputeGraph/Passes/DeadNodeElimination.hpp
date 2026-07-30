@@ -71,9 +71,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
   public:
     APIARY_EXPOSE DeadNodeElimination() = default;
 
-    [[nodiscard]] std::string name() const override { return "DeadNodeElimination"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+    [[nodiscard]] std::string              name() const override { return "DeadNodeElimination"; }
+    bool                                   run(Graph &graph) override;
+    [[nodiscard]] std::vector<std::string> explain() const override;
+    void                                   reset_stats() override;
 
     /// Opt out of PassManager auto-recursion: run() descends the sub-graph
     /// tree itself. A body tensor is live if ANY enclosing or sibling graph

@@ -430,4 +430,19 @@ void MemoryPlanning::print_report(std::ostream &os) const {
     }
 }
 
+std::vector<std::string> MemoryPlanning::explain() const {
+    if (total_memory() == 0) {
+        return {};
+    }
+    std::vector<std::string> out{fmt::format("MemoryPlanning: peak {:.2f} MB of {:.2f} MB total",
+                                             static_cast<double>(peak_memory()) / 1048576.0,
+                                             static_cast<double>(total_memory()) / 1048576.0)};
+    if (num_planned() > 0) {
+        out.push_back(fmt::format("    arena: {:.2f} MB hosting {} intermediate(s) ({:.2f} MB of buffers)",
+                                  static_cast<double>(planned_arena_bytes()) / 1048576.0, num_planned(),
+                                  static_cast<double>(planned_tensor_bytes()) / 1048576.0));
+    }
+    return out;
+}
+
 } // namespace einsums::compute_graph::passes

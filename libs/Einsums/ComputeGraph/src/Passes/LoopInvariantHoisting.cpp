@@ -365,4 +365,11 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
     }
 }
 
+std::vector<std::string> LoopInvariantHoisting::explain() const {
+    if (num_hoisted() == 0) {
+        return {};
+    }
+    return {fmt::format("LoopInvariantHoisting: hoisted {} node(s) out of loops", num_hoisted())};
+}
+
 } // namespace einsums::compute_graph::passes

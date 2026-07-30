@@ -103,6 +103,20 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
     virtual void reset_stats() {}
 
     /**
+     * @brief What this pass did on its last run, for @ref PassManager::explain.
+     *
+     * One entry per line of the report; empty means there is nothing worth
+     * saying, which is the default and what a pass with no counters wants. A
+     * pass that did nothing should return empty rather than a line saying so,
+     * so a quiet report means a quiet pipeline.
+     *
+     * Lives here, next to the counters it reads, rather than in a type switch
+     * inside the manager: a pass that grows a statistic updates one file, and a
+     * pass defined outside this library gets summarized like any other.
+     */
+    [[nodiscard]] virtual std::vector<std::string> explain() const { return {}; }
+
+    /**
      * @brief Reads this pass intentionally redirected to a tensor's INITIAL
      *        contents by compensating the reader, exempted from the
      *        program-order validator.

@@ -61,9 +61,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
   public:
     APIARY_EXPOSE ElementWiseFusion() = default;
 
-    [[nodiscard]] std::string name() const override { return "ElementWiseFusion"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+    [[nodiscard]] std::string              name() const override { return "ElementWiseFusion"; }
+    bool                                   run(Graph &graph) override;
+    [[nodiscard]] std::vector<std::string> explain() const override;
+    void                                   reset_stats() override;
 
     /// Safe on loop bodies / conditional branches: a local fusion of
     /// adjacent element-wise ops within the graph it's handed.

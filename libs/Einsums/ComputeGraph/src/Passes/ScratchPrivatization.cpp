@@ -373,4 +373,12 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
     }
 }
 
+std::vector<std::string> ScratchPrivatization::explain() const {
+    if (num_tensors_privatized() == 0) {
+        return {};
+    }
+    return {fmt::format("ScratchPrivatization: {} scratch tensor(s) split onto {} clone(s), {} node(s) rebuilt", num_tensors_privatized(),
+                        num_copies_created(), num_nodes_rebuilt())};
+}
+
 } // namespace einsums::compute_graph::passes

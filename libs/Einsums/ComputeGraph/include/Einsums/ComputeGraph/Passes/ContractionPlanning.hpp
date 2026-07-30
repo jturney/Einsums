@@ -98,9 +98,10 @@ class EINSUMS_EXPORT ContractionPlanning : public OptimizerPass {
     /// Construct with a specific hardware cost_model.
     explicit ContractionPlanning(CostModel cost_model);
 
-    [[nodiscard]] std::string name() const override { return "ContractionPlanning"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+    [[nodiscard]] std::string              name() const override { return "ContractionPlanning"; }
+    bool                                   run(Graph &graph) override;
+    [[nodiscard]] std::vector<std::string> explain() const override;
+    void                                   reset_stats() override;
 
     /// Recurse into loop bodies / conditional branches. Safe: restructuring a
     /// GEMM chain to its optimal parenthesization is numerically equivalent

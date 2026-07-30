@@ -92,4 +92,11 @@ bool ElementWiseFusion::run(Graph &graph) {
     return true;
 }
 
+std::vector<std::string> ElementWiseFusion::explain() const {
+    if (num_fused() == 0) {
+        return {};
+    }
+    return {fmt::format("ElementWiseFusion: fused {} elementwise pair(s)", num_fused())};
+}
+
 } // namespace einsums::compute_graph::passes

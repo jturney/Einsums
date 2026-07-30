@@ -255,4 +255,11 @@ bool InplaceOptimization::run(Graph &graph) {
     return _num_merged > num_merged_at_entry;
 }
 
+std::vector<std::string> InplaceOptimization::explain() const {
+    if (num_merged() == 0 && num_candidates() == 0) {
+        return {};
+    }
+    return {fmt::format("InplaceOptimization: merged {} buffer(s) into dying inputs ({} candidate(s))", num_merged(), num_candidates())};
+}
+
 } // namespace einsums::compute_graph::passes

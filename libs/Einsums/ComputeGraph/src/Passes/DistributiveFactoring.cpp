@@ -732,4 +732,12 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
     return true;
 }
 
+std::vector<std::string> DistributiveFactoring::explain() const {
+    if (_num_groups == 0 && _num_unprofitable == 0) {
+        return {};
+    }
+    return {fmt::format("DistributiveFactoring: factored {} group(s), eliminated {} contraction(s); {} declined as unprofitable",
+                        _num_groups, _num_eliminated, _num_unprofitable)};
+}
+
 } // namespace einsums::compute_graph::passes

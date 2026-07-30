@@ -197,4 +197,11 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
     return modified;
 }
 
+std::vector<std::string> DeadNodeElimination::explain() const {
+    if (num_eliminated() == 0) {
+        return {};
+    }
+    return {fmt::format("DeadNodeElimination: removed {} dead node(s)", num_eliminated())};
+}
+
 } // namespace einsums::compute_graph::passes
