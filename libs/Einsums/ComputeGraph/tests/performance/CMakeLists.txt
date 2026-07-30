@@ -4,6 +4,7 @@
 #----------------------------------------------------------------------------------------------
 
 set(ComputeGraphPerfTests
+    BenchmarkDispatchRoutes.cpp
     BenchmarkExecutors.cpp
     BenchmarkGraphOverhead.cpp
     BenchmarkOuterProduct.cpp
