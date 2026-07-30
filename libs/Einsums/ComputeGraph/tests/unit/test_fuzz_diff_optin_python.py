@@ -145,7 +145,11 @@ def _run_df(prog, m, v, t, name):
     g = cg.Graph(name)
     build_cg(prog, g, mats, vecs, r3, name)
 
-    df = _G.DistributiveFactoring()
+    # Factor.Always: the fuzz shapes are 1-4 in every extent, where the cost model
+    # rightly judges factoring pointless, so Auto would decline every injected
+    # group and this suite would verify nothing. The differential check below is
+    # about whether the rewrite is CORRECT, not whether it is worth doing.
+    df = _G.DistributiveFactoring(_G.Factor.Always)
     pm = cg.PassManager()
     pm.add(df)
     pm.run(g)
@@ -231,7 +235,7 @@ def test_fuzz_optin_distributive_factoring(seed, dtype):
 
     # Coverage: prove the factoring fired on the (control-flow-free) injected group.
     if df_grp is not None:
-        probe = _G.DistributiveFactoring()
+        probe = _G.DistributiveFactoring(_G.Factor.Always)
         fired = _optin_group_fires(probe, df_grp, m, v, t, f"optin_df_cov{seed}_{dtype}")
         assert fired >= 1, f"DistributiveFactoring did not fire on its injected group (seed {seed})"
 
@@ -274,7 +278,7 @@ def test_distributive_factoring_preserves_program_order():
         einsums.einsum("ij <- ik ; kj", R, A, B2, c_pf=1.0, ab_pf=0.7)
         einsums.linalg.gemm(1.0, R, E, 0.0, S)  # downstream reader of the factored R
     pm = cg.PassManager()
-    df = _G.DistributiveFactoring()
+    df = _G.DistributiveFactoring(_G.Factor.Always)
     pm.add(df)
     assert pm.run(g) and df.num_groups == 1  # rewrites and passes the verifier
     g.execute()
@@ -306,7 +310,7 @@ def test_distributive_factoring_executes_on_runtime_tensor():
     with cg.capture(g):
         einsums.einsum("ij <- ik ; kj", R, A, B1, c_pf=1.0, ab_pf=0.5)
         einsums.einsum("ij <- ik ; kj", R, A, B2, c_pf=1.0, ab_pf=0.7)
-    df = _G.DistributiveFactoring()
+    df = _G.DistributiveFactoring(_G.Factor.Always)
     pm = cg.PassManager()
     pm.add(df)
     assert pm.run(g) and df.num_groups == 1

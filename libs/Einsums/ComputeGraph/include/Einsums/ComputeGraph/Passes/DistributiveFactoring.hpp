@@ -5,13 +5,24 @@
 
 #pragma once
 
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace einsums::compute_graph::passes {
+
+/// Whether to let the cost model decide that a group is worth factoring.
+enum class APIARY_EXPOSE APIARY_MODULE("graph") Factor : std::uint8_t{
+    Auto,   ///< Price the trade against the @ref CostModel. The default.
+    Always, ///< Factor whenever the rewrite is structurally possible, whatever it
+            ///< costs. For tests that exercise the rewrite on shapes too small to
+            ///< be worth it, and for callers who know their workload better than
+            ///< the model does.
+};
 
 /**
  * @brief Distributive factoring pass: factors out shared operands from accumulating einsums.
@@ -61,20 +72,27 @@ namespace einsums::compute_graph::passes {
  * significant FLOPs when the contraction is expensive relative to the addition.
  *
  * @par Profitability
- * Only applied when the FLOP savings exceed the cost of the intermediate
- * (memory + copy + additions). Currently uses a simple heuristic: factor
- * when there are 2+ factorable terms.
+ * Priced, not guessed. The trade is (N-1) contractions saved against one axpy
+ * chain over the summed operands plus a buffer, so it pays when the contraction
+ * is flop-bound and loses when it is bandwidth-bound: a cheap contraction over
+ * large operands spends more assembling the sum than it saves, and pays memory
+ * for the privilege. Both sides are estimated in microseconds from the shared
+ * @ref CostModel, the same way TiledExpansion chooses between its lowerings, and
+ * @ref num_unprofitable counts the groups declined on those grounds.
  *
- * @par Opt-in
- * This pass is **not** registered in ``PassManager::create_default()``.
- * Factoring is a workload-dependent tradeoff, it saves FLOPs only when
- * the shared operand's contraction is expensive relative to the extra
- * axpy chain, and it adds a temporary allocation. Opt in per graph when
- * you know the pattern helps:
+ * Note the direction of the memory effect: factoring ADDS a buffer that the
+ * unfactored form does not need. Sharing reduces how many it adds when several
+ * consumers want one sum; it does not make the pass a memory saving.
+ *
+ * @par In the default pipeline
+ * Registered by ``PassManager::populate_default()``, next to
+ * @ref LinearCombinationContractionFolding and before
+ * @ref LoopInvariantHoisting, so a loop-invariant sum is built once rather than
+ * every replay. Because it self-gates on cost, it is a no-op on graphs it cannot
+ * help. To exercise it alone, or to price it against a chosen profile:
  * @code
- * cg::PassManager pm; pm.add(std::make_shared<DistributiveFactoring>());
- * graph.apply(pm);
- * // or:  auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+ * auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+ * auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(my_cost_model);
  * @endcode
  *
  * @par Example (Python)
@@ -127,12 +145,8 @@ namespace einsums::compute_graph::passes {
  *   so no node between the first and last member may read/write the output or
  *   write a factor operand, and any `Loop`/`Conditional` in the span disqualifies
  *   the group.
- * - Profitability is a simple heuristic: factor whenever there are 2+ factorable
- *   terms, without weighing the contraction cost against the extra axpy chain.
  *
  * @par Future improvements
- * - Replace the "2+ terms" heuristic with a cost-model decision (compare the FLOPs
- *   saved against the axpy chain plus the intermediate allocation).
  * - Thread `conj_a`/`conj_b` and complex prefactors through the rewrite so
  *   conjugated / complex-scaled contractions can also be factored.
  * - Fold the zeroing Scale into the first Axpy once an Axpby node factory exists,
@@ -142,7 +156,15 @@ namespace einsums::compute_graph::passes {
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT DistributiveFactoring : public OptimizerPass {
   public:
-    APIARY_EXPOSE DistributiveFactoring() = default;
+    APIARY_EXPOSE DistributiveFactoring();
+
+    /// Override the profitability decision. @ref Factor::Always skips it entirely.
+    APIARY_EXPOSE explicit DistributiveFactoring(Factor factor);
+
+    /// Price the trade against a supplied profile instead of the detected one.
+    /// populate_default() passes the profile it shares with the other cost-model
+    /// passes, so every planning decision is made against one machine.
+    explicit DistributiveFactoring(CostModel cost_model, Factor factor = Factor::Auto);
 
     [[nodiscard]] std::string name() const override { return "DistributiveFactoring"; }
 
@@ -154,6 +176,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// branches itself. Opting into PassManager auto-recursion would re-invoke
     /// run() per body and reset (clobber) the top-level tally each time.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
+
+    /// Groups declined because the axpy chain would cost more than the
+    /// contractions it saves. A bandwidth-bound contraction over large operands
+    /// is the shape that lands here.
+    APIARY_EXPOSE APIARY_GETTER("num_unprofitable") [[nodiscard]] size_t num_unprofitable() const { return _num_unprofitable; }
 
     /// Number of factoring groups found.
     APIARY_EXPOSE APIARY_GETTER("num_groups") [[nodiscard]] size_t num_groups() const { return _num_groups; }
@@ -181,8 +208,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool factor_one_level(Graph &graph);
 
     size_t                      _num_groups{0};
+    size_t                      _num_unprofitable{0};
     size_t                      _num_eliminated{0};
     std::vector<FactoringGroup> _groups;
+    CostModel                   _cost_model;
+    Factor                      _factor{Factor::Auto};
 };
 
 } // namespace einsums::compute_graph::passes

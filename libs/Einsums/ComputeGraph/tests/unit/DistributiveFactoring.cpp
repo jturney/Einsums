@@ -14,6 +14,22 @@ using namespace einsums;
 using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
+/// A machine profile on which factoring always pays: contractions are slow and
+/// memory is fast, so the axpy chain can never outweigh the saved contractions.
+///
+/// Most cases below are about the REWRITE, not the pricing, and they use shapes
+/// small enough that the real profile would rightly call factoring pointless.
+/// Pricing gets its own two cases at the end, against the detected profile.
+static cg::CostModel favors_factoring() {
+    cg::CostModel cm;
+    cm.cpu.peak_gflops_fp64          = 1e-3; // contractions are ruinously slow
+    cm.cpu.mem_bandwidth_gbps        = 1e6;  // memory traffic is free
+    cm.cpu.kernel_launch_overhead_us = 0.0;
+    cm.cpu.alloc_overhead_us         = 0.0;
+    cm.cpu.gemm_efficiency.clear();
+    return cm;
+}
+
 TEST_CASE("DistributiveFactoring - rewrites 2 terms sharing operand A", "[ComputeGraph][DistributiveFactoring]") {
     auto A  = create_random_tensor<double>("A", 4, 3);
     auto B1 = create_random_tensor<double>("B1", 3, 5);
@@ -33,7 +49,7 @@ TEST_CASE("DistributiveFactoring - rewrites 2 terms sharing operand A", "[Comput
         cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B2);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
 
     REQUIRE(modified);
     REQUIRE(pass.num_groups() >= 1);
@@ -69,7 +85,7 @@ TEST_CASE("DistributiveFactoring - rewrites 3 terms", "[ComputeGraph][Distributi
         cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B3);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE(modified);
     REQUIRE(pass.num_groups() >= 1);
 
@@ -96,7 +112,7 @@ TEST_CASE("DistributiveFactoring - no rewrite when shapes differ", "[ComputeGrap
         cg::einsum("ik;kj->ij", 1.0, &R2, 1.0, A, B2);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE_FALSE(modified);
     REQUIRE(pass.num_groups() == 0);
 }
@@ -114,7 +130,7 @@ TEST_CASE("DistributiveFactoring - no rewrite for non-accumulating", "[ComputeGr
         cg::einsum("ik;kj->ij", 0.0, &R, 1.0, A, B2);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE_FALSE(modified);
 }
 
@@ -135,7 +151,7 @@ TEST_CASE("DistributiveFactoring - shared operand on B side", "[ComputeGraph][Di
         cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A2, B);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE(modified);
 
     graph.execute();
@@ -164,7 +180,7 @@ TEST_CASE("DistributiveFactoring - rank-4 contraction", "[ComputeGraph][Distribu
         cg::einsum("ijkl;klab->ijab", 1.0, &R, 1.0, g, T2);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE(modified);
 
     graph.execute();
@@ -196,7 +212,7 @@ TEST_CASE("DistributiveFactoring - different ab_prefactors", "[ComputeGraph][Dis
         cg::einsum("ik;kj->ij", 1.0, &R, 2.0, A, B2);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE(modified);
 
     graph.execute();
@@ -263,12 +279,12 @@ TEST_CASE("DistributiveFactoring - idempotent", "[ComputeGraph][DistributiveFact
     }
 
     // First pass factors the group.
-    auto [m1, p1] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [m1, p1] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE(m1);
     REQUIRE(p1.num_groups() == 1);
 
     // Second pass finds no einsum group left (the combined node is a Custom op).
-    auto [m2, p2] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [m2, p2] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE_FALSE(m2);
     REQUIRE(p2.num_groups() == 0);
 
@@ -295,7 +311,7 @@ TEST_CASE("DistributiveFactoring - replay factored graph", "[ComputeGraph][Distr
         cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B2);
     }
 
-    graph.apply<cg::passes::DistributiveFactoring>();
+    graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
 
     // First execute
     graph.execute();
@@ -333,7 +349,7 @@ TEST_CASE("DistributiveFactoring - declines a member accumulating with c_pf != 1
         cg::einsum("ik;kj->ij", 2.0, &R, 1.0, A, B2);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE_FALSE(modified);
     REQUIRE(pass.num_groups() == 0);
 
@@ -364,7 +380,7 @@ TEST_CASE("DistributiveFactoring - emits ordinary nodes, not one opaque node", "
         cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B3);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE(modified);
     REQUIRE(pass.num_groups() == 1);
 
@@ -420,7 +436,7 @@ TEST_CASE("DistributiveFactoring - two consumers share one summed intermediate",
         cg::einsum("lk;kj->lj", 1.0, &S, 1.0, C, B2);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE(modified);
     REQUIRE(pass.num_groups() == 2);
 
@@ -473,7 +489,7 @@ TEST_CASE("DistributiveFactoring - sums differing only in a prefactor are not sh
         cg::einsum("lk;kj->lj", 1.0, &S, 0.5, C, B2); // half the second term
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE(modified);
     REQUIRE(pass.num_groups() == 2);
 
@@ -533,7 +549,7 @@ TEST_CASE("DistributiveFactoring - a rewritten operand blocks the second group",
         cg::einsum("lk;kj->lj", 1.0, &S, 1.0, C, B2);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE(modified);
     REQUIRE(pass.num_groups() == 1); // only the group before the overwrite
 
@@ -588,7 +604,7 @@ TEST_CASE("DistributiveFactoring - a proportional sum reuses the build and scale
         cg::einsum("lk;kj->lj", 1.0, &S, 0.5, C, B2);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE(modified);
     REQUIRE(pass.num_groups() == 2);
 
@@ -641,7 +657,7 @@ TEST_CASE("DistributiveFactoring - a ratio that is not a power of two is not sha
         cg::einsum("lk;kj->lj", 1.0, &S, 3.0, C, B2);
     }
 
-    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE(modified);
     REQUIRE(pass.num_groups() == 2);
 
@@ -659,4 +675,68 @@ TEST_CASE("DistributiveFactoring - a ratio that is not a power of two is not sha
     for (size_t ll = 0; ll < 6; ll++)
         for (size_t jj = 0; jj < 5; jj++)
             REQUIRE_THAT(S(ll, jj), Catch::Matchers::WithinRel(S_ref(ll, jj), 1e-10));
+}
+
+// ── Profitability, priced against the DETECTED machine profile ───────────────
+
+TEST_CASE("DistributiveFactoring - factors a flop-bound contraction", "[ComputeGraph][DistributiveFactoring]") {
+    // Square-ish contraction with real reuse: three of them cost far more than
+    // one plus an axpy chain over the operands.
+    constexpr size_t D  = 120;
+    auto             S  = create_random_tensor<double>("S", D, D);
+    auto             B1 = create_random_tensor<double>("B1", D, D);
+    auto             B2 = create_random_tensor<double>("B2", D, D);
+    auto             B3 = create_random_tensor<double>("B3", D, D);
+    auto             R  = create_zero_tensor<double>("R", D, D);
+
+    cg::Graph graph("flop_bound");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, S, B1);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, S, B2);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, S, B3);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 1);
+    REQUIRE(pass.num_unprofitable() == 0);
+}
+
+TEST_CASE("DistributiveFactoring - declines a bandwidth-bound contraction", "[ComputeGraph][DistributiveFactoring]") {
+    // Tiny output, huge operands: each contraction is a single streaming pass, so
+    // assembling the sum touches the same bytes three times to save passes that
+    // were already memory-bound. Factoring loses, and would also cost a buffer.
+    constexpr size_t I = 2, K = 2, J = 300000;
+    auto             S  = create_random_tensor<double>("S", I, K);
+    auto             B1 = create_random_tensor<double>("B1", K, J);
+    auto             B2 = create_random_tensor<double>("B2", K, J);
+    auto             B3 = create_random_tensor<double>("B3", K, J);
+    auto             R  = create_zero_tensor<double>("R", I, J);
+
+    // Reference: the unfactored meaning, which must survive the decline.
+    auto R_ref = create_zero_tensor<double>("R_ref", I, J);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, S, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, S, Indices{k, j}, B2);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, S, Indices{k, j}, B3);
+
+    cg::Graph graph("bandwidth_bound");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, S, B1);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, S, B2);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, S, B3);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    REQUIRE_FALSE(modified);
+    REQUIRE(pass.num_groups() == 0);
+    REQUIRE(pass.num_unprofitable() == 1);
+
+    // Untouched graphs still have to compute the right answer.
+    graph.execute();
+    for (size_t ii = 0; ii < I; ii++) {
+        REQUIRE_THAT(R(ii, 0), Catch::Matchers::WithinRel(R_ref(ii, 0), 1e-10));
+        REQUIRE_THAT(R(ii, J - 1), Catch::Matchers::WithinRel(R_ref(ii, J - 1), 1e-10));
+    }
 }

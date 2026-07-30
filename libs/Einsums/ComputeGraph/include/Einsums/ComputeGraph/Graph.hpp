@@ -278,10 +278,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * mem.print_report(std::cout);
      * @endcode
      */
-    template <typename PassType>
-    std::pair<bool, PassType> apply() {
+    /// Constructor arguments are forwarded, mirroring PassManager::add, so a
+    /// cost-model pass can be priced against an explicit profile.
+    template <typename PassType, typename... Args>
+    std::pair<bool, PassType> apply(Args &&...args) {
         std::scoped_lock const lock(*_content_mutex);
-        PassType               pass;
+        PassType               pass{std::forward<Args>(args)...};
         bool                   modified = pass.run(*this);
         return {modified, std::move(pass)};
     }

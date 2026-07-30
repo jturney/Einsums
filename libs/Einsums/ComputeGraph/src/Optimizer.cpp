@@ -15,6 +15,7 @@
 #include <Einsums/ComputeGraph/Passes/ContractionPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/DeadNodeElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributionPlanning.hpp>
+#include <Einsums/ComputeGraph/Passes/DistributiveFactoring.hpp>
 #include <Einsums/ComputeGraph/Passes/ElementWiseFusion.hpp>
 #include <Einsums/ComputeGraph/Passes/FreeInsertion.hpp>
 #include <Einsums/ComputeGraph/Passes/GEMMBatching.hpp>
@@ -318,6 +319,10 @@ std::string PassManager::explain() const {
         } else if (auto const *sp = dynamic_cast<passes::ScratchPrivatization const *>(p.get()); sp && sp->num_tensors_privatized() > 0) {
             line(fmt::format("ScratchPrivatization: {} scratch tensor(s) split onto {} clone(s), {} node(s) rebuilt",
                              sp->num_tensors_privatized(), sp->num_copies_created(), sp->num_nodes_rebuilt()));
+        } else if (auto const *df = dynamic_cast<passes::DistributiveFactoring const *>(p.get());
+                   df && (df->num_groups() > 0 || df->num_unprofitable() > 0)) {
+            line(fmt::format("DistributiveFactoring: factored {} group(s), eliminated {} contraction(s); {} declined as unprofitable",
+                             df->num_groups(), df->num_eliminated(), df->num_unprofitable()));
         } else if (auto const *cp = dynamic_cast<passes::ContractionPlanning const *>(p.get()); cp && !cp->chain_reports().empty()) {
             line(fmt::format("ContractionPlanning: restructured {} of {} GEMM chain(s), {} intermediate(s)", cp->chains_restructured(),
                              cp->chain_reports().size(), cp->intermediates_created()));
@@ -395,6 +400,16 @@ void PassManager::populate_default() {
     // after ElementWiseFusion for the same reason CSE/DNE precede it: match on a
     // deduplicated, canonical node set.
     pm.add<passes::LinearCombinationContractionFolding>();
+    // Factor a shared operand out of sibling accumulating contractions, next to
+    // LCCF for the same reason and with the same ordering logic: it emits the sum
+    // it builds as ordinary nodes, so when the summed operands are loop-invariant
+    // LoopInvariantHoisting below lifts the build out of the iteration and the sum
+    // is assembled once instead of every replay. Several consumers of one sum
+    // share a single build, which is what turns a hand-named quantity like CCSD's
+    // tau into one tensor. Self-gating on the shared cost model: it declines when
+    // the axpy chain would cost more than the contractions it saves, which is the
+    // bandwidth-bound case, so it is a no-op on graphs it cannot help.
+    pm.add<passes::DistributiveFactoring>(cost_model);
     pm.add<passes::LoopInvariantHoisting>();
     // After the structural rewrites above have settled and hoisting has thinned
     // the bodies: rename reused scratch onto per-generation clones so false

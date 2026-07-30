@@ -129,6 +129,52 @@ std::optional<double> proportional_scale(std::vector<std::pair<TensorId, double>
     return r;
 }
 
+/// GEMM-shaped extents of a contraction, for pricing it.
+struct ContractionShape {
+    size_t m{1};     ///< target extents carried only by A
+    size_t n{1};     ///< target extents carried only by B
+    size_t k{1};     ///< link extents: in both operands, not in the output
+    size_t batch{1}; ///< target extents in both operands and the output
+    bool   ok{false};
+};
+
+/// Classify a contraction's indices the way PackedGemm does, so the cost model
+/// can be asked for the time of an equivalent batched GEMM.
+ContractionShape contraction_shape(std::vector<std::string> const &a_idx, std::vector<size_t> const &a_dims,
+                                   std::vector<std::string> const &b_idx, std::vector<size_t> const &b_dims,
+                                   std::vector<std::string> const &c_idx) {
+    ContractionShape s;
+    if (a_idx.size() != a_dims.size() || b_idx.size() != b_dims.size()) {
+        return s;
+    }
+    std::unordered_map<std::string, size_t> extent;
+    for (size_t i = 0; i < a_idx.size(); i++) {
+        extent[a_idx[i]] = a_dims[i];
+    }
+    for (size_t i = 0; i < b_idx.size(); i++) {
+        extent[b_idx[i]] = b_dims[i];
+    }
+    auto const has = [](std::vector<std::string> const &v, std::string const &x) { return std::ranges::find(v, x) != v.end(); };
+    for (auto const &[name, ext] : extent) {
+        bool const in_a = has(a_idx, name);
+        bool const in_b = has(b_idx, name);
+        bool const in_c = has(c_idx, name);
+        if (in_a && in_b && in_c) {
+            s.batch *= ext;
+        } else if (in_a && in_b) {
+            s.k *= ext;
+        } else if (in_a && in_c) {
+            s.m *= ext;
+        } else if (in_b && in_c) {
+            s.n *= ext;
+        } else {
+            s.k *= ext; // summed over but present in one operand only: still reduced
+        }
+    }
+    s.ok = true;
+    return s;
+}
+
 /// A summed intermediate already built at this level, offered for reuse.
 struct BuiltSum {
     std::vector<std::pair<TensorId, double>> identity;
@@ -139,9 +185,19 @@ struct BuiltSum {
 
 } // namespace
 
+DistributiveFactoring::DistributiveFactoring() : DistributiveFactoring(CostModel::detect_default(), Factor::Auto) {
+}
+
+DistributiveFactoring::DistributiveFactoring(Factor factor) : DistributiveFactoring(CostModel::detect_default(), factor) {
+}
+
+DistributiveFactoring::DistributiveFactoring(CostModel cost_model, Factor factor) : _cost_model(std::move(cost_model)), _factor(factor) {
+}
+
 void DistributiveFactoring::reset_stats() {
-    _num_groups     = 0;
-    _num_eliminated = 0;
+    _num_groups       = 0;
+    _num_eliminated   = 0;
+    _num_unprofitable = 0;
 }
 
 bool DistributiveFactoring::run(Graph &graph) {
@@ -453,6 +509,62 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             reuse_id    = bs.t_id;
             reuse_scale = *scale;
             break;
+        }
+
+        // --- Profitability ---
+        // The trade is (N-1) contractions saved against one axpy chain over the
+        // summed operands, plus a buffer. It pays when the contraction is
+        // flop-bound and loses when it is bandwidth-bound: a cheap contraction
+        // over large operands spends more assembling the sum than it saves. Price
+        // both in microseconds against the shared machine profile, the same way
+        // TiledExpansion decides between its two lowerings, rather than guessing
+        // from a term count. A reused sum costs nothing to build, so those groups
+        // are essentially always profitable. Factor::Always skips the question.
+        if (_factor == Factor::Auto) {
+            auto const *fd    = std::get_if<EinsumDescriptor>(&nodes[first_pos].op_data);
+            auto        sh_h  = tensors.find(vg.key.shared_input_id);
+            auto        out_h = tensors.find(vg.key.output_id);
+            if (fd == nullptr || sh_h == tensors.end() || out_h == tensors.end()) {
+                continue;
+            }
+            auto const &a_dims = vg.key.shared_is_first ? sh_h->second.dims : ref_handle.dims;
+            auto const &b_dims = vg.key.shared_is_first ? ref_handle.dims : sh_h->second.dims;
+            auto const  shape  = contraction_shape(fd->spec.a_indices, a_dims, fd->spec.b_indices, b_dims, fd->spec.c_indices);
+            if (!shape.ok) {
+                continue;
+            }
+
+            size_t const elem    = ref_handle.element_size != 0 ? ref_handle.element_size : sizeof(double);
+            size_t       b_elems = 1;
+            for (auto d : ref_handle.dims) {
+                b_elems *= d;
+            }
+            size_t const b_bytes = b_elems * elem;
+
+            // estimate_total_gemm_time_us already carries the launch and allocation
+            // cost of being a node, so node_overhead_us is added only to the axpy
+            // chain, which has no such built-in estimate. Adding it to both put
+            // small shapes on a knife edge between the two totals.
+            double const overhead = _cost_model.node_overhead_us(Target::CPU);
+            double const einsum_us =
+                static_cast<double>(shape.batch) * _cost_model.estimate_total_gemm_time_us(shape.m, shape.n, shape.k, elem, Target::CPU);
+            double const n_terms    = static_cast<double>(available.size());
+            double const unfactored = n_terms * einsum_us;
+
+            // Zero writes T once; each axpy reads its operand and read-modify-writes
+            // T, so three buffer-sized touches per term.
+            double const build_us = reuse_id ? 0.0
+                                             : _cost_model.estimate_memory_time_us(b_bytes, Target::CPU) +
+                                                   n_terms * _cost_model.estimate_memory_time_us(3 * b_bytes, Target::CPU) +
+                                                   (n_terms + 1.0) * overhead;
+            double const factored = build_us + einsum_us;
+
+            if (factored >= unfactored) {
+                _num_unprofitable++;
+                report(2, fmt::format("skip factoring into '{}': {} contraction(s) est {:.1f} us, factored est {:.1f} us",
+                                      out_h->second.name, available.size(), unfactored, factored));
+                continue;
+            }
         }
 
         // Create intermediate tensor T = sum of non-shared operands, of the same
