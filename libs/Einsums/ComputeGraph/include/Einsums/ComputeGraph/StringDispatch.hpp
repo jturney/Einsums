@@ -313,14 +313,17 @@ template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept
     }
 void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf,
                    AType const &A, BType const &B, bool conj_a = false, bool conj_b = false,
-                   std::vector<std::string> const *precomputed_links = nullptr) {
+                   std::vector<std::string> const *precomputed_links = nullptr, packed_gemm::ContractionSite *pg_site = nullptr) {
     using T = typename AType::ValueType;
 
     LabeledSection("cg::einsum: {} <- {} ; {}", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
                    fmt::join(parsed.b_indices, ","));
-    ProfileAnnotate("a_rank", std::to_string(detail::tensor_rank(A)));
-    ProfileAnnotate("b_rank", std::to_string(detail::tensor_rank(B)));
-    ProfileAnnotate("c_rank", std::to_string(detail::tensor_rank(*C)));
+    // As integers, not std::to_string: the string form was BUILT before
+    // annotate() could check whether anything was recording, so every
+    // contraction paid three of them whether or not they went anywhere.
+    ProfileAnnotate("a_rank", static_cast<int64_t>(detail::tensor_rank(A)));
+    ProfileAnnotate("b_rank", static_cast<int64_t>(detail::tensor_rank(B)));
+    ProfileAnnotate("c_rank", static_cast<int64_t>(detail::tensor_rank(*C)));
 
     auto const &c_idx = parsed.c_indices;
     auto const &a_idx = parsed.a_indices;
@@ -683,29 +686,42 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // direct rank-1/rank-2 paths above already handle, or for shapes
     // PackedGemm can't form (no M-dims, no N-dims, no link indices).
     {
-        packed_gemm::ContractionSpec spec;
-        spec.c_indices    = c_idx;
-        spec.a_indices    = a_idx;
-        spec.b_indices    = b_idx;
-        spec.link_indices = links;
-        std::vector<std::string> c_sorted_unique(c_idx.begin(), c_idx.end());
-        std::sort(c_sorted_unique.begin(), c_sorted_unique.end());
-        c_sorted_unique.erase(std::unique(c_sorted_unique.begin(), c_sorted_unique.end()), c_sorted_unique.end());
-        spec.target_indices = std::move(c_sorted_unique);
-        // Preserve target order from c_idx (sets aren't ordered).
-        spec.target_indices.clear();
-        std::set<std::string> seen_target;
-        for (auto const &t : c_idx) {
-            if (seen_target.insert(t).second)
-                spec.target_indices.push_back(t);
-        }
-        spec.all_indices = spec.target_indices;
-        for (auto const &l : spec.link_indices)
-            spec.all_indices.push_back(l);
-        spec.conj_a = conj_a; // PackedGemm conjugates during packing/transpose (native, no copy)
-        spec.conj_b = conj_b;
+        // A caller that repeats this contraction (a graph node) hands in a
+        // site holding the spec it built last time. The spec is a pure
+        // function of the index lists and the conjugation flags, so when those
+        // still agree it is lent back instead of assembling six vector<string>
+        // - about fifteen allocations - on a path a tiled expansion drives
+        // thousands of times per replay.
+        bool const reuse_spec = pg_site != nullptr && pg_site->resolved &&
+                                packed_gemm::spec_matches_indices(pg_site->key.spec, c_idx, a_idx, b_idx, links, conj_a, conj_b);
 
-        if (packed_gemm::try_packed_gemm<AType, BType, CType>(spec, c_pf, C, ab_pf, A, B)) {
+        packed_gemm::ContractionSpec built;
+        if (!reuse_spec) {
+            built.c_indices    = c_idx;
+            built.a_indices    = a_idx;
+            built.b_indices    = b_idx;
+            built.link_indices = links;
+
+            // Unique C indices in C's own order (PackedGemm's target space is
+            // ordered, so a sorted set is the wrong shape). Index lists are
+            // rank-bounded, so the linear scan beats a std::set - which is
+            // what this used to build, on top of a sorted-unique vector that
+            // was discarded unused a line later.
+            built.target_indices.reserve(c_idx.size());
+            for (auto const &t : c_idx) {
+                if (std::find(built.target_indices.begin(), built.target_indices.end(), t) == built.target_indices.end()) {
+                    built.target_indices.push_back(t);
+                }
+            }
+            built.all_indices = built.target_indices;
+            for (auto const &l : built.link_indices)
+                built.all_indices.push_back(l);
+            built.conj_a = conj_a; // PackedGemm conjugates during packing/transpose (native, no copy)
+            built.conj_b = conj_b;
+        }
+        packed_gemm::ContractionSpec const &spec = reuse_spec ? pg_site->key.spec : built;
+
+        if (packed_gemm::try_packed_gemm<AType, BType, CType>(spec, c_pf, C, ab_pf, A, B, /*allow_scatter=*/true, pg_site)) {
             ProfileAnnotate("dispatch", "packed_gemm");
             last_dispatch_route() = "packed_gemm";
             return;

@@ -1559,8 +1559,14 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     node.inputs  = is_zero(c_pf) ? std::vector<TensorId>{a_id, b_id} : std::vector<TensorId>{a_id, b_id, c_id};
     node.outputs = {c_id};
 
+    // This node's packed-GEMM memo (see packed_gemm::ContractionSite). One per
+    // node, so per-tile nodes from a tiled expansion never share one and a
+    // parallel executor needs no synchronization around it. Dtype-agnostic:
+    // the key records the scalar type, so a rebind to another dtype misses.
+    auto pg_site = std::make_shared<packed_gemm::ContractionSite>();
+
     Graph *self  = this;
-    node.execute = [self, a_id, b_id, c_id, params, indices, dtype]() {
+    node.execute = [self, a_id, b_id, c_id, params, indices, dtype, pg_site]() {
         detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
             using Impl = ::einsums::detail::TensorImpl<T>;
             // Re-view each operand through its LIVE impl: aliasing, so writes to C
@@ -1575,7 +1581,7 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
             // object. Rebuilding it per call copied three vector<string> for
             // nothing, which a per-tile expansion pays thousands of times a replay.
             dispatch::string_einsum(indices->spec, as<T>(params->c_pf), &C, as<T>(params->ab_pf), A, B, params->conj_a, params->conj_b,
-                                    &indices->link_indices);
+                                    &indices->link_indices, pg_site.get());
         });
     };
 

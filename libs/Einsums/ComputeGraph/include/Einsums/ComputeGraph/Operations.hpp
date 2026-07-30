@@ -4138,10 +4138,17 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     auto label = fmt::format("einsum: C[{}] = A[{}] * B[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
                              fmt::join(parsed.b_indices, ","));
 
+    // This node's packed-GEMM memo, so a replay skips assembling the
+    // contraction spec, the plan-cache key and its stride vectors, and the
+    // lookup itself. Re-validated against the live indices and operand layout
+    // on every call, so a pass rewriting either is honored (see
+    // packed_gemm::ContractionSite).
+    auto pg_site = std::make_shared<packed_gemm::ContractionSite>();
+
     // Capture the shared indices + params by shared_ptr and hand the dispatch
     // the LIVE spec by reference, so a pass that rewrites indices is honored
     // without copying three vector<string> per call.
-    auto executor = [indices, params, a_slot, b_slot, c_slot]() {
+    auto executor = [indices, params, a_slot, b_slot, c_slot, pg_site]() {
         LabeledSection("einsum execute");
         ProfileAnnotate("a_size", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->size()));
         ProfileAnnotate("b_size", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->size()));
@@ -4150,7 +4157,7 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
         // dispatch derives); passing it spares every replay three set builds.
         dispatch::string_einsum(indices->spec, as<T>(params->c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params->ab_pf),
                                 *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), params->conj_a,
-                                params->conj_b, &indices->link_indices);
+                                params->conj_b, &indices->link_indices, pg_site.get());
     };
 
     ctx.record(OpKind::Einsum, std::move(label), {a_id, b_id}, {c_id}, std::move(executor), std::move(desc));

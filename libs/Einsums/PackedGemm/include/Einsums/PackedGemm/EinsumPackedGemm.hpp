@@ -95,6 +95,99 @@ TensorDescriptor tensor_descriptor(TensorType const &t) {
     return td;
 }
 
+/// @brief Whether @p td still describes @p t, without building a descriptor.
+///
+/// The comparison @ref tensor_descriptor + operator== would do, done in place:
+/// a ContractionSite checks three of these per call, and allocating three
+/// stride vectors to throw them away is the cost it exists to avoid.
+template <einsums::BasicTensorConcept TensorType>
+bool descriptor_matches(TensorDescriptor const &td, TensorType const &t) {
+    using TT    = std::remove_cvref_t<TensorType>;
+    size_t rank = 0;
+    if constexpr (requires { TT::Rank; }) {
+        if constexpr (TT::Rank >= 0) {
+            rank = static_cast<size_t>(TT::Rank);
+        } else {
+            rank = t.rank();
+        }
+    } else {
+        rank = t.rank();
+    }
+    if (td.rank != rank || td.dtype != get_scalar_type<typename TensorType::ValueType>() || td.strides.size() != rank) {
+        return false;
+    }
+    for (size_t i = 0; i < rank; ++i) {
+        if (td.strides[i] != static_cast<int64_t>(t.stride(i))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// @brief Whether a memoized @p key still describes this contraction.
+///
+/// Checks exactly what the ContractionKey encodes - topology, operand layout,
+/// and the runtime sizes of the target and link dimensions - because that is
+/// the plan cache's own soundness contract: equal key, valid plan. Everything
+/// is compared in place, so a match allocates nothing.
+///
+/// @p spec_in's derived fields (target/all/link) are checked only when the
+/// caller filled them; they are functions of the raw c/a/b lists, which are
+/// compared unconditionally.
+template <einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType, einsums::BasicTensorConcept CType>
+bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in, ScalarType st, AType const &A, BType const &B,
+                      CType const &C) {
+    if (key.spec.scalar_type != st || key.spec.conj_a != spec_in.conj_a || key.spec.conj_b != spec_in.conj_b) {
+        return false;
+    }
+    if (key.spec.c_indices != spec_in.c_indices || key.spec.a_indices != spec_in.a_indices || key.spec.b_indices != spec_in.b_indices) {
+        return false;
+    }
+    if (!spec_in.link_indices.empty() && key.spec.link_indices != spec_in.link_indices) {
+        return false;
+    }
+    if (!descriptor_matches(key.a_desc, A) || !descriptor_matches(key.b_desc, B) || !descriptor_matches(key.c_desc, C)) {
+        return false;
+    }
+
+    auto const &target = key.spec.target_indices;
+    auto const &c_raw  = key.spec.c_indices;
+    if (key.target_dims.size() != target.size()) {
+        return false;
+    }
+    for (size_t ti = 0; ti < target.size(); ++ti) {
+        int64_t dim = 0;
+        for (size_t ci = 0; ci < c_raw.size(); ++ci) {
+            if (c_raw[ci] == target[ti]) {
+                dim = static_cast<int64_t>(C.dim(ci));
+                break;
+            }
+        }
+        if (key.target_dims[ti] != dim) {
+            return false;
+        }
+    }
+
+    auto const &link  = key.spec.link_indices;
+    auto const &a_raw = key.spec.a_indices;
+    if (key.link_dims.size() != link.size()) {
+        return false;
+    }
+    for (size_t li = 0; li < link.size(); ++li) {
+        int64_t dim = 0;
+        for (size_t ai = 0; ai < a_raw.size(); ++ai) {
+            if (a_raw[ai] == link[li]) {
+                dim = static_cast<int64_t>(A.dim(ai));
+                break;
+            }
+        }
+        if (key.link_dims[li] != dim) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // BLIS-style packed contraction with BLAS GEMM tiles
 // ---------------------------------------------------------------------------
@@ -1148,10 +1241,15 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 ///        (the compile-time einsum dispatch falls back to Sort+GEMM); leave
 ///        true for callers whose only alternative is a generic loop (the
 ///        ComputeGraph runtime string dispatch).
+/// @param site Optional memo owned by a caller that repeats this exact
+///        contraction (a graph node). See @ref ContractionSite: a hit skips
+///        assembling the spec, the key and its stride vectors, hashing them,
+///        and the plan-cache lookup, none of which can change between two
+///        calls that the key compares equal for.
 template <einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType, einsums::BasicTensorConcept CType>
 bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> C_prefactor, CType *C,
                      einsums::BiggestTypeT<typename AType::ValueType, typename BType::ValueType> AB_prefactor, AType const &A,
-                     BType const &B, bool allow_scatter = true) {
+                     BType const &B, bool allow_scatter = true, ContractionSite *site = nullptr) {
     LabeledSection("packed_gemm: {} <- {} ; {}", fmt::join(spec_in.c_indices, ","), fmt::join(spec_in.a_indices, ","),
                    fmt::join(spec_in.b_indices, ","));
 
@@ -1168,6 +1266,31 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         ProfileAnnotate("packed_gemm_skip", "mixed_dtype");
         return false;
     }
+
+    // Memo hit: this caller already resolved this exact contraction, under the
+    // same policy, against operands with this layout and these sizes.
+    if (site != nullptr && site->resolved && site->allow_scatter == allow_scatter && site_key_matches(site->key, spec_in, st, A, B, *C)) {
+        if (site->plan == nullptr) {
+            ProfileAnnotate("packed_gemm_skip", "site_declined");
+            return false;
+        }
+        ProfileAnnotate("packed_gemm_plan", "site");
+        blis_contraction<ValueType>(*site->plan, *C, A, B, static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor),
+                                    spec_in.conj_a, spec_in.conj_b);
+        return true;
+    }
+
+    // Records what this call resolved to, so the next one can skip straight to
+    // it. A null plan means "declined": that is a property of the key too, and
+    // re-deriving it costs the same as finding a plan would.
+    auto remember = [site, allow_scatter](ContractionKey const &k, PackingPlan const *p) {
+        if (site != nullptr) {
+            site->key           = k;
+            site->plan          = p;
+            site->allow_scatter = allow_scatter;
+            site->resolved      = true;
+        }
+    };
 
     // Snapshot the spec, since we may need to refresh derived fields (target/link/all)
     // if the caller didn't fill them, and we want to set scalar_type from T.
@@ -1218,9 +1341,13 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         }
     }
 
-    {
-        size_t const kernel_hash = std::hash<ContractionKey>{}(key);
-        ProfileAnnotate("packed_gemm_hash", std::to_string(kernel_hash));
+    // Hashing the whole key - every index string in the spec, plus three
+    // stride vectors - purely to label a profiler annotation, on a path the
+    // tiled expansion drives thousands of times per replay. It buys a
+    // debugging aid, so it is worth exactly what a recording run will pay for
+    // it and nothing on a run that records nothing.
+    if (profile::Profiler::instance().enabled()) {
+        profile::annotate("packed_gemm_hash", static_cast<int64_t>(std::hash<ContractionKey>{}(key)));
     }
 
     // -------------------------------------------------------------------------
@@ -1249,6 +1376,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // Skip contractions that BLAS GEMM can handle directly (no batch, single M/N/K).
         if (m_count == 1 && n_count == 1 && link.size() == 1 && !spec.conj_a && !spec.conj_b && m_count + n_count == target.size()) {
             ProfileAnnotate("packed_gemm_skip", "defer_to_direct_gemm");
+            remember(key, nullptr);
             return false; // Deferred to direct BLAS GEMM, not a rejection.
         }
         // Bandwidth-bound shape classes where the packed pass structure
@@ -1265,10 +1393,12 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // than packed for streamed GEMV shapes - they keep the packed path.
         if (!allow_scatter && m_count == 0 && n_count == 0) {
             ProfileAnnotate("packed_gemm_skip", "defer_to_generic_batch_dot");
+            remember(key, nullptr);
             return false;
         }
         if (!allow_scatter && (m_count == 0 || n_count == 0)) {
             ProfileAnnotate("packed_gemm_skip", "defer_to_generic_gemv_shaped");
+            remember(key, nullptr);
             return false;
         }
         outer_shaped = link.empty();
@@ -1297,6 +1427,11 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             sort_k_dims_for_packing(computed);
             coalesce_plan(computed);
             PackingPlanCache::instance().insert(key, computed);
+            // Re-look-up so `cached` names the CACHE's copy, not this frame's.
+            // A site remembers the pointer, and only the cache's entries live
+            // long enough to be remembered (they are never erased, and the map
+            // is node-based, so the address is stable).
+            cached = PackingPlanCache::instance().lookup(key);
             ProfileAnnotate("packed_gemm_plan", "computed");
         }
     } else {
@@ -1329,6 +1464,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // always the generic loop, which runs at a flat ~2.2 ns an element.
         if (outer_shaped && plan.M_total * plan.N_total < (int64_t{1} << 12)) {
             ProfileAnnotate("packed_gemm_skip", "defer_small_outer_to_generic");
+            remember(key, nullptr);
             return false;
         }
 
@@ -1340,16 +1476,25 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             ProfileAnnotate("packed_gemm_skip", "scatter_defer_to_ttgt");
             EINSUMS_LOG_INFO("PackedGemm: declining — scatter-path shape, the caller has a TTGT fallback, "
                              "and this rung's kernel does not beat it for this shape.");
+            remember(key, nullptr);
             return false;
         }
 
         ProfileAnnotate("packed_gemm_path", needs_scatter ? "scatter" : "single_mn");
+        // Only a cache-owned plan is stable enough to remember. `computed` is
+        // this frame's; if the re-lookup above somehow missed, skip the memo
+        // rather than record a null plan, which would read as "declined" and
+        // wrongly turn every later call away.
+        if (cached != nullptr) {
+            remember(key, cached);
+        }
         blis_contraction<ValueType>(plan, *C, A, B, static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor), spec.conj_a,
                                     spec.conj_b);
         return true;
     } else {
         ProfileAnnotate("packed_gemm_skip", "invalid_topology");
         EINSUMS_LOG_INFO("PackedGemm: skipping — packing topology invalid for this contraction pattern.");
+        remember(key, nullptr);
     }
 
     // Contraction doesn't fit packed GEMM, so fall back to generic algorithm.

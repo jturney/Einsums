@@ -16,6 +16,8 @@
 
 namespace einsums::packed_gemm {
 
+struct PackingPlan; // defined in Packing.hpp, which depends on this header
+
 /// Scalar element type enumeration for type selection.
 enum class ScalarType : std::uint8_t {
     Float32,
@@ -106,6 +108,43 @@ struct ContractionKey {
                link_dims == o.link_dims;
     }
 };
+
+/// @brief Per-call-site memo for a contraction that repeats.
+///
+/// The plan cache makes PREPARING a packing plan free on a repeat; this makes
+/// FINDING it free. Getting to the cache means assembling a ContractionSpec,
+/// copying it again into a ContractionKey along with three stride vectors,
+/// hashing every index string in it, and comparing them all again under the
+/// cache's lock - about twenty allocations that a hit throws away. A
+/// ComputeGraph node replaying its contraction, or a tiled expansion driving
+/// thousands of same-shape contractions through one node, resolves to the same
+/// entry every single time.
+///
+/// A site is owned by whatever repeats: one per graph node. It holds the key
+/// it resolved, which is re-checked against the caller's spec and the
+/// operands' current layout on every call, so it is exactly as sound as the
+/// plan cache it front-ends - equal key, same plan. Nothing here is
+/// thread-safe: a site belongs to one caller.
+struct ContractionSite {
+    ContractionKey     key;                 ///< what @c plan was resolved for
+    PackingPlan const *plan{nullptr};       ///< cache-owned and stable, or null for "declined"
+    bool               resolved{false};     ///< @c key and @c plan are filled
+    bool               allow_scatter{true}; ///< the policy the resolution was made under
+};
+
+/// @brief Whether @p spec already describes this contraction's topology.
+///
+/// A ContractionSpec is a pure function of the index lists and the conjugation
+/// flags, so a caller holding one built for these lists - a @ref
+/// ContractionSite's key, say - can reuse it instead of assembling six
+/// vector<string> per call. Index lists are rank-bounded and their elements
+/// are single letters, so this compares in nanoseconds and allocates nothing.
+inline bool spec_matches_indices(ContractionSpec const &spec, std::vector<std::string> const &c_indices,
+                                 std::vector<std::string> const &a_indices, std::vector<std::string> const &b_indices,
+                                 std::vector<std::string> const &link_indices, bool conj_a, bool conj_b) {
+    return spec.conj_a == conj_a && spec.conj_b == conj_b && spec.c_indices == c_indices && spec.a_indices == a_indices &&
+           spec.b_indices == b_indices && spec.link_indices == link_indices;
+}
 
 } // namespace einsums::packed_gemm
 
