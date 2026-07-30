@@ -10,6 +10,8 @@
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -74,6 +76,57 @@ std::vector<std::pair<TensorId, double>> sum_identity(std::vector<FactorCandidat
     }
     std::ranges::sort(key);
     return key;
+}
+
+/// Whether @p v is exactly a power of two, sign included.
+///
+/// Multiplying by such a value only shifts an exponent, so scaling a sum gives
+/// bit-for-bit what scaling every term before summing would: `r*(a+b)` equals
+/// `r*a + r*b`. That identity is what lets one built sum stand in for a
+/// proportional one without changing the arithmetic.
+bool is_exact_power_of_two(double v) {
+    if (!std::isfinite(v) || v == 0.0) {
+        return false;
+    }
+    int          exp = 0;
+    double const m   = std::frexp(v, &exp);
+    return m == 0.5 || m == -0.5;
+}
+
+/// The factor r for which @p candidate is r times @p built, term by term, when
+/// there is one that is safe to use.
+///
+/// r == 1 (an exact match) is the common case and falls out of the same test.
+/// Ratios that are not powers of two are declined even when they are exactly
+/// representable: the scale would be applied to the assembled sum rather than to
+/// each term, and only a power of two makes those agree. Lifting that is safe up
+/// to rounding, but it would make the result depend on how the pass chose to
+/// share, which is a bad property for a pass that runs by default off.
+std::optional<double> proportional_scale(std::vector<std::pair<TensorId, double>> const &built,
+                                         std::vector<std::pair<TensorId, double>> const &candidate) {
+    if (built.empty() || built.size() != candidate.size()) {
+        return std::nullopt;
+    }
+    // Both lists are sorted and every operand in a group is distinct, so equal
+    // sums line up index by index.
+    for (size_t i = 0; i < built.size(); i++) {
+        if (built[i].first != candidate[i].first) {
+            return std::nullopt;
+        }
+    }
+    if (built[0].second == 0.0) {
+        return std::nullopt;
+    }
+    double const r = candidate[0].second / built[0].second;
+    if (!is_exact_power_of_two(r)) {
+        return std::nullopt;
+    }
+    for (size_t i = 0; i < built.size(); i++) {
+        if (built[i].second * r != candidate[i].second) {
+            return std::nullopt;
+        }
+    }
+    return r;
 }
 
 /// A summed intermediate already built at this level, offered for reuse.
@@ -358,10 +411,17 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         // cannot do it for us: an accumulation buffer has several writers, and its
         // single-writer guard is there to stop readers being redirected onto a
         // buffer that is mutated again.
+        // A consumer that wants the same sum scaled reuses it too: the scale rides
+        // on the contraction's ab_pf, which costs nothing, instead of paying for a
+        // second buffer and a second axpy chain. CCSD consumes tau with 1/4 in
+        // W_mnij and W_abef and with 1/2 in the T2 equation, so this is the common
+        // case rather than a corner one.
         auto const              identity = sum_identity(available);
         std::optional<TensorId> reuse_id;
+        double                  reuse_scale = 1.0;
         for (auto const &bs : built_sums) {
-            if (bs.identity != identity) {
+            auto const scale = proportional_scale(bs.identity, identity);
+            if (!scale) {
                 continue;
             }
             // The build has to run before this contraction reads it.
@@ -390,7 +450,8 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             if (!usable) {
                 continue;
             }
-            reuse_id = bs.t_id;
+            reuse_id    = bs.t_id;
+            reuse_scale = *scale;
             break;
         }
 
@@ -475,13 +536,17 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         }
 
         // One contraction, with T in the position the non-shared operand held, so
-        // the spec is unchanged. ab_pf is 1: the prefactors moved into the axpys.
+        // the spec is unchanged. ab_pf carries only the ratio to a reused sum; for
+        // a sum built here it is 1, the members' prefactors having moved into the
+        // axpys.
         {
-            TensorId const a_id = vg.key.shared_is_first ? vg.key.shared_input_id : t_id;
-            TensorId const b_id = vg.key.shared_is_first ? t_id : vg.key.shared_input_id;
-            emitted.push_back(graph.make_einsum_node(a_id, b_id, vg.key.output_id, spec, c_pf, PrefactorScalar{double{1}},
-                                                     /*conj_a=*/false, /*conj_b=*/false,
-                                                     fmt::format("df_factored({} terms via {})", available.size(), t_name)));
+            TensorId const a_id  = vg.key.shared_is_first ? vg.key.shared_input_id : t_id;
+            TensorId const b_id  = vg.key.shared_is_first ? t_id : vg.key.shared_input_id;
+            auto           label = reuse_scale == 1.0
+                                       ? fmt::format("df_factored({} terms via {})", available.size(), t_name)
+                                       : fmt::format("df_factored({} terms via {} scaled by {})", available.size(), t_name, reuse_scale);
+            emitted.push_back(graph.make_einsum_node(a_id, b_id, vg.key.output_id, spec, c_pf, PrefactorScalar{reuse_scale},
+                                                     /*conj_a=*/false, /*conj_b=*/false, std::move(label)));
         }
 
         // Offer this sum to the groups still to come.

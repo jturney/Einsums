@@ -558,3 +558,105 @@ TEST_CASE("DistributiveFactoring - a rewritten operand blocks the second group",
         for (size_t jj = 0; jj < 5; jj++)
             REQUIRE_THAT(S(ll, jj), Catch::Matchers::WithinRel(S_ref(ll, jj), 1e-10));
 }
+
+TEST_CASE("DistributiveFactoring - a proportional sum reuses the build and scales the contraction",
+          "[ComputeGraph][DistributiveFactoring]") {
+    // The second consumer wants the same sum at half strength. Building it twice
+    // would cost a whole extra buffer and axpy chain; the ratio rides on the
+    // contraction's ab_pf instead. CCSD consumes tau with 1/4 in W_mnij and
+    // W_abef and with 1/2 in the T2 equation, so this is the ordinary case.
+    auto A  = create_random_tensor<double>("A", 4, 3);
+    auto B1 = create_random_tensor<double>("B1", 3, 5);
+    auto B2 = create_random_tensor<double>("B2", 3, 5);
+    auto C  = create_random_tensor<double>("C", 6, 3);
+
+    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 0.5, Indices{l, k}, C, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 0.5, Indices{l, k}, C, Indices{k, j}, B2);
+
+    auto      R = create_zero_tensor<double>("R", 4, 5);
+    auto      S = create_zero_tensor<double>("S", 6, 5);
+    cg::Graph graph("proportional_sum");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B1);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B2);
+        cg::einsum("lk;kj->lj", 1.0, &S, 0.5, C, B1);
+        cg::einsum("lk;kj->lj", 1.0, &S, 0.5, C, B2);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 2);
+
+    size_t num_scale = 0, num_axpy = 0, num_einsum = 0;
+    for (auto const &node : graph.nodes()) {
+        if (node.kind == cg::OpKind::Scale)
+            num_scale++;
+        else if (node.kind == cg::OpKind::Axpy)
+            num_axpy++;
+        else if (node.kind == cg::OpKind::Einsum)
+            num_einsum++;
+    }
+    REQUIRE(num_scale == 1); // one build, not two
+    REQUIRE(num_axpy == 2);
+    REQUIRE(num_einsum == 2);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+    for (size_t ll = 0; ll < 6; ll++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(S(ll, jj), Catch::Matchers::WithinRel(S_ref(ll, jj), 1e-10));
+}
+
+TEST_CASE("DistributiveFactoring - a ratio that is not a power of two is not shared", "[ComputeGraph][DistributiveFactoring]") {
+    // Scaling the assembled sum only equals scaling each term when the factor is
+    // a power of two, so a ratio of three declines and builds its own sum. The
+    // answer is right either way; this pins the conservative choice.
+    auto A  = create_random_tensor<double>("A", 4, 3);
+    auto B1 = create_random_tensor<double>("B1", 3, 5);
+    auto B2 = create_random_tensor<double>("B2", 3, 5);
+    auto C  = create_random_tensor<double>("C", 6, 3);
+
+    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 3.0, Indices{l, k}, C, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 3.0, Indices{l, k}, C, Indices{k, j}, B2);
+
+    auto      R = create_zero_tensor<double>("R", 4, 5);
+    auto      S = create_zero_tensor<double>("S", 6, 5);
+    cg::Graph graph("odd_ratio");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B1);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B2);
+        cg::einsum("lk;kj->lj", 1.0, &S, 3.0, C, B1);
+        cg::einsum("lk;kj->lj", 1.0, &S, 3.0, C, B2);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 2);
+
+    size_t num_scale = 0;
+    for (auto const &node : graph.nodes()) {
+        if (node.kind == cg::OpKind::Scale)
+            num_scale++;
+    }
+    REQUIRE(num_scale == 2); // two builds
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+    for (size_t ll = 0; ll < 6; ll++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(S(ll, jj), Catch::Matchers::WithinRel(S_ref(ll, jj), 1e-10));
+}

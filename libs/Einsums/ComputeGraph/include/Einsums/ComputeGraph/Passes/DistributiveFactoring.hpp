@@ -31,11 +31,12 @@ namespace einsums::compute_graph::passes {
  * member's baked executor read the intermediate. That ran correctly but hid the
  * intermediate from every other pass, so nothing could share or hoist it.
  *
- * Groups that sum the same operands with the same prefactors share one
+ * Groups that sum the same operands, up to an overall factor, share one
  * intermediate, so a quantity several terms consume is built once. This is the
- * shape of CCSD's tau, which feeds W_mnij, W_abef and the T2 equation: written
- * out term by term, with no hint that tau exists, the pass recovers it and
- * contracts it once per consumer. Reuse lives here rather than in CSE because an
+ * shape of CCSD's tau, which feeds W_mnij and W_abef with a quarter and the T2
+ * equation with a half: written out term by term, with no hint that tau exists,
+ * the pass recovers it, builds it once, and puts each consumer's factor on that
+ * consumer's contraction. Reuse lives here rather than in CSE because an
  * accumulation buffer has several writers, and CSE's single-writer guard is what
  * stops readers being redirected onto a buffer that is mutated again.
  *
@@ -99,11 +100,19 @@ namespace einsums::compute_graph::passes {
  *   rescales the partial sum its predecessors wrote cannot be folded:
  *   `R = 2*(R + A*B1) + A*B2` is not `R = 2*R + A*(B1 + B2)`. Such a group
  *   declines rather than silently computing the second form.
- * - Sharing is keyed on the operands AND their prefactors, so two sums that
- *   differ only in a coefficient stay separate. CCSD's tau and tau-tilde sum the
- *   same three operands and differ by a factor of one half, and they are
- *   genuinely different tensors; recognising them as one parameterised quantity
- *   would need reasoning over coefficients, which nothing here does.
+ * - Sharing covers sums that are equal or PROPORTIONAL: a consumer wanting the
+ *   same sum at a different strength reuses the build and carries the ratio on
+ *   its own ``ab_pf``, which is free. The ratio must be an exact power of two,
+ *   because only then does scaling the assembled sum agree with scaling each term
+ *   (``r*(a+b) == r*a + r*b``). Other ratios decline; lifting that is safe up to
+ *   rounding but would make the answer depend on what the pass chose to share.
+ * - Sums that are not proportional stay separate even when related. CCSD's tau and
+ *   tau-tilde are ``T2 + P`` and ``T2 + P/2`` for the same ``P``, a ratio of 1 on
+ *   one term and 1/2 on the others, so they are two tensors here. That matches
+ *   practice: deriving one from the other saves a single pass over an o^2v^2
+ *   buffer against contractions costing o^2v^4, and serialises two builds that are
+ *   otherwise independent. Seeing them as one quantity at two coefficients is
+ *   multi-term optimisation over a coefficient matrix, which nothing here does.
  * - Reuse only looks within one graph level. A sum built in a loop body is not
  *   offered to the enclosing graph or to a sibling branch.
  * - Non-shared operands must all be **distinct** tensors of identical shape and
