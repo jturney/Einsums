@@ -625,15 +625,26 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             }
         }
 
-        // ── Runtime-rank BLAS fast paths ────────────────────────────────────────
-        // Mirror of the typed BLAS ladder above for runtime-rank operands. We
-        // build a zero-copy TensorView<T, K> over the RuntimeTensor's data, whose
-        // impl carries the same dims and strides, then call the same rank-
-        // specialized BLAS helpers. The upcast is just a pointer plus a small
-        // metadata array, with no allocation and no copy. It only fires when all
-        // three operands are runtime-rank; mixed typed/runtime calls fall through
-        // to PackedGemm or the generic loop.
-        if constexpr (!HasCompileTimeRank<AType> && !HasCompileTimeRank<BType> && !HasCompileTimeRank<CType>) {
+        // ── Rank-erased BLAS fast paths ─────────────────────────────────────────
+        // Mirror of the typed BLAS ladder above, reached whenever that one did
+        // not apply. We build a zero-copy TensorView<T, K> over each operand's
+        // data, whose impl carries the same dims and strides, then call the
+        // same rank-specialized BLAS helpers. The upcast is just a pointer plus
+        // a small metadata array, with no allocation and no copy, and it reads
+        // only data()/dim()/stride() - which typed and runtime-rank tensors
+        // both have, so it does not care which it is handed.
+        //
+        // That is what makes a MIXED triple work. This used to require all
+        // three operands to be runtime-rank, so one typed and one runtime
+        // operand satisfied neither ladder and fell through to PackedGemm -
+        // which DEFERS a plain single-M/N/K GEMM back to direct BLAS, leaving
+        // the serial generic loop to run it. A rank-2 matmul was hitting the
+        // odometer loop purely because its operands were declared differently.
+        //
+        // Running it for an all-typed triple is harmless: every branch here
+        // tests the same shape conditions the typed ladder already returned on,
+        // so it only ever sees shapes that one declined.
+        if constexpr (!(HasCompileTimeRank<AType> && HasCompileTimeRank<BType> && HasCompileTimeRank<CType>)) {
             std::size_t const a_rank = detail::tensor_rank(A);
             std::size_t const b_rank = detail::tensor_rank(B);
             std::size_t const c_rank = detail::tensor_rank(*C);

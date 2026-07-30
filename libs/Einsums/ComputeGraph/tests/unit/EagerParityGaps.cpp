@@ -724,6 +724,29 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         CHECK(std::abs(s3.data()[0] - want3) <= 1e-12 * (1.0 + std::abs(want3)));
     }
 
+    SECTION("mixed typed/runtime operand triple") {
+        // One typed and one runtime-rank operand satisfied neither ladder, so
+        // a plain matmul reached PackedGemm - which defers single-M/N/K back
+        // to direct BLAS - and ended up on the serial generic loop.
+        auto                  A   = create_random_tensor<double>("A", 4, 3);
+        auto                  B_t = create_random_tensor<double>("B", 3, 5);
+        auto                  C   = create_zero_tensor<double>("C", 4, 5);
+        RuntimeTensor<double> B(B_t);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+        CHECK(route() == "gemm_direct_runtime");
+
+        for (size_t r = 0; r < 4; r++) {
+            for (size_t c = 0; c < 5; c++) {
+                double want = 0.0;
+                for (size_t k = 0; k < 3; k++) {
+                    want += A(r, k) * B_t(k, c);
+                }
+                CHECK(std::abs(C(r, c) - want) <= 1e-12 * (1.0 + std::abs(want)));
+            }
+        }
+    }
+
     SECTION("conjugated gemv already reaches PackedGemm") {
         // Not a gap: the conjugating gate skips the BLAS ladder, but PackedGemm
         // conjugates natively during packing, so gemm- and gemv-shaped
