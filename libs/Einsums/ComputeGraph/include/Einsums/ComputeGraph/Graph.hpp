@@ -1681,25 +1681,41 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// topological_sort() can skip the Kahn pass but must refresh the lists.
     bool _deps_valid{false};
 
-    /// Pre-formatted profiler payloads for one node: the zone name plus every
+    /// Pre-interned profiler payloads for one node: the zone name plus every
     /// annotation whose value is invariant across replays. Built once per
     /// graph mutation instead of fmt::format-ing per node per execute() -
     /// for an SCF/CC loop that replays the graph hundreds of times, the
     /// formatting dominated the serial replay overhead.
+    ///
+    /// The ids are string-table ids, not strings: interning a key and a value
+    /// per annotation per node per replay took the table's lock several times
+    /// per node, which is what made a profiled replay several times the cost
+    /// of an unprofiled one. Ids are stable for the life of the process (the
+    /// table only grows), so caching them here is safe across enable/disable.
+    /// @c zone is kept because the Tracy backend wants the characters.
     struct NodeProfileStrings {
-        std::string                                      zone;    ///< "graph:<name>/<label>"
-        std::vector<std::pair<std::string, std::string>> texts;   ///< invariant string annotations
-        std::vector<std::pair<std::string, int64_t>>     numbers; ///< invariant integer annotations
-        std::vector<std::pair<std::string, double>>      reals;   ///< invariant floating-point annotations
+        NodeId                                     node_id{0}; ///< owner, checked against the node at replay
+        std::string                                zone;       ///< "graph:<name>/<label>"
+        uint32_t                                   zone_id{0}; ///< interned @c zone
+        std::vector<std::pair<uint32_t, uint32_t>> texts;      ///< invariant string annotations (key id, value id)
+        std::vector<std::pair<uint32_t, int64_t>>  numbers;    ///< invariant integer annotations
+        std::vector<std::pair<uint32_t, double>>   reals;      ///< invariant floating-point annotations
     };
 
-    /// Keyed by NodeId (stable across reorders). Invalidated wherever the
-    /// node list or annotated metadata changes: add_node, mark_sorted (the
-    /// declared-mutation contract - passes rewrite labels/descriptors),
-    /// rebind (tensor names), and update_prefactors.
-    std::unordered_map<NodeId, NodeProfileStrings> _profile_strings;
-    bool                                           _profile_strings_valid{false};
-    std::string                                    _exec_zone_name;
+    /// Parallel to _nodes (position i describes node i), which is what lets
+    /// the replay loop index straight in instead of hashing a NodeId per node.
+    /// @c node_id is checked against the node anyway, so an UNdeclared
+    /// mutation degrades to a bare label rather than mislabelling a zone.
+    ///
+    /// Invalidated wherever the node list or annotated metadata changes:
+    /// add_node, mark_sorted (the declared-mutation contract - passes rewrite
+    /// labels/descriptors), rebind (tensor names), and update_prefactors.
+    /// Only built when something is recording; a run with the profiler off
+    /// never formats or interns any of it.
+    std::vector<NodeProfileStrings> _profile_strings;
+    bool                            _profile_strings_valid{false};
+    std::string                     _exec_zone_name;
+    uint32_t                        _exec_zone_id{0};
 
     /// Mutation counter for cached analyses. Bumped at every
     /// mutation-declaration point; UsageAnalysis caches against it.

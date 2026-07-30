@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <ostream>
 #include <queue>
 #include <set>
@@ -502,6 +503,7 @@ void Graph::move_members_from(Graph &&other) noexcept {
     _profile_strings       = std::move(other._profile_strings);
     _profile_strings_valid = other._profile_strings_valid;
     _exec_zone_name        = std::move(other._exec_zone_name);
+    _exec_zone_id          = other._exec_zone_id;
     _last_optimize_report  = std::move(other._last_optimize_report);
     _analysis_version      = other._analysis_version;
     _usage_version         = other._usage_version;
@@ -1853,40 +1855,48 @@ void Graph::print_timing_report(std::ostream &os) const {
 
 void Graph::rebuild_profile_strings() {
     _exec_zone_name = fmt::format("ComputeGraph::execute({})", _name);
+    _exec_zone_id   = profile::intern_string(_exec_zone_name);
     _profile_strings.clear();
-    _profile_strings.reserve(_nodes.size());
+    _profile_strings.resize(_nodes.size());
 
-    for (auto const &node : _nodes) {
-        NodeProfileStrings entry;
-        entry.zone = fmt::format("graph:{}/{}", _name, node.label);
+    for (size_t idx = 0; idx < _nodes.size(); idx++) {
+        auto const         &node  = _nodes[idx];
+        NodeProfileStrings &entry = _profile_strings[idx];
+        entry.node_id             = node.id;
+        entry.zone                = fmt::format("graph:{}/{}", _name, node.label);
+        entry.zone_id             = profile::intern_string(entry.zone);
+
+        auto text = [&entry](std::string_view key, std::string_view value) {
+            entry.texts.emplace_back(profile::intern_string(key), profile::intern_string(value));
+        };
+        auto number = [&entry](std::string_view key, int64_t value) { entry.numbers.emplace_back(profile::intern_string(key), value); };
 
         if (auto const *tdesc = std::get_if<TransferDescriptor>(&node.op_data)) {
-            entry.numbers.emplace_back("transfer_bytes", static_cast<int64_t>(tdesc->size_bytes));
+            number("transfer_bytes", static_cast<int64_t>(tdesc->size_bytes));
         }
 
         if (auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data)) {
-            entry.texts.emplace_back("c_prefactor", to_string(desc->c_prefactor));
-            entry.texts.emplace_back("ab_prefactor", to_string(desc->ab_prefactor));
+            text("c_prefactor", to_string(desc->c_prefactor));
+            text("ab_prefactor", to_string(desc->ab_prefactor));
             if (!desc->spec.c_indices.empty()) {
-                entry.texts.emplace_back("c_indices", fmt::format("{}", fmt::join(desc->spec.c_indices, ",")));
-                entry.texts.emplace_back("a_indices", fmt::format("{}", fmt::join(desc->spec.a_indices, ",")));
-                entry.texts.emplace_back("b_indices", fmt::format("{}", fmt::join(desc->spec.b_indices, ",")));
+                text("c_indices", fmt::format("{}", fmt::join(desc->spec.c_indices, ",")));
+                text("a_indices", fmt::format("{}", fmt::join(desc->spec.a_indices, ",")));
+                text("b_indices", fmt::format("{}", fmt::join(desc->spec.b_indices, ",")));
             }
         } else if (auto const *sdesc = std::get_if<ScaleDescriptor>(&node.op_data)) {
-            entry.reals.emplace_back("scale_factor", sdesc->factor);
+            entry.reals.emplace_back(profile::intern_string("scale_factor"), sdesc->factor);
         } else if (auto const *cdesc = std::get_if<CommDescriptor>(&node.op_data)) {
-            entry.numbers.emplace_back("comm_bytes", static_cast<int64_t>(cdesc->size_bytes));
-            entry.numbers.emplace_back("comm_tensor", static_cast<int64_t>(cdesc->tensor_id));
+            number("comm_bytes", static_cast<int64_t>(cdesc->size_bytes));
+            number("comm_tensor", static_cast<int64_t>(cdesc->tensor_id));
         }
 
         auto annotate_tensors = [&](std::vector<TensorId> const &ids, char const *prefix) {
             for (TensorId const tid : ids) {
                 auto it = _tensors.find(tid);
                 if (it != _tensors.end() && !it->second.dims.empty()) {
-                    entry.texts.emplace_back(fmt::format("{}.{}", prefix, it->second.name),
-                                             fmt::format("{}", fmt::join(it->second.dims, "x")));
+                    text(fmt::format("{}.{}", prefix, it->second.name), fmt::format("{}", fmt::join(it->second.dims, "x")));
                     if (it->second.is_distributed) {
-                        entry.texts.emplace_back(fmt::format("{}.{}.distributed", prefix, it->second.name), "true");
+                        text(fmt::format("{}.{}.distributed", prefix, it->second.name), "true");
                     }
                 }
             }
@@ -1895,10 +1905,8 @@ void Graph::rebuild_profile_strings() {
         annotate_tensors(node.outputs, "output");
 
         if (node.estimated_flops > 0) {
-            entry.numbers.emplace_back("estimated_flops", static_cast<int64_t>(node.estimated_flops));
+            number("estimated_flops", static_cast<int64_t>(node.estimated_flops));
         }
-
-        _profile_strings.emplace(node.id, std::move(entry));
     }
 
     _profile_strings_valid = true;
@@ -1956,38 +1964,62 @@ void Graph::execute() {
     _timing_samples.reserve(_nodes.size());
     _timing_report_valid = false; // samples are about to be written
 
-    // All fmt::format work for zones/annotations is precomputed; replays of
-    // an unchanged graph only pay the profiler's record cost itself.
-    if (!_profile_strings_valid) {
+    // Read once so the zone pushes and their matching pops agree even if
+    // another thread flips recording mid-run: an unbalanced zone deepens the
+    // profiler tree without bound.
+    bool const recording = profile::Profiler::instance().enabled();
+
+    // Two call sites shared by every graph and every node. The NAMES are per
+    // graph and per node and come pre-interned from _profile_strings; the site
+    // supplies the file/function/line, which are the same every time.
+    static profile::ZoneSite const kGraphExecSite{"ComputeGraph::execute", __FILE__, __LINE__, __func__};
+    static profile::ZoneSite const kGraphNodeSite{"ComputeGraph::node", __FILE__, __LINE__, __func__};
+
+    // All fmt::format work for zones/annotations is precomputed, and so is the
+    // string interning behind them; replays of an unchanged graph only pay the
+    // profiler's event write. A run that records nothing builds none of it.
+    if (recording && !_profile_strings_valid) {
         rebuild_profile_strings();
     }
 
     // RAII zones (see execute(Executor&)): a node that throws must still pop its
     // profiler zone, or the tree depth grows without bound across failed runs.
-    profile::ScopedZone const _exec_zone(_exec_zone_name);
+    std::optional<profile::ScopedZone> exec_zone;
+    if (recording) {
+        exec_zone.emplace(kGraphExecSite, _exec_zone_id, _exec_zone_name);
+    }
 
-    // A node missing from the cache falls back to its bare label (defensive:
-    // an undeclared mutation after the rebuild above).
+    // A node whose cache entry does not match falls back to its bare label
+    // (defensive: an undeclared mutation after the rebuild above).
     static NodeProfileStrings const kEmptyEntry{};
 
-    for (auto &node : _nodes) {
-        auto                      ps_it = _profile_strings.find(node.id);
-        NodeProfileStrings const &ps    = ps_it != _profile_strings.end() ? ps_it->second : kEmptyEntry;
+    for (size_t idx = 0; idx < _nodes.size(); idx++) {
+        Node &node = _nodes[idx];
 
-        profile::ScopedZone const _node_zone(ps.zone.empty() ? node.label : ps.zone);
+        std::optional<profile::ScopedZone> node_zone;
+        if (recording) {
+            NodeProfileStrings const &ps =
+                (idx < _profile_strings.size() && _profile_strings[idx].node_id == node.id) ? _profile_strings[idx] : kEmptyEntry;
 
-        // These two are static strings; no caching needed.
-        profile::annotate("op_kind", op_kind_name(node.kind));
-        profile::annotate("device", node.target == Target::GPU ? "GPU" : "CPU");
+            if (ps.zone_id != 0) {
+                node_zone.emplace(kGraphNodeSite, ps.zone_id, ps.zone);
+            } else {
+                node_zone.emplace(node.label);
+            }
 
-        for (auto const &[key, value] : ps.texts) {
-            profile::annotate(key, value);
-        }
-        for (auto const &[key, value] : ps.numbers) {
-            profile::annotate(key, value);
-        }
-        for (auto const &[key, value] : ps.reals) {
-            profile::annotate(key, value);
+            // These two are static strings, interned once per process.
+            profile::annotate("op_kind", op_kind_name(node.kind));
+            profile::annotate("device", node.target == Target::GPU ? "GPU" : "CPU");
+
+            for (auto const &[key, value] : ps.texts) {
+                profile::annotate_interned(key, value);
+            }
+            for (auto const &[key, value] : ps.numbers) {
+                profile::annotate_interned(key, value);
+            }
+            for (auto const &[key, value] : ps.reals) {
+                profile::annotate_interned(key, value);
+            }
         }
 
         auto t_start = std::chrono::steady_clock::now();
@@ -2103,7 +2135,7 @@ void Graph::execute() {
 
         double const ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
         _timing_samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = ms});
-        // _node_zone pops here (and on any early continue / thrown node).
+        // node_zone pops here (and on any early continue / thrown node).
     }
 
     // Final D2H flush (discrete GPU only).
@@ -2128,7 +2160,7 @@ void Graph::execute() {
         }
     }
 
-    // _exec_zone pops here.
+    // exec_zone pops here.
     _executed = true;
 }
 

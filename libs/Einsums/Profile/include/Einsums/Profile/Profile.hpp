@@ -437,11 +437,28 @@ struct ScopedZone {
         prof.push_interned(prof.string_table().intern(name), site.file_id, site.func_id, site.line, name, site.file, site.func);
     }
 
+    /// Enter a zone whose name the CALLER interned, at a fixed call site.
+    ///
+    /// For a caller that has its own stable set of runtime names and can cache
+    /// their ids - a graph replaying the same nodes, say - this is the plain
+    /// site path with a name the site could not know: nothing is interned, so
+    /// nothing is locked. Get the id from @ref intern_string.
+    ScopedZone(ZoneSite const &site, uint32_t name_id, std::string_view name = {}) {
+        Profiler::instance().push_interned(name_id, site.file_id, site.func_id, site.line, name, site.file, site.func);
+    }
+
     explicit ScopedZone(std::string const &name, std::string const &file = "", int line = 0, std::string const &func = "") {
         Profiler::instance().push(name, file, line, func);
     }
     ~ScopedZone() { Profiler::instance().pop(); }
 };
+
+/// Intern @p s and return its id, for callers that cache annotation keys,
+/// values or zone names of their own. Ids are stable for the life of the
+/// process: the string table only ever grows.
+inline uint32_t intern_string(std::string_view s) {
+    return Profiler::instance().string_table().intern(s);
+}
 
 // ---------------------- Annotation API ----------------------
 
@@ -493,6 +510,59 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate(std::string_view key
     evt.type       = EventType::Annotate;
     evt.timestamp  = Clock::now();
     evt.key_id     = st.intern(key);
+    evt.value_type = AnnotateValueType::Float64;
+    evt.float_val  = value;
+
+    prof.emit_event(evt);
+}
+
+/// Attach a string annotation whose key AND value were interned ahead of time.
+///
+/// The @ref annotate overloads above intern on every call, under the string
+/// table's lock. A caller whose annotations are invariant across repetitions -
+/// a graph node's shapes and index lists, say - can intern once and come
+/// through here instead, which costs the enabled() check and the event write.
+inline void annotate_interned(uint32_t key_id, uint32_t value_id) {
+    auto &prof = Profiler::instance();
+    if (!prof.enabled()) {
+        return;
+    }
+    Event evt{};
+    evt.type       = EventType::Annotate;
+    evt.timestamp  = Clock::now();
+    evt.key_id     = key_id;
+    evt.value_type = AnnotateValueType::String;
+    evt.string_id  = value_id;
+
+    prof.emit_event(evt);
+}
+
+/// Attach an integer annotation under a pre-interned key.
+inline void annotate_interned(uint32_t key_id, int64_t value) {
+    auto &prof = Profiler::instance();
+    if (!prof.enabled()) {
+        return;
+    }
+    Event evt{};
+    evt.type       = EventType::Annotate;
+    evt.timestamp  = Clock::now();
+    evt.key_id     = key_id;
+    evt.value_type = AnnotateValueType::Int64;
+    evt.int_val    = value;
+
+    prof.emit_event(evt);
+}
+
+/// Attach a floating-point annotation under a pre-interned key.
+inline void annotate_interned(uint32_t key_id, double value) {
+    auto &prof = Profiler::instance();
+    if (!prof.enabled()) {
+        return;
+    }
+    Event evt{};
+    evt.type       = EventType::Annotate;
+    evt.timestamp  = Clock::now();
+    evt.key_id     = key_id;
     evt.value_type = AnnotateValueType::Float64;
     evt.float_val  = value;
 
@@ -703,9 +773,16 @@ struct ScopedZone {
         requires std::invocable<MakeName>
     ScopedZone(ZoneSite const & /*site*/, MakeName && /*make_name*/) {}
 
+    ScopedZone(ZoneSite const & /*site*/, uint32_t /*name_id*/, std::string_view /*name*/ = {}) {}
+
     explicit ScopedZone(std::string const & /*name*/, std::string const & /*file*/ = "", int /*line*/ = 0,
                         std::string const & /*func*/ = "") {}
 };
+
+/// Stand-in for interning. There is no string table, so every id is 0.
+inline uint32_t intern_string([[maybe_unused]] std::string_view s) {
+    return 0;
+}
 
 // The einsums.profile Python surface stays intact so that an instrumented script
 // still runs against a build with the profiler compiled out, the same way an
@@ -728,6 +805,18 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate([[maybe_unused]] std
 
 /// Discard a floating-point annotation.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate([[maybe_unused]] std::string_view key, [[maybe_unused]] double value) {
+}
+
+/// Discard a pre-interned string annotation.
+inline void annotate_interned([[maybe_unused]] uint32_t key_id, [[maybe_unused]] uint32_t value_id) {
+}
+
+/// Discard a pre-interned integer annotation.
+inline void annotate_interned([[maybe_unused]] uint32_t key_id, [[maybe_unused]] int64_t value) {
+}
+
+/// Discard a pre-interned floating-point annotation.
+inline void annotate_interned([[maybe_unused]] uint32_t key_id, [[maybe_unused]] double value) {
 }
 
 /// Discard a vector of dimension sizes.
