@@ -314,50 +314,55 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /**
      * @brief Create a PassManager with all built-in passes in recommended order.
      *
-     * Ordering rationale: graph-transforming cleanups first (fold/absorb/
-     * fuse/eliminate), then fusion (GEMMBatching), then scheduling
-     * (Reorder/IOPrefetch), then deferred materialization, then backend
-     * placement (GPU, distributed), then memory management, then read-only
-     * analyses. The GPU and distributed blocks are compile-time-gated by
-     * backend availability.
+     * Ordering rationale: lowering first (TiledExpansion, so every pass below
+     * sees dense nodes), then graph-transforming cleanups (fold/absorb/fuse/
+     * eliminate), then planning and fusion, then scheduling (Reorder/
+     * IOPrefetch), then deferred materialization, then backend placement (GPU,
+     * distributed), then memory management. The GPU and distributed blocks are
+     * compile-time-gated by backend availability; the numbering below assumes
+     * both are present. populate_default() in Optimizer.cpp carries the
+     * per-pass ordering rationale.
      *
-     *  1. ConstantFolding: evaluate constant-input nodes at compile time
-     *  2. ScaleAbsorption: drop a Scale(α) made dead by the next op overwriting it
-     *  3. PermuteFusion: absorb leading permutes into the GEMM trans flags
-     *  4. CSE: common subexpression elimination
-     *  5. DeadNodeElimination: drop nodes whose outputs are unused
-     *  6. ElementWiseFusion: merge adjacent element-wise ops
-     *  7. LoopInvariantHoisting: move invariant ops out of Loop bodies
-     *  8. GEMMBatching: collapse compatible GEMMs into one BatchedGemm
-     *  9. Reorder: memory-aware topological sort
-     * 10. IOPrefetch: overlap DiskRead with compute
-     * 11. DistributionPlanning: classify indices for distributed dispatch
-     * 12. Materialization: resize deferred tensors to local partitions
-     * 13. SymmetryPropagation: infer symmetry on graph intermediates and
+     *  1. TiledExpansion: lower tiled ops into per-tile dense nodes
+     *  2. ConstantFolding: evaluate constant-input nodes at compile time
+     *  3. ScaleAbsorption: drop a Scale(α) made dead by the next op overwriting it
+     *  4. PermuteFusion: absorb leading permutes into the GEMM trans flags
+     *  5. CSE: common subexpression elimination
+     *  6. DeadNodeElimination: drop nodes whose outputs are unused
+     *  7. SymmetrizedAccumulation: fold the r2 += s*(tmp + P(tmp)) idiom
+     *  8. ElementWiseFusion: merge adjacent element-wise ops
+     *  9. LinearCombinationContractionFolding: fold transpose-paired contractions
+     * 10. DistributiveFactoring: factor a shared operand out of sibling contractions
+     * 11. LoopInvariantHoisting: move invariant ops out of Loop bodies
+     * 12. ScratchPrivatization: clone reused scratch to break false WAR/WAW chains
+     * 13. ContractionPlanning: cost-model chain reassociation
+     * 14. GEMMBatching: collapse compatible GEMMs into one BatchedGemm
+     * 15. Reorder: memory-aware topological sort
+     * 16. IOPrefetch: overlap DiskRead with compute
+     * 17. DistributionPlanning: classify indices for distributed dispatch
+     * 18. Materialization: resize deferred tensors to local partitions
+     * 19. SymmetryPropagation: infer symmetry on graph intermediates and
      *                                 push to backing tensors for rank-2 BLAS dispatch
+     * 20. StreamContractionFusion: loop-fuse sibling contractions over one big tensor
      *
      * GPU block (when a GPU backend or mock is available):
-     * 14. GPUPlacement: cost-model based node-to-GPU assignment
-     * 15. TransferInsertion: insert HostToDevice / DeviceToHost nodes
-     * 16. TransferElimination: drop redundant transfers
-     * 17. GPUDiagnostics: log placement decisions
-     * 18. StreamAssignment: assign CUDA/HIP streams for overlap
+     * 21. GPUPlacement: cost-model based node-to-GPU assignment
+     * 22. TransferInsertion: insert HostToDevice / DeviceToHost nodes
+     * 23. TransferElimination: drop redundant transfers
+     * 24. GPUDiagnostics: log placement decisions
+     * 25. StreamAssignment: assign CUDA/HIP streams for overlap
      *
      * Distributed block (when MPI or its mock is available):
-     * 19. InputSlicing: create per-rank views of distributed inputs
-     * 20. SUMMAExpansion: expand einsums to SUMMA loops on square grids
-     * 21. CommunicationInsertion: insert allreduces for replicated outputs
-     * 22. CommunicationElimination: drop redundant communications
-     * 23. CommunicationScheduling: split allreduce into async iallreduce + wait
+     * 26. InputSlicing: create per-rank views of distributed inputs
+     * 27. SUMMAExpansion: expand einsums to SUMMA loops on square grids
+     * 28. CommunicationInsertion: insert allreduces for replicated outputs
+     * 29. CommunicationElimination: drop redundant communications
+     * 30. CommunicationScheduling: split allreduce into async iallreduce + wait
      *
      * Tail (always registered):
-     * 24. FreeInsertion: free intermediates after last consumer
-     * 25. MemoryPlanning: analysis: tensor liveness + peak memory
-     * 26. ContractionPlanning: analysis: per-einsum dispatch choice
-     * 27. InplaceOptimization: analysis: detect in-place candidates
-     *
-     * Note: DistributiveFactoring is deliberately
-     * not registered by default, see their own docstrings for when to opt in.
+     * 31. InplaceOptimization: merge elementwise outputs into dying inputs
+     * 32. FreeInsertion: free intermediates after last consumer
+     * 33. MemoryPlanning: tensor liveness, peak memory, and arena planning
      *
      * @return A fully-populated PassManager.
      */

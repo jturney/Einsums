@@ -38,13 +38,25 @@ void execute_node(Node &node) {
     }
 }
 
-void execute_timed(Node &node, Graph &graph) {
-    auto t0 = std::chrono::steady_clock::now();
-    execute_node(node);
-    auto t1 = std::chrono::steady_clock::now();
+/// Run every node in list order, collecting timings into one batch.
+///
+/// The batch matters: recording per node took the graph's RECURSIVE content
+/// mutex and copied the node's label string, once per node per replay, which
+/// an SCF/CC loop pays on every iteration. Samples carry only the node id, and
+/// Graph::timing_report() resolves labels if anyone asks for them.
+void execute_all_timed(Graph &graph) {
+    auto &nodes = graph.nodes();
 
-    double const ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    graph.record_node_timing(node.id, node.label, node.kind, ms);
+    std::vector<Graph::NodeTimingSample> samples;
+    samples.reserve(nodes.size());
+    for (auto &node : nodes) {
+        auto t0 = std::chrono::steady_clock::now();
+        execute_node(node);
+        auto t1 = std::chrono::steady_clock::now();
+
+        samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = std::chrono::duration<double, std::milli>(t1 - t0).count()});
+    }
+    graph.record_node_timings(std::move(samples));
 }
 
 } // namespace
@@ -52,9 +64,7 @@ void execute_timed(Node &node, Graph &graph) {
 // ─── SequentialExecutor ─────────────────────────────────────────────────────
 
 void SequentialExecutor::execute(Graph &graph) {
-    for (auto &node : graph.nodes()) {
-        execute_timed(node, graph);
-    }
+    execute_all_timed(graph);
 }
 
 // ─── OpenMPExecutor ─────────────────────────────────────────────────────────
@@ -112,15 +122,16 @@ void OpenMPExecutor::execute(Graph &graph) {
         }
     }
 
+    std::vector<Graph::NodeTimingSample> samples;
+    samples.reserve(n);
     for (size_t i = 0; i < n; i++) {
         if (node_ms[i] >= 0.0) {
-            graph.record_node_timing(nodes[i].id, nodes[i].label, nodes[i].kind, node_ms[i]);
+            samples.push_back({.id = nodes[i].id, .kind = nodes[i].kind, .duration_ms = node_ms[i]});
         }
     }
+    graph.record_node_timings(std::move(samples));
 #else
-    for (auto &node : nodes) {
-        execute_timed(node, graph);
-    }
+    execute_all_timed(graph);
 #endif
 }
 
@@ -318,11 +329,14 @@ void DataflowExecutor::execute(Graph &graph) {
 
     // Serial merge in deterministic node order (the mutex-per-node this
     // replaces produced completion order, which was nondeterministic anyway).
+    std::vector<Graph::NodeTimingSample> samples;
+    samples.reserve(n);
     for (size_t i = 0; i < n; i++) {
         if (state->node_ms[i] >= 0.0) {
-            graph.record_node_timing(nodes[i].id, nodes[i].label, nodes[i].kind, state->node_ms[i]);
+            samples.push_back({.id = nodes[i].id, .kind = nodes[i].kind, .duration_ms = state->node_ms[i]});
         }
     }
+    graph.record_node_timings(std::move(samples));
 
     if (state->first_exc) {
         std::rethrow_exception(state->first_exc);
@@ -335,9 +349,7 @@ void MPIExecutor::execute(Graph &graph) {
     // All ranks execute the same node sequence. Compute nodes operate on
     // local partitions; communication nodes are collective (all ranks
     // participate). On mock backend (1 rank), this is identical to Sequential.
-    for (auto &node : graph.nodes()) {
-        execute_timed(node, graph);
-    }
+    execute_all_timed(graph);
 }
 
 } // namespace einsums::compute_graph

@@ -311,6 +311,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     };
 
     /**
+     * @brief One raw timing sample, as a replay records it.
+     *
+     * Deliberately label-free: a replay writes one of these per node, and the
+     * label is recoverable from the node id, so copying a label string per
+     * node per replay was pure waste in an SCF/CC loop that replays the same
+     * graph hundreds of times. @ref timing_report() attaches the labels once,
+     * only if anyone asks for the report.
+     */
+    struct NodeTimingSample {
+        NodeId id;
+        OpKind kind;
+        double duration_ms{0.0}; ///< Wall-clock time in milliseconds
+    };
+
+    /**
      * @brief Print a timing report from the last execute() call.
      *
      * Shows per-node wall-clock times sorted by duration (longest first).
@@ -320,22 +335,49 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     void print_timing_report(std::ostream &os) const;
 
-    /// Access the timing data from the last execute() call.
-    [[nodiscard]] std::vector<NodeTiming> const &timing_report() const { return _timing_report; }
+    /// Access the timing data from the last execute() call. Labels are
+    /// resolved here (cached until the next recorded sample), not on the
+    /// replay path.
+    [[nodiscard]] std::vector<NodeTiming> const &timing_report() const;
 
     /**
      * @brief Record timing for a single node (used by custom Executors).
      *
      * Custom executors should call this after executing each node so that
-     * print_timing_report() works correctly.
+     * print_timing_report() works correctly. Executors that time a whole run
+     * before merging should prefer @ref record_node_timings(), which takes the
+     * content mutex once for the batch instead of once per node.
      */
-    void record_node_timing(NodeId id, std::string const &label, OpKind kind, double duration_ms) {
+    void record_node_timing(NodeId id, OpKind kind, double duration_ms) {
         std::scoped_lock const lock(*_content_mutex);
-        _timing_report.push_back({.id = id, .label = label, .kind = kind, .duration_ms = duration_ms});
+        _timing_samples.push_back({.id = id, .kind = kind, .duration_ms = duration_ms});
+        _timing_report_valid = false;
+    }
+
+    /// Label-carrying form kept for executors written against the older
+    /// signature. The label is ignored: @ref timing_report() resolves it from
+    /// the node list.
+    void record_node_timing(NodeId id, std::string const & /*label*/, OpKind kind, double duration_ms) {
+        record_node_timing(id, kind, duration_ms);
+    }
+
+    /// Append a whole run's samples under a single lock acquisition.
+    void record_node_timings(std::vector<NodeTimingSample> &&samples) {
+        std::scoped_lock const lock(*_content_mutex);
+        if (_timing_samples.empty()) {
+            _timing_samples = std::move(samples);
+        } else {
+            _timing_samples.insert(_timing_samples.end(), samples.begin(), samples.end());
+        }
+        _timing_report_valid = false;
     }
 
     /// Clear timing data (called at the start of execute()).
-    void clear_timing_report() { _timing_report.clear(); }
+    void clear_timing_report() {
+        _timing_samples.clear();
+        _timing_report.clear();
+        _timing_report_valid = true;
+    }
 
     /**
      * @brief Sort nodes in topological order based on data dependencies.
@@ -584,6 +626,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         // Passes also rewrite labels/descriptors; refresh cached profiler
         // payloads on next execute.
         _profile_strings_valid = false;
+        // ... and slot pointers (arena slices, CSE redirects).
+        _slots_validated = false;
         // Position-keyed analyses (UsageAnalysis) are stale too.
         _analysis_version++;
     }
@@ -1376,6 +1420,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }
         from_slot->ptr        = to_slot->ptr;
         _slot_redirects[from] = to;
+        _slots_validated      = false;
         // Anything already redirected to `from` now follows the same terminal.
         for (auto &[f, t] : _slot_redirects) {
             if (t == from) {
@@ -1418,6 +1463,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }
         auto *raw            = slot.get();
         _slot_map[tensor_id] = std::move(slot);
+        _slots_validated     = false;
         return raw;
     }
 
@@ -1462,6 +1508,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
         // Tensor names feed the cached profiler annotations.
         _profile_strings_valid = false;
+        // A fresh pointer has not been through the slot check yet.
+        _slots_validated = false;
 
         // An explicit rebind of a merged-away tensor overrides its pass
         // redirect; otherwise a later rebind of the survivor would stomp it.
@@ -1705,6 +1753,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Tensor slots for rebindable tensor references (TensorId → TensorSlot).
     std::unordered_map<TensorId, std::unique_ptr<TensorSlot>> _slot_map;
 
+    /// Whether every slot pointer has been checked since the last change to
+    /// the slot table. The check catches cross-pipeline tensor misuse before
+    /// it segfaults, but nothing can invalidate a pointer between two replays
+    /// of an unchanged graph, so walking the whole map per replay only taxed
+    /// iterative workloads. Cleared wherever a slot is created, rebound,
+    /// redirected, or handed to a pass.
+    bool _slots_validated{false};
+
     /// Summary of the last optimize() run (see explain()).
     std::string _last_optimize_report;
 
@@ -1717,8 +1773,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Persists across execute() calls so shadows can be reused.
     DeviceShadowMap _device_shadows;
 
-    /// Per-node timing from last execute() call.
-    std::vector<NodeTiming> _timing_report;
+    /// Per-node timing from last execute() call, as recorded (no labels).
+    std::vector<NodeTimingSample> _timing_samples;
+
+    /// Labelled view of _timing_samples, materialized on demand by
+    /// timing_report(). Mutable so the const accessor can fill it.
+    mutable std::vector<NodeTiming> _timing_report;
+    mutable bool                    _timing_report_valid{true};
 
     /// Executor plain execute() delegates to (see set_executor); nullptr means
     /// the built-in sequential path. Loop bodies replay through this.

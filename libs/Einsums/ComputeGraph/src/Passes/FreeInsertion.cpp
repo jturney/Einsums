@@ -249,10 +249,11 @@ bool FreeInsertion::run(Graph &graph) {
         free_node.inputs  = {emit_tid};
         free_node.outputs = {emit_tid};
 
-        free_node.execute = [rel_fn, bytes, name = handle.name]() {
+        // No logging here: this fires once per freed tensor per REPLAY, and
+        // the pass already reports the insertion at verbosity 2 below.
+        free_node.execute = [rel_fn]() {
             if (rel_fn) {
                 rel_fn();
-                EINSUMS_LOG_DEBUG("FreeInsertion: released '{}' ({} bytes)", name, bytes);
             }
         };
         free_node.estimated_bytes = bytes;

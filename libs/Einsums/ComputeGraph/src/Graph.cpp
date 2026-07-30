@@ -493,7 +493,9 @@ void Graph::move_members_from(Graph &&other) noexcept {
     _adopted_cleanups      = std::move(other._adopted_cleanups);
     _params                = std::move(other._params);
     _slot_map              = std::move(other._slot_map);
+    _timing_samples        = std::move(other._timing_samples);
     _timing_report         = std::move(other._timing_report);
+    _timing_report_valid   = other._timing_report_valid;
     _params_store          = std::move(other._params_store);
     _slot_redirects        = std::move(other._slot_redirects);
     _deps_valid            = other._deps_valid;
@@ -1801,14 +1803,41 @@ void Graph::validate_shapes_at_capture() const {
     }
 }
 
+std::vector<Graph::NodeTiming> const &Graph::timing_report() const {
+    if (_timing_report_valid) {
+        return _timing_report;
+    }
+
+    // Attach labels here rather than on the replay path: one string copy per
+    // node per REPORT instead of per node per execute().
+    std::unordered_map<NodeId, std::string_view> labels;
+    labels.reserve(_nodes.size());
+    for (auto const &node : _nodes) {
+        labels.emplace(node.id, node.label);
+    }
+
+    _timing_report.clear();
+    _timing_report.reserve(_timing_samples.size());
+    for (auto const &sample : _timing_samples) {
+        auto const it = labels.find(sample.id);
+        _timing_report.push_back({.id          = sample.id,
+                                  .label       = it != labels.end() ? std::string(it->second) : fmt::format("node {}", sample.id),
+                                  .kind        = sample.kind,
+                                  .duration_ms = sample.duration_ms});
+    }
+    _timing_report_valid = true;
+    return _timing_report;
+}
+
 void Graph::print_timing_report(std::ostream &os) const {
-    if (_timing_report.empty()) {
+    auto const &report = timing_report();
+    if (report.empty()) {
         os << "No timing data available. Call execute() first.\n";
         return;
     }
 
     // Sort by duration descending
-    auto sorted = _timing_report;
+    auto sorted = report;
     std::ranges::sort(sorted, [](auto const &a, auto const &b) { return a.duration_ms > b.duration_ms; });
 
     double total = 0.0;
@@ -1892,20 +1921,27 @@ void Graph::execute() {
         topological_sort();
     }
 
-    // Validate slot pointers every execution (cheap check).
-    // This catches cross-pipeline tensor misuse before it segfaults.
-    for (auto const &[id, slot] : _slot_map) {
-        if (!slot)
-            continue;
-        if (slot->ptr == nullptr || reinterpret_cast<uintptr_t>(slot->ptr) < 4096) {
-            std::string tname = slot->name.empty() ? fmt::format("id={}", id) : slot->name;
-            EINSUMS_THROW_EXCEPTION(std::runtime_error,
-                                    "Graph '{}': tensor slot '{}' has invalid pointer (0x{:x}). "
-                                    "This usually means the tensor was declared on a different pipeline/graph "
-                                    "and wasn't properly shared via the workspace. "
-                                    "Declare shared tensors on the Workspace, not on individual Pipelines.",
-                                    _name, tname, reinterpret_cast<uintptr_t>(slot->ptr));
+    // Validate slot pointers once per change to the slot table (cheap check).
+    // This catches cross-pipeline tensor misuse before it segfaults. Nothing
+    // can invalidate a pointer between two replays of an unchanged graph, so
+    // the walk is skipped on the replays that iterative workloads spend their
+    // time in; every slot create/rebind/redirect and every pass run clears the
+    // flag.
+    if (!_slots_validated) {
+        for (auto const &[id, slot] : _slot_map) {
+            if (!slot)
+                continue;
+            if (slot->ptr == nullptr || reinterpret_cast<uintptr_t>(slot->ptr) < 4096) {
+                std::string tname = slot->name.empty() ? fmt::format("id={}", id) : slot->name;
+                EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                        "Graph '{}': tensor slot '{}' has invalid pointer (0x{:x}). "
+                                        "This usually means the tensor was declared on a different pipeline/graph "
+                                        "and wasn't properly shared via the workspace. "
+                                        "Declare shared tensors on the Workspace, not on individual Pipelines.",
+                                        _name, tname, reinterpret_cast<uintptr_t>(slot->ptr));
+            }
         }
+        _slots_validated = true;
     }
 
     if (!_executed) {
@@ -1916,8 +1952,9 @@ void Graph::execute() {
         register_graph(this);
     }
 
-    _timing_report.clear();
-    _timing_report.reserve(_nodes.size());
+    clear_timing_report();
+    _timing_samples.reserve(_nodes.size());
+    _timing_report_valid = false; // samples are about to be written
 
     // All fmt::format work for zones/annotations is precomputed; replays of
     // an unchanged graph only pay the profiler's record cost itself.
@@ -2065,7 +2102,7 @@ void Graph::execute() {
         auto t_end = std::chrono::steady_clock::now();
 
         double const ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
-        _timing_report.push_back({.id = node.id, .label = node.label, .kind = node.kind, .duration_ms = ms});
+        _timing_samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = ms});
         // _node_zone pops here (and on any early continue / thrown node).
     }
 
@@ -2111,14 +2148,23 @@ void Graph::execute(Executor &executor) {
         }
     }
 
-    _timing_report.clear();
+    clear_timing_report();
+    _timing_samples.reserve(_nodes.size());
+    _timing_report_valid = false; // the executor is about to write samples
 
     {
         // RAII: pop the profiler zone even if the executor propagates an
         // exception. A bare push/pop here leaks an unclosed zone on every
         // failed execute, deepening the profiler tree without bound (which
         // makes the profiler→viewer serialization progressively slower).
-        profile::ScopedZone const _zone(fmt::format("ComputeGraph::execute({}, executor={})", _name, executor.name()));
+        //
+        // The name is built through the callable overload so that a run with
+        // recording off pays neither the fmt::format nor executor.name()'s
+        // returned std::string - this fired on every replay regardless of
+        // profiler state.
+        static profile::ZoneSite const site{"ComputeGraph::execute(executor)", __FILE__, __LINE__, __func__};
+        profile::ScopedZone const      _zone(site,
+                                             [&]() { return fmt::format("ComputeGraph::execute({}, executor={})", _name, executor.name()); });
         executor.execute(*this);
     }
     _executed = true;
@@ -2316,7 +2362,7 @@ std::string Graph::to_json() const {
 
     // Build timing lookup
     std::unordered_map<NodeId, double> timing_map;
-    for (auto const &t : _timing_report)
+    for (auto const &t : _timing_samples)
         timing_map[t.id] = t.duration_ms;
 
     // Nodes: use array index as ID

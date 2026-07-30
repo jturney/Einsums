@@ -101,7 +101,7 @@ bool is_exact_power_of_two(double v) {
 /// representable: the scale would be applied to the assembled sum rather than to
 /// each term, and only a power of two makes those agree. Lifting that is safe up
 /// to rounding, but it would make the result depend on how the pass chose to
-/// share, which is a bad property for a pass that runs by default off.
+/// share, which is a bad property for a pass that runs by default.
 std::optional<double> proportional_scale(std::vector<std::pair<TensorId, double>> const &built,
                                          std::vector<std::pair<TensorId, double>> const &candidate) {
     if (built.empty() || built.size() != candidate.size()) {
