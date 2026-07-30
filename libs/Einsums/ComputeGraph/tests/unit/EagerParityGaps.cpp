@@ -434,46 +434,205 @@ TEST_CASE("eager aliasing - typed-Indices dispatcher matches the policy", "[Comp
 // losing orders of magnitude of performance - this is the tripwire.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("cg dispatch route - fast paths fire where intended", "[ComputeGraph][EagerParity][dispatch-route]") {
+TEST_CASE("cg dispatch route - every route in the cascade fires where intended", "[ComputeGraph][EagerParity][dispatch-route]") {
     namespace cgd = einsums::compute_graph::dispatch;
 
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto B = create_random_tensor<double>("B", 3, 5);
-    auto C = create_zero_tensor<double>("C", 4, 5);
-    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("ij <- ik ; kj", &C, A, B);
-    CHECK(std::string{cgd::last_dispatch_route()} == "gemm_direct");
+    // last_dispatch_route() is thread-local and set by the call just made.
+    auto route = []() { return std::string{cgd::last_dispatch_route()}; };
 
-    auto x = create_random_tensor<double>("x", 6);
-    auto y = create_random_tensor<double>("y", 6);
-    auto G = create_zero_tensor<double>("G", 6, 6);
-    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("ij <- i ; j", &G, x, y);
-    CHECK(std::string{cgd::last_dispatch_route()} == "ger");
+    // ── Zero-extent quick paths ─────────────────────────────────────────────
+    SECTION("empty_output_noop") {
+        auto A = create_random_tensor<double>(std::string("A"), size_t{2}, size_t{3});
+        auto B = create_random_tensor<double>(std::string("B"), size_t{3}, size_t{0});
+        auto C = create_zero_tensor<double>(std::string("C"), size_t{2}, size_t{0});
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+        CHECK(route() == "empty_output_noop");
+    }
 
-    auto D  = create_random_tensor<double>("D", 4, 5);
-    auto C2 = create_zero_tensor<double>("C2", 4, 5);
-    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("ij <- ij ; ij", &C2, C, D);
-    CHECK(std::string{cgd::last_dispatch_route()} == "direct_product");
+    SECTION("empty_input_scale_only") {
+        // The explicit std::string keeps the call unambiguous for GCC, which
+        // otherwise also considers the (bool row_major, ...) overload via the
+        // const char* -> bool conversion.
+        auto A = create_random_tensor<double>(std::string("A"), size_t{2}, size_t{0});
+        auto B = create_random_tensor<double>(std::string("B"), size_t{0}, size_t{3});
+        auto C = create_zero_tensor<double>("C", 2, 3);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+        CHECK(route() == "empty_input_scale_only");
+    }
 
-    // Repeated letters must take the repeat-aware generic loop.
-    auto H = create_zero_tensor<double>("H", 4, 4);
-    auto S = create_random_tensor<double>("S", 4, 4);
-    auto R = create_random_tensor<double>("R", 4, 4);
-    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("ij <- ii ; jj", &H, S, R);
-    CHECK(std::string{cgd::last_dispatch_route()} == "generic_loop_repeated_indices");
+    // ── Generic-loop-only shapes, claimed before any fast path ──────────────
+    SECTION("generic_loop_repeated_indices") {
+        auto S = create_random_tensor<double>("S", 4, 4);
+        auto R = create_random_tensor<double>("R", 4, 4);
+        auto H = create_zero_tensor<double>("H", 4, 4);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ii ; jj", &H, S, R);
+        CHECK(route() == "generic_loop_repeated_indices");
+    }
 
-    // Zero-extent input: prefactor-only path. The explicit std::string keeps
-    // the call unambiguous for GCC, which otherwise also considers the
-    // (bool row_major, ...) overload via the const char* -> bool conversion.
-    auto Ez = create_random_tensor<double>(std::string("Ez"), size_t{2}, size_t{0});
-    auto Bz = create_random_tensor<double>(std::string("Bz"), size_t{0}, size_t{3});
-    auto Cz = create_zero_tensor<double>("Cz", 2, 3);
-    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("ij <- ik ; kj", &Cz, Ez, Bz);
-    CHECK(std::string{cgd::last_dispatch_route()} == "empty_input_scale_only");
+    SECTION("generic_loop_lone_summed") {
+        // `l` lives in A only and is absent from C and from the links, so it is
+        // a single-operand reduction no BLAS or PackedGemm call can express.
+        auto A = create_random_tensor<double>("A", 3, 2, 4);
+        auto B = create_random_tensor<double>("B", 2, 5);
+        auto C = create_zero_tensor<double>("C", 3, 5);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ikl ; kj", &C, A, B);
+        CHECK(route() == "generic_loop_lone_summed");
+    }
+
+    // ── Typed (compile-time rank) BLAS ladder ───────────────────────────────
+    SECTION("dot") {
+        auto x = create_random_tensor<double>("x", 6);
+        auto y = create_random_tensor<double>("y", 6);
+        auto s = create_zero_tensor<double>("s", 1);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("<- i ; i", &s, x, y);
+        CHECK(route() == "dot");
+
+        // The scalar-output spec form is not exercised anywhere else, so pin
+        // the value too: a route assertion alone would pass on a path that
+        // fires correctly and computes nothing.
+        double want = 0.0;
+        for (size_t n = 0; n < 6; n++) {
+            want += x.data()[n] * y.data()[n];
+        }
+        CHECK(std::abs(s.data()[0] - want) <= 1e-12 * (1.0 + std::abs(want)));
+    }
+
+    SECTION("gemv_mat_vec") {
+        auto A = create_random_tensor<double>("A", 4, 3);
+        auto x = create_random_tensor<double>("x", 3);
+        auto y = create_zero_tensor<double>("y", 4);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("i <- ij ; j", &y, A, x);
+        CHECK(route() == "gemv_mat_vec");
+    }
+
+    SECTION("gemv_vec_mat") {
+        auto x = create_random_tensor<double>("x", 4);
+        auto A = create_random_tensor<double>("A", 4, 3);
+        auto y = create_zero_tensor<double>("y", 3);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("j <- i ; ij", &y, x, A);
+        CHECK(route() == "gemv_vec_mat");
+    }
+
+    SECTION("ger") {
+        auto x = create_random_tensor<double>("x", 6);
+        auto y = create_random_tensor<double>("y", 6);
+        auto G = create_zero_tensor<double>("G", 6, 6);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- i ; j", &G, x, y);
+        CHECK(route() == "ger");
+    }
+
+    SECTION("gemm_direct") {
+        auto A = create_random_tensor<double>("A", 4, 3);
+        auto B = create_random_tensor<double>("B", 3, 5);
+        auto C = create_zero_tensor<double>("C", 4, 5);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+        CHECK(route() == "gemm_direct");
+    }
+
+    SECTION("direct_product") {
+        auto A = create_random_tensor<double>("A", 4, 5);
+        auto B = create_random_tensor<double>("B", 4, 5);
+        auto C = create_zero_tensor<double>("C", 4, 5);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ij ; ij", &C, A, B);
+        CHECK(route() == "direct_product");
+    }
+
+    // ── Runtime-rank mirror of the same ladder ──────────────────────────────
+    // The runtime ladder only fires when ALL THREE operands are runtime-rank;
+    // these pin that, and 2.2's mixed typed/runtime gap is a separate test.
+    SECTION("dot_runtime") {
+        auto                  x_t = create_random_tensor<double>("x", 6);
+        auto                  y_t = create_random_tensor<double>("y", 6);
+        auto                  s_t = create_zero_tensor<double>("s", 1);
+        RuntimeTensor<double> x(x_t), y(y_t), s(s_t);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("<- i ; i", &s, x, y);
+        CHECK(route() == "dot_runtime");
+    }
+
+    SECTION("gemv_mat_vec_runtime") {
+        auto                  A_t = create_random_tensor<double>("A", 4, 3);
+        auto                  x_t = create_random_tensor<double>("x", 3);
+        auto                  y_t = create_zero_tensor<double>("y", 4);
+        RuntimeTensor<double> A(A_t), x(x_t), y(y_t);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("i <- ij ; j", &y, A, x);
+        CHECK(route() == "gemv_mat_vec_runtime");
+    }
+
+    SECTION("gemv_vec_mat_runtime") {
+        auto                  x_t = create_random_tensor<double>("x", 4);
+        auto                  A_t = create_random_tensor<double>("A", 4, 3);
+        auto                  y_t = create_zero_tensor<double>("y", 3);
+        RuntimeTensor<double> x(x_t), A(A_t), y(y_t);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("j <- i ; ij", &y, x, A);
+        CHECK(route() == "gemv_vec_mat_runtime");
+    }
+
+    SECTION("ger_runtime") {
+        auto                  x_t = create_random_tensor<double>("x", 6);
+        auto                  y_t = create_random_tensor<double>("y", 6);
+        auto                  G_t = create_zero_tensor<double>("G", 6, 6);
+        RuntimeTensor<double> x(x_t), y(y_t), G(G_t);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- i ; j", &G, x, y);
+        CHECK(route() == "ger_runtime");
+    }
+
+    SECTION("gemm_direct_runtime") {
+        auto                  A_t = create_random_tensor<double>("A", 4, 3);
+        auto                  B_t = create_random_tensor<double>("B", 3, 5);
+        auto                  C_t = create_zero_tensor<double>("C", 4, 5);
+        RuntimeTensor<double> A(A_t), B(B_t), C(C_t);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+        CHECK(route() == "gemm_direct_runtime");
+    }
+
+    SECTION("direct_product_runtime") {
+        auto                  A_t = create_random_tensor<double>("A", 4, 5);
+        auto                  B_t = create_random_tensor<double>("B", 4, 5);
+        auto                  C_t = create_zero_tensor<double>("C", 4, 5);
+        RuntimeTensor<double> A(A_t), B(B_t), C(C_t);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ij ; ij", &C, A, B);
+        CHECK(route() == "direct_product_runtime");
+    }
+
+    // ── PackedGemm and the floor beneath it ─────────────────────────────────
+    SECTION("packed_gemm") {
+        // Two M indices and two N indices, so the single-M/N/K deferral to a
+        // direct BLAS GEMM does not apply and PackedGemm forms the contraction.
+        auto A = create_random_tensor<double>("A", 3, 4, 2);
+        auto B = create_random_tensor<double>("B", 2, 5, 6);
+        auto C = create_zero_tensor<double>("C", 3, 4, 5, 6);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ijkl <- ijm ; mkl", &C, A, B);
+        CHECK(route() == "packed_gemm");
+    }
+
+    SECTION("generic_loop") {
+        // A small rank-3 outer product: no link indices, and below the ~4k
+        // output elements where PackedGemm's fixed setup starts to pay off, so
+        // it declines and the runtime nested loop is what is left.
+        auto A = create_random_tensor<double>("A", 2, 3);
+        auto B = create_random_tensor<double>("B", 4);
+        auto C = create_zero_tensor<double>("C", 2, 3, 4);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ijk <- ij ; k", &C, A, B);
+        CHECK(route() == "generic_loop");
+    }
 }
 
 // ---------------------------------------------------------------------------
