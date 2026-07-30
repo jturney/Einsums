@@ -60,6 +60,30 @@ bool is_unit_real(PrefactorScalar const &p) {
     return is_real_valued(p) && as_real<double>(p) == 1.0;
 }
 
+/// Canonical identity of a summed intermediate: which operands, scaled by what.
+///
+/// Sorted, so two groups that happen to list the same terms in a different order
+/// still agree. Prefactors are part of the identity: CCSD's tau and tau-tilde sum
+/// the same three operands and differ only in a coefficient, and they are
+/// genuinely different tensors.
+std::vector<std::pair<TensorId, double>> sum_identity(std::vector<FactorCandidate> const &members) {
+    std::vector<std::pair<TensorId, double>> key;
+    key.reserve(members.size());
+    for (auto const &c : members) {
+        key.emplace_back(c.non_shared_input, c.ab_prefactor);
+    }
+    std::ranges::sort(key);
+    return key;
+}
+
+/// A summed intermediate already built at this level, offered for reuse.
+struct BuiltSum {
+    std::vector<std::pair<TensorId, double>> identity;
+    TensorId                                 t_id{0};
+    std::size_t                              build_pos{0}; ///< pre-erase position its nodes are spliced at
+    std::unordered_set<TensorId>             operands;     ///< what it summed, for staleness checks
+};
+
 } // namespace
 
 void DistributiveFactoring::reset_stats() {
@@ -208,7 +232,16 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
     }
 
     // --- Phase 3: Deduplicate (largest group first, greedy) ---
-    std::ranges::sort(valid_groups, [](ValidGroup const &a, ValidGroup const &b) { return a.candidates.size() > b.candidates.size(); });
+    // Ties break on position, earliest first, so that when several groups sum the
+    // same operands the EARLIEST one builds the intermediate and the later ones
+    // can reuse it. Sorting on size alone leaves the winner to unordered_map
+    // iteration order, and an owner positioned after its peers cannot be shared.
+    std::ranges::sort(valid_groups, [](ValidGroup const &a, ValidGroup const &b) {
+        if (a.candidates.size() != b.candidates.size()) {
+            return a.candidates.size() > b.candidates.size();
+        }
+        return a.candidates.front().node_index < b.candidates.front().node_index;
+    });
 
     // create_*_tensor_dynamic appends Alloc nodes (index >= orig_count) that are
     // always kept; the removal / used sets cover only the original nodes.
@@ -219,6 +252,9 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
 
     // Replacement nodes, keyed by the pre-erase position they belong at.
     std::vector<std::pair<std::size_t, std::vector<Node>>> inserts;
+
+    // Sums built so far, so several consumers of one quantity share one tensor.
+    std::vector<BuiltSum> built_sums;
 
     for (auto &vg : valid_groups) {
         std::vector<FactorCandidate> available;
@@ -314,14 +350,66 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         if (!kinds_uniform)
             continue;
 
+        // --- Reuse a sum already built at this level ---
+        // A quantity a chemist names once and consumes several times (CCSD's tau
+        // feeds W_mnij, W_abef and the T2 equation) arrives here as several groups
+        // summing the same operands with the same prefactors. Reusing the first
+        // build is what makes it one tensor rather than one per consumer. CSE
+        // cannot do it for us: an accumulation buffer has several writers, and its
+        // single-writer guard is there to stop readers being redirected onto a
+        // buffer that is mutated again.
+        auto const              identity = sum_identity(available);
+        std::optional<TensorId> reuse_id;
+        for (auto const &bs : built_sums) {
+            if (bs.identity != identity) {
+                continue;
+            }
+            // The build has to run before this contraction reads it.
+            if (bs.build_pos >= first_pos) {
+                continue;
+            }
+            // And nothing in between may rewrite a summed operand, or T holds a
+            // stale value by the time we get here. Control flow hides its writes
+            // in a subgraph, so its presence in the span forfeits the reuse.
+            bool usable = true;
+            for (size_t k = bs.build_pos; k < first_pos && usable; k++) {
+                if (remove[k]) {
+                    continue; // subsumed by an earlier group; it will not exist
+                }
+                if (nodes[k].kind == OpKind::Loop || nodes[k].kind == OpKind::Conditional) {
+                    usable = false;
+                    break;
+                }
+                for (auto out : nodes[k].outputs) {
+                    if (bs.operands.contains(out)) {
+                        usable = false;
+                        break;
+                    }
+                }
+            }
+            if (!usable) {
+                continue;
+            }
+            reuse_id = bs.t_id;
+            break;
+        }
+
         // Create intermediate tensor T = sum of non-shared operands, of the same
         // kind as the operands. This APPENDS an Alloc node (kept below).
-        std::string t_name        = fmt::format("_df_sum_{}", _num_groups);
-        auto        create_result = operands_runtime ? graph.create_zero_runtime_tensor_dynamic(t_name, ref_handle.dtype, ref_handle.dims)
-                                                     : graph.create_tensor_dynamic(t_name, ref_handle.dtype, ref_handle.dims);
-        if (!create_result)
-            continue; // Skip this factoring group if tensor creation fails
-        auto [t_id, t_ptr] = create_result.value();
+        TensorId    t_id{};
+        std::string t_name;
+        if (reuse_id) {
+            t_id     = *reuse_id;
+            auto tit = tensors.find(t_id);
+            t_name   = tit != tensors.end() ? tit->second.name : "?";
+        } else {
+            t_name             = fmt::format("_df_sum_{}", _num_groups);
+            auto create_result = operands_runtime ? graph.create_zero_runtime_tensor_dynamic(t_name, ref_handle.dtype, ref_handle.dims)
+                                                  : graph.create_tensor_dynamic(t_name, ref_handle.dtype, ref_handle.dims);
+            if (!create_result)
+                continue; // Skip this factoring group if tensor creation fails
+            t_id = create_result.value().first;
+        }
 
         // Emit the factorization as ORDINARY nodes: zero T, accumulate each
         // non-shared operand into it, contract once against the shared operand.
@@ -352,34 +440,38 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         std::vector<Node> emitted;
         emitted.reserve(available.size() + 2);
 
-        // T = 0. Recorded as a Scale by zero, which is what it means, so the
-        // algebraic passes can reason about it; the executor is a true zero-fill
-        // rather than a multiply, so a freshly allocated T holding garbage cannot
-        // turn into a NaN here.
-        {
-            Node nd;
-            nd.id      = graph.reserve_node_id();
-            nd.kind    = OpKind::Scale;
-            nd.label   = fmt::format("zero({})", t_name);
-            nd.inputs  = {t_id};
-            nd.outputs = {t_id};
-            nd.op_data = ScaleDescriptor{.factor = 0.0};
-            nd.execute = graph.make_zero_executor(t_id);
-            emitted.push_back(std::move(nd));
-        }
+        // Reusing an existing sum emits only the contraction; the build already
+        // stands earlier in the graph.
+        if (!reuse_id) {
+            // T = 0. Recorded as a Scale by zero, which is what it means, so the
+            // algebraic passes can reason about it; the executor is a true zero-fill
+            // rather than a multiply, so a freshly allocated T holding garbage cannot
+            // turn into a NaN here.
+            {
+                Node nd;
+                nd.id      = graph.reserve_node_id();
+                nd.kind    = OpKind::Scale;
+                nd.label   = fmt::format("zero({})", t_name);
+                nd.inputs  = {t_id};
+                nd.outputs = {t_id};
+                nd.op_data = ScaleDescriptor{.factor = 0.0};
+                nd.execute = graph.make_zero_executor(t_id);
+                emitted.push_back(std::move(nd));
+            }
 
-        // T += ab_i * B_i, carrying each member's own product prefactor, so the
-        // combined contraction needs no prefactor of its own.
-        for (auto const &c : available) {
-            auto nit = tensors.find(c.non_shared_input);
-            Node nd;
-            nd.id      = graph.reserve_node_id();
-            nd.kind    = OpKind::Axpy;
-            nd.label   = fmt::format("axpy({} -> {}, alpha={})", nit != tensors.end() ? nit->second.name : "?", t_name, c.ab_prefactor);
-            nd.inputs  = {c.non_shared_input, t_id};
-            nd.outputs = {t_id};
-            nd.execute = graph.make_axpy_executor(c.ab_prefactor, c.non_shared_input, t_id);
-            emitted.push_back(std::move(nd));
+            // T += ab_i * B_i, carrying each member's own product prefactor, so the
+            // combined contraction needs no prefactor of its own.
+            for (auto const &c : available) {
+                auto nit = tensors.find(c.non_shared_input);
+                Node nd;
+                nd.id      = graph.reserve_node_id();
+                nd.kind    = OpKind::Axpy;
+                nd.label   = fmt::format("axpy({} -> {}, alpha={})", nit != tensors.end() ? nit->second.name : "?", t_name, c.ab_prefactor);
+                nd.inputs  = {c.non_shared_input, t_id};
+                nd.outputs = {t_id};
+                nd.execute = graph.make_axpy_executor(c.ab_prefactor, c.non_shared_input, t_id);
+                emitted.push_back(std::move(nd));
+            }
         }
 
         // One contraction, with T in the position the non-shared operand held, so
@@ -390,6 +482,18 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             emitted.push_back(graph.make_einsum_node(a_id, b_id, vg.key.output_id, spec, c_pf, PrefactorScalar{double{1}},
                                                      /*conj_a=*/false, /*conj_b=*/false,
                                                      fmt::format("df_factored({} terms via {})", available.size(), t_name)));
+        }
+
+        // Offer this sum to the groups still to come.
+        if (!reuse_id) {
+            BuiltSum bs;
+            bs.identity  = identity;
+            bs.t_id      = t_id;
+            bs.build_pos = first_pos;
+            for (auto const &c : available) {
+                bs.operands.insert(c.non_shared_input);
+            }
+            built_sums.push_back(std::move(bs));
         }
 
         // Splice in at the first member's position so the combined writer stays

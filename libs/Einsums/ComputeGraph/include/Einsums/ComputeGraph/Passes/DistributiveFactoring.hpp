@@ -31,6 +31,14 @@ namespace einsums::compute_graph::passes {
  * member's baked executor read the intermediate. That ran correctly but hid the
  * intermediate from every other pass, so nothing could share or hoist it.
  *
+ * Groups that sum the same operands with the same prefactors share one
+ * intermediate, so a quantity several terms consume is built once. This is the
+ * shape of CCSD's tau, which feeds W_mnij, W_abef and the T2 equation: written
+ * out term by term, with no hint that tau exists, the pass recovers it and
+ * contracts it once per consumer. Reuse lives here rather than in CSE because an
+ * accumulation buffer has several writers, and CSE's single-writer guard is what
+ * stops readers being redirected onto a buffer that is mutated again.
+ *
  * @par Example (CCSD-like pattern)
  * Before:
  * @code
@@ -91,11 +99,13 @@ namespace einsums::compute_graph::passes {
  *   rescales the partial sum its predecessors wrote cannot be folded:
  *   `R = 2*(R + A*B1) + A*B2` is not `R = 2*R + A*(B1 + B2)`. Such a group
  *   declines rather than silently computing the second form.
- * - Each factoring group builds its own intermediate. Two groups that would sum
- *   the same operands do not share one, and CSE cannot merge the chains for
- *   them: an accumulation buffer has several writers, which its single-writer
- *   guard rejects. A CCSD tau consumed by four terms is therefore built four
- *   times.
+ * - Sharing is keyed on the operands AND their prefactors, so two sums that
+ *   differ only in a coefficient stay separate. CCSD's tau and tau-tilde sum the
+ *   same three operands and differ by a factor of one half, and they are
+ *   genuinely different tensors; recognising them as one parameterised quantity
+ *   would need reasoning over coefficients, which nothing here does.
+ * - Reuse only looks within one graph level. A sum built in a loop body is not
+ *   offered to the enclosing graph or to a sibling branch.
  * - Non-shared operands must all be **distinct** tensors of identical shape and
  *   dtype; the shared operand may not alias any non-shared operand (the
  *   slot-redirect trick cannot separate two reads of one tensor).
@@ -116,12 +126,10 @@ namespace einsums::compute_graph::passes {
  *   saved against the axpy chain plus the intermediate allocation).
  * - Thread `conj_a`/`conj_b` and complex prefactors through the rewrite so
  *   conjugated / complex-scaled contractions can also be factored.
- * - Reuse an intermediate across groups that sum the same operands with the same
- *   prefactors, which is what makes a hand-derived quantity like CCSD's tau one
- *   tensor rather than one per consumer. Soundness needs the earlier build to
- *   precede the later use with no intervening write to any summed operand.
  * - Fold the zeroing Scale into the first Axpy once an Axpby node factory exists,
  *   saving a node per group.
+ * - Offer sums across graph levels, so a loop-invariant one built in a CC
+ *   iteration can be shared with, or hoisted above, the enclosing graph.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT DistributiveFactoring : public OptimizerPass {
   public:

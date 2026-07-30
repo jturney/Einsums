@@ -392,3 +392,169 @@ TEST_CASE("DistributiveFactoring - emits ordinary nodes, not one opaque node", "
     REQUIRE(num_axpy == 3);
     REQUIRE(num_einsum == 1);
 }
+
+TEST_CASE("DistributiveFactoring - two consumers share one summed intermediate", "[ComputeGraph][DistributiveFactoring]") {
+    // The CCSD tau shape: several intermediates contract the SAME sum of operands
+    // against the same shared operand. Building it once is what makes tau a named
+    // quantity rather than one buffer per consumer.
+    auto A  = create_random_tensor<double>("A", 4, 3);
+    auto B1 = create_random_tensor<double>("B1", 3, 5);
+    auto B2 = create_random_tensor<double>("B2", 3, 5);
+    auto C  = create_random_tensor<double>("C", 6, 3);
+
+    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 1.0, Indices{l, k}, C, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 1.0, Indices{l, k}, C, Indices{k, j}, B2);
+
+    auto      R = create_zero_tensor<double>("R", 4, 5);
+    auto      S = create_zero_tensor<double>("S", 6, 5);
+    cg::Graph graph("shared_sum");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B1);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B2);
+        cg::einsum("lk;kj->lj", 1.0, &S, 1.0, C, B1);
+        cg::einsum("lk;kj->lj", 1.0, &S, 1.0, C, B2);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 2);
+
+    // One build (a zeroing Scale plus one Axpy per operand) feeding two einsums.
+    size_t num_scale = 0, num_axpy = 0, num_einsum = 0;
+    for (auto const &node : graph.nodes()) {
+        if (node.kind == cg::OpKind::Scale)
+            num_scale++;
+        else if (node.kind == cg::OpKind::Axpy)
+            num_axpy++;
+        else if (node.kind == cg::OpKind::Einsum)
+            num_einsum++;
+    }
+    REQUIRE(num_scale == 1);
+    REQUIRE(num_axpy == 2);
+    REQUIRE(num_einsum == 2);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+    for (size_t ll = 0; ll < 6; ll++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(S(ll, jj), Catch::Matchers::WithinRel(S_ref(ll, jj), 1e-10));
+}
+
+TEST_CASE("DistributiveFactoring - sums differing only in a prefactor are not shared", "[ComputeGraph][DistributiveFactoring]") {
+    // CCSD's tau and tau-tilde sum the same operands and differ by one
+    // coefficient, so they are different tensors. Sharing them would be wrong.
+    auto A  = create_random_tensor<double>("A", 4, 3);
+    auto B1 = create_random_tensor<double>("B1", 3, 5);
+    auto B2 = create_random_tensor<double>("B2", 3, 5);
+    auto C  = create_random_tensor<double>("C", 6, 3);
+
+    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 1.0, Indices{l, k}, C, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 0.5, Indices{l, k}, C, Indices{k, j}, B2);
+
+    auto      R = create_zero_tensor<double>("R", 4, 5);
+    auto      S = create_zero_tensor<double>("S", 6, 5);
+    cg::Graph graph("tau_vs_tau_tilde");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B1);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B2);
+        cg::einsum("lk;kj->lj", 1.0, &S, 1.0, C, B1);
+        cg::einsum("lk;kj->lj", 1.0, &S, 0.5, C, B2); // half the second term
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 2);
+
+    // Two distinct sums, so two builds.
+    size_t num_scale = 0;
+    for (auto const &node : graph.nodes()) {
+        if (node.kind == cg::OpKind::Scale)
+            num_scale++;
+    }
+    REQUIRE(num_scale == 2);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+    for (size_t ll = 0; ll < 6; ll++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(S(ll, jj), Catch::Matchers::WithinRel(S_ref(ll, jj), 1e-10));
+}
+
+TEST_CASE("DistributiveFactoring - a rewritten operand blocks the second group", "[ComputeGraph][DistributiveFactoring]") {
+    // A summed operand overwritten between two consumers of the same sum must not
+    // let the second read the first's intermediate, which was built from the old
+    // value.
+    //
+    // In practice the interference gate gets there first: topological_sort floats
+    // independent writes early, so the overwrite lands inside the second group's
+    // span and that group declines outright rather than declining only the reuse.
+    // Either way the answer is right, which is what this pins. The reuse pass has
+    // its own staleness scan for the case where a write falls between the build
+    // and a later span; that is defense in depth and not reachable from here.
+    auto A  = create_random_tensor<double>("A", 4, 3);
+    auto B1 = create_random_tensor<double>("B1", 3, 5);
+    auto B2 = create_random_tensor<double>("B2", 3, 5);
+    auto Bs = create_random_tensor<double>("Bs", 3, 5);
+    auto C  = create_random_tensor<double>("C", 6, 3);
+    auto Cs = create_random_tensor<double>("Cs", 6, 3);
+
+    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+    // B2 = Bs and C = Cs happen in between, so S sees the new values.
+    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 1.0, Indices{l, k}, Cs, Indices{k, j}, B1);
+    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 1.0, Indices{l, k}, Cs, Indices{k, j}, Bs);
+
+    auto      R = create_zero_tensor<double>("R", 4, 5);
+    auto      S = create_zero_tensor<double>("S", 6, 5);
+    cg::Graph graph("stale_operand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B1);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B2);
+        cg::axpby(1.0, Bs, 0.0, &B2); // overwrite a summed operand
+        cg::axpby(1.0, Cs, 0.0, &C);  // and the shared one, to pin the order
+        cg::einsum("lk;kj->lj", 1.0, &S, 1.0, C, B1);
+        cg::einsum("lk;kj->lj", 1.0, &S, 1.0, C, B2);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 1); // only the group before the overwrite
+
+    // One build, and the second pair of contractions is left alone rather than
+    // pointed at an intermediate holding the pre-overwrite operands.
+    size_t num_scale = 0, num_einsum = 0;
+    for (auto const &node : graph.nodes()) {
+        if (node.kind == cg::OpKind::Scale)
+            num_scale++;
+        else if (node.kind == cg::OpKind::Einsum)
+            num_einsum++;
+    }
+    REQUIRE(num_scale == 1);
+    REQUIRE(num_einsum == 3); // one factored, two untouched
+
+    graph.execute();
+
+    for (size_t ii = 0; ii < 4; ii++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+    for (size_t ll = 0; ll < 6; ll++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(S(ll, jj), Catch::Matchers::WithinRel(S_ref(ll, jj), 1e-10));
+}
