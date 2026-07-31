@@ -9,6 +9,7 @@
 
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
@@ -35,7 +36,7 @@ auto element_transform(CType *C, UnaryOperator unary_opt) -> void {
     Stride<Rank> index_strides;
     size_t       elements = dims_to_strides(C->dims(), index_strides);
 
-    EINSUMS_OMP_PARALLEL_FOR
+    EINSUMS_OMP_PARALLEL_FOR_IF(elements >= ::einsums::hardware::omp_min_parallel_elements())
     for (size_t item = 0; item < elements; item++) {
         size_t offset;
         sentinel_to_sentinels(item, index_strides, C->strides(), offset);
@@ -89,7 +90,7 @@ auto element(MultiOperator multi_opt, CType *C, MultiTensors &...tensors) {
     Stride<Rank> index_strides;
     size_t       elements = dims_to_strides(C->dims(), index_strides);
 
-    EINSUMS_OMP_PARALLEL_FOR
+    EINSUMS_OMP_PARALLEL_FOR_IF(elements >= ::einsums::hardware::omp_min_parallel_elements())
     for (size_t item = 0; item < elements; item++) {
         thread_local std::array<int64_t, Rank> index;
 

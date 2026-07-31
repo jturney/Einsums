@@ -32,6 +32,7 @@ einsums_add_module(
   HEADERS ${TensorAlgebraHeaders}
   MODULE_DEPENDENCIES
     Einsums_Comm
+    Einsums_Hardware
     Einsums_Config
     Einsums_LinearAlgebra
     Einsums_BufferAllocator

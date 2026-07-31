@@ -14,6 +14,7 @@
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
 #include <Einsums/HPTT/Transpose.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Iterator/Enumerate.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile.hpp>
@@ -398,7 +399,7 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
         Stride<CRank> index_strides;
         size_t        elements = dims_to_strides(C->dims(), index_strides);
 
-        EINSUMS_OMP_PARALLEL_FOR
+        EINSUMS_OMP_PARALLEL_FOR_IF(elements >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < elements; i++) {
             thread_local std::array<int64_t, CRank> index;
 

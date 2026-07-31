@@ -21,6 +21,7 @@ einsums_add_module(
   DEPENDENCIES
   MODULE_DEPENDENCIES
     Einsums_Logging
+    Einsums_Hardware
     Einsums_TypeSupport
     Einsums_Config
     Einsums_BLAS

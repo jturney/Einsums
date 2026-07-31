@@ -8,6 +8,7 @@ set(LinearAlgebraPerfTests
     BenchmarkBandwidth.cpp
     BenchmarkLAPACK.cpp
     BenchmarkPeakFlops.cpp
+    BenchmarkSmallElementwise.cpp
     BenchmarkThreadScaling.cpp
 )
 

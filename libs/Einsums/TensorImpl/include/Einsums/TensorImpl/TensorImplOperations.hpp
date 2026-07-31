@@ -7,6 +7,7 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/Errors/Error.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
@@ -34,7 +35,7 @@ void impl_real_contiguous(TensorImpl<std::complex<T>> const &in, TensorImpl<T> &
         T const     *in_data  = reinterpret_cast<T const *>(in.data());
         T           *out_data = out.data();
         size_t const incx = 2 * in.get_incx(), incy = out.get_incx(), size = in.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < size; i++) {
             out_data[i * incy] = in_data[i * incx];
         }
@@ -51,7 +52,7 @@ void impl_real_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
             blas::copy(easy_size, reinterpret_cast<T const *>(in), twice_inc_in, out, inc_out);
         } else {
             T const *in_data = reinterpret_cast<T const *>(in);
-            EINSUMS_OMP_PARALLEL_FOR_SIMD
+            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
             for (size_t i = 0; i < easy_size; i++) {
                 out[i * inc_out] = in_data[i * twice_inc_in];
             }
@@ -153,7 +154,7 @@ void impl_imag_contiguous(TensorImpl<std::complex<T>> const &in, TensorImpl<T> &
         T const     *in_data  = reinterpret_cast<T const *>(in.data()) + 1;
         T           *out_data = out.data();
         size_t const incx = 2 * in.get_incx(), incy = out.get_incx(), size = in.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < size; i++) {
             out_data[i * incy] = in_data[i * incx];
         }
@@ -170,7 +171,7 @@ void impl_imag_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
             blas::copy(easy_size, reinterpret_cast<T const *>(in) + 1, twice_inc_in, out, inc_out);
         } else {
             T const *in_data = reinterpret_cast<T const *>(in) + 1;
-            EINSUMS_OMP_PARALLEL_FOR_SIMD
+            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
             for (size_t i = 0; i < easy_size; i++) {
                 out[i * inc_out] = in_data[i * twice_inc_in];
             }
@@ -269,7 +270,7 @@ void impl_abs_contiguous(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     TOther const *in_data  = in.data();
     T            *out_data = out.data();
     size_t const  incx = in.get_incx(), incy = out.get_incx(), size = in.size();
-    EINSUMS_OMP_PARALLEL_FOR_SIMD
+    EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
     for (size_t i = 0; i < size; i++) {
         out_data[i * incy] = std::abs(in_data[i * incx]);
     }
@@ -280,7 +281,7 @@ void impl_abs_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_siz
                                        InStrides const &in_strides, size_t inc_in, TOut *out, OutStrides const &out_strides,
                                        size_t inc_out) {
     if (depth == hard_rank) {
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < easy_size; i++) {
             out[i * inc_out] = std::abs(in[i * inc_in]);
         }
@@ -380,7 +381,7 @@ void impl_conj_contiguous(TensorImpl<std::complex<T>> &x) {
     } else {
         T           *x_data = x.data();
         size_t const incx = x.get_incx(), size = x.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < size; i++) {
             x_data[i * incx] = std::conj(x_data[i * incx]);
         }
@@ -395,7 +396,7 @@ void impl_conj_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
         if constexpr (blas::IsBlasableV<T>) {
             blas::lacgv(easy_size, x, incx);
         } else {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD
+            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
             for (size_t i = 0; i < easy_size; i++) {
                 x[i * incx] = std::conj(x[i * incx]);
             }
@@ -460,7 +461,7 @@ void impl_axpy_contiguous(T alpha, TensorImpl<TOther> const &in, TensorImpl<T> &
         TOther const *in_data  = in.data();
         T            *out_data = out.data();
         size_t const  incx = in.get_incx(), incy = out.get_incx(), size = in.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < size; i++) {
             out_data[i * incy] += alpha * convert<TOther, T>(in_data[i * incx]);
         }
@@ -477,7 +478,7 @@ void impl_axpy_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
             EINSUMS_THROW_EXCEPTION(complex_conversion_error,
                                     "Can not convert complex to real! Please extract the components you want to use before operating.");
         } else {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD
+            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
             for (size_t i = 0; i < easy_size; i++) {
                 out[i * inc_out] += alpha * convert<TOther, T>(in[i * inc_in]);
             }
@@ -604,7 +605,7 @@ void impl_scal_contiguous(TOther alpha, TensorImpl<T> &out) {
         T           *out_data = out.data();
         size_t const size = out.size(), incx = out.get_incx();
 
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < size; i++) {
             out_data[i * incx] *= convert<TOther, T>(alpha);
         }
@@ -622,7 +623,7 @@ void impl_scal_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
             EINSUMS_THROW_EXCEPTION(complex_conversion_error,
                                     "Can not convert complex to real! Please extract the components you want to use before operating.");
         } else {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD
+            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
             for (size_t i = 0; i < easy_size; i++) {
                 out[i * inc_out] *= convert<TOther, T>(alpha);
             }
@@ -686,7 +687,7 @@ void impl_div_scalar_contiguous(TOther alpha, TensorImpl<T> &out) {
         T           *out_data = out.data();
         size_t const size = out.size(), incx = out.get_incx();
 
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < size; i++) {
             out_data[i * incx] /= convert<TOther, T>(alpha);
         }
@@ -704,7 +705,7 @@ void impl_div_scalar_noncontiguous_vectorable(int depth, int hard_rank, size_t e
             EINSUMS_THROW_EXCEPTION(complex_conversion_error,
                                     "Can not convert complex to real! Please extract the components you want to use before operating.");
         } else {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD
+            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
             for (size_t i = 0; i < easy_size; i++) {
                 out[i * inc_out] /= convert<TOther, T>(alpha);
             }
@@ -765,7 +766,7 @@ void impl_mult_contiguous(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         TOther const *in_data  = in.data();
         T            *out_data = out.data();
         size_t const  incx = in.get_incx(), incy = out.get_incx(), size = in.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < size; i++) {
             out_data[i * incy] *= convert<TOther, T>(in_data[i * incx]);
         }
@@ -780,7 +781,7 @@ void impl_mult_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (depth == hard_rank) {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD
+            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
             for (size_t i = 0; i < easy_size; i++) {
                 out[i * inc_out] *= convert<TOther, T>(in[i * inc_in]);
             }
@@ -888,7 +889,7 @@ void impl_div_contiguous(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         TOther const *in_data  = in.data();
         T            *out_data = out.data();
         size_t const  incx = in.get_incx(), incy = out.get_incx(), size = in.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < size; i++) {
             out_data[i * incy] /= convert<TOther, T>(in_data[i * incx]);
         }
@@ -903,7 +904,7 @@ void impl_div_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_siz
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (depth == hard_rank) {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD
+            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
             for (size_t i = 0; i < easy_size; i++) {
                 out[i * inc_out] /= in[i * inc_in];
             }
@@ -1013,7 +1014,7 @@ void impl_copy_contiguous(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         TOther const *in_data  = in.data();
         T            *out_data = out.data();
         size_t const  incx = in.get_incx(), incy = out.get_incx(), size = in.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < size; i++) {
             out_data[i * incy] = convert<TOther, T>(in_data[i * incx]);
         }
@@ -1030,7 +1031,7 @@ void impl_copy_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
             EINSUMS_THROW_EXCEPTION(complex_conversion_error,
                                     "Can not convert complex to real! Please extract the components you want to use before operating.");
         } else {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD
+            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
             for (size_t i = 0; i < easy_size; i++) {
                 out[i * inc_out] = convert<TOther, T>(in[i * inc_in]);
             }
@@ -1137,7 +1138,7 @@ void impl_scalar_add_contiguous(T alpha, TensorImpl<T> &out) {
     } else {
         T           *out_data = out.data();
         size_t const incy = out.get_incx(), size = out.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < size; i++) {
             out_data[i * incy] += alpha;
         }
@@ -1153,7 +1154,7 @@ void impl_scalar_add_noncontiguous_vectorable(int depth, int hard_rank, size_t e
             blas::axpy(easy_size, T{1.0}, &alpha, 0, out, inc_out);
         } else {
 
-            EINSUMS_OMP_PARALLEL_FOR_SIMD
+            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
             for (size_t i = 0; i < easy_size; i++) {
                 out[i * inc_out] += alpha;
             }
@@ -1218,7 +1219,7 @@ void impl_scalar_copy_contiguous(T alpha, TensorImpl<T> &out) {
     } else {
         T           *out_data = out.data();
         size_t const incy = out.get_incx(), size = out.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < size; i++) {
             out_data[i * incy] = alpha;
         }
@@ -1234,7 +1235,7 @@ void impl_scalar_copy_noncontiguous_vectorable(int depth, int hard_rank, size_t 
             blas::copy(easy_size, &alpha, 0, out, inc_out);
         } else {
 
-            EINSUMS_OMP_PARALLEL_FOR_SIMD
+            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
             for (size_t i = 0; i < easy_size; i++) {
                 out[i * inc_out] = alpha;
             }
