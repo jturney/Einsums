@@ -134,6 +134,48 @@ TEST_CASE("TaskPool - parallel_reduce", "[TaskPool]") {
     REQUIRE_THAT(result, Catch::Matchers::WithinRel(999.0 * 1000.0 / 2.0, 1e-10));
 }
 
+TEST_CASE("TaskPool - parallel_reduce accumulator slots are disjoint", "[TaskPool]") {
+    // Regression: the calling thread and worker 0 both mapped to accumulator
+    // slot 0, and parallel_for has the caller help drain the queue, so the two
+    // of them accumulated into one unsynchronized Acc. Interleaved updates
+    // were lost and the reduction came out short by a random amount.
+    //
+    // Asserting on the sum only catches the lost update when the two threads
+    // happen to interleave, so this checks the invariant the fix establishes
+    // instead: every accumulator is written by exactly one thread. Each slot
+    // records its first writer and flags a second one.
+    struct Witness {
+        std::thread::id owner{};
+        bool            shared{false};
+    };
+
+    auto &pool = TaskPool::get_singleton();
+
+    // Enough work per element that several chunks are still in flight when the
+    // calling thread picks one up, so the caller and the workers really do run
+    // concurrently. parallel_for cuts the range into a fixed number of chunks
+    // (four per thread), so the length of a chunk is what buys the overlap,
+    // not the number of them.
+    auto const result = pool.parallel_reduce<Witness>(
+        "witness", 0, 20000, []() { return Witness{}; },
+        [](size_t i, Witness &w) {
+            auto const id = std::this_thread::get_id();
+            if (w.owner == std::thread::id{}) {
+                w.owner = id;
+            } else if (w.owner != id) {
+                w.shared = true;
+            }
+            // Keep the chunk from finishing instantly.
+            volatile double sink = 0.0;
+            for (int r = 0; r < 40; r++) {
+                sink += static_cast<double>(i) * 0.5;
+            }
+        },
+        [](Witness &global, Witness const &local) { global.shared = global.shared || local.shared; });
+
+    REQUIRE_FALSE(result.shared);
+}
+
 TEST_CASE("TaskPool - dataflow void input", "[TaskPool]") {
     auto &pool = TaskPool::get_singleton();
 

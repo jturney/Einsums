@@ -200,11 +200,17 @@ class EINSUMS_EXPORT TaskPool {
             pa.acc = init_factory();
         }
 
-        // Each worker gets an accumulator slot based on worker_id.
-        // The calling thread (worker_id = -1) uses slot 0.
+        // Slot 0 belongs to the calling thread; worker `w` takes slot `w + 1`.
+        // The offset is what makes the slots disjoint: parallel_for has the
+        // caller help drain the queue, so it runs chunks alongside the workers,
+        // and mapping worker 0 onto slot 0 as well had the two of them
+        // accumulate into one unsynchronized Acc. Updates were lost whenever
+        // they interleaved, which showed up as a reduction that came out short
+        // by a random amount. There are num_workers() + 1 slots and worker ids
+        // run 0 .. num_workers() - 1, so `wid + 1` is always in range.
         parallel_for(std::move(name), begin, end, [&](size_t idx) {
-            int const wid  = current_worker_id();
-            size_t    slot = (wid >= 0) ? (static_cast<size_t>(wid) % nw) : 0;
+            int const    wid  = current_worker_id();
+            size_t const slot = (wid >= 0) ? static_cast<size_t>(wid) + 1 : 0;
             body(idx, accs[slot].acc);
         });
 
