@@ -122,3 +122,54 @@ def test_ewf_fuses_consecutive_rank3_scales():
 
     g.execute()
     assert_close(A, A_ref)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# axpby chains
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_ewf_fuses_consecutive_axpby():
+    """Y = a1*X + b1*Y then Y = a2*X + b2*Y composes into one axpby."""
+    X = einsums.create_random_tensor("X", [4, 5])
+    Y = einsums.create_random_tensor("Y", [4, 5])
+
+    X_np = np.asarray(X).copy()
+    Y_np = np.asarray(Y).copy()
+    expected = 5.0 * X_np + 7.0 * (2.0 * X_np + 3.0 * Y_np)
+
+    g = cg.Graph("ewf_axpby")
+    with cg.capture(g):
+        einsums.linalg.axpby(2.0, X, 3.0, Y)
+        einsums.linalg.axpby(5.0, X, 7.0, Y)
+    assert g.num_nodes() == 2
+
+    pass_inst = cg.ElementWiseFusion()
+    assert _run(pass_inst, g)
+    assert pass_inst.num_fused == 1
+    assert g.num_nodes() == 1
+
+    g.execute()
+    assert_close(Y, expected)
+
+
+def test_ewf_axpby_on_a_different_source_does_not_fuse():
+    """Two different sources are a three-operand update; no axpby expresses it."""
+    X1 = einsums.create_random_tensor("X1", [4, 5])
+    X2 = einsums.create_random_tensor("X2", [4, 5])
+    Y = einsums.create_random_tensor("Y", [4, 5])
+
+    x1 = np.asarray(X1).copy()
+    x2 = np.asarray(X2).copy()
+    expected = 5.0 * x2 + 7.0 * (2.0 * x1 + 3.0 * np.asarray(Y).copy())
+
+    g = cg.Graph("ewf_axpby_diff_src")
+    with cg.capture(g):
+        einsums.linalg.axpby(2.0, X1, 3.0, Y)
+        einsums.linalg.axpby(5.0, X2, 7.0, Y)
+
+    assert not _run(cg.ElementWiseFusion(), g)
+    assert g.num_nodes() == 2
+
+    g.execute()
+    assert_close(Y, expected)

@@ -125,6 +125,50 @@ TEST_CASE("InplaceOptimization - merges direct_product output into dying input",
     }
 }
 
+TEST_CASE("InplaceOptimization - a permute is never merged onto its dying input", "[ComputeGraph][Passes][Inplace]") {
+    // Guard against widening the alias whitelist to permute, which looks
+    // tempting (a transpose whose source dies is an obvious buffer to reuse)
+    // and is unsound: a permute's out[j,i] comes from in[i,j], so writing
+    // through the shared buffer destroys elements that have not been read yet.
+    // Measured directly: transposing a 4x4 in place through the out-of-place
+    // kernel gives max abs error 1.68 against the correct transpose, i.e.
+    // wrong by O(1), not by rounding.
+    //
+    // Same shape as the direct_product merge above, so the only reason this
+    // one is declined is the op kind.
+    auto A   = create_random_tensor<double>("A", 6, 6);
+    auto B   = create_random_tensor<double>("B", 6, 6);
+    auto out = create_zero_tensor<double>("out", 6, 6);
+
+    auto X_ref = create_zero_tensor<double>("Xref", 6, 6);
+    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
+    auto Y_ref = create_zero_tensor<double>("Yref", 6, 6);
+    tensor_algebra::permute(Indices{j, i}, &Y_ref, Indices{i, j}, X_ref);
+    auto out_ref = create_zero_tensor<double>("OUTref", 6, 6);
+    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, Y_ref, Indices{k, j}, A);
+
+    cg::Graph graph("inplace_permute");
+    auto     &X = graph.create_zero_tensor<double, 2>("X", 6, 6);
+    auto     &Y = graph.create_zero_tensor<double, 2>("Y", 6, 6);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &X, A, B);
+        cg::permute("ji <- ij", 0.0, &Y, 1.0, X); // X dies here
+        cg::einsum("ik;kj->ij", &out, Y, A);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::InplaceOptimization>();
+    CHECK_FALSE(modified);
+    CHECK(pass.num_merged() == 0);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 6; ii++) {
+        for (size_t jj = 0; jj < 6; jj++) {
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
+
 TEST_CASE("InplaceOptimization - accumulating direct_product is not merged", "[ComputeGraph][Passes][Inplace]") {
     // beta != 0 means the op reads its destination (listed as an input by
     // the recording convention), so the output is not a pure overwrite.

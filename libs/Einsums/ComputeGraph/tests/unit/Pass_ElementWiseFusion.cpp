@@ -213,3 +213,152 @@ TEST_CASE("ElementWiseFusion - fused output feeding a downstream consumer stays 
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// axpby chains
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("ElementWiseFusion - fuses consecutive axpby on the same pair", "[ComputeGraph][Passes][Axpby]") {
+    // Y = a1*X + b1*Y then Y = a2*X + b2*Y is Y = (a2 + b2*a1)*X + (b2*b1)*Y.
+    // axpby reads its scalars from live shared params, so the fused node is
+    // ONE sweep over Y with new scalars, not two executors called in turn.
+    auto X = create_random_tensor<double>("X", 4, 5);
+    auto Y = create_random_tensor<double>("Y", 4, 5);
+
+    auto Y_ref = Tensor<double, 2>("Yref", 4, 5);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            double const after_first = 2.0 * X(ii, jj) + 3.0 * Y(ii, jj);
+            Y_ref(ii, jj)            = 5.0 * X(ii, jj) + 7.0 * after_first;
+        }
+    }
+
+    cg::Graph graph("ewf_axpby");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpby(2.0, X, 3.0, &Y);
+        cg::axpby(5.0, X, 7.0, &Y);
+    }
+    REQUIRE(graph.num_nodes() == 2);
+
+    auto [modified, ewf] = graph.apply<cg::passes::ElementWiseFusion>();
+    REQUIRE(modified);
+    CHECK(ewf.num_fused() == 1);
+    REQUIRE(graph.num_nodes() == 1);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(Y(ii, jj) - Y_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("ElementWiseFusion - three consecutive axpby fuse to one", "[ComputeGraph][Passes][Axpby]") {
+    auto X = create_random_tensor<double>("X", 4, 5);
+    auto Y = create_random_tensor<double>("Y", 4, 5);
+
+    auto Y_ref = Tensor<double, 2>("Yref", 4, 5);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            double acc    = Y(ii, jj);
+            acc           = 2.0 * X(ii, jj) + 3.0 * acc;
+            acc           = 5.0 * X(ii, jj) + 7.0 * acc;
+            acc           = 0.5 * X(ii, jj) + 0.25 * acc;
+            Y_ref(ii, jj) = acc;
+        }
+    }
+
+    cg::Graph graph("ewf_axpby3");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpby(2.0, X, 3.0, &Y);
+        cg::axpby(5.0, X, 7.0, &Y);
+        cg::axpby(0.5, X, 0.25, &Y);
+    }
+
+    auto [modified, ewf] = graph.apply<cg::passes::ElementWiseFusion>();
+    REQUIRE(modified);
+    CHECK(ewf.num_fused() == 2);
+    REQUIRE(graph.num_nodes() == 1);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(Y(ii, jj) - Y_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("ElementWiseFusion - axpby on a different source does not fuse", "[ComputeGraph][Passes][Axpby]") {
+    // Composing needs the SAME X: Y = a1*X1 + b1*Y then Y = a2*X2 + b2*Y is a
+    // three-operand update, which no single axpby expresses.
+    auto X1 = create_random_tensor<double>("X1", 4, 5);
+    auto X2 = create_random_tensor<double>("X2", 4, 5);
+    auto Y  = create_random_tensor<double>("Y", 4, 5);
+
+    auto Y_ref = Tensor<double, 2>("Yref", 4, 5);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            double const after_first = 2.0 * X1(ii, jj) + 3.0 * Y(ii, jj);
+            Y_ref(ii, jj)            = 5.0 * X2(ii, jj) + 7.0 * after_first;
+        }
+    }
+
+    cg::Graph graph("ewf_axpby_diff_src");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpby(2.0, X1, 3.0, &Y);
+        cg::axpby(5.0, X2, 7.0, &Y);
+    }
+
+    auto [modified, ewf] = graph.apply<cg::passes::ElementWiseFusion>();
+    CHECK_FALSE(modified);
+    CHECK(graph.num_nodes() == 2);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(Y(ii, jj) - Y_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("ElementWiseFusion - a fused axpby that drops Y stops listing it as an input", "[ComputeGraph][Passes][Axpby]") {
+    // b2*b1 == 0 means the composed op overwrites Y, so Y must leave the input
+    // list - liveness passes read that to decide what is still needed.
+    auto X = create_random_tensor<double>("X", 4, 5);
+    auto Y = create_random_tensor<double>("Y", 4, 5);
+
+    auto Y_ref = Tensor<double, 2>("Yref", 4, 5);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            double const after_first = 2.0 * X(ii, jj) + 3.0 * Y(ii, jj);
+            Y_ref(ii, jj)            = 5.0 * X(ii, jj) + 0.0 * after_first;
+        }
+    }
+
+    cg::Graph graph("ewf_axpby_overwrite");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpby(2.0, X, 3.0, &Y);
+        cg::axpby(5.0, X, 0.0, &Y); // beta 0: the earlier value is discarded
+    }
+
+    auto [modified, ewf] = graph.apply<cg::passes::ElementWiseFusion>();
+    REQUIRE(modified);
+    REQUIRE(graph.num_nodes() == 1);
+
+    auto const &fused = graph.nodes()[0];
+    CHECK(fused.inputs.size() == 1); // Y no longer read
+    auto const *desc = std::get_if<cg::AxpbyDescriptor>(&fused.op_data);
+    REQUIRE(desc != nullptr);
+    CHECK(einsums::compute_graph::is_zero(desc->beta));
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(Y(ii, jj) - Y_ref(ii, jj)) < 1e-12);
+        }
+    }
+}

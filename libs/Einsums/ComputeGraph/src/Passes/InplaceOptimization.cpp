@@ -25,6 +25,19 @@ namespace {
 /// (output not read) is checked separately via the out-tensor-as-input
 /// recording convention: an op that reads its destination lists it in
 /// Node::inputs.
+///
+/// Permute keeps coming up as a candidate - a transpose whose source dies is
+/// an obvious buffer to reuse - and it is unsound, not merely unimplemented:
+/// out[j,i] comes from in[i,j], so writing through a shared buffer destroys
+/// elements not yet read. Transposing a 4x4 in place through the out-of-place
+/// kernel gives max abs error 1.68 against the correct transpose. An IDENTITY
+/// permute (a scaled copy) would be alias-safe, but PermuteFusion already
+/// removes those. See the guard test "a permute is never merged onto its dying
+/// input".
+///
+/// ElementTransform is element-aligned but records `{c_id}` as both input and
+/// output (it is in-place), so the pure-overwrite check excludes it anyway and
+/// adding it here would buy nothing.
 bool elementwise_alias_safe(OpKind kind) {
     return kind == OpKind::DirectProduct || kind == OpKind::DirectDivision || kind == OpKind::Axpby;
 }

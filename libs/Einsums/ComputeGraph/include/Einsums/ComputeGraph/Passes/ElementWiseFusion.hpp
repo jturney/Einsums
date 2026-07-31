@@ -46,16 +46,22 @@ namespace einsums::compute_graph::passes {
  * # ewf.num_fused -> 1   (getter is a property, not a method)
  * @endcode
  *
- * @par Limitations
- * - Fuses **only consecutive Scale-into-Scale** pairs on the same output tensor, despite the general "element-wise" name; other
- *   element-wise kinds (ElementTransform, axpy/axpby chains) are not yet composed here.
- * - Each participating scale must have exactly one output and a `ScaleDescriptor`; the scan breaks on any intervening node that
- *   is not a same-target scale, so scales separated by another op do not fuse.
- * - The merged factor is a plain product; no numeric reassociation or overflow handling beyond floating-point multiplication.
+ * @par What it fuses
+ * - **axpby chains**: `Y = a1·X + b1·Y` directly followed by `Y = a2·X + b2·Y` on the same pair becomes
+ *   `Y = (a2 + b2·a1)·X + (b2·b1)·Y`. axpby reads its scalars from live shared params, so this is a real fusion - the result is
+ *   ONE sweep over Y. If the composed `beta` is zero the node stops listing Y as an input, since it no longer reads it.
+ * - **Scale-into-Scale** on the same tensor: the factors multiply.
  *
- * @par Future improvements
- * - Extend fusion to the other element-wise ops the class name promises (ElementTransform composition, axpy/axpby chains) into a
- *   single composite executor.
+ * @par Limitations
+ * - The Scale fusion removes a node but not a sweep: `ScaleDescriptor` carries a plain `double` with no live params, so the
+ *   merged node composes the two executors instead of applying one combined factor. Giving Scale live params (as
+ *   EinsumParams/AxpbyParams do) would make it a real fusion, and would let ScaleAbsorption fold into it as well.
+ * - Both fusions need the participants to be DIRECTLY consecutive; the scan breaks on any intervening node, so ops separated by
+ *   another node do not fuse even when nothing in between touches the tensor.
+ * - axpby fusion requires the same source X and the same destination Y. Two different sources are a three-operand update, which
+ *   no single axpby expresses. It also requires all four prefactors to share a PrefactorScalar alternative.
+ * - `ElementTransform` is not composed: it holds an opaque callable, so two of them can only be chained, not merged.
+ * - Merged scalars are plain floating-point arithmetic; no reassociation or overflow handling.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT ElementWiseFusion : public OptimizerPass {
   public:
