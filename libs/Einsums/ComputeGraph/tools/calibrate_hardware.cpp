@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -185,6 +186,142 @@ double measure_bandwidth_gbps() {
     return bytes / (seconds * 1e9);
 }
 
+/// Median of a timed callable, in seconds.
+template <typename F>
+double median_seconds(size_t warmup, size_t repeats, F &&run) {
+    for (size_t w = 0; w < warmup; w++) {
+        run();
+    }
+    std::vector<double> times(repeats);
+    for (size_t r = 0; r < repeats; r++) {
+        auto const t0 = std::chrono::steady_clock::now();
+        run();
+        auto const t1 = std::chrono::steady_clock::now();
+        times[r]      = std::chrono::duration<double>(t1 - t0).count();
+    }
+    std::ranges::sort(times);
+    return times[repeats / 2];
+}
+
+/// Achieved (read + write) bandwidth of a rank-2 transpose of an N x N tensor.
+double measure_permute_rank2_gbps(size_t N, size_t warmup, size_t repeats) {
+    using namespace einsums::index;
+    auto A = create_random_tensor<double>("A", N, N);
+    auto C = Tensor<double, 2>("C", N, N);
+
+    double const seconds = median_seconds(warmup, repeats, [&] { tensor_algebra::permute(Indices{j, i}, &C, Indices{i, j}, A); });
+
+    double const bytes = 2.0 * static_cast<double>(N) * static_cast<double>(N) * sizeof(double);
+    return bytes / (seconds * 1e9);
+}
+
+/// Same for a rank-3 cyclic permutation of an N x N x N tensor.
+double measure_permute_rank3_gbps(size_t N, size_t warmup, size_t repeats) {
+    using namespace einsums::index;
+    auto A = create_random_tensor<double>("A", N, N, N);
+    auto C = Tensor<double, 3>("C", N, N, N);
+
+    double const seconds = median_seconds(warmup, repeats, [&] { tensor_algebra::permute(Indices{k, i, j}, &C, Indices{i, j, k}, A); });
+
+    double const bytes = 2.0 * std::pow(static_cast<double>(N), 3.0) * sizeof(double);
+    return bytes / (seconds * 1e9);
+}
+
+/// Same for a rank-4 permutation that swaps both index pairs, the shape a
+/// coupled-cluster residual keeps asking for.
+double measure_permute_rank4_gbps(size_t N, size_t warmup, size_t repeats) {
+    using namespace einsums::index;
+    auto A = create_random_tensor<double>("A", N, N, N, N);
+    auto C = Tensor<double, 4>("C", N, N, N, N);
+
+    double const seconds = median_seconds(warmup, repeats, [&] {
+        tensor_algebra::permute(Indices{j, i, l, k}, &C, Indices{i, j, k, l}, A);
+    });
+
+    double const bytes = 2.0 * std::pow(static_cast<double>(N), 4.0) * sizeof(double);
+    return bytes / (seconds * 1e9);
+}
+
+/// Read bandwidth over a working set of @p bytes, for pricing a cache level.
+///
+/// Sums a buffer sized to sit inside the level under test, repeatedly, so the
+/// data stays resident after the first pass.
+///
+/// The eight independent accumulators are the point: a single `acc += buf[i]`
+/// chain is a dependent sequence of FP adds, so it measures the adder's
+/// latency (it reported the same ~16 GB/s for L1, L2 and L3) rather than how
+/// fast the level delivers bytes. Eight chains keep enough loads in flight for
+/// the memory side to be the limit.
+double measure_cache_bandwidth_gbps(size_t bytes) {
+    constexpr size_t kLanes = 8;
+
+    size_t n = std::max<size_t>(4096, bytes / sizeof(double));
+    n        = n / kLanes * kLanes;
+    std::vector<double> buf(n, 1.0);
+
+    // Enough passes that a small level still takes a measurable time.
+    size_t const passes = std::max<size_t>(8, (256UL * 1024 * 1024) / (n * sizeof(double)));
+
+    double volatile sink = 0.0;
+
+    double const seconds = median_seconds(1, 5, [&] {
+        double acc[kLanes] = {};
+        for (size_t p = 0; p < passes; p++) {
+            for (size_t idx = 0; idx < n; idx += kLanes) {
+                for (size_t lane = 0; lane < kLanes; lane++) {
+                    acc[lane] += buf[idx + lane];
+                }
+            }
+        }
+        double total = 0.0;
+        for (double const a : acc) {
+            total += a;
+        }
+        sink = total;
+    });
+
+    double const moved = static_cast<double>(n) * sizeof(double) * static_cast<double>(passes);
+    return (sink == 0.0 ? 0.0 : moved) / (seconds * 1e9);
+}
+
+/// Dependent-load latency over a working set of @p bytes, in nanoseconds.
+///
+/// Classic pointer chase: a random cyclic permutation of the indices, walked
+/// one dependent load at a time so the measured time is latency and not
+/// throughput. The walked position has to escape through the volatile sink or
+/// the whole loop is dead code and the level reports 0 ns.
+double measure_cache_latency_ns(size_t bytes) {
+    size_t const n = std::max<size_t>(4096, bytes / sizeof(size_t));
+
+    // A random single cycle over 0..n-1: shuffle the visit order, then link
+    // each position to the one visited after it.
+    std::vector<size_t> order(n);
+    for (size_t idx = 0; idx < n; idx++) {
+        order[idx] = idx;
+    }
+    std::mt19937_64 rng(12345);
+    for (size_t idx = n - 1; idx > 0; idx--) {
+        std::swap(order[idx], order[rng() % (idx + 1)]);
+    }
+    std::vector<size_t> next(n);
+    for (size_t idx = 0; idx < n; idx++) {
+        next[order[idx]] = order[(idx + 1) % n];
+    }
+
+    size_t const steps   = std::max<size_t>(n, 1UL << 20);
+    size_t volatile sink = 0;
+
+    double const seconds = median_seconds(1, 5, [&] {
+        size_t p = sink;
+        for (size_t s = 0; s < steps; s++) {
+            p = next[p];
+        }
+        sink = p;
+    });
+
+    return seconds * 1e9 / static_cast<double>(steps);
+}
+
 /// Measure kernel launch overhead by timing very small GEMMs.
 double measure_overhead_us() {
     auto A  = Tensor<double, 2>("A", 1, 1);
@@ -265,6 +402,46 @@ int einsums_main() {
     double const bw                   = measure_bandwidth_gbps();
     cost_model.cpu.mem_bandwidth_gbps = bw;
     einsums::println("  Sustained copy bandwidth: {:.1f} GB/s", bw);
+
+    // Measure permute (tensor transpose) efficiency. A transpose moves the
+    // same bytes as a copy with one side strided, so what the cost model needs
+    // is how far short of the copy rate it lands, per rank and size.
+    einsums::println("\n--- Permute Benchmark ---\n");
+    cost_model.cpu.permute_efficiency.clear();
+
+    auto record_permute = [&](size_t rank, size_t extent, size_t elements, double gbps) {
+        size_t const bytes = elements * sizeof(double);
+        cost_model.cpu.permute_efficiency.push_back({.bytes = bytes, .rank = rank, .gbps = gbps});
+        einsums::println("  rank {} extent {:>5}: {:>8.2f} MB  {:>7.1f} GB/s  ({:.0f}% of copy)", rank, extent,
+                         static_cast<double>(bytes) / (1024.0 * 1024.0), gbps, 100.0 * gbps / bw);
+    };
+
+    for (size_t const N : {64UL, 256UL, 1024UL, 4096UL}) {
+        record_permute(2, N, N * N, measure_permute_rank2_gbps(N, cfg.warmup, cfg.repeats));
+    }
+    for (size_t const N : {16UL, 48UL, 128UL, 256UL}) {
+        record_permute(3, N, N * N * N, measure_permute_rank3_gbps(N, cfg.warmup, cfg.repeats));
+    }
+    for (size_t const N : {8UL, 16UL, 32UL, 64UL}) {
+        record_permute(4, N, N * N * N * N, measure_permute_rank4_gbps(N, cfg.warmup, cfg.repeats));
+    }
+
+    // Measure per-cache-level bandwidth and dependent-load latency. Sizes come
+    // from the detector; this fills in the two fields it leaves at zero.
+    einsums::println("\n--- Cache Levels ---\n");
+    for (size_t lvl = 0; lvl < cost_model.cpu.caches.size(); lvl++) {
+        auto &level = cost_model.cpu.caches[lvl];
+        if (level.size_bytes == 0) {
+            continue;
+        }
+        // Half the level, so the working set stays resident with room for the
+        // walk's own metadata.
+        size_t const working_set = level.size_bytes / 2;
+        level.bandwidth_gbps     = measure_cache_bandwidth_gbps(working_set);
+        level.latency_ns         = measure_cache_latency_ns(working_set);
+        einsums::println("  L{} ({:>6.1f} KB): {:>7.1f} GB/s  {:>6.2f} ns", lvl + 1, static_cast<double>(level.size_bytes) / 1024.0,
+                         level.bandwidth_gbps, level.latency_ns);
+    }
 
     // Measure kernel overhead
     einsums::println("\n--- Kernel Overhead ---\n");

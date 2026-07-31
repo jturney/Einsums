@@ -25,6 +25,17 @@ struct GemmEfficiencyPoint {
     double gflops{0};
 };
 
+/// A single measured permute (tensor transpose) data point.
+///
+/// `gbps` is the achieved TRAFFIC rate, counting the source read and the
+/// destination write, so it is directly comparable with @ref
+/// DeviceProfile::mem_bandwidth_gbps from the copy benchmark.
+struct PermuteEfficiencyPoint {
+    size_t bytes{0}; ///< Size of the permuted tensor (one side, not the traffic)
+    size_t rank{0};  ///< Rank of the permuted tensor
+    double gbps{0};  ///< Achieved (read + write) bandwidth
+};
+
 /// Cache level description.
 struct CacheLevel {
     size_t size_bytes{0};
@@ -62,8 +73,9 @@ struct DeviceProfile {
     double inter_node_latency_us{1.0};     ///< Network latency (e.g., 1-5 us for IB)
     double nccl_bandwidth_gbps{0.0};       ///< Measured NCCL throughput for GPU-direct
 
-    std::vector<CacheLevel>          caches;
-    std::vector<GemmEfficiencyPoint> gemm_efficiency;
+    std::vector<CacheLevel>             caches;
+    std::vector<GemmEfficiencyPoint>    gemm_efficiency;
+    std::vector<PermuteEfficiencyPoint> permute_efficiency;
 
     /// Estimate GEMM throughput using nearest-neighbor interpolation.
     [[nodiscard]] double estimate_gemm_gflops(size_t M, size_t N, size_t K) const {
@@ -104,6 +116,76 @@ struct DeviceProfile {
         double const memory_us   = estimate_memory_time_us(read_bytes + write_bytes);
         return std::max(compute_us, memory_us) + alloc_overhead_us;
     }
+
+    /**
+     * @brief Fraction of @ref mem_bandwidth_gbps a permute of this rank is
+     *        expected to reach, when no calibration data is available.
+     *
+     * A transpose moves the same bytes as a copy with one side strided, and the
+     * penalty grows with rank because the innermost contiguous run shortens.
+     *
+     * Calibrate rather than lean on these. An HPTT sweep on one machine (Apple
+     * M4, doubles) put the achieved rate between 52% and 104% of the copy
+     * figure for working sets up to about 1 MB, and ABOVE it from 8 MB up,
+     * where HPTT's threading beats the single-threaded copy benchmark that
+     * mem_bandwidth_gbps comes from. The constants below track the small end,
+     * which is where a cost model actually has to make a call, and so they
+     * over-price a large permute. @c calibrate_hardware replaces them with
+     * measured points.
+     */
+    [[nodiscard]] static double default_permute_efficiency(size_t rank) {
+        switch (rank) {
+        case 0:
+        case 1:
+            return 1.0; // no reordering: this is a copy
+        case 2:
+            return 0.80;
+        case 3:
+            return 0.75;
+        default:
+            return 0.60;
+        }
+    }
+
+    /// Achieved (read + write) bandwidth for permuting a tensor of @p bytes at
+    /// @p rank. Calibration points win; nearest neighbour prefers an exact rank
+    /// match and then the closest size on a log scale, the same shape of
+    /// interpolation @ref estimate_gemm_gflops uses.
+    [[nodiscard]] double estimate_permute_gbps(size_t bytes, size_t rank) const {
+        if (permute_efficiency.empty()) {
+            return mem_bandwidth_gbps * default_permute_efficiency(rank);
+        }
+        double const target = std::log(static_cast<double>(bytes) + 1.0);
+        double       best   = mem_bandwidth_gbps * default_permute_efficiency(rank);
+        double       best_d = 1e30;
+        for (auto const &pt : permute_efficiency) {
+            // A rank mismatch is a bigger error than a size mismatch, so it
+            // costs more than the whole plausible range of the log-size term.
+            double const d = std::abs(std::log(static_cast<double>(pt.bytes) + 1.0) - target) +
+                             100.0 * std::abs(static_cast<double>(pt.rank) - static_cast<double>(rank));
+            if (d < best_d) {
+                best_d = d;
+                best   = pt.gbps;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * @brief Estimate the time to permute a tensor of @p bytes at @p rank.
+     *
+     * Bandwidth-bound: the source is read once and the destination written
+     * once, at the rate @ref estimate_permute_gbps predicts for that shape.
+     * This is what prices a transpose against the contraction that would
+     * otherwise absorb it.
+     */
+    [[nodiscard]] double estimate_permute_time_us(size_t bytes, size_t rank) const {
+        double const gbps = estimate_permute_gbps(bytes, rank);
+        if (gbps <= 0.0) {
+            return kernel_launch_overhead_us;
+        }
+        return 2.0 * static_cast<double>(bytes) / (gbps * 1e3) + kernel_launch_overhead_us;
+    }
 };
 
 /**
@@ -137,6 +219,11 @@ struct EINSUMS_EXPORT CostModel {
     /// Estimate memory transfer time on a specific target.
     [[nodiscard]] double estimate_memory_time_us(size_t bytes, Target target) const {
         return device(target).estimate_memory_time_us(bytes);
+    }
+
+    /// Estimate the time to permute a tensor of @p bytes at @p rank.
+    [[nodiscard]] double estimate_permute_time_us(size_t bytes, size_t rank, Target target) const {
+        return device(target).estimate_permute_time_us(bytes, rank);
     }
 
     /// Estimate host-device transfer time (via PCIe or unified memory bus).

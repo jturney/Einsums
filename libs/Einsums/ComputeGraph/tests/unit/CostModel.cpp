@@ -85,6 +85,52 @@ TEST_CASE("DeviceProfile - memory time estimation", "[ComputeGraph][CostModel]")
     CHECK(time < 28000.0);
 }
 
+TEST_CASE("DeviceProfile - permute time with no calibration data", "[ComputeGraph][CostModel]") {
+    cg::DeviceProfile p;
+    p.mem_bandwidth_gbps        = 40.0;
+    p.kernel_launch_overhead_us = 0.0;
+
+    constexpr size_t kBytes = 8UL * 1024 * 1024;
+
+    // Bandwidth bound over read + write, so a permute costs about what moving
+    // twice the tensor costs, divided by the rank's efficiency.
+    double const rank2 = p.estimate_permute_time_us(kBytes, 2);
+    CHECK(rank2 == Catch::Approx(2.0 * kBytes / (40.0 * 0.80 * 1e3)));
+
+    // Higher rank shortens the contiguous run, so it can only get slower.
+    CHECK(p.estimate_permute_time_us(kBytes, 3) > rank2);
+    CHECK(p.estimate_permute_time_us(kBytes, 4) > p.estimate_permute_time_us(kBytes, 3));
+
+    // Rank 1 is a copy: no reordering to pay for.
+    CHECK(p.estimate_permute_time_us(kBytes, 1) == Catch::Approx(2.0 * kBytes / (40.0 * 1e3)));
+
+    // And it scales with size.
+    CHECK(p.estimate_permute_time_us(2 * kBytes, 2) == Catch::Approx(2.0 * rank2));
+}
+
+TEST_CASE("DeviceProfile - permute time uses calibrated points", "[ComputeGraph][CostModel]") {
+    cg::DeviceProfile p;
+    p.mem_bandwidth_gbps        = 40.0;
+    p.kernel_launch_overhead_us = 0.0;
+    p.permute_efficiency        = {
+        {.bytes = 1024, .rank = 2, .gbps = 20.0},
+        {.bytes = 1024UL * 1024, .rank = 2, .gbps = 100.0},
+        {.bytes = 1024UL * 1024, .rank = 4, .gbps = 10.0},
+    };
+
+    // Nearest neighbour on log size within the matching rank.
+    CHECK(p.estimate_permute_gbps(2048, 2) == Catch::Approx(20.0));
+    CHECK(p.estimate_permute_gbps(2UL * 1024 * 1024, 2) == Catch::Approx(100.0));
+
+    // Rank wins over size: the rank-4 point is used even though a rank-2 point
+    // sits at exactly the requested size.
+    CHECK(p.estimate_permute_gbps(1024UL * 1024, 4) == Catch::Approx(10.0));
+
+    // A measured rate above the copy benchmark's is honored, not clamped: HPTT
+    // is threaded and mem_bandwidth_gbps comes from a single-threaded copy.
+    CHECK(p.estimate_permute_time_us(1024UL * 1024, 2) == Catch::Approx(2.0 * 1024.0 * 1024.0 / (100.0 * 1e3)));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CostModel composite
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -206,6 +252,9 @@ TEST_CASE("CostModel - save and load JSON", "[ComputeGraph][CostModel]") {
     original.cpu.peak_gflops_fp64      = 42.0;
     original.cpu.mem_bandwidth_gbps    = 99.0;
     original.cpu.gemm_efficiency       = {{.M = 64, .N = 64, .K = 64, .gflops = 30.0}, {.M = 256, .N = 256, .K = 256, .gflops = 40.0}};
+    original.cpu.permute_efficiency    = {{.bytes = 4096, .rank = 2, .gbps = 21.5}, {.bytes = 65536, .rank = 4, .gbps = 12.5}};
+    original.cpu.caches                = {{.size_bytes = 65536, .bandwidth_gbps = 118.0, .latency_ns = 0.95},
+                                          {.size_bytes = 8388608, .bandwidth_gbps = 96.0, .latency_ns = 7.0}};
     original.gpu.name                  = "Test GPU";
     original.gpu.peak_gflops_fp64      = 1000.0;
     original.gpu.device_bandwidth_gbps = 500.0;
@@ -224,6 +273,20 @@ TEST_CASE("CostModel - save and load JSON", "[ComputeGraph][CostModel]") {
     CHECK(loaded.cpu.gemm_efficiency.size() == 2);
     CHECK(loaded.gpu.name == "Test GPU");
     CHECK(loaded.gpu.peak_gflops_fp64 == Catch::Approx(1000.0));
+
+    REQUIRE(loaded.cpu.permute_efficiency.size() == 2);
+    CHECK(loaded.cpu.permute_efficiency[0].bytes == 4096);
+    CHECK(loaded.cpu.permute_efficiency[0].rank == 2);
+    CHECK(loaded.cpu.permute_efficiency[0].gbps == Catch::Approx(21.5));
+    CHECK(loaded.cpu.permute_efficiency[1].rank == 4);
+
+    // The cache array was written but never parsed, so a calibrated profile
+    // used to lose its cache data on reload.
+    REQUIRE(loaded.cpu.caches.size() == 2);
+    CHECK(loaded.cpu.caches[0].size_bytes == 65536);
+    CHECK(loaded.cpu.caches[0].bandwidth_gbps == Catch::Approx(118.0));
+    CHECK(loaded.cpu.caches[0].latency_ns == Catch::Approx(0.95));
+    CHECK(loaded.cpu.caches[1].size_bytes == 8388608);
 
     // Cleanup
     std::remove(path.c_str());

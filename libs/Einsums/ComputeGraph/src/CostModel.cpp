@@ -347,7 +347,9 @@ void write_device_profile_json(std::ostream &f, DeviceProfile const &p, std::str
     for (size_t i = 0; i < p.caches.size(); i++) {
         if (i > 0)
             f << ",";
-        f << fmt::format("\n{}    {{\"size_bytes\": {}, \"bandwidth_gbps\": {:.1f}, \"latency_ns\": {:.1f}}}", indent,
+        // Two decimals: an L1 latency is under a nanosecond, so one decimal
+        // quantizes it away.
+        f << fmt::format("\n{}    {{\"size_bytes\": {}, \"bandwidth_gbps\": {:.2f}, \"latency_ns\": {:.2f}}}", indent,
                          p.caches[i].size_bytes, p.caches[i].bandwidth_gbps, p.caches[i].latency_ns);
     }
     f << "\n" << indent << "  ],\n";
@@ -359,8 +361,59 @@ void write_device_profile_json(std::ostream &f, DeviceProfile const &p, std::str
         auto const &pt = p.gemm_efficiency[i];
         f << fmt::format("\n{}    {{\"M\": {}, \"N\": {}, \"K\": {}, \"gflops\": {:.1f}}}", indent, pt.M, pt.N, pt.K, pt.gflops);
     }
+    f << "\n" << indent << "  ],\n";
+
+    f << indent << "  \"permute_efficiency\": [";
+    for (size_t i = 0; i < p.permute_efficiency.size(); i++) {
+        if (i > 0)
+            f << ",";
+        auto const &pt = p.permute_efficiency[i];
+        f << fmt::format("\n{}    {{\"bytes\": {}, \"rank\": {}, \"gbps\": {:.1f}}}", indent, pt.bytes, pt.rank, pt.gbps);
+    }
     f << "\n" << indent << "  ]\n";
     f << indent << "}";
+}
+
+/// Call @p on_object once per `{...}` object inside the array that follows
+/// @p key. Shared by the three measured-point arrays; each of them used to
+/// carry its own copy of this scan, which is how `caches` came to be written
+/// but never read back.
+void for_each_json_object(std::string const &obj, std::string const &key, auto const &on_object) {
+    auto const key_pos = obj.find("\"" + key + "\"");
+    if (key_pos == std::string::npos) {
+        return;
+    }
+    auto const arr_start = obj.find('[', key_pos);
+    auto const arr_end   = obj.find(']', arr_start);
+    if (arr_start == std::string::npos || arr_end == std::string::npos) {
+        return;
+    }
+    std::string const arr    = obj.substr(arr_start, arr_end - arr_start + 1);
+    size_t            search = 0;
+    while (true) {
+        auto const os = arr.find('{', search);
+        if (os == std::string::npos) {
+            break;
+        }
+        auto const oe = arr.find('}', os);
+        if (oe == std::string::npos) {
+            break;
+        }
+        std::string const sub = arr.substr(os, oe - os + 1);
+        on_object([&sub](std::string const &field) -> double {
+            auto fp = sub.find("\"" + field + "\"");
+            if (fp == std::string::npos) {
+                return 0;
+            }
+            fp = sub.find(':', fp);
+            try {
+                return std::stod(sub.substr(fp + 1));
+            } catch (...) {
+                return 0;
+            }
+        });
+        search = oe + 1;
+    }
 }
 
 DeviceProfile parse_device_profile_json(std::string const &obj) {
@@ -425,46 +478,39 @@ DeviceProfile parse_device_profile_json(std::string const &obj) {
         }
     }
 
-    // Parse gemm_efficiency
-    auto ge_pos = obj.find("\"gemm_efficiency\"");
-    if (ge_pos != std::string::npos) {
-        auto arr_start = obj.find('[', ge_pos);
-        auto arr_end   = obj.find(']', arr_start);
-        if (arr_start != std::string::npos && arr_end != std::string::npos) {
-            std::string const arr    = obj.substr(arr_start, arr_end - arr_start + 1);
-            size_t            search = 0;
-            while (true) {
-                auto os = arr.find('{', search);
-                if (os == std::string::npos)
-                    break;
-                auto oe = arr.find('}', os);
-                if (oe == std::string::npos)
-                    break;
-                std::string sub = arr.substr(os, oe - os + 1);
-
-                auto get_f = [&](std::string const &k) -> double {
-                    auto fp = sub.find("\"" + k + "\"");
-                    if (fp == std::string::npos)
-                        return 0;
-                    fp = sub.find(':', fp);
-                    try {
-                        return std::stod(sub.substr(fp + 1));
-                    } catch (...) {
-                        return 0;
-                    }
-                };
-
-                GemmEfficiencyPoint pt;
-                pt.M      = static_cast<size_t>(get_f("M"));
-                pt.N      = static_cast<size_t>(get_f("N"));
-                pt.K      = static_cast<size_t>(get_f("K"));
-                pt.gflops = get_f("gflops");
-                if (pt.M > 0 && pt.gflops > 0)
-                    p.gemm_efficiency.push_back(pt);
-                search = oe + 1;
-            }
+    for_each_json_object(obj, "gemm_efficiency", [&](auto const &field) {
+        GemmEfficiencyPoint pt;
+        pt.M      = static_cast<size_t>(field("M"));
+        pt.N      = static_cast<size_t>(field("N"));
+        pt.K      = static_cast<size_t>(field("K"));
+        pt.gflops = field("gflops");
+        if (pt.M > 0 && pt.gflops > 0) {
+            p.gemm_efficiency.push_back(pt);
         }
-    }
+    });
+
+    for_each_json_object(obj, "permute_efficiency", [&](auto const &field) {
+        PermuteEfficiencyPoint pt;
+        pt.bytes = static_cast<size_t>(field("bytes"));
+        pt.rank  = static_cast<size_t>(field("rank"));
+        pt.gbps  = field("gbps");
+        if (pt.bytes > 0 && pt.gbps > 0) {
+            p.permute_efficiency.push_back(pt);
+        }
+    });
+
+    // The cache array was written but never read back, so a calibrated profile
+    // silently lost its cache sizes on reload and fell back to whatever the
+    // detector reported for the machine doing the loading.
+    for_each_json_object(obj, "caches", [&](auto const &field) {
+        CacheLevel level;
+        level.size_bytes     = static_cast<size_t>(field("size_bytes"));
+        level.bandwidth_gbps = field("bandwidth_gbps");
+        level.latency_ns     = field("latency_ns");
+        if (level.size_bytes > 0) {
+            p.caches.push_back(level);
+        }
+    });
 
     return p;
 }
