@@ -8,6 +8,7 @@
 #include <Einsums/BLASVendor/Defines.hpp>
 #include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/Config/CompilerSpecific.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
@@ -93,6 +94,22 @@ void zdirprod_kernel(size_t n, std::complex<double> alpha, std::complex<double> 
 
 namespace einsums::blas::vendor {
 
+namespace {
+
+/// Element count below which a direct product runs serially.
+///
+/// Forking a thread team costs tens of microseconds when the workers are
+/// parked, and these routines used to do it unconditionally the moment the
+/// operand reached one 64-element block: a 64-element Hadamard product paid a
+/// full fork to run a single block, measured at ~23 us against 0.1 us serial.
+/// Elementwise kernels elsewhere already gate on this same threshold, which is
+/// derived from the measured region cost (see omp_min_parallel_elements).
+size_t parallel_threshold() {
+    return ::einsums::hardware::omp_min_parallel_elements();
+}
+
+} // namespace
+
 void sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, int_t incy, float *z, int_t incz) {
     LabeledSection0();
 
@@ -102,7 +119,7 @@ void sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, 
         auto offset    = 64 * blocks;
 
         if (blocks != 0) {
-            EINSUMS_OMP_PARALLEL_FOR
+            EINSUMS_OMP_PARALLEL_FOR_IF(n >= parallel_threshold())
             for (int_t i = 0; i < blocks; i++) {
                 ::sdirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
             }
@@ -112,7 +129,7 @@ void sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, 
             ::sdirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
         }
     } else {
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())
         for (int_t i = 0; i < n; i++) {
             z[i * incz] += alpha * x[i * incx] * y[i * incy];
         }
@@ -128,7 +145,7 @@ void ddirprod(int_t n, double alpha, double const *x, int_t incx, double const *
         auto offset    = 64 * blocks;
 
         if (blocks != 0) {
-            EINSUMS_OMP_PARALLEL_FOR
+            EINSUMS_OMP_PARALLEL_FOR_IF(n >= parallel_threshold())
             for (int_t i = 0; i < blocks; i++) {
                 ::ddirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
             }
@@ -138,7 +155,7 @@ void ddirprod(int_t n, double alpha, double const *x, int_t incx, double const *
             ::ddirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
         }
     } else {
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())
         for (int_t i = 0; i < n; i++) {
             z[i * incz] += alpha * x[i * incx] * y[i * incy];
         }
@@ -155,7 +172,7 @@ void cdirprod(int_t n, std::complex<float> alpha, std::complex<float> const *x, 
         auto offset    = 64 * blocks;
 
         if (blocks != 0) {
-            EINSUMS_OMP_PARALLEL_FOR
+            EINSUMS_OMP_PARALLEL_FOR_IF(n >= parallel_threshold())
             for (int_t i = 0; i < blocks; i++) {
                 ::cdirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
             }
@@ -165,7 +182,7 @@ void cdirprod(int_t n, std::complex<float> alpha, std::complex<float> const *x, 
             ::cdirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
         }
     } else {
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())
         for (int_t i = 0; i < n; i++) {
             z[i * incz] += alpha * x[i * incx] * y[i * incy];
         }
@@ -182,7 +199,7 @@ void zdirprod(int_t n, std::complex<double> alpha, std::complex<double> const *x
         auto offset    = 64 * blocks;
 
         if (blocks != 0) {
-            EINSUMS_OMP_PARALLEL_FOR
+            EINSUMS_OMP_PARALLEL_FOR_IF(n >= parallel_threshold())
             for (int_t i = 0; i < blocks; i++) {
                 ::zdirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
             }
@@ -192,7 +209,7 @@ void zdirprod(int_t n, std::complex<double> alpha, std::complex<double> const *x
             ::zdirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
         }
     } else {
-        EINSUMS_OMP_PARALLEL_FOR_SIMD
+        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())
         for (int_t i = 0; i < n; i++) {
             z[i * incz] += alpha * x[i * incx] * y[i * incy];
         }

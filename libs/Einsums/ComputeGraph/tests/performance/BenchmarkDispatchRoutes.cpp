@@ -130,3 +130,47 @@ EINSUMS_TEST_CASE("Bench DispatchRoute: mixed typed/runtime GEMM", "[ComputeGrap
         report(fmt::format("mixed typed/runtime GEMM n={}", n), n * n * n, t);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Where the elementwise route starts paying. direct_product has a fixed setup
+// cost the generic loop does not, so below some element count the loop wins -
+// the same tradeoff PackedGemm already encodes for small outer products. This
+// measures BOTH paths in one process (the generic loop is callable directly),
+// so the crossover is a measurement rather than a guess, and it re-measures
+// itself on whatever hardware runs it.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+EINSUMS_TEST_CASE("Bench DispatchRoute: elementwise crossover", "[ComputeGraph][DispatchRoute][benchmark]") {
+    LabeledSection0();
+
+    auto parsed = einsums::compute_graph::parse_einsum_spec("ijk <- ijk ; ijk");
+    REQUIRE(parsed.has_value());
+    std::vector<std::string> const no_links;
+
+    // Three columns, because the first two differ by more than the route:
+    //   full     - cg::einsum(), which PARSES the spec string on every call
+    //   dispatch - string_einsum() on an already-parsed spec, i.e. route + kernel
+    //   generic  - the odometer loop on the same parsed spec
+    // full-minus-dispatch is the per-call parse cost; dispatch-vs-generic is the
+    // route decision on its own, which is the one a threshold should be set from.
+    fmt::println("[DispatchRoute elementwise crossover] {:>10} {:>10} {:>10} {:>10} {:>10} {:>9}", "elements", "full(us)", "dispatch",
+                 "kernel", "generic", "d-vs-g");
+    for (size_t n : {4UL, 6UL, 8UL, 12UL, 16UL, 24UL, 32UL, 48UL, 64UL}) {
+        auto A = create_random_tensor<double>(std::string("A"), n, n, n);
+        auto B = create_random_tensor<double>(std::string("B"), n, n, n);
+        auto C = create_zero_tensor<double>(std::string("C"), n, n, n);
+
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        auto t_full = time_us(
+            "full", [&]() { cg::einsum("ijk <- ijk ; ijk", &C, A, B); }, 50);
+        auto t_route = time_us(
+            "dispatch", [&]() { cgd::string_einsum(parsed.value(), 0.0, &C, 1.0, A, B); }, 50);
+        auto t_loop = time_us(
+            "generic", [&]() { cgd::generic_string_einsum(parsed.value(), no_links, 0.0, &C, 1.0, A, B); }, 50);
+        auto t_kernel = time_us(
+            "kernel", [&]() { linear_algebra::direct_product(1.0, A, B, 0.0, &C); }, 50);
+
+        fmt::println("[DispatchRoute elementwise crossover] {:>10d} {:>10.2f} {:>10.2f} {:>10.2f} {:>10.2f} {:>8.2f}x", n * n * n,
+                     t_full.avg, t_route.avg, t_kernel.avg, t_loop.avg, t_loop.avg / t_route.avg);
+    }
+}

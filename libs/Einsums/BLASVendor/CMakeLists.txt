@@ -71,6 +71,7 @@ einsums_add_module(
   DEPENDENCIES tgt::lapack
         MODULE_DEPENDENCIES Einsums_Assertion Einsums_Config Einsums_Print Einsums_Profile
                             Einsums_BLASBase Einsums_HPTT Einsums_Errors Einsums_Logging Einsums_BufferAllocator
+                            Einsums_Hardware
   CMAKE_SUBDIRS examples tests
 )
 
