@@ -186,6 +186,31 @@ def test_cse_does_not_eliminate_different_inputs():
     assert g.num_nodes() == 2
 
 
+def test_cse_does_not_merge_permutes_with_different_index_orders():
+    """Two transposes of one source differ in their index orders alone.
+
+    Regression: the descriptor comparison looked only at alpha and beta, so
+    these merged and P2 was left holding P1's values.
+    """
+    A = einsums.create_random_tensor("A", [3, 3, 3])
+
+    g = cg.Graph("cse_permute_orders")
+    P1 = g.create_zero_tensor("P1", [3, 3, 3], dtype="float64")
+    P2 = g.create_zero_tensor("P2", [3, 3, 3], dtype="float64")
+    with cg.capture(g):
+        einsums.permute("j,i,k <- i,j,k", P1, A, c_pf=0.0, a_pf=1.0)
+        einsums.permute("i,k,j <- i,j,k", P2, A, c_pf=0.0, a_pf=1.0)
+
+    modified = g.apply(_one_pass(cg.CSE()))
+    assert not modified
+
+    g.execute()
+
+    A_np = np.asarray(A)
+    assert_close(np.asarray(P1), A_np.transpose(1, 0, 2))
+    assert_close(np.asarray(P2), A_np.transpose(0, 2, 1))
+
+
 def test_cse_does_not_merge_scale_with_different_factors():
     """scale(2.0, A) and scale(3.0, A) have different OpData → no merge."""
     A = einsums.create_random_tensor("A", [3, 3])

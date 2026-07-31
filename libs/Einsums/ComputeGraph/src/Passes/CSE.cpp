@@ -29,8 +29,13 @@ bool scale_desc_equal(ScaleDescriptor const &a, ScaleDescriptor const &b) {
 }
 
 /// Check if two PermuteDescriptors are equivalent.
+///
+/// The index orders are half the operation: `C[j,i,k] = A[i,j,k]` and
+/// `C[i,k,j] = A[i,j,k]` read the same source with the same scalars and write
+/// the same shape, yet compute different transposes. Comparing only alpha and
+/// beta merged them and left the second output holding the first one's values.
 bool permute_desc_equal(PermuteDescriptor const &a, PermuteDescriptor const &b) {
-    return a.alpha == b.alpha && a.beta == b.beta;
+    return a.alpha == b.alpha && a.beta == b.beta && a.c_indices == b.c_indices && a.a_indices == b.a_indices;
 }
 
 /// Check if two BatchedGemmDescriptors are equivalent. All fields must

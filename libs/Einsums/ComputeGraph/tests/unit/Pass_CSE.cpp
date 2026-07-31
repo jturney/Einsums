@@ -277,6 +277,39 @@ TEST_CASE("CSE - does not eliminate different inputs", "[ComputeGraph][CSE]") {
     REQUIRE(graph.num_nodes() == 2);
 }
 
+TEST_CASE("CSE - does not merge permutes with different index orders", "[ComputeGraph][CSE][Permute]") {
+    // Regression: permute_desc_equal compared only alpha and beta, so two
+    // permutes of the SAME source with the same scalars but DIFFERENT index
+    // orders looked like the same computation. CSE merged them and the second
+    // transpose was never computed - its consumers read the first one's buffer.
+    // Both outputs are 3x3x3, so the failure is silent wrong values, not a
+    // shape error.
+    auto A = create_random_tensor<double>("A", 3, 3, 3);
+
+    cg::Graph graph("cse_permute_orders");
+    auto     &P1 = graph.create_zero_tensor<double, 3>("P1", 3, 3, 3);
+    auto     &P2 = graph.create_zero_tensor<double, 3>("P2", 3, 3, 3);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("j,i,k <- i,j,k", 0.0, &P1, 1.0, A);
+        cg::permute("i,k,j <- i,j,k", 0.0, &P2, 1.0, A);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    CHECK_FALSE(modified);
+
+    graph.execute();
+
+    for (size_t ii = 0; ii < 3; ii++) {
+        for (size_t jj = 0; jj < 3; jj++) {
+            for (size_t kk = 0; kk < 3; kk++) {
+                REQUIRE(std::abs(P1(jj, ii, kk) - A(ii, jj, kk)) < 1e-12);
+                REQUIRE(std::abs(P2(ii, kk, jj) - A(ii, jj, kk)) < 1e-12);
+            }
+        }
+    }
+}
+
 TEST_CASE("CSE - does not merge scale with different factors", "[ComputeGraph][CSE]") {
     auto A = create_random_tensor<double>("A", 3, 3);
 
