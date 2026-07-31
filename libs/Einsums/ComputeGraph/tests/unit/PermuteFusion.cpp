@@ -285,6 +285,46 @@ TEST_CASE("PermuteFusion: skip when permute has non-trivial alpha", "[ComputeGra
     REQUIRE(graph.num_nodes() == 2);
 }
 
+TEST_CASE("PermuteFusion: skip when a complex permute has an imaginary alpha", "[ComputeGraph][Optimizer][PermuteFusion][Complex]") {
+    // Regression: PermuteDescriptor stored alpha/beta as `double` and capture
+    // filled them with alpha.real(), so alpha = 1+3i recorded as 1.0. can_fuse
+    // then read a pure axis reorder and absorbed the permute into the einsum's
+    // subscript, silently dropping the 3i.
+    using Complex = std::complex<double>;
+    auto A        = create_random_tensor<Complex>("A", 3, 4);
+    auto B        = create_random_tensor<Complex>("B", 4, 5);
+
+    auto      A_T = create_zero_tensor<Complex>("A_T", 4, 3);
+    auto      C   = create_zero_tensor<Complex>("C", 3, 5);
+    cg::Graph graph("complex_alpha_permute");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("ji <- ij", Complex{0.0, 0.0}, &A_T, Complex{1.0, 3.0}, A);
+        cg::einsum("ji;jk->ik", &C, A_T, B);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::PermuteFusion>();
+    REQUIRE_FALSE(modified);
+    REQUIRE(pass.num_rewrites() == 0);
+    REQUIRE(graph.num_nodes() == 2);
+
+    graph.execute();
+
+    // Reference: C = ((1+3i) * A^T)^T-contracted with B, i.e. (1+3i)*(A·B).
+    auto C_ref = create_zero_tensor<Complex>("C_ref", 3, 5);
+    {
+        cg::Graph              g("ref_complex");
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ij;jk->ik", 0.0, &C_ref, Complex{1.0, 3.0}, A, B);
+        g.execute();
+    }
+    for (size_t ii = 0; ii < 3; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(C(ii, jj) - C_ref(ii, jj)) < kTol);
+        }
+    }
+}
+
 TEST_CASE("PermuteFusion: skip when permute accumulates (non-zero beta)", "[ComputeGraph][Optimizer][PermuteFusion]") {
     auto A = create_random_tensor<double>("A", 3, 4);
     auto B = create_random_tensor<double>("B", 4, 5);

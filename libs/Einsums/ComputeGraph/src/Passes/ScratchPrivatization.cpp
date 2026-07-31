@@ -121,9 +121,12 @@ void rebuild_node(Graph &graph, Node &nd, TensorId old_id, TensorId new_id) {
         pspec.a_indices = d->a_indices;
         pspec.raw       = fmt::format("{} <- {}", fmt::join(d->c_indices, ","), fmt::join(d->a_indices, ","));
 
-        double const alpha = d->alpha;
-        double const beta  = d->beta;
-        auto const   dtype = graph.tensor(c).dtype;
+        // PrefactorScalar, not the raw complex<double>: `as<T>` narrows to the
+        // element type exactly and throws rather than silently dropping a
+        // non-zero imaginary part into a real permute.
+        PrefactorScalar const alpha{d->alpha};
+        PrefactorScalar const beta{d->beta};
+        auto const            dtype = graph.tensor(c).dtype;
 
         Graph *g   = &graph;
         nd.execute = [g, a, c, pspec = std::move(pspec), alpha, beta, dtype]() {
@@ -131,7 +134,7 @@ void rebuild_node(Graph &graph, Node &nd, TensorId old_id, TensorId new_id) {
                 using Impl = ::einsums::detail::TensorImpl<T>;
                 RuntimeTensorView<T> const A{*static_cast<Impl *>(g->tensor(a).impl_fn())};
                 RuntimeTensorView<T>       C{*static_cast<Impl *>(g->tensor(c).impl_fn())};
-                dispatch::string_permute(pspec, static_cast<T>(beta), &C, static_cast<T>(alpha), A);
+                dispatch::string_permute(pspec, as<T>(beta), &C, as<T>(alpha), A);
             });
         };
         nd.inputs  = {a};

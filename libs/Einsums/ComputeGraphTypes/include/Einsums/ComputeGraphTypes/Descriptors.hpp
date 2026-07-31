@@ -44,12 +44,19 @@ struct ScaleDescriptor {
  * @brief Metadata for Permute nodes.
  *
  * Stores the alpha/beta prefactors: C = beta * C + alpha * permute(A).
+ *
+ * The scalars are @c std::complex<double> (the tier's widest concrete scalar,
+ * as in @ref BatchedGemmDescriptor) so a complex permute records exactly what
+ * its executor will apply. They were @c double, filled from @c alpha.real() at
+ * capture, which made `alpha = 1+3i` read back as a plain `1.0`: PermuteFusion
+ * saw a pure axis reorder and fused the permute away, dropping the imaginary
+ * part, and CSE merged permutes that differ only in it.
  */
 struct PermuteDescriptor {
-    double                   alpha{1.0}; ///< Prefactor for the source tensor
-    double                   beta{0.0};  ///< Prefactor for the destination tensor (0 = overwrite)
-    std::vector<std::string> c_indices;  ///< Output index names (e.g., {"j","i"})
-    std::vector<std::string> a_indices;  ///< Input index names (e.g., {"i","j"})
+    std::complex<double>     alpha{1.0, 0.0}; ///< Prefactor for the source tensor
+    std::complex<double>     beta{0.0, 0.0};  ///< Prefactor for the destination tensor (0 = overwrite)
+    std::vector<std::string> c_indices;       ///< Output index names (e.g., {"j","i"})
+    std::vector<std::string> a_indices;       ///< Input index names (e.g., {"i","j"})
 };
 
 /**

@@ -310,6 +310,35 @@ TEST_CASE("CSE - does not merge permutes with different index orders", "[Compute
     }
 }
 
+TEST_CASE("CSE - does not merge permutes differing only in the imaginary prefactor", "[ComputeGraph][CSE][Permute][Complex]") {
+    // Companion to the index-order case: PermuteDescriptor recorded alpha as a
+    // `double` taken from alpha.real(), so 1+3i and 1-3i both stored as 1.0 and
+    // these two permutes compared equal.
+    using Complex = std::complex<double>;
+    auto A        = create_random_tensor<Complex>("A", 3, 3);
+
+    cg::Graph graph("cse_permute_complex_alpha");
+    auto     &P1 = graph.create_zero_tensor<Complex, 2>("P1", 3, 3);
+    auto     &P2 = graph.create_zero_tensor<Complex, 2>("P2", 3, 3);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("ji <- ij", Complex{0.0, 0.0}, &P1, Complex{1.0, 3.0}, A);
+        cg::permute("ji <- ij", Complex{0.0, 0.0}, &P2, Complex{1.0, -3.0}, A);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    CHECK_FALSE(modified);
+
+    graph.execute();
+
+    for (size_t ii = 0; ii < 3; ii++) {
+        for (size_t jj = 0; jj < 3; jj++) {
+            REQUIRE(std::abs(P1(jj, ii) - Complex{1.0, 3.0} * A(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(P2(jj, ii) - Complex{1.0, -3.0} * A(ii, jj)) < 1e-12);
+        }
+    }
+}
+
 TEST_CASE("CSE - does not merge scale with different factors", "[ComputeGraph][CSE]") {
     auto A = create_random_tensor<double>("A", 3, 3);
 

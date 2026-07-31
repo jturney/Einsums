@@ -467,11 +467,11 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
 
         PermuteDescriptor desc;
         if constexpr (IsComplexV<T>) {
-            desc.alpha = static_cast<double>(alpha.real());
-            desc.beta  = static_cast<double>(beta.real());
+            desc.alpha = std::complex<double>{static_cast<double>(alpha.real()), static_cast<double>(alpha.imag())};
+            desc.beta  = std::complex<double>{static_cast<double>(beta.real()), static_cast<double>(beta.imag())};
         } else {
-            desc.alpha = static_cast<double>(alpha);
-            desc.beta  = static_cast<double>(beta);
+            desc.alpha = std::complex<double>{static_cast<double>(alpha), 0.0};
+            desc.beta  = std::complex<double>{static_cast<double>(beta), 0.0};
         }
         desc.c_indices = parsed.c_indices;
         desc.a_indices = parsed.a_indices;

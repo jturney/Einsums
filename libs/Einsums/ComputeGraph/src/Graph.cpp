@@ -2443,8 +2443,9 @@ std::string Graph::to_json() const {
         } else if (auto const *desc = std::get_if<ScaleDescriptor>(&node.op_data)) {
             nd.scale_factor = desc->factor;
         } else if (auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data)) {
-            nd.alpha     = desc->alpha;
-            nd.beta      = desc->beta;
+            // Same viewer-facing projection as the einsum prefactors above.
+            nd.alpha     = desc->alpha.real();
+            nd.beta      = desc->beta.real();
             nd.c_indices = fmt::format("{}", fmt::join(desc->c_indices, ","));
             nd.a_indices = fmt::format("{}", fmt::join(desc->a_indices, ","));
         }
