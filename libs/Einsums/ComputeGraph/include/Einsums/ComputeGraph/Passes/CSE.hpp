@@ -10,15 +10,31 @@
 namespace einsums::compute_graph::passes {
 
 /**
- * @brief Common Subexpression Elimination (CSE): merges two nodes that compute the same value and redirects readers of the
- *        duplicate onto the survivor's output.
+ * @brief Common Subexpression Elimination (CSE): merges two nodes that compute the same value -- or one that is a fixed multiple
+ *        of the other -- and redirects readers of the duplicate onto the survivor's output.
  *
- * Detects pairs of nodes with identical OpKind, identical input TensorIds (in order), identical OpData
- * (EinsumDescriptor / ScaleDescriptor / PermuteDescriptor / BatchedGemmDescriptor prefactors, index patterns, conj flags), and
- * the same number of outputs. The later duplicate is deleted; every downstream reader of its output is redirected -- in both the
- * TensorId metadata (so liveness passes see the survivor's buffer as live) and via `Graph::redirect_slot` (so any already-baked
- * executor lambda reads the survivor's result at execute time). Redirections propagate through all remaining nodes' input lists,
- * so multi-level CSE resolves in a single pass.
+ * Detects pairs of nodes with identical OpKind, identical input TensorIds (in order), the same number of outputs, and OpData
+ * (EinsumDescriptor / AxpbyDescriptor / ScaleDescriptor / PermuteDescriptor / BatchedGemmDescriptor) that agrees on index
+ * patterns, conj flags, and the destination prefactor. The later duplicate is deleted; every downstream reader of its output is
+ * redirected -- in both the TensorId metadata (so liveness passes see the survivor's buffer as live) and via
+ * `Graph::redirect_slot` (so any already-baked executor lambda reads the survivor's result at execute time). Redirections
+ * propagate through all remaining nodes' input lists, so multi-level CSE resolves in a single pass.
+ *
+ * @par Proportional duplicates
+ * The two nodes need not agree on the SOURCE prefactor, the one their result is linear in (einsum's `ab_prefactor`, axpby's
+ * `alpha`, permute's and batched-gemm's `alpha`). When they differ by a factor `r` that is an exact power of two -- so `(r*x)*y`
+ * and `x*(r*y)` agree bit for bit and no arithmetic changes -- the duplicate is eliminated and `r` is multiplied into every
+ * reader's own prefactor instead. CCSD's tau and tau-tilde are the motivating shape: the same `t1 x t1` outer product differing
+ * only by a 0.5. Ratios that are exactly representable but not powers of two are declined, so the result never depends on which
+ * of two proportional nodes the pass happened to keep.
+ *
+ * @par Example (proportional)
+ * @code
+ * cg::einsum("ij <- ik ; kj", 0.0, &P, 1.0, A, B);      // survivor
+ * cg::einsum("ij <- ik ; kj", 0.0, &Q, 0.5, A, B);      // Q == 0.5 * P
+ * cg::einsum("ij <- ik ; kj", 0.0, &out, 1.0, Q, F);    // reader of the duplicate
+ * // After CSE: Q's producer is gone and the reader's ab_prefactor is 0.5.
+ * @endcode
  *
  * In the default pipeline (populate_default; also the O1 cleanup cluster in PassManager::create_for). Runs after PermuteFusion so
  * duplicate permute->einsum patterns collapse into the same fused node first, and before DeadNodeElimination so the now-dead
@@ -51,9 +67,9 @@ namespace einsums::compute_graph::passes {
  * @endcode
  *
  * @par Limitations
- * - Only **pure-overwrite** producers are eligible: einsum with `c_prefactor == 0`, permute with `beta == 0`, or batched-gemm
- *   with `beta == 0`. Accumulating ops (nonzero destination prefactor) and scale/axpy/axpby/element-transform (whose scalar
- *   coefficients are not carried in `op_data`, so equality can't be decided) are never merged.
+ * - Only **pure-overwrite** producers are eligible: einsum with `c_prefactor == 0`, axpby / permute / batched-gemm with
+ *   `beta == 0`. Accumulating ops (nonzero destination prefactor) and scale/axpy/element-transform (whose scalar coefficients
+ *   are not carried in `op_data`, so equality can't be decided) are never merged.
  * - The duplicate's outputs must be graph-owned intermediates that are **not** views (`is_intermediate && aliases == 0`); a
  *   user-visible output is left in place because the user reads that tensor directly, not through an executor slot.
  * - Every merged output buffer must have **exactly one writer** in the whole graph (Guard B), and the shared inputs must not be
@@ -63,10 +79,15 @@ namespace einsums::compute_graph::passes {
  *   this graph's slot table, so a body reading the eliminated duplicate's output would read a never-written buffer.
  * - Opt-out of PassManager auto-recursion (`recurse_into_subgraphs() == false`): never runs on loop bodies / conditional
  *   branches, because redirecting a duplicate whose output is later written independently is unsound (the SCF-body case).
+ * - A proportional (`r != 1`) merge additionally needs EVERY reader of the duplicate's output to absorb `r` (Guard E): an einsum
+ *   or axpby reading it as exactly one operand through live shared params. permute and batched-gemm bake their scalars into the
+ *   executor closure, so a reader of either blocks the merge.
  * - Matching is an O(n^2) pairwise scan over the node list.
  *
  * @par Future improvements
- * - Fold user-visible duplicates behind an inserted copy node instead of skipping them (see Guard C).
+ * - Fold user-visible duplicates, and proportional duplicates whose readers cannot absorb the factor, behind an inserted scaled
+ *   copy of the survivor. A copy is two sweeps over the result while an outer product is barely more than one, so this needs a
+ *   cost model to decide (CostModel's permute/bandwidth estimate, roadmap 3.3) rather than always being a win.
  * - Add a write-once precondition on the merged output so CSE can safely recurse into loop bodies / conditional branches.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT CSE : public OptimizerPass {

@@ -38,6 +38,21 @@ namespace einsums::compute_graph::passes {
 }
 
 /**
+ * @brief ``pf * a``, preserving the PrefactorScalar's element type.
+ *
+ * Shared by the passes that push a real scalar into an existing prefactor
+ * (ScaleAbsorption's operand fold, CSE's proportional-duplicate merge).
+ */
+[[nodiscard]] inline PrefactorScalar scale_prefactor(PrefactorScalar const &pf, double a) {
+    return std::visit(
+        [a](auto x) -> PrefactorScalar {
+            using T = decltype(x);
+            return PrefactorScalar{x * static_cast<T>(a)};
+        },
+        pf);
+}
+
+/**
  * @brief True when @p nd overwrites its destination without reading it.
  *
  * A prefactor-bearing op (Einsum/Permute/BatchedGemm) whose destination

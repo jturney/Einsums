@@ -381,6 +381,149 @@ TEST_CASE("CSE - does not merge permutes differing only in the imaginary prefact
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Proportional duplicates: same computation up to one real scalar
+// ═══════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("CSE - merges a proportional duplicate and folds the factor into its readers", "[ComputeGraph][CSE][Prefactor]") {
+    auto A    = create_random_tensor<double>("A", 4, 3);
+    auto B    = create_random_tensor<double>("B", 3, 5);
+    auto F    = create_random_tensor<double>("F", 5, 2);
+    auto out1 = create_zero_tensor<double>("out1", 4, 2);
+    auto out2 = create_zero_tensor<double>("out2", 4, 2);
+
+    cg::Graph graph("cse_proportional");
+    auto     &P = graph.create_zero_tensor<double, 2>("P", 4, 5); // survivor
+    auto     &Q = graph.create_zero_tensor<double, 2>("Q", 4, 5); // 0.5 * P
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &P, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &Q, 0.5, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &out1, 1.0, P, F);
+        cg::einsum("ik;kj->ij", 0.0, &out2, 1.0, Q, F);
+    }
+
+    size_t const n_before = graph.num_nodes();
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    REQUIRE(modified);
+    REQUIRE(graph.num_nodes() == n_before - 1); // Q's producer is gone
+
+    graph.execute();
+
+    auto AB = create_zero_tensor<double>("AB", 4, 5);
+    tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
+    auto ref = create_zero_tensor<double>("ref", 4, 2);
+    tensor_algebra::einsum(Indices{i, j}, &ref, Indices{i, k}, AB, Indices{k, j}, F);
+
+    double max_abs = 0.0;
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 2; jj++) {
+            max_abs = std::max(max_abs, std::abs(ref(ii, jj)));
+            REQUIRE(std::abs(out1(ii, jj) - ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(out2(ii, jj) - 0.5 * ref(ii, jj)) < 1e-12);
+        }
+    }
+    REQUIRE(max_abs > 1e-10);
+}
+
+TEST_CASE("CSE - declines a ratio that is not an exact power of two", "[ComputeGraph][CSE][Prefactor]") {
+    // 3x is exactly representable, but folding it would make the result depend
+    // on which of the two proportional nodes the pass kept.
+    auto A    = create_random_tensor<double>("A", 4, 3);
+    auto B    = create_random_tensor<double>("B", 3, 5);
+    auto F    = create_random_tensor<double>("F", 5, 2);
+    auto out2 = create_zero_tensor<double>("out2", 4, 2);
+
+    cg::Graph graph("cse_odd_ratio");
+    auto     &P = graph.create_zero_tensor<double, 2>("P", 4, 5);
+    auto     &Q = graph.create_zero_tensor<double, 2>("Q", 4, 5);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &P, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &Q, 3.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &out2, 1.0, Q, F);
+    }
+
+    size_t const n_before = graph.num_nodes();
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    CHECK_FALSE(modified);
+    CHECK(graph.num_nodes() == n_before);
+}
+
+TEST_CASE("CSE - declines a proportional duplicate whose reader cannot take the factor", "[ComputeGraph][CSE][Prefactor]") {
+    // A permute bakes its prefactor into the executor closure, so there is
+    // nowhere to put the factor; the duplicate has to stay.
+    auto A  = create_random_tensor<double>("A", 4, 3);
+    auto B  = create_random_tensor<double>("B", 3, 5);
+    auto QT = create_zero_tensor<double>("QT", 5, 4);
+
+    cg::Graph graph("cse_unfoldable_reader");
+    auto     &P = graph.create_zero_tensor<double, 2>("P", 4, 5);
+    auto     &Q = graph.create_zero_tensor<double, 2>("Q", 4, 5);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &P, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &Q, 0.5, A, B);
+        cg::permute("ji <- ij", 0.0, &QT, 1.0, Q);
+    }
+
+    size_t const n_before = graph.num_nodes();
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    CHECK_FALSE(modified);
+    CHECK(graph.num_nodes() == n_before);
+
+    graph.execute();
+
+    auto AB = create_zero_tensor<double>("AB", 4, 5);
+    tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(QT(jj, ii) - 0.5 * AB(ii, jj)) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("CSE - merges proportional axpby copies", "[ComputeGraph][CSE][Prefactor][Axpby]") {
+    // Axpby had no arm in the descriptor comparison at all, so even identical
+    // pure-overwrite copies never merged. `Y = alpha*X` is linear in alpha, so
+    // the proportional case works the same way as einsum's.
+    auto X    = create_random_tensor<double>("X", 4, 5);
+    auto G    = create_random_tensor<double>("G", 5, 2);
+    auto out1 = create_zero_tensor<double>("out1", 4, 2);
+    auto out2 = create_zero_tensor<double>("out2", 4, 2);
+
+    cg::Graph graph("cse_axpby_proportional");
+    auto     &Y1 = graph.create_zero_tensor<double, 2>("Y1", 4, 5);
+    auto     &Y2 = graph.create_zero_tensor<double, 2>("Y2", 4, 5);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpby(2.0, X, 0.0, &Y1);
+        cg::axpby(1.0, X, 0.0, &Y2); // 0.5 * Y1
+        cg::einsum("ik;kj->ij", 0.0, &out1, 1.0, Y1, G);
+        cg::einsum("ik;kj->ij", 0.0, &out2, 1.0, Y2, G);
+    }
+
+    size_t const n_before = graph.num_nodes();
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    REQUIRE(modified);
+    REQUIRE(graph.num_nodes() == n_before - 1);
+
+    graph.execute();
+
+    auto ref = create_zero_tensor<double>("ref", 4, 2);
+    tensor_algebra::einsum(Indices{i, j}, &ref, Indices{i, k}, X, Indices{k, j}, G);
+
+    double max_abs = 0.0;
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 2; jj++) {
+            max_abs = std::max(max_abs, std::abs(ref(ii, jj)));
+            REQUIRE(std::abs(out1(ii, jj) - 2.0 * ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(out2(ii, jj) - ref(ii, jj)) < 1e-12);
+        }
+    }
+    REQUIRE(max_abs > 1e-10);
+}
+
 TEST_CASE("CSE - does not merge scale with different factors", "[ComputeGraph][CSE]") {
     auto A = create_random_tensor<double>("A", 3, 3);
 

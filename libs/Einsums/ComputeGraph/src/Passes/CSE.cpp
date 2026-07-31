@@ -9,6 +9,9 @@
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Logging.hpp>
 
+#include <algorithm>
+#include <cmath>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -17,79 +20,221 @@ namespace einsums::compute_graph::passes {
 
 namespace {
 
-/// Check if two EinsumDescriptors are equivalent.
-bool einsum_desc_equal(EinsumDescriptor const &a, EinsumDescriptor const &b) {
-    return a.spec == b.spec && a.c_prefactor == b.c_prefactor && a.ab_prefactor == b.ab_prefactor && a.conj_a == b.conj_a &&
-           a.conj_b == b.conj_b;
-}
+// ── Live scalar accessors ───────────────────────────────────────────────────
+//
+// A node's descriptor holds an at-capture snapshot beside a shared handle to
+// the state its executor actually reads. A pass that folded a scale wrote
+// through the handle, so comparing snapshots can disagree with what the next
+// execute() will do. Read the live value where there is one.
 
-/// Check if two ScaleDescriptors are equivalent.
-bool scale_desc_equal(ScaleDescriptor const &a, ScaleDescriptor const &b) {
-    return a.factor == b.factor;
+PrefactorScalar const &live_ab_prefactor(EinsumDescriptor const &d) {
+    return d.params ? d.params->ab_pf : d.ab_prefactor;
 }
-
-/// Check if two PermuteDescriptors are equivalent.
+PrefactorScalar const &live_c_prefactor(EinsumDescriptor const &d) {
+    return d.params ? d.params->c_pf : d.c_prefactor;
+}
+bool live_conj_a(EinsumDescriptor const &d) {
+    return d.params ? d.params->conj_a : d.conj_a;
+}
+bool live_conj_b(EinsumDescriptor const &d) {
+    return d.params ? d.params->conj_b : d.conj_b;
+}
+/// Do two einsum descriptors describe the same contraction topology?
 ///
-/// The index orders are half the operation: `C[j,i,k] = A[i,j,k]` and
-/// `C[i,k,j] = A[i,j,k]` read the same source with the same scalars and write
-/// the same shape, yet compute different transposes. Comparing only alpha and
-/// beta merged them and left the second output holding the first one's values.
-bool permute_desc_equal(PermuteDescriptor const &a, PermuteDescriptor const &b) {
-    return a.alpha == b.alpha && a.beta == b.beta && a.c_indices == b.c_indices && a.a_indices == b.a_indices;
+/// Checks the at-capture ContractionSpec snapshot AND the live ParsedEinsumSpec
+/// index lists the executor reads. An index rewriter (PermuteFusion) is
+/// required to update both; comparing both means one that updated only one
+/// cannot make two different contractions look alike here.
+bool einsum_indices_equal(EinsumDescriptor const &a, EinsumDescriptor const &b) {
+    if (!(a.spec == b.spec)) {
+        return false;
+    }
+    if ((a.indices == nullptr) != (b.indices == nullptr)) {
+        return false;
+    }
+    if (a.indices == nullptr) {
+        return true;
+    }
+    auto const &sa = a.indices->spec;
+    auto const &sb = b.indices->spec;
+    return sa.c_indices == sb.c_indices && sa.a_indices == sb.a_indices && sa.b_indices == sb.b_indices && sa.conj_a == sb.conj_a &&
+           sa.conj_b == sb.conj_b;
+}
+PrefactorScalar const &live_alpha(AxpbyDescriptor const &d) {
+    return d.params ? d.params->alpha : d.alpha;
+}
+PrefactorScalar const &live_beta(AxpbyDescriptor const &d) {
+    return d.params ? d.params->beta : d.beta;
 }
 
-/// Check if two BatchedGemmDescriptors are equivalent. All fields must
-/// match: including the strided flag and its per-operand batch strides,
-/// since pointer-array and strided batches have different executor
-/// semantics even when the BLAS key looks identical.
-bool batched_gemm_desc_equal(BatchedGemmDescriptor const &a, BatchedGemmDescriptor const &b) {
+// ── Proportional matching ───────────────────────────────────────────────────
+
+/// Whether @p v is exactly a power of two, sign included.
+///
+/// Scaling by such a value only shifts an exponent, so `(r*x)*y` and `x*(r*y)`
+/// agree bit for bit. That is what lets the factor move off a producer and onto
+/// its readers without changing any arithmetic. Ratios that are exactly
+/// representable but not powers of two are declined: they would make the result
+/// depend on which of two proportional nodes the pass happened to keep, a bad
+/// property for a pass that runs by default. (DistributiveFactoring restricts
+/// its own ratios the same way, for the related reason that its factor has to
+/// distribute exactly over an assembled sum.)
+bool is_exact_power_of_two(double v) {
+    if (!std::isfinite(v) || v == 0.0) {
+        return false;
+    }
+    int          exp = 0;
+    double const m   = std::frexp(v, &exp);
+    return m == 0.5 || m == -0.5;
+}
+
+/// The r with `b == r * a`, when there is one that scales exactly.
+/// r == 1 is the ordinary identical case and falls out of the same test.
+std::optional<double> exact_ratio(double a, double b) {
+    if (a == b) {
+        return 1.0;
+    }
+    if (a == 0.0) {
+        return std::nullopt;
+    }
+    double const r = b / a;
+    if (!is_exact_power_of_two(r) || a * r != b) {
+        return std::nullopt;
+    }
+    return r;
+}
+
+/// Same, for type-erased prefactors. Identical values match whatever their
+/// alternative; a real ratio is only sought between two real-valued scalars,
+/// so a complex pair still merges when it is an exact duplicate.
+std::optional<double> exact_ratio(PrefactorScalar const &a, PrefactorScalar const &b) {
+    if (a == b) {
+        return 1.0;
+    }
+    if (!is_real_valued(a) || !is_real_valued(b)) {
+        return std::nullopt;
+    }
+    return exact_ratio(as_real<double>(a), as_real<double>(b));
+}
+
+std::optional<double> exact_ratio(std::complex<double> a, std::complex<double> b) {
+    if (a == b) {
+        return 1.0;
+    }
+    if (a.imag() != 0.0 || b.imag() != 0.0) {
+        return std::nullopt;
+    }
+    return exact_ratio(a.real(), b.real());
+}
+
+/// Every BatchedGemm field except the source prefactor. The strided flag and
+/// its per-operand batch strides are part of the identity: pointer-array and
+/// strided batches have different executor semantics even when the BLAS key
+/// looks identical.
+bool batched_gemm_shape_equal(BatchedGemmDescriptor const &a, BatchedGemmDescriptor const &b) {
     return a.m == b.m && a.n == b.n && a.k == b.k && a.lda == b.lda && a.ldb == b.ldb && a.ldc == b.ldc && a.trans_a == b.trans_a &&
-           a.trans_b == b.trans_b && a.alpha == b.alpha && a.beta == b.beta && a.batch_count == b.batch_count && a.scalar == b.scalar &&
-           a.strided == b.strided && a.batch_stride_a == b.batch_stride_a && a.batch_stride_b == b.batch_stride_b &&
-           a.batch_stride_c == b.batch_stride_c;
+           a.trans_b == b.trans_b && a.beta == b.beta && a.batch_count == b.batch_count && a.scalar == b.scalar && a.strided == b.strided &&
+           a.batch_stride_a == b.batch_stride_a && a.batch_stride_b == b.batch_stride_b && a.batch_stride_c == b.batch_stride_c;
 }
 
-/// Check if two OpData variants are equivalent.
-bool op_data_equal(OpData const &a, OpData const &b) {
-    if (a.index() != b.index())
-        return false;
-
-    if (auto *ea = std::get_if<EinsumDescriptor>(&a)) {
-        return einsum_desc_equal(*ea, std::get<EinsumDescriptor>(b));
-    }
-    if (auto *sa = std::get_if<ScaleDescriptor>(&a)) {
-        return scale_desc_equal(*sa, std::get<ScaleDescriptor>(b));
-    }
-    if (auto *pa = std::get_if<PermuteDescriptor>(&a)) {
-        return permute_desc_equal(*pa, std::get<PermuteDescriptor>(b));
-    }
-    if (auto *ba = std::get_if<BatchedGemmDescriptor>(&a)) {
-        return batched_gemm_desc_equal(*ba, std::get<BatchedGemmDescriptor>(b));
-    }
-    // monostate or unknown, only equal if both monostate
-    return std::holds_alternative<std::monostate>(a) && std::holds_alternative<std::monostate>(b);
-}
-
-/// Whether a node may participate in CSE at all.
+/// The factor r for which node @p b computes `r` times what node @p a computes,
+/// or null when they are not the same computation up to a real scalar.
 ///
-/// CSE eliminates a duplicate node by redirecting readers of its output onto
-/// another node's output. That is only valid for a *pure overwrite* producer:
-/// the output must be a function of the inputs alone, never read back. Ops that
-/// accumulate into or otherwise read their destination, axpby/axpy/scale/
-/// element-transform (monostate op_data here), or an einsum/permute/batched
-/// gemm with a nonzero destination prefactor, are excluded. Two such nodes
-/// writing different buffers are not the same computation (they read different
-/// destinations), and their scalar coefficients may not even be represented in
-/// op_data, so op_data_equal cannot tell them apart.
-/// Check if two nodes compute the same thing.
-bool nodes_equivalent(Node const &a, Node const &b) {
-    if (a.kind != b.kind)
+/// Everything except the one prefactor the result is linear in must match
+/// exactly, the DESTINATION prefactor included: the caller checks
+/// @ref pure_overwrite on the survivor alone, which only covers the duplicate
+/// because the pair is required to agree there.
+///
+/// Descriptor kinds with no arm here (monostate, the tiled and view
+/// descriptors, control flow) never match. Those nodes are not pure-overwrite
+/// producers either, so this only restates the caller's gate.
+std::optional<double> op_data_ratio(OpData const &a, OpData const &b) {
+    if (a.index() != b.index()) {
+        return std::nullopt;
+    }
+
+    if (auto const *ea = std::get_if<EinsumDescriptor>(&a)) {
+        auto const &eb = std::get<EinsumDescriptor>(b);
+        if (!(einsum_indices_equal(*ea, eb) && live_c_prefactor(*ea) == live_c_prefactor(eb) && live_conj_a(*ea) == live_conj_a(eb) &&
+              live_conj_b(*ea) == live_conj_b(eb))) {
+            return std::nullopt;
+        }
+        return exact_ratio(live_ab_prefactor(*ea), live_ab_prefactor(eb));
+    }
+    if (auto const *aa = std::get_if<AxpbyDescriptor>(&a)) {
+        auto const &ab = std::get<AxpbyDescriptor>(b);
+        if (live_beta(*aa) != live_beta(ab)) {
+            return std::nullopt;
+        }
+        return exact_ratio(live_alpha(*aa), live_alpha(ab));
+    }
+    if (auto const *pa = std::get_if<PermuteDescriptor>(&a)) {
+        auto const &pb = std::get<PermuteDescriptor>(b);
+        // The index orders are half the operation: `C[j,i,k] = A[i,j,k]` and
+        // `C[i,k,j] = A[i,j,k]` read the same source with the same scalars and
+        // write the same shape, yet compute different transposes.
+        if (!(pa->beta == pb.beta && pa->c_indices == pb.c_indices && pa->a_indices == pb.a_indices)) {
+            return std::nullopt;
+        }
+        return exact_ratio(pa->alpha, pb.alpha);
+    }
+    if (auto const *ba = std::get_if<BatchedGemmDescriptor>(&a)) {
+        auto const &bb = std::get<BatchedGemmDescriptor>(b);
+        if (!batched_gemm_shape_equal(*ba, bb)) {
+            return std::nullopt;
+        }
+        return exact_ratio(ba->alpha, bb.alpha);
+    }
+    if (auto const *sa = std::get_if<ScaleDescriptor>(&a)) {
+        // In place, so never a pure-overwrite producer and never reached; the
+        // exact comparison is kept so the variant is covered explicitly.
+        return sa->factor == std::get<ScaleDescriptor>(b).factor ? std::optional<double>{1.0} : std::nullopt;
+    }
+    return std::nullopt;
+}
+
+// ── Moving the factor onto the readers ──────────────────────────────────────
+
+/// Can @p nd absorb a real scalar into its read of @p tensor?
+///
+/// Only ops whose executor takes the factor from LIVE shared params qualify: an
+/// einsum's ab_pf and an axpby's alpha. Permute and BatchedGemm bake their
+/// scalars into the executor closure, so editing their descriptor would leave
+/// the closure applying the old value - the same rule ScaleAbsorption follows.
+///
+/// The tensor must be exactly one operand and must not be the destination:
+/// reading it twice would need r squared, and a destination read is an
+/// accumulation the factor does not distribute over.
+bool foldable_reader(Node const &nd, TensorId tensor) {
+    if (std::ranges::find(nd.outputs, tensor) != nd.outputs.end()) {
         return false;
-    if (a.inputs != b.inputs)
+    }
+    if (std::ranges::count(nd.inputs, tensor) != 1) {
         return false;
-    if (a.outputs.size() != b.outputs.size())
-        return false;
-    return op_data_equal(a.op_data, b.op_data);
+    }
+    if (nd.kind == OpKind::Einsum) {
+        auto const *d = std::get_if<EinsumDescriptor>(&nd.op_data);
+        return d != nullptr && d->params != nullptr;
+    }
+    if (nd.kind == OpKind::Axpby) {
+        auto const *d = std::get_if<AxpbyDescriptor>(&nd.op_data);
+        return d != nullptr && d->params != nullptr;
+    }
+    return false;
+}
+
+/// Multiply @p nd's read of its operand by @p r. Caller guarantees
+/// @ref foldable_reader. Writes the live params the executor reads and the
+/// snapshot beside them, so later analysis sees the same value.
+void fold_reader(Node &nd, double r) {
+    if (auto *d = std::get_if<EinsumDescriptor>(&nd.op_data)) {
+        d->params->ab_pf = scale_prefactor(d->params->ab_pf, r);
+        d->ab_prefactor  = d->params->ab_pf;
+        return;
+    }
+    auto *d          = std::get_if<AxpbyDescriptor>(&nd.op_data);
+    d->params->alpha = scale_prefactor(d->params->alpha, r);
+    d->alpha         = d->params->alpha;
 }
 
 } // namespace
@@ -186,7 +331,10 @@ bool CSE::run(Graph &graph) {
                 continue;
             if (nodes[i].outputs.size() != nodes[j].outputs.size())
                 continue;
-            if (!op_data_equal(nodes[i].op_data, nodes[j].op_data))
+            // The two nodes must compute the same thing up to one real scalar;
+            // `ratio` is 1 for an outright duplicate.
+            auto const ratio = op_data_ratio(nodes[i].op_data, nodes[j].op_data);
+            if (!ratio)
                 continue;
 
             // Guard C: the duplicate's outputs must be graph-owned
@@ -274,6 +422,39 @@ bool CSE::run(Graph &graph) {
             if (!inputs_stable)
                 continue;
 
+            // Guard E, proportional duplicates only: node j's value is `r` times
+            // node i's, so handing its readers node i's buffer also has to
+            // multiply `r` into each of them. Every reader must be able to take
+            // the factor, and the pair must have the single output the factor
+            // attaches to. (A reader that cannot take it could instead be fed a
+            // scaled copy of the survivor, but a copy is two sweeps over the
+            // result and an outer product is barely more than one, so that trade
+            // needs a cost model - see the note in the header.)
+            std::vector<size_t> folds;
+            if (*ratio != 1.0) {
+                if (nodes[j].outputs.size() != 1)
+                    continue;
+                TensorId const dup_out      = nodes[j].outputs[0];
+                bool           all_foldable = true;
+                for (size_t k = 0; k < nodes.size(); k++) {
+                    if (k == j || remove[k] || is_lifecycle(nodes[k].kind))
+                        continue;
+                    if (std::ranges::find(nodes[k].inputs, dup_out) == nodes[k].inputs.end())
+                        continue;
+                    if (!foldable_reader(nodes[k], dup_out)) {
+                        all_foldable = false;
+                        break;
+                    }
+                    folds.push_back(k);
+                }
+                if (!all_foldable)
+                    continue;
+            }
+
+            for (size_t const k : folds) {
+                fold_reader(nodes[k], *ratio);
+            }
+
             // Equivalent! Redirect j's outputs to i's outputs.
             //
             // Two redirects are needed, for two different consumers:
@@ -297,8 +478,15 @@ bool CSE::run(Graph &graph) {
             remove[j] = true;
             modified  = true;
 
-            EINSUMS_LOG_INFO("CSE: eliminated node {} (duplicate of node {})", nodes[j].id, nodes[i].id);
-            report(2, fmt::format("eliminate node {} '{}' — duplicate of node {}", nodes[j].id, nodes[j].label, nodes[i].id));
+            if (*ratio == 1.0) {
+                EINSUMS_LOG_INFO("CSE: eliminated node {} (duplicate of node {})", nodes[j].id, nodes[i].id);
+                report(2, fmt::format("eliminate node {} '{}' — duplicate of node {}", nodes[j].id, nodes[j].label, nodes[i].id));
+            } else {
+                EINSUMS_LOG_INFO("CSE: eliminated node {} ({}x node {}, factor folded into {} reader(s))", nodes[j].id, *ratio, nodes[i].id,
+                                 folds.size());
+                report(2, fmt::format("eliminate node {} '{}' — {}x node {}, factor folded into {} reader(s)", nodes[j].id, nodes[j].label,
+                                      *ratio, nodes[i].id, folds.size()));
+            }
         }
     }
 

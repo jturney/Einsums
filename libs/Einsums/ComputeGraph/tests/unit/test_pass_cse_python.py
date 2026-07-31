@@ -239,6 +239,91 @@ def test_cse_does_not_merge_permutes_with_different_index_orders():
     assert_close(np.asarray(P2), A_np.transpose(0, 2, 1))
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Proportional duplicates
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_cse_merges_a_proportional_duplicate():
+    """Q = 0.5 * P is eliminated and the 0.5 moves onto Q's reader."""
+    A = einsums.create_random_tensor("A", [4, 3])
+    B = einsums.create_random_tensor("B", [3, 5])
+    F = einsums.create_random_tensor("F", [5, 2])
+    out1 = einsums.create_zero_tensor("out1", [4, 2])
+    out2 = einsums.create_zero_tensor("out2", [4, 2])
+
+    g = cg.Graph("cse_proportional")
+    P = g.create_zero_tensor("P", [4, 5], dtype="float64")
+    Q = g.create_zero_tensor("Q", [4, 5], dtype="float64")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", P, A, B, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("ij <- ik ; kj", Q, A, B, c_pf=0.0, ab_pf=0.5)
+        einsums.einsum("ij <- ik ; kj", out1, P, F, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("ij <- ik ; kj", out2, Q, F, c_pf=0.0, ab_pf=1.0)
+
+    n_before = g.num_nodes()
+    modified = g.apply(_one_pass(cg.CSE()))
+    assert modified
+    assert g.num_nodes() == n_before - 1
+
+    g.execute()
+
+    ref = (np.asarray(A) @ np.asarray(B)) @ np.asarray(F)
+    assert_close(out1, ref)
+    assert_close(out2, 0.5 * ref)
+
+
+def test_cse_declines_a_ratio_that_is_not_a_power_of_two():
+    """3x is exactly representable but is not folded, so the result never
+    depends on which of two proportional nodes the pass kept."""
+    A = einsums.create_random_tensor("A", [4, 3])
+    B = einsums.create_random_tensor("B", [3, 5])
+    F = einsums.create_random_tensor("F", [5, 2])
+    out2 = einsums.create_zero_tensor("out2", [4, 2])
+
+    g = cg.Graph("cse_odd_ratio")
+    P = g.create_zero_tensor("P", [4, 5], dtype="float64")
+    Q = g.create_zero_tensor("Q", [4, 5], dtype="float64")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", P, A, B, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("ij <- ik ; kj", Q, A, B, c_pf=0.0, ab_pf=3.0)
+        einsums.einsum("ij <- ik ; kj", out2, Q, F, c_pf=0.0, ab_pf=1.0)
+
+    n_before = g.num_nodes()
+    modified = g.apply(_one_pass(cg.CSE()))
+    assert not modified
+    assert g.num_nodes() == n_before
+
+
+def test_cse_merges_proportional_axpby_copies():
+    """Axpby had no descriptor arm at all, so even identical copies never
+    merged; `Y = alpha*X` is linear in alpha, so the ratio path applies."""
+    X = einsums.create_random_tensor("X", [4, 5])
+    G = einsums.create_random_tensor("G", [5, 2])
+    out1 = einsums.create_zero_tensor("out1", [4, 2])
+    out2 = einsums.create_zero_tensor("out2", [4, 2])
+
+    g = cg.Graph("cse_axpby_proportional")
+    Y1 = g.create_zero_tensor("Y1", [4, 5], dtype="float64")
+    Y2 = g.create_zero_tensor("Y2", [4, 5], dtype="float64")
+    with cg.capture(g):
+        einsums.linalg.axpby(2.0, X, 0.0, Y1)
+        einsums.linalg.axpby(1.0, X, 0.0, Y2)
+        einsums.einsum("ij <- ik ; kj", out1, Y1, G, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("ij <- ik ; kj", out2, Y2, G, c_pf=0.0, ab_pf=1.0)
+
+    n_before = g.num_nodes()
+    modified = g.apply(_one_pass(cg.CSE()))
+    assert modified
+    assert g.num_nodes() == n_before - 1
+
+    g.execute()
+
+    ref = np.asarray(X) @ np.asarray(G)
+    assert_close(out1, 2.0 * ref)
+    assert_close(out2, ref)
+
+
 def test_cse_does_not_merge_scale_with_different_factors():
     """scale(2.0, A) and scale(3.0, A) have different OpData → no merge."""
     A = einsums.create_random_tensor("A", [3, 3])

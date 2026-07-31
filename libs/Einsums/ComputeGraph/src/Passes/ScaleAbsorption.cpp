@@ -22,16 +22,6 @@ namespace {
 /// (c_prefactor / beta == 0)? If so, a Scale of that tensor immediately
 /// preceding it (with no intervening reader) is dead.
 
-/// pf * a, preserving the PrefactorScalar's element type (a is the real scale).
-PrefactorScalar scale_prefactor(PrefactorScalar const &pf, double a) {
-    return std::visit(
-        [a](auto x) -> PrefactorScalar {
-            using T = decltype(x);
-            return PrefactorScalar{x * static_cast<T>(a)};
-        },
-        pf);
-}
-
 /// Can a scale of `tensor` fold into `node`'s operand prefactor? `node` must be
 /// an einsum reading `tensor` as EXACTLY ONE operand (not its output, not both
 /// operands — that would contribute a², not a). einsum is linear in each
