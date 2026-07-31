@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/HPTT/HPTT.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 
 #if defined(I)
 #    undef I
@@ -102,9 +103,19 @@ inline std::shared_ptr<hptt::Transpose<T>>
 get_or_create_hptt_plan(int const *perm, int dim, T alpha, T const *A, size_t const *sizeA, size_t const *outerSizeA, size_t const *offsetA,
                         size_t innerStrideA, T beta, T *B, size_t const *outerSizeB, size_t const *offsetB, size_t innerStrideB,
                         bool row_major, hptt::SelectionMethod method = hptt::ESTIMATE) {
-    int const numThreads = []() {
+    // HPTT parallelizes internally with whatever team size it is handed, and
+    // the plan bakes that in - so a small transpose paid a thread-team fork on
+    // every execute that dwarfed the copy: 24 us against 0.6 us serial for a
+    // 64-element permute. Below the threshold ask for one thread, which makes
+    // execute() skip its parallel region outright.
+    size_t elements = 1;
+    for (int d = 0; d < dim; ++d) {
+        elements *= sizeA[d];
+    }
+
+    int const numThreads = [elements]() {
 #ifdef _OPENMP
-        return omp_get_max_threads();
+        return elements >= ::einsums::hardware::omp_min_parallel_elements() ? omp_get_max_threads() : 1;
 #else
         return 1;
 #endif

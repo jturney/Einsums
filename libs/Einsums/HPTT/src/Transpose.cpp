@@ -959,6 +959,7 @@ TransposeImpl<floatType>::TransposeImpl(size_t const *sizeA, int const *perm, si
     _lda.resize(dim);
     _ldb.resize(dim);
     _threadIds.reserve(dim);
+    _callerManagedThreads = (threadIds != nullptr);
     if (threadIds) {
         // compact threadIds. E.g., 1, 7, 5 -> local_id(1) = 0, local_id(7) = 2,
         // local_id(5) = 1
@@ -990,7 +991,7 @@ TransposeImpl<floatType>::TransposeImpl(size_t const *sizeA, int const *perm, si
 template <typename floatType>
 TransposeImpl<floatType>::TransposeImpl(TransposeImpl<floatType> const &other)
     : _A(other._A), _B(other._B), _alpha(other._alpha), _beta(other._beta), _dim(other._dim), _numThreads(other._numThreads),
-      _masterPlan(other._masterPlan), _selectionMethod(other._selectionMethod),
+      _callerManagedThreads(other._callerManagedThreads), _masterPlan(other._masterPlan), _selectionMethod(other._selectionMethod),
       _selectedParallelStrategyId(other._selectedParallelStrategyId), _selectedLoopOrderId(other._selectedLoopOrderId),
       _maxAutotuningCandidates(other._maxAutotuningCandidates), _sizeA(other._sizeA), _perm(other._perm), _outerSizeA(other._outerSizeA),
       _outerSizeB(other._outerSizeB), _offsetA(other._offsetA), _offsetB(other._offsetB), _innerStrideA(other._innerStrideA),
@@ -1107,6 +1108,23 @@ void TransposeImpl<floatType>::get_start_end(size_t n, size_t &myStart, size_t &
 #else
     int myLocalThreadId = 0;
 #endif
+
+    // A single-threaded plan whose thread ids were filled in by DEFAULT has
+    // exactly one participant: whoever called it. Matching omp_get_thread_num()
+    // against _threadIds is an execute_expert() concept - it means "the caller
+    // spawned this team and told us which of its threads take part" - and a
+    // default {0} says nothing of the kind.
+    //
+    // execute() routes _numThreads == 1 through the no-spawnThreads path, so
+    // without this a 1-thread plan called from inside somebody ELSE's parallel
+    // region saw a thread id that is not 0, decided it was not a participant,
+    // and silently transposed NOTHING. Two concurrent permutes then left one
+    // output untouched, with no error and no crash.
+    if (!_callerManagedThreads && _numThreads == 1) {
+        myStart = 0;
+        myEnd   = n;
+        return;
+    }
 
     if (myLocalThreadId == -1) // skip those threads which do not participate in this plan
     {

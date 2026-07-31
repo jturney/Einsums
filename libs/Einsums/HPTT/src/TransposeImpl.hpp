@@ -328,9 +328,14 @@ class TransposeImpl final : public hptt::Transpose<floatType> {
     std::vector<size_t> _ldb;          //!< strides for all dimensions of B (first dimension has a stride of 1)
     std::vector<int>    _threadIds;    //!< OpenMP threadIds of the threads involed in the transposition
     int                 _numThreads;
-    int                 _selectedParallelStrategyId;
-    int                 _selectedLoopOrderId;
-    bool                _conjA;
+    /// Whether the CALLER declared which OpenMP threads take part (the
+    /// execute_expert() contract, where the caller spawns the team). When it
+    /// did not, _threadIds is just 0..numThreads-1 filled in by default and
+    /// carries no information about who may legitimately call.
+    bool _callerManagedThreads{false};
+    int  _selectedParallelStrategyId;
+    int  _selectedLoopOrderId;
+    bool _conjA;
 #ifdef _OPENMP
     omp_lock_t _writelock;
 #endif
