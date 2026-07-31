@@ -77,8 +77,10 @@ namespace einsums::compute_graph::passes {
  * - Neither output may be a buffer a control-flow node's sub-graph reads or writes (Guard D). A Loop/Conditional node's own
  *   `inputs`/`outputs` do not list what its body touches (that is @ref Graph::effective_io), and `redirect_slot` repoints only
  *   this graph's slot table, so a body reading the eliminated duplicate's output would read a never-written buffer.
- * - Opt-out of PassManager auto-recursion (`recurse_into_subgraphs() == false`): never runs on loop bodies / conditional
- *   branches, because redirecting a duplicate whose output is later written independently is unsound (the SCF-body case).
+ * - Neither output may be visible outside the graph being rewritten (Guard F). `Graph::redirect_slot` repoints only that
+ *   graph's slot table, so a reader in the parent, a sibling branch, or a nested body would keep reading the eliminated
+ *   duplicate's now never-written buffer. Inside a sub-graph the SURVIVOR must additionally be graph-owned: a loop predicate or
+ *   DIIS callback runs between iterations and can write user tensors from Python, which no node list describes.
  * - A proportional (`r != 1`) merge additionally needs EVERY reader of the duplicate's output to absorb `r` (Guard E): an einsum
  *   or axpby reading it as exactly one operand through live shared params. permute and batched-gemm bake their scalars into the
  *   executor closure, so a reader of either blocks the merge.
@@ -90,7 +92,9 @@ namespace einsums::compute_graph::passes {
  * - Fold user-visible duplicates, and proportional duplicates whose readers cannot absorb the factor, behind an inserted scaled
  *   copy of the survivor. A copy is two sweeps over the result while an outer product is barely more than one, so this needs a
  *   cost model to decide (CostModel's permute/bandwidth estimate, roadmap 3.3) rather than always being a win.
- * - Add a write-once precondition on the merged output so CSE can safely recurse into loop bodies / conditional branches.
+ * - Recursing into sub-graphs is DONE: `run()` walks the tree itself. The SCF-body case that originally motivated the opt-out
+ *   (`axpby(1,H,0,F)` and `axpby(1,H,0,sum_HF)` diverging afterwards) turns out to be ruled out by Guard B already, since both
+ *   destinations are written twice.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT CSE : public OptimizerPass {
   public:
@@ -98,23 +102,33 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     [[nodiscard]] std::string name() const override { return "CSE"; }
 
-    /// NOTE: stays opt-out. CSE has a latent soundness gap with
-    /// mutable-tensor reuse: it merges two nodes that compute the same
-    /// value into different output tensors and redirects readers of the
-    /// duplicate's output to the original's, which is wrong when that
-    /// output is subsequently written independently (e.g. the SCF body's
-    /// ``axpby(1,H,0,F)`` and ``axpby(1,H,0,sum_HF)``, where F and sum_HF
-    /// then diverge). Recursing exposed this on the SCF example. Until CSE
-    /// gains a write-once precondition on the merged output it must not run
-    /// on bodies.
+    /// Opts out of the PassManager's recursion and descends ITSELF, which is
+    /// not the same as not running on bodies - it does, since `run()` walks the
+    /// tree. The driver hands a pass nothing but the sub-graph, and two guards
+    /// cannot be decided from inside one: whether a buffer escapes the graph
+    /// being rewritten (``Graph::redirect_slot`` repoints only that graph's
+    /// slots, so an outside reader would be stranded), and whether a body's
+    /// handle for a parent-created tensor describes a user tensor or graph
+    /// scratch (the body's own handle says `is_intermediate == false` either
+    /// way). Both are answerable from the root, so `run()` collects the tree
+    /// once and passes it down.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
 
     /**
-     * @brief Run the CSE pass on the graph.
+     * @brief Run the CSE pass on @p graph and every loop body / conditional
+     *        branch beneath it.
      * @param[in,out] graph The graph to optimize.
-     * @return True if at least one duplicate node was eliminated.
+     * @return True if at least one duplicate node was eliminated anywhere.
      */
     bool run(Graph &graph) override;
+
+  private:
+    /// One graph of the tree. @p tree_context is an opaque handle to the
+    /// root-level facts collected by @ref run (type-erased to keep the tree
+    /// bookkeeping out of this header). @p is_subgraph tightens Guard C: inside
+    /// a body the survivor must be graph-owned too, because a loop predicate or
+    /// DIIS callback runs between iterations and can write user tensors.
+    bool run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph);
 };
 
 } // namespace einsums::compute_graph::passes

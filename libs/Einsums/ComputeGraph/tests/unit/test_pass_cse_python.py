@@ -186,6 +186,59 @@ def test_cse_does_not_eliminate_different_inputs():
     assert g.num_nodes() == 2
 
 
+def test_cse_merges_a_duplicate_inside_a_loop_body():
+    """CSE descends the tree itself, so bodies are optimized too.
+
+    Iterative workloads capture everything into a loop body, so until it did
+    the pass had no effect on them at all.
+    """
+    n = 8
+    A = einsums.create_random_tensor("A", [n, n])
+    B = einsums.create_random_tensor("B", [n, n])
+    out = einsums.create_zero_tensor("out", [n, n])
+
+    g = cg.Graph("cse_in_body")
+    P = g.create_zero_tensor("P", [n, n], dtype="float64")
+    Q = g.create_zero_tensor("Q", [n, n], dtype="float64")
+    body = g.add_loop("once", 1, lambda it: it < 1)
+    with cg.capture(body):
+        einsums.einsum("ij <- ik ; kj", P, A, B, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("ij <- ik ; kj", Q, A, B, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("ij <- ij ; ij", out, P, Q, c_pf=0.0, ab_pf=1.0)
+
+    before = body.num_nodes()
+    assert g.apply(_one_pass(cg.CSE()))
+    assert body.num_nodes() == before - 1
+
+    g.execute()
+    ref = np.asarray(A) @ np.asarray(B)
+    assert_close(out, ref * ref)
+
+
+def test_cse_keeps_a_body_duplicate_the_parent_reads():
+    """The slot redirect reaches only the graph it runs on, so a parent reader
+    of a body-local duplicate blocks the merge."""
+    n = 8
+    A = einsums.create_random_tensor("A", [n, n])
+    B = einsums.create_random_tensor("B", [n, n])
+    seen = einsums.create_zero_tensor("seen", [n, n])
+
+    g = cg.Graph("cse_body_escapes")
+    P = g.create_zero_tensor("P", [n, n], dtype="float64")
+    Q = g.create_zero_tensor("Q", [n, n], dtype="float64")
+    body = g.add_loop("once", 1, lambda it: it < 1)
+    with cg.capture(body):
+        einsums.einsum("ij <- ik ; kj", P, A, B, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("ij <- ik ; kj", Q, A, B, c_pf=0.0, ab_pf=1.0)
+    with cg.capture(g):
+        einsums.linalg.axpby(1.0, Q, 0.0, seen)
+
+    assert not g.apply(_one_pass(cg.CSE()))
+
+    g.execute()
+    assert_close(seen, np.asarray(A) @ np.asarray(B))
+
+
 def test_cse_keeps_a_duplicate_a_loop_body_reads():
     """A loop body reading the duplicate's output blocks the merge.
 

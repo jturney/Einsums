@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -239,7 +240,71 @@ void fold_reader(Node &nd, double r) {
 
 } // namespace
 
-bool CSE::run(Graph &graph) {
+namespace {
+
+/// What a merge inside one graph of the tree needs to know about the rest of it.
+///
+/// CSE declines the pass manager's auto-recursion and walks the tree itself
+/// (see CSE::run) precisely so this exists. Two facts are only answerable from
+/// the root:
+///
+///   - **Is a buffer visible outside the graph being rewritten?** A merge
+///     redirects readers with @ref Graph::redirect_slot, which repoints only
+///     the slot table of the graph it is called on. A node in the parent, in a
+///     sibling branch, or in a nested body reading the eliminated duplicate's
+///     output would keep reading a buffer nothing writes any more.
+///   - **Is a buffer a graph-owned intermediate?** A body registers its OWN
+///     handle for a tensor its parent created, and that handle reports
+///     `is_intermediate == false` even for parent-created scratch. Asking the
+///     body would reject every candidate; the root's answer is the real one.
+struct TreeContext {
+    /// Buffer -> how many nodes touch its VALUE anywhere in the tree. Counted
+    /// from RAW node I/O: every sub-graph's nodes are visited in their own
+    /// right, so a control-flow node's raw (empty) I/O double-counts nothing.
+    ///
+    /// Lifecycle nodes are excluded, as they are from the writer count: an
+    /// Alloc or Materialize in the parent for scratch only a body uses manages
+    /// storage without observing the value, and counting it would make every
+    /// body-local buffer look externally visible.
+    std::unordered_map<void const *, size_t> touches_in_tree;
+    /// Buffers that any graph in the tree calls a non-view graph-owned
+    /// intermediate. Membership is what Guard C tests.
+    std::unordered_set<void const *> intermediate_buffers;
+};
+
+void collect_tree_context(Graph const &graph, TreeContext &ctx) {
+    auto const &tensors = graph.tensors_map();
+    auto const  ptr_of  = [&](TensorId tid) -> void const  *{
+        auto it = tensors.find(tid);
+        return (it != tensors.end()) ? it->second.tensor_ptr : nullptr;
+    };
+
+    for (auto const &nd : graph.nodes()) {
+        if (is_lifecycle(nd.kind))
+            continue;
+        for (auto const tid : nd.inputs) {
+            if (auto const *p = ptr_of(tid))
+                ctx.touches_in_tree[p]++;
+        }
+        for (auto const tid : nd.outputs) {
+            if (auto const *p = ptr_of(tid))
+                ctx.touches_in_tree[p]++;
+        }
+    }
+    for (auto const &[tid, handle] : tensors) {
+        if (handle.tensor_ptr != nullptr && handle.is_intermediate && handle.aliases == 0) {
+            ctx.intermediate_buffers.insert(handle.tensor_ptr);
+        }
+    }
+
+    graph.for_each_subgraph([&ctx](Graph const &sub) { collect_tree_context(sub, ctx); });
+}
+
+} // namespace
+
+bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph) {
+    auto const &ctx = *static_cast<TreeContext const *>(tree_context);
+
     graph.topological_sort();
 
     auto &nodes = graph.nodes();
@@ -300,6 +365,31 @@ bool CSE::run(Graph &graph) {
                 subgraph_touched.insert(p);
         }
     }
+
+    // How many of a buffer's tree-wide touches come from THIS graph's nodes.
+    // A buffer touched more often elsewhere is visible outside, and
+    // Graph::redirect_slot cannot reach those readers (Guard F).
+    std::unordered_map<void const *, size_t> local_touches;
+    for (auto const &nd : nodes) {
+        if (is_lifecycle(nd.kind))
+            continue;
+        for (auto const tid : nd.inputs) {
+            if (auto const *p = ptr_of(tid))
+                local_touches[p]++;
+        }
+        for (auto const tid : nd.outputs) {
+            if (auto const *p = ptr_of(tid))
+                local_touches[p]++;
+        }
+    }
+    auto const visible_outside_this_graph = [&](void const *p) {
+        auto const total = ctx.touches_in_tree.find(p);
+        if (total == ctx.touches_in_tree.end()) {
+            return true; // unknown: assume the worst
+        }
+        auto const local = local_touches.find(p);
+        return total->second > (local == local_touches.end() ? 0 : local->second);
+    };
 
     // Candidates bucketed by what cheaply distinguishes them, so the scan does
     // not compare every pair.
@@ -379,15 +469,53 @@ bool CSE::run(Graph &graph) {
             // eliding its producer leaves it unwritten no matter how graph
             // consumers are redirected. (Folding such duplicates behind an
             // inserted copy node is possible future work.)
+            //
+            // Answered from the TREE, not from this graph: a loop body
+            // registers its own handle for a tensor its parent created, and
+            // that handle says `is_intermediate == false` even for
+            // parent-created scratch. Asking the body would reject everything.
             bool duplicate_user_visible = false;
             for (auto out : nodes[j].outputs) {
-                auto it = graph.tensors_map().find(out);
-                if (it == graph.tensors_map().end() || !it->second.is_intermediate || it->second.aliases != 0) {
+                auto const *p = ptr_of(out);
+                if (p == nullptr || ctx.intermediate_buffers.count(p) == 0) {
                     duplicate_user_visible = true;
                     break;
                 }
             }
+            // Inside a sub-graph the SURVIVOR must be graph-owned too. A loop's
+            // predicate or DIIS callback runs between iterations and can write
+            // user tensors from Python; nothing in the node list describes that,
+            // so a user-visible survivor is a buffer this pass cannot reason
+            // about. Graph-owned scratch is never what such a callback touches.
+            if (!duplicate_user_visible && is_subgraph) {
+                for (auto out : nodes[i].outputs) {
+                    auto const *p = ptr_of(out);
+                    if (p == nullptr || ctx.intermediate_buffers.count(p) == 0) {
+                        duplicate_user_visible = true;
+                        break;
+                    }
+                }
+            }
             if (duplicate_user_visible)
+                continue;
+
+            // Guard F: neither output may be visible outside THIS graph.
+            // Graph::redirect_slot repoints only this graph's slot table, so a
+            // reader in the parent, a sibling branch, or a nested body would
+            // keep reading the eliminated duplicate's now never-written buffer.
+            bool escapes = false;
+            for (auto const *outs : {&nodes[i].outputs, &nodes[j].outputs}) {
+                for (auto out : *outs) {
+                    auto const *p = ptr_of(out);
+                    if (p == nullptr || visible_outside_this_graph(p)) {
+                        escapes = true;
+                        break;
+                    }
+                }
+                if (escapes)
+                    break;
+            }
+            if (escapes)
                 continue;
 
             // Guard B: both producers' output buffers must be written exactly
@@ -553,6 +681,33 @@ bool CSE::run(Graph &graph) {
     graph.mark_sorted();
 
     return true;
+}
+
+bool CSE::run(Graph &graph) {
+    // CSE walks the tree itself rather than letting PassManager recurse (see
+    // recurse_into_subgraphs). The driver hands a pass nothing but the
+    // sub-graph, and two of the guards below cannot be decided from inside one:
+    // whether a buffer escapes the graph being rewritten, and whether a body's
+    // handle for a parent-created tensor really describes a user tensor.
+    // Collecting the whole tree once here answers both.
+    TreeContext ctx;
+    collect_tree_context(graph, ctx);
+
+    bool modified = run_on_graph(graph, &ctx, /*is_subgraph=*/false);
+
+    // Post-order, so a body is rewritten before the parent it sits in. The
+    // context stays valid across rewrites: erasing nodes only ever REMOVES
+    // touches, so a buffer can look visible-outside when it no longer is, which
+    // costs a missed merge and never an unsound one.
+    std::function<void(Graph &)> descend = [&](Graph &sub) {
+        sub.for_each_subgraph(descend);
+        if (run_on_graph(sub, &ctx, /*is_subgraph=*/true)) {
+            modified = true;
+        }
+    };
+    graph.for_each_subgraph(descend);
+
+    return modified;
 }
 
 } // namespace einsums::compute_graph::passes

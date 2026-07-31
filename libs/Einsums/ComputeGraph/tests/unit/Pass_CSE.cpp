@@ -319,6 +319,128 @@ TEST_CASE("CSE - keeps a duplicate whose output a loop body reads", "[ComputeGra
     REQUIRE(out_norm > 1e-8);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Inside loop bodies (CSE descends the tree itself)
+// ═══════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("CSE - merges a duplicate inside a loop body", "[ComputeGraph][CSE][ControlFlow]") {
+    // Iterative workloads capture EVERYTHING into a loop body, so until CSE
+    // descended the tree it did nothing at all on them. The scratch is created
+    // on the parent (the usual pattern) and used only by the body, which is
+    // what makes it eliminable: the body's own handle for it reports
+    // is_intermediate == false, so the check has to be answered at the root.
+    auto A   = create_random_tensor<double>("A", 4, 3);
+    auto B   = create_random_tensor<double>("B", 3, 5);
+    auto out = create_zero_tensor<double>("out", 4, 5);
+
+    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+
+    cg::Graph graph("cse_in_body");
+    auto     &P    = graph.create_zero_tensor<double, 2>("P", 4, 5);
+    auto     &Q    = graph.create_zero_tensor<double, 2>("Q", 4, 5);
+    auto     &body = graph.add_loop("once", 1, [](size_t iter) { return iter < 1; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", 0.0, &P, 1.0, A, B); // survivor
+        cg::einsum("ik;kj->ij", 0.0, &Q, 1.0, A, B); // duplicate
+        cg::einsum("ij;ij->ij", 0.0, &out, 1.0, P, Q);
+    }
+
+    size_t const body_before = body.num_nodes();
+    auto [modified, pass]    = graph.apply<cg::passes::CSE>();
+    REQUIRE(modified);
+    CHECK(body.num_nodes() == body_before - 1);
+
+    graph.execute();
+    double max_abs = 0.0;
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            max_abs = std::max(max_abs, std::abs(out(ii, jj)));
+            REQUIRE(std::abs(out(ii, jj) - C_ref(ii, jj) * C_ref(ii, jj)) < 1e-12);
+        }
+    }
+    REQUIRE(max_abs > 1e-10);
+}
+
+TEST_CASE("CSE - keeps a body duplicate whose output the parent reads", "[ComputeGraph][CSE][ControlFlow]") {
+    // Guard F. Graph::redirect_slot repoints only the slot table of the graph
+    // it is called on, so a merge inside the body cannot fix up a reader in the
+    // parent: that reader would keep reading the eliminated duplicate's buffer,
+    // which nothing writes any more.
+    auto A    = create_random_tensor<double>("A", 4, 3);
+    auto B    = create_random_tensor<double>("B", 3, 5);
+    auto seen = create_zero_tensor<double>("seen", 4, 5);
+
+    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+
+    cg::Graph graph("cse_body_escapes");
+    auto     &P    = graph.create_zero_tensor<double, 2>("P", 4, 5);
+    auto     &Q    = graph.create_zero_tensor<double, 2>("Q", 4, 5);
+    auto     &body = graph.add_loop("once", 1, [](size_t iter) { return iter < 1; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", 0.0, &P, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &Q, 1.0, A, B); // would be the duplicate
+    }
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpby(1.0, Q, 0.0, &seen); // parent reads the body's Q
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    CHECK_FALSE(modified);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(seen(ii, jj) - C_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("CSE - body axpby copies that later diverge are not merged", "[ComputeGraph][CSE][ControlFlow]") {
+    // The SCF-body case the pass used to name as its reason for never running
+    // on bodies: axpby(1,H,0,F) and axpby(1,H,0,sum_HF), where F and sum_HF
+    // then diverge. Guard B (single writer) is what actually rules it out -
+    // both destinations are written twice - so recursing is safe here.
+    auto H = create_random_tensor<double>("H", 4, 4);
+    auto G = create_random_tensor<double>("G", 4, 4);
+
+    auto F_ref = Tensor<double, 2>("Fref", 4, 4);
+    auto S_ref = Tensor<double, 2>("Sref", 4, 4);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            F_ref(ii, jj) = H(ii, jj) + G(ii, jj);       // F  = H then F += G
+            S_ref(ii, jj) = H(ii, jj) + 2.0 * G(ii, jj); // sum = H then sum += 2G
+        }
+    }
+
+    cg::Graph graph("cse_body_diverge");
+    auto     &F    = graph.create_zero_tensor<double, 2>("F", 4, 4);
+    auto     &S    = graph.create_zero_tensor<double, 2>("S", 4, 4);
+    auto     &body = graph.add_loop("once", 1, [](size_t iter) { return iter < 1; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::axpby(1.0, H, 0.0, &F);
+        cg::axpby(1.0, H, 0.0, &S);
+        cg::axpby(1.0, G, 1.0, &F); // F and S diverge from here
+        cg::axpby(2.0, G, 1.0, &S);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    CHECK_FALSE(modified);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            REQUIRE(std::abs(F(ii, jj) - F_ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(S(ii, jj) - S_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
+
 TEST_CASE("CSE - does not merge permutes with different index orders", "[ComputeGraph][CSE][Permute]") {
     // Regression: permute_desc_equal compared only alpha and beta, so two
     // permutes of the SAME source with the same scalars but DIFFERENT index
