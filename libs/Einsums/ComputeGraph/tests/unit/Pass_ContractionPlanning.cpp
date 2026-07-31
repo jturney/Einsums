@@ -55,15 +55,16 @@ size_t count_kind(cg::Graph const &g, cg::OpKind kind) {
 // Leaf-orientation gate (the transposed-operand bug)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("ContractionPlanning - transposed interior leaf is NOT restructured", "[ComputeGraph][Passes][CP]") {
-    // Regression for the leaf-orientation defect. The restructured chain emits
-    // fixed (m,k)x(k,n) GEMM nodes and runs them through the rank-2 fast path,
-    // which calls gemm<false, false> on each leaf's PHYSICAL layout - it
-    // ignores the captured index order. When an interior leaf is captured
-    // TRANSPOSED ("ik;jk->ij", link index LAST), folding it into a plain GEMM
-    // reads it in the wrong orientation and silently produces garbage (this
-    // chain gave max abs error ~38 before the gate was added). The pass must
-    // decline: analysis-only, original order preserved, numerics exact.
+TEST_CASE("ContractionPlanning - transposed interior leaf is restructured via a transpose flag", "[ComputeGraph][Passes][CP]") {
+    // A leaf captured TRANSPOSED ("ik;jk->ij", link index LAST) is stored (N,K)
+    // rather than (K,N). The emitted GEMM now carries that as a transpose flag,
+    // which BLAS absorbs in its packing step, so the chain folds like any other
+    // and no physical permute is inserted.
+    //
+    // This case used to be declined outright: the fold read every leaf with
+    // gemm<false, false> on its physical layout and silently produced garbage
+    // (max abs error ~38 on this chain), so the pass refused any non-canonical
+    // orientation. The numeric check below is what that gate was protecting.
     auto A   = create_random_tensor<double>("A", 100, 1);
     auto B   = create_random_tensor<double>("B", 1, 100);
     auto Csq = create_random_tensor<double>("Csq", 100, 100); // square, so the wrong-orientation GEMM would still *run*
@@ -96,17 +97,154 @@ TEST_CASE("ContractionPlanning - transposed interior leaf is NOT restructured", 
     cg::passes::ContractionPlanning pass(skewed_model());
     pass.run(graph);
 
-    // The chain is detected (a cost report exists) but declined for folding.
-    CHECK(pass.chain_reports().size() == 1);
-    CHECK(pass.chains_restructured() == 0);
-    CHECK(pass.intermediates_created() == 0);
-    // No fold means no emitted Gemm nodes; the original Einsum chain survives.
-    CHECK(count_kind(graph, cg::OpKind::Gemm) == 0);
+    CHECK(pass.chains_restructured() == 1);
+    CHECK(pass.intermediates_created() > 0);
+    CHECK(count_kind(graph, cg::OpKind::Gemm) > 0);
+    // The transposed leaf is handled by a flag on the GEMM, not by inserting a
+    // permute of its own.
+    CHECK(count_kind(graph, cg::OpKind::Permute) == 0);
 
     graph.execute();
     for (size_t ii = 0; ii < 100; ii++)
         for (size_t jj = 0; jj < 100; jj++)
             CHECK(T4(ii, jj) == Catch::Approx(T4r(ii, jj)).margin(1e-8));
+}
+
+TEST_CASE("ContractionPlanning - every operand orientation folds to the same values", "[ComputeGraph][Passes][CP]") {
+    // Each of the three leaves can be captured either way round, so the emitted
+    // GEMMs have to cover all four transA/transB combinations. The reference is
+    // the SAME graph left unfolded: what is being pinned is that restructuring
+    // preserves semantics, whatever orientation the chain was captured in.
+    //
+    // Shapes are chosen so left-to-right (100x1x100 then 100x100x2) is far
+    // worse than the right-first association, guaranteeing a fold.
+    // The specs must be literals (EinsumFormatString is consteval), so the
+    // orientations are template parameters rather than generated values.
+    auto run_case = []<bool AT, bool BT, bool CT>() {
+        CAPTURE(AT, BT, CT);
+
+        // Mathematical shapes: L0 is 100x1, L1 is 1x100, L2 is 100x2. A
+        // transposed leaf is stored with its axes swapped.
+        auto L0 = AT ? create_random_tensor<double>("L0", 1, 100) : create_random_tensor<double>("L0", 100, 1);
+        auto L1 = BT ? create_random_tensor<double>("L1", 100, 1) : create_random_tensor<double>("L1", 1, 100);
+        auto L2 = CT ? create_random_tensor<double>("L2", 2, 100) : create_random_tensor<double>("L2", 100, 2);
+
+        auto build = [&](cg::Graph &g, Tensor<double, 2> &out) {
+            auto                  &mid = g.create_zero_tensor<double, 2>("mid", 100, 100);
+            cg::CaptureGuard const guard(g);
+            if constexpr (!AT && !BT) {
+                cg::einsum("ik;kj->ij", 0.0, &mid, 1.0, L0, L1);
+            } else if constexpr (!AT && BT) {
+                cg::einsum("ik;jk->ij", 0.0, &mid, 1.0, L0, L1);
+            } else if constexpr (AT && !BT) {
+                cg::einsum("ki;kj->ij", 0.0, &mid, 1.0, L0, L1);
+            } else {
+                cg::einsum("ki;jk->ij", 0.0, &mid, 1.0, L0, L1);
+            }
+            if constexpr (!CT) {
+                cg::einsum("ij;jl->il", 0.0, &out, 1.0, mid, L2);
+            } else {
+                cg::einsum("ij;lj->il", 0.0, &out, 1.0, mid, L2);
+            }
+        };
+
+        // Reference: the same graph, left unfolded. What is pinned is that
+        // restructuring preserves semantics in every capture orientation.
+        auto      ref = create_zero_tensor<double>("ref", 100, 2);
+        cg::Graph ref_graph("cp_orient_ref");
+        build(ref_graph, ref);
+        ref_graph.execute();
+
+        auto      got = create_zero_tensor<double>("got", 100, 2);
+        cg::Graph graph("cp_orient");
+        build(graph, got);
+
+        cg::passes::ContractionPlanning pass(skewed_model());
+        pass.run(graph);
+
+        CHECK(pass.chains_restructured() == 1);
+        CHECK(count_kind(graph, cg::OpKind::Permute) == 0);
+
+        graph.execute();
+
+        double ref_norm = 0.0;
+        for (size_t ii = 0; ii < 100; ii++) {
+            for (size_t jj = 0; jj < 2; jj++) {
+                ref_norm += std::abs(ref(ii, jj));
+                CHECK(got(ii, jj) == Catch::Approx(ref(ii, jj)).margin(1e-10));
+            }
+        }
+        // Guard against a comparison of two all-zero results.
+        REQUIRE(ref_norm > 1e-8);
+    };
+
+    run_case.template operator()<false, false, false>();
+    run_case.template operator()<false, false, true>();
+    run_case.template operator()<false, true, false>();
+    run_case.template operator()<false, true, true>();
+    run_case.template operator()<true, false, false>();
+    run_case.template operator()<true, false, true>();
+    run_case.template operator()<true, true, false>();
+    run_case.template operator()<true, true, true>();
+}
+
+TEST_CASE("ContractionPlanning - a permuted output keeps the chain analysis-only", "[ComputeGraph][Passes][CP]") {
+    // The operand transpose flags cannot express a permuted RESULT: the fold
+    // computes an M x N block and there is no flag that writes it as N x M. A
+    // member whose output reverses its axes has to stay unfolded.
+    auto A  = create_random_tensor<double>("A", 100, 1);
+    auto B  = create_random_tensor<double>("B", 1, 100);
+    auto C  = create_random_tensor<double>("C", 100, 100);
+    auto T2 = create_zero_tensor<double>("T2", 100, 100);
+
+    cg::Graph graph("cp_permuted_output_declined");
+    auto     &T1 = graph.create_zero_tensor<double, 2>("T1", 100, 100);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, A, B);
+        cg::einsum("ik;kj->ji", 0.0, &T2, 1.0, T1, C);
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    pass.run(graph);
+
+    CHECK(pass.chain_reports().size() == 1); // detected and priced
+    CHECK(pass.chains_restructured() == 0);  // but not folded
+    CHECK(count_kind(graph, cg::OpKind::Gemm) == 0);
+}
+
+TEST_CASE("ContractionPlanning - transposed OUTPUT is not folded into a straight GEMM", "[ComputeGraph][Passes][CP]") {
+    // The leaf-orientation gate looks only at the operands. A member whose
+    // OUTPUT index order is reversed ("ji <- ik ; kj") passes every gate, but
+    // the fold emits C[m,n] = A[m,k] * B[k,n] and writes an M x N result into
+    // a tensor whose axes are N x M. Square dimensions make that a silent
+    // transpose rather than a shape error.
+    auto A  = create_random_tensor<double>("A", 100, 1);
+    auto B  = create_random_tensor<double>("B", 1, 100);
+    auto C  = create_random_tensor<double>("C", 100, 100);
+    auto T2 = create_zero_tensor<double>("T2", 100, 100);
+
+    // Eager reference: T2[j,i] = sum_k T1[i,k] * C[k,j].
+    auto T1r = create_zero_tensor<double>("T1r", 100, 100);
+    auto T2r = create_zero_tensor<double>("T2r", 100, 100);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+    tensor_algebra::einsum(0.0, Indices{j, i}, &T2r, 1.0, Indices{i, k}, T1r, Indices{k, j}, C);
+
+    cg::Graph graph("cp_transposed_output");
+    auto     &T1 = graph.create_zero_tensor<double, 2>("T1", 100, 100);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, A, B);
+        cg::einsum("ik;kj->ji", 0.0, &T2, 1.0, T1, C); // output axes reversed
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    pass.run(graph);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 100; ii++)
+        for (size_t jj = 0; jj < 100; jj++)
+            CHECK(T2(ii, jj) == Catch::Approx(T2r(ii, jj)).margin(1e-8));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -317,28 +455,78 @@ TEST_CASE("ContractionPlanning - user-visible interior blocks restructuring", "[
     }
 }
 
+TEST_CASE("ContractionPlanning - a leaf that is an earlier interior blocks the fold", "[ComputeGraph][Passes][CP]") {
+    // Found by test_fuzz_free_lifecycle_parallel_stress. The last member's
+    // fresh operand is T0, which is also the FIRST member's output. The DP is
+    // handed T0 as an independent leaf, but re-parenthesizing elides the write
+    // that produces it, so the restructured tree reads a buffer nothing
+    // computes any more - and once FreeInsertion is in the pipeline, one that
+    // has been released. The shape is a DAG, not a chain.
+    //
+    // The observable-interior scan cannot catch this on its own: it skips
+    // readers that are chain members, which is right for the chain LINK.
+    auto A   = create_random_tensor<double>("A", 100, 1);
+    auto B   = create_random_tensor<double>("B", 1, 100);
+    auto C   = create_random_tensor<double>("C", 100, 100);
+    auto out = create_zero_tensor<double>("out", 100, 100);
+
+    auto T0r  = create_zero_tensor<double>("T0r", 100, 100);
+    auto T1r  = create_zero_tensor<double>("T1r", 100, 100);
+    auto outr = create_zero_tensor<double>("outr", 100, 100);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &T0r, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 1.0, Indices{i, k}, T0r, Indices{k, j}, C);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &outr, 1.0, Indices{i, k}, T1r, Indices{k, j}, T0r);
+
+    cg::Graph graph("cp_leaf_is_interior");
+    auto     &T0 = graph.create_zero_tensor<double, 2>("T0", 100, 100);
+    auto     &T1 = graph.create_zero_tensor<double, 2>("T1", 100, 100);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &T0, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, T0, C);
+        cg::einsum("ik;kj->ij", 0.0, &out, 1.0, T1, T0); // leaf is the first member's output
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    pass.run(graph);
+
+    CHECK(pass.chains_restructured() == 0);
+    CHECK(count_kind(graph, cg::OpKind::Gemm) == 0);
+
+    graph.execute();
+
+    double ref_norm = 0.0;
+    for (size_t ii = 0; ii < 100; ii++) {
+        for (size_t jj = 0; jj < 100; jj++) {
+            ref_norm += std::abs(outr(ii, jj));
+            CHECK(out(ii, jj) == Catch::Approx(outr(ii, jj)).margin(1e-8));
+        }
+    }
+    REQUIRE(ref_norm > 1e-8);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
-// Runtime-tensor chain stays analysis-only
+// Runtime-rank chains
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("ContractionPlanning - runtime-tensor chain stays analysis-only", "[ComputeGraph][Passes][CP]") {
-    // The rank-2 fold casts each operand to Tensor<T, 2>*. A runtime-rank
-    // tensor in the chain would be type confusion at execute (garbage rank),
-    // the same hazard LCCF grew a gate for. all_rank2 checks is_runtime and
-    // must fall back to analysis-only even when the shape would otherwise be
-    // profitable to fold.
+TEST_CASE("ContractionPlanning - runtime-rank chain is restructured", "[ComputeGraph][Passes][CP]") {
+    // RuntimeTensor is the Python-facing type, so this is the shape any graph
+    // captured from Python has. It used to be declined outright: the fold cast
+    // every operand to Tensor<T,2>*, which for a runtime tensor is type
+    // confusion. The emitted executor now goes through each tensor's impl and
+    // the dynamic-rank gemm overload, so the chain folds like a typed one.
     auto A_t = create_random_tensor<double>("A", 100, 1);
     auto B_t = create_random_tensor<double>("B", 1, 100);
     auto C_t = create_random_tensor<double>("C", 100, 1);
 
-    // Runtime-rank captures.
     RuntimeTensor<double> A(A_t), B(B_t), C(C_t);
-    RuntimeTensor<double> T1("T1", std::vector<size_t>{100, 100});
     RuntimeTensor<double> T2("T2", std::vector<size_t>{100, 1});
-    T1.zero();
     T2.zero();
 
     cg::Graph graph("cp_runtime");
+    // Graph-owned interior, so the observable-interior gate does not fire.
+    auto &T1 = graph.create_runtime_tensor<double>("T1", {100, 100}, /*intermediate=*/true);
+    T1.zero();
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, A, B);
@@ -348,15 +536,55 @@ TEST_CASE("ContractionPlanning - runtime-tensor chain stays analysis-only", "[Co
     cg::passes::ContractionPlanning pass(skewed_model());
     pass.run(graph);
 
-    // Detected but declined: no fold, no emitted Gemm nodes.
-    CHECK(pass.chains_restructured() == 0);
-    CHECK(pass.intermediates_created() == 0);
-    CHECK(count_kind(graph, cg::OpKind::Gemm) == 0);
+    CHECK(pass.chains_restructured() == 1);
+    CHECK(count_kind(graph, cg::OpKind::Gemm) > 0);
 
     graph.execute();
 
     // Reference on the fixed-rank originals (compile-time Indices einsum needs
     // static rank, so it can't take a RuntimeTensor directly).
+    auto T1r = create_zero_tensor<double>("T1r", 100, 100);
+    auto T2r = create_zero_tensor<double>("T2r", 100, 1);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 1.0, Indices{i, k}, A_t, Indices{k, j}, B_t);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &T2r, 1.0, Indices{i, k}, T1r, Indices{k, j}, C_t);
+
+    double ref_norm = 0.0;
+    for (size_t ii = 0; ii < 100; ii++) {
+        std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), 0};
+        ref_norm += std::abs(T2r(ii, 0));
+        CHECK(T2(idx) == Catch::Approx(T2r(ii, 0)).margin(1e-8));
+    }
+    REQUIRE(ref_norm > 1e-8);
+}
+
+TEST_CASE("ContractionPlanning - user-visible runtime interior still blocks the fold", "[ComputeGraph][Passes][CP]") {
+    // Runtime-ness is no longer the blocker, but the observable-interior rule
+    // is unchanged: a user-created interior keeps a write the fold would elide.
+    auto A_t = create_random_tensor<double>("A", 100, 1);
+    auto B_t = create_random_tensor<double>("B", 1, 100);
+    auto C_t = create_random_tensor<double>("C", 100, 1);
+
+    RuntimeTensor<double> A(A_t), B(B_t), C(C_t);
+    RuntimeTensor<double> T1("T1", std::vector<size_t>{100, 100}); // user-visible interior
+    RuntimeTensor<double> T2("T2", std::vector<size_t>{100, 1});
+    T1.zero();
+    T2.zero();
+
+    cg::Graph graph("cp_runtime_user_interior");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &T2, 1.0, T1, C);
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    pass.run(graph);
+
+    CHECK(pass.chains_restructured() == 0);
+    CHECK(count_kind(graph, cg::OpKind::Gemm) == 0);
+
+    graph.execute();
+
     auto T1r = create_zero_tensor<double>("T1r", 100, 100);
     auto T2r = create_zero_tensor<double>("T2r", 100, 1);
     tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 1.0, Indices{i, k}, A_t, Indices{k, j}, B_t);

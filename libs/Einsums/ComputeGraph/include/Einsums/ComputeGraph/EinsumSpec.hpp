@@ -64,6 +64,36 @@ struct EINSUMS_EXPORT ParsedEinsumSpec {
 };
 
 /**
+ * @brief Where an operand's link (contracted) indices sit in its index list.
+ *
+ * A GEMM reads its operands as flat matrices, A as (M,K) and B as (K,N), so an
+ * operand can be handed to BLAS without first being physically transposed only
+ * when its link indices form a contiguous block at one END of its index list.
+ * Which end tells you the transpose flag: an A whose links are a prefix is
+ * stored (K,M) and needs `transA`, a B whose links are a suffix is stored (N,K)
+ * and needs `transB`.
+ *
+ * Both flags are true when an operand is entirely link indices or entirely
+ * target indices, and the caller picks whichever reading needs no transpose.
+ * Both false means the links are interleaved with the targets, which no
+ * transpose flag can fix - that operand needs a real permute first.
+ */
+struct LinkPlacement {
+    bool prefix{false}; ///< The link indices occupy exactly the first |link| positions.
+    bool suffix{false}; ///< The link indices occupy exactly the last |link| positions.
+
+    /// True when neither end holds the whole link block.
+    [[nodiscard]] bool split() const { return !prefix && !suffix; }
+};
+
+/**
+ * @brief Classify @p indices by where the members of @p link_indices sit.
+ * @see LinkPlacement
+ */
+[[nodiscard]] EINSUMS_EXPORT LinkPlacement link_placement(std::vector<std::string> const &indices,
+                                                          std::vector<std::string> const &link_indices);
+
+/**
  * @brief Parse an einsum specification string.
  *
  * Supports both arrow (`<-`) and NumPy (`->`) notation. Auto-detects

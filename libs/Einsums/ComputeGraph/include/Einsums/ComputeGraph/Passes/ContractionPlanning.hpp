@@ -69,14 +69,19 @@ namespace einsums::compute_graph::passes {
  *   inputs, and each output must feed exactly one operand of the next member.
  * - A chain must have >= 2 members and an estimated speedup > 1.05x; otherwise
  *   it gets a cost report only (analysis, no rewrite).
- * - Only **rank-2, non-runtime** chains are restructured. Higher-rank or
- *   runtime-rank chains are analysis-only: the emitted Gemm executor casts
- *   operands to `Tensor<T,2>*`, so a runtime tensor would be type confusion.
- * - Leaf-orientation gate: the folded GEMMs run `gemm<false,false>` on each
- *   leaf's physical layout, so a chain with a transposed operand
- *   (e.g. `ik;jk->ij`, link not a contiguous prefix/suffix) is declined - it
- *   would silently corrupt the result. The running product must enter each later
- *   member as `input_a` (matrix-chain DP assumes left-to-right leaf order).
+ * - Only **rank-2 shaped** chains are restructured; a higher-rank operand would
+ *   need its outer dimensions flattened, which this pass does not do. Rank-2
+ *   *runtime-rank* tensors are fine: the emitted executor reaches each operand
+ *   through its impl and the dynamic-rank `gemm` overload, so there is no
+ *   `Tensor<T,2>*` cast to be confused by.
+ * - Leaf orientation is carried as a transpose flag on the emitted GEMM, so a
+ *   chain captured with transposed operands (`ik;jk->ij`) folds like any other
+ *   and no permute is inserted. What still cannot be expressed: a member whose
+ *   OUTPUT is permuted (`ji <- ik ; kj`) - there is no flag that writes an M x N
+ *   result as N x M - an operand whose link indices are interleaved with its
+ *   targets (no flat `(M,K)` reading at all), and a chain where the running
+ *   product enters a later member as `input_b` (the matrix-chain DP assumes
+ *   left-to-right leaf order, and GEMM does not commute).
  * - A squaring node (`OUT = T*T`) breaks the chain (`T` would be both link and
  *   leaf), and unknown dtypes are analysis-only.
  * - Interior outputs of the chain must be graph-owned, unaliased intermediates
@@ -84,11 +89,14 @@ namespace einsums::compute_graph::passes {
  *   value makes the eliminated write observable, so the chain is declined.
  *
  * @par Future improvements
- * - Derive per-operand transpose flags from each leaf's captured index order and
- *   emit `gemm<transA,transB>`, lifting the canonical-orientation gate so
- *   transposed and higher-rank chains can also be restructured (needs folding).
- * - Restructure runtime-rank chains once the Gemm executor no longer assumes a
- *   static `Tensor<T,2>` layout.
+ * - Flatten higher-rank operands into a rank-2 `(M,K)` reading so those chains
+ *   restructure too.
+ * - Insert a permute for an operand whose link indices are interleaved with its
+ *   targets, priced against the saving with
+ *   @ref DeviceProfile::estimate_permute_time_us. Only reachable above rank 2,
+ *   so it is blocked behind the flattening above.
+ * - Reorder the leaf list when the running product enters a member as `input_b`,
+ *   instead of declining the chain.
  */
 class EINSUMS_EXPORT ContractionPlanning : public OptimizerPass {
   public:

@@ -1655,40 +1655,107 @@ std::function<void()> Graph::make_einsum_executor(TensorId a_id, TensorId b_id, 
         }
     }
 
-    // Determine transpose flags: does A have the link index first or last?
-    // Standard GEMM: C(M,N) = A(M,K) * B(K,N)
-    // If A's indices have link before target, A is transposed.
-    // For the folded case, we use column-major BLAS with explicit dimensions.
-    // Since the data is contiguous and we control M,K,N, we call gemm directly.
+    // Per-operand transpose flags, taken from the captured index order.
+    //
+    // A GEMM reads A as (M,K) and B as (K,N). An operand whose link indices sit
+    // at the other end is stored with its axes the other way round and has to
+    // be read transposed; BLAS does that in the packing step, so no physical
+    // permute is needed. This used to be a comment saying "determine transpose
+    // flags" above an unconditional gemm<false, false>, which silently read a
+    // transposed operand in the wrong orientation.
+    //
+    // An operand whose links are neither a prefix nor a suffix (interleaved with
+    // its targets) has no flat (M,K) reading at all; the caller is expected to
+    // have excluded that, and the executor throws rather than compute garbage.
+    auto const a_placement = link_placement(spec.a_indices, links);
+    auto const b_placement = link_placement(spec.b_indices, links);
 
-    return [this, a_id, b_id, c_id, alpha, beta, M, K, N]() {
+    // Prefer the reading that needs no transpose, which also settles the
+    // degenerate all-link / all-target operand where both ends qualify.
+    bool const trans_a = !a_placement.suffix && a_placement.prefix;
+    bool const trans_b = !b_placement.prefix && b_placement.suffix;
+
+    if (a_placement.split() || b_placement.split()) {
+        throw std::invalid_argument(
+            fmt::format("Graph '{}': make_einsum_executor cannot express spec '{}' as a GEMM - an operand's link indices are "
+                        "interleaved with its target indices, so it has no flat (M,K) or (K,N) reading. Permute it first.",
+                        _name, spec.raw));
+    }
+
+    return [this, a_id, b_id, c_id, alpha, beta, M, K, N, trans_a, trans_b]() {
         auto const &a_h = tensor(a_id);
         auto const &b_h = tensor(b_id);
         auto       &c_h = tensor(c_id);
 
         auto go = [&]<typename T>(T /*tag*/) {
-            // For rank-2 tensors, use the standard gemm.
+            // Runtime flags into the compile-time gemm<TransA, TransB>.
+            auto call_gemm = [&](auto const &A, auto const &B, auto *C) {
+                if (trans_a) {
+                    if (trans_b) {
+                        linear_algebra::gemm<true, true>(static_cast<T>(alpha), A, B, static_cast<T>(beta), C);
+                    } else {
+                        linear_algebra::gemm<true, false>(static_cast<T>(alpha), A, B, static_cast<T>(beta), C);
+                    }
+                } else {
+                    if (trans_b) {
+                        linear_algebra::gemm<false, true>(static_cast<T>(alpha), A, B, static_cast<T>(beta), C);
+                    } else {
+                        linear_algebra::gemm<false, false>(static_cast<T>(alpha), A, B, static_cast<T>(beta), C);
+                    }
+                }
+            };
+
+            // The result is M x N by construction. A destination shaped the
+            // other way round would be a silent transpose whenever M == N, so
+            // say so instead of writing it.
+            auto check_destination = [&](size_t rows, size_t cols) {
+                if (rows != M || cols != N) {
+                    throw std::invalid_argument(
+                        fmt::format("Graph '{}': make_einsum_executor produces a {}x{} result but its destination is {}x{}; the "
+                                    "output's index order does not match [A targets..., B targets...].",
+                                    _name, M, N, rows, cols));
+                }
+            };
+
+            bool const rank2_shaped = a_h.rank == 2 && b_h.rank == 2 && c_h.rank == 2;
+            bool const any_runtime  = a_h.is_runtime || b_h.is_runtime || c_h.is_runtime;
+
+            // For statically typed rank-2 tensors, use the standard gemm.
             // For higher-rank, create temporary rank-2 views.
-            if (a_h.rank == 2 && b_h.rank == 2 && c_h.rank == 2) {
+            if (rank2_shaped && !any_runtime) {
                 auto *A = static_cast<Tensor<T, 2> *>(a_h.tensor_ptr);
                 auto *B = static_cast<Tensor<T, 2> *>(b_h.tensor_ptr);
                 auto *C = static_cast<Tensor<T, 2> *>(c_h.tensor_ptr);
-                linear_algebra::gemm<false, false>(static_cast<T>(alpha), *A, *B, static_cast<T>(beta), C);
+                check_destination(C->dim(0), C->dim(1));
+                call_gemm(*A, *B, C);
+            } else if (rank2_shaped && a_h.impl_fn && b_h.impl_fn && c_h.impl_fn) {
+                // At least one operand is runtime-rank. Casting to Tensor<T,2>*
+                // would be type confusion, so go through the impl each tensor
+                // type exposes and let the dynamic-rank gemm overload take it.
+                // This is what lets a chain of RuntimeTensors - the Python-facing
+                // type - be restructured instead of staying analysis-only.
+                using Impl = ::einsums::detail::TensorImpl<T>;
+                RuntimeTensorView<T> const A{*static_cast<Impl *>(a_h.impl_fn())};
+                RuntimeTensorView<T> const B{*static_cast<Impl *>(b_h.impl_fn())};
+                RuntimeTensorView<T>       C{*static_cast<Impl *>(c_h.impl_fn())};
+                check_destination(C.dim(0), C.dim(1));
+                call_gemm(A, B, &C);
             } else {
                 // Higher-rank: use raw BLAS on the data pointers with folded dims.
-                // Create temporary rank-2 TensorView-like wrappers.
-                // For column-major: A is stored as (M, K), B as (K, N), C as (M, N).
+                // Create temporary rank-2 TensorView-like wrappers. The flat
+                // shape follows the transpose flag: a transposed A is stored
+                // (K,M), a transposed B is stored (N,K).
                 T const     *a_data = static_cast<T *>(a_h.data_ptr ? a_h.data_ptr : const_cast<void *>(a_h.tensor_ptr));
                 T const     *b_data = static_cast<T *>(b_h.data_ptr ? b_h.data_ptr : const_cast<void *>(b_h.tensor_ptr));
                 T           *c_data = static_cast<T *>(c_h.data_ptr ? c_h.data_ptr : const_cast<void *>(c_h.tensor_ptr));
-                Tensor<T, 2> A_view("A_fold", M, K);
-                Tensor<T, 2> B_view("B_fold", K, N);
+                Tensor<T, 2> A_view("A_fold", trans_a ? K : M, trans_a ? M : K);
+                Tensor<T, 2> B_view("B_fold", trans_b ? N : K, trans_b ? K : N);
                 Tensor<T, 2> C_view("C_fold", M, N);
                 std::memcpy(A_view.data(), a_data, M * K * sizeof(T));
                 std::memcpy(B_view.data(), b_data, K * N * sizeof(T));
                 if (beta != 0.0)
                     std::memcpy(C_view.data(), c_data, M * N * sizeof(T));
-                linear_algebra::gemm<false, false>(static_cast<T>(alpha), A_view, B_view, static_cast<T>(beta), &C_view);
+                call_gemm(A_view, B_view, &C_view);
                 std::memcpy(c_data, C_view.data(), M * N * sizeof(T));
             }
         };

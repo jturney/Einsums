@@ -178,6 +178,31 @@ std::vector<std::string> ParsedEinsumSpec::target_indices() const {
     return {c_set.begin(), c_set.end()};
 }
 
+LinkPlacement link_placement(std::vector<std::string> const &indices, std::vector<std::string> const &link_indices) {
+    std::set<std::string> const link_set(link_indices.begin(), link_indices.end());
+
+    size_t nlink = 0;
+    for (auto const &idx : indices) {
+        if (link_set.count(idx) != 0) {
+            nlink++;
+        }
+    }
+
+    LinkPlacement placement;
+    placement.prefix = true;
+    placement.suffix = true;
+    for (size_t pos = 0; pos < indices.size(); pos++) {
+        bool const is_link = link_set.count(indices[pos]) != 0;
+        if ((pos < nlink) != is_link) {
+            placement.prefix = false;
+        }
+        if ((pos >= indices.size() - nlink) != is_link) {
+            placement.suffix = false;
+        }
+    }
+    return placement;
+}
+
 expected<ParsedPermuteSpec, GraphError> parse_permute_spec(std::string_view spec) {
     std::string const stripped = strip_whitespace(spec);
 
