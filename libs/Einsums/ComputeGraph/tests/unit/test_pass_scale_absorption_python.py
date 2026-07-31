@@ -69,18 +69,119 @@ def test_scale_absorption_absorbs_into_permute():
     assert_close(C, C_ref)
 
 
-def test_scale_absorption_no_absorption_when_beta_not_zero():
+def test_scale_absorption_no_fold_into_accumulating_permute():
+    """An accumulating consumer folds only when it exposes live shared params.
+
+    permute bakes its prefactors into the executor closure, so the scale stays.
+    """
+    A = einsums.create_random_tensor("A", [3, 3])
+    C = einsums.create_random_tensor("C", [3, 3])
+
+    A_np = np.asarray(A).copy()
+    expected = 2.0 * np.asarray(C).copy() + A_np.T
+
+    g = cg.Graph("no_absorb_accum_permute")
+    with cg.capture(g):
+        einsums.linalg.scale(2.0, C)
+        einsums.permute("j,i <- i,j", C, A, c_pf=1.0, a_pf=1.0)
+
+    pass_inst = cg.ScaleAbsorption()
+    assert not _run(pass_inst, g)
+
+    g.execute()
+    assert_close(C, expected)
+
+
+def test_scale_absorption_folds_into_accumulating_einsum():
+    """scale(a, C) then C = c_pf*C + ... folds a into the accumulate prefactor."""
     A = einsums.create_random_tensor("A", [3, 3])
     B = einsums.create_random_tensor("B", [3, 3])
     C = einsums.create_random_tensor("C", [3, 3])
 
-    g = cg.Graph("no_absorb")
+    expected = 3.0 * np.asarray(C).copy() + np.asarray(A) @ np.asarray(B)
+
+    g = cg.Graph("fold_accumulator")
     with cg.capture(g):
-        einsums.linalg.scale(2.0, C)
+        einsums.linalg.scale(3.0, C)
         einsums.einsum("ij <- ik ; kj", C, A, B, c_pf=1.0, ab_pf=1.0)
 
-    pass_inst = cg.ScaleAbsorption()
-    assert not _run(pass_inst, g)
+    assert _run(cg.ScaleAbsorption(), g)
+
+    g.execute()
+    assert_close(C, expected)
+
+
+def test_scale_absorption_folds_into_axpby_source():
+    """axpby is linear in X, so scaling X equals scaling alpha."""
+    A = einsums.create_random_tensor("A", [4, 3])
+    B = einsums.create_random_tensor("B", [3, 5])
+    X = einsums.create_random_tensor("X", [4, 5])
+    Y = einsums.create_zero_tensor("Y", [4, 5])
+
+    expected = 2.0 * 3.0 * np.asarray(X).copy()
+
+    g = cg.Graph("fold_axpby_operand")
+    with cg.capture(g):
+        einsums.linalg.scale(3.0, X)
+        einsums.linalg.axpby(2.0, X, 0.0, Y)
+        einsums.einsum("ij <- ik ; kj", X, A, B, c_pf=0.0, ab_pf=1.0)
+
+    assert _run(cg.ScaleAbsorption(), g)
+
+    g.execute()
+    assert_close(Y, expected)
+
+
+def test_scale_absorption_folds_into_every_reader():
+    """Two readers before the overwrite: the factor goes into both."""
+    A = einsums.create_random_tensor("A", [4, 3])
+    B = einsums.create_random_tensor("B", [3, 5])
+    C = einsums.create_random_tensor("C", [4, 5])
+    E1 = einsums.create_random_tensor("E1", [4, 4])
+    E2 = einsums.create_random_tensor("E2", [4, 4])
+    D1 = einsums.create_zero_tensor("D1", [4, 5])
+    D2 = einsums.create_zero_tensor("D2", [4, 5])
+
+    C_np = np.asarray(C).copy()
+    d1_expected = 3.0 * (np.asarray(E1) @ C_np)
+    d2_expected = 3.0 * (np.asarray(E2) @ C_np)
+
+    g = cg.Graph("fold_all_readers")
+    with cg.capture(g):
+        einsums.linalg.scale(3.0, C)
+        einsums.einsum("ij <- ik ; kj", D1, E1, C, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("ij <- ik ; kj", D2, E2, C, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("ij <- ik ; kj", C, A, B, c_pf=0.0, ab_pf=1.0)
+
+    assert _run(cg.ScaleAbsorption(), g)
+
+    g.execute()
+    assert_close(D1, d1_expected)
+    assert_close(D2, d2_expected)
+
+
+def test_scale_absorption_loop_body_reader_keeps_scale():
+    """A loop body reading the scaled tensor is a reader the parent scan must see."""
+    A = einsums.create_random_tensor("A", [4, 4])
+    B = einsums.create_random_tensor("B", [4, 4])
+    C = einsums.create_random_tensor("C", [4, 4])
+    out = einsums.create_zero_tensor("out", [4, 4])
+
+    expected = 3.0 * np.asarray(C).copy()
+
+    g = cg.Graph("sa_loop_body_reader")
+    with cg.capture(g):
+        einsums.linalg.scale(3.0, C)
+    body = g.add_loop("once", 1, lambda it: it < 1)
+    with cg.capture(body):
+        einsums.linalg.axpby(1.0, C, 0.0, out)
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", C, A, B, c_pf=0.0, ab_pf=1.0)
+
+    assert not _run(cg.ScaleAbsorption(), g)
+
+    g.execute()
+    assert_close(out, expected)
 
 
 def test_scale_absorption_no_fusion_when_different_tensors():

@@ -26,11 +26,20 @@ namespace einsums::compute_graph::passes {
  * - **BatchedGemm**: Scale(α) + BatchedGemm(beta=0) → BatchedGemm(beta=0)
  * - **Permute**: Scale(α) + Permute(beta=0) → Permute(beta=0)
  *
- * **Operand fold (live scale)** — the scaled tensor is read by exactly one
- * einsum as a single operand and is then overwritten (so its scaled value is
- * dead everywhere else). einsum is linear in each operand, so `α` folds into
- * that einsum's `ab_prefactor` and the Scale is dropped:
- * - Scale(α, A) + Einsum(ab_pf, …, A, B) + overwrite(A) → Einsum(ab_pf·α, …, A, B)
+ * **Fold (live scale)** — the scaled tensor is overwritten later, so its scaled
+ * value is observable only to the nodes in between. Every one of those nodes
+ * takes the factor and the Scale is dropped. Two ways a node can take it:
+ * - **Operand**: it reads the tensor as one operand. einsum and axpby are
+ *   linear in their source, so `α` folds into `ab_prefactor` / `alpha`:
+ *   Scale(α, A) + Einsum(ab_pf, …, A, B) + overwrite(A) → Einsum(ab_pf·α, …, A, B)
+ * - **Accumulator**: it accumulates into the tensor and reads it only as that
+ *   destination. `scale(α, C)` then `C = c_pf·C + …` is exactly
+ *   `C = (c_pf·α)·C + …`, so `α` folds into `c_prefactor` / `beta`:
+ *   Scale(α, C) + Einsum(c_pf≠0, C, …) → Einsum(c_pf·α, C, …)
+ *
+ * The fold is all-or-nothing across the window: if any observer cannot take the
+ * factor the whole Scale is kept, because a partial fold would be wrong rather
+ * than merely a missed optimization.
  *
  * The fold is written to BOTH the live EinsumParams (read by the CPU executor)
  * and the descriptor snapshot (read by GPU dispatch / later passes); a
@@ -68,25 +77,22 @@ namespace einsums::compute_graph::passes {
  * @endcode
  *
  * @par Limitations
- * - Operand folding targets only **einsum** (folds into `ab_prefactor`). A scale
- *   feeding a live gemm/axpby/permute/BatchedGemm operand is kept — `permute`
- *   and `BatchedGemm` bake their prefactors into the executor closure, so
- *   folding into them is not desync-safe (they lack live shared params).
- * - Operand folding requires the scaled tensor to be read by exactly ONE op as
- *   ONE operand AND overwritten afterward: two readers, the tensor used as both
- *   einsum operands (α² not α), or a scaled value that stays live (never
- *   overwritten, e.g. a graph output) are left un-folded.
- * - **Accumulator** scales — `scale(α, C)` before an *accumulating* write
- *   (c_pf/beta != 0) — are not yet folded into the accumulate prefactor.
+ * - Only **einsum** and **axpby** can take the factor. `gemm`, `permute` and
+ *   `BatchedGemm` bake their prefactors into the executor closure, so folding
+ *   into them is not desync-safe (they lack live shared params); a scale whose
+ *   window contains one of them is kept.
+ * - The tensor must be read as exactly ONE operand by each observer: the tensor
+ *   used as both einsum operands, or accumulated into AND used as an operand by
+ *   the same node, would need α² and is left un-folded.
+ * - A scaled value that is never overwritten stays observable to the caller
+ *   after execute, so its Scale is always kept.
+ * - Reads from inside a control-flow node's sub-graphs count (via
+ *   @ref Graph::effective_io) but cannot be folded into, so a loop body reading
+ *   the scaled tensor keeps the Scale.
  *
  * @par Future improvements
- * - Extend operand folding to axpby (fold into `alpha`, via AxpbyDescriptor's
- *   live params) and gemm; and to `permute`/`BatchedGemm` once they carry live
- *   prefactor params (CG audit §5.1-3).
- * - Accumulator folding: `scale(α, C)` + accumulating consumer → fold α into the
- *   consumer's c_prefactor / beta.
- * - Fold into ALL readers when a scaled tensor has several foldable consumers,
- *   instead of bailing on the multi-reader case.
+ * - Fold into `permute` / `BatchedGemm` / `gemm` once they carry live prefactor
+ *   params the way EinsumParams and AxpbyParams do (CG audit §5.1-3).
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT ScaleAbsorption : public OptimizerPass {
   public:

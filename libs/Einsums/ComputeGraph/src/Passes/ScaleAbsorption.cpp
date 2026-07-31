@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <complex>
+#include <ranges>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -18,28 +20,106 @@ namespace einsums::compute_graph::passes {
 
 namespace {
 
-/// Does `target` fully overwrite its output without reading its prior contents
-/// (c_prefactor / beta == 0)? If so, a Scale of that tensor immediately
-/// preceding it (with no intervening reader) is dead.
+/// Where a scale of some tensor can be folded inside a consumer.
+enum class FoldSite : std::uint8_t {
+    None,        ///< Cannot take the factor.
+    Operand,     ///< Reads the tensor as one operand: fold into the source prefactor.
+    Accumulator, ///< Accumulates into the tensor: fold into the destination prefactor.
+};
 
-/// Can a scale of `tensor` fold into `node`'s operand prefactor? `node` must be
-/// an einsum reading `tensor` as EXACTLY ONE operand (not its output, not both
-/// operands — that would contribute a², not a). einsum is linear in each
-/// operand, so scaling one operand equals scaling the product: fold a into
-/// ab_prefactor. Requires live shared params — the CPU executor reads ab_pf from
-/// EinsumParams, so a descriptor-only edit would desync it.
-bool foldable_einsum_operand(Node const &node, TensorId tensor) {
-    if (node.kind != OpKind::Einsum) {
-        return false;
+/// Where (if anywhere) a scale of @p tensor folds inside @p node.
+///
+/// **Operand**: the node reads @p tensor as EXACTLY ONE operand. Both einsum
+/// and axpby are linear in their source, so scaling the source equals scaling
+/// the result: `a` folds into `ab_prefactor` / `alpha`. Reading it as both
+/// operands would contribute a², so that is declined.
+///
+/// **Accumulator**: the node writes @p tensor and reads it only as that
+/// destination, with a non-zero destination prefactor. `scale(a, C)` followed
+/// by `C = c_pf*C + …` is exactly `C = (c_pf*a)*C + …`, so `a` folds into
+/// `c_pf` / `beta`. A node that reads its destination AND uses it as an operand
+/// would again need a², so the single-read requirement stands.
+///
+/// Both require live shared params: the CPU executor reads the scalars from
+/// EinsumParams / AxpbyParams, so a descriptor-only edit would desync it. That
+/// is why permute and BatchedGemm are not folded into - they bake their
+/// prefactors into the executor closure.
+FoldSite fold_site(Node const &node, TensorId tensor) {
+    if (node.outputs.empty()) {
+        return FoldSite::None;
     }
-    if (node.outputs.empty() || node.outputs[0] == tensor) {
-        return false; // tensor is the einsum's output (accumulator), not an operand
+
+    // Count reads through the OPERAND slots only, by position: einsum's are
+    // inputs[0] and inputs[1], axpby's is inputs[0]. Counting the whole input
+    // list would not answer this, because whether an accumulating node also
+    // lists its destination there depends on how the node was built -
+    // Graph::make_einsum_node appends it, the capture path does not.
+    size_t const operand_slots  = (node.kind == OpKind::Einsum) ? 2 : 1;
+    size_t const operand_reads  = static_cast<size_t>(std::ranges::count(node.inputs | std::views::take(operand_slots), tensor));
+    bool const   is_destination = node.outputs[0] == tensor;
+
+    if (is_destination) {
+        // Accumulating into the tensor AND using it as an operand would need
+        // the factor twice; only the pure accumulate folds.
+        if (operand_reads != 0) {
+            return FoldSite::None;
+        }
+    } else if (operand_reads != 1) {
+        return FoldSite::None;
     }
-    auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
-    if (desc == nullptr || desc->params == nullptr) {
-        return false; // no live params: folding into the descriptor alone would desync
+
+    if (node.kind == OpKind::Einsum) {
+        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        if (desc == nullptr || desc->params == nullptr) {
+            return FoldSite::None;
+        }
+        if (!is_destination) {
+            return FoldSite::Operand;
+        }
+        return is_zero(desc->params->c_pf) ? FoldSite::None : FoldSite::Accumulator;
     }
-    return std::ranges::count(node.inputs, tensor) == 1;
+
+    if (node.kind == OpKind::Axpby) {
+        auto const *desc = std::get_if<AxpbyDescriptor>(&node.op_data);
+        if (desc == nullptr || desc->params == nullptr) {
+            return FoldSite::None;
+        }
+        if (!is_destination) {
+            return FoldSite::Operand;
+        }
+        return is_zero(desc->params->beta) ? FoldSite::None : FoldSite::Accumulator;
+    }
+
+    return FoldSite::None;
+}
+
+/// Multiply @p node's prefactor at @p site by @p factor. Caller guarantees
+/// @ref fold_site returned that site. Writes the live params the executor reads
+/// AND the snapshot beside them, so later analysis sees the same value.
+void apply_fold(Node &node, FoldSite site, double factor) {
+    if (auto *desc = std::get_if<EinsumDescriptor>(&node.op_data)) {
+        if (site == FoldSite::Operand) {
+            desc->params->ab_pf = scale_prefactor(desc->params->ab_pf, factor);
+            desc->ab_prefactor  = desc->params->ab_pf;
+        } else {
+            desc->params->c_pf = scale_prefactor(desc->params->c_pf, factor);
+            desc->c_prefactor  = desc->params->c_pf;
+        }
+        return;
+    }
+    auto *desc = std::get_if<AxpbyDescriptor>(&node.op_data);
+    if (site == FoldSite::Operand) {
+        desc->params->alpha = scale_prefactor(desc->params->alpha, factor);
+        desc->alpha         = desc->params->alpha;
+    } else {
+        desc->params->beta = scale_prefactor(desc->params->beta, factor);
+        desc->beta         = desc->params->beta;
+    }
+}
+
+/// A short name for the fold, for logs.
+char const *fold_site_name(FoldSite site) {
+    return site == FoldSite::Operand ? "operand" : "accumulator";
 }
 
 } // namespace
@@ -71,6 +151,29 @@ bool ScaleAbsorption::run(Graph &graph) {
 
     auto const touches = [](std::vector<TensorId> const &v, TensorId t) { return std::ranges::find(v, t) != v.end(); };
 
+    // What each control-flow node's SUB-GRAPHS touch.
+    //
+    // A Loop/Conditional node's own inputs/outputs say nothing about what its
+    // body reads or writes; Graph::effective_io is what reconstructs that. The
+    // window scan below is a liveness question, so a body read is exactly as
+    // observable as a top-level one - without this, a scale whose only reader
+    // lives inside a loop body looked dead and was dropped, and the body then
+    // read the unscaled tensor.
+    std::unordered_map<size_t, std::pair<std::vector<TensorId>, std::vector<TensorId>>> subgraph_io;
+    for (size_t idx = 0; idx < nodes.size(); idx++) {
+        if (is_control_flow(nodes[idx].kind)) {
+            subgraph_io.emplace(idx, graph.effective_io(nodes[idx]));
+        }
+    }
+    auto const node_reads = [&](size_t idx, TensorId t) {
+        auto const it = subgraph_io.find(idx);
+        return touches(it != subgraph_io.end() ? it->second.first : nodes[idx].inputs, t);
+    };
+    auto const node_writes = [&](size_t idx, TensorId t) {
+        auto const it = subgraph_io.find(idx);
+        return touches(it != subgraph_io.end() ? it->second.second : nodes[idx].outputs, t);
+    };
+
     for (size_t sc = 0; sc + 1 < nodes.size(); sc++) {
         if (remove[sc]) {
             continue;
@@ -93,28 +196,34 @@ bool ScaleAbsorption::run(Graph &graph) {
         // then dead — i.e. overwritten before anything else (including the
         // caller after execute) could read it. Accumulator writes read too, so
         // count them as reads.
-        long reader   = -1;
-        bool multiple = false;
-        long writer   = -1;
+        std::vector<size_t> readers;
+        long                writer = -1;
         for (size_t tgt = sc + 1; tgt < nodes.size(); tgt++) {
             if (remove[tgt]) {
                 continue;
             }
-            auto const &node = nodes[tgt];
-            if (touches(node.inputs, scaled_tensor)) {
-                if (reader != -1) {
-                    multiple = true;
-                    break;
-                }
-                reader = static_cast<long>(tgt);
+            bool const writes = node_writes(tgt, scaled_tensor);
+            // An accumulating node reads its destination whether or not it says
+            // so in `inputs` (the capture path does not list it, only
+            // Graph::make_einsum_node does), and that read observes the scale.
+            bool const reads = node_reads(tgt, scaled_tensor) || (writes && reads_destination(nodes[tgt]));
+            if (reads) {
+                readers.push_back(tgt);
             }
-            if (touches(node.outputs, scaled_tensor)) {
+            if (writes) {
                 writer = static_cast<long>(tgt);
                 break; // the scaled value's live range ends here
             }
         }
 
-        if (reader == -1 && writer >= 0 && pure_overwrite(nodes[writer])) {
+        if (writer < 0) {
+            continue; // never overwritten: the scaled value stays observable
+        }
+        // A control-flow writer is opaque: its body may read the destination
+        // before writing it, so it cannot be treated as a pure overwrite.
+        bool const writer_overwrites = !is_control_flow(nodes[writer].kind) && pure_overwrite(nodes[writer]);
+
+        if (readers.empty() && writer_overwrites) {
             // Dead scale: the next writer overwrites the tensor without reading
             // it, so the scale's result is discarded. Drop the Scale node.
             remove[sc] = true;
@@ -123,25 +232,46 @@ bool ScaleAbsorption::run(Graph &graph) {
                              op_kind_name(nodes[writer].kind), nodes[writer].id);
             report(2, fmt::format("remove dead scale({}); {} node {} overwrites the tensor without reading it", scale_factor,
                                   op_kind_name(nodes[writer].kind), nodes[writer].id));
-        } else if (reader >= 0 && !multiple && writer >= 0 && foldable_einsum_operand(nodes[static_cast<size_t>(reader)], scaled_tensor)) {
-            // Operand fold: the scaled value is read by exactly one einsum operand
-            // and then overwritten, so it is dead everywhere else. Fold a into the
-            // einsum's ab_prefactor (product scales by a) — both the live params
-            // (read by the CPU executor) and the snapshot — and drop the Scale.
-            Node &einsum        = nodes[static_cast<size_t>(reader)];
-            auto *desc          = std::get_if<EinsumDescriptor>(&einsum.op_data);
-            desc->ab_prefactor  = scale_prefactor(desc->ab_prefactor, scale_factor);
-            desc->params->ab_pf = scale_prefactor(desc->params->ab_pf, scale_factor);
-            remove[sc]          = true;
-            ++_num_absorbed;
-            // The einsum's read of scaled_tensor now observes the tensor's initial
-            // contents (the scale is gone) but is exact thanks to the ab_pf fold;
-            // waive the program-order guard for exactly that read.
-            _compensated.emplace_back(einsum.id, scaled_tensor);
-            EINSUMS_LOG_INFO("ScaleAbsorption: folded scale({}) into einsum node {} ab_prefactor", scale_factor, einsum.id);
-            report(2, fmt::format("fold scale({}) into einsum node {} ab_prefactor (sole operand)", scale_factor, einsum.id));
+            continue;
         }
-        // else: the scale is live and not (yet) foldable — keep it.
+
+        // Fold: every node that observes the scaled value before it dies has to
+        // take the factor. A reader that reads the tensor as an operand scales
+        // its source prefactor; the accumulating writer scales its destination
+        // prefactor. Both are exact, and with all of them compensated the Scale
+        // itself is redundant. Bail on the whole scale if any one of them
+        // cannot take it - a partial fold would be wrong, not merely missed.
+        std::vector<std::pair<size_t, FoldSite>> folds;
+        folds.reserve(readers.size());
+        bool all_foldable = true;
+        for (size_t const r : readers) {
+            FoldSite const site = fold_site(nodes[r], scaled_tensor);
+            if (site == FoldSite::None) {
+                all_foldable = false;
+                break;
+            }
+            folds.emplace_back(r, site);
+        }
+        // The writer closes the live range. If it does not read the tensor it
+        // is not in `readers` and needs nothing; if it does, it was folded
+        // above as the accumulator.
+        if (!all_foldable || folds.empty()) {
+            continue; // the scale is live and not foldable - keep it
+        }
+
+        for (auto const &[idx, site] : folds) {
+            apply_fold(nodes[idx], site, scale_factor);
+            // That node's read of scaled_tensor now observes the tensor's
+            // initial contents (the scale is gone) but is exact thanks to the
+            // fold; waive the program-order guard for exactly that read.
+            _compensated.emplace_back(nodes[idx].id, scaled_tensor);
+            EINSUMS_LOG_INFO("ScaleAbsorption: folded scale({}) into {} node {} ({} prefactor)", scale_factor,
+                             op_kind_name(nodes[idx].kind), nodes[idx].id, fold_site_name(site));
+            report(2, fmt::format("fold scale({}) into {} node {} {} prefactor", scale_factor, op_kind_name(nodes[idx].kind), nodes[idx].id,
+                                  fold_site_name(site)));
+        }
+        remove[sc] = true;
+        ++_num_absorbed;
     }
 
     if (_num_absorbed == num_absorbed_at_entry) {
