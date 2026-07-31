@@ -4,6 +4,7 @@
 #----------------------------------------------------------------------------------------------
 
 set(TensorAlgebraTests
+    ConcurrentPermute.cpp
     Batched.cpp
     DispatchCoverage.cpp
     Dot.cpp
