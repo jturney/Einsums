@@ -186,6 +186,34 @@ def test_cse_does_not_eliminate_different_inputs():
     assert g.num_nodes() == 2
 
 
+def test_cse_keeps_a_duplicate_a_loop_body_reads():
+    """A loop body reading the duplicate's output blocks the merge.
+
+    Regression: a control-flow node's inputs do not list what its body reads,
+    and the slot redirect reaches only the parent graph, so the merge left the
+    body reading a never-written buffer.
+    """
+    A = einsums.create_random_tensor("A", [4, 3])
+    B = einsums.create_random_tensor("B", [3, 5])
+    C = einsums.create_zero_tensor("C", [4, 5])
+    out = einsums.create_zero_tensor("out", [4, 5])
+
+    g = cg.Graph("cse_loop_body_reader")
+    D = g.create_zero_tensor("D", [4, 5], dtype="float64")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", C, A, B)
+        einsums.einsum("ij <- ik ; kj", D, A, B)
+    body = g.add_loop("once", 1, lambda it: it < 1)
+    with cg.capture(body):
+        einsums.linalg.axpby(1.0, D, 0.0, out)
+
+    modified = g.apply(_one_pass(cg.CSE()))
+    assert not modified
+
+    g.execute()
+    assert_close(out, np.asarray(A) @ np.asarray(B))
+
+
 def test_cse_does_not_merge_permutes_with_different_index_orders():
     """Two transposes of one source differ in their index orders alone.
 

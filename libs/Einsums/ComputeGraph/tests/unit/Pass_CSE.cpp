@@ -277,6 +277,48 @@ TEST_CASE("CSE - does not eliminate different inputs", "[ComputeGraph][CSE]") {
     REQUIRE(graph.num_nodes() == 2);
 }
 
+TEST_CASE("CSE - keeps a duplicate whose output a loop body reads", "[ComputeGraph][CSE][ControlFlow]") {
+    // A control-flow node's Node::inputs do not list what its body reads (that
+    // is what Graph::effective_io reconstructs), so the reader scan saw nobody
+    // reading D and merged its producer away. Graph::redirect_slot only repoints
+    // the parent's slot table, so the body kept reading D's own -- now never
+    // written -- buffer and summed zeros.
+    auto A   = create_random_tensor<double>("A", 4, 3);
+    auto B   = create_random_tensor<double>("B", 3, 5);
+    auto C   = create_zero_tensor<double>("C", 4, 5);
+    auto out = create_zero_tensor<double>("out", 4, 5);
+
+    cg::Graph graph("cse_loop_body_reader");
+    auto     &D = graph.create_zero_tensor<double, 2>("D", 4, 5); // graph-owned duplicate
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B); // survivor
+        cg::einsum("ik;kj->ij", &D, A, B); // duplicate
+    }
+    auto &body = graph.add_loop("once", 1, [](size_t iter) { return iter < 1; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::axpby(1.0, D, 0.0, &out);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    CHECK_FALSE(modified);
+
+    graph.execute();
+
+    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+
+    double out_norm = 0.0;
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(out(ii, jj) - C_ref(ii, jj)) < 1e-12);
+            out_norm += std::abs(out(ii, jj));
+        }
+    }
+    REQUIRE(out_norm > 1e-8);
+}
+
 TEST_CASE("CSE - does not merge permutes with different index orders", "[ComputeGraph][CSE][Permute]") {
     // Regression: permute_desc_equal compared only alpha and beta, so two
     // permutes of the SAME source with the same scalars but DIFFERENT index

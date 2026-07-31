@@ -58,6 +58,9 @@ namespace einsums::compute_graph::passes {
  *   user-visible output is left in place because the user reads that tensor directly, not through an executor slot.
  * - Every merged output buffer must have **exactly one writer** in the whole graph (Guard B), and the shared inputs must not be
  *   overwritten by any node between the two candidates (Guard A); either condition would make the reused value stale.
+ * - Neither output may be a buffer a control-flow node's sub-graph reads or writes (Guard D). A Loop/Conditional node's own
+ *   `inputs`/`outputs` do not list what its body touches (that is @ref Graph::effective_io), and `redirect_slot` repoints only
+ *   this graph's slot table, so a body reading the eliminated duplicate's output would read a never-written buffer.
  * - Opt-out of PassManager auto-recursion (`recurse_into_subgraphs() == false`): never runs on loop bodies / conditional
  *   branches, because redirecting a duplicate whose output is later written independently is unsound (the SCF-body case).
  * - Matching is an O(n^2) pairwise scan over the node list.

@@ -133,6 +133,29 @@ bool CSE::run(Graph &graph) {
         }
     }
 
+    // Buffers reached from inside a control-flow node's sub-graphs (Guard D).
+    //
+    // A Loop/Conditional node's own inputs/outputs say nothing about what its
+    // body touches; Graph::effective_io is what reconstructs that. Neither the
+    // writer count above nor the reader scan below sees a body, and
+    // Graph::redirect_slot repoints only THIS graph's slot table, so a merge
+    // involving a buffer a body reads leaves that body reading a never-written
+    // buffer, and one a body writes hands redirected readers a mutated value.
+    std::unordered_set<void const *> subgraph_touched;
+    for (auto const &nd : nodes) {
+        if (!is_control_flow(nd.kind))
+            continue;
+        auto const [sub_in, sub_out] = graph.effective_io(nd);
+        for (auto tid : sub_in) {
+            if (auto const *p = ptr_of(tid))
+                subgraph_touched.insert(p);
+        }
+        for (auto tid : sub_out) {
+            if (auto const *p = ptr_of(tid))
+                subgraph_touched.insert(p);
+        }
+    }
+
     for (size_t i = 0; i < nodes.size(); i++) {
         if (remove[i])
             continue;
@@ -204,6 +227,26 @@ bool CSE::run(Graph &graph) {
                 }
             }
             if (!single_writer)
+                continue;
+
+            // Guard D: neither output may be a buffer some control-flow node's
+            // sub-graph touches (see subgraph_touched above).
+            bool subgraph_reachable = false;
+            for (auto out : nodes[i].outputs) {
+                if (auto const *p = ptr_of(out); p != nullptr && subgraph_touched.count(p) > 0) {
+                    subgraph_reachable = true;
+                    break;
+                }
+            }
+            if (!subgraph_reachable) {
+                for (auto out : nodes[j].outputs) {
+                    if (auto const *p = ptr_of(out); p != nullptr && subgraph_touched.count(p) > 0) {
+                        subgraph_reachable = true;
+                        break;
+                    }
+                }
+            }
+            if (subgraph_reachable)
                 continue;
 
             // Guard A: the shared inputs must not be overwritten between i and
