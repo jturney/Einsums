@@ -243,3 +243,62 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: dataflow submission of 200 independent n
     publish_benchmark_result("GraphOverhead dataflow submit 200n", "t_sequential", static_cast<int>(kNoopNodes), t_seq);
     publish_benchmark_result("GraphOverhead dataflow submit 200n", "t_dataflow", static_cast<int>(kNoopNodes), t_df);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CSE scaling: the pass matches nodes pairwise, so its cost is quadratic in the
+// node count unless candidates are bucketed. TiledExpansion routinely emits
+// thousands of nodes (its default budget is 4096), which is where that bites.
+//
+// The graph here is the worst realistic shape: every node is a distinct
+// contraction, so nothing merges and the scan pays for every pair. Reported at
+// three sizes so the growth rate is visible, not just the absolute number.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+EINSUMS_TEST_CASE("Bench GraphOverhead: CSE scan over 500/1000/2000 distinct nodes", "[ComputeGraph][Overhead][benchmark]") {
+    LabeledSection0();
+    constexpr size_t kSmall = 8; // tiny tensors: the pass, not the math, is the signal
+
+    auto bench_at = [&](size_t count) {
+        // Distinct operand pairs per node, so no two nodes are equivalent and
+        // every candidate pair is examined and rejected.
+        std::vector<Tensor<double, 2>> ins;
+        ins.reserve(count + 1);
+        for (size_t n = 0; n <= count; n++) {
+            ins.emplace_back(create_random_tensor<double>(fmt::format("I{}", n), kSmall, kSmall));
+        }
+
+        auto build = [&](cg::Graph &graph) {
+            std::vector<Tensor<double, 2> *> outs;
+            outs.reserve(count);
+            for (size_t n = 0; n < count; n++) {
+                auto &out = graph.create_zero_tensor<double, 2>(fmt::format("O{}", n), kSmall, kSmall);
+                outs.push_back(&out);
+            }
+            cg::CaptureGuard const guard(graph);
+            for (size_t n = 0; n < count; n++) {
+                cg::einsum("ik;kj->ij", 0.0, outs[n], 1.0, ins[n], ins[n + 1]);
+            }
+        };
+
+        // Nothing in this graph merges, so the pass leaves it untouched and can
+        // be timed directly, repeatedly, on one graph. Differencing against a
+        // separate build-only run was the obvious alternative and is useless
+        // here: capture costs tens of milliseconds and varies by more than the
+        // pass now costs, which read as a NEGATIVE pass time.
+        cg::Graph graph("cse_scale");
+        build(graph);
+        size_t const before = graph.num_nodes();
+
+        auto t_cse = time_us(
+            "CSE", [&]() { graph.apply<cg::passes::CSE>(); }, kReps);
+
+        size_t const removed = before - graph.num_nodes();
+        fmt::println("[GraphOverhead CSE {}n] {:.1f} us ({:.3f} us/node, {} removed)", count, t_cse.avg,
+                     t_cse.avg / static_cast<double>(count), removed);
+        publish_benchmark_result("GraphOverhead CSE scan", "t_cse", static_cast<int>(count), t_cse);
+    };
+
+    bench_at(500);
+    bench_at(1000);
+    bench_at(2000);
+}

@@ -301,36 +301,72 @@ bool CSE::run(Graph &graph) {
         }
     }
 
-    for (size_t i = 0; i < nodes.size(); i++) {
-        if (remove[i])
+    // Candidates bucketed by what cheaply distinguishes them, so the scan does
+    // not compare every pair.
+    //
+    // Walking the nodes once and matching each against the earlier SURVIVORS
+    // that share a key is the same answer the pairwise scan gave - the earliest
+    // equivalent node still wins - at a fraction of the work. It matters
+    // because TiledExpansion emits thousands of nodes (its default budget is
+    // 4096) where almost nothing matches, and the quadratic term dominated.
+    //
+    // The key deliberately excludes op_data: two nodes differing only in a
+    // prefactor must land in the same bucket for the proportional merge below
+    // to find them.
+    //
+    // Keying on the REDIRECTED inputs is well-defined even though the redirect
+    // map grows as the scan runs. A redirect key is always the output of an
+    // already-removed node, and a node's inputs only ever name outputs of nodes
+    // before it, so by the time any node is keyed every redirect that could
+    // affect it has been recorded. (This also fixes an asymmetry in the old
+    // scan, which redirected the candidate's inputs but compared them against
+    // the survivor's RAW inputs, and so missed matches whose shared operand had
+    // itself been redirected.)
+    struct CandidateKey {
+        OpKind                kind{};
+        std::vector<TensorId> inputs;
+        size_t                num_outputs{0};
+
+        bool operator==(CandidateKey const &o) const { return kind == o.kind && num_outputs == o.num_outputs && inputs == o.inputs; }
+    };
+    struct CandidateKeyHash {
+        size_t operator()(CandidateKey const &k) const {
+            size_t h   = std::hash<std::uint8_t>{}(static_cast<std::uint8_t>(k.kind));
+            auto   mix = [&h](std::uint64_t v) { h ^= std::hash<std::uint64_t>{}(v) + 0x9e3779b9 + (h << 6) + (h >> 2); };
+            mix(k.num_outputs);
+            for (auto const tid : k.inputs) {
+                mix(tid);
+            }
+            return h;
+        }
+    };
+
+    std::unordered_map<CandidateKey, std::vector<size_t>, CandidateKeyHash> buckets;
+
+    for (size_t j = 0; j < nodes.size(); j++) {
+        if (remove[j])
             continue;
 
         // Only pure-overwrite producers may be a CSE survivor/candidate. (Since
-        // a matched pair must have equal op_data, checking node i covers j.)
-        if (!pure_overwrite(nodes[i]))
+        // a matched pair must have equal op_data, checking one covers the other.)
+        if (!pure_overwrite(nodes[j]))
             continue;
 
-        for (size_t j = i + 1; j < nodes.size(); j++) {
-            if (remove[j])
-                continue;
-
-            // Apply any existing redirections to the candidate's inputs
-            // before comparing.
-            auto redirected_inputs_j = nodes[j].inputs;
-            for (auto &tid : redirected_inputs_j) {
-                auto it = tensor_redirect.find(tid);
-                if (it != tensor_redirect.end()) {
-                    tid = it->second;
-                }
+        CandidateKey key;
+        key.kind        = nodes[j].kind;
+        key.num_outputs = nodes[j].outputs.size();
+        key.inputs      = nodes[j].inputs;
+        for (auto &tid : key.inputs) {
+            auto it = tensor_redirect.find(tid);
+            if (it != tensor_redirect.end()) {
+                tid = it->second;
             }
+        }
 
-            // Check equivalence with redirected inputs
-            if (nodes[i].kind != nodes[j].kind)
-                continue;
-            if (nodes[i].inputs != redirected_inputs_j)
-                continue;
-            if (nodes[i].outputs.size() != nodes[j].outputs.size())
-                continue;
+        auto &bucket = buckets[key];
+        bool  merged = false;
+
+        for (size_t const i : bucket) {
             // The two nodes must compute the same thing up to one real scalar;
             // `ratio` is 1 for an outright duplicate.
             auto const ratio = op_data_ratio(nodes[i].op_data, nodes[j].op_data);
@@ -477,6 +513,7 @@ bool CSE::run(Graph &graph) {
 
             remove[j] = true;
             modified  = true;
+            merged    = true;
 
             if (*ratio == 1.0) {
                 EINSUMS_LOG_INFO("CSE: eliminated node {} (duplicate of node {})", nodes[j].id, nodes[i].id);
@@ -487,6 +524,12 @@ bool CSE::run(Graph &graph) {
                 report(2, fmt::format("eliminate node {} '{}' — {}x node {}, factor folded into {} reader(s)", nodes[j].id, nodes[j].label,
                                       *ratio, nodes[i].id, folds.size()));
             }
+            break; // j is gone; nothing later in this bucket can match it
+        }
+
+        if (!merged) {
+            // A survivor: later nodes with this key match against it.
+            bucket.push_back(j);
         }
     }
 

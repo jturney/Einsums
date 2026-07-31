@@ -82,7 +82,9 @@ namespace einsums::compute_graph::passes {
  * - A proportional (`r != 1`) merge additionally needs EVERY reader of the duplicate's output to absorb `r` (Guard E): an einsum
  *   or axpby reading it as exactly one operand through live shared params. permute and batched-gemm bake their scalars into the
  *   executor closure, so a reader of either blocks the merge.
- * - Matching is an O(n^2) pairwise scan over the node list.
+ * - Matching walks the node list once, bucketing candidates by `(kind, redirected inputs, output count)` and comparing each node
+ *   only against earlier survivors in its own bucket. The bucket key deliberately excludes `op_data`, so two nodes differing
+ *   only in a prefactor still meet.
  *
  * @par Future improvements
  * - Fold user-visible duplicates, and proportional duplicates whose readers cannot absorb the factor, behind an inserted scaled
