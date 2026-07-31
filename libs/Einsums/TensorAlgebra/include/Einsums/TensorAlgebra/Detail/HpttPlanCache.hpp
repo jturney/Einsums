@@ -39,7 +39,20 @@ namespace einsums::tensor_algebra::detail {
 
 template <typename T>
 struct HpttPlanKey {
-    int                 dim{0};
+    int dim{0};
+    /// The team size the plan was BUILT for, which is a structural input and
+    /// not a runtime knob: Plan's constructor sets ``_numTasks`` to the product
+    /// of the per-loop thread splits and materializes one root node per task,
+    /// so the work decomposition itself is shaped by this number. Two calls on
+    /// one shape that want different counts genuinely need different plans -
+    /// reusing an 8-thread plan on one thread runs 8 chunks sequentially, and
+    /// a 1-thread plan on 8 threads leaves 7 idle. Without this field the
+    /// cache silently handed back whichever it built first, which differs on
+    /// the same thread inside and outside an OpenMP parallel region (nested
+    /// ``omp_get_max_threads()`` is not the outer one).
+    ///
+    /// PackedGemm's own plan cache has always keyed on it; this one had not.
+    int                 num_threads{1};
     bool                row_major{false};
     size_t              innerStrideA{1};
     size_t              innerStrideB{1};
@@ -64,6 +77,7 @@ struct HpttPlanKeyHash {
             h *= 0x100000001b3ULL;
         };
         mix(static_cast<size_t>(k.dim));
+        mix(static_cast<size_t>(k.num_threads));
         mix(k.innerStrideA);
         mix(k.innerStrideB);
         mix(k.row_major ? 1ULL : 0ULL);
@@ -106,6 +120,7 @@ get_or_create_hptt_plan(int const *perm, int dim, T alpha, T const *A, size_t co
 
     HpttPlanKey<T> key;
     key.dim          = dim;
+    key.num_threads  = numThreads;
     key.row_major    = row_major;
     key.innerStrideA = innerStrideA;
     key.innerStrideB = innerStrideB;
