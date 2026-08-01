@@ -93,7 +93,7 @@ namespace einsums::compute_graph::passes {
  *   restructure too.
  * - Insert a permute for an operand whose link indices are interleaved with its
  *   targets, priced against the saving with
- *   `DeviceProfile::estimate_permute_time_us`. Only reachable above rank 2,
+ *   @ref DeviceProfile::estimate_permute_time_us. Only reachable above rank 2,
  *   so it is blocked behind the flattening above.
  * - Reorder the leaf list when the running product enters a member as `input_b`,
  *   instead of declining the chain.

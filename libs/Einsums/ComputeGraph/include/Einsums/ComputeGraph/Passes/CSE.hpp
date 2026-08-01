@@ -75,7 +75,7 @@ namespace einsums::compute_graph::passes {
  * - Every merged output buffer must have **exactly one writer** in the whole graph (Guard B), and the shared inputs must not be
  *   overwritten by any node between the two candidates (Guard A); either condition would make the reused value stale.
  * - Neither output may be a buffer a control-flow node's sub-graph reads or writes (Guard D). A Loop/Conditional node's own
- *   `inputs`/`outputs` do not list what its body touches (that is `Graph::effective_io`), and `redirect_slot` repoints only
+ *   `inputs`/`outputs` do not list what its body touches (that is @ref Graph::effective_io), and `redirect_slot` repoints only
  *   this graph's slot table, so a body reading the eliminated duplicate's output would read a never-written buffer.
  * - Neither output may be visible outside the graph being rewritten (Guard F). `Graph::redirect_slot` repoints only that
  *   graph's slot table, so a reader in the parent, a sibling branch, or a nested body would keep reading the eliminated
