@@ -87,7 +87,7 @@ namespace einsums::compute_graph::passes {
  * - A scaled value that is never overwritten stays observable to the caller
  *   after execute, so its Scale is always kept.
  * - Reads from inside a control-flow node's sub-graphs count (via
- *   @ref Graph::effective_io) but cannot be folded into, so a loop body reading
+ *   `Graph::effective_io`) but cannot be folded into, so a loop body reading
  *   the scaled tensor keeps the Scale.
  *
  * @par Future improvements

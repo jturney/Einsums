@@ -79,8 +79,8 @@ struct EINSUMS_EXPORT ParsedEinsumSpec {
  * transpose flag can fix - that operand needs a real permute first.
  */
 struct LinkPlacement {
-    bool prefix{false}; ///< The link indices occupy exactly the first |link| positions.
-    bool suffix{false}; ///< The link indices occupy exactly the last |link| positions.
+    bool prefix{false}; ///< The link indices occupy exactly the leading positions of the list.
+    bool suffix{false}; ///< The link indices occupy exactly the trailing positions of the list.
 
     /// True when neither end holds the whole link block.
     [[nodiscard]] bool split() const { return !prefix && !suffix; }
