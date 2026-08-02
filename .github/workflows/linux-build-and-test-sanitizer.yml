@@ -36,9 +36,13 @@ jobs:
         blas: [ openblas ]
         build_type: [ Debug ]
         variant: [ default ]
-        sanitizer: ${{ fromJSON(inputs.full_matrix && '["address,leak,undefined","thread"]' || '["thread"]') }}
+        # Each entry carries both spellings deliberately. `flags` is what
+        # -DEINSUMS_WITH_SANITIZERS wants, comma-separated; `slug` is the same
+        # choice in a form a cache key accepts, because actions/cache rejects a
+        # key containing a comma.
+        sanitizer: ${{ fromJSON(inputs.full_matrix && '[{"flags":"address,leak,undefined","slug":"asan-lsan-ubsan"},{"flags":"thread","slug":"tsan"}]' || '[{"flags":"thread","slug":"tsan"}]') }}
 
-    name: "${{ matrix.sanitizer }} • ${{ matrix.compiler }} • ${{ matrix.blas }} • ${{ matrix.build_type }} • ${{ matrix.variant }}"
+    name: "${{ matrix.sanitizer.flags }} • ${{ matrix.compiler }} • ${{ matrix.blas }} • ${{ matrix.build_type }} • ${{ matrix.variant }}"
     runs-on: ubuntu-latest
     env:
       CCACHE_DIR: $GITHUB_WORKSPACE/build_cache_${{ inputs.build_cache_suffix }}
@@ -54,12 +58,16 @@ jobs:
           path: src
           submodules: recursive
 
+      # The sanitizer belongs in the key. Without it the full matrix's two legs
+      # ("address,leak,undefined" and "thread") resolve to one identical key:
+      # they race to save, each restores the other's objects, and both report a
+      # 100% ccache miss on a build that costs an hour.
       - name: Cache Build Cache
         uses: actions/cache@v6
         with:
           path: build_cache_${{ inputs.build_cache_suffix }}
-          key: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-${{ github.sha }}
-          restore-keys: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-
+          key: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-${{ matrix.sanitizer.slug }}-${{ github.sha }}
+          restore-keys: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-${{ matrix.sanitizer.slug }}-
 
       - name: Set up conda environment
         uses: ./src/.github/actions/setup-conda-env
@@ -84,17 +92,24 @@ jobs:
             -G Ninja \
             -S "$GITHUB_WORKSPACE/src" \
             -B "$GITHUB_WORKSPACE/build" \
-            -D EINSUMS_BUILD_PYTHON=${{ matrix.sanitizer == 'thread' && 'ON' || 'OFF' }} \
+            -D EINSUMS_BUILD_PYTHON=${{ matrix.sanitizer.slug == 'tsan' && 'ON' || 'OFF' }} \
             -D Python_EXECUTABLE="${CONDA_PREFIX}/bin/python3" \
             -D CMAKE_C_COMPILER_LAUNCHER=ccache \
             -D CMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -D EINSUMS_WITH_SANITIZERS=${{ matrix.sanitizer }} \
+            -D CMAKE_C_FLAGS_DEBUG="-g1" \
+            -D CMAKE_CXX_FLAGS_DEBUG="-g1" \
+            -D EINSUMS_WITH_SANITIZERS=${{ matrix.sanitizer.flags }} \
             -D EINSUMS_SHOW_WARNING=OFF \
             -D CMAKE_INSTALL_PREFIX="${{ github.workspace }}/installed" \
             -D CMAKE_PREFIX_PATH="${CONDA_PREFIX}" \
             ${{ inputs.build_configure_extra_args }}
 
+      # -g1 rather than Debug's default -g. A sanitizer build emits more debug
+      # info than any other leg and this is the slowest job in CI, so the object
+      # and link-time saving lands hardest here. Line tables are kept, which is
+      # all a symbolized TSan/ASan report needs - the runtimes resolve frames
+      # through the line table, not through variable DWARF.
       - name: Build and Install
         run: |
           # -j2 caps ninja parallelism: GitHub Linux runners have 16GB RAM and
@@ -124,7 +139,7 @@ jobs:
         run: ctest --output-on-failure -E '[Pp]ython'
 
       - name: Test (CTest) - Python unit tests under ThreadSanitizer
-        if: ${{ matrix.sanitizer == 'thread' }}
+        if: ${{ matrix.sanitizer.slug == 'tsan' }}
         working-directory: "${{ github.workspace }}/build"
         # The Python interpreter is not TSan-instrumented but dlopen's an
         # instrumented _core.so, so the TSan runtime must be preloaded into the

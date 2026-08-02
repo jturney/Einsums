@@ -34,7 +34,11 @@ jobs:
         build_type: [ RelWithDebInfo ]
         variant: [ default ]
         include:
+          # openblas as well as default: keyed on the compiler alone this merged
+          # into BOTH default legs, so the mkl leg paid for instrumentation and
+          # an 8-minute lcov pass to upload a second copy of the same report.
           - compiler: default
+            blas: openblas
             cmake_extra: >
               -DEINSUMS_WITH_COVERAGE=ON
           # EINSUMS_WITH_PROFILER=OFF swaps the whole instrumentation API for
@@ -92,18 +96,36 @@ jobs:
             -D CMAKE_C_COMPILER_LAUNCHER=ccache \
             -D CMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -D CMAKE_C_FLAGS_RELWITHDEBINFO="-O2 -g1 -DNDEBUG" \
+            -D CMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g1 -DNDEBUG" \
             -D EINSUMS_SHOW_WARNING=OFF \
             -D CMAKE_INSTALL_PREFIX="${{ github.workspace }}/installed" \
             -D CMAKE_PREFIX_PATH="${CONDA_PREFIX}" \
             ${{ matrix.cmake_extra }} ${{ inputs.build_configure_extra_args }}
 
+      # -g1 instead of the RelWithDebInfo default -g. Full DWARF for a template
+      # library this size is most of the object: measured on the real sources,
+      # Graph.cpp is 26.4MB at -g and 8.9MB at -g1, ContractionPlanning.cpp
+      # 6.7MB against 1.35MB. That matters twice over. The ccache is capped at
+      # CCACHE_MAXSIZE (2G by default) and was running at 101% full with 622
+      # self-evictions DURING a single build, so it threw away objects before
+      # the next run could use them and settled at a 22% hit rate; 3-5x smaller
+      # objects is what makes one build fit. It also cuts peak compiler RSS by
+      # ~20% (Graph.cpp 2.05GB -> 1.57GB), and far more at link time, where the
+      # DWARF merge is what actually OOM-killed this job.
+      #
+      # Line tables survive, so a CI backtrace still resolves to file:line. Only
+      # variable/type inspection in a post-mortem debugger is lost, which is not
+      # something anyone does with a GitHub runner.
       - name: Build and Install
         run: |
-          # Cap ninja parallelism to fit the 16GB GitHub Linux runner: heavy
-          # template instantiations (ComputeGraph + TensorAlgebra) peak at
+          # Ninja parallelism is capped to fit the 16GB GitHub Linux runner:
+          # heavy template instantiations (ComputeGraph + TensorAlgebra) peak at
           # ~3-4GB per TU under -O2 and ninja's default (nproc+2 = 6) OOM-kills
-          # the runner mid-link. -j2 leaves comfortable headroom on default/clang.
-          cmake --build "${{ github.workspace }}/build" --config Release --target install -j2
+          # the runner mid-link. -g1 buys back enough headroom for a third
+          # worker; -j4 is probably also fine but has not been demonstrated on
+          # the runner, and an OOM here costs more than the fourth core earns.
+          cmake --build "${{ github.workspace }}/build" --config Release --target install -j3
 
       # - name: Linked dependencies, otool (M)
       #   if: runner.os == 'macOS'
@@ -125,7 +147,7 @@ jobs:
         run: ctest --rerun-failed --output-on-failure -j4
 
       - name: Generate coverage information
-        if: ${{ contains(matrix.compiler, 'default') }}
+        if: ${{ matrix.compiler == 'default' && matrix.blas == 'openblas' }}
         working-directory: "${{github.workspace}}/build"
         run: |
           # Conda's gcc installs gcov as <arch>-conda-linux-gnu-gcov
@@ -158,7 +180,7 @@ jobs:
           lcov --gcov-tool "$GCOV" --capture --directory . --output-file coverage.info --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\*
 
       - name: Upload C++ coverage to Codecov
-        if: ${{ contains(matrix.compiler, 'default') }}
+        if: ${{ matrix.compiler == 'default' && matrix.blas == 'openblas' }}
         uses: codecov/codecov-action@v7
         with:
           directory: "${{github.workspace}}/src"

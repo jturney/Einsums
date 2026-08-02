@@ -5,6 +5,14 @@ on:
       build_ref:
         type: string
         required: false
+      build_cache_suffix:
+        type: string
+        required: false
+        default: "default"
+      build_cache_size:
+        type: string
+        required: false
+        default: 2G
       build_configure_extra_args:
         type: string
         required: false
@@ -20,6 +28,13 @@ jobs:
 
     name: "clang-cl • openblas • ${{ matrix.build_type }}"
     runs-on: windows-2022
+    env:
+      # Spelled with the ${{ }} form, not the "$GITHUB_WORKSPACE" the other legs
+      # use: those rely on ccache's own expansion of a $-prefixed name in a
+      # config value, which is a POSIX-shaped assumption to be making about a
+      # cmd.exe step.
+      CCACHE_DIR: ${{ github.workspace }}\build_cache_${{ inputs.build_cache_suffix }}
+      CCACHE_MAXSIZE: ${{ inputs.build_cache_size }}
     defaults:
       run:
         shell: bash -el {0}
@@ -63,12 +78,33 @@ jobs:
         run: conda env update -n einsums-env -f src/devtools/conda-envs/conda.yml
         if: steps.cache.outputs.cache-hit != 'true'
 
+      - name: Cache Build Cache
+        uses: actions/cache@v6
+        with:
+          path: build_cache_${{ inputs.build_cache_suffix }}
+          key: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-clang-cl-openblas-${{ github.sha }}
+          restore-keys: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-clang-cl-openblas-
+
       - name: Conda Environment
         run: |
           conda info
           conda list
 
       # ---- Configure, Build, Test ----
+      # This leg had no compiler cache at all and paid ~38 minutes of cold
+      # clang-cl on every run, the second-largest build in CI. Two things have
+      # to be true before ccache can help an MSVC-style driver, and neither is
+      # the default:
+      #
+      #   * the debug info must live IN the object. /Zi (what RelWithDebInfo
+      #     selects) writes to a shared PDB that ccache cannot capture or
+      #     replay, so it refuses to cache at all. Embedded is /Z7.
+      #     CMAKE_MSVC_DEBUG_INFORMATION_FORMAT needs CMP0141 NEW, which the
+      #     root cmake_minimum_required(3.25.2) already gives us.
+      #   * /Z7 then puts the full debug info in every object, which is what
+      #     fills the cache. -gline-tables-only is the /Z7-compatible way to ask
+      #     for what the other legs get from -g1. clang-cl warns and ignores an
+      #     argument it does not know, so the worst case here is a larger cache.
       - name: Configure CMake
         shell: cmd
         run: |
@@ -94,6 +130,11 @@ jobs:
             -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} ^
             -D CMAKE_C_COMPILER="%CC%" ^
             -D CMAKE_CXX_COMPILER="%CXX%" ^
+            -D CMAKE_C_COMPILER_LAUNCHER=ccache ^
+            -D CMAKE_CXX_COMPILER_LAUNCHER=ccache ^
+            -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded ^
+            -D CMAKE_C_FLAGS="-gline-tables-only" ^
+            -D CMAKE_CXX_FLAGS="-gline-tables-only" ^
             -D CMAKE_PREFIX_PATH="%CONDA_PREFIX%\Library" ^
             -D EINSUMS_BUILD_PYTHON=OFF ^
             -D EINSUMS_WITH_TESTS=ON ^
@@ -109,6 +150,14 @@ jobs:
           call conda activate einsums-env
           if errorlevel 1 exit /b %ERRORLEVEL%
           cmake --build "%GITHUB_WORKSPACE%\build" --config ${{ matrix.build_type }}
+
+      # In cmd, like every other step that needs the env: ccache lives in the
+      # conda env, and only the .bat activation puts it on PATH here.
+      - name: ccache statistics
+        shell: cmd
+        run: |
+          call conda activate einsums-env
+          ccache -sv || ccache -s
 
       # Diagnostic: ctest reports a bare 0xc0000135 (STATUS_DLL_NOT_FOUND) and
       # hides which DLL. Run one test exe directly so the loader prints the
