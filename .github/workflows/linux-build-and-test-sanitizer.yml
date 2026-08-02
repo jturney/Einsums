@@ -105,11 +105,17 @@ jobs:
             -D CMAKE_PREFIX_PATH="${CONDA_PREFIX}" \
             ${{ inputs.build_configure_extra_args }}
 
-      # -g1 rather than Debug's default -g. A sanitizer build emits more debug
-      # info than any other leg and this is the slowest job in CI, so the object
-      # and link-time saving lands hardest here. Line tables are kept, which is
-      # all a symbolized TSan/ASan report needs - the runtimes resolve frames
-      # through the line table, not through variable DWARF.
+      # -g1 rather than Debug's default -g. This is the ONLY leg in CI that
+      # builds any debug info at all: everywhere else it is dropped outright,
+      # because nothing reads it (Catch2 gets a failing assertion's file and
+      # line from __FILE__/__LINE__ at compile time). Here it earns its size - a
+      # TSan or ASan report that cannot name a line is close to useless, and
+      # this is the leg whose findings someone has to sit down and read.
+      #
+      # -g1 rather than -g because line tables are all the runtimes need: they
+      # symbolize frames through the line table, not through variable DWARF. A
+      # sanitizer build emits more debug info than any other leg and this is the
+      # slowest job in CI, so the object and link-time saving lands hardest here.
       - name: Build and Install
         run: |
           # -j2 caps ninja parallelism: GitHub Linux runners have 16GB RAM and

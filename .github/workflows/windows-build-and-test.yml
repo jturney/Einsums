@@ -92,29 +92,26 @@ jobs:
 
       # ---- Configure, Build, Test ----
       # This leg had no compiler cache at all and paid ~38 minutes of cold
-      # clang-cl on every run, the second-largest build in CI. Two things have
-      # to be true before ccache can help an MSVC-style driver, and neither is
-      # the default:
+      # clang-cl on every run, the second-largest build in CI.
       #
-      #   * the debug info must live IN the object. /Zi (what RelWithDebInfo
-      #     selects) writes to a shared PDB that ccache cannot capture or
-      #     replay, so it refuses to cache at all. Embedded is /Z7.
-      #     CMAKE_MSVC_DEBUG_INFORMATION_FORMAT needs CMP0141 NEW, which the
-      #     root cmake_minimum_required(3.25.2) already gives us.
-      #   * /Z7 then puts the full debug info in every object, which is what
-      #     fills the cache. -gline-tables-only is the /Z7-compatible way to ask
-      #     for what the other legs get from -g1. CMake picks the same flag for
-      #     a clang driver targeting the MSVC ABI (Windows-MSVC.cmake:535).
+      # CI builds no debug info, here or on any leg but the sanitizers: nothing
+      # reads it. Catch2 reports a failing assertion's file and line from
+      # __FILE__/__LINE__ captured at compile time, and this leg has
+      # EINSUMS_WITH_BACKTRACES=OFF anyway. Setting
+      # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT empty is how CMP0141 spells "none"
+      # (the policy is NEW under the root cmake_minimum_required(3.25.2)), and
+      # it happens to remove the one obstacle to caching an MSVC-style compile:
+      # the default /Zi writes to a shared PDB that ccache can neither capture
+      # nor replay, so it declines to cache at all.
       #
-      # -gline-tables-only rides on the PER-CONFIG variable, and that placement
-      # is not cosmetic. CMAKE_CXX_FLAGS is where the MSVC platform module puts
-      # /DWIN32 /D_WINDOWS /W3 /GR /EHsc (Windows-MSVC.cmake:538), so setting it
-      # from the command line REPLACES all of that - dropping exceptions and
-      # RTTI, and failing the build deep inside spdlog with "cannot use 'throw'
-      # with exceptions disabled". The per-config variable holds only
-      # /O2 /Ob1 /DNDEBUG (line 541; /Zi is absent because CMP0141 routes debug
-      # info through CMAKE_MSVC_DEBUG_INFORMATION_FORMAT above), so restating it
-      # costs nothing.
+      # The per-config variable, not CMAKE_CXX_FLAGS, is where the optimization
+      # flags belong, and that placement is not cosmetic. CMAKE_CXX_FLAGS is
+      # where the MSVC platform module puts /DWIN32 /D_WINDOWS /W3 /GR /EHsc
+      # (Windows-MSVC.cmake:538), so setting it from the command line REPLACES
+      # all of that - dropping exceptions and RTTI, and failing the build deep
+      # inside spdlog with "cannot use 'throw' with exceptions disabled". The
+      # per-config variable holds only /O2 /Ob1 /DNDEBUG (line 541), so
+      # restating it costs nothing.
       - name: Configure CMake
         shell: cmd
         run: |
@@ -142,9 +139,9 @@ jobs:
             -D CMAKE_CXX_COMPILER="%CXX%" ^
             -D CMAKE_C_COMPILER_LAUNCHER=ccache ^
             -D CMAKE_CXX_COMPILER_LAUNCHER=ccache ^
-            -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded ^
-            -D CMAKE_C_FLAGS_RELWITHDEBINFO="/O2 /Ob1 /DNDEBUG -gline-tables-only" ^
-            -D CMAKE_CXX_FLAGS_RELWITHDEBINFO="/O2 /Ob1 /DNDEBUG -gline-tables-only" ^
+            -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT="" ^
+            -D CMAKE_C_FLAGS_RELWITHDEBINFO="/O2 /Ob1 /DNDEBUG" ^
+            -D CMAKE_CXX_FLAGS_RELWITHDEBINFO="/O2 /Ob1 /DNDEBUG" ^
             -D CMAKE_PREFIX_PATH="%CONDA_PREFIX%\Library" ^
             -D EINSUMS_BUILD_PYTHON=OFF ^
             -D EINSUMS_WITH_TESTS=ON ^

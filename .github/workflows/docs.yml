@@ -68,8 +68,8 @@ jobs:
             -D CMAKE_C_COMPILER_LAUNCHER=ccache \
             -D CMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -D CMAKE_BUILD_TYPE=Debug \
-            -D CMAKE_C_FLAGS_DEBUG="-g1" \
-            -D CMAKE_CXX_FLAGS_DEBUG="-g1" \
+            -D CMAKE_C_FLAGS_DEBUG="-g0" \
+            -D CMAKE_CXX_FLAGS_DEBUG="-g0" \
             -D EINSUMS_SHOW_WARNING=OFF \
             -D EINSUMS_WITH_DOCUMENTATION=ON \
             -D CMAKE_INSTALL_PREFIX="${{ github.workspace }}/installed" \
