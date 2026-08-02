@@ -103,8 +103,18 @@ jobs:
       #     root cmake_minimum_required(3.25.2) already gives us.
       #   * /Z7 then puts the full debug info in every object, which is what
       #     fills the cache. -gline-tables-only is the /Z7-compatible way to ask
-      #     for what the other legs get from -g1. clang-cl warns and ignores an
-      #     argument it does not know, so the worst case here is a larger cache.
+      #     for what the other legs get from -g1. CMake picks the same flag for
+      #     a clang driver targeting the MSVC ABI (Windows-MSVC.cmake:535).
+      #
+      # -gline-tables-only rides on the PER-CONFIG variable, and that placement
+      # is not cosmetic. CMAKE_CXX_FLAGS is where the MSVC platform module puts
+      # /DWIN32 /D_WINDOWS /W3 /GR /EHsc (Windows-MSVC.cmake:538), so setting it
+      # from the command line REPLACES all of that - dropping exceptions and
+      # RTTI, and failing the build deep inside spdlog with "cannot use 'throw'
+      # with exceptions disabled". The per-config variable holds only
+      # /O2 /Ob1 /DNDEBUG (line 541; /Zi is absent because CMP0141 routes debug
+      # info through CMAKE_MSVC_DEBUG_INFORMATION_FORMAT above), so restating it
+      # costs nothing.
       - name: Configure CMake
         shell: cmd
         run: |
@@ -133,8 +143,8 @@ jobs:
             -D CMAKE_C_COMPILER_LAUNCHER=ccache ^
             -D CMAKE_CXX_COMPILER_LAUNCHER=ccache ^
             -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded ^
-            -D CMAKE_C_FLAGS="-gline-tables-only" ^
-            -D CMAKE_CXX_FLAGS="-gline-tables-only" ^
+            -D CMAKE_C_FLAGS_RELWITHDEBINFO="/O2 /Ob1 /DNDEBUG -gline-tables-only" ^
+            -D CMAKE_CXX_FLAGS_RELWITHDEBINFO="/O2 /Ob1 /DNDEBUG -gline-tables-only" ^
             -D CMAKE_PREFIX_PATH="%CONDA_PREFIX%\Library" ^
             -D EINSUMS_BUILD_PYTHON=OFF ^
             -D EINSUMS_WITH_TESTS=ON ^
