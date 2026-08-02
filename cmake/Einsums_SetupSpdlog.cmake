@@ -23,6 +23,29 @@ block()
   # spdlog's add_library() honors BUILD_SHARED_LIBS; force it off inside this
   # scope so spdlog is STATIC even though the rest of the tree is shared.
   set(BUILD_SHARED_LIBS OFF)
+
+  # ...and give it the visibility every other translation unit in the tree
+  # already has. -fvisibility=hidden is carried by einsums_private_flags, which
+  # only Einsums' own targets link, so spdlog was the single set of sources we
+  # compile at default visibility. The mismatch is not cosmetic on Mach-O: an
+  # object compiled hidden binds a weak symbol like std::piecewise_construct
+  # directly, and when the same symbol also has a default-visibility definition
+  # in libspdlog.a the linker reports every such reference -
+  #
+  #   ld: warning: direct access in function '...' to global weak symbol
+  #   'std::__1::piecewise_construct' ... means the weak symbol cannot be
+  #   overridden at runtime
+  #
+  # - which was 378 warnings on the macOS leg, all naming spdlog.cpp.o. Hidden
+  # visibility only affects the dynamic symbol table of the final shared object,
+  # and spdlog is folded statically into consumers, so nothing that resolves
+  # today stops resolving.
+  if(EINSUMS_WITH_HIDDEN_VISIBILITY)
+    set(CMAKE_C_VISIBILITY_PRESET hidden)
+    set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+    set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+  endif()
+
   fetchcontent_declare(
     spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
