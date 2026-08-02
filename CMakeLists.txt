@@ -69,7 +69,16 @@ include(CheckLanguage)
 
 # Explicitly set certain policies
 einsums_set_cmake_policy(CMP0144 NEW)
-einsums_set_cmake_policy(CMP0155 OLD)
+
+# CMP0155 governs whether C++20 sources are scanned for module dependencies.
+# Einsums has no modules, so the scan is pure build-time cost - but pinning the
+# policy OLD to avoid it is itself deprecated ("The OLD behavior for policy
+# CMP0155 will be removed from a future version of CMake"), which is a warning
+# on every configure today and a hard error eventually. NEW plus an explicit
+# opt-out asks for the same thing in the supported way: the policy stops
+# warning, and CMAKE_CXX_SCAN_FOR_MODULES turns the scanner off outright.
+einsums_set_cmake_policy(CMP0155 NEW)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 set(CMAKE_CXX_FLAGS_SAFE ${CMAKE_CXX_FLAGS})
 include(Einsums_CheckCXXStandard)
