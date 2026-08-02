@@ -41,14 +41,14 @@ jobs:
         shell: bash -el {0}
     steps:
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.build_ref }}
           path: src
           submodules: recursive
 
       - name: Cache Build Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: build_cache_${{ inputs.build_cache_suffix }}
           key: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ github.sha }}
@@ -108,7 +108,7 @@ jobs:
           llvm-cov export -format=lcov -ignore-filename-regex="_deps|einsums-env" -instr-profile=default.profdata $BINARIES > coverage.info
 
       - name: Upload C++ coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           directory: "${{github.workspace}}/src"
           working-directory: "${{github.workspace}}/src"

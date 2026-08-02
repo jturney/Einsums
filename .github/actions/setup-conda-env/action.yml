@@ -31,7 +31,7 @@ runs:
   steps:
     # From https://github.com/conda-incubator/setup-miniconda#caching-environments
     - name: Setup Miniforge
-      uses: conda-incubator/setup-miniconda@v3
+      uses: conda-incubator/setup-miniconda@v4
       with:
         miniforge-version: latest
         activate-environment: ${{ inputs.environment-name }}

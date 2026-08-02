@@ -26,7 +26,7 @@ jobs:
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # For same-repo PRs, check out the PR branch itself so an auto-format
           # commit can be pushed back. For fork PRs github.head_ref does not
@@ -35,12 +35,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.head_ref || '' }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - name: Cache pre-commit hooks
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
@@ -92,7 +92,7 @@ jobs:
           steps.format.outputs.needs_formatting == '1'
           && github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const formattedFiles = '${{ steps.format.outputs.formatted_files }}' || 'files';

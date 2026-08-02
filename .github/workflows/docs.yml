@@ -37,13 +37,13 @@ jobs:
       CCACHE_MAXSIZE: ${{ inputs.build_cache_size }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.build_ref }}
           submodules: recursive
 
       - name: Cache Build Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: build_cache_${{ inputs.build_cache_suffix }}
           key: einsums-docs-${{ runner.os }}-${{ inputs.build_cache_suffix }}-${{ github.sha }}
