@@ -73,7 +73,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// By default the pass rewrites only graphs that carry an installed
     /// executor (Graph::set_executor): under the built-in sequential replay
     /// the clones cost cache locality and buy nothing, so a graph that will
-    /// never run wide is left alone. Install the executor BEFORE apply().
+    /// never run wide is left alone.
+    ///
+    /// Install the executor BEFORE apply().
     /// Setting this false privatizes unconditionally (tests, custom drivers).
     APIARY_EXPOSE void set_require_executor(bool require) { _require_executor = require; }
 

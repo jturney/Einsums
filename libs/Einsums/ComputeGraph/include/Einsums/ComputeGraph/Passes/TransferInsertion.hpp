@@ -76,8 +76,9 @@ class EINSUMS_EXPORT TransferInsertion : public OptimizerPass {
     bool                      run(Graph &graph) override;
     void                      reset_stats() override;
 
-    /// Recurse into loop bodies / conditional branches. TransferInsertion
-    /// is a per-graph transform: run on a body it inserts that body's H2D
+    /// Recurse into loop bodies / conditional branches.
+    ///
+    /// TransferInsertion is a per-graph transform: run on a body it inserts that body's H2D
     /// before each GPU op and D2H after, making the body self-contained.
     /// It re-transfers loop-invariant inputs each iteration; hoisting those
     /// before the loop is a later optimization. See

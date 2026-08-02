@@ -87,6 +87,7 @@ template <typename T>
 struct TiledRuntimeTensor;
 
 /// GPU-resident runtime-rank tensor using the gpu:: abstraction layer.
+///
 /// Mirrors GPUTensor but with rank known only at runtime. It is not exposed to
 /// Python. The ComputeGraph optimization passes, such as GPUPlacement, own
 /// the host-to-device decision; users program in Python as if everything

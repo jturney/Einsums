@@ -80,7 +80,9 @@ T compute_arithmetic(std::tuple<SubtractionOp, Operand> const *input, MultiIndex
  * @struct ArithmeticTensor
  *
  * This struct allows for lazy evaluation of simple arithmetic expressions without the need to create
- * several intermediate tensors. The goal is to have these be turned into simple arithmetic expressions
+ * several intermediate tensors.
+ *
+ * The goal is to have these be turned into simple arithmetic expressions
  * on the elements of the input tensors at compile time. Then, when an assignment is performed, the
  * elements of the tensors are looped and placed through this arithmetic expression.
  *

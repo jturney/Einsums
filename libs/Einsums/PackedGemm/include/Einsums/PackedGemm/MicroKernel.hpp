@@ -42,6 +42,7 @@ struct MicroKernelShape {
     int mr;
     int nr;
     /// K-block hint: 0 = use the cache-derived default (compute_blocking).
+    ///
     /// The SME rung raises it: the ZA tile accumulators hold the C block for
     /// the whole K loop, so deep K blocks mean C is read-modify-written and
     /// the tiles extracted once instead of once per cache-sized K slice. The
@@ -62,8 +63,9 @@ struct MicroKernelShape {
     /// Complex elements via Van Zee's 1m method: A packs in the expanded 1e
     /// form ([[ar,-ai],[ai,ar]] per element), B packs re/im as adjacent K
     /// rows (1r), and the REAL tile kernel of the underlying real type
-    /// computes interleaved-complex output directly. When set, mr/nr/kc
-    /// describe the REAL kernel's geometry and the working extents double
+    /// computes interleaved-complex output directly.
+    ///
+    /// When set, mr/nr/kc describe the REAL kernel's geometry and the working extents double
     /// (Mh = 2M, Kh = 2K). Measured 1.74x over Sort+GEMM for complex<double>
     /// on the M4 SME rung.
     bool use_1m = false;
@@ -71,7 +73,9 @@ struct MicroKernelShape {
     /// path: three real vendor GEMMs per block (Re*Re, Im*Im, (Re+Im)*(Re+Im))
     /// instead of one complex GEMM - 25% fewer flops, and the real GEMMs
     /// reach matrix hardware (Accelerate's AMX) that complex arithmetic may
-    /// not. Error bounds are mildly weakened versus conventional complex
+    /// not.
+    ///
+    /// Error bounds are mildly weakened versus conventional complex
     /// multiplication (Higham's 3m analysis); enable only where measured.
     bool use_3m = false;
 };

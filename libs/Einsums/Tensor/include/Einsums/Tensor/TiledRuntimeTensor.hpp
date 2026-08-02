@@ -317,7 +317,9 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
     /// Access an existing tile; throws if it is not populated.
     [[nodiscard]] StoredType const &tile(std::vector<int> const &coord) const { return _tiles.at(normalize(coord)); }
 
-    /// Experimental zero-copy bridge. Add a tile at @p coord that aliases the
+    /// Experimental zero-copy bridge.
+    ///
+    /// Add a tile at @p coord that aliases the
     /// external buffer @p ptr instead of owning a copy. The tile takes the grid
     /// dims for @p coord and the given layout, where row_major matches psi4's
     /// contiguous irrep blocks. @p ptr must outlive this tensor. This lets a

@@ -351,6 +351,7 @@ auto EINSUMS_EXPORT dsterf(int_t n, double *d, double *e) -> int_t;
 
 /**
  * @brief Computes the eigenvalues of a symmetric tridiagonal matrix.
+ *
  * The sterf routine finds the matrices that satisfy the following equation.
  * @f[
  * \mathbf{A} = \mathbf{P} \mathbf{\Lambda} \mathbf{P}^T

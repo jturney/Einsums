@@ -88,8 +88,9 @@ void string_gemv_mat_vec(ParsedEinsumSpec const & /*parsed*/, T c_pf, OutType *o
 
 /// Name of the kernel route the most recent string_einsum call on this
 /// thread selected ("packed_gemm", "gemv_mat_vec", "generic_loop",
-/// "generic_loop_repeated_indices", "empty_input_scale_only", ...). Test
-/// introspection ONLY: lets dispatch-coverage tests assert the intended
+/// "generic_loop_repeated_indices", "empty_input_scale_only", ...).
+///
+/// Test introspection ONLY: lets dispatch-coverage tests assert the intended
 /// fast path fired instead of a silent generic-loop fallback, mirroring the
 /// eager API's AlgorithmChoice out-parameter. Thread-local; not an API for
 /// steering execution.

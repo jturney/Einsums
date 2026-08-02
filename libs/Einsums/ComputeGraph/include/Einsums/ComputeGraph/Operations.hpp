@@ -2275,11 +2275,15 @@ APIARY_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::TiledRun
 /// Outer sum of N rank-1 vectors with per-axis coefficients.
 ///
 /// Fills ``result`` with
-///   ``result(i_0, i_1, ..., i_{N-1}) = Σ_k coefficients[k] * vectors[k](i_k)``.
+///
+/// @code result(i_0, i_1, ..., i_{N-1}) = Σ_k coefficients[k] * vectors[k](i_k)
+/// @endcode
 ///
 /// Canonical use case is the MP2/CC energy denominator:
-///   Δ(i,j,a,b) = ε_i + ε_j − ε_a − ε_b
-///     ↪ outer_sum(&Δ, {ε_occ, ε_occ, ε_virt, ε_virt}, {+1, +1, -1, -1})
+///
+/// @code Δ(i,j,a,b) = ε_i + ε_j − ε_a − ε_b
+///   ↪ outer_sum(&Δ, {ε_occ, ε_occ, ε_virt, ε_virt}, {+1, +1, -1, -1})
+/// @endcode
 ///
 /// If ``coefficients`` is empty, defaults to all +1.
 ///
@@ -3112,10 +3116,11 @@ void heev(AType *A, WType *W) {
 }
 
 /// Python-facing syev: real-symmetric eigendecomposition (in place; A receives
-/// eigenvectors, W the eigenvalues). A wrapper because the templated syev has a
-/// leading non-type ``bool ComputeEigenvectors`` parameter the pybind codegen
-/// can't pin via INSTANTIATE_AS; this fixes it to true and presents a clean,
-/// type-only signature. Accepts dense (RuntimeTensor) or tiled operands; the
+/// eigenvectors, W the eigenvalues).
+///
+/// A wrapper because the templated syev has a leading non-type
+/// ``bool ComputeEigenvectors`` parameter the pybind codegen can't pin via
+/// INSTANTIATE_AS; this fixes it to true and presents a clean, type-only signature. Accepts dense (RuntimeTensor) or tiled operands; the
 /// inner syev<true>() dispatches accordingly.
 template <typename AType, typename WType>
     requires(std::is_same_v<typename AType::ValueType, typename WType::ValueType> && !IsComplexV<typename AType::ValueType> &&

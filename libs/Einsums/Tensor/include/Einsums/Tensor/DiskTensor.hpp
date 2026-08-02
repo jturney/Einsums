@@ -278,18 +278,15 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
      *
      * @param file The file to use for the storage. Can also be a parent object.
      * @param name The name for the tensor.
-     * @param chunk @todo No clue.
      * @param dims The dimensions of the tensor.
      */
     template <std::integral... Dims>
     explicit DiskTensor(hid_t file, std::string const &name, Dims... dims) : DiskTensor(file, name, Dim{dims...}) {}
 
     /**
-     * Create a new disk tensor bound to a file.
+     * Create a new disk tensor in the process-wide HDF5 file.
      *
-     * @param file The file to use for the storage. Can also be a parent object.
      * @param name The name for the tensor.
-     * @param chunk @todo No clue.
      * @param dims The dimensions of the tensor.
      */
     template <typename... Dims>

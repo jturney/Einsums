@@ -46,7 +46,9 @@ auto order_indices(std::tuple<Args...> const &combination, std::array<size_t, Ra
 } // namespace detail
 
 /**
- * Swap around the indices to the desired order. For instance, if we have a list of indices
+ * Swap around the indices to the desired order.
+ *
+ * For instance, if we have a list of indices
  * <tt>{a,b,c}</tt> and we want to reverse it, we would give the order <tt>{2, 1, 0}</tt>.
  * There is no requirement that all the orders be different, so if we were to pass <tt>{1, 1, 0}</tt>
  * instead, we would get <tt>{b,b,a}</tt>.

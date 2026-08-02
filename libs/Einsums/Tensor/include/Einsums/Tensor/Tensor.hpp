@@ -1454,8 +1454,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         return TensorView<T, Rank - sizeof...(MultiIndex) + 1>(_impl.tie_indices(std::forward<MultiIndex>(index)...));
     }
 
-    /// Lazily-created token whose lifetime tracks this object. The graph's
-    /// validator, see make_handle, holds a std::weak_ptr to it to detect
+    /// Lazily-created token whose lifetime tracks this object.
+    ///
+    /// The graph's validator, see make_handle, holds a std::weak_ptr to it to detect
     /// destruction without dereferencing a possibly-freed tensor. Reading a
     /// destroyed object's memory, the old canary approach, is undefined
     /// behavior and unreliable. The token is created on first request, so

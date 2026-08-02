@@ -100,6 +100,7 @@ struct BatchedGemmDescriptor {
     /// Strided-batched mode: when true, the batched executor reads a
     /// single base pointer per operand from the live slot and computes
     /// each matrix pointer as `base + i * batch_stride_* * sizeof(T)`.
+    ///
     /// Matches the layout `cublasDgemmStridedBatched` requires on GPU.
     /// When false, the executor stores N per-slice extractors (the
     /// output of the GEMMBatching pass over independent 2D einsums).

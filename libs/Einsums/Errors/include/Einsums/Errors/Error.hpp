@@ -53,7 +53,9 @@ std::string make_error_message(StringLiteral<N> const type_name, std::string con
  * @struct CodedError
  *
  * This error type is used when a function can emit several different instances of the
- * same error. This allows the user to either catch the class the code is based on,
+ * same error.
+ *
+ * This allows the user to either catch the class the code is based on,
  * or the CodedError with the code specified. This means that the user can
  * handle all errors with a similar cause together, or gain more fine-grained control
  * if needed.
@@ -130,6 +132,7 @@ struct EINSUMS_EXPORT dimension_error : std::invalid_argument {
  * @struct tensor_compat_error
  *
  * Indicates that two or more tensors are not compatible with each other for the requested operation.
+ *
  * For instance, matrix multiplication is only allowed for matrices of certain dimensions: for some
  * natural numbers n, m, and k, the only allowed contraction is of the form (n by k) times (k by m)
  * giving (n by m). If you were to pass a 3-by-2 matrix as the first matrix argument, a 1-by-4 matrix
@@ -148,7 +151,9 @@ struct EINSUMS_EXPORT tensor_compat_error : std::logic_error {
  * @struct num_argument_error
  *
  * Indicates that a function that can receive a variable number of arguments did not receive the
- * right number of arguments. This is especially used in the RuntimeTensor subscript functions,
+ * right number of arguments.
+ *
+ * This is especially used in the RuntimeTensor subscript functions,
  * where the number of indices needed is not known at compile time, so compile-time checks can't
  * be made. This exception has two specializations, not_enough_args and too_many_args , for not
  * enough and too many arguments. It is also thrown when a function takes an array of values that
@@ -198,7 +203,9 @@ struct EINSUMS_EXPORT access_denied : std::logic_error {
 /**
  * @struct todo_error
  *
- * Indicates that a certain code path is not yet finished. This exception, along with
+ * Indicates that a certain code path is not yet finished.
+ *
+ * This exception, along with
  * not_implemented , indicates that the action you requested is not yet implemented. If you get
  * this error, come tell us `on our issue tracker <https://github.com/Einsums/Einsums/issues>`_
  * or `our Discord server <https://discord.gg/8GvtkyWZUv>`_, and we will try to focus some energy
@@ -214,7 +221,9 @@ struct EINSUMS_EXPORT todo_error : std::logic_error {
 /**
  * @struct not_implemented
  *
- * Indicates that a certain code path is not implemented. This may be because the feature is not
+ * Indicates that a certain code path is not implemented.
+ *
+ * This may be because the feature is not
  * yet ready, or it may be that the specific combination of parameters is not acceptable. The
  * message provided should give more information. If you absolutely need that set of features,
  * come tell us `on our discussion page <https://github.com/Einsums/Einsums/discussions>`_ or
@@ -231,7 +240,9 @@ struct EINSUMS_EXPORT not_implemented : std::logic_error {
 /**
  * @struct bad_logic
  *
- * Indicates that an error occurred for some unspecified reason. It means
+ * Indicates that an error occurred for some unspecified reason.
+ *
+ * It means
  * the same as std::logic_error. However, since std::logic_error is the base class for so many
  * exceptions, this specialization is provided so that you can catch it specifically without
  * also matching every exception derived from std::logic_error.

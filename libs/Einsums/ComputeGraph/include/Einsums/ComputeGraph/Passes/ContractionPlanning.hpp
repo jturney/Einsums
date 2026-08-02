@@ -111,8 +111,9 @@ class EINSUMS_EXPORT ContractionPlanning : public OptimizerPass {
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
-    /// Recurse into loop bodies / conditional branches. Safe: restructuring a
-    /// GEMM chain to its optimal parenthesization is numerically equivalent
+    /// Recurse into loop bodies / conditional branches.
+    ///
+    /// Safe: restructuring a GEMM chain to its optimal parenthesization is numerically equivalent
     /// (matrix-chain associativity), per-graph, and the intermediates it
     /// creates via create_tensor_dynamic are *eager* (allocated at pass time,
     /// not deferred) so they don't depend on the Materialization pass that

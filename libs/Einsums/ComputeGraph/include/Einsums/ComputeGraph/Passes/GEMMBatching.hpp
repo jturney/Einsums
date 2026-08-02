@@ -109,7 +109,9 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
   public:
     GEMMBatching() = default;
 
-    /// Profitability-gated batching. gemm_batch runs as ONE node - and on
+    /// Profitability-gated batching.
+    ///
+    /// gemm_batch runs as ONE node - and on
     /// TaskPool workers BLAS is single-threaded - so collapsing large GEMMs
     /// that the Dataflow executor would otherwise spread across workers is a
     /// pessimization. With a cost_model, a group is only batched when the

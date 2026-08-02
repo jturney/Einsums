@@ -1127,6 +1127,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     }
 
     /// Materialize into caller-provided storage instead of allocating.
+    ///
     /// Mirrors GeneralTensor::materialize_into: @p ptr must hold at least
     /// size() elements and outlive every use of this tensor; release()
     /// detaches from it and the destructor never frees it. Used by the
@@ -1159,8 +1160,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     /// materialized into external storage, or rank-0 with no data needed.
     [[nodiscard]] bool is_materialized() const { return _aliased || _external_data != nullptr || !_data.empty() || _impl.size() == 0; }
 
-    /// Release backing storage, returning to the deferred state. Dims and
-    /// strides are preserved. data() returns a sentinel pointer until
+    /// Release backing storage, returning to the deferred state.
+    ///
+    /// Dims and strides are preserved. data() returns a sentinel pointer until
     /// materialize() is called again. Used by FreeInsertion to free
     /// intermediates after their last consumer. External (materialize_into)
     /// storage is detached, never freed. This is a no-op for aliased
@@ -1179,7 +1181,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     }
 
     /// Re-point this tensor at an external buffer it does not own, a zero-copy
-    /// alias, with the given layout. Any previous owned storage is dropped, and
+    /// alias, with the given layout.
+    ///
+    /// Any previous owned storage is dropped, and
     /// the caller guarantees @p ptr outlives this tensor. Used to wrap foreign
     /// block memory, such as a psi4 Matrix irrep block, as a tile of a
     /// TiledRuntimeTensor without copying. After this the tensor reports
@@ -1270,7 +1274,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     }
 
     /// Lazily-created liveness token used by ComputeGraph's runtime validator;
-    /// see make_handle. The validator holds a std::weak_ptr to it so it can
+    /// see make_handle.
+    ///
+    /// The validator holds a std::weak_ptr to it so it can
     /// detect destruction without dereferencing a possibly-freed tensor. The
     /// old canary read freed memory, which is undefined behavior, and was
     /// unreliable, since a reused but unchanged canary read as alive. The token

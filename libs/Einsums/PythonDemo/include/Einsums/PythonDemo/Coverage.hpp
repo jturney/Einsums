@@ -43,7 +43,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_RENAME("Vec3") Vec3 {
 class EINSUMS_EXPORT APIARY_EXPOSE APIARY_RENAME("Resource") APIARY_HOLDER(std::shared_ptr) Resource {
   public:
     /// Inner type returned by reference; a separate small bound class so we
-    /// can prove the @rvp(reference_internal) policy is honored.
+    /// can prove the ``@rvp(reference_internal)`` policy is honored.
     class EINSUMS_EXPORT APIARY_EXPOSE Slot {
       public:
         APIARY_EXPOSE explicit Slot(int v);
@@ -67,8 +67,8 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_RENAME("Resource") APIARY_HOLDER(std::
     std::vector<Slot> _slots;
 };
 
-/// CounterError: exercises @exception. Lives in the ``demo`` submodule
-/// to also exercise @module.
+/// CounterError: exercises ``@exception``. Lives in the ``demo`` submodule
+/// to also exercise ``@module``.
 class EINSUMS_EXPORT APIARY_EXPOSE APIARY_EXCEPTION APIARY_MODULE("demo") CounterError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;

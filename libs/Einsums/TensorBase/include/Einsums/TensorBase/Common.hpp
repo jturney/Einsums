@@ -253,6 +253,7 @@ struct Range : std::array<std::int64_t, 2> {
 
     /**
      * Check if the range can be treated as a single value if its entries are the same.
+     *
      * If it is removable and the entries are the same, then the rank of the tensor view created with this range will
      * have a lower rank than the parent tensor. If it is not removable, or the entries are different, then the rank
      * of the view will be the same as the rank of the parent.

@@ -75,6 +75,7 @@ struct EinsumDescriptor {
     bool                         conj_b{false};           ///< Whether to conjugate B (for complex types)
 
     /// Live-mutable index state shared with the executor lambda.
+    ///
     /// Optimization passes (PermuteFusion, future index rewriters) mutate
     /// this in place; the executor dereferences it on every call, so
     /// rewrites take effect on the next `graph.execute()`. The
@@ -84,7 +85,9 @@ struct EinsumDescriptor {
     std::shared_ptr<EinsumIndices> indices;
 
     /// Live-mutable scalar state shared with the executor lambda, same
-    /// pattern as `indices`. CPU executors read prefactors from here on
+    /// pattern as `indices`.
+    ///
+    /// CPU executors read prefactors from here on
     /// every call; `c_prefactor`/`ab_prefactor` above are the at-capture
     /// snapshots (still read by GPU dispatch). Graph::update_prefactors
     /// writes both through this handle so the node stays self-contained
@@ -98,6 +101,7 @@ struct EinsumDescriptor {
 
 /// Live-mutable scalar state for axpby (Y = alpha*X + beta*Y), shared with the
 /// executor lambda - the same snapshot + shared-params pattern as EinsumParams.
+///
 /// The executor reads alpha/beta from here on every call, so a pass that folds a
 /// scale into an axpby writes beta through this handle and the change takes
 /// effect on the next `graph.execute()`. A snapshot-only descriptor would leave

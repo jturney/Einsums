@@ -96,8 +96,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool                      run(Graph &graph) override;
     void                      reset_stats() override;
 
-    /// Recurse into loop bodies / conditional branches. Safe: the pass only
-    /// reads op structure (no execution, no node changes) and tags a tensor
+    /// Recurse into loop bodies / conditional branches.
+    ///
+    /// Safe: the pass only reads op structure (no execution, no node changes) and tags a tensor
     /// only when its symmetry is guaranteed: single-writer in this graph
     /// and not written by a child sub-graph (see the InferGuard in run()).
     /// So a body intermediate proven symmetric by a self-contraction gets

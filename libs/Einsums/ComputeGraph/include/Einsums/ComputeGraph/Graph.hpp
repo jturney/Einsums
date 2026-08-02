@@ -981,6 +981,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /// Tiled analog of declare_zero_runtime_tensor(): a graph-owned
     /// TiledRuntimeTensor shell over @p tile_sizes with DEFERRED lifecycle.
+    ///
     /// The shell starts with no populated tiles - ops create tiles on demand
     /// (infer-and-create, zeroed) - so Materialize and Initialize are cheap,
     /// but registering the handle as Deferred puts the tensor under the same

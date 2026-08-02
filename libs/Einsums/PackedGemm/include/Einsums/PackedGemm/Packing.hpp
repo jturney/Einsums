@@ -84,8 +84,9 @@ struct PackingPlan {
     bool coalesced{false};
 
     /// True when compute_packing_topology() synthesized a unit dim for an
-    /// empty M/N/K group (GEMV- or outer-product-shaped contraction). The
-    /// direct BLAS fast paths (gemm_batch, single-K, multi-K flatten) must
+    /// empty M/N/K group (GEMV- or outer-product-shaped contraction).
+    ///
+    /// The direct BLAS fast paths (gemm_batch, single-K, multi-K flatten) must
     /// be skipped: a synthetic stride of 0 maps to invalid leading
     /// dimensions there. The tiled/block scatter paths handle it naturally.
     bool synthetic{false};

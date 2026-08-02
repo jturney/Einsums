@@ -359,7 +359,9 @@ EINSUMS_EXPORT auto sdot(int_t n, float const *x, int_t incx, float const *y, in
 /// @copydoc sdot
 EINSUMS_EXPORT auto ddot(int_t n, double const *x, int_t incx, double const *y, int_t incy) -> double;
 /**
- * Compute the unconjugated dot product between two vectors. The dot product is normally defined to be @f$ \sum_{i} x_i^*y_i@f$,
+ * Compute the unconjugated dot product between two vectors.
+ *
+ * The dot product is normally defined to be @f$ \sum_{i} x_i^*y_i@f$,
  * where the left vector is conjugated. However, this function performs @f$\sum_{i} x_iy_i@f$, akin to how it is done for
  * real vectors. For real vectors, the two definitions are the same. For complex vectors, the two definitions are different,
  * so keep this in mind when selecting between the two functions. This is the equivalent to BLAS's cdot<b>u</b>.
@@ -382,7 +384,9 @@ EINSUMS_EXPORT auto cdot(int_t n, std::complex<float> const *x, int_t incx, std:
 EINSUMS_EXPORT auto zdot(int_t n, std::complex<double> const *x, int_t incx, std::complex<double> const *y, int_t incy)
     -> std::complex<double>;
 /**
- * Compute the dot product between two vectors. The dot product is normally defined to be @f$ \sum_{i} x_i^*y_i@f$,
+ * Compute the dot product between two vectors.
+ *
+ * The dot product is normally defined to be @f$ \sum_{i} x_i^*y_i@f$,
  * where the left vector is conjugated. This is how this function works. There is another way, where the first vector is not conjugated. For
  * that, use cdot. For real vectors, the two definitions are the same. For complex vectors, the two definitions are different, so keep this
  * in mind when selecting between the two functions.

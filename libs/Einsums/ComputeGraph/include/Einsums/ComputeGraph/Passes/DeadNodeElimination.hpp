@@ -77,7 +77,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     void                                   reset_stats() override;
 
     /// Opt out of PassManager auto-recursion: run() descends the sub-graph
-    /// tree itself. A body tensor is live if ANY enclosing or sibling graph
+    /// tree itself.
+    ///
+    /// A body tensor is live if ANY enclosing or sibling graph
     /// reads it, a cross-graph fact the per-graph recursion cannot see (it
     /// would eliminate a body producer whose only reader sits in the parent
     /// after the loop, or in a sibling loop body). run() threads the external

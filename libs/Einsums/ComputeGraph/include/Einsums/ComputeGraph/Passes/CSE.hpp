@@ -104,7 +104,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Opts out of the PassManager's recursion and descends ITSELF, which is
     /// not the same as not running on bodies - it does, since `run()` walks the
-    /// tree. The driver hands a pass nothing but the sub-graph, and two guards
+    /// tree.
+    ///
+    /// The driver hands a pass nothing but the sub-graph, and two guards
     /// cannot be decided from inside one: whether a buffer escapes the graph
     /// being rewritten (``Graph::redirect_slot`` repoints only that graph's
     /// slots, so an outside reader would be stranded), and whether a body's

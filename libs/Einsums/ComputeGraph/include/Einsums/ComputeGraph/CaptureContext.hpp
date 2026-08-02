@@ -262,6 +262,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
     }
 
     /// Get-or-create a TensorSlot for an already-registered tensor.
+    ///
     /// Used by capture-time helpers (e.g. ``cg::view``) that need to
     /// create a slot for a tensor object they constructed themselves.
     /// The @ref get_slot path requires the object's address to match

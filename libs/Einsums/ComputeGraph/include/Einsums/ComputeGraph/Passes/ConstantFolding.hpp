@@ -74,8 +74,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool                      run(Graph &graph) override;
     void                      reset_stats() override;
 
-    /// Recurse into loop bodies / conditional branches. Safe now that
-    /// run() only folds nodes whose tensors are materialized at pass time
+    /// Recurse into loop bodies / conditional branches.
+    ///
+    /// Safe now that run() only folds nodes whose tensors are materialized at pass time
     /// (see the materialization guard in run()): a loop body's deferred
     /// workspace tensors are simply skipped rather than executed against
     /// unallocated storage. Loop-carried tensors are never folded because
