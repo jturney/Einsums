@@ -16,8 +16,10 @@
 #include <Einsums/Profile/Profile.hpp>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -62,6 +64,85 @@ inline std::vector<std::string> compute_link_indices(std::vector<std::string> co
         }
     }
     return link;
+}
+
+/// Outer-product destination size at which the k=1 GEMM stops paying.
+///
+/// ger has no beta, so a destination prefactor costs a separate pass over C -
+/// and C traffic IS the cost of an outer product. A k=1 GEMM folds beta in and
+/// makes one pass, which wins while C is small; past that, GEMM's blocking and
+/// threading overhead outgrows the extra pass and plain ger wins.
+///
+/// Measured graph-vs-eager on the same shapes (lower is better), three runs,
+/// A/B interleaved in both orders:
+///
+///   C elements   256    2.4k    10k    65k    332k     1M    5.3M
+///   k=1 gemm    2.1-2.8 2.5-2.6 0.36-0.43 0.56-0.60 1.05-1.10 0.93-0.95 1.46-1.50
+///   ger         1.9-3.0 2.5-2.9 1.07-1.10 0.91-0.94 0.58-0.61 0.52-0.55 0.84-0.87
+///
+/// The crossover sits between 65k and 332k; this threshold is in that gap.
+/// Below ~2.4k the two agree within noise - the call overhead dominates - so
+/// only the middle of the range actually decides it.
+constexpr size_t kOuterGemmMaxElems = 1u << 17;
+
+/// Outer-product destination size below which no BLAS call is worth making.
+///
+/// Matches the existing small-outer deferral further down, which measured the
+/// packed path losing to the generic loop under ~4k output elements. At that
+/// size a BLAS call's fixed cost is the entire measurement, so the direct paths
+/// leave the decision to the deferral rather than pre-empting a tuned choice
+/// with a noisier one.
+constexpr size_t kOuterMinElems = 1u << 12;
+
+/// @brief Collapse axes [@p begin, @p end) of @p t into one (extent, stride).
+///
+/// Succeeds only when that run of axes tiles memory exactly: sorted by stride,
+/// each axis must begin where the previous one ended (s_next == s * d). A
+/// permuted or gappy view fails, and the caller must not flatten it. Extent-1
+/// axes are ignored - their stride is arbitrary and a permuted view can leave
+/// one at a boundary with an inflated value.
+///
+/// This is the runtime twin of the compile-time `contiguous_positions` check
+/// the eager dispatcher uses to decide the same question.
+template <einsums::BasicTensorConcept TensorType>
+bool flatten_run(TensorType const &t, size_t begin, size_t end, size_t &extent, size_t &stride_out) {
+    extent = 1;
+    std::vector<std::pair<size_t, size_t>> ds; // (stride, dim), extent > 1 only
+    ds.reserve(end - begin);
+    for (size_t i = begin; i < end; ++i) {
+        size_t const d = t.dim(i);
+        if (d == 0) {
+            return false;
+        }
+        extent *= d;
+        if (d > 1) {
+            ds.emplace_back(t.stride(i), d);
+        }
+    }
+    if (ds.empty()) { // every axis is a singleton: one element, stride irrelevant
+        stride_out = 1;
+        return true;
+    }
+    std::sort(ds.begin(), ds.end());
+    stride_out    = ds.front().first;
+    size_t expect = stride_out;
+    for (auto const &[s, d] : ds) {
+        if (s != expect) {
+            return false;
+        }
+        expect = s * d;
+    }
+    return true;
+}
+
+/// @brief True when @p prefix ++ @p suffix == @p whole, element for element.
+inline bool is_concatenation(std::vector<std::string> const &whole, std::vector<std::string> const &prefix,
+                             std::vector<std::string> const &suffix) {
+    if (whole.size() != prefix.size() + suffix.size()) {
+        return false;
+    }
+    return std::equal(prefix.begin(), prefix.end(), whole.begin()) &&
+           std::equal(suffix.begin(), suffix.end(), whole.begin() + prefix.size());
 }
 
 // ---------------------------------------------------------------------------
@@ -1379,6 +1460,200 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             remember(key, nullptr);
             return false; // Deferred to direct BLAS GEMM, not a rejection.
         }
+        // ── Direct BLAS fast paths ───────────────────────────────────────
+        // The packed structure needs a K dimension to amortize its packing
+        // copy. Two shape classes have none, and pay 2-3 memory passes for
+        // work one BLAS call does in a single pass:
+        //
+        //   - outer product (no link indices): a K=1 GEMM, where the
+        //     micro-kernel's per-tile setup IS the cost, while ger writes C at
+        //     bandwidth.
+        //   - GEMV-shaped (no N, or no M): packing copies the largest operand
+        //     (read + write) and the kernel then reads it again - three passes
+        //     where gemv makes one. This is the "no K reuse to amortize the
+        //     packing copy" case noted below.
+        //
+        // Measured 4-5x on both against the packed path. They apply when the
+        // operands' axis groups flatten to BLAS shapes, which is the common
+        // case (dense tensors, index groups already adjacent); anything that
+        // does not flatten falls through to packing below, unchanged.
+        //
+        // Conjugated operands are excluded: ger/gerc and the gemv transposes
+        // differ for complex, and the packing path already handles conjugation
+        // natively.
+        if (!spec.conj_a && !spec.conj_b) {
+            auto const alpha = static_cast<ValueType>(AB_prefactor);
+            auto const beta  = static_cast<ValueType>(C_prefactor);
+
+            // ── Outer product -> ger / k=1 gemm ──
+            // C's axes must be A's group followed by B's (or the reverse), so
+            // one flat 2-D view of C exists. C must be wholly contiguous, which
+            // also makes the destination prefactor a single pass.
+            auto try_outer = [&]() -> bool {
+                if (!link.empty() || !(is_concatenation(c_raw, a_raw, b_raw) || is_concatenation(c_raw, b_raw, a_raw))) {
+                    return false;
+                }
+                bool const   a_first = is_concatenation(c_raw, a_raw, b_raw);
+                size_t const split   = a_first ? a_raw.size() : b_raw.size();
+
+                size_t m = 0, n = 0, s_first = 0, s_second = 0, c_all = 0, s_c = 0;
+                size_t a_ext = 0, inc_a = 0, b_ext = 0, inc_b = 0;
+                if (!flatten_run(*C, 0, split, m, s_first) || !flatten_run(*C, split, c_raw.size(), n, s_second) ||
+                    !flatten_run(*C, 0, c_raw.size(), c_all, s_c) || !flatten_run(A, 0, a_raw.size(), a_ext, inc_a) ||
+                    !flatten_run(B, 0, b_raw.size(), b_ext, inc_b) || s_c != 1 || c_all != m * n) {
+                    return false;
+                }
+                // m/n are C's two groups in C's own order; map them back to the
+                // operands, which may be swapped relative to that.
+                size_t const m_a = a_first ? m : n;
+                size_t const n_b = a_first ? n : m;
+                if (a_ext != m_a || b_ext != n_b || (s_first != 1 && s_second != 1)) {
+                    return false;
+                }
+                // Below this the fixed cost of a BLAS call is the whole
+                // measurement, and the existing small-outer deferral already
+                // picks the runtime loop; leave that decision where it is.
+                if (m * n < kOuterMinElems) {
+                    return false;
+                }
+
+                using int_t            = einsums::blas::int_t;
+                auto       *cp         = C->data();
+                auto const *ap         = A.data();
+                auto const *bp         = B.data();
+                bool const  rows_first = s_first == 1;
+
+                // Rows are whichever of C's groups carries unit stride; the
+                // other is the column axis and supplies ldc.
+                auto const rows = static_cast<int_t>(rows_first ? m : n);
+                auto const cols = static_cast<int_t>(rows_first ? n : m);
+                auto       ldc  = static_cast<int_t>(rows_first ? s_second : s_first);
+
+                // With one column there is no second column to address, so the
+                // column stride is unconstrained - and an all-extent-1 group
+                // reports a placeholder anyway. BLAS still validates
+                // ldc >= rows, so pin it. Anything still short of that is a
+                // layout no leading dimension can describe: decline rather than
+                // hand the vendor an ldc it will reject.
+                if (cols == 1) {
+                    ldc = std::max(ldc, rows);
+                }
+                if (ldc < rows) {
+                    return false;
+                }
+
+                // Which operand feeds the row axis: C's first group is A's when
+                // a_first, so rows come from A iff those agree.
+                bool const  rows_from_a = rows_first == a_first;
+                auto const *rp          = rows_from_a ? ap : bp;
+                auto const *cq          = rows_from_a ? bp : ap;
+                auto const  inc_r       = static_cast<int_t>(rows_from_a ? inc_a : inc_b);
+                auto const  inc_c2      = static_cast<int_t>(rows_from_a ? inc_b : inc_a);
+
+                // A k=1 GEMM rather than scal-then-ger: ger has no beta, so a
+                // destination prefactor would cost a separate pass over C - and
+                // C traffic IS the cost of an outer product, so that pass is the
+                // whole overhead. gemm folds beta in. Past kOuterGemmMaxElems
+                // its blocking overhead outgrows the saved pass. A strided
+                // operand has no ldb to express, so it takes ger either way.
+                if (inc_r == 1 && inc_c2 == 1 && (static_cast<size_t>(rows) * cols) < kOuterGemmMaxElems) {
+                    ProfileAnnotate("packed_gemm_path", "direct_outer_gemm");
+                    einsums::blas::gemm<ValueType>('n', 'n', rows, cols, 1, alpha, rp, rows, cq, 1, beta, cp, ldc);
+                    return true;
+                }
+                ProfileAnnotate("packed_gemm_path", "direct_ger");
+                if (beta == ValueType{0}) {
+                    std::fill(cp, cp + (m * n), ValueType{0});
+                } else if (beta != ValueType{1}) {
+                    einsums::blas::scal<ValueType>(static_cast<int_t>(m * n), beta, cp, 1);
+                }
+                einsums::blas::ger<ValueType>(rows, cols, alpha, rp, inc_r, cq, inc_c2, cp, ldc);
+                return true;
+            };
+            if (try_outer()) {
+                return true;
+            }
+
+            // ── GEMV-shaped -> gemv ──
+            // Exactly one operand supplies all of C; the other is entirely
+            // contracted. The supplying operand's axes must be C's group and
+            // the link group, adjacent in either order.
+            if (!link.empty() && (m_count == 0) != (n_count == 0) && m_count + n_count == target.size()) {
+                // A and B are distinct types, so the supplying operand cannot be
+                // selected into one reference - the shared body is a template
+                // instead, instantiated for whichever side supplies C.
+                auto try_gemv = [&]<einsums::BasicTensorConcept SupT, einsums::BasicTensorConcept VecT>(
+                                    SupT const &S, VecT const &V, std::vector<std::string> const &sup,
+                                    std::vector<std::string> const &other) -> bool {
+                    // The contracted operand must be exactly the link group, so
+                    // it flattens to the gemv vector.
+                    if (other != link || !(is_concatenation(sup, c_raw, link) || is_concatenation(sup, link, c_raw))) {
+                        return false;
+                    }
+                    bool const   c_first = is_concatenation(sup, c_raw, link);
+                    size_t const split   = c_first ? c_raw.size() : link.size();
+
+                    size_t d0 = 0, s0 = 0, d1 = 0, s1 = 0, v_ext = 0, inc_v = 0, c_ext = 0, inc_c = 0;
+                    if (!flatten_run(S, 0, split, d0, s0) || !flatten_run(S, split, sup.size(), d1, s1) ||
+                        !flatten_run(V, 0, other.size(), v_ext, inc_v) || !flatten_run(*C, 0, c_raw.size(), c_ext, inc_c)) {
+                        return false;
+                    }
+                    size_t const m   = c_first ? d0 : d1; // C extent
+                    size_t const k   = c_first ? d1 : d0; // link extent
+                    size_t const s_m = c_first ? s0 : s1;
+                    size_t const s_k = c_first ? s1 : s0;
+                    if (v_ext != k || c_ext != m) {
+                        return false;
+                    }
+                    using int_t    = einsums::blas::int_t;
+                    auto const *sp = S.data();
+                    auto const *vp = V.data();
+                    auto       *cp = C->data();
+                    // Same leading-dimension rule as the outer path: with a
+                    // single column the other stride is unconstrained (and an
+                    // all-extent-1 group reports a placeholder), but BLAS still
+                    // validates lda against the leading extent.
+                    if (s_m == 1) {
+                        // S is m x k column-major: y = alpha*S*v + beta*y
+                        auto lda = static_cast<int_t>(s_k);
+                        if (k == 1) {
+                            lda = std::max(lda, static_cast<int_t>(m));
+                        }
+                        if (lda < static_cast<int_t>(m)) {
+                            return false;
+                        }
+                        ProfileAnnotate("packed_gemm_path", "direct_gemv");
+                        einsums::blas::gemv<ValueType>('n', static_cast<int_t>(m), static_cast<int_t>(k), alpha, sp, lda, vp,
+                                                       static_cast<int_t>(inc_v), beta, cp, static_cast<int_t>(inc_c));
+                        return true;
+                    }
+                    if (s_k == 1) {
+                        // S is k x m column-major: y = alpha*S^T*v + beta*y
+                        auto lda = static_cast<int_t>(s_m);
+                        if (m == 1) {
+                            lda = std::max(lda, static_cast<int_t>(k));
+                        }
+                        if (lda < static_cast<int_t>(k)) {
+                            return false;
+                        }
+                        ProfileAnnotate("packed_gemm_path", "direct_gemv");
+                        einsums::blas::gemv<ValueType>('t', static_cast<int_t>(k), static_cast<int_t>(m), alpha, sp, lda, vp,
+                                                       static_cast<int_t>(inc_v), beta, cp, static_cast<int_t>(inc_c));
+                        return true;
+                    }
+                    return false;
+                };
+
+                if (n_count == 0) {
+                    if (try_gemv(A, B, a_raw, b_raw)) {
+                        return true;
+                    }
+                } else if (try_gemv(B, A, b_raw, a_raw)) {
+                    return true;
+                }
+            }
+        }
+
         // Bandwidth-bound shape classes where the packed pass structure
         // (pack + kernel + scatter = 2-3 memory passes) measurably loses to
         // the COMPILE-TIME generic loop's single fused pass, at every size

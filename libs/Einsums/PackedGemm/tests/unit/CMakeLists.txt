@@ -30,6 +30,14 @@ einsums_add_executable(
 )
 einsums_add_unit_test("Modules.PackedGemm" MultiMN)
 
+# The direct-BLAS fast paths go through the full einsum dispatch too.
+einsums_add_executable(
+  DirectBlasPaths_test INTERNAL_FLAGS
+  SOURCES DirectBlasPaths.cpp
+  NOINSTALL
+)
+einsums_add_unit_test("Modules.PackedGemm" DirectBlasPaths)
+
 # The tile micro-kernel is compiled once per SIMD dispatch rung; run the
 # multi-M/N suite (which drives the scatter path through every tile shape)
 # once per rung (no-op on single-TU builds).
