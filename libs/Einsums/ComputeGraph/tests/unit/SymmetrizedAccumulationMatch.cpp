@@ -125,3 +125,110 @@ TEST_CASE("SymmetrizedAccumulation matcher - a lone permute+axpby is not a site"
     CHECK(pass->num_candidates() == 0);
     CHECK(pass->num_matched() == 0);
 }
+
+// `r2 += tmp` is an axpy in every other library, so cg::axpy is the spelling a
+// user reaches for first - and for a long time it could never match, because it
+// recorded a separate opaque node kind and the fold needs to read the
+// accumulate's scalar. cg::axpy now records an Axpby with beta == 1, so both
+// spellings match identically. Regression guard for the spelling, not the
+// algebra: the rewrite itself is covered next door.
+TEST_CASE("SymmetrizedAccumulation matcher - the axpy spelling matches like axpby", "[ComputeGraph][SymmetrizedAccumulation]") {
+    auto A  = create_random_tensor<double>("A", 2, 3);
+    auto B  = create_random_tensor<double>("B", 2, 3);
+    auto r2 = create_zero_tensor<double>("r2", 2, 2, 3, 3);
+
+    cg::Graph graph("symacc-axpy-spelling");
+    auto     &tmp  = graph.declare_tensor<double, 4>("tmp", 2, 2, 3, 3);
+    auto     &tmpP = graph.declare_tensor<double, 4>("tmpP", 2, 2, 3, 3);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j,a,b <- i,a ; j,b", &tmp, A, B);
+        cg::axpy(1.0, tmp, &r2);                       // the natural spelling
+        cg::permute("j,i,b,a <- i,j,a,b", &tmpP, tmp); // involution
+        cg::axpy(1.0, tmpP, &r2);                      // the natural spelling
+    }
+
+    auto pass = match(graph);
+    CHECK(pass->num_candidates() == 1);
+    CHECK(pass->num_matched() == 1);
+}
+
+// The tally is per-apply state: a second apply() must not report the first
+// apply's rejections on top of its own. Uses a shape the pass declines (only
+// the permuted half accumulates) so there is something to count.
+TEST_CASE("SymmetrizedAccumulation - skip reasons reset between applies", "[ComputeGraph][SymmetrizedAccumulation]") {
+    auto A  = create_random_tensor<double>("A", 2, 3);
+    auto B  = create_random_tensor<double>("B", 2, 3);
+    auto r2 = create_zero_tensor<double>("r2", 2, 2, 3, 3);
+
+    cg::Graph graph("symacc-reset");
+    auto     &tmp  = graph.declare_tensor<double, 4>("tmp", 2, 2, 3, 3);
+    auto     &tmpP = graph.declare_tensor<double, 4>("tmpP", 2, 2, 3, 3);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j,a,b <- i,a ; j,b", &tmp, A, B);
+        cg::permute("j,i,b,a <- i,j,a,b", &tmpP, tmp);
+        cg::axpby(1.0, tmpP, 1.0, &r2); // no sibling accumulate of the un-permuted tmp
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::SymmetrizedAccumulation>();
+    pm.add(pass);
+
+    graph.apply(pm);
+    auto const first = pass->skip_reasons();
+    REQUIRE_FALSE(first.empty());
+
+    graph.apply(pm);
+    auto const second = pass->skip_reasons();
+    REQUIRE(second.size() == first.size());
+    for (size_t n = 0; n < first.size(); n++) {
+        CHECK(second[n].first == first[n].first);
+        CHECK(second[n].second == first[n].second); // counts, not accumulated totals
+    }
+}
+
+// The descriptor must not be a snapshot the executor disagrees with. axpy's
+// executor reads the shared params, so rewriting alpha there changes what
+// replay computes - the property that makes the scalar safe for a pass to fold
+// into, and the thing a baked-in lambda constant silently broke.
+TEST_CASE("axpy - descriptor scalars are live, and beta != 1 is honored", "[ComputeGraph][Operations]") {
+    auto X = create_random_tensor<double>("X", 4);
+    auto Y = create_zero_tensor<double>("Y", 4);
+
+    cg::Graph graph("axpy-live-params");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpy(2.0, X, &Y);
+    }
+
+    REQUIRE(graph.num_nodes() == 1);
+    auto *desc = std::get_if<cg::AxpbyDescriptor>(&graph.nodes()[0].op_data);
+    REQUIRE(desc != nullptr);
+    REQUIRE(desc->params != nullptr);
+    CHECK(cg::is_one(desc->params->beta));
+
+    graph.execute();
+    for (size_t n = 0; n < 4; n++) {
+        REQUIRE(std::abs(Y(n) - 2.0 * X(n)) < 1e-12);
+    }
+
+    // Rewrite alpha through the params, as ScaleAbsorption/CSE do.
+    desc->params->alpha = cg::PrefactorScalar{5.0};
+    Y.zero();
+    graph.execute();
+    for (size_t n = 0; n < 4; n++) {
+        REQUIRE(std::abs(Y(n) - 5.0 * X(n)) < 1e-12);
+    }
+
+    // Rewriting beta turns it into a genuine axpby; the executor must follow
+    // rather than keep calling the beta == 1 fast path.
+    desc->params->beta = cg::PrefactorScalar{2.0};
+    for (size_t n = 0; n < 4; n++) {
+        Y(n) = 1.0;
+    }
+    graph.execute(); // Y = 5*X + 2*1
+    for (size_t n = 0; n < 4; n++) {
+        REQUIRE(std::abs(Y(n) - (5.0 * X(n) + 2.0)) < 1e-12);
+    }
+}

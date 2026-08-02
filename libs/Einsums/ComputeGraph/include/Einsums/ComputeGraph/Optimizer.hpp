@@ -103,6 +103,33 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
     virtual void reset_stats() {}
 
     /**
+     * @brief Zero everything the manager owns, then the pass's own counters.
+     *
+     * ``PassManager::run`` calls THIS, not @ref reset_stats, so the skip-reason
+     * tally is cleared once per ``apply()`` without every pass having to
+     * remember to chain to a base implementation.
+     */
+    void reset_all_stats() {
+        _skips.clear();
+        reset_stats();
+    }
+
+    /**
+     * @brief Why this pass declined the candidates it looked at.
+     *
+     * One entry per distinct reason, with the number of candidates that hit it,
+     * ordered most-frequent first. Populated by @ref note_skip during
+     * ``run()``; empty for a pass that never declines anything or has not been
+     * taught to explain itself yet.
+     *
+     * This is the negative half of @ref explain: `explain()` says what a pass
+     * DID, `skip_reasons()` says what it declined and why. A pipeline that
+     * looks inert usually has a full skip tally - that is the useful signal,
+     * and reading it should not require rebuilding with a debugger attached.
+     */
+    EINSUMS_EXPORT [[nodiscard]] std::vector<std::pair<std::string, std::size_t>> skip_reasons() const;
+
+    /**
      * @brief What this pass did on its last run, for @ref PassManager::explain.
      *
      * One entry per line of the report; empty means there is nothing worth
@@ -142,6 +169,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * examined, including why it was rejected). Output goes to stderr,
      * prefixed with the pass name. Usually set in bulk via
      * ``PassManager::set_verbosity`` rather than per pass.
+     *
+     * From level 2 up, ``PassManager::explain()`` also grows a "not applied"
+     * section built from @ref skip_reasons - the aggregated form of what
+     * level 3 narrates per candidate. Reach for that first when a pipeline
+     * looks inert: the tally names the gate, and is a returned string rather
+     * than stderr noise you have to read past.
      */
     APIARY_EXPOSE void set_verbosity(int level) { _verbosity = level; }
 
@@ -161,7 +194,33 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      */
     EINSUMS_EXPORT void report(int level, std::string_view message) const;
 
+    /**
+     * @brief Record that a candidate was examined and declined, and why.
+     *
+     * ``reason`` must be a short, *shape-independent* phrase so repeated hits
+     * aggregate into one counted line - "operands are not runtime tensors",
+     * not "tensor 'Wmbej' (id=17) is not a runtime tensor". Put the specifics
+     * in ``detail``, which is emitted to stderr at verbosity 3 but never
+     * aggregated:
+     *
+     * @code
+     * note_skip("operands are not runtime tensors",
+     *           fmt::format("output '{}' has is_runtime=false", name));
+     * @endcode
+     *
+     * Cheap enough to call on every rejected candidate: the aggregate is a
+     * small map keyed by reason, and the stderr line is formatted only when
+     * verbosity warrants it.
+     */
+    EINSUMS_EXPORT void note_skip(std::string_view reason, std::string_view detail = {}) const;
+
     int _verbosity{0};
+
+  private:
+    /// Reason -> number of candidates declined for it. Mutable so a pass can
+    /// record from a const analysis helper; cleared per apply() by
+    /// reset_all_stats().
+    mutable std::vector<std::pair<std::string, std::size_t>> _skips;
 };
 
 /**
@@ -379,6 +438,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * inserted, arena size vs the buffers it hosts, batches formed and
      * profitability-gate skips) into a few lines of text. Empty until run()
      * has been called. See Graph::explain() for the graph-level entry point.
+     *
+     * At verbosity >= 2 the report gains a "not applied" section listing, per
+     * pass, how many candidates it declined and why (see
+     * ``OptimizerPass::skip_reasons``). "(no optimizations applied)" on its own
+     * cannot tell you whether the graph was already optimal or whether every
+     * candidate hit one satisfiable gate - and those call for opposite
+     * responses - so raise the verbosity before concluding a pipeline is inert.
      */
     APIARY_EXPOSE [[nodiscard]] std::string explain() const;
 

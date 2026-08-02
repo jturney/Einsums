@@ -1243,6 +1243,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     std::function<void()> make_axpy_executor(double alpha, TensorId src_id, TensorId dst_id);
 
     /**
+     * @brief Executor for ``dst = alpha*src + beta*dst`` reading LIVE scalars.
+     *
+     * Prefer this over @ref make_axpy_executor for any pass-built node that also
+     * carries an AxpbyDescriptor: the descriptor must share this @p params
+     * object, so a later pass that rewrites alpha/beta changes what replay
+     * actually computes. @ref make_axpy_executor bakes its alpha into the
+     * lambda, which makes a descriptor beside it a snapshot the executor can
+     * silently disagree with.
+     *
+     * @param[in] params Scalars shared with the node's AxpbyDescriptor.
+     * @param[in] src_id TensorId of the source tensor.
+     * @param[in] dst_id TensorId of the destination tensor.
+     * @return A callable that performs the axpby operation.
+     */
+    std::function<void()> make_axpby_executor(std::shared_ptr<AxpbyParams> params, TensorId src_id, TensorId dst_id);
+
+    /**
      * @brief Create an executor lambda that copies src into dst: dst = src.
      *
      * @param[in] src_id TensorId of the source tensor.

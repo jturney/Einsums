@@ -185,7 +185,7 @@ TEST_CASE("TiledRuntimeTensor - tiled axpy in a loop is not hoisted", "[ComputeG
         cg::axpy(1.5, X, &Y);
     };
 
-    // Dense oracle: OpKind::Axpy, which reads_destination() already protects.
+    // Dense oracle: OpKind::Axpby, which reads_destination() already protects.
     Tensor<double, 2> Xd("Xd", 5, 9);
     Tensor<double, 2> Yd("Yd", 5, 9);
     for (int i = 0; i < 5; ++i) {

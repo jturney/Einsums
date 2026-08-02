@@ -59,6 +59,31 @@ void OptimizerPass::report(int level, std::string_view message) const {
     }
 }
 
+void OptimizerPass::note_skip(std::string_view reason, std::string_view detail) const {
+    auto hit = std::ranges::find_if(_skips, [&](auto const &e) { return e.first == reason; });
+    if (hit == _skips.end()) {
+        _skips.emplace_back(std::string(reason), 1);
+    } else {
+        hit->second++;
+    }
+
+    if (_verbosity >= 3) {
+        if (detail.empty()) {
+            report(3, fmt::format("declined: {}", reason));
+        } else {
+            report(3, fmt::format("declined: {} ({})", reason, detail));
+        }
+    }
+}
+
+std::vector<std::pair<std::string, std::size_t>> OptimizerPass::skip_reasons() const {
+    auto out = _skips;
+    // Most-frequent first: the dominant reason a pass stayed quiet is the one
+    // worth reading, and a stable order keeps the report diffable.
+    std::ranges::stable_sort(out, [](auto const &a, auto const &b) { return a.second > b.second; });
+    return out;
+}
+
 namespace {
 
 /// Parse a comma-separated list of pass names into a set.
@@ -212,7 +237,7 @@ bool PassManager::run(Graph &graph) {
         // Zero the pass's counters ONCE per apply. run() must not do this
         // itself: the recursive driver calls it per subgraph, so a reset there
         // would leave the getters reporting only the last subgraph visited.
-        pass->reset_stats();
+        pass->reset_all_stats();
 
         if (analyze) {
             // Analysis-only: save node list, run pass, log results, restore.
@@ -308,8 +333,38 @@ std::string PassManager::explain() const {
         }
     }
 
-    if (out.empty()) {
-        out = "  (no optimizations applied)\n";
+    bool const applied_anything = !out.empty();
+
+    // From verbosity 2 up, follow what the pipeline DID with what it DECLINED
+    // and why. A pipeline that looks inert is the case where this matters most:
+    // "no optimizations applied" alone cannot distinguish "this graph was
+    // already optimal" from "every candidate was rejected by one gate you could
+    // have satisfied", and those call for opposite responses from the user.
+    if (_verbosity >= 2) {
+        std::string skipped;
+        for (auto const &p : _passes) {
+            auto const reasons = p->skip_reasons();
+            if (reasons.empty()) {
+                continue;
+            }
+            skipped += "  - ";
+            skipped += p->name();
+            skipped += " declined:\n";
+            for (auto const &[reason, count] : reasons) {
+                skipped += fmt::format("      {} candidate(s): {}\n", count, reason);
+            }
+        }
+        if (!skipped.empty()) {
+            if (applied_anything) {
+                out += '\n';
+            }
+            out += "  not applied:\n";
+            out += skipped;
+        }
+    }
+
+    if (!applied_anything) {
+        out.insert(0, "  (no optimizations applied)\n");
     }
     return out;
 }

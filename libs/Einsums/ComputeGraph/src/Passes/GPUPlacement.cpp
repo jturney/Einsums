@@ -41,7 +41,6 @@ bool is_gpu_capable_op(OpKind kind) {
     case OpKind::Gemv:
     case OpKind::Ger:
     case OpKind::Dot:
-    case OpKind::Axpy:
     case OpKind::Axpby:
     case OpKind::Scale:
     case OpKind::DirectProduct:

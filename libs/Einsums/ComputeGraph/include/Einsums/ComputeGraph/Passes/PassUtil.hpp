@@ -27,6 +27,8 @@ namespace einsums::compute_graph::passes {
  * value the executor will read.
  */
 [[nodiscard]] inline PrefactorScalar const *axpby_beta(Node const &nd) {
+    // A pass-built Axpby with no descriptor returns null, which every caller
+    // already treats conservatively.
     if (nd.kind != OpKind::Axpby) {
         return nullptr;
     }
@@ -87,7 +89,8 @@ namespace einsums::compute_graph::passes {
 /**
  * @brief True when @p nd reads its destination (accumulates into it).
  *
- * The always-accumulating kinds (Scale/Axpy/Axpby/ElementTransform), or a
+ * The always-accumulating kinds (Scale/ElementTransform), an Axpby with a
+ * non-zero beta, or a
  * prefactor-bearing op with a non-zero destination prefactor. Used by
  * LoopInvariantHoisting to refuse to hoist a self-modifying update out of a loop.
  *
@@ -97,7 +100,6 @@ namespace einsums::compute_graph::passes {
 [[nodiscard]] inline bool reads_destination(Node const &nd) {
     switch (nd.kind) {
     case OpKind::Scale:
-    case OpKind::Axpy:
     case OpKind::ElementTransform:
         return true;
     default:

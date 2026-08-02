@@ -112,6 +112,23 @@ TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Den
     : _max_nodes(max_nodes), _zero_tolerance(zero_tile_tolerance), _densify(densify), _fuse(fuse), _cost_model(std::move(cost_model)) {
 }
 
+std::vector<std::string> TiledExpansion::explain() const {
+    if (_num_expanded == 0 && _num_declined == 0) {
+        return {};
+    }
+    std::vector<std::string> out;
+    if (_num_expanded != 0) {
+        out.push_back(fmt::format("TiledExpansion: expanded {} tiled op(s) into {} per-tile node(s) ({} screened out as structurally "
+                                  "zero, {} densified, {} fused, {} gather(s) reused)",
+                                  _num_expanded, _num_tile_nodes, _num_screened, _num_densified, _num_fused, _num_gathers_reused));
+    }
+    if (_num_declined != 0) {
+        out.push_back(
+            fmt::format("TiledExpansion: declined {} tiled op(s) (over node budget or tile sparsity undecidable)", _num_declined));
+    }
+    return out;
+}
+
 void TiledExpansion::reset_stats() {
     _num_expanded       = 0;
     _num_tile_nodes     = 0;
@@ -271,23 +288,43 @@ bool TiledExpansion::run(Graph &graph) {
         return sc;
     };
 
-    // One dense `y_tile += alpha * x_tile`. Recorded as a real OpKind::Axpy with
+    // One dense `y_tile += alpha * x_tile`. Recorded as a real OpKind::Axpby with
     // the destination among its inputs, so the liveness and hoisting passes read
     // it as the accumulation it is.
     auto emit_tile_axpy = [&graph](TensorId xt, TensorId yt, PrefactorScalar alpha, packed_gemm::ScalarType dt, std::string label) {
         Node nd;
         nd.id      = graph.reserve_node_id();
-        nd.kind    = OpKind::Axpy;
+        nd.kind    = OpKind::Axpby;
         nd.label   = std::move(label);
         nd.inputs  = {xt, yt};
         nd.outputs = {yt};
+
+        // Live scalars shared with the executor, same contract as a captured
+        // axpby: the descriptor is what downstream passes read AND what the
+        // executor uses, so a fold into alpha reaches the replay. A descriptor
+        // the executor ignored would be worse than none.
+        auto params   = std::make_shared<AxpbyParams>();
+        params->alpha = alpha;
+        params->beta  = PrefactorScalar{1.0};
+
+        AxpbyDescriptor desc;
+        desc.alpha  = params->alpha;
+        desc.beta   = params->beta;
+        desc.params = params;
+        nd.op_data  = desc;
+
         Graph *g   = &graph;
-        nd.execute = [g, xt, yt, alpha, dt]() {
+        nd.execute = [g, xt, yt, params, dt]() {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 using Dense      = GeneralRuntimeTensor<T, std::allocator<T>>;
                 auto const *xptr = static_cast<Dense const *>(g->tensor(xt).tensor_ptr);
                 auto       *yptr = static_cast<Dense *>(g->tensor(yt).tensor_ptr);
-                linear_algebra::axpy(as<T>(alpha), *xptr, yptr);
+                auto const  b    = as<T>(params->beta);
+                if (b == T{1}) {
+                    linear_algebra::axpy(as<T>(params->alpha), *xptr, yptr);
+                } else {
+                    linear_algebra::axpby(as<T>(params->alpha), *xptr, b, yptr);
+                }
             });
         };
         return nd;

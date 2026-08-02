@@ -393,7 +393,7 @@ TEST_CASE("DistributiveFactoring - emits ordinary nodes, not one opaque node", "
         case cg::OpKind::Scale:
             num_scale++;
             break;
-        case cg::OpKind::Axpy:
+        case cg::OpKind::Axpby:
             num_axpy++;
             break;
         case cg::OpKind::Einsum:
@@ -445,7 +445,7 @@ TEST_CASE("DistributiveFactoring - two consumers share one summed intermediate",
     for (auto const &node : graph.nodes()) {
         if (node.kind == cg::OpKind::Scale)
             num_scale++;
-        else if (node.kind == cg::OpKind::Axpy)
+        else if (node.kind == cg::OpKind::Axpby)
             num_axpy++;
         else if (node.kind == cg::OpKind::Einsum)
             num_einsum++;
@@ -612,7 +612,7 @@ TEST_CASE("DistributiveFactoring - a proportional sum reuses the build and scale
     for (auto const &node : graph.nodes()) {
         if (node.kind == cg::OpKind::Scale)
             num_scale++;
-        else if (node.kind == cg::OpKind::Axpy)
+        else if (node.kind == cg::OpKind::Axpby)
             num_axpy++;
         else if (node.kind == cg::OpKind::Einsum)
             num_einsum++;

@@ -638,11 +638,24 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
                 auto nit = tensors.find(c.non_shared_input);
                 Node nd;
                 nd.id      = graph.reserve_node_id();
-                nd.kind    = OpKind::Axpy;
+                nd.kind    = OpKind::Axpby;
                 nd.label   = fmt::format("axpy({} -> {}, alpha={})", nit != tensors.end() ? nit->second.name : "?", t_name, c.ab_prefactor);
                 nd.inputs  = {c.non_shared_input, t_id};
                 nd.outputs = {t_id};
-                nd.execute = graph.make_axpy_executor(c.ab_prefactor, c.non_shared_input, t_id);
+
+                // Live scalars shared with the executor, so the accumulator this
+                // pass builds is as readable to later passes as a captured one.
+                auto params   = std::make_shared<AxpbyParams>();
+                params->alpha = PrefactorScalar{c.ab_prefactor};
+                params->beta  = PrefactorScalar{1.0};
+
+                AxpbyDescriptor desc;
+                desc.alpha  = params->alpha;
+                desc.beta   = params->beta;
+                desc.params = params;
+                nd.op_data  = desc;
+
+                nd.execute = graph.make_axpby_executor(params, c.non_shared_input, t_id);
                 emitted.push_back(std::move(nd));
             }
         }

@@ -957,18 +957,53 @@ APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<double>>,
         auto [x_id, x_slot] = ctx.get_slot(X);
         auto [y_id, y_slot] = ctx.get_slot(*Y);
 
-        auto label    = fmt::format("axpy(alpha={}, {}, {})", alpha, X.name(), Y->name());
-        auto executor = [alpha, x_slot, y_slot]() {
+        using T = typename XType::ValueType;
+
+        // axpy IS an axpby with beta == 1, so it records as one. It used to be
+        // its own OpKind carrying no op_data at all, which made the op opaque:
+        // a pass could see "something accumulates into Y" but not by how much,
+        // so every scalar-aware rewrite (ScaleAbsorption, CSE, ElementWiseFusion,
+        // SymmetrizedAccumulation, ...) gated on OpKind::Axpby and skipped it.
+        // Since `Y += X` is how this operation is spelled in every other
+        // library, the most natural spelling was the one the optimizer could not
+        // see.
+        //
+        // Recording the same kind rather than a parallel one is what makes those
+        // passes work on it, with no per-pass special-casing. The kernel choice
+        // is the executor's, not the kind's: it still calls the BLAS axpy fast
+        // path whenever beta == 1, which is every capture from here.
+        auto params   = std::make_shared<AxpbyParams>();
+        params->alpha = PrefactorScalar{alpha};
+        params->beta  = PrefactorScalar{T{1}};
+
+        auto label = fmt::format("axpy(alpha={}, {}, {})", alpha, X.name(), Y->name());
+        // Reads the scalars through the shared params, exactly as axpby does, so
+        // the descriptor is the single source of truth rather than a snapshot the
+        // executor can silently disagree with. A pass that rewrites beta away
+        // from 1 turns this into a genuine axpby, so honor that rather than
+        // ignoring the write - a baked beta would compute the wrong thing.
+        auto executor = [params, x_slot, y_slot]() {
             LabeledSection("axpy execute");
-            linear_algebra::axpy(alpha, *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
+            auto const a = as<T>(params->alpha);
+            auto const b = as<T>(params->beta);
+            if (b == T{1}) {
+                linear_algebra::axpy(a, *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
+            } else {
+                linear_algebra::axpby(a, *static_cast<XType const *>(x_slot->ptr), b, static_cast<YType *>(y_slot->ptr));
+            }
         };
 
-        // Y += alpha*X reads its destination unconditionally; list it as an
-        // input so dependency passes see the read (matches gemm's and
+        AxpbyDescriptor desc;
+        desc.alpha  = params->alpha;
+        desc.beta   = params->beta;
+        desc.params = params;
+
+        // Y += alpha*X reads its destination unconditionally (beta == 1); list it
+        // as an input so dependency passes see the read (matches gemm's and
         // direct_product's out-tensor-as-input convention - without it,
         // LoopInvariantHoisting's reads-its-output guard is blind to the
         // accumulation and Reorder misses the WAR hazard on Y's old value).
-        ctx.record(OpKind::Axpy, std::move(label), {x_id, y_id}, {y_id}, std::move(executor));
+        ctx.record(OpKind::Axpby, std::move(label), {x_id, y_id}, {y_id}, std::move(executor), std::move(desc));
     }
 }
 

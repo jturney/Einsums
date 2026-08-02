@@ -70,6 +70,15 @@ void LinearCombinationContractionFolding::reset_stats() {
     _num_eliminated = 0;
 }
 
+std::vector<std::string> LinearCombinationContractionFolding::explain() const {
+    if (_num_groups == 0) {
+        return {};
+    }
+    return {fmt::format("LinearCombinationContractionFolding: folded {} group(s), replacing {} contraction(s) with {} fused contraction(s) "
+                        "plus {} operand-combination node(s)",
+                        _num_groups, _num_eliminated + _num_groups, _num_groups, _num_groups)};
+}
+
 bool LinearCombinationContractionFolding::run(Graph &graph) {
     graph.topological_sort();
 
@@ -177,6 +186,10 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
             }
         }
         if (!any_permuted) {
+            // Same operand read the same way by every member: that is duplicate
+            // work for CSE to collapse, not a linear combination to fold.
+            note_skip("group members all read the folded operand in the same order (no transpose to fold)",
+                      fmt::format("{} members into tensor {}", cands.size(), key.output_id));
             continue;
         }
         // Every non-first member must purely accumulate (c_pf == 1) so the
@@ -189,6 +202,8 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
             }
         }
         if (!tail_accumulates) {
+            note_skip("a non-first group member overwrites the output instead of accumulating (c_prefactor != 1)",
+                      fmt::format("{} members into tensor {}", cands.size(), key.output_id));
             continue;
         }
         if (tensors.find(key.non_shared_id) == tensors.end()) {
@@ -242,11 +257,9 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         std::unordered_set<TensorId> const operand_ids{vg.key.shared_id, vg.key.non_shared_id};
         bool const interference = span_interferes(nodes, lo, hi, is_member, vg.key.output_id, operand_ids, /*reject_control_flow=*/false);
         if (interference) {
-            if (_verbosity >= 3) {
-                auto on = tensors.find(vg.key.output_id);
-                report(3, fmt::format("skip fold into '{}': an intervening node reads/writes the output or an operand",
-                                      on != tensors.end() ? on->second.name : "?"));
-            }
+            auto on = tensors.find(vg.key.output_id);
+            note_skip("an intervening node reads or writes the output or a folded operand",
+                      fmt::format("fold into '{}' over nodes [{}..{}]", on != tensors.end() ? on->second.name : "?", lo, hi));
             continue;
         }
 
@@ -268,6 +281,16 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
             return h != nullptr && h->is_runtime && h->dtype == dtype;
         };
         if (!rt_dtyped(vg.key.output_id) || !rt_dtyped(vg.key.shared_id) || !rt_dtyped(vg.key.non_shared_id)) {
+            auto const kind_of = [&](TensorId tid) {
+                auto const *h = graph.find_tensor(tid);
+                if (h == nullptr) {
+                    return "unregistered";
+                }
+                return h->is_runtime ? "runtime" : "typed";
+            };
+            note_skip("operands are statically-typed tensors, not RuntimeTensor - this fold only applies to runtime-ranked operands",
+                      fmt::format("group of {} into tensor {}: output={}, shared={}, folded={}", members.size(), vg.key.output_id,
+                                  kind_of(vg.key.output_id), kind_of(vg.key.shared_id), kind_of(vg.key.non_shared_id)));
             continue;
         }
 

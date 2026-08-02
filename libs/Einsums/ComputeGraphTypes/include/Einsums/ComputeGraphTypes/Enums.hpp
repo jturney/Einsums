@@ -21,7 +21,7 @@ namespace APIARY_MODULE("graph") compute_graph {
  *
  * Categories:
  * - **TensorAlgebra**: Einsum, Permute, Transpose, ElementTransform, KhatriRao
- * - **BLAS-level**: Gemm, Gemv, Ger, Dot, Scale, Axpy, Axpby, DirectProduct
+ * - **BLAS-level**: Gemm, Gemv, Ger, Dot, Scale, Axpby, DirectProduct
  * - **LAPACK-level**: SVD, QR, Syev, Heev, Geev, Gesv, Invert, Det, Pow, etc.
  * - **Other**: HPTTPermute, Custom
  */
@@ -40,7 +40,6 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     Ger,            ///< Rank-1 update (BLAS Level 2)
     Dot,            ///< Dot product (returns scalar)
     Scale,          ///< Scalar multiplication of entire tensor
-    Axpy,           ///< Y += alpha * X
     Axpby,          ///< Y = alpha * X + beta * Y
     DirectProduct,  ///< Element-wise (Hadamard) product
     DirectDivision, ///< Element-wise (Hadamard) quotient
@@ -186,8 +185,6 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "Dot";
     case OpKind::Scale:
         return "Scale";
-    case OpKind::Axpy:
-        return "Axpy";
     case OpKind::Axpby:
         return "Axpby";
     case OpKind::DirectProduct:

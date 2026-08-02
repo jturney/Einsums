@@ -316,9 +316,15 @@ bool try_gpu_scale(Node const &node, std::unordered_map<TensorId, TensorHandle> 
     return false;
 }
 
-/// Try Axpy dispatch: y = alpha * x + y
+/// Try Axpy/Axpby dispatch: y = alpha * x + beta * y
+///
+/// The scalars come from the AxpbyDescriptor. They used to be read from a
+/// ScaleDescriptor, which an axpy/axpby node never carries, so `alpha` silently
+/// defaulted to 1.0 and every prefactor was dropped on the device path - a
+/// wrong answer, not a slow one. A node whose scalars cannot be read now
+/// declines here and runs its own (correct) CPU executor instead of guessing.
 bool try_gpu_axpy(Node const &node, std::unordered_map<TensorId, TensorHandle> const &tensors, DeviceShadowMap &shadows) {
-    if (node.kind != OpKind::Axpy)
+    if (node.kind != OpKind::Axpby)
         return false;
 
     if (node.inputs.size() < 1 || node.outputs.size() != 1)
@@ -346,17 +352,39 @@ bool try_gpu_axpy(Node const &node, std::unordered_map<TensorId, TensorHandle> c
 
     auto n = static_cast<int64_t>(hy.total_bytes() / hy.element_size);
 
-    // Get alpha from the ScaleDescriptor if present, otherwise 1.0
-    double alpha = 1.0;
-    if (auto const *sdesc = std::get_if<ScaleDescriptor>(&node.op_data)) {
-        alpha = sdesc->factor;
+    // Read the live scalars. Prefer the shared params over the descriptor
+    // snapshot: a pass that folded a scale into this node wrote them there, and
+    // that is what the CPU executor would use.
+    auto const *desc = std::get_if<AxpbyDescriptor>(&node.op_data);
+    if (desc == nullptr) {
+        return false; // pass-built node with no readable scalars: let the CPU executor run
     }
+    PrefactorScalar const &alpha_pf = desc->params ? desc->params->alpha : desc->alpha;
+    PrefactorScalar const &beta_pf  = desc->params ? desc->params->beta : desc->beta;
+
+    // Only real scalars are representable by the real gpu::blas entry points
+    // reached below; a complex prefactor on a real tensor has nowhere to go.
+    if (!is_real_valued(alpha_pf) || !is_real_valued(beta_pf)) {
+        return false;
+    }
+    double const alpha = as<double>(alpha_pf);
+    double const beta  = as<double>(beta_pf);
+
+    // y = alpha*x + beta*y. beta == 1 is the axpy fast path; otherwise scale the
+    // destination first. beta == 0 is handled by the same scal (y := 0) and then
+    // the axpy, which is exact.
+    auto apply = [&]<typename T>(T /*tag*/) {
+        if (beta != 1.0) {
+            gpu::blas::scal<T>(n, static_cast<T>(beta), static_cast<T *>(ptr_y), 1);
+        }
+        gpu::blas::axpy<T>(n, static_cast<T>(alpha), static_cast<T const *>(ptr_x), 1, static_cast<T *>(ptr_y), 1);
+    };
 
     if (hx.dtype == packed_gemm::ScalarType::Float32) {
-        gpu::blas::axpy<float>(n, static_cast<float>(alpha), static_cast<float const *>(ptr_x), 1, static_cast<float *>(ptr_y), 1);
+        apply(float{});
         return true;
     } else if (hx.dtype == packed_gemm::ScalarType::Float64) {
-        gpu::blas::axpy<double>(n, alpha, static_cast<double const *>(ptr_x), 1, static_cast<double *>(ptr_y), 1);
+        apply(double{});
         return true;
     }
     return false;
@@ -1335,6 +1363,28 @@ std::function<void()> Graph::make_axpy_executor(double alpha, TensorId src_id, T
         dispatch_binary(src, dst, [alpha](auto *s, auto *d) {
             using T = typename std::remove_pointer_t<decltype(s)>::ValueType;
             linear_algebra::axpy(static_cast<T>(alpha), *s, d);
+        });
+    };
+}
+
+std::function<void()> Graph::make_axpby_executor(std::shared_ptr<AxpbyParams> params, TensorId src_id, TensorId dst_id) {
+    // Reads the scalars from the shared params on every replay, so a node built
+    // with this executor can carry a real AxpbyDescriptor: passes rewrite the
+    // params and the replay honors them. The beta == 1 case keeps the BLAS axpy
+    // fast path - the common one, since accumulation is what pass-built nodes of
+    // this shape are for.
+    return [this, params = std::move(params), src_id, dst_id]() {
+        auto const &src = tensor(src_id);
+        auto       &dst = tensor(dst_id);
+        dispatch_binary(src, dst, [&params](auto *s, auto *d) {
+            using T          = typename std::remove_pointer_t<decltype(s)>::ValueType;
+            auto const alpha = as<T>(params->alpha);
+            auto const beta  = as<T>(params->beta);
+            if (beta == T{1}) {
+                linear_algebra::axpy(alpha, *s, d);
+            } else {
+                linear_algebra::axpby(alpha, *s, beta, d);
+            }
         });
     };
 }

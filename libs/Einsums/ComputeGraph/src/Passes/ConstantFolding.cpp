@@ -13,6 +13,13 @@
 
 namespace einsums::compute_graph::passes {
 
+std::vector<std::string> ConstantFolding::explain() const {
+    if (_num_folded == 0) {
+        return {};
+    }
+    return {fmt::format("ConstantFolding: folded {} node(s) to constants", _num_folded)};
+}
+
 void ConstantFolding::reset_stats() {
     _num_folded = 0;
 }

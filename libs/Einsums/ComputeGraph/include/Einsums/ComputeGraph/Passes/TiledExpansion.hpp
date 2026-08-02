@@ -44,7 +44,7 @@ enum class FuseTiles : std::uint8_t {
  * ``RuntimeTensor``, so it has ``materialize_into``), and Reorder schedules them.
  *
  * Tiled ``scale`` and ``axpy`` lower the same way, into one dense ``OpKind::Scale``
- * or ``OpKind::Axpy`` per stored tile. They are trivially per-tile; the point is
+ * or ``OpKind::Axpby`` per stored tile. They are trivially per-tile; the point is
  * that afterwards the tile buffers are visible to CSE and InplaceOptimization.
  * When the tiles are too small for that to pay, they instead collapse into a
  * single ``OpKind::TileElementwise`` node covering every tile; see @ref FuseTiles.
@@ -286,6 +286,9 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     [[nodiscard]] std::string name() const override { return "TiledExpansion"; }
     bool                      run(Graph &graph) override;
     void                      reset_stats() override;
+
+    /// @copydoc OptimizerPass::explain
+    [[nodiscard]] std::vector<std::string> explain() const override;
 
     /// Safe per sub-graph: a tiled einsum is expanded within the single graph it
     /// is handed, and the nodes it emits stay in that graph.

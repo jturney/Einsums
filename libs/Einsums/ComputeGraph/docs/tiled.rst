@@ -231,7 +231,7 @@ MemoryPlanning packs the per-tile buffers (each tile *is* a dense
 ``RuntimeTensor``, so it has ``materialize_into``), and Reorder schedules them.
 
 Tiled ``scale`` and ``axpy`` lower the same way, into one dense ``OpKind::Scale``
-or ``OpKind::Axpy`` per stored tile.
+or ``OpKind::Axpby`` per stored tile.
 
 Emission order
 --------------

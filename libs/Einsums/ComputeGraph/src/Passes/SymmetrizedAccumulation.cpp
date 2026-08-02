@@ -55,6 +55,14 @@ bool is_involution(std::vector<std::string> const &a, std::vector<std::string> c
 
 } // namespace
 
+std::vector<std::string> SymmetrizedAccumulation::explain() const {
+    if (_num_rewritten == 0) {
+        return {};
+    }
+    return {fmt::format("SymmetrizedAccumulation: folded {} symmetrization site(s) of {} matched ({} candidate(s) examined)",
+                        _num_rewritten, _num_matched, _num_candidates)};
+}
+
 void SymmetrizedAccumulation::reset_stats() {
     _num_candidates = 0;
     _num_matched    = 0;
@@ -94,6 +102,11 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
     };
     // An accumulating axpby reads its destination: `dst` in BOTH inputs and
     // outputs (Operations.hpp records inputs = {src, dst} only when beta != 0).
+    //
+    // cg::axpy records an Axpby with beta == 1, so `r2 += tmp` - the spelling
+    // every other library uses - matches here like any other accumulation. A
+    // pass-built node with no descriptor is rejected below, where the scalar is
+    // read.
     auto const is_accumulating_axpby = [&](Node const &node, TensorId src, TensorId dst) {
         return node.kind == OpKind::Axpby && node.outputs.size() == 1 && node.outputs[0] == dst && contains(node.inputs, src) &&
                contains(node.inputs, dst);
@@ -135,12 +148,15 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         }
         // Pure overwrite permutation (tmpP freshly written): beta == 0.
         if (pd->beta != 0.0) {
+            note_skip("permute accumulates into its output (beta != 0)", fmt::format("permute #{}", pi));
             continue;
         }
         if (!is_involution(pd->a_indices, pd->c_indices)) {
+            note_skip("permutation is not an involution", fmt::format("permute #{} '{}'", pi, permute.label));
             continue;
         }
         if (permute.inputs.size() != 1 || permute.outputs.size() != 1) {
+            note_skip("permute has unexpected operand arity", fmt::format("permute #{}", pi));
             continue;
         }
         TensorId const tmp  = permute.inputs[0];
@@ -161,16 +177,23 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
                 a2_found = static_cast<long>(i);
             }
         }
+        if (a2_found == -1) {
+            note_skip("permuted result has no consumer in its generation", fmt::format("permute #{}", pi));
+            continue;
+        }
         if (a2_found < 0) {
+            note_skip("permuted result has more than one consumer", fmt::format("permute #{}", pi));
             continue;
         }
         size_t const a2     = static_cast<size_t>(a2_found);
         Node const  &axpby2 = nodes[a2];
         if (axpby2.outputs.size() != 1) {
+            note_skip("consumer of the permuted result has unexpected output arity", fmt::format("node #{}", a2));
             continue;
         }
         TensorId const r2 = axpby2.outputs[0];
         if (!is_accumulating_axpby(axpby2, tmpP, r2)) {
+            note_skip("consumer of the permuted result is not an accumulating axpy/axpby", fmt::format("node #{} '{}'", a2, axpby2.label));
             continue;
         }
 
@@ -194,7 +217,12 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
                 a1 = static_cast<long>(ri);
             }
         }
+        if (a1 == -1) {
+            note_skip("no sibling accumulate of the un-permuted operand into the same output", fmt::format("permute #{}", pi));
+            continue;
+        }
         if (a1 < 0) {
+            note_skip("more than one candidate sibling accumulate", fmt::format("permute #{}", pi));
             continue;
         }
 
@@ -256,7 +284,10 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
             // destination: an op that also reads r2 as a SOURCE operand
             // (axpby's x, an einsum's A or B) consumes the half-symmetrized
             // values and does not commute.
-            PrefactorScalar const *beta           = nodes[i].kind == OpKind::Axpby ? axpby_beta(nodes[i]) : nullptr;
+            // A plain `r2 += something_else` between the halves is the
+            // commuting accumulation it looks like, so read its beta rather
+            // than treating every intervening write as interference.
+            PrefactorScalar const *beta           = axpby_beta(nodes[i]);
             bool                   additive_accum = beta != nullptr && is_one(*beta) && nodes[i].inputs.size() == 2 &&
                                   graph.resolve_alias(nodes[i].inputs[0]) != r2_owner && touches_owner(nodes[i].outputs, r2_owner) &&
                                   touches_owner(nodes[i].inputs, r2_owner);
@@ -267,10 +298,9 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
                                  graph.resolve_alias(nodes[i].inputs[1]) != r2_owner && touches_owner(nodes[i].outputs, r2_owner);
             }
             if (writes_tmp || (touches_r2 && !additive_accum)) {
-                if (_verbosity >= 3) {
-                    report(3, fmt::format("candidate at permute #{} rejected: node #{} '{}' {} inside [{}..{}]", pi, i, nodes[i].label,
-                                          writes_tmp ? "rewrites the source" : "observes the half-symmetrized output", first, last));
-                }
+                note_skip(writes_tmp ? "an intervening node rewrites the permute source"
+                                     : "an intervening node observes the half-symmetrized output",
+                          fmt::format("permute #{} blocked by node #{} '{}' inside [{}..{}]", pi, i, nodes[i].label, first, last));
                 clean = false;
                 break;
             }
@@ -280,13 +310,18 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         }
         ++_num_matched;
 
-        // s2 is axpby2's alpha. Requires the axpby descriptor (added alongside
-        // this pass); without it the scalar is unreadable and we cannot fold.
+        // s2 is axpby2's alpha. Requires the axpby descriptor (which cg::axpy
+        // now carries too); without it - a pass-built node - the scalar is
+        // unreadable and we cannot fold. Read it through the live params when
+        // present: an earlier pass that folded a scale into this accumulate
+        // wrote it there, and that is the value the executor will use.
         auto const *ad = std::get_if<AxpbyDescriptor>(&axpby2.op_data);
         if (ad == nullptr) {
+            note_skip("accumulate carries no readable scalar (pass-built node without a descriptor)",
+                      fmt::format("node #{} '{}'", a2, axpby2.label));
             continue;
         }
-        sites.push_back(Site{pi, a2, tmp, r2, ad->alpha, pd->a_indices, pd->c_indices});
+        sites.push_back(Site{pi, a2, tmp, r2, ad->params ? ad->params->alpha : ad->alpha, pd->a_indices, pd->c_indices});
     }
 
     // ── Rewrite (Level 1): fold each runtime-tensor site by making the permute
@@ -300,13 +335,25 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         // typed Tensor<T, Rank>).
         auto const *th_tmp = graph.find_tensor(s.tmp);
         auto const *th_r2  = graph.find_tensor(s.r2);
-        if (th_tmp == nullptr || th_r2 == nullptr || !th_tmp->is_runtime || !th_r2->is_runtime || th_tmp->dtype != th_r2->dtype) {
+        if (th_tmp == nullptr || th_r2 == nullptr) {
+            note_skip("operand tensor is not registered in the graph", fmt::format("permute #{}", s.permute_idx));
+            continue;
+        }
+        if (!th_tmp->is_runtime || !th_r2->is_runtime) {
+            note_skip(
+                "operands are statically-typed tensors, not RuntimeTensor - this fold only applies to runtime-ranked operands",
+                fmt::format("permute #{}: tmp.is_runtime={}, r2.is_runtime={}", s.permute_idx, th_tmp->is_runtime, th_r2->is_runtime));
+            continue;
+        }
+        if (th_tmp->dtype != th_r2->dtype) {
+            note_skip("operands have mixed dtypes", fmt::format("permute #{}", s.permute_idx));
             continue;
         }
         // Only fold a pure permutation (alpha == 1); a scaled permute would need
         // s2 * alpha folded into the accumulate, deferred until it appears.
         auto *pd = std::get_if<PermuteDescriptor>(&nodes[s.permute_idx].op_data);
         if (pd == nullptr || pd->alpha != 1.0) {
+            note_skip("permute is scaled (alpha != 1)", fmt::format("permute #{}", s.permute_idx));
             continue;
         }
         auto const dtype = th_r2->dtype;

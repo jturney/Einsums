@@ -81,10 +81,10 @@ bool propagate_scale(Graph &graph, Node const &node, InferGuard const &guard) {
 }
 
 /// Rule: ``C = α·A + β·B`` (or simple sum), if A and B carry identical
-/// descriptors, C inherits them. Applies to OpKind::Axpy and
+/// descriptors, C inherits them. Applies to
 /// OpKind::Axpby when the descriptors match exactly.
 bool propagate_linear_combination(Graph &graph, Node const &node, InferGuard const &guard) {
-    if (node.kind != OpKind::Axpy && node.kind != OpKind::Axpby)
+    if (node.kind != OpKind::Axpby)
         return false;
     if (node.inputs.size() < 2 || node.outputs.size() != 1)
         return false;
@@ -178,6 +178,13 @@ bool propagate_permute(Graph &graph, Node const &node, InferGuard const &guard) 
 }
 
 } // namespace
+
+std::vector<std::string> SymmetryPropagation::explain() const {
+    if (_num_inferred == 0) {
+        return {};
+    }
+    return {fmt::format("SymmetryPropagation: inferred symmetry on {} tensor(s)", _num_inferred)};
+}
 
 void SymmetryPropagation::reset_stats() {
     _num_inferred = 0;

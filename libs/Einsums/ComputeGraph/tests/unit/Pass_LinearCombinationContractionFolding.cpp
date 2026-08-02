@@ -85,6 +85,14 @@ TEST_CASE("LCCF - folded output feeding a downstream consumer stays correct", "[
     REQUIRE(modified);
     REQUIRE(pass.num_groups() == 1);
 
+    // A fold this consequential must show up in the pipeline report. It did not
+    // for a long time - LCCF had no explain() override at all, so a run that
+    // replaced three contractions with one reported nothing and read as a
+    // no-op pipeline.
+    auto const applied = pass.explain();
+    REQUIRE(applied.size() == 1);
+    CHECK_THAT(applied[0], Catch::Matchers::ContainsSubstring("folded 1 group"));
+
     graph.execute();
 
     for (size_t ii = 0; ii < 3; ii++) {
@@ -161,6 +169,17 @@ TEST_CASE("LCCF - statically-typed captures are not folded (and stay correct)", 
     auto [modified, pass] = graph.apply<cg::passes::LinearCombinationContractionFolding>();
     CHECK_FALSE(modified);
     CHECK(pass.num_groups() == 0);
+
+    // The pass declining is correct, but silence about WHY cost real debugging
+    // time: a graph that looks un-optimizable is indistinguishable from one
+    // rejected by a gate the caller could have satisfied. The skip tally has to
+    // name the runtime-tensor gate, and explain() must stay empty because
+    // nothing was applied.
+    auto const reasons = pass.skip_reasons();
+    REQUIRE(reasons.size() == 1);
+    CHECK(reasons[0].second == 1);
+    CHECK_THAT(reasons[0].first, Catch::Matchers::ContainsSubstring("RuntimeTensor"));
+    CHECK(pass.explain().empty());
 
     graph.execute();
 

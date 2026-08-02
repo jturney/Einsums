@@ -382,6 +382,13 @@ size_t StreamContractionFusion::max_output_elems(size_t elem_size) const {
     return std::max(kMinOutputElemsFloor, llc_bytes / threads / elem_size);
 }
 
+std::vector<std::string> StreamContractionFusion::explain() const {
+    if (_num_groups == 0) {
+        return {};
+    }
+    return {fmt::format("StreamContractionFusion: loop-fused {} group(s), eliminating {} node(s)", _num_groups, _num_eliminated)};
+}
+
 void StreamContractionFusion::reset_stats() {
     _num_groups     = 0;
     _num_eliminated = 0;

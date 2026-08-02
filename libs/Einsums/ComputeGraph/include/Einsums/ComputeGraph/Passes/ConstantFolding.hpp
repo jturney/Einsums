@@ -74,6 +74,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool                      run(Graph &graph) override;
     void                      reset_stats() override;
 
+    /// @copydoc OptimizerPass::explain
+    [[nodiscard]] std::vector<std::string> explain() const override;
+
     /// Recurse into loop bodies / conditional branches.
     ///
     /// Safe now that run() only folds nodes whose tensors are materialized at pass time

@@ -572,12 +572,12 @@ TEST_CASE("TiledExpansion - tiled axpy expands to one dense axpy per stored X ti
 
     CHECK(pass->num_expanded() == 1);
     CHECK(pass->num_tile_nodes() == x_tiles.size());
-    CHECK(nodes_of_kind(graph, cg::OpKind::Axpy) == x_tiles.size());
+    CHECK(nodes_of_kind(graph, cg::OpKind::Axpby) == x_tiles.size());
 
     // Every emitted node must declare its read of the destination, or the
     // accumulation is invisible to the scheduler.
     for (auto const &nd : graph.nodes()) {
-        if (nd.kind != cg::OpKind::Axpy) {
+        if (nd.kind != cg::OpKind::Axpby) {
             continue;
         }
         REQUIRE(nd.outputs.size() == 1);
@@ -1452,7 +1452,7 @@ TEST_CASE("TiledExpansion - a fused axpy matches the per-tile lowering and decla
     fill_det(X, 0.5);
     fill_det(Y, 2.5);
     CHECK(run(cg::passes::FuseTiles::Always, X, Y, graph) == 1);
-    CHECK(nodes_of_kind(graph, cg::OpKind::Axpy) == 0);
+    CHECK(nodes_of_kind(graph, cg::OpKind::Axpby) == 0);
     REQUIRE(nodes_of_kind(graph, cg::OpKind::TileElementwise) == 1);
 
     // The accumulation reads every tile it writes. Dropping that from the fused

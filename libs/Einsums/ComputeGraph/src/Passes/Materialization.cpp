@@ -130,6 +130,13 @@ void collect_descendant_deferred(Graph &graph, std::vector<DeferredEntry> &out) 
 
 } // namespace
 
+std::vector<std::string> Materialization::explain() const {
+    if (_num_materialized == 0 && _num_initialized == 0) {
+        return {};
+    }
+    return {fmt::format("Materialization: allocated {} deferred tensor(s), zero-initialized {}", _num_materialized, _num_initialized)};
+}
+
 void Materialization::reset_stats() {
     _num_materialized = 0;
     _num_initialized  = 0;

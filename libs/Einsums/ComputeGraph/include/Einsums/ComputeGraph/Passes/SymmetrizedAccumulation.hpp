@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace einsums::compute_graph::passes {
 
@@ -96,7 +97,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::string name() const override { return "SymmetrizedAccumulation"; }
 
     bool run(Graph &graph) override;
-    void reset_stats() override;
+
+    /// @copydoc OptimizerPass::explain
+    [[nodiscard]] std::vector<std::string> explain() const override;
+    void                                   reset_stats() override;
 
     /// The CCSD residual is a loop body; the sites live in the subgraph.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
