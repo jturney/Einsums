@@ -36,10 +36,8 @@ jobs:
         blas: [ openblas ]
         build_type: [ Debug ]
         variant: [ default ]
-        # Each entry carries both spellings deliberately. `flags` is what
-        # -DEINSUMS_WITH_SANITIZERS wants, comma-separated; `slug` is the same
-        # choice in a form a cache key accepts, because actions/cache rejects a
-        # key containing a comma.
+        # Two spellings: `flags` for -DEINSUMS_WITH_SANITIZERS, `slug` for the
+        # cache key, which actions/cache will not accept with a comma in it.
         sanitizer: ${{ fromJSON(inputs.full_matrix && '[{"flags":"address,leak,undefined","slug":"asan-lsan-ubsan"},{"flags":"thread","slug":"tsan"}]' || '[{"flags":"thread","slug":"tsan"}]') }}
 
     name: "${{ matrix.sanitizer.flags }} • ${{ matrix.compiler }} • ${{ matrix.blas }} • ${{ matrix.build_type }} • ${{ matrix.variant }}"
@@ -58,10 +56,8 @@ jobs:
           path: src
           submodules: recursive
 
-      # The sanitizer belongs in the key. Without it the full matrix's two legs
-      # ("address,leak,undefined" and "thread") resolve to one identical key:
-      # they race to save, each restores the other's objects, and both report a
-      # 100% ccache miss on a build that costs an hour.
+      # The sanitizer must be in the key, or the full matrix's two legs share
+      # one entry, overwrite each other, and both miss completely.
       - name: Cache Build Cache
         uses: actions/cache@v6
         with:
@@ -77,6 +73,9 @@ jobs:
           source-dir: src
 
       - name: Configure CMake
+        # The only leg in CI that builds debug info: a sanitizer report needs
+        # line numbers, and -g1 is all the runtimes symbolize through.
+        #
         # Build the Python bindings on the ThreadSanitizer leg so the Python
         # test suite (registered as ctest "*Python" entries) runs under TSan.
         # This is the path that exercises kernels multithreaded: a single-node
@@ -105,17 +104,6 @@ jobs:
             -D CMAKE_PREFIX_PATH="${CONDA_PREFIX}" \
             ${{ inputs.build_configure_extra_args }}
 
-      # -g1 rather than Debug's default -g. This is the ONLY leg in CI that
-      # builds any debug info at all: everywhere else it is dropped outright,
-      # because nothing reads it (Catch2 gets a failing assertion's file and
-      # line from __FILE__/__LINE__ at compile time). Here it earns its size - a
-      # TSan or ASan report that cannot name a line is close to useless, and
-      # this is the leg whose findings someone has to sit down and read.
-      #
-      # -g1 rather than -g because line tables are all the runtimes need: they
-      # symbolize frames through the line table, not through variable DWARF. A
-      # sanitizer build emits more debug info than any other leg and this is the
-      # slowest job in CI, so the object and link-time saving lands hardest here.
       - name: Build and Install
         run: |
           # -j2 caps ninja parallelism: GitHub Linux runners have 16GB RAM and

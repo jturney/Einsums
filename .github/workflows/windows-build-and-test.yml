@@ -29,10 +29,8 @@ jobs:
     name: "clang-cl • openblas • ${{ matrix.build_type }}"
     runs-on: windows-2022
     env:
-      # Spelled with the ${{ }} form, not the "$GITHUB_WORKSPACE" the other legs
-      # use: those rely on ccache's own expansion of a $-prefixed name in a
-      # config value, which is a POSIX-shaped assumption to be making about a
-      # cmd.exe step.
+      # ${{ }} form, not "$GITHUB_WORKSPACE": the other legs lean on ccache's
+      # own $-expansion, which is a POSIX assumption in a cmd.exe step.
       CCACHE_DIR: ${{ github.workspace }}\build_cache_${{ inputs.build_cache_suffix }}
       CCACHE_MAXSIZE: ${{ inputs.build_cache_size }}
     defaults:
@@ -91,27 +89,12 @@ jobs:
           conda list
 
       # ---- Configure, Build, Test ----
-      # This leg had no compiler cache at all and paid ~38 minutes of cold
-      # clang-cl on every run, the second-largest build in CI.
-      #
-      # CI builds no debug info, here or on any leg but the sanitizers: nothing
-      # reads it. Catch2 reports a failing assertion's file and line from
-      # __FILE__/__LINE__ captured at compile time, and this leg has
-      # EINSUMS_WITH_BACKTRACES=OFF anyway. Setting
-      # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT empty is how CMP0141 spells "none"
-      # (the policy is NEW under the root cmake_minimum_required(3.25.2)), and
-      # it happens to remove the one obstacle to caching an MSVC-style compile:
-      # the default /Zi writes to a shared PDB that ccache can neither capture
-      # nor replay, so it declines to cache at all.
-      #
-      # The per-config variable, not CMAKE_CXX_FLAGS, is where the optimization
-      # flags belong, and that placement is not cosmetic. CMAKE_CXX_FLAGS is
-      # where the MSVC platform module puts /DWIN32 /D_WINDOWS /W3 /GR /EHsc
-      # (Windows-MSVC.cmake:538), so setting it from the command line REPLACES
-      # all of that - dropping exceptions and RTTI, and failing the build deep
-      # inside spdlog with "cannot use 'throw' with exceptions disabled". The
-      # per-config variable holds only /O2 /Ob1 /DNDEBUG (line 541), so
-      # restating it costs nothing.
+      # Two traps below. An empty CMAKE_MSVC_DEBUG_INFORMATION_FORMAT means "no
+      # debug info" under CMP0141, which also drops the /Zi shared PDB that
+      # ccache cannot cache. And the optimization flags must ride on the
+      # PER-CONFIG variable: CMAKE_CXX_FLAGS is where MSVC's defaults live
+      # (/DWIN32 /D_WINDOWS /W3 /GR /EHsc), so setting it replaces them and the
+      # build fails in spdlog with "cannot use 'throw' with exceptions disabled".
       - name: Configure CMake
         shell: cmd
         run: |
@@ -158,8 +141,8 @@ jobs:
           if errorlevel 1 exit /b %ERRORLEVEL%
           cmake --build "%GITHUB_WORKSPACE%\build" --config ${{ matrix.build_type }}
 
-      # In cmd, like every other step that needs the env: ccache lives in the
-      # conda env, and only the .bat activation puts it on PATH here.
+      # cmd, like the other env-dependent steps: only the .bat activation puts
+      # ccache on PATH.
       - name: ccache statistics
         shell: cmd
         run: |

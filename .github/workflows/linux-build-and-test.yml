@@ -34,9 +34,8 @@ jobs:
         build_type: [ RelWithDebInfo ]
         variant: [ default ]
         include:
-          # openblas as well as default: keyed on the compiler alone this merged
-          # into BOTH default legs, so the mkl leg paid for instrumentation and
-          # an 8-minute lcov pass to upload a second copy of the same report.
+          # blas matters here: keyed on compiler alone this merges into both
+          # default legs and runs coverage twice.
           - compiler: default
             blas: openblas
             cmake_extra: >
@@ -103,39 +102,10 @@ jobs:
             -D CMAKE_PREFIX_PATH="${CONDA_PREFIX}" \
             ${{ matrix.cmake_extra }} ${{ inputs.build_configure_extra_args }}
 
-      # No debug info, rather than the RelWithDebInfo default -g. The build type
-      # stays RelWithDebInfo on purpose: -O2 is the codegen we want under test,
-      # and switching to Release would move it to -O3, changing what CI actually
-      # exercises and compiling slower for the privilege.
-      #
-      # Nothing in CI reads DWARF. A failing Catch2 assertion reports its file
-      # and line from __FILE__/__LINE__ captured at compile time, not from debug
-      # info, and coverage comes out of .gcno/.gcda, which --coverage emits
-      # independently. What is given up is a symbolized stack trace on a hard
-      # crash; the sanitizer leg keeps -g1 precisely because a TSan report
-      # without line numbers is close to useless, and that leg is where a crash
-      # is worth reading.
-      #
-      # For a template library this size the debug info IS most of the object,
-      # and the cache stores entries zstd-compressed, so the compressed number
-      # is the one that matters. Measured on the real sources:
-      #
-      #                             raw -g    raw -g0   zstd -g   zstd -g0
-      #   Graph.cpp                 26.4MB     4.2MB     4.94MB     0.56MB
-      #   ContractionPlanning.cpp    6.7MB     0.6MB     1.18MB     0.09MB
-      #
-      # ~9-13x in the cache. That is what lets a whole build fit under
-      # CCACHE_MAXSIZE, which it did not at -g (2.0/2.0GB, 964 self-evictions
-      # DURING one build, so objects were discarded before the next run could
-      # use them). Peak compiler RSS and link-time memory drop with it.
       - name: Build and Install
         run: |
-          # Ninja parallelism is capped to fit the 16GB GitHub Linux runner:
-          # heavy template instantiations (ComputeGraph + TensorAlgebra) peak at
-          # ~3-4GB per TU under -O2 and ninja's default (nproc+2 = 6) OOM-kills
-          # the runner mid-link. Dropping debug info buys back enough headroom
-          # for a third worker; -j4 is very likely fine now too but has not been
-          # demonstrated on the runner, and an OOM costs more than a core earns.
+          # -j3 fits the 16GB runner; heavy TUs peak at ~3-4GB and ninja's
+          # default (nproc+2) OOM-kills the link.
           cmake --build "${{ github.workspace }}/build" --config Release --target install -j3
 
       # - name: Linked dependencies, otool (M)
