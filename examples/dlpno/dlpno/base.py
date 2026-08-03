@@ -58,6 +58,11 @@ class DLPNOBase:
         self.metric = None
         self.q_ia = None
 
+        # Per-domain results shared across pairs (see _fit_coefficients and
+        # _canonical_pao_domain). One entry each until screening lands.
+        self._fit_cache = {}
+        self._pao_domain_cache = {}
+
         # pno_transform. The per-pair amplitude/integral blocks live in flat
         # rank-3 stores with the PAIR INDEX TRAILING; see _allocate_pair_stores.
         self.npno_max = 0
@@ -190,29 +195,76 @@ class DLPNOBase:
         )
         return self
 
+    def _fit_coefficients(self, ij):
+        """``J_dom^-1 (Q | i u)`` for every LMO at once, memoized by domain.
+
+        psi4's local robust fit solves ``J_dom x = (Q|ia)`` per pair. The matrix
+        is the same for every pair sharing an auxiliary domain, so solving it
+        per pair re-factorizes one matrix once per pair: with screening off that
+        is 91 identical factorizations for ethanol, a quarter of this phase.
+
+        Solved once for all LMOs instead, which is a single ``gesv`` with
+        ``naocc * npao`` right-hand sides. Keyed by the (auxiliary, PAO) domain
+        pair, so it stays correct when screening makes the domains differ and
+        simply yields more entries.
+        """
+        key = (id(self.lmopair_to_ribfs[ij]), id(self.lmopair_to_paos[ij]))
+        hit = self._fit_cache.get(key)
+        if hit is not None:
+            return hit
+
+        ribfs = self.lmopair_to_ribfs[ij]
+        paos = self.lmopair_to_paos[ij]
+        naocc = self.ref.naocc
+        block = ten.view(self.q_ia)[np.ix_(ribfs, range(naocc), paos)]
+        rhs = ten.from_numpy("(Q|i u) domain", block.reshape(len(ribfs), naocc * len(paos)))
+        A_solve = sparse.submatrix_rows_and_cols(self.metric, ribfs, ribfs, name="(P|Q) domain")
+        solved = ten.view(ten.solve(A_solve, rhs)).reshape(len(ribfs), naocc, len(paos))
+
+        hit = ten.from_numpy("J^-1 (Q|i u)", solved)
+        self._fit_cache[key] = hit
+        return hit
+
+    def _canonical_pao_domain(self, ij):
+        """``(X_pao, e_pao, F_can)`` for pair ``ij``'s PAO domain, memoized.
+
+        The orthocanonical basis of a PAO domain depends only on the domain, so
+        every pair sharing one gets the same answer. Computing it per pair costs
+        two eigendecompositions each, and with screening off there is exactly one
+        distinct domain: 182 of this phase's 364 ``syev`` calls produced the same
+        result. Keyed by domain, so screening just adds entries.
+        """
+        key = id(self.lmopair_to_paos[ij])
+        hit = self._pao_domain_cache.get(key)
+        if hit is not None:
+            return hit
+
+        paos = self.lmopair_to_paos[ij]
+        S_dom = sparse.submatrix_rows_and_cols(self.S_pao, paos, paos)
+        F_dom = sparse.submatrix_rows_and_cols(self.F_pao, paos, paos)
+        X_pao, e_pao = ten.orthocanonicalizer(S_dom, F_dom, self.cut.s_cut)
+        F_can = ten.triplet(X_pao, F_dom, X_pao, trans_a=True, name="F (can PAO)")
+
+        hit = (X_pao, e_pao, F_can)
+        self._pao_domain_cache[key] = hit
+        return hit
+
     def _pair_exchange(self, ij, i, j):
         """The exchange operator ``K_ij[a,b] = (i a | j b)`` over pair ``ij``'s
         PAO domain, density-fitted within the pair's auxiliary domain.
 
-        psi4's local robust fit: gather ``(Q|ia)`` and ``(Q|jb)`` on the domain,
-        solve ``J_dom x = (Q|ia)`` for the fit coefficients, and contract against
-        ``(Q|jb)``. Fitting per domain rather than once globally is what keeps
-        the auxiliary domains local.
+        The fit coefficients come from :meth:`_fit_coefficients`, which solves
+        the domain metric once for all LMOs; here it is one GEMM per pair.
         """
         ribfs = self.lmopair_to_ribfs[ij]
         paos = self.lmopair_to_paos[ij]
 
         # The gather seam: einsums has no index-list gather, so the domain
         # restriction runs on the host view rather than as a captured op.
-        q = ten.view(self.q_ia)
-        i_qa = ten.from_numpy("(Q|i a)", q[np.ix_(ribfs, [i], paos)][:, 0, :])
-        j_qa = ten.from_numpy("(Q|j a)", q[np.ix_(ribfs, [j], paos)][:, 0, :])
-
-        A_solve = sparse.submatrix_rows_and_cols(
-            self.metric, ribfs, ribfs, name="(P|Q) domain"
-        )
-        fit = ten.solve(A_solve, i_qa, name="J^-1 (Q|i a)")
-        return ten.doublet(fit, j_qa, trans_a=True, name="K (ia|jb)")
+        fit = self._fit_coefficients(ij)
+        fit_i = fit[:, i, :]
+        j_qa = ten.from_numpy("(Q|j a)", ten.view(self.q_ia)[np.ix_(ribfs, [j], paos)][:, 0, :])
+        return ten.doublet(fit_i, j_qa, trans_a=True, name="K (ia|jb)")
 
     # -- pair-block storage ------------------------------------------------
 
@@ -373,12 +425,8 @@ class DLPNOBase:
             K_pao = self._pair_exchange(ij, i, j)
 
             # Canonicalize the pair's PAO domain, removing linear dependencies.
-            paos = self.lmopair_to_paos[ij]
-            S_pao_ij = sparse.submatrix_rows_and_cols(self.S_pao, paos, paos)
-            F_pao_ij = sparse.submatrix_rows_and_cols(self.F_pao, paos, paos)
-            X_pao, e_pao = ten.orthocanonicalizer(S_pao_ij, F_pao_ij, self.cut.s_cut)
-
-            F_pao_ij = ten.triplet(X_pao, F_pao_ij, X_pao, trans_a=True, name="F (can PAO)")
+            # Shared by every pair on the same domain; see _canonical_pao_domain.
+            X_pao, e_pao, F_pao_ij = self._canonical_pao_domain(ij)
             K_pao = ten.triplet(X_pao, K_pao, X_pao, trans_a=True, name="K (can PAO)")
 
             # One semicanonical MP2 step gives the amplitudes the PNOs come from.
