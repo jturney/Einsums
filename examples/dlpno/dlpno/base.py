@@ -260,27 +260,53 @@ class DLPNOBase:
         its own maximum, keeps the shapes uniform *within* a bucket (which is
         all the batching needs) while cutting most of that waste.
 
-        Boundaries are chosen by brute force over the distinct PNO counts to
-        minimize the padded cubic cost, which is cheap: there are only a few
-        dozen distinct counts and at most a handful of buckets.
+        Boundaries minimize the padded cubic cost. Each PNO count contributes
+        independently once its bucket's maximum is fixed, so the objective is
+        separable and a segmentation DP finds the exact optimum in O(n^2 B) over
+        the distinct counts. Enumerating the boundary combinations instead is
+        the same answer at C(n-1, B-1) cost, which for 32 distinct counts and 6
+        buckets is 170k combinations: three seconds, dwarfing the PNO transform
+        it is sizing storage for.
         """
-        import itertools
-
         counts = sorted({n for n in self.n_pno if n})
-        n_buckets = max(1, min(self.cut.n_buckets, len(counts)))
         if not counts:
             self.bucket_dims, self.bucket_of, self.slot_of = [], [], []
             self.bucket_members = []
             return
+        n_buckets = max(1, min(self.cut.n_buckets, len(counts)))
 
-        weight = {c: sum(1 for n in self.n_pno if n == c) for c in counts}
-        best = None
-        for cut in itertools.combinations(range(len(counts) - 1), n_buckets - 1):
-            edges = [counts[c] for c in cut] + [counts[-1]]
-            cost = sum(weight[c] * next(e for e in edges if e >= c) ** 3 for c in counts)
-            if best is None or cost < best[0]:
-                best = (cost, edges)
-        self.bucket_dims = best[1]
+        weight = [0] * len(counts)
+        index = {c: i for i, c in enumerate(counts)}
+        for n in self.n_pno:
+            if n:
+                weight[index[n]] += 1
+        prefix = [0] * (len(counts) + 1)
+        for i, w in enumerate(weight):
+            prefix[i + 1] = prefix[i] + w
+
+        # seg(j, i): counts[j:i] in one bucket, padded to counts[i-1].
+        def seg(j, i):
+            return (prefix[i] - prefix[j]) * counts[i - 1] ** 3
+
+        INF = float("inf")
+        dp = [[INF] * (n_buckets + 1) for _ in range(len(counts) + 1)]
+        back = [[0] * (n_buckets + 1) for _ in range(len(counts) + 1)]
+        dp[0][0] = 0
+        for i in range(1, len(counts) + 1):
+            for b in range(1, n_buckets + 1):
+                for j in range(i):
+                    if dp[j][b - 1] == INF:
+                        continue
+                    cost = dp[j][b - 1] + seg(j, i)
+                    if cost < dp[i][b]:
+                        dp[i][b] = cost
+                        back[i][b] = j
+
+        edges, i = [], len(counts)
+        for b in range(n_buckets, 0, -1):
+            edges.append(counts[i - 1])
+            i = back[i][b]
+        self.bucket_dims = sorted(edges)
 
         self.bucket_of = [-1] * self.n_lmo_pairs
         self.slot_of = [-1] * self.n_lmo_pairs
