@@ -217,7 +217,12 @@ bool ScaleAbsorption::run(Graph &graph) {
         }
 
         if (writer < 0) {
-            continue; // never overwritten: the scaled value stays observable
+            // Nothing overwrites the tensor afterwards, so the scaled value is
+            // still observable to the caller when execute() returns. Folding
+            // the scale away would change what they read back.
+            note_skip("scaled tensor is never overwritten, so its scaled value stays observable",
+                      fmt::format("scale node {} on tensor {}", scale_node.id, scaled_tensor));
+            continue;
         }
         // A control-flow writer is opaque: its body may read the destination
         // before writing it, so it cannot be treated as a pure overwrite.
@@ -255,8 +260,17 @@ bool ScaleAbsorption::run(Graph &graph) {
         // The writer closes the live range. If it does not read the tensor it
         // is not in `readers` and needs nothing; if it does, it was folded
         // above as the accumulator.
-        if (!all_foldable || folds.empty()) {
-            continue; // the scale is live and not foldable - keep it
+        if (!all_foldable) {
+            // A partial fold would be wrong rather than merely missed, so one
+            // unfoldable observer disqualifies the whole scale.
+            note_skip("a node observing the scaled value has no prefactor to fold it into",
+                      fmt::format("scale node {} on tensor {}", scale_node.id, scaled_tensor));
+            continue;
+        }
+        if (folds.empty()) {
+            note_skip("scaled value is read by nothing foldable before it dies",
+                      fmt::format("scale node {} on tensor {}", scale_node.id, scaled_tensor));
+            continue;
         }
 
         for (auto const &[idx, site] : folds) {

@@ -185,3 +185,35 @@ def test_disjoint_view_writes_parallel_and_exact(rng):
     g.set_executor(cg.DataflowExecutor())
     g.execute()
     np.testing.assert_allclose(np.asarray(out), 2 * ref, atol=1e-12)
+
+
+def test_privatization_splits_generations_axpy_spelling(rng):
+    """The axpy spelling of the reader privatizes exactly like axpby.
+
+    `acc += tmp` is an axpy in every other library, and until axpy started
+    recording as an Axpby the pass could not classify it as a reader at all -
+    so the generations of a scratch consumed this way never split, and the
+    false WAR chain kept serializing work a parallel executor could overlap.
+    """
+    ops = [einsums.asarray(_randn(rng, 24, 24), name=f"B{k}") for k in range(3)]
+    acc = einsums.create_zero_tensor("acc_axpy", [24, 24], dtype="float64")
+
+    g = cg.Graph("gen_axpy")
+    tmp = g.declare_zero_tensor("tmp", [24, 24], dtype="float64", intermediate=True)
+    with cg.capture(g):
+        for A in ops:
+            einsums.einsum("ij <- ik ; kj", tmp, A, A, c_pf=0.0, ab_pf=1.0)
+            la.axpy(1.0, tmp, acc)
+
+    sp = cg.ScratchPrivatization()
+    sp.set_require_executor(False)
+    pm = cg.PassManager()
+    pm.add(sp)
+    g.apply(pm)
+    assert sp.num_tensors_privatized == 1
+    assert sp.num_copies_created == 2
+
+    g.apply(cg.default_pass_manager())
+    g.execute()
+    ref = sum(np.asarray(A) @ np.asarray(A) for A in ops)
+    np.testing.assert_allclose(np.asarray(acc), ref, atol=1e-12)

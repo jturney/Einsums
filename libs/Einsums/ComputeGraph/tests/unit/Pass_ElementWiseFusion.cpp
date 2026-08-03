@@ -362,3 +362,37 @@ TEST_CASE("ElementWiseFusion - a fused axpby that drops Y stops listing it as an
         }
     }
 }
+
+// Two `Y += a*X` accumulations compose into one sweep. Both were invisible to
+// this pass while cg::axpy recorded its own opaque node kind, so a chain of
+// the most natural spelling of an accumulation fused into nothing.
+TEST_CASE("ElementWiseFusion - fuses a pair of axpy accumulations", "[ComputeGraph][Passes]") {
+    auto X = create_random_tensor<double>("X", 6, 4);
+    auto Y = create_random_tensor<double>("Y", 6, 4);
+
+    auto Y_ref = Tensor<double, 2>(Y);
+    linear_algebra::axpy(2.0, X, &Y_ref);
+    linear_algebra::axpy(3.0, X, &Y_ref);
+
+    cg::Graph graph("fuse_axpy");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpy(2.0, X, &Y);
+        cg::axpy(3.0, X, &Y);
+    }
+
+    REQUIRE(graph.num_nodes() == 2);
+
+    auto [modified, pass] = graph.apply<cg::passes::ElementWiseFusion>();
+
+    REQUIRE(modified);
+    REQUIRE(graph.num_nodes() == 1);
+
+    graph.execute();
+
+    for (size_t ii = 0; ii < 6; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            REQUIRE(std::abs(Y(ii, jj) - Y_ref(ii, jj)) < 1e-12);
+        }
+    }
+}

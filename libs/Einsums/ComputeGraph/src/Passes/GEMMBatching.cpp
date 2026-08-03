@@ -177,6 +177,8 @@ bool GEMMBatching::run(Graph &graph) {
                 EINSUMS_LOG_INFO("GEMMBatching: group of {} GEMMs ({}x{}x{}, ~{:.1f}us each) exceeds the {:.0f}us batching "
                                  "threshold — leaving them as independent nodes",
                                  group.size(), key.m, key.k, key.n, gemm_us, _max_gemm_us);
+                note_skip("each GEMM in the group is already large enough to run better as its own parallel node",
+                          fmt::format("group of {} at level {}", group.size(), lvl));
                 report(2, fmt::format("skip group of {} GEMMs (~{:.1f}us each > {:.0f}us gate) — better as parallel nodes", group.size(),
                                       gemm_us, _max_gemm_us));
                 continue;
@@ -209,6 +211,8 @@ bool GEMMBatching::run(Graph &graph) {
         if (!uniform) {
             EINSUMS_LOG_INFO("GEMMBatching: group of {} einsums at level {} ({}×{}×{}) has mismatched strides — not batching", group.size(),
                              lvl, key.m, key.k, key.n);
+            note_skip("group members' operand strides differ, so one batched call cannot address them",
+                      fmt::format("group of {} at level {}", group.size(), lvl));
             report(3, fmt::format("skip group of {} einsums at level {} ({}x{}x{}) — mismatched strides", group.size(), lvl, key.m, key.k,
                                   key.n));
             continue;
@@ -259,6 +263,8 @@ bool GEMMBatching::run(Graph &graph) {
             if (interference) {
                 EINSUMS_LOG_INFO("GEMMBatching: group of {} einsums at level {} has an interfering node between members — not batching",
                                  group.size(), lvl);
+                note_skip("a node between the group members reads or writes one of their operands",
+                          fmt::format("group of {} at level {}", group.size(), lvl));
                 report(3, fmt::format("skip group of {} einsums at level {} — interfering node between members", group.size(), lvl));
                 continue;
             }

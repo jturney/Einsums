@@ -763,3 +763,43 @@ TEST_CASE("CSE - deduplicates rank-3 BatchedGemm nodes (row-major)", "[ComputeGr
             ++batched_after;
     CHECK(batched_after == 1);
 }
+
+// An axpy reading an eliminated duplicate has to be redirected onto the
+// survivor like any other consumer. This is the same soundness hazard as the
+// diamond above - a consumer left reading a never-written buffer produces
+// silent zeros - and the axpy spelling could not even be classified as a
+// reader until it started recording as an Axpby.
+TEST_CASE("CSE - an axpy consumer of an eliminated duplicate reads the survivor", "[ComputeGraph][CSE]") {
+    auto A   = create_random_tensor<double>("A", 4, 3);
+    auto B   = create_random_tensor<double>("B", 3, 5);
+    auto C   = create_zero_tensor<double>("C", 4, 5);
+    auto acc = create_zero_tensor<double>("acc", 4, 5);
+
+    cg::Graph graph("cse_axpy_consumer");
+    auto     &D = graph.create_tensor<double, 2>("D", 4, 5); // graph-owned duplicate
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B); // survivor
+        cg::einsum("ik;kj->ij", &D, A, B); // duplicate (eliminated)
+        cg::axpy(2.0, D, &acc);            // consumer of the eliminated duplicate
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    REQUIRE(modified);
+
+    graph.execute();
+
+    // Reference: acc = 2 * (A·B). Zeros here would mean the axpy was left
+    // pointed at D's never-written buffer.
+    auto AB = create_zero_tensor<double>("AB", 4, 5);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &AB, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+
+    double magnitude = 0.0;
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(acc(ii, jj) - 2.0 * AB(ii, jj)) < 1e-12);
+            magnitude += std::abs(acc(ii, jj));
+        }
+    }
+    REQUIRE(magnitude > 1e-6); // guard against the all-zeros false pass
+}

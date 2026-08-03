@@ -188,15 +188,16 @@ bool PermuteFusion::run(Graph &graph) {
             if (consumer_count[input_tid] != 1) {
                 EINSUMS_LOG_INFO("PermuteFusion: skip {} (node {}) — {} consumers, need exactly 1", nodes[prod_idx].label,
                                  nodes[prod_idx].id, consumer_count[input_tid]);
-                report(3,
-                       fmt::format("skip permute node {} — {} consumers, need exactly 1", nodes[prod_idx].id, consumer_count[input_tid]));
+                note_skip("permuted tensor has more than one consumer, so the permute cannot be removed",
+                          fmt::format("permute node {} has {} consumers", nodes[prod_idx].id, consumer_count[input_tid]));
                 continue;
             }
 
             if (!try_fuse(graph, nodes, prod_idx, nd, slot)) {
                 EINSUMS_LOG_INFO("PermuteFusion: skip {} (node {}) — non-pure permute (alpha/beta/dup indices)", nodes[prod_idx].label,
                                  nodes[prod_idx].id);
-                report(3, fmt::format("skip permute node {} — non-pure permute (alpha/beta/dup indices)", nodes[prod_idx].id));
+                note_skip("permute is not pure (scaled, accumulating, or repeats an index)",
+                          fmt::format("permute node {}", nodes[prod_idx].id));
                 continue;
             }
 

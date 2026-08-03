@@ -456,8 +456,14 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
                 break;
             }
         }
-        if (!kinds_uniform)
+        if (!kinds_uniform) {
+            // The accumulator this pass builds has to dispatch like its
+            // operands; a compile-time accumulator fed runtime operands
+            // rank-errors at execute.
+            note_skip("summed operands mix runtime and statically-typed tensors",
+                      fmt::format("group of {} into tensor {}", available.size(), vg.key.output_id));
             continue;
+        }
 
         // --- Reuse a sum already built at this level ---
         // A quantity a chemist names once and consumes several times (CCSD's tau
@@ -561,8 +567,9 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
 
             if (factored >= unfactored) {
                 _num_unprofitable++;
-                report(2, fmt::format("skip factoring into '{}': {} contraction(s) est {:.1f} us, factored est {:.1f} us",
-                                      out_h->second.name, available.size(), unfactored, factored));
+                note_skip("cost model says the summed accumulator costs more than the contractions it saves",
+                          fmt::format("group of {} into '{}': {:.1f} us unfactored vs {:.1f} us factored", available.size(),
+                                      out_h->second.name, unfactored, factored));
                 continue;
             }
         }

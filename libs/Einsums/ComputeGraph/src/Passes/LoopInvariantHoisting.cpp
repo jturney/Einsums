@@ -209,6 +209,7 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
                 }
             }
             if (!single_writer_outputs) {
+                note_skip("node's output is written more than once in the loop subtree", fmt::format("body node '{}'", bnode.label));
                 continue;
             }
 
@@ -234,9 +235,16 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
                 }
             }
             if (output_read_earlier) {
+                // Loop-carried through this producer: an earlier reader sees the
+                // previous iteration's value, which computing it once would change.
+                note_skip("node's output is read by an earlier body node, so the value is loop-carried",
+                          fmt::format("body node '{}'", bnode.label));
                 continue;
             }
 
+            if (!all_inputs_invariant) {
+                note_skip("node reads a tensor the loop body rewrites each iteration", fmt::format("body node '{}'", bnode.label));
+            }
             if (all_inputs_invariant) {
                 invariant[bi] = true;
                 for (auto tid : bnode.outputs) {

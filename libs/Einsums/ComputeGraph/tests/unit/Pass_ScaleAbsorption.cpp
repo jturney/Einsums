@@ -594,3 +594,51 @@ TEST_CASE("ScaleAbsorption - top-level compensation survives subgraph recursion"
     CHECK(pass->num_absorbed() == 1);
     CHECK(pass->compensated_reads().size() == 1);
 }
+
+// `Y *= s` followed by `Y += a*X` is the accumulator fold: the scale is not
+// dead (the axpy reads Y), so it folds into beta rather than being deleted
+// outright. This shape could not match at all while cg::axpy recorded a
+// separate opaque node kind - the pass gates on Axpby and had no scalar to
+// fold into - so it is a regression guard for the spelling as much as the fold.
+TEST_CASE("ScaleAbsorption - absorbs into an axpy accumulation", "[ComputeGraph][Passes]") {
+    auto X = create_random_tensor<double>("X", 4, 5);
+    auto Y = create_random_tensor<double>("Y", 4, 5);
+
+    auto Y_ref = Tensor<double, 2>(Y);
+    linear_algebra::scale(3.0, &Y_ref);
+    linear_algebra::axpy(2.0, X, &Y_ref);
+
+    cg::Graph graph("absorb_axpy");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(3.0, &Y);
+        cg::axpy(2.0, X, &Y);
+    }
+
+    REQUIRE(graph.num_nodes() == 2);
+
+    auto [modified, pass] = graph.apply<cg::passes::ScaleAbsorption>();
+
+    REQUIRE(modified);
+    REQUIRE(pass.num_absorbed() == 1);
+    REQUIRE(graph.num_nodes() == 1);
+
+    // The scale went into the accumulate's beta, through the LIVE params - the
+    // executor reads those, so a fold written only to the descriptor snapshot
+    // would leave the replay computing the unscaled result.
+    auto &surviving = graph.nodes()[0];
+    REQUIRE(surviving.kind == cg::OpKind::Axpby);
+    auto *desc = std::get_if<cg::AxpbyDescriptor>(&surviving.op_data);
+    REQUIRE(desc != nullptr);
+    REQUIRE(desc->params != nullptr);
+    REQUIRE(cg::as<double>(desc->params->beta) == 3.0);
+    REQUIRE(cg::as<double>(desc->params->alpha) == 2.0);
+
+    graph.execute();
+
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(Y(ii, jj) - Y_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
