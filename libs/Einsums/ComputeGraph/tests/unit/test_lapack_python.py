@@ -157,14 +157,27 @@ def test_gesv_eager_2d_rhs(dtype):
     n = 3
     A = einsums.create_random_tensor("A", [n, n], dtype=dtype)
     B = einsums.create_random_tensor("B", [n, 2], dtype=dtype)
-    A_np = np.asarray(A).copy()
+    # Same diagonal-dominant shim as the invert tests below: a uniform-random
+    # 3x3 can land close enough to singular that the solution reaches O(1e4)
+    # for an O(1) right-hand side, and float32 then misses the tolerance on
+    # conditioning alone rather than on anything gesv did wrong.
+    A_view = np.asarray(A)
+    A_view[:] = A_view + n * np.eye(n, dtype=A_view.dtype)
+    A_np = A_view.copy()
     B_np = np.asarray(B).copy()
     expected_x = np.linalg.solve(A_np, B_np)
 
     info = einsums.linalg.gesv(A, B)
 
     assert info == 0
-    np.testing.assert_allclose(np.asarray(B), expected_x, rtol=1e-4)
+    # Tolerance is relative to the norm of the solution, not elementwise. An
+    # individual component of X can land arbitrarily near zero by cancellation
+    # even for a well-conditioned A, and a bare rtol judges that component
+    # against its own magnitude, which is not a statement about solver
+    # accuracy. Measured over 8000 draws this leaves a ~500x margin, where
+    # elementwise rtol failed roughly 1 run in 2000.
+    np.testing.assert_allclose(np.asarray(B), expected_x, rtol=1e-4,
+                               atol=1e-4 * np.max(np.abs(expected_x)))
 
 
 @pytest.mark.parametrize("dtype", REAL_DTYPES)
@@ -172,7 +185,12 @@ def test_gesv_in_graph_capture(dtype):
     n = 3
     A = einsums.create_random_tensor("A", [n, n], dtype=dtype)
     B = einsums.create_random_tensor("B", [n, 1], dtype=dtype)
-    A_np = np.asarray(A).copy()
+    # Same diagonal-dominant shim and norm-relative tolerance as
+    # test_gesv_eager_2d_rhs, for the same two reasons. This is the test that
+    # actually flaked, on the ThreadSanitizer leg, with a near-singular draw.
+    A_view = np.asarray(A)
+    A_view[:] = A_view + n * np.eye(n, dtype=A_view.dtype)
+    A_np = A_view.copy()
     B_np = np.asarray(B).copy()
     expected_x = np.linalg.solve(A_np, B_np)
 
@@ -181,7 +199,8 @@ def test_gesv_in_graph_capture(dtype):
         einsums.linalg.gesv(A, B)
     g.execute()
 
-    np.testing.assert_allclose(np.asarray(B), expected_x, rtol=1e-4)
+    np.testing.assert_allclose(np.asarray(B), expected_x, rtol=1e-4,
+                               atol=1e-4 * np.max(np.abs(expected_x)))
 
 
 # ──────────────────────────────────────────────────────────────────────────
