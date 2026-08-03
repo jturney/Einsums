@@ -1,0 +1,219 @@
+#----------------------------------------------------------------------------------------------
+# Copyright (c) The Einsums Developers. All rights reserved.
+# Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+#----------------------------------------------------------------------------------------------
+"""Wall-clock comparison against psi4's native C++ DLPNO-MP2.
+
+Read the caveat before the numbers: **this is not a like-for-like comparison of
+the same calculation.** psi4 screens and this port does not yet, so psi4 solves a
+strictly smaller problem:
+
+* psi4 drops distant LMO pairs (dipole prescreening) and keeps only the
+  surviving ones; this port carries all ``naocc^2``.
+* psi4 shrinks each pair's PAO and auxiliary domain; this port gives every pair
+  the full domain, so its PNO counts are larger.
+* psi4 builds the three-index integrals with a screened, linear-scaling
+  shell-triplet loop; this port builds the dense ``(Q|mn)`` and slices it.
+
+The port additionally pads every pair's block to a common size, which trades
+flops for batchability (see bench_batching.py).
+
+So the honest reading is per-phase, with the problem sizes printed alongside.
+The LMP2 iteration is the phase where the two are doing recognizably the same
+work, and it is reported per iteration because the convergence paths differ.
+
+psi4 runs in a subprocess so its timer file is flushed and its threads do not
+overlap with the einsums run.
+
+    PYTHONPATH=/path/to/Einsums/build/lib:/path/to/psi4/stage/lib \
+        python examples/dlpno/bench_vs_psi4.py --molecule methanol
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from dlpno.molecules import MOLECULES
+
+parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+parser.add_argument("--molecule", default="methanol", choices=sorted(MOLECULES))
+parser.add_argument("--basis", default="cc-pvdz")
+parser.add_argument("--t-cut-pno", type=float, default=1e-8)
+parser.add_argument("--buckets", type=int, default=4,
+                    help="PNO-count buckets to pad pair blocks into")
+parser.add_argument(
+    "--threads", type=int, default=1,
+    help="thread count for BOTH sides. Importing psi4 clamps process-wide "
+         "OpenMP to 1, so einsums needs this set too; OMP_NUM_THREADS alone "
+         "does nothing once psi4 is in the process.",
+)
+args = parser.parse_args()
+
+GEOM = MOLECULES[args.molecule] + "symmetry c1\n"
+OPTIONS = {
+    "basis": args.basis, "scf_type": "df", "freeze_core": "false",
+    "e_convergence": 1e-10, "d_convergence": 1e-10,
+    "t_cut_pno": args.t_cut_pno,
+}
+THREADS = args.threads
+
+PSI4_CHILD = r'''
+import json, sys, time
+import psi4
+geom, options, outfile = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3]
+psi4.core.set_output_file(outfile, False)
+psi4.set_options(options)
+psi4.set_num_threads(int(sys.argv[4]))
+psi4.geometry(geom)
+t0 = time.perf_counter(); psi4.energy("scf"); t_scf = time.perf_counter() - t0
+psi4.set_options({"dlpno_algorithm": "mp2"})
+t0 = time.perf_counter(); e = psi4.energy("dlpno-mp2"); t_dlpno = time.perf_counter() - t0
+print(json.dumps({"scf": t_scf, "dlpno": t_dlpno,
+                  "corr": psi4.variable("MP2 CORRELATION ENERGY")}))
+'''
+
+
+def run_psi4(workdir):
+    """psi4's DLPNO-MP2 in a subprocess; returns (timings, phase table, stats)."""
+    script = os.path.join(workdir, "child.py")
+    with open(script, "w") as fh:
+        fh.write(PSI4_CHILD)
+    out = os.path.join(workdir, "psi4.out")
+    proc = subprocess.run(
+        [sys.executable, script, json.dumps(GEOM), json.dumps(OPTIONS), out, str(THREADS)],
+        cwd=workdir, capture_output=True, text=True, check=True,
+    )
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    phases = {}
+    timer = os.path.join(workdir, "timer.dat")
+    if os.path.exists(timer):
+        for line in open(timer):
+            m = re.match(r"^([A-Za-z0-9 /()-]+?)\s*:\s+\S+u\s+\S+s\s+([0-9.]+)w", line)
+            if m:
+                phases.setdefault(m.group(1).strip(), float(m.group(2)))
+
+    text = open(out).read()
+    stats = {}
+    m = re.search(r"Avg:\s+(\d+) NOs", text)
+    if m:
+        stats["avg_pno"] = int(m.group(1))
+    stats["iterations"] = len(re.findall(r"@LMP2 iter", text))
+    m = re.search(r"Screened (\d+) of (\d+) LMO pairs", text)
+    if m:
+        stats["pairs"] = int(m.group(2)) - int(m.group(1))
+    m = re.search(r"Projected AOs per Local MO pair:\s*\n\s*Avg:\s+(\d+)", text)
+    if m:
+        stats["avg_pao_pair"] = int(m.group(1))
+    return result, phases, stats
+
+
+with tempfile.TemporaryDirectory() as workdir:
+    print(f"\n{args.molecule}/{args.basis}, T_CUT_PNO = {args.t_cut_pno:.0e}, "
+          f"{THREADS} thread(s) both sides")
+    print("running psi4 (subprocess) ...", flush=True)
+    psi4_times, psi4_phases, psi4_stats = run_psi4(workdir)
+
+# ---- this port, in-process ---------------------------------------------------
+print("running the einsums port ...", flush=True)
+import psi4  # noqa: E402
+from dlpno import DLPNOMP2, Thresholds  # noqa: E402
+from dlpno.psi4_source import from_psi4  # noqa: E402
+
+psi4.core.set_output_file("/tmp/psi4_dlpno_ref_scf.out", False)
+# Importing psi4 sets the process-wide OpenMP thread count to 1, which silently
+# serializes every einsums BLAS and gemm_batch call in this process regardless
+# of OMP_NUM_THREADS. Setting it here restores threading for BOTH libraries.
+psi4.set_num_threads(THREADS)
+psi4.set_options(OPTIONS)
+psi4.geometry(GEOM)
+t0 = time.perf_counter()
+_, wfn = psi4.energy("scf", return_wfn=True)
+t_scf_ours = time.perf_counter() - t0
+
+reference = from_psi4(wfn)
+mp2 = DLPNOMP2(reference, Thresholds.preset("NORMAL", t_cut_pno=args.t_cut_pno, n_buckets=args.buckets), verbose=False)
+
+ours = {}
+
+
+def phase(name, fn):
+    t0 = time.perf_counter()
+    fn()
+    ours[name] = time.perf_counter() - t0
+
+
+t_total = time.perf_counter()
+phase("Setup Orbitals", mp2.setup_orbitals)
+phase("Sparsity", mp2.prep_sparsity)
+phase("DF Ints", lambda: (mp2.compute_metric(), mp2.compute_qia()))
+phase("PNO Transform", mp2.pno_transform)
+phase("PNO Overlaps", mp2.compute_pno_overlaps)
+phase("LMP2", mp2.lmp2_iterations)
+ours["DLPNO-MP2"] = time.perf_counter() - t_total
+
+# ---- report ------------------------------------------------------------------
+print(f"\n  problem size")
+print(f"    {'':22} {'psi4':>12} {'this port':>12}")
+print(f"    {'LMO pairs':22} {psi4_stats.get('pairs', '?'):>12} {mp2.n_lmo_pairs:>12}"
+      "   (port keeps all naocc^2: no pair screening)")
+print(f"    {'avg PNOs per pair':22} {psi4_stats.get('avg_pno', '?'):>12} "
+      f"{sum(mp2.n_pno) / mp2.n_lmo_pairs:>12.1f}"
+      "   (port has full PAO domains)")
+print(f"    {'padded PNO dimension':22} {'-':>12} {mp2.npno_max:>12}"
+      "   (port pads every block to this)")
+print(f"    {'LMP2 iterations':22} {psi4_stats.get('iterations', '?'):>12} "
+      f"{mp2.n_iterations:>12}")
+
+print(f"\n  wall time (seconds)")
+print(f"    {'phase':22} {'psi4':>12} {'this port':>12} {'ratio':>10}")
+for label, key in [("Setup Orbitals", "Setup Orbitals"), ("DF Ints", "DF Ints"),
+                   ("PNO Transform", "PNO Transform"), ("PNO Overlaps", "PNO Overlaps"),
+                   ("LMP2", "LMP2"), ("total DLPNO-MP2", "DLPNO-MP2")]:
+    p = psi4_phases.get(key)
+    o = ours.get(key)
+    if p is None or o is None:
+        continue
+    ratio = f"{o / p:>9.1f}x" if p > 1e-6 else "        -"
+    print(f"    {label:22} {p:>12.3f} {o:>12.3f} {ratio:>10}")
+
+p_it = psi4_phases.get("LMP2", 0.0) / max(psi4_stats.get("iterations", 1), 1)
+# Steady state only: graph capture and optimization are paid once, and at ten
+# iterations they dominate the LMP2 total. psi4 has no equivalent setup cost,
+# so folding ours into a per-iteration figure would compare different things.
+o_it = mp2.t_iterate / max(mp2.n_iterations, 1)
+print(f"\n    {'graph capture+optimize':22} {'-':>12} {mp2.t_capture:>12.3f}"
+      "   (one-time, not in the per-iteration figure)")
+if p_it > 1e-9:
+    print(f"\n    {'LMP2 per iteration':22} {p_it:>12.4f} {o_it:>12.4f} {o_it / p_it:>9.1f}x")
+
+# How much of the gap is padding? The coupling GEMMs are cubic in the block
+# dimension, so padding every pair to npno_max instead of its own PNO count
+# multiplies the coupling flops by roughly (npno_max / avg_pno)^3. Dividing the
+# measured ratio by that separates "we waste flops on padding" from "we are
+# slower per useful flop", which point at completely different fixes.
+avg_pno = sum(mp2.n_pno) / mp2.n_lmo_pairs
+padding_overhead = (mp2.npno_max / avg_pno) ** 3
+if p_it > 1e-9:
+    print(f"\n  where the LMP2 gap comes from (estimate)")
+    print(f"    padding overhead   (npno_max/avg)^3 = ({mp2.npno_max}/{avg_pno:.1f})^3"
+          f" = {padding_overhead:>5.2f}x extra coupling flops")
+    print(f"    measured slowdown                    = {o_it / p_it:>5.2f}x")
+    print(f"    per useful flop                      = {o_it / p_it / padding_overhead:>5.2f}x"
+          "   (<1 means faster than psi4 per flop actually needed)")
+
+e_ours = mp2.e_lmp2 + mp2.de_pno_total
+print(f"\n  correlation energy   psi4 {psi4_times['corr']:.10f}   "
+      f"port {e_ours:.10f}   diff {abs(e_ours - psi4_times['corr']):.2e}")
+print(f"  (SCF, excluded above: psi4 {psi4_times['scf']:.3f} s, "
+      f"port reference {t_scf_ours:.3f} s)")
+print("\n  Reminder: psi4 is solving a smaller problem (screened pairs and "
+      "domains).\n  Compare the phases against the sizes above, not the totals "
+      "in isolation.")
