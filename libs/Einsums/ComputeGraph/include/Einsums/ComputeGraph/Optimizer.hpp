@@ -127,7 +127,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * looks inert usually has a full skip tally - that is the useful signal,
      * and reading it should not require rebuilding with a debugger attached.
      */
-    EINSUMS_EXPORT [[nodiscard]] std::vector<std::pair<std::string, std::size_t>> skip_reasons() const;
+    [[nodiscard]] EINSUMS_EXPORT std::vector<std::pair<std::string, std::size_t>> skip_reasons() const;
 
     /**
      * @brief What this pass did on its last run, for @ref PassManager::explain.
