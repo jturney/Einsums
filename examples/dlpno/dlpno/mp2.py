@@ -91,84 +91,130 @@ class DLPNOMP2(DLPNOBase):
     # -- psi4 DLPNOMP2::compute_pno_overlaps -------------------------------
 
     def compute_pno_overlaps(self):
-        """PNO overlap matrices ``S(ij, kj)`` and ``S(ij, ik)``, stacked over k.
+        """PNO overlap matrices ``S(ij, kj)`` and ``S(ij, ik)``, as one graph.
 
         Every pair has its own PNO basis, so coupling pair ``ij`` to pair ``kj``
         needs the overlap between the two bases. Built once and reused every
         iteration.
 
-        Each pair gets ONE ``(npno_max, npno_max, naocc)`` tensor per coupling
-        term rather than ``naocc`` separate matrices. Couplings psi4 skips
-        (insignificant pair, ``k`` equal to ``i`` or ``j``, or an occupied Fock
-        element under ``F_CUT``) are left as zero blocks and emit no graph node.
-
         **The overlaps are pre-scaled by the square root of their Fock
         prefactor.** ``GEMMBatching`` requires bit-identical ``alpha`` across a
         group, and the residual's natural form carries a different prefactor
-        ``-F_ik`` on every single coupling, which fragments the batches into
-        one group per distinct Fock element (309 groups of 26 for ethanol, far
-        too small to amortize a parallel region). Since
+        ``-F_ik`` on every coupling, which fragments the batches into one group
+        per distinct Fock element. Since
 
             f * S T S^T = sign(f) * (sqrt(|f|) S) T (sqrt(|f|) S)^T
 
-        and S is constant for the whole calculation, folding ``sqrt(|f|)`` into
-        S at build time leaves ``alpha`` at exactly +1 or -1 everywhere. The
-        overlaps stop being pure overlaps, hence the name.
+        and S is constant for the whole calculation, folding ``sqrt(|f|)`` in
+        here leaves ``alpha`` at exactly +1 or -1 in the residual. The overlaps
+        stop being pure overlaps, hence the name.
 
-        This also means each pair needs its own arrays: psi4 shares S(ij,kj)
-        with S(ji,ik), but the two carry different prefactors, so sharing and
-        scaling in place are incompatible.
+        Two things make this cheap. First, each pair's PNO transform is
+        scattered into the FULL PAO axis, so ``X`` is zero outside its own
+        domain and the domain restriction becomes implicit: the full-space
+        triple product picks exactly the terms the restricted one did, and the
+        per-coupling ``S_pao`` gather disappears. That gather was copying the
+        whole of ``S_pao`` once per coupling, 42% of this phase.
+
+        Second, a pair's partners are concatenated into one matrix, so the
+        overlaps against ALL of them are a single GEMM:
+
+            half[ij]  = X[ij]^T S_pao                      (one per pair)
+            S_cat[ij] = half[ij] [ X[mn1] | X[mn2] | ... ] (one per pair)
+
+        and each coupling's block is a column slice of the result rather than a
+        separate allocation. That is 2 GEMMs per pair instead of 2 per coupling:
+        338 graph nodes for ethanol instead of 8112, which matters because
+        capture costs ~38 us a node and this phase runs once. Capturing the
+        per-coupling form would have spent more on building the graph than the
+        eager version spends computing.
         """
         naocc = self.ref.naocc
         F_lmo = ten.view(self.F_lmo)
         f_cut = self.cut.f_cut
+        npao = ten.shape(self.C_pao)[1]
 
-        # Keyed by (pair, k). Each block is (M_ij, M_partner), so its shape is
-        # set by BOTH pairs' buckets and it cannot be stacked over k the way a
-        # single global padding allowed. Only surviving couplings are stored.
         self.S_pno_ij_kj = {}
         self.S_pno_ij_ik = {}
         self.k_couple_kj = [{} for _ in range(self.n_lmo_pairs)]
         self.k_couple_ik = [{} for _ in range(self.n_lmo_pairs)]
 
+        # Which partners each pair couples to, in the order they are laid out.
+        partners = [[] for _ in range(self.n_lmo_pairs)]  # (partner, k, is_ik, factor)
         for ij, (i, j) in enumerate(self.ij_to_i_j):
-            n_ij = self.n_pno[ij]
-            if n_ij == 0:
+            if self.n_pno[ij] == 0:
                 continue
-            M_ij = self.pair_dim(ij)
             for k in range(naocc):
                 kj = int(self.i_j_to_ij[k, j])
                 if kj != -1 and i != k and abs(F_lmo[i, k]) > f_cut and self.n_pno[kj] > 0:
-                    factor = -float(F_lmo[i, k])
-                    block = ten.zeros(f"S({i},{j}|{k},{j})", [M_ij, self.pair_dim(kj)])
-                    ten.view(block)[:n_ij, : self.n_pno[kj]] = (
-                        ten.view(self._pno_overlap(ij, kj)) * np.sqrt(abs(factor))
-                    )
-                    self.S_pno_ij_kj[ij, k] = block
-                    self.k_couple_kj[ij][k] = float(np.sign(factor))
-
+                    partners[ij].append((kj, k, False, -float(F_lmo[i, k])))
                 ik = int(self.i_j_to_ij[i, k])
                 if ik != -1 and j != k and abs(F_lmo[k, j]) > f_cut and self.n_pno[ik] > 0:
-                    factor = -float(F_lmo[k, j])
-                    block = ten.zeros(f"S({i},{j}|{i},{k})", [M_ij, self.pair_dim(ik)])
-                    ten.view(block)[:n_ij, : self.n_pno[ik]] = (
-                        ten.view(self._pno_overlap(ij, ik)) * np.sqrt(abs(factor))
-                    )
+                    partners[ij].append((ik, k, True, -float(F_lmo[k, j])))
+
+        # Each pair's PNO transform on the full PAO axis, padded to its bucket.
+        X_pad = [None] * self.n_lmo_pairs
+        for ij in range(self.n_lmo_pairs):
+            n = self.n_pno[ij]
+            if n == 0:
+                continue
+            Xp = ten.zeros(f"X (padded) {ij}", [npao, self.pair_dim(ij)])
+            ten.view(Xp)[np.asarray(self.lmopair_to_paos[ij], dtype=int), :n] = ten.view(self.X_pno[ij])
+            X_pad[ij] = Xp
+
+        # Partner blocks side by side, and the per-column sqrt prefactor.
+        self._S_cat = {}
+        cat, scale = {}, {}
+        for ij, plist in enumerate(partners):
+            if not plist:
+                continue
+            widths = [self.pair_dim(p) for p, _, _, _ in plist]
+            block = ten.zeros(f"X (partners) {ij}", [npao, sum(widths)])
+            factors = np.empty(sum(widths))
+            view = ten.view(block)
+            off = 0
+            for (p, _, _, factor), w in zip(plist, widths):
+                view[:, off:off + w] = ten.view(X_pad[p])
+                factors[off:off + w] = np.sqrt(abs(factor))
+                off += w
+            cat[ij] = block
+            scale[ij] = factors
+            self._S_cat[ij] = ten.zeros(f"S (cat) {ij}", [self.pair_dim(ij), sum(widths)])
+
+        half = {ij: ten.zeros(f"half {ij}", [self.pair_dim(ij), npao]) for ij in cat}
+        g = cg.Graph("pno overlaps")
+        with cg.capture(g):
+            for ij in cat:
+                einsums.einsum("ab <- ca ; cb", half[ij], X_pad[ij], self.S_pao)
+                einsums.einsum("ab <- ac ; cb", self._S_cat[ij], half[ij], cat[ij])
+        pm = cg.PassManager()
+        pm.populate_default()
+        g.apply(pm)
+        g.execute()
+
+        # One vectorized scaling per pair: every coupling owns a column range.
+        for ij, factors in scale.items():
+            ten.view(self._S_cat[ij])[...] *= factors[np.newaxis, :]
+
+        # Each coupling's overlap is a column slice, not its own allocation.
+        for ij, plist in enumerate(partners):
+            off = 0
+            for p, k, is_ik, factor in plist:
+                w = self.pair_dim(p)
+                block = self._S_cat[ij][:, off:off + w]
+                if is_ik:
                     self.S_pno_ij_ik[ij, k] = block
                     self.k_couple_ik[ij][k] = float(np.sign(factor))
+                else:
+                    self.S_pno_ij_kj[ij, k] = block
+                    self.k_couple_kj[ij][k] = float(np.sign(factor))
+                off += w
 
+        self._print(
+            f"  overlaps: {sum(len(p) for p in partners)} couplings via "
+            f"{g.num_nodes()} nodes ({2 * len(cat)} captured)"
+        )
         return self
-
-    def _pno_overlap(self, ij, mn):
-        """``X_pno[ij]^T S_pao(ij, mn) X_pno[mn]``, the overlap of two PNO bases."""
-        S_dom = sparse.submatrix_rows_and_cols(
-            self.S_pao, self.lmopair_to_paos[ij], self.lmopair_to_paos[mn]
-        )
-        return ten.triplet(
-            self.X_pno[ij], S_dom, self.X_pno[mn], trans_a=True, name="S (PNO/PNO)"
-        )
-
-    # -- psi4 DLPNOMP2::lmp2_iterations ------------------------------------
 
     def _allocate_iteration_tensors(self):
         """Residuals, denominators, scratch, and the captured views."""

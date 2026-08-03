@@ -58,6 +58,10 @@ Once screening lands, this becomes an exact comparison.
 
 ## Design notes
 
+**The setup phases are captured too, but shaped differently.**
+`compute_pno_overlaps` builds 4056 pair-basis overlaps from 338 captured nodes rather than 8112, by scattering each pair's PNO transform onto the full PAO axis (which makes the domain restriction implicit and deletes a per-coupling `S_pao` gather that was 42% of the phase) and concatenating a pair's partners so all its overlaps are one GEMM.
+Node count is the constraint here, not flops: capture costs ~38 us a node and this phase runs once, so capturing the per-coupling form would have spent more building the graph than the eager version spent computing. 0.233 s -> 0.090 s.
+
 **Five graphs per iteration.**
 `mp2.py` captures the residual prologue, the Fock coupling, the iteration energy, the Jacobi amplitude step, and the antisymmetrized amplitudes as separate graphs, then replays them in that order each iteration.
 The split is not cosmetic: see "Phases are separate graphs" below.
