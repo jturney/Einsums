@@ -204,12 +204,12 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
             return it->second;
         }
 
-        // Check if the graph already has this tensor registered (e.g., from create_tensor())
-        for (auto const &[tid, handle] : _graph->tensors_map()) {
-            if (handle.tensor_ptr == ptr) {
-                _ptr_to_id[ptr] = tid;
-                return tid;
-            }
+        // Already registered with the graph (e.g. from create_tensor())? This
+        // was a linear scan of the tensor table, which made a capture quadratic
+        // in the number of distinct operands.
+        if (TensorId const tid = _graph->find_tensor_id_by_ptr(ptr); tid != 0) {
+            _ptr_to_id[ptr] = tid;
+            return tid;
         }
 
         // New tensor *to this graph*, register it. Inside a loop body or

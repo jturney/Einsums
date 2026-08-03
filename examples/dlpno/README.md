@@ -82,11 +82,14 @@ And because every coupling GEMM now has the same shape, `GEMMBatching` can colla
 
 Padding is inert: integrals, amplitudes and overlaps are zero outside each pair's logical block and the energy denominators are one, so padded components stay zero for the life of the calculation.
 
-**Write the coupling as a plain loop and let the pass batch it.**
-The residual's Fock coupling is written the way psi4 writes it, one `(pair, k)` at a time, with two conditions attached:
+**Emit the batch directly with `cg.batched_gemm`.**
+The residual's Fock coupling groups its `(pair, k)` contractions by shape, sign and dependency level and emits one `cg.batched_gemm` per group.
 
-* the einsums must be `einsum`, not `linalg.gemm`. A 2D x 2D -> 2D einsum with one link index carries the `gemm_hint` that `GEMMBatching` groups on; `linalg.gemm` captures as `OpKind::Gemm` and the pass skips it outright. This is easy to get wrong and costs the entire optimization silently.
-* the blocks must be padded, per above.
+It used to emit one einsum per coupling and let `GEMMBatching` fuse them, which reaches the same node but only after building the graph one node at a time: 8112 nodes for a graph that ends up ~30 wide, and capture is not free.
+Emitting the fused form directly took the ethanol capture from 8215 nodes to 335.
+The blocks must still be padded, per above, since one `gemm_batch` call takes a single m/n/k and a single leading dimension for the whole batch.
+
+If you do write the per-contraction form, use `einsum` and not `linalg.gemm`: a 2D x 2D -> 2D einsum with one link index carries the `gemm_hint` that `GEMMBatching` groups on, while `linalg.gemm` captures as `OpKind::Gemm` and the pass skips it outright, silently costing the whole optimization.
 
 Hand-stacking k into a trailing batch axis and calling one rank-3 batched einsum per pair was tried first and is *worse*: 2.1x against 4.2x on the water dimer.
 It fixes the batch at one pair's worth of k, where the pass batches across every pair and every k at once.

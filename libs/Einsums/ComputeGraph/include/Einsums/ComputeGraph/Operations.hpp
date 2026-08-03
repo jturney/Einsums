@@ -7,6 +7,7 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/Detail/BatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeElementwise.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
@@ -2485,6 +2486,226 @@ APIARY_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<doubl
     };
 
     ctx.record(OpKind::Custom, "outer_sum", in_ids, {r_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// batched_gemm: many independent GEMMs as ONE node
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Emit one `blas::gemm_batch` over a batch of independent GEMMs:
+/// ``C_i = alpha * op(A_i) op(B_i) + beta * C_i`` for every i.
+///
+/// The GEMMBatching pass already fuses independent 2D einsums into a single
+/// BatchedGemm node, so the fused form was reachable without this. What it was
+/// not reachable *cheaply*: the caller had to emit one node per GEMM and let
+/// the pass collapse them, and capture costs on the order of tens of
+/// microseconds a node. A DLPNO-MP2 residual emitted 8112 nodes for the passes
+/// to fuse into 33, spending more time building the graph than replaying it.
+/// This lets a caller who already knows the batch say so directly.
+///
+/// Every member must share m, n, k, the transpose flags, the element type and
+/// the leading dimensions, which is what `gemm_batch` takes as scalars. The
+/// prefactors are shared too, so a per-member prefactor has to be folded into
+/// the operands beforehand. Mismatches throw here rather than at execute time.
+///
+/// Outside capture this executes immediately, so the same call works eagerly.
+///
+/// @param alpha   Prefactor on op(A_i) op(B_i), shared by the batch.
+/// @param a_list  Left operands. Must all be rank 2 with identical dims.
+/// @param b_list  Right operands, same length as @p a_list.
+/// @param beta    Prefactor on C_i. Non-zero means every C_i is read as well as
+///                written, which the node records as a dependency.
+/// @param c_list  Destinations, same length as @p a_list. Must be distinct
+///                tensors: `gemm_batch` gives no ordering between members, so
+///                two members sharing a destination race.
+/// @param trans_a Transpose each A_i.
+/// @param trans_b Transpose each B_i.
+template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicTensorConcept CType>
+    requires(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+             std::is_same_v<typename AType::ValueType, typename CType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("graph")
+// All 8 owning/view combinations of (A, B, C) per dtype. Unlike outer_sum,
+// where a homogeneous list is the natural shape, a batched GEMM routinely
+// mixes them: scratch destinations are owning tensors while the operands are
+// slices of a larger store. Each LIST is still homogeneous, since one template
+// parameter covers it.
+//
+// float
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+//
+// double
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+//
+// std::complex<float>
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>)
+//
+// std::complex<double>
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void batched_gemm(double alpha, std::vector<AType const *> a_list, std::vector<BType const *> b_list, double beta,
+                      std::vector<CType *> c_list, bool trans_a = false, bool trans_b = false) {
+    using T = typename AType::ValueType;
+
+    size_t const count = a_list.size();
+    if (count == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::batched_gemm: batch is empty");
+    }
+    if (b_list.size() != count || c_list.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::batched_gemm: A, B and C lists must be the same length; got {}, {}, {}", count,
+                                b_list.size(), c_list.size());
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (a_list[i] == nullptr || b_list[i] == nullptr || c_list[i] == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::batched_gemm: member {} has a null operand", i);
+        }
+        // tensor_rank, not rank(): statically-ranked tensors carry Rank as a
+        // constant and have no rank() member.
+        if (detail::tensor_rank(*a_list[i]) != 2 || detail::tensor_rank(*b_list[i]) != 2 || detail::tensor_rank(*c_list[i]) != 2) {
+            EINSUMS_THROW_EXCEPTION(rank_error, "cg::batched_gemm: member {} is not rank 2 (got {}, {}, {})", i,
+                                    detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]), detail::tensor_rank(*c_list[i]));
+        }
+    }
+
+    BatchedGemmDescriptor d;
+    d.trans_a     = trans_a ? 'T' : 'N';
+    d.trans_b     = trans_b ? 'T' : 'N';
+    d.alpha       = std::complex<double>{alpha, 0.0};
+    d.beta        = std::complex<double>{beta, 0.0};
+    d.batch_count = static_cast<int>(count);
+    d.m           = static_cast<int>(c_list[0]->dim(0));
+    d.n           = static_cast<int>(c_list[0]->dim(1));
+    d.k           = static_cast<int>(trans_a ? a_list[0]->dim(0) : a_list[0]->dim(1));
+    d.lda         = static_cast<int>(a_list[0]->impl().get_lda());
+    d.ldb         = static_cast<int>(b_list[0]->impl().get_lda());
+    d.ldc         = static_cast<int>(c_list[0]->impl().get_lda());
+    if constexpr (std::is_same_v<T, float>) {
+        d.scalar = BlasScalar::Float;
+    } else if constexpr (std::is_same_v<T, double>) {
+        d.scalar = BlasScalar::Double;
+    } else if constexpr (std::is_same_v<T, std::complex<float>>) {
+        d.scalar = BlasScalar::ComplexFloat;
+    } else {
+        d.scalar = BlasScalar::ComplexDouble;
+    }
+
+    // gemm_batch takes ONE lda/ldb/ldc and one m/n/k for the whole batch, so a
+    // member that differs is not expressible. Caught here, where the caller can
+    // see which member and why, rather than as corruption at execute time.
+    auto const require = [&](bool ok, size_t i, char const *what) {
+        if (!ok) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::batched_gemm: member {} disagrees on {}; every member must share m/n/k and leading dimensions "
+                                    "because gemm_batch takes them once for the whole batch",
+                                    i, what);
+        }
+    };
+    for (size_t i = 1; i < count; ++i) {
+        require(static_cast<int>(c_list[i]->dim(0)) == d.m, i, "m");
+        require(static_cast<int>(c_list[i]->dim(1)) == d.n, i, "n");
+        require(static_cast<int>(trans_a ? a_list[i]->dim(0) : a_list[i]->dim(1)) == d.k, i, "k");
+        require(static_cast<int>(a_list[i]->impl().get_lda()) == d.lda, i, "lda");
+        require(static_cast<int>(b_list[i]->impl().get_lda()) == d.ldb, i, "ldb");
+        require(static_cast<int>(c_list[i]->impl().get_lda()) == d.ldc, i, "ldc");
+    }
+    // The contraction dimension has to agree between A and B as well.
+    for (size_t i = 0; i < count; ++i) {
+        require(static_cast<int>(trans_b ? b_list[i]->dim(1) : b_list[i]->dim(0)) == d.k, i, "the link dimension shared with A");
+        require(static_cast<int>(trans_b ? b_list[i]->dim(0) : b_list[i]->dim(1)) == d.n, i, "n against B");
+        require(static_cast<int>(trans_a ? a_list[i]->dim(1) : a_list[i]->dim(0)) == d.m, i, "m against A");
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("batched_gemm eager");
+        std::vector<void const *> a_vs(count), b_vs(count);
+        std::vector<void *>       c_vs(count);
+        for (size_t i = 0; i < count; ++i) {
+            a_vs[i] = static_cast<void const *>(a_list[i]->data());
+            b_vs[i] = static_cast<void const *>(b_list[i]->data());
+            c_vs[i] = static_cast<void *>(c_list[i]->data());
+        }
+        if constexpr (IsComplexV<T>) {
+            detail::run_batched_gemm_complex<T>(d, a_vs, b_vs, c_vs);
+        } else {
+            detail::run_batched_gemm<T>(d, a_vs, b_vs, c_vs);
+        }
+        return;
+    }
+
+    LabeledSection("batched_gemm capture");
+    detail::BatchedGemmExtractors       a_exs, b_exs;
+    detail::BatchedGemmOutputExtractors c_exs;
+    a_exs.reserve(count);
+    b_exs.reserve(count);
+    c_exs.reserve(count);
+    // Node I/O keeps the pass's convention: inputs interleaved A_0, B_0, A_1,
+    // B_1, ... and outputs C_0, C_1, ... in batch order.
+    std::vector<TensorId> inputs;
+    std::vector<TensorId> outputs;
+    inputs.reserve(2 * count);
+    outputs.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        auto [a_id, a_slot] = ctx.get_slot(*a_list[i]);
+        auto [b_id, b_slot] = ctx.get_slot(*b_list[i]);
+        auto [c_id, c_slot] = ctx.get_slot(*c_list[i]);
+        inputs.push_back(a_id);
+        inputs.push_back(b_id);
+        outputs.push_back(c_id);
+        // Read through the slot, not the captured pointer: rebind() and the
+        // MemoryPlanning arena can both move a tensor's storage.
+        a_exs.emplace_back([a_slot]() -> std::pair<void const *, int> {
+            auto const *t = static_cast<AType const *>(a_slot->ptr);
+            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
+        });
+        b_exs.emplace_back([b_slot]() -> std::pair<void const *, int> {
+            auto const *t = static_cast<BType const *>(b_slot->ptr);
+            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
+        });
+        c_exs.emplace_back([c_slot]() -> std::pair<void *, int> {
+            auto *t = static_cast<CType *>(c_slot->ptr);
+            return {static_cast<void *>(t->data()), static_cast<int>(t->impl().get_lda())};
+        });
+    }
+    // beta != 0 means gemm_batch reads every destination before writing it, so
+    // the RAW edge from whoever produced each C must survive (bug-1009).
+    if (beta != 0.0) {
+        inputs.insert(inputs.end(), outputs.begin(), outputs.end());
+    }
+
+    auto executor = detail::make_batched_gemm_executor(d, std::move(a_exs), std::move(b_exs), std::move(c_exs));
+    ctx.record(OpKind::BatchedGemm,
+               fmt::format("gemm_batch x{} ({}x{}x{}, trans={}{})", d.batch_count, d.m, d.k, d.n, d.trans_a, d.trans_b), std::move(inputs),
+               std::move(outputs), std::move(executor), d);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

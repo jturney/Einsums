@@ -324,21 +324,36 @@ class DLPNOMP2(DLPNOBase):
         with cg.capture(g):
             # Phase 1: every S T product. Distinct scratch, depends only on T,
             # so the whole lot is one dependency level.
+            #
+            # Emitted as cg.batched_gemm rather than one einsum per coupling.
+            # GEMMBatching would fuse the per-coupling form to the same thing,
+            # but only after the graph has been built one node at a time, and
+            # capture costs ~38 us a node: 8112 nodes was 0.31 s of pure
+            # bookkeeping for a graph that ends up ~30 nodes wide.
+            groups = {}
             for _, tmp, S, T, _, _ in work:
-                einsums.einsum("ad <- ac ; cd", tmp, S, T)
+                groups.setdefault(ten.shape(tmp), []).append((S, T, tmp))
+            for members in groups.values():
+                cg.batched_gemm(1.0, [S for S, _, _ in members], [T for _, T, _ in members],
+                                0.0, [tmp for _, _, tmp in members])
 
-            # Phase 2: level-major. Level 0 assigns (c_pf = 0) and later levels
-            # accumulate, which also means the accumulators never need zeroing
-            # between iterations: every slot a pair uses is overwritten at level
-            # 0, and slots it never uses stay at their allocated zero.
+            # Phase 2: accumulate into the residuals, grouped by (level, sign)
+            # so members of a group write different accumulators, and by shape
+            # so one gemm_batch can take them. Level 0 assigns (beta = 0) and
+            # later levels accumulate, which also means the accumulators never
+            # need zeroing between iterations: every slot a pair uses is
+            # overwritten at level 0, and slots it never uses stay at their
+            # allocated zero.
             by_key = {}
             for level, tmp, S, _, target, sign in work:
-                by_key.setdefault((level, sign), []).append((tmp, S, target))
-            for level, sign in sorted(by_key):
-                c_pf = 0.0 if level == 0 else 1.0
-                for tmp, S, target in by_key[level, sign]:
-                    einsums.einsum("ab <- ad ; bd", target, tmp, S,
-                                   c_pf=c_pf, ab_pf=sign)
+                key = (level, sign, ten.shape(tmp), ten.shape(target))
+                by_key.setdefault(key, []).append((tmp, S, target))
+            for key in sorted(by_key):
+                level, sign = key[0], key[1]
+                members = by_key[key]
+                cg.batched_gemm(sign, [tmp for tmp, _, _ in members], [S for _, S, _ in members],
+                                0.0 if level == 0 else 1.0,
+                                [t for _, _, t in members], trans_b=True)
         return g
 
     def _coupling_work(self):

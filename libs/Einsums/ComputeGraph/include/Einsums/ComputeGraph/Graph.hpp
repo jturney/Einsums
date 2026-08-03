@@ -148,10 +148,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * So containment is detected here from the registration-time data pointer
      * and strides, which closes the hole whatever the view's provenance.
-     * Called for both directions because registration order is not controlled:
-     * the parent may first appear after several of its views.
+     * Runs once over all registered tensors rather than per registration:
+     * a containment test is O(n) against what is already there, so doing it on
+     * every registration is quadratic, and a DLPNO-MP2 capture registers ~13k
+     * tensors. Idempotent and cheap to call; register_tensor just marks it
+     * stale.
      */
-    void link_alias_storage(TensorId id);
+    void link_alias_storage();
 
     /**
      * @brief Reuse or mint a TensorId for @p handle's buffer in this graph.
@@ -167,6 +170,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return The existing or newly assigned TensorId.
      */
     TensorId find_or_register_tensor_ptr(TensorHandle const &handle);
+
+    /// The id registered for @p ptr, or 0 if there is none.
+    [[nodiscard]] TensorId find_tensor_id_by_ptr(void const *ptr) const noexcept {
+        auto const it = _ptr_index.find(ptr);
+        return it == _ptr_index.end() ? TensorId{0} : it->second;
+    }
 
     /**
      * @brief Look up a tensor handle by its TensorId.
@@ -1724,7 +1733,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// link_alias_storage. ``TensorHandle::data_ptr`` is a registration-time
     /// snapshot that nothing refreshes, so these stay valid for the life of the
     /// handle and the search need not recompute an extent per candidate.
-    std::vector<std::tuple<char const *, char const *, TensorId>> _span_index;
+    /// False once a tensor has been registered since the last link pass.
+    bool _aliases_linked{true};
+
+    /// ``TensorHandle::tensor_ptr`` to id. Capture asks "is this object already
+    /// registered?" for every operand, which was a linear scan of the tensor
+    /// table and so quadratic over a capture; a DLPNO-MP2 graph registers ~13k
+    /// tensors. First registration wins, matching the scan it replaces.
+    std::unordered_map<void const *, TensorId> _ptr_index;
 
     bool _sorted{false};
 

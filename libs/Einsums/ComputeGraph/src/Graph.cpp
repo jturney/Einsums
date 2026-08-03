@@ -724,72 +724,95 @@ bool derive_alias_box(TensorHandle const &parent, TensorHandle const &child, std
 
 } // namespace
 
-void Graph::link_alias_storage(TensorId id) {
-    auto self = _tensors.find(id);
-    if (self == _tensors.end()) {
+void Graph::link_alias_storage() {
+    if (_aliases_linked) {
         return;
     }
-    char const *lo = nullptr;
-    char const *hi = nullptr;
-    if (!handle_byte_span(self->second, lo, hi)) {
-        return; // deferred, tiled or zero-extent: nothing to compare
+    _aliases_linked = true;
+
+    struct Entry {
+        char const *lo;
+        char const *hi;
+        TensorId    id;
+    };
+    std::vector<Entry> spans;
+    spans.reserve(_tensors.size());
+    for (auto const &[id, h] : _tensors) {
+        char const *lo = nullptr;
+        char const *hi = nullptr;
+        if (handle_byte_span(h, lo, hi)) {
+            spans.push_back({.lo = lo, .hi = hi, .id = id});
+        }
+    }
+    if (spans.size() < 2) {
+        return;
+    }
+    std::ranges::sort(spans, [](Entry const &a, Entry const &b) { return a.lo < b.lo; });
+
+    // Running max of hi over the prefix. Only a span starting at or before this
+    // one can contain it, so once the best hi in that prefix falls short of our
+    // end there is nothing left to find and the backward walk stops. Without it
+    // the walk is the O(n^2) scan this replaces.
+    std::vector<char const *> prefix_max_hi(spans.size());
+    char const               *running = nullptr;
+    for (size_t i = 0; i < spans.size(); ++i) {
+        running          = (running == nullptr || spans[i].hi > running) ? spans[i].hi : running;
+        prefix_max_hi[i] = running;
     }
 
     // Strictly fewer elements keeps a handle from aliasing itself and makes the
     // relation a partial order, so the chains resolve_alias() walks are acyclic.
-    auto const link = [&](TensorHandle const &owner, TensorHandle &child) {
-        child.aliases = owner.id;
-        if (!derive_alias_box(owner, child, child.alias_box)) {
-            child.alias_box.clear(); // unknown box reads as the whole parent
+    for (size_t i = 0; i < spans.size(); ++i) {
+        auto self = _tensors.find(spans[i].id);
+        if (self == _tensors.end() || self->second.aliases != 0) {
+            continue;
         }
-    };
-
-    // The new handle inside an existing one.
-    if (self->second.aliases == 0) {
-        for (auto const &[olo, ohi, other_id] : _span_index) {
-            if (!(olo <= lo && hi <= ohi)) {
-                continue;
+        // Last span starting at or before this one.
+        size_t j = i;
+        while (j > 0 && spans[j].lo > spans[i].lo) {
+            --j;
+        }
+        for (;; --j) {
+            if (prefix_max_hi[j] < spans[i].hi) {
+                break; // nothing at or before j reaches far enough
             }
-            auto const other = _tensors.find(other_id);
-            if (other != _tensors.end() && other->second.total_elems() > self->second.total_elems()) {
-                link(other->second, self->second);
+            if (spans[j].id != spans[i].id && spans[j].lo <= spans[i].lo && spans[i].hi <= spans[j].hi) {
+                auto const owner = _tensors.find(spans[j].id);
+                if (owner != _tensors.end() && owner->second.total_elems() > self->second.total_elems()) {
+                    self->second.aliases = owner->first;
+                    if (!derive_alias_box(owner->second, self->second, self->second.alias_box)) {
+                        self->second.alias_box.clear(); // unknown box reads as the whole parent
+                    }
+                    break;
+                }
+            }
+            if (j == 0) {
                 break;
             }
         }
     }
-
-    // ... and existing handles inside the new one: an owner is routinely
-    // registered after the views built from it, because the views are used
-    // first. Both directions are needed; registration order is not controlled.
-    for (auto const &[olo, ohi, other_id] : _span_index) {
-        if (!(lo <= olo && ohi <= hi)) {
-            continue;
-        }
-        auto other = _tensors.find(other_id);
-        if (other != _tensors.end() && other->second.aliases == 0 && self->second.total_elems() > other->second.total_elems()) {
-            link(self->second, other->second);
-        }
-    }
-
-    // Appended last so the scans above never see this handle.
-    _span_index.emplace_back(lo, hi, id);
 }
 
 TensorId Graph::register_tensor(TensorHandle handle) {
     std::scoped_lock const lock(*_content_mutex);
     TensorId               id = _next_tensor_id++;
     handle.id                 = id;
-    _tensors.emplace(id, std::move(handle));
-    link_alias_storage(id);
+    auto const &stored        = _tensors.emplace(id, std::move(handle)).first->second;
+    if (stored.tensor_ptr != nullptr) {
+        _ptr_index.emplace(stored.tensor_ptr, id);
+    }
+    // Deliberately not linked here: containment is resolved in one amortized
+    // pass (see link_alias_storage), because doing it per registration is
+    // O(n) each and quadratic overall. A DLPNO-MP2 capture registers ~13k
+    // tensors and paid 0.3s for it.
+    _aliases_linked = false;
     return id;
 }
 
 TensorId Graph::find_or_register_tensor_ptr(TensorHandle const &handle) {
     if (handle.tensor_ptr != nullptr) {
-        for (auto const &[id, h] : _tensors) {
-            if (h.tensor_ptr == handle.tensor_ptr) {
-                return id;
-            }
+        if (TensorId const id = find_tensor_id_by_ptr(handle.tensor_ptr); id != 0) {
+            return id;
         }
     }
     return register_tensor(handle);
@@ -1003,6 +1026,9 @@ std::pair<std::span<TensorId const>, std::span<TensorId const>> Graph::effective
 
 template <typename F>
 void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
+    // Storage-level aliasing must be resolved before anything reasons about
+    // which buffer a node touches; cheap and idempotent after the first call.
+    link_alias_storage();
     // Owner-resolved (resolve_alias), subtree-aware (effective_io_cached)
     // RAW/WAW/WAR scan. Every emitted edge points from an earlier to a later
     // position, so program order remains a valid topological order.
@@ -2246,6 +2272,9 @@ void Graph::rebuild_profile_strings() {
 }
 
 void Graph::execute() {
+    // Storage-level aliasing must be resolved before anything reasons about
+    // which buffer a node touches; cheap and idempotent after the first call.
+    link_alias_storage();
     // An installed executor (set_executor) takes over the whole run. This is
     // how loop bodies get a parallel backend: the loop node replays its body
     // via this argument-less execute().
@@ -2544,6 +2573,9 @@ UsageAnalysis const &Graph::usage() {
 }
 
 bool Graph::apply(PassManager &pm) {
+    // Storage-level aliasing must be resolved before anything reasons about
+    // which buffer a node touches; cheap and idempotent after the first call.
+    link_alias_storage();
     std::scoped_lock const lock(*_content_mutex);
     bool const             modified = pm.run(*this);
     if (modified) {

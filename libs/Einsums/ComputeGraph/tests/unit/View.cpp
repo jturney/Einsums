@@ -671,3 +671,71 @@ TEST_CASE("View - mixed callback + param + const bounds", "[ComputeGraph][View][
         REQUIRE(A(k) == 0.0);
     REQUIRE(A(7) == 2.0);
 }
+
+TEST_CASE("batched_gemm - one node for many independent GEMMs", "[ComputeGraph][BatchedGemm]") {
+    // The GEMMBatching pass could already produce this node; the point of the
+    // op is reaching it without emitting one node per GEMM first, since capture
+    // costs tens of microseconds a node and a big batch pays that N times.
+    constexpr size_t               N = 12, m = 5, k = 4, n = 3;
+    std::vector<Tensor<double, 2>> A, B, C, want;
+    for (size_t i = 0; i < N; ++i) {
+        A.emplace_back("a", m, k);
+        B.emplace_back("b", k, n);
+        C.emplace_back("c", m, n);
+        want.emplace_back("w", m, n);
+        for (size_t p = 0; p < m; ++p)
+            for (size_t q = 0; q < k; ++q)
+                A[i](p, q) = static_cast<double>(p + 2 * q + i);
+        for (size_t p = 0; p < k; ++p)
+            for (size_t q = 0; q < n; ++q)
+                B[i](p, q) = static_cast<double>(3 * p - q + i);
+        C[i].set_all(1.0);
+        want[i].set_all(1.0);
+        // reference: want = 2*A*B + 0.5*want
+        for (size_t p = 0; p < m; ++p)
+            for (size_t q = 0; q < n; ++q) {
+                double acc = 0.0;
+                for (size_t r = 0; r < k; ++r)
+                    acc += A[i](p, r) * B[i](r, q);
+                want[i](p, q) = 2.0 * acc + 0.5 * want[i](p, q);
+            }
+    }
+
+    std::vector<Tensor<double, 2> const *> a_ptr, b_ptr;
+    std::vector<Tensor<double, 2> *>       c_ptr;
+    for (size_t i = 0; i < N; ++i) {
+        a_ptr.push_back(&A[i]);
+        b_ptr.push_back(&B[i]);
+        c_ptr.push_back(&C[i]);
+    }
+
+    SECTION("captured: exactly one node") {
+        cg::Graph graph("batched");
+        {
+            cg::CaptureGuard const capture(graph);
+            cg::batched_gemm(2.0, a_ptr, b_ptr, 0.5, c_ptr);
+        }
+        REQUIRE(graph.num_nodes() == 1);
+        graph.execute();
+        for (size_t i = 0; i < N; ++i)
+            for (size_t p = 0; p < m; ++p)
+                for (size_t q = 0; q < n; ++q)
+                    REQUIRE(C[i](p, q) == Catch::Approx(want[i](p, q)));
+    }
+
+    SECTION("eager: same result outside capture") {
+        cg::batched_gemm(2.0, a_ptr, b_ptr, 0.5, c_ptr);
+        for (size_t i = 0; i < N; ++i)
+            for (size_t p = 0; p < m; ++p)
+                for (size_t q = 0; q < n; ++q)
+                    REQUIRE(C[i](p, q) == Catch::Approx(want[i](p, q)));
+    }
+
+    SECTION("a member that cannot share the batch's scalars is rejected") {
+        Tensor<double, 2> odd("odd", m + 1, n);
+        auto              bad = c_ptr;
+        bad.back()            = &odd;
+        REQUIRE_THROWS_AS(cg::batched_gemm(1.0, a_ptr, b_ptr, 0.0, bad), std::invalid_argument);
+        REQUIRE_THROWS_AS(cg::batched_gemm(1.0, decltype(a_ptr){}, decltype(b_ptr){}, 0.0, decltype(c_ptr){}), std::invalid_argument);
+    }
+}

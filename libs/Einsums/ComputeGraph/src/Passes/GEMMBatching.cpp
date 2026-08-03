@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/BLAS.hpp>
+#include <Einsums/ComputeGraph/Detail/BatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/GEMMBatching.hpp>
@@ -23,47 +24,6 @@
 namespace einsums::compute_graph::passes {
 
 namespace {
-
-// ── Typed batched executor dispatch ─────────────────────────────────────────
-//
-// At pass time we've type-erased all tensors to void*; the scalar tag on
-// each group drives the final specialization.
-
-template <typename T>
-void run_batched_gemm(BatchedGemmDescriptor const &d, std::vector<void const *> const &a_vs, std::vector<void const *> const &b_vs,
-                      std::vector<void *> const &c_vs) {
-    std::vector<T const *> a_arr(d.batch_count);
-    std::vector<T const *> b_arr(d.batch_count);
-    std::vector<T *>       c_arr(d.batch_count);
-    for (int i = 0; i < d.batch_count; ++i) {
-        a_arr[i] = static_cast<T const *>(a_vs[i]);
-        b_arr[i] = static_cast<T const *>(b_vs[i]);
-        c_arr[i] = static_cast<T *>(c_vs[i]);
-    }
-    blas::gemm_batch<T>(d.trans_a, d.trans_b, d.m, d.n, d.k, static_cast<T>(d.alpha.real()), a_arr.data(), d.lda, b_arr.data(), d.ldb,
-                        static_cast<T>(d.beta.real()), c_arr.data(), d.ldc, d.batch_count);
-}
-
-// The descriptor carries the full complex prefactor; preserve both parts when
-// dispatching the complex batched GEMM (a complex einsum prefactor like a phase
-// factor must not be truncated to its real part).
-template <typename Complex>
-void run_batched_gemm_complex(BatchedGemmDescriptor const &d, std::vector<void const *> const &a_vs, std::vector<void const *> const &b_vs,
-                              std::vector<void *> const &c_vs) {
-    using T = typename Complex::value_type;
-    std::vector<Complex const *> a_arr(d.batch_count);
-    std::vector<Complex const *> b_arr(d.batch_count);
-    std::vector<Complex *>       c_arr(d.batch_count);
-    for (int i = 0; i < d.batch_count; ++i) {
-        a_arr[i] = static_cast<Complex const *>(a_vs[i]);
-        b_arr[i] = static_cast<Complex const *>(b_vs[i]);
-        c_arr[i] = static_cast<Complex *>(c_vs[i]);
-    }
-    Complex alpha{static_cast<T>(d.alpha.real()), static_cast<T>(d.alpha.imag())};
-    Complex beta{static_cast<T>(d.beta.real()), static_cast<T>(d.beta.imag())};
-    blas::gemm_batch<Complex>(d.trans_a, d.trans_b, d.m, d.n, d.k, alpha, a_arr.data(), d.lda, b_arr.data(), d.ldb, beta, c_arr.data(),
-                              d.ldc, d.batch_count);
-}
 
 // ── Grouping key ────────────────────────────────────────────────────────────
 //
@@ -324,32 +284,9 @@ bool GEMMBatching::run(Graph &graph) {
             batched_inputs.insert(batched_inputs.end(), batched_outputs.begin(), batched_outputs.end());
         }
 
-        // Batched executor: pack pointers on every call (rebind may
-        // have changed them), then dispatch to the typed gemm_batch.
-        auto executor = [d, a_exs = std::move(a_exs), b_exs = std::move(b_exs), c_exs = std::move(c_exs)]() {
-            std::vector<void const *> a_vs(d.batch_count);
-            std::vector<void const *> b_vs(d.batch_count);
-            std::vector<void *>       c_vs(d.batch_count);
-            for (int i = 0; i < d.batch_count; ++i) {
-                a_vs[i] = a_exs[i]().first;
-                b_vs[i] = b_exs[i]().first;
-                c_vs[i] = c_exs[i]().first;
-            }
-            switch (d.scalar) {
-            case BlasScalar::Float:
-                run_batched_gemm<float>(d, a_vs, b_vs, c_vs);
-                break;
-            case BlasScalar::Double:
-                run_batched_gemm<double>(d, a_vs, b_vs, c_vs);
-                break;
-            case BlasScalar::ComplexFloat:
-                run_batched_gemm_complex<std::complex<float>>(d, a_vs, b_vs, c_vs);
-                break;
-            case BlasScalar::ComplexDouble:
-                run_batched_gemm_complex<std::complex<double>>(d, a_vs, b_vs, c_vs);
-                break;
-            }
-        };
+        // Shared with cg::batched_gemm so the two producers of a BatchedGemm
+        // node cannot drift; see ComputeGraph/Detail/BatchedGemm.hpp.
+        auto executor = detail::make_batched_gemm_executor(d, std::move(a_exs), std::move(b_exs), std::move(c_exs));
 
         // Construct the new node and mark originals for removal.
         Node batched;
