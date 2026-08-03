@@ -112,26 +112,30 @@ Bucketing pairs by PNO count would get the batching without the wasted flops, an
 ## Performance against psi4
 
 `bench_vs_psi4.py` runs psi4's native C++ DLPNO-MP2 in a subprocess and this port in process.
-At these sizes psi4 screens no LMO pairs (it keeps all `naocc²`, same as the port) and its average PNO counts match the port's, so the two are solving essentially the same problem.
-LMP2 seconds per iteration, ethanol:
+At these sizes psi4 screens no LMO pairs (it keeps all `naocc²`, same as the port) and its average PNO counts match, so the two are solving essentially the same problem.
+Whole calculation, ethanol, SCF excluded:
 
 | | psi4 | this port | |
 | --- | --- | --- | --- |
-| cc-pVDZ, 1 thread | 0.0256 | 0.0216 | **1.19x faster** |
-| cc-pVTZ, 1 thread | 0.1245 | 0.1068 | **1.17x faster** |
-| cc-pVTZ, 10 threads | 0.0393 | 0.0408 | 0.96x (parity) |
-| cc-pVDZ, 10 threads | 0.0098 | 0.0139 | 0.71x |
+| cc-pVTZ, 1 thread | 2.748 | **2.019** | **1.36x faster** |
+| cc-pVDZ, 1 thread | 0.433 | 0.486 | 1.1x |
+| cc-pVTZ, 10 threads | 0.786 | 1.417 | 1.8x |
+| cc-pVDZ, 10 threads | 0.143 | 0.449 | 3.1x |
 
-**Single threaded the port beats the C++ by ~1.2x.**
-Threaded, it reaches parity at cc-pVTZ and is still behind at cc-pVDZ; the gap closes as the system grows, because the thing that limits it is batch size and batch size grows with the pair count.
+**Single threaded the port is ahead of the C++ on the larger basis and at parity on the smaller one.**
+Threaded it is still behind, and that gap is now the whole story: psi4 parallelizes its setup phases over pairs, and this port does not.
 
-Getting here from an initial 3.5x deficit took five things.
+Per phase at cc-pVTZ on one thread, the port is *faster* at PNO Transform (0.485 vs 1.292, 2.7x) and within 30% everywhere else.
+Getting there took, in order of size:
 
-1. **psi4 clamps the process-wide OpenMP thread count to 1 when imported.** Every einsums BLAS and `gemm_batch` call in the process is then serialized and `OMP_NUM_THREADS` has no effect (a batch measured 172 GFLOP/s standalone, 46 with psi4 imported). `psi4.set_num_threads(n)` sets it for both. Nothing warns.
-2. **`GEMMBatching` requires bit-identical `alpha`.** The residual carries a different Fock prefactor on every coupling, fragmenting 8112 contractions into 309 batches of 26. Since `f·S T Sᵀ = sign(f)·(√|f| S) T (√|f| S)ᵀ` and S is constant, folding `√|f|` into the overlaps leaves alpha at exactly ±1.
-3. **Capture order:** all the `S T` products first, then the accumulations, so each group sits at one dependency level.
-4. **Bucketing pairs by PNO count** (`n_buckets`), padding to a bucket maximum rather than the global one.
-5. **Cross-slot accumulators** (`n_accumulators`), below.
+1. **psi4 clamps the process-wide OpenMP thread count to 1 when imported.** Every einsums BLAS and `gemm_batch` call in the process is then serialized and `OMP_NUM_THREADS` has no effect. `psi4.set_num_threads(n)` sets it for both. Nothing warns.
+2. **Per-domain work was being redone per pair.** The orthocanonical PAO basis and the local fit's metric factorization depend only on the domain, and with screening off there is one domain: 182 of 364 eigendecompositions and all 91 linear solves computed the same answer repeatedly. Memoized by domain identity, PNO Transform went 0.220s -> 0.065s at cc-pVDZ.
+3. **`GEMMBatching` requires bit-identical `alpha`**, and the residual carries a different Fock prefactor per coupling. Folding `sqrt(|f|)` into the (constant) overlaps leaves alpha at exactly +/-1.
+4. **`cg.batched_gemm` emits the fused node directly** instead of emitting one node per contraction for the pass to collapse: 8215 captured nodes -> 335.
+5. **Two quadratics in capture** (storage-alias linking per registration, and a linear scan to answer "is this object registered?") reduced capture+optimize from 0.419s to 0.082s.
+6. **Cross-slot accumulators and PNO-count bucketing**, below.
+
+### Why the two knobs interact
 
 ### Why the two knobs interact
 

@@ -27,6 +27,7 @@ import numpy as np
 
 import einsums
 from einsums import linalg as la
+import einsums.graph as cg
 
 from . import sparse
 from . import tensors as ten
@@ -62,6 +63,7 @@ class DLPNOBase:
         # _canonical_pao_domain). One entry each until screening lands.
         self._fit_cache = {}
         self._pao_domain_cache = {}
+        self._pass_manager = None
 
         # pno_transform. The per-pair amplitude/integral blocks live in flat
         # rank-3 stores with the PAIR INDEX TRAILING; see _allocate_pair_stores.
@@ -78,6 +80,20 @@ class DLPNOBase:
         self.de_pno_total = 0.0
         self.de_pno_total_os = 0.0
         self.de_pno_total_ss = 0.0
+
+    def pass_manager(self):
+        """The default optimization pipeline, built once.
+
+        ``PassManager.populate_default()`` costs ~40 ms, an order of magnitude
+        more than applying the result to a graph that was already emitted in
+        fused form (~2 ms). Building one per graph made pipeline construction
+        the single largest line item in the overlap phase.
+        """
+        if self._pass_manager is None:
+            pm = cg.PassManager()
+            pm.populate_default()
+            self._pass_manager = pm
+        return self._pass_manager
 
     # -- reporting ---------------------------------------------------------
 

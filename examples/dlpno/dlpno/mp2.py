@@ -187,9 +187,7 @@ class DLPNOMP2(DLPNOBase):
             for ij in cat:
                 einsums.einsum("ab <- ca ; cb", half[ij], X_pad[ij], self.S_pao)
                 einsums.einsum("ab <- ac ; cb", self._S_cat[ij], half[ij], cat[ij])
-        pm = cg.PassManager()
-        pm.populate_default()
-        g.apply(pm)
+        g.apply(self.pass_manager())
         g.execute()
 
         # One vectorized scaling per pair: every coupling owns a column range.
@@ -490,8 +488,7 @@ class DLPNOMP2(DLPNOBase):
             f"step {g_step.num_nodes()}, Tt {g_tt.num_nodes()})"
         )
         if optimize:
-            pm = cg.PassManager()
-            pm.populate_default()
+            pm = self.pass_manager()
             before = sum(g.num_nodes() for g in graphs)
             for g in graphs:
                 g.apply(pm)
