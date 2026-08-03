@@ -133,6 +133,27 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     TensorId register_tensor(TensorHandle handle);
 
     /**
+     * @brief Link a freshly registered handle to any registered tensor whose
+     *        storage contains it (or that it contains).
+     *
+     * ``cg::view()`` sets ``TensorHandle::aliases`` itself, but a view sliced
+     * OUTSIDE a capture never goes through it: Python's capture-aware
+     * ``__getitem__`` falls through to the eager slice, and the resulting view
+     * reaches the graph as an ordinary operand on first use. Registered as-is
+     * it has ``aliases == 0``, so the scheduler sees no relationship to its
+     * parent and is free to order a read of the parent before a write through
+     * the view. That produced silently wrong results with no error, and the
+     * pattern is not exotic: a captured view must outlive the graph, which
+     * pushes callers to build views up front.
+     *
+     * So containment is detected here from the registration-time data pointer
+     * and strides, which closes the hole whatever the view's provenance.
+     * Called for both directions because registration order is not controlled:
+     * the parent may first appear after several of its views.
+     */
+    void link_alias_storage(TensorId id);
+
+    /**
      * @brief Reuse or mint a TensorId for @p handle's buffer in this graph.
      *
      * Scans this graph's tensors for one whose ``tensor_ptr`` matches @p
@@ -1698,7 +1719,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     // for "not a view"). If a real tensor could be id 0, a view of it would have
     // aliases == 0 and silently fail to resolve to its parent in the scheduler.
     TensorId _next_tensor_id{1};
-    bool     _sorted{false};
+
+    /// Registration-time byte spans, for the containment search in
+    /// link_alias_storage. ``TensorHandle::data_ptr`` is a registration-time
+    /// snapshot that nothing refreshes, so these stay valid for the life of the
+    /// handle and the search need not recompute an extent per candidate.
+    std::vector<std::tuple<char const *, char const *, TensorId>> _span_index;
+
+    bool _sorted{false};
 
     /// Whether _deps matches the current node order. Distinct from _sorted:
     /// mark_sorted() vouches for the order without rebuilding _deps, so

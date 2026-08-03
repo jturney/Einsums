@@ -166,6 +166,54 @@ TEST_CASE("View - aliasing: write through slice mutates parent", "[ComputeGraph]
     }
 }
 
+TEST_CASE("View - a view made outside capture still orders against its parent", "[ComputeGraph][View][aliasing]") {
+    // cg::view() sets TensorHandle::aliases itself, but a view sliced OUTSIDE a
+    // capture never goes through it: it reaches the graph as an ordinary
+    // operand on first use. Registered with aliases == 0 it looked unrelated to
+    // its parent, so the scheduler was free to order a read of the parent
+    // before the writes through the views, silently returning a stale result.
+    // Graph::link_alias_storage now recovers the relationship from the storage.
+    //
+    // The pattern is not exotic: a captured view must outlive the graph, which
+    // pushes callers to build their views up front.
+    constexpr size_t  N = 6;
+    Tensor<double, 2> A("A", N, N);
+    Tensor<double, 1> ones("ones", N);
+    double            out = 0.0;
+    A.zero();
+    ones.set_all(1.0);
+
+    // Sliced eagerly, before any capture exists.
+    std::vector<TensorView<double, 1>> rows;
+    rows.reserve(N);
+    for (size_t i = 0; i < N; ++i) {
+        rows.push_back(A(static_cast<int>(i), All));
+    }
+
+    cg::Graph graph("view_outside_capture");
+    {
+        cg::CaptureGuard const capture(graph);
+        for (size_t i = 0; i < N; ++i) {
+            cg::scale(0.0, &rows[i]); // write every row through a view
+            cg::axpy(static_cast<double>(i + 1), ones, &rows[i]);
+        }
+        cg::dot(&out, A, A); // read the parent: must come after all of them
+    }
+    graph.execute();
+
+    double expected = 0.0;
+    for (size_t i = 0; i < N; ++i) {
+        expected += static_cast<double>(N) * static_cast<double>(i + 1) * static_cast<double>(i + 1);
+    }
+    REQUIRE(out == Catch::Approx(expected));
+
+    // Disjoint slices must still be free to run concurrently: recovering the
+    // parent link must not collapse every view into a whole-tensor access.
+    auto const &deps = graph.dependencies();
+    REQUIRE(deps.levels.size() > 1);
+    REQUIRE(deps.levels.front().size() > 1);
+}
+
 TEST_CASE("WriteParam - callback updates param mid-loop", "[ComputeGraph][WriteParam]") {
     Tensor<double, 1> v("v", 1);
     v(0) = 1.0;

@@ -2,11 +2,17 @@
 # Copyright (c) The Einsums Developers. All rights reserved.
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
-"""Standalone reproducer: writes through a view are not ordered against the parent.
+"""Reproducer for a FIXED bug: view writes vs parent reads were unordered.
 
-A captured op that writes ``R[:, :, p]`` and one that reads or writes ``R`` are
-treated as touching unrelated tensors, so the scheduler may run them in either
-order. Both cases below give wrong answers with no error raised.
+A captured op that wrote ``R[:, :, p]`` and one that read or wrote ``R`` were
+treated as touching unrelated tensors, so the scheduler could run them in either
+order. Both cases below returned wrong answers with no error raised.
+
+Fixed by ``Graph::link_alias_storage``, which recovers the parent relationship
+from the registration-time data pointer and strides for views that reach the
+graph without a ``View`` node (sliced outside a capture). Both cases now print
+"ok"; the C++ regression test is in ``ComputeGraph/tests/unit/View.cpp``. Kept
+here because it exercises the parallel executors, which that test does not.
 
 Needs only einsums (no psi4)::
 

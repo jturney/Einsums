@@ -214,6 +214,22 @@ struct TensorHandle {
     TensorId aliases{0};
 
     /**
+     * @brief The region this alias covers, in the parent's axis space.
+     *
+     * One ``[lo, hi)`` interval per parent axis. Empty means "unknown", which
+     * the hazard scan reads as the whole parent (conservative).
+     *
+     * ``cg::view()`` does not need this: its View node carries a
+     * ViewDescriptor the scheduler reads the box from directly. It is for
+     * views that reach the graph WITHOUT a View node, i.e. sliced outside a
+     * capture and registered on first use, where the box is recovered from
+     * the data pointer offset and strides (see Graph::link_alias_storage).
+     * Without it every such view would conflict with every other slice of its
+     * parent, which is correct but serializes work that is provably disjoint.
+     */
+    std::vector<std::pair<std::int64_t, std::int64_t>> alias_box;
+
+    /**
      * @brief Optional validation function to check if the tensor is still alive.
      *
      * Set automatically by make_handle() at registration time. The function captures

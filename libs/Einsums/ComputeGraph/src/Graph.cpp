@@ -623,11 +623,164 @@ void Graph::insert_node_groups(std::vector<std::pair<std::size_t, std::vector<No
     mark_sorted();
 }
 
+namespace {
+
+/// Half-open byte span of a handle's storage, or false when it has none that
+/// can be reasoned about (deferred allocation, tiled layout, zero extent).
+bool handle_byte_span(TensorHandle const &h, char const *&lo, char const *&hi) {
+    if (h.data_ptr == nullptr || h.is_tiled || h.element_size == 0 || h.dims.empty() || h.strides.size() != h.dims.size()) {
+        return false;
+    }
+    size_t last = 0;
+    for (size_t d = 0; d < h.dims.size(); ++d) {
+        if (h.dims[d] == 0) {
+            return false;
+        }
+        last += (h.dims[d] - 1) * h.strides[d];
+    }
+    lo = static_cast<char const *>(h.data_ptr);
+    hi = lo + (last + 1) * h.element_size;
+    return true;
+}
+
+/// Recover @p child's region in @p parent's axis space from the pointer offset
+/// and the two stride sets. Returns false whenever the layout is not provably a
+/// sub-box, which leaves the box empty and the access conservatively
+/// whole-tensor. Being wrong here would UNDER-serialize, so every ambiguity
+/// declines rather than guesses.
+bool derive_alias_box(TensorHandle const &parent, TensorHandle const &child, std::vector<std::pair<std::int64_t, std::int64_t>> &box) {
+    size_t const rank = parent.dims.size();
+    if (rank == 0 || parent.element_size == 0 || child.element_size != parent.element_size) {
+        return false;
+    }
+    // Equal strides on two traversed axes make the offset decomposition and the
+    // axis matching below ambiguous.
+    for (size_t a = 0; a < rank; ++a) {
+        for (size_t b = a + 1; b < rank; ++b) {
+            if (parent.strides[a] == parent.strides[b] && parent.dims[a] > 1 && parent.dims[b] > 1) {
+                return false;
+            }
+        }
+    }
+
+    auto const *p = static_cast<char const *>(parent.data_ptr);
+    auto const *c = static_cast<char const *>(child.data_ptr);
+    if (c < p) {
+        return false;
+    }
+    size_t off = static_cast<size_t>(c - p);
+    if (off % parent.element_size != 0) {
+        return false;
+    }
+    off /= parent.element_size;
+
+    // Peel the offset apart largest stride first; unique for a canonical layout.
+    std::vector<size_t> order(rank);
+    std::iota(order.begin(), order.end(), size_t{0});
+    std::ranges::sort(order, [&](size_t a, size_t b) { return parent.strides[a] > parent.strides[b]; });
+
+    std::vector<std::int64_t> start(rank, 0);
+    for (size_t const d : order) {
+        if (parent.strides[d] == 0) {
+            continue;
+        }
+        start[d] = static_cast<std::int64_t>(off / parent.strides[d]);
+        off %= parent.strides[d];
+    }
+    if (off != 0) {
+        return false; // offset does not land on a parent index
+    }
+
+    // A child axis that reuses a parent stride keeps that axis; the rest are
+    // pinned to a single index by the offset.
+    std::vector<std::int64_t> extent(rank, 1);
+    std::vector<bool>         matched(child.dims.size(), false);
+    for (size_t d = 0; d < rank; ++d) {
+        for (size_t e = 0; e < child.dims.size(); ++e) {
+            if (!matched[e] && child.strides[e] == parent.strides[d] && child.dims[e] > 1) {
+                extent[d]  = static_cast<std::int64_t>(child.dims[e]);
+                matched[e] = true;
+                break;
+            }
+        }
+    }
+    for (size_t e = 0; e < child.dims.size(); ++e) {
+        if (!matched[e] && child.dims[e] > 1) {
+            return false; // a traversed child axis with no parent counterpart
+        }
+    }
+
+    box.clear();
+    box.reserve(rank);
+    for (size_t d = 0; d < rank; ++d) {
+        std::int64_t const hi = start[d] + extent[d];
+        if (start[d] < 0 || hi > static_cast<std::int64_t>(parent.dims[d])) {
+            return false;
+        }
+        box.emplace_back(start[d], hi);
+    }
+    return true;
+}
+
+} // namespace
+
+void Graph::link_alias_storage(TensorId id) {
+    auto self = _tensors.find(id);
+    if (self == _tensors.end()) {
+        return;
+    }
+    char const *lo = nullptr;
+    char const *hi = nullptr;
+    if (!handle_byte_span(self->second, lo, hi)) {
+        return; // deferred, tiled or zero-extent: nothing to compare
+    }
+
+    // Strictly fewer elements keeps a handle from aliasing itself and makes the
+    // relation a partial order, so the chains resolve_alias() walks are acyclic.
+    auto const link = [&](TensorHandle const &owner, TensorHandle &child) {
+        child.aliases = owner.id;
+        if (!derive_alias_box(owner, child, child.alias_box)) {
+            child.alias_box.clear(); // unknown box reads as the whole parent
+        }
+    };
+
+    // The new handle inside an existing one.
+    if (self->second.aliases == 0) {
+        for (auto const &[olo, ohi, other_id] : _span_index) {
+            if (!(olo <= lo && hi <= ohi)) {
+                continue;
+            }
+            auto const other = _tensors.find(other_id);
+            if (other != _tensors.end() && other->second.total_elems() > self->second.total_elems()) {
+                link(other->second, self->second);
+                break;
+            }
+        }
+    }
+
+    // ... and existing handles inside the new one: an owner is routinely
+    // registered after the views built from it, because the views are used
+    // first. Both directions are needed; registration order is not controlled.
+    for (auto const &[olo, ohi, other_id] : _span_index) {
+        if (!(lo <= olo && ohi <= hi)) {
+            continue;
+        }
+        auto other = _tensors.find(other_id);
+        if (other != _tensors.end() && other->second.aliases == 0 && self->second.total_elems() > other->second.total_elems()) {
+            link(self->second, other->second);
+        }
+    }
+
+    // Appended last so the scans above never see this handle.
+    _span_index.emplace_back(lo, hi, id);
+}
+
 TensorId Graph::register_tensor(TensorHandle handle) {
     std::scoped_lock const lock(*_content_mutex);
     TensorId               id = _next_tensor_id++;
     handle.id                 = id;
     _tensors.emplace(id, std::move(handle));
+    link_alias_storage(id);
     return id;
 }
 
@@ -912,6 +1065,22 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
         }
         view_parent.emplace(nd.outputs[0], vd->parent_id);
         view_box.emplace(nd.outputs[0], std::move(box));
+    }
+
+    // Views that reached the graph without a View node (sliced outside a
+    // capture, linked by storage containment at registration) carry their box
+    // on the handle instead. Without this they would still be ordered against
+    // the parent correctly, but as whole-tensor accesses, chaining every slice
+    // behind every other and costing the parallel executors their width.
+    for (auto const &[tid, h] : _tensors) {
+        if (h.aliases == 0 || h.alias_box.empty() || view_box.contains(tid)) {
+            continue;
+        }
+        if (resolve_alias(h.aliases) != h.aliases) {
+            continue; // box lives in the immediate parent's axis space
+        }
+        view_parent.emplace(tid, h.aliases);
+        view_box.emplace(tid, Box(h.alias_box.begin(), h.alias_box.end()));
     }
 
     auto const may_overlap = [](Box const *a, Box const *b) {

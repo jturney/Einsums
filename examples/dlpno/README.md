@@ -168,10 +168,9 @@ The equal-rank `"ab <- ab ; ab"` was fine, which is what hid it: that shape is s
 The fix snapshots any operand overlapping C in `StringDispatch.hpp`'s generic loop and in `BaseAlgebra.hpp`'s `einsum_generic_algorithm`, so only the aliased case pays a copy and the loops (and their summation order) are untouched.
 Regression tests are in `ComputeGraph/tests/unit/EagerParityGaps.cpp`, covering all four generic routes on both the graph and eager paths.
 
-**View/parent aliasing is not a graph dependency** (open, worked around).
-A write through `R[:, :, p]` and a read or write of `R` are treated as touching unrelated tensors, so the scheduler is free to order them arbitrarily.
-This produces wrong answers with no error, and it is not confined to parallel execution: with the residual's three phases in one graph the energy dot was scheduled at node 201 of 405 under *both* the default and sequential executors.
-It is worse under the parallel executors, where even a plain write-then-read is unordered:
+**View/parent aliasing was not a graph dependency** (fixed).
+A write through `R[:, :, p]` and a read or write of `R` were treated as touching unrelated tensors, so the scheduler was free to order them arbitrarily: wrong answers, no error, and not confined to parallel execution.
+With the residual's phases in one graph the energy dot was scheduled at node 201 of 405 under *both* the default and sequential executors; under the parallel executors even a plain write-then-read was unordered:
 
 ```python
 views = [R[:, :, p] for p in range(P)]
@@ -183,8 +182,10 @@ g.set_executor(cg.OpenMPExecutor())                       # or DataflowExecutor
 g.execute()          # out != sum(R*W); Sequential and the default are correct here
 ```
 
-`examples/dlpno/repro_view_aliasing.py` is the standalone reproducer.
-This one deserves a real fix: the pair-block layout above is a natural and useful pattern, and it is a silent-wrong-answer trap today.
+`cg::view()` always set `TensorHandle::aliases`, but a view sliced *outside* a capture never goes through it: Python's capture-aware `__getitem__` falls through to the eager slice, and the view reaches the graph as an ordinary operand on first use with `aliases == 0`.
+That is exactly the pattern this port needs, because a captured view must outlive the graph.
+`Graph::link_alias_storage` now recovers the relationship from the registration-time data pointer and strides, in both directions (a parent is routinely registered after the views built from it), and reconstructs the view's box so disjoint slices still do not serialize.
+`examples/dlpno/repro_view_aliasing.py` is the standalone reproducer, and `ComputeGraph/tests/unit/View.cpp` carries the regression test.
 
 **`linalg.gemm` is invisible to `GEMMBatching`.**
 It captures as `OpKind::Gemm`, and the pass only groups `Einsum` nodes carrying a `gemm_hint`.
