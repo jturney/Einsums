@@ -36,6 +36,7 @@ set(example_programs
     DistributedGEMM
     GPUOffload
     Views
+    TriplesBlocking
 )
 
 foreach(example_program ${example_programs})
