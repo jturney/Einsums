@@ -72,6 +72,7 @@ set(ComputeGraphTests
     RuntimeTensorEinsum.cpp
     RuntimeTensorLAPACK.cpp
     RuntimeTensorOwnership.cpp
+    ParametricLoop.cpp
     RuntimeTensorView.cpp
     StridedBatchedGemm.cpp
     StringEinsum.cpp

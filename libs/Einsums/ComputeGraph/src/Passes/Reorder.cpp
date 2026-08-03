@@ -45,6 +45,15 @@ bool Reorder::run(Graph &graph) {
     std::unordered_map<TensorId, std::vector<size_t>> readers_since_write;
     std::vector<std::unordered_set<size_t>>           adj_set(n);
 
+    // The same hazards over the ParamTable. A WriteParam and the
+    // parameter-bound Views that resolve against it share no tensor, so
+    // without these edges the reschedule below is free to float a slice ahead
+    // of the write that positions it -- which reads the previous iteration's
+    // value, or throws outright on the first iteration when the parameter has
+    // never been set. See param_writes / param_reads in Node.hpp.
+    std::unordered_map<std::string, size_t>              last_param_writer;
+    std::unordered_map<std::string, std::vector<size_t>> param_readers_since_write;
+
     for (size_t i = 0; i < n; i++) {
         // Use effective I/O so Loop/Conditional nodes (whose own input/output
         // lists are empty) carry dependency edges for the tensors their bodies
@@ -78,6 +87,29 @@ bool Reorder::run(Graph &graph) {
                 rit->second.clear(); // reads before this write are now satisfied
             }
             last_writer[tid] = i;
+        }
+        for (auto const &pname : param_reads(nodes[i])) {
+            auto it = last_param_writer.find(pname);
+            if (it != last_param_writer.end() && it->second != i) {
+                adj_set[it->second].insert(i); // RAW: parameter write -> slice
+            }
+            param_readers_since_write[pname].push_back(i);
+        }
+        for (auto const &pname : param_writes(nodes[i])) {
+            auto it = last_param_writer.find(pname);
+            if (it != last_param_writer.end() && it->second != i) {
+                adj_set[it->second].insert(i); // WAW
+            }
+            auto rit = param_readers_since_write.find(pname);
+            if (rit != param_readers_since_write.end()) {
+                for (size_t const r : rit->second) {
+                    if (r != i) {
+                        adj_set[r].insert(i); // WAR
+                    }
+                }
+                rit->second.clear();
+            }
+            last_param_writer[pname] = i;
         }
     }
 

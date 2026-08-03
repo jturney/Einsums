@@ -9,6 +9,8 @@
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Logging.hpp>
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
@@ -137,6 +139,25 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
 
             // Skip control flow and memory nodes
             if (is_control_flow(bnode.kind) || bnode.kind == OpKind::Alloc || bnode.kind == OpKind::Free) {
+                continue;
+            }
+
+            // Nodes whose per-iteration effect does not travel through their
+            // tensor inputs. A WriteParam writes the ParamTable, and its
+            // callback form has no tensor inputs at all, so the invariance test
+            // below waves it through; hoisting it pins every downstream
+            // parametric View at whatever the first iteration resolved to. A
+            // parameter-bound View is the mirror image: invariant parent, moving
+            // slice. Neither is inspectable as dataflow, so both are refused
+            // outright rather than proven safe. (The View case is also caught
+            // today by the single-writer guard below, but incidentally -- that
+            // guard resolves a view's output through its alias to the parent
+            // buffer, which usually has no writer in the body at all -- so it
+            // stops holding the moment the parent is written once per
+            // iteration, which is exactly what a blocked residual does.)
+            if (bnode.kind == OpKind::WriteParam || has_runtime_view_bounds(bnode)) {
+                note_skip("node's per-iteration effect is a parameter write or a parameter-bound slice, not visible as dataflow",
+                          fmt::format("body node '{}'", bnode.label));
                 continue;
             }
 

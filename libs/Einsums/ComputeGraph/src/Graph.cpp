@@ -967,6 +967,15 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     std::unordered_map<TensorId, std::vector<Access>> writers;
     std::unordered_map<TensorId, std::vector<Access>> readers;
 
+    // The same three hazards over the PARAMETER table. A WriteParam's effect
+    // and a parameter-bound View's dependence on it never touch a tensor, so
+    // the owner-resolved scan above emits no edge between them and the two are
+    // free to be reordered - which silently freezes the slice at whatever the
+    // table happened to hold. Keyed by parameter name; see param_writes /
+    // param_reads in Node.hpp.
+    std::unordered_map<std::string, std::vector<size_t>> param_writers;
+    std::unordered_map<std::string, std::vector<size_t>> param_readers;
+
     size_t const n = _nodes.size();
     for (size_t i = 0; i < n; i++) {
         auto [eff_in, eff_out] = effective_io_cached(_nodes[i], cache);
@@ -1002,6 +1011,30 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
                 wl.clear(); // a whole-tensor write dominates all prior writers
             }
             wl.push_back({.pos = i, .box = box});
+        }
+
+        for (auto const &pname : param_reads(_nodes[i])) {
+            for (size_t const w : param_writers[pname]) {
+                if (w != i) {
+                    emit(w, i); // RAW: parameter write -> slice that resolves it
+                }
+            }
+            param_readers[pname].push_back(i);
+        }
+        for (auto const &pname : param_writes(_nodes[i])) {
+            for (size_t const w : param_writers[pname]) {
+                if (w != i) {
+                    emit(w, i); // WAW: the later write must win
+                }
+            }
+            for (size_t const r : param_readers[pname]) {
+                if (r != i) {
+                    emit(r, i); // WAR: readers of the old value must go first
+                }
+            }
+            param_readers[pname].clear();
+            param_writers[pname].clear();
+            param_writers[pname].push_back(i);
         }
     }
 }

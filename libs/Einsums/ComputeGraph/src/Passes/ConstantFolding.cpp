@@ -103,6 +103,19 @@ bool ConstantFolding::run(Graph &graph) {
             continue;
         }
 
+        // A node whose effect or operand lives in the ParamTable is never a
+        // constant. WriteParam carries no tensor inputs at all, so the test
+        // below is vacuously satisfied and folding swaps its per-iteration
+        // write for a no-op, pinning every downstream slice at the value the
+        // pass happened to evaluate. A runtime-bound View is the same mistake
+        // from the reading side: its parent really is constant, its slice is
+        // not.
+        if (node.kind == OpKind::WriteParam || has_runtime_view_bounds(node)) {
+            note_skip("node's effect or slice bounds live in the parameter table, not in its tensor operands",
+                      fmt::format("node {} ({})", node.id, node.label));
+            continue;
+        }
+
         // Check if all inputs are constant
         bool all_inputs_constant = true;
         for (auto tid : node.inputs) {

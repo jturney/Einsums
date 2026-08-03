@@ -14,6 +14,7 @@
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -441,5 +442,69 @@ struct Node {
     /// 0 = default/compute stream, 1 = transfer stream.
     int stream_id{0};
 };
+
+/// @brief Names of @ref ParamTable entries this node WRITES - the parameter
+///        analogue of @ref Node::outputs.
+///
+/// A @c WriteParam node's entire effect is this write. It travels through the
+/// parameter table rather than through any tensor, so a TensorId-keyed
+/// dependency scan cannot see it, and in the callback form the node carries no
+/// tensor operands at all - which reads to an unguarded pass as "no inputs,
+/// therefore unconditionally movable". Schedulers pair this with
+/// @ref param_reads to order parameter writes against their consumers.
+[[nodiscard]] inline std::vector<std::string> param_writes(Node const &node) {
+    if (auto const *wd = std::get_if<WriteParamDescriptor>(&node.op_data)) {
+        return {wd->name};
+    }
+    return {};
+}
+
+/// @brief Names of @ref ParamTable entries this node READS - the analogue of
+///        @ref Node::inputs.
+///
+/// A @c View whose slice bounds name a parameter re-resolves them every time it
+/// executes, so it must stay ordered after whatever writes them. Callback-valued
+/// bounds are deliberately NOT reported here: they name nothing, so no edge can
+/// be derived. Use @ref has_runtime_view_bounds to ask the weaker question "does
+/// this slice move at all", which is what hoisting and folding need.
+[[nodiscard]] inline std::vector<std::string> param_reads(Node const &node) {
+    std::vector<std::string> names;
+    auto const              *vd = std::get_if<ViewDescriptor>(&node.op_data);
+    if (vd == nullptr) {
+        return names;
+    }
+    auto const add = [&names](BoundExpr const &bound) {
+        if (bound.is_param()) {
+            names.push_back(bound.param_name());
+        }
+    };
+    for (auto const &ax : vd->axes) {
+        add(ax.lo);
+        if (ax.kind == ViewAxis::Kind::Range) {
+            add(ax.hi);
+        }
+    }
+    return names;
+}
+
+/// @brief True when a @c View's slice is resolved from runtime state (a named
+///        parameter or a callback) rather than from literals.
+///
+/// Such a view aliases the same parent every iteration but describes a
+/// different slice each time. Passes that would evaluate a node once and reuse
+/// the result - constant folding, loop-invariant hoisting - must refuse it: the
+/// parent input they inspect is genuinely invariant, and the part that moves is
+/// not expressed as dataflow at all.
+[[nodiscard]] inline bool has_runtime_view_bounds(Node const &node) {
+    if (node.kind != OpKind::View) {
+        return false;
+    }
+    auto const *vd = std::get_if<ViewDescriptor>(&node.op_data);
+    if (vd == nullptr) {
+        return true; // no descriptor to inspect: assume the slice moves
+    }
+    return std::ranges::any_of(
+        vd->axes, [](ViewAxis const &ax) { return !ax.lo.is_const() || (ax.kind == ViewAxis::Kind::Range && !ax.hi.is_const()); });
+}
 
 } // namespace einsums::compute_graph
