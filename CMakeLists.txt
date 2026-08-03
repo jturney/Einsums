@@ -894,9 +894,6 @@ endif()
 # Git commit detection
 # ##################################################################################################
 include(Einsums_GitCommit)
-einsums_add_config_define(EINSUMS_HAVE_GIT_COMMIT "\"${EINSUMS_WITH_GIT_COMMIT}\"")
-einsums_add_config_define(EINSUMS_HAVE_GIT_BRANCH "\"${EINSUMS_WITH_GIT_BRANCH}\"")
-einsums_add_config_define(EINSUMS_HAVE_GIT_DIRTY ${EINSUMS_WITH_GIT_DIRTY})
 
 include(Einsums_SetOutputPaths)
 

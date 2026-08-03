@@ -46,7 +46,7 @@ std::string configuration_string() {
 }
 
 std::string build_string() {
-    return fmt::format("v{}{}, Git: {:.10}", full_version_as_string(), EINSUMS_VERSION_TAG, EINSUMS_HAVE_GIT_COMMIT);
+    return fmt::format("v{}{}, Git: {:.10}", full_version_as_string(), EINSUMS_VERSION_TAG, git_commit());
 }
 
 std::string complete_version() {

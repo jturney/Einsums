@@ -10,6 +10,8 @@
 #include <Einsums/Config/ExportDefinitions.hpp>
 #include <Einsums/Preprocessor/Cat.hpp>
 
+#include <string_view>
+
 // clang-format off
 /// Evaluates to the major version of einsums
 #define EINSUMS_VERSION_MAJOR @EINSUMS_VERSION_MAJOR@
@@ -40,17 +42,27 @@
 // build_date_time() now reads __DATE__ __TIME__ directly from Version.cpp,
 // so the timestamp only updates when that one TU is compiled.
 
-#if !defined(EINSUMS_HAVE_GIT_COMMIT)
-#    define EINSUMS_HAVE_GIT_COMMIT "unknown"
-#endif
+namespace einsums {
 
-#if !defined(EINSUMS_HAVE_GIT_BRANCH)
-#    define EINSUMS_HAVE_GIT_BRANCH "unknown"
-#endif
+// The git identity is reported through functions rather than macros for the
+// same reason the timestamp is. The values change on every commit, so defining
+// them here, in a header every translation unit reaches through Config.hpp,
+// would rewrite every translation unit's preprocessor fingerprint on every
+// commit. That defeats ccache's direct mode outright and orphans the whole
+// object cache per push instead of only the objects a change really touched.
+// The values live in a private generated header that only Config/src/Version.cpp
+// includes; these declarations do not change from commit to commit.
 
-#if !defined(EINSUMS_HAVE_GIT_DIRTY)
-#    define EINSUMS_HAVE_GIT_DIRTY 0
-#endif
+/// Returns the full git commit this build was configured from, or "unknown".
+[[nodiscard]] EINSUMS_EXPORT std::string_view git_commit();
+
+/// Returns the git branch this build was configured from, or "unknown".
+[[nodiscard]] EINSUMS_EXPORT std::string_view git_branch();
+
+/// Returns whether the working tree had uncommitted changes at configure time.
+[[nodiscard]] EINSUMS_EXPORT bool git_dirty();
+
+} // namespace einsums
 
 ///////////////////////////////////////////////////////////////////////////////
 // The version check enforces the major and minor version numbers to match for

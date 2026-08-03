@@ -475,9 +475,9 @@ void Server::send_snapshot_to(int fd) {
     msg += R"(,"executable":")" + escape_json_str(s_executable_name) + "\"";
     msg += R"(,"executable_path":")" + escape_json_str(s_executable_path) + "\"";
     msg += R"(,"start_time":")" + escape_json_str(s_start_time) + "\"";
-    msg += R"(,"git_commit":")" + escape_json_str(EINSUMS_HAVE_GIT_COMMIT) + "\"";
-    msg += R"(,"git_branch":")" + escape_json_str(EINSUMS_HAVE_GIT_BRANCH) + "\"";
-    msg += std::string(",\"git_dirty\":") + (EINSUMS_HAVE_GIT_DIRTY ? "true" : "false");
+    msg += R"(,"git_commit":")" + escape_json_str(std::string(git_commit())) + "\"";
+    msg += R"(,"git_branch":")" + escape_json_str(std::string(git_branch())) + "\"";
+    msg += std::string(",\"git_dirty\":") + (git_dirty() ? "true" : "false");
     {
         // EINSUMS_BUILD_TYPE is a bare identifier (e.g. release, debug), so stringify it.
 #    define EINSUMS_STRINGIFY_HELPER_(x) #x
