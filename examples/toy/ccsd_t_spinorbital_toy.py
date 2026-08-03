@@ -22,40 +22,49 @@ with P(i/jk) f = f(ijk) - f(jik) - f(kji). Both the CCSD equations and this (T)
 expression were checked against psi4's CCSD(T) on water/STO-3G before this file
 was written: CCSD correlation to 8e-13 Eh, (T) to 9e-15 Eh.
 
-WHY THIS FILE EXISTS. Triples is the first workload in the repo where the
-antisymmetrizers, not the contractions, are the bill. Every P(i/jk)P(a/bc) is nine
-permuted accumulations of a rank-6 tensor, and at this toy size the three
-contractions that build Xc and Xd cost about 6 ms while the eighteen permuted
-accumulations that antisymmetrize them cost about 30 ms. That ratio barely improves
-with system size - the connected term is o^3 v^4 of arithmetic against 9 o^3 v^3 of
-permute traffic, so flops per moved element grow only like v/9 - which makes the
-P-operator the obvious next target for an optimization pass.
+WHY THIS FILE EXISTS. It is a controlled comparison of two spellings of the same
+correction, to keep optimization work aimed at the one that matters:
 
-To make the headroom measurable rather than asserted, the correction is written
-two ways and both are validated against the oracle:
+    whole-tensor  build W and V as o^3 v^3 arrays, antisymmetrize with nine
+                  permuted accumulations each, contract once at the end
+    blocked       loop over i < j < k, build one v^3 block per triple, add its
+                  energy contribution, move on - what production codes do
+
+Each is written two ways again, since the disconnected antisymmetrizer can be
+folded away exactly:
 
     naive   both W and V antisymmetrized, E = 1/36 sum W (W + V) / D
     folded  only W antisymmetrized,       E = 1/4  sum (W/D) (Xc + Xd)
 
-The folded form is exact, not an approximation. Because D is invariant under
-P(i/jk)P(a/bc) and W is antisymmetric under it, summing W against any one of the
-nine permuted copies of a tensor gives the same value up to the permutation's
-sign, so the nine terms of V collapse into 9 * (the unpermuted term) and 9/36
-becomes 1/4. A pass that recognized "this antisymmetrized tensor is only ever
-contracted against another antisymmetrized tensor" could do that rewrite itself.
-The naive-minus-folded time is what such a pass would be worth here.
+The fold is exact, not an approximation. D is invariant under P(i/jk)P(a/bc) and W
+is fully antisymmetric (it is D times a genuine triple-excitation amplitude), so
+summing W against any permuted copy of a tensor gives the same value up to the
+permutation's sign, the nine terms of V collapse into 9 * (the unpermuted term),
+and 9/36 becomes 1/4.
 
-Each formulation runs twice, with and without the default pass manager, so the
-table also shows what today's passes recover on a flat rank-6 body. As of writing
-that is nothing: the pipeline's only edits are Materialization, FreeInsertion and
-MemoryPlanning, and replay time is unchanged. SymmetrizedAccumulation is the pass
-that looks closest to relevant, and it declines every antisymmetrizer permute with
-"permute accumulates into its output (beta != 0)" - correctly, since the P-operator
-is already written in the accumulating form that pass rewrites toward. Its
-documented Level 2 (one fused sweep instead of one sweep per permuted term) is what
-this workload actually wants: nine terms that read the same source and accumulate
-into the same destination move 852 MB here, where a fused kernel would move 98 MB.
-Pass ``--explain`` for the full report.
+All eight runs agree with the oracle, and the table is the point. Whole-tensor,
+the antisymmetrizers dominate: the three contractions cost about 6 ms and the
+eighteen permuted accumulations about 30 ms, so folding one of them away is worth
+about 40%. Blocked, the same fold is worth a small fraction of that, on a run
+already 3x faster in a working set of 197 KB instead of 164 MB. The P-operator
+only looks expensive when it is applied to a materialized rank-6 tensor - and
+materializing is not a choice a real calculation has, since at o=50, v=500 that
+tensor is 1.25e16 bytes.
+
+So a pass that fuses the antisymmetrizer optimizes an artifact. The pass worth
+having turns the first spelling into the second. Note what the table says about
+today's pipeline either way: it changes nothing in either spelling (its only edits
+are Materialization, FreeInsertion and MemoryPlanning), and on the blocked runs it
+spends more time optimizing than the graph spends executing. Pass ``--explain``
+for the per-pass report, including the declines.
+
+One caveat on the blocked column: it is UNROLLED, 120 triples times ~20 nodes.
+Production writes a loop, and so should the graph - ViewAxis bounds are BoundExpr
+values that can name a Pipeline parameter, and the executor re-resolves them and
+rebuilds the TensorView every iteration, which is exactly a parametric slice. That
+machinery is C++-only today (Pipeline::set_param and parameter-valued view bounds
+carry no Python binding), so this file unrolls instead. At o=50 the unrolled form
+would be 400k nodes, which is why the pass's target has to be the looped one.
 
 Run with the Einsums build on PYTHONPATH, using the conda-env Python::
 
@@ -386,7 +395,114 @@ def run_triples(t1, t2, folded, optimize, replays=3):
         energies.append(float(np.asarray(Et)[0]))
     assert max(abs(e - energies[0]) for e in energies) == 0.0, "replay is not idempotent"
 
-    return {"label": ("folded" if folded else "naive") + ("" if optimize else " (no passes)"),
+    return {"label": ("whole-tensor folded" if folded else "whole-tensor") + ("" if optimize else " (no passes)"),
+            "energy": energies[0], "nodes": gr.num_nodes(), "opt_ms": opt_ms, "ms": best * 1e3,
+            "explain": explain}
+
+
+# ── (T), the way production codes write it: one v^3 block per occupied triple ─
+#
+# psi4's cc/cctriples/ET_RHF.cc is the reference shape - `for i, j, k: if (I >= J
+# && J >= K)`, a `W[ab][c]` block allocated per triple, two C_DGEMM groups per
+# permutation, `sort_3d` for the index swaps, and the block freed before the next
+# triple. Memory is O(v^3), not O(o^3 v^3): at o=50, v=500 the rank-6 tensor above
+# would be 1.25e16 bytes, so this is not a preference, it is the only way the
+# method runs at all. Everything below is the same equations, blocked that way.
+#
+# Two economies come with the blocking and neither is available whole-tensor.
+# The summand is invariant under permutations of (i,j,k) - W and V are both fully
+# antisymmetric there, being D times genuine triple-excitation amplitudes - so
+# triples with a repeated index vanish and i < j < k covers the rest six times
+# over: 120 triples instead of 1000, with 1/36 becoming 1/6. And the occupied
+# antisymmetrizer disappears into the loop, since the three terms of P(i/jk) are
+# just three different (i,j,k) orderings feeding the same v^3 accumulator. Only
+# P(a/bc) survives as an actual permutation, on a 32 KB block.
+def run_triples_blocked(t1, t2, folded, optimize, replays=3):
+    G = {nm: make(nm, BLOCKS[nm]) for nm in ("oovv", "vovv", "ovoo")}
+    Dv = make("Dv", -(ev[:, None, None] + ev[None, :, None] + ev[None, None, :]))
+    ones = make("ones", np.ones((NV, NV, NV)))
+    E = einsums.zeros((1,), dtype="float64")
+    e_trip = einsums.zeros((1,), dtype="float64")
+
+    gr = cg.Graph("triples_blocked_folded" if folded else "triples_blocked")
+    names = ["Xtot", "Vtot", "W", "Wd", "D"] + ([] if folded else ["V"])
+    if optimize:
+        S = {nm: gr.declare_zero_tensor(nm, [NV] * 3, dtype="float64", intermediate=True) for nm in names}
+    else:
+        S = {nm: einsums.zeros((NV,) * 3, dtype="float64") for nm in names}
+
+    # Slices of the amplitudes and integrals, shared across the triples that reuse
+    # them. Built eagerly, so they cost graph operands rather than graph nodes.
+    cache = {}
+
+    def sl(key, build):
+        if key not in cache:
+            cache[key] = build()
+        return cache[key]
+
+    with cg.capture(gr):
+        la.scale(0.0, E)
+        for i in range(NO):
+            for j in range(i + 1, NO):
+                for k in range(j + 1, NO):
+                    perms = ((i, j, k, 1.0), (j, i, k, -1.0), (k, j, i, -1.0))   # P(i/jk)
+
+                    # D[a,b,c] = (e_i + e_j + e_k) - e_a - e_b - e_c
+                    la.axpby(1.0, Dv, 0.0, S["D"])
+                    la.axpby(eo[i] + eo[j] + eo[k], ones, 1.0, S["D"])
+
+                    # Xtot = sum_sigma sign * [ t2[jk,ae] <ei||bc> - t2[im,bc] <ma||jk> ]
+                    for n, (ii, jj, kk, s) in enumerate(perms):
+                        ein("a,b,c <- a,e ; e,b,c", S["Xtot"],
+                            sl(("t2jk", jj, kk), lambda: t2[jj, kk, :, :]),
+                            sl(("gv", ii), lambda: G["vovv"][:, ii, :, :]), s, n > 0)
+                        ein("a,b,c <- m,b,c ; m,a", S["Xtot"],
+                            sl(("t2i", ii), lambda: t2[ii, :, :, :]),
+                            sl(("go", jj, kk), lambda: G["ovoo"][:, :, jj, kk]), -s, True)
+                    # Vtot = sum_sigma sign * t1[i,a] <jk||bc>
+                    for n, (ii, jj, kk, s) in enumerate(perms):
+                        ein("a,b,c <- a ; b,c", S["Vtot"],
+                            sl(("t1", ii), lambda: t1[ii, :]),
+                            sl(("goovv", jj, kk), lambda: G["oovv"][jj, kk, :, :]), s, n > 0)
+
+                    # W = P(a/bc) Xtot, the only permutation left, on a v^3 block
+                    la.axpby(1.0, S["Xtot"], 0.0, S["W"])
+                    einsums.permute("b,a,c <- a,b,c", S["W"], S["Xtot"], c_pf=1.0, a_pf=-1.0)
+                    einsums.permute("c,b,a <- a,b,c", S["W"], S["Xtot"], c_pf=1.0, a_pf=-1.0)
+                    la.direct_division(1.0, S["W"], S["D"], 0.0, S["Wd"])
+
+                    if folded:
+                        la.axpby(1.0, S["Vtot"], 1.0, S["Xtot"])            # Xtot := Xtot + Vtot
+                        la.dot(e_trip, S["Wd"], S["Xtot"])
+                        la.axpby(0.5, e_trip, 1.0, E)                       # 1/6 * 3 (folded)
+                    else:
+                        la.axpby(1.0, S["Vtot"], 0.0, S["V"])
+                        einsums.permute("b,a,c <- a,b,c", S["V"], S["Vtot"], c_pf=1.0, a_pf=-1.0)
+                        einsums.permute("c,b,a <- a,b,c", S["V"], S["Vtot"], c_pf=1.0, a_pf=-1.0)
+                        la.axpby(1.0, S["W"], 1.0, S["V"])                  # V := W + V
+                        la.dot(e_trip, S["Wd"], S["V"])
+                        la.axpby(1.0 / 6.0, e_trip, 1.0, E)
+
+    explain = None
+    t0 = time.perf_counter()
+    if optimize:
+        pm = cg.default_pass_manager()
+        if _args.explain:
+            pm.set_verbosity(2)
+        gr.apply(pm)
+        explain = pm.explain()
+    opt_ms = (time.perf_counter() - t0) * 1e3
+
+    best, energies = None, []
+    for _ in range(replays):
+        t0 = time.perf_counter()
+        gr.execute()
+        dt = time.perf_counter() - t0
+        best = dt if best is None else min(best, dt)
+        energies.append(float(np.asarray(E)[0]))
+    assert max(abs(e - energies[0]) for e in energies) < 1e-18, "replay is not idempotent"
+
+    return {"label": ("blocked folded" if folded else "blocked") + ("" if optimize else " (no passes)"),
             "energy": energies[0], "nodes": gr.num_nodes(), "opt_ms": opt_ms, "ms": best * 1e3,
             "explain": explain}
 
@@ -405,33 +521,36 @@ assert np.abs(np.asarray(t1) - t1_ref).max() < 1e-9, "t1 disagrees with the orac
 assert np.abs(np.asarray(t2) - t2_ref).max() < 1e-9, "t2 disagrees with the oracle"
 
 results = []
-for folded in (False, True):
-    for optimize in (False, True):
-        r = run_triples(t1, t2, folded=folded, optimize=optimize)
-        results.append(r)
-        err = abs(r["energy"] - e_t_ref)
-        print(f"einsums (T)     : E(T)    = {r['energy']:.12f}   err = {err:.2e}   [{r['label']}]")
-        assert err < 1e-10, f"{r['label']} disagrees with the oracle"
-        if _args.explain and r["explain"]:
-            print(f"\n--- pass report for the {r['label']} correction ---")
-            print(r["explain"])
+for run in (run_triples, run_triples_blocked):
+    for folded in (False, True):
+        for optimize in (False, True):
+            r = run(t1, t2, folded=folded, optimize=optimize)
+            results.append(r)
+            err = abs(r["energy"] - e_t_ref)
+            print(f"einsums (T)     : E(T)    = {r['energy']:.12f}   err = {err:.2e}   [{r['label']}]")
+            assert err < 1e-10, f"{r['label']} disagrees with the oracle"
+            if _args.explain and r["explain"]:
+                print(f"\n--- pass report for the {r['label']} correction ---")
+                print(r["explain"])
 
 print()
 print(f"total CCSD(T)   : {e_ccsd + e_t_ref:.12f}")
 print()
-print(f"{'(T) formulation':<22} {'nodes':>7} {'optimize ms':>12} {'ms / evaluation':>16}")
+print(f"{'(T) formulation':<32} {'nodes':>7} {'optimize ms':>12} {'ms / evaluation':>16}")
 for r in results:
-    print(f"{r['label']:<22} {r['nodes']:>7} {r['opt_ms']:>12.1f} {r['ms']:>16.2f}")
+    print(f"{r['label']:<32} {r['nodes']:>7} {r['opt_ms']:>12.1f} {r['ms']:>16.2f}")
 
-naive_ms = next(r["ms"] for r in results if r["label"] == "naive")
-folded_ms = next(r["ms"] for r in results if r["label"] == "folded")
-mb = NO ** 3 * NV ** 3 * 8 / 1e6
+by = {r["label"]: r for r in results}
+whole_mb = NO ** 3 * NV ** 3 * 8 / 1e6
+block_kb = NV ** 3 * 8 / 1e3
+speedup = by["whole-tensor"]["ms"] / by["blocked"]["ms"]
+whole_fold = 100 * (1 - by["whole-tensor folded"]["ms"] / by["whole-tensor"]["ms"])
+block_fold = 100 * (1 - by["blocked folded"]["ms"] / by["blocked"]["ms"])
 print()
-print(f"rank-6 tensors are {mb:.1f} MB each. One P(i/jk)P(a/bc) is an overwriting axpby "
-      f"(2 sweeps) plus eight accumulating permutes (3 sweeps each: read source, read and "
-      f"write destination), so {26 * mb:.0f} MB moves where a single fused sweep over the "
-      f"nine terms would move {3 * mb:.0f} MB.")
-print(f"dropping the disconnected antisymmetrizer costs {naive_ms - folded_ms:.1f} ms of the "
-      f"{naive_ms:.1f} ms naive evaluation ({100 * (naive_ms - folded_ms) / naive_ms:.0f}%) - "
-      f"the headroom for a pass that folds P-operators into their consumer.")
+print(f"whole-tensor peak working set is {5 * whole_mb:.0f} MB of rank-6 scratch; blocked is "
+      f"{6 * block_kb:.0f} KB of v^3 blocks - and blocked is {speedup:.1f}x faster here, before "
+      f"any of that memory argument matters.")
+print(f"folding the disconnected antisymmetrizer away is worth {whole_fold:.0f}% whole-tensor "
+      f"and {block_fold:.0f}% blocked: the P-operator only looks expensive when it is applied "
+      f"to a materialized rank-6 tensor, which is not how the method is run.")
 print("toy spin-orbital CCSD(T) (synthetic integrals, SGWB + Raghavachari equations) OK")
