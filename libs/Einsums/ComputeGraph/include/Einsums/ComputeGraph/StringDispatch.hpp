@@ -214,6 +214,49 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
     for (auto *li : link_infos)
         link_total *= li->dim_size;
 
+    // The dispatcher permits exactly one in-place shape: C aliasing an operand
+    // whose index list is IDENTICAL to C's, on the grounds that every element is
+    // then read immediately before its own overwrite. That holds for the
+    // elementwise BLAS routes, but NOT here - this loop clears C before reading
+    // anything, so an aliased operand would be read back as zeros and the whole
+    // result would be zero ("ab <- ab ; b" with C aliasing A hit exactly this).
+    // Snapshot any operand whose storage overlaps C's and read the copy, which
+    // leaves the loop below (and so the summation order, and so the exact
+    // floating-point result) untouched.
+    //
+    // Guarded on a non-empty iteration space: the loop reads nothing when
+    // either total is zero, and that is also the only way an operand can carry
+    // a zero extent, which the span arithmetic below cannot represent.
+    std::vector<T> a_snapshot, b_snapshot;
+    T const       *a_data = A.data();
+    T const       *b_data = B.data();
+    if (target_total != 0 && link_total != 0) {
+        auto const span_of = [](auto const &t) {
+            size_t last = 0;
+            for (size_t d = 0; d < detail::tensor_rank(t); d++) {
+                last += (t.dim(d) - 1) * t.stride(d);
+            }
+            return last + 1;
+        };
+        // Interval intersection, deliberately conservative: unlike the
+        // dispatcher's guard this only decides whether to take a copy, so a
+        // false positive costs one allocation rather than a spurious throw.
+        T const     *c_lo       = C->data();
+        size_t const c_span     = span_of(*C);
+        auto const   overlaps_c = [&](auto const &t) {
+            T const *lo = t.data();
+            return lo < c_lo + c_span && c_lo < lo + span_of(t);
+        };
+        if (overlaps_c(A)) {
+            a_snapshot.assign(a_data, a_data + span_of(A));
+            a_data = a_snapshot.data();
+        }
+        if (overlaps_c(B)) {
+            b_snapshot.assign(b_data, b_data + span_of(B));
+            b_data = b_snapshot.data();
+        }
+    }
+
     // Scale C by c_pf
     if (c_pf == T{0}) {
         C->zero();
@@ -286,8 +329,8 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
         std::ranges::fill(link_value, 0);
 
         for (size_t link_flat = 0; link_flat < link_total; link_flat++) {
-            T a_val = A.data()[a_off];
-            T b_val = B.data()[b_off];
+            T a_val = a_data[a_off];
+            T b_val = b_data[b_off];
             if constexpr (IsComplexV<T>) {
                 if (conj_a) {
                     a_val = std::conj(a_val);

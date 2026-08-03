@@ -388,6 +388,114 @@ TEST_CASE("cg aliasing - elementwise in-place update is allowed", "[ComputeGraph
     require_close(C, expected);
 }
 
+// The equal-rank case above ("ij <- ij ; ij") is served by the elementwise
+// direct_product route, which reads each element immediately before
+// overwriting it and so is safe in place by construction. Every other shape
+// the aliasing carve-out permits falls through to the generic loop, which
+// clears C before reading anything -- an aliased operand then reads back as
+// zeros and the whole result is zero, silently, with no throw. Each spec below
+// takes a different generic route: broadcast against a lower-rank operand
+// (either axis), a lone summed index in B, and a repeated letter in B.
+TEST_CASE("cg aliasing - in-place update survives the generic loop routes", "[ComputeGraph][EagerParity][aliasing]") {
+    auto const A0 = create_random_tensor<double>("A0", 3, 4);
+    auto const u  = create_random_tensor<double>("u", 3);
+    auto const v  = create_random_tensor<double>("v", 4);
+    auto const w  = create_random_tensor<double>("w", 5);
+    auto const M  = create_random_tensor<double>("M", 4, 4);
+
+    auto expected = create_zero_tensor<double>("E", 3, 4);
+
+    SECTION("broadcast against B's trailing axis: ij <- ij ; j") {
+        for (size_t a = 0; a < 3; ++a)
+            for (size_t b = 0; b < 4; ++b)
+                expected(a, b) = A0(a, b) * v(b);
+
+        auto C = A0;
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ij ; j", &C, C, v);
+        require_close(C, expected);
+    }
+
+    SECTION("broadcast against B's leading axis: ij <- ij ; i") {
+        for (size_t a = 0; a < 3; ++a)
+            for (size_t b = 0; b < 4; ++b)
+                expected(a, b) = A0(a, b) * u(a);
+
+        auto C = A0;
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ij ; i", &C, C, u);
+        require_close(C, expected);
+    }
+
+    SECTION("lone summed index in B: ij <- ij ; k") {
+        double sum_w = 0.0;
+        for (size_t k = 0; k < 5; ++k)
+            sum_w += w(k);
+        for (size_t a = 0; a < 3; ++a)
+            for (size_t b = 0; b < 4; ++b)
+                expected(a, b) = A0(a, b) * sum_w;
+
+        auto C = A0;
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ij ; k", &C, C, w);
+        require_close(C, expected);
+    }
+
+    SECTION("repeated letter in B: ij <- ij ; jj") {
+        for (size_t a = 0; a < 3; ++a)
+            for (size_t b = 0; b < 4; ++b)
+                expected(a, b) = A0(a, b) * M(b, b);
+
+        auto C = A0;
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ij ; jj", &C, C, M);
+        require_close(C, expected);
+    }
+
+    SECTION("the aliased operand is B: ij <- j ; ij") {
+        for (size_t a = 0; a < 3; ++a)
+            for (size_t b = 0; b < 4; ++b)
+                expected(a, b) = v(b) * A0(a, b);
+
+        auto C = A0;
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- j ; ij", &C, v, C);
+        require_close(C, expected);
+    }
+
+    SECTION("captured and replayed, not just eager-dispatched") {
+        for (size_t a = 0; a < 3; ++a)
+            for (size_t b = 0; b < 4; ++b)
+                expected(a, b) = A0(a, b) * v(b);
+
+        auto      C = A0;
+        cg::Graph graph("alias_broadcast");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ij <- ij ; j", &C, C, v);
+        }
+        graph.execute();
+        require_close(C, expected);
+    }
+}
+
+TEST_CASE("eager aliasing - in-place update survives the generic algorithm", "[ComputeGraph][EagerParity][aliasing]") {
+    // Same defect, same fix, in the eager generic algorithm. Eager is the
+    // oracle the differential tests compare against, so a silent zero here
+    // would agree with a silent zero in the graph path and neither would fail.
+    auto const A0 = create_random_tensor<double>("A0", 3, 4);
+    auto const v  = create_random_tensor<double>("v", 4);
+
+    auto expected = create_zero_tensor<double>("E", 3, 4);
+    for (size_t a = 0; a < 3; ++a)
+        for (size_t b = 0; b < 4; ++b)
+            expected(a, b) = A0(a, b) * v(b);
+
+    auto C = A0;
+    ta::einsum(Indices{i, j}, &C, Indices{i, j}, C, Indices{j}, v);
+    require_close(C, expected);
+}
+
 TEST_CASE("cg aliasing - A and B sharing a tensor is allowed", "[ComputeGraph][EagerParity][aliasing]") {
     auto A = create_random_tensor<double>("A", 3, 3);
 
