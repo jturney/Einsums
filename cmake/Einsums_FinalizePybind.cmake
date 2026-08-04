@@ -222,8 +222,16 @@ function(einsums_finalize_pybind)
     # Wire pseudo-targets registered by einsums_add_python_unit_test() to
     # depend on PyEinsums. The function can't do this itself because it runs
     # before the PyEinsums target exists.
+    #
+    # Through einsums_add_pseudo_dependencies, not add_dependencies: the
+    # registered names are the full dotted ones, and pseudo targets do not
+    # necessarily exist under those names. Windows forces
+    # EINSUMS_WITH_PSEUDO_DEPENDENCIES OFF, so none of them exist at all, and
+    # the shortener collapses a dotted name to its last element everywhere
+    # else on WIN32. The helper applies both rules, so it no-ops where the
+    # raw call would fail on a non-existent target.
     get_property(_pyt_targets GLOBAL PROPERTY EINSUMS_PYTHON_UNIT_TEST_TARGETS)
     foreach(_pyt_target IN LISTS _pyt_targets)
-        add_dependencies("${_pyt_target}" PyEinsums)
+        einsums_add_pseudo_dependencies("${_pyt_target}" PyEinsums)
     endforeach()
 endfunction()
