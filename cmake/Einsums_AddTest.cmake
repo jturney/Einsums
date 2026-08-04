@@ -334,6 +334,14 @@ function(einsums_add_python_unit_test subcategory name)
     "EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1"
     "EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1"
   )
+  # Windows still defaults stdout to the ANSI code page (cp1252 on the CI
+  # image), so printing any non-ASCII character - a Greek letter in a test's
+  # progress line, say - raises UnicodeEncodeError and fails a test that has
+  # nothing to do with encodings. UTF-8 mode is what CPython 3.15 makes the
+  # default anyway; the other platforms are already there.
+  if(WIN32)
+    list(APPEND _pyt_env "PYTHONUTF8=1")
+  endif()
 
   # Under a sanitizer build the interpreter dlopens the instrumented _core too
   # late for the runtime's interceptors. Preload the runtime on the child env

@@ -51,6 +51,10 @@ def test_full_roundtrip_double():
         g.read("A", rt2)
         arr2 = np.asarray(rt2, copy=False)
         assert np.allclose(arr, arr2)
+        # Every handle has to be released before the cleanup below: Windows
+        # refuses to remove a file that is still open, where POSIX is happy to
+        # unlink it. Same reason the writers above are dropped explicitly.
+        del g
     finally:
         if os.path.exists(path):
             os.remove(path)
@@ -81,6 +85,7 @@ def test_full_roundtrip_resizes_from_zero_dim_preserves_layout():
 
         assert arr2.flags.f_contiguous, "resize must preserve column-major layout"
         assert np.allclose(arr, arr2)
+        del g
     finally:
         if os.path.exists(path):
             os.remove(path)
@@ -107,6 +112,7 @@ def test_slice_write_then_full_read():
         expected = np.zeros((4, 4))
         expected[1:3, 1:3] = 7.0
         assert np.allclose(arr2, expected)
+        del g
     finally:
         if os.path.exists(path):
             os.remove(path)
@@ -130,6 +136,7 @@ def test_slice_read_returns_pre_sized_slab():
         g.read_slice("A", slab, [(1, 3), (1, 3)])
         sa = np.asarray(slab, copy=False)
         assert np.allclose(sa, 9.0)
+        del g
     finally:
         if os.path.exists(path):
             os.remove(path)
@@ -153,6 +160,7 @@ def test_dtype_dispatch_real(ctor, dtype):
         rt2 = ctor("back", [2, 3])
         g.read("A", rt2)
         assert np.allclose(np.asarray(rt2, copy=False), np.asarray(rt, copy=False))
+        del g
     finally:
         if os.path.exists(path):
             os.remove(path)
@@ -169,6 +177,7 @@ def test_write_slice_rejects_dim_mismatch():
         wrong = einsums.RuntimeTensorD("w", [3, 2])  # doesn't fit (1:3,1:3)
         with pytest.raises(RuntimeError):
             h.write_slice("A", wrong, [(1, 3), (1, 3)])
+        del h
     finally:
         if os.path.exists(path):
             os.remove(path)

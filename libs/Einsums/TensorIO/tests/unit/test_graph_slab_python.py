@@ -85,6 +85,9 @@ def test_graph_slab_round_trip_through_recorded_node():
         f2.read_slice("A", truth, [(1, 3), (1, 3)])
         assert np.allclose(np.asarray(block, copy=False),
                            np.asarray(truth, copy=False))
+        # Windows refuses to remove a file that is still open, where POSIX
+        # unlinks it happily, so every reader is dropped before cleanup.
+        del f2
     finally:
         if os.path.exists(path):
             os.remove(path)
@@ -135,6 +138,7 @@ def test_graph_driven_tile_loop_via_add_loop():
         arr = np.asarray(rt, copy=False)
         expected = np.arange(16, dtype=np.float64).reshape(4, 4) * 10.0
         assert np.allclose(arr, expected), f"mismatch:\n{arr}\nvs\n{expected}"
+        del f3
     finally:
         if os.path.exists(path):
             os.remove(path)
@@ -172,6 +176,7 @@ def test_slab_io_runs_immediately_outside_capture():
         f3 = einsums.io.TensorFile(path, einsums.io.Mode.Read)
         f3.read_slice("A", check, [(1, 3), (1, 3)])
         assert np.allclose(np.asarray(check, copy=False), 42.0)
+        del f2, f3
     finally:
         if os.path.exists(path):
             os.remove(path)

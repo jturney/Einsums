@@ -109,6 +109,12 @@ if(EINSUMS_BUILD_PYTHON
     # Build the test ENVIRONMENT string. PYTHONPATH always; the sanitizer
     # runtime preload only under a sanitizer build (see comment above).
     set(_example_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib")
+    # These scripts print physics: Greek letters in the progress lines. Windows
+    # still defaults stdout to the ANSI code page, which cannot encode them, so
+    # ask for UTF-8 mode there (see einsums_add_python_unit_test).
+    if(WIN32)
+      set(_example_env "${_example_env};PYTHONUTF8=1")
+    endif()
     if(_einsums_python_example_preload)
       set(_example_env "${_example_env};${_einsums_python_example_preload}")
       # Deliver the same suppression files the C++ and Python unit tests get (see

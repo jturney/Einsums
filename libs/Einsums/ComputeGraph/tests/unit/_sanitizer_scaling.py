@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 import warnings
 
 _SANITIZER_SEED_CAP = 4     # seeds per range()-based fuzz test under a sanitizer
@@ -38,6 +39,11 @@ _SANITIZER_EXAMPLE_CAP = 8  # Hypothesis max_examples under a sanitizer
 
 
 def _sanitizer_runtime_active() -> bool:
+    # CDLL(None) is dlopen(NULL), a POSIX-only way to reach the global symbol
+    # table; on Windows it is a TypeError rather than an OSError, and there is
+    # no sanitizer leg there to detect anyway.
+    if sys.platform == "win32":
+        return False
     try:
         main = ctypes.CDLL(None)
     except OSError:
