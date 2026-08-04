@@ -119,22 +119,54 @@ support and the OpenMP OpenBLAS cannot both be adopted.**
 
 Today Einsums is protected on those interpreters, but by accident rather than
 design. Its pybind11 module does not declare ``Py_MOD_GIL_NOT_USED``
-(pybind11 spells this ``py::mod_gil_not_used()``), and CPython re-enables the
-GIL at runtime when it imports an extension that has not opted in. So a
-free-threaded interpreter loading Einsums quietly stops being free-threaded.
-Run with ``PYTHONWARNDEFAULTGIL=1`` to see that happen.
+(pybind11 spells this ``py::mod_gil_not_used()``), so CPython re-enables the
+GIL when it imports Einsums and says so:
 
-The moment that opt-in is added, which is the natural first step in supporting
-free-threading, every concurrent call from a Python thread pool reaches BLAS
-directly and the corruption above applies with no other change. Free-threading
-therefore requires the ``pthreads_`` OpenBLAS (or MKL) as a hard prerequisite,
-not as a tuning option.
+.. code:: text
 
-This part is reasoned from the measured behavior rather than observed directly:
-the corruption was reproduced by releasing the GIL explicitly on a standard
-build, and free-threading removes the GIL globally, which has the same effect on
-every binding at once. It has not been run on a ``cp313t`` interpreter, because
-that needs Einsums rebuilt against the free-threaded ABI.
+   RuntimeWarning: The global interpreter lock (GIL) has been enabled to load
+   module 'einsums._core', which has not declared that it can run safely
+   without the GIL. To override this behavior and keep the GIL disabled (at
+   your own risk), run with PYTHON_GIL=0 or -Xgil=0.
+
+A free-threaded interpreter loading Einsums therefore stops being
+free-threaded. That is what makes the current state safe, and it is why nobody
+has hit this.
+
+Setting ``PYTHON_GIL=0`` overrides the fallback, which is exactly the state
+adding the opt-in would produce permanently. Measured on a ``cp314t``
+interpreter with stock bindings, no ``APIARY_RELEASE_GIL`` anywhere, running 91
+concurrent ``syev`` calls of order 161 from a ten-worker pool:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Configuration
+     - Max eigenvalue error
+   * - GIL auto-re-enabled (the default today)
+     - 5.1e-13
+   * - ``PYTHON_GIL=0``, ``openmp_`` OpenBLAS
+     - **6.2e+05**, and 2.6e+03 on a rerun
+   * - ``PYTHON_GIL=0``, ``pthreads_`` OpenBLAS, ``OPENBLAS_NUM_THREADS=1``
+     - 5.1e-13
+
+So free-threading requires the ``pthreads_`` OpenBLAS (or MKL) as a hard
+prerequisite, not as a tuning option. Adding ``py::mod_gil_not_used()`` while
+still linked against the ``openmp_`` build would turn a correct library into a
+silently wrong one for any threaded caller.
+
+Building against a free-threaded interpreter also needs a CMake hint, because
+``FindPython`` will otherwise reject the ``t`` ABI and quietly fall back to
+another interpreter on the system:
+
+.. code:: bash
+
+   cmake -S . -B build -DPython_ROOT_DIR="$CONDA_PREFIX" \
+         -DPython_EXECUTABLE="$CONDA_PREFIX/bin/python" \
+         -DPython_FIND_ABI="OFF;ANY;ANY;ON" -DPython_FIND_STRATEGY=LOCATION
+
+The fourth ``Python_FIND_ABI`` field is the free-threaded flag, and needs CMake
+3.30 or newer.
 
 .. _blas-threading-switching:
 
