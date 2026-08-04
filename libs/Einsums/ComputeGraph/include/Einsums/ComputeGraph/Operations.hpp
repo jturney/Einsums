@@ -759,15 +759,8 @@ APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<double>>
     }
 
     auto apply = [indices, extents, N](DstType *d, SrcType const *s) {
-        using T      = typename DstType::ValueType;
-        size_t total = 1;
-        for (size_t k = 0; k < N; ++k)
-            total *= extents[k];
-        if (total == 0) {
-            return; // an empty selection is a no-op, not an error
-        }
-
-        std::vector<size_t> idx(N, 0), d_str(N), s_str(N);
+        using T = typename DstType::ValueType;
+        std::vector<size_t> d_str(N), s_str(N);
         for (size_t k = 0; k < N; ++k) {
             d_str[k] = d->stride(k);
             s_str[k] = s->stride(k);
@@ -775,21 +768,9 @@ APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<double>>
         T       *d_data = d->data();
         T const *s_data = s->data();
 
-        for (size_t count = 0; count < total; ++count) {
-            size_t d_off = 0, s_off = 0;
-            for (size_t k = 0; k < N; ++k) {
-                d_off += idx[k] * d_str[k];
-                s_off += indices[k][idx[k]] * s_str[k];
-            }
-            d_data[d_off] = s_data[s_off];
-            // Axis 0 fastest, matching block_copy. Correctness-only ordering:
-            // the source access is a gather, so it is not contiguous anyway.
-            for (size_t k = 0; k < N; ++k) {
-                if (++idx[k] < extents[k])
-                    break;
-                idx[k] = 0;
-            }
-        }
+        // The source is the indexed side; the destination is walked linearly.
+        detail::for_each_selection_run(indices, extents, s_str, d_str,
+                                       [&](size_t s_off, size_t d_off, size_t n) { std::copy_n(s_data + s_off, n, d_data + d_off); });
     };
 
     auto &ctx = CaptureContext::current();
@@ -896,15 +877,8 @@ APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<double>
     }
 
     auto apply = [indices, extents, N](DstType *d, SrcType const *s) {
-        using T      = typename DstType::ValueType;
-        size_t total = 1;
-        for (size_t k = 0; k < N; ++k)
-            total *= extents[k];
-        if (total == 0) {
-            return; // placing nothing is a no-op, not an error
-        }
-
-        std::vector<size_t> idx(N, 0), d_str(N), s_str(N);
+        using T = typename DstType::ValueType;
+        std::vector<size_t> d_str(N), s_str(N);
         for (size_t k = 0; k < N; ++k) {
             d_str[k] = d->stride(k);
             s_str[k] = s->stride(k);
@@ -912,19 +886,10 @@ APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<double>
         T       *d_data = d->data();
         T const *s_data = s->data();
 
-        for (size_t count = 0; count < total; ++count) {
-            size_t d_off = 0, s_off = 0;
-            for (size_t k = 0; k < N; ++k) {
-                d_off += indices[k][idx[k]] * d_str[k];
-                s_off += idx[k] * s_str[k];
-            }
-            d_data[d_off] = s_data[s_off];
-            for (size_t k = 0; k < N; ++k) {
-                if (++idx[k] < extents[k])
-                    break;
-                idx[k] = 0;
-            }
-        }
+        // The destination is the indexed side here, which is what makes this
+        // the inverse of gather; the source is walked linearly.
+        detail::for_each_selection_run(indices, extents, d_str, s_str,
+                                       [&](size_t d_off, size_t s_off, size_t n) { std::copy_n(s_data + s_off, n, d_data + d_off); });
     };
 
     auto &ctx = CaptureContext::current();
@@ -1362,32 +1327,23 @@ APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<
     }
 
     auto apply = [indices, extents, N](DstType *d, SrcType const *s) {
-        using T      = typename DstType::ValueType;
-        size_t total = 1;
-        for (size_t k = 0; k < N; ++k)
-            total *= extents[k];
-        if (total == 0)
-            return;
-        std::vector<size_t> idx(N, 0), d_str(N), s_str(N);
+        using T = typename DstType::ValueType;
+        std::vector<size_t> d_str(N), s_str(N);
         for (size_t k = 0; k < N; ++k) {
             d_str[k] = d->stride(k);
             s_str[k] = s->stride(k);
         }
         T       *d_data = d->data();
         T const *s_data = s->data();
-        for (size_t count = 0; count < total; ++count) {
-            size_t d_off = 0, s_off = 0;
-            for (size_t k = 0; k < N; ++k) {
-                d_off += indices[k][idx[k]] * d_str[k];
-                s_off += idx[k] * s_str[k];
+
+        // As scatter, but accumulating. A repeated index only collapses into a
+        // run when it repeats the PREVIOUS index plus one, which it cannot, so
+        // the run path never merges two writes to the same element.
+        detail::for_each_selection_run(indices, extents, d_str, s_str, [&](size_t d_off, size_t s_off, size_t n) {
+            for (size_t i = 0; i < n; ++i) {
+                d_data[d_off + i] += s_data[s_off + i];
             }
-            d_data[d_off] += s_data[s_off];
-            for (size_t k = 0; k < N; ++k) {
-                if (++idx[k] < extents[k])
-                    break;
-                idx[k] = 0;
-            }
-        }
+        });
     };
 
     auto &ctx = CaptureContext::current();
