@@ -48,11 +48,15 @@ namespace einsums {
  *      Added the row_major parameter.
  * @endversion
  */
-template <typename T = double, bool Normalize = false, typename Distribution, std::integral... MultiIndex>
+// The deduced flag type, rather than a plain `bool`, keeps this overload out of
+// the candidate set unless the caller really passed a bool. See the note on
+// create_zero_tensor for the null-pointer-constant ambiguity it avoids.
+template <typename T = double, bool Normalize = false, std::same_as<bool> RowMajor = bool, typename Distribution,
+          std::integral... MultiIndex>
     requires requires(Distribution dist) {
         { dist(einsums::random_engine) } -> std::same_as<T>;
     }
-auto create_random_tensor(bool row_major, std::string const &name, Distribution &&distribution, MultiIndex... index)
+auto create_random_tensor(RowMajor row_major, std::string const &name, Distribution &&distribution, MultiIndex... index)
     -> Tensor<T, sizeof...(MultiIndex)> {
     EINSUMS_LOG_TRACE("creating random tensor {}, {}", name, std::forward_as_tuple(index...));
 
@@ -152,8 +156,10 @@ auto create_random_tensor(std::string const &name, MultiIndex... index) -> Tenso
  *      Added row major parameter.
  * @endversion
  */
-template <typename T = double, bool Normalize = false, std::integral... MultiIndex>
-auto create_random_tensor(bool row_major, std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
+// See the note on the distribution-taking overload above for why the row-major
+// flag is a deduced type here.
+template <typename T = double, bool Normalize = false, std::same_as<bool> RowMajor = bool, std::integral... MultiIndex>
+auto create_random_tensor(RowMajor row_major, std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     if constexpr (IsComplexV<T>) {
         return create_random_tensor<T, Normalize>(row_major, name, detail::UnitCircleDistribution<T>(), index...);
     } else {

@@ -11,6 +11,7 @@
 #include <Einsums/TensorBase/IndexUtilities.hpp>
 
 #include <complex>
+#include <concepts>
 #include <string>
 
 namespace einsums {
@@ -37,8 +38,11 @@ namespace einsums {
  *
  * @versionadded{1.0.0}
  */
-template <typename T = double, typename... MultiIndex>
-auto create_incremented_tensor(bool row_major, std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
+// The deduced flag type, rather than a plain `bool`, keeps this overload out of
+// the candidate set unless the caller really passed a bool. See the note on
+// create_zero_tensor for the null-pointer-constant ambiguity it avoids.
+template <typename T = double, std::same_as<bool> RowMajor = bool, typename... MultiIndex>
+auto create_incremented_tensor(RowMajor row_major, std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     Tensor<T, sizeof...(MultiIndex)> A(row_major, name, std::forward<MultiIndex>(index)...);
 
     Stride<sizeof...(MultiIndex)> index_strides;

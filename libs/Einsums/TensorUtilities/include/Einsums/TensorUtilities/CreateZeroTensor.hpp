@@ -11,6 +11,7 @@
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 
+#include <concepts>
 #include <string>
 #include <vector>
 
@@ -37,8 +38,14 @@ auto create_zero_tensor(std::string const &name, MultiIndex... index) -> Tensor<
     return A;
 }
 
-template <typename T = double, typename... MultiIndex>
-auto create_zero_tensor(bool row_major, std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
+// Deducing the flag rather than taking a plain `bool` keeps this overload out of
+// the candidate set unless the caller really passed a bool. GCC and the
+// MSVC-compatible front ends still treat any integer constant expression of value
+// zero as a null pointer constant, so a zero-extent call such as
+// create_zero_tensor<T>("out", size_t{0}, size_t{6}) would otherwise match here
+// too, with name = (char const *)0, and be ambiguous.
+template <typename T = double, std::same_as<bool> RowMajor = bool, typename... MultiIndex>
+auto create_zero_tensor(RowMajor row_major, std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     EINSUMS_LOG_TRACE("creating zero tensor {}, {}", name, std::forward_as_tuple(index...));
 
     Tensor<T, sizeof...(MultiIndex)> A(row_major, name, std::forward<MultiIndex>(index)...);

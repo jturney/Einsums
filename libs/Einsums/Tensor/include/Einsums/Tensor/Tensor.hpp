@@ -2762,9 +2762,13 @@ auto create_tensor(std::string const &name, Args... args) {
 // compilers, where a literal `false` converts to a null `char const *` and a
 // call like create_tensor<T>(false, "a", 3, 4) would otherwise match BOTH
 // overloads (this one properly, the one above with name = (char const*)false).
-template <typename Type = double, typename... Args>
+// The deduced flag type closes the mirror image of that hole: GCC and the same
+// MSVC-compat front ends treat any integer constant expression of value zero as
+// a null pointer constant, so a zero-extent call like create_tensor<T>("a", 0, 4)
+// would otherwise match here too, with row_major = "a" and name = (char const*)0.
+template <typename Type = double, std::same_as<bool> RowMajor = bool, typename... Args>
     requires(std::is_convertible_v<Args, std::size_t> && ...)
-auto create_tensor(bool row_major, std::string const &name, Args... args) {
+auto create_tensor(RowMajor row_major, std::string const &name, Args... args) {
     EINSUMS_LOG_TRACE("creating tensor {}, {}", name, std::forward_as_tuple(args...));
     return Tensor<Type, sizeof...(Args)>{row_major, name, args...};
 }
