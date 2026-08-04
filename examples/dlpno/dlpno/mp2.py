@@ -566,6 +566,7 @@ class DLPNOMP2(DLPNOBase):
     def compute_energy(self, optimize=True):
         """Run the whole DLPNO-MP2 pipeline and return the total energy."""
         self.setup_orbitals()
+        self.compute_doi()
         self.prep_sparsity()
         self.compute_metric()
         self.compute_qia()
@@ -573,13 +574,15 @@ class DLPNOMP2(DLPNOBase):
         self.compute_pno_overlaps()
         self.lmp2_iterations(optimize=optimize)
 
-        # de_dipole_ is the correction for pairs dropped by dipole screening;
-        # nothing is dropped yet, so it is zero.
-        self.e_corr = self.e_lmp2 + self.de_pno_total
+        # Three additive pieces, as psi4 reports them: the converged LMP2
+        # energy in the truncated PNO bases, the energy lost to that truncation,
+        # and the dipole-estimated energy of the pairs never formed at all.
+        self.e_corr = self.e_lmp2 + self.de_pno_total + self.de_dipole
         self._print(
             "\n  Total DLPNO-MP2 Correlation Energy: "
             f"{self.e_corr:16.12f}\n"
             f"    MP2 Correlation Energy:           {self.e_lmp2:16.12f}\n"
-            f"    PNO Truncation Correction:        {self.de_pno_total:16.12f}"
+            f"    PNO Truncation Correction:        {self.de_pno_total:16.12f}\n"
+            f"    Dipole Pair Correction:           {self.de_dipole:16.12f}"
         )
         return self.ref.e_scf + self.e_corr

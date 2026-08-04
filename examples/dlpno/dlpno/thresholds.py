@@ -27,7 +27,7 @@ class Thresholds:
     t_cut_pno_core_scale: float = 1e-2
     min_pnos: int = 5
 
-    # LMO / PAO / auxiliary domain truncation (used once screening is enabled)
+    # LMO / PAO / auxiliary domain truncation
     t_cut_do: float = 1e-2
     t_cut_do_ij: float = 1e-5
     t_cut_do_pre: float = 3e-2
@@ -89,5 +89,13 @@ class Thresholds:
             t_cut_pno_core_scale=1.0,
             min_pnos=0,
             f_cut=0.0,
+            # Negative rather than zero: the domain tests are on absolute
+            # values, so a zero threshold would still drop an orbital whose
+            # overlap or population happened to vanish exactly.
+            t_cut_do=-1.0,
+            t_cut_do_ij=-1.0,
+            t_cut_do_pre=-1.0,
+            t_cut_mkn=-1.0,
+            t_cut_pre=-1.0,
             **overrides,
         )

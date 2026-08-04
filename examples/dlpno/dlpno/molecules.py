@@ -17,6 +17,18 @@ MOLECULES = {
         "H   1.680398  -0.373741  -0.758561\n"
         "H   1.680398  -0.373741   0.758561\n"
     ),
+    # Two water monomers pushed far enough apart that they barely interact.
+    # The screening test case: every inter-monomer LMO pair should fail both
+    # the differential-overlap and the dipole-energy criteria and be dropped,
+    # which the compact geometries never exercise (psi4 screens nothing there).
+    "water-dimer-far": (
+        "O  -6.000000  -0.114520   0.000000\n"
+        "H  -6.383252   0.762503   0.000000\n"
+        "H  -5.048670   0.040712   0.000000\n"
+        "O   6.000000   0.111469   0.000000\n"
+        "H   6.329773  -0.373741  -0.758561\n"
+        "H   6.329773  -0.373741   0.758561\n"
+    ),
     "methanol": (
         "C  -0.047131   0.664389   0.000000\n"
         "O  -0.047131  -0.758551   0.000000\n"

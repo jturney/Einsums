@@ -10,17 +10,15 @@ pairs and which PAO/auxiliary domains matter, and transforms each surviving pair
 into its own truncated pair-natural-orbital basis. The MP2, CCSD and (T) layers
 all sit on top of exactly these quantities.
 
-Screening is not implemented yet. :meth:`prep_sparsity` currently marks every
-LMO pair significant and gives every pair the full PAO and auxiliary domain,
-which makes local MP2 exactly equivalent to canonical DF-MP2 once PNO truncation
-is also switched off. That equivalence is what pins the port down; the
-differential-overlap and dipole screening from ``DLPNO::compute_overlap_ints``,
-``DLPNO::compute_dipole_ints`` and ``DLPNO::prep_sparsity`` then layers on top
-without changing anything below.
-
-The per-pair data structures (``ij_to_i_j``, ``lmopair_to_paos``, ...) are the
-real ones from the start even though they are trivially dense today, so turning
-screening on is a change to :meth:`prep_sparsity` alone.
+All three of psi4's truncations are here: differential-overlap PAO domains,
+Mulliken auxiliary domains, and dipole pair prescreening
+(``DLPNO::compute_overlap_ints``, ``DLPNO::compute_dipole_ints``,
+``DLPNO::prep_sparsity``). Switching them off - which
+:meth:`~dlpno.thresholds.Thresholds.untruncated` does, and which is also what
+happens when no integration grid is available - gives every pair the full PAO
+and auxiliary domain, and local MP2 becomes exactly canonical DF-MP2. That
+equivalence is what pins the port down, so it is kept as a supported mode
+rather than a historical stage.
 """
 
 import numpy as np
@@ -48,19 +46,34 @@ class DLPNOBase:
         self.C_lmo = self.F_lmo = None
         self.C_pao = self.S_pao = self.F_pao = None
 
+        # compute_doi
+        self.doi_ij = None
+        self.doi_iu = None
+
         # prep_sparsity
         self.i_j_to_ij = None
         self.ij_to_i_j = []
         self.ij_to_ji = []
+        self.lmo_to_paos = []
+        self.lmo_to_ribfs = []
         self.lmopair_to_paos = []
         self.lmopair_to_ribfs = []
+        self.lmopair_to_lmos = []
+        self.dipole_pair_e = None
+        self.dipole_pair_e_bound = None
+        #: Correlation energy of the pairs dropped by prescreening, added back
+        #: to the total (psi4's ``de_dipole_``).
+        self.de_dipole = 0.0
+        #: One canonical object per distinct domain; see _intern.
+        self._interned = {}
 
         # compute_metric / compute_qia
         self.metric = None
         self.q_ia = None
 
         # Per-domain results shared across pairs (see _fit_coefficients and
-        # _canonical_pao_domain). One entry each until screening lands.
+        # _canonical_pao_domain). Screening multiplies the number of distinct
+        # domains, which is exactly why the domain lists are interned.
         self._fit_cache = {}
         self._pao_domain_cache = {}
         self._pass_manager = None
@@ -144,35 +157,306 @@ class DLPNOBase:
 
     # -- psi4 DLPNO::prep_sparsity -----------------------------------------
 
-    def prep_sparsity(self):
-        """Enumerate significant LMO pairs and their PAO/auxiliary domains.
+    def _intern(self, indices):
+        """Return one canonical list object per distinct index list.
 
-        No screening yet: every ordered pair ``(i, j)`` is significant and every
-        domain is complete. The maps built here have the same meaning and layout
-        as psi4's, so enabling screening means shrinking these lists, not
-        reshaping the code that consumes them.
+        Load-bearing rather than a micro-optimization. The domain caches
+        (:meth:`_fit_coefficients`, :meth:`_canonical_pao_domain`) are keyed on
+        ``id()`` of these lists, so two pairs with *equal* domains only share a
+        cache entry if they are handed the *same* object. Without screening
+        there was one domain and one object; merging per pair would produce
+        thousands of equal-but-distinct lists and silently turn every cache hit
+        into a miss, which is most of the setup cost.
         """
-        naocc = self.ref.naocc
+        key = tuple(indices)
+        hit = self._interned.get(key)
+        if hit is None:
+            hit = list(indices)
+            self._interned[key] = hit
+        return hit
+
+    # -- psi4 DLPNO::compute_overlap_ints ----------------------------------
+
+    def compute_doi(self):
+        """Differential overlap integrals, by numerical quadrature.
+
+        ``DOI_ij = sqrt(int |phi_i(r)|^2 |phi_j(r)|^2 dr)`` measures how much
+        two orbitals occupy the same space, which is what decides both the PAO
+        domains and which LMO pairs survive. It is the one quantity here that
+        cannot be had from the AO integrals alone, so it needs a grid; the
+        blocks stream in from the bridge (see
+        :func:`~dlpno.psi4_source.grid_block_provider`).
+
+        Accumulated over blocks as two GEMMs each, which is the whole cost:
+        ``(points x naocc)^T (points x naocc)`` and the same against the PAOs.
+        """
+        ref = self.ref
+        naocc = ref.naocc
         npao = ten.shape(self.C_pao)[1]
-        naux = self.ref.naux
+
+        if self.doi_ij is not None:      # idempotent: prep_sparsity self-serves
+            return self
+        if ref.grid_blocks is None:
+            self.doi_ij = self.doi_iu = None
+            return self
+
+        C_lmo = ten.view(self.C_lmo)
+        C_pao = ten.view(self.C_pao)
+        doi_ij = ten.zeros("DOI (i,j)", [naocc, naocc])
+        doi_iu = ten.zeros("DOI (i,u)", [naocc, npao])
+        nblocks = npoints = 0
+
+        for phi_np, w_np, bf_map in ref.grid_blocks():
+            npts = phi_np.shape[0]
+            if npts == 0:
+                continue
+            nblocks += 1
+            npoints += npts
+
+            # The gather seam again: the block's basis functions are an index
+            # list into the global coefficients.
+            phi = ten.from_numpy("phi", phi_np)
+            lmo = ten.doublet(phi, ten.from_numpy("C_lmo blk", C_lmo[bf_map, :]))
+            pao = ten.doublet(phi, ten.from_numpy("C_pao blk", C_pao[bf_map, :]))
+
+            # Squared orbital values, and a weighted copy of the LMO side. The
+            # quadrature weight belongs to exactly one of the two factors.
+            lmo2 = ten.zeros("|phi_i|^2", [npts, naocc])
+            pao2 = ten.zeros("|phi_u|^2", [npts, npao])
+            einsums.einsum("pi <- pi ; pi", lmo2, lmo, lmo)
+            einsums.einsum("pu <- pu ; pu", pao2, pao, pao)
+
+            w = ten.from_numpy("w", np.ascontiguousarray(w_np))
+            lmo2_w = ten.zeros("w |phi_i|^2", [npts, naocc])
+            einsums.einsum("pi <- pi ; p", lmo2_w, lmo2, w)
+
+            einsums.einsum("ij <- pi ; pj", doi_ij, lmo2_w, lmo2, c_pf=1.0, ab_pf=1.0)
+            einsums.einsum("iu <- pi ; pu", doi_iu, lmo2_w, pao2, c_pf=1.0, ab_pf=1.0)
+
+        self.doi_ij = np.sqrt(np.abs(ten.view(doi_ij)))
+        self.doi_iu = np.sqrt(np.abs(ten.view(doi_iu)))
+        self._print(f"  DOI:      {nblocks} grid blocks, {npoints} points")
+        return self
+
+    # -- psi4 DLPNO::compute_dipole_ints -----------------------------------
+
+    def _dipole_pair_energies(self):
+        """Semicanonical MP2 pair energies from the dipole approximation.
+
+        Two well-separated orbitals interact through their transition dipoles,
+        so a pair energy can be estimated at O(1) cost per pair without any
+        integrals over the pair. ``dipole_pair_e_bound`` is the same expression
+        with the orientation factor replaced by its largest possible value, so
+        it is an upper bound and is what the screening tests: dropping a pair
+        because the *bound* is small cannot discard a large true energy.
+
+        Returns ``(dipole_pair_e, dipole_pair_e_bound)``, both ``naocc^2``.
+        """
+        ref = self.ref
+        naocc = ref.naocc
+        F_lmo = ten.view(self.F_lmo)
+
+        C_lmo, C_pao = self.C_lmo, self.C_pao
+        dip_ii, dip_iu = [], []
+        for x in range(3):
+            D = ten.from_numpy(f"dipole {x} (AO)", np.ascontiguousarray(ref.dipole_ao[x]))
+            dip_ii.append(np.diag(ten.view(ten.triplet(C_lmo, D, C_lmo, trans_a=True))).copy())
+            dip_iu.append(ten.view(ten.triplet(C_lmo, D, C_pao, trans_a=True)).copy())
+
+        # Orbital centroids <i|r|i>.
+        R_i = np.stack(dip_ii, axis=1)  # naocc x 3
+
+        # Per-LMO transition dipoles into its own orthocanonical PAO domain.
+        # A looser DOI cutoff than the real domains: this is a prescreen, and
+        # it must not be more aggressive than what it is screening for.
+        lmo_dr, lmo_e = [], []
+        for i in range(naocc):
+            paos = [u for u in range(self.doi_iu.shape[1])
+                    if abs(self.doi_iu[i, u]) > self.cut.t_cut_do_pre]
+            paos = sparse.contract_lists(paos, ref.atom_to_bf)
+            if not paos:
+                lmo_dr.append(np.zeros((0, 3)))
+                lmo_e.append(np.zeros(0))
+                continue
+            S_dom = sparse.submatrix_rows_and_cols(self.S_pao, paos, paos)
+            F_dom = sparse.submatrix_rows_and_cols(self.F_pao, paos, paos)
+            X_i, e_i = ten.orthocanonicalizer(S_dom, F_dom, self.cut.s_cut)
+            dr = np.stack(
+                [ten.view(ten.doublet(
+                    ten.from_numpy("d", np.ascontiguousarray(dip_iu[x][[i], :][:, paos])), X_i))[0]
+                 for x in range(3)], axis=1)          # npao_i x 3
+            lmo_dr.append(dr)
+            lmo_e.append(np.asarray(ten.view(e_i)).copy())
+
+        e_pair = np.zeros((naocc, naocc))
+        e_bound = np.zeros((naocc, naocc))
+        for i in range(naocc):
+            for j in range(i + 1, naocc):
+                R_ij = R_i[i] - R_i[j]
+                norm = np.linalg.norm(R_ij)
+                if norm == 0.0 or lmo_dr[i].size == 0 or lmo_dr[j].size == 0:
+                    continue
+                Rh = R_ij / norm
+                iu, jv = lmo_dr[i], lmo_dr[j]
+
+                dot = iu @ jv.T                                   # nu x nv
+                num_actual = (dot - 3.0 * np.outer(iu @ Rh, jv @ Rh)) ** 2
+                num_linear = 4.0 * dot ** 2
+                denom = (lmo_e[i][:, None] + lmo_e[j][None, :]
+                         - (F_lmo[i, i] + F_lmo[j, j]))
+                scale = -4.0 * norm ** -6
+
+                e_pair[i, j] = e_pair[j, i] = scale * np.sum(num_actual / denom)
+                e_bound[i, j] = e_bound[j, i] = scale * np.sum(num_linear / denom)
+        return e_pair, e_bound
+
+    # -- psi4 DLPNO::prep_sparsity -----------------------------------------
+
+    def prep_sparsity(self):
+        """Significant LMO pairs and their PAO/auxiliary domains.
+
+        This is where "domain-based local" stops being a name. Three independent
+        truncations, all of them psi4's:
+
+        * **PAO domains.** LMO ``i`` keeps the PAOs it has differential overlap
+          with (``t_cut_do``), rounded up to whole atoms.
+        * **Auxiliary domains.** LMO ``i`` keeps the fitting functions of atoms
+          carrying Mulliken population from it (``t_cut_mkn``), again
+          all-or-nothing per atom. This is what makes the density fitting local.
+        * **Pair screening.** A pair survives if the two orbitals overlap
+          (``t_cut_do_ij``) or their dipole-estimated energy bound is
+          non-negligible (``t_cut_pre``). Diagonal pairs always survive. What is
+          dropped is not ignored: its dipole pair energy is accumulated into
+          ``de_dipole`` and added to the correlation energy.
+
+        A pair's domains are the union of the two orbitals' domains, so the
+        merged lists are interned (see :meth:`_intern`) to keep the per-domain
+        caches effective.
+
+        With no grid available, or with the thresholds switched off, every pair
+        and every domain is complete and this reduces to the untruncated
+        calculation that validates against canonical DF-MP2.
+        """
+        ref = self.ref
+        naocc = ref.naocc
+        npao = ten.shape(self.C_pao)[1]
+        naux = ref.naux
+
+        # Self-serving rather than relying on the caller to have run
+        # compute_doi first. Forgetting it would not raise; it would silently
+        # disable every domain truncation and quietly solve a bigger problem,
+        # which is exactly the failure that is hard to notice in a benchmark.
+        if self.doi_ij is None:
+            self.compute_doi()
+        screening = self.doi_ij is not None
+
+        # -- LMO -> auxiliary domain, by Mulliken population ----------------
+        # Population bookkeeping rather than tensor algebra: the products are
+        # elementwise and the result is an index list, not an operand.
+        if screening:
+            C_lmo = ten.view(self.C_lmo)
+            S = np.asarray(ref.S)
+            natom = len(ref.atom_to_bf)
+            bf_to_atom = np.empty(ref.nbf, dtype=int)
+            for a, bfs in enumerate(ref.atom_to_bf):
+                bf_to_atom[list(bfs)] = a
+
+            self.lmo_to_ribfs = []
+            for i in range(naocc):
+                c = C_lmo[:, i]
+                P = c[:, None] * S * c[None, :]
+                d = np.diag(P)
+                denom = d[:, None] + d[None, :]
+                # psi4 splits each off-diagonal population between the two
+                # centres in proportion to their diagonal populations.
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    share_u = np.where(denom != 0.0, P * (d[:, None] / denom), 0.0)
+                    share_v = np.where(denom != 0.0, P * (d[None, :] / denom), 0.0)
+                pop = np.zeros(natom)
+                np.add.at(pop, bf_to_atom, share_u.sum(axis=1))
+                np.add.at(pop, bf_to_atom, share_v.sum(axis=0))
+
+                ribfs = []
+                for a in range(natom):
+                    if abs(pop[a]) > self.cut.t_cut_mkn:
+                        ribfs.extend(ref.atom_to_ribf[a])
+                self.lmo_to_ribfs.append(self._intern(sorted(ribfs)))
+        else:
+            self.lmo_to_ribfs = [self._intern(range(naux))] * naocc
+
+        # -- LMO -> PAO domain, by differential overlap ---------------------
+        if screening:
+            self.lmo_to_paos = []
+            for i in range(naocc):
+                paos = [u for u in range(npao) if abs(self.doi_iu[i, u]) > self.cut.t_cut_do]
+                # Any PAO on an atom pulls in all of that atom's PAOs.
+                self.lmo_to_paos.append(
+                    self._intern(sparse.contract_lists(paos, ref.atom_to_bf)))
+        else:
+            self.lmo_to_paos = [self._intern(range(npao))] * naocc
+
+        # -- which (i, j) pairs survive -------------------------------------
+        self.de_dipole = 0.0
+        # Only worth building when a pair can actually be rejected. Under
+        # `untruncated()` the thresholds are negative, so every pair survives
+        # and the estimate would be an expensive unused quantity: one
+        # orthocanonicalization of the *full* PAO space per LMO.
+        prescreen = screening and (self.cut.t_cut_pre >= 0.0 or self.cut.t_cut_do_ij >= 0.0)
+        if prescreen:
+            self.dipole_pair_e, self.dipole_pair_e_bound = self._dipole_pair_energies()
+        else:
+            self.dipole_pair_e = self.dipole_pair_e_bound = np.zeros((naocc, naocc))
 
         self.i_j_to_ij = np.full((naocc, naocc), -1, dtype=int)
         self.ij_to_i_j = []
         for i in range(naocc):
             for j in range(naocc):
-                self.i_j_to_ij[i, j] = len(self.ij_to_i_j)
-                self.ij_to_i_j.append((i, j))
+                keep = (i == j) or not prescreen or (
+                    self.doi_ij[i, j] > self.cut.t_cut_do_ij
+                    or abs(self.dipole_pair_e_bound[i, j]) > self.cut.t_cut_pre
+                )
+                if keep:
+                    self.i_j_to_ij[i, j] = len(self.ij_to_i_j)
+                    self.ij_to_i_j.append((i, j))
+                else:
+                    self.de_dipole += self.dipole_pair_e[i, j]
         self.ij_to_ji = [int(self.i_j_to_ij[j, i]) for (i, j) in self.ij_to_i_j]
 
-        all_paos = list(range(npao))
-        all_ribfs = list(range(naux))
-        self.lmopair_to_paos = [all_paos for _ in self.ij_to_i_j]
-        self.lmopair_to_ribfs = [all_ribfs for _ in self.ij_to_i_j]
+        # -- pair domains are the union of the two LMO domains --------------
+        self.lmopair_to_paos = [
+            self._intern(sparse.merge_lists(self.lmo_to_paos[i], self.lmo_to_paos[j]))
+            for (i, j) in self.ij_to_i_j
+        ]
+        self.lmopair_to_ribfs = [
+            self._intern(sparse.merge_lists(self.lmo_to_ribfs[i], self.lmo_to_ribfs[j]))
+            for (i, j) in self.ij_to_i_j
+        ]
 
-        self._print(
-            f"  domains:  {self.n_lmo_pairs} LMO pairs "
-            f"({naocc}^2, no screening), {npao} PAOs and {naux} aux per pair"
-        )
+        # LMOs m for which both (i,m) and (j,m) survived. The residual's
+        # coupling sum runs over these, not over all naocc.
+        self.lmopair_to_lmos = [
+            [m for m in range(naocc)
+             if self.i_j_to_ij[i, m] != -1 and self.i_j_to_ij[j, m] != -1]
+            for (i, j) in self.ij_to_i_j
+        ]
+
+        n_pairs = self.n_lmo_pairs
+        if screening:
+            avg_pao = sum(len(d) for d in self.lmopair_to_paos) / max(n_pairs, 1)
+            avg_aux = sum(len(d) for d in self.lmopair_to_ribfs) / max(n_pairs, 1)
+            self._print(
+                f"  domains:  {n_pairs} of {naocc}^2 LMO pairs survive "
+                f"({100.0 * n_pairs / naocc**2:.1f}%), "
+                f"{avg_pao:.1f}/{npao} PAOs and {avg_aux:.1f}/{naux} aux per pair, "
+                f"{len(self._interned)} distinct domains"
+            )
+            if self.de_dipole:
+                self._print(f"            dropped pairs contribute {self.de_dipole:.10f} Eh")
+        else:
+            self._print(
+                f"  domains:  {n_pairs} LMO pairs "
+                f"({naocc}^2, no screening), {npao} PAOs and {naux} aux per pair"
+            )
         return self
 
     # -- psi4 DLPNO::pno_transform -----------------------------------------

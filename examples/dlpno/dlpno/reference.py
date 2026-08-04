@@ -41,6 +41,15 @@ class Reference:
     atom_to_bf: list = field(default_factory=list)
     #: Which auxiliary basis functions sit on each atom.
     atom_to_ribf: list = field(default_factory=list)
+    #: AO dipole integrals ``(3, nbf, nbf)``, for the dipole pair prescreening.
+    dipole_ao: np.ndarray = None
+    #: Callable yielding DFT-grid blocks ``(phi, w, bf_map)`` for the
+    #: differential overlap integrals. The one non-buffer entry in the contract:
+    #: the grid has to stream (collocating it whole is hundreds of MB), and the
+    #: integrals cannot be finished in the bridge because they need the PAO
+    #: coefficients that :meth:`DLPNOBase.setup_orbitals` builds. ``None``
+    #: disables screening, which is the untruncated reference calculation.
+    grid_blocks: object = None
     #: Number of core orbitals to scale PNO thresholds for (0 when core is frozen).
     n_core: int = 0
     #: SCF total energy, carried through so the driver can report a total.

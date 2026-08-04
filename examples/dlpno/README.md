@@ -8,7 +8,7 @@ The module split follows psi4's, so the two can be read side by side.
 | this package | psi4 | status |
 | --- | --- | --- |
 | `dlpno/sparse.py` | `dlpno/sparse.cc` | ported |
-| `dlpno/base.py` | `dlpno/dlpno.cc` (class `DLPNO`) | orbitals, PAOs, DF integrals, PNO transform ported; screening not yet |
+| `dlpno/base.py` | `dlpno/dlpno.cc` (class `DLPNO`) | orbitals, PAOs, DOI and dipole screening, domains, DF integrals, PNO transform |
 | `dlpno/mp2.py` | `dlpno/mp2.cc` (class `DLPNOMP2`) | ported, iterations captured as graphs |
 | - | `dlpno/ccsd.cc` (class `DLPNOCCSD`) | not started |
 | - | `dlpno/triples.cc` (class `DLPNOCCSD_T`) | not started |
@@ -42,19 +42,19 @@ It does, to 1e-13 or better on every molecule in the driver.
 This is the check that pins the port down: the PAO construction, the local density fit, the PNO machinery, the residual, and the solver all have to be right simultaneously for it to pass.
 
 **Truncated, against psi4's own DLPNO-MP2.**
-At `T_CUT_PNO = 1e-8` the PNO statistics and truncation correction line up with psi4's:
+Both sides apply the same three truncations, so this is an exact comparison rather than an ordering check.
+At `T_CUT_PNO = 1e-8`, cc-pVDZ, no frozen core:
 
-| | psi4 DLPNO-MP2 | this port |
+| molecule | pairs kept | vs psi4 DLPNO-MP2 |
 | --- | --- | --- |
-| PNOs per pair (avg/min/max) | 18 / 9 / 19 | 18.1 / 9 / 19 |
-| PNO truncation correction | -1.5693e-8 | -1.5921e-8 |
-| local MP2 correlation energy | -0.204089507549 | -0.204089517862 |
+| water | 25 / 25 | 5.4e-13 |
+| water-dimer | 100 / 100 | 5.3e-13 |
+| water-dimer-far | **50 / 100** | 1.2e-12 |
+| methanol | 81 / 81 | 2.5e-13 |
+| ethanol | 169 / 169 | 1.7e-13 |
 
-(water, cc-pVDZ, no frozen core.)
-
-The two do not agree to machine precision, and should not: psi4 additionally screens LMO pairs and shrinks the PAO and auxiliary domains, so it discards strictly more.
-The port's truncation error is consequently the smaller of the two on every molecule tested, and the driver asserts that ordering rather than equality.
-Once screening lands, this becomes an exact comparison.
+Only `water-dimer-far` exercises the pair prescreening: the compact geometries are small enough that psi4 keeps every pair too, so the two monomers are pushed 12 A apart to force the issue.
+There the port drops exactly the 50 pairs psi4 drops, and its dipole estimate of what was discarded (-0.0000002432 Eh) matches psi4's `Screened LMO pair energy` (-0.000000243227) to the printed digits.
 
 ## Design notes
 
@@ -112,7 +112,7 @@ Bucketing pairs by PNO count would get the batching without the wasted flops, an
 ## Performance against psi4
 
 `bench_vs_psi4.py` runs psi4's native C++ DLPNO-MP2 in a subprocess and this port in process.
-At these sizes psi4 screens no LMO pairs (it keeps all `naocc²`, same as the port) and its average PNO counts match, so the two are solving essentially the same problem.
+Both sides now screen identically, which the script checks by comparing correlation energies before reporting any timing: agreement at ~1e-13 means the same problem, disagreement at ~1e-5 means the timings are meaningless.
 Whole calculation, ethanol, SCF excluded:
 
 | | psi4 | this port | |
@@ -214,7 +214,7 @@ So `.reshape(-1)` silently copies rather than viewing, which is easy to write by
 ## Next steps
 
 1. **Close the threaded gap at small sizes.** The port is ~1.2x ahead single threaded and at parity threaded on cc-pVTZ, but 1.4x behind on cc-pVDZ, where there is not enough work per batch to fill ten cores. Choosing `n_buckets` automatically from the pair count and thread count would get most of it.
-2. **Screening**, in psi4's order: differential overlap integrals (`compute_overlap_ints`, needs a DFT grid, which psi4 exposes to Python), dipole pair energies (`compute_dipole_ints`), then `prep_sparsity` proper. This turns the comparison against psi4's DLPNO-MP2 into an exact one.
+2. **Batch the PNO transform.** Screening made this worth doing: pairs used to share a single domain, so memoization removed the duplication outright, whereas now there are many distinct domains but many pairs per domain. The per-pair exchange build and semicanonical MP2 step are uniform within a domain and could go through `cg.batched_gemm` the way the residual couplings do.
 3. **One graph for the whole iteration**, using a loop node, with DIIS either captured or hoisted.
 4. **DLPNO-CCSD** (`ccsd.cc`), which is where the graph work gets interesting: the residuals are much larger and the intermediates are shared across pairs.
 5. **DLPNO-(T)** (`triples.cc`).

@@ -18,7 +18,8 @@ import psi4
 
 from .reference import Reference
 
-__all__ = ["from_psi4", "raw_three_index", "aux_metric", "localize"]
+__all__ = ["from_psi4", "raw_three_index", "aux_metric", "localize", "ao_dipole",
+           "grid_block_provider"]
 
 
 def localize(basis, C_act_occ, kind="BOYS"):
@@ -71,6 +72,68 @@ def _atom_maps(basis):
     return out
 
 
+def ao_dipole(basis):
+    """AO dipole integrals, ``(3, nbf, nbf)``, for the dipole pair prescreening."""
+    mints = psi4.core.MintsHelper(basis)
+    return np.ascontiguousarray(np.array([np.asarray(d) for d in mints.ao_dipole()]))
+
+
+def grid_block_provider(basis, spherical_points=50, radial_points=25,
+                        pruning_scheme="ROBUST", basis_tolerance=1.0e-10):
+    """Return a callable streaming the DFT grid as ``(phi, w, bf_map)`` blocks.
+
+    The differential overlap integrals are numerical quadrature, so they need
+    basis-function values on a grid. Those depend on the PAO coefficients, which
+    :meth:`DLPNOBase.setup_orbitals` builds rather than the bridge, so the grid
+    has to cross the boundary rather than the finished integrals.
+
+    It crosses as a *stream* because it is the one quantity here that does not
+    fit comfortably: collocating every point against every basis function at
+    once is roughly 550 MB at ethanol/cc-pVTZ, where a single block is a few
+    hundred kilobytes. psi4's own DOI routine blocks it for the same reason.
+
+    This is the only entry in :class:`Reference` that is a callable rather than
+    a buffer. The alternative was to duplicate the PAO projector in this module
+    so the integrals could be finished here, which would put the same piece of
+    physics in two places.
+
+    Grid defaults match psi4's ``DOI_*`` options so the domains come out the
+    same. ``DFT_BASIS_TOLERANCE`` and friends are set globally rather than
+    passed, because the Python ``DFTGrid.build`` takes only the integer and
+    string option maps and reads the rest from the environment.
+    """
+    mol = basis.molecule()
+    psi4.set_options({"DFT_BASIS_TOLERANCE": basis_tolerance,
+                      "DFT_BS_RADIUS_ALPHA": 1.0,
+                      "DFT_PRUNING_ALPHA": 1.0,
+                      "DFT_BLOCK_MAX_RADIUS": 3.0,
+                      "DFT_WEIGHTS_TOLERANCE": 1e-15})
+    grid = psi4.core.DFTGrid.build(
+        mol, basis,
+        {"DFT_SPHERICAL_POINTS": spherical_points,
+         "DFT_RADIAL_POINTS": radial_points,
+         "DFT_BLOCK_MIN_POINTS": 100,
+         "DFT_BLOCK_MAX_POINTS": 256},
+        {"DFT_PRUNING_SCHEME": pruning_scheme,
+         "DFT_RADIAL_SCHEME": "TREUTLER",
+         "DFT_NUCLEAR_SCHEME": "TREUTLER",
+         "DFT_GRID_NAME": "",
+         "DFT_BLOCK_SCHEME": "OCTREE"})
+
+    def blocks():
+        # BasisFunctions is stateful and sized to the largest block, so it is
+        # built once here and its buffer re-trimmed per block.
+        point_funcs = psi4.core.BasisFunctions(basis, grid.max_points(), basis.nbf())
+        for block in grid.blocks():
+            point_funcs.compute_functions(block)
+            bf_map = block.functions_local_to_global()
+            npoints = block.npoints()
+            phi = np.asarray(point_funcs.basis_values()["PHI"])[:npoints, :len(bf_map)]
+            yield np.ascontiguousarray(phi), np.asarray(block.w())[:npoints], list(bf_map)
+
+    return blocks
+
+
 def from_psi4(wfn, aux=None, localization="BOYS", freeze_core=False):
     """Assemble a :class:`Reference` from a converged psi4 wavefunction.
 
@@ -100,6 +163,8 @@ def from_psi4(wfn, aux=None, localization="BOYS", freeze_core=False):
         metric=aux_metric(aux),
         atom_to_bf=_atom_maps(primary),
         atom_to_ribf=_atom_maps(aux),
+        dipole_ao=ao_dipole(primary),
+        grid_blocks=grid_block_provider(primary),
         # psi4 keeps core orbitals correlated but scales their PNO threshold;
         # once they are frozen outright there is nothing left to scale.
         n_core=0 if freeze_core else primary.n_frozen_core("TRUE", mol),

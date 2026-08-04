@@ -107,13 +107,14 @@ print(f"  difference vs psi4 DLPNO-MP2 = {err_dlpno:.3e}  ({trunc.n_iterations} 
 print(f"  truncation error vs DF-MP2   = {ours:.3e} (psi4's own: {theirs:.3e})")
 
 assert err_exact < 1e-9, f"untruncated PNO-MP2 disagrees with DF-MP2 by {err_exact:.3e}"
-# PNO truncation is the only approximation here; psi4 additionally screens LMO
-# pairs and shrinks the PAO and auxiliary domains, so it discards strictly more
-# and its truncation error is the larger of the two. Requiring that ordering
-# (with a little slack) is the meaningful check until screening lands: matching
-# psi4 to machine precision would actually mean the port is over-truncating.
-assert ours <= 1.2 * theirs + 1e-9, (
-    f"truncated PNO-MP2 lost {ours:.3e} to truncation, more than psi4's "
-    f"{theirs:.3e} despite keeping full domains"
+# Both sides now apply the same three truncations - PNO occupation, PAO and
+# auxiliary domains, and dipole pair prescreening - so this is an equality, not
+# the ordering check it had to be while the port kept full domains. The
+# tolerance is loose next to the ~1e-13 actually observed because the two
+# solvers converge along different paths; anything at the truncation scale
+# (1e-5) means the domains genuinely disagree.
+assert err_dlpno < 1e-9, (
+    f"truncated PNO-MP2 disagrees with psi4 DLPNO-MP2 by {err_dlpno:.3e}; "
+    f"the two are not applying the same truncations"
 )
-print("\nPNO-MP2 (einsums ComputeGraph) MATCHES psi4 DF-MP2, and tracks psi4 DLPNO-MP2")
+print("\nPNO-MP2 (einsums ComputeGraph) MATCHES psi4 DF-MP2 and psi4 DLPNO-MP2")

@@ -4,21 +4,21 @@
 #----------------------------------------------------------------------------------------------
 """Wall-clock comparison against psi4's native C++ DLPNO-MP2.
 
-Read the caveat before the numbers: **this is not a like-for-like comparison of
-the same calculation.** psi4 screens and this port does not yet, so psi4 solves a
-strictly smaller problem:
+Both sides now apply the same three truncations - differential-overlap PAO
+domains, Mulliken auxiliary domains and dipole pair prescreening - so this is a
+like-for-like comparison, and the printed correlation energies agree to roughly
+1e-13. Check that agreement before reading the timings: if the energies differ
+at the truncation level (1e-5), the two are not solving the same problem and
+the comparison means nothing.
 
-* psi4 drops distant LMO pairs (dipole prescreening) and keeps only the
-  surviving ones; this port carries all ``naocc^2``.
-* psi4 shrinks each pair's PAO and auxiliary domain; this port gives every pair
-  the full domain, so its PNO counts are larger.
+Two differences remain, both in the port's disfavour and both visible in the
+sizes printed alongside:
+
 * psi4 builds the three-index integrals with a screened, linear-scaling
   shell-triplet loop; this port builds the dense ``(Q|mn)`` and slices it.
+* the port pads every pair's block to a bucket size, trading flops for
+  batchability (see bench_batching.py). The padding factor is reported below.
 
-The port additionally pads every pair's block to a common size, which trades
-flops for batchability (see bench_batching.py).
-
-So the honest reading is per-phase, with the problem sizes printed alongside.
 The LMP2 iteration is the phase where the two are doing recognizably the same
 work, and it is reported per iteration because the convergence paths differ.
 
@@ -163,10 +163,10 @@ ours["DLPNO-MP2"] = time.perf_counter() - t_total
 print(f"\n  problem size")
 print(f"    {'':22} {'psi4':>12} {'this port':>12}")
 print(f"    {'LMO pairs':22} {psi4_stats.get('pairs', '?'):>12} {mp2.n_lmo_pairs:>12}"
-      "   (port keeps all naocc^2: no pair screening)")
+      f"   (of {mp2.ref.naocc**2} possible; both sides prescreen)")
 print(f"    {'avg PNOs per pair':22} {psi4_stats.get('avg_pno', '?'):>12} "
       f"{sum(mp2.n_pno) / mp2.n_lmo_pairs:>12.1f}"
-      "   (port has full PAO domains)")
+      "   (both sides use screened PAO domains)")
 print(f"    {'padded PNO dimension':22} {'-':>12} {mp2.npno_max:>12}"
       "   (port pads every block to this)")
 print(f"    {'LMP2 iterations':22} {psi4_stats.get('iterations', '?'):>12} "
@@ -214,6 +214,11 @@ print(f"\n  correlation energy   psi4 {psi4_times['corr']:.10f}   "
       f"port {e_ours:.10f}   diff {abs(e_ours - psi4_times['corr']):.2e}")
 print(f"  (SCF, excluded above: psi4 {psi4_times['scf']:.3f} s, "
       f"port reference {t_scf_ours:.3f} s)")
-print("\n  Reminder: psi4 is solving a smaller problem (screened pairs and "
-      "domains).\n  Compare the phases against the sizes above, not the totals "
-      "in isolation.")
+if abs(e_ours - psi4_times["corr"]) > 1e-9:
+    print("\n  WARNING: the correlation energies disagree by more than 1e-9, so the "
+          "two sides\n  are NOT solving the same problem and these timings are not "
+          "comparable.")
+else:
+    print("\n  The energies agree, so the two sides are solving the same problem. "
+          "The port's\n  remaining handicaps are the dense (Q|mn) build and the "
+          "block padding; both are\n  quantified above.")
