@@ -69,6 +69,7 @@ set(ComputeGraphTests
     Rebind.cpp
     RecursionPlumbing.cpp
     EagerParityGaps.cpp
+    Gather.cpp
     RuntimeTensorEinsum.cpp
     RuntimeTensorLAPACK.cpp
     RuntimeTensorOwnership.cpp
@@ -88,6 +89,7 @@ set(ComputeGraphTests
     test_auto_view_python.py
     test_axpy_axpby_views_python.py
     test_blas_python.py
+    test_gather_python.py
     test_block_copy_python.py
     test_capture_parity_gaps_python.py
     test_capture_python.py

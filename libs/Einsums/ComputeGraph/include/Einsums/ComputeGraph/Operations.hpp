@@ -676,6 +676,141 @@ APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<doub
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// gather: index-list extraction along any subset of axes
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Copy an arbitrary index selection out of @p src into @p dst.
+///
+/// For each axis k, @p indices[k] lists the positions of src to take along that
+/// axis:
+///
+///   dst[i0, i1, ...] = src[indices[0][i0], indices[1][i1], ...]
+///
+/// This is the outer-product selection numpy spells `A[np.ix_(rows, cols)]`,
+/// not the zipped selection `A[rows, cols]`.
+///
+/// Every axis needs an explicit list; there is deliberately no "whole axis"
+/// wildcard. Spelling it as the empty list would be the natural choice and is
+/// the wrong one: the callers are domain-restricted methods, an empty domain is
+/// a legitimate (if degenerate) input there, and having it silently expand to
+/// the entire axis would turn a screened-out domain into a full-rank one with
+/// no error. An empty list therefore selects nothing, and a whole axis is
+/// `std::iota` / `range(n)` at the call site.
+///
+/// @ref block_copy covers the contiguous case; this covers the case where the
+/// wanted elements are scattered, which is what domain-restricted methods do
+/// constantly: a local-correlation pair domain is a sorted list of orbital
+/// indices, and every operand is `A[domain, domain]`. Doing that on the host
+/// forces the extraction out of the graph, which is what this exists to avoid.
+///
+/// Both tensors must have the same rank and dtype, and dst's extent on each
+/// axis must equal the number of indices selected there. Capture-aware: outside
+/// capture it runs immediately; inside, it records a node with src as an input
+/// and dst as an output, so a whole per-pair setup can be one graph.
+template <CoreBasicTensorConcept DstType, CoreBasicTensorConcept SrcType>
+    requires std::is_same_v<typename DstType::ValueType, typename SrcType::ValueType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("gather", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+APIARY_INSTANTIATE_AS("gather", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+APIARY_INSTANTIATE_AS("gather", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("gather", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<float>,                                                   einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<double>,                                                  einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<float>>,                                     einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<double>>,                                    einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("gather", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("gather", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("gather", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("gather", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<float>,                                                   einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<double>,                                                  einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<float>>,                                     einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<double>>,                                    einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void gather(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices) {
+    size_t const N = indices.size();
+    if (N == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::gather: indices must be non-empty");
+    }
+    // tensor_rank rather than .rank(): compile-time Tensor<T, N> has no rank()
+    // member, and gather is useful on those too.
+    size_t const dst_rank = detail::tensor_rank(*dst);
+    size_t const src_rank = detail::tensor_rank(src);
+    if (dst_rank != N || src_rank != N) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::gather: rank mismatch - dst rank={}, src rank={}, indices.size()={}", dst_rank, src_rank,
+                                N);
+    }
+
+    std::vector<size_t> extents(N);
+    for (size_t k = 0; k < N; ++k) {
+        extents[k] = indices[k].size();
+        if (dst->dim(k) != extents[k]) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::gather: dst axis {} has extent {}, but {} indices were given", k,
+                                    dst->dim(k), extents[k]);
+        }
+        for (size_t p : indices[k]) {
+            if (p >= src.dim(k)) {
+                EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::gather: index {} on axis {} is out of range for src dim {}", p, k,
+                                        src.dim(k));
+            }
+        }
+    }
+
+    auto apply = [indices, extents, N](DstType *d, SrcType const *s) {
+        using T      = typename DstType::ValueType;
+        size_t total = 1;
+        for (size_t k = 0; k < N; ++k)
+            total *= extents[k];
+        if (total == 0) {
+            return; // an empty selection is a no-op, not an error
+        }
+
+        std::vector<size_t> idx(N, 0), d_str(N), s_str(N);
+        for (size_t k = 0; k < N; ++k) {
+            d_str[k] = d->stride(k);
+            s_str[k] = s->stride(k);
+        }
+        T       *d_data = d->data();
+        T const *s_data = s->data();
+
+        for (size_t count = 0; count < total; ++count) {
+            size_t d_off = 0, s_off = 0;
+            for (size_t k = 0; k < N; ++k) {
+                d_off += idx[k] * d_str[k];
+                s_off += indices[k][idx[k]] * s_str[k];
+            }
+            d_data[d_off] = s_data[s_off];
+            // Axis 0 fastest, matching block_copy. Correctness-only ordering:
+            // the source access is a gather, so it is not contiguous anyway.
+            for (size_t k = 0; k < N; ++k) {
+                if (++idx[k] < extents[k])
+                    break;
+                idx[k] = 0;
+            }
+        }
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("gather eager");
+        apply(dst, &src);
+        return;
+    }
+
+    LabeledSection("gather capture");
+    auto [s_id, s_slot] = ctx.get_slot(src);
+    auto [d_id, d_slot] = ctx.get_slot(*dst);
+
+    auto executor = [s_slot, d_slot, apply]() {
+        LabeledSection("gather execute");
+        apply(static_cast<DstType *>(d_slot->ptr), static_cast<SrcType const *>(s_slot->ptr));
+    };
+    ctx.record(OpKind::Custom, "gather", {s_id}, {d_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // element_transform
 // ─────────────────────────────────────────────────────────────────────────────
 
