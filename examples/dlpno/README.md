@@ -112,20 +112,28 @@ Bucketing pairs by PNO count would get the batching without the wasted flops, an
 ## Performance against psi4
 
 `bench_vs_psi4.py` runs psi4's native C++ DLPNO-MP2 in a subprocess and this port in process.
-Both sides now screen identically, which the script checks by comparing correlation energies before reporting any timing: agreement at ~1e-13 means the same problem, disagreement at ~1e-5 means the timings are meaningless.
-Whole calculation, ethanol, SCF excluded:
+Both sides screen identically, which the script checks by comparing correlation energies before reporting any timing.
+It also sets psi4's `R_CONVERGENCE` to match the port's: psi4's LMP2 default is 1e-6, two orders looser, which costs it two iterations in exactly the phase being compared.
+
+Whole calculation, ethanol, SCF excluded, 4 P-cores + 6 E-cores:
 
 | | psi4 | this port | |
 | --- | --- | --- | --- |
-| cc-pVTZ, 1 thread | 2.748 | **2.019** | **1.36x faster** |
-| cc-pVDZ, 1 thread | 0.433 | 0.486 | 1.1x |
-| cc-pVTZ, 10 threads | 0.786 | 1.417 | 1.8x |
-| cc-pVDZ, 10 threads | 0.143 | 0.449 | 3.1x |
+| cc-pVTZ, 1 thread | 2.842 | **2.490** | **1.14x faster** |
+| cc-pVDZ, 1 thread | 0.456 | 0.606 | 1.3x |
+| cc-pVTZ, 10 threads | 0.944 | 1.645 | 1.7x |
+| cc-pVDZ, 10 threads | 0.144 | 0.506 | 3.5x |
 
-**Single threaded the port is ahead of the C++ on the larger basis and at parity on the smaller one.**
-Threaded it is still behind, and that gap is now the whole story: psi4 parallelizes its setup phases over pairs, and this port does not.
+**Single threaded the port is ahead of the C++ on the larger basis; threaded it is behind, and by a widening margin as the problem gets smaller.**
 
-Per phase at cc-pVTZ on one thread, the port is *faster* at PNO Transform (0.485 vs 1.292, 2.7x) and within 30% everywhere else.
+The LMP2 iteration itself is at parity everywhere, threaded or not: 0.1157 vs 0.1141 s at cc-pVTZ on one thread, 0.0404 vs 0.0405 threaded.
+That is the phase the ComputeGraph and the batching actually cover.
+The whole threaded deficit is in the setup phases, which psi4 parallelizes over pairs with OpenMP and the port still runs as an eager per-pair loop: at cc-pVTZ on ten threads, PNO Transform is 0.779 against 0.292 (2.7x) and PNO Overlaps 0.150 against 0.050 (3.0x).
+
+A note on the energies at cc-pVTZ: the two agree to 2.3e-8 rather than the ~1e-13 seen at cc-pVDZ.
+Every input to the comparison matches psi4 exactly - PAO and auxiliary domains (average, min *and* max, per LMO and per pair), pairs screened, PNOs per pair (54/5/92), and the PNO truncation correction to 1.4e-10.
+What is left is the linear-dependence tie-break: cc-pVTZ puts PAO-domain overlap eigenvalues near `S_CUT`, and retaining four more vectors (at `s_cut` 1e-9) moves the correlation energy by 1.6e-7, so a single vector is worth ~4e-8.
+The comparison tolerance is therefore scaled to 1% of the PNO truncation correction rather than fixed, since a genuine domain disagreement is orders of magnitude larger.
 Getting there took, in order of size:
 
 1. **psi4 clamps the process-wide OpenMP thread count to 1 when imported.** Every einsums BLAS and `gemm_batch` call in the process is then serialized and `OMP_NUM_THREADS` has no effect. `psi4.set_num_threads(n)` sets it for both. Nothing warns.
@@ -213,7 +221,7 @@ So `.reshape(-1)` silently copies rather than viewing, which is easy to write by
 
 ## Next steps
 
-1. **Close the threaded gap at small sizes.** The port is ~1.2x ahead single threaded and at parity threaded on cc-pVTZ, but 1.4x behind on cc-pVDZ, where there is not enough work per batch to fill ten cores. Choosing `n_buckets` automatically from the pair count and thread count would get most of it.
+1. **Parallelize the setup phases over pairs.** This is now the entire threaded deficit: the LMP2 iteration is at parity on ten threads, while PNO Transform and PNO Overlaps are 2.7x and 3.0x behind because psi4 runs them under `#pragma omp parallel for` over pairs and the port runs an eager Python loop. Batching them (next item) and threading them are two ways at the same problem.
 2. **Batch the PNO transform.** Screening made this worth doing: pairs used to share a single domain, so memoization removed the duplication outright, whereas now there are many distinct domains but many pairs per domain. The per-pair exchange build and semicanonical MP2 step are uniform within a domain and could go through `cg.batched_gemm` the way the residual couplings do.
 3. **One graph for the whole iteration**, using a loop node, with DIIS either captured or hoisted.
 4. **DLPNO-CCSD** (`ccsd.cc`), which is where the graph work gets interesting: the residuals are much larger and the intermediates are shared across pairs.
