@@ -160,8 +160,14 @@ jobs:
       - name: Test (CTest) - Python suite with the GIL disabled
         if: ${{ matrix.variant == 'free-threaded' }}
         working-directory: "${{ github.workspace }}/build"
-        env:
-          PYTHON_GIL: "0"
+        # PYTHON_GIL is deliberately NOT a step-level env var. The step shell is
+        # `bash -el`, a LOGIN shell, so it sources the profile and conda's
+        # activation runs Python before any of this script does. With the
+        # variable set for the whole step that startup Python aborts with
+        #   Fatal Python error: config_read_gil: Disabling the GIL is not
+        #   supported by this build
+        # and the step dies before reaching the command it was meant for. Scope
+        # it to the two processes that should see it instead.
         run: |
           # Use the interpreter CMake resolved, not whatever `python` is on
           # PATH. FindPython picks the t-build via Python_FIND_ABI, but the
@@ -175,12 +181,12 @@ jobs:
           # Assert after the import, not just at startup: the point is that
           # loading _core did not flip the GIL back on and reduce this to a
           # duplicate of the run above.
-          PYTHONPATH="${{ github.workspace }}/build/lib" "$PY" -c "
+          PYTHONPATH="${{ github.workspace }}/build/lib" PYTHON_GIL=0 "$PY" -c "
           import sys, einsums
           assert not sys._is_gil_enabled(), 'importing einsums re-enabled the GIL'
           print('GIL still disabled after importing einsums')
           "
-          ctest -L PYTHON --output-on-failure -j4
+          PYTHON_GIL=0 ctest -L PYTHON --output-on-failure -j4
 
       - name: Generate coverage information
         if: ${{ matrix.compiler == 'default' && matrix.blas == 'openblas' && matrix.variant == 'default' }}
