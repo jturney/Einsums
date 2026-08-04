@@ -491,10 +491,18 @@ class DLPNOBase:
         Qmn = ten.from_numpy("(Q|mn)", ref.eri_3index)
         npao = ten.shape(self.C_pao)[1]
 
-        half = ten.zeros("(Q|m u)", [ref.naux, ref.nbf, npao])
-        einsums.einsum("Qmu <- Qmn ; nu", half, Qmn, self.C_pao)
+        # Occupied index first. Both orders give the same answer, but the
+        # half-transform carries whichever index has already been contracted,
+        # and there are naocc of those against npao of the other - 13 against
+        # 174 at ethanol/cc-pVTZ, since the PAOs span the whole AO basis. Doing
+        # the PAO index first makes the dominant contraction naux*nbf^2*npao
+        # instead of naux*nbf^2*naocc and leaves a half-transform the size of
+        # the integrals themselves: 4.79 GFLOP and 97.7 MiB against 0.67 GFLOP
+        # and 7.3 MiB. The gap is npao/naocc, so it widens with basis set.
+        half = ten.zeros("(Q|i n)", [ref.naux, ref.naocc, ref.nbf])
+        einsums.einsum("Qin <- Qmn ; mi", half, Qmn, self.C_lmo)
         self.q_ia = ten.zeros("(Q|i u)", [ref.naux, ref.naocc, npao])
-        einsums.einsum("Qiu <- Qmu ; mi", self.q_ia, half, self.C_lmo)
+        einsums.einsum("Qiu <- Qin ; nu", self.q_ia, half, self.C_pao)
 
         self._print(
             f"  DF ints:  (Q|iu) is {ref.naux} x {ref.naocc} x {npao} "

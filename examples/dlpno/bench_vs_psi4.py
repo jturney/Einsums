@@ -144,22 +144,32 @@ t0 = time.perf_counter()
 _, wfn = psi4.energy("scf", return_wfn=True)
 t_scf_ours = time.perf_counter() - t0
 
-reference = from_psi4(wfn)
-mp2 = DLPNOMP2(reference, Thresholds.preset("NORMAL", t_cut_pno=args.t_cut_pno, n_buckets=args.buckets), verbose=False)
-
 ours = {}
 
 
 def phase(name, fn):
     t0 = time.perf_counter()
-    fn()
+    result = fn()
     ours[name] = time.perf_counter() - t0
+    return result
 
 
+# from_psi4 builds the dense (Q|mn), and that has to be inside the timed region.
+# It used to run before the clock started, which quietly excluded the port's
+# single largest DF cost from the comparison while psi4's number included
+# generating its own integrals - so the difference the header calls out as
+# being in the port's disfavour was not actually being counted. At
+# ethanol/cc-pVTZ that is 0.243 s against a 1.16 s total.
 t_total = time.perf_counter()
+reference = phase("DF Ints", lambda: from_psi4(wfn))
+mp2 = DLPNOMP2(reference, Thresholds.preset("NORMAL", t_cut_pno=args.t_cut_pno, n_buckets=args.buckets), verbose=False)
+
 phase("Setup Orbitals", mp2.setup_orbitals)
 phase("Sparsity", mp2.prep_sparsity)
-phase("DF Ints", lambda: (mp2.compute_metric(), mp2.compute_qia()))
+t0 = time.perf_counter()
+mp2.compute_metric()
+mp2.compute_qia()
+ours["DF Ints"] += time.perf_counter() - t0
 # precompute_fits belongs to this phase, not to DF Ints: psi4 solves the
 # domain fitting equations inside its own pno_transform.
 phase("PNO Transform", lambda: (mp2.precompute_fits(), mp2.pno_transform()))
