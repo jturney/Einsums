@@ -16,6 +16,24 @@ on:
       build_configure_extra_args:
         type: string
         required: false
+  # Windows-only failures cannot be reproduced on any other runner, and the
+  # full CMake matrix costs an order of magnitude more than this one leg. The
+  # dispatch trigger runs it alone, on any branch, while chasing them. The
+  # inputs are repeated because workflow_dispatch does not inherit the
+  # workflow_call defaults - ${{ inputs.x }} would be empty otherwise.
+  workflow_dispatch:
+    inputs:
+      build_cache_suffix:
+        type: string
+        required: false
+        default: "default"
+      build_cache_size:
+        type: string
+        required: false
+        default: 2G
+      build_configure_extra_args:
+        type: string
+        required: false
 
 permissions: read-all
 
