@@ -188,6 +188,13 @@ class DLPNOMP2(DLPNOBase):
                 einsums.einsum("ab <- ca ; cb", half[ij], X_pad[ij], self.S_pao)
                 einsums.einsum("ab <- ac ; cb", self._S_cat[ij], half[ij], cat[ij])
         g.apply(self.pass_manager())
+        # Two GEMMs per pair, and pairs are independent, so this is the same
+        # shape as the domain fits and the pair-density eigendecompositions:
+        # parallelism across nodes, each node serial underneath. The OpenMP
+        # executor rather than Dataflow because Dataflow runs nodes on
+        # std::thread workers, which is the pattern the OpenMP-built OpenBLAS
+        # miscomputes; see DLPNOBase.precompute_fits.
+        g.set_executor(cg.OpenMPExecutor())
         g.execute()
 
         # One vectorized scaling per pair: every coupling owns a column range.
@@ -570,6 +577,7 @@ class DLPNOMP2(DLPNOBase):
         self.prep_sparsity()
         self.compute_metric()
         self.compute_qia()
+        self.precompute_fits()
         self.pno_transform()
         self.compute_pno_overlaps()
         self.lmp2_iterations(optimize=optimize)

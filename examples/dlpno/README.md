@@ -119,16 +119,30 @@ Whole calculation, ethanol, SCF excluded, 4 P-cores + 6 E-cores:
 
 | | psi4 | this port | |
 | --- | --- | --- | --- |
-| cc-pVTZ, 1 thread | 2.842 | **2.490** | **1.14x faster** |
-| cc-pVDZ, 1 thread | 0.456 | 0.606 | 1.3x |
-| cc-pVTZ, 10 threads | 0.944 | 1.645 | 1.7x |
-| cc-pVDZ, 10 threads | 0.144 | 0.506 | 3.5x |
+| cc-pVTZ, 1 thread | 2.853 | **2.456** | **1.16x faster** |
+| cc-pVDZ, 1 thread | 0.452 | 0.615 | 1.4x |
+| cc-pVTZ, 10 threads | 0.889 | 1.280 | 1.4x |
+| cc-pVDZ, 10 threads | 0.146 | 0.470 | 3.2x |
 
 **Single threaded the port is ahead of the C++ on the larger basis; threaded it is behind, and by a widening margin as the problem gets smaller.**
 
 The LMP2 iteration itself is at parity everywhere, threaded or not: 0.1157 vs 0.1141 s at cc-pVTZ on one thread, 0.0404 vs 0.0405 threaded.
-That is the phase the ComputeGraph and the batching actually cover.
-The whole threaded deficit is in the setup phases, which psi4 parallelizes over pairs with OpenMP and the port still runs as an eager per-pair loop: at cc-pVTZ on ten threads, PNO Transform is 0.779 against 0.292 (2.7x) and PNO Overlaps 0.150 against 0.050 (3.0x).
+That is the phase the ComputeGraph and the batching cover, and it is not where the threaded deficit lives.
+
+### Parallelizing the setup phases
+
+psi4 runs its setup under `#pragma omp parallel for` over pairs.
+The port cannot simply do the same from Python: driving those loops from a `ThreadPoolExecutor` returns silently wrong numbers against the OpenMP-built OpenBLAS that conda resolves by default, because that build indexes its internal scratch by `omp_get_thread_num()`, which is 0 on every caller-created thread.
+See [BLAS threading](../../docs/sphinx/building/blas_threading.rst).
+
+The way that *is* safe is to hand the independent work to the graph and run it under the OpenMP executor, so the parallelism is a real OpenMP team and each node stays serial underneath:
+
+* `precompute_fits` captures every distinct domain's fitting solve into one graph. There are only 23 of them at ethanol/cc-pVTZ, but they were 31% of the phase, because the solve is per *domain* and carries `naocc * npao` right-hand sides.
+* `pno_transform` is three stages rather than one loop, so the two eigendecompositions per pair batch into two graphs, with the data-dependent truncation decision in between. Issued one at a time these got *worse* with threads (219 ms serial against 329 ms on ten threads), each small `syev` fighting the BLAS's own threading.
+
+At cc-pVTZ on ten threads PNO Transform went 0.779 -> 0.438 s against psi4's 0.275, so 2.7x behind became 1.6x.
+PNO Overlaps was already parallel inside `gemm_batch` and moved only 0.150 -> 0.141.
+What is left of the threaded gap is spread across PNO Overlaps (3.1x), the dense `(Q|mn)` build (2.3x) and the host-side gathers, which are not parallel at all.
 
 A note on the energies at cc-pVTZ: the two agree to 2.3e-8 rather than the ~1e-13 seen at cc-pVDZ.
 Every input to the comparison matches psi4 exactly - PAO and auxiliary domains (average, min *and* max, per LMO and per pair), pairs screened, PNOs per pair (54/5/92), and the PNO truncation correction to 1.4e-10.
@@ -221,7 +235,7 @@ So `.reshape(-1)` silently copies rather than viewing, which is easy to write by
 
 ## Next steps
 
-1. **Parallelize the setup phases over pairs.** This is now the entire threaded deficit: the LMP2 iteration is at parity on ten threads, while PNO Transform and PNO Overlaps are 2.7x and 3.0x behind because psi4 runs them under `#pragma omp parallel for` over pairs and the port runs an eager Python loop. Batching them (next item) and threading them are two ways at the same problem.
+1. **The host-side gather seam.** With the fits and eigendecompositions on the graph, what is left of the setup cost is largely `np.ix_` gathers and `from_numpy` copies building each domain's operands, which no executor can parallelize because they are not captured. An einsums gather primitive would let the whole per-pair setup be one graph.
 2. **Batch the PNO transform.** Screening made this worth doing: pairs used to share a single domain, so memoization removed the duplication outright, whereas now there are many distinct domains but many pairs per domain. The per-pair exchange build and semicanonical MP2 step are uniform within a domain and could go through `cg.batched_gemm` the way the residual couplings do.
 3. **One graph for the whole iteration**, using a loop node, with DIIS either captured or hoisted.
 4. **DLPNO-CCSD** (`ccsd.cc`), which is where the graph work gets interesting: the residuals are much larger and the intermediates are shared across pairs.

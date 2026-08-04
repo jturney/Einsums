@@ -495,6 +495,79 @@ class DLPNOBase:
         )
         return self
 
+    def _domain_key(self, ij):
+        """What :meth:`_fit_coefficients` caches on: the pair's two domains."""
+        return (id(self.lmopair_to_ribfs[ij]), id(self.lmopair_to_paos[ij]))
+
+    def _fit_operands(self, ij):
+        """``(A, rhs)`` for one domain's fitting equations, gathered on the host.
+
+        Split out of :meth:`_fit_coefficients` so the solves can be captured as
+        a batch. The gathers stay eager: they are index lists, and there is no
+        einsums primitive for "take these rows and these columns".
+        """
+        ribfs = self.lmopair_to_ribfs[ij]
+        paos = self.lmopair_to_paos[ij]
+        naocc = self.ref.naocc
+        block = ten.view(self.q_ia)[np.ix_(ribfs, range(naocc), paos)]
+        rhs = ten.from_numpy("(Q|i u) domain", block.reshape(len(ribfs), naocc * len(paos)))
+        A = sparse.submatrix_rows_and_cols(self.metric, ribfs, ribfs, name="(P|Q) domain")
+        return A, rhs
+
+    def _reshape_fit(self, ij, rhs):
+        """The solved right-hand side, back to ``(naux_dom, naocc, npao_dom)``."""
+        ribfs = self.lmopair_to_ribfs[ij]
+        paos = self.lmopair_to_paos[ij]
+        solved = ten.view(rhs).reshape(len(ribfs), self.ref.naocc, len(paos))
+        return ten.from_numpy("J^-1 (Q|i u)", solved)
+
+    def precompute_fits(self):
+        """Solve every distinct domain's fitting equations in one graph.
+
+        The single largest item in the PNO transform: 31% of the phase at
+        ethanol/cc-pVTZ, and only 23 calls, because the solve is per *domain*
+        rather than per pair and each one carries ``naocc * npao`` right-hand
+        sides.
+
+        They are mutually independent, so they go into one graph and run under
+        the OpenMP executor. That is the safe way to get this parallelism.
+        Driving the same loop from a Python thread pool is what an earlier
+        attempt did, and against the OpenMP-built OpenBLAS that conda resolves
+        by default it returns silently wrong numbers: that build indexes its
+        internal buffers by ``omp_get_thread_num()``, which is 0 on every
+        caller-created thread, so the workers overwrite each other's scratch.
+        An OpenMP parallel region is a real team with distinct thread numbers,
+        so the same BLAS is safe underneath it. See
+        docs/sphinx/building/blas_threading.rst.
+
+        One check is given up: ``gesv``'s ``info``, which the eager path
+        inspects per solve. The domain metric is a Coulomb metric and positive
+        definite, so a singular factorization would mean the auxiliary basis
+        itself is broken; :meth:`_fit_coefficients` still checks on the lazy
+        path that remains for anything this pass has not covered.
+        """
+        if self.q_ia is None:
+            raise RuntimeError("precompute_fits() needs compute_qia() first")
+
+        first = {}
+        for ij in range(self.n_lmo_pairs):
+            first.setdefault(self._domain_key(ij), ij)
+        if not first:
+            return self
+
+        jobs = [(key, ij) + self._fit_operands(ij) for key, ij in first.items()]
+        g = cg.Graph("domain fits")
+        with cg.capture(g):
+            for _, _, A, rhs in jobs:
+                la.gesv(A, rhs)
+        g.set_executor(cg.OpenMPExecutor())
+        g.execute()
+
+        for key, ij, _, rhs in jobs:
+            self._fit_cache[key] = self._reshape_fit(ij, rhs)
+        self._print(f"  fits:     {len(jobs)} distinct domains solved in one graph")
+        return self
+
     def _fit_coefficients(self, ij):
         """``J_dom^-1 (Q | i u)`` for every LMO at once, memoized by domain.
 
@@ -508,22 +581,53 @@ class DLPNOBase:
         pair, so it stays correct when screening makes the domains differ and
         simply yields more entries.
         """
-        key = (id(self.lmopair_to_ribfs[ij]), id(self.lmopair_to_paos[ij]))
+        key = self._domain_key(ij)
         hit = self._fit_cache.get(key)
         if hit is not None:
             return hit
 
-        ribfs = self.lmopair_to_ribfs[ij]
-        paos = self.lmopair_to_paos[ij]
-        naocc = self.ref.naocc
-        block = ten.view(self.q_ia)[np.ix_(ribfs, range(naocc), paos)]
-        rhs = ten.from_numpy("(Q|i u) domain", block.reshape(len(ribfs), naocc * len(paos)))
-        A_solve = sparse.submatrix_rows_and_cols(self.metric, ribfs, ribfs, name="(P|Q) domain")
-        solved = ten.view(ten.solve(A_solve, rhs)).reshape(len(ribfs), naocc, len(paos))
+        # Lazy fallback for anything precompute_fits() did not cover. It also
+        # keeps gesv's info check, which the captured path cannot see.
+        A_solve, rhs = self._fit_operands(ij)
+        solved = ten.view(ten.solve(A_solve, rhs)).reshape(
+            len(self.lmopair_to_ribfs[ij]), self.ref.naocc, len(self.lmopair_to_paos[ij]))
 
         hit = ten.from_numpy("J^-1 (Q|i u)", solved)
         self._fit_cache[key] = hit
         return hit
+
+    def _batched_eigh(self, mats, descending=True, label="eigh"):
+        """Diagonalize many independent matrices in one graph.
+
+        Per-pair ``syev`` is the largest remaining item in the PNO transform
+        once the domain fits are batched, and the calls are mutually
+        independent, so they are captured together and run under the OpenMP
+        executor instead of being issued one at a time.
+
+        Issuing them eagerly gets *worse* with threads, not better: 219 ms
+        serial against 329 ms on ten threads at ethanol/cc-pVTZ, because each
+        small ``syev`` is fighting the BLAS's own internal threading. One graph
+        node per matrix with an OpenMP team over the nodes is the right grain -
+        the parallelism is across matrices, and each matrix stays serial.
+
+        A Python thread pool would be the obvious alternative and is not safe
+        here; see :meth:`precompute_fits` for why.
+        """
+        evecs = [ten.from_numpy(f"{label} vectors", ten.view(A)) for A in mats]
+        evals = [ten.zeros(f"{label} values", [ten.shape(A)[0]]) for A in mats]
+        if evecs:
+            g = cg.Graph(label)
+            with cg.capture(g):
+                for V, w in zip(evecs, evals):
+                    la.syev(V, w, compute_eigenvectors=True)
+            g.set_executor(cg.OpenMPExecutor())
+            g.execute()
+        if descending:
+            for V, w in zip(evecs, evals):
+                v, e = ten.view(V), ten.view(w)
+                v[...] = v[:, ::-1].copy()
+                e[...] = e[::-1].copy()
+        return evals, evecs
 
     def _canonical_pao_domain(self, ij):
         """``(X_pao, e_pao, F_can)`` for pair ``ij``'s PAO domain, memoized.
@@ -717,11 +821,16 @@ class DLPNOBase:
         self.de_pno_os = [0.0] * npairs
         self.de_pno_ss = [0.0] * npairs
 
-        for ij, (i, j) in enumerate(self.ij_to_i_j):
-            if i > j:
-                continue
-            ji = self.ij_to_ji[ij]
-
+        # Three stages rather than one loop, so the two eigendecompositions per
+        # pair can be batched. Each stage is the same arithmetic in the same
+        # order as the per-pair loop it replaces; only the issue order changes.
+        #
+        # Stage 1: everything up to the pair density, which depends on nothing
+        # outside its own pair.
+        upper = [ij for ij, (i, j) in enumerate(self.ij_to_i_j) if i <= j]
+        st = {}
+        for ij in upper:
+            i, j = self.ij_to_i_j[ij]
             K_pao = self._pair_exchange(ij, i, j)
 
             # Canonicalize the pair's PAO domain, removing linear dependencies.
@@ -736,16 +845,26 @@ class DLPNOBase:
             la.direct_division(1.0, K_pao, D_pao, 0.0, T_pao)
             Tt_pao = ten.antisymmetrize(T_pao)
 
-            e_ij_initial = ten.vector_dot(K_pao, Tt_pao)
-            e_ij_os_initial = ten.vector_dot(K_pao, T_pao)
-
             # Pair density; its eigenvectors are the PNOs, eigenvalues the
             # PNO occupation numbers.
             D_ij = ten.doublet(Tt_pao, T_pao, trans_b=True, name="D (pair)")
             la.axpby(1.0, ten.doublet(Tt_pao, T_pao, trans_a=True), 1.0, D_ij)
-            pno_occ, X_pno = ten.eigh(D_ij, descending=True, name="PNO")
 
-            nvir_ij = ten.shape(K_pao)[0]
+            st[ij] = dict(
+                K_pao=K_pao, T_pao=T_pao, Tt_pao=Tt_pao, D_ij=D_ij,
+                X_pao=X_pao, F_pao_ij=F_pao_ij,
+                e_ij_initial=ten.vector_dot(K_pao, Tt_pao),
+                e_ij_os_initial=ten.vector_dot(K_pao, T_pao),
+            )
+
+        occs, vecs = self._batched_eigh([st[ij]["D_ij"] for ij in upper],
+                                        descending=True, label="PNO")
+
+        # Stage 2: the truncation decision, which is data dependent and so
+        # cannot be captured, then the Fock matrix in each surviving subspace.
+        for ij, pno_occ, X_pno in zip(upper, occs, vecs):
+            i, j = self.ij_to_i_j[ij]
+            nvir_ij = ten.shape(st[ij]["K_pao"])[0]
             pno_scale = 1.0
             if i < self.ref.n_core or j < self.ref.n_core:
                 pno_scale *= self.cut.t_cut_pno_core_scale
@@ -757,10 +876,25 @@ class DLPNOBase:
                     keep += 1
 
             X_pno = sparse.submatrix_cols(X_pno, range(keep), name="X (PNO)")
-
+            st[ij]["X_pno"] = X_pno
+            st[ij]["keep"] = keep
             # Orthonormal but not canonical yet; rotate so F is diagonal.
-            pno_canon, e_pno = ten.canonicalizer(X_pno, F_pao_ij, name="PNO")
-            X_pno = ten.doublet(X_pno, pno_canon, name="X (PNO)")
+            st[ij]["Fmo"] = ten.triplet(X_pno, st[ij]["F_pao_ij"], X_pno,
+                                        trans_a=True, name="C^T F C")
+
+        e_pnos, canons = self._batched_eigh([st[ij]["Fmo"] for ij in upper],
+                                            descending=True, label="PNO canon")
+
+        # Stage 3: rotate into the canonical PNO basis and record the pair.
+        for ij, e_pno, pno_canon in zip(upper, e_pnos, canons):
+            i, j = self.ij_to_i_j[ij]
+            ji = self.ij_to_ji[ij]
+            K_pao, T_pao, Tt_pao = st[ij]["K_pao"], st[ij]["T_pao"], st[ij]["Tt_pao"]
+            X_pao, keep = st[ij]["X_pao"], st[ij]["keep"]
+            e_ij_initial = st[ij]["e_ij_initial"]
+            e_ij_os_initial = st[ij]["e_ij_os_initial"]
+
+            X_pno = ten.doublet(st[ij]["X_pno"], pno_canon, name="X (PNO)")
 
             K_pno = ten.triplet(X_pno, K_pao, X_pno, trans_a=True, name="K (PNO)")
             T_pno = ten.triplet(X_pno, T_pao, X_pno, trans_a=True, name="T (PNO)")

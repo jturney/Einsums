@@ -160,7 +160,9 @@ t_total = time.perf_counter()
 phase("Setup Orbitals", mp2.setup_orbitals)
 phase("Sparsity", mp2.prep_sparsity)
 phase("DF Ints", lambda: (mp2.compute_metric(), mp2.compute_qia()))
-phase("PNO Transform", mp2.pno_transform)
+# precompute_fits belongs to this phase, not to DF Ints: psi4 solves the
+# domain fitting equations inside its own pno_transform.
+phase("PNO Transform", lambda: (mp2.precompute_fits(), mp2.pno_transform()))
 phase("PNO Overlaps", mp2.compute_pno_overlaps)
 phase("LMP2", mp2.lmp2_iterations)
 ours["DLPNO-MP2"] = time.perf_counter() - t_total
