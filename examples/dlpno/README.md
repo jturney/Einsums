@@ -198,8 +198,11 @@ Note `gather` has no whole-axis wildcard: an empty index list selects nothing, b
 The remaining numpy in the package is a useful map of what else is missing, in rough order of what this workload would pay for.
 Bookkeeping numpy (integer index maps like `i_j_to_ij`, scalars, and the psi4 buffers arriving through the bridge) is excluded — that is interop, not a gap.
 
-1. **Element-wise unary math.** `np.sqrt`, `np.abs`, reciprocal. The DOI integrals finish with `sqrt(abs(...))` on a whole matrix and the MP2 denominators are a reciprocal, both of which currently round-trip through the host. `element_transform` exists but takes a Python callable, so it cannot be the answer for a hot elementwise op.
-2. **Reductions along axes.** `np.sum` over one or all axes. `vector_dot` and `rms` cover the two special cases that already had users; the Mulliken populations need a genuine axis reduction and do `share_u.sum(axis=1)` on the host.
+Check before assuming something is missing: several of these already exist, and the real gap is narrower than "einsums cannot do X".
+`linalg.abs`, `scale`, `direct_product` and `element_transform` all capture, as do the pointer-writer `sum`, `max`, `dot`, `trace` and `norm` (the returning forms throw during capture by design).
+
+1. **`pow` does not capture.** It exists — `linalg.pow(A, alpha, cutoff)`, in place — but throws inside a capture, so `sqrt` as `pow(A, 0.5)` is only available eagerly. Making it capture-aware is a smaller change than a new op and would cover the DOI finish, which is `sqrt(abs(...))` over a whole matrix and whose `abs` half already captures.
+2. **Reductions along an axis.** `linalg.sum(result, A)` exists and captures, but sums the *whole* tensor into a scalar. The Mulliken populations need `share_u.sum(axis=1)`, and there is no axis-wise form.
 3. **Reshape.** `_fit_operands` gathers `(Q|iu)` for a domain and then reshapes to feed one `gesv` with `naocc * npao` right-hand sides. The gather captures now; the reshape does not, so the assembly still breaks the graph.
 4. **Diagonal extract and set.** `np.diag` appears in the PAO normalization and the dipole centroids.
 5. **Accumulating scatter.** The Mulliken populations are `np.add.at`, which is exactly scatter-with-accumulate. `cg::scatter` deliberately rejects repeated indices rather than silently picking a winner, so this is a separate op and not a relaxation of that rule.
