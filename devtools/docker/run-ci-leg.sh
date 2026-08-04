@@ -23,6 +23,7 @@
 #     ./devtools/docker/run-ci-leg.sh no-profiler          # EINSUMS_WITH_PROFILER=OFF (BUILD_PYTHON=ON)
 #     ./devtools/docker/run-ci-leg.sh tsan                 # Sanitizers/thread (Debug, BUILD_PYTHON=ON)
 #     ./devtools/docker/run-ci-leg.sh asan                 # Sanitizers/address,leak,undefined (Debug)
+#     ./devtools/docker/run-ci-leg.sh free-threaded        # free-threaded CPython (cp314t), BUILD_PYTHON=ON
 #
 #     # Append `-arm64` to any leg name to run on native arm64 instead of
 #     # x86_64-via-Rosetta. It is faster, roughly 2x for instrumented builds,
@@ -90,6 +91,11 @@ leg_settings() {
     # Desktop. CI itself does build Python; use the `python` variant
     # (e.g. `gcc-openblas-py`) if you need that parity locally and your
     # Docker memory allowance is comfortable.
+    #
+    # Extra args for merge_yml.py. Legs that need a different conda env than the
+    # plain (compiler, blas) pair set this; it also namespaces the env, see
+    # ENV_NAME in run_leg. Reset here so it never leaks between calls.
+    MERGE_EXTRA=""
     case "$1" in
         gcc-openblas)
             COMPILER=default
@@ -173,9 +179,37 @@ leg_settings() {
             BUILD_TYPE=Debug
             EXTRA=("-DEINSUMS_WITH_SANITIZERS=address,leak,undefined" "-DEINSUMS_BUILD_PYTHON=OFF")
             ;;
+        free-threaded)
+            # Free-threaded CPython (cp314t), mirroring the CI leg of the same
+            # name. Python must be ON -- the whole point is the bindings.
+            #
+            # The Python_FIND_ABI 4th field is the free-threaded flag (CMake
+            # 3.30+); without it FindPython refuses the t-build and silently
+            # falls back to another interpreter, which looks like a pass while
+            # testing nothing. MERGE_EXTRA gets this leg its own conda env, so
+            # it does not inherit the regular-ABI interpreter from the shared
+            # gcc-openblas env.
+            #
+            # After the normal ctest, the runner re-runs the PYTHON label with
+            # PYTHON_GIL=0; see step 5 below for why that second pass matters.
+            COMPILER=default
+            BLAS=openblas
+            BUILD_TYPE=RelWithDebInfo
+            MERGE_EXTRA="--free-threaded"
+            # The single quotes around the ABI list are load-bearing: EXTRA is
+            # flattened into a plain string and interpolated into the `docker
+            # exec bash -lc "..."` command, so bare semicolons would be read as
+            # command separators by the container's shell. \${CONDA_PREFIX} is
+            # escaped for the same reason -- it must reach the container
+            # unexpanded and be resolved there, after conda activate.
+            EXTRA=("-DEINSUMS_BUILD_PYTHON=ON"
+                   "-DPython_FIND_ABI='OFF;ANY;ANY;ON'"
+                   "-DPython_ROOT_DIR=\${CONDA_PREFIX}"
+                   "-DPython_FIND_STRATEGY=LOCATION")
+            ;;
         *)
             echo "Unknown leg: $1" >&2
-            echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], intel, no-profiler, tsan, tsan-nopy, asan, windows-cross" >&2
+            echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], intel, no-profiler, tsan, tsan-nopy, asan, free-threaded, windows-cross" >&2
             echo "       (append -arm64 to any of the above for native arm64)" >&2
             exit 1
             ;;
@@ -266,7 +300,14 @@ run_leg() {
     # `mamba env create` cost more than once per combo. For example, the asan
     # and tsan legs both reuse the gcc-openblas env. Build dirs and ccache stay
     # per-leg since cmake flags and sanitizer flags differ.
+    # Legs that pass extra merge_yml.py args resolve a DIFFERENT dependency set
+    # (the free-threaded leg swaps the CPython ABI), so they must not share the
+    # plain (compiler, blas) env - reusing it would silently build against the
+    # regular interpreter and pass while testing nothing.
     local ENV_NAME="einsums-env-${COMPILER}-${BLAS}"
+    if [[ -n "${MERGE_EXTRA}" ]]; then
+        ENV_NAME="${ENV_NAME}-$(echo "${MERGE_EXTRA}" | tr -d ' -')"
+    fi
     local BUILD_DIR="/work/build-${LEG}"
     local CCACHE_DIR="/work/ccache-${LEG}"
     local SRC_DIR="/work/src"
@@ -303,7 +344,7 @@ if ! conda env list | awk '{print \$1}' | grep -qx '${ENV_NAME}'; then
     # the source has been updated. Wipe and recopy contents to /tmp/merge.
     rm -rf /tmp/merge
     cp -r '${SRC_DIR}/devtools/conda-envs' /tmp/merge
-    python /tmp/merge/merge_yml.py '${COMPILER}' '${BLAS}' --output /tmp/env-${LEG}.yml
+    python /tmp/merge/merge_yml.py ${MERGE_EXTRA} '${COMPILER}' '${BLAS}' --output /tmp/env-${LEG}.yml
     mamba env create -f /tmp/env-${LEG}.yml -n '${ENV_NAME}' -y >/dev/null
 fi
 conda activate '${ENV_NAME}'
@@ -336,6 +377,23 @@ fi
 # 5. Run tests.
 cd '${BUILD_DIR}'
 ctest --output-on-failure ${CTEST_EXTRA_STR}
+
+# 5b. Free-threaded leg only: the run above imports einsums with the GIL
+#     auto-re-enabled, because _core does not declare Py_MOD_GIL_NOT_USED and
+#     CPython falls back for any such module (it warns when it does). That
+#     proves the tree works against the 't' ABI but exercises no free-threading
+#     at all. PYTHON_GIL=0 overrides the fallback. The assert is after the
+#     import on purpose: if loading _core flipped the GIL back on, this pass
+#     would silently duplicate the one above instead of failing.
+if [[ '${LEG}' == 'free-threaded' ]]; then
+    echo '⤷ re-running the PYTHON label with the GIL disabled'
+    PYTHONPATH='${BUILD_DIR}/lib' PYTHON_GIL=0 python -c \"
+import sys, einsums
+assert not sys._is_gil_enabled(), 'importing einsums re-enabled the GIL'
+print('GIL still disabled after importing einsums')
+\"
+    PYTHON_GIL=0 ctest -L PYTHON --output-on-failure ${CTEST_EXTRA_STR}
+fi
 "
 }
 

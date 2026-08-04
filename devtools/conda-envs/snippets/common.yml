@@ -35,9 +35,15 @@ dependencies:
   # Pin the interpreter to the regular (GIL) CPython ABI. Without an explicit
   # python entry the solver picks it transitively, and conda-forge's linux-64
   # solver started resolving that to the free-threaded cp314t variant
-  # (2026-07). FindPython rejects a t-build for
-  # `COMPONENTS Interpreter Development` and silently falls back to the CI
-  # runner's system python, whose multiarch dev headers are absent.
+  # (2026-07). FindPython then silently falls back to the CI runner's system
+  # python, whose multiarch dev headers are absent.
+  #
+  # A t-build is usable, it just has to be asked for explicitly: pass
+  # `--free-threaded` to merge_yml.py and give CMake the ABI hint
+  # `-DPython_FIND_ABI="OFF;ANY;ANY;ON"` (4th field = free-threaded, needs CMake
+  # 3.30+) plus Python_ROOT_DIR. That is what the free-threaded CI leg does.
+  # Without the hint FindPython will not accept a t-build for
+  # `COMPONENTS Interpreter Development`, which is where the fallback comes from.
   - python 3.14.* *_cp314
   - pybind11
   - pytest

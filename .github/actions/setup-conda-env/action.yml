@@ -17,6 +17,12 @@ inputs:
     description: "Set to 'true' to add the documentation build dependencies."
     required: false
     default: "false"
+  free-threaded:
+    description: >
+      Set to 'true' to pin the free-threaded (no-GIL) CPython ABI. Building
+      against it also needs -DPython_FIND_ABI="OFF;ANY;ANY;ON" at configure time.
+    required: false
+    default: "false"
   source-dir:
     description: "Path to the checked-out repository root, relative to the workspace."
     required: false
@@ -47,7 +53,9 @@ runs:
       run: |
         docs_flag=""
         if [ "${{ inputs.docs }}" = "true" ]; then docs_flag="--docs"; fi
-        python merge_yml.py ${docs_flag} ${{ inputs.compiler }} ${{ inputs.blas }}
+        ft_flag=""
+        if [ "${{ inputs.free-threaded }}" = "true" ]; then ft_flag="--free-threaded"; fi
+        python merge_yml.py ${docs_flag} ${ft_flag} ${{ inputs.compiler }} ${{ inputs.blas }}
 
     # The conda env is deliberately NOT cached. The env tarballs weighed
     # ~1GB each (per OS/compiler/blas/week/yml-hash, duplicated per branch)

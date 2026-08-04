@@ -49,6 +49,29 @@ jobs:
             variant: no-profiler
             cmake_extra: >
               -DEINSUMS_WITH_PROFILER=OFF
+          # Free-threaded CPython (cp314t). Guards two distinct things: that the
+          # tree still compiles and links against the `t` ABI, and that nothing in
+          # the bindings assumes the GIL exists. The second needs PYTHON_GIL=0 —
+          # without it CPython re-enables the GIL on import, because _core does not
+          # declare Py_MOD_GIL_NOT_USED, and the leg would silently test nothing new.
+          #
+          # Python_FIND_ABI's 4th field is the free-threaded flag (CMake 3.30+).
+          # Without it FindPython refuses the t-build and quietly falls back to
+          # another interpreter on the runner.
+          #
+          # Note this leg drives einsums from ONE python thread, so it does not
+          # cover concurrent callers; the OpenMP-OpenBLAS hazard that free-threading
+          # exposes needs a threaded caller to reproduce. See
+          # docs/sphinx/building/blas_threading.rst.
+          - compiler: default
+            blas: openblas
+            build_type: RelWithDebInfo
+            variant: free-threaded
+            free_threaded: true
+            cmake_extra: >
+              -DPython_FIND_ABI="OFF;ANY;ANY;ON"
+              -DPython_ROOT_DIR="$CONDA_PREFIX"
+              -DPython_FIND_STRATEGY=LOCATION
         exclude:
           # clang leg is openblas-only (mkl pairs with the intel toolchain).
           - compiler: clang
@@ -83,6 +106,7 @@ jobs:
           compiler: ${{ matrix.compiler }}
           blas: ${{ matrix.blas }}
           source-dir: src
+          free-threaded: ${{ matrix.free_threaded == true }}
 
       - name: Configure CMake
         run: |
@@ -127,8 +151,30 @@ jobs:
         working-directory: "${{ github.workspace }}/build"
         run: ctest --rerun-failed --output-on-failure -j4
 
+      # The run above imports einsums with the GIL auto-re-enabled: CPython does
+      # that for any extension that has not declared Py_MOD_GIL_NOT_USED, and
+      # announces it with a RuntimeWarning. So by itself it only proves the tree
+      # works against the `t` ABI. PYTHON_GIL=0 overrides the fallback and runs
+      # the bindings with no GIL at all, which is the state declaring the opt-in
+      # would make permanent.
+      - name: Test (CTest) - Python suite with the GIL disabled
+        if: ${{ matrix.variant == 'free-threaded' }}
+        working-directory: "${{ github.workspace }}/build"
+        env:
+          PYTHON_GIL: "0"
+        run: |
+          # Assert after the import, not just at startup: the point is that
+          # loading _core did not flip the GIL back on and reduce this to a
+          # duplicate of the run above.
+          PYTHONPATH="${{ github.workspace }}/build/lib" python -c "
+          import sys, einsums
+          assert not sys._is_gil_enabled(), 'importing einsums re-enabled the GIL'
+          print('GIL still disabled after importing einsums')
+          "
+          ctest -L PYTHON --output-on-failure -j4
+
       - name: Generate coverage information
-        if: ${{ matrix.compiler == 'default' && matrix.blas == 'openblas' }}
+        if: ${{ matrix.compiler == 'default' && matrix.blas == 'openblas' && matrix.variant == 'default' }}
         working-directory: "${{github.workspace}}/build"
         run: |
           # Conda's gcc installs gcov as <arch>-conda-linux-gnu-gcov
@@ -161,7 +207,7 @@ jobs:
           lcov --gcov-tool "$GCOV" --capture --directory . --output-file coverage.info --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\*
 
       - name: Upload C++ coverage to Codecov
-        if: ${{ matrix.compiler == 'default' && matrix.blas == 'openblas' }}
+        if: ${{ matrix.compiler == 'default' && matrix.blas == 'openblas' && matrix.variant == 'default' }}
         uses: codecov/codecov-action@v7
         with:
           directory: "${{github.workspace}}/src"

@@ -168,6 +168,17 @@ another interpreter on the system:
 The fourth ``Python_FIND_ABI`` field is the free-threaded flag, and needs CMake
 3.30 or newer.
 
+A CI leg covers this. ``merge_yml.py --free-threaded`` swaps the interpreter pin
+for the ``t`` ABI, and the ``free-threaded`` job builds the tree against it, runs
+the full suite, then re-runs the Python tests under ``PYTHON_GIL=0``. The second
+pass is the one that matters: without it CPython re-enables the GIL on import and
+the leg would only prove the tree compiles. Reproduce it locally with
+``./devtools/docker/run-ci-leg.sh free-threaded``.
+
+That leg drives Einsums from a single Python thread, so it does not exercise the
+hazard described above, which needs concurrent callers. It guards the build and
+the GIL-free serial path, not thread safety.
+
 .. _blas-threading-switching:
 
 Switching to the pthreads build

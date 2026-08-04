@@ -144,7 +144,30 @@ def compiler_packages(compiler, system):
     raise SystemExit(f"Unknown compiler: {compiler!r}.")
 
 
-def merge_environment(output_file, system, compiler, blas, docs):
+def free_threaded_pin(dependencies):
+    """Swap the CPython pin in ``dependencies`` for the free-threaded ABI, in place.
+
+    ``snippets/common.yml`` pins the regular ABI (``*_cp314``); the free-threaded
+    interpreter is the same version with a ``t`` suffix (``*_cp314t``). Rewriting
+    the existing entry rather than appending a second one keeps the solver from
+    seeing two conflicting python specs.
+
+    conda-forge ships matching ``*_cp314t`` builds of everything the env needs on
+    linux-64, so no package has to be dropped. That is not true everywhere: the
+    osx-arm64 solve currently has no free-threaded scipy/textual/rich, so a macOS
+    free-threaded env needs those removed by hand.
+    """
+    for i, dep in enumerate(dependencies):
+        if isinstance(dep, str) and dep.startswith("python ") and dep.endswith("_cp314"):
+            dependencies[i] = dep + "t"
+            return dependencies[i]
+    raise SystemExit(
+        "Could not find the regular-ABI python pin to convert. Expected an entry "
+        "like 'python 3.14.* *_cp314' in snippets/common.yml."
+    )
+
+
+def merge_environment(output_file, system, compiler, blas, docs, free_threaded=False):
     yaml = YAML()
     merged = {"name": "einsums-dev", "channels": [], "dependencies": []}
 
@@ -189,11 +212,18 @@ def merge_environment(output_file, system, compiler, blas, docs):
     merged["channels"] = list(dict.fromkeys(merged["channels"]))
     merged["dependencies"] = list(dict.fromkeys(merged["dependencies"]))
 
+    python_pin = None
+    if free_threaded:
+        python_pin = free_threaded_pin(merged["dependencies"])
+
     with open(output_file, "w") as f:
         yaml.dump(merged, f)
 
-    print(f"Wrote {output_file}  [{system} / {compiler} / {blas}{' / docs' if docs else ''}]")
+    label = f"{system} / {compiler} / {blas}{' / docs' if docs else ''}"
+    print(f"Wrote {output_file}  [{label}]")
     print("  toolchain: " + ", ".join(compiler_packages(compiler, system)))
+    if python_pin:
+        print(f"  interpreter: {python_pin} (free-threaded)")
 
 
 if __name__ == "__main__":
@@ -211,6 +241,13 @@ Options:
     parser.add_argument("--output", help="Name of the output yml file", default="conda.yml")
     parser.add_argument(
         "--docs", help="Install packages needed to build documentation", action="store_true"
+    )
+    parser.add_argument(
+        "--free-threaded",
+        action="store_true",
+        help="Pin the free-threaded (no-GIL) CPython ABI instead of the regular one. "
+        "Building against it also needs the Python_FIND_ABI CMake hint; see "
+        "docs/sphinx/building/blas_threading.rst.",
     )
     parser.add_argument(
         "compiler",
@@ -242,4 +279,6 @@ Options:
         print("Windows detected: forcing BLAS=mkl.")
         args.blas = "mkl"
 
-    merge_environment(args.output, system, args.compiler, args.blas, args.docs)
+    merge_environment(
+        args.output, system, args.compiler, args.blas, args.docs, args.free_threaded
+    )
