@@ -190,10 +190,21 @@ At ten iterations it is the larger half of the port's LMP2 wall time, so it matt
 
 ## Gaps found in Einsums
 
-**No gather by index list.**
-Domain restriction is the fundamental operation in DLPNO, and there is no einsums primitive for "take these rows and these columns".
-`sparse.submatrix_*` therefore goes through the tensor's numpy view, which means every domain extraction runs eagerly on the host and cannot be captured into a graph.
-A gather/scatter op over index lists is the single most valuable thing the library could add for this workload.
+**Gather and scatter by index list — FIXED.**
+Domain restriction is the fundamental operation in DLPNO, and einsums had no primitive for "take these rows and these columns", so `sparse.submatrix_*` went through the tensor's numpy view and every domain extraction ran eagerly on the host, uncapturable.
+`cg::gather` and `cg::scatter` now cover it, and `sparse.submatrix` / `sparse.scatter_into` are thin wrappers over them.
+Note `gather` has no whole-axis wildcard: an empty index list selects nothing, because an empty domain silently becoming the full axis is a wrong answer rather than an error.
+
+The remaining numpy in the package is a useful map of what else is missing, in rough order of what this workload would pay for.
+Bookkeeping numpy (integer index maps like `i_j_to_ij`, scalars, and the psi4 buffers arriving through the bridge) is excluded — that is interop, not a gap.
+
+1. **Element-wise unary math.** `np.sqrt`, `np.abs`, reciprocal. The DOI integrals finish with `sqrt(abs(...))` on a whole matrix and the MP2 denominators are a reciprocal, both of which currently round-trip through the host. `element_transform` exists but takes a Python callable, so it cannot be the answer for a hot elementwise op.
+2. **Reductions along axes.** `np.sum` over one or all axes. `vector_dot` and `rms` cover the two special cases that already had users; the Mulliken populations need a genuine axis reduction and do `share_u.sum(axis=1)` on the host.
+3. **Reshape.** `_fit_operands` gathers `(Q|iu)` for a domain and then reshapes to feed one `gesv` with `naocc * npao` right-hand sides. The gather captures now; the reshape does not, so the assembly still breaks the graph.
+4. **Diagonal extract and set.** `np.diag` appears in the PAO normalization and the dipole centroids.
+5. **Accumulating scatter.** The Mulliken populations are `np.add.at`, which is exactly scatter-with-accumulate. `cg::scatter` deliberately rejects repeated indices rather than silently picking a winner, so this is a separate op and not a relaxation of that rule.
+6. **Concatenate / stack along an axis.** DIIS flattens every pair block into one vector and back; the dipole code stacks three components into an `(naocc, 3)`.
+7. **Masked select.** `np.where` guards a divide-by-zero in the population split. Lowest value of the seven: it is one guarded division, not a hot path.
 
 **In-place elementwise einsum against a lower-rank operand silently yielded zeros** (fixed).
 `einsum("ab <- ab ; b", X, X, f)` was accepted by the aliasing guard, because the aliased operand's index list matches the output's, but returned zeros: both generic algorithms clear C before reading anything, so the aliased operand read back already zeroed.

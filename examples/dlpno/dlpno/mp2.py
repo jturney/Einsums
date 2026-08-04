@@ -159,7 +159,8 @@ class DLPNOMP2(DLPNOBase):
             if n == 0:
                 continue
             Xp = ten.zeros(f"X (padded) {ij}", [npao, self.pair_dim(ij)])
-            ten.view(Xp)[np.asarray(self.lmopair_to_paos[ij], dtype=int), :n] = ten.view(self.X_pno[ij])
+            sparse.scatter_into(Xp, self.X_pno[ij],
+                                [self.lmopair_to_paos[ij], range(n)])
             X_pad[ij] = Xp
 
         # Partner blocks side by side, and the per-column sqrt prefactor.

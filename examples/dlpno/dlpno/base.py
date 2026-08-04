@@ -503,14 +503,19 @@ class DLPNOBase:
         """``(A, rhs)`` for one domain's fitting equations, gathered on the host.
 
         Split out of :meth:`_fit_coefficients` so the solves can be captured as
-        a batch. The gathers stay eager: they are index lists, and there is no
-        einsums primitive for "take these rows and these columns".
+        a batch.
         """
         ribfs = self.lmopair_to_ribfs[ij]
         paos = self.lmopair_to_paos[ij]
         naocc = self.ref.naocc
-        block = ten.view(self.q_ia)[np.ix_(ribfs, range(naocc), paos)]
-        rhs = ten.from_numpy("(Q|i u) domain", block.reshape(len(ribfs), naocc * len(paos)))
+        # The domain restriction is a captured gather now, not a numpy view.
+        # The reshape that follows is still numpy: it is a shape change, not an
+        # extraction, and einsums has no capturable reshape (see the README's
+        # note on remaining seams). np.reshape is order-agnostic logically, so
+        # the (i, u) flattening matches what the view-based version produced.
+        block = sparse.submatrix(self.q_ia, [ribfs, range(naocc), paos], name="(Q|i u) domain")
+        rhs = ten.from_numpy("(Q|i u) domain",
+                             ten.view(block).reshape(len(ribfs), naocc * len(paos)))
         A = sparse.submatrix_rows_and_cols(self.metric, ribfs, ribfs, name="(P|Q) domain")
         return A, rhs
 
@@ -663,11 +668,11 @@ class DLPNOBase:
         ribfs = self.lmopair_to_ribfs[ij]
         paos = self.lmopair_to_paos[ij]
 
-        # The gather seam: einsums has no index-list gather, so the domain
-        # restriction runs on the host view rather than as a captured op.
         fit = self._fit_coefficients(ij)
         fit_i = fit[:, i, :]
-        j_qa = ten.from_numpy("(Q|j a)", ten.view(self.q_ia)[np.ix_(ribfs, [j], paos)][:, 0, :])
+        j_qa = ten.from_numpy(
+            "(Q|j a)",
+            ten.view(sparse.submatrix(self.q_ia, [ribfs, [j], paos], name="(Q|j a)"))[:, 0, :])
         return ten.doublet(fit_i, j_qa, trans_a=True, name="K (ia|jb)")
 
     # -- pair-block storage ------------------------------------------------

@@ -19,6 +19,8 @@ eagerly on the host.
 
 import numpy as np
 
+from einsums import linalg as la
+
 from . import tensors as ten
 
 __all__ = [
@@ -32,6 +34,8 @@ __all__ = [
     "submatrix_rows",
     "submatrix_cols",
     "submatrix_rows_and_cols",
+    "submatrix",
+    "scatter_into",
 ]
 
 
@@ -117,19 +121,45 @@ def extend_maps(x_to_y, xpairs):
 
 def submatrix_rows(mat, rows, name=None):
     """Gather rows of a rank-2 tensor into a fresh tensor."""
-    a = ten.view(mat)
-    return ten.from_numpy(name or "submatrix rows", a[np.asarray(rows, dtype=int), :])
+    return submatrix(mat, [list(rows), range(ten.shape(mat)[1])],
+                     name=name or "submatrix rows")
 
 
 def submatrix_cols(mat, cols, name=None):
     """Gather columns of a rank-2 tensor into a fresh tensor."""
-    a = ten.view(mat)
-    return ten.from_numpy(name or "submatrix cols", a[:, np.asarray(cols, dtype=int)])
+    return submatrix(mat, [range(ten.shape(mat)[0]), list(cols)],
+                     name=name or "submatrix cols")
 
 
 def submatrix_rows_and_cols(mat, rows, cols, name=None):
     """Gather a rectangular index-list submatrix into a fresh tensor."""
-    a = ten.view(mat)
-    r = np.asarray(rows, dtype=int)
-    c = np.asarray(cols, dtype=int)
-    return ten.from_numpy(name or "submatrix", a[np.ix_(r, c)])
+    return submatrix(mat, [list(rows), list(cols)], name=name or "submatrix")
+
+
+def submatrix(tensor, indices, name="submatrix"):
+    """``tensor[np.ix_(*indices)]`` as a fresh tensor, via ``linalg.gather``.
+
+    The one operation every domain-restricted method is built on. It used to go
+    through the tensor's numpy view, which meant the extraction could not be
+    captured: a graph could contain the contraction but never the restriction
+    that produced its operands. ``cg::gather`` exists so it can.
+
+    Every axis needs an explicit index list. ``gather`` has no whole-axis
+    wildcard on purpose - an empty domain must stay empty rather than silently
+    becoming the full axis - so the callers above spell out ``range(n)``.
+    """
+    idx = [[int(p) for p in axis] for axis in indices]
+    out = ten.zeros(name, [len(axis) for axis in idx])
+    la.gather(out, tensor, idx)
+    return out
+
+
+def scatter_into(dst, src, indices):
+    """``dst[np.ix_(*indices)] = src``, via ``linalg.scatter``.
+
+    The inverse of :func:`submatrix`: a block computed in a domain basis put
+    back into its slot in the full-length container. Everything outside the
+    selection is left alone.
+    """
+    la.scatter(dst, src, [[int(p) for p in axis] for axis in indices])
+    return dst
