@@ -87,3 +87,54 @@ def test_gather_rejects_bad_shapes_and_indices():
     out = einsums.create_zero_tensor("oob", [2, 4], dtype="float64")
     with pytest.raises(Exception):
         la.gather(out, A, [[0, 9], whole])
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_scatter_matches_numpy_ix_assignment(dtype):
+    rng = np.random.default_rng(2)
+    dst = einsums.create_zero_tensor("dst", [5, 6], dtype=dtype)
+    src = _filled("src", (3, 2), dtype, rng)
+    rows, cols = [4, 0, 2], [5, 1]
+    la.scatter(dst, src, [rows, cols])
+
+    want = np.zeros((5, 6), dtype=dtype)
+    want[np.ix_(rows, cols)] = np.asarray(src)
+    assert_close(np.asarray(dst), want, dtype=dtype)
+
+
+def test_scatter_leaves_the_rest_untouched():
+    """A scatter is a placement, not an assignment of the whole tensor."""
+    dst = einsums.create_zero_tensor("dst", [4, 4], dtype="float64")
+    np.asarray(dst)[...] = 7.0
+    src = einsums.create_zero_tensor("src", [2, 2], dtype="float64")
+    np.asarray(src)[...] = 1.0
+    la.scatter(dst, src, [[0, 3], [0, 3]])
+
+    got = np.asarray(dst)
+    assert got[0, 0] == 1.0 and got[3, 3] == 1.0
+    assert got[1, 1] == 7.0 and got[2, 0] == 7.0
+
+
+def test_scatter_round_trips_with_gather():
+    A = einsums.create_zero_tensor("A", [6, 6], dtype="float64")
+    np.asarray(A)[...] = np.arange(36).reshape(6, 6)
+    dom = [4, 1, 0]
+
+    block = einsums.create_zero_tensor("block", [len(dom), len(dom)], dtype="float64")
+    la.gather(block, A, [dom, dom])
+    back = einsums.create_zero_tensor("back", [6, 6], dtype="float64")
+    la.scatter(back, block, [dom, dom])
+
+    assert_close(np.asarray(back)[np.ix_(dom, dom)], np.asarray(A)[np.ix_(dom, dom)])
+
+
+def test_scatter_rejects_repeated_indices():
+    """Two writes to one element would be order-dependent, so it is an error.
+
+    gather allows repeats - reading the same element twice is harmless - but
+    the asymmetry is deliberate.
+    """
+    dst = einsums.create_zero_tensor("dst", [4, 4], dtype="float64")
+    src = einsums.create_zero_tensor("src", [3, 4], dtype="float64")
+    with pytest.raises(Exception):
+        la.scatter(dst, src, [[1, 2, 1], list(range(4))])

@@ -811,6 +811,144 @@ APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<double>>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// scatter: index-list placement, the inverse of gather
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Write @p src into an arbitrary index selection of @p dst.
+///
+/// The inverse of @ref gather, with the index lists naming positions in the
+/// DESTINATION rather than the source:
+///
+///   dst[indices[0][i0], indices[1][i1], ...] = src[i0, i1, ...]
+///
+/// which is numpy's `A[np.ix_(rows, cols)] = B`. Elements of dst outside the
+/// selection are left alone, so this is a placement, not an assignment of the
+/// whole tensor. That is what a domain-restricted result needs: a pair's block
+/// is computed in its own small domain basis and then dropped into its slot in
+/// the full-length container.
+///
+/// As with gather, an empty index list selects nothing rather than acting as a
+/// whole-axis wildcard, and a whole axis is an explicit range at the call site.
+///
+/// **Repeated indices are rejected.** In a gather a repeat is harmless - the
+/// same element is read twice - but in a scatter it means two writes to one
+/// destination element, and which one survives depends on iteration order. The
+/// callers here build index lists from orbital domains, where a repeat is a
+/// bug rather than an intent, so it is diagnosed instead of silently resolved.
+/// An accumulating scatter would be a different operation, and is not this one.
+template <CoreBasicTensorConcept DstType, CoreBasicTensorConcept SrcType>
+    requires std::is_same_v<typename DstType::ValueType, typename SrcType::ValueType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("scatter", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+APIARY_INSTANTIATE_AS("scatter", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+APIARY_INSTANTIATE_AS("scatter", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("scatter", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<float>,                                                   einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<double>,                                                  einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<float>>,                                     einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<double>>,                                    einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("scatter", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("scatter", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("scatter", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("scatter", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<float>,                                                   einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<double>,                                                  einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<float>>,                                     einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<double>>,                                    einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void scatter(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices) {
+    size_t const N = indices.size();
+    if (N == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::scatter: indices must be non-empty");
+    }
+    size_t const dst_rank = detail::tensor_rank(*dst);
+    size_t const src_rank = detail::tensor_rank(src);
+    if (dst_rank != N || src_rank != N) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::scatter: rank mismatch - dst rank={}, src rank={}, indices.size()={}", dst_rank, src_rank,
+                                N);
+    }
+
+    std::vector<size_t> extents(N);
+    for (size_t k = 0; k < N; ++k) {
+        extents[k] = indices[k].size();
+        if (src.dim(k) != extents[k]) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::scatter: src axis {} has extent {}, but {} indices were given", k,
+                                    src.dim(k), extents[k]);
+        }
+        for (size_t p : indices[k]) {
+            if (p >= dst->dim(k)) {
+                EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::scatter: index {} on axis {} is out of range for dst dim {}", p, k,
+                                        dst->dim(k));
+            }
+        }
+        // O(n log n) once at record time, not per element.
+        std::vector<size_t> sorted(indices[k]);
+        std::sort(sorted.begin(), sorted.end());
+        auto dup = std::adjacent_find(sorted.begin(), sorted.end());
+        if (dup != sorted.end()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::scatter: index {} is repeated on axis {}; two writes would target the same element and the "
+                                    "result would depend on iteration order",
+                                    *dup, k);
+        }
+    }
+
+    auto apply = [indices, extents, N](DstType *d, SrcType const *s) {
+        using T      = typename DstType::ValueType;
+        size_t total = 1;
+        for (size_t k = 0; k < N; ++k)
+            total *= extents[k];
+        if (total == 0) {
+            return; // placing nothing is a no-op, not an error
+        }
+
+        std::vector<size_t> idx(N, 0), d_str(N), s_str(N);
+        for (size_t k = 0; k < N; ++k) {
+            d_str[k] = d->stride(k);
+            s_str[k] = s->stride(k);
+        }
+        T       *d_data = d->data();
+        T const *s_data = s->data();
+
+        for (size_t count = 0; count < total; ++count) {
+            size_t d_off = 0, s_off = 0;
+            for (size_t k = 0; k < N; ++k) {
+                d_off += indices[k][idx[k]] * d_str[k];
+                s_off += idx[k] * s_str[k];
+            }
+            d_data[d_off] = s_data[s_off];
+            for (size_t k = 0; k < N; ++k) {
+                if (++idx[k] < extents[k])
+                    break;
+                idx[k] = 0;
+            }
+        }
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("scatter eager");
+        apply(dst, &src);
+        return;
+    }
+
+    LabeledSection("scatter capture");
+    auto [s_id, s_slot] = ctx.get_slot(src);
+    auto [d_id, d_slot] = ctx.get_slot(*dst);
+
+    // dst is BOTH an input and an output: a scatter leaves everything outside
+    // the selection untouched, so whatever wrote those elements has to be
+    // ordered before this node.
+    auto executor = [s_slot, d_slot, apply]() {
+        LabeledSection("scatter execute");
+        apply(static_cast<DstType *>(d_slot->ptr), static_cast<SrcType const *>(s_slot->ptr));
+    };
+    ctx.record(OpKind::Custom, "scatter", {s_id, d_id}, {d_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // element_transform
 // ─────────────────────────────────────────────────────────────────────────────
 
