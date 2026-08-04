@@ -962,17 +962,21 @@ class DLPNOBase:
                 if abs(occ[a]) >= pno_scale * self.cut.t_cut_pno:
                     keep += 1
             st[ij]["keep"] = keep
-            st[ij]["pno_vecs"] = X_pno
+            # The survivors are the LEADING columns, because the eigenvectors
+            # came back sorted by descending occupation number, so truncating
+            # is a view rather than a gather: no node, no allocation, and no
+            # copy of a matrix we already have. Taken out here rather than
+            # under the capture below, where slicing would record a view node
+            # of its own and put back the node it just saved.
+            st[ij]["X_pno"] = X_pno[:, :keep]
 
         g2 = cg.Graph("PNO stage 2")
         with ten.arena() as hold, cg.capture(g2):
             for ij in upper:
-                X_pno = sparse.submatrix_cols(st[ij]["pno_vecs"], range(st[ij]["keep"]),
-                                              name="X (PNO)")
-                st[ij]["X_pno"] = X_pno
                 # Orthonormal but not canonical yet; rotate so F is diagonal.
-                st[ij]["Fmo"] = ten.triplet(X_pno, st[ij]["F_pao_ij"], X_pno,
-                                            trans_a=True, name="C^T F C")
+                st[ij]["Fmo"] = ten.triplet(st[ij]["X_pno"], st[ij]["F_pao_ij"],
+                                            st[ij]["X_pno"], trans_a=True,
+                                            name="C^T F C")
         self._run(g2)
         del hold
 
