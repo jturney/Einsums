@@ -153,50 +153,90 @@ class DLPNOMP2(DLPNOBase):
                     partners[ij].append((ik, k, True, -float(F_lmo[k, j])))
 
         # Each pair's PNO transform on the full PAO axis, padded to its bucket.
+        # The scatters are captured with the GEMMs that consume them rather than
+        # run here, so they parallelize too and the graph orders them itself.
         X_pad = [None] * self.n_lmo_pairs
         for ij in range(self.n_lmo_pairs):
-            n = self.n_pno[ij]
-            if n == 0:
-                continue
-            Xp = ten.zeros(f"X (padded) {ij}", [npao, self.pair_dim(ij)])
-            sparse.scatter_into(Xp, self.X_pno[ij],
-                                [self.lmopair_to_paos[ij], range(n)])
-            X_pad[ij] = Xp
+            if self.n_pno[ij]:
+                X_pad[ij] = ten.zeros(f"X (padded) {ij}", [npao, self.pair_dim(ij)])
 
-        # Partner blocks side by side, and the per-column sqrt prefactor.
-        self._S_cat = {}
-        cat, scale = {}, {}
+        # Where each coupling's block sits in its pair's output, and the
+        # per-column sqrt prefactor. No partner blocks are concatenated: see
+        # below.
+        self._S_cat, scale, offsets = {}, {}, {}
         for ij, plist in enumerate(partners):
             if not plist:
                 continue
             widths = [self.pair_dim(p) for p, _, _, _ in plist]
-            block = ten.zeros(f"X (partners) {ij}", [npao, sum(widths)])
             factors = np.empty(sum(widths))
-            view = ten.view(block)
-            off = 0
-            for (p, _, _, factor), w in zip(plist, widths):
-                view[:, off:off + w] = ten.view(X_pad[p])
+            offs, off = [], 0
+            for (_, _, _, factor), w in zip(plist, widths):
                 factors[off:off + w] = np.sqrt(abs(factor))
+                offs.append(off)
                 off += w
-            cat[ij] = block
             scale[ij] = factors
+            offsets[ij] = offs
             self._S_cat[ij] = ten.zeros(f"S (cat) {ij}", [self.pair_dim(ij), sum(widths)])
 
-        half = {ij: ten.zeros(f"half {ij}", [self.pair_dim(ij), npao]) for ij in cat}
+        half = {ij: ten.zeros(f"half {ij}", [self.pair_dim(ij), npao]) for ij in self._S_cat}
+
+        # Both GEMMs are emitted as batches over pairs of buckets rather than
+        # one node per pair, which is what lets the partner concatenation go.
+        #
+        # The concatenation was the dominant cost of this phase and none of it
+        # was arithmetic: laying a pair's partners side by side so its overlaps
+        # are one GEMM re-copies every partner block once per pair that couples
+        # to it, which at ethanol/cc-pVTZ is 335 MiB of allocate-and-memcpy
+        # over blocks that already exist in 14 MiB of X_pad. It was also the
+        # one part of the phase that could not be parallelized, being numpy
+        # slice assignment on the calling thread.
+        #
+        # gemm_batch takes a single m/n/k and a single leading dimension for
+        # the whole batch, which is exactly what bucketing already guarantees:
+        # group the couplings by (bucket of ij, bucket of partner) and every
+        # member of a group agrees on all of them. Each output is a column
+        # slice of its pair's S_cat, so the blocks land where the concatenated
+        # form put them and the rest of the phase is unchanged. Sixteen groups
+        # at four buckets, against 4056 couplings.
+        # Each coupling's output block. Sliced once and reused, by the batch
+        # below and by the coupling map at the end: a slice is a pybind round
+        # trip building a fresh view object, and at 4056 couplings doing it
+        # twice costs more than the batch emission it feeds.
+        blocks, by_shape = {}, {}
+        for ij, plist in enumerate(partners):
+            for idx, ((p, _, _, _), off) in enumerate(zip(plist, offsets.get(ij, []))):
+                block = self._S_cat[ij][:, off:off + self.pair_dim(p)]
+                blocks[ij, idx] = block
+                by_shape.setdefault((self.bucket_of[ij], self.bucket_of[p]), []).append(
+                    (half[ij], X_pad[p], block))
+
+        by_bucket = {}
+        for ij in self._S_cat:
+            by_bucket.setdefault(self.bucket_of[ij], []).append(ij)
+
         g = cg.Graph("pno overlaps")
         with cg.capture(g):
-            for ij in cat:
-                einsums.einsum("ab <- ca ; cb", half[ij], X_pad[ij], self.S_pao)
-                einsums.einsum("ab <- ac ; cb", self._S_cat[ij], half[ij], cat[ij])
-        g.apply(self.pass_manager())
-        # Two GEMMs per pair, and pairs are independent, so this is the same
-        # shape as the domain fits and the pair-density eigendecompositions:
-        # parallelism across nodes, each node serial underneath. The OpenMP
-        # executor rather than Dataflow because Dataflow runs nodes on
+            for ij in range(self.n_lmo_pairs):
+                if self.n_pno[ij]:
+                    sparse.scatter_into(X_pad[ij], self.X_pno[ij],
+                                        [self.lmopair_to_paos[ij], range(self.n_pno[ij])])
+            for members in by_bucket.values():
+                cg.batched_gemm(1.0, [X_pad[ij] for ij in members],
+                                [self.S_pao] * len(members), 0.0,
+                                [half[ij] for ij in members], trans_a=True)
+            for members in by_shape.values():
+                cg.batched_gemm(1.0, [h for h, _, _ in members], [x for _, x, _ in members],
+                                0.0, [s for _, _, s in members])
+        # No pass pipeline. This graph is emitted in the form the passes would
+        # produce - the batches are already fused, and there is nothing to share
+        # between them - so applying them is pure cost, and it is not small:
+        # 14 ms to apply, plus the 27 ms of populate_default it forces.
+        #
+        # Parallelism across the batch, each member serial underneath. The
+        # OpenMP executor rather than Dataflow because Dataflow runs nodes on
         # std::thread workers, which is the pattern the OpenMP-built OpenBLAS
         # miscomputes; see DLPNOBase.precompute_fits.
-        g.set_executor(cg.OpenMPExecutor())
-        g.execute()
+        self._run(g)
 
         # One vectorized scaling per pair: every coupling owns a column range.
         for ij, factors in scale.items():
@@ -204,21 +244,17 @@ class DLPNOMP2(DLPNOBase):
 
         # Each coupling's overlap is a column slice, not its own allocation.
         for ij, plist in enumerate(partners):
-            off = 0
-            for p, k, is_ik, factor in plist:
-                w = self.pair_dim(p)
-                block = self._S_cat[ij][:, off:off + w]
+            for idx, (p, k, is_ik, factor) in enumerate(plist):
                 if is_ik:
-                    self.S_pno_ij_ik[ij, k] = block
+                    self.S_pno_ij_ik[ij, k] = blocks[ij, idx]
                     self.k_couple_ik[ij][k] = float(np.sign(factor))
                 else:
-                    self.S_pno_ij_kj[ij, k] = block
+                    self.S_pno_ij_kj[ij, k] = blocks[ij, idx]
                     self.k_couple_kj[ij][k] = float(np.sign(factor))
-                off += w
 
         self._print(
             f"  overlaps: {sum(len(p) for p in partners)} couplings via "
-            f"{g.num_nodes()} nodes ({2 * len(cat)} captured)"
+            f"{g.num_nodes()} nodes ({len(by_bucket) + len(by_shape)} captured)"
         )
         return self
 

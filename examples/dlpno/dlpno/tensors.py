@@ -17,6 +17,8 @@ keep psi4's convention, which matters wherever a leading block is truncated
 (PNO occupation numbers, near-linear-dependency removal).
 """
 
+import contextlib
+
 import numpy as np
 
 import einsums
@@ -24,6 +26,8 @@ from einsums import linalg as la
 
 __all__ = [
     "zeros",
+    "arena",
+    "scalar",
     "from_numpy",
     "view",
     "shape",
@@ -35,14 +39,49 @@ __all__ = [
     "diagonal",
     "reshape",
     "vector_dot",
+    "dot_into",
     "canonicalizer",
     "orthocanonicalizer",
 ]
 
+_arena = None
+
+
+@contextlib.contextmanager
+def arena():
+    """Retain every tensor allocated inside the block.
+
+    A captured node holds its operands by pointer, not by reference, so any
+    tensor built inside a ``with cg.capture(...)`` block has to outlive the
+    capture. The intermediates are the problem: :func:`triplet` allocates one
+    for its first product and never returns it, so its last Python reference
+    dies with the expression, the tensor is freed, and the node reads freed
+    memory at ``execute()`` time. Nothing raises - the result is quietly wrong,
+    or a crash, depending on what the allocator does with the block.
+
+    Wrapping the capture in an arena keeps them all alive without every caller
+    having to name its temporaries, so the captured code can go on reading like
+    the eager code it replaces. Hold the yielded list until after ``execute()``.
+    """
+    global _arena
+    prev, _arena = _arena, []
+    try:
+        yield _arena
+    finally:
+        _arena = prev
+
 
 def zeros(name, shape_):
     """A zeroed dense float64 tensor."""
-    return einsums.create_zero_tensor(name, [int(s) for s in shape_], dtype="float64")
+    T = einsums.create_zero_tensor(name, [int(s) for s in shape_], dtype="float64")
+    if _arena is not None:
+        _arena.append(T)
+    return T
+
+
+def scalar(name="scalar"):
+    """A length-1 tensor to receive a captured reduction."""
+    return zeros(name, [1])
 
 
 def from_numpy(name, arr):
@@ -137,6 +176,17 @@ def solve(A, B, name="solve"):
 def vector_dot(A, B):
     """``sum_ij A_ij B_ij`` as a python float, psi4's ``Matrix::vector_dot``."""
     return float(la.dot(A, B))
+
+
+def dot_into(out, A, B):
+    """:func:`vector_dot` in pointer-writer form, so it can be captured.
+
+    The returning form has to throw under capture - there is no value to return
+    until the graph runs - so a captured phase that needs a scalar writes it
+    into a length-1 tensor and reads it back after ``execute()``.
+    """
+    la.dot(out, A, B)
+    return out
 
 
 def rms(A):

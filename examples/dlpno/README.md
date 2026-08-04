@@ -59,8 +59,12 @@ There the port drops exactly the 50 pairs psi4 drops, and its dipole estimate of
 ## Design notes
 
 **The setup phases are captured too, but shaped differently.**
-`compute_pno_overlaps` builds 4056 pair-basis overlaps from 338 captured nodes rather than 8112, by scattering each pair's PNO transform onto the full PAO axis (which makes the domain restriction implicit and deletes a per-coupling `S_pao` gather that was 42% of the phase) and concatenating a pair's partners so all its overlaps are one GEMM.
-Node count is the constraint here, not flops: capture costs ~38 us a node and this phase runs once, so capturing the per-coupling form would have spent more building the graph than the eager version spent computing. 0.233 s -> 0.090 s.
+Every setup phase is one or a few graphs replayed under the OpenMP executor, because the parallelism worth having there is across pairs, with each pair's BLAS call left serial underneath.
+`compute_pno_overlaps` builds 4056 pair-basis overlaps from 20 captured nodes: each pair's PNO transform is scattered onto the full PAO axis (which makes the domain restriction implicit and deletes a per-coupling `S_pao` gather that was 42% of the phase), and the couplings are then grouped by the bucket pair `(ij, partner)` and emitted as one `cg.batched_gemm` per group.
+`pno_transform` is three graphs of ~1500, ~270 and ~1100 nodes, split where the truncation decision has to come back to the host.
+
+Node count is a real constraint in this phase, not just flops: capture costs tens of microseconds a node and these phases run once, so a form that emits one node per coupling can spend more building the graph than the eager version spends computing.
+That is what makes the bucketing pay twice - it is what lets the residual batch, and it is what makes every coupling in a group agree on the single m/n/k and leading dimension `gemm_batch` takes.
 
 **Five graphs per iteration.**
 `mp2.py` captures the residual prologue, the Fock coupling, the iteration energy, the Jacobi amplitude step, and the antisymmetrized amplitudes as separate graphs, then replays them in that order each iteration.
@@ -119,14 +123,12 @@ Whole calculation, ethanol, SCF excluded, 4 P-cores + 6 E-cores:
 
 | | psi4 | this port | |
 | --- | --- | --- | --- |
-| cc-pVTZ, 1 thread | 2.883 | **2.520** | **1.14x faster** |
-| cc-pVDZ, 1 thread | 0.452 | 0.615 | 1.4x |
-| cc-pVTZ, 10 threads | 0.871 | 1.259 | 1.4x |
-| cc-pVDZ, 10 threads | 0.148 | 0.454 | 3.1x |
+| cc-pVTZ, 1 thread | 2.931 | **2.482** | **1.18x faster** |
+| cc-pVTZ, 10 threads | 0.918 | 1.109 | 1.2x |
 
-**Single threaded the port is ahead of the C++ on the larger basis; threaded it is behind, and by a widening margin as the problem gets smaller.**
+**Single threaded the port is ahead of the C++ on the larger basis; threaded it is behind, and the gap widens as the problem gets smaller.**
 
-The LMP2 iteration itself is at parity everywhere, threaded or not: 0.1157 vs 0.1141 s at cc-pVTZ on one thread, 0.0404 vs 0.0405 threaded.
+The LMP2 iteration itself is at parity everywhere, threaded or not: 0.1155 vs 0.1224 s at cc-pVTZ on one thread, 0.0386 vs 0.0380 threaded.
 That is the phase the ComputeGraph and the batching cover, and it is not where the threaded deficit lives.
 
 ### Parallelizing the setup phases
@@ -135,14 +137,26 @@ psi4 runs its setup under `#pragma omp parallel for` over pairs.
 The port cannot simply do the same from Python: driving those loops from a `ThreadPoolExecutor` returns silently wrong numbers against the OpenMP-built OpenBLAS that conda resolves by default, because that build indexes its internal scratch by `omp_get_thread_num()`, which is 0 on every caller-created thread.
 See [BLAS threading](../../docs/sphinx/building/blas_threading.rst).
 
-The way that *is* safe is to hand the independent work to the graph and run it under the OpenMP executor, so the parallelism is a real OpenMP team and each node stays serial underneath:
+The way that *is* safe is to hand the independent work to the graph and run it under the OpenMP executor, so the parallelism is a real OpenMP team and each node stays serial underneath.
+`DLPNOBase._run` is that call, and every setup phase goes through it:
 
 * `precompute_fits` captures every distinct domain's fitting solve into one graph. There are only 23 of them at ethanol/cc-pVTZ, but they were 31% of the phase, because the solve is per *domain* and carries `naocc * npao` right-hand sides.
-* `pno_transform` is three stages rather than one loop, so the two eigendecompositions per pair batch into two graphs, with the data-dependent truncation decision in between. Issued one at a time these got *worse* with threads (219 ms serial against 329 ms on ten threads), each small `syev` fighting the BLAS's own threading.
+* `pno_transform` captures its three stages rather than only the two eigendecompositions inside them. This is the one that matters, and not for the reason the name suggests: the phase issues ~1400 small GEMMs against ~190 gathers, and eagerly issued they run serially no matter how many threads the BLAS has, each call far too small to fill them. Captured, stage 1 scales 5.0x on ten threads and stage 3 4.4x.
+* `compute_pno_overlaps` emits `cg.batched_gemm` per bucket pair instead of concatenating each pair's partners side by side. The concatenation was the phase's dominant cost and none of it was arithmetic: laying out a pair's partners re-copies every partner block once per pair coupling to it, 335 MiB of allocate-and-memcpy at ethanol/cc-pVTZ over blocks that already exist in 14 MiB of `X_pad`. It was also the one part that could not be parallelized, being numpy slice assignment on the calling thread.
 
-At cc-pVTZ on ten threads PNO Transform went 0.779 -> 0.438 s against psi4's 0.275, so 2.7x behind became 1.6x.
-PNO Overlaps was already parallel inside `gemm_batch` and moved only 0.150 -> 0.141.
-What is left of the threaded gap is spread across PNO Overlaps (3.1x), the dense `(Q|mn)` build (2.3x) and the host-side gathers, which are not parallel at all.
+Ten threads at cc-pVTZ, against psi4:
+
+| phase | before | after | psi4 |
+| --- | --- | --- | --- |
+| PNO Transform | 0.446 (1.7x) | **0.311** (1.1x) | 0.260 |
+| PNO Overlaps | 0.143 (3.0x) | **0.076** (1.5x) | 0.049 |
+| total | 1.258 (1.4x) | **1.109** (1.2x) | 0.918 |
+
+Single-threaded times are unchanged, which is the point: nothing got cheaper, it got issued in parallel.
+Setup scaling from 1 to 10 threads went 2.0x -> 2.9x for PNO Transform and 1.7x -> 2.4x for PNO Overlaps, against psi4's 4.8x.
+
+What is left of the threaded gap is the dense `(Q|mn)` build (2.1x), and, within the setup phases, the serial remainder that does not move with threads at all: graph capture, tensor allocation, and the two eager eigendecompositions the truncation decision needs.
+At ten threads that remainder is now roughly half of what PNO Transform costs, so capture overhead - not arithmetic - is the next thing in the way.
 
 A note on the energies at cc-pVTZ: the two agree to 2.3e-8 rather than the ~1e-13 seen at cc-pVDZ.
 Every input to the comparison matches psi4 exactly - PAO and auxiliary domains (average, min *and* max, per LMO and per pair), pairs screened, PNOs per pair (54/5/92), and the PNO truncation correction to 1.4e-10.
@@ -194,6 +208,17 @@ At ten iterations it is the larger half of the port's LMP2 wall time, so it matt
 Domain restriction is the fundamental operation in DLPNO, and einsums had no primitive for "take these rows and these columns", so `sparse.submatrix_*` went through the tensor's numpy view and every domain extraction ran eagerly on the host, uncapturable.
 `cg::gather` and `cg::scatter` now cover it, and `sparse.submatrix` / `sparse.scatter_into` are thin wrappers over them.
 Note `gather` has no whole-axis wildcard: an empty index list selects nothing, because an empty domain silently becoming the full axis is a wrong answer rather than an error.
+
+The kernel behind them was worth a second look, and the answer was not the expected one.
+`gather`, `scatter` and `scatter_add` were each their own odometer rebuilding both offsets from scratch per element, which costs a multiply-add per axis per element and, worse, hides the shape these callers hit most: because there is no wildcard, a whole axis is spelled `range(n)`, and when that is the fastest axis and both sides step by one, the selection along it is a contiguous block that the element loop was copying a multiply-add at a time.
+They now share `detail::for_each_selection_run`, which hoists the per-axis offsets into tables and collapses that case into one `copy_n`.
+On the shapes this port issues: 1.7x on `S_pao[dom, dom]`, 2.0x on the fit right-hand side, and 4.5x on `X[:, :keep]`, which is the contiguous case.
+
+This is worth stating plainly because the SIMD module looks like it should be the answer here and is not.
+`simd::gather` is a strided-lane load - `base[0], base[stride], ...` for a kernel's inner loop - not an index-list gather, and the psABI rung ladder is x86-only, so on an arm64 host the dispatch collapses to a single native TU regardless.
+The gathers were never the bottleneck either: `pno_transform` issues ~1400 small GEMMs against ~190 gathers.
+What was actually left on the table was index arithmetic and a missed `memcpy`, and both fixes are scalar.
+Even after them the kernel is 7-18x off a straight `memcpy` of the same payload, which is the honest ceiling for a scattered read.
 
 The remaining numpy in the package is a useful map of what else is missing, in rough order of what this workload would pay for.
 Bookkeeping numpy (integer index maps like `i_j_to_ij`, scalars, and the psi4 buffers arriving through the bridge) is excluded — that is interop, not a gap.
@@ -249,8 +274,9 @@ So `.reshape(-1)` silently copies rather than viewing, which is easy to write by
 
 ## Next steps
 
-1. **The host-side gather seam.** With the fits and eigendecompositions on the graph, what is left of the setup cost is largely `np.ix_` gathers and `from_numpy` copies building each domain's operands, which no executor can parallelize because they are not captured. An einsums gather primitive would let the whole per-pair setup be one graph.
-2. **Batch the PNO transform.** Screening made this worth doing: pairs used to share a single domain, so memoization removed the duplication outright, whereas now there are many distinct domains but many pairs per domain. The per-pair exchange build and semicanonical MP2 step are uniform within a domain and could go through `cg.batched_gemm` the way the residual couplings do.
-3. **One graph for the whole iteration**, using a loop node, with DIIS either captured or hoisted.
-4. **DLPNO-CCSD** (`ccsd.cc`), which is where the graph work gets interesting: the residuals are much larger and the intermediates are shared across pairs.
-5. **DLPNO-(T)** (`triples.cc`).
+1. **Capture overhead in the setup graphs.** The per-pair loops are captured now, so what is left un-parallel is building the graph rather than running it: at ethanol/cc-pVTZ ten threads, `pno_transform` spends about as long capturing and allocating as executing. Emitting the uniform parts as batches (below) attacks this directly, since a batch is one node however many pairs it covers.
+2. **Batch the PNO transform.** The natural follow-on: `compute_pno_overlaps` now emits `cg.batched_gemm` per bucket pair and `pno_transform` still emits one node per pair. The per-pair exchange build and semicanonical MP2 step are uniform within a domain and could be batched the same way, which would cut both the node count and the padding waste.
+3. **Allocation.** `create_zero_tensor` zeroes memory that a `beta = 0` GEMM immediately overwrites, and at ~2700 tensors it is 15% of `pno_transform`. An uninitialized-allocation entry point, or reusing scratch across pairs of the same bucket, would remove it.
+4. **One graph for the whole iteration**, using a loop node, with DIIS either captured or hoisted.
+5. **DLPNO-CCSD** (`ccsd.cc`), which is where the graph work gets interesting: the residuals are much larger and the intermediates are shared across pairs.
+6. **DLPNO-(T)** (`triples.cc`).
