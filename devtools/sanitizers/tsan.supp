@@ -109,3 +109,33 @@ race:macro_kernel
 # einsums_main entries above; a genuine overlapping-write race would still surface
 # with 1 thread and is deliberately NOT hidden by this necessary-serial reasoning.
 race:blis_contraction
+
+# --- pybind11 instance registry on free-threaded CPython (cp313t and later) ---
+# Only reachable when the GIL is actually off, so this is inert on a normal
+# interpreter: either the module has not declared Py_MOD_GIL_NOT_USED and CPython
+# re-enables the GIL on import, or the run overrides that with PYTHON_GIL=0.
+#
+# pybind11 maps every C++ pointer to its Python instance in `registered_instances`,
+# maintained by register_instance/deregister_instance and read by get_object_handle.
+# Under Py_GIL_DISABLED pybind11 shards that map and takes a lock per shard, so the
+# accesses ARE serialized - `with_instance_map` returns from inside a
+# std::unique_lock<pymutex>. TSan flags them anyway because `pymutex` wraps CPython's
+# PyMutex, and _PyMutex_Lock is a custom atomic/parking-lot lock inside the
+# uninstrumented interpreter rather than a pthread_mutex TSan intercepts, so no
+# happens-before edge is visible and concurrent object destruction looks like a bare
+# erase/find on the same multimap.
+#
+# Verified benign: 79 reports on a cp314t build were 79/79 through with_instance_map
+# with zero racing accesses in einsums code, and the same driver at 12 workers x 25
+# reps under PYTHON_GIL=0 without TSan ran clean with correct results three times
+# over. An actually-unlocked multimap under concurrent erase-and-rehash would have
+# corrupted. A properly clean run needs a TSan-instrumented CPython; upstream ships
+# Tools/tsan/suppressions_free_threading.txt for the same reason.
+#
+# Scoped to the registry-maintenance entry points on purpose. Do NOT broaden this to
+# `race:pybind11::detail` - that substring appears in ordinary binding dispatch and
+# casting frames, so it would hide genuine einsums races reported through a binding.
+race:with_instance_map
+race:register_instance
+race:deregister_instance
+race:get_object_handle
