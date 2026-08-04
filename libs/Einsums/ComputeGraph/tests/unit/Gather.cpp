@@ -234,3 +234,112 @@ TEST_CASE("scatter captures, and orders after prior writes to dst", "[compute-gr
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// sqrt / sum_axes / reshape / diagonal / scatter_add
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_CASE("sqrt is element-wise, unlike pow", "[compute-graph][gather]") {
+    auto   A   = create_zero_tensor<double>("A", 2, 3);
+    auto   out = create_zero_tensor<double>("out", 2, 3);
+    double v   = 1.0;
+    for (size_t i = 0; i < 2; ++i)
+        for (size_t j = 0; j < 3; ++j)
+            A(i, j) = v++;
+    compute_graph::sqrt(&out, A);
+    for (size_t i = 0; i < 2; ++i)
+        for (size_t j = 0; j < 3; ++j)
+            REQUIRE(out(i, j) == Catch::Approx(std::sqrt(A(i, j))));
+
+    SECTION("negative input is a caller decision, not a silent branch") {
+        A(0, 0) = -1.0;
+        REQUIRE_THROWS_AS(compute_graph::sqrt(&out, A), std::domain_error);
+    }
+}
+
+TEST_CASE("sum_axes reduces the listed axes", "[compute-graph][gather]") {
+    auto A = create_random_tensor<double>("A", 3, 4, 2);
+
+    SECTION("sum one axis") {
+        auto out = create_zero_tensor<double>("out", 3, 2);
+        compute_graph::sum_axes(&out, A, {1});
+        for (size_t i = 0; i < 3; ++i) {
+            for (size_t k = 0; k < 2; ++k) {
+                double want = 0.0;
+                for (size_t j = 0; j < 4; ++j)
+                    want += A(i, j, k);
+                REQUIRE(out(i, k) == Catch::Approx(want));
+            }
+        }
+    }
+
+    SECTION("replay assigns rather than accumulating") {
+        auto                 out = create_zero_tensor<double>("out", 3, 2);
+        compute_graph::Graph g("sum_axes");
+        {
+            compute_graph::CaptureGuard guard(g);
+            compute_graph::sum_axes(&out, A, {1});
+        }
+        g.execute();
+        double const first = out(0, 0);
+        g.execute();
+        REQUIRE(out(0, 0) == Catch::Approx(first));
+    }
+
+    SECTION("a repeated axis is rejected") {
+        auto out = create_zero_tensor<double>("out", size_t{2});
+        REQUIRE_THROWS_AS(compute_graph::sum_axes(&out, A, {1, 1}), std::invalid_argument);
+    }
+}
+
+TEST_CASE("reshape order is explicit, and the two differ", "[compute-graph][gather]") {
+    auto   A = create_zero_tensor<double>("A", 2, 3);
+    double v = 1.0;
+    for (size_t i = 0; i < 2; ++i)
+        for (size_t j = 0; j < 3; ++j)
+            A(i, j) = v++;
+
+    auto row = create_zero_tensor<double>("row", 3, 2);
+    auto col = create_zero_tensor<double>("col", 3, 2);
+    compute_graph::reshape(&row, A, true);
+    compute_graph::reshape(&col, A, false);
+
+    // Row-major walks A as 1,2,3,4,5,6; column-major as 1,4,2,5,3,6. If the
+    // two ever agree the argument has stopped meaning anything.
+    REQUIRE(row(0, 0) == 1.0);
+    REQUIRE(row(0, 1) == 2.0);
+    REQUIRE(col(0, 0) == 1.0);
+    REQUIRE(col(1, 0) == 4.0);
+
+    SECTION("element count must be preserved") {
+        auto bad = create_zero_tensor<double>("bad", 4, 2);
+        REQUIRE_THROWS_AS(compute_graph::reshape(&bad, A, true), dimension_error);
+    }
+}
+
+TEST_CASE("diagonal extracts A(i, i)", "[compute-graph][gather]") {
+    auto A   = create_random_tensor<double>("A", 4, 6); // rectangular: shorter axis wins
+    auto out = create_zero_tensor<double>("out", size_t{4});
+    compute_graph::diagonal(&out, A);
+    for (size_t i = 0; i < 4; ++i)
+        REQUIRE(out(i) == A(i, i));
+}
+
+TEST_CASE("scatter_add accumulates, and allows the repeats scatter forbids", "[compute-graph][gather]") {
+    auto dst  = create_zero_tensor<double>("dst", 4, 4);
+    auto src  = create_zero_tensor<double>("src", 3, 1);
+    src(0, 0) = 1.0;
+    src(1, 0) = 2.0;
+    src(2, 0) = 4.0;
+
+    // index 1 twice: under a plain scatter this is an error because the result
+    // would depend on loop order; under accumulation it is well defined.
+    compute_graph::scatter_add(&dst, src, {std::vector<size_t>{1, 2, 1}, std::vector<size_t>{0}});
+    REQUIRE(dst(1, 0) == 5.0); // 1 + 4
+    REQUIRE(dst(2, 0) == 2.0);
+    REQUIRE(dst(0, 0) == 0.0);
+
+    // and it accumulates onto what is already there
+    compute_graph::scatter_add(&dst, src, {std::vector<size_t>{1, 2, 1}, std::vector<size_t>{0}});
+    REQUIRE(dst(1, 0) == 10.0);
+}

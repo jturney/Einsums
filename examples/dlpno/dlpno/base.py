@@ -144,7 +144,7 @@ class DLPNOBase:
         # Normalize each PAO against its own overlap, then rebuild S and F.
         S_pao = ten.triplet(C_pao, S, C_pao, trans_a=True, name="S (PAO)")
         self.C_pao = ten.scale_columns(
-            C_pao, np.diag(ten.view(S_pao)) ** -0.5, name="C (PAO)"
+            C_pao, ten.view(ten.diagonal(S_pao)) ** -0.5, name="C (PAO)"
         )
         self.S_pao = ten.triplet(self.C_pao, S, self.C_pao, trans_a=True, name="S (PAO)")
         self.F_pao = ten.triplet(self.C_pao, F, self.C_pao, trans_a=True, name="F (PAO)")
@@ -233,8 +233,14 @@ class DLPNOBase:
             einsums.einsum("ij <- pi ; pj", doi_ij, lmo2_w, lmo2, c_pf=1.0, ab_pf=1.0)
             einsums.einsum("iu <- pi ; pu", doi_iu, lmo2_w, pao2, c_pf=1.0, ab_pf=1.0)
 
-        self.doi_ij = np.sqrt(np.abs(ten.view(doi_ij)))
-        self.doi_iu = np.sqrt(np.abs(ten.view(doi_iu)))
+        # sqrt(abs(...)) without leaving the tensor layer: linalg.abs and the
+        # new element-wise linalg.sqrt. (linalg.pow is a *matrix* power via
+        # eigendecomposition, not this.)
+        for src in (doi_ij, doi_iu):
+            la.abs(src, src)
+            la.sqrt(src, src)
+        self.doi_ij = np.asarray(ten.view(doi_ij)).copy()
+        self.doi_iu = np.asarray(ten.view(doi_iu)).copy()
         self._print(f"  DOI:      {nblocks} grid blocks, {npoints} points")
         return self
 
@@ -260,7 +266,8 @@ class DLPNOBase:
         dip_ii, dip_iu = [], []
         for x in range(3):
             D = ten.from_numpy(f"dipole {x} (AO)", np.ascontiguousarray(ref.dipole_ao[x]))
-            dip_ii.append(np.diag(ten.view(ten.triplet(C_lmo, D, C_lmo, trans_a=True))).copy())
+            dip_ii.append(
+                ten.view(ten.diagonal(ten.triplet(C_lmo, D, C_lmo, trans_a=True))).copy())
             dip_iu.append(ten.view(ten.triplet(C_lmo, D, C_pao, trans_a=True)).copy())
 
         # Orbital centroids <i|r|i>.
@@ -508,14 +515,11 @@ class DLPNOBase:
         ribfs = self.lmopair_to_ribfs[ij]
         paos = self.lmopair_to_paos[ij]
         naocc = self.ref.naocc
-        # The domain restriction is a captured gather now, not a numpy view.
-        # The reshape that follows is still numpy: it is a shape change, not an
-        # extraction, and einsums has no capturable reshape (see the README's
-        # note on remaining seams). np.reshape is order-agnostic logically, so
-        # the (i, u) flattening matches what the view-based version produced.
+        # Gather then reshape, both captured. row_major=True because the
+        # flattening this replaces was numpy's, whose default order is C; the
+        # column-major walk would transpose the (i, u) block silently.
         block = sparse.submatrix(self.q_ia, [ribfs, range(naocc), paos], name="(Q|i u) domain")
-        rhs = ten.from_numpy("(Q|i u) domain",
-                             ten.view(block).reshape(len(ribfs), naocc * len(paos)))
+        rhs = ten.reshape(block, [len(ribfs), naocc * len(paos)], name="(Q|i u) domain")
         A = sparse.submatrix_rows_and_cols(self.metric, ribfs, ribfs, name="(P|Q) domain")
         return A, rhs
 
@@ -523,8 +527,7 @@ class DLPNOBase:
         """The solved right-hand side, back to ``(naux_dom, naocc, npao_dom)``."""
         ribfs = self.lmopair_to_ribfs[ij]
         paos = self.lmopair_to_paos[ij]
-        solved = ten.view(rhs).reshape(len(ribfs), self.ref.naocc, len(paos))
-        return ten.from_numpy("J^-1 (Q|i u)", solved)
+        return ten.reshape(rhs, [len(ribfs), self.ref.naocc, len(paos)], name="J^-1 (Q|i u)")
 
     def precompute_fits(self):
         """Solve every distinct domain's fitting equations in one graph.
@@ -594,10 +597,7 @@ class DLPNOBase:
         # Lazy fallback for anything precompute_fits() did not cover. It also
         # keeps gesv's info check, which the captured path cannot see.
         A_solve, rhs = self._fit_operands(ij)
-        solved = ten.view(ten.solve(A_solve, rhs)).reshape(
-            len(self.lmopair_to_ribfs[ij]), self.ref.naocc, len(self.lmopair_to_paos[ij]))
-
-        hit = ten.from_numpy("J^-1 (Q|i u)", solved)
+        hit = self._reshape_fit(ij, ten.solve(A_solve, rhs))
         self._fit_cache[key] = hit
         return hit
 

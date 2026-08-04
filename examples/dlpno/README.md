@@ -201,12 +201,12 @@ Bookkeeping numpy (integer index maps like `i_j_to_ij`, scalars, and the psi4 bu
 Check before assuming something is missing: several of these already exist, and the real gap is narrower than "einsums cannot do X".
 `linalg.abs`, `scale`, `direct_product` and `element_transform` all capture, as do the pointer-writer `sum`, `max`, `dot`, `trace` and `norm` (the returning forms throw during capture by design).
 
-1. **Element-wise `sqrt` (and reciprocal).** `linalg.abs` is element-wise and captures, but `linalg.pow` is *not* the other half: it is a **matrix** power computed by eigendecomposition, so `pow(A, 0.5)` is a matrix square root, and it is a returning form that rejects capture by design. There is no element-wise `sqrt` kernel at all. So the DOI finish, `sqrt(abs(...))` over a whole matrix, captures its `abs` half and then falls back to the host — the worst of both. Adding one is not a one-liner: `impl_abs` in `TensorImpl` is a family of contiguous / non-contiguous / vectorable kernels, and an element-wise `sqrt` has to mirror it.
-2. **Reductions along an axis.** `linalg.sum(result, A)` exists and captures, but sums the *whole* tensor into a scalar. The Mulliken populations need `share_u.sum(axis=1)`, and there is no axis-wise form.
-3. **Reshape.** `_fit_operands` gathers `(Q|iu)` for a domain and then reshapes to feed one `gesv` with `naocc * npao` right-hand sides. The gather captures now; the reshape does not, so the assembly still breaks the graph.
-4. **Diagonal extract and set.** `np.diag` appears in the PAO normalization and the dipole centroids.
-5. **Accumulating scatter.** The Mulliken populations are `np.add.at`, which is exactly scatter-with-accumulate. `cg::scatter` deliberately rejects repeated indices rather than silently picking a winner, so this is a separate op and not a relaxation of that rule.
-6. **Concatenate / stack along an axis.** DIIS flattens every pair block into one vector and back; the dipole code stacks three components into an `(naocc, 3)`.
+1. **Element-wise `sqrt` — ADDED.** `cg::sqrt` is the element-wise partner to `abs`; `linalg.pow` is a *matrix* power by eigendecomposition and is not it. The DOI finish is now `abs` then `sqrt` with no host round-trip. Real-only: the square root of a negative real is a branch choice the caller should make, so negative input throws.
+2. **Axis-wise reduction — ADDED.** `cg::sum_axes`, numpy's `A.sum(axis=...)`. `linalg.sum` still covers whole-tensor-to-scalar. Assigns rather than accumulates, so a replay does not add to the previous execution.
+3. **Reshape — ADDED.** `cg::reshape`, with a mandatory `row_major` argument. Not a formality: einsums is column major and numpy's default is C, and picking the wrong walk transposes blocks silently instead of raising. It copies rather than aliasing.
+4. **Diagonal extract — ADDED.** `cg::diagonal`, numpy's `np.diag` on a matrix; rectangular input is fine, the shorter axis wins.
+5. **Accumulating scatter — ADDED.** `cg::scatter_add`, numpy's `np.add.at`. Repeated indices are *allowed* here and rejected by `scatter`: under a plain write two writes to one element depend on loop order, under an accumulation they do not.
+6. **Concatenate / stack along an axis.** STILL MISSING. DIIS flattens every pair block into one vector and back; the dipole code stacks three components into an `(naocc, 3)`.
 7. **Masked select.** `np.where` guards a divide-by-zero in the population split. Lowest value of the seven: it is one guarded division, not a hot path.
 
 **In-place elementwise einsum against a lower-rank operand silently yielded zeros** (fixed).

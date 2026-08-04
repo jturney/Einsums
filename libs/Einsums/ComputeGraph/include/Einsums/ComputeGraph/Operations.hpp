@@ -949,6 +949,465 @@ APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<double>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// sqrt: element-wise square root
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Graph-aware element-wise square root: ``out := sqrt(A)``.
+///
+/// Distinct from @ref pow, which is a MATRIX power computed by
+/// eigendecomposition (that is what its cutoff argument discards) and is a
+/// returning form that rejects capture. This is the element-wise partner to
+/// @ref abs, and the two together are what a numerical `sqrt(abs(X))` needs
+/// without dropping to the host between them.
+///
+/// Real dtypes only: the square root of a negative real is where a caller
+/// wants to decide, not have the library pick a branch. Negative inputs throw.
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("sqrt", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("sqrt", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("sqrt", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("sqrt", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+    // clang-format on
+    void sqrt(ResultType *out, AType const &A) {
+    using T = typename ResultType::ValueType;
+    static_assert(!IsComplexV<T>, "cg::sqrt is real-only; complex needs a branch choice the caller must make");
+    if (detail::tensor_rank(*out) != detail::tensor_rank(A)) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::sqrt: rank mismatch - out rank={}, A rank={}", detail::tensor_rank(*out),
+                                detail::tensor_rank(A));
+    }
+    size_t const N = detail::tensor_rank(A);
+    for (size_t k = 0; k < N; ++k) {
+        if (out->dim(k) != A.dim(k)) {
+            EINSUMS_THROW_EXCEPTION(dimension_error, "cg::sqrt: axis {} - out dim {} does not match A dim {}", k, out->dim(k), A.dim(k));
+        }
+    }
+
+    auto apply = [N](ResultType *o, AType const *a) {
+        size_t total = 1;
+        for (size_t k = 0; k < N; ++k)
+            total *= a->dim(k);
+        if (total == 0)
+            return;
+        std::vector<size_t> idx(N, 0), o_str(N), a_str(N), dims(N);
+        for (size_t k = 0; k < N; ++k) {
+            o_str[k] = o->stride(k);
+            a_str[k] = a->stride(k);
+            dims[k]  = a->dim(k);
+        }
+        T       *o_data = o->data();
+        T const *a_data = a->data();
+        for (size_t count = 0; count < total; ++count) {
+            size_t o_off = 0, a_off = 0;
+            for (size_t k = 0; k < N; ++k) {
+                o_off += idx[k] * o_str[k];
+                a_off += idx[k] * a_str[k];
+            }
+            T const v = a_data[a_off];
+            if (v < T{0}) {
+                EINSUMS_THROW_EXCEPTION(std::domain_error, "cg::sqrt: negative input {}; use abs() first if that is intended",
+                                        static_cast<double>(v));
+            }
+            o_data[o_off] = std::sqrt(v);
+            for (size_t k = 0; k < N; ++k) {
+                if (++idx[k] < dims[k])
+                    break;
+                idx[k] = 0;
+            }
+        }
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("sqrt eager");
+        apply(out, &A);
+        return;
+    }
+    LabeledSection("sqrt capture");
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [r_id, r_slot] = ctx.get_slot(*out);
+    auto executor       = [a_slot, r_slot, apply]() {
+        LabeledSection("sqrt execute");
+        apply(static_cast<ResultType *>(r_slot->ptr), static_cast<AType const *>(a_slot->ptr));
+    };
+    ctx.record(OpKind::Custom, "sqrt", {a_id}, {r_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// sum_axes: reduction over a subset of axes
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Graph-aware reduction: sum @p A over @p axes, writing the surviving axes to
+/// @p out in their original order.
+///
+/// @ref sum already reduces a whole tensor to a scalar; this is the axis-wise
+/// form, numpy's ``A.sum(axis=...)``. ``out`` must have rank
+/// ``rank(A) - axes.size()`` with the extents of the axes not being summed.
+/// ``out`` is zeroed first, so this assigns rather than accumulates.
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void sum_axes(ResultType *out, AType const &A, std::vector<size_t> axes) {
+    using T        = typename ResultType::ValueType;
+    size_t const N = detail::tensor_rank(A);
+    std::sort(axes.begin(), axes.end());
+    if (std::adjacent_find(axes.begin(), axes.end()) != axes.end()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::sum_axes: an axis is listed twice");
+    }
+    for (size_t ax : axes) {
+        if (ax >= N) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::sum_axes: axis {} is out of range for a rank-{} tensor", ax, N);
+        }
+    }
+    std::vector<bool> reduced(N, false);
+    for (size_t ax : axes)
+        reduced[ax] = true;
+    std::vector<size_t> kept;
+    for (size_t k = 0; k < N; ++k)
+        if (!reduced[k])
+            kept.push_back(k);
+    if (detail::tensor_rank(*out) != kept.size()) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::sum_axes: out rank {} should be {} after summing {} of {} axes", detail::tensor_rank(*out),
+                                kept.size(), axes.size(), N);
+    }
+    for (size_t k = 0; k < kept.size(); ++k) {
+        if (out->dim(k) != A.dim(kept[k])) {
+            EINSUMS_THROW_EXCEPTION(dimension_error, "cg::sum_axes: out axis {} has extent {}, expected {}", k, out->dim(k),
+                                    A.dim(kept[k]));
+        }
+    }
+
+    auto apply = [N, kept](ResultType *o, AType const *a) {
+        size_t              total = 1;
+        std::vector<size_t> dims(N), a_str(N);
+        for (size_t k = 0; k < N; ++k) {
+            dims[k]  = a->dim(k);
+            a_str[k] = a->stride(k);
+            total *= dims[k];
+        }
+        size_t              out_total = 1;
+        std::vector<size_t> o_str(kept.size());
+        for (size_t k = 0; k < kept.size(); ++k) {
+            o_str[k] = o->stride(k);
+            out_total *= o->dim(k);
+        }
+        T *o_data = o->data();
+        // Assign, not accumulate: zero first so a replay does not add to the
+        // previous execution's result.
+        for (size_t k = 0; k < out_total; ++k) {
+            size_t off = 0, rem = k;
+            for (size_t d = 0; d < kept.size(); ++d) {
+                off += (rem % o->dim(d)) * o_str[d];
+                rem /= o->dim(d);
+            }
+            o_data[off] = T{0};
+        }
+        if (total == 0)
+            return;
+        T const            *a_data = a->data();
+        std::vector<size_t> idx(N, 0);
+        for (size_t count = 0; count < total; ++count) {
+            size_t a_off = 0, o_off = 0;
+            for (size_t k = 0; k < N; ++k)
+                a_off += idx[k] * a_str[k];
+            for (size_t k = 0; k < kept.size(); ++k)
+                o_off += idx[kept[k]] * o_str[k];
+            o_data[o_off] += a_data[a_off];
+            for (size_t k = 0; k < N; ++k) {
+                if (++idx[k] < dims[k])
+                    break;
+                idx[k] = 0;
+            }
+        }
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("sum_axes eager");
+        apply(out, &A);
+        return;
+    }
+    LabeledSection("sum_axes capture");
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [r_id, r_slot] = ctx.get_slot(*out);
+    auto executor       = [a_slot, r_slot, apply]() {
+        LabeledSection("sum_axes execute");
+        apply(static_cast<ResultType *>(r_slot->ptr), static_cast<AType const *>(a_slot->ptr));
+    };
+    ctx.record(OpKind::Custom, "sum_axes", {a_id}, {r_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// reshape: same elements, different shape
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Graph-aware reshape: copy @p A into @p out, which has the same number of
+/// elements in a different shape.
+///
+/// @p row_major picks which linear order the elements are walked in, and it is
+/// NOT a formality. Einsums tensors are column major, so the natural order here
+/// is column major (``row_major = false``); numpy's ``reshape`` defaults to row
+/// major, and code ported from it means the other one. Getting it wrong
+/// silently transposes blocks rather than failing, so the argument is required
+/// and has no default.
+///
+/// This copies. It is not a view: a reshape that could alias would have to
+/// reason about strides, and the callers here are assembling operands for BLAS
+/// which wants a fresh contiguous buffer anyway.
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void reshape(ResultType *out, AType const &A, bool row_major) {
+    using T              = typename ResultType::ValueType;
+    size_t const a_rank  = detail::tensor_rank(A);
+    size_t const o_rank  = detail::tensor_rank(*out);
+    size_t       a_total = 1, o_total = 1;
+    for (size_t k = 0; k < a_rank; ++k)
+        a_total *= A.dim(k);
+    for (size_t k = 0; k < o_rank; ++k)
+        o_total *= out->dim(k);
+    if (a_total != o_total) {
+        EINSUMS_THROW_EXCEPTION(dimension_error, "cg::reshape: {} elements cannot be reshaped into {}", a_total, o_total);
+    }
+
+    auto apply = [a_rank, o_rank, a_total, row_major](ResultType *o, AType const *a) {
+        if (a_total == 0)
+            return;
+        std::vector<size_t> a_dims(a_rank), a_str(a_rank), o_dims(o_rank), o_str(o_rank);
+        for (size_t k = 0; k < a_rank; ++k) {
+            a_dims[k] = a->dim(k);
+            a_str[k]  = a->stride(k);
+        }
+        for (size_t k = 0; k < o_rank; ++k) {
+            o_dims[k] = o->dim(k);
+            o_str[k]  = o->stride(k);
+        }
+        T       *o_data = o->data();
+        T const *a_data = a->data();
+        // Walk the shared linear index and decompose it into each shape.
+        for (size_t lin = 0; lin < a_total; ++lin) {
+            size_t a_off = 0, o_off = 0, rem = lin;
+            if (row_major) {
+                for (size_t k = a_rank; k-- > 0;) {
+                    a_off += (rem % a_dims[k]) * a_str[k];
+                    rem /= a_dims[k];
+                }
+                rem = lin;
+                for (size_t k = o_rank; k-- > 0;) {
+                    o_off += (rem % o_dims[k]) * o_str[k];
+                    rem /= o_dims[k];
+                }
+            } else {
+                for (size_t k = 0; k < a_rank; ++k) {
+                    a_off += (rem % a_dims[k]) * a_str[k];
+                    rem /= a_dims[k];
+                }
+                rem = lin;
+                for (size_t k = 0; k < o_rank; ++k) {
+                    o_off += (rem % o_dims[k]) * o_str[k];
+                    rem /= o_dims[k];
+                }
+            }
+            o_data[o_off] = a_data[a_off];
+        }
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("reshape eager");
+        apply(out, &A);
+        return;
+    }
+    LabeledSection("reshape capture");
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [r_id, r_slot] = ctx.get_slot(*out);
+    auto executor       = [a_slot, r_slot, apply]() {
+        LabeledSection("reshape execute");
+        apply(static_cast<ResultType *>(r_slot->ptr), static_cast<AType const *>(a_slot->ptr));
+    };
+    ctx.record(OpKind::Custom, "reshape", {a_id}, {r_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// diagonal: extract the diagonal of a rank-2 tensor
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Graph-aware diagonal extraction: ``out[i] := A[i, i]``.
+///
+/// @p out is rank-1 with extent ``min(A.dim(0), A.dim(1))``, matching numpy's
+/// ``np.diag`` on a matrix. A rectangular @p A is fine; the shorter axis wins.
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void diagonal(ResultType *out, AType const &A) {
+    if (detail::tensor_rank(A) != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::diagonal: A must be rank 2, got rank {}", detail::tensor_rank(A));
+    }
+    if (detail::tensor_rank(*out) != 1) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::diagonal: out must be rank 1, got rank {}", detail::tensor_rank(*out));
+    }
+    size_t const n = std::min(A.dim(0), A.dim(1));
+    if (out->dim(0) != n) {
+        EINSUMS_THROW_EXCEPTION(dimension_error, "cg::diagonal: out has extent {}, expected {}", out->dim(0), n);
+    }
+
+    auto apply = [n](ResultType *o, AType const *a) {
+        using T             = typename ResultType::ValueType;
+        T           *o_data = o->data();
+        T const     *a_data = a->data();
+        size_t const s0 = a->stride(0), s1 = a->stride(1), os = o->stride(0);
+        for (size_t i = 0; i < n; ++i)
+            o_data[i * os] = a_data[i * s0 + i * s1];
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("diagonal eager");
+        apply(out, &A);
+        return;
+    }
+    LabeledSection("diagonal capture");
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [r_id, r_slot] = ctx.get_slot(*out);
+    auto executor       = [a_slot, r_slot, apply]() {
+        LabeledSection("diagonal execute");
+        apply(static_cast<ResultType *>(r_slot->ptr), static_cast<AType const *>(a_slot->ptr));
+    };
+    ctx.record(OpKind::Custom, "diagonal", {a_id}, {r_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// scatter_add: accumulating placement
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Graph-aware accumulating scatter: ``dst[indices...] += src[...]``.
+///
+/// numpy's ``np.add.at``. The companion to @ref scatter rather than a
+/// relaxation of it: scatter REJECTS repeated indices, because a plain write
+/// twice to one element leaves the result depending on loop order. Under an
+/// accumulation that ambiguity disappears - addition is commutative - so
+/// repeats are meaningful here and are allowed.
+template <CoreBasicTensorConcept DstType, CoreBasicTensorConcept SrcType>
+    requires std::is_same_v<typename DstType::ValueType, typename SrcType::ValueType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void scatter_add(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices) {
+    size_t const N = indices.size();
+    if (N == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::scatter_add: indices must be non-empty");
+    }
+    if (detail::tensor_rank(*dst) != N || detail::tensor_rank(src) != N) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::scatter_add: rank mismatch - dst rank={}, src rank={}, indices.size()={}",
+                                detail::tensor_rank(*dst), detail::tensor_rank(src), N);
+    }
+    std::vector<size_t> extents(N);
+    for (size_t k = 0; k < N; ++k) {
+        extents[k] = indices[k].size();
+        if (src.dim(k) != extents[k]) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::scatter_add: src axis {} has extent {}, but {} indices were given", k,
+                                    src.dim(k), extents[k]);
+        }
+        for (size_t p : indices[k]) {
+            if (p >= dst->dim(k)) {
+                EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::scatter_add: index {} on axis {} is out of range for dst dim {}", p, k,
+                                        dst->dim(k));
+            }
+        }
+    }
+
+    auto apply = [indices, extents, N](DstType *d, SrcType const *s) {
+        using T      = typename DstType::ValueType;
+        size_t total = 1;
+        for (size_t k = 0; k < N; ++k)
+            total *= extents[k];
+        if (total == 0)
+            return;
+        std::vector<size_t> idx(N, 0), d_str(N), s_str(N);
+        for (size_t k = 0; k < N; ++k) {
+            d_str[k] = d->stride(k);
+            s_str[k] = s->stride(k);
+        }
+        T       *d_data = d->data();
+        T const *s_data = s->data();
+        for (size_t count = 0; count < total; ++count) {
+            size_t d_off = 0, s_off = 0;
+            for (size_t k = 0; k < N; ++k) {
+                d_off += indices[k][idx[k]] * d_str[k];
+                s_off += idx[k] * s_str[k];
+            }
+            d_data[d_off] += s_data[s_off];
+            for (size_t k = 0; k < N; ++k) {
+                if (++idx[k] < extents[k])
+                    break;
+                idx[k] = 0;
+            }
+        }
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("scatter_add eager");
+        apply(dst, &src);
+        return;
+    }
+    LabeledSection("scatter_add capture");
+    auto [s_id, s_slot] = ctx.get_slot(src);
+    auto [d_id, d_slot] = ctx.get_slot(*dst);
+    auto executor       = [s_slot, d_slot, apply]() {
+        LabeledSection("scatter_add execute");
+        apply(static_cast<DstType *>(d_slot->ptr), static_cast<SrcType const *>(s_slot->ptr));
+    };
+    // dst is read as well as written: this accumulates onto what is there.
+    ctx.record(OpKind::Custom, "scatter_add", {s_id, d_id}, {d_id}, std::move(executor));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // element_transform
 // ─────────────────────────────────────────────────────────────────────────────
 

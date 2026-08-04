@@ -32,6 +32,8 @@ __all__ = [
     "triplet",
     "eigh",
     "solve",
+    "diagonal",
+    "reshape",
     "vector_dot",
     "canonicalizer",
     "orthocanonicalizer",
@@ -99,6 +101,27 @@ def eigh(A, descending=False, name="eigen"):
         v[...] = v[:, ::-1].copy()
         w[...] = w[::-1].copy()
     return evals, evecs
+
+
+def diagonal(A, name="diagonal"):
+    """The diagonal of a rank-2 tensor as a fresh rank-1 tensor."""
+    out = zeros(name, [min(shape(A)[0], shape(A)[1])])
+    la.diagonal(out, A)
+    return out
+
+
+def reshape(A, new_shape, name="reshape", row_major=True):
+    """``A`` with a new shape, as a fresh tensor.
+
+    ``row_major`` defaults to True because every reshape here replaces a numpy
+    one, and numpy's default order is C. einsums tensors are column major, so
+    the other walk is the natural one for native code - getting it wrong
+    transposes blocks silently rather than raising, which is why the underlying
+    ``linalg.reshape`` makes the argument mandatory.
+    """
+    out = zeros(name, list(new_shape))
+    la.reshape(out, A, row_major)
+    return out
 
 
 def solve(A, B, name="solve"):
