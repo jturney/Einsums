@@ -387,7 +387,11 @@ ctest --output-on-failure ${CTEST_EXTRA_STR}
 #     would silently duplicate the one above instead of failing.
 if [[ '${LEG}' == 'free-threaded' ]]; then
     echo '⤷ re-running the PYTHON label with the GIL disabled'
-    PYTHONPATH='${BUILD_DIR}/lib' PYTHON_GIL=0 python -c \"
+    # The interpreter CMake resolved, not PATH's: FindPython picks the
+    # t-build via Python_FIND_ABI, but the env's default python can be the
+    # regular-ABI one, where PYTHON_GIL=0 aborts rather than being ignored.
+    FT_PY=\$(grep '^Python_EXECUTABLE:' CMakeCache.txt | cut -d= -f2-)
+    PYTHONPATH='${BUILD_DIR}/lib' PYTHON_GIL=0 \"\${FT_PY}\" -c \"
 import sys, einsums
 assert not sys._is_gil_enabled(), 'importing einsums re-enabled the GIL'
 print('GIL still disabled after importing einsums')

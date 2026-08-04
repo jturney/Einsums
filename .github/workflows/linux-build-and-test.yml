@@ -163,10 +163,19 @@ jobs:
         env:
           PYTHON_GIL: "0"
         run: |
+          # Use the interpreter CMake resolved, not whatever `python` is on
+          # PATH. FindPython picks the t-build via Python_FIND_ABI, but the
+          # conda env's default `python` can be the regular-ABI one, and
+          # PYTHON_GIL=0 on that aborts rather than being ignored:
+          #   Fatal Python error: config_read_gil: Disabling the GIL is not
+          #   supported by this build
+          # It is also the interpreter the ctest Python tests launch.
+          PY=$(grep '^Python_EXECUTABLE:' CMakeCache.txt | cut -d= -f2-)
+          echo "using $PY"
           # Assert after the import, not just at startup: the point is that
           # loading _core did not flip the GIL back on and reduce this to a
           # duplicate of the run above.
-          PYTHONPATH="${{ github.workspace }}/build/lib" python -c "
+          PYTHONPATH="${{ github.workspace }}/build/lib" "$PY" -c "
           import sys, einsums
           assert not sys._is_gil_enabled(), 'importing einsums re-enabled the GIL'
           print('GIL still disabled after importing einsums')
