@@ -199,10 +199,12 @@ def merge_environment(output_file, system, compiler, blas, docs, free_threaded=F
     # clang-tools and llvmdev transitively, so it satisfies both the configure-time
     # find_package() calls and the runtime resource headers (lib/clang/<ver>/include).
     # Pinned to the clang toolchain version for ABI consistency on the clang legs.
-    # Windows already injects ``clangdev`` as its compiler, so skip the duplicate.
-    if system != "Windows":
-        merged["dependencies"].append(f"clangdev={CLANG_VERSION}.*")
-        merged["dependencies"].append(f"llvmdev={CLANG_VERSION}.*")
+    # Windows needs them too: ``clang_win-64`` is only the clang-cl activation
+    # package and carries no ClangConfig.cmake, so find_package(Clang CONFIG)
+    # fails without clangdev. The pin also drags clang_win-64 up to the same
+    # major, which apiary requires (LLVM >= 22).
+    merged["dependencies"].append(f"clangdev={CLANG_VERSION}.*")
+    merged["dependencies"].append(f"llvmdev={CLANG_VERSION}.*")
 
     # cpptrace has no Windows package.
     if system == "Windows" and "cpptrace" in merged["dependencies"]:

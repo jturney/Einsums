@@ -160,6 +160,41 @@ function(einsums_finalize_pybind)
         OUTPUT_NAME _core
         LIBRARY_OUTPUT_DIRECTORY "${_pkg_dir}"
     )
+    # Einsums_SetOutputPaths sets the PER-CONFIG output variables under MSVC
+    # (build/<Config>/lib), and a per-config property beats the plain one, so
+    # the line above would be ignored there and _core.pyd would miss the
+    # package directory PYTHONPATH points at. Pin every config explicitly.
+    if(MSVC)
+        set(_pyd_configs ${CMAKE_CONFIGURATION_TYPES})
+        if(NOT _pyd_configs)
+            set(_pyd_configs "${CMAKE_BUILD_TYPE}")
+        endif()
+        foreach(_cfg IN LISTS _pyd_configs)
+            string(TOUPPER "${_cfg}" _cfg_upper)
+            set_target_properties(PyEinsums PROPERTIES
+                LIBRARY_OUTPUT_DIRECTORY_${_cfg_upper} "${_pkg_dir}"
+                RUNTIME_OUTPUT_DIRECTORY_${_cfg_upper} "${_pkg_dir}"
+            )
+        endforeach()
+
+        # Windows has no RPATH: an extension resolves its dependent DLLs from
+        # its own directory, the directories registered with
+        # os.add_dll_directory, and the system directories - never from PATH
+        # (CPython 3.8+). Copying Einsums.dll in beside _core.pyd is what makes
+        # `import einsums` work from a plain build tree, and mirrors the
+        # vendored layout a wheel would ship. The package's __init__ registers
+        # the conda environment for the third-party DLLs underneath it.
+        # The $<IF:...> picks ``cmake -E true`` when the DLL list is empty (a
+        # static Einsums), because copy_if_different with no sources is an
+        # error rather than a no-op.
+        add_custom_command(TARGET PyEinsums POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E
+                    $<IF:$<BOOL:$<TARGET_RUNTIME_DLLS:PyEinsums>>,copy_if_different,true>
+                    $<TARGET_RUNTIME_DLLS:PyEinsums> "$<TARGET_FILE_DIR:PyEinsums>"
+            COMMAND_EXPAND_LISTS
+            COMMENT "Copying runtime DLLs next to the einsums extension"
+        )
+    endif()
     # Link only the umbrella ``Einsums`` shared library. Linking the per-module
     # targets (${_targets}) as well baked each module's object files into _core.so
     # on top of libEinsums.dylib, duplicating code/RTTI. Everything _core needs is

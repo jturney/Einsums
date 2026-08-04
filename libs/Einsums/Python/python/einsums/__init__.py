@@ -33,6 +33,7 @@ on first use if nothing was configured.
 import importlib as _importlib
 import itertools as _itertools
 import numbers as _numbers
+import os as _os
 import sys as _sys
 
 from . import rc  # noqa: F401  (exposed as einsums.rc)
@@ -65,6 +66,53 @@ def _extract_cli_options(argv: list[str]) -> list[str]:
 
 #: ``--einsums:*`` flags claimed from the command line at import, in order.
 cli_options: list[str] = _extract_cli_options(_sys.argv)
+
+# ----------------------------------------------------------------------
+# Windows DLL search path
+# ----------------------------------------------------------------------
+# Since CPython 3.8 the dependent DLLs of an extension module are resolved
+# only from the directory holding the extension, the directories registered
+# with os.add_dll_directory, and the system directories. PATH and the working
+# directory are deliberately not searched, so an activated conda environment
+# is not enough: Einsums.dll's own dependencies (BLAS, HDF5, fmt) live in
+# ``<env>/Library/bin`` and would not be found. Register the directories that
+# can hold them before _core is imported.
+#
+# Einsums.dll itself is copied next to _core by the build (see
+# einsums_finalize_pybind), which is what a redistributable layout wants
+# anyway; these entries cover its dependencies and any out-of-tree layout.
+_dll_directory_handles = []
+
+
+def _add_dll_directories() -> None:
+    """Register the directories holding the DLLs ``_core`` links against."""
+    candidates = []
+    # Escape hatch, and how a build tree points at its own bin directory.
+    override = _os.environ.get("EINSUMS_DLL_PATH")
+    if override:
+        candidates.extend(p for p in override.split(_os.pathsep) if p)
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    # Installed layout: <prefix>/lib/einsums next to <prefix>/bin.
+    candidates.append(_os.path.join(here, _os.pardir, _os.pardir, "bin"))
+    # conda keeps the third-party DLLs here.
+    candidates.append(_os.path.join(_sys.prefix, "Library", "bin"))
+
+    seen = set()
+    for candidate in candidates:
+        path = _os.path.normpath(candidate)
+        if path in seen or not _os.path.isdir(path):
+            continue
+        seen.add(path)
+        try:
+            # The returned handle removes the directory again when it is
+            # closed or collected, so it has to outlive the import below.
+            _dll_directory_handles.append(_os.add_dll_directory(path))
+        except OSError:
+            pass
+
+
+if _sys.platform == "win32":
+    _add_dll_directories()
 
 # Eager-load the compiled extension so its bindings are registered as soon as
 # the package is imported. This only registers types and functions; _core's

@@ -107,7 +107,13 @@ jobs:
           conda list
 
       # ---- Configure, Build, Test ----
-      # Two traps below. An empty CMAKE_MSVC_DEBUG_INFORMATION_FORMAT means "no
+      # CMAKE_PREFIX_PATH carries both halves of the env: conda puts compiled
+      # packages (LLVM/Clang for the apiary codegen, HDF5, MKL) under
+      # %CONDA_PREFIX%\Library, but noarch python packages keep their unix
+      # layout at the env root, which is where pybind11-global's
+      # share\cmake\pybind11 lives.
+      #
+      # Two more traps below. An empty CMAKE_MSVC_DEBUG_INFORMATION_FORMAT means "no
       # debug info" under CMP0141, which also drops the /Zi shared PDB that
       # ccache cannot cache. And the optimization flags must ride on the
       # PER-CONFIG variable: CMAKE_CXX_FLAGS is where MSVC's defaults live
@@ -143,8 +149,9 @@ jobs:
             -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT="" ^
             -D CMAKE_C_FLAGS_RELWITHDEBINFO="/O2 /Ob1 /DNDEBUG" ^
             -D CMAKE_CXX_FLAGS_RELWITHDEBINFO="/O2 /Ob1 /DNDEBUG" ^
-            -D CMAKE_PREFIX_PATH="%CONDA_PREFIX%\Library" ^
-            -D EINSUMS_BUILD_PYTHON=OFF ^
+            -D CMAKE_PREFIX_PATH="%CONDA_PREFIX%\Library;%CONDA_PREFIX%" ^
+            -D EINSUMS_BUILD_PYTHON=ON ^
+            -D Python_EXECUTABLE="%CONDA_PREFIX%\python.exe" ^
             -D EINSUMS_WITH_TESTS=ON ^
             -D EINSUMS_WITH_EXAMPLES=ON ^
             -D EINSUMS_WITH_BACKTRACES=OFF ^
