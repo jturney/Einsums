@@ -171,5 +171,6 @@ Customizing builds
    :maxdepth: 1
 
    compilers_and_options
+   blas_threading
 
 .. _Condaforge: https://github.com/conda-forge/miniforge
