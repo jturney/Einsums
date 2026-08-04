@@ -563,17 +563,46 @@ class DLPNOBase:
         if not first:
             return self
 
-        jobs = [(key, ij) + self._fit_operands(ij) for key, ij in first.items()]
+        # Allocate every operand first, then capture the WHOLE assembly - the
+        # two gathers, the reshape, the solve and the reshape back. Building
+        # the operands eagerly and capturing only the solve, which is what this
+        # did first, leaves the gathers running one at a time on the calling
+        # thread: the primitives are capture-aware precisely so this phase does
+        # not have to be, and calling them eagerly pays their cost without
+        # collecting the parallelism.
+        naocc = self.ref.naocc
+        jobs = []
+        for key, ij in first.items():
+            ribfs = self.lmopair_to_ribfs[ij]
+            paos = self.lmopair_to_paos[ij]
+            nq, nu = len(ribfs), len(paos)
+            jobs.append((
+                key,
+                [list(ribfs), list(range(naocc)), list(paos)],
+                [list(ribfs), list(ribfs)],
+                ten.zeros("(P|Q) domain", [nq, nq]),
+                ten.zeros("(Q|i u) domain", [nq, naocc, nu]),
+                ten.zeros("(Q|i u) domain flat", [nq, naocc * nu]),
+                ten.zeros("J^-1 (Q|i u)", [nq, naocc, nu]),
+            ))
+
         g = cg.Graph("domain fits")
         with cg.capture(g):
-            for _, _, A, rhs in jobs:
+            for _, q_idx, m_idx, A, block, rhs, fit in jobs:
+                la.gather(A, self.metric, m_idx)
+                la.gather(block, self.q_ia, q_idx)
+                # row_major=True: this flattening replaces numpy's, whose
+                # default order is C.
+                la.reshape(rhs, block, True)
                 la.gesv(A, rhs)
+                la.reshape(fit, rhs, True)
         g.set_executor(cg.OpenMPExecutor())
         g.execute()
 
-        for key, ij, _, rhs in jobs:
-            self._fit_cache[key] = self._reshape_fit(ij, rhs)
-        self._print(f"  fits:     {len(jobs)} distinct domains solved in one graph")
+        for key, _, _, _, _, _, fit in jobs:
+            self._fit_cache[key] = fit
+        self._print(f"  fits:     {len(jobs)} distinct domains, "
+                    f"{g.num_nodes()} nodes in one graph")
         return self
 
     def _fit_coefficients(self, ij):

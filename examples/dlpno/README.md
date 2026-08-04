@@ -119,10 +119,10 @@ Whole calculation, ethanol, SCF excluded, 4 P-cores + 6 E-cores:
 
 | | psi4 | this port | |
 | --- | --- | --- | --- |
-| cc-pVTZ, 1 thread | 2.853 | **2.456** | **1.16x faster** |
+| cc-pVTZ, 1 thread | 2.883 | **2.520** | **1.14x faster** |
 | cc-pVDZ, 1 thread | 0.452 | 0.615 | 1.4x |
-| cc-pVTZ, 10 threads | 0.889 | 1.280 | 1.4x |
-| cc-pVDZ, 10 threads | 0.146 | 0.470 | 3.2x |
+| cc-pVTZ, 10 threads | 0.871 | 1.259 | 1.4x |
+| cc-pVDZ, 10 threads | 0.148 | 0.454 | 3.1x |
 
 **Single threaded the port is ahead of the C++ on the larger basis; threaded it is behind, and by a widening margin as the problem gets smaller.**
 
