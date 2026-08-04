@@ -119,17 +119,23 @@ Bucketing pairs by PNO count would get the batching without the wasted flops, an
 Both sides screen identically, which the script checks by comparing correlation energies before reporting any timing.
 It also sets psi4's `R_CONVERGENCE` to match the port's: psi4's LMP2 default is 1e-6, two orders looser, which costs it two iterations in exactly the phase being compared.
 
-Whole calculation, ethanol, SCF excluded, 4 P-cores + 6 E-cores:
+The dense `(Q|mn)` build is inside the timed region, and it did not used to be.
+`from_psi4()` ran before the clock started, which excluded the port's single largest DF cost while psi4's figure included generating its own integrals - so the difference this section calls out as being in the port's disfavour was not actually being counted. It is 0.24 s.
+Every number below therefore reads worse than the ones this file carried before, against an unchanged port.
+
+Whole calculation, ethanol/cc-pVTZ, SCF excluded, 4 P-cores + 6 E-cores:
 
 | | psi4 | this port | |
 | --- | --- | --- | --- |
-| cc-pVTZ, 1 thread | 2.931 | **2.482** | **1.18x faster** |
-| cc-pVTZ, 10 threads | 0.918 | 1.109 | 1.2x |
+| 1 thread | 3.06 | **2.78** | **1.10x faster** |
+| 10 threads | 1.02 | 1.49 | 1.5x |
 
-**Single threaded the port is ahead of the C++ on the larger basis; threaded it is behind, and the gap widens as the problem gets smaller.**
+**Single threaded the port is ahead of the C++ on the larger basis; threaded it is behind.**
 
-The LMP2 iteration itself is at parity everywhere, threaded or not: 0.1155 vs 0.1224 s at cc-pVTZ on one thread, 0.0386 vs 0.0380 threaded.
-That is the phase the ComputeGraph and the batching cover, and it is not where the threaded deficit lives.
+The LMP2 iteration itself is at parity everywhere, threaded or not: 0.1214 vs 0.1242 s on one thread, 0.0438 vs 0.0404 threaded.
+That is the phase the ComputeGraph and the batching cover, and it is not where the deficit lives.
+
+Timings on this machine move by 10-15% with background load; the ratios are stable across runs, the absolute numbers less so.
 
 ### Parallelizing the setup phases
 
@@ -144,19 +150,26 @@ The way that *is* safe is to hand the independent work to the graph and run it u
 * `pno_transform` captures its three stages rather than only the two eigendecompositions inside them. This is the one that matters, and not for the reason the name suggests: the phase issues ~1400 small GEMMs against ~190 gathers, and eagerly issued they run serially no matter how many threads the BLAS has, each call far too small to fill them. Captured, stage 1 scales 5.0x on ten threads and stage 3 4.4x.
 * `compute_pno_overlaps` emits `cg.batched_gemm` per bucket pair instead of concatenating each pair's partners side by side. The concatenation was the phase's dominant cost and none of it was arithmetic: laying out a pair's partners re-copies every partner block once per pair coupling to it, 335 MiB of allocate-and-memcpy at ethanol/cc-pVTZ over blocks that already exist in 14 MiB of `X_pad`. It was also the one part that could not be parallelized, being numpy slice assignment on the calling thread.
 
-Ten threads at cc-pVTZ, against psi4:
+Ten threads at cc-pVTZ, against psi4. The "before" column is the eager per-pair
+form these phases replaced, on the same DF timing:
 
 | phase | before | after | psi4 |
 | --- | --- | --- | --- |
-| PNO Transform | 0.446 (1.7x) | **0.311** (1.1x) | 0.260 |
-| PNO Overlaps | 0.143 (3.0x) | **0.076** (1.5x) | 0.049 |
-| total | 1.258 (1.4x) | **1.109** (1.2x) | 0.918 |
+| PNO Transform | 0.446 (1.7x) | **0.35** (1.1x) | 0.31 |
+| PNO Overlaps | 0.143 (3.0x) | **0.085** (1.5x) | 0.058 |
 
 Single-threaded times are unchanged, which is the point: nothing got cheaper, it got issued in parallel.
 Setup scaling from 1 to 10 threads went 2.0x -> 2.9x for PNO Transform and 1.7x -> 2.4x for PNO Overlaps, against psi4's 4.8x.
 
-What is left of the threaded gap is the dense `(Q|mn)` build (2.1x), and, within the setup phases, the serial remainder that does not move with threads at all: graph capture, tensor allocation, and the two eager eigendecompositions the truncation decision needs.
-At ten threads that remainder is now roughly half of what PNO Transform costs, so capture overhead - not arithmetic - is the next thing in the way.
+**The graph's execution already scales as well as psi4's OpenMP; the setup deficit is entirely the serial tax around it.**
+Splitting each phase into `execute()` and everything else shows `execute` scaling 4.9x on PNO Transform against psi4's 4.8x, while a remainder of ~0.15 s across the setup is *identical* at one thread and at ten.
+That remainder is graph capture, tensor allocation, and the two eager eigendecompositions the truncation decision needs - roughly 40/40/20 - and at ten threads it is 41% of the whole setup.
+It is Amdahl, not a threading problem: no number of cores takes the setup below it.
+
+The dominant gap now is elsewhere.
+DF Ints is 7-8x, and 0.24 s of its 0.34 s is `mints.ao_eri` building the dense `(Q|mn)`: 98 MiB of integrals of which Schwarz screening would drop about one, because ethanol is small and compact enough that nearly every AO pair is significant.
+psi4's DLPNO builder screens by *domain* instead - for each auxiliary atom, only the AOs on atoms in its extended LMO/PAO domain - and does the whole phase in 0.05 s.
+That is the tier that turns O(naux nbf^2) into something linear, it is the one that gets worse with system size, and psi4 does not expose it: `DFHelper` is reachable from Python but applies J^-1/2 and `set_metric_pow` is not bound, which a method that fits per domain cannot use.
 
 A note on the energies at cc-pVTZ: the two agree to 2.3e-8 rather than the ~1e-13 seen at cc-pVDZ.
 Every input to the comparison matches psi4 exactly - PAO and auxiliary domains (average, min *and* max, per LMO and per pair), pairs screened, PNOs per pair (54/5/92), and the PNO truncation correction to 1.4e-10.
@@ -274,9 +287,19 @@ So `.reshape(-1)` silently copies rather than viewing, which is easy to write by
 
 ## Next steps
 
-1. **Capture overhead in the setup graphs.** The per-pair loops are captured now, so what is left un-parallel is building the graph rather than running it: at ethanol/cc-pVTZ ten threads, `pno_transform` spends about as long capturing and allocating as executing. Emitting the uniform parts as batches (below) attacks this directly, since a batch is one node however many pairs it covers.
-2. **Batch the PNO transform.** The natural follow-on: `compute_pno_overlaps` now emits `cg.batched_gemm` per bucket pair and `pno_transform` still emits one node per pair. The per-pair exchange build and semicanonical MP2 step are uniform within a domain and could be batched the same way, which would cut both the node count and the padding waste.
-3. **Allocation.** `create_zero_tensor` zeroes memory that a `beta = 0` GEMM immediately overwrites, and at ~2700 tensors it is 15% of `pno_transform`. An uninitialized-allocation entry point, or reusing scratch across pairs of the same bucket, would remove it.
-4. **One graph for the whole iteration**, using a loop node, with DIIS either captured or hoisted.
-5. **DLPNO-CCSD** (`ccsd.cc`), which is where the graph work gets interesting: the residuals are much larger and the intermediates are shared across pairs.
-6. **DLPNO-(T)** (`triples.cc`).
+1. **Screen the `(Q|mn)` build.** The largest single item left, 0.24 s, and the only one that gets structurally worse with system size. Needs an integral interface psi4 does not currently offer from Python: `MintsHelper.ao_eri` is dense, `DFHelper` is Schwarz-screened but metric-locked (`set_metric_pow` is in the header, not in the bindings), and the domain-screened builder DLPNO itself uses is private to the C++ class. Binding `set_metric_pow` is one line in `export_fock.cc` and would unlock the middle tier, worth ~1.9x on this phase.
+2. **Per-node capture cost.** The ~0.15 s serial setup tax is ~40% graph capture. Restructuring does *not* reach it - see below - so the lever is the per-node cost itself (~10 us here, against 1.85 us for a C++ caller) or moving the phase out of Python. `DESIGN-cpp-hybrid.md` sketches the latter.
+
+Three attempts at that tax were measured and rejected; the patches are under `parked/` so they are not re-derived.
+
+* **Batching `pno_transform` by domain group.** Node count 2977 -> 1075, capture -12 ms, execute +29 ms. Net loss. The padding is most of it - a group pads to its widest PNO count, and they run 5..92 - plus eight graph barriers needed because a store written through per-pair slices and then read whole is not reliably ordered.
+* **`declare_tensor` for the captured scratch.** Capture -30 ms, execute +26 ms: Materialization adds ~2651 lifecycle nodes whose scheduling costs back the allocation saving. Also settles the "allocation is overhead" theory - `create_zero_tensor` is 5.30 us for a 92x92 block against a 1.57 us empty-call floor, so most of it is the memset, which no allocator change avoids.
+* **Binding `cg::parallel_for`.** Not attempted after analysis. The body would be a Python callable on TaskPool workers; `execute()` has already released the GIL, so every iteration re-acquires it and the loop serializes - and it would run BLAS on `std::thread`, which the OpenMP-built OpenBLAS miscomputes. It is a C++-caller feature.
+
+The pattern across all three: moving work from capture into the graph costs about what it saves, because per-node graph overhead is comparable to the per-operation Python overhead it displaces.
+
+Then, unchanged from before:
+
+3. **One graph for the whole iteration**, using a loop node, with DIIS either captured or hoisted.
+4. **DLPNO-CCSD** (`ccsd.cc`), which is where the graph work gets interesting: the residuals are much larger and the intermediates are shared across pairs.
+5. **DLPNO-(T)** (`triples.cc`).
