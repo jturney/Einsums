@@ -72,9 +72,9 @@ TEST_CASE("LCCF - folded output feeding a downstream consumer stays correct", "[
     reference(out_ref, D_ref, A, B, E);
 
     // Runtime-tensor captures: the shape LCCF's fused executor is built for.
-    RuntimeTensor<double> A_rt(A), B_rt(B), E_rt(E);
-    RuntimeTensor<double> out_rt("out", std::vector<size_t>{3, 3});
-    RuntimeTensor<double> D_rt("D", std::vector<size_t>{3, 3});
+    RuntimeTensor<double> const A_rt(A), B_rt(B), E_rt(E);
+    RuntimeTensor<double>       out_rt("out", std::vector<size_t>{3, 3});
+    RuntimeTensor<double>       D_rt("D", std::vector<size_t>{3, 3});
     out_rt.zero();
     D_rt.zero();
 
@@ -125,7 +125,8 @@ TEST_CASE("LCCF - complex prefactors on complex tensors fold exactly", "[Compute
         }
     }
 
-    RuntimeTensor<T> A_rt(A), B_rt(B), out_rt(out0);
+    RuntimeTensor<T> const A_rt(A), B_rt(B);
+    RuntimeTensor<T>       out_rt(out0);
 
     cg::Graph graph("lccf_complex_pf");
     {
@@ -287,5 +288,115 @@ TEST_CASE("LCCF - the L builder is a separate node that LIH hoists out of a loop
             std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(a), static_cast<ptrdiff_t>(e)};
             REQUIRE(std::abs(Fae(idx) - ref(a, e)) < 1e-11);
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Arena-hosted L intermediate
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// LCCF's fold is sound on its own; these two cases only ever failed once the
+// intermediate it emits was hosted in MemoryPlanning's shared arena. The
+// minimal trigger was LCCF + FreeInsertion + MemoryPlanning - each of the
+// three alone, and every pair of them, was correct. create_default() is used
+// here because that is the combination a caller actually gets.
+//
+// Both were the same defect, and it was not in LCCF: build_l() zeroes L before
+// accumulating into it, but GeneralRuntimeTensor::zero() memset the owned
+// _data vector, which materialize_into() empties when it attaches the tensor
+// to an arena slice. So zero() was a silent no-op on exactly the tensors the
+// memory passes manage, and each execution's contributions piled onto the
+// last, giving 2x, 3x, ... the correct answer. zero() now goes through _impl.
+//
+// L must clear FreeInsertion's 1 MiB gate for the Frees to be inserted at all,
+// hence the deliberately large operand: 16*128*128 doubles = 2 MiB.
+namespace {
+constexpr size_t kArenaK = 16;  // contracted extent
+constexpr size_t kArenaN = 128; // both free extents (the fold transposes them)
+
+// out = 2*einsum("i,j <- k ; k,i,j") - einsum("i,j <- k ; k,j,i")
+void capture_2j_minus_k(cg::Graph &graph, RuntimeTensor<double> &out, RuntimeTensor<double> const &A, RuntimeTensor<double> const &B) {
+    cg::CaptureGuard const guard(graph);
+    cg::einsum("i,j <- k ; k,i,j", 0.0, &out, 2.0, A, B);
+    cg::einsum("i,j <- k ; k,j,i", 1.0, &out, -1.0, A, B);
+}
+
+void reference_2j_minus_k(Tensor<double, 2> &ref, Tensor<double, 1> const &A, Tensor<double, 3> const &B) {
+    ref.zero();
+    for (size_t ii = 0; ii < kArenaN; ii++) {
+        for (size_t jj = 0; jj < kArenaN; jj++) {
+            for (size_t kk = 0; kk < kArenaK; kk++) {
+                ref(ii, jj) += 2.0 * A(kk) * B(kk, ii, jj) - A(kk) * B(kk, jj, ii);
+            }
+        }
+    }
+}
+
+void require_matches(RuntimeTensor<double> const &out, Tensor<double, 2> const &ref, std::string const &what) {
+    for (size_t ii = 0; ii < kArenaN; ii++) {
+        for (size_t jj = 0; jj < kArenaN; jj++) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), static_cast<ptrdiff_t>(jj)};
+            INFO(what << " at (" << ii << ", " << jj << ")");
+            REQUIRE(std::abs(out(idx) - ref(ii, jj)) < 1e-9);
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("LCCF - arena-hosted L is rebuilt on every replay", "[ComputeGraph][Passes][LCCF]") {
+    // Replaying an optimized graph must be idempotent in the inputs: nothing
+    // changes between executions, so every execution must produce the same
+    // answer. Before the zero() fix the second gave 2x and the third 3x.
+    auto A = create_random_tensor<double>("A", kArenaK);
+    auto B = create_random_tensor<double>("B", kArenaK, kArenaN, kArenaN);
+
+    Tensor<double, 2> ref("ref", kArenaN, kArenaN);
+    reference_2j_minus_k(ref, A, B);
+
+    RuntimeTensor<double> const A_rt(A), B_rt(B);
+    RuntimeTensor<double>       out_rt("out", std::vector<size_t>{kArenaN, kArenaN});
+    out_rt.zero();
+
+    cg::Graph graph("lccf_arena_replay");
+    capture_2j_minus_k(graph, out_rt, A_rt, B_rt);
+
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+
+    graph.execute();
+    require_matches(out_rt, ref, "first execute");
+    graph.execute();
+    require_matches(out_rt, ref, "second execute");
+    graph.execute();
+    require_matches(out_rt, ref, "third execute");
+}
+
+TEST_CASE("LCCF - a second optimized graph does not inherit the first one's L", "[ComputeGraph][Passes][LCCF]") {
+    // The more damaging face of the same defect: these two graphs share no
+    // tensors, no PassManager and no Graph object, and each is executed
+    // exactly once. The second must not see anything the first left behind.
+    // Before the zero() fix this returned 2x for calculation 2 (and, once the
+    // replay case above had run in the same process, already for calculation
+    // 1): a program running two calculations back to back got a silently wrong
+    // second answer with no diagnostic.
+    auto A = create_random_tensor<double>("A", kArenaK);
+    auto B = create_random_tensor<double>("B", kArenaK, kArenaN, kArenaN);
+
+    Tensor<double, 2> ref("ref", kArenaN, kArenaN);
+    reference_2j_minus_k(ref, A, B);
+
+    for (int calculation = 1; calculation <= 2; calculation++) {
+        RuntimeTensor<double> const A_rt(A), B_rt(B);
+        RuntimeTensor<double>       out_rt("out", std::vector<size_t>{kArenaN, kArenaN});
+        out_rt.zero();
+
+        cg::Graph graph("lccf_arena_fresh");
+        capture_2j_minus_k(graph, out_rt, A_rt, B_rt);
+
+        auto pm = cg::PassManager::create_default();
+        graph.apply(pm);
+        graph.execute();
+
+        require_matches(out_rt, ref, fmt::format("calculation {}", calculation));
     }
 }

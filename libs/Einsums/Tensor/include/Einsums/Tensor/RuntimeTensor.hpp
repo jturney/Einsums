@@ -377,7 +377,15 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         if constexpr (IsDeviceTensor) {
             gpu::device_memset(_data.data(), 0, _data.size() * sizeof(T));
         } else {
-            std::memset(_data.data(), 0, _data.size() * sizeof(T));
+            // Storage is owned (_data), aliased (@ref alias_to), or external
+            // (@ref materialize_into, the MemoryPlanning arena). Both of the
+            // latter two clear _data, so zeroing it was a silent no-op on
+            // exactly the tensors the memory passes manage. Go through the
+            // impl, which always points at the live buffer.
+            if (!is_materialized()) {
+                return; // deferred: no storage yet, and _impl holds the release sentinel
+            }
+            detail::copy_to(T{0.0}, _impl);
         }
     }
 
@@ -395,7 +403,12 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         if constexpr (IsDeviceTensor) {
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "set_all() is not supported for device runtime tensors. Use a GPU kernel instead.");
         } else {
-            std::fill(_data.begin(), _data.end(), val);
+            // Same storage cases as zero(): _data is empty for aliased and
+            // arena-backed tensors, so filling it silently did nothing.
+            if (!is_materialized()) {
+                return; // deferred: no storage yet
+            }
+            detail::copy_to(val, _impl);
         }
     }
 
@@ -410,36 +423,42 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      *
      * Disabled for device runtime tensors, because gpu::DeviceVector has no
      * iterators and device memory is not host-accessible.
+     *
+     * These iterate the LIVE storage, which is the owned _data only when the
+     * tensor owns it: alias_to() and materialize_into() both empty _data, so
+     * iterating it yielded an empty range on aliased and arena-backed tensors.
+     * A deferred tensor still yields an empty range - _impl holds the release
+     * sentinel there, so its size must not be used to bound a pointer walk.
      */
     auto begin() noexcept
         requires(!IsDeviceTensor)
     {
-        return _data.begin();
+        return is_materialized() ? data() : Pointer{nullptr};
     }
     auto end() noexcept
         requires(!IsDeviceTensor)
     {
-        return _data.end();
+        return is_materialized() ? data() + _impl.size() : Pointer{nullptr};
     }
     auto begin() const noexcept
         requires(!IsDeviceTensor)
     {
-        return _data.begin();
+        return is_materialized() ? data() : ConstPointer{nullptr};
     }
     auto end() const noexcept
         requires(!IsDeviceTensor)
     {
-        return _data.end();
+        return is_materialized() ? data() + _impl.size() : ConstPointer{nullptr};
     }
     auto cbegin() const noexcept
         requires(!IsDeviceTensor)
     {
-        return _data.cbegin();
+        return begin();
     }
     auto cend() const noexcept
         requires(!IsDeviceTensor)
     {
-        return _data.cend();
+        return end();
     }
 
     /**
@@ -1022,8 +1041,15 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
 
     /**
      * @brief Returns the linear size of the tensor.
+     *
+     * The element count implied by the dims, which is what materialize()
+     * allocates. Not the owned buffer's length: alias_to() and
+     * materialize_into() empty _data while the tensor is fully usable, so
+     * reporting _data.size() gave 0 for aliased and arena-backed tensors.
+     * A deferred tensor reports the count it will have once materialized;
+     * use is_materialized() to ask whether storage exists.
      */
-    [[nodiscard]] APIARY_EXPOSE APIARY_GETTER("size") virtual auto size() const -> size_t { return _data.size(); }
+    [[nodiscard]] APIARY_EXPOSE APIARY_GETTER("size") virtual auto size() const -> size_t { return _impl.size(); }
 
     /**
      * @brief Returns whether the tensor sees all of the underlying data.
