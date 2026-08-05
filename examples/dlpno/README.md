@@ -173,10 +173,14 @@ It is simply the minority of the wall time, and the majority barely moves, which
 That bucket is Python loops, but not only: it is also eager numpy bookkeeping (`compute_doi` and `prep_sparsity` are entirely that), tensor allocation, graph capture, and pybind view construction.
 The accurate label is host-side serial work outside the graph.
 
-`compute_pno_overlaps` is the clearest case and was measured directly.
-Its graph replay is 107 ms on one thread and 26 ms on ten, a clean 4.1x, and it is only 7-19% of the phase.
-Roughly half the phase is **32,948 Python tensor-view constructions**, one per coupling, to hand the batched GEMM its output operands.
-That work is serial by nature, so the phase looks like it does not thread when in fact its parallel part parallelizes fine.
+`compute_pno_overlaps` was the clearest case, and the one that has since been fixed, which is worth keeping as the worked example.
+Its graph replay was 107 ms on one thread and 26 ms on ten, a clean 4.1x, and only 7-19% of the phase.
+Roughly half the phase was **32,948 Python tensor-view constructions**, one per coupling, purely to hand the batched GEMM its output operands.
+Serial by nature, so the phase looked like it did not thread when its parallel part was parallelizing fine.
+
+`cg::batched_gemm_blocked` takes those destinations as offsets into one tensor instead of as a list of views, so C++ builds them.
+The phase went from 690-800 ms to 254-289 ms on one thread and roughly halved on ten, and against psi4 it went from 4.3x to 1.3x serially and 21x to about 5x threaded.
+It also registers one output slot rather than 32,948, and because that output is the base tensor rather than a view of it, a later read of the whole base is ordered against the write without needing a graph boundary.
 
 This is the ceiling on the current shape: even if graph replay went to zero, the port would still take 915 ms at n=6 against psi4's 561 ms total.
 No amount of optimizing what is inside the graph reaches that.
@@ -319,6 +323,12 @@ Worth stating plainly: the SIMD module looks like it should be the answer here a
 `simd::gather` is a strided-lane load, not an index-list gather, and the psABI rung ladder is x86-only.
 What was left on the table was index arithmetic and a missed `memcpy`, and both fixes are scalar.
 
+**A batched GEMM whose destinations are blocks of one tensor - ADDED.**
+`cg::batched_gemm_blocked` takes the destinations as offsets into a base tensor instead of as a list of views.
+The list form needs one tensor object per member, and building those is not free: 32,948 Python view constructions plus 32,948 slot registrations here, together about half of `compute_pno_overlaps` and none of it arithmetic.
+A column block of a column-major tensor inherits the parent's leading dimension, which is what makes the description sufficient.
+Worth 2.7x on that phase serially.
+
 **`gather` can permute axes as it moves - ADDED.**
 Selecting and reordering are both full passes over the result, and doing them separately means two.
 `axes[k]` names the destination axis that source axis `k` lands on.
@@ -354,11 +364,10 @@ A write through `R[:, :, p]` and a read of `R` were treated as touching unrelate
 
 Still missing, in rough order of what this workload would pay for:
 
-1. **A batched GEMM taking a base tensor rather than a list of views.** The operands are uniform-stride blocks of one tensor, and building them in Python is 32,948 view constructions and roughly half of `compute_pno_overlaps`. The single biggest remaining item.
-2. **Concatenate / stack along an axis.** DIIS flattens every pair block into one vector and back; the dipole code stacks three components into an `(naocc, 3)`.
-3. **Strided views under capture.** `T[:, :, j::naocc]` works eagerly but raises `only step=1 slices are supported` under capture.
-4. **`linalg.gemm` is invisible to `GEMMBatching`.** It captures as `OpKind::Gemm`, and the pass only groups `Einsum` nodes carrying a `gemm_hint`.
-5. **Masked select.** `np.where` guards a divide-by-zero in the population split.
+1. **Concatenate / stack along an axis.** DIIS flattens every pair block into one vector and back; the dipole code stacks three components into an `(naocc, 3)`.
+2. **Strided views under capture.** `T[:, :, j::naocc]` works eagerly but raises `only step=1 slices are supported` under capture.
+3. **`linalg.gemm` is invisible to `GEMMBatching`.** It captures as `OpKind::Gemm`, and the pass only groups `Einsum` nodes carrying a `gemm_hint`.
+4. **Masked select.** `np.where` guards a divide-by-zero in the population split.
 
 One numpy trap worth repeating: `np.asarray` on a tensor is F-contiguous, so `.reshape(-1)` silently copies rather than viewing.
 An early DIIS here extrapolated into throwaway buffers and quietly degraded to unaccelerated Jacobi, 48 iterations instead of 11, with no error anywhere.
@@ -369,12 +378,11 @@ An early DIIS here extrapolated into throwaway buffers and quietly degraded to u
 In the order the measurements above argue for.
 
 1. **Move the serial layer off the host.** 73% of the threaded run is outside the graph and does not thread, and that is the ceiling on everything else. Either more of the work becomes graph nodes, or the phases move to C++; `DESIGN-cpp-hybrid.md` sketches the latter.
-2. **A base-tensor batched GEMM** (gap 1 above), the largest single piece of that serial layer and the one with a clear shape.
-3. **Screen the `(Q|mn)` build.** 2.5-8.4x depending on thread count, and algorithmic rather than overhead. psi4 does not expose the interface: `MintsHelper.ao_eri` is dense, `DFHelper` is Schwarz-screened but metric-locked (`set_metric_pow` is in the header, not the bindings), and the domain-screened builder DLPNO itself uses is private to the C++ class. Binding `set_metric_pow` is one line in `export_fock.cc` and would unlock the middle tier.
-4. **Halve the residual's working set.** Both halves are single GEMMs at the price of holding the intermediate in two orders at once. That is the standing cost of the bipartite structure, and the thing to attack before pushing to larger systems.
-5. **One graph for the whole iteration**, using a loop node, with DIIS either captured or hoisted.
-6. **DLPNO-CCSD** (`ccsd.cc`), which is where the graph work gets interesting: the residuals are much larger and the intermediates are shared across pairs.
-7. **DLPNO-(T)** (`triples.cc`).
+2. **Screen the `(Q|mn)` build.** 2.5-8.4x depending on thread count, and algorithmic rather than overhead. psi4 does not expose the interface: `MintsHelper.ao_eri` is dense, `DFHelper` is Schwarz-screened but metric-locked (`set_metric_pow` is in the header, not the bindings), and the domain-screened builder DLPNO itself uses is private to the C++ class. Binding `set_metric_pow` is one line in `export_fock.cc` and would unlock the middle tier.
+3. **Halve the residual's working set.** Both halves are single GEMMs at the price of holding the intermediate in two orders at once. That is the standing cost of the bipartite structure, and the thing to attack before pushing to larger systems.
+4. **One graph for the whole iteration**, using a loop node, with DIIS either captured or hoisted.
+5. **DLPNO-CCSD** (`ccsd.cc`), which is where the graph work gets interesting: the residuals are much larger and the intermediates are shared across pairs.
+6. **DLPNO-(T)** (`triples.cc`).
 
 `bench_batching.py` has not run since bucketing landed - it reaches for `T_all` as a single store and that is now a list of one per bucket.
 Its conclusion, that padding only pays once a pass can exploit the uniformity, is superseded anyway: the residual no longer has a per-coupling form to compare against.

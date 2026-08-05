@@ -194,10 +194,13 @@ class DLPNOMP2(DLPNOBase):
         by_shape = {}
         for ij, entries in self._couplings.items():
             for idx, (p, _, _, _, cls, _) in enumerate(entries):
-                M_p = self.bucket_dims[cls[1]]
-                slot = self._dest_slot[ij, idx]
+                M_b, M_p = self.bucket_dims[cls[0]], self.bucket_dims[cls[1]]
+                # The destination is described, not constructed. Column block
+                # `slot` of a (M_b, M_p * N) column-major tensor starts at
+                # element slot * M_p * M_b and inherits the parent's leading
+                # dimension, which is exactly what batched_gemm_blocked wants.
                 by_shape.setdefault(cls, []).append(
-                    (half[ij], X_pad[p], self._S_cls[cls][:, slot * M_p:(slot + 1) * M_p]))
+                    (half[ij], X_pad[p], self._dest_slot[ij, idx] * M_p * M_b))
 
         by_bucket = {}
         for ij in self._couplings:
@@ -213,9 +216,12 @@ class DLPNOMP2(DLPNOBase):
                 cg.batched_gemm(1.0, [X_pad[ij] for ij in members],
                                 [self.S_pao] * len(members), 0.0,
                                 [half[ij] for ij in members], trans_a=True)
-            for members in by_shape.values():
-                cg.batched_gemm(1.0, [h for h, _, _ in members], [x for _, x, _ in members],
-                                0.0, [s for _, _, s in members])
+            for cls, members in by_shape.items():
+                M_b, M_p = self.bucket_dims[cls[0]], self.bucket_dims[cls[1]]
+                cg.batched_gemm_blocked(1.0, [h for h, _, _ in members],
+                                        [x for _, x, _ in members], 0.0,
+                                        self._S_cls[cls], [o for _, _, o in members],
+                                        M_b, M_p)
         # No pass pipeline. This graph is emitted in the form the passes would
         # produce - the batches are already fused, and there is nothing to share
         # between them - so applying them is pure cost, and it is not small:
