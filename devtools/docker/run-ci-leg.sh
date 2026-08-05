@@ -24,6 +24,12 @@
 #     ./devtools/docker/run-ci-leg.sh tsan                 # Sanitizers/thread (Debug, BUILD_PYTHON=ON)
 #     ./devtools/docker/run-ci-leg.sh asan                 # Sanitizers/address,leak,undefined (Debug)
 #     ./devtools/docker/run-ci-leg.sh free-threaded        # free-threaded CPython (cp314t), BUILD_PYTHON=ON
+#     ./devtools/docker/run-ci-leg.sh valgrind             # memcheck under valgrind (Debug, BUILD_PYTHON=OFF)
+#
+#     # Valgrind runs each test 20-50x slower, so the whole suite is an
+#     # overnight proposition. Narrow it:
+#     ./devtools/docker/run-ci-leg.sh valgrind -- -L UNIT_ONLY
+#     ./devtools/docker/run-ci-leg.sh valgrind -- -R "Modules.Tensor"
 #
 #     # Append `-arm64` to any leg name to run on native arm64 instead of
 #     # x86_64-via-Rosetta. It is faster, roughly 2x for instrumented builds,
@@ -207,9 +213,35 @@ leg_settings() {
                    "-DPython_ROOT_DIR=\${CONDA_PREFIX}"
                    "-DPython_FIND_STRATEGY=LOCATION")
             ;;
+        valgrind)
+            # Memcheck. Debug rather than RelWithDebInfo on purpose: valgrind
+            # reports uninitialised values in terms of what the optimizer
+            # emitted, so -O2 yields both confusing line numbers and reports
+            # with no source-level cause. -O0 costs build time and buys signal.
+            #
+            # Python is off. The python tests are registered with add_test
+            # directly (einsums_add_python_unit_test), not through
+            # einsums_add_test, so they never get the valgrind wrapper - they
+            # would only add runtime. Running CPython itself under memcheck
+            # additionally needs Python's own suppression file to be readable.
+            #
+            # The options are one CMake list: --error-exitcode makes a finding
+            # fail the test rather than merely printing, and leak checking is
+            # limited to definite losses because OpenMP and BLAS runtimes leave
+            # still-reachable pools behind by design. The suppression path is
+            # the in-container source tree, i.e. SRC_DIR below.
+            COMPILER=default
+            BLAS=openblas
+            BUILD_TYPE=Debug
+            # Single quotes around the semicolon-separated list are load-bearing;
+            # see the free-threaded leg for why.
+            EXTRA=("-DEINSUMS_WITH_TESTS_VALGRIND=ON"
+                   "-DEINSUMS_BUILD_PYTHON=OFF"
+                   "-DEINSUMS_WITH_TESTS_VALGRIND_OPTIONS='--error-exitcode=1;--leak-check=full;--errors-for-leak-kinds=definite;--suppressions=/work/src/devtools/sanitizers/valgrind.supp'")
+            ;;
         *)
             echo "Unknown leg: $1" >&2
-            echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], intel, no-profiler, tsan, tsan-nopy, asan, free-threaded, windows-cross" >&2
+            echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], intel, no-profiler, tsan, tsan-nopy, asan, free-threaded, valgrind, windows-cross" >&2
             echo "       (append -arm64 to any of the above for native arm64)" >&2
             exit 1
             ;;
@@ -352,6 +384,16 @@ conda activate '${ENV_NAME}'
 export CCACHE_DIR='${CCACHE_DIR}'
 export CCACHE_MAXSIZE=5G
 mkdir -p '${CCACHE_DIR}'
+
+# 2b. valgrind is not in the miniforge image, and Einsums_AddTest does
+#     find_program(valgrind REQUIRED) at configure time when the option is on,
+#     so install it before cmake runs rather than before ctest. Done here and
+#     not at container creation so existing containers pick it up without
+#     being recreated, and so the other legs do not carry it.
+if [[ '${LEG}' == 'valgrind' ]] && ! command -v valgrind >/dev/null; then
+    echo '⤷ installing valgrind (first time for this container)'
+    apt-get update -qq >/dev/null && apt-get install -y -qq valgrind >/dev/null
+fi
 
 # 3. Configure (idempotent; CMake re-uses cache).
 mkdir -p '${BUILD_DIR}'

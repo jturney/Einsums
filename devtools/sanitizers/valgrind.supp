@@ -1,0 +1,30 @@
+# Valgrind memcheck suppressions for the `valgrind` docker CI leg.
+#
+# Only for reports that are not ours to fix: allocations the OpenMP, BLAS and
+# CUDA-less GPU shim runtimes make once and never free, and known-benign
+# reads inside those libraries. Anything in einsums code belongs in a fix, not
+# here.
+#
+# The leg already passes --errors-for-leak-kinds=definite, so still-reachable
+# pools (libgomp's thread arenas, OpenBLAS's per-thread buffers) do not need
+# suppressing - they are reported but do not fail a test.
+#
+# To add an entry, re-run the offending test with --gen-suppressions=all and
+# paste the generated block, then replace the innermost frames with `...` so
+# the rule survives a library update:
+#
+#   ./devtools/docker/run-ci-leg.sh valgrind -- -R "TheTest" \
+#       --overwrite MemoryCheckCommandOptions="--gen-suppressions=all"
+#
+# Keep each entry commented with what it is and why it is not our bug.
+
+# Example of the intended shape; harmless as written because no such object
+# exists. Replace it with a real entry rather than adding alongside it.
+#
+# {
+#    libgomp-thread-pool-teardown
+#    Memcheck:Leak
+#    match-leak-kinds: possible
+#    ...
+#    obj:*/libgomp.so*
+# }
