@@ -44,6 +44,83 @@ std::string DeviceProfileDB::detect_cpu_brand() {
         std::memcpy(brand + i * 16, regs, 16);
     }
     return std::string(brand);
+#elif defined(__linux__)
+    // Non-x86 Linux, in practice aarch64: there is no CPUID, and an ARM
+    // /proc/cpuinfo carries no "model name" line - the CPU is identified by
+    // numeric implementer and part codes instead. Returning "Unknown CPU" here
+    // left every aarch64 Linux run without a device profile, matching nothing
+    // in the database and silently costing against a generic CPU.
+    //
+    // A hypervisor commonly masks the part number (Docker on Apple silicon
+    // reports implementer 0x61 with part 0x000), so the implementer alone has
+    // to be enough to name something useful.
+    {
+        auto value_of = [](std::string const &l) -> std::string {
+            auto const colon = l.find(':');
+            if (colon == std::string::npos) {
+                return {};
+            }
+            auto const v = l.substr(colon + 1);
+            auto const b = v.find_first_not_of(" \t");
+            auto const e = v.find_last_not_of(" \t\r\n");
+            return b == std::string::npos ? std::string{} : v.substr(b, e - b + 1);
+        };
+
+        std::ifstream cpuinfo("/proc/cpuinfo");
+        std::string   line;
+        std::string   implementer;
+        std::string   part;
+        while (std::getline(cpuinfo, line)) {
+            // Some ARM boards, and every x86 kernel, do publish a name. Prefer
+            // it whenever it is present.
+            if (line.rfind("model name", 0) == 0 || line.rfind("Model", 0) == 0) {
+                if (auto const v = value_of(line); !v.empty()) {
+                    return v;
+                }
+            } else if (line.rfind("CPU implementer", 0) == 0) {
+                implementer = value_of(line);
+            } else if (line.rfind("CPU part", 0) == 0) {
+                part = value_of(line);
+            }
+        }
+
+        if (!implementer.empty()) {
+            struct CodeName {
+                char const *code;
+                char const *name;
+            };
+            // Implementer codes are assigned by ARM. Anything unlisted still
+            // reports its raw code rather than falling through to "Unknown CPU".
+            static constexpr CodeName kImplementers[] = {
+                {"0x41", "ARM"},    {"0x42", "Broadcom"}, {"0x43", "Cavium"},   {"0x46", "Fujitsu"}, {"0x48", "HiSilicon"},
+                {"0x4e", "NVIDIA"}, {"0x50", "APM"},      {"0x51", "Qualcomm"}, {"0x53", "Samsung"}, {"0x56", "Marvell"},
+                {"0x61", "Apple"},  {"0x69", "Intel"},    {"0x70", "Phytium"},  {"0xc0", "Ampere"}};
+            // ARM's own cores, where the part number names a specific design.
+            static constexpr CodeName kArmParts[] = {{"0xd03", "Cortex-A53"},  {"0xd05", "Cortex-A55"},  {"0xd07", "Cortex-A57"},
+                                                     {"0xd08", "Cortex-A72"},  {"0xd09", "Cortex-A73"},  {"0xd0a", "Cortex-A75"},
+                                                     {"0xd0b", "Cortex-A76"},  {"0xd0c", "Neoverse-N1"}, {"0xd40", "Neoverse-V1"},
+                                                     {"0xd49", "Neoverse-N2"}, {"0xd4f", "Neoverse-V2"}};
+
+            char const *vendor = nullptr;
+            for (auto const &entry : kImplementers) {
+                if (implementer == entry.code) {
+                    vendor = entry.name;
+                    break;
+                }
+            }
+            if (vendor != nullptr && implementer == std::string("0x41")) {
+                for (auto const &entry : kArmParts) {
+                    if (part == entry.code) {
+                        return fmt::format("{} {}", vendor, entry.name);
+                    }
+                }
+            }
+            if (vendor != nullptr) {
+                return fmt::format("{} aarch64 (part {})", vendor, part.empty() ? "unknown" : part);
+            }
+            return fmt::format("aarch64 (implementer {}, part {})", implementer, part.empty() ? "unknown" : part);
+        }
+    }
 #endif
     return "Unknown CPU";
 }
