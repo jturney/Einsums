@@ -50,4 +50,60 @@ MOLECULES = {
     ),
 }
 
-__all__ = ["MOLECULES"]
+# The dimer's O-O distance in the compact geometry above, in angstrom. Both
+# monomers lie along x, so a separation sweep only has to translate the second
+# one; its internal geometry and orientation are left alone, which keeps the
+# monomer energies constant and makes the pair screening the only thing that
+# changes between points.
+_DIMER_R_OO = 2.901632
+
+# Atom lines of the second monomer, and the x coordinate of its oxygen.
+_DIMER_MONOMER_B = (
+    ("O", 1.350625, 0.111469, 0.000000),
+    ("H", 1.680398, -0.373741, -0.758561),
+    ("H", 1.680398, -0.373741, 0.758561),
+)
+_DIMER_MONOMER_A = (
+    ("O", -1.551007, -0.114520, 0.000000),
+    ("H", -1.934259, 0.762503, 0.000000),
+    ("H", -0.599677, 0.040712, 0.000000),
+)
+
+
+def water_dimer_at(r_oo):
+    """The water dimer with its O-O distance set to ``r_oo`` angstrom.
+
+    ``water-dimer`` and ``water-dimer-far`` are the two ends of this: 2.9 A,
+    where psi4 screens nothing, and 12 A, where every inter-monomer pair fails
+    both criteria by orders of magnitude. Neither says anything about the
+    region between, where pairs cross the thresholds one at a time and the two
+    survival criteria can disagree. See sweep_separation.py.
+    """
+    shift = float(r_oo) - _DIMER_R_OO
+    lines = [f"{s}  {x:.6f}  {y:.6f}  {z:.6f}" for (s, x, y, z) in _DIMER_MONOMER_A]
+    lines += [f"{s}  {x + shift:.6f}  {y:.6f}  {z:.6f}" for (s, x, y, z) in _DIMER_MONOMER_B]
+    return "\n".join(lines) + "\n"
+
+
+def water_chain(n, r_oo=2.9):
+    """``n`` water monomers in a line, ``r_oo`` angstrom apart along x.
+
+    The scaling test the fixed geometries cannot be: pair count grows as the
+    square of the monomer count while the number of pairs close enough to
+    survive prescreening grows linearly, so the kept fraction has to fall as
+    the chain lengthens. Nothing else in the driver shows that, because every
+    compact molecule keeps every pair and the far dimer is a single step.
+
+    The monomers all share one orientation, which is not the hydrogen-bonded
+    arrangement a real water chain adopts. That is deliberate: this is a
+    locality test, and a uniform lattice makes the pair distances a clean
+    function of the index difference rather than of the geometry optimizer.
+    """
+    lines = []
+    for k in range(int(n)):
+        shift = k * float(r_oo)
+        lines += [f"{s}  {x + shift:.6f}  {y:.6f}  {z:.6f}" for (s, x, y, z) in _DIMER_MONOMER_A]
+    return "\n".join(lines) + "\n"
+
+
+__all__ = ["MOLECULES", "water_dimer_at", "water_chain"]
