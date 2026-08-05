@@ -17,10 +17,27 @@ process that hangs forever inside ``util::attach_debugger()``.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
+import pytest
+
 import einsums
+
+# A sanitizer build needs its runtime preloaded before the interpreter dlopens
+# the instrumented _core, which einsums_add_python_unit_test arranges for the
+# test process itself. It cannot arrange it for a child: on macOS dyld strips
+# DYLD_* from the environment of a signed binary, so the variable is not even
+# visible here to pass along, and the child aborts with "interceptors are not
+# working". Linux inherits LD_PRELOAD normally, so only Darwin loses these
+# cases, and only under a sanitizer.
+_sanitizer_active = any(os.environ.get(v) for v in ("ASAN_OPTIONS", "TSAN_OPTIONS", "LSAN_OPTIONS"))
+
+requires_child_preload = pytest.mark.skipif(
+    sys.platform == "darwin" and _sanitizer_active,
+    reason="macOS strips DYLD_* for signed binaries, so a child cannot inherit the sanitizer runtime",
+)
 
 
 def _run(args, code):
@@ -59,6 +76,7 @@ def test_extract_ignores_argv0_even_if_it_looks_like_a_flag():
 # ── end to end, in a subprocess (this process' argv has no einsums flags) ──
 
 
+@requires_child_preload
 def test_flags_are_claimed_from_the_command_line_and_stripped():
     code = (
         "import sys, einsums\n"
@@ -72,6 +90,7 @@ def test_flags_are_claimed_from_the_command_line_and_stripped():
     assert "ARGV ['--mine', '3']" in r.stdout, r.stdout
 
 
+@requires_child_preload
 def test_forwarded_flag_does_not_prevent_runtime_startup():
     # The flag has to be accepted by the runtime's parser, not just forwarded:
     # an unknown or malformed option would fail initialization.
@@ -86,6 +105,7 @@ def test_forwarded_flag_does_not_prevent_runtime_startup():
     assert "STARTED ['--einsums:debug:no-attach-debugger']" in r.stdout, r.stdout
 
 
+@requires_child_preload
 def test_no_flags_still_starts_cleanly():
     code = (
         "import einsums\n"
