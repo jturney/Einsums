@@ -467,38 +467,46 @@ Three attempts at that tax were measured and rejected; the patches are under `pa
 
 The pattern across all three: moving work from capture into the graph costs about what it saves, because per-node graph overhead is comparable to the per-operation Python overhead it displaces.
 
-3. **Collapse the residual's first half** - prototyped, measured, and blocked on a missing view operation. Details below.
-4. **Capture cost in the residual**, now ~300 ms of `lmp2_iterations`' 970 at n=6, most of it 32,948 pybind slices building the coupling views. The same per-node-cost problem as item 2, in a phase where it is now a third of the total.
+3. **Halve the residual's working set.** Both halves are now single GEMMs, at the price of holding the intermediate in two orders at once. That is the standing cost of the bipartite structure, and it is the thing to attack if this is pushed to larger systems - either by finding an ordering that serves both halves, or by repacking a class at a time so only one class is duplicated.
+4. **The transposed overlap copy** costs `compute_pno_overlaps` about 20%. It is a gather at setup, so it is cheap, but it is also 66 MiB that exists only because a GEMM cannot write transposed output.
 
-### Why the first half did not collapse the same way
+### The first half, collapsed too
 
-`tmp_c = S_c T_c` is still one GEMM per coupling and is now 63% of the replay, so it is the obvious next target.
-It even has the same shape of answer: the second half collapsed because a pair's couplings share that pair, and the first half's couplings share their *partner* - many pairs couple through the same `T`.
-Grouping by partner and stacking those couplings' `S_c` gives one GEMM per partner, 32,948 down to 776 again, and `S` is constant so the partner-major copy is a one-time cost.
+`tmp_c = S_c T_c` was one GEMM per coupling and 63% of the replay.
+It has the mirror-image structure of the second half: those couplings shared a *pair*, these share a *partner*, because many pairs couple through the same `T`.
+Grouping by partner and stacking their overlaps makes it one GEMM per partner - 32,948 down to 2,822 in 64 batches - and `S` is constant, so the partner-major copy is paid once.
 
-Prototyped on the real n=6 coupling structure, it is a large win on the arithmetic - padding controlled the same way `_choose_width_groups` does it, at 1.21x the flops:
+Two things fall out of column-major storage and are worth stating rather than rediscovering.
+A GEMM's output blocks are contiguous only when the *shared* operand is on the left; the shared operand here is `T`, so the products come out **transposed**.
+And the sign can no longer ride on the batch's `alpha`, because one batch now spans many pairs and the sign varies between them - it rides on the transposed copy of `S` instead, which is the one copy of the two the first half reads.
 
-| | today | partner-major | |
-| --- | --- | --- | --- |
-| 1 thread | 36.4 ms | **15.2 ms** | 2.39x |
-| 10 threads | 20.6 ms | **7.5 ms** | 2.76x |
+**The two halves want opposite orderings and cannot both have them.**
+The couplings are a bipartite graph, so the intermediate is produced by partner and read by pair, and something has to move 66 MiB between them once per iteration.
+That is `_capture_repack`, one permuting gather per shape class - the reordering along the coupling axis and the transpose of the other two are the same pass.
+Written as two passes it is 12.7 ms serial and 5.7 threaded; as one, 6.9 and 3.3.
 
-**The repack is what kills it.**
-The first half wants the intermediate ordered by partner; the second half wants it ordered by pair.
-The two orderings cannot both be contiguous - the couplings are a bipartite graph - so one side has to physically move the whole 66 MiB intermediate every iteration.
-And it is not only a reordering. Column-major makes a single GEMM per partner produce *transposed* blocks (a shared left operand gives contiguous blocks, a shared right operand gives contiguous rows, and only one of those can be the `T`), so the repack is a permutation along the coupling axis **and** a swap of the last two axes: 3.3 ms threaded and 6.5 ms serial for the gather, plus 2.6 and 6.2 for the permute.
+This is what the two library primitives were added for, and neither is optional:
 
-That leaves 13.3 ms against 20.6 threaded and 28.1 against 36.4 serial - 1.55x and 1.30x, so roughly 1.2x on the replay rather than the 2.7x the arithmetic promised.
+* **`reshape_view`** (`RuntimeTensor::reshape_view`). Every operand here is a slice reinterpreted as a matrix - a phase-1 slice is `(M_p, M_b, n)` and the GEMM wants `(M_p, M_b * n)`; a phase-2 slice is `(M_p, n, M_b)` and the GEMM wants `(M_p * n, M_b)`. Both merges are free, the axes already abut, but `linalg.reshape` would have copied the whole intermediate twice an iteration to express them.
+* **`gather(..., axes=)`**. Without it the repack is a gather and then a permute, and the second pass costs as much as the first.
 
-It is also blocked as written. Phase 1's operand has to be `(M_p, M_b * n)` for the GEMM and `(M_p, M_b, n)` for the gather, and there is no zero-copy reshape between them: `permute_view` reorders axes but cannot merge them, and merging these two would need stride `M_p` where the view has `M_p * M_b`.
-`linalg.reshape` copies, which is another pass over the 66 MiB.
+Water chain n=6, medians on a loaded machine:
 
-So the two things that would make this worth building are library features, not changes here:
+| | 1 thread | 10 threads |
+| --- | --- | --- |
+| `lmp2_iterations` before | 0.99 s | 0.72 s |
+| after | **0.61 s** | **0.36 s** |
+| | 1.61x | 1.97x |
+| whole run before | 2.33 s | 1.73 s |
+| after | **1.94 s** | **1.35 s** |
 
-* a **view-reshape** that merges adjacent axes when the strides allow it, which unblocks it; and
-* a **gather that permutes axes as it moves**, which would halve the repack and take the whole thing to ~1.9x on this half.
+Correlation energies are unchanged to every printed digit on water, water-dimer and ethanol in cc-pVDZ and cc-pVTZ, at chain lengths 3 through 6, with and without DIIS, and across `n_buckets` and `n_width_groups` from 1 to 16.
 
-Without them the honest accounting is 1.2x on the replay for a third intermediate buffer and a partner-major copy of `S`, roughly tripling the residual's working set - a poor trade for a method whose point is how it scales.
+Two costs, both real.
+`compute_pno_overlaps` grew about 20%, from building the transposed copy and lifting it into partner order.
+And the intermediate is now held twice, so the residual's working set roughly doubles - which for a method whose selling point is scaling is the thing to watch if this is ever pushed to larger systems.
+
+The trap on the way was not the algebra. Building the transposed copy with a second GEMM per coupling needed 32,948 more output slices, at 20 us each: 0.65 s added to a phase that took 0.37 s. Lifting it with one gather per class instead - which needs `S` stored per class rather than per pair - is what made the restructure pay rather than break even. Two `O(classes x couplings)` Python loops did the same thing again, a third of a second each, and are worth watching for: there are 32,948 couplings and 16 classes, and the nesting reads naturally.
 
 Then, unchanged from before:
 

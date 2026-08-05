@@ -160,42 +160,21 @@ class DLPNOMP2(DLPNOBase):
             if self.n_pno[ij]:
                 X_pad[ij] = ten.zeros(f"X (padded) {ij}", [npao, self.pair_dim(ij)])
 
-        # Where each coupling's block sits in its pair's output, and the
-        # per-column sqrt prefactor. No partner blocks are concatenated: see
-        # below.
-        self._couplings, raw_width = {}, {}
-        for ij, plist in enumerate(partners):
-            if not plist:
-                continue
-            entries, off = [], 0
-            for (p, k, is_ik, factor) in plist:
-                w = self.pair_dim(p)
-                entries.append((p, k, is_ik, off, w, float(np.sign(factor))))
-                off += w
-            self._couplings[ij] = entries
-            raw_width[ij] = off
+        # Both halves of the residual want the couplings laid out, and they want
+        # different layouts. _plan_couplings builds both and the map between.
+        self._plan_couplings(partners)
 
-        # The concatenation is padded to a width its whole group shares, so the
-        # residual's second half is one batched GEMM per group rather than one
-        # per coupling. See _choose_width_groups.
-        self._cat_groups = self._choose_width_groups(raw_width)
-        self._cat_width = {ij: width for width, members in self._cat_groups for ij in members}
+        # One overlap tensor per shape class, in pair order, rank 2 so that a
+        # coupling, a (pair, class) run, and the whole class are all column
+        # ranges of it. The extra slot at the end is a reserved zero, which the
+        # transposed copy's padding reads from.
+        self._S_cls = {}
+        for cls in self._classes:
+            M_b, M_p = self.bucket_dims[cls[0]], self.bucket_dims[cls[1]]
+            self._S_cls[cls] = ten.zeros(f"S (class {cls})",
+                                         [M_b, M_p * (self._cls_slots_pair[cls] + 1)])
 
-        self._S_cat, scale, offsets = {}, {}, {}
-        for ij, entries in self._couplings.items():
-            # Padding columns are allocated zero and never written, and they are
-            # what keeps the padded product exact: a zero column of S_cat meets a
-            # zero column of tmp_cat and contributes nothing. Their prefactor is
-            # therefore arbitrary; 1.0 keeps the scaling below a pure multiply.
-            factors = np.ones(self._cat_width[ij])
-            for (p, _, _, off, w, _), (_, _, _, factor) in zip(entries, partners[ij]):
-                factors[off:off + w] = np.sqrt(abs(factor))
-            scale[ij] = factors
-            offsets[ij] = [off for _, _, _, off, _, _ in entries]
-            self._S_cat[ij] = ten.zeros(f"S (cat) {ij}",
-                                        [self.pair_dim(ij), self._cat_width[ij]])
-
-        half = {ij: ten.zeros(f"half {ij}", [self.pair_dim(ij), npao]) for ij in self._S_cat}
+        half = {ij: ten.zeros(f"half {ij}", [self.pair_dim(ij), npao]) for ij in self._couplings}
 
         # Both GEMMs are emitted as batches over pairs of buckets rather than
         # one node per pair, which is what lets the partner concatenation go.
@@ -215,22 +194,22 @@ class DLPNOMP2(DLPNOBase):
         # slice of its pair's S_cat, so the blocks land where the concatenated
         # form put them and the rest of the phase is unchanged. Sixteen groups
         # at four buckets, against 4056 couplings.
-        # Each coupling's output block. Sliced once and reused, by the batch
-        # below, by the coupling map at the end, and every iteration afterwards
-        # by the residual: a slice is a pybind round trip building a fresh view
-        # object, and at 4056 couplings doing it twice costs more than the batch
-        # emission it feeds.
+        # Each coupling's output block, a column range of its class's tensor.
+        # Sliced once and kept: a slice is a pybind round trip building a fresh
+        # view object, and at 32948 couplings that is 0.24 s, so doing it twice
+        # would cost more than everything else in this phase.
         blocks = self._S_block = {}
         by_shape = {}
-        for ij, plist in enumerate(partners):
-            for idx, ((p, _, _, _), off) in enumerate(zip(plist, offsets.get(ij, []))):
-                block = self._S_cat[ij][:, off:off + self.pair_dim(p)]
+        for ij, entries in self._couplings.items():
+            for idx, (p, _, _, _, cls, _) in enumerate(entries):
+                M_p = self.bucket_dims[cls[1]]
+                slot = self._dest_slot[ij, idx]
+                block = self._S_cls[cls][:, slot * M_p:(slot + 1) * M_p]
                 blocks[ij, idx] = block
-                by_shape.setdefault((self.bucket_of[ij], self.bucket_of[p]), []).append(
-                    (half[ij], X_pad[p], block))
+                by_shape.setdefault(cls, []).append((half[ij], X_pad[p], block))
 
         by_bucket = {}
-        for ij in self._S_cat:
+        for ij in self._couplings:
             by_bucket.setdefault(self.bucket_of[ij], []).append(ij)
 
         g = cg.Graph("pno overlaps")
@@ -257,64 +236,211 @@ class DLPNOMP2(DLPNOBase):
         # miscomputes; see DLPNOBase.precompute_fits.
         self._run(g)
 
-        # One vectorized scaling per pair: every coupling owns a column range.
-        for ij, factors in scale.items():
-            ten.view(self._S_cat[ij])[...] *= factors[np.newaxis, :]
+        # One vectorized scaling per class: every coupling owns a column range.
+        # Built in one pass over the couplings rather than one per class - there
+        # are 32948 of them against 16 classes, and the obvious nesting is a
+        # third of a second of pure Python.
+        factors = {cls: np.ones(self.bucket_dims[cls[1]] * (self._cls_slots_pair[cls] + 1))
+                   for cls in self._classes}
+        for ij, entries in self._couplings.items():
+            for idx, (_, _, _, _, cls, factor) in enumerate(entries):
+                M_p = self.bucket_dims[cls[1]]
+                factors[cls][self._dest_slot[ij, idx] * M_p:
+                             (self._dest_slot[ij, idx] + 1) * M_p] = np.sqrt(abs(factor))
+        for cls in self._classes:
+            ten.view(self._S_cls[cls])[...] *= factors[cls][np.newaxis, :]
+
+        # The partner-major transposed copy the first half consumes, taken from
+        # the pair-major one by a single permuting gather per class rather than
+        # a second GEMM per coupling. Transposing and reordering are the same
+        # pass, and 32948 more output slices would have cost 0.65 s.
+        #
+        # It reads S AFTER the scaling above, so it inherits sqrt|f| and only
+        # the sign is left to apply. The sign has to ride on exactly one of the
+        # two copies - S appears on both sides of the congruence, so a sign in
+        # both would square away - and this is the copy the first half reads.
+        self._S_T = {}
+        # Held past the capture: the graph keeps tensors by slot pointer, so a
+        # view built inline in the loop is freed at the end of the expression
+        # and the replay reads released memory.
+        src_views = {}
+        for cls in self._classes:
+            M_b, M_p = self.bucket_dims[cls[0]], self.bucket_dims[cls[1]]
+            self._S_T[cls] = ten.zeros(
+                f"S^T (class {cls})", [M_p, M_b, self._cls_slots_partner[cls]])
+            src_views[cls] = self._S_cls[cls].reshape_view(
+                [M_b, M_p, self._cls_slots_pair[cls] + 1])
+
+        g2 = cg.Graph("pno overlaps transposed")
+        with cg.capture(g2):
+            for cls in self._classes:
+                M_b, M_p = self.bucket_dims[cls[0]], self.bucket_dims[cls[1]]
+                la.gather(self._S_T[cls], src_views[cls],
+                          [list(range(M_b)), list(range(M_p)), self._cls_inv_perm[cls]],
+                          [1, 0, 2])
+        g2.set_executor(cg.OpenMPExecutor())
+        g2.execute()
+
+        signed = {cls: np.ones(self._cls_slots_partner[cls]) for cls in self._classes}
+        for ij, entries in self._couplings.items():
+            for idx, (_, _, _, sign, cls, _) in enumerate(entries):
+                signed[cls][self._src_slot[ij, idx]] = sign
+        for cls in self._classes:
+            ten.view(self._S_T[cls])[...] *= signed[cls][np.newaxis, np.newaxis, :]
 
         # Each coupling's overlap is a column slice, not its own allocation.
-        for ij, plist in enumerate(partners):
-            for idx, (p, k, is_ik, factor) in enumerate(plist):
+        for ij, entries in self._couplings.items():
+            for idx, (_, k, is_ik, sign, _, _) in enumerate(entries):
                 if is_ik:
                     self.S_pno_ij_ik[ij, k] = blocks[ij, idx]
-                    self.k_couple_ik[ij][k] = float(np.sign(factor))
+                    self.k_couple_ik[ij][k] = sign
                 else:
                     self.S_pno_ij_kj[ij, k] = blocks[ij, idx]
-                    self.k_couple_kj[ij][k] = float(np.sign(factor))
+                    self.k_couple_kj[ij][k] = sign
 
         self._print(
             f"  overlaps: {sum(len(p) for p in partners)} couplings via "
-            f"{g.num_nodes()} nodes ({len(by_bucket) + len(by_shape)} captured), "
-            f"{len(self._cat_groups)} width groups"
+            f"{g.num_nodes()} nodes ({len(by_bucket) + 2 * len(by_shape)} captured), "
+            f"{len(self._classes)} shape classes"
         )
         return self
 
-    def _choose_width_groups(self, raw_width):
-        """Partition the pairs into groups sharing one padded concatenation width.
+    def _plan_couplings(self, partners):
+        """Lay the couplings out twice, and record the map between the two.
 
-        The residual's second half is ``R_ij = sum_c sign_c tmp_c S_c^T``, and
-        summing over the couplings of a pair is a contraction, so the whole sum
-        is a single GEMM against the concatenated operands - ``(M, W) x (M, W)^T``
-        with ``W`` the pair's total coupling width. That turns 32948 GEMMs into
-        776 at a six-monomer water chain, which is the point: the residual issues
-        ~11000 flops per GEMM call, so it is bound by the per-call cost rather
-        than by arithmetic, and the only thing that helps is fewer calls.
+        The residual is ``R_ij = sum_c sign_c S_c T_c S_c^T``, and its two halves
+        want opposite groupings. The second half sums over a pair's couplings, so
+        it wants them consecutive **by pair**. The first half applies each
+        partner's ``T``, and many pairs couple through the same partner, so it
+        wants them consecutive **by partner**. The couplings are a bipartite
+        graph, so no single order is consecutive both ways: the intermediate is
+        produced in one order and read in the other, and something has to move it
+        between. That something is one permuting gather per shape class - see
+        :meth:`_capture_repack`.
 
-        Batching those 776 needs them to agree on ``m``, ``n`` and ``k``. The
-        first two come from the PNO bucket; ``k`` is ``W``, which no two pairs
-        need share, so it is padded. Padding every pair in a bucket to that
-        bucket's widest costs 1.42x the flops, because coupling counts inside one
-        bucket spread widely (258..983 columns in the smallest). Sorting by width
-        first and cutting each bucket into ``n_width_groups`` chunks costs 1.10x
-        at four, which buys back most of the padding for four times the calls -
-        16 in total, against 32948.
+        Everything is per *shape class*, a pair of PNO buckets ``(bucket of ij,
+        bucket of the partner)``. Within a class every coupling block is the same
+        ``M_b x M_p``, which is what lets a class be one tensor and its GEMMs be
+        one batch.
 
-        The padding is inert rather than merely cheap: a padded column of
-        ``S_cat`` is zero and so is its partner in ``tmp_cat``, so it contributes
-        nothing to any residual.
+        Sets, per class:
+
+        * ``_cls_partner_groups`` - the phase-1 batches. Partners sorted by how
+          many couplings they carry and cut into ``n_width_groups`` chunks, each
+          padded to its chunk's widest, so a chunk is one batched GEMM.
+        * ``_cls_pair_groups`` - the same for phase 2, over pairs.
+        * ``_cls_perm`` - for each destination slot in pair order, the source slot
+          in partner order. Padding slots point at a reserved zero slot, so the
+          gather writes a full destination and the padded columns it leaves are
+          genuinely zero rather than stale.
+
+        and per pair, ``_couplings[ij]``, the entries in the class-grouped padded
+        order that ``S_cat`` is built in.
         """
         n_groups = max(1, int(self.cut.n_width_groups))
-        by_bucket = {}
-        for ij in raw_width:
-            by_bucket.setdefault(self.bucket_of[ij], []).append(ij)
 
-        groups = []
-        for members in by_bucket.values():
-            members.sort(key=lambda ij: raw_width[ij])
-            chunk = -(-len(members) // n_groups)
-            for start in range(0, len(members), chunk):
-                part = members[start:start + chunk]
-                groups.append((max(raw_width[ij] for ij in part), part))
-        return groups
+        # -- couplings by (pair, class), which is the order S_cat is built in --
+        per_pair = {}
+        for ij, plist in enumerate(partners):
+            if not plist:
+                continue
+            by_cls = {}
+            for entry in plist:
+                by_cls.setdefault(self.bucket_of[entry[0]], []).append(entry)
+            per_pair[ij] = by_cls
+
+        counts = {}  # class -> {pair: how many couplings}
+        for ij, by_cls in per_pair.items():
+            for b_p, lst in by_cls.items():
+                counts[self.bucket_of[ij], b_p] = counts.get((self.bucket_of[ij], b_p), {})
+                counts[self.bucket_of[ij], b_p][ij] = len(lst)
+
+        def chunk_by_size(keys, size_of):
+            """Sort by size and cut into n_groups chunks, each padded to its widest."""
+            keys = sorted(keys, key=size_of)
+            step = -(-len(keys) // n_groups)
+            return [(max(size_of(k) for k in keys[s:s + step]), keys[s:s + step])
+                    for s in range(0, len(keys), step)]
+
+        # -- phase 2: pair order, padded per group ---------------------------
+        self._classes = sorted(counts)
+        self._cls_pair_groups, self._cls_slots_pair = {}, {}
+        pair_pad, pair_slot = {}, {}
+        for cls in self._classes:
+            groups = chunk_by_size(list(counts[cls]), lambda ij: counts[cls][ij])
+            slot = 0
+            laid = []
+            for n_pad, members in groups:
+                for ij in members:
+                    pair_pad[cls, ij] = n_pad
+                    pair_slot[cls, ij] = slot
+                    slot += n_pad
+                laid.append((n_pad, members))
+            self._cls_pair_groups[cls] = laid
+            self._cls_slots_pair[cls] = slot
+
+        # -- the couplings themselves, in that same order --------------------
+        self._couplings = {}
+        self._pair_slot = pair_slot
+        dest_of = {}  # (pair, index within the pair's entries) -> destination slot
+        for ij, by_cls in per_pair.items():
+            entries = []
+            for b_p in sorted(by_cls):
+                cls = (self.bucket_of[ij], b_p)
+                for c, (p, k, is_ik, factor) in enumerate(by_cls[b_p]):
+                    dest_of[ij, len(entries)] = (cls, pair_slot[cls, ij] + c)
+                    entries.append((p, k, is_ik, float(np.sign(factor)), cls, factor))
+            self._couplings[ij] = entries
+
+        # -- phase 1: partner order, padded per group ------------------------
+        by_partner = {}  # class -> {partner: [(pair, index)]}
+        for ij, entries in self._couplings.items():
+            for idx, (p, _, _, _, cls, _) in enumerate(entries):
+                by_partner.setdefault(cls, {}).setdefault(p, []).append((ij, idx))
+
+        self._cls_partner_groups, self._cls_slots_partner = {}, {}
+        src_of = {}
+        for cls in self._classes:
+            groups = chunk_by_size(list(by_partner[cls]),
+                                   lambda q: len(by_partner[cls][q]))
+            slot = 0
+            laid = []
+            for n_pad, members in groups:
+                for q in members:
+                    for c, key in enumerate(by_partner[cls][q]):
+                        src_of[key] = slot + c
+                    laid.append((q, slot, n_pad))
+                    slot += n_pad
+            # Reserved zero slot: every padded destination reads from it, so the
+            # gather writes its whole destination and the padding stays zero.
+            self._cls_slots_partner[cls] = slot + 1
+            self._cls_partner_groups[cls] = self._regroup_partners(laid)
+        self._src_slot = src_of
+
+        # -- the map from partner order to pair order ------------------------
+        # One pass over the couplings, not one per class: there are 32948 of
+        # them and 16 classes, and the obvious nesting is a third of a second of
+        # pure Python.
+        self._cls_perm = {cls: [self._cls_slots_partner[cls] - 1] * self._cls_slots_pair[cls]
+                          for cls in self._classes}
+        # ...and its inverse, for lifting the transposed copy of S out of the
+        # pair-major one at setup. Its padding reads the reserved zero slot at
+        # the end of the pair-major side.
+        self._cls_inv_perm = {cls: [self._cls_slots_pair[cls]] * self._cls_slots_partner[cls]
+                              for cls in self._classes}
+        self._dest_slot = {}
+        for key, (cls, dst) in dest_of.items():
+            self._cls_perm[cls][dst] = src_of[key]
+            self._cls_inv_perm[cls][src_of[key]] = dst
+            self._dest_slot[key] = dst
+
+    @staticmethod
+    def _regroup_partners(laid):
+        """``[(n_pad, [(partner, slot), ...])]`` - one entry per batchable group."""
+        groups = {}
+        for q, slot, n_pad in laid:
+            groups.setdefault(n_pad, []).append((q, slot))
+        return sorted(groups.items())
 
     def _allocate_iteration_tensors(self):
         """Residuals, denominators, scratch, and the captured views."""
@@ -356,64 +482,139 @@ class DLPNOMP2(DLPNOBase):
         #
         # The padding columns are allocated zero and nothing ever writes them,
         # which is what makes the padded GEMM exact rather than approximately so.
-        self._tmp_cat = {
-            ij: ten.zeros(f"tmp (cat) {ij}", [self.pair_dim(ij), self._cat_width[ij]])
-            for ij in self._couplings
+        # The intermediate, held twice: V in partner order, which is what the
+        # first half produces, and W in pair order, which is what the second half
+        # reads. Both are (M_p, slots, M_b) per shape class and hold TRANSPOSED
+        # blocks, because column major only gives a GEMM contiguous output blocks
+        # when the shared operand is on the left, and here the shared operand is
+        # the partner's T.
+        #
+        # Padding slots are allocated zero. V's are computed (from zero columns
+        # of S^T, so they come out zero) and never read; W's are written by the
+        # repack from V's reserved zero slot. Either way the padded columns a
+        # GEMM sees are genuinely zero rather than stale.
+        self._V = {
+            cls: ten.zeros(f"V (class {cls})",
+                           [self.bucket_dims[cls[1]], self.bucket_dims[cls[0]],
+                            self._cls_slots_partner[cls]])
+            for cls in self._classes
         }
-        # Sliced once and kept: a slice is a pybind round trip building a fresh
-        # view, and a view handed to a captured op has to outlive the graph.
-        self._tmp_block = {
-            (ij, idx): self._tmp_cat[ij][:, off:off + w]
-            for ij, entries in self._couplings.items()
-            for idx, (_, _, _, off, w, _) in enumerate(entries)
+        self._W = {
+            cls: ten.zeros(f"W (class {cls})",
+                           [self.bucket_dims[cls[1]], self._cls_slots_pair[cls],
+                            self.bucket_dims[cls[0]]])
+            for cls in self._classes
         }
+
+        # Every operand is a slice reinterpreted as a matrix. Sliced and reshaped
+        # once and kept: both are pybind round trips, and a view handed to a
+        # captured op has to outlive the graph.
+        #
+        # reshape_view is what makes this layout usable at all. A phase-1 slice
+        # is (M_p, M_b, n) and the GEMM wants (M_p, M_b * n); a phase-2 slice is
+        # (M_p, n, M_b) and the GEMM wants (M_p * n, M_b). Both merges are free -
+        # the axes already abut - but linalg.reshape would have copied the whole
+        # 66 MiB intermediate twice per iteration to express them.
+        self._V_group, self._ST_group = {}, {}
+        for cls in self._classes:
+            M_p, M_b = self.bucket_dims[cls[1]], self.bucket_dims[cls[0]]
+            for n_pad, members in self._cls_partner_groups[cls]:
+                for q, slot in members:
+                    self._V_group[cls, q] = (
+                        self._V[cls][:, :, slot:slot + n_pad].reshape_view([M_p, M_b * n_pad]))
+                    self._ST_group[cls, q] = (
+                        self._S_T[cls][:, :, slot:slot + n_pad].reshape_view([M_p, M_b * n_pad]))
+
+        self._W_pair, self._S_pair = {}, {}
+        for cls in self._classes:
+            M_p, M_b = self.bucket_dims[cls[1]], self.bucket_dims[cls[0]]
+            for n_pad, members in self._cls_pair_groups[cls]:
+                for ij in members:
+                    slot = self._pair_slot[cls, ij]
+                    self._W_pair[cls, ij] = (
+                        self._W[cls][:, slot:slot + n_pad, :].reshape_view([M_p * n_pad, M_b]))
+                    self._S_pair[cls, ij] = self._S_cls[cls][:, slot * M_p:(slot + n_pad) * M_p]
 
         self.e_iter = ten.zeros("E(iteration)", [1])
         self._e_part = ten.zeros("E(part)", [1])
 
     def _capture_couplings(self):
-        """Graph: ``tmp_c = sign_c S_c T_c`` for every coupling, into ``tmp_cat``.
+        """Graph: ``V_c = (sign_c S_c T_c)^T``, one GEMM per PARTNER.
 
-        The first half of ``R_ij = sum_c sign_c S_c T_c S_c^T``. Every coupling
-        has its own ``T``, so this half stays one GEMM per coupling; what it does
-        not have to be is one graph *node* per coupling. Emitted as
-        ``cg.batched_gemm`` rather than one einsum each: ``GEMMBatching`` would
-        fuse the per-coupling form to the same thing, but only after the graph
-        has been built a node at a time, and capture costs ~38 us a node - 8112
-        nodes was 0.31 s of pure bookkeeping for a graph that ends up ~30 nodes
-        wide.
+        The first half of ``R_ij = sum_c sign_c S_c T_c S_c^T``, and the mirror
+        image of the second. The second half collapses because a pair's
+        couplings share that pair; this one collapses because many pairs couple
+        through the same partner, so they share that partner's ``T``. Stack
+        those couplings' overlaps and the whole set is one GEMM: 32948 down to
+        2822 at a six-monomer water chain, in 64 batches.
 
-        Each product lands in its coupling's column range of the pair's
-        ``tmp_cat``, which is what lets :meth:`_capture_residual` read the whole
-        concatenation back as one operand. The sign rides on the batch's
-        ``alpha`` here rather than in the second half, because ``S`` appears
-        twice there and a sign folded into ``S`` would square away; grouping by
-        it splits each shape group in two, which costs nothing.
+        Two things fall out of column major and are worth stating rather than
+        rediscovering. A GEMM's output blocks are contiguous only when the
+        SHARED operand is on the left, and the shared operand here is ``T``, so
+        the products come out transposed - hence ``V_c`` rather than ``tmp_c``.
+        And the sign rides on ``S_T`` rather than on the batch's ``alpha``,
+        because one batch now spans many pairs and the sign varies between them;
+        ``S`` appears twice in the congruence, so it has to ride on exactly one
+        of the two copies, and this is the one the first half reads.
         """
         g = cg.Graph("lmp2 couplings")
         with cg.capture(g):
-            groups = {}
-            for tmp, S, T, sign in self._coupling_work():
-                groups.setdefault((ten.shape(tmp), sign), []).append((S, T, tmp))
-            for (_, sign), members in groups.items():
-                cg.batched_gemm(sign, [S for S, _, _ in members], [T for _, T, _ in members],
-                                0.0, [tmp for _, _, tmp in members])
+            for cls in self._classes:
+                for _, members in self._cls_partner_groups[cls]:
+                    cg.batched_gemm(1.0, [self._T_view[q] for q, _ in members],
+                                    [self._ST_group[cls, q] for q, _ in members], 0.0,
+                                    [self._V_group[cls, q] for q, _ in members], trans_a=True)
+        return g
+
+    def _capture_repack(self):
+        """Graph: the intermediate from partner order into pair order.
+
+        The price of having both halves be big GEMMs. They want the couplings
+        grouped opposite ways and the couplings are a bipartite graph, so no one
+        order serves both and the intermediate has to move once per iteration.
+
+        One permuting gather per shape class, which is the whole of it: the
+        reordering along the coupling axis and the swap of the other two are the
+        same pass. Written as two passes - gather then permute - it is 12.71 ms
+        serial and 5.72 threaded over the 66 MiB this moves at n=6, against 6.93
+        and 3.29 for the one pass.
+
+        Under the OpenMP executor because the classes are independent and a
+        gather does not thread inside itself.
+
+        Padding slots read from the reserved zero slot at the end of each class,
+        so the destination is written whole and its padded columns are zero
+        rather than stale - which is what lets the second half's GEMM ignore
+        them.
+        """
+        g = cg.Graph("lmp2 repack")
+        with cg.capture(g):
+            for cls in self._classes:
+                M_p, M_b = self.bucket_dims[cls[1]], self.bucket_dims[cls[0]]
+                la.gather(self._W[cls], self._V[cls],
+                          [list(range(M_p)), list(range(M_b)), self._cls_perm[cls]],
+                          [0, 2, 1])
+        g.set_executor(cg.OpenMPExecutor())
         return g
 
     def _capture_residual(self):
         """Graph: fold every coupling into its pair's residual, one GEMM per pair.
 
         The second half of ``R_ij = sum_c sign_c S_c T_c S_c^T``. The sum over a
-        pair's couplings is a contraction, so with the ``tmp_c`` and the ``S_c``
-        both concatenated along it the whole sum is a single ``(M, W) x (M, W)^T``
-        GEMM - not a loop of GEMMs and an accumulator tree.
+        pair's couplings is a contraction, so with the intermediate and the
+        ``S_c`` both concatenated along it the whole sum is a single GEMM - not a
+        loop of GEMMs and an accumulator tree.
 
         That is the difference between being bound by arithmetic and being bound
         by dispatch. The residual issues ~11000 flops per GEMM call, and a call
         costs ~0.2 us however small it is, so the per-coupling form spent most of
-        its time entering and leaving the BLAS. This collapses 32948 of those
-        calls into 776 at a six-monomer water chain, and
-        :meth:`_choose_width_groups` batches the 776 into 16.
+        its time entering and leaving the BLAS.
+
+        One GEMM per (pair, shape class) rather than per pair, because the
+        intermediate is per class: a pair's couplings to differently sized
+        partners cannot share one operand. That is at most four per pair and they
+        accumulate into the same residual with ``beta = 1``, which is safe
+        because they are separate batches replayed in order.
 
         It also removes the partial accumulators the per-coupling form needed.
         Those existed because a pair's couplings all wrote one residual and so
@@ -421,36 +622,27 @@ class DLPNOMP2(DLPNOBase):
         depth by ``G`` at the cost of a reduction graph. A contraction has no
         dependency depth, so both are gone.
 
-        Separate from :meth:`_capture_couplings` because it reads ``tmp_cat``
-        whole while that one writes single column ranges of it, and the graph
-        does not know a write through a view touches its parent. Separate from
-        the prologue (which writes ``R_all`` whole) and the energy (which reads
-        it whole) for the same reason, in the other direction. It is not
-        hypothetical -- with the phases captured together the energy dot landed
-        at node 201 of 405, summing a half-built residual and quietly returning a
-        wrong correlation energy. Graphs execute in the order they are replayed,
-        so keeping each granularity in its own graph is an explicit barrier.
+        Separate from :meth:`_capture_repack` because it reads ``W`` through
+        slices while that one writes the parent, and the graph does not know a
+        write to a parent touches its views. Separate from the prologue (which
+        writes ``R_all`` whole) and the energy (which reads it whole) for the
+        same reason, in the other direction. It is not hypothetical -- with the
+        phases captured together the energy dot landed at node 201 of 405,
+        summing a half-built residual and quietly returning a wrong correlation
+        energy. Graphs execute in the order they are replayed, so keeping each
+        granularity in its own graph is an explicit barrier.
         """
         g = cg.Graph("lmp2 residual")
         with cg.capture(g):
-            # beta = 1: the prologue has already put K + D T in R.
-            for _, members in self._cat_groups:
-                cg.batched_gemm(1.0, [self._tmp_cat[ij] for ij in members],
-                                [self._S_cat[ij] for ij in members],
-                                1.0, [self._R_view[ij] for ij in members], trans_b=True)
+            # beta = 1: the prologue has already put K + D T in R, and earlier
+            # classes have already added theirs.
+            for cls in self._classes:
+                for _, members in self._cls_pair_groups[cls]:
+                    cg.batched_gemm(1.0, [self._W_pair[cls, ij] for ij in members],
+                                    [self._S_pair[cls, ij] for ij in members], 1.0,
+                                    [self._R_view[ij] for ij in members],
+                                    trans_a=True, trans_b=True)
         return g
-
-    def _coupling_work(self):
-        """Every coupling as ``(tmp block, S block, T view, sign)``.
-
-        The tmp and S blocks are the same column range of their pair's two
-        concatenations, which is what lets :meth:`_capture_residual` contract the
-        pair of them whole.
-        """
-        return [(self._tmp_block[ij, idx], self._S_block[ij, idx],
-                 self._T_view[partner], sign)
-                for ij, entries in self._couplings.items()
-                for idx, (partner, _, _, _, _, sign) in enumerate(entries)]
 
     def _capture_prologue(self):
         """Graph: ``R = K + (e_a + e_b - F_ii - F_jj) T`` for every pair, in two nodes."""
@@ -529,17 +721,19 @@ class DLPNOMP2(DLPNOBase):
 
         g_prologue = self._capture_prologue()
         g_couple = self._capture_couplings()
+        g_repack = self._capture_repack()
         g_residual = self._capture_residual()
         g_energy = self._capture_energy()
         g_step = self._capture_step()
         g_tt = self._capture_antisymmetrize()
-        graphs = [g_prologue, g_couple, g_residual, g_energy, g_step, g_tt]
+        graphs = [g_prologue, g_couple, g_repack, g_residual, g_energy, g_step, g_tt]
 
         self._print(
             "\n  ==> Local MP2 <==\n"
             f"    captured {sum(g.num_nodes() for g in graphs)} nodes in "
             f"{len(graphs)} graphs (prologue {g_prologue.num_nodes()}, "
-            f"coupling {g_couple.num_nodes()}, residual {g_residual.num_nodes()}, "
+            f"coupling {g_couple.num_nodes()}, repack {g_repack.num_nodes()}, "
+            f"residual {g_residual.num_nodes()}, "
             f"energy {g_energy.num_nodes()}, "
             f"step {g_step.num_nodes()}, Tt {g_tt.num_nodes()})"
         )
@@ -553,7 +747,7 @@ class DLPNOMP2(DLPNOBase):
             # It buys nothing measurable either, the two graphs being 48 of the
             # 85 nodes and the whole pipeline removing exactly one of them.
             # Same argument, and the same decision, as compute_pno_overlaps.
-            batched = {id(g_couple), id(g_residual)}
+            batched = {id(g_couple), id(g_repack), id(g_residual)}
             targets = [g for g in graphs if id(g) not in batched]
             pm = self.pass_manager()
             before = sum(g.num_nodes() for g in targets)
@@ -578,6 +772,7 @@ class DLPNOMP2(DLPNOBase):
         for iteration in range(self.cut.maxiter + 1):
             g_prologue.execute()
             g_couple.execute()
+            g_repack.execute()
             g_residual.execute()
             g_energy.execute()
             e_prev, e_curr = e_curr, float(ten.view(self.e_iter)[0])
