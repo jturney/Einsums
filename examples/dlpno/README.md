@@ -173,7 +173,7 @@ See [BLAS threading](../../docs/sphinx/building/blas_threading.rst).
 The way that *is* safe is to hand the independent work to the graph and run it under the OpenMP executor, so the parallelism is a real OpenMP team and each node stays serial underneath.
 `DLPNOBase._run` is that call, and every setup phase goes through it:
 
-* `precompute_fits` captures every distinct domain's fitting solve into one graph. There are only 23 of them at ethanol/cc-pVTZ, but they were 31% of the phase, because the solve is per *domain* and carries `naocc * npao` right-hand sides.
+* `precompute_fits` captures every distinct domain's fitting solve into one graph. There are only 23 of them at ethanol/cc-pVTZ, but they were 31% of the phase, because the solve is per *domain* and carried `naocc * npao` right-hand sides. It carries far fewer now; see [Most of that phase was solving for right-hand sides nobody reads](#most-of-that-phase-was-solving-for-right-hand-sides-nobody-reads).
 * `pno_transform` captures its three stages rather than only the two eigendecompositions inside them. This is the one that matters, and not for the reason the name suggests: the phase issues ~1400 small GEMMs against ~190 gathers, and eagerly issued they run serially no matter how many threads the BLAS has, each call far too small to fill them. Captured, stage 1 scales 5.0x on ten threads and stage 3 4.4x.
 * `compute_pno_overlaps` emits `cg.batched_gemm` per bucket pair instead of concatenating each pair's partners side by side. The concatenation was the phase's dominant cost and none of it was arithmetic: laying out a pair's partners re-copies every partner block once per pair coupling to it, 335 MiB of allocate-and-memcpy at ethanol/cc-pVTZ over blocks that already exist in 14 MiB of `X_pad`. It was also the one part that could not be parallelized, being numpy slice assignment on the calling thread.
 
@@ -328,10 +328,50 @@ Single thread, cc-pVDZ, 2.9 A spacing:
 
 `precompute_fits` grew 22x from n=3 to n=6 while the whole run grew 9x, and `compute_qia` - the phase that consumes the dense three-index integrals - is 1% of it.
 That contradicts the reasoning in "Next steps" below: on a compact molecule `(Q|mn)` is the largest item, but it is not the phase that gets structurally worse as the system extends.
-The port also loses to psi4 somewhere around n=4 on this chain, having been 1.4x faster at n=2, so this is the phase that costs the lead.
+The port also lost to psi4 somewhere around n=4 on this chain, having been 1.4x faster at n=2, so this was the phase that cost the lead.
 
-**The cause is the granularity of the fit, not the integrals.**
-`precompute_fits` solves one set of fitting equations per distinct *pair* domain, and a pair domain is the union of two LMO domains:
+### Most of that phase was solving for right-hand sides nobody reads
+
+The numbers above are what the phase cost before this was found; the paragraphs that follow are what it cost afterwards, and the fix changes no computed quantity at all.
+
+`precompute_fits` solves one set of fitting equations per distinct *pair* domain, sharing the factorization across every pair over that domain - and it does that by carrying **all `naocc`** right-hand-side blocks through the solve, so any pair over the domain can find its own.
+Its only consumer, `_pair_exchange(ij, i, j)`, reads exactly **one** of them: the `i` of the pair it is building.
+
+Whether that is nearly free or nearly all waste depends on how many pairs share a domain, and that is exactly what screening changes:
+
+| | ethanol/cc-pVTZ | chain n=3 | n=4 | n=5 | n=6 |
+| --- | --- | --- | --- | --- | --- |
+| `naocc` | 13 | 15 | 20 | 25 | 30 |
+| distinct pair domains | 23 | 36 | 88 | 138 | 189 |
+| LMO blocks a domain is asked for, mean | 2.8 | 1.9 | 1.5 | 1.5 | 1.6 |
+| solve GFLOP, all `naocc` | 9.1 | 1.6 | 9.2 | 24.1 | 45.9 |
+| solve GFLOP, only what is read | 2.9 | 0.3 | 1.0 | 2.0 | 3.3 |
+| gathered `(Q\|iu)` blocks | 107 MiB | 37 MiB | 183 MiB | 440 MiB | 799 MiB |
+| gathered, restricted | 27 MiB | 5 MiB | 14 MiB | 26 MiB | 40 MiB |
+
+The right-hand side carried is `naocc / 1.6` times the one read, so the discarded part grows with the system while the useful part does not.
+That, not the pair-domain granularity, is where the 22x came from.
+Note the ethanol column: even on a compact molecule the mean is 2.8 of 13, because screening splits its domains too.
+The regime where solving for every LMO is the right thing is the *unscreened* one, where there is a single domain and every pair over it asks for a different `i`, and that is the regime the phase was written in.
+
+Restricting the right-hand sides to the LMOs some pair will actually read (`DLPNOBase._fit_demand`) is a pure deletion of unread work - the surviving columns are the same numbers from the same factorization - and the correlation energies are unchanged to every digit printed, at every chain length and on ethanol/cc-pVTZ.
+Single thread, same machine:
+
+| | before | after | |
+| --- | --- | --- | --- |
+| ethanol/cc-pVTZ | 0.435 s | **0.123 s** | 3.5x |
+| chain n=3 | 0.101 s | **0.021 s** | 4.8x |
+| n=4 | 0.536 s | **0.057 s** | 9.4x |
+| n=5 | 1.435 s | **0.111 s** | 12.9x |
+| n=6 | 2.570 s | **0.170 s** | 15.1x |
+
+`precompute_fits` is now 5.7% of the n=6 run rather than 46%, and grows 9.3x from n=3 to n=6 against the whole run's 6.3x rather than 22x against 9x.
+The phase order at n=6 becomes `lmp2_iterations` 51%, `pno_transform` 20%, `compute_pno_overlaps` 20%, `precompute_fits` 6%, `compute_qia` 2%.
+`sweep_chain.py` no longer shows the crossover: the port is ahead of psi4 at every length up to n=6 on one thread (3.23 s against 3.36 s at n=6, 1.69 against 2.10 at n=5), where before it fell behind at n=4.
+
+### The pair-domain granularity itself, and what psi4 does
+
+The union structure this section originally blamed is real, and is still what remains after the fix:
 
 | n | distinct LMO domains | max `naux*npao` | distinct pair domains | max `naux*npao` |
 | --- | --- | --- | --- | --- |
@@ -340,19 +380,20 @@ The port also loses to psi4 somewhere around n=4 on this chain, having been 1.4x
 | 6 | 24 | 13132 | 189 | 52528 |
 
 LMO domains behave the way locality promises: their count grows linearly with the occupied space and each one's size is *constant*, because a domain around one orbital does not grow when the chain lengthens.
-Pair domains do neither. The count grows faster than the orbital count, and a distant pair's union is two disjoint blobs whose size grows with the separation, so `precompute_fits` pays both growths at once.
+Pair domains do neither. The count grows faster than the orbital count, and a distant pair's union is two disjoint blobs whose size grows with the separation.
 The memoization is not at fault and was checked: distinct solves by interned identity equal distinct solves by content at every length (36/36, 138/138, 189/189), so no cache hit is being missed.
 
-**The restructure this suggests** is to solve the fitting equations per LMO domain - 24 solves of bounded size at n=6, against 189 of growing size - and assemble each pair's quantities from its two orbitals' fits.
+The restructure that suggests - solve per LMO domain, 24 bounded solves at n=6 against 189 growing ones, and assemble each pair from its two orbitals' fits - is now a much smaller prize, against a question that has since been answered:
 
-Two things are unresolved and should be settled before anyone builds it:
+* **psi4 also fits per pair domain.** `dlpno.cc:1373` builds `A_solve = submatrix_rows_and_cols(*full_metric_, lmopair_to_ribfs_[ij], lmopair_to_ribfs_[ij])` and solves it inside the pair loop, and `ccsd.cc:569`, `ccsd.cc:1506` and `triples.cc:724` do the same over pair and triplet domains. So per-LMO fitting is a change to the method, not a return to psi4's choice, and the 1e-13 agreement on compact geometries would not survive it.
+* The union solve and two per-LMO solves are still *not* the same object: the metric over a union carries cross terms between the two auxiliary sets that neither single-domain metric has. Whether that difference sits below the truncation error is answerable cheaply by computing both for one pair, and remains unanswered.
 
-* The union solve and two per-LMO solves are *not* algebraically the same object. The metric over a union carries cross terms between the two auxiliary sets that neither single-domain metric has, so this is a change to which fit is computed, not merely where. Whether the difference is below the truncation error is the question, and it is answerable cheaply by computing both for one pair.
-* psi4's own granularity was never checked. The two agree to 1e-13 on compact geometries, which means they compute the same quantity *there*; whether that is because psi4 also fits per pair domain, or because the formulations coincide when there is only one domain, decides whether per-LMO fitting is a correctness change or a return to psi4's own choice.
+Worth noting that psi4 carries one right-hand-side block per solve and pays a factorization per pair, where the port now carries the ~1.6 blocks a domain is asked for and pays one factorization per domain.
+Those are the two ends of the same trade, and the port is on the better end of it at every size measured here.
 
 ## Next steps
 
-1. **Screen the `(Q|mn)` build.** The largest single item on a compact molecule, 0.24 s - but see the chain measurements above, which show `compute_qia` at 1% and `precompute_fits` at 46% once the system extends, so this is no longer the first thing to reach for. Needs an integral interface psi4 does not currently offer from Python: `MintsHelper.ao_eri` is dense, `DFHelper` is Schwarz-screened but metric-locked (`set_metric_pow` is in the header, not in the bindings), and the domain-screened builder DLPNO itself uses is private to the C++ class. Binding `set_metric_pow` is one line in `export_fock.cc` and would unlock the middle tier, worth ~1.9x on this phase.
+1. **Screen the `(Q|mn)` build.** The largest single item on a compact molecule, 0.24 s - but see the chain measurements above, which show `compute_qia` at 2% of the n=6 run, so this is not the first thing to reach for. Needs an integral interface psi4 does not currently offer from Python: `MintsHelper.ao_eri` is dense, `DFHelper` is Schwarz-screened but metric-locked (`set_metric_pow` is in the header, not in the bindings), and the domain-screened builder DLPNO itself uses is private to the C++ class. Binding `set_metric_pow` is one line in `export_fock.cc` and would unlock the middle tier, worth ~1.9x on this phase.
 2. **Per-node capture cost.** The ~0.15 s serial setup tax is ~40% graph capture. Restructuring does *not* reach it - see below - so the lever is the per-node cost itself (~10 us here, against 1.85 us for a C++ caller) or moving the phase out of Python. `DESIGN-cpp-hybrid.md` sketches the latter.
 
 Three attempts at that tax were measured and rejected; the patches are under `parked/` so they are not re-derived.

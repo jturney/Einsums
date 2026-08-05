@@ -74,6 +74,9 @@ class DLPNOBase:
         # Per-domain results shared across pairs (see _fit_coefficients and
         # _canonical_pao_domain). Screening multiplies the number of distinct
         # domains, which is exactly why the domain lists are interned.
+        # The fits are keyed by (domain, LMO) and hold ``(parent, position)``:
+        # one solve produces a domain's whole block and each LMO's fit is a
+        # column slice of it, so the entry carries the parent to keep it alive.
         self._fit_cache = {}
         self._pao_domain_cache = {}
         self._pass_manager = None
@@ -511,31 +514,63 @@ class DLPNOBase:
         return self
 
     def _domain_key(self, ij):
-        """What :meth:`_fit_coefficients` caches on: the pair's two domains."""
+        """What a fit is shared across: the pair's two domains."""
         return (id(self.lmopair_to_ribfs[ij]), id(self.lmopair_to_paos[ij]))
 
-    def _fit_operands(self, ij):
-        """``(A, rhs)`` for one domain's fitting equations, gathered on the host.
+    def _fit_demand(self):
+        """``{domain: (representative pair, sorted LMOs)}`` for the whole run.
+
+        Which right-hand sides the fits are actually asked for, and the reason
+        this phase does not grow with the occupied space. The solve is per
+        *domain*, so a domain shared by many pairs is factorized once - but its
+        right-hand side only has to carry the LMOs that some pair over that
+        domain will read, and :meth:`_pair_exchange` reads exactly one, the
+        ``i`` of the pair it is building. Solving for all ``naocc`` regardless
+        is correct, and it is what the shared domain of an unscreened run wants
+        anyway, since there every ``i`` is asked for. Under screening it is
+        almost all waste: domains become nearly distinct per pair, and each one
+        is asked for 1.6 LMOs on average against ``naocc``, which is 13 at
+        ethanol/cc-pVTZ and 30 at a six-monomer water chain. The waste therefore
+        grows with the system while the useful work does not, which is why this
+        phase used to grow 22x from n=3 to n=6 against 9x for the whole run.
+
+        Only ``i <= j`` pairs appear, matching :meth:`pno_transform`'s loop;
+        anything else falls through to the lazy path in
+        :meth:`_fit_coefficients`.
+        """
+        demand = {}
+        for ij, (i, j) in enumerate(self.ij_to_i_j):
+            if i > j:
+                continue
+            key = self._domain_key(ij)
+            hit = demand.get(key)
+            if hit is None:
+                demand[key] = (ij, {i})
+            else:
+                hit[1].add(i)
+        return {key: (ij, sorted(lmos)) for key, (ij, lmos) in demand.items()}
+
+    def _fit_operands(self, ij, lmos):
+        """``(A, rhs)`` for one domain's fitting equations over ``lmos``.
 
         Split out of :meth:`_fit_coefficients` so the solves can be captured as
         a batch.
         """
         ribfs = self.lmopair_to_ribfs[ij]
         paos = self.lmopair_to_paos[ij]
-        naocc = self.ref.naocc
         # Gather then reshape, both captured. row_major=True because the
         # flattening this replaces was numpy's, whose default order is C; the
         # column-major walk would transpose the (i, u) block silently.
-        block = sparse.submatrix(self.q_ia, [ribfs, range(naocc), paos], name="(Q|i u) domain")
-        rhs = ten.reshape(block, [len(ribfs), naocc * len(paos)], name="(Q|i u) domain")
+        block = sparse.submatrix(self.q_ia, [ribfs, lmos, paos], name="(Q|i u) domain")
+        rhs = ten.reshape(block, [len(ribfs), len(lmos) * len(paos)], name="(Q|i u) domain")
         A = sparse.submatrix_rows_and_cols(self.metric, ribfs, ribfs, name="(P|Q) domain")
         return A, rhs
 
-    def _reshape_fit(self, ij, rhs):
-        """The solved right-hand side, back to ``(naux_dom, naocc, npao_dom)``."""
+    def _reshape_fit(self, ij, rhs, nlmo):
+        """The solved right-hand side, back to ``(naux_dom, nlmo, npao_dom)``."""
         ribfs = self.lmopair_to_ribfs[ij]
         paos = self.lmopair_to_paos[ij]
-        return ten.reshape(rhs, [len(ribfs), self.ref.naocc, len(paos)], name="J^-1 (Q|i u)")
+        return ten.reshape(rhs, [len(ribfs), nlmo, len(paos)], name="J^-1 (Q|i u)")
 
     @staticmethod
     def _run(graph):
@@ -563,10 +598,20 @@ class DLPNOBase:
     def precompute_fits(self):
         """Solve every distinct domain's fitting equations in one graph.
 
-        The single largest item in the PNO transform: 31% of the phase at
-        ethanol/cc-pVTZ, and only 23 calls, because the solve is per *domain*
-        rather than per pair and each one carries ``naocc * npao`` right-hand
-        sides.
+        Two reductions, both of which matter and neither of which changes a
+        number the rest of the calculation sees.
+
+        The solve is per *domain* rather than per pair, so a domain shared by
+        many pairs is factorized once: 23 solves against 169 pairs at
+        ethanol/cc-pVTZ.
+
+        Each solve then carries only the right-hand sides some pair over that
+        domain will read, which :meth:`_fit_demand` collects, rather than all
+        ``naocc`` of them. Solving for every LMO was the right thing when there
+        was one domain and every pair asked it for a different LMO; once
+        screening splits the domains apart, nearly all of it is discarded. That
+        is 3.5x off this phase at ethanol/cc-pVTZ and 15x at a six-monomer water
+        chain, where the phase went from 46% of the run to 6%.
 
         They are mutually independent, so they go into one graph and run under
         the OpenMP executor. That is the safe way to get this parallelism.
@@ -588,10 +633,8 @@ class DLPNOBase:
         if self.q_ia is None:
             raise RuntimeError("precompute_fits() needs compute_qia() first")
 
-        first = {}
-        for ij in range(self.n_lmo_pairs):
-            first.setdefault(self._domain_key(ij), ij)
-        if not first:
+        demand = self._fit_demand()
+        if not demand:
             return self
 
         # Allocate every operand first, then capture the WHOLE assembly - the
@@ -601,25 +644,24 @@ class DLPNOBase:
         # thread: the primitives are capture-aware precisely so this phase does
         # not have to be, and calling them eagerly pays their cost without
         # collecting the parallelism.
-        naocc = self.ref.naocc
         jobs = []
-        for key, ij in first.items():
+        for key, (ij, lmos) in demand.items():
             ribfs = self.lmopair_to_ribfs[ij]
             paos = self.lmopair_to_paos[ij]
-            nq, nu = len(ribfs), len(paos)
+            nq, nu, nk = len(ribfs), len(paos), len(lmos)
             jobs.append((
-                key,
-                [list(ribfs), list(range(naocc)), list(paos)],
+                key, lmos,
+                [list(ribfs), [int(i) for i in lmos], list(paos)],
                 [list(ribfs), list(ribfs)],
                 ten.zeros("(P|Q) domain", [nq, nq]),
-                ten.zeros("(Q|i u) domain", [nq, naocc, nu]),
-                ten.zeros("(Q|i u) domain flat", [nq, naocc * nu]),
-                ten.zeros("J^-1 (Q|i u)", [nq, naocc, nu]),
+                ten.zeros("(Q|i u) domain", [nq, nk, nu]),
+                ten.zeros("(Q|i u) domain flat", [nq, nk * nu]),
+                ten.zeros("J^-1 (Q|i u)", [nq, nk, nu]),
             ))
 
         g = cg.Graph("domain fits")
         with cg.capture(g):
-            for _, q_idx, m_idx, A, block, rhs, fit in jobs:
+            for _, _, q_idx, m_idx, A, block, rhs, fit in jobs:
                 la.gather(A, self.metric, m_idx)
                 la.gather(block, self.q_ia, q_idx)
                 # row_major=True: this flattening replaces numpy's, whose
@@ -629,36 +671,40 @@ class DLPNOBase:
                 la.reshape(fit, rhs, True)
         self._run(g)
 
-        for key, _, _, _, _, _, fit in jobs:
-            self._fit_cache[key] = fit
+        rhs_total = 0
+        for key, lmos, _, _, _, _, _, fit in jobs:
+            rhs_total += len(lmos)
+            for pos, i in enumerate(lmos):
+                self._fit_cache[(key, i)] = (fit, pos)
         self._print(f"  fits:     {len(jobs)} distinct domains, "
+                    f"{rhs_total} of {len(jobs) * self.ref.naocc} LMO blocks, "
                     f"{g.num_nodes()} nodes in one graph")
         return self
 
-    def _fit_coefficients(self, ij):
-        """``J_dom^-1 (Q | i u)`` for every LMO at once, memoized by domain.
+    def _fit_coefficients(self, ij, i):
+        """``J_dom^-1 (Q | i u)`` for LMO ``i`` over pair ``ij``'s domain.
 
         psi4's local robust fit solves ``J_dom x = (Q|ia)`` per pair. The matrix
         is the same for every pair sharing an auxiliary domain, so solving it
         per pair re-factorizes one matrix once per pair: with screening off that
         is 91 identical factorizations for ethanol, a quarter of this phase.
 
-        Solved once for all LMOs instead, which is a single ``gesv`` with
-        ``naocc * npao`` right-hand sides. Keyed by the (auxiliary, PAO) domain
-        pair, so it stays correct when screening makes the domains differ and
-        simply yields more entries.
+        Solved once per domain instead, for the set of LMOs that domain's pairs
+        will ask for, so a shared domain costs one factorization and one
+        right-hand-side block per distinct ``i``. Keyed by the (auxiliary, PAO)
+        domain pair and the LMO, so it stays correct when screening makes the
+        domains differ and simply yields more entries.
         """
-        key = self._domain_key(ij)
+        key = (self._domain_key(ij), i)
         hit = self._fit_cache.get(key)
-        if hit is not None:
-            return hit
-
-        # Lazy fallback for anything precompute_fits() did not cover. It also
-        # keeps gesv's info check, which the captured path cannot see.
-        A_solve, rhs = self._fit_operands(ij)
-        hit = self._reshape_fit(ij, ten.solve(A_solve, rhs))
-        self._fit_cache[key] = hit
-        return hit
+        if hit is None:
+            # Lazy fallback for anything precompute_fits() did not cover. It
+            # also keeps gesv's info check, which the captured path cannot see.
+            A_solve, rhs = self._fit_operands(ij, [i])
+            hit = (self._reshape_fit(ij, ten.solve(A_solve, rhs), 1), 0)
+            self._fit_cache[key] = hit
+        fit, pos = hit
+        return fit[:, pos, :]
 
     def _batched_eigh(self, mats, descending=True, label="eigh"):
         """Diagonalize many independent matrices in one graph.
@@ -721,13 +767,13 @@ class DLPNOBase:
         PAO domain, density-fitted within the pair's auxiliary domain.
 
         The fit coefficients come from :meth:`_fit_coefficients`, which solves
-        the domain metric once for all LMOs; here it is one GEMM per pair.
+        the domain metric once for every LMO some pair over that domain asks
+        for; here it is one GEMM per pair.
         """
         ribfs = self.lmopair_to_ribfs[ij]
         paos = self.lmopair_to_paos[ij]
 
-        fit = self._fit_coefficients(ij)
-        fit_i = fit[:, i, :]
+        fit_i = self._fit_coefficients(ij, i)
         # Gather straight into a rank-3 block and contract through its rank-2
         # view, rather than slicing the gathered block in numpy. gather needs
         # one index list per axis of the source, so selecting a single LMO
@@ -910,7 +956,7 @@ class DLPNOBase:
         # end in something that cannot be captured: gesv's info check on the
         # fits, and eigh's descending reorder on the PAO domains.
         for ij in upper:
-            self._fit_coefficients(ij)
+            self._fit_coefficients(ij, self.ij_to_i_j[ij][0])
             self._canonical_pao_domain(ij)
 
         # Stage 1: everything up to the pair density, which depends on nothing
