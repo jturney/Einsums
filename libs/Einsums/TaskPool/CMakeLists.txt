@@ -24,6 +24,7 @@ einsums_add_module(
   SOURCES ${TaskPoolSources}
   HEADERS ${TaskPoolHeaders}
   MODULE_DEPENDENCIES
+    Einsums_BLAS
     Einsums_Config
     Einsums_Logging
     Einsums_Profile

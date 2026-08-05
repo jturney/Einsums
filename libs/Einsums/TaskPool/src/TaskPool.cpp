@@ -5,6 +5,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Runtime/ShutdownFunction.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
@@ -143,6 +144,14 @@ void TaskPool::worker_loop(size_t worker_id) {
     // wedge at the fork/join barrier.
     omp_set_num_threads(1);
 #endif
+
+    // The ICV above only reaches a BLAS that threads through OpenMP, and then
+    // only when it shares our runtime - true of conda-forge's openblas, which
+    // is the openmp build resolving through the same libgomp shim. MKL brings
+    // its own runtime and so keeps its own thread count, which stays at the
+    // machine width unless it is told otherwise. Ask the vendor directly for
+    // the same policy; a vendor without a per-thread knob is left alone.
+    blas::set_num_threads_this_thread(1);
 
     // Register thread name with profiler (safe to call from any thread after
     // Profiler singleton is initialized; the thread-local ring buffer is
