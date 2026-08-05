@@ -83,15 +83,24 @@ jobs:
         # whereas the C++ unit-test TUs frequently instantiate the same
         # templates in a context that runs serially. A data race in e.g.
         # impl_gemv_noncontiguous is therefore only reachable through Python
-        # — see bug-dropped-view-gemv-flaky-element. Kept OFF on the
-        # address/leak/undefined leg: ASan+Python needs its own libasan
-        # preload dance and would not have caught a *race* anyway.
+        # — see bug-dropped-view-gemv-flaky-element.
+        #
+        # On for address/leak/undefined too, as of 2026-08. It was off because
+        # "ASan+Python needs its own libasan preload dance", which
+        # einsums_add_python_unit_test has since grown
+        # (EINSUMS_PYTEST_SANITIZER_PRELOAD, plus detect_leaks=0 for CPython's
+        # deliberate shutdown leaks). That left the binding layer — the
+        # generated pybind TUs and their glue — as the one part of the tree
+        # checked for races but never for memory errors, which is backwards:
+        # it is where lifetimes are managed by hand across the numpy buffer
+        # protocol rather than by RAII. This leg is nightly-only, so the extra
+        # build costs no PR time.
         run: |
           cmake \
             -G Ninja \
             -S "$GITHUB_WORKSPACE/src" \
             -B "$GITHUB_WORKSPACE/build" \
-            -D EINSUMS_BUILD_PYTHON=${{ matrix.sanitizer.slug == 'tsan' && 'ON' || 'OFF' }} \
+            -D EINSUMS_BUILD_PYTHON=ON \
             -D Python_EXECUTABLE="${CONDA_PREFIX}/bin/python3" \
             -D CMAKE_C_COMPILER_LAUNCHER=ccache \
             -D CMAKE_CXX_COMPILER_LAUNCHER=ccache \

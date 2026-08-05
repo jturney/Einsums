@@ -22,7 +22,8 @@
 #     ./devtools/docker/run-ci-leg.sh clang-openblas       # Linux/clang/openblas RelWithDebInfo
 #     ./devtools/docker/run-ci-leg.sh no-profiler          # EINSUMS_WITH_PROFILER=OFF (BUILD_PYTHON=ON)
 #     ./devtools/docker/run-ci-leg.sh tsan                 # Sanitizers/thread (Debug, BUILD_PYTHON=ON)
-#     ./devtools/docker/run-ci-leg.sh asan                 # Sanitizers/address,leak,undefined (Debug)
+#     ./devtools/docker/run-ci-leg.sh asan                 # Sanitizers/address,leak,undefined (Debug, BUILD_PYTHON=ON)
+#     ./devtools/docker/run-ci-leg.sh asan-nopy            # same without Python, if the pybind TUs exhaust memory
 #     ./devtools/docker/run-ci-leg.sh free-threaded        # free-threaded CPython (cp314t), BUILD_PYTHON=ON
 #     ./devtools/docker/run-ci-leg.sh valgrind             # memcheck under valgrind (Debug, BUILD_PYTHON=OFF)
 #
@@ -180,6 +181,20 @@ leg_settings() {
             EXTRA=("-DEINSUMS_WITH_SANITIZERS=thread" "-DEINSUMS_BUILD_PYTHON=OFF")
             ;;
         asan)
+            # Python ON: the bindings are the one part of the tree with no
+            # memory-error coverage otherwise, since the tsan leg builds them
+            # for races and nothing else builds them under a sanitizer at all.
+            # einsums_add_python_unit_test already preloads the sanitizer
+            # runtime for the test process (EINSUMS_PYTEST_SANITIZER_PRELOAD)
+            # and disables LSan there, CPython leaking at shutdown by design.
+            COMPILER=default
+            BLAS=openblas
+            BUILD_TYPE=Debug
+            EXTRA=("-DEINSUMS_WITH_SANITIZERS=address,leak,undefined" "-DEINSUMS_BUILD_PYTHON=ON")
+            ;;
+        asan-nopy)
+            # The variant to reach for if the instrumented pybind TUs exhaust
+            # the container's memory; mirrors tsan-nopy.
             COMPILER=default
             BLAS=openblas
             BUILD_TYPE=Debug
@@ -241,7 +256,7 @@ leg_settings() {
             ;;
         *)
             echo "Unknown leg: $1" >&2
-            echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], intel, no-profiler, tsan, tsan-nopy, asan, free-threaded, valgrind, windows-cross" >&2
+            echo "Valid: gcc-openblas[-py], gcc-mkl[-py], clang-openblas[-py], intel, no-profiler, tsan, tsan-nopy, asan, asan-nopy, free-threaded, valgrind, windows-cross" >&2
             echo "       (append -arm64 to any of the above for native arm64)" >&2
             exit 1
             ;;
