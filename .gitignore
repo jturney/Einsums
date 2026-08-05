@@ -86,9 +86,6 @@ conda.yml
 devtools/benchmarks/*.db
 benchmark_report.html
 
-# Einsums Studio per-user state (committed configs stay tracked above).
-.einsums-studio
-.mcp.json
 .wolf
 
 # Claude Code per-user memory
@@ -99,3 +96,5 @@ testing/Temporary/
 
 # Lavish Editor review artifacts (local review surfaces, not project sources)
 .lavish/
+
+timer.dat
