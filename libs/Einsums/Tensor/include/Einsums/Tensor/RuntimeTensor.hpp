@@ -1074,6 +1074,24 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         return RuntimeTensorView<T>(_impl.permute_view(perm));
     }
 
+    // Zero-copy reshaped view. The reinterpretation is free when the axes being
+    // merged already abut in memory - which is the case that matters, because
+    // the alternative is linalg::reshape copying the whole tensor. Throws rather
+    // than silently copying when the strides do not allow it, so a caller that
+    // wanted a view finds out. KEEP_ALIVE(0,1) ties storage.
+    [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> reshape_view(std::vector<size_t> const &new_dims) {
+        return RuntimeTensorView<T>(_impl.reshape_view(new_dims));
+    }
+
+    [[nodiscard]] RuntimeTensorView<T> const reshape_view(std::vector<size_t> const &new_dims) const {
+        return RuntimeTensorView<T>(_impl.reshape_view(new_dims));
+    }
+
+    // Whether reshape_view would succeed, for callers that have a fallback.
+    [[nodiscard]] APIARY_EXPOSE bool reshapable_as_view(std::vector<size_t> const &new_dims) const {
+        return _impl.reshapable_as_view(new_dims);
+    }
+
     [[nodiscard]] RuntimeTensorView<T> to_row_major() { return RuntimeTensorView<T>(_impl.to_row_major()); }
 
     [[nodiscard]] RuntimeTensorView<T> const to_row_major() const { return RuntimeTensorView<T>(_impl.to_row_major()); }
@@ -2003,6 +2021,24 @@ struct APIARY_EXPOSE
     // the capture path uses cg.permute_view instead. KEEP_ALIVE(0,1) ties storage.
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> permute_view(std::vector<size_t> const &perm) {
         return RuntimeTensorView<T>(_impl.permute_view(perm));
+    }
+
+    // Zero-copy reshaped view. The reinterpretation is free when the axes being
+    // merged already abut in memory - which is the case that matters, because
+    // the alternative is linalg::reshape copying the whole tensor. Throws rather
+    // than silently copying when the strides do not allow it, so a caller that
+    // wanted a view finds out. KEEP_ALIVE(0,1) ties storage.
+    [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> reshape_view(std::vector<size_t> const &new_dims) {
+        return RuntimeTensorView<T>(_impl.reshape_view(new_dims));
+    }
+
+    [[nodiscard]] RuntimeTensorView<T> const reshape_view(std::vector<size_t> const &new_dims) const {
+        return RuntimeTensorView<T>(_impl.reshape_view(new_dims));
+    }
+
+    // Whether reshape_view would succeed, for callers that have a fallback.
+    [[nodiscard]] APIARY_EXPOSE bool reshapable_as_view(std::vector<size_t> const &new_dims) const {
+        return _impl.reshapable_as_view(new_dims);
     }
 
     [[nodiscard]] RuntimeTensorView<T> to_row_major() { return RuntimeTensorView<T>(_impl.to_row_major()); }

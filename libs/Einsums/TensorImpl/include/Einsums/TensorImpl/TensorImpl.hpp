@@ -1396,6 +1396,148 @@ struct TensorImpl final {
     }
 
     /**
+     * @brief Strides for @p new_dims over this tensor's storage, or an empty vector.
+     *
+     * The stride solver behind @ref reshape_view. Returns strides such that
+     * @p new_dims addresses exactly the elements this tensor does, in the same
+     * order, or an empty vector when no such strides exist.
+     *
+     * A reshape is a view when each new axis lands inside a run of old axes that
+     * are already contiguous with one another. Merging ``(a, b)`` into ``a*b``
+     * needs ``stride(b) == stride(a) * dim(a)``; splitting is the same condition
+     * read backwards. Anything else - merging across a gap, or reshaping a
+     * strided slice whose rows are not adjacent - has no answer, and the caller
+     * has to copy.
+     *
+     * Axes of extent one carry no data and are dropped before matching, so a
+     * length-1 axis in the middle does not break a run the way a naive stride
+     * comparison against it would. New axes of extent one get whatever stride
+     * the walk is holding; nothing addresses through them.
+     */
+    [[nodiscard]] BufferVector<size_t> reshape_strides(std::vector<size_t> const &new_dims) const {
+        size_t const new_size = std::accumulate(new_dims.begin(), new_dims.end(), size_t{1}, std::multiplies<>());
+        if (new_size != _size) {
+            return {};
+        }
+
+        BufferVector<size_t> out(new_dims.size(), size_t{0});
+        if (_size == 0) {
+            // Nothing is addressable, so any consistent strides will do and the
+            // matching below has no work to do anyway.
+            size_t running = 1;
+            for (size_t k = 0; k < new_dims.size(); ++k) {
+                out[k] = running;
+                running *= new_dims[k];
+            }
+            return out;
+        }
+
+        // Column major walks axis 0 fastest, row major walks the last one
+        // fastest. Match in storage order so one algorithm covers both.
+        //
+        // Read that off the strides rather than off _row_major, which is not
+        // usable here: infer_row_major() calls any rank < 2 tensor row major,
+        // having no evidence either way, so the rank-1 view produced by
+        // flattening a column-major tensor claims to be row major and reshaping
+        // it back would transpose. When the strides say nothing either - rank
+        // below 2, or every stride equal - column major is the fallback, being
+        // this library's construction default, which makes flatten-then-restore
+        // an identity for tensors built that way.
+        bool reverse = false;
+        for (size_t k = 0; k + 1 < _rank; ++k) {
+            if (_strides[k] != _strides[k + 1]) {
+                reverse = _strides[k] > _strides[k + 1];
+                break;
+            }
+        }
+        std::vector<size_t> old_d, old_s, new_d;
+        std::vector<size_t> new_pos; // where each kept new axis sits in `out`
+        for (size_t i = 0; i < _rank; ++i) {
+            size_t const k = reverse ? _rank - 1 - i : i;
+            if (_dims[k] != 1) {
+                old_d.push_back(_dims[k]);
+                old_s.push_back(_strides[k]);
+            }
+        }
+        for (size_t i = 0; i < new_dims.size(); ++i) {
+            size_t const k = reverse ? new_dims.size() - 1 - i : i;
+            if (new_dims[k] != 1) {
+                new_d.push_back(new_dims[k]);
+                new_pos.push_back(k);
+            }
+        }
+
+        size_t oi = 0, ni = 0;
+        while (oi < old_d.size() && ni < new_d.size()) {
+            size_t const o_start = oi, n_start = ni;
+            size_t       o_prod = old_d[oi++], n_prod = new_d[ni++];
+            while (o_prod != n_prod) {
+                if (o_prod < n_prod) {
+                    o_prod *= old_d[oi++];
+                } else {
+                    n_prod *= new_d[ni++];
+                }
+            }
+            // Every old axis in this group must abut the next one.
+            for (size_t k = o_start; k + 1 < oi; ++k) {
+                if (old_s[k + 1] != old_s[k] * old_d[k]) {
+                    return {};
+                }
+            }
+            size_t running = old_s[o_start];
+            for (size_t k = n_start; k < ni; ++k) {
+                out[new_pos[k]] = running;
+                running *= new_d[k];
+            }
+        }
+
+        // Extent-one axes address nothing; give them the neighbouring stride so
+        // the result is still a well-formed tensor.
+        size_t running = 1;
+        for (size_t i = 0; i < new_dims.size(); ++i) {
+            size_t const k = reverse ? new_dims.size() - 1 - i : i;
+            if (new_dims[k] == 1) {
+                out[k] = running;
+            } else {
+                running = out[k] * new_dims[k];
+            }
+        }
+        return out;
+    }
+
+    /**
+     * @brief Whether @ref reshape_view to @p new_dims is possible without copying.
+     */
+    [[nodiscard]] bool reshapable_as_view(std::vector<size_t> const &new_dims) const {
+        return !reshape_strides(new_dims).empty() || _size == 0;
+    }
+
+    /**
+     * @brief Create a reshaped view sharing this tensor's storage.
+     *
+     * Throws @ref dimension_error when the new shape does not have the same
+     * number of elements, and @ref tensor_compat_error when it does but cannot
+     * be addressed over this tensor's strides - which is the case worth knowing
+     * about, because it is the difference between a free reinterpretation and a
+     * copy. See @ref reshape_strides for the rule.
+     */
+    [[nodiscard]] TensorImpl<T> reshape_view(std::vector<size_t> const &new_dims) {
+        auto strides = reshape_strides(new_dims);
+        if (strides.empty() && !new_dims.empty()) {
+            throw_reshape_failure(new_dims);
+        }
+        return TensorImpl<T>(_ptr, BufferVector<size_t>(new_dims.begin(), new_dims.end()), std::move(strides));
+    }
+
+    [[nodiscard]] TensorImpl<T> const reshape_view(std::vector<size_t> const &new_dims) const {
+        auto strides = reshape_strides(new_dims);
+        if (strides.empty() && !new_dims.empty()) {
+            throw_reshape_failure(new_dims);
+        }
+        return TensorImpl<T>(_ptr, BufferVector<size_t>(new_dims.begin(), new_dims.end()), std::move(strides));
+    }
+
+    /**
      * @brief Create an axis-permuted view: result axis i takes parent axis ``perm[i]``.
      *
      * Like @ref transpose_view but for an arbitrary permutation of the axes
@@ -1669,6 +1811,18 @@ struct TensorImpl final {
     [[nodiscard]] bool try_lock() const { return _mutex.try_lock(); }
 
   private:
+    /// Report why @ref reshape_view could not produce a view. Never returns.
+    [[noreturn]] void throw_reshape_failure(std::vector<size_t> const &new_dims) const {
+        size_t const new_size = std::accumulate(new_dims.begin(), new_dims.end(), size_t{1}, std::multiplies<>());
+        if (new_size != _size) {
+            EINSUMS_THROW_EXCEPTION(dimension_error, "reshape_view: {} elements requested, tensor holds {}", new_size, _size);
+        }
+        EINSUMS_THROW_EXCEPTION(tensor_compat_error,
+                                "reshape_view: shape {} has the right size but cannot be addressed over strides {} of dims {} - the axes "
+                                "being merged are not adjacent in memory. Copy with linalg::reshape instead.",
+                                new_dims, _strides, _dims);
+    }
+
     /// Compute strides from _dims and _row_major. Sets _strides and _size.
     constexpr void compute_strides() {
         _strides.resize(_rank);

@@ -63,3 +63,8 @@ einsums_add_python_unit_test(
   "Modules.Tensor" TiledRuntimeTensorPython
   SCRIPT test_tiled_runtime_tensor_python.py
 )
+
+einsums_add_python_unit_test(
+  "Modules.Tensor" ReshapeViewPython
+  SCRIPT test_reshape_view_python.py
+)

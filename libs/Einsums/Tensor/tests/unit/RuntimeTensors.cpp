@@ -593,3 +593,42 @@ TEST_CASE("RuntimeTensor liveness token tracks destruction", "[tensor][runtime][
         REQUIRE(w.expired());
     }
 }
+TEST_CASE("RuntimeTensor::reshape_view reinterprets without copying", "[tensor][runtime][view]") {
+    using namespace einsums;
+
+    RuntimeTensor<double> A("A", std::vector<size_t>{3, 4, 5});
+    for (size_t i = 0; i < A.size(); ++i) {
+        A.data()[i] = static_cast<double>(i);
+    }
+
+    SECTION("merging adjacent axes shares storage") {
+        auto V = A.reshape_view({3, 20});
+        REQUIRE(V.dim(0) == 3);
+        REQUIRE(V.dim(1) == 20);
+        REQUIRE(V.data() == A.data());
+        V.data()[7] = -1.0;
+        REQUIRE(A.data()[7] == -1.0);
+    }
+
+    SECTION("splitting is the inverse") {
+        auto back = A.reshape_view({60}).reshape_view({3, 4, 5});
+        for (size_t i = 0; i < A.size(); ++i) {
+            REQUIRE(back.data()[i] == A.data()[i]);
+        }
+    }
+
+    SECTION("a wrong element count throws") {
+        REQUIRE_FALSE(A.reshapable_as_view({3, 4, 6}));
+        REQUIRE_THROWS(A.reshape_view({3, 4, 6}));
+    }
+
+    SECTION("a gap on the fastest axis cannot be merged") {
+        // Slicing axis 0 leaves consecutive axis-1 elements 3 apart in a run of
+        // 2, so the first two axes no longer abut.
+        auto S = A(Range{0, 2}, All, All);
+        REQUIRE_FALSE(S.reshapable_as_view({4, 10}));
+        REQUIRE_THROWS(S.reshape_view({4, 10}));
+        // Merging the axes that still abut is fine.
+        REQUIRE(S.reshapable_as_view({2, 20}));
+    }
+}
