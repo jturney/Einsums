@@ -140,8 +140,12 @@ psi4 is 1.6x ahead on ethanol and 3.7x on the chain.
 | **total** | **0.561** | 2.076 | 3.7x |
 
 Per LMP2 iteration the two are level threaded, 0.0214 s against 0.0215.
-The port gets there while doing **37x** the coupling flops psi4 does, because every block is padded to the widest PNO count in its bucket, so per flop that actually needs doing the residual runs at roughly 0.03x psi4's cost.
-Bucketing harder is a large and cheap win still on the table.
+The port gets there while doing 1.6x the coupling flops psi4 does, because each block runs on its bucket's dimension rather than its own PNO count, so per flop that actually needs doing the residual is at about 0.67x psi4's cost.
+
+That 1.6x is not headroom, which is worth stating because the obvious reading is that it should be.
+Raising `n_buckets` does cut it - to 1.15x at eight buckets and 1.07x at twelve - and single threaded that converts, 48.1 ms per iteration at four buckets down to 37.6 at twelve.
+Threaded it goes the other way, 28.4 ms at four buckets up to 54.0 at twelve, because the batches stop being large enough to fill the cores.
+Four is the shipped default because it is the best threaded value, and the two regimes genuinely disagree.
 
 ### Where the threading goes
 
@@ -209,7 +213,7 @@ Everything elementwise over pairs (the amplitude update, the antisymmetrization,
 And because every coupling GEMM has the same shape, they batch.
 
 Padding is inert: integrals, amplitudes and overlaps are zero outside each pair's logical block and the energy denominators are one, so padded components stay zero for the life of the calculation.
-It is not free, though - it is the 37x flop overhead noted above - which is what `n_buckets` trades against.
+It is not free, though - it is the 1.6x flop overhead noted above - which is what `n_buckets` trades against.
 Single threaded, flops dominate and more buckets is monotonically better; threaded, the batches have to stay large enough to fill the cores.
 That is why it is a knob rather than a constant.
 

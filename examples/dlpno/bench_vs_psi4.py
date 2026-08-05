@@ -220,25 +220,31 @@ print(f"\n    {'graph capture+optimize':22} {'-':>12} {mp2.t_capture:>12.3f}"
 if p_it > 1e-9:
     print(f"\n    {'LMP2 per iteration':22} {p_it:>12.4f} {o_it:>12.4f} {o_it / p_it:>9.1f}x")
 
-# How much of the gap is padding? The coupling GEMMs are cubic in the block
-# dimension, so padding every pair to npno_max instead of its own PNO count
-# multiplies the coupling flops by roughly (npno_max / avg_pno)^3. Dividing the
-# measured ratio by that separates "we waste flops on padding" from "we are
-# slower per useful flop", which point at completely different fixes.
-avg_pno = sum(mp2.n_pno) / mp2.n_lmo_pairs
-padding_overhead = (mp2.npno_max / avg_pno) ** 3
+# How much of the gap is padding? The coupling GEMMs run on each pair's BUCKET
+# dimension rather than its own PNO count, so the wasted flops are the ratio of
+# the two, summed over couplings.
+#
+# This used to be reported as (npno_max/avg)^3, which is the factor only if
+# every block were padded to the global maximum - true before bucketing landed
+# and wrong ever since. At n_buckets=4 on a six-monomer chain it reads 37x where
+# the real figure is 1.6x, which is not a rounding error: it turned "the port is
+# 30x more efficient per useful flop" into something believable.
+padded_flops = exact_flops = 0
+for ij, entries in mp2._couplings.items():
+    M_b, n_ij = mp2.pair_dim(ij), mp2.n_pno[ij]
+    for (q, _, _, _, _, _) in entries:
+        M_p, n_p = mp2.pair_dim(q), mp2.n_pno[q]
+        padded_flops += M_b * M_p * M_p
+        exact_flops += n_ij * n_p * n_p
+padding_overhead = padded_flops / max(exact_flops, 1)
 if p_it > 1e-9:
     print(f"\n  where the LMP2 gap comes from (estimate)")
-    print(f"    padding overhead   (npno_max/avg)^3 = ({mp2.npno_max}/{avg_pno:.1f})^3"
+    print(f"    padding overhead   bucket dims vs true PNO counts"
           f" = {padding_overhead:>5.2f}x extra coupling flops")
     print(f"    measured slowdown                    = {o_it / p_it:>5.2f}x")
     print(f"    per useful flop                      = {o_it / p_it / padding_overhead:>5.2f}x"
           "   (<1 means faster than psi4 per flop actually needed)")
 
-# All three pieces psi4 reports, including the dipole estimate of the pairs
-# never formed. That is zero on a compact molecule, where nothing is screened,
-# and is not on a chain - leaving it out made the same-problem check below fire
-# on exactly the geometries screening was added for.
 e_ours = mp2.e_lmp2 + mp2.de_pno_total + mp2.de_dipole
 print(f"\n  correlation energy   psi4 {psi4_times['corr']:.10f}   "
       f"port {e_ours:.10f}   diff {abs(e_ours - psi4_times['corr']):.2e}")
