@@ -65,6 +65,24 @@ At `T_CUT_PNO = 1e-8`, cc-pVDZ, no frozen core:
 Only `water-dimer-far` exercises the pair prescreening: the compact geometries are small enough that psi4 keeps every pair too, so the two monomers are pushed 12 A apart to force the issue.
 There the port drops exactly the 50 pairs psi4 drops, and its dipole estimate of what was discarded (-0.0000002432 Eh) matches psi4's `Screened LMO pair energy` (-0.000000243227) to the printed digits.
 
+**The 1e-13 agreement is a property of these geometries, not an invariant.**
+`sweep_separation.py` walks the dimer's O-O distance, and at 4.0 A the two codes differ by 9.5e-08 - six orders worse than the 3.8e-14 at 2.9 A and the 8.4e-14 at 12 A.
+It is not a convergence artifact: the difference is 9.451e-08 at `r_convergence` of 1e-8, 1e-10 and 1e-12 alike, unchanged to four significant figures while the iteration count goes 10, 14, 17.
+It is not the basis either. cc-pVTZ reproduces it at the same separation, 5.4e-08 against 4.2e-14 at 2.9 A, which is what rules out the first guess: a PAO linear-dependence tie-break should have moved or vanished in a different PAO space.
+
+Nor is it any of the three truncations, all of which match psi4 exactly at that geometry:
+
+| quantity at 4.0 A | port | psi4 |
+| --- | --- | --- |
+| pairs kept | 100 / 100 | 100 / 100 |
+| PAO domain per LMO, min / max | 24 / 38 | 24 / 38 |
+| aux BFs per LMO, average | 78.4 | 78 |
+| PNOs per pair, min / max | 5 / 20 | 5 / 20 |
+
+So the two codes construct the same domains, keep the same pairs and the same PNOs, and still land 9.5e-08 apart, which puts it in the numerics inside those identical domains rather than in any truncation decision.
+It sits well under the PNO truncation error at that geometry (8.5e-05), so it is not a correctness problem - but it does mean the 1e-13 figures above hold where nothing lands near a threshold, and 4.0 A is where the domains first straddle both monomers.
+Unexplained; the differential-overlap values there do sit on the `t_cut_do` cutoff (0.00972 and 0.01044 against 1e-2) even though the resulting domains agree, which is the thread worth pulling next.
+
 ## Design notes
 
 **The setup phases are captured too, but shaped differently.**
