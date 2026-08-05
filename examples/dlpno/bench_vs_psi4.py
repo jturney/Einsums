@@ -40,10 +40,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from dlpno.molecules import MOLECULES
+from dlpno.molecules import MOLECULES, water_chain
 
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-parser.add_argument("--molecule", default="methanol", choices=sorted(MOLECULES))
+parser.add_argument("--molecule", default="methanol",
+                    help=f"one of {sorted(MOLECULES)}, or 'chain<N>' for an N-monomer "
+                         "water chain at 2.9 A - the geometry the scaling work targets")
 parser.add_argument("--basis", default="cc-pvdz")
 parser.add_argument("--t-cut-pno", type=float, default=1e-8)
 parser.add_argument("--buckets", type=int, default=4,
@@ -56,7 +58,13 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-GEOM = MOLECULES[args.molecule] + "symmetry c1\n"
+if args.molecule.startswith("chain"):
+    GEOM = water_chain(int(args.molecule[5:]), 2.9) + "symmetry c1\nno_reorient\nno_com\n"
+elif args.molecule in MOLECULES:
+    GEOM = MOLECULES[args.molecule] + "symmetry c1\n"
+else:
+    parser.error(f"unknown molecule {args.molecule!r}; "
+                 f"use one of {sorted(MOLECULES)} or chain<N>")
 OPTIONS = {
     "basis": args.basis, "scf_type": "df", "freeze_core": "false",
     "e_convergence": 1e-10, "d_convergence": 1e-10,
@@ -227,7 +235,11 @@ if p_it > 1e-9:
     print(f"    per useful flop                      = {o_it / p_it / padding_overhead:>5.2f}x"
           "   (<1 means faster than psi4 per flop actually needed)")
 
-e_ours = mp2.e_lmp2 + mp2.de_pno_total
+# All three pieces psi4 reports, including the dipole estimate of the pairs
+# never formed. That is zero on a compact molecule, where nothing is screened,
+# and is not on a chain - leaving it out made the same-problem check below fire
+# on exactly the geometries screening was added for.
+e_ours = mp2.e_lmp2 + mp2.de_pno_total + mp2.de_dipole
 print(f"\n  correlation energy   psi4 {psi4_times['corr']:.10f}   "
       f"port {e_ours:.10f}   diff {abs(e_ours - psi4_times['corr']):.2e}")
 print(f"  (SCF, excluded above: psi4 {psi4_times['scf']:.3f} s, "
