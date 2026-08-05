@@ -81,8 +81,6 @@ class DLPNOMP2(DLPNOBase):
     def __init__(self, reference, thresholds=None, verbose=True, use_diis=True):
         super().__init__(reference, thresholds, verbose)
         self.use_diis = use_diis
-        self.S_pno_ij_kj = {}
-        self.S_pno_ij_ik = {}
         self.e_lmp2 = 0.0
         self.e_lmp2_os = 0.0
         self.e_lmp2_ss = 0.0
@@ -133,11 +131,6 @@ class DLPNOMP2(DLPNOBase):
         F_lmo = ten.view(self.F_lmo)
         f_cut = self.cut.f_cut
         npao = ten.shape(self.C_pao)[1]
-
-        self.S_pno_ij_kj = {}
-        self.S_pno_ij_ik = {}
-        self.k_couple_kj = [{} for _ in range(self.n_lmo_pairs)]
-        self.k_couple_ik = [{} for _ in range(self.n_lmo_pairs)]
 
         # Which partners each pair couples to, in the order they are laid out.
         partners = [[] for _ in range(self.n_lmo_pairs)]  # (partner, k, is_ik, factor)
@@ -198,15 +191,13 @@ class DLPNOMP2(DLPNOBase):
         # Sliced once and kept: a slice is a pybind round trip building a fresh
         # view object, and at 32948 couplings that is 0.24 s, so doing it twice
         # would cost more than everything else in this phase.
-        blocks = self._S_block = {}
         by_shape = {}
         for ij, entries in self._couplings.items():
             for idx, (p, _, _, _, cls, _) in enumerate(entries):
                 M_p = self.bucket_dims[cls[1]]
                 slot = self._dest_slot[ij, idx]
-                block = self._S_cls[cls][:, slot * M_p:(slot + 1) * M_p]
-                blocks[ij, idx] = block
-                by_shape.setdefault(cls, []).append((half[ij], X_pad[p], block))
+                by_shape.setdefault(cls, []).append(
+                    (half[ij], X_pad[p], self._S_cls[cls][:, slot * M_p:(slot + 1) * M_p]))
 
         by_bucket = {}
         for ij in self._couplings:
@@ -287,16 +278,6 @@ class DLPNOMP2(DLPNOBase):
                 signed[cls][self._src_slot[ij, idx]] = sign
         for cls in self._classes:
             ten.view(self._S_T[cls])[...] *= signed[cls][np.newaxis, np.newaxis, :]
-
-        # Each coupling's overlap is a column slice, not its own allocation.
-        for ij, entries in self._couplings.items():
-            for idx, (_, k, is_ik, sign, _, _) in enumerate(entries):
-                if is_ik:
-                    self.S_pno_ij_ik[ij, k] = blocks[ij, idx]
-                    self.k_couple_ik[ij][k] = sign
-                else:
-                    self.S_pno_ij_kj[ij, k] = blocks[ij, idx]
-                    self.k_couple_kj[ij][k] = sign
 
         self._print(
             f"  overlaps: {sum(len(p) for p in partners)} couplings via "
