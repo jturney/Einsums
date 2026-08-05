@@ -29,10 +29,11 @@ namespace einsums::blas {
  * - Accelerate schedules through GCD with no per-thread control, and a
  *   reference BLAS is serial. Both are no-ops here.
  *
- * The vendor is resolved at run time rather than at build time, so a build
- * links against no vendor-specific symbol and an environment that swaps its
- * BLAS underneath us still gets the right behavior. Unrecognized vendors are
- * left alone.
+ * The vendor is decided at build time, from the one FindTargetLAPACK resolved.
+ * An earlier version looked the symbol up at run time so no build would carry
+ * a vendor-specific dependency; it silently found nothing under MKL's layered
+ * Windows DLLs and left this a no-op on the only platform that needs it. A
+ * declaration the linker has to satisfy fails loudly instead.
  *
  * Only ever affects the calling thread. There is deliberately no process-wide
  * form: OpenBLAS's ``openblas_set_num_threads`` is global, so calling it from a
