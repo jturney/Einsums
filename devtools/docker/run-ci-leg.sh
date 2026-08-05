@@ -385,6 +385,16 @@ export CCACHE_DIR='${CCACHE_DIR}'
 export CCACHE_MAXSIZE=5G
 mkdir -p '${CCACHE_DIR}'
 
+# 2a. valgrind's aarch64 emulation gets OpenBLAS's tuned kernels wrong: sdot
+#     comes back as -3.4e38 and memcheck calls the result uninitialised, so
+#     LinearAlgebra.dot and GPU.Runtime fail against a library that is fine
+#     natively. Asking OpenBLAS for the baseline ARMv8 kernel avoids the
+#     instructions valgrind mishandles. x86_64 needs none of this, which is
+#     also why amd64 is the faithful target and arm64 is for triage.
+if [[ '${LEG}' == 'valgrind' && \$(uname -m) == 'aarch64' ]]; then
+    export OPENBLAS_CORETYPE=ARMV8
+fi
+
 # 2b. valgrind is not in the miniforge image, and Einsums_AddTest does
 #     find_program(valgrind REQUIRED) at configure time when the option is on,
 #     so install it before cmake runs rather than before ctest. Done here and

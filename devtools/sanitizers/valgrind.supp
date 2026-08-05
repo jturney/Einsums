@@ -18,13 +18,15 @@
 #
 # Keep each entry commented with what it is and why it is not our bug.
 
-# Example of the intended shape; harmless as written because no such object
-# exists. Replace it with a real entry rather than adding alongside it.
-#
-# {
-#    libgomp-thread-pool-teardown
-#    Memcheck:Leak
-#    match-leak-kinds: possible
-#    ...
-#    obj:*/libgomp.so*
-# }
+# LLVM's OpenMP runtime reads its own partially-initialised team and task
+# structures while forking a parallel region, and reports one uninitialised
+# conditional per region entry. Nothing is passed in from our side: the region
+# that first surfaced this, ConcurrentPermute.cpp, has literal loop bounds.
+# Scoped to __kmp_fork_call rather than all of libomp so that a genuinely
+# uninitialised value we hand to OpenMP is still reported.
+{
+   libomp-fork-call-uninitialised
+   Memcheck:Cond
+   fun:__kmp_fork_call
+   ...
+}
