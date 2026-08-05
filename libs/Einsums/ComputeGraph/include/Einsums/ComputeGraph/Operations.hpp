@@ -3440,6 +3440,215 @@ APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<do
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// batched_gemm_blocked: a batch whose C operands are blocks of ONE tensor
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @ref batched_gemm where the destinations are uniform-shaped blocks of a
+/// single tensor, described by their offsets rather than enumerated as views.
+///
+/// The list form needs one tensor object per member, and building those is not
+/// free: a caller whose destinations are column ranges of one store has to
+/// materialize a view apiece, which in a local-correlation method is tens of
+/// thousands of them. On the DLPNO port's overlap build that is 32948 view
+/// constructions on the Python side and 32948 more slot registrations here,
+/// together about half the phase, and none of it is arithmetic.
+///
+/// @p c_offsets gives each block's first element as an offset into @p c_base,
+/// in elements. Every block is @p c_rows by @p c_cols and inherits the base's
+/// leading dimension, which is what makes them expressible this way: a column
+/// range of a column-major tensor has the parent's ``lda``.
+///
+/// A and B stay lists, because the callers that want this have destinations
+/// that repeat one tensor and sources that do not. Passing a list of existing
+/// tensors is cheap; it is *constructing* the views that is not.
+///
+/// One further difference from the list form, and it is a correctness one: the
+/// node declares a single output, @p c_base itself, so a later read of the whole
+/// base is ordered against this write. The list form declares the views, and
+/// the graph does not know a view write touches its parent, so that ordering
+/// has to be forced with a graph boundary.
+template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
+    requires(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+             std::is_same_v<typename AType::ValueType, typename CType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("graph")
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    void batched_gemm_blocked(double alpha, std::vector<AType const *> a_list, std::vector<BType const *> b_list, double beta,
+                              CType *c_base, std::vector<size_t> const &c_offsets, size_t c_rows, size_t c_cols, bool trans_a = false,
+                              bool trans_b = false) {
+    using T = typename AType::ValueType;
+
+    size_t const count = a_list.size();
+    if (count == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::batched_gemm_blocked: batch is empty");
+    }
+    if (b_list.size() != count || c_offsets.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "cg::batched_gemm_blocked: A, B and the offset list must be the same length; got {}, {}, {}", count,
+                                b_list.size(), c_offsets.size());
+    }
+    if (c_base == nullptr) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::batched_gemm_blocked: c_base is null");
+    }
+    if (detail::tensor_rank(*c_base) != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::batched_gemm_blocked: c_base is not rank 2 (got {})", detail::tensor_rank(*c_base));
+    }
+    if (c_rows == 0 || c_cols == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::batched_gemm_blocked: block shape is {}x{}; neither may be zero", c_rows,
+                                c_cols);
+    }
+
+    size_t const ldc_s = c_base->impl().get_lda();
+    size_t const span  = c_base->size();
+    // A block starting at `off` reaches off + (c_cols-1)*ldc + c_rows - 1. Checked
+    // here because the executor only ever sees a raw pointer, where an offset past
+    // the end is silent corruption rather than a diagnosable error.
+    if (c_rows > ldc_s) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "cg::batched_gemm_blocked: block has {} rows but c_base's leading dimension is {}; a block taller than the "
+                                "parent's column stride would overlap the next column",
+                                c_rows, ldc_s);
+    }
+    for (size_t i = 0; i < count; ++i) {
+        size_t const last = c_offsets[i] + (c_cols - 1) * ldc_s + c_rows;
+        if (last > span) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range,
+                                    "cg::batched_gemm_blocked: block {} at offset {} spans {} elements of a {}-element c_base", i,
+                                    c_offsets[i], last - c_offsets[i], span);
+        }
+        if (a_list[i] == nullptr || b_list[i] == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::batched_gemm_blocked: member {} has a null operand", i);
+        }
+        if (detail::tensor_rank(*a_list[i]) != 2 || detail::tensor_rank(*b_list[i]) != 2) {
+            EINSUMS_THROW_EXCEPTION(rank_error, "cg::batched_gemm_blocked: member {} is not rank 2 (got {}, {})", i,
+                                    detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]));
+        }
+    }
+
+    BatchedGemmDescriptor d;
+    d.trans_a     = trans_a ? 'T' : 'N';
+    d.trans_b     = trans_b ? 'T' : 'N';
+    d.alpha       = std::complex<double>{alpha, 0.0};
+    d.beta        = std::complex<double>{beta, 0.0};
+    d.batch_count = static_cast<int>(count);
+    d.m           = static_cast<int>(c_rows);
+    d.n           = static_cast<int>(c_cols);
+    d.k           = static_cast<int>(trans_a ? a_list[0]->dim(0) : a_list[0]->dim(1));
+    d.lda         = static_cast<int>(a_list[0]->impl().get_lda());
+    d.ldb         = static_cast<int>(b_list[0]->impl().get_lda());
+    d.ldc         = static_cast<int>(ldc_s);
+    if constexpr (std::is_same_v<T, float>) {
+        d.scalar = BlasScalar::Float;
+    } else if constexpr (std::is_same_v<T, double>) {
+        d.scalar = BlasScalar::Double;
+    } else if constexpr (std::is_same_v<T, std::complex<float>>) {
+        d.scalar = BlasScalar::ComplexFloat;
+    } else {
+        d.scalar = BlasScalar::ComplexDouble;
+    }
+
+    auto const require = [&](bool ok, size_t i, char const *what) {
+        if (!ok) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::batched_gemm_blocked: member {} disagrees on {}; every member must share m/n/k and leading "
+                                    "dimensions because gemm_batch takes them once for the whole batch",
+                                    i, what);
+        }
+    };
+    for (size_t i = 0; i < count; ++i) {
+        require(static_cast<int>(trans_a ? a_list[i]->dim(1) : a_list[i]->dim(0)) == d.m, i, "m against A");
+        require(static_cast<int>(trans_a ? a_list[i]->dim(0) : a_list[i]->dim(1)) == d.k, i, "k");
+        require(static_cast<int>(trans_b ? b_list[i]->dim(1) : b_list[i]->dim(0)) == d.k, i, "the link dimension shared with A");
+        require(static_cast<int>(trans_b ? b_list[i]->dim(0) : b_list[i]->dim(1)) == d.n, i, "n against B");
+        require(static_cast<int>(a_list[i]->impl().get_lda()) == d.lda, i, "lda");
+        require(static_cast<int>(b_list[i]->impl().get_lda()) == d.ldb, i, "ldb");
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("batched_gemm_blocked eager");
+        std::vector<void const *> a_vs(count), b_vs(count);
+        std::vector<void *>       c_vs(count);
+        T                        *base = c_base->data();
+        for (size_t i = 0; i < count; ++i) {
+            a_vs[i] = static_cast<void const *>(a_list[i]->data());
+            b_vs[i] = static_cast<void const *>(b_list[i]->data());
+            c_vs[i] = static_cast<void *>(base + c_offsets[i]);
+        }
+        if constexpr (IsComplexV<T>) {
+            detail::run_batched_gemm_complex<T>(d, a_vs, b_vs, c_vs);
+        } else {
+            detail::run_batched_gemm<T>(d, a_vs, b_vs, c_vs);
+        }
+        return;
+    }
+
+    LabeledSection("batched_gemm_blocked capture");
+    detail::BatchedGemmExtractors       a_exs, b_exs;
+    detail::BatchedGemmOutputExtractors c_exs;
+    a_exs.reserve(count);
+    b_exs.reserve(count);
+    c_exs.reserve(count);
+    std::vector<TensorId> inputs;
+    inputs.reserve(2 * count);
+
+    // One slot for the whole destination, against one per member in the list
+    // form. That is the point of this overload.
+    auto [c_id, c_slot] = ctx.get_slot(*c_base);
+
+    for (size_t i = 0; i < count; ++i) {
+        auto [a_id, a_slot] = ctx.get_slot(*a_list[i]);
+        auto [b_id, b_slot] = ctx.get_slot(*b_list[i]);
+        inputs.push_back(a_id);
+        inputs.push_back(b_id);
+        a_exs.emplace_back([a_slot]() -> std::pair<void const *, int> {
+            auto const *t = static_cast<AType const *>(a_slot->ptr);
+            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
+        });
+        b_exs.emplace_back([b_slot]() -> std::pair<void const *, int> {
+            auto const *t = static_cast<BType const *>(b_slot->ptr);
+            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
+        });
+        // Read the base through its slot and offset at execute time: rebind()
+        // and the MemoryPlanning arena can both move the storage after capture.
+        size_t const off = c_offsets[i];
+        c_exs.emplace_back([c_slot, off]() -> std::pair<void *, int> {
+            auto *t = static_cast<CType *>(c_slot->ptr);
+            return {static_cast<void *>(t->data() + off), static_cast<int>(t->impl().get_lda())};
+        });
+    }
+
+    std::vector<TensorId> outputs{c_id};
+    // beta != 0 means gemm_batch reads every destination before writing it, so
+    // the RAW edge from whoever produced c_base must survive (bug-1009).
+    if (beta != 0.0) {
+        inputs.push_back(c_id);
+    }
+
+    auto executor = detail::make_batched_gemm_executor(d, std::move(a_exs), std::move(b_exs), std::move(c_exs));
+    ctx.record(OpKind::BatchedGemm,
+               fmt::format("gemm_batch x{} into blocks ({}x{}x{}, trans={}{})", d.batch_count, d.m, d.k, d.n, d.trans_a, d.trans_b),
+               std::move(inputs), std::move(outputs), std::move(executor), d);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // norm
 // ─────────────────────────────────────────────────────────────────────────────
 

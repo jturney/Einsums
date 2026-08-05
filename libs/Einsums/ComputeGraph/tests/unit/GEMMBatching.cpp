@@ -502,3 +502,107 @@ TEST_CASE("GEMMBatching - interfering node between members disables the batch", 
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// batched_gemm_blocked: destinations described, not enumerated
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_CASE("batched_gemm_blocked matches the list form", "[ComputeGraph][GEMMBatching]") {
+    using namespace einsums;
+    namespace cg = einsums::compute_graph;
+
+    constexpr size_t m = 4, k = 6, n = 3, count = 5;
+
+    std::vector<RuntimeTensor<double>> a_store, b_store;
+    for (size_t i = 0; i < count; ++i) {
+        a_store.push_back(create_random_tensor<double>("a", m, k));
+        b_store.push_back(create_random_tensor<double>("b", k, n));
+    }
+    std::vector<RuntimeTensor<double> const *> a_list, b_list;
+    for (size_t i = 0; i < count; ++i) {
+        a_list.push_back(&a_store[i]);
+        b_list.push_back(&b_store[i]);
+    }
+
+    // Reference: the list form writing per-block views of the same store.
+    RuntimeTensor<double> ref("ref", std::vector<size_t>{m, n * count});
+    ref.zero();
+    {
+        std::vector<RuntimeTensorView<double>> views;
+        views.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            views.push_back(ref(AllT{}, Range{i * n, (i + 1) * n}));
+        }
+        std::vector<RuntimeTensorView<double> *> c_list;
+        for (auto &v : views) {
+            c_list.push_back(&v);
+        }
+        cg::batched_gemm(1.0, a_list, b_list, 0.0, c_list);
+    }
+
+    // Column block i of an (m, n*count) column-major tensor starts at i*n*m.
+    std::vector<size_t> offsets;
+    for (size_t i = 0; i < count; ++i) {
+        offsets.push_back(i * n * m);
+    }
+
+    SECTION("eager") {
+        RuntimeTensor<double> got("got", std::vector<size_t>{m, n * count});
+        got.zero();
+        cg::batched_gemm_blocked(1.0, a_list, b_list, 0.0, &got, offsets, m, n);
+        for (size_t i = 0; i < ref.size(); ++i) {
+            REQUIRE_THAT(got.data()[i], Catch::Matchers::WithinAbs(ref.data()[i], 1e-12));
+        }
+    }
+
+    SECTION("captured, and it registers ONE output rather than one per member") {
+        RuntimeTensor<double> got("got", std::vector<size_t>{m, n * count});
+        got.zero();
+        cg::Graph g("blocked");
+        {
+            cg::CaptureGuard guard(g);
+            cg::batched_gemm_blocked(1.0, a_list, b_list, 0.0, &got, offsets, m, n);
+        }
+        REQUIRE(g.num_nodes() == 1);
+        g.execute();
+        for (size_t i = 0; i < ref.size(); ++i) {
+            REQUIRE_THAT(got.data()[i], Catch::Matchers::WithinAbs(ref.data()[i], 1e-12));
+        }
+    }
+
+    SECTION("beta accumulates, and the offsets need not be in order") {
+        RuntimeTensor<double> got("got", std::vector<size_t>{m, n * count});
+        for (size_t i = 0; i < got.size(); ++i) {
+            got.data()[i] = 1.0;
+        }
+        std::vector<size_t> const perm{3, 0, 4, 1, 2};
+        std::vector<size_t>       shuffled;
+        for (size_t p : perm) {
+            shuffled.push_back(p * n * m);
+        }
+        cg::batched_gemm_blocked(1.0, a_list, b_list, 1.0, &got, shuffled, m, n);
+
+        // Member i landed on block perm[i], on top of the ones already there.
+        for (size_t i = 0; i < count; ++i) {
+            for (size_t c = 0; c < n; ++c) {
+                for (size_t r = 0; r < m; ++r) {
+                    double expected = 1.0 + ref.data()[i * n * m + c * m + r];
+                    REQUIRE_THAT(got.data()[perm[i] * n * m + c * m + r], Catch::Matchers::WithinAbs(expected, 1e-12));
+                }
+            }
+        }
+    }
+
+    SECTION("out-of-range and mismatched shapes are rejected at the call") {
+        RuntimeTensor<double> got("got", std::vector<size_t>{m, n * count});
+        // A block reaching past the end: the executor only sees a raw pointer,
+        // so this has to be caught here or it is silent corruption.
+        REQUIRE_THROWS(cg::batched_gemm_blocked(1.0, a_list, b_list, 0.0, &got, offsets, m, n * count));
+        // One offset per member.
+        std::vector<size_t> short_offsets(offsets.begin(), offsets.end() - 1);
+        REQUIRE_THROWS(cg::batched_gemm_blocked(1.0, a_list, b_list, 0.0, &got, short_offsets, m, n));
+        // A block taller than the parent's leading dimension would run into the
+        // next column rather than staying inside its own.
+        REQUIRE_THROWS(cg::batched_gemm_blocked(1.0, a_list, b_list, 0.0, &got, offsets, m + 1, n));
+    }
+}
