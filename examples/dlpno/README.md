@@ -333,7 +333,7 @@ Single thread, cc-pVDZ, 2.9 A spacing:
 
 `precompute_fits` grew 22x from n=3 to n=6 while the whole run grew 9x, and `compute_qia` - the phase that consumes the dense three-index integrals - is 1% of it.
 That contradicts the reasoning in "Next steps" below: on a compact molecule `(Q|mn)` is the largest item, but it is not the phase that gets structurally worse as the system extends.
-The port also lost to psi4 somewhere around n=4 on this chain, having been 1.4x faster at n=2, so this was the phase that cost the lead.
+The port appeared to lose to psi4 around n=4 on this chain, having appeared 1.4x faster at n=2 - but see [Measuring against psi4 fairly](#measuring-against-psi4-fairly): those comparisons were not measuring the same work, and the real picture is different in both directions.
 
 ### Most of that phase was solving for right-hand sides nobody reads
 
@@ -372,7 +372,7 @@ Single thread, same machine:
 
 `precompute_fits` is now 5.7% of the n=6 run rather than 46%, and grows 9.3x from n=3 to n=6 against the whole run's 6.3x rather than 22x against 9x.
 The phase order at n=6 becomes `lmp2_iterations` 51%, `pno_transform` 20%, `compute_pno_overlaps` 20%, `precompute_fits` 6%, `compute_qia` 2%.
-`sweep_chain.py` no longer shows the crossover: the port is ahead of psi4 at every length up to n=6 on one thread (3.23 s against 3.36 s at n=6, 1.69 against 2.10 at n=5), where before it fell behind at n=4.
+For the comparison against psi4, which needed correcting before it meant anything, see [Measuring against psi4 fairly](#measuring-against-psi4-fairly).
 The next section takes `lmp2_iterations` apart, which is what that leaves on top.
 
 ### The residual was bound by GEMM calls, not by arithmetic
@@ -414,7 +414,7 @@ Water chain n=6, `lmp2_iterations`, correlation energies unchanged to every prin
 | after | **0.97 s** | **0.72 s** | 1.35x |
 
 The whole n=6 run goes 2.98 -> 2.33 s on one thread and 2.45 -> 1.73 s on ten.
-Against psi4 on a loaded machine (medians of three, and the load is why these are ranges): one thread 2.31 s against 4.04, ten threads 1.83 against 1.99 - so the 1.56x threaded deficit at n=6 is gone, and the single-thread lead widened.
+For where that leaves the port against psi4, see [Measuring against psi4 fairly](#measuring-against-psi4-fairly).
 
 Where the chain stands after both fixes, replacing the table at the top of this section. Single thread, cc-pVDZ, 2.9 A spacing:
 
@@ -453,6 +453,40 @@ The restructure that suggests - solve per LMO domain, 24 bounded solves at n=6 a
 
 Worth noting that psi4 carries one right-hand-side block per solve and pays a factorization per pair, where the port now carries the ~1.6 blocks a domain is asked for and pays one factorization per domain.
 Those are the two ends of the same trade, and the port is on the better end of it at every size measured here.
+
+## Measuring against psi4 fairly
+
+`sweep_chain.py` printed a `t_port` and a `t_psi4` that were not measuring the same work, in two ways that both flattered the port.
+
+**psi4's number included an SCF.**
+It timed `psi4.energy("dlpno-mp2")`, which converges its own reference first, while the port was handed a converged one and timed only the correlation.
+At ten threads that SCF is **61-84% of psi4's timed region** on this chain, so the printed ratio was mostly a comparison of two SCFs.
+`ref_wfn=wfn` fixes it.
+
+**The port's number excluded its integral build.**
+`from_psi4` builds the dense `(Q|mn)` and ran before the clock started.
+That is work psi4 does too - screened, inside the run being timed - so leaving it out is the same bias pointing the other way. It does not thread, and it is 0.36 s at n=6.
+
+With both fixed, correlation only, medians of three on a quiet machine:
+
+| n | port, 1 thread | psi4 | | port, 10 threads | psi4 | |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2 | 0.17 s | 0.12 | 0.7x | 0.22 s | 0.06 | **0.3x** |
+| 3 | 0.34 s | 0.34 | 1.0x | 0.31 s | 0.13 | **0.4x** |
+| 4 | 0.85 s | 0.78 | 0.9x | 0.69 s | 0.25 | **0.4x** |
+| 5 | 1.36 s | 1.31 | 1.0x | 1.13 s | 0.38 | **0.3x** |
+| 6 | 2.47 s | 2.29 | 0.9x | 1.85 s | 0.59 | **0.3x** |
+
+**Single-threaded the two are at parity**, with psi4 pulling slightly ahead as the chain grows.
+**Threaded, psi4 is 2.4-3x faster**, and has been throughout - the earlier claims in this file that the port led, and that the threaded deficit had closed, were measurement artifacts, not results.
+
+That does not undo the optimizations above; they moved the port's own numbers by the amounts recorded, and those were measured against the port itself. What it changes is the baseline they are measured *from*.
+The gap is threading: psi4 scales its whole correlation ~3.9x from one core to ten at n=6 where the port manages 1.3x, and the phases that do not thread - `pno_transform`, the DF integral build, the serial Python around the solver - are what is left.
+
+Two caveats on the psi4 side, both making its numbers slightly better than a like-for-like port would be:
+
+* Its DF integrals are domain-screened and the port's are dense. That is next-step 1, and it is a real algorithmic difference rather than an implementation one.
+* This psi4 is a Release build of 1.11a1.dev39 with the same OpenBLAS; the comparison is otherwise apples to apples on one machine, and the ratios are stable across runs while the absolute times move 10-15% with load.
 
 ## Next steps
 

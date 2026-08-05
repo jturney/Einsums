@@ -101,15 +101,23 @@ for n in args.lengths:
     if not args.skip_psi4_dlpno:
         psi4.set_options({"dlpno_algorithm": "mp2", "t_cut_pno": args.t_cut_pno})
         t0 = time.perf_counter()
-        psi4.energy("dlpno-mp2")
+        # ref_wfn, so this converges no SCF of its own. Without it the timed
+        # region is psi4's SCF *plus* its correlation while the port's is
+        # correlation alone, and at ten threads the SCF is up to 84% of it -
+        # which silently turned a 2.4x deficit into a reported 1.1x lead.
+        psi4.energy("dlpno-mp2", ref_wfn=wfn)
         t_psi4 = time.perf_counter() - t0
         dropped, tot = psi4_screened_pairs(out)
         psi4_kept = f"{tot - dropped}/{tot}"
 
-    reference = from_psi4(wfn, localization="BOYS")
+    # from_psi4 is inside the port's clock. It builds the dense (Q|mn), which
+    # is work psi4 does too - screened, inside the run just timed - so leaving
+    # it out is the same bias in the other direction. It does not thread, and
+    # at n=6 it is 0.36 s.
     cut = Thresholds.preset("NORMAL", t_cut_pno=args.t_cut_pno, n_buckets=args.buckets)
-    port = DLPNOMP2(reference, cut, use_diis=True, verbose=False)
     t0 = time.perf_counter()
+    reference = from_psi4(wfn, localization="BOYS")
+    port = DLPNOMP2(reference, cut, use_diis=True, verbose=False)
     port.compute_energy(optimize=True)
     t_port = time.perf_counter() - t0
 
