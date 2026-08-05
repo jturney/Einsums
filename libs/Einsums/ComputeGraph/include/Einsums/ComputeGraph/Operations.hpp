@@ -707,6 +707,18 @@ APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<doub
 /// axis must equal the number of indices selected there. Capture-aware: outside
 /// capture it runs immediately; inside, it records a node with src as an input
 /// and dst as an output, so a whole per-pair setup can be one graph.
+///
+/// @p axes optionally reorders the axes on the way out: source axis k lands on
+/// destination axis `axes[k]`, so
+///
+///   dst[..., i_{axes[k]} = ik, ...] = src[..., indices[k][ik], ...]
+///
+/// Empty (the default) is the identity. This exists because the alternative is
+/// a gather followed by a permute, and both are full passes over the result:
+/// selecting and reordering together is one pass, and the traversal already
+/// walks the destination through per-axis strides, so permuting is only a
+/// different set of strides. Callers that need to reinterpret rather than move
+/// axes want @ref RuntimeTensor::reshape_view, which does not copy at all.
 template <CoreBasicTensorConcept DstType, CoreBasicTensorConcept SrcType>
     requires std::is_same_v<typename DstType::ValueType, typename SrcType::ValueType>
 // clang-format off
@@ -729,7 +741,11 @@ APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<double>,             
 APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<float>>,                                     einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<double>>,                                    einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
-    void gather(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices) {
+    // The default is spelled out rather than `{}` because the binding generator
+    // copies the token through to py::arg, and pybind cannot deduce a type from
+    // an empty braced list.
+    void gather(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices,
+                std::vector<size_t> const &axes = std::vector<size_t>{}) {
     size_t const N = indices.size();
     if (N == 0) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::gather: indices must be non-empty");
@@ -743,12 +759,34 @@ APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<double>>
                                 N);
     }
 
+    // axes[k] is the DESTINATION axis that source axis k lands on, so a gather
+    // can reorder axes on its way out instead of needing a separate permute
+    // pass over the whole result. Empty means the identity.
+    std::vector<size_t> dst_axis(N);
+    if (axes.empty()) {
+        std::iota(dst_axis.begin(), dst_axis.end(), size_t{0});
+    } else {
+        if (axes.size() != N) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::gather: axes has {} entries but there are {} axes", axes.size(), N);
+        }
+        std::vector<bool> seen(N, false);
+        for (size_t k = 0; k < N; ++k) {
+            if (axes[k] >= N || seen[axes[k]]) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::gather: axes must be a permutation of [0, {}), got {}", N, axes);
+            }
+            seen[axes[k]] = true;
+        }
+        dst_axis = axes;
+    }
+
     std::vector<size_t> extents(N);
     for (size_t k = 0; k < N; ++k) {
         extents[k] = indices[k].size();
-        if (dst->dim(k) != extents[k]) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::gather: dst axis {} has extent {}, but {} indices were given", k,
-                                    dst->dim(k), extents[k]);
+        if (dst->dim(dst_axis[k]) != extents[k]) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::gather: dst axis {} has extent {}, but {} indices were given for source "
+                                    "axis {}",
+                                    dst_axis[k], dst->dim(dst_axis[k]), extents[k], k);
         }
         for (size_t p : indices[k]) {
             if (p >= src.dim(k)) {
@@ -758,11 +796,16 @@ APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<double>>
         }
     }
 
-    auto apply = [indices, extents, N](DstType *d, SrcType const *s) {
+    auto apply = [indices, extents, dst_axis, N](DstType *d, SrcType const *s) {
         using T = typename DstType::ValueType;
         std::vector<size_t> d_str(N), s_str(N);
         for (size_t k = 0; k < N; ++k) {
-            d_str[k] = d->stride(k);
+            // Indexed by SOURCE axis, so the traversal below is unchanged: it
+            // walks the destination linearly through whatever strides it is
+            // handed, and a permutation is just a different set of strides. The
+            // contiguous-run fast path keys on d_str[0] == 1, so it switches
+            // itself off exactly when the permutation breaks that.
+            d_str[k] = d->stride(dst_axis[k]);
             s_str[k] = s->stride(k);
         }
         T       *d_data = d->data();

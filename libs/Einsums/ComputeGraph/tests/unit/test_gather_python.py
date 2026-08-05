@@ -138,3 +138,84 @@ def test_scatter_rejects_repeated_indices():
     src = einsums.create_zero_tensor("src", [3, 4], dtype="float64")
     with pytest.raises(Exception):
         la.scatter(dst, src, [[1, 2, 1], list(range(4))])
+
+
+# ── axis-permuting gather ────────────────────────────────────────────────────
+#
+# ``axes[k]`` is the destination axis that source axis ``k`` lands on. The point
+# is to avoid a separate permute pass: selecting and reordering are both full
+# passes over the result, and doing them together is one.
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_gather_axes_permutes_on_the_way_out(dtype):
+    rng = np.random.default_rng(11)
+    src = _filled("src", (4, 3, 7), dtype, rng)
+    perm = [5, 0, 3, 6, 1, 4, 2]
+
+    # (a, b, n) -> (a, n, b): source axis 2 lands on destination axis 1.
+    dst = einsums.create_zero_tensor("dst", [4, 7, 3], dtype=dtype)
+    la.gather(dst, src, [list(range(4)), list(range(3)), perm], [0, 2, 1])
+
+    want = np.asarray(src)[:, :, perm].transpose(0, 2, 1)
+    assert_close(np.asarray(dst), want)
+
+
+def test_gather_axes_default_is_the_identity():
+    rng = np.random.default_rng(12)
+    src = _filled("src", (4, 3, 7), "float64", rng)
+    perm = [5, 0, 3, 6, 1, 4, 2]
+    idx = [list(range(4)), list(range(3)), perm]
+
+    a = einsums.create_zero_tensor("a", [4, 3, 7], dtype="float64")
+    b = einsums.create_zero_tensor("b", [4, 3, 7], dtype="float64")
+    la.gather(a, src, idx)
+    la.gather(b, src, idx, [0, 1, 2])
+
+    assert_close(np.asarray(a), np.asarray(src)[:, :, perm])
+    assert_close(np.asarray(b), np.asarray(a))
+
+
+def test_gather_axes_composes_with_selection():
+    """Selecting a subset and reordering axes at once."""
+    rng = np.random.default_rng(13)
+    src = _filled("src", (4, 3, 7), "float64", rng)
+
+    dst = einsums.create_zero_tensor("dst", [4, 2, 2], dtype="float64")
+    la.gather(dst, src, [list(range(4)), [0, 2], [1, 5]], [0, 2, 1])
+
+    want = np.asarray(src)[:, [0, 2], :][:, :, [1, 5]].transpose(0, 2, 1)
+    assert_close(np.asarray(dst), want)
+
+
+@pytest.mark.parametrize("axes", [[0, 1], [0, 1, 1], [0, 1, 3]])
+def test_gather_rejects_bad_axes(axes):
+    """Wrong length, a repeat, and out of range - none is a permutation."""
+    src = einsums.create_zero_tensor("src", [4, 3, 7], dtype="float64")
+    dst = einsums.create_zero_tensor("dst", [4, 7, 3], dtype="float64")
+    with pytest.raises(Exception):
+        la.gather(dst, src, [list(range(4)), list(range(3)), list(range(7))], axes)
+
+
+def test_gather_axes_checks_the_permuted_extent():
+    """dst's extent is checked on the axis the source axis actually lands on."""
+    src = einsums.create_zero_tensor("src", [4, 3, 7], dtype="float64")
+    unpermuted = einsums.create_zero_tensor("dst", [4, 3, 7], dtype="float64")
+    with pytest.raises(Exception):
+        la.gather(unpermuted, src, [list(range(4)), list(range(3)), list(range(7))], [0, 2, 1])
+
+
+def test_gather_axes_captures():
+    """The permutation survives capture and replay, like any other gather."""
+    rng = np.random.default_rng(14)
+    src = _filled("src", (4, 3, 7), "float64", rng)
+    dst = einsums.create_zero_tensor("dst", [4, 7, 3], dtype="float64")
+    perm = [5, 0, 3, 6, 1, 4, 2]
+
+    g = cg.Graph("permuting gather")
+    with cg.capture(g):
+        la.gather(dst, src, [list(range(4)), list(range(3)), perm], [0, 2, 1])
+    assert np.asarray(dst).any() == False  # capture does not run it
+    g.execute()
+
+    assert_close(np.asarray(dst), np.asarray(src)[:, :, perm].transpose(0, 2, 1))
