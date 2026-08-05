@@ -3,6 +3,17 @@
 A port of psi4's DLPNO module (`psi4/src/psi4/dlpno`) with the tensor algebra expressed in einsums and the iterative solvers captured as ComputeGraphs.
 DLPNO is a good fit for deferred execution: it is thousands of small dense operations whose shapes and dependency pattern are fixed for a whole calculation and change only in their values from iteration to iteration, which is exactly the capture-once, replay-many shape.
 
+**Single threaded, this Python port is at parity with psi4's C++ DLPNO-MP2.**
+On ethanol/cc-pVTZ it is 2.54 s against psi4's 2.87 s, and on a six-monomer water chain 2.64 s against 2.06 s, with the correlation energies agreeing to 1e-08 or better.
+That is a Python program driving a tensor library beating, or landing within 30% of, a mature C++ implementation of the same method on the same machine against the same BLAS.
+
+It is worth being precise about why, because the reason is not that Python got fast: it is that almost no arithmetic happens in Python.
+Every contraction is captured into a graph once and replayed, so the per-iteration Python cost is a handful of `execute()` calls however many GEMMs they stand for.
+And the layout decisions below turn what psi4 issues as thousands of individually dispatched small GEMMs into a few batched calls, which at these block sizes is worth more than the language difference.
+
+Threaded, psi4 is 1.6-3.7x faster, and the reason is measured rather than guessed: 73% of the port's wall time is host-side work outside the graph, and that part does not thread.
+See [Where the threading goes](#where-the-threading-goes).
+
 The module split follows psi4's, so the two can be read side by side.
 
 | this package | psi4 | status |
@@ -29,9 +40,11 @@ PYTHONPATH=/path/to/Einsums/build/lib:/path/to/psi4/cmake-build-debug/stage/lib 
 
 Useful flags: `--basis`, `--localization {BOYS,PIPEK_MEZEY}`, `--t-cut-pno`, `--buckets`, `--threads`, `--no-optimize` (skip the graph passes), `--no-diis`.
 
-Two scripts sweep rather than run a single geometry:
+Three scripts do more than run a single geometry:
 
 ```bash
+# phase against phase with psi4; chain<N> builds an N-monomer water chain
+python examples/dlpno/bench_vs_psi4.py --molecule chain6 --threads 10
 # pair screening through the separation where it decides something
 python examples/dlpno/sweep_separation.py --distances 2.9 4.0 6.0 8.0 12.0
 # the locality claim itself: pairs grow as n^2, kept pairs should not
@@ -83,467 +96,287 @@ So the two codes construct the same domains, keep the same pairs and the same PN
 It sits well under the PNO truncation error at that geometry (8.5e-05), so it is not a correctness problem - but it does mean the 1e-13 figures above hold where nothing lands near a threshold, and 4.0 A is where the domains first straddle both monomers.
 Unexplained; the differential-overlap values there do sit on the `t_cut_do` cutoff (0.00972 and 0.01044 against 1e-2) even though the resulting domains agree, which is the thread worth pulling next.
 
+## Performance against psi4
+
+`bench_vs_psi4.py` runs psi4's native C++ DLPNO-MP2 in a subprocess and this port in process, comparing phase against phase using psi4's own module timers.
+Both sides get the same thread count and the same converged reference, and the SCF is excluded from both.
+
+**Ethanol/cc-pVTZ, one thread.**
+Correlation energies agree to 2.3e-08.
+
+| phase | psi4 | this port | |
+| --- | --- | --- | --- |
+| Setup Orbitals | 0.003 | 0.003 | 1.1x |
+| DF Ints | **0.132** | 0.333 | 2.5x |
+| PNO Transform | 1.236 | **0.577** | **0.5x** |
+| PNO Overlaps | 0.221 | 0.227 | 1.0x |
+| LMP2 | **1.170** | 1.307 | 1.1x |
+| **total** | 2.873 | **2.538** | **0.9x** |
+
+**Water chain n=6, cc-pVDZ, one thread.**
+Correlation energies agree to 9.7e-09.
+
+| phase | psi4 | this port | |
+| --- | --- | --- | --- |
+| Setup Orbitals | 0.004 | **0.002** | 0.5x |
+| DF Ints | **0.138** | 0.410 | 3.0x |
+| PNO Transform | 0.995 | **0.789** | 0.8x |
+| PNO Overlaps | **0.179** | 0.776 | 4.3x |
+| LMP2 | 0.668 | **0.596** | 0.9x |
+| **total** | **2.061** | 2.637 | 1.3x |
+
+Single threaded the port wins on the compact molecule in the larger basis and loses on the extended one in the smaller basis, and the two phases that decide it are identifiable: the dense `(Q|mn)` build, and `PNO Overlaps` once there are many pairs.
+The LMP2 iteration itself, which is what the graph work is really about, is 0.9-1.1x on both.
+
+**Ten threads.**
+psi4 is 1.6x ahead on ethanol and 3.7x on the chain.
+
+| phase, chain n=6 | psi4 | this port | |
+| --- | --- | --- | --- |
+| DF Ints | **0.047** | 0.394 | 8.4x |
+| PNO Transform | **0.202** | 0.494 | 2.4x |
+| PNO Overlaps | **0.033** | 0.699 | 21x |
+| LMP2 | **0.235** | 0.377 | 1.6x |
+| **total** | **0.561** | 2.076 | 3.7x |
+
+Per LMP2 iteration the two are level threaded, 0.0214 s against 0.0215.
+The port gets there while doing **37x** the coupling flops psi4 does, because every block is padded to the widest PNO count in its bucket, so per flop that actually needs doing the residual runs at roughly 0.03x psi4's cost.
+Bucketing harder is a large and cheap win still on the table.
+
+### Where the threading goes
+
+Splitting every phase into graph replay and everything else, on the chain at n=6:
+
+| | 1 thread | 10 threads | scaling |
+| --- | --- | --- | --- |
+| graph replay | 976 ms | 335 ms | **2.9x** |
+| everything else | 1136 ms | 915 ms | **1.24x** |
+
+**At ten threads, 73% of the run is outside the graph.**
+The graph itself threads about as well as psi4's OpenMP does.
+It is simply the minority of the wall time, and the majority barely moves, which is why every phase's non-replay share *rises* from one thread to ten: only the replay half shrinks.
+
+| phase | non-replay, 1 thread | non-replay, 10 threads |
+| --- | --- | --- |
+| `compute_doi` | 100% | 100% (78 ms) |
+| `prep_sparsity` | 100% | 100% (33 ms) |
+| `compute_qia` | 100% | 100% (46 ms) |
+| `precompute_fits` | 15% | 41% (24 ms) |
+| `pno_transform` | 49% | **82%** (329 ms) |
+| `compute_pno_overlaps` | 79% | **88%** (235 ms) |
+| `lmp2_iterations` | 38% | 46% (171 ms) |
+
+That bucket is Python loops, but not only: it is also eager numpy bookkeeping (`compute_doi` and `prep_sparsity` are entirely that), tensor allocation, graph capture, and pybind view construction.
+The accurate label is host-side serial work outside the graph.
+
+`compute_pno_overlaps` is the clearest case and was measured directly.
+Its graph replay is 107 ms on one thread and 26 ms on ten, a clean 4.1x, and it is only 7-19% of the phase.
+Roughly half the phase is **32,948 Python tensor-view constructions**, one per coupling, to hand the batched GEMM its output operands.
+That work is serial by nature, so the phase looks like it does not thread when in fact its parallel part parallelizes fine.
+
+This is the ceiling on the current shape: even if graph replay went to zero, the port would still take 915 ms at n=6 against psi4's 561 ms total.
+No amount of optimizing what is inside the graph reaches that.
+The work has to move into the graph, or out of Python, which is what `DESIGN-cpp-hybrid.md` sketches.
+
+One gap in the table is not this and should not be attributed to it.
+`DF Ints` is `from_psi4` calling psi4's *dense* `ao_eri` against psi4's own domain-screened builder: C++ on both sides, and an algorithmic difference rather than overhead.
+
+### Two traps in measuring this at all
+
+Both were live in this directory and both flattered the port, which is why these numbers are not the ones earlier versions of this file carried.
+
+**Timing psi4's `energy("dlpno-mp2")` includes an SCF.**
+The port is handed a converged reference and times only the correlation, so a wall clock around psi4's driver compares different work.
+At ten threads that SCF is 61-84% of psi4's timed region on this chain, which silently turned a 2.4x deficit into a reported 1.1x lead.
+`ref_wfn=wfn` fixes it, and `bench_vs_psi4.py` sidesteps it entirely by reading psi4's module timers.
+
+**Leaving `from_psi4` outside the port's clock hides its largest DF cost.**
+It builds the dense `(Q|mn)`, which is work psi4 does too, screened, inside the run being timed.
+It does not thread and it is 0.36 s at n=6.
+
 ## Design notes
 
-**The setup phases are captured too, but shaped differently.**
-Every setup phase is one or a few graphs replayed under the OpenMP executor, because the parallelism worth having there is across pairs, with each pair's BLAS call left serial underneath.
-`compute_pno_overlaps` builds 4056 pair-basis overlaps from 20 captured nodes: each pair's PNO transform is scattered onto the full PAO axis (which makes the domain restriction implicit and deletes a per-coupling `S_pao` gather that was 42% of the phase), and the couplings are then grouped by the bucket pair `(ij, partner)` and emitted as one `cg.batched_gemm` per group.
-`pno_transform` is three graphs of ~1500, ~270 and ~1100 nodes, split where the truncation decision has to come back to the host.
-
-Node count is a real constraint in this phase, not just flops: capture costs tens of microseconds a node and these phases run once, so a form that emits one node per coupling can spend more building the graph than the eager version spends computing.
-That is what makes the bucketing pay twice - it is what lets the residual batch, and it is what makes every coupling in a group agree on the single m/n/k and leading dimension `gemm_batch` takes.
-
-**Five graphs per iteration.**
-`mp2.py` captures the residual prologue, the Fock coupling, the iteration energy, the Jacobi amplitude step, and the antisymmetrized amplitudes as separate graphs, then replays them in that order each iteration.
-The split is not cosmetic: see "Phases are separate graphs" below.
-
-DIIS sits between the step and the antisymmetrization, because psi4 extrapolates the amplitudes before rebuilding `Tt`.
-It runs on the host: it is a solver detail over flattened buffers rather than tensor algebra, and with every pair in one contiguous store it needs no gathering at all, just a `ravel` view of `T_all`.
-It writes back into the same tensors the graphs already reference, so the replay picks the new values up.
-Folding the whole loop into one graph with a loop node is the obvious next step.
+These are the decisions parity rests on.
+They are mostly about what *shape* the work is issued in, not about arithmetic.
 
 **Everything per-pair lives in one contiguous store, padded to a uniform shape.**
-This is the layout decision the whole calculation turns on, and it is the one psi4 makes differently.
-psi4 keeps each pair's block in its own `SharedMatrix` sized to that pair's PNO count, which leaves the residual as a loop of individually dispatched small GEMMs over operands that share neither shape nor allocation.
+This is the layout decision the whole calculation turns on, and the one psi4 makes differently.
+psi4 keeps each pair's block in its own `SharedMatrix` sized to that pair's PNO count, which leaves the residual a loop of individually dispatched small GEMMs over operands sharing neither shape nor allocation.
 Here each per-pair quantity is one `(npno_max, npno_max, n_pairs)` tensor.
 
 Two things follow.
 Everything elementwise over pairs (the amplitude update, the antisymmetrization, the energy) becomes a single operation on the whole store rather than one per pair: the Jacobi step is 1 node and the antisymmetrization is 2, whatever the molecule.
-And because every coupling GEMM now has the same shape, `GEMMBatching` can collapse all `n_pairs * naocc` of them into a handful of `blas::gemm_batch` calls.
+And because every coupling GEMM has the same shape, they batch.
 
 Padding is inert: integrals, amplitudes and overlaps are zero outside each pair's logical block and the energy denominators are one, so padded components stay zero for the life of the calculation.
+It is not free, though - it is the 37x flop overhead noted above - which is what `n_buckets` trades against.
+Single threaded, flops dominate and more buckets is monotonically better; threaded, the batches have to stay large enough to fill the cores.
+That is why it is a knob rather than a constant.
+
+**The residual is two GEMMs per pair, not thousands.**
+`R_ij = sum_c sign_c S_c T_c S_c^T` reads as a loop over couplings and was written that way: 65,896 GEMM calls per iteration for 737 MFLOP, which is 11,000 flops per call.
+At that size a GEMM is bound by the cost of *making the call* rather than by arithmetic - 13.0 GFLOP/s on one thread where a well-sized GEMM does 53.
+
+Both halves collapse, for mirror-image reasons.
+
+The second half sums over a pair's couplings, and a sum is a contraction: with the intermediate and the `S_c` both concatenated along it, the whole sum is one `(M, W) x (M, W)^T` GEMM.
+32,948 calls become 776.
+The partial accumulators this used to need went with it - they existed only to break a dependency chain a contraction does not have.
+
+The first half applies each partner's `T`, and many pairs couple through the same partner, so grouping by partner rather than by pair makes it one GEMM per partner: 32,948 into 2,822.
+
+The catch is that those two groupings form a bipartite graph and cannot both be contiguous, so the intermediate is produced by partner, read by pair, and moved between once per iteration by one permuting gather per shape class.
+Two consequences of column-major storage are worth stating rather than rediscovering.
+A GEMM's output blocks are contiguous only when the *shared* operand is on the left, and here that is `T`, so the products come out transposed.
+And the per-coupling sign cannot ride on the batch's `alpha`, because one batch now spans many pairs; it rides on one of the two copies of `S` instead, since `S` appears on both sides of the congruence and a sign in both would square away.
+
+Together these took `lmp2_iterations` at n=6 from 1.58 s to 0.61 s on one thread and to 0.36 s on ten.
 
 **Emit the batch directly with `cg.batched_gemm`.**
-The residual's Fock coupling groups its `(pair, k)` contractions by shape, sign and dependency level and emits one `cg.batched_gemm` per group.
-
-It used to emit one einsum per coupling and let `GEMMBatching` fuse them, which reaches the same node but only after building the graph one node at a time: 8112 nodes for a graph that ends up ~30 wide, and capture is not free.
+Capture costs tens of microseconds a node and these graphs are built once, so a form that emits one node per coupling can spend more building the graph than the eager version spends computing.
 Emitting the fused form directly took the ethanol capture from 8215 nodes to 335.
-The blocks must still be padded, per above, since one `gemm_batch` call takes a single m/n/k and a single leading dimension for the whole batch.
 
-If you do write the per-contraction form, use `einsum` and not `linalg.gemm`: a 2D x 2D -> 2D einsum with one link index carries the `gemm_hint` that `GEMMBatching` groups on, while `linalg.gemm` captures as `OpKind::Gemm` and the pass skips it outright, silently costing the whole optimization.
+If you do write a per-contraction form, use `einsum` and not `linalg.gemm`: a 2D x 2D -> 2D einsum with one link index carries the `gemm_hint` that `GEMMBatching` groups on, while `linalg.gemm` captures as `OpKind::Gemm` and the pass skips it outright, silently costing the whole optimization.
 
-Hand-stacking k into a trailing batch axis and calling one rank-3 batched einsum per pair was tried first and is *worse*: 2.1x against 4.2x on the water dimer.
-It fixes the batch at one pair's worth of k, where the pass batches across every pair and every k at once.
-The general lesson is to make the data uniform and leave the batching to the optimizer, not to pre-commit to a batch shape.
+The older lesson here was "make the data uniform and leave the batching to the optimizer", and it needs qualifying.
+That is right when the alternative is guessing a batch shape.
+It is not the whole story, because both halves of the residual are now single GEMMs *by construction*, and no pass can find that: it is a change to which contraction is written, not to how contractions are grouped.
 
-`bench_batching.py` measures this over identical data, on the coupling term alone:
+**Do not hand a pre-batched graph to the pass pipeline.**
+The coupling and residual graphs are emitted in the form the passes would produce, and `apply` costs 445 ms on a 32-node graph whose nodes carry ~1000 operands each - more than the entire solve replays in - while removing exactly one node of 85.
+The passes scale with operand count, not node count.
+`compute_pno_overlaps` had already made the same call for the same reason.
 
-| configuration | nodes | ms/replay | vs psi4 layout |
-| --- | --- | --- | --- |
-| padded, no passes | 3440 | 23.6 | 0.45x |
-| padded + passes (shipped) | 3440 -> 254 | 5.9 | **1.78x** |
-| ragged + passes (psi4 layout) | 3440 -> 1673 | 10.5 | 1.00x |
+**Phases are separate graphs.**
+The graph does not know that a write through `R_all[:, :, ij]` touches `R_all`, so mixing parent-level and view-level access to one store in a single graph lets the scheduler interleave them.
+This is not hypothetical: with the residual's phases captured together the energy dot landed at node 201 of 405, summing a half-built residual and quietly returning a wrong correlation energy.
+Graphs execute in the order they are replayed, so keeping each granularity in its own graph is an explicit barrier.
 
-(water dimer/cc-pVDZ, 100 pairs, 1720 couplings, PNO counts 5..29 padded to 29. Methanol gives 1.33x.)
+**Setup phases are captured too, but shaped differently.**
+Each is one or a few graphs replayed under the OpenMP executor, because the parallelism worth having there is across pairs with each pair's BLAS call left serial underneath.
+Driving the same loops from a Python thread pool is not safe: the OpenMP-built OpenBLAS conda resolves by default indexes internal scratch by `omp_get_thread_num()`, which is 0 on every caller-created thread, so workers silently overwrite each other.
+An OpenMP parallel region is a real team with distinct thread numbers, so the same BLAS is safe underneath it.
 
-Note the first row: padding *on its own* is a 2.2x loss, because it does real extra flops on the padded elements.
-It only pays once the pass can exploit the uniformity, and then it wins.
-Bucketing pairs by PNO count would get the batching without the wasted flops, and is the obvious next refinement.
-
-Two caveats on this section, both later than the measurements in it.
-`bench_batching.py` has not run since bucketing landed - it reaches for `T_all` as a single store and that is now a list of one per bucket - so the table above is a record rather than something reproducible today.
-And the lesson in it needs qualifying: leaving the batching to the optimizer is right when the alternative is guessing a batch shape, but the second half of the residual is now *one GEMM per pair* by construction, and no pass can find that, because it is a change to which contraction is written rather than to how the contractions are grouped.
-See [The residual was bound by GEMM calls](#the-residual-was-bound-by-gemm-calls-not-by-arithmetic).
-
-## Performance against psi4
-
-`bench_vs_psi4.py` runs psi4's native C++ DLPNO-MP2 in a subprocess and this port in process.
-Both sides screen identically, which the script checks by comparing correlation energies before reporting any timing.
-It also sets psi4's `R_CONVERGENCE` to match the port's: psi4's LMP2 default is 1e-6, two orders looser, which costs it two iterations in exactly the phase being compared.
-
-The dense `(Q|mn)` build is inside the timed region, and it did not used to be.
-`from_psi4()` ran before the clock started, which excluded the port's single largest DF cost while psi4's figure included generating its own integrals - so the difference this section calls out as being in the port's disfavour was not actually being counted. It is 0.24 s.
-Every number below therefore reads worse than the ones this file carried before, against an unchanged port.
-
-Whole calculation, ethanol/cc-pVTZ, SCF excluded, 4 P-cores + 6 E-cores:
-
-| | psi4 | this port | |
-| --- | --- | --- | --- |
-| 1 thread | 3.06 | **2.78** | **1.10x faster** |
-| 10 threads | 1.02 | 1.49 | 1.5x |
-
-**Single threaded the port is ahead of the C++ on the larger basis; threaded it is behind.**
-
-The LMP2 iteration itself is at parity everywhere, threaded or not: 0.1214 vs 0.1242 s on one thread, 0.0438 vs 0.0404 threaded.
-That is the phase the ComputeGraph and the batching cover, and it is not where the deficit lives.
-
-Timings on this machine move by 10-15% with background load; the ratios are stable across runs, the absolute numbers less so.
-
-### Parallelizing the setup phases
-
-psi4 runs its setup under `#pragma omp parallel for` over pairs.
-The port cannot simply do the same from Python: driving those loops from a `ThreadPoolExecutor` returns silently wrong numbers against the OpenMP-built OpenBLAS that conda resolves by default, because that build indexes its internal scratch by `omp_get_thread_num()`, which is 0 on every caller-created thread.
-See [BLAS threading](../../docs/sphinx/building/blas_threading.rst).
-
-The way that *is* safe is to hand the independent work to the graph and run it under the OpenMP executor, so the parallelism is a real OpenMP team and each node stays serial underneath.
-`DLPNOBase._run` is that call, and every setup phase goes through it:
-
-* `precompute_fits` captures every distinct domain's fitting solve into one graph. There are only 23 of them at ethanol/cc-pVTZ, but they were 31% of the phase, because the solve is per *domain* and carried `naocc * npao` right-hand sides. It carries far fewer now; see [Most of that phase was solving for right-hand sides nobody reads](#most-of-that-phase-was-solving-for-right-hand-sides-nobody-reads).
-* `pno_transform` captures its three stages rather than only the two eigendecompositions inside them. This is the one that matters, and not for the reason the name suggests: the phase issues ~1400 small GEMMs against ~190 gathers, and eagerly issued they run serially no matter how many threads the BLAS has, each call far too small to fill them. Captured, stage 1 scales 5.0x on ten threads and stage 3 4.4x.
-* `compute_pno_overlaps` emits `cg.batched_gemm` per bucket pair instead of concatenating each pair's partners side by side. The concatenation was the phase's dominant cost and none of it was arithmetic: laying out a pair's partners re-copies every partner block once per pair coupling to it, 335 MiB of allocate-and-memcpy at ethanol/cc-pVTZ over blocks that already exist in 14 MiB of `X_pad`. It was also the one part that could not be parallelized, being numpy slice assignment on the calling thread.
-
-Ten threads at cc-pVTZ, against psi4. The "before" column is the eager per-pair
-form these phases replaced, on the same DF timing:
-
-| phase | before | after | psi4 |
-| --- | --- | --- | --- |
-| PNO Transform | 0.446 (1.7x) | **0.35** (1.1x) | 0.31 |
-| PNO Overlaps | 0.143 (3.0x) | **0.085** (1.5x) | 0.058 |
-
-Single-threaded times are unchanged, which is the point: nothing got cheaper, it got issued in parallel.
-Setup scaling from 1 to 10 threads went 2.0x -> 2.9x for PNO Transform and 1.7x -> 2.4x for PNO Overlaps, against psi4's 4.8x.
-
-**The graph's execution already scales as well as psi4's OpenMP; the setup deficit is entirely the serial tax around it.**
-Splitting each phase into `execute()` and everything else shows `execute` scaling 4.9x on PNO Transform against psi4's 4.8x, while a remainder of ~0.15 s across the setup is *identical* at one thread and at ten.
-That remainder is graph capture, tensor allocation, and the two eager eigendecompositions the truncation decision needs - roughly 40/40/20 - and at ten threads it is 41% of the whole setup.
-It is Amdahl, not a threading problem: no number of cores takes the setup below it.
-
-The dominant gap now is elsewhere.
-DF Ints is 7-8x, and 0.24 s of its 0.34 s is `mints.ao_eri` building the dense `(Q|mn)`: 98 MiB of integrals of which Schwarz screening would drop about one, because ethanol is small and compact enough that nearly every AO pair is significant.
-psi4's DLPNO builder screens by *domain* instead - for each auxiliary atom, only the AOs on atoms in its extended LMO/PAO domain - and does the whole phase in 0.05 s.
-That is the tier that turns O(naux nbf^2) into something linear, it is the one that gets worse with system size, and psi4 does not expose it: `DFHelper` is reachable from Python but applies J^-1/2 and `set_metric_pow` is not bound, which a method that fits per domain cannot use.
-
-A note on the energies at cc-pVTZ: the two agree to 2.3e-8 rather than the ~1e-13 seen at cc-pVDZ.
-Every input to the comparison matches psi4 exactly - PAO and auxiliary domains (average, min *and* max, per LMO and per pair), pairs screened, PNOs per pair (54/5/92), and the PNO truncation correction to 1.4e-10.
-What is left is the linear-dependence tie-break: cc-pVTZ puts PAO-domain overlap eigenvalues near `S_CUT`, and retaining four more vectors (at `s_cut` 1e-9) moves the correlation energy by 1.6e-7, so a single vector is worth ~4e-8.
-The comparison tolerance is therefore scaled to 1% of the PNO truncation correction rather than fixed, since a genuine domain disagreement is orders of magnitude larger.
-Getting there took, in order of size:
-
-1. **psi4 clamps the process-wide OpenMP thread count to 1 when imported.** Every einsums BLAS and `gemm_batch` call in the process is then serialized and `OMP_NUM_THREADS` has no effect. `psi4.set_num_threads(n)` sets it for both. Nothing warns.
-2. **Per-domain work was being redone per pair.** The orthocanonical PAO basis and the local fit's metric factorization depend only on the domain, and with screening off there is one domain: 182 of 364 eigendecompositions and all 91 linear solves computed the same answer repeatedly. Memoized by domain identity, PNO Transform went 0.220s -> 0.065s at cc-pVDZ.
-3. **`GEMMBatching` requires bit-identical `alpha`**, and the residual carries a different Fock prefactor per coupling. Folding `sqrt(|f|)` into the (constant) overlaps leaves alpha at exactly +/-1.
-4. **`cg.batched_gemm` emits the fused node directly** instead of emitting one node per contraction for the pass to collapse: 8215 captured nodes -> 335.
-5. **Two quadratics in capture** (storage-alias linking per registration, and a linear scan to answer "is this object registered?") reduced capture+optimize from 0.419s to 0.082s.
-6. **Cross-slot accumulators and PNO-count bucketing**, below.
-
-### Why the two knobs interact
-
-### Why the two knobs interact
-
-A pair's couplings all accumulate into its residual, so they serialize: with one accumulator the batch is capped at *one coupling per pair per dependency level*, and bucketing then makes things worse by splitting the pairs further.
-Spreading a pair's couplings over `G` accumulators (coupling `c` goes to accumulator `c % G` at level `c // G`) cuts the levels by `G` and multiplies the batch by `G`.
-The partials are folded back by `G` rank-3 `axpby` nodes per bucket, a count that does not grow with the molecule.
-Level 0 assigns rather than accumulates, so the accumulators never need re-zeroing.
-
-Ethanol/cc-pVDZ, whole-iteration ms:
-
-| buckets | G=1 | G=8 | G=32 | |
-| --- | --- | --- | --- | --- |
-| 1 | 46.8 | 47.3 | 49.0 | 1 thread |
-| 4 | 30.6 | **24.1** | 24.0 | 1 thread |
-| 6 | 21.9 | **21.6** | 22.6 | 1 thread |
-| 1 | 14.6 | **13.9** | 15.8 | 10 threads |
-| 4 | 23.7 | **14.5** | 14.6 | 10 threads |
-| 6 | 26.0 | **16.1** | 16.4 | 10 threads |
-
-The accumulators are what make bucketing viable when threaded: at B=4 they take the 10-thread iteration from 23.7 ms to 14.5.
-Beyond `G ≈ 8` there is nothing left to win, and the extra partials start costing memory traffic.
-
-The right bucket count depends on system size and thread count, which is why it is a knob rather than a constant.
-Single threaded, flops dominate and more buckets is monotonically better.
-Threaded, the batches have to stay large enough to fill the cores: at cc-pVDZ (169 pairs) B=1 wins, while at cc-pVTZ the same molecule prefers B=4 by 2.3x.
-Defaults are `n_buckets=4`, `n_accumulators=8`.
-
-Graph capture and optimization is excluded from the per-iteration figures and reported separately: ~0.4 s for ethanol, paid once, with no psi4 equivalent.
-At ten iterations it is the larger half of the port's LMP2 wall time, so it matters in practice even though it does not belong in a per-iteration number.
-
-## Gaps found in Einsums
-
-**Gather and scatter by index list — FIXED.**
-Domain restriction is the fundamental operation in DLPNO, and einsums had no primitive for "take these rows and these columns", so `sparse.submatrix_*` went through the tensor's numpy view and every domain extraction ran eagerly on the host, uncapturable.
-`cg::gather` and `cg::scatter` now cover it, and `sparse.submatrix` / `sparse.scatter_into` are thin wrappers over them.
-Note `gather` has no whole-axis wildcard: an empty index list selects nothing, because an empty domain silently becoming the full axis is a wrong answer rather than an error.
-
-The kernel behind them was worth a second look, and the answer was not the expected one.
-`gather`, `scatter` and `scatter_add` were each their own odometer rebuilding both offsets from scratch per element, which costs a multiply-add per axis per element and, worse, hides the shape these callers hit most: because there is no wildcard, a whole axis is spelled `range(n)`, and when that is the fastest axis and both sides step by one, the selection along it is a contiguous block that the element loop was copying a multiply-add at a time.
-They now share `detail::for_each_selection_run`, which hoists the per-axis offsets into tables and collapses that case into one `copy_n`.
-On the shapes this port issues: 1.7x on `S_pao[dom, dom]`, 2.0x on the fit right-hand side, and 4.5x on `X[:, :keep]`, which is the contiguous case.
-
-This is worth stating plainly because the SIMD module looks like it should be the answer here and is not.
-`simd::gather` is a strided-lane load - `base[0], base[stride], ...` for a kernel's inner loop - not an index-list gather, and the psABI rung ladder is x86-only, so on an arm64 host the dispatch collapses to a single native TU regardless.
-The gathers were never the bottleneck either: `pno_transform` issues ~1400 small GEMMs against ~190 gathers.
-What was actually left on the table was index arithmetic and a missed `memcpy`, and both fixes are scalar.
-Even after them the kernel is 7-18x off a straight `memcpy` of the same payload, which is the honest ceiling for a scattered read.
-
-The remaining numpy in the package is a useful map of what else is missing, in rough order of what this workload would pay for.
-Bookkeeping numpy (integer index maps like `i_j_to_ij`, scalars, and the psi4 buffers arriving through the bridge) is excluded — that is interop, not a gap.
-
-Check before assuming something is missing: several of these already exist, and the real gap is narrower than "einsums cannot do X".
-`linalg.abs`, `scale`, `direct_product` and `element_transform` all capture, as do the pointer-writer `sum`, `max`, `dot`, `trace` and `norm` (the returning forms throw during capture by design).
-
-1. **Element-wise `sqrt` — ADDED.** `cg::sqrt` is the element-wise partner to `abs`; `linalg.pow` is a *matrix* power by eigendecomposition and is not it. The DOI finish is now `abs` then `sqrt` with no host round-trip. Real-only: the square root of a negative real is a branch choice the caller should make, so negative input throws.
-2. **Axis-wise reduction — ADDED.** `cg::sum_axes`, numpy's `A.sum(axis=...)`. `linalg.sum` still covers whole-tensor-to-scalar. Assigns rather than accumulates, so a replay does not add to the previous execution.
-3. **Reshape — ADDED.** `cg::reshape`, with a mandatory `row_major` argument. Not a formality: einsums is column major and numpy's default is C, and picking the wrong walk transposes blocks silently instead of raising. It copies rather than aliasing.
-4. **Diagonal extract — ADDED.** `cg::diagonal`, numpy's `np.diag` on a matrix; rectangular input is fine, the shorter axis wins.
-5. **Accumulating scatter — ADDED.** `cg::scatter_add`, numpy's `np.add.at`. Repeated indices are *allowed* here and rejected by `scatter`: under a plain write two writes to one element depend on loop order, under an accumulation they do not.
-6. **Concatenate / stack along an axis.** STILL MISSING. DIIS flattens every pair block into one vector and back; the dipole code stacks three components into an `(naocc, 3)`.
-7. **Masked select.** `np.where` guards a divide-by-zero in the population split. Lowest value of the seven: it is one guarded division, not a hot path.
-
-**In-place elementwise einsum against a lower-rank operand silently yielded zeros** (fixed).
-`einsum("ab <- ab ; b", X, X, f)` was accepted by the aliasing guard, because the aliased operand's index list matches the output's, but returned zeros: both generic algorithms clear C before reading anything, so the aliased operand read back already zeroed.
-The equal-rank `"ab <- ab ; ab"` was fine, which is what hid it: that shape is served by the elementwise route, which really does read each element immediately before overwriting it.
-The fix snapshots any operand overlapping C in `StringDispatch.hpp`'s generic loop and in `BaseAlgebra.hpp`'s `einsum_generic_algorithm`, so only the aliased case pays a copy and the loops (and their summation order) are untouched.
-Regression tests are in `ComputeGraph/tests/unit/EagerParityGaps.cpp`, covering all four generic routes on both the graph and eager paths.
-
-**View/parent aliasing was not a graph dependency** (fixed).
-A write through `R[:, :, p]` and a read or write of `R` were treated as touching unrelated tensors, so the scheduler was free to order them arbitrarily: wrong answers, no error, and not confined to parallel execution.
-With the residual's phases in one graph the energy dot was scheduled at node 201 of 405 under *both* the default and sequential executors; under the parallel executors even a plain write-then-read was unordered:
-
-```python
-views = [R[:, :, p] for p in range(P)]
-with cg.capture(g):
-    for p in range(P):
-        einsums.einsum("ab <- ac ; cb", views[p], A, B)   # write each block
-    la.dot(out, R, W)                                     # read the parent
-g.set_executor(cg.OpenMPExecutor())                       # or DataflowExecutor
-g.execute()          # out != sum(R*W); Sequential and the default are correct here
-```
-
-`cg::view()` always set `TensorHandle::aliases`, but a view sliced *outside* a capture never goes through it: Python's capture-aware `__getitem__` falls through to the eager slice, and the view reaches the graph as an ordinary operand on first use with `aliases == 0`.
-That is exactly the pattern this port needs, because a captured view must outlive the graph.
-`Graph::link_alias_storage` now recovers the relationship from the registration-time data pointer and strides, in both directions (a parent is routinely registered after the views built from it), and reconstructs the view's box so disjoint slices still do not serialize.
-`examples/dlpno/repro_view_aliasing.py` is the standalone reproducer, and `ComputeGraph/tests/unit/View.cpp` carries the regression test.
-
-**`linalg.gemm` is invisible to `GEMMBatching`.**
-It captures as `OpKind::Gemm`, and the pass only groups `Einsum` nodes carrying a `gemm_hint`.
-Writing the obvious `linalg.gemm` instead of the equivalent `einsum` costs the whole optimization with nothing to indicate it.
-Either `gemm` should carry the hint, or the pass should grow a `Gemm` case.
-
-**Strided views cannot be captured.**
-`T[:, :, j::naocc]` works eagerly but raises `only step=1 slices are supported` under capture.
-That ruled out indexing the `{T_kj : k}` set directly and shaped the first (later abandoned) design around a transposed second copy of the amplitudes.
-
-**`np.asarray` on a tensor is F-contiguous.**
-So `.reshape(-1)` silently copies rather than viewing, which is easy to write by accident and hard to see: an early version of the DIIS here extrapolated into throwaway buffers and quietly degraded to unaccelerated Jacobi (48 iterations instead of 11) with no error anywhere.
-`ravel(order="F")` is the view; `mp2.py` asserts it.
+**DIIS runs on the host.**
+It is a solver detail over flattened buffers rather than tensor algebra, and with every pair in one contiguous store it needs no gathering at all, just a `ravel` view of `T_all`.
+It writes back into the same tensors the graphs already reference, so the replay picks the new values up.
+Folding the whole loop into one graph with a loop node is the obvious next step.
 
 ## What the chain shows and a fixed molecule cannot
 
-Every profile above is a compact molecule, where each occupied orbital's domain reaches most of the system and there is effectively one domain.
-`sweep_chain.py` lengthens a uniform water chain instead, and the phase that dominates changes.
-Single thread, cc-pVDZ, 2.9 A spacing:
+Every compact geometry has each occupied orbital's domain reaching most of the system, so none of them can show the property DLPNO exists for.
+`sweep_chain.py` lengthens a uniform water chain instead, and the kept fraction falls as it should:
 
-| phase | n=3 | n=5 | n=6 | share at n=6 |
-| --- | --- | --- | --- | --- |
-| `precompute_fits` | 0.11 s | 1.32 s | 2.47 s | 46% |
-| `lmp2_iterations` | 0.32 s | 0.93 s | 1.58 s | 30% |
-| `compute_pno_overlaps` | 0.04 s | 0.39 s | 0.58 s | 11% |
-| `pno_transform` | 0.08 s | 0.35 s | 0.58 s | 11% |
-| `compute_qia` | ~0.01 s | 0.03 s | 0.05 s | **1%** |
+| n | occupied | kept / total | fraction |
+| --- | --- | --- | --- |
+| 2 | 10 | 100 / 100 | 1.00 |
+| 3 | 15 | 225 / 225 | 1.00 |
+| 4 | 20 | 398 / 400 | 0.99 |
+| 5 | 25 | 587 / 625 | 0.94 |
+| 6 | 30 | 776 / 900 | 0.86 |
 
-`precompute_fits` grew 22x from n=3 to n=6 while the whole run grew 9x, and `compute_qia` - the phase that consumes the dense three-index integrals - is 1% of it.
-That contradicts the reasoning in "Next steps" below: on a compact molecule `(Q|mn)` is the largest item, but it is not the phase that gets structurally worse as the system extends.
-The port appeared to lose to psi4 around n=4 on this chain, having appeared 1.4x faster at n=2 - but see [Measuring against psi4 fairly](#measuring-against-psi4-fairly): those comparisons were not measuring the same work, and the real picture is different in both directions.
+psi4 drops exactly the same pairs at every length.
 
-### Most of that phase was solving for right-hand sides nobody reads
+The chain also found the port's worst scaling bug, which no fixed molecule would have.
 
-The numbers above are what the phase cost before this was found; the paragraphs that follow are what it cost afterwards, and the fix changes no computed quantity at all.
+**`precompute_fits` was solving for right-hand sides nobody reads.**
+It solves one set of fitting equations per distinct *pair* domain, sharing the factorization across every pair over that domain, and it did that by carrying **all `naocc`** right-hand-side blocks through each solve so any pair could find its own.
+Its only consumer reads exactly **one** of them.
 
-`precompute_fits` solves one set of fitting equations per distinct *pair* domain, sharing the factorization across every pair over that domain - and it does that by carrying **all `naocc`** right-hand-side blocks through the solve, so any pair over the domain can find its own.
-Its only consumer, `_pair_exchange(ij, i, j)`, reads exactly **one** of them: the `i` of the pair it is building.
+That is nearly free when one domain serves every pair, which is the unscreened case the phase was written in.
+Under screening the domains become nearly distinct per pair, and a domain is asked for 1.6 LMO blocks on average against `naocc`, which is 30 at n=6.
+The discarded fraction therefore grows with the system while the useful part does not, and the phase grew 22x from n=3 to n=6 where the whole run grew 9x.
 
-Whether that is nearly free or nearly all waste depends on how many pairs share a domain, and that is exactly what screening changes:
-
-| | ethanol/cc-pVTZ | chain n=3 | n=4 | n=5 | n=6 |
-| --- | --- | --- | --- | --- | --- |
-| `naocc` | 13 | 15 | 20 | 25 | 30 |
-| distinct pair domains | 23 | 36 | 88 | 138 | 189 |
-| LMO blocks a domain is asked for, mean | 2.8 | 1.9 | 1.5 | 1.5 | 1.6 |
-| solve GFLOP, all `naocc` | 9.1 | 1.6 | 9.2 | 24.1 | 45.9 |
-| solve GFLOP, only what is read | 2.9 | 0.3 | 1.0 | 2.0 | 3.3 |
-| gathered `(Q\|iu)` blocks | 107 MiB | 37 MiB | 183 MiB | 440 MiB | 799 MiB |
-| gathered, restricted | 27 MiB | 5 MiB | 14 MiB | 26 MiB | 40 MiB |
-
-The right-hand side carried is `naocc / 1.6` times the one read, so the discarded part grows with the system while the useful part does not.
-That, not the pair-domain granularity, is where the 22x came from.
-Note the ethanol column: even on a compact molecule the mean is 2.8 of 13, because screening splits its domains too.
-The regime where solving for every LMO is the right thing is the *unscreened* one, where there is a single domain and every pair over it asks for a different `i`, and that is the regime the phase was written in.
-
-Restricting the right-hand sides to the LMOs some pair will actually read (`DLPNOBase._fit_demand`) is a pure deletion of unread work - the surviving columns are the same numbers from the same factorization - and the correlation energies are unchanged to every digit printed, at every chain length and on ethanol/cc-pVTZ.
-Single thread, same machine:
+Restricting the right-hand sides to the LMOs some pair will actually read is a pure deletion of unread work, so the energies are unchanged to every digit:
 
 | | before | after | |
 | --- | --- | --- | --- |
 | ethanol/cc-pVTZ | 0.435 s | **0.123 s** | 3.5x |
-| chain n=3 | 0.101 s | **0.021 s** | 4.8x |
-| n=4 | 0.536 s | **0.057 s** | 9.4x |
-| n=5 | 1.435 s | **0.111 s** | 12.9x |
-| n=6 | 2.570 s | **0.170 s** | 15.1x |
+| chain n=6 | 2.570 s | **0.170 s** | **15x** |
 
-`precompute_fits` is now 5.7% of the n=6 run rather than 46%, and grows 9.3x from n=3 to n=6 against the whole run's 6.3x rather than 22x against 9x.
-The phase order at n=6 becomes `lmp2_iterations` 51%, `pno_transform` 20%, `compute_pno_overlaps` 20%, `precompute_fits` 6%, `compute_qia` 2%.
-For the comparison against psi4, which needed correcting before it meant anything, see [Measuring against psi4 fairly](#measuring-against-psi4-fairly).
-The next section takes `lmp2_iterations` apart, which is what that leaves on top.
+**psi4 also fits per pair domain**, which was an open question worth settling before considering anything more invasive.
+`dlpno.cc:1373` builds `A_solve = submatrix_rows_and_cols(*full_metric_, lmopair_to_ribfs_[ij], ...)` inside the pair loop, and `ccsd.cc:569`, `ccsd.cc:1506` and `triples.cc:724` do the same over pair and triplet domains.
+So fitting per LMO domain instead would be a change to the method rather than a return to psi4's choice, and the 1e-13 agreement on compact geometries would not survive it.
 
-### The residual was bound by GEMM calls, not by arithmetic
+## Gaps found in Einsums
 
-With the fits fixed, `lmp2_iterations` is half the chain run, and it does not thread: 1.05x from one core to ten, against psi4's whole-run 2.0x.
-Splitting it shows the coupling graph is 92% of an iteration and the serial Python around it (DIIS concatenate, the per-pair RMS loop) only 6%, so this is not the Amdahl story the setup phases had.
+This port has driven several einsums features.
+Check before assuming something is missing: `linalg.abs`, `scale`, `direct_product` and `element_transform` all capture, as do the pointer-writer `sum`, `max`, `dot`, `trace` and `norm` (the returning forms throw during capture by design).
 
-The graph issued **65,896 GEMM calls per iteration for 737 MFLOP** - 11,000 flops per call.
-That is 13.0 GFLOP/s on one thread where a well-sized GEMM does 53, and 19.2 threaded where a well-sized batch does 241.
-The blocks are that small because a chain's PNO buckets come out at 9/21/26/41 and most surviving pairs are distant with few PNOs: the commonest single shape is 9x9, 10,844 of the 32,948 couplings.
+**Gather and scatter by index list - ADDED.**
+Domain restriction is the fundamental operation in DLPNO, and einsums had no primitive for "take these rows and these columns", so every domain extraction ran eagerly on the host, uncapturable.
+`cg::gather` and `cg::scatter` now cover it.
+Note `gather` has no whole-axis wildcard: an empty index list selects nothing, because an empty domain silently becoming the full axis is a wrong answer rather than an error.
 
-Two things were wrong, one in the library and one here.
+The kernel behind them was worth a second look, and the answer was not the expected one.
+They share `detail::for_each_selection_run`, which hoists per-axis offsets into tables and collapses the common case - a whole axis spelled `range(n)` as the fastest axis, where the selection is a contiguous block - into one `copy_n`.
+That is 1.7x to 4.5x on the shapes this port issues.
+Worth stating plainly: the SIMD module looks like it should be the answer here and is not.
+`simd::gather` is a strided-lane load, not an index-list gather, and the psABI rung ladder is x86-only.
+What was left on the table was index arithmetic and a missed `memcpy`, and both fixes are scalar.
 
-**A vendor GEMM cannot be called concurrently.**
-`gemm_batch` parallelized the batch with OpenMP and called OpenBLAS `dgemm` per item, and OpenBLAS serializes inside each call, so the same 4000-element 9x9 batch cost 0.44 ms on one thread, 0.78 on two and 1.20 on ten.
-The OpenMP loop was not at fault: a hand-written kernel in the identical loop scales 5.4x over that range.
-`libs/Einsums/BLASVendor/src/gemm_batch.cpp` now runs batches whose every dimension is at most 16 on an inline kernel, gated on there being more than one thread, because on one thread the vendor GEMM is simply better.
-Worth 10% here, which is all it can be worth: only a third of the calls have every dimension small enough.
+**`gather` can permute axes as it moves - ADDED.**
+Selecting and reordering are both full passes over the result, and doing them separately means two.
+`axes[k]` names the destination axis that source axis `k` lands on.
+The traversal needed nothing: it already walks the destination through per-axis strides, and a permutation is a different set of them.
+On the residual's repack, 66 MiB over 16 gathers: 12.7 ms to 6.9 on one thread, 5.7 to 3.3 on ten.
+
+**`reshape_view` - ADDED.**
+Reshaping went through `linalg::reshape`, which copies.
+That is right when the shape cannot be addressed over the existing strides and wrong when it can, which is the common case: merging adjacent axes, or splitting one, over a tensor already contiguous across them.
+`reshape_view` returns a view when each new axis lands inside a run of old axes that abut, and throws when it does not rather than quietly copying.
+Without it the residual's restructure is not expressible: every operand there is a slice reinterpreted as a matrix, and `linalg.reshape` would have copied the whole intermediate twice per iteration.
+
+Two traps it exposed, both pinned in tests.
+The row-major flag is not usable for this - `infer_row_major()` reports true for any rank below 2, so the rank-1 view of a flattened column-major tensor claims to be row major and reshaping it back would transpose it - so the storage order comes off the strides instead.
+And slicing behaves opposite to intuition: `A[:, 0:4, :]` still merges its first two axes, because axis 0 stays whole and the slice is therefore the parent's first 36 elements in order, while `A[0:4, :, :]` does not.
+
+**Tiny batched GEMMs must not call the vendor - FIXED.**
+`gemm_batch` parallelized the batch with OpenMP and called OpenBLAS `dgemm` per item, and OpenBLAS serializes inside each call, so the same batch got *slower* as threads were added: 4000 9x9 doubles is 0.44 ms on one thread, 0.78 on two, 1.20 on ten.
+The OpenMP loop was not at fault - a hand-written kernel in the identical loop scales 5.4x over the same range.
+Batches whose every dimension is at most 16 now run on an inline kernel, gated on there being more than one thread, because on a single thread the vendor GEMM is simply the better kernel.
 OpenBLAS's own `cblas_dgemm_batch` was measured as the alternative and is 15x slower than the per-item loop.
 
-**The sum over a pair's couplings is a contraction, so it is one GEMM.**
-`R_ij = sum_c sign_c S_c T_c S_c^T` was a loop of `S T` products, a loop of `tmp S^T` products, and an accumulator tree to keep the second loop from serializing on `R_ij`.
-But `compute_pno_overlaps` already lays a pair's overlaps side by side in one `S_cat`, and if the `tmp_c` go into a `tmp_cat` with the same layout then the whole sum is `tmp_cat S_cat^T` - a single `(M, W) x (M, W)^T` GEMM per pair.
-The signs move to the first half's `alpha`, because `S` appears twice in the second and a sign folded there would square away.
+**In-place elementwise einsum against a lower-rank operand silently yielded zeros - FIXED.**
+`einsum("ab <- ab ; b", X, X, f)` was accepted by the aliasing guard, because the aliased operand's index list matches the output's, but returned zeros: both generic algorithms clear C before reading anything.
+The equal-rank `"ab <- ab ; ab"` was fine, which is what hid it.
+Regression tests in `ComputeGraph/tests/unit/EagerParityGaps.cpp`.
 
-That collapses the second half from 32,948 GEMMs to 776, and `_choose_width_groups` batches the 776 into 16 by padding each PNO bucket's pairs into four groups of similar total coupling width (padding to the bucket's widest costs 1.42x the flops; four groups cost 1.10x).
-The padding is inert rather than merely cheap: a padded column of `S_cat` is zero and so is its partner in `tmp_cat`.
-The accumulators and the reduction graph are gone with it - they existed only to break the dependency chain that a contraction does not have.
+**View/parent aliasing was not a graph dependency - FIXED.**
+A write through `R[:, :, p]` and a read of `R` were treated as touching unrelated tensors, so the scheduler could order them arbitrarily: wrong answers, no error.
+`cg::view()` always set `TensorHandle::aliases`, but a view sliced *outside* a capture never goes through it, and that is exactly the pattern this port needs, because a captured view must outlive the graph.
+`Graph::link_alias_storage` now recovers the relationship from the registration-time data pointer and strides.
+`repro_view_aliasing.py` is the standalone reproducer; `ComputeGraph/tests/unit/View.cpp` carries the regression test.
 
-One trap on the way. The two batched graphs must not be handed the default pass pipeline.
-They are already emitted in the form the passes would produce, and `apply` costs 445 ms on a 32-node graph whose nodes carry ~1000 operands each - more than the entire solve replays in - while removing exactly one node of 85.
-That is the same argument, and the same decision, `compute_pno_overlaps` already records.
+Still missing, in rough order of what this workload would pay for:
 
-Water chain n=6, `lmp2_iterations`, correlation energies unchanged to every printed digit at every length:
+1. **A batched GEMM taking a base tensor rather than a list of views.** The operands are uniform-stride blocks of one tensor, and building them in Python is 32,948 view constructions and roughly half of `compute_pno_overlaps`. The single biggest remaining item.
+2. **Concatenate / stack along an axis.** DIIS flattens every pair block into one vector and back; the dipole code stacks three components into an `(naocc, 3)`.
+3. **Strided views under capture.** `T[:, :, j::naocc]` works eagerly but raises `only step=1 slices are supported` under capture.
+4. **`linalg.gemm` is invisible to `GEMMBatching`.** It captures as `OpKind::Gemm`, and the pass only groups `Einsum` nodes carrying a `gemm_hint`.
+5. **Masked select.** `np.where` guards a divide-by-zero in the population split.
 
-| | 1 thread | 10 threads | scaling |
-| --- | --- | --- | --- |
-| before | 1.54 s | 1.50 s | 1.03x |
-| after | **0.97 s** | **0.72 s** | 1.35x |
-
-The whole n=6 run goes 2.98 -> 2.33 s on one thread and 2.45 -> 1.73 s on ten.
-For where that leaves the port against psi4, see [Measuring against psi4 fairly](#measuring-against-psi4-fairly).
-
-Where the chain stands after both fixes, replacing the table at the top of this section. Single thread, cc-pVDZ, 2.9 A spacing:
-
-| phase | n=3 | n=5 | n=6 | share at n=6 | was at n=6 |
-| --- | --- | --- | --- | --- | --- |
-| `lmp2_iterations` | 0.20 s | 0.60 s | 0.97 s | 41% | 1.58 s (30%) |
-| `pno_transform` | 0.09 s | 0.40 s | 0.65 s | 28% | 0.58 s (11%) |
-| `compute_pno_overlaps` | 0.05 s | 0.22 s | 0.37 s | 16% | 0.58 s (11%) |
-| `precompute_fits` | 0.02 s | 0.12 s | 0.19 s | 8% | **2.47 s (46%)** |
-| `compute_qia` | 0.01 s | 0.03 s | 0.07 s | 3% | 0.05 s (1%) |
-
-Nothing dominates any more, which is the useful part: the next thing to fix is no longer obvious from the profile, and `pno_transform` - untouched by either fix - has risen to second on share alone.
-
-`lmp2_iterations` is still the largest phase and still scales worst.
-The remaining ceiling is the *first* half, which is 63% of the replay and stays one GEMM per coupling because every coupling has its own `T`; collapsing it the same way needs the couplings grouped by partner rather than by pair, and the two groupings want incompatible layouts.
-Capture is now the other half of the phase (~300 ms of 970 at n=6), most of it 32,948 pybind slices and 32 batch emissions.
-
-### The pair-domain granularity itself, and what psi4 does
-
-The union structure this section originally blamed is real, and is still what remains after the fix:
-
-| n | distinct LMO domains | max `naux*npao` | distinct pair domains | max `naux*npao` |
-| --- | --- | --- | --- | --- |
-| 3 | 12 | 13132 | 36 | 16128 |
-| 5 | 20 | 13132 | 138 | 38640 |
-| 6 | 24 | 13132 | 189 | 52528 |
-
-LMO domains behave the way locality promises: their count grows linearly with the occupied space and each one's size is *constant*, because a domain around one orbital does not grow when the chain lengthens.
-Pair domains do neither. The count grows faster than the orbital count, and a distant pair's union is two disjoint blobs whose size grows with the separation.
-The memoization is not at fault and was checked: distinct solves by interned identity equal distinct solves by content at every length (36/36, 138/138, 189/189), so no cache hit is being missed.
-
-The restructure that suggests - solve per LMO domain, 24 bounded solves at n=6 against 189 growing ones, and assemble each pair from its two orbitals' fits - is now a much smaller prize, against a question that has since been answered:
-
-* **psi4 also fits per pair domain.** `dlpno.cc:1373` builds `A_solve = submatrix_rows_and_cols(*full_metric_, lmopair_to_ribfs_[ij], lmopair_to_ribfs_[ij])` and solves it inside the pair loop, and `ccsd.cc:569`, `ccsd.cc:1506` and `triples.cc:724` do the same over pair and triplet domains. So per-LMO fitting is a change to the method, not a return to psi4's choice, and the 1e-13 agreement on compact geometries would not survive it.
-* The union solve and two per-LMO solves are still *not* the same object: the metric over a union carries cross terms between the two auxiliary sets that neither single-domain metric has. Whether that difference sits below the truncation error is answerable cheaply by computing both for one pair, and remains unanswered.
-
-Worth noting that psi4 carries one right-hand-side block per solve and pays a factorization per pair, where the port now carries the ~1.6 blocks a domain is asked for and pays one factorization per domain.
-Those are the two ends of the same trade, and the port is on the better end of it at every size measured here.
-
-## Measuring against psi4 fairly
-
-`sweep_chain.py` printed a `t_port` and a `t_psi4` that were not measuring the same work, in two ways that both flattered the port.
-
-**psi4's number included an SCF.**
-It timed `psi4.energy("dlpno-mp2")`, which converges its own reference first, while the port was handed a converged one and timed only the correlation.
-At ten threads that SCF is **61-84% of psi4's timed region** on this chain, so the printed ratio was mostly a comparison of two SCFs.
-`ref_wfn=wfn` fixes it.
-
-**The port's number excluded its integral build.**
-`from_psi4` builds the dense `(Q|mn)` and ran before the clock started.
-That is work psi4 does too - screened, inside the run being timed - so leaving it out is the same bias pointing the other way. It does not thread, and it is 0.36 s at n=6.
-
-With both fixed, correlation only, medians of three on a quiet machine:
-
-| n | port, 1 thread | psi4 | | port, 10 threads | psi4 | |
-| --- | --- | --- | --- | --- | --- | --- |
-| 2 | 0.17 s | 0.12 | 0.7x | 0.22 s | 0.06 | **0.3x** |
-| 3 | 0.34 s | 0.34 | 1.0x | 0.31 s | 0.13 | **0.4x** |
-| 4 | 0.85 s | 0.78 | 0.9x | 0.69 s | 0.25 | **0.4x** |
-| 5 | 1.36 s | 1.31 | 1.0x | 1.13 s | 0.38 | **0.3x** |
-| 6 | 2.47 s | 2.29 | 0.9x | 1.85 s | 0.59 | **0.3x** |
-
-**Single-threaded the two are at parity**, with psi4 pulling slightly ahead as the chain grows.
-**Threaded, psi4 is 2.4-3x faster**, and has been throughout - the earlier claims in this file that the port led, and that the threaded deficit had closed, were measurement artifacts, not results.
-
-That does not undo the optimizations above; they moved the port's own numbers by the amounts recorded, and those were measured against the port itself. What it changes is the baseline they are measured *from*.
-The gap is threading: psi4 scales its whole correlation ~3.9x from one core to ten at n=6 where the port manages 1.3x, and the phases that do not thread - `pno_transform`, the DF integral build, the serial Python around the solver - are what is left.
-
-Two caveats on the psi4 side, both making its numbers slightly better than a like-for-like port would be:
-
-* Its DF integrals are domain-screened and the port's are dense. That is next-step 1, and it is a real algorithmic difference rather than an implementation one.
-* This psi4 is a Release build of 1.11a1.dev39 with the same OpenBLAS; the comparison is otherwise apples to apples on one machine, and the ratios are stable across runs while the absolute times move 10-15% with load.
+One numpy trap worth repeating: `np.asarray` on a tensor is F-contiguous, so `.reshape(-1)` silently copies rather than viewing.
+An early DIIS here extrapolated into throwaway buffers and quietly degraded to unaccelerated Jacobi, 48 iterations instead of 11, with no error anywhere.
+`ravel(order="F")` is the view, and `mp2.py` asserts it.
 
 ## Next steps
 
-1. **Screen the `(Q|mn)` build.** The largest single item on a compact molecule, 0.24 s - but see the chain measurements above, which show `compute_qia` at 2% of the n=6 run, so this is not the first thing to reach for. Needs an integral interface psi4 does not currently offer from Python: `MintsHelper.ao_eri` is dense, `DFHelper` is Schwarz-screened but metric-locked (`set_metric_pow` is in the header, not in the bindings), and the domain-screened builder DLPNO itself uses is private to the C++ class. Binding `set_metric_pow` is one line in `export_fock.cc` and would unlock the middle tier, worth ~1.9x on this phase.
-2. **Per-node capture cost.** The ~0.15 s serial setup tax is ~40% graph capture. Restructuring does *not* reach it - see below - so the lever is the per-node cost itself (~10 us here, against 1.85 us for a C++ caller) or moving the phase out of Python. `DESIGN-cpp-hybrid.md` sketches the latter.
+In the order the measurements above argue for.
 
-Three attempts at that tax were measured and rejected; the patches are under `parked/` so they are not re-derived.
-
-* **Batching `pno_transform` by domain group.** Node count 2977 -> 1075, capture -12 ms, execute +29 ms. Net loss. The padding is most of it - a group pads to its widest PNO count, and they run 5..92 - plus eight graph barriers needed because a store written through per-pair slices and then read whole is not reliably ordered.
-* **`declare_tensor` for the captured scratch.** Capture -30 ms, execute +26 ms: Materialization adds ~2651 lifecycle nodes whose scheduling costs back the allocation saving. Also settles the "allocation is overhead" theory - `create_zero_tensor` is 5.30 us for a 92x92 block against a 1.57 us empty-call floor, so most of it is the memset, which no allocator change avoids.
-* **Binding `cg::parallel_for`.** Not attempted after analysis. The body would be a Python callable on TaskPool workers; `execute()` has already released the GIL, so every iteration re-acquires it and the loop serializes - and it would run BLAS on `std::thread`, which the OpenMP-built OpenBLAS miscomputes. It is a C++-caller feature.
-
-The pattern across all three: moving work from capture into the graph costs about what it saves, because per-node graph overhead is comparable to the per-operation Python overhead it displaces.
-
-3. **Halve the residual's working set.** Both halves are now single GEMMs, at the price of holding the intermediate in two orders at once. That is the standing cost of the bipartite structure, and it is the thing to attack if this is pushed to larger systems - either by finding an ordering that serves both halves, or by repacking a class at a time so only one class is duplicated.
-4. **The transposed overlap copy** costs `compute_pno_overlaps` about 20%. It is a gather at setup, so it is cheap, but it is also 66 MiB that exists only because a GEMM cannot write transposed output.
-
-### The first half, collapsed too
-
-`tmp_c = S_c T_c` was one GEMM per coupling and 63% of the replay.
-It has the mirror-image structure of the second half: those couplings shared a *pair*, these share a *partner*, because many pairs couple through the same `T`.
-Grouping by partner and stacking their overlaps makes it one GEMM per partner - 32,948 down to 2,822 in 64 batches - and `S` is constant, so the partner-major copy is paid once.
-
-Two things fall out of column-major storage and are worth stating rather than rediscovering.
-A GEMM's output blocks are contiguous only when the *shared* operand is on the left; the shared operand here is `T`, so the products come out **transposed**.
-And the sign can no longer ride on the batch's `alpha`, because one batch now spans many pairs and the sign varies between them - it rides on the transposed copy of `S` instead, which is the one copy of the two the first half reads.
-
-**The two halves want opposite orderings and cannot both have them.**
-The couplings are a bipartite graph, so the intermediate is produced by partner and read by pair, and something has to move 66 MiB between them once per iteration.
-That is `_capture_repack`, one permuting gather per shape class - the reordering along the coupling axis and the transpose of the other two are the same pass.
-Written as two passes it is 12.7 ms serial and 5.7 threaded; as one, 6.9 and 3.3.
-
-This is what the two library primitives were added for, and neither is optional:
-
-* **`reshape_view`** (`RuntimeTensor::reshape_view`). Every operand here is a slice reinterpreted as a matrix - a phase-1 slice is `(M_p, M_b, n)` and the GEMM wants `(M_p, M_b * n)`; a phase-2 slice is `(M_p, n, M_b)` and the GEMM wants `(M_p * n, M_b)`. Both merges are free, the axes already abut, but `linalg.reshape` would have copied the whole intermediate twice an iteration to express them.
-* **`gather(..., axes=)`**. Without it the repack is a gather and then a permute, and the second pass costs as much as the first.
-
-Water chain n=6, medians on a loaded machine:
-
-| | 1 thread | 10 threads |
-| --- | --- | --- |
-| `lmp2_iterations` before | 0.99 s | 0.72 s |
-| after | **0.61 s** | **0.36 s** |
-| | 1.61x | 1.97x |
-| whole run before | 2.33 s | 1.73 s |
-| after | **1.94 s** | **1.35 s** |
-
-Correlation energies are unchanged to every printed digit on water, water-dimer and ethanol in cc-pVDZ and cc-pVTZ, at chain lengths 3 through 6, with and without DIIS, and across `n_buckets` and `n_width_groups` from 1 to 16.
-
-Two costs, both real.
-`compute_pno_overlaps` grew about 20%, from building the transposed copy and lifting it into partner order.
-And the intermediate is now held twice, so the residual's working set roughly doubles - which for a method whose selling point is scaling is the thing to watch if this is ever pushed to larger systems.
-
-The trap on the way was not the algebra. Building the transposed copy with a second GEMM per coupling needed 32,948 more output slices, at 20 us each: 0.65 s added to a phase that took 0.37 s. Lifting it with one gather per class instead - which needs `S` stored per class rather than per pair - is what made the restructure pay rather than break even. Two `O(classes x couplings)` Python loops did the same thing again, a third of a second each, and are worth watching for: there are 32,948 couplings and 16 classes, and the nesting reads naturally.
-
-Then, unchanged from before:
-
+1. **Move the serial layer off the host.** 73% of the threaded run is outside the graph and does not thread, and that is the ceiling on everything else. Either more of the work becomes graph nodes, or the phases move to C++; `DESIGN-cpp-hybrid.md` sketches the latter.
+2. **A base-tensor batched GEMM** (gap 1 above), the largest single piece of that serial layer and the one with a clear shape.
+3. **Screen the `(Q|mn)` build.** 2.5-8.4x depending on thread count, and algorithmic rather than overhead. psi4 does not expose the interface: `MintsHelper.ao_eri` is dense, `DFHelper` is Schwarz-screened but metric-locked (`set_metric_pow` is in the header, not the bindings), and the domain-screened builder DLPNO itself uses is private to the C++ class. Binding `set_metric_pow` is one line in `export_fock.cc` and would unlock the middle tier.
+4. **Halve the residual's working set.** Both halves are single GEMMs at the price of holding the intermediate in two orders at once. That is the standing cost of the bipartite structure, and the thing to attack before pushing to larger systems.
 5. **One graph for the whole iteration**, using a loop node, with DIIS either captured or hoisted.
 6. **DLPNO-CCSD** (`ccsd.cc`), which is where the graph work gets interesting: the residuals are much larger and the intermediates are shared across pairs.
 7. **DLPNO-(T)** (`triples.cc`).
+
+`bench_batching.py` has not run since bucketing landed - it reaches for `T_all` as a single store and that is now a list of one per bucket.
+Its conclusion, that padding only pays once a pass can exploit the uniformity, is superseded anyway: the residual no longer has a per-coupling form to compare against.
+
+Three attempts at the capture cost were measured and rejected; the patches are under `parked/` so they are not re-derived.
+
+* **Batching `pno_transform` by domain group.** Node count 2977 -> 1075, capture -12 ms, execute +29 ms. Net loss, mostly padding.
+* **`declare_tensor` for the captured scratch.** Capture -30 ms, execute +26 ms: Materialization adds ~2651 lifecycle nodes whose scheduling costs back the allocation saving. It also settles the "allocation is overhead" theory - `create_zero_tensor` is 5.30 us for a 92x92 block against a 1.57 us empty-call floor, so most of it is the memset, which no allocator change avoids.
+* **Binding `cg::parallel_for`.** Not attempted after analysis. The body would be a Python callable on TaskPool workers; `execute()` has already released the GIL, so every iteration re-acquires it and the loop serializes - and it would run BLAS on `std::thread`, which the OpenMP-built OpenBLAS miscomputes. It is a C++-caller feature.
