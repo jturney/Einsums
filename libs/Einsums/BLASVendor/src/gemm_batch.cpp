@@ -8,6 +8,8 @@
 #include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/Profile.hpp>
 
+#include <array>
+
 #include "Common.hpp"
 
 #ifdef _OPENMP
@@ -37,6 +39,106 @@ extern void FC_GLOBAL(zgemm, ZGEMM)(char *, char *, int_t *, int_t *, int_t *, s
                                     int_t *);
 }
 
+namespace {
+
+/// Largest dimension that the inline kernel below will take from the vendor GEMM.
+constexpr int_t small_gemm_dim = 16;
+
+template <typename T>
+constexpr bool is_complex_v = false;
+template <typename U>
+constexpr bool is_complex_v<std::complex<U>> = true;
+
+template <typename T>
+inline T conj_if(T v, bool conj) {
+    if constexpr (is_complex_v<T>) {
+        return conj ? std::conj(v) : v;
+    } else {
+        return v;
+    }
+}
+
+/// One tiny column-major GEMM, written so the innermost loop walks the unit-stride index.
+template <typename T>
+void small_gemm(char transa, char transb, int_t m, int_t n, int_t k, T alpha, T const *a, int_t lda, T const *b, int_t ldb, T beta, T *c,
+                int_t ldc) {
+    bool const ta = transa != 'N' && transa != 'n';
+    bool const tb = transb != 'N' && transb != 'n';
+    bool const ca = transa == 'C' || transa == 'c';
+    bool const cb = transb == 'C' || transb == 'c';
+
+    std::array<T, small_gemm_dim * small_gemm_dim> acc;
+    for (int_t j = 0; j < n; j++) {
+        T *cj = acc.data() + j * m;
+        for (int_t i = 0; i < m; i++) {
+            cj[i] = T{};
+        }
+        for (int_t p = 0; p < k; p++) {
+            T const bp = conj_if(tb ? b[j + p * ldb] : b[p + j * ldb], cb);
+            if (ta) {
+                for (int_t i = 0; i < m; i++) {
+                    cj[i] += conj_if(a[p + i * lda], ca) * bp;
+                }
+            } else {
+                T const *ap = a + p * lda;
+                for (int_t i = 0; i < m; i++) {
+                    cj[i] += ap[i] * bp;
+                }
+            }
+        }
+    }
+    // beta == 0 must not read C at all: BLAS lets the caller pass uninitialized memory.
+    if (beta == T{}) {
+        for (int_t j = 0; j < n; j++) {
+            for (int_t i = 0; i < m; i++) {
+                c[i + j * ldc] = alpha * acc[i + j * m];
+            }
+        }
+    } else {
+        for (int_t j = 0; j < n; j++) {
+            for (int_t i = 0; i < m; i++) {
+                c[i + j * ldc] = alpha * acc[i + j * m] + beta * c[i + j * ldc];
+            }
+        }
+    }
+}
+
+/// Should this batch run on the inline kernel rather than on the vendor GEMM?
+///
+/// Only when the loop below will actually be concurrent. A vendor GEMM beats the
+/// kernel on a single thread at every size - 0.11 us against 0.22 for 9x9 doubles
+/// here - because it is a better kernel. What it does not survive is being called
+/// concurrently: OpenBLAS serializes inside each call, so the same 4000-element
+/// 9x9 batch costs 0.44 ms on one thread and 1.04 ms on ten, while the kernel below
+/// shares nothing and goes 0.85 -> 0.21. The crossover against the vendor rises with
+/// the thread count (dim 10 at four threads, dim 16 at ten), so the cutoff is set
+/// where it holds for a wide team and left alone for a narrow one.
+inline bool use_small_gemm(int_t m, int_t n, int_t k) {
+#ifdef _OPENMP
+    return m <= small_gemm_dim && n <= small_gemm_dim && k <= small_gemm_dim && omp_get_max_threads() > 1;
+#else
+    return false;
+#endif
+}
+
+} // namespace
+
+#ifdef _OPENMP
+#    define EINSUMS_SMALL_GEMM_BATCH(TYPE)                                                                                                 \
+        if (use_small_gemm(m, n, k)) {                                                                                                     \
+            _Pragma(                                                                                                                       \
+                "omp parallel for schedule(static) firstprivate(transa, transb, m, n, k, alpha, lda, ldb, beta, ldc)") for (int_t i = 0;   \
+                                                                                                                            i <            \
+                                                                                                                            batch_count;   \
+                                                                                                                            i++) {         \
+                small_gemm<TYPE>(transa, transb, m, n, k, alpha, a_array[i], lda, b_array[i], ldb, beta, c_array[i], ldc);                 \
+            }                                                                                                                              \
+            return;                                                                                                                        \
+        }
+#else
+#    define EINSUMS_SMALL_GEMM_BATCH(TYPE)
+#endif
+
 // LAPACK's gemm takes its scalar arguments by pointer (Fortran ABI), so we pass
 // addresses of the function-locals. Without ``firstprivate``, every OMP worker
 // reads those addresses out of the caller's stack frame, which is fine while the
@@ -53,6 +155,8 @@ void sgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, float alph
     if (batch_count <= 0 || m == 0 || n == 0)
         return;
 
+    EINSUMS_SMALL_GEMM_BATCH(float)
+
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(dynamic) firstprivate(transa, transb, m, n, k, alpha, lda, ldb, beta, ldc)
 #endif
@@ -67,6 +171,8 @@ void dgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, double alp
     LabeledSection0();
     if (batch_count <= 0 || m == 0 || n == 0)
         return;
+
+    EINSUMS_SMALL_GEMM_BATCH(double)
 
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(dynamic) firstprivate(transa, transb, m, n, k, alpha, lda, ldb, beta, ldc)
@@ -84,6 +190,8 @@ void cgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, std::compl
     if (batch_count <= 0 || m == 0 || n == 0)
         return;
 
+    EINSUMS_SMALL_GEMM_BATCH(std::complex<float>)
+
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(dynamic) firstprivate(transa, transb, m, n, k, alpha, lda, ldb, beta, ldc)
 #endif
@@ -99,6 +207,8 @@ void zgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, std::compl
     LabeledSection0();
     if (batch_count <= 0 || m == 0 || n == 0)
         return;
+
+    EINSUMS_SMALL_GEMM_BATCH(std::complex<double>)
 
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(dynamic) firstprivate(transa, transb, m, n, k, alpha, lda, ldb, beta, ldc)
