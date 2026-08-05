@@ -140,6 +140,11 @@ Note the first row: padding *on its own* is a 2.2x loss, because it does real ex
 It only pays once the pass can exploit the uniformity, and then it wins.
 Bucketing pairs by PNO count would get the batching without the wasted flops, and is the obvious next refinement.
 
+Two caveats on this section, both later than the measurements in it.
+`bench_batching.py` has not run since bucketing landed - it reaches for `T_all` as a single store and that is now a list of one per bucket - so the table above is a record rather than something reproducible today.
+And the lesson in it needs qualifying: leaving the batching to the optimizer is right when the alternative is guessing a batch shape, but the second half of the residual is now *one GEMM per pair* by construction, and no pass can find that, because it is a change to which contraction is written rather than to how the contractions are grouped.
+See [The residual was bound by GEMM calls](#the-residual-was-bound-by-gemm-calls-not-by-arithmetic).
+
 ## Performance against psi4
 
 `bench_vs_psi4.py` runs psi4's native C++ DLPNO-MP2 in a subprocess and this port in process.
@@ -368,6 +373,64 @@ Single thread, same machine:
 `precompute_fits` is now 5.7% of the n=6 run rather than 46%, and grows 9.3x from n=3 to n=6 against the whole run's 6.3x rather than 22x against 9x.
 The phase order at n=6 becomes `lmp2_iterations` 51%, `pno_transform` 20%, `compute_pno_overlaps` 20%, `precompute_fits` 6%, `compute_qia` 2%.
 `sweep_chain.py` no longer shows the crossover: the port is ahead of psi4 at every length up to n=6 on one thread (3.23 s against 3.36 s at n=6, 1.69 against 2.10 at n=5), where before it fell behind at n=4.
+The next section takes `lmp2_iterations` apart, which is what that leaves on top.
+
+### The residual was bound by GEMM calls, not by arithmetic
+
+With the fits fixed, `lmp2_iterations` is half the chain run, and it does not thread: 1.05x from one core to ten, against psi4's whole-run 2.0x.
+Splitting it shows the coupling graph is 92% of an iteration and the serial Python around it (DIIS concatenate, the per-pair RMS loop) only 6%, so this is not the Amdahl story the setup phases had.
+
+The graph issued **65,896 GEMM calls per iteration for 737 MFLOP** - 11,000 flops per call.
+That is 13.0 GFLOP/s on one thread where a well-sized GEMM does 53, and 19.2 threaded where a well-sized batch does 241.
+The blocks are that small because a chain's PNO buckets come out at 9/21/26/41 and most surviving pairs are distant with few PNOs: the commonest single shape is 9x9, 10,844 of the 32,948 couplings.
+
+Two things were wrong, one in the library and one here.
+
+**A vendor GEMM cannot be called concurrently.**
+`gemm_batch` parallelized the batch with OpenMP and called OpenBLAS `dgemm` per item, and OpenBLAS serializes inside each call, so the same 4000-element 9x9 batch cost 0.44 ms on one thread, 0.78 on two and 1.20 on ten.
+The OpenMP loop was not at fault: a hand-written kernel in the identical loop scales 5.4x over that range.
+`libs/Einsums/BLASVendor/src/gemm_batch.cpp` now runs batches whose every dimension is at most 16 on an inline kernel, gated on there being more than one thread, because on one thread the vendor GEMM is simply better.
+Worth 10% here, which is all it can be worth: only a third of the calls have every dimension small enough.
+OpenBLAS's own `cblas_dgemm_batch` was measured as the alternative and is 15x slower than the per-item loop.
+
+**The sum over a pair's couplings is a contraction, so it is one GEMM.**
+`R_ij = sum_c sign_c S_c T_c S_c^T` was a loop of `S T` products, a loop of `tmp S^T` products, and an accumulator tree to keep the second loop from serializing on `R_ij`.
+But `compute_pno_overlaps` already lays a pair's overlaps side by side in one `S_cat`, and if the `tmp_c` go into a `tmp_cat` with the same layout then the whole sum is `tmp_cat S_cat^T` - a single `(M, W) x (M, W)^T` GEMM per pair.
+The signs move to the first half's `alpha`, because `S` appears twice in the second and a sign folded there would square away.
+
+That collapses the second half from 32,948 GEMMs to 776, and `_choose_width_groups` batches the 776 into 16 by padding each PNO bucket's pairs into four groups of similar total coupling width (padding to the bucket's widest costs 1.42x the flops; four groups cost 1.10x).
+The padding is inert rather than merely cheap: a padded column of `S_cat` is zero and so is its partner in `tmp_cat`.
+The accumulators and the reduction graph are gone with it - they existed only to break the dependency chain that a contraction does not have.
+
+One trap on the way. The two batched graphs must not be handed the default pass pipeline.
+They are already emitted in the form the passes would produce, and `apply` costs 445 ms on a 32-node graph whose nodes carry ~1000 operands each - more than the entire solve replays in - while removing exactly one node of 85.
+That is the same argument, and the same decision, `compute_pno_overlaps` already records.
+
+Water chain n=6, `lmp2_iterations`, correlation energies unchanged to every printed digit at every length:
+
+| | 1 thread | 10 threads | scaling |
+| --- | --- | --- | --- |
+| before | 1.54 s | 1.50 s | 1.03x |
+| after | **0.97 s** | **0.72 s** | 1.35x |
+
+The whole n=6 run goes 2.98 -> 2.33 s on one thread and 2.45 -> 1.73 s on ten.
+Against psi4 on a loaded machine (medians of three, and the load is why these are ranges): one thread 2.31 s against 4.04, ten threads 1.83 against 1.99 - so the 1.56x threaded deficit at n=6 is gone, and the single-thread lead widened.
+
+Where the chain stands after both fixes, replacing the table at the top of this section. Single thread, cc-pVDZ, 2.9 A spacing:
+
+| phase | n=3 | n=5 | n=6 | share at n=6 | was at n=6 |
+| --- | --- | --- | --- | --- | --- |
+| `lmp2_iterations` | 0.20 s | 0.60 s | 0.97 s | 41% | 1.58 s (30%) |
+| `pno_transform` | 0.09 s | 0.40 s | 0.65 s | 28% | 0.58 s (11%) |
+| `compute_pno_overlaps` | 0.05 s | 0.22 s | 0.37 s | 16% | 0.58 s (11%) |
+| `precompute_fits` | 0.02 s | 0.12 s | 0.19 s | 8% | **2.47 s (46%)** |
+| `compute_qia` | 0.01 s | 0.03 s | 0.07 s | 3% | 0.05 s (1%) |
+
+Nothing dominates any more, which is the useful part: the next thing to fix is no longer obvious from the profile, and `pno_transform` - untouched by either fix - has risen to second on share alone.
+
+`lmp2_iterations` is still the largest phase and still scales worst.
+The remaining ceiling is the *first* half, which is 63% of the replay and stays one GEMM per coupling because every coupling has its own `T`; collapsing it the same way needs the couplings grouped by partner rather than by pair, and the two groupings want incompatible layouts.
+Capture is now the other half of the phase (~300 ms of 970 at n=6), most of it 32,948 pybind slices and 32 batch emissions.
 
 ### The pair-domain granularity itself, and what psi4 does
 
@@ -404,8 +467,11 @@ Three attempts at that tax were measured and rejected; the patches are under `pa
 
 The pattern across all three: moving work from capture into the graph costs about what it saves, because per-node graph overhead is comparable to the per-operation Python overhead it displaces.
 
+3. **Collapse the residual's first half too.** `tmp_c = S_c T_c` is still one GEMM per coupling, and it is now 63% of the replay. The second half collapsed because a pair's couplings share nothing but the pair; the first half's operands are shared the other way round - many pairs couple through the same `T` - so it wants the couplings grouped by *partner*, stacking the `S_c` along rows into one tall GEMM per partner pair. That would take it from 32,948 GEMMs to 776 as well. The obstacle is layout: the first half's output would be grouped by partner and the second half needs it grouped by pair, and one of the two has to repack.
+4. **Capture cost in the residual**, now ~300 ms of `lmp2_iterations`' 970 at n=6, most of it 32,948 pybind slices building the coupling views. The same per-node-cost problem as item 2, in a phase where it is now a third of the total.
+
 Then, unchanged from before:
 
-3. **One graph for the whole iteration**, using a loop node, with DIIS either captured or hoisted.
-4. **DLPNO-CCSD** (`ccsd.cc`), which is where the graph work gets interesting: the residuals are much larger and the intermediates are shared across pairs.
-5. **DLPNO-(T)** (`triples.cc`).
+5. **One graph for the whole iteration**, using a loop node, with DIIS either captured or hoisted.
+6. **DLPNO-CCSD** (`ccsd.cc`), which is where the graph work gets interesting: the residuals are much larger and the intermediates are shared across pairs.
+7. **DLPNO-(T)** (`triples.cc`).

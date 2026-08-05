@@ -47,13 +47,14 @@ class Thresholds:
     #: cutting most of the waste. 1 reproduces a single padded store.
     n_buckets: int = 4
 
-    #: How many independent accumulators each pair's couplings are spread over.
-    #: A pair's couplings serialize when they share an accumulator, which caps
-    #: the batch at one coupling per pair per dependency level. Spreading them
-    #: over G accumulators cuts the levels by G and multiplies the batch by G,
-    #: paid for with G partial results to sum at the end. 1 reproduces direct
-    #: accumulation into the residual.
-    n_accumulators: int = 8
+    #: How many groups each PNO bucket's pairs are split into by the total width
+    #: of their concatenated couplings. The residual folds all of a pair's
+    #: couplings in one GEMM, and batching those across pairs needs them to agree
+    #: on that width, so it is padded to the group's widest. One group per bucket
+    #: is the fewest calls and the most padding (1.42x the flops at a six-monomer
+    #: water chain); four costs 1.10x for sixteen calls against 32948 in the
+    #: per-coupling form this replaced.
+    n_width_groups: int = 4
 
     # iterative solver
     maxiter: int = 50

@@ -163,20 +163,37 @@ class DLPNOMP2(DLPNOBase):
         # Where each coupling's block sits in its pair's output, and the
         # per-column sqrt prefactor. No partner blocks are concatenated: see
         # below.
-        self._S_cat, scale, offsets = {}, {}, {}
+        self._couplings, raw_width = {}, {}
         for ij, plist in enumerate(partners):
             if not plist:
                 continue
-            widths = [self.pair_dim(p) for p, _, _, _ in plist]
-            factors = np.empty(sum(widths))
-            offs, off = [], 0
-            for (_, _, _, factor), w in zip(plist, widths):
-                factors[off:off + w] = np.sqrt(abs(factor))
-                offs.append(off)
+            entries, off = [], 0
+            for (p, k, is_ik, factor) in plist:
+                w = self.pair_dim(p)
+                entries.append((p, k, is_ik, off, w, float(np.sign(factor))))
                 off += w
+            self._couplings[ij] = entries
+            raw_width[ij] = off
+
+        # The concatenation is padded to a width its whole group shares, so the
+        # residual's second half is one batched GEMM per group rather than one
+        # per coupling. See _choose_width_groups.
+        self._cat_groups = self._choose_width_groups(raw_width)
+        self._cat_width = {ij: width for width, members in self._cat_groups for ij in members}
+
+        self._S_cat, scale, offsets = {}, {}, {}
+        for ij, entries in self._couplings.items():
+            # Padding columns are allocated zero and never written, and they are
+            # what keeps the padded product exact: a zero column of S_cat meets a
+            # zero column of tmp_cat and contributes nothing. Their prefactor is
+            # therefore arbitrary; 1.0 keeps the scaling below a pure multiply.
+            factors = np.ones(self._cat_width[ij])
+            for (p, _, _, off, w, _), (_, _, _, factor) in zip(entries, partners[ij]):
+                factors[off:off + w] = np.sqrt(abs(factor))
             scale[ij] = factors
-            offsets[ij] = offs
-            self._S_cat[ij] = ten.zeros(f"S (cat) {ij}", [self.pair_dim(ij), sum(widths)])
+            offsets[ij] = [off for _, _, _, off, _, _ in entries]
+            self._S_cat[ij] = ten.zeros(f"S (cat) {ij}",
+                                        [self.pair_dim(ij), self._cat_width[ij]])
 
         half = {ij: ten.zeros(f"half {ij}", [self.pair_dim(ij), npao]) for ij in self._S_cat}
 
@@ -199,10 +216,12 @@ class DLPNOMP2(DLPNOBase):
         # form put them and the rest of the phase is unchanged. Sixteen groups
         # at four buckets, against 4056 couplings.
         # Each coupling's output block. Sliced once and reused, by the batch
-        # below and by the coupling map at the end: a slice is a pybind round
-        # trip building a fresh view object, and at 4056 couplings doing it
-        # twice costs more than the batch emission it feeds.
-        blocks, by_shape = {}, {}
+        # below, by the coupling map at the end, and every iteration afterwards
+        # by the residual: a slice is a pybind round trip building a fresh view
+        # object, and at 4056 couplings doing it twice costs more than the batch
+        # emission it feeds.
+        blocks = self._S_block = {}
+        by_shape = {}
         for ij, plist in enumerate(partners):
             for idx, ((p, _, _, _), off) in enumerate(zip(plist, offsets.get(ij, []))):
                 block = self._S_cat[ij][:, off:off + self.pair_dim(p)]
@@ -254,9 +273,48 @@ class DLPNOMP2(DLPNOBase):
 
         self._print(
             f"  overlaps: {sum(len(p) for p in partners)} couplings via "
-            f"{g.num_nodes()} nodes ({len(by_bucket) + len(by_shape)} captured)"
+            f"{g.num_nodes()} nodes ({len(by_bucket) + len(by_shape)} captured), "
+            f"{len(self._cat_groups)} width groups"
         )
         return self
+
+    def _choose_width_groups(self, raw_width):
+        """Partition the pairs into groups sharing one padded concatenation width.
+
+        The residual's second half is ``R_ij = sum_c sign_c tmp_c S_c^T``, and
+        summing over the couplings of a pair is a contraction, so the whole sum
+        is a single GEMM against the concatenated operands - ``(M, W) x (M, W)^T``
+        with ``W`` the pair's total coupling width. That turns 32948 GEMMs into
+        776 at a six-monomer water chain, which is the point: the residual issues
+        ~11000 flops per GEMM call, so it is bound by the per-call cost rather
+        than by arithmetic, and the only thing that helps is fewer calls.
+
+        Batching those 776 needs them to agree on ``m``, ``n`` and ``k``. The
+        first two come from the PNO bucket; ``k`` is ``W``, which no two pairs
+        need share, so it is padded. Padding every pair in a bucket to that
+        bucket's widest costs 1.42x the flops, because coupling counts inside one
+        bucket spread widely (258..983 columns in the smallest). Sorting by width
+        first and cutting each bucket into ``n_width_groups`` chunks costs 1.10x
+        at four, which buys back most of the padding for four times the calls -
+        16 in total, against 32948.
+
+        The padding is inert rather than merely cheap: a padded column of
+        ``S_cat`` is zero and so is its partner in ``tmp_cat``, so it contributes
+        nothing to any residual.
+        """
+        n_groups = max(1, int(self.cut.n_width_groups))
+        by_bucket = {}
+        for ij in raw_width:
+            by_bucket.setdefault(self.bucket_of[ij], []).append(ij)
+
+        groups = []
+        for members in by_bucket.values():
+            members.sort(key=lambda ij: raw_width[ij])
+            chunk = -(-len(members) // n_groups)
+            for start in range(0, len(members), chunk):
+                part = members[start:start + chunk]
+                groups.append((max(raw_width[ij] for ij in part), part))
+        return groups
 
     def _allocate_iteration_tensors(self):
         """Residuals, denominators, scratch, and the captured views."""
@@ -290,155 +348,109 @@ class DLPNOMP2(DLPNOBase):
                         for ij in range(P)]
         self._T_view = [self.pair_view(self.T_all, ij) if self.n_pno[ij] else None
                         for ij in range(P)]
-        # One scratch block per surviving (pair, k) coupling. Its shape is set
-        # by BOTH pairs' buckets: S(ij,kj) is (M_ij, M_kj). Sharing scratch
-        # across couplings would serialize contractions that are mutually
-        # independent, and independence at one dependency level is exactly what
-        # GEMMBatching groups on.
-        self._tmp_kj, self._tmp_ik = {}, {}
-        for ij, (i, j) in enumerate(self.ij_to_i_j):
-            if self.n_pno[ij] == 0:
-                continue
-            M_ij = self.pair_dim(ij)
-            for k in self.k_couple_kj[ij]:
-                M_p = self.pair_dim(int(self.i_j_to_ij[k, j]))
-                self._tmp_kj[ij, k] = ten.zeros(f"tmp_kj({ij},{k})", [M_ij, M_p])
-            for k in self.k_couple_ik[ij]:
-                M_p = self.pair_dim(int(self.i_j_to_ij[i, k]))
-                self._tmp_ik[ij, k] = ten.zeros(f"tmp_ik({ij},{k})", [M_ij, M_p])
-
-        # Partial accumulators. Coupling number c of a pair goes to accumulator
-        # c % G at dependency level c // G, so couplings sharing a level are
-        # independent even within one pair and the whole level batches together.
-        # Shape (M, M, n_pairs_in_bucket, G) keeps A[:, :, :, g] a contiguous
-        # rank-3 slice, which the final reduction needs (strided views cannot be
-        # captured).
-        self.n_acc = max(1, int(self.cut.n_accumulators))
-        self.A_all = [
-            ten.zeros(f"A (bucket {b}, dim {M})", [M, M, len(members), self.n_acc])
-            for b, (M, members) in enumerate(zip(self.bucket_dims, self.bucket_members))
-        ]
-        self._A_view = [
-            [self.A_all[self.bucket_of[ij]][:, :, self.slot_of[ij], g]
-             for g in range(self.n_acc)] if self.n_pno[ij] else None
-            for ij in range(P)
-        ]
-        self._A_slice = [[A[:, :, :, g] for g in range(self.n_acc)] for A in self.A_all]
+        # Scratch for the couplings, concatenated per pair in exactly the layout
+        # S_cat uses, so the second half of the residual can read it whole. Each
+        # coupling still gets its own block - they are written independently and
+        # sharing one would serialize contractions that are not related - but the
+        # blocks are column ranges of one buffer rather than separate tensors.
+        #
+        # The padding columns are allocated zero and nothing ever writes them,
+        # which is what makes the padded GEMM exact rather than approximately so.
+        self._tmp_cat = {
+            ij: ten.zeros(f"tmp (cat) {ij}", [self.pair_dim(ij), self._cat_width[ij]])
+            for ij in self._couplings
+        }
+        # Sliced once and kept: a slice is a pybind round trip building a fresh
+        # view, and a view handed to a captured op has to outlive the graph.
+        self._tmp_block = {
+            (ij, idx): self._tmp_cat[ij][:, off:off + w]
+            for ij, entries in self._couplings.items()
+            for idx, (_, _, _, off, w, _) in enumerate(entries)
+        }
 
         self.e_iter = ten.zeros("E(iteration)", [1])
         self._e_part = ten.zeros("E(part)", [1])
 
-    def _capture_residual(self):
-        """Graph: the local MP2 residual for every pair, plus the iteration energy.
+    def _capture_couplings(self):
+        """Graph: ``tmp_c = sign_c S_c T_c`` for every coupling, into ``tmp_cat``.
 
-        Everything elementwise over pairs is one rank-3 operation on the whole
-        store, so the prologue, the update and the energy cost a handful of
-        nodes regardless of how many pairs there are.
+        The first half of ``R_ij = sum_c sign_c S_c T_c S_c^T``. Every coupling
+        has its own ``T``, so this half stays one GEMM per coupling; what it does
+        not have to be is one graph *node* per coupling. Emitted as
+        ``cg.batched_gemm`` rather than one einsum each: ``GEMMBatching`` would
+        fuse the per-coupling form to the same thing, but only after the graph
+        has been built a node at a time, and capture costs ~38 us a node - 8112
+        nodes was 0.31 s of pure bookkeeping for a graph that ends up ~30 nodes
+        wide.
 
-        The Fock coupling stays a plain loop over (pair, k) of two 2D einsums,
-        which is what psi4 writes. Two details make that loop batchable, and
-        both are measured in ``bench_batching.py``:
-
-        * every block is padded to ``npno_max``, so all ``n_pairs * naocc``
-          coupling GEMMs share one shape and ``GEMMBatching`` collapses them
-          into a handful of ``gemm_batch`` calls;
-        * they are written with ``einsum``, not ``linalg.gemm``. A 2D x 2D -> 2D
-          einsum with one link index carries the ``gemm_hint`` the pass groups
-          on; ``linalg.gemm`` captures as ``OpKind::Gemm`` and the pass skips it.
-
-        Hand-stacking k into a batch axis here was measurably *worse* (2.1x
-        against 4.2x on the water dimer): it fixes the batch at one pair's worth
-        of k, where the pass batches across every pair and every k at once.
-
-        This graph contains ONLY the view-level accumulations. The prologue
-        (which writes ``R_all`` whole) and the energy (which reads it whole) are
-        separate graphs on purpose: the graph does not know that a write through
-        ``R_all[:, :, ij]`` touches ``R_all``, so mixing parent-level and
-        view-level access to one store in a single graph lets the scheduler
-        interleave them. It is not hypothetical -- with all three phases
-        captured together the energy dot landed at node 201 of 405, summing a
-        half-built residual and quietly returning a wrong correlation energy.
-        Graphs execute in the order they are replayed, so keeping each
-        granularity in its own graph is an explicit barrier.
+        Each product lands in its coupling's column range of the pair's
+        ``tmp_cat``, which is what lets :meth:`_capture_residual` read the whole
+        concatenation back as one operand. The sign rides on the batch's
+        ``alpha`` here rather than in the second half, because ``S`` appears
+        twice there and a sign folded into ``S`` would square away; grouping by
+        it splits each shape group in two, which costs nothing.
         """
-        work = self._coupling_work()
+        g = cg.Graph("lmp2 couplings")
+        with cg.capture(g):
+            groups = {}
+            for tmp, S, T, sign in self._coupling_work():
+                groups.setdefault((ten.shape(tmp), sign), []).append((S, T, tmp))
+            for (_, sign), members in groups.items():
+                cg.batched_gemm(sign, [S for S, _, _ in members], [T for _, T, _ in members],
+                                0.0, [tmp for _, _, tmp in members])
+        return g
+
+    def _capture_residual(self):
+        """Graph: fold every coupling into its pair's residual, one GEMM per pair.
+
+        The second half of ``R_ij = sum_c sign_c S_c T_c S_c^T``. The sum over a
+        pair's couplings is a contraction, so with the ``tmp_c`` and the ``S_c``
+        both concatenated along it the whole sum is a single ``(M, W) x (M, W)^T``
+        GEMM - not a loop of GEMMs and an accumulator tree.
+
+        That is the difference between being bound by arithmetic and being bound
+        by dispatch. The residual issues ~11000 flops per GEMM call, and a call
+        costs ~0.2 us however small it is, so the per-coupling form spent most of
+        its time entering and leaving the BLAS. This collapses 32948 of those
+        calls into 776 at a six-monomer water chain, and
+        :meth:`_choose_width_groups` batches the 776 into 16.
+
+        It also removes the partial accumulators the per-coupling form needed.
+        Those existed because a pair's couplings all wrote one residual and so
+        serialized; spreading them over ``G`` accumulators cut the dependency
+        depth by ``G`` at the cost of a reduction graph. A contraction has no
+        dependency depth, so both are gone.
+
+        Separate from :meth:`_capture_couplings` because it reads ``tmp_cat``
+        whole while that one writes single column ranges of it, and the graph
+        does not know a write through a view touches its parent. Separate from
+        the prologue (which writes ``R_all`` whole) and the energy (which reads
+        it whole) for the same reason, in the other direction. It is not
+        hypothetical -- with the phases captured together the energy dot landed
+        at node 201 of 405, summing a half-built residual and quietly returning a
+        wrong correlation energy. Graphs execute in the order they are replayed,
+        so keeping each granularity in its own graph is an explicit barrier.
+        """
         g = cg.Graph("lmp2 residual")
         with cg.capture(g):
-            # Phase 1: every S T product. Distinct scratch, depends only on T,
-            # so the whole lot is one dependency level.
-            #
-            # Emitted as cg.batched_gemm rather than one einsum per coupling.
-            # GEMMBatching would fuse the per-coupling form to the same thing,
-            # but only after the graph has been built one node at a time, and
-            # capture costs ~38 us a node: 8112 nodes was 0.31 s of pure
-            # bookkeeping for a graph that ends up ~30 nodes wide.
-            groups = {}
-            for _, tmp, S, T, _, _ in work:
-                groups.setdefault(ten.shape(tmp), []).append((S, T, tmp))
-            for members in groups.values():
-                cg.batched_gemm(1.0, [S for S, _, _ in members], [T for _, T, _ in members],
-                                0.0, [tmp for _, _, tmp in members])
-
-            # Phase 2: accumulate into the residuals, grouped by (level, sign)
-            # so members of a group write different accumulators, and by shape
-            # so one gemm_batch can take them. Level 0 assigns (beta = 0) and
-            # later levels accumulate, which also means the accumulators never
-            # need zeroing between iterations: every slot a pair uses is
-            # overwritten at level 0, and slots it never uses stay at their
-            # allocated zero.
-            by_key = {}
-            for level, tmp, S, _, target, sign in work:
-                key = (level, sign, ten.shape(tmp), ten.shape(target))
-                by_key.setdefault(key, []).append((tmp, S, target))
-            for key in sorted(by_key):
-                level, sign = key[0], key[1]
-                members = by_key[key]
-                cg.batched_gemm(sign, [tmp for tmp, _, _ in members], [S for _, S, _ in members],
-                                0.0 if level == 0 else 1.0,
-                                [t for _, _, t in members], trans_b=True)
+            # beta = 1: the prologue has already put K + D T in R.
+            for _, members in self._cat_groups:
+                cg.batched_gemm(1.0, [self._tmp_cat[ij] for ij in members],
+                                [self._S_cat[ij] for ij in members],
+                                1.0, [self._R_view[ij] for ij in members], trans_b=True)
         return g
 
     def _coupling_work(self):
-        """Every coupling as ``(level, tmp, S, T, target, sign)``.
+        """Every coupling as ``(tmp block, S block, T view, sign)``.
 
-        ``level`` is ``c // G`` for the pair's ``c``-th coupling, and the target
-        is accumulator ``c % G``. Two couplings share a target only when they
-        share a pair *and* their levels differ, so everything at one level is
-        mutually independent and batches as a unit. That is the whole point: with
-        a single accumulator a pair's couplings serialize, capping the batch at
-        one per pair per level.
+        The tmp and S blocks are the same column range of their pair's two
+        concatenations, which is what lets :meth:`_capture_residual` contract the
+        pair of them whole.
         """
-        work = []
-        for ij, (i, j) in enumerate(self.ij_to_i_j):
-            if self.n_pno[ij] == 0:
-                continue
-            c = 0
-            for k, sign in self.k_couple_kj[ij].items():
-                work.append((c // self.n_acc, self._tmp_kj[ij, k], self.S_pno_ij_kj[ij, k],
-                             self._T_view[int(self.i_j_to_ij[k, j])],
-                             self._A_view[ij][c % self.n_acc], sign))
-                c += 1
-            for k, sign in self.k_couple_ik[ij].items():
-                work.append((c // self.n_acc, self._tmp_ik[ij, k], self.S_pno_ij_ik[ij, k],
-                             self._T_view[int(self.i_j_to_ij[i, k])],
-                             self._A_view[ij][c % self.n_acc], sign))
-                c += 1
-        return work
-
-    def _capture_reduce(self):
-        """Graph: fold the partial accumulators into the residual.
-
-        ``G`` rank-3 axpby nodes per bucket, independent of how many pairs or
-        couplings there are. Separate from the coupling graph because it reads
-        ``A`` whole while the couplings write single blocks of it, and the graph
-        does not order view writes against parent reads.
-        """
-        g = cg.Graph("lmp2 coupling reduction")
-        with cg.capture(g):
-            for slices, R in zip(self._A_slice, self.R_all):
-                for A_g in slices:
-                    la.axpby(1.0, A_g, 1.0, R)
-        return g
+        return [(self._tmp_block[ij, idx], self._S_block[ij, idx],
+                 self._T_view[partner], sign)
+                for ij, entries in self._couplings.items()
+                for idx, (partner, _, _, _, _, sign) in enumerate(entries)]
 
     def _capture_prologue(self):
         """Graph: ``R = K + (e_a + e_b - F_ii - F_jj) T`` for every pair, in two nodes."""
@@ -516,29 +528,40 @@ class DLPNOMP2(DLPNOBase):
         self._allocate_iteration_tensors()
 
         g_prologue = self._capture_prologue()
+        g_couple = self._capture_couplings()
         g_residual = self._capture_residual()
-        g_reduce = self._capture_reduce()
         g_energy = self._capture_energy()
         g_step = self._capture_step()
         g_tt = self._capture_antisymmetrize()
-        graphs = [g_prologue, g_residual, g_reduce, g_energy, g_step, g_tt]
+        graphs = [g_prologue, g_couple, g_residual, g_energy, g_step, g_tt]
 
         self._print(
             "\n  ==> Local MP2 <==\n"
             f"    captured {sum(g.num_nodes() for g in graphs)} nodes in "
             f"{len(graphs)} graphs (prologue {g_prologue.num_nodes()}, "
-            f"coupling {g_residual.num_nodes()}, reduce {g_reduce.num_nodes()}, "
+            f"coupling {g_couple.num_nodes()}, residual {g_residual.num_nodes()}, "
             f"energy {g_energy.num_nodes()}, "
             f"step {g_step.num_nodes()}, Tt {g_tt.num_nodes()})"
         )
         if optimize:
+            # Not the two batched graphs. They are emitted in the form the
+            # passes would produce - the batches are already fused and there is
+            # nothing to share between them - so applying the pipeline is pure
+            # cost, and the cost scales with the batch rather than the node
+            # count: 445 ms on a 32-node coupling graph whose nodes carry ~1000
+            # operands each, against a replay of 324 ms for the whole solve.
+            # It buys nothing measurable either, the two graphs being 48 of the
+            # 85 nodes and the whole pipeline removing exactly one of them.
+            # Same argument, and the same decision, as compute_pno_overlaps.
+            batched = {id(g_couple), id(g_residual)}
+            targets = [g for g in graphs if id(g) not in batched]
             pm = self.pass_manager()
-            before = sum(g.num_nodes() for g in graphs)
-            for g in graphs:
+            before = sum(g.num_nodes() for g in targets)
+            for g in targets:
                 g.apply(pm)
             self._print(
-                f"    optimization: {pm.size} passes, nodes "
-                f"{before} -> {sum(g.num_nodes() for g in graphs)}"
+                f"    optimization: {pm.size} passes on {len(targets)} graphs, "
+                f"nodes {before} -> {sum(g.num_nodes() for g in targets)}"
             )
 
         self.t_capture = _time.perf_counter() - _t0
@@ -554,8 +577,8 @@ class DLPNOMP2(DLPNOBase):
         e_curr = e_prev = 0.0
         for iteration in range(self.cut.maxiter + 1):
             g_prologue.execute()
+            g_couple.execute()
             g_residual.execute()
-            g_reduce.execute()
             g_energy.execute()
             e_prev, e_curr = e_curr, float(ten.view(self.e_iter)[0])
             # Max RMS over the pairs, on each pair's logical block: the padding
