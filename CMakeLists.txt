@@ -468,11 +468,6 @@ einsums_option(
 
 # Debugging related build options
 einsums_option(
-  EINSUMS_WITH_VALGRIND BOOL "Enable Valgrind instrumentation support." OFF CATEGORY "Debugging"
-                                                                                     ADVANCED
-)
-
-einsums_option(
   EINSUMS_WITH_TESTS_VALGRIND BOOL "Run selected tests with valgrind." OFF CATEGORY "Debugging"
                                                                                     ADVANCED
 )
