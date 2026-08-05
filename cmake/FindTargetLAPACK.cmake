@@ -126,6 +126,29 @@ else()
       endif()
 
     endif()
+
+    # The VENDOR set above is BLA_VENDOR, which records what the search asked
+    # for rather than what it found. They diverge on Windows: find_package(MKL
+    # CONFIG) is skipped under MSVC, the OpenBLAS and Generic passes then fail,
+    # and the "All" pass succeeds against MKL while reporting "All". Consumers
+    # keyed on the vendor silently take the wrong branch - EINSUMS_HAVE_MKL is
+    # never defined, so MKL's xerbla is not routed into our logger, and the FFT
+    # default falls back to fftw3 on a build that links MKL. Re-derive it from
+    # the libraries actually resolved, matching how the LAPACK_LIBRARIES branch
+    # at the top of this file names the vendor.
+    if(TARGET tgt::lapack)
+      foreach(_l IN LISTS LAPACK_LIBRARIES BLAS_LIBRARIES)
+        get_filename_component(_lname "${_l}" NAME)
+        if(_lname MATCHES "[mM][kK][lL]")
+          set_property(TARGET tgt::lapack PROPERTY VENDOR "MKL")
+          break()
+        elseif(_lname MATCHES "[oO][pP][eE][nN][bB][lL][aA][sS]")
+          set_property(TARGET tgt::lapack PROPERTY VENDOR "OpenBLAS")
+          break()
+        endif()
+      endforeach()
+    endif()
+
     if(NOT ${PN}_FIND_QUIETLY)
       message(STATUS "LAPACK detected.")
     endif()
