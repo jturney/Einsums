@@ -29,6 +29,15 @@ PYTHONPATH=/path/to/Einsums/build/lib:/path/to/psi4/cmake-build-debug/stage/lib 
 
 Useful flags: `--basis`, `--localization {BOYS,PIPEK_MEZEY}`, `--t-cut-pno`, `--buckets`, `--threads`, `--no-optimize` (skip the graph passes), `--no-diis`.
 
+Two scripts sweep rather than run a single geometry:
+
+```bash
+# pair screening through the separation where it decides something
+python examples/dlpno/sweep_separation.py --distances 2.9 4.0 6.0 8.0 12.0
+# the locality claim itself: pairs grow as n^2, kept pairs should not
+python examples/dlpno/sweep_chain.py --lengths 2 3 4 5 6
+```
+
 Note `--threads`: importing psi4 clamps the process-wide OpenMP thread count to 1, so einsums runs serial unless it is set, and `OMP_NUM_THREADS` alone will not do it.
 The scripts are not wired into CTest or pytest, since they need a psi4 install.
 
@@ -285,9 +294,47 @@ That ruled out indexing the `{T_kj : k}` set directly and shaped the first (late
 So `.reshape(-1)` silently copies rather than viewing, which is easy to write by accident and hard to see: an early version of the DIIS here extrapolated into throwaway buffers and quietly degraded to unaccelerated Jacobi (48 iterations instead of 11) with no error anywhere.
 `ravel(order="F")` is the view; `mp2.py` asserts it.
 
+## What the chain shows and a fixed molecule cannot
+
+Every profile above is a compact molecule, where each occupied orbital's domain reaches most of the system and there is effectively one domain.
+`sweep_chain.py` lengthens a uniform water chain instead, and the phase that dominates changes.
+Single thread, cc-pVDZ, 2.9 A spacing:
+
+| phase | n=3 | n=5 | n=6 | share at n=6 |
+| --- | --- | --- | --- | --- |
+| `precompute_fits` | 0.11 s | 1.32 s | 2.47 s | 46% |
+| `lmp2_iterations` | 0.32 s | 0.93 s | 1.58 s | 30% |
+| `compute_pno_overlaps` | 0.04 s | 0.39 s | 0.58 s | 11% |
+| `pno_transform` | 0.08 s | 0.35 s | 0.58 s | 11% |
+| `compute_qia` | ~0.01 s | 0.03 s | 0.05 s | **1%** |
+
+`precompute_fits` grew 22x from n=3 to n=6 while the whole run grew 9x, and `compute_qia` - the phase that consumes the dense three-index integrals - is 1% of it.
+That contradicts the reasoning in "Next steps" below: on a compact molecule `(Q|mn)` is the largest item, but it is not the phase that gets structurally worse as the system extends.
+The port also loses to psi4 somewhere around n=4 on this chain, having been 1.4x faster at n=2, so this is the phase that costs the lead.
+
+**The cause is the granularity of the fit, not the integrals.**
+`precompute_fits` solves one set of fitting equations per distinct *pair* domain, and a pair domain is the union of two LMO domains:
+
+| n | distinct LMO domains | max `naux*npao` | distinct pair domains | max `naux*npao` |
+| --- | --- | --- | --- | --- |
+| 3 | 12 | 13132 | 36 | 16128 |
+| 5 | 20 | 13132 | 138 | 38640 |
+| 6 | 24 | 13132 | 189 | 52528 |
+
+LMO domains behave the way locality promises: their count grows linearly with the occupied space and each one's size is *constant*, because a domain around one orbital does not grow when the chain lengthens.
+Pair domains do neither. The count grows faster than the orbital count, and a distant pair's union is two disjoint blobs whose size grows with the separation, so `precompute_fits` pays both growths at once.
+The memoization is not at fault and was checked: distinct solves by interned identity equal distinct solves by content at every length (36/36, 138/138, 189/189), so no cache hit is being missed.
+
+**The restructure this suggests** is to solve the fitting equations per LMO domain - 24 solves of bounded size at n=6, against 189 of growing size - and assemble each pair's quantities from its two orbitals' fits.
+
+Two things are unresolved and should be settled before anyone builds it:
+
+* The union solve and two per-LMO solves are *not* algebraically the same object. The metric over a union carries cross terms between the two auxiliary sets that neither single-domain metric has, so this is a change to which fit is computed, not merely where. Whether the difference is below the truncation error is the question, and it is answerable cheaply by computing both for one pair.
+* psi4's own granularity was never checked. The two agree to 1e-13 on compact geometries, which means they compute the same quantity *there*; whether that is because psi4 also fits per pair domain, or because the formulations coincide when there is only one domain, decides whether per-LMO fitting is a correctness change or a return to psi4's own choice.
+
 ## Next steps
 
-1. **Screen the `(Q|mn)` build.** The largest single item left, 0.24 s, and the only one that gets structurally worse with system size. Needs an integral interface psi4 does not currently offer from Python: `MintsHelper.ao_eri` is dense, `DFHelper` is Schwarz-screened but metric-locked (`set_metric_pow` is in the header, not in the bindings), and the domain-screened builder DLPNO itself uses is private to the C++ class. Binding `set_metric_pow` is one line in `export_fock.cc` and would unlock the middle tier, worth ~1.9x on this phase.
+1. **Screen the `(Q|mn)` build.** The largest single item on a compact molecule, 0.24 s - but see the chain measurements above, which show `compute_qia` at 1% and `precompute_fits` at 46% once the system extends, so this is no longer the first thing to reach for. Needs an integral interface psi4 does not currently offer from Python: `MintsHelper.ao_eri` is dense, `DFHelper` is Schwarz-screened but metric-locked (`set_metric_pow` is in the header, not in the bindings), and the domain-screened builder DLPNO itself uses is private to the C++ class. Binding `set_metric_pow` is one line in `export_fock.cc` and would unlock the middle tier, worth ~1.9x on this phase.
 2. **Per-node capture cost.** The ~0.15 s serial setup tax is ~40% graph capture. Restructuring does *not* reach it - see below - so the lever is the per-node cost itself (~10 us here, against 1.85 us for a C++ caller) or moving the phase out of Python. `DESIGN-cpp-hybrid.md` sketches the latter.
 
 Three attempts at that tax were measured and rejected; the patches are under `parked/` so they are not re-derived.
