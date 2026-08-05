@@ -38,6 +38,14 @@ TEST_CASE("blas thread control takes effect where the vendor supports it", "[bla
     // to actually land, otherwise TaskPool workers would still be dispatching
     // multi-threaded BLAS and this whole mechanism would be decorative. On
     // every other vendor the reader returns 0 and there is nothing to check.
+#if defined(EINSUMS_TEST_BLAS_IS_MKL)
+    // This build linked MKL, the one vendor whose threads the OpenMP ICVs do
+    // not reach, so the symbol lookup failing is a real failure rather than an
+    // absent feature. Asserted here because the skip below would otherwise let
+    // a silently inert mechanism report success.
+    REQUIRE(einsums::blas::has_per_thread_control());
+#endif
+
     if (!einsums::blas::has_per_thread_control()) {
         SUCCEED("linked BLAS exposes no per-thread control; nothing to verify");
         return;

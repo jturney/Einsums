@@ -7,6 +7,14 @@
 
 #if defined(_WIN32)
 #    include <windows.h>
+
+// windows.h is kept in its own block above because psapi.h needs its types;
+// the blank line is what stops clang-format sorting the two together.
+// K32EnumProcessModules is exported by kernel32, so despite being declared in
+// psapi.h it needs no psapi.lib.
+#    include <algorithm>
+#    include <iterator>
+#    include <psapi.h>
 #else
 #    include <dlfcn.h>
 #endif
@@ -27,17 +35,22 @@ using MklGetMaxThreads = int (*)();
 /// fails and the caller falls back to doing nothing.
 void *find_loaded_symbol(char const *name) {
 #if defined(_WIN32)
-    // No RTLD_DEFAULT equivalent, so walk the handful of module names the
-    // vendors ship under. GetModuleHandle only succeeds for already-loaded
-    // modules, which is the intent - it never triggers a load. The null handle
-    // covers a statically linked vendor.
-    static char const *const modules[] = {nullptr, "mkl_rt.2.dll", "mkl_rt.1.dll", "mkl_rt.dll", "mkl_core.2.dll", "mkl_core.dll"};
-    for (char const *module : modules) {
-        HMODULE const handle = GetModuleHandleA(module);
-        if (handle == nullptr) {
-            continue;
-        }
-        if (FARPROC const symbol = GetProcAddress(handle, name)) {
+    // Windows has no RTLD_DEFAULT, so walk what is loaded and ask each module.
+    // Enumerating beats naming the DLLs directly: MKL alone ships the symbol
+    // under mkl_rt or one of the layered mkl_core / mkl_intel_thread modules
+    // depending on how it was linked, each with its own version suffix, and a
+    // list of guesses silently degrades to a no-op the day one of them is
+    // renamed. Nothing is loaded on our behalf - a vendor that is not already
+    // in the process simply is not found.
+    HMODULE      modules[512];
+    DWORD        needed = 0;
+    HANDLE const self   = GetCurrentProcess();
+    if (K32EnumProcessModules(self, modules, static_cast<DWORD>(sizeof(modules)), &needed) == 0) {
+        return nullptr;
+    }
+    DWORD const count = (std::min)(static_cast<DWORD>(needed / sizeof(HMODULE)), static_cast<DWORD>(std::size(modules)));
+    for (DWORD i = 0; i < count; ++i) {
+        if (FARPROC const symbol = GetProcAddress(modules[i], name)) {
             // FARPROC -> object pointer needs the trip through void(*)().
             return reinterpret_cast<void *>(symbol);
         }

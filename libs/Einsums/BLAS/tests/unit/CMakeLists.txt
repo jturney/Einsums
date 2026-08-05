@@ -21,3 +21,15 @@ foreach(test ${BLASTests})
 
   einsums_add_unit_test("Modules.BLAS" ${TestName})
 endforeach()
+
+# Tell the test which vendor it is linked against. Without this the thread
+# control test passes either way - when MKL's per-thread setter resolves, and
+# when it is not found and the test skips itself - so a green run would say
+# nothing about whether the mechanism works on the one platform that needs it.
+# FindTargetLAPACK records the vendor it settled on.
+if(TARGET tgt::lapack)
+  get_target_property(_einsums_blas_vendor tgt::lapack VENDOR)
+  if(_einsums_blas_vendor STREQUAL "MKL")
+    target_compile_definitions(ThreadControl_test PRIVATE EINSUMS_TEST_BLAS_IS_MKL)
+  endif()
+endif()
