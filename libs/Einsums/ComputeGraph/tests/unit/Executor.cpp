@@ -1173,6 +1173,20 @@ TEST_CASE("Graph - to_json is safe against concurrent graph mutation", "[Compute
         }
     });
 
+    // Let the poller complete one read before mutating. The check at the end is
+    // meant to confirm the race was exercised, but without this wait it really
+    // asserts a scheduling outcome: where threads are serialized rather than
+    // run in parallel - under valgrind, or on a single core - the loop below
+    // can finish before the poller is first scheduled, leaving polls at zero
+    // and failing a test that found nothing wrong. Bounded, so a poller that
+    // never runs still fails the check rather than hanging here.
+    {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (polls.load(std::memory_order_relaxed) == 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+    }
+
     // Grow and re-sort the graph while the poller reads it. add_node reallocates
     // _nodes; topological_sort moves it wholesale -- both raced with to_json.
     constexpr int iters = 2000;
