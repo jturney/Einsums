@@ -36,3 +36,8 @@ foreach(test ${ConfigTests})
     "Modules.Config" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS}
   )
 endforeach()
+
+# Two copies of one library in one process: the loader-behaviour reproduction
+# the sealed-worlds symbol isolation depends on. Self-contained, links no
+# Einsums except in the test driver.
+add_subdirectory(two_worlds)

@@ -1,0 +1,18 @@
+# Version script for miniworld_b.
+#
+# Two copies of this library export the same symbol NAMES. Without a version,
+# the first one to reach the global lookup scope answers for both, and a
+# consumer linked against the other silently calls into it. Tagging the symbols
+# makes the reference a consumer records ("miniworld_value@MINIWORLD_B_1")
+# specific enough that the dynamic linker rejects the wrong copy and keeps
+# searching.
+#
+# This is the same mechanism libEinsums itself will use; here it is small
+# enough to build twice and prove.
+MINIWORLD_B_1 {
+  global:
+    miniworld_value;
+    miniworld_identity;
+  local:
+    *;
+};
