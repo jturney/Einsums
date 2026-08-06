@@ -52,7 +52,31 @@ python examples/dlpno/sweep_chain.py --lengths 2 3 4 5 6
 ```
 
 Note `--threads`: importing psi4 clamps the process-wide OpenMP thread count to 1, so einsums runs serial unless it is set, and `OMP_NUM_THREADS` alone will not do it.
-The scripts are not wired into CTest or pytest, since they need a psi4 install.
+The scripts above are not wired into CTest or pytest, since they need a psi4 install.
+
+### Running without psi4
+
+A converged reference can be frozen to a `.npz` fixture on a machine that has psi4, then replayed anywhere:
+
+```bash
+# once, with psi4 importable
+python examples/dlpno/dump_reference.py --molecule water --basis cc-pvdz \
+    --out examples/dlpno/fixtures/water-ccpvdz.npz
+
+# thereafter, einsums only
+PYTHONPATH=/path/to/Einsums/build/lib \
+    python examples/dlpno/run_pno_mp2_offline.py examples/dlpno/fixtures/water-ccpvdz.npz
+```
+
+`dump_reference.py` records psi4's own DF-MP2 and DLPNO-MP2 correlation energies inside the file, so the replay checks itself against them to the same tolerances `run_pno_mp2.py` uses.
+`fixtures/water-ccpvdz.npz` is checked in at 0.21 MiB; regenerate rather than commit anything much larger, since the file scales as the DFT grid (the water dimer is 2.7 MiB).
+
+This is a **smoke test, not a validation**: the reference is frozen, so it cannot catch a change anywhere upstream of `Reference` - a different localization, a different auxiliary basis, a psi4 change in the integrals.
+Those still need `run_pno_mp2.py`.
+What it does catch is any change in the port itself, end to end, on a machine with no quantum chemistry program installed.
+
+A FCIDUMP would not have served: it carries MO-basis `h_pq`, `(pq|rs)` and the nuclear repulsion, while `Reference` is AO-basis throughout and also carries the auxiliary metric, the raw three-index integrals, the atom-to-basis maps the domain construction keys off, and the DFT grid the differential overlap integrals are quadratured on.
+`dlpno/reference_io.py` writes all of it as flat numpy arrays with no pickling; `test_reference_io.py` round-trips it and imports neither psi4 nor einsums.
 
 ## What is validated
 

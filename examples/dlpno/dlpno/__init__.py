@@ -16,14 +16,36 @@ this package                 psi4
 ``mp2.py``                   ``dlpno/mp2.cc``     (class ``DLPNOMP2``)
 ===========================  ==========================================
 
-``reference.py`` and ``psi4_source.py`` have no psi4 counterpart: they define
-the psi4-free data contract the port starts from and the one adapter that fills
-it in, so nothing else here knows psi4 exists.
+``reference.py``, ``reference_io.py`` and ``psi4_source.py`` have no psi4
+counterpart: they define the psi4-free data contract the port starts from, its
+on-disk form, and the one adapter that fills it in, so nothing else here knows
+psi4 exists.
+
+The solver names below are resolved lazily. ``reference`` and ``reference_io``
+need nothing but numpy, and importing either should not drag in einsums:
+otherwise a fixture could fail to load for reasons belonging to the library it
+exists to test.
 """
 
-from .base import DLPNOBase
-from .mp2 import DLPNOMP2
-from .reference import Reference
-from .thresholds import Thresholds
+import importlib
 
 __all__ = ["DLPNOBase", "DLPNOMP2", "Reference", "Thresholds"]
+
+_LAZY = {
+    "DLPNOBase": "base",
+    "DLPNOMP2": "mp2",
+    "Reference": "reference",
+    "Thresholds": "thresholds",
+}
+
+
+def __getattr__(name):
+    if name in _LAZY:
+        value = getattr(importlib.import_module(f".{_LAZY[name]}", __name__), name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY))
