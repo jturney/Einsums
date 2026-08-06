@@ -36,6 +36,7 @@
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -54,6 +55,16 @@ struct TensorSlot {
     size_t              rank{0};         ///< Expected rank (for validation on rebind)
     size_t              element_size{0}; ///< Expected element size (for validation)
     std::vector<size_t> dims;            ///< Expected dimensions (for validation on rebind)
+
+    /// Keeps whatever @ref ptr addresses alive for as long as the slot exists.
+    ///
+    /// Set to the graph's stand-in for a captured operand (see
+    /// ``Graph::adopt_operand``), which is what makes it safe for the caller's
+    /// own wrapper to be destroyed between capture and ``execute()``. Empty
+    /// when the graph did not adopt the operand -- a tensor the graph already
+    /// owns, or a type with no storage block to share -- in which case @ref ptr
+    /// keeps the older "must outlive the graph" contract.
+    std::shared_ptr<void> owner;
 };
 
 /**

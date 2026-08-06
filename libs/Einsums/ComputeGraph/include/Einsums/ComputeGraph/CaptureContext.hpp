@@ -216,8 +216,19 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
         // conditional branch this is also the path a parent-registered tensor
         // takes: it gets a fresh default handle, deliberately dropping the
         // parent's metadata. See the contract note above before "fixing" this.
-        TensorId id     = _graph->register_tensor(make_handle(tensor, 0));
-        _ptr_to_id[ptr] = id;
+        //
+        // The handle's lambdas are baked over the graph's stand-in, not the
+        // caller's wrapper, so impl_fn / swap_data / the validator all reach an
+        // object the graph keeps alive. ``tensor_ptr`` still names the caller's
+        // tensor: it is the handle's identity, compared against user-held
+        // addresses all over the passes.
+        using Clean       = std::remove_cvref_t<TensorType>;
+        auto  owner       = _graph->adopt_operand(tensor);
+        auto &bound       = owner ? *static_cast<Clean *>(owner.get()) : const_cast<Clean &>(tensor);
+        auto  handle      = make_handle(bound, 0, ptr);
+        handle.owner      = std::move(owner);
+        TensorId const id = _graph->register_tensor(std::move(handle));
+        _ptr_to_id[ptr]   = id;
         return id;
     }
 
@@ -258,6 +269,9 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
     template <GraphCapturableTensor TensorType>
     std::pair<TensorId, TensorSlot *> get_slot(TensorType const &tensor) {
         TensorId id = get_or_register(tensor);
+        // get_or_create_slot re-points the slot at the handle's stand-in when
+        // there is one, so passing the caller's tensor here is only how the
+        // slot gets its name/rank/dims.
         return {id, _graph->get_or_create_slot(tensor, id)};
     }
 

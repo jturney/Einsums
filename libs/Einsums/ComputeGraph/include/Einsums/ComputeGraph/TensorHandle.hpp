@@ -230,6 +230,23 @@ struct TensorHandle {
     std::vector<std::pair<std::int64_t, std::int64_t>> alias_box;
 
     /**
+     * @brief The graph's stand-in for this operand, when it adopted one.
+     *
+     * Set by capture to a wrapper sharing the caller's storage that the graph
+     * keeps alive (see ``Graph::adopt_operand``). Every lambda above is baked
+     * over this object, and the operand's TensorSlot points at it, which is
+     * what lets the caller's own wrapper be destroyed before ``execute()``.
+     *
+     * Empty when the graph adopted nothing: a tensor it already owns, a
+     * deferred tensor it will relocate, or a type with no storage block to
+     * share. Those keep the older "operands must outlive the graph" contract.
+     *
+     * @ref tensor_ptr still names the CALLER's tensor either way; it is the
+     * handle's identity, not its lifetime.
+     */
+    std::shared_ptr<void> owner;
+
+    /**
      * @brief Optional validation function to check if the tensor is still alive.
      *
      * Set automatically by make_handle() at registration time. The function captures
@@ -274,6 +291,13 @@ struct TensorHandle {
  * @tparam TensorType Any type satisfying CoreBasicTensorConcept.
  * @param[in] tensor The tensor to create a handle for. The tensor must outlive the graph.
  * @param[in] id Initial ID (will be reassigned by Graph::register_tensor()).
+ * @param[in] identity Address to record as @ref TensorHandle::tensor_ptr, when
+ *            that must differ from @p tensor's own. Capture passes the caller's
+ *            wrapper here while handing @p tensor the graph's stand-in (see
+ *            ``Graph::adopt_operand``): the lambdas below then bake in an object
+ *            the graph keeps alive, while ``tensor_ptr`` keeps naming the tensor
+ *            the caller knows, which is what every identity comparison against a
+ *            user-held tensor relies on. Null means "use @p tensor's address".
  * @return A fully populated TensorHandle.
  *
  * @code
@@ -283,9 +307,9 @@ struct TensorHandle {
  * @endcode
  */
 template <GraphCapturableTensor TensorType>
-TensorHandle make_handle(TensorType const &tensor, TensorId id) {
+TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *identity = nullptr) {
     TensorHandle h;
-    h.tensor_ptr = const_cast<void *>(static_cast<void const *>(&tensor));
+    h.tensor_ptr = const_cast<void *>(identity != nullptr ? identity : static_cast<void const *>(&tensor));
 
     // data_ptr may be nullptr for deferred (shell) tensors, that's expected.
     if constexpr (requires { tensor.is_materialized(); }) {

@@ -129,20 +129,38 @@ TEST_CASE("Pipeline::create_tensor - owned by pipeline", "[ComputeGraph][Lifetim
     }
 }
 
-TEST_CASE("Graph validation - catches destroyed tensor", "[ComputeGraph][Lifetime][Validation]") {
+TEST_CASE("Graph validation - a destroyed operand's storage outlives it", "[ComputeGraph][Lifetime][Validation]") {
+    // This case used to require execute() to THROW: the captured node held its
+    // operand by raw pointer, so the best it could do with a destroyed tensor
+    // was notice and refuse. Capture now takes a share of the operand's storage
+    // (Graph::adopt_operand), so the wrapper going out of scope is no longer an
+    // error, and the operation still computes the right answer.
     cg::Graph graph("validation_test");
 
+    auto expected = create_random_tensor<double>("expected", 3, 3);
+
     {
-        // Create a tensor that will be destroyed at end of this block
-        auto temp = create_random_tensor<double>("temp_will_die", 3, 3);
+        // Created and destroyed entirely inside this block, with nothing
+        // outside it referring to the tensor afterwards.
+        auto temp = create_random_tensor<double>("temp_outlives_scope", 3, 3);
+        expected  = temp;
 
         cg::CaptureGuard const guard(graph);
         cg::scale(2.0, &temp);
     }
-    // temp is destroyed here, the graph has a dangling reference
 
-    // execute() should detect the destroyed tensor and throw instead of segfaulting
-    REQUIRE_THROWS_AS(graph.execute(), std::runtime_error);
+    REQUIRE_NOTHROW(graph.execute());
+
+    // The scale landed in the storage the graph kept alive. Read it back
+    // through a view the graph still owns rather than the dead wrapper.
+    auto const &handle = graph.tensor(graph.tensors_map().begin()->first);
+    REQUIRE(handle.dims == std::vector<size_t>{3, 3});
+    auto const *data =
+        static_cast<double const *>(handle.impl_fn ? static_cast<detail::TensorImpl<double> *>(handle.impl_fn())->data() : nullptr);
+    REQUIRE(data != nullptr);
+    for (size_t idx = 0; idx < 9; idx++) {
+        REQUIRE_THAT(data[idx], Catch::Matchers::WithinAbs(2.0 * expected.data()[idx], 1e-12));
+    }
 }
 
 TEST_CASE("Graph validation - passes for valid tensors", "[ComputeGraph][Lifetime][Validation]") {

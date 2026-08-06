@@ -66,6 +66,7 @@ set(ComputeGraphTests
     PassManager.cpp
     PermuteFusion.cpp
     PipelineLoop.cpp
+    OperandOwnership.cpp
     Rebind.cpp
     RecursionPlumbing.cpp
     EagerParityGaps.cpp

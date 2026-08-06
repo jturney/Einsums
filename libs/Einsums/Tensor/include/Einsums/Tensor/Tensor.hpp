@@ -21,6 +21,7 @@
 #include <Einsums/Profile.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/PendingInit.hpp>
+#include <Einsums/Tensor/StorageBlock.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
@@ -133,9 +134,11 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     /**
      * @brief Construct a new Tensor object. Default copy constructor
      */
-    GeneralTensor(GeneralTensor const &other) : _name(other.name()), _data(other._data), _impl(other._impl) {
-        _impl.set_data(_data.data());
-        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
+    GeneralTensor(GeneralTensor const &other) : _name(other.name()), _impl(other._impl) {
+        // A copy gets its own storage block. Sharing is opt-in, through
+        // shallow_alias(); copy construction keeps value semantics.
+        _storage->copy_owned_from(other._storage->owned);
+        _impl.set_data(_storage->owned.data());
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
@@ -155,24 +158,23 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         constexpr bool other_is_device = gpu::IsDeviceAllocatorV<Alloc2>;
         constexpr bool this_is_device  = IsDeviceTensor;
 
-        _data.resize(_impl.size());
-        _impl.set_data(_data.data());
+        _storage->resize_owned(_impl.size());
+        _impl.set_data(_storage->owned.data());
 
         if constexpr (this_is_device && !other_is_device) {
             // Host → Device
-            gpu::memcpy_host_to_device(_data.data(), other.data(), _impl.size() * sizeof(T));
+            gpu::memcpy_host_to_device(_storage->owned.data(), other.data(), _impl.size() * sizeof(T));
         } else if constexpr (!this_is_device && other_is_device) {
             // Device → Host
-            gpu::memcpy_device_to_host(_data.data(), other.data(), _impl.size() * sizeof(T));
+            gpu::memcpy_device_to_host(_storage->owned.data(), other.data(), _impl.size() * sizeof(T));
         } else if constexpr (this_is_device && other_is_device) {
             // Device → Device
-            gpu::memcpy_device_to_device(_data.data(), other.data(), _impl.size() * sizeof(T));
+            gpu::memcpy_device_to_device(_storage->owned.data(), other.data(), _impl.size() * sizeof(T));
         } else {
             // Host → Host (same as before)
-            std::memcpy(_data.data(), other.data(), _impl.size() * sizeof(T));
+            std::memcpy(_storage->owned.data(), other.data(), _impl.size() * sizeof(T));
         }
 
-        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
@@ -183,14 +185,17 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
     /**
      * @brief Destroy the Tensor object.
+     *
+     * Storage is released by the block, once the last holder drops it. A tensor
+     * captured into a graph is not the last holder, which is the point.
      */
-    ~GeneralTensor() { ProfileMemFree(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T))); }
+    ~GeneralTensor() = default;
 
     /**
      * @brief Default move constructor.
      */
     GeneralTensor(GeneralTensor &&other) noexcept
-        : _name{std::move(other._name)}, _data{std::move(other._data)}, _external_data{std::exchange(other._external_data, nullptr)},
+        : _name{std::move(other._name)}, _storage{std::exchange(other._storage, detail::make_storage_block<T, Vector>())},
           _dim_array{std::move(other._dim_array)}, _stride_array{std::move(other._stride_array)}, _impl{std::move(other._impl)},
           _symmetry{std::move(other._symmetry)} {}
 
@@ -198,13 +203,12 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * @brief Default move assignment.
      */
     GeneralTensor &operator=(GeneralTensor &&other) noexcept {
-        _name          = std::move(other._name);
-        _data          = std::move(other._data);
-        _external_data = std::exchange(other._external_data, nullptr);
-        _dim_array     = std::move(other._dim_array);
-        _stride_array  = std::move(other._stride_array);
-        _symmetry      = std::move(other._symmetry);
-        _impl          = std::move(other._impl);
+        _name         = std::move(other._name);
+        _storage      = std::exchange(other._storage, detail::make_storage_block<T, Vector>());
+        _dim_array    = std::move(other._dim_array);
+        _stride_array = std::move(other._stride_array);
+        _symmetry     = std::move(other._symmetry);
+        _impl         = std::move(other._impl);
 
         return *this;
     }
@@ -233,10 +237,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         static_assert(Rank == sizeof...(dims), "Declared Rank does not match provided dims");
 
         // Resize the data structure
-        _data.resize(_impl.size());
-        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
@@ -267,10 +270,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         static_assert(Rank == sizeof...(dims), "Declared Rank does not match provided dims");
 
         // Resize the data structure
-        _data.resize(_impl.size());
-        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
@@ -305,7 +307,10 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      */
     template <size_t OtherRank, typename... Dims>
     explicit GeneralTensor(GeneralTensor<T, OtherRank, Alloc> &&existingTensor, std::string name, Dims... dims)
-        : _name{std::move(name)}, _data(std::move(existingTensor._data)) {
+        // Reshaping adopts the source's whole storage block rather than just
+        // its buffer, so anything already holding that block -- a view, a
+        // captured graph operand -- keeps reading the same memory.
+        : _name{std::move(name)}, _storage{std::exchange(existingTensor._storage, detail::make_storage_block<T, Vector>())} {
         static_assert(Rank == sizeof...(dims), "Declared rank does not match provided dims");
 
         // Check to see if the user provided a dim of "-1" in one place. If found then the user requests that we
@@ -339,7 +344,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
             _dims[location] = existingTensor.size() / size;
         }
 
-        _impl = detail::TensorImpl<T>(_data.data(), _dims, existingTensor.impl().is_row_major());
+        _impl = detail::TensorImpl<T>(_storage->owned.data(), _dims, existingTensor.impl().is_row_major());
 
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
@@ -347,7 +352,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         }
 
         // Check size
-        if (_data.size() != _impl.size()) {
+        if (_storage->owned.size() != _impl.size()) {
             EINSUMS_THROW_EXCEPTION(dimension_error, "Provided dims to not match size of parent tensor");
         }
     }
@@ -359,10 +364,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      */
     explicit GeneralTensor(Dim<Rank> dims) : _impl(nullptr, dims) {
         // Resize the data structure
-        _data.resize(_impl.size());
-        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
@@ -377,10 +381,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      */
     explicit GeneralTensor(bool row_major, Dim<Rank> dims) : _impl(nullptr, dims, row_major) {
         // Resize the data structure
-        _data.resize(_impl.size());
-        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
@@ -398,10 +401,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     GeneralTensor(TensorView<T, rank> const &other)
         : _name{other.name()}, _impl(nullptr, other.dims(), GlobalConfigMap::get_singleton().get_bool("row-major")) {
         // Resize the data structure
-        _data.resize(_impl.size());
-        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         detail::copy_to(other.impl(), _impl);
 
@@ -415,10 +417,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * @brief Construct a new Tensor from the implementation of another.
      */
     GeneralTensor(detail::TensorImpl<T> const &other) : _impl(nullptr, other.dims()) {
-        _data.resize(_impl.size());
-        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
         detail::copy_to(other, _impl);
 
         for (int i = 0; std::cmp_less(i, Rank); i++) {
@@ -462,7 +463,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
           _impl(reinterpret_cast<T *>(0x1), std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...},
                 GlobalConfigMap::get_singleton().get_bool("row-major")) {
         static_assert(Rank == sizeof...(dims), "Declared Rank does not match provided dims");
-        // Do not resize _data; storage is deferred until materialize().
+        // Do not allocate; storage is deferred until materialize().
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
@@ -478,9 +479,8 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     void materialize() {
         if (is_materialized())
             return;
-        _data.resize(_impl.size());
-        ProfileMemAlloc(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
-        _impl.set_data(_data.data());
+        _storage->resize_owned(_impl.size());
+        _impl.set_data(_storage->owned.data());
     }
 
     /**
@@ -494,19 +494,14 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * pointer; switching storage requires an intervening release().
      */
     void materialize_into(T *ptr) {
-        if (_external_data == ptr) {
+        if (_storage->external == ptr) {
             return;
         }
-        assert(_external_data == nullptr && "materialize_into(): release() before switching external storage");
+        assert(_storage->external == nullptr && "materialize_into(): release() before switching external storage");
         // An owned buffer gives way to the external one (the MemoryPlanning
         // arena attaches to eager intermediates that were allocated at
         // create_tensor time); holding both would waste the owned copy.
-        if (!_data.empty()) {
-            ProfileMemFree(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
-            _data.clear();
-            _data.shrink_to_fit();
-        }
-        _external_data = ptr;
+        _storage->attach_external(ptr);
         _impl.set_data(ptr);
     }
 
@@ -514,7 +509,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * @brief Check if this tensor has allocated backing storage.
      * @return true if data() returns a valid pointer.
      */
-    [[nodiscard]] bool is_materialized() const { return !_data.empty() || _external_data != nullptr || _impl.size() == 0; }
+    [[nodiscard]] bool is_materialized() const { return !_storage->owned.empty() || _storage->external != nullptr || _impl.size() == 0; }
 
     /**
      * @brief Release the backing data storage, returning to deferred state.
@@ -526,16 +521,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * Used by FreeInsertion pass to release intermediates after their last consumer.
      */
     void release() {
-        if (_external_data != nullptr) {
-            _external_data = nullptr;
-            _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel; dims/strides preserved
+        if (!_storage->allocated())
             return;
-        }
-        if (_data.empty())
-            return;
-        ProfileMemFree(static_cast<int64_t>(_data.size()) * static_cast<int64_t>(sizeof(T)));
-        _data.clear();
-        _data.shrink_to_fit();
+        _storage->clear();
         _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel; dims/strides preserved
     }
 
@@ -762,12 +750,12 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         // Build new impl to compute the required size, but don't commit yet.
         detail::TensorImpl<T> new_impl(nullptr, dims, _impl.is_row_major());
 
-        // Resize data first; if this throws, _impl and _data remain consistent.
-        _data.resize(new_impl.size());
+        // Resize data first; if this throws, _impl and the block remain consistent.
+        _storage->resize_owned(new_impl.size());
 
         // Data resize succeeded, so now commit the new impl.
         _impl = std::move(new_impl);
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
@@ -790,22 +778,22 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * @brief Zeroes out the tensor data.
      */
     void zero() {
-        // _data.data() is allowed to be nullptr when _data.size() == 0
+        // The owned buffer's data() is allowed to be nullptr when it is empty
         // (e.g. zero-sized tensors used during construction or as views).
         // memset / device_memset are declared [[gnu::nonnull(1)]] in the
         // glibc/CUDA headers, so passing nullptr trips UBSan even though
         // the count is also 0 (which is otherwise defined). Skip the call
         // when there's nothing to write. Caught on the ASan/UBSan leg by
         // Tests.Unit.Modules.LinearAlgebra.pow + .TensorUtilities.BlockViews.
-        if (_data.empty()) {
+        if (_storage->owned.empty()) {
             return;
         }
         if constexpr (IsDeviceTensor) {
-            gpu::device_memset(_data.data(), 0, sizeof(T) * _data.size());
+            gpu::device_memset(_storage->owned.data(), 0, sizeof(T) * _storage->owned.size());
         } else if constexpr (std::is_trivially_copyable_v<T>) {
-            memset(_data.data(), 0, sizeof(T) * _data.size());
+            memset(_storage->owned.data(), 0, sizeof(T) * _storage->owned.size());
         } else {
-            std::fill(_data.begin(), _data.end(), T{0.0});
+            std::fill(_storage->owned.begin(), _storage->owned.end(), T{0.0});
         }
     }
 
@@ -816,7 +804,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      */
     void set_all(T value) {
         static_assert(!IsDeviceTensor, "set_all() is not supported for device tensors. Use a GPU kernel instead.");
-        std::fill(_data.begin(), _data.end(), value);
+        std::fill(_storage->owned.begin(), _storage->owned.end(), value);
     }
 
     /**
@@ -1068,9 +1056,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         if (realloc) {
             _impl = other.impl();
 
-            _data.resize(_impl.size());
+            _storage->resize_owned(_impl.size());
 
-            _impl.set_data(_data.data());
+            _impl.set_data(_storage->owned.data());
         }
 
         for (int i = 0; std::cmp_less(i, Rank); i++) {
@@ -1079,7 +1067,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         }
 
         if constexpr (IsDeviceTensor) {
-            gpu::memcpy_device_to_device(_data.data(), other.data(), _impl.size() * sizeof(T));
+            gpu::memcpy_device_to_device(_storage->owned.data(), other.data(), _impl.size() * sizeof(T));
         } else {
             detail::copy_to(other.impl(), _impl);
         }
@@ -1102,9 +1090,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         if (realloc) {
             _impl = other.impl();
 
-            _data.resize(_impl.size());
+            _storage->resize_owned(_impl.size());
 
-            _impl.set_data(_data.data());
+            _impl.set_data(_storage->owned.data());
         }
 
         for (int i = 0; std::cmp_less(i, Rank); i++) {
@@ -1114,11 +1102,11 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
         constexpr bool other_is_device = gpu::IsDeviceAllocatorV<Alloc2>;
         if constexpr (IsDeviceTensor && !other_is_device) {
-            gpu::memcpy_host_to_device(_data.data(), other.data(), _impl.size() * sizeof(T));
+            gpu::memcpy_host_to_device(_storage->owned.data(), other.data(), _impl.size() * sizeof(T));
         } else if constexpr (!IsDeviceTensor && other_is_device) {
-            gpu::memcpy_device_to_host(_data.data(), other.data(), _impl.size() * sizeof(T));
+            gpu::memcpy_device_to_host(_storage->owned.data(), other.data(), _impl.size() * sizeof(T));
         } else if constexpr (IsDeviceTensor && other_is_device) {
-            gpu::memcpy_device_to_device(_data.data(), other.data(), _impl.size() * sizeof(T));
+            gpu::memcpy_device_to_device(_storage->owned.data(), other.data(), _impl.size() * sizeof(T));
         } else {
             detail::copy_to(other.impl(), _impl);
         }
@@ -1145,9 +1133,9 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         if (realloc) {
             _impl = detail::TensorImpl<T>(nullptr, other.dims(), other.impl().is_row_major());
 
-            _data.resize(_impl.size());
+            _storage->resize_owned(_impl.size());
 
-            _impl.set_data(_data.data());
+            _impl.set_data(_storage->owned.data());
         }
 
         detail::copy_to(other.impl(), _impl);
@@ -1187,7 +1175,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         for (size_t sentinel = 0; sentinel < size; sentinel++) {
             thread_local std::array<size_t, Rank> index;
             sentinel_to_indices(sentinel, _impl.strides(), index);
-            _data[sentinel] = subscript_tensor(other, index);
+            _storage->owned[sentinel] = subscript_tensor(other, index);
         }
 
         return *this;
@@ -1340,10 +1328,43 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     /**
      * Get the internal vector containing the tensor's data.
      */
-    [[nodiscard]] auto vector_data() const -> Vector const & { return _data; }
+    [[nodiscard]] auto vector_data() const -> Vector const & { return _storage->owned; }
 
     /// @copydoc GeneralTensor<T,Rank, Alloc>::vector_data() const
-    [[nodiscard]] auto vector_data() -> Vector & { return _data; }
+    [[nodiscard]] auto vector_data() -> Vector & { return _storage->owned; }
+
+    /**
+     * @brief This tensor's refcounted storage block.
+     *
+     * Hold it to keep the buffer alive independently of this wrapper, and read
+     * @c StorageBase::base through it rather than caching @ref data(), which
+     * goes stale across materialize / materialize_into / release / resize.
+     */
+    [[nodiscard]] std::shared_ptr<detail::StorageBlock<T, Vector>> const &storage() const noexcept { return _storage; }
+
+    /**
+     * @brief A second wrapper over the same storage.
+     *
+     * Same element type, rank, dims and strides as this tensor, sharing the
+     * buffer rather than copying it: writes through either are visible to
+     * both. Copy construction deliberately does not do this, so sharing is
+     * always something the caller asked for by name.
+     *
+     * Graph capture uses it to hold an operand by value without deep-copying,
+     * which is what lets a captured tensor go out of scope before
+     * ``execute()``.
+     */
+    [[nodiscard]] GeneralTensor shallow_alias() const { return GeneralTensor(detail::SharedStorageTag{}, *this); }
+
+    /// @copydoc GeneralTensor::shallow_alias
+    ///
+    /// The in-place form. See @ref einsums::detail::SharedStorageTag for why
+    /// building an alias through @c make_shared needs its own constructor.
+    GeneralTensor(detail::SharedStorageTag /*unused*/, GeneralTensor const &src)
+        : _name(src._name), _storage(src._storage), _impl(src._impl), _dim_array(src._dim_array), _stride_array(src._stride_array) {
+        if (src._symmetry)
+            _symmetry = std::make_unique<SymmetryDescriptor>(*src._symmetry);
+    }
 
     /**
      * Get the stride along a given axis.
@@ -1428,17 +1449,17 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     /// True iff a non-empty symmetry descriptor is attached.
     [[nodiscard]] bool has_symmetry() const { return _symmetry && !_symmetry->empty(); }
 
-    [[nodiscard]] TensorView<T, Rank> transpose_view() { return TensorView<T, Rank>(_impl.transpose_view()); }
+    [[nodiscard]] TensorView<T, Rank> transpose_view() { return TensorView<T, Rank>(_impl.transpose_view(), _storage); }
 
-    [[nodiscard]] TensorView<T, Rank> const transpose_view() const { return TensorView<T, Rank>(_impl.transpose_view()); }
+    [[nodiscard]] TensorView<T, Rank> const transpose_view() const { return TensorView<T, Rank>(_impl.transpose_view(), _storage); }
 
-    [[nodiscard]] TensorView<T, Rank> to_row_major() { return TensorView<T, Rank>(_impl.to_row_major()); }
+    [[nodiscard]] TensorView<T, Rank> to_row_major() { return TensorView<T, Rank>(_impl.to_row_major(), _storage); }
 
-    [[nodiscard]] TensorView<T, Rank> const to_row_major() const { return TensorView<T, Rank>(_impl.to_row_major()); }
+    [[nodiscard]] TensorView<T, Rank> const to_row_major() const { return TensorView<T, Rank>(_impl.to_row_major(), _storage); }
 
-    [[nodiscard]] TensorView<T, Rank> to_column_major() { return TensorView<T, Rank>(_impl.to_column_major()); }
+    [[nodiscard]] TensorView<T, Rank> to_column_major() { return TensorView<T, Rank>(_impl.to_column_major(), _storage); }
 
-    [[nodiscard]] TensorView<T, Rank> const to_column_major() const { return TensorView<T, Rank>(_impl.to_column_major()); }
+    [[nodiscard]] TensorView<T, Rank> const to_column_major() const { return TensorView<T, Rank>(_impl.to_column_major(), _storage); }
 
     [[nodiscard]] bool is_gemmable(size_t *lda = nullptr) const { return _impl.is_gemmable(lda); }
 
@@ -1473,12 +1494,18 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
     std::string _name{"(unnamed)"};
 
-    Vector _data{};
-
-    /// Non-owning backing storage attached via materialize_into() (e.g. a
-    /// MemoryPlanning arena slice). Mutually exclusive with _data; never
-    /// freed by this tensor.
-    T *_external_data{nullptr};
+    /// Refcounted backing storage, always non-null.
+    ///
+    /// Holds both storage modes: ``owned`` for memory this tensor allocated and
+    /// ``external`` for memory attached through materialize_into() (e.g. a
+    /// MemoryPlanning arena slice), which are mutually exclusive.
+    ///
+    /// Shared rather than held by value so that a holder other than this
+    /// wrapper can keep the buffer alive: graph capture takes a reference to
+    /// it, and so does any view sliced from this tensor. Copy construction
+    /// still allocates a fresh block and deep-copies, so value semantics are
+    /// unchanged; sharing only happens where somebody asked for it.
+    std::shared_ptr<detail::StorageBlock<T, Vector>> _storage{detail::make_storage_block<T, Vector>()};
 
     detail::TensorImpl<T> _impl{};
 
@@ -1897,6 +1924,24 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
         : _impl(const_cast<T *>(data), dims, strides), _parent{const_cast<T *>(data)} {
         _offsets.fill(0);
         _source_dims = dims;
+        for (int i = 0; std::cmp_less(i, Rank); i++) {
+            _dim_array[i]    = _impl.dim(i);
+            _stride_array[i] = _impl.stride(i);
+        }
+    }
+
+    /**
+     * @brief Creates a view around an implementation, holding @p storage alive.
+     *
+     * The slicing helpers use this form: an impl on its own carries a bare
+     * pointer into somebody else's buffer, so a view built from one has no way
+     * to keep that buffer alive. Passing the parent's storage block along makes
+     * the view self-sufficient, which is what lets a sliced-then-orphaned view
+     * still be read (and still be a valid graph operand) after the tensor it
+     * came from is gone.
+     */
+    explicit TensorView(detail::TensorImpl<T> const &impl, std::shared_ptr<detail::StorageBase> storage)
+        : _impl(impl), _parent{const_cast<T *>(impl.data())}, _storage_ref(std::move(storage)) {
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             _dim_array[i]    = _impl.dim(i);
             _stride_array[i] = _impl.stride(i);
@@ -2411,17 +2456,17 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
     [[nodiscard]] SymmetryDescriptor const *symmetry() const noexcept { return nullptr; }
     [[nodiscard]] bool                      has_symmetry() const noexcept { return false; }
 
-    [[nodiscard]] TensorView<T, Rank> transpose_view() { return TensorView<T, Rank>(_impl.transpose_view()); }
+    [[nodiscard]] TensorView<T, Rank> transpose_view() { return TensorView<T, Rank>(_impl.transpose_view(), _storage_ref); }
 
-    [[nodiscard]] TensorView<T, Rank> const transpose_view() const { return TensorView<T, Rank>(_impl.transpose_view()); }
+    [[nodiscard]] TensorView<T, Rank> const transpose_view() const { return TensorView<T, Rank>(_impl.transpose_view(), _storage_ref); }
 
-    [[nodiscard]] TensorView<T, Rank> to_row_major() { return TensorView<T, Rank>(_impl.to_row_major()); }
+    [[nodiscard]] TensorView<T, Rank> to_row_major() { return TensorView<T, Rank>(_impl.to_row_major(), _storage_ref); }
 
-    [[nodiscard]] TensorView<T, Rank> const to_row_major() const { return TensorView<T, Rank>(_impl.to_row_major()); }
+    [[nodiscard]] TensorView<T, Rank> const to_row_major() const { return TensorView<T, Rank>(_impl.to_row_major(), _storage_ref); }
 
-    [[nodiscard]] TensorView<T, Rank> to_column_major() { return TensorView<T, Rank>(_impl.to_column_major()); }
+    [[nodiscard]] TensorView<T, Rank> to_column_major() { return TensorView<T, Rank>(_impl.to_column_major(), _storage_ref); }
 
-    [[nodiscard]] TensorView<T, Rank> const to_column_major() const { return TensorView<T, Rank>(_impl.to_column_major()); }
+    [[nodiscard]] TensorView<T, Rank> const to_column_major() const { return TensorView<T, Rank>(_impl.to_column_major(), _storage_ref); }
 
     [[nodiscard]] bool is_gemmable(size_t *lda = nullptr) const { return _impl.is_gemmable(lda); }
 
@@ -2437,6 +2482,17 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
         return TensorView<T, Rank - sizeof...(MultiIndex) + 1>(_impl.tie_indices(std::forward<MultiIndex>(index)...));
     }
 
+    /// The storage block of the tensor this view was sliced from, or null when
+    /// the view was built from a raw pointer and has none.
+    [[nodiscard]] std::shared_ptr<detail::StorageBase> const &storage() const noexcept { return _storage_ref; }
+
+    /// A second view over the same region, holding the same parent storage.
+    ///
+    /// Views are already non-owning, so this is a plain copy; it exists so that
+    /// graph capture can adopt a view operand through the same interface it
+    /// uses for owning tensors. See ``Graph::adopt_operand``.
+    [[nodiscard]] TensorView shallow_alias() const { return *this; }
+
   private:
     /**
      * Initialize a view using a tensor.
@@ -2449,6 +2505,13 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
         static_assert(Rank <= OtherRank, "A TensorView must be the same Rank or smaller that the Tensor being viewed.");
 
         _parent = other.data();
+
+        // Hold the parent's storage so this view can outlive the wrapper it was
+        // sliced from. Views built straight from a raw pointer have no block to
+        // hold and keep the older "the parent must outlive the view" contract.
+        if constexpr (requires { other.storage(); }) {
+            _storage_ref = other.storage();
+        }
 
         // set_mutex(other.get_mutex());
         Stride<Rank>      default_strides{};
@@ -2643,6 +2706,11 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
     Stride<Rank> _stride_array;
 
     T *_parent{nullptr};
+
+    /// Strong reference to the storage block of the tensor this view was
+    /// sliced from, so the view keeps that buffer alive on its own. Null for
+    /// views built directly from a raw pointer, which have no block to hold.
+    std::shared_ptr<detail::StorageBase> _storage_ref;
 
     template <typename T_, size_t Rank_, typename Alloc>
     friend struct GeneralTensor;

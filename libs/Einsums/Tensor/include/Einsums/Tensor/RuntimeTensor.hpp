@@ -169,19 +169,21 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     /**
      * @brief Default copy constructor.
      */
-    GeneralRuntimeTensor(GeneralRuntimeTensor<T, Alloc> const &copy)
-        : _name{copy._name}, _impl(copy.impl()), _data(copy.vector_data()), _aliased(copy._aliased) {
-        // An aliased tensor does not own _data; keep _impl pointing at the
-        // external buffer (copy.impl() already carries it) rather than
-        // repointing at our empty _data.
-        if (copy._external_data != nullptr) {
+    GeneralRuntimeTensor(GeneralRuntimeTensor<T, Alloc> const &copy) : _name{copy._name}, _impl(copy.impl()), _aliased(copy._aliased) {
+        // A copy gets a storage block of its own; sharing is opt-in, through
+        // shallow_alias().
+        _storage->copy_owned_from(copy.vector_data());
+        // An aliased tensor owns no buffer; keep _impl pointing at the external
+        // one (copy.impl() already carries it) rather than repointing at our
+        // empty block.
+        if (copy._storage->external != nullptr) {
             // Arena-backed (materialize_into) source: deep-copy into owned
             // storage; the copy must not share the source's arena slot.
-            _data.resize(_impl.size());
-            std::memcpy(_data.data(), copy._external_data, _impl.size() * sizeof(T));
-            _impl.set_data(_data.data());
+            _storage->resize_owned(_impl.size());
+            std::memcpy(_storage->owned.data(), copy._storage->external, _impl.size() * sizeof(T));
+            _impl.set_data(_storage->owned.data());
         } else if (!_aliased) {
-            _impl.set_data(_data.data());
+            _impl.set_data(_storage->owned.data());
         }
     }
 
@@ -197,19 +199,19 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         constexpr bool other_is_device = gpu::IsDeviceAllocatorV<Alloc2>;
         constexpr bool this_is_device  = IsDeviceTensor;
 
-        _data.resize(_impl.size());
-        _impl.set_data(_data.data());
+        _storage->resize_owned(_impl.size());
+        _impl.set_data(_storage->owned.data());
 
         size_t const bytes = _impl.size() * sizeof(T);
 
         if constexpr (this_is_device && !other_is_device) {
-            gpu::memcpy_host_to_device(_data.data(), copy.data(), bytes);
+            gpu::memcpy_host_to_device(_storage->owned.data(), copy.data(), bytes);
         } else if constexpr (!this_is_device && other_is_device) {
-            gpu::memcpy_device_to_host(_data.data(), copy.data(), bytes);
+            gpu::memcpy_device_to_host(_storage->owned.data(), copy.data(), bytes);
         } else if constexpr (this_is_device && other_is_device) {
-            gpu::memcpy_device_to_device(_data.data(), copy.data(), bytes);
+            gpu::memcpy_device_to_device(_storage->owned.data(), copy.data(), bytes);
         } else {
-            std::memcpy(_data.data(), copy.data(), bytes);
+            std::memcpy(_storage->owned.data(), copy.data(), bytes);
         }
     }
 
@@ -221,9 +223,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      */
     template <Container Dim>
     GeneralRuntimeTensor(std::string name, Dim const &dims, bool row_major) : _name{std::move(name)}, _impl(nullptr, dims, row_major) {
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
     }
 
     /**
@@ -233,9 +235,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      */
     template <Container Dim>
     explicit GeneralRuntimeTensor(Dim const &dims, bool row_major) : _impl(nullptr, dims, row_major) {
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
     }
 
     /**
@@ -264,9 +266,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     template <Container Dim>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER(Dim = std::vector<size_t>) GeneralRuntimeTensor(std::string name, Dim const &dims)
         : _name{std::move(name)}, _impl(nullptr, dims, GlobalConfigMap::get_singleton().get_bool("row-major")) {
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
     }
 
     /**
@@ -276,9 +278,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      */
     template <Container Dim>
     explicit GeneralRuntimeTensor(Dim const &dims) : _impl(nullptr, dims, GlobalConfigMap::get_singleton().get_bool("row-major")) {
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
     }
 
     /**
@@ -310,26 +312,26 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         constexpr bool other_is_device = gpu::IsDeviceAllocatorV<Alloc2>;
         constexpr bool this_is_device  = IsDeviceTensor;
 
-        _data.resize(copy.size());
-        _impl.set_data(_data.data());
+        _storage->resize_owned(copy.size());
+        _impl.set_data(_storage->owned.data());
 
         size_t const bytes = copy.size() * sizeof(T);
 
         if constexpr (this_is_device && !other_is_device) {
-            gpu::memcpy_host_to_device(_data.data(), copy.data(), bytes);
+            gpu::memcpy_host_to_device(_storage->owned.data(), copy.data(), bytes);
         } else if constexpr (!this_is_device && other_is_device) {
-            gpu::memcpy_device_to_host(_data.data(), copy.data(), bytes);
+            gpu::memcpy_device_to_host(_storage->owned.data(), copy.data(), bytes);
         } else if constexpr (this_is_device && other_is_device) {
-            gpu::memcpy_device_to_device(_data.data(), copy.data(), bytes);
+            gpu::memcpy_device_to_device(_storage->owned.data(), copy.data(), bytes);
         } else {
-            std::memcpy(_data.data(), copy.data(), bytes);
+            std::memcpy(_storage->owned.data(), copy.data(), bytes);
         }
     }
 
     template <size_t Rank, typename Alloc2>
-    GeneralRuntimeTensor(GeneralTensor<T, Rank, Alloc2> &&copy) noexcept
-        : _name{std::move(copy.name())}, _impl{std::move(copy.impl())}, _data{std::move(copy.vector_data())} {
-        _impl.set_data(_data.data());
+    GeneralRuntimeTensor(GeneralTensor<T, Rank, Alloc2> &&copy) noexcept : _name{std::move(copy.name())}, _impl{std::move(copy.impl())} {
+        _storage->adopt_owned(std::move(copy.vector_data()));
+        _impl.set_data(_storage->owned.data());
     }
 
     /**
@@ -343,9 +345,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     GeneralRuntimeTensor(TensorView<T, Rank> const &copy) : _impl(nullptr, copy.dims()) {
         static_assert(!IsDeviceTensor, "Constructing a device runtime tensor from a host TensorView is not supported. "
                                        "Construct a host RuntimeTensor first, then cross-allocator-copy into a RuntimeGPUTensor.");
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         detail::copy_to(copy.impl(), _impl);
     }
@@ -360,9 +362,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     GeneralRuntimeTensor(RuntimeTensorView<T> const &copy) : _impl(nullptr, copy.dims()) {
         static_assert(!IsDeviceTensor, "Constructing a device runtime tensor from a RuntimeTensorView is not supported. "
                                        "Views carry no allocator information; copy into a host RuntimeTensor first.");
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         detail::copy_to(copy.impl(), _impl);
     }
@@ -375,11 +377,11 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      */
     APIARY_EXPOSE virtual void zero() {
         if constexpr (IsDeviceTensor) {
-            gpu::device_memset(_data.data(), 0, _data.size() * sizeof(T));
+            gpu::device_memset(_storage->owned.data(), 0, _storage->owned.size() * sizeof(T));
         } else {
-            // Storage is owned (_data), aliased (@ref alias_to), or external
+            // Storage is owned, aliased (@ref alias_to), or external
             // (@ref materialize_into, the MemoryPlanning arena). Both of the
-            // latter two clear _data, so zeroing it was a silent no-op on
+            // latter two leave the owned buffer empty, so zeroing it was a silent no-op on
             // exactly the tensors the memory passes manage. Go through the
             // impl, which always points at the live buffer.
             if (!is_materialized()) {
@@ -403,7 +405,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         if constexpr (IsDeviceTensor) {
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "set_all() is not supported for device runtime tensors. Use a GPU kernel instead.");
         } else {
-            // Same storage cases as zero(): _data is empty for aliased and
+            // Same storage cases as zero(): the owned buffer is empty for aliased and
             // arena-backed tensors, so filling it silently did nothing.
             if (!is_materialized()) {
                 return; // deferred: no storage yet
@@ -424,8 +426,8 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * Disabled for device runtime tensors, because gpu::DeviceVector has no
      * iterators and device memory is not host-accessible.
      *
-     * These iterate the LIVE storage, which is the owned _data only when the
-     * tensor owns it: alias_to() and materialize_into() both empty _data, so
+     * These iterate the LIVE storage, which is the owned buffer only when the
+     * tensor owns it: alias_to() and materialize_into() both empty that buffer, so
      * iterating it yielded an empty range on aliased and arena-backed tensors.
      * A deferred tensor still yields an empty range - _impl holds the release
      * sentinel there, so its size must not be used to bound a pointer walk.
@@ -465,14 +467,16 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * @brief Get the pointer to the stored data.
      *
      * For an aliased tensor (@ref alias_to) the data lives in an external
-     * buffer, not the owned _data, so return the impl's pointer.
+     * buffer, not the owned one, so return the impl's pointer.
      */
-    [[nodiscard]] Pointer data() noexcept { return (_aliased || _external_data != nullptr) ? _impl.data() : _data.data(); }
+    [[nodiscard]] Pointer data() noexcept { return (_aliased || _storage->external != nullptr) ? _impl.data() : _storage->owned.data(); }
 
     /**
      * @copydoc data()
      */
-    [[nodiscard]] ConstPointer data() const noexcept { return (_aliased || _external_data != nullptr) ? _impl.data() : _data.data(); }
+    [[nodiscard]] ConstPointer data() const noexcept {
+        return (_aliased || _storage->external != nullptr) ? _impl.data() : _storage->owned.data();
+    }
 
     /**
      * @brief Get the pointer to the stored data starting at the given index.
@@ -701,7 +705,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
             requires !(std::is_integral_v<Args> && ... && true);
         }
     RuntimeTensorView<T> const operator()(Args const &...args) const {
-        return RuntimeTensorView<T>(_impl.subscript(args...));
+        return RuntimeTensorView<T>(_impl.subscript(args...), _storage);
     }
 
     /**
@@ -717,7 +721,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
             requires !(std::is_integral_v<Args> && ... && true);
         }
     RuntimeTensorView<T> operator()(Args const &...args) {
-        return RuntimeTensorView<T>(_impl.subscript(args...));
+        return RuntimeTensorView<T>(_impl.subscript(args...), _storage);
     }
 
     /**
@@ -729,19 +733,19 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     GeneralRuntimeTensor &operator=(GeneralTensor<T, Rank, Alloc2> const &other) {
         _impl = other.impl();
 
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         constexpr bool other_is_device = gpu::IsDeviceAllocatorV<Alloc2>;
         size_t const   bytes           = _impl.size() * sizeof(T);
 
         if constexpr (IsDeviceTensor && !other_is_device) {
-            gpu::memcpy_host_to_device(_data.data(), other.data(), bytes);
+            gpu::memcpy_host_to_device(_storage->owned.data(), other.data(), bytes);
         } else if constexpr (!IsDeviceTensor && other_is_device) {
-            gpu::memcpy_device_to_host(_data.data(), other.data(), bytes);
+            gpu::memcpy_device_to_host(_storage->owned.data(), other.data(), bytes);
         } else if constexpr (IsDeviceTensor && other_is_device) {
-            gpu::memcpy_device_to_device(_data.data(), other.data(), bytes);
+            gpu::memcpy_device_to_device(_storage->owned.data(), other.data(), bytes);
         } else {
             detail::copy_to(other.impl(), _impl);
         }
@@ -760,9 +764,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
                       "Element-type-converting copy is not supported for device runtime tensors — would require a GPU kernel.");
         _impl = other.impl();
 
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         detail::copy_to(other.impl(), _impl);
 
@@ -779,9 +783,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         static_assert(!IsDeviceTensor, "Copy from a host TensorView is not supported for device runtime tensors.");
         _impl = detail::TensorImpl<T>(nullptr, other.dims());
 
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         detail::copy_to(other.impl(), _impl);
 
@@ -799,12 +803,12 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         }
         _impl = other.impl();
 
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         if constexpr (IsDeviceTensor) {
-            gpu::memcpy_device_to_device(_data.data(), other.data(), _impl.size() * sizeof(T));
+            gpu::memcpy_device_to_device(_storage->owned.data(), other.data(), _impl.size() * sizeof(T));
         } else {
             detail::copy_to(other.impl(), _impl);
         }
@@ -816,19 +820,19 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     GeneralRuntimeTensor &operator=(GeneralRuntimeTensor<T, Alloc2> const &other) {
         _impl = other.impl();
 
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         constexpr bool other_is_device = gpu::IsDeviceAllocatorV<Alloc2>;
         size_t const   bytes           = _impl.size() * sizeof(T);
 
         if constexpr (IsDeviceTensor && !other_is_device) {
-            gpu::memcpy_host_to_device(_data.data(), other.data(), bytes);
+            gpu::memcpy_host_to_device(_storage->owned.data(), other.data(), bytes);
         } else if constexpr (!IsDeviceTensor && other_is_device) {
-            gpu::memcpy_device_to_host(_data.data(), other.data(), bytes);
+            gpu::memcpy_device_to_host(_storage->owned.data(), other.data(), bytes);
         } else if constexpr (IsDeviceTensor && other_is_device) {
-            gpu::memcpy_device_to_device(_data.data(), other.data(), bytes);
+            gpu::memcpy_device_to_device(_storage->owned.data(), other.data(), bytes);
         } else {
             detail::copy_to(other.impl(), _impl);
         }
@@ -852,9 +856,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         } else {
             _impl = detail::TensorImpl<T>(nullptr, other.dims());
 
-            _data.resize(_impl.size());
+            _storage->resize_owned(_impl.size());
 
-            _impl.set_data(_data.data());
+            _impl.set_data(_storage->owned.data());
 
             detail::copy_to(other.impl(), _impl);
         }
@@ -873,9 +877,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
                       "Element-type-converting copy is not supported for device runtime tensors — would require a GPU kernel.");
         _impl = other.impl();
 
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         detail::copy_to(other.impl(), _impl);
 
@@ -892,9 +896,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         static_assert(!IsDeviceTensor, "Copy from a RuntimeTensorView is not supported for device runtime tensors.");
         _impl = detail::TensorImpl<T>(nullptr, other.dims());
 
-        _data.resize(_impl.size());
+        _storage->resize_owned(_impl.size());
 
-        _impl.set_data(_data.data());
+        _impl.set_data(_storage->owned.data());
 
         detail::copy_to(other.impl(), _impl);
 
@@ -989,12 +993,12 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
 
     template <size_t Rank>
     operator TensorView<T, Rank>() {
-        return TensorView<T, Rank>(_impl);
+        return TensorView<T, Rank>(_impl, _storage);
     }
 
     template <size_t Rank>
     operator TensorView<T, Rank> const() const {
-        return TensorView<T, Rank>(_impl);
+        return TensorView<T, Rank>(_impl, _storage);
     }
     /**
      * @brief Get the length of the tensor along a given axis.
@@ -1011,12 +1015,48 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     /**
      * @brief Return the vector containing the data stored by the tensor.
      */
-    [[nodiscard]] virtual Vector const &vector_data() const { return _data; }
+    [[nodiscard]] virtual Vector const &vector_data() const { return _storage->owned; }
 
     /**
      * @brief Return the vector containing the data stored by the tensor.
      */
-    [[nodiscard]] virtual Vector &vector_data() { return _data; }
+    [[nodiscard]] virtual Vector &vector_data() { return _storage->owned; }
+
+    /**
+     * @brief This tensor's refcounted storage block.
+     *
+     * Hold it to keep the buffer alive independently of this wrapper, and read
+     * @c StorageBase::base through it rather than caching @ref data(), which
+     * goes stale across materialize / materialize_into / release / resize.
+     *
+     * An @ref alias_to tensor owns no buffer, so its block is empty and this is
+     * not what keeps its memory alive; the caller guaranteed that separately.
+     */
+    [[nodiscard]] std::shared_ptr<detail::StorageBlock<T, Vector>> const &storage() const noexcept { return _storage; }
+
+    /**
+     * @brief A second wrapper over the same storage.
+     *
+     * Same element type, dims and strides as this tensor, sharing the buffer
+     * rather than copying it: writes through either are visible to both. Copy
+     * construction deliberately does not do this, so sharing is always
+     * something the caller asked for by name.
+     *
+     * Graph capture uses it to hold an operand by value without deep-copying,
+     * which is what lets a captured tensor go out of scope before
+     * ``execute()``.
+     */
+    [[nodiscard]] GeneralRuntimeTensor shallow_alias() const { return GeneralRuntimeTensor(detail::SharedStorageTag{}, *this); }
+
+    /// @copydoc GeneralRuntimeTensor::shallow_alias
+    ///
+    /// The in-place form. See @ref einsums::detail::SharedStorageTag for why
+    /// building an alias through @c make_shared needs its own constructor.
+    GeneralRuntimeTensor(detail::SharedStorageTag /*unused*/, GeneralRuntimeTensor const &src)
+        : _storage(src._storage), _name(src._name), _impl(src._impl), _aliased(src._aliased), _pending_init(src._pending_init) {
+        if (src._symmetry)
+            _symmetry = std::make_unique<SymmetryDescriptor>(*src._symmetry);
+    }
 
     /**
      * @brief Get the stride along a given axis.
@@ -1044,8 +1084,8 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      *
      * The element count implied by the dims, which is what materialize()
      * allocates. Not the owned buffer's length: alias_to() and
-     * materialize_into() empty _data while the tensor is fully usable, so
-     * reporting _data.size() gave 0 for aliased and arena-backed tensors.
+     * materialize_into() empty the owned buffer while the tensor is fully usable, so
+     * reporting that buffer's size gave 0 for aliased and arena-backed tensors.
      * A deferred tensor reports the count it will have once materialized;
      * use is_materialized() to ask whether storage exists.
      */
@@ -1088,16 +1128,16 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     // tensor's storage to the returned view so numpy arrays built from it
     // stay valid.
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> transpose_view() {
-        return RuntimeTensorView<T>(_impl.transpose_view());
+        return RuntimeTensorView<T>(_impl.transpose_view(), _storage);
     }
 
-    [[nodiscard]] RuntimeTensorView<T> const transpose_view() const { return RuntimeTensorView<T>(_impl.transpose_view()); }
+    [[nodiscard]] RuntimeTensorView<T> const transpose_view() const { return RuntimeTensorView<T>(_impl.transpose_view(), _storage); }
 
     // Zero-copy axis-permuted view (result axis i takes parent axis perm[i]).
     // Backs the eager ``.transpose(axes)`` / ``.swapaxes`` (see einsums/__init__.py);
     // the capture path uses cg.permute_view instead. KEEP_ALIVE(0,1) ties storage.
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> permute_view(std::vector<size_t> const &perm) {
-        return RuntimeTensorView<T>(_impl.permute_view(perm));
+        return RuntimeTensorView<T>(_impl.permute_view(perm), _storage);
     }
 
     // Zero-copy reshaped view. The reinterpretation is free when the axes being
@@ -1106,11 +1146,11 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     // than silently copying when the strides do not allow it, so a caller that
     // wanted a view finds out. KEEP_ALIVE(0,1) ties storage.
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> reshape_view(std::vector<size_t> const &new_dims) {
-        return RuntimeTensorView<T>(_impl.reshape_view(new_dims));
+        return RuntimeTensorView<T>(_impl.reshape_view(new_dims), _storage);
     }
 
     [[nodiscard]] RuntimeTensorView<T> const reshape_view(std::vector<size_t> const &new_dims) const {
-        return RuntimeTensorView<T>(_impl.reshape_view(new_dims));
+        return RuntimeTensorView<T>(_impl.reshape_view(new_dims), _storage);
     }
 
     // Whether reshape_view would succeed, for callers that have a fallback.
@@ -1118,22 +1158,22 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         return _impl.reshapable_as_view(new_dims);
     }
 
-    [[nodiscard]] RuntimeTensorView<T> to_row_major() { return RuntimeTensorView<T>(_impl.to_row_major()); }
+    [[nodiscard]] RuntimeTensorView<T> to_row_major() { return RuntimeTensorView<T>(_impl.to_row_major(), _storage); }
 
-    [[nodiscard]] RuntimeTensorView<T> const to_row_major() const { return RuntimeTensorView<T>(_impl.to_row_major()); }
+    [[nodiscard]] RuntimeTensorView<T> const to_row_major() const { return RuntimeTensorView<T>(_impl.to_row_major(), _storage); }
 
-    [[nodiscard]] RuntimeTensorView<T> to_column_major() { return RuntimeTensorView<T>(_impl.to_column_major()); }
+    [[nodiscard]] RuntimeTensorView<T> to_column_major() { return RuntimeTensorView<T>(_impl.to_column_major(), _storage); }
 
-    [[nodiscard]] RuntimeTensorView<T> const to_column_major() const { return RuntimeTensorView<T>(_impl.to_column_major()); }
+    [[nodiscard]] RuntimeTensorView<T> const to_column_major() const { return RuntimeTensorView<T>(_impl.to_column_major(), _storage); }
 
     template <std::integral... MultiIndex>
     [[nodiscard]] RuntimeTensorView<T> tie_indices(MultiIndex &&...index) {
-        return RuntimeTensorView<T>(_impl.tie_indices(std::forward<MultiIndex>(index)...));
+        return RuntimeTensorView<T>(_impl.tie_indices(std::forward<MultiIndex>(index)...), _storage);
     }
 
     template <std::integral... MultiIndex>
     [[nodiscard]] RuntimeTensorView<T> const tie_indices(MultiIndex &&...index) const {
-        return RuntimeTensorView<T>(_impl.tie_indices(std::forward<MultiIndex>(index)...));
+        return RuntimeTensorView<T>(_impl.tie_indices(std::forward<MultiIndex>(index)...), _storage);
     }
 
     // ── Symmetry metadata ──────────────────────────────────────────────
@@ -1166,8 +1206,8 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     void materialize() {
         if (is_materialized())
             return;
-        _data.resize(_impl.size());
-        _impl.set_data(_data.data());
+        _storage->resize_owned(_impl.size());
+        _impl.set_data(_storage->owned.data());
     }
 
     /// Materialize into caller-provided storage instead of allocating.
@@ -1184,25 +1224,23 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     void materialize_into(T *ptr)
         requires(!IsDeviceTensor)
     {
-        if (_external_data == ptr) {
+        if (_storage->external == ptr) {
             return;
         }
-        assert(_external_data == nullptr && "materialize_into(): release() before switching external storage");
+        assert(_storage->external == nullptr && "materialize_into(): release() before switching external storage");
         assert(!_aliased && "materialize_into(): aliased tensors do not own storage to replace");
         // An owned buffer gives way to the external one; holding both would
         // waste the owned copy.
-        if (!_data.empty()) {
-            _data.clear();
-            _data.shrink_to_fit();
-        }
-        _external_data = ptr;
+        _storage->attach_external(ptr);
         _impl.set_data(ptr);
     }
 
     /// True iff backing storage is available. Storage counts as available when
-    /// it is owned with _data non-empty, aliased to an external buffer,
+    /// it is owned with a non-empty buffer, aliased to an external buffer,
     /// materialized into external storage, or rank-0 with no data needed.
-    [[nodiscard]] bool is_materialized() const { return _aliased || _external_data != nullptr || !_data.empty() || _impl.size() == 0; }
+    [[nodiscard]] bool is_materialized() const {
+        return _aliased || _storage->external != nullptr || !_storage->owned.empty() || _impl.size() == 0;
+    }
 
     /// Release backing storage, returning to the deferred state.
     ///
@@ -1212,15 +1250,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     /// storage is detached, never freed. This is a no-op for aliased
     /// tensors, which don't own their memory, so there is nothing to free.
     void release() {
-        if (_external_data != nullptr) {
-            _external_data = nullptr;
-            _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel; dims/strides preserved
+        if (_aliased || !_storage->allocated())
             return;
-        }
-        if (_aliased || _data.empty())
-            return;
-        _data.clear();
-        _data.shrink_to_fit();
+        _storage->clear();
         _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel; dims/strides preserved
     }
 
@@ -1237,11 +1269,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         for (size_t i = 0; i < d.size(); ++i) {
             d[i] = _impl.dim(static_cast<int>(i));
         }
-        _data.clear();
-        _data.shrink_to_fit();
-        _external_data = nullptr; // aliasing supersedes any arena attachment
-        _impl          = detail::TensorImpl<T>(ptr, d, row_major);
-        _aliased       = true;
+        _storage->clear(); // aliasing supersedes owned storage and any arena attachment
+        _impl    = detail::TensorImpl<T>(ptr, d, row_major);
+        _aliased = true;
     }
 
     /// Override the internal data pointer. Used by the GPU executor's
@@ -1271,14 +1301,14 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         // tensor was originally constructed, so resizing a column-major
         // ``[0]`` placeholder up to ``[3,4]`` would silently flip layout.
         detail::TensorImpl<T> new_impl(nullptr, dims, _impl.stored_row_major());
-        // Resize data first; if this throws, _impl and _data remain consistent.
-        _data.resize(new_impl.size());
-        // Data resize succeeded, so now commit. A resize always lands in
-        // owned storage: any arena attachment is dropped (the planned slot
-        // was sized for the old shape).
-        _external_data = nullptr;
-        _impl          = std::move(new_impl);
-        _impl.set_data(_data.data());
+        // Resize data first; if this throws, _impl and the block remain consistent.
+        // A resize always lands in owned storage: any arena attachment is
+        // dropped (the planned slot was sized for the old shape).
+        _storage->external = nullptr;
+        _storage->resize_owned(new_impl.size());
+        // Data resize succeeded, so now commit.
+        _impl = std::move(new_impl);
+        _impl.set_data(_storage->owned.data());
     }
 
     /// Initializer-list overload for ergonomic call sites:
@@ -1334,7 +1364,19 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     }
 
   protected:
-    Vector _data{};
+    /// Refcounted backing storage, always non-null.
+    ///
+    /// Holds both storage modes: ``owned`` for memory this tensor allocated and
+    /// ``external`` for memory attached through @ref materialize_into (the
+    /// MemoryPlanning arena), which are mutually exclusive. A third mode,
+    /// @ref alias_to, owns nothing at all and leaves the block empty.
+    ///
+    /// Shared rather than held by value so that a holder other than this
+    /// wrapper can keep the buffer alive: graph capture takes a reference to
+    /// it, and so does any view sliced from this tensor. Copy construction
+    /// still allocates a fresh block and deep-copies, so value semantics are
+    /// unchanged.
+    std::shared_ptr<detail::StorageBlock<T, Vector>> _storage{detail::make_storage_block<T, Vector>()};
 
     std::string _name{"(unnamed)"};
 
@@ -1344,12 +1386,6 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     /// @ref alias_to). Such a tensor is permanently "materialized" and
     /// release()/materialize() leave its external buffer untouched.
     bool _aliased{false};
-
-    /// Non-null when the tensor is materialized into caller-provided storage
-    /// (see @ref materialize_into, used by the MemoryPlanning arena). Unlike
-    /// _aliased, release() DETACHES from this storage (returning the tensor
-    /// to the deferred state) without freeing it.
-    Pointer _external_data{nullptr};
 
     std::unique_ptr<SymmetryDescriptor> _symmetry{};
 
@@ -1455,7 +1491,7 @@ struct APIARY_EXPOSE
      *
      * @param view The tensor to view.
      */
-    RuntimeTensorView(RuntimeTensor<T> const &view) : _impl{view.impl()}, _name{view.name()} {}
+    RuntimeTensorView(RuntimeTensor<T> const &view) : _impl{view.impl()}, _name{view.name()}, _storage_ref{view.storage()} {}
 
     /**
      * @brief Creates a view of a tensor with new dimensions specified.
@@ -1465,7 +1501,7 @@ struct APIARY_EXPOSE
      */
     template <Container Dim>
     RuntimeTensorView(RuntimeTensor<T> const &other, Dim const &dims)
-        : _impl{const_cast<Pointer>(other.data()), dims, other.impl().is_row_major()} {}
+        : _impl{const_cast<Pointer>(other.data()), dims, other.impl().is_row_major()}, _storage_ref{other.storage()} {}
 
     /**
      * @brief Creates a view of a tensor with new dimensions specified.
@@ -1475,7 +1511,7 @@ struct APIARY_EXPOSE
      */
     template <Container Dim>
     RuntimeTensorView(RuntimeTensorView<T> const &other, Dim const &dims)
-        : _impl(const_cast<Pointer>(other.data()), dims, other.impl().is_row_major()) {}
+        : _impl(const_cast<Pointer>(other.data()), dims, other.impl().is_row_major()), _storage_ref{other.storage()} {}
 
     /**
      * @brief Creates a view of a tensor with new dimensions, strides, and offsets specified.
@@ -1487,7 +1523,7 @@ struct APIARY_EXPOSE
      */
     template <Container Dim, Container Stride, Container Offset, typename Alloc>
     RuntimeTensorView(GeneralRuntimeTensor<T, Alloc> const &other, Dim const &dims, Stride const &strides, Offset const &offsets)
-        : _impl(const_cast<Pointer>(other.data(offsets)), dims, strides) {}
+        : _impl(const_cast<Pointer>(other.data(offsets)), dims, strides), _storage_ref{other.storage()} {}
 
     /**
      * @brief Creates a view of a tensor with new dimensions, strides, and offsets specified.
@@ -1499,7 +1535,7 @@ struct APIARY_EXPOSE
      */
     template <Container Dim, Container Stride, Container Offset>
     RuntimeTensorView(RuntimeTensorView<T> const &other, Dim const &dims, Stride const &strides, Offset const &offsets)
-        : _impl(const_cast<Pointer>(other.data(offsets)), dims, strides) {}
+        : _impl(const_cast<Pointer>(other.data(offsets)), dims, strides), _storage_ref{other.storage()} {}
 
     /**
      * @brief Creates a view of a tensor with compile-time rank.
@@ -1507,7 +1543,7 @@ struct APIARY_EXPOSE
      * @param copy The tensor to view.
      */
     template <size_t Rank>
-    RuntimeTensorView(TensorView<T, Rank> const &copy) : _impl(copy.impl()) {}
+    RuntimeTensorView(TensorView<T, Rank> const &copy) : _impl(copy.impl()), _storage_ref{copy.storage()} {}
 
     /**
      * @brief Creates a view of a tensor with compile-time rank.
@@ -1515,12 +1551,25 @@ struct APIARY_EXPOSE
      * @param copy The tensor to view.
      */
     template <size_t Rank, typename Alloc>
-    RuntimeTensorView(GeneralTensor<T, Rank, Alloc> const &copy) : _impl(copy.impl()) {}
+    RuntimeTensorView(GeneralTensor<T, Rank, Alloc> const &copy) : _impl(copy.impl()), _storage_ref{copy.storage()} {}
 
     /**
      * @brief Creates a view around an implementation.
      */
     RuntimeTensorView(detail::TensorImpl<T> const &impl) : _impl(impl) {}
+
+    /**
+     * @brief Creates a view around an implementation, holding @p storage alive.
+     *
+     * The slicing helpers use this form: an impl on its own carries a bare
+     * pointer into somebody else's buffer, so a view built from one has no way
+     * to keep that buffer alive. Passing the parent's storage block along makes
+     * the view self-sufficient, which is what lets a sliced-then-orphaned view
+     * still be read (and still be a valid graph operand) after the tensor it
+     * came from is gone.
+     */
+    RuntimeTensorView(detail::TensorImpl<T> const &impl, std::shared_ptr<detail::StorageBase> storage)
+        : _impl(impl), _storage_ref(std::move(storage)) {}
 
     // HIP clang doesn't like it when this is defaulted.
     virtual ~RuntimeTensorView() = default;
@@ -1603,7 +1652,7 @@ struct APIARY_EXPOSE
     template <Container Storage>
         requires(std::is_base_of_v<Range, typename Storage::value_type>)
     RuntimeTensorView<T> operator()(Storage const &index) {
-        return RuntimeTensorView<T>(_impl.subscript(index));
+        return RuntimeTensorView<T>(_impl.subscript(index), _storage_ref);
     }
 
     /**
@@ -1616,7 +1665,7 @@ struct APIARY_EXPOSE
     template <Container Storage>
         requires(std::is_base_of_v<Range, typename Storage::value_type>)
     RuntimeTensorView<T> const operator()(Storage const &index) const {
-        return RuntimeTensorView<T>(_impl.subscript(index));
+        return RuntimeTensorView<T>(_impl.subscript(index), _storage_ref);
     }
 
     /**
@@ -1694,7 +1743,7 @@ struct APIARY_EXPOSE
             requires !(std::is_integral_v<Args> && ... && true);
         }
     RuntimeTensorView<T> const operator()(Args const &...args) const {
-        return RuntimeTensorView<T>(_impl.subscript(args...));
+        return RuntimeTensorView<T>(_impl.subscript(args...), _storage_ref);
     }
 
     /**
@@ -1879,7 +1928,7 @@ struct APIARY_EXPOSE
                                     Rank);
         }
 
-        return TensorView<T, Rank>(_impl);
+        return TensorView<T, Rank>(_impl, _storage_ref);
     }
 
     template <size_t Rank>
@@ -1889,7 +1938,7 @@ struct APIARY_EXPOSE
                                     Rank);
         }
 
-        return TensorView<T, Rank>(_impl);
+        return TensorView<T, Rank>(_impl, _storage_ref);
     }
 
     template <size_t Rank, typename Alloc>
@@ -1899,7 +1948,7 @@ struct APIARY_EXPOSE
                                     Rank);
         }
 
-        return TensorView<T, Rank>(_impl);
+        return TensorView<T, Rank>(_impl, _storage_ref);
     }
 
     /**
@@ -2037,16 +2086,16 @@ struct APIARY_EXPOSE
     // tensor's storage to the returned view so numpy arrays built from it
     // stay valid.
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> transpose_view() {
-        return RuntimeTensorView<T>(_impl.transpose_view());
+        return RuntimeTensorView<T>(_impl.transpose_view(), _storage_ref);
     }
 
-    [[nodiscard]] RuntimeTensorView<T> const transpose_view() const { return RuntimeTensorView<T>(_impl.transpose_view()); }
+    [[nodiscard]] RuntimeTensorView<T> const transpose_view() const { return RuntimeTensorView<T>(_impl.transpose_view(), _storage_ref); }
 
     // Zero-copy axis-permuted view (result axis i takes parent axis perm[i]).
     // Backs the eager ``.transpose(axes)`` / ``.swapaxes`` (see einsums/__init__.py);
     // the capture path uses cg.permute_view instead. KEEP_ALIVE(0,1) ties storage.
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> permute_view(std::vector<size_t> const &perm) {
-        return RuntimeTensorView<T>(_impl.permute_view(perm));
+        return RuntimeTensorView<T>(_impl.permute_view(perm), _storage_ref);
     }
 
     // Zero-copy reshaped view. The reinterpretation is free when the axes being
@@ -2055,11 +2104,11 @@ struct APIARY_EXPOSE
     // than silently copying when the strides do not allow it, so a caller that
     // wanted a view finds out. KEEP_ALIVE(0,1) ties storage.
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> reshape_view(std::vector<size_t> const &new_dims) {
-        return RuntimeTensorView<T>(_impl.reshape_view(new_dims));
+        return RuntimeTensorView<T>(_impl.reshape_view(new_dims), _storage_ref);
     }
 
     [[nodiscard]] RuntimeTensorView<T> const reshape_view(std::vector<size_t> const &new_dims) const {
-        return RuntimeTensorView<T>(_impl.reshape_view(new_dims));
+        return RuntimeTensorView<T>(_impl.reshape_view(new_dims), _storage_ref);
     }
 
     // Whether reshape_view would succeed, for callers that have a fallback.
@@ -2067,22 +2116,22 @@ struct APIARY_EXPOSE
         return _impl.reshapable_as_view(new_dims);
     }
 
-    [[nodiscard]] RuntimeTensorView<T> to_row_major() { return RuntimeTensorView<T>(_impl.to_row_major()); }
+    [[nodiscard]] RuntimeTensorView<T> to_row_major() { return RuntimeTensorView<T>(_impl.to_row_major(), _storage_ref); }
 
-    [[nodiscard]] RuntimeTensorView<T> const to_row_major() const { return RuntimeTensorView<T>(_impl.to_row_major()); }
+    [[nodiscard]] RuntimeTensorView<T> const to_row_major() const { return RuntimeTensorView<T>(_impl.to_row_major(), _storage_ref); }
 
-    [[nodiscard]] RuntimeTensorView<T> to_column_major() { return RuntimeTensorView<T>(_impl.to_column_major()); }
+    [[nodiscard]] RuntimeTensorView<T> to_column_major() { return RuntimeTensorView<T>(_impl.to_column_major(), _storage_ref); }
 
-    [[nodiscard]] RuntimeTensorView<T> const to_column_major() const { return RuntimeTensorView<T>(_impl.to_column_major()); }
+    [[nodiscard]] RuntimeTensorView<T> const to_column_major() const { return RuntimeTensorView<T>(_impl.to_column_major(), _storage_ref); }
 
     template <std::integral... MultiIndex>
     [[nodiscard]] RuntimeTensorView<T> tie_indices(MultiIndex &&...index) {
-        return RuntimeTensorView<T>(_impl.tie_indices(std::forward<MultiIndex>(index)...));
+        return RuntimeTensorView<T>(_impl.tie_indices(std::forward<MultiIndex>(index)...), _storage_ref);
     }
 
     template <std::integral... MultiIndex>
     [[nodiscard]] RuntimeTensorView<T> const tie_indices(MultiIndex &&...index) const {
-        return RuntimeTensorView<T>(_impl.tie_indices(std::forward<MultiIndex>(index)...));
+        return RuntimeTensorView<T>(_impl.tie_indices(std::forward<MultiIndex>(index)...), _storage_ref);
     }
 
     /**
@@ -2104,6 +2153,17 @@ struct APIARY_EXPOSE
         return _life_token;
     }
 
+    /// The storage block of the tensor this view was sliced from, or null when
+    /// the view was built from a bare @c TensorImpl and has none.
+    [[nodiscard]] std::shared_ptr<detail::StorageBase> const &storage() const noexcept { return _storage_ref; }
+
+    /// A second view over the same region, holding the same parent storage.
+    ///
+    /// Views are already non-owning, so this is a plain copy; it exists so that
+    /// graph capture can adopt a view operand through the same interface it
+    /// uses for owning tensors. See ``Graph::adopt_operand``.
+    [[nodiscard]] RuntimeTensorView shallow_alias() const { return *this; }
+
   protected:
     /**
      * @property _name
@@ -2113,6 +2173,11 @@ struct APIARY_EXPOSE
     std::string _name{"(unnamed view)"};
 
     detail::TensorImpl<T> _impl{};
+
+    /// Strong reference to the storage block of the tensor this view was
+    /// sliced from, so the view keeps that buffer alive on its own. Null for
+    /// views built directly from a @c TensorImpl, which have no block to hold.
+    std::shared_ptr<detail::StorageBase> _storage_ref;
 
     /// @see liveness_token(). Lazily created; destroyed with the view so the
     /// graph-capture validator's weak_ptr observes the destruction.

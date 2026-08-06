@@ -70,17 +70,26 @@ def test_captured_view_kept_alive_executes():
     assert np.isclose(np.asarray(res).ravel()[0], oracle)
 
 
-def test_captured_view_temp_reports_cleanly():
-    """A view operand captured as a temporary then dropped before execute() is
-    reported as destroyed (clean RuntimeError) -- previously a use-after-free."""
+def test_captured_view_temp_executes():
+    """A view operand captured as a temporary and dropped before execute() still
+    computes correctly.
+
+    This used to raise a clean RuntimeError, which was the best a node holding
+    its operands by raw pointer could manage. Capture now takes a share of each
+    operand's storage, and a view holds one on its parent, so no Python
+    reference has to survive the statement -- which is what let the DLPNO port
+    drop its ``tensors.arena()`` hack."""
     rng = np.random.default_rng(2)
-    A = _mk(rng.standard_normal((2, 3)))
-    B = _mk(rng.standard_normal((2, 3)))
+    A0 = rng.standard_normal((2, 3))
+    B0 = rng.standard_normal((2, 3))
+    oracle = float(np.sum(A0.T * B0.T))
+    A = _mk(A0)
+    B = _mk(B0)
     res = _mk(np.zeros(1))
     g = cg.Graph(f"vl{next(_ctr)}")
     with cg.capture(g):
         # permute_view temporaries: no Python reference survives the statement.
         einsums.linalg.dot(res, A.permute_view([1, 0]), B.permute_view([1, 0]))
     gc.collect()
-    with pytest.raises(RuntimeError):
-        g.execute()
+    g.execute()
+    assert np.isclose(np.asarray(res).ravel()[0], oracle)

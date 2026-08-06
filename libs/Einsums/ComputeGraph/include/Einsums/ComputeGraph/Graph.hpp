@@ -838,6 +838,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     Tensor<T, Rank> &create_tensor(std::string name, Dims... dims) {
         auto *ptr = new Tensor<T, Rank>(name, static_cast<size_t>(dims)...);
         _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<Tensor<T, Rank> *>(p); });
+        _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
 
         auto handle            = make_handle(*ptr, 0);
         handle.is_intermediate = true;
@@ -903,6 +904,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         using TensorType = GeneralRuntimeTensor<T, Alloc>;
         auto *ptr        = new TensorType(name, std::move(dims));
         _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
+        _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
 
         // ``intermediate`` controls DeadNodeElimination: a graph-owned
         // intermediate with no in-graph consumer is prunable, but a
@@ -966,6 +968,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         using TensorType = GeneralRuntimeTensor<T, Alloc>;
         auto *ptr        = new TensorType(typename TensorType::DeferredAlloc{}, name, std::move(dims));
         _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
+        _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
 
         auto handle            = make_handle(*ptr, 0);
         handle.is_intermediate = intermediate;
@@ -1035,6 +1038,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         using TensorType = TiledRuntimeTensor<T>;
         auto *ptr        = new TensorType(std::move(name), std::move(tile_sizes));
         _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
+        _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
 
         auto handle            = make_handle(*ptr, 0);
         handle.is_intermediate = intermediate;
@@ -1070,6 +1074,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         using TensorType = Tensor<T, Rank>;
         auto *ptr        = new TensorType(typename TensorType::DeferredAlloc{}, std::move(name), dims...);
         _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
+        _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
 
         auto handle             = make_handle(*ptr, 0);
         handle.is_intermediate  = false; // User-visible by default. Use create_tensor for intermediates.
@@ -1486,6 +1491,91 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }
     }
 
+    // ── Operand ownership ───────────────────────────────────────────────────
+
+    /**
+     * @brief The graph-owned stand-in for a captured operand.
+     *
+     * Returns a wrapper over @p tensor's storage that this graph keeps alive
+     * for its own lifetime. Registration, slots and executor lambdas all bind
+     * to the returned object rather than to the caller's, which is what lets a
+     * captured operand's own wrapper go out of scope before ``execute()``:
+     *
+     * @code
+     * cg::Graph g("x");
+     * {
+     *     cg::CaptureGuard guard(g);
+     *     auto tmp = create_zero_tensor<double>("tmp", m, n);   // dies here
+     *     cg::gemm(1.0, A, B, 0.0, &tmp);
+     *     cg::gemm(1.0, tmp, D, 0.0, &E);
+     * }
+     * g.execute();                                              // still correct
+     * @endcode
+     *
+     * The stand-in shares storage, so writes through it land in the caller's
+     * buffer and the caller reads its results as before. One stand-in per
+     * caller wrapper, so repeat captures of the same tensor stay one operand.
+     *
+     * Three kinds of operand are returned unchanged:
+     *
+     *  - tensors this graph already owns (``create_tensor`` / ``declare_tensor``),
+     *    because their wrapper is graph-owned already;
+     *  - **deferred** tensors, which have no storage yet. These are the ones
+     *    the graph relocates: Materialization allocates them and MemoryPlanning
+     *    re-seats them on an arena slice, both during execute, and a stand-in
+     *    taken at capture time would still hold the pre-materialization
+     *    pointer. They need no stand-in either, since whatever declared them
+     *    (a Workspace, a Pipeline, this Graph) outlives the capture by
+     *    construction;
+     *  - types with no ``shallow_alias()`` (tile-wise sparse tensors have no
+     *    single storage block to share), which keep the older "operands must
+     *    outlive the graph" contract.
+     *
+     * What is left is exactly the operands the graph reads and writes but never
+     * moves, which is what makes one stand-in safe for a whole replay.
+     *
+     * @tparam TensorType The operand's type.
+     * @param[in] tensor The caller's tensor.
+     * @return An owning reference to the stand-in, or empty when the graph
+     *         adopted nothing and the caller's own tensor is used directly.
+     *         The caller stores it in the operand's TensorHandle and TensorSlot;
+     *         the graph keeps no separate index, so adoption costs one
+     *         allocation and nothing per node afterwards.
+     */
+    template <GraphCapturableTensor TensorType>
+    std::shared_ptr<void> adopt_operand(TensorType const &tensor) {
+        using Clean = std::remove_cvref_t<TensorType>;
+
+        if constexpr (!requires(Clean const &t) { t.shallow_alias(); }) {
+            return {};
+        } else {
+            if (_owned_tensor_ptrs.contains(static_cast<void const *>(&tensor))) {
+                return {};
+            }
+            if constexpr (requires(Clean const &t) { t.is_materialized(); }) {
+                if (!tensor.is_materialized()) {
+                    return {};
+                }
+            }
+            // make_shared, not shared_ptr(new ...): one allocation for the
+            // object and its control block rather than two. Capture allocates
+            // one of these per distinct operand, so the difference shows up in
+            // BenchmarkGraphOverhead.
+            //
+            // Built through the tagged constructor, never from the prvalue
+            // shallow_alias() returns: these types have no move constructor, so
+            // make_shared would bind that prvalue to the COPY constructor and
+            // hand back a deep copy that shares nothing. See
+            // einsums::detail::SharedStorageTag. Views own no storage, so their
+            // plain copy already aliases.
+            if constexpr (requires { Clean(::einsums::detail::SharedStorageTag{}, tensor); }) {
+                return std::make_shared<Clean>(::einsums::detail::SharedStorageTag{}, tensor);
+            } else {
+                return std::make_shared<Clean>(tensor);
+            }
+        }
+    }
+
     // ── Rebind support ──────────────────────────────────────────────────────
 
     /**
@@ -1515,6 +1605,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         for (size_t d = 0; d < slot->rank; d++) {
             slot->dims[d] = tensor.dim(d);
         }
+        // If capture adopted a stand-in for this operand, the handle owns it and
+        // the slot must point at it and share that ownership: the slot outlives
+        // the caller's wrapper, and pointing at a wrapper that may be destroyed
+        // is exactly what operand adoption exists to avoid.
+        if (auto const *handle = find_tensor(tensor_id); handle != nullptr && handle->owner) {
+            slot->ptr   = handle->owner.get();
+            slot->owner = handle->owner;
+        }
+
         auto *raw            = slot.get();
         _slot_map[tensor_id] = std::move(slot);
         _slots_validated     = false;
@@ -1823,6 +1922,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Type-erased storage for graph-owned tensors (from create_tensor()).
     /// Each entry uses a typed deleter captured at creation time.
     std::vector<std::unique_ptr<void, void (*)(void *)>> _owned_tensors;
+
+    /// Addresses of the wrappers in @ref _owned_tensors, for the "do I already
+    /// own this one?" test in @ref adopt_operand.
+    std::unordered_set<void const *> _owned_tensor_ptrs;
 
     /// Captured cleanup callbacks from ``adopt()``, invoked in
     /// reverse-insertion order at graph destruction. Used by capture-time
