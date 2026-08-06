@@ -106,10 +106,15 @@ foreach(lib ${EINSUMS_LIBS})
     endif()
   endif()
 
+  # OUTPUT_NAME carries the ABI generation, so two incompatible copies are two files rather than one
+  # name the loader deduplicates down to whichever landed first. SOVERSION carries it too, for the
+  # ELF consumers that key on that.
   set_target_properties(
-    ${lib} PROPERTIES VERSION ${EINSUMS_VERSION} SOVERSION ${EINSUMS_SOVERSION} OUTPUT_NAME ${lib}
-                      FOLDER "Core"
+    ${lib} PROPERTIES VERSION ${EINSUMS_VERSION} SOVERSION ${EINSUMS_SOVERSION}
+                      OUTPUT_NAME ${EINSUMS_LIBRARY_OUTPUT_NAME} FOLDER "Core"
   )
+  include(Einsums_SymbolIsolation)
+  einsums_apply_symbol_isolation(${lib})
   install(
     TARGETS ${lib}
     EXPORT einsums_targets

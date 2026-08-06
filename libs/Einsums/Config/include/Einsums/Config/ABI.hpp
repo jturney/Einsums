@@ -149,6 +149,11 @@ constexpr std::uint64_t fnv1a_value(std::uint64_t v, std::uint64_t h) noexcept {
 [[nodiscard]] constexpr std::uint64_t config_fingerprint() noexcept {
     std::uint64_t h = detail::fnv1a("einsums.abi.config.1");
 
+    // The ABI generation first: it is the one number that is SUPPOSED to differ
+    // when two builds are incompatible, so a mismatch here is the answer rather
+    // than a clue.
+    h = detail::fnv1a_value(EINSUMS_ABI_VERSION, h);
+
     // Version. A patch bump is not an ABI break, but it is worth reporting.
     h = detail::fnv1a_value(EINSUMS_VERSION_FULL, h);
 

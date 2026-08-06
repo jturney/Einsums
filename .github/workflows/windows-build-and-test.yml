@@ -192,8 +192,10 @@ jobs:
           echo direct-run exit code: %ERRORLEVEL%
           echo ==== import table (fallback) ====
           llvm-readobj --coff-imports "%TESTEXE%" 2>nul || dumpbin /dependents "%TESTEXE%" 2>nul || echo "(no llvm-readobj/dumpbin on PATH)"
-          echo ==== Einsums.dll imports ====
-          for /f "delims=" %%D in ('dir /b /s "RelWithDebInfo\Einsums.dll" 2^>nul') do llvm-readobj --coff-imports "%%D" 2>nul || dumpbin /dependents "%%D" 2>nul
+          echo ==== Einsums DLL imports ====
+          rem Glob rather than a fixed name: the DLL carries the ABI generation
+          rem (Einsums-abi1.dll), which changes on an ABI break.
+          for /f "delims=" %%D in ('dir /b /s "RelWithDebInfo\Einsums-abi*.dll" 2^>nul') do llvm-readobj --coff-imports "%%D" 2>nul || dumpbin /dependents "%%D" 2>nul
           exit /b 0
 
       - name: Test (CTest)

@@ -51,8 +51,24 @@ set(EINSUMS_VERSION_FULL
     "${EINSUMS_VERSION_MAJOR}.${EINSUMS_VERSION_MINOR}.${EINSUMS_VERSION_PATCH}${EINSUMS_VERSION_TAG}"
 )
 
+# ABI generation. Counts ABI BREAKS, not releases, and is deliberately not derived from the version:
+# this library breaks ABI between minor versions, so a SONAME tied to the major version is a
+# compatibility promise it does not keep. Two copies claiming `libEinsums.so.2` are deduplicated by
+# the loader, which then serves both worlds from whichever loaded first - silently, and possibly the
+# older one.
+#
+# Bump on any change to an exported type's layout, an exported function's signature, a virtual
+# table, or an enumerator's value. Do NOT bump for a release that changes none of those.
+#
+# The value reaches C++ as EINSUMS_ABI_TAG (see Config/ConfigDefines.hpp.in) and names the library
+# file, so two incompatible copies can coexist in one process instead of colliding. The filename
+# matters on Windows in particular, where the PE loader keys on module base name and SONAME has no
+# effect at all.
+set(EINSUMS_ABI_VERSION 1)
+
 set(EINSUMS_LIBRARY_VERSION "${EINSUMS_VERSION}")
-set(EINSUMS_SOVERSION ${EINSUMS_VERSION_MAJOR})
+set(EINSUMS_SOVERSION ${EINSUMS_ABI_VERSION})
+set(EINSUMS_LIBRARY_OUTPUT_NAME "Einsums-abi${EINSUMS_ABI_VERSION}")
 set(EINSUMS_PACKAGE_NAME Einsums)
 # To keep track of the einsums_root when other subprojects are declared
 set(EINSUMS_SOURCE_DIR "${PROJECT_SOURCE_DIR}")

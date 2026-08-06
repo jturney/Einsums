@@ -32,12 +32,33 @@ foreach(test ${ConfigTests})
     NOINSTALL
   )
 
-  einsums_add_unit_test(
-    "Modules.Config" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS}
-  )
+  einsums_add_unit_test("Modules.Config" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS})
 endforeach()
 
-# Two copies of one library in one process: the loader-behaviour reproduction
-# the sealed-worlds symbol isolation depends on. Self-contained, links no
-# Einsums except in the test driver.
+# Two copies of one library in one process: the loader-behaviour reproduction the sealed-worlds
+# symbol isolation depends on. Self-contained, links no Einsums except in the test driver.
 add_subdirectory(two_worlds)
+
+# Assert the isolation was actually applied to the real libEinsums.
+#
+# Every flag in Einsums_SymbolIsolation.cmake sits behind check_linker_flag, so the whole thing
+# fails OPEN: a toolchain that stops accepting a flag, a linker swap, or a refactor that drops the
+# call would each leave the library unprotected with nothing going red. This is the test that
+# notices.
+#
+# Skips itself on non-ELF platforms and where readelf is absent, so it is only evidence where there
+# is something to be evidence about.
+if(TARGET Einsums)
+  find_program(EINSUMS_READELF NAMES readelf llvm-readelf eu-readelf)
+  add_test(
+    NAME Tests.Unit.Modules.Config.SymbolIsolation
+    COMMAND
+      ${CMAKE_COMMAND} -DLIBRARY=$<TARGET_FILE:Einsums> -DABI_VERSION=${EINSUMS_ABI_VERSION}
+      -DREADELF=${EINSUMS_READELF} -P
+      ${PROJECT_SOURCE_DIR}/cmake/scripts/verify_symbol_isolation.cmake
+  )
+  set_tests_properties(
+    Tests.Unit.Modules.Config.SymbolIsolation PROPERTIES LABELS "UNIT_ONLY" SKIP_REGULAR_EXPRESSION
+                                                         "SKIP:"
+  )
+endif()

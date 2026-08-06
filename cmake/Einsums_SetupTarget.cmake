@@ -96,7 +96,7 @@ function(einsums_setup_target target)
   if("${_type}" STREQUAL "LIBRARY")
     if(DEFINED EINSUMS_LIBRARY_VERSION AND DEFINED EINSUMS_SOVERSION)
       set_target_properties(
-        ${target} PROPERTIES VESRION ${EINSUMS_LIBRARY_VERSION} SOVERSION ${EINSUMS_SOVERSION}
+        ${target} PROPERTIES VERSION ${EINSUMS_LIBRARY_VERSION} SOVERSION ${EINSUMS_SOVERSION}
       )
     endif()
 

@@ -19,14 +19,15 @@ set(MINIWORLD_A_VALUE 1001)
 set(MINIWORLD_B_VALUE 2002)
 set(MINIWORLD_STATIC_VALUE 3003)
 
-# ELF only. Mach-O binds through a two-level namespace that records the source
-# dylib per symbol, and PE binds per-DLL by name; neither has the flat-namespace
-# race that versioning exists to settle, and neither linker takes the flag.
+# ELF only. Mach-O binds through a two-level namespace that records the source dylib per symbol, and
+# PE binds per-DLL by name; neither has the flat-namespace race that versioning exists to settle,
+# and neither linker takes the flag.
 set(_miniworld_versioned FALSE)
 if(CMAKE_SYSTEM_NAME MATCHES "Linux|BSD|SunOS")
   include(CheckLinkerFlag)
-  check_linker_flag(CXX "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/miniworld_a.map"
-                    EINSUMS_LINKER_SUPPORTS_VERSION_SCRIPT
+  check_linker_flag(
+    CXX "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/miniworld_a.map"
+    EINSUMS_LINKER_SUPPORTS_VERSION_SCRIPT
   )
   if(EINSUMS_LINKER_SUPPORTS_VERSION_SCRIPT)
     set(_miniworld_versioned TRUE)
@@ -38,12 +39,15 @@ function(einsums_add_miniworld name value tag)
   add_library(${name} SHARED MiniWorld.cpp)
   target_include_directories(${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_definitions(${name} PRIVATE MINIWORLD_VALUE=${value})
-  set_target_properties(${name} PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+  set_target_properties(
+    ${name} PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON
+  )
   if(_miniworld_versioned)
-    target_link_options(${name} PRIVATE "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/${name}.map")
-    # A version script is an input file, not just a flag: without this the
-    # library does not relink when the script changes, and a broken script
-    # would keep passing from cache.
+    target_link_options(
+      ${name} PRIVATE "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/${name}.map"
+    )
+    # A version script is an input file, not just a flag: without this the library does not relink
+    # when the script changes, and a broken script would keep passing from cache.
     set_target_properties(${name} PROPERTIES LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${name}.map)
   endif()
 endfunction()
@@ -51,8 +55,7 @@ endfunction()
 einsums_add_miniworld(miniworld_a ${MINIWORLD_A_VALUE} A)
 einsums_add_miniworld(miniworld_b ${MINIWORLD_B_VALUE} B)
 
-# The static copy, for the case a stage module absorbs the library instead of
-# linking it shared.
+# The static copy, for the case a stage module absorbs the library instead of linking it shared.
 add_library(miniworld_static STATIC MiniWorld.cpp)
 target_include_directories(miniworld_static PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(miniworld_static PRIVATE MINIWORLD_VALUE=${MINIWORLD_STATIC_VALUE})
@@ -60,12 +63,14 @@ set_target_properties(
   miniworld_static PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden
 )
 
-# One consumer per copy, standing in for a compiled stage module. MODULE rather
-# than SHARED: these are dlopen targets, never linked against.
+# One consumer per copy, standing in for a compiled stage module. MODULE rather than SHARED: these
+# are dlopen targets, never linked against.
 function(einsums_add_miniworld_consumer name world)
   add_library(${name} MODULE Consumer.cpp)
   target_link_libraries(${name} PRIVATE ${world})
-  set_target_properties(${name} PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+  set_target_properties(
+    ${name} PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON
+  )
 endfunction()
 
 einsums_add_miniworld_consumer(two_worlds_consumer_a miniworld_a)
@@ -78,8 +83,8 @@ einsums_add_executable(
   NOINSTALL
 )
 
-# Paths and expected constants reach the test as definitions, so it never has to
-# guess a build layout.
+# Paths and expected constants reach the test as definitions, so it never has to guess a build
+# layout.
 target_compile_definitions(
   TwoWorlds_test
   PRIVATE CONSUMER_A_PATH="$<TARGET_FILE:two_worlds_consumer_a>"
