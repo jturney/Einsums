@@ -124,6 +124,54 @@ TEST_CASE("Operand ownership: a captured intermediate destroyed before execute()
     require_close(E, E_ref);
 }
 
+TEST_CASE("Operand ownership: a recycled address is not mistaken for its predecessor", "[ComputeGraph][Ownership]") {
+    // Capture dedupes operands by address, which only identifies a tensor while
+    // no captured tensor is ever freed. Once operands may die during a capture,
+    // a destroyed wrapper's address is immediately reusable, and a tensor
+    // allocated on top of a dead one would inherit its TensorId: every node
+    // referring to it would then read the wrong operand, with no diagnostic.
+    //
+    // Found by deleting the DLPNO port's `tensors.arena()`, which existed to
+    // keep every captured temporary alive and so kept addresses unique as a
+    // side effect. The failure there was a gemm handed a rank-3 destination
+    // because a freed (Q|ja) had been replaced by a rank-2 product.
+    //
+    // Placement new into one buffer makes the reuse exact rather than a race
+    // with the allocator.
+    constexpr size_t M = 6, K = 5, N = 4;
+
+    alignas(RuntimeTensor<double>) std::byte slot_storage[sizeof(RuntimeTensor<double>)];
+    auto                                    *slot_ptr = reinterpret_cast<RuntimeTensor<double> *>(slot_storage);
+
+    auto A   = filled("A", M, K, 0.3);
+    auto B   = filled("B", K, N, 1.7);
+    auto out = zeros("out", M, N);
+    auto ref = zeros("ref", M, N);
+    linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &ref);
+
+    cg::Graph graph("recycled_address");
+    {
+        cg::CaptureGuard const guard(graph);
+
+        // A rank-3 tensor at the address, captured, then destroyed.
+        std::construct_at(slot_ptr, "first (rank 3)", std::vector<size_t>{2, 3, 4});
+        slot_ptr->zero();
+        cg::scale(2.0, slot_ptr);
+        std::destroy_at(slot_ptr);
+
+        // A rank-2 tensor at the SAME address, captured as a gemm destination.
+        // Resolving it to the rank-3 tensor's id fails in the executor with
+        // "the inputs to gemm need to be matrices".
+        std::construct_at(slot_ptr, "second (rank 2)", std::vector<size_t>{M, N});
+        slot_ptr->zero();
+        cg::gemm<false, false>(1.0, A, B, 0.0, slot_ptr);
+    }
+
+    graph.execute();
+    require_close(*slot_ptr, ref);
+    std::destroy_at(slot_ptr);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 3. Per-slice writes ordered against a whole-parent read
 // ═══════════════════════════════════════════════════════════════════════════

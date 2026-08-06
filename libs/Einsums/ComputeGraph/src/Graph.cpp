@@ -799,7 +799,12 @@ TensorId Graph::register_tensor(TensorHandle handle) {
     handle.id                 = id;
     auto const &stored        = _tensors.emplace(id, std::move(handle)).first->second;
     if (stored.tensor_ptr != nullptr) {
-        _ptr_index.emplace(stored.tensor_ptr, id);
+        // insert_or_assign, not emplace: an address freed during a capture can
+        // be reused by a different tensor, and the index has to name the tensor
+        // that lives there NOW. The stale-entry case is caught upstream by the
+        // liveness-token check in CaptureContext::get_or_register, which is
+        // what routes a recycled address here for re-registration.
+        _ptr_index.insert_or_assign(stored.tensor_ptr, id);
     }
     // Deliberately not linked here: containment is resolved in one amortized
     // pass (see link_alias_storage), because doing it per registration is

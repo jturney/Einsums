@@ -26,6 +26,28 @@
 
 namespace einsums::compute_graph {
 
+namespace detail {
+
+/// True when @p token names no control block at all, as opposed to naming one
+/// that has since expired. The distinction matters: an untracked handle always
+/// matches, while an expired one names a tensor that is gone.
+inline bool untracked(std::weak_ptr<void> const &token) noexcept {
+    static std::weak_ptr<void> const none;
+    return !token.owner_before(none) && !none.owner_before(token);
+}
+
+/// Whether two liveness tokens name the same tensor. An untracked token on
+/// either side matches anything, which keeps tensor types that expose no token
+/// (and handles registered before capture) on the pre-existing behaviour.
+inline bool same_tensor(std::weak_ptr<void> const &a, std::weak_ptr<void> const &b) noexcept {
+    if (untracked(a) || untracked(b)) {
+        return true;
+    }
+    return !a.owner_before(b) && !b.owner_before(a);
+}
+
+} // namespace detail
+
 /**
  * @brief A tensor the graph can capture into a handle.
  *
@@ -228,6 +250,25 @@ struct TensorHandle {
      * parent, which is correct but serializes work that is provably disjoint.
      */
     std::vector<std::pair<std::int64_t, std::int64_t>> alias_box;
+
+    /**
+     * @brief Liveness token of the CALLER's wrapper at registration time.
+     *
+     * An address does not identify a tensor across a capture that frees them.
+     * A destroyed wrapper's address is immediately reusable, so a tensor
+     * allocated on top of a dead one would inherit its TensorId from the
+     * address-keyed caches and every node referring to it would silently
+     * operate on the wrong operand. This token distinguishes "same tensor" from
+     * "same address": a recycled address arrives with a different token.
+     *
+     * Empty for handles registered outside capture (``create_tensor`` /
+     * ``declare_tensor``), whose wrapper the graph owns and cannot recycle, and
+     * for tensor types that expose no token. Both are treated as always
+     * matching, which is the behaviour that predates the check.
+     *
+     * @see einsums::compute_graph::detail::untracked
+     */
+    std::weak_ptr<void> caller_token;
 
     /**
      * @brief The graph's stand-in for this operand, when it adopted one.

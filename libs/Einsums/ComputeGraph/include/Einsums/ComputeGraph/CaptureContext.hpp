@@ -198,18 +198,37 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
     TensorId get_or_register(TensorType const &tensor) {
         void *ptr = const_cast<void *>(static_cast<void const *>(&tensor));
 
+        // Both caches below are keyed by address, and an address does not
+        // identify a tensor across a capture that frees them: a destroyed
+        // wrapper's address is immediately reusable, so a tensor allocated on
+        // top of a dead one would inherit its TensorId and every node referring
+        // to it would silently operate on the wrong operand. The liveness token
+        // tells the two apart. (Callers used to dodge this by keeping every
+        // captured temporary alive for the whole capture; operand adoption
+        // removed the reason to, which is what exposed it.)
+        std::weak_ptr<void> token;
+        if constexpr (requires { tensor.liveness_token(); }) {
+            token = tensor.liveness_token();
+        }
+
         // Check capture-local cache first
         auto it = _ptr_to_id.find(ptr);
         if (it != _ptr_to_id.end()) {
-            return it->second;
+            if (detail::same_tensor(it->second.token, token)) {
+                return it->second.id;
+            }
+            _ptr_to_id.erase(it);
         }
 
         // Already registered with the graph (e.g. from create_tensor())? This
         // was a linear scan of the tensor table, which made a capture quadratic
         // in the number of distinct operands.
         if (TensorId const tid = _graph->find_tensor_id_by_ptr(ptr); tid != 0) {
-            _ptr_to_id[ptr] = tid;
-            return tid;
+            auto const *existing = _graph->find_tensor(tid);
+            if (existing != nullptr && detail::same_tensor(existing->caller_token, token)) {
+                _ptr_to_id[ptr] = {.id = tid, .token = token};
+                return tid;
+            }
         }
 
         // New tensor *to this graph*, register it. Inside a loop body or
@@ -222,13 +241,14 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
         // object the graph keeps alive. ``tensor_ptr`` still names the caller's
         // tensor: it is the handle's identity, compared against user-held
         // addresses all over the passes.
-        using Clean       = std::remove_cvref_t<TensorType>;
-        auto  owner       = _graph->adopt_operand(tensor);
-        auto &bound       = owner ? *static_cast<Clean *>(owner.get()) : const_cast<Clean &>(tensor);
-        auto  handle      = make_handle(bound, 0, ptr);
-        handle.owner      = std::move(owner);
-        TensorId const id = _graph->register_tensor(std::move(handle));
-        _ptr_to_id[ptr]   = id;
+        using Clean         = std::remove_cvref_t<TensorType>;
+        auto  owner         = _graph->adopt_operand(tensor);
+        auto &bound         = owner ? *static_cast<Clean *>(owner.get()) : const_cast<Clean &>(tensor);
+        auto  handle        = make_handle(bound, 0, ptr);
+        handle.owner        = std::move(owner);
+        handle.caller_token = token;
+        TensorId const id   = _graph->register_tensor(std::move(handle));
+        _ptr_to_id[ptr]     = {.id = id, .token = token};
         return id;
     }
 
@@ -246,12 +266,14 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
         void *ptr = static_cast<void *>(scalar);
         auto  it  = _ptr_to_id.find(ptr);
         if (it != _ptr_to_id.end()) {
-            return it->second;
+            return it->second.id;
         }
 
+        // Scalars have no liveness token, so the entry stays untracked and
+        // matches on address alone, which is what it did before.
         TensorId id     = _graph->register_tensor(make_scalar_handle(scalar, 0, std::move(name)));
         auto    &handle = _graph->tensor(id);
-        _ptr_to_id[ptr] = handle.id;
+        _ptr_to_id[ptr] = {.id = handle.id, .token = {}};
         return handle.id;
     }
 
@@ -296,9 +318,16 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
     }
 
   private:
+    /// A cached address→id mapping, plus the liveness token that says whether
+    /// the tensor at that address is still the one the id was minted for.
+    struct CachedId {
+        TensorId            id{0};
+        std::weak_ptr<void> token;
+    };
+
     Graph                               *_graph{nullptr};
     bool                                 _capturing{false};
-    std::unordered_map<void *, TensorId> _ptr_to_id; ///< Maps tensor address → TensorId for deduplication
+    std::unordered_map<void *, CachedId> _ptr_to_id; ///< Maps tensor address → TensorId for deduplication
 };
 
 /**
