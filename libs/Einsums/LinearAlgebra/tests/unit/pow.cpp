@@ -10,6 +10,8 @@
 #include <Einsums/TensorUtilities/CreateTensorLike.hpp>
 #include <Einsums/TensorUtilities/Diagonal.hpp>
 
+#include <type_traits>
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -25,13 +27,21 @@ TEMPLATE_TEST_CASE("pow", "[linear-algebra]", float, double) {
     // either: A has entries in [-1, 1), so A@A off-diagonals are cancellation
     // sums that land near zero, where WithinRel's eps*|target| tolerance
     // collapses to ~0. The combined matcher below scales with magnitude for
-    // large entries and keeps an absolute floor at zero; one pair of
-    // tolerances covers both float and double (double satisfies both
-    // trivially). It is spelled inline at each check because Catch2's matcher
-    // operator|| holds its operands by reference - a helper returning the
-    // combined matcher would dangle.
-    auto const rel_tol = TestType{1e-4};
-    auto const abs_tol = TestType{1e-5};
+    // large entries and keeps an absolute floor at zero. It is spelled inline
+    // at each check because Catch2's matcher operator|| holds its operands by
+    // reference - a helper returning the combined matcher would dangle.
+    //
+    // The tolerances are per dtype. One pair used to cover both, on the
+    // reasoning that double satisfies float's trivially - true, but it left
+    // float held to a bound its own arithmetic cannot meet. The non-integer
+    // section reassembles the matrix through an eigendecomposition, a
+    // fractional power of each eigenvalue, and two GEMMs; in float that is a
+    // few hundred eps of accumulated error, right on top of a 1e-4 relative
+    // bound. It failed about one run in a hundred, on whichever leg drew the
+    // unlucky random matrix, and Catch2 reseeds every run so it never
+    // reproduced twice in the same place.
+    auto const rel_tol = std::is_same_v<TestType, float> ? TestType{1e-3} : TestType{1e-4};
+    auto const abs_tol = std::is_same_v<TestType, float> ? TestType{1e-4} : TestType{1e-5};
 
     SECTION("Integer power") {
 
