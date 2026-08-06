@@ -54,8 +54,8 @@ void bench_plan(int N) {
     ProfileAnnotate("elements", int64_t(N) * N);
 
     auto t_uncached = time_us("plan-uncached", [&] {
-        auto const plan =
-            hptt::create_plan<float>(perm, 2, 1.0f, A.data(), size, nullptr, 0.0f, B.data(), nullptr, hptt::ESTIMATE, hptt_threads());
+        auto const plan = einsums::hptt::create_plan<float>(perm, 2, 1.0f, A.data(), size, nullptr, 0.0f, B.data(), nullptr,
+                                                            einsums::hptt::ESTIMATE, hptt_threads());
         plan->execute();
     });
     publish_benchmark_result("plan-uncached", "t_plan", N, t_uncached);

@@ -10,14 +10,14 @@
  * \f[ B_{\pi(i_0,i_1,...)} = \alpha * A_{i_0,i_1,...} + \beta * B_{\pi(i_0,i_1,...)}. \f]
  *
  * @code
- *     auto plan = hptt::create_plan(perm, dim, alpha, A, size, nullptr,
- *                                   beta, B, nullptr, hptt::ESTIMATE, numThreads);
+ *     auto plan = einsums::hptt::create_plan(perm, dim, alpha, A, size, nullptr,
+ *                                   beta, B, nullptr, einsums::hptt::ESTIMATE, numThreads);
  *     plan->execute();
  * @endcode
  *
  * Supported types: float, double, std::complex<float>, std::complex<double>.
  *
- * @see hptt::Transpose, hptt::create_plan
+ * @see einsums::hptt::Transpose, einsums::hptt::create_plan
  */
 
 #pragma once
@@ -32,7 +32,7 @@
 #    include <omp.h>
 #endif
 
-namespace hptt {
+namespace einsums::hptt {
 
 // ===========================================================================
 // Templatized create_plan overloads.
@@ -106,4 +106,4 @@ create_plan(std::vector<int> const &perm, int dim, T alpha, T const *A, std::vec
                                 threadIds.empty() ? nullptr : threadIds.data(), useRowMajor);
 }
 
-} // namespace hptt
+} // namespace einsums::hptt

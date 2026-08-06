@@ -10,7 +10,7 @@
 
 #include <complex>
 
-extern "C" {
+namespace einsums::blas::vendor {
 /**
  * Internal kernel for performing the direct product. The direct product function is not in BLAS, so we have to write our own.
  *
@@ -26,21 +26,18 @@ extern "C" {
  *  Added AVX2 vectorized kernels and default unvectorized kernels.
  * @endversion
  */
-extern EINSUMS_EXPORT void sdirprod_kernel(size_t n, float alpha, float const *x, float const *y, float *z);
+EINSUMS_EXPORT void sdirprod_kernel(size_t n, float alpha, float const *x, float const *y, float *z);
 
 /// @copydoc sdirprod_kernel
-extern EINSUMS_EXPORT void ddirprod_kernel(size_t n, double alpha, double const *x, double const *y, double *z);
+EINSUMS_EXPORT void ddirprod_kernel(size_t n, double alpha, double const *x, double const *y, double *z);
 
 /// @copydoc sdirprod_kernel
-extern EINSUMS_EXPORT void cdirprod_kernel(size_t n, std::complex<float> alpha, std::complex<float> const *x, std::complex<float> const *y,
-                                           std::complex<float> *z);
+EINSUMS_EXPORT void cdirprod_kernel(size_t n, std::complex<float> alpha, std::complex<float> const *x, std::complex<float> const *y,
+                                    std::complex<float> *z);
 
 /// @copydoc sdirprod_kernel
-extern EINSUMS_EXPORT void zdirprod_kernel(size_t n, std::complex<double> alpha, std::complex<double> const *x,
-                                           std::complex<double> const *y, std::complex<double> *z);
-}
-
-namespace einsums::blas::vendor {
+EINSUMS_EXPORT void zdirprod_kernel(size_t n, std::complex<double> alpha, std::complex<double> const *x, std::complex<double> const *y,
+                                    std::complex<double> *z);
 
 /**
  * @brief Initializes the BLAS library.

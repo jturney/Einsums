@@ -15,7 +15,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
-namespace hptt {
+namespace einsums::hptt {
 
 constexpr char endian_char() {
     if constexpr (std::endian::native == std::endian::big) {
@@ -111,4 +111,4 @@ EINSUMS_EXPORT uint32_t compute_checksum(std::FILE *fp);
 
 EINSUMS_EXPORT int verify_file(std::FILE *fp);
 
-} // namespace hptt
+} // namespace einsums::hptt

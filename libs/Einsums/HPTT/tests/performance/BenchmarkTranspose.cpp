@@ -53,8 +53,8 @@ void bench_transpose_2d(char const *label, int N) {
 
     int const    perm[2]{1, 0};
     size_t const size[2]{static_cast<size_t>(N), static_cast<size_t>(N)};
-    auto const plan = hptt::create_plan<T>(perm, 2, static_cast<T>(1.0f), A.data(), size, nullptr, static_cast<T>(0.0f), B.data(), nullptr,
-                                           hptt::ESTIMATE, hptt_threads());
+    auto const plan = einsums::hptt::create_plan<T>(perm, 2, static_cast<T>(1.0f), A.data(), size, nullptr, static_cast<T>(0.0f), B.data(),
+                                                    nullptr, einsums::hptt::ESTIMATE, hptt_threads());
 
     ProfileAnnotate("rank", int64_t(2));
     ProfileAnnotate("pattern", "ji<-ij");

@@ -37,7 +37,7 @@
 
 #include "Einsums/HPTT/Files.hpp"
 
-namespace hptt {
+namespace einsums::hptt {
 
 Plan::Plan(std::vector<int> loopOrder, std::vector<int> numThreadsAtLoop)
     : _rootNodes(), _loopOrder(std::move(loopOrder)), _numThreadsAtLoop(numThreadsAtLoop) {
@@ -333,4 +333,4 @@ Plan::Plan(std::FILE *fp, bool swap_endian) {
         }
     }
 }
-} // namespace hptt
+} // namespace einsums::hptt

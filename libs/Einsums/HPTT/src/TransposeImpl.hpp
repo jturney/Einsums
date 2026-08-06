@@ -48,7 +48,7 @@
 #    include <omp.h>
 #endif
 
-namespace hptt {
+namespace einsums::hptt {
 
 class Plan;
 
@@ -363,4 +363,4 @@ extern template class TransposeImpl<einsums::simd::bfloat16_t>;
 #endif
 
 } // namespace EINSUMS_SIMD_ARCH_NS
-} // namespace hptt
+} // namespace einsums::hptt

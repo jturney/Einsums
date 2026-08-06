@@ -50,8 +50,8 @@ How It Works
     int size[] = {10, 20, 30};        // Dimensions of A
     float alpha = 1.0f, beta = 0.0f;
 
-    auto plan = hptt::create_plan(perm, 3, alpha, A, size, nullptr,
-                                   beta, C, nullptr, hptt::ESTIMATE, 4);
+    auto plan = einsums::hptt::create_plan(perm, 3, alpha, A, size, nullptr,
+                                   beta, C, nullptr, einsums::hptt::ESTIMATE, 4);
     plan->execute();
 
 SIMD Refactoring

@@ -64,7 +64,7 @@
 
 #include "TransposeImpl.hpp"
 
-namespace hptt {
+namespace einsums::hptt {
 namespace EINSUMS_SIMD_ARCH_NS {
 
 // std::abs has no overload for __fp16 / __bf16, so promote those to float
@@ -2651,4 +2651,4 @@ EINSUMS_HPTT_INSTANTIATE_FACTORIES(einsums::simd::bfloat16_t)
 #undef EINSUMS_HPTT_INSTANTIATE_FACTORIES
 
 } // namespace EINSUMS_SIMD_ARCH_NS
-} // namespace hptt
+} // namespace einsums::hptt

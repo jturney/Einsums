@@ -9,7 +9,7 @@
 #include <limits>
 #include <memory>
 
-namespace hptt {
+namespace einsums::hptt {
 
 /**
  * \brief A ComputeNode encodes a loop.
@@ -31,4 +31,4 @@ class ComputeNode {
     std::unique_ptr<ComputeNode> next;                          //!< next ComputeNode, or nullptr if this is the last (macro-kernel call)
 };
 
-} // namespace hptt
+} // namespace einsums::hptt

@@ -10,7 +10,7 @@
 #include <cerrno>
 #include <cstring>
 
-namespace hptt {
+namespace einsums::hptt {
 
 constexpr char version[4] = {0, 0, 0, endian_char()};
 
@@ -156,4 +156,4 @@ int verify_file(std::FILE *fp) {
     return 0;
 }
 
-} // namespace hptt
+} // namespace einsums::hptt

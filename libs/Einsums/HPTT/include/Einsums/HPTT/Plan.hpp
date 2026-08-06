@@ -31,7 +31,7 @@
 
 #include <vector>
 
-namespace hptt {
+namespace einsums::hptt {
 
 /**
  * @class Plan
@@ -111,4 +111,4 @@ class Plan {
     std::vector<ComputeNode> _rootNodes;
 };
 
-} // namespace hptt
+} // namespace einsums::hptt

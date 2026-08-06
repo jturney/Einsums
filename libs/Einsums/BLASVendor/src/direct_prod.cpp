@@ -33,14 +33,21 @@
 // deadlocks. (The former .c file was built without -fopenmp, so its pragma
 // was inert; compiling here as C++ activates it.)
 // ---------------------------------------------------------------------------
-extern "C" {
 #if defined(__AVX2__) && defined(__FMA3__) && !defined(__ICC) && !defined(__INTEL_COMPILER)
+// The AVX2 kernels are hand-written assembly, so these keep C linkage.
+extern "C" {
 extern int sdirprod_kernel_avx2(size_t n, float alpha, float const *x, float const *y, float *z);
 extern int ddirprod_kernel_avx2(size_t n, double alpha, double const *x, double const *y, double *z);
 extern int cdirprod_kernel_avx2(size_t n, std::complex<float> alpha, std::complex<float> const *x, std::complex<float> const *y,
                                 std::complex<float> *z);
 extern int zdirprod_kernel_avx2(size_t n, std::complex<double> alpha, std::complex<double> const *x, std::complex<double> const *y,
                                 std::complex<double> *z);
+} // extern "C"
+#endif
+
+namespace einsums::blas::vendor {
+
+#if defined(__AVX2__) && defined(__FMA3__) && !defined(__ICC) && !defined(__INTEL_COMPILER)
 
 void sdirprod_kernel(size_t n, float alpha, float const *__restrict x, float const *__restrict y, float *__restrict z) {
     sdirprod_kernel_avx2(n, alpha, x, y, z);
@@ -90,9 +97,6 @@ void zdirprod_kernel(size_t n, std::complex<double> alpha, std::complex<double> 
     }
 }
 #endif
-} // extern "C"
-
-namespace einsums::blas::vendor {
 
 namespace {
 
@@ -121,12 +125,12 @@ void sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, 
         if (blocks != 0) {
             EINSUMS_OMP_PARALLEL_FOR_IF(n >= parallel_threshold())
             for (int_t i = 0; i < blocks; i++) {
-                ::sdirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
+                sdirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
             }
         }
 
         if (remaining != 0) {
-            ::sdirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
+            sdirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
         }
     } else {
         EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())
@@ -147,12 +151,12 @@ void ddirprod(int_t n, double alpha, double const *x, int_t incx, double const *
         if (blocks != 0) {
             EINSUMS_OMP_PARALLEL_FOR_IF(n >= parallel_threshold())
             for (int_t i = 0; i < blocks; i++) {
-                ::ddirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
+                ddirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
             }
         }
 
         if (remaining != 0) {
-            ::ddirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
+            ddirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
         }
     } else {
         EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())
@@ -174,12 +178,12 @@ void cdirprod(int_t n, std::complex<float> alpha, std::complex<float> const *x, 
         if (blocks != 0) {
             EINSUMS_OMP_PARALLEL_FOR_IF(n >= parallel_threshold())
             for (int_t i = 0; i < blocks; i++) {
-                ::cdirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
+                cdirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
             }
         }
 
         if (remaining != 0) {
-            ::cdirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
+            cdirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
         }
     } else {
         EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())
@@ -201,12 +205,12 @@ void zdirprod(int_t n, std::complex<double> alpha, std::complex<double> const *x
         if (blocks != 0) {
             EINSUMS_OMP_PARALLEL_FOR_IF(n >= parallel_threshold())
             for (int_t i = 0; i < blocks; i++) {
-                ::zdirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
+                zdirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
             }
         }
 
         if (remaining != 0) {
-            ::zdirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
+            zdirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
         }
     } else {
         EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())

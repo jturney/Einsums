@@ -39,7 +39,7 @@
 
 #include "Primes.hpp"
 
-namespace hptt {
+namespace einsums::hptt {
 
 template <>
 void get_prime_factors(std::uint8_t n, std::list<std::uint8_t> &primeFactors) {
@@ -412,13 +412,4 @@ void account_for_row_major(size_t const *sizeA, size_t const *outerSizeA, size_t
     }
 }
 
-} // namespace hptt
-
-extern "C" void random_numa_aware_init(float *data, long const *size, int dim) {
-    long totalSize = 1;
-    for (int i = 0; i < dim; i++)
-        totalSize *= size[i];
-#pragma omp parallel for
-    for (int i = 0; i < totalSize; ++i)
-        data[i] = (i + 1) % 1000 - 500;
-}
+} // namespace einsums::hptt

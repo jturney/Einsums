@@ -22,7 +22,7 @@
 #include <cstdio>
 #include <memory>
 
-namespace hptt {
+namespace einsums::hptt {
 
 #define EINSUMS_HPTT_DECLARE_RUNG_FACTORIES(ns)                                                                                            \
     namespace ns {                                                                                                                         \
@@ -143,4 +143,4 @@ template class EINSUMS_EXPORT Transpose<einsums::simd::half_t>;
 template class EINSUMS_EXPORT Transpose<einsums::simd::bfloat16_t>;
 #endif
 
-} // namespace hptt
+} // namespace einsums::hptt

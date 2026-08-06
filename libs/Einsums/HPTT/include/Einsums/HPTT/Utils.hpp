@@ -42,7 +42,7 @@
 
 #include "HPTTTypes.hpp"
 
-namespace hptt {
+namespace einsums::hptt {
 
 /**
  * Find the conjugate of the given type.
@@ -220,4 +220,4 @@ std::uint64_t factorial(std::uint8_t n);
 void account_for_row_major(size_t const *sizeA, size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA,
                            size_t const *offsetB, int const *perm, size_t *tmpSizeA, size_t *tmpOuterSizeA, size_t *tmpouterSizeB,
                            size_t *tmpOffsetA, size_t *tmpOffsetB, int *tmpPerm, int const dim, bool const useRowMajor);
-} // namespace hptt
+} // namespace einsums::hptt

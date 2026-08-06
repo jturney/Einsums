@@ -303,7 +303,7 @@ TEST_CASE("Saving and loading permutes") {
 
     auto fp = std::fopen(plan_path.c_str(), "w+");
 
-    hptt::setup_file(fp);
+    einsums::hptt::setup_file(fp);
 
     plan->write_to_file(fp);
 
@@ -311,7 +311,7 @@ TEST_CASE("Saving and loading permutes") {
 
     fp = std::fopen(plan_path.c_str(), "r");
 
-    auto plan2 = hptt::Transpose<double>::read_from_file(fp, 1.0, A.data(), 0.0, B.data());
+    auto plan2 = einsums::hptt::Transpose<double>::read_from_file(fp, 1.0, A.data(), 0.0, B.data());
 
     std::fclose(fp);
     std::remove(plan_path.c_str());

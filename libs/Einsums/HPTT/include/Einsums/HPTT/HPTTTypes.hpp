@@ -32,7 +32,7 @@
 
 #include <complex>
 
-namespace hptt {
+namespace einsums::hptt {
 
 /**
  * \brief Determines the duration of the auto-tuning process.
@@ -58,4 +58,4 @@ using FloatComplex = std::complex<float>;
  */
 using DoubleComplex = std::complex<double>;
 
-} // namespace hptt
+} // namespace einsums::hptt
