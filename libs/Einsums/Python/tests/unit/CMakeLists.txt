@@ -8,4 +8,5 @@
 if(EINSUMS_BUILD_PYTHON)
   einsums_add_python_unit_test("Modules.Python" CliOptionsPython SCRIPT test_cli_options_python.py)
   einsums_add_python_unit_test("Modules.Python" InteropPsi4Python SCRIPT test_interop_psi4_python.py)
+  einsums_add_python_unit_test("Modules.Python" WorldPython SCRIPT test_world_python.py)
 endif()

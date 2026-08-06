@@ -13,10 +13,12 @@
 // writes at config time. Splitting the static and generated halves keeps this
 // file linted, formatted, and IDE-indexed like ordinary C++ sources.
 
+#include <Einsums/Config/ABI.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
 #include <Einsums/Utilities/SetEnv.hpp>
 
+#include <cstdint>
 #include <cstdlib>
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>
@@ -201,6 +203,56 @@ PYBIND11_MODULE(_core, m) {
 
     m.def(
         "_is_initialized", []() { return einsums::is_running(); }, "Returns True if the einsums runtime has been initialized.");
+
+    // --- sealed worlds ------------------------------------------------------
+    //
+    // Which libEinsums did THIS extension bind to? A compiled stage module
+    // exports the same attribute, and the loader refuses it when the two
+    // disagree. Exposed as a plain int rather than a capsule so the comparison,
+    // and the error message when it fails, are both trivial in Python.
+    //
+    // Bound by hand here rather than annotated in <Einsums/Config/ABI.hpp>:
+    // that would mean turning on apiary codegen for Config, the lowest module
+    // in the tree, to publish four accessors.
+    m.attr("__einsums_world__") = reinterpret_cast<std::uintptr_t>(einsums::sealed::world().identity);
+
+    m.def(
+        "_world_info",
+        []() {
+            einsums::sealed::WorldInfo const &w = einsums::sealed::world();
+            py::dict                          d;
+            d["identity"]           = reinterpret_cast<std::uintptr_t>(w.identity);
+            d["config_fingerprint"] = w.config_fingerprint;
+            d["layout_fingerprint"] = w.layout_fingerprint;
+            d["version"]            = std::string(w.version_string);
+            d["version_major"]      = w.version_major;
+            d["version_minor"]      = w.version_minor;
+            d["version_patch"]      = w.version_patch;
+            d["git_commit"]         = std::string(w.git_commit);
+            d["compiler"]           = std::string(w.compiler_id);
+            d["compiler_major"]     = w.compiler_major;
+            d["library_path"]       = std::string(w.library_path);
+            return d;
+        },
+        "Identity and build fingerprint of the libEinsums this extension is bound to.\n"
+        "Compared against a stage module's own record to refuse a cross-world load.");
+
+    m.def(
+        "_mapped_einsums_libraries", []() { return einsums::sealed::mapped_einsums_libraries(); },
+        "Paths of every libEinsums mapped into this process.\n"
+        "More than one entry means more than one world; empty means the platform\n"
+        "offers no way to enumerate loaded images.");
+
+    m.def(
+        "_register_stage_module", [](std::string const &name) { return einsums::sealed::register_stage_module(name.c_str()); },
+        py::arg("name"), "Record a stage module against THIS libEinsums. Returns False if already recorded.");
+
+    m.def(
+        "_stage_module_registered", [](std::string const &name) { return einsums::sealed::stage_module_registered(name.c_str()); },
+        py::arg("name"),
+        "Whether a stage module registered against THIS libEinsums.\n"
+        "False for a module that bound to a different copy: its registration went\n"
+        "into that copy's table, which is what makes this a cross-world check.");
 
     apiary_register_all(m);
 }
