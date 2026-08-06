@@ -162,34 +162,32 @@ constexpr std::uint64_t fnv1a_value(std::uint64_t v, std::uint64_t h) noexcept {
     h = detail::fnv1a_value(sizeof(void *), h);
     h = detail::fnv1a_value(sizeof(long), h);
 
-    // Debug against release, which is a genuine ABI axis rather than an
-    // optimization setting.
+    // Standard-library modes that change TYPES, and only those.
     //
-    // On MSVC this is the fatal one: /MDd and /MD are different C runtimes with
-    // different heaps and different standard-library layouts, so a debug stage
-    // module against a release library does not misbehave, it corrupts. The
-    // library filename postfix never protected against this, because the damage
-    // happens at load time in one process rather than at install time in one
-    // prefix. libstdc++ and libc++ have milder but real equivalents: their
-    // hardened modes change container layouts and iterator invariants.
+    // The bar is deliberately "does this change a layout", not "is this a debug
+    // build". Bare NDEBUG does not qualify here: it appears in exactly two
+    // public headers, neither of which guards a member, so folding it in would
+    // reject the ordinary case of a consumer that never set CMAKE_BUILD_TYPE
+    // against a RelWithDebInfo library, which is a false alarm and a common one.
+    // That was measured, not assumed: an out-of-tree consumer built against an
+    // install failed the handshake for exactly that reason.
     //
-    // Deliberately folded from the macros themselves rather than from
-    // CMAKE_BUILD_TYPE. What matters is what the translation unit was actually
-    // compiled with, which is the thing a stage module can get wrong.
-#if defined(NDEBUG)
-    h = detail::fnv1a("NDEBUG", h);
-#endif
+    // What does qualify:
+    //   _ITERATOR_DEBUG_LEVEL  MSVC, and the fatal one. It tracks /MDd against
+    //                          /MD, which are different C runtimes with
+    //                          different heaps and different container layouts,
+    //                          so mixing them corrupts rather than misbehaves.
+    //   _GLIBCXX_DEBUG         libstdc++ swaps in entirely different container
+    //                          types from namespace __debug.
+    //
+    // Checking-only knobs (_GLIBCXX_ASSERTIONS, _LIBCPP_HARDENING_MODE) are
+    // deliberately absent: they add checks without changing layouts, so
+    // including them would cost false refusals and buy nothing.
 #if defined(_ITERATOR_DEBUG_LEVEL)
     h = detail::fnv1a_value(_ITERATOR_DEBUG_LEVEL, h);
 #endif
 #if defined(_GLIBCXX_DEBUG)
     h = detail::fnv1a("GLIBCXX_DEBUG", h);
-#endif
-#if defined(_GLIBCXX_ASSERTIONS)
-    h = detail::fnv1a("GLIBCXX_ASSERTIONS", h);
-#endif
-#if defined(_LIBCPP_HARDENING_MODE)
-    h = detail::fnv1a_value(_LIBCPP_HARDENING_MODE, h);
 #endif
 
     // Build toggles. Anything that changes a member, a base, or a code path

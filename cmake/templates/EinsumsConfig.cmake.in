@@ -21,6 +21,31 @@ list(APPEND CMAKE_PREFIX_PATH "${_einsums_root_dir}/lib")
 include("${CMAKE_CURRENT_LIST_DIR}/EinsumsInternalTargets.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/EinsumsTargets.cmake")
 
+# Shared-graph capture requires exactly one libEinsums per world. The capture
+# context is thread-local state INSIDE the library, so a consumer that absorbed
+# its own static copy gets its own context: nodes it emits land in a graph
+# nobody executes, and the ones it thinks it captured are silently missing.
+#
+# That is unrecoverable at runtime and invisible in the result, so refuse it
+# here, where the message can still name a cause. The load-time handshake in
+# <Einsums/Config/ABI.hpp> catches the same mistake from the other direction,
+# for a module built before this check existed.
+if(TARGET Einsums::Einsums)
+  get_target_property(_einsums_lib_type Einsums::Einsums TYPE)
+  if(_einsums_lib_type STREQUAL "STATIC_LIBRARY")
+    message(
+      FATAL_ERROR
+        "This Einsums installation provides only a STATIC libEinsums, which cannot be used to "
+        "build extension modules or stages.\n"
+        "Shared-graph capture keeps its capture context in thread-local state inside the library, "
+        "so a static copy gives the consumer a second, private context and the captured graph "
+        "silently loses whatever the consumer emitted.\n"
+        "Rebuild and install Einsums with BUILD_SHARED_LIBS=ON."
+    )
+  endif()
+  unset(_einsums_lib_type)
+endif()
+
 einsums_set_cmake_policy(CMP0144 NEW)
 
 # Get the version number
@@ -105,7 +130,18 @@ if (@EINSUMS_BUILD_PYTHON@)
           COMPONENTS Interpreter Development
           REQUIRED
   )
-  find_package(pybind11 REQUIRED)
+  # EXACT, and exported so a stage module's own CMakeLists can ask for the same
+  # one: an out-of-tree module receives RuntimeTensors that einsums._core
+  # created, and pybind11 only shares types between modules that agree on their
+  # internals blob. Disagree and the module gets a private type registry, so the
+  # failure surfaces as "incompatible function arguments" at call time rather
+  # than as anything diagnosable at load time.
+  set(Einsums_PYBIND11_VERSION "@EINSUMS_PYBIND11_VERSION@")
+  if(Einsums_PYBIND11_VERSION)
+    find_package(pybind11 ${Einsums_PYBIND11_VERSION} EXACT REQUIRED)
+  else()
+    find_package(pybind11 REQUIRED)
+  endif()
 endif ()
 
 # If using hip...then dependencies need to be found and listed here.
