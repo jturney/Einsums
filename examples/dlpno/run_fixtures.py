@@ -1,0 +1,87 @@
+#----------------------------------------------------------------------------------------------
+# Copyright (c) The Einsums Developers. All rights reserved.
+# Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+#----------------------------------------------------------------------------------------------
+"""Replay every saved reference in a directory, with no psi4 in the process.
+
+The whole psi4-free suite in one command, which is what makes it usable as a
+smoke test after a change to the port:
+
+    PYTHONPATH=/path/to/Einsums/build/lib python examples/dlpno/run_fixtures.py
+
+Each fixture is run at both its untruncated and its truncated thresholds and
+checked against the psi4 energies recorded in it. Exits non-zero if any
+disagrees, so it can be wired into a script.
+"""
+
+import argparse
+import glob
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from dlpno.mp2 import DLPNOMP2
+from dlpno.reference_io import load_reference
+from dlpno.thresholds import Thresholds
+
+DEFAULT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+parser = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+parser.add_argument("fixtures", nargs="*",
+                    help=f"fixture files; default is every .npz in {DEFAULT_DIR}")
+parser.add_argument("--buckets", type=int, default=4)
+parser.add_argument("--no-diis", action="store_true")
+parser.add_argument("--no-optimize", action="store_true")
+parser.add_argument("-k", "--filter", default="",
+                    help="only run fixtures whose name contains this substring")
+args = parser.parse_args()
+
+paths = args.fixtures or sorted(glob.glob(os.path.join(DEFAULT_DIR, "*.npz")))
+paths = [p for p in paths if args.filter in os.path.basename(p)]
+if not paths:
+    parser.error(f"no fixtures matched (looked in {DEFAULT_DIR})")
+
+# Untruncated has to reproduce canonical DF-MP2 exactly; truncated is scaled to
+# the PNO truncation correction, for the reason run_pno_mp2.py explains.
+UNTRUNCATED_TOL = 1e-9
+
+print(f"{'fixture':<32} {'untruncated':>13} {'truncated':>13} {'time':>8}")
+print("-" * 70)
+
+failures = []
+for path in paths:
+    name = os.path.basename(path)
+    started = time.perf_counter()
+    reference, extras = load_reference(path)
+    energies, meta = extras["energies"], extras["metadata"]
+    t_cut_pno = float(meta.get("t_cut_pno", 1e-8))
+
+    exact = DLPNOMP2(reference, Thresholds.untruncated(n_buckets=args.buckets),
+                     verbose=False, use_diis=not args.no_diis)
+    exact.compute_energy(optimize=not args.no_optimize)
+    err_exact = abs(exact.e_lmp2 - energies["psi4_df_mp2"])
+    if err_exact >= UNTRUNCATED_TOL:
+        failures.append(f"{name}: untruncated off by {err_exact:.3e}")
+
+    trunc = DLPNOMP2(reference, Thresholds.preset("NORMAL", t_cut_pno=t_cut_pno,
+                                                  n_buckets=args.buckets),
+                     verbose=False, use_diis=not args.no_diis)
+    trunc.compute_energy(optimize=not args.no_optimize)
+    err_trunc = abs(trunc.e_corr - energies["psi4_dlpno_mp2"])
+    tol_trunc = max(1e-9, 0.01 * abs(trunc.de_pno_total))
+    if err_trunc >= tol_trunc:
+        failures.append(f"{name}: truncated off by {err_trunc:.3e} (tolerance {tol_trunc:.1e})")
+
+    elapsed = time.perf_counter() - started
+    mark = " " if err_exact < UNTRUNCATED_TOL and err_trunc < tol_trunc else "X"
+    print(f"{mark}{name:<31} {err_exact:>13.3e} {err_trunc:>13.3e} {elapsed:>7.1f}s")
+
+print("-" * 70)
+if failures:
+    for message in failures:
+        print(f"FAIL {message}")
+    sys.exit(1)
+print(f"all {len(paths)} fixtures match their recorded psi4 energies")

@@ -97,11 +97,18 @@ def save_reference(ref, path, energies=None, metadata=None):
     if ref.grid_blocks is not None:
         phis, ws, maps, npts, nbfs = [], [], [], [], []
         for phi, w, bf_map in ref.grid_blocks():
-            phi = np.ascontiguousarray(phi, dtype=np.float64)
+            # copy=True, not ascontiguousarray. A provider is entitled to yield
+            # views into a buffer it reuses for the next block - the contract is
+            # that a block is consumed before the next is asked for - and this
+            # loop accumulates instead of consuming. Without the copy, every
+            # block sharing a buffer ends up holding the last one's values, and
+            # the only symptom is that differential-overlap screening quietly
+            # chooses the wrong domains.
+            phi = np.array(phi, dtype=np.float64, copy=True, order="C")
             npts.append(phi.shape[0])
             nbfs.append(phi.shape[1])
             phis.append(phi.ravel())
-            ws.append(np.ascontiguousarray(w, dtype=np.float64))
+            ws.append(np.array(w, dtype=np.float64, copy=True))
             maps.append(np.asarray(bf_map, dtype=np.int64))
         arrays["grid_phi_flat"] = np.concatenate(phis) if phis else np.zeros(0)
         arrays["grid_w_flat"] = np.concatenate(ws) if ws else np.zeros(0)

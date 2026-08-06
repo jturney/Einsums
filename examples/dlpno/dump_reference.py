@@ -23,32 +23,54 @@ import psi4
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from dlpno.molecules import MOLECULES
+from dlpno.molecules import MOLECULES, water_chain, water_dimer_at
 from dlpno.psi4_source import from_psi4
 from dlpno.reference_io import save_reference
 
 parser = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument("--molecule", default="water", choices=sorted(MOLECULES))
+parser.add_argument("--molecule", default="water",
+                    help=f"one of {sorted(MOLECULES)}, 'chain<N>' for an N-monomer water "
+                         "chain at 2.9 A, or 'dimer@<R>' for the dimer at an O-O distance "
+                         "of R angstrom")
 parser.add_argument("--basis", default="cc-pvdz")
 parser.add_argument("--localization", default="BOYS", choices=["BOYS", "PIPEK_MEZEY"])
+parser.add_argument("--freeze-core", action="store_true",
+                    help="freeze core orbitals; otherwise they are correlated with a "
+                         "scaled PNO threshold, which is psi4's default")
 parser.add_argument("--t-cut-pno", type=float, default=1e-8,
                     help="threshold psi4's own DLPNO-MP2 reference is taken at")
 parser.add_argument("--out", required=True, help="destination .npz")
 args = parser.parse_args()
+
+
+def resolve_geometry(name):
+    """Same spelling the bench scripts accept, so a fixture can be made of
+    anything they can profile."""
+    if name.startswith("chain"):
+        return water_chain(int(name[len("chain"):]), 2.9) + "symmetry c1\nno_reorient\nno_com\n"
+    if name.startswith("dimer@"):
+        return water_dimer_at(float(name[len("dimer@"):])) + "symmetry c1\nno_reorient\nno_com\n"
+    if name not in MOLECULES:
+        parser.error(f"unknown molecule '{name}'; use one of {sorted(MOLECULES)}, "
+                     "chain<N>, or dimer@<R>")
+    return MOLECULES[name] + "symmetry c1\n"
+
+
+GEOM = resolve_geometry(args.molecule)
 
 psi4.core.set_output_file(f"/tmp/psi4_dump_{args.molecule}.out", False)
 psi4.set_options({
     "basis": args.basis,
     "scf_type": "df",
     "mp2_type": "df",
-    "freeze_core": "false",
+    "freeze_core": "true" if args.freeze_core else "false",
     "e_convergence": 1e-10,
     "d_convergence": 1e-10,
     "r_convergence": 1e-8,
 })
 
-mol = psi4.geometry(MOLECULES[args.molecule] + "symmetry c1\n")
+mol = psi4.geometry(GEOM)
 
 _, wfn = psi4.energy("mp2", return_wfn=True)
 df_mp2 = psi4.variable("MP2 CORRELATION ENERGY")
@@ -57,7 +79,8 @@ psi4.set_options({"dlpno_algorithm": "mp2", "t_cut_pno": args.t_cut_pno})
 psi4.energy("dlpno-mp2")
 dlpno_mp2 = psi4.variable("MP2 CORRELATION ENERGY")
 
-reference = from_psi4(wfn, localization=args.localization)
+reference = from_psi4(wfn, localization=args.localization,
+                      freeze_core=args.freeze_core)
 
 os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
 save_reference(
@@ -66,7 +89,7 @@ save_reference(
     energies={"psi4_df_mp2": df_mp2, "psi4_dlpno_mp2": dlpno_mp2, "scf": wfn.energy()},
     metadata={"molecule": args.molecule, "basis": args.basis,
               "localization": args.localization, "t_cut_pno": args.t_cut_pno,
-              "psi4_version": psi4.__version__},
+              "freeze_core": args.freeze_core, "psi4_version": psi4.__version__},
 )
 
 size_mb = os.path.getsize(args.out) / (1024 * 1024)

@@ -90,6 +90,37 @@ def test_grid_blocks_replay_identically(tmp_path):
         assert map_b == map_a
 
 
+def test_grid_blocks_that_alias_one_buffer_are_captured(tmp_path):
+    """A provider may hand out views into a buffer it reuses for the next block.
+
+    That is what psi4's does: ``PHI`` is one allocation sized to the largest
+    block, and the trimmed slice of it is sometimes already contiguous, so the
+    yielded array can be a view onto memory the next iteration overwrites. The
+    streaming contract allows it - a block is consumed before the next is asked
+    for - and ``prep_sparsity`` honours it, but ``save_reference`` accumulates.
+    Without an eager copy every block sharing the buffer stores the LAST
+    block's values, and the only symptom downstream is that differential-overlap
+    screening picks the wrong domains.
+    """
+    scratch = np.zeros((4, 3))
+    wanted = [np.full((4, 3), float(i)) for i in range(3)]
+
+    def aliasing_grid():
+        for i, block in enumerate(wanted):
+            scratch[:] = block          # reuse one buffer, as psi4 does
+            yield scratch, np.full(4, float(i)), [0, 1, 2]
+
+    ref = make_reference(with_grid=False)
+    ref.grid_blocks = aliasing_grid
+
+    back, _ = load_reference(save_reference(ref, str(tmp_path / "ref.npz")))
+
+    replayed = [phi.copy() for phi, _, _ in back.grid_blocks()]
+    assert len(replayed) == len(wanted)
+    for i, (got, want) in enumerate(zip(replayed, wanted)):
+        np.testing.assert_array_equal(got, want, err_msg=f"block {i} was not captured")
+
+
 def test_grid_is_replayable_more_than_once(tmp_path):
     """The loaded provider is a generator *factory*, like the psi4 one.
 

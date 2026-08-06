@@ -69,7 +69,27 @@ PYTHONPATH=/path/to/Einsums/build/lib \
 ```
 
 `dump_reference.py` records psi4's own DF-MP2 and DLPNO-MP2 correlation energies inside the file, so the replay checks itself against them to the same tolerances `run_pno_mp2.py` uses.
-`fixtures/water-ccpvdz.npz` is checked in at 0.21 MiB; regenerate rather than commit anything much larger, since the file scales as the DFT grid (the water dimer is 2.7 MiB).
+It takes the same geometries the bench scripts do (`chain<N>`, `dimer@<R>`), plus `--freeze-core`.
+
+`run_fixtures.py` replays every fixture in `fixtures/`, which is the psi4-free suite in one command and takes about a second:
+
+```bash
+PYTHONPATH=/path/to/Einsums/build/lib python examples/dlpno/run_fixtures.py
+```
+
+Six are checked in, chosen to cover distinct paths rather than distinct molecules:
+
+| fixture | size | what it exercises |
+| --- | --- | --- |
+| `water-ccpvdz` | 0.46 MiB | the baseline: nothing screened, one domain |
+| `water-ccpvdz-frozencore` | 0.46 MiB | `n_core` handling, 4 active occupied instead of 5 |
+| `water-ccpvtz` | 2.06 MiB | a larger basis, and PAO linear-dependence removal |
+| `water-dimer-ccpvdz` | 2.80 MiB | the compact dimer: more pairs, still nothing screened |
+| `water-dimer-far-ccpvdz` | 2.18 MiB | pair prescreening, which drops 50 of 100 pairs |
+| `methanol-ccpvdz` | 3.01 MiB | a heteroatom: 10 distinct domains, 16 shape classes, PNO counts from 7 to 37 |
+
+Size scales with the DFT grid, so anything much larger is better generated on demand than committed.
+`PIPEK_MEZEY` fixtures are deliberately absent: psi4's own DLPNO-MP2 reference is taken with its default localization, so the truncated comparison would be against a different set of domains and fails by the truncation error rather than by anything being wrong.
 
 This is a **smoke test, not a validation**: the reference is frozen, so it cannot catch a change anywhere upstream of `Reference` - a different localization, a different auxiliary basis, a psi4 change in the integrals.
 Those still need `run_pno_mp2.py`.

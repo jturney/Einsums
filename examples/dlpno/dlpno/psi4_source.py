@@ -129,7 +129,17 @@ def grid_block_provider(basis, spherical_points=50, radial_points=25,
             bf_map = block.functions_local_to_global()
             npoints = block.npoints()
             phi = np.asarray(point_funcs.basis_values()["PHI"])[:npoints, :len(bf_map)]
-            yield np.ascontiguousarray(phi), np.asarray(block.w())[:npoints], list(bf_map)
+            # Copy, explicitly. Both of these are views into buffers psi4 reuses
+            # across blocks - PHI is one allocation sized to the largest block,
+            # and the trimmed slice of it is sometimes already contiguous, so
+            # ascontiguousarray alone returns a view and hands out memory the
+            # next iteration overwrites. A consumer that reads a block straight
+            # away (prep_sparsity) never notices; one that accumulates blocks
+            # (reference_io.save_reference) silently gets the last block's
+            # values for every block that shared the buffer.
+            yield (np.array(phi, dtype=np.float64, copy=True),
+                   np.array(np.asarray(block.w())[:npoints], dtype=np.float64, copy=True),
+                   list(bf_map))
 
     return blocks
 
