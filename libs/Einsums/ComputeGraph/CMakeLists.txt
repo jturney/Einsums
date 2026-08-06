@@ -12,6 +12,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/CaptureContext.hpp
     Einsums/ComputeGraph/DeviceShadowMap.hpp
     Einsums/ComputeGraph/Error.hpp
+    Einsums/ComputeGraph/ABILayout.hpp
     Einsums/ComputeGraph/Graph.hpp
     Einsums/ComputeGraph/CostModel.hpp
     Einsums/ComputeGraph/Node.hpp
@@ -66,6 +67,7 @@ set(ComputeGraphSources
     CaptureContext.cpp
     EinsumSpec.cpp
     Executor.cpp
+    ABILayout.cpp
     Graph.cpp
     UsageAnalysis.cpp
     CostModel.cpp

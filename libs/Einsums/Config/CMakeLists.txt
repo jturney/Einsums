@@ -7,6 +7,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(ConfigHeaders
     Einsums/Config.hpp
+    Einsums/Config/ABI.hpp
     Einsums/Config/Alias.hpp
     Einsums/Config/BranchHints.hpp
     Einsums/Config/CompilerSpecific.hpp
@@ -16,7 +17,7 @@ set(ConfigHeaders
     Einsums/Config/Types.hpp
 )
 
-set(ConfigSources Version.cpp Types.cpp)
+set(ConfigSources ABI.cpp Version.cpp Types.cpp)
 
 # The git identity goes to a private header under `generated/`, never under
 # `include/`: anything below `include/` is on the public include path, is
