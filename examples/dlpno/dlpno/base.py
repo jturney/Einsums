@@ -963,7 +963,7 @@ class DLPNOBase:
         # outside its own pair.
         st = {}
         g1 = cg.Graph("PNO stage 1")
-        with ten.arena() as hold, cg.capture(g1):
+        with cg.capture(g1):
             for ij in upper:
                 i, j = self.ij_to_i_j[ij]
                 K_pao = self._pair_exchange(ij, i, j)
@@ -995,7 +995,6 @@ class DLPNOBase:
                     e_ij_os_initial=ten.dot_into(ten.scalar("e_ij os"), K_pao, T_pao),
                 )
         self._run(g1)
-        del hold
 
         occs, vecs = self._batched_eigh([st[ij]["D_ij"] for ij in upper],
                                         descending=True, label="PNO")
@@ -1025,21 +1024,20 @@ class DLPNOBase:
             st[ij]["X_pno"] = X_pno[:, :keep]
 
         g2 = cg.Graph("PNO stage 2")
-        with ten.arena() as hold, cg.capture(g2):
+        with cg.capture(g2):
             for ij in upper:
                 # Orthonormal but not canonical yet; rotate so F is diagonal.
                 st[ij]["Fmo"] = ten.triplet(st[ij]["X_pno"], st[ij]["F_pao_ij"],
                                             st[ij]["X_pno"], trans_a=True,
                                             name="C^T F C")
         self._run(g2)
-        del hold
 
         e_pnos, canons = self._batched_eigh([st[ij]["Fmo"] for ij in upper],
                                             descending=True, label="PNO canon")
 
         # Stage 3: rotate into the canonical PNO basis and record the pair.
         g3 = cg.Graph("PNO stage 3")
-        with ten.arena() as hold, cg.capture(g3):
+        with cg.capture(g3):
             for ij, e_pno, pno_canon in zip(upper, e_pnos, canons):
                 i, j = self.ij_to_i_j[ij]
                 ji = self.ij_to_ji[ij]
@@ -1066,7 +1064,6 @@ class DLPNOBase:
                     T_pairs[ji] = ten.transpose(T_pno, name="T (PNO)")
                     self.X_pno[ji] = X_pno_global
         self._run(g3)
-        del hold
 
         self._print(f"  PNO xform: {g1.num_nodes()} + {g2.num_nodes()} + "
                     f"{g3.num_nodes()} nodes in three graphs")
