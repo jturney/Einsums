@@ -53,11 +53,30 @@ EXACT_PREFACTORS: list[float] = [0.0, 1.0, -2.0]
 # f64/c128 paths should be near machine precision. Tests with looser
 # expected accuracy (eigenvalue ordering, matrix inverse reconstruction)
 # override via explicit rtol=/atol= kwargs.
+#
+# Every dtype carries a non-zero atol, including the 64-bit ones, which used to
+# sit at exactly 0. A relative tolerance alone says nothing useful about an
+# element that cancelled toward zero: its true value is small, so ordinary
+# last-bit noise at the *operand* scale becomes an unbounded *relative* error.
+# A result of -3.1e-4 sitting among neighbours of ~1e1 has lost four decimal
+# digits to cancellation, and comparing it at rtol with no floor is asking two
+# different summation orders to agree far past what either one knows.
+#
+# That is not hypothetical: it made PassElementWiseFusion's axpby test fail
+# roughly one run in fourteen hundred, on whichever CI leg drew the unlucky
+# random input. The two sides there differ by at most 2.8e-14 absolute (about
+# four ULP at that magnitude), and at most 5.3e-15 on the elements that actually
+# broke rtol, so 1e-13 clears it with room while staying an order of magnitude
+# under the smallest error any of these tests exists to catch.
+#
+# The atol is rtol/10 for every dtype, which is the ratio f32/c64 already used.
+# It only takes effect where |expected| < atol/rtol, i.e. below 0.1 - above that
+# the relative term dominates and nothing is relaxed.
 _TOLERANCES: dict[str, tuple[float, float]] = {
     "float32":    (1e-5, 1e-6),
-    "float64":    (1e-12, 0.0),
+    "float64":    (1e-12, 1e-13),
     "complex64":  (1e-5, 1e-6),
-    "complex128": (1e-12, 0.0),
+    "complex128": (1e-12, 1e-13),
 }
 
 
