@@ -96,11 +96,20 @@ constexpr size_t kOuterMinElems = 1u << 12;
 
 /// @brief Collapse axes [@p begin, @p end) of @p t into one (extent, stride).
 ///
-/// Succeeds only when that run of axes tiles memory exactly: sorted by stride,
-/// each axis must begin where the previous one ended (s_next == s * d). A
-/// permuted or gappy view fails, and the caller must not flatten it. Extent-1
-/// axes are ignored - their stride is arbitrary and a permuted view can leave
-/// one at a boundary with an inflated value.
+/// Succeeds only when that run of axes tiles memory exactly **in axis order**:
+/// taken first to last, each axis must begin where the previous one ended
+/// (s_next == s * d). A permuted or gappy view fails, and the caller must not
+/// flatten it. Extent-1 axes are ignored - their stride is arbitrary and a
+/// permuted view can leave one at a boundary with an inflated value.
+///
+/// Axis order is the whole point, and this used to sort the axes by stride
+/// before checking. That answers "do these axes tile memory?", which is not the
+/// question: the caller flattens two operands independently and then walks both
+/// flat runs in lockstep, so they have to agree on which index varies fastest.
+/// Sorting made a reversed run look flattenable, and a C[i,j] <- A[k] B[k,i,j]
+/// with a permuted B then came out transposed - correct memory, wrong order.
+/// A run that is not already in increasing-stride order now declines, and the
+/// caller falls through to the generic loop.
 ///
 /// This is the runtime twin of the compile-time `contiguous_positions` check
 /// the eager dispatcher uses to decide the same question.
@@ -123,7 +132,8 @@ bool flatten_run(TensorType const &t, size_t begin, size_t end, size_t &extent, 
         stride_out = 1;
         return true;
     }
-    std::sort(ds.begin(), ds.end());
+    // Deliberately NOT sorted: see above. The axes must already tile in the
+    // order the caller will walk them.
     stride_out    = ds.front().first;
     size_t expect = stride_out;
     for (auto const &[s, d] : ds) {

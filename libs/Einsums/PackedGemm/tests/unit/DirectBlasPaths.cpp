@@ -20,6 +20,7 @@
 
 #include <cmath>
 #include <complex>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -244,5 +245,39 @@ TEST_CASE("DirectBlas - complex outer product and gemv", "[PackedGemm][DirectBla
             }
         }
         REQUIRE_THAT(std::abs(Cv(a) - ref), Catch::Matchers::WithinAbs(0.0, kTol));
+    }
+}
+
+// A run of axes can tile memory exactly and still be the wrong flattening: what
+// the direct paths need is that the operands agree on which index varies
+// fastest, because they walk the flattened runs in lockstep. A permuted view
+// whose axes tile in REVERSE order satisfies "is this contiguous?" and fails
+// "does this flatten the way C does", and the result comes back transposed -
+// right memory, wrong order.
+//
+// Found by the einsum differential fuzzer on 'ij <- k ; kij' with a permuted B.
+// The check was sorting the axes by stride before testing them, which is the
+// one operation that cannot tell the two questions apart.
+TEST_CASE("DirectBlas - a reverse-order operand view is not flattened", "[PackedGemm][DirectBlas]") {
+    constexpr size_t ni = 2, nj = 3;
+
+    // B holds (k, i, j) with k an extent-1 axis, laid out so that within the
+    // (i, j) run the LAST axis is the fast one - the opposite of C's layout.
+    auto                  Bsrc = create_random_tensor<double>(std::string("Bsrc"), nj, size_t{1}, ni); // (j, k, i)
+    TensorView<double, 3> B(Bsrc.impl().permute_view(std::vector<size_t>{1, 2, 0}));                   // (k, i, j)
+    REQUIRE(B.dim(0) == 1);
+    REQUIRE(B.dim(1) == ni);
+    REQUIRE(B.dim(2) == nj);
+
+    auto A = create_random_tensor<double>(std::string("A"), size_t{1});
+    auto C = create_zero_tensor<double>("C", ni, nj);
+
+    einsum(0.0, Indices{i, j}, &C, 1.0, Indices{k}, A, Indices{k, i, j}, B);
+
+    for (size_t a = 0; a < ni; a++) {
+        for (size_t b = 0; b < nj; b++) {
+            double const want = A(0) * B(0, a, b);
+            REQUIRE_THAT(std::abs(C(a, b) - want), Catch::Matchers::WithinAbs(0.0, kTol));
+        }
     }
 }

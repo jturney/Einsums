@@ -527,6 +527,22 @@ bool einsum_do_matrix_vector(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
         }
     }
 
+    // The per-axis walk above proves A's axes tile memory; it does not prove the
+    // flattened 2-D view is a matrix BLAS will accept. A permuted view can pass
+    // it and still land a leading dimension below the leading extent - gemv then
+    // throws outright instead of computing anything. Declining here sends the
+    // contraction to the generic loop, which handles any layout.
+    {
+        bool const   a0_fast  = sA[0] <= sA[1];
+        size_t const fast     = a0_fast ? sA[0] : sA[1];
+        size_t const lead     = a0_fast ? sA[1] : sA[0];
+        size_t const fast_dim = a0_fast ? dA[0] : dA[1];
+        if (fast != 1 || lead < fast_dim) {
+            EINSUMS_LOG_TRACE("flattened A is not a gemv-able matrix.");
+            return false;
+        }
+    }
+
     if constexpr (DryRun) {
         return true;
     }
