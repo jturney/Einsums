@@ -241,10 +241,8 @@ void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /
     // frame size, so deep recursion exhausts stack even at modest tree
     // depth. Switching to an explicit work stack puts the per-node
     // bookkeeping on the heap and keeps a constant call-stack budget.
-    auto variance = [](uint64_t cnt, int64_t M2) -> double {
-        return (cnt > 1) ? static_cast<double>(M2) / static_cast<double>(cnt - 1) : 0.0;
-    };
-    auto stddev = [variance](uint64_t cnt, int64_t M2) -> double { return sqrt(variance(cnt, M2)); };
+    auto variance = [](uint64_t cnt, double M2) -> double { return (cnt > 1) ? M2 / static_cast<double>(cnt - 1) : 0.0; };
+    auto stddev   = [variance](uint64_t cnt, double M2) -> double { return sqrt(variance(cnt, M2)); };
 
     struct Frame {
         AggNode const *node;
@@ -265,7 +263,7 @@ void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /
         if (name.size() > 60)
             name = name.substr(0, 57) + "...";
 
-        std::string const mean_str = fmt::format("{:7.3f}\u00B1{:3.3f}", static_cast<double>(node->total_exclusive_mean) / 1'000'000.0,
+        std::string const mean_str = fmt::format("{:7.3f}\u00B1{:3.3f}", node->total_exclusive_mean / 1'000'000.0,
                                                  stddev(node->call_count, node->total_exclusive_M2) / 1'000'000.0);
 
         // Build file:line field

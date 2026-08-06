@@ -138,6 +138,36 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
     }
 }
 
+void AggNode::record_exclusive(ns exclusive) {
+    call_count += 1;
+    total_exclusive += exclusive;
+
+    // Welford's online variance, in double. See the field declarations for why
+    // this is not integer arithmetic.
+    double const sample = static_cast<double>(exclusive.count());
+    double const delta  = sample - total_exclusive_mean;
+    total_exclusive_mean += delta / static_cast<double>(call_count);
+    double const delta2 = sample - total_exclusive_mean;
+    total_exclusive_M2 += delta * delta2;
+
+    if (exclusive < exclusive_min)
+        exclusive_min = exclusive;
+    if (exclusive > exclusive_max)
+        exclusive_max = exclusive;
+
+    // Per-call log2 histogram (buckets in microseconds: bucket i = [2^i, 2^(i+1)) us)
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(exclusive).count();
+    if (us < 1)
+        us = 1; // clamp to 1us minimum
+    int  bucket = 0;
+    auto v      = us;
+    while (v > 1 && bucket < AggNode::kHistogramBuckets - 1) {
+        v >>= 1;
+        ++bucket;
+    }
+    histogram[bucket]++;
+}
+
 void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id) {
     if (ts.stack.empty())
         return;
@@ -172,33 +202,7 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
     cur->line     = frame.line;
     cur->function = _strings.get(frame.func_id);
 
-    cur->call_count += 1;
-    cur->total_exclusive += exclusive;
-
-    // Welford's online variance
-    int64_t const delta = exclusive.count() - cur->total_exclusive_mean;
-    cur->total_exclusive_mean += delta / static_cast<int64_t>(cur->call_count);
-    int64_t const delta2 = exclusive.count() - cur->total_exclusive_mean;
-    cur->total_exclusive_M2 += delta * delta2;
-
-    if (exclusive < cur->exclusive_min)
-        cur->exclusive_min = exclusive;
-    if (exclusive > cur->exclusive_max)
-        cur->exclusive_max = exclusive;
-
-    // Per-call log2 histogram (buckets in microseconds: bucket i = [2^i, 2^(i+1)) us)
-    {
-        auto us = std::chrono::duration_cast<std::chrono::microseconds>(exclusive).count();
-        if (us < 1)
-            us = 1; // clamp to 1us minimum
-        int  bucket = 0;
-        auto v      = us;
-        while (v > 1 && bucket < AggNode::kHistogramBuckets - 1) {
-            v >>= 1;
-            ++bucket;
-        }
-        cur->histogram[bucket]++;
-    }
+    cur->record_exclusive(exclusive);
 
     // Merge hardware counter deltas
     auto &counter_backend = get_counter_backend();

@@ -8,6 +8,8 @@
 #include <Einsums/Profile/Profile.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <cmath>
 #include <sstream>
 #include <thread>
 
@@ -125,4 +127,55 @@ TEST_CASE("LabeledSection macro works", "[profiler][consumer]") {
 
     auto const *node = find_node_any_thread(thread_map, "labeled_macro_42");
     REQUIRE(node != nullptr);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Per-sample statistics
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Driven through AggNode directly rather than through push/pop: the durations
+// that broke this are tens of seconds, and no test should spend them.
+
+TEST_CASE("AggNode::record_exclusive - mean and variance of a small sample", "[profiler][consumer]") {
+    AggNode node("stats");
+    for (int64_t v : {10, 20, 30, 40}) {
+        node.record_exclusive(ns{v});
+    }
+
+    REQUIRE(node.call_count == 4);
+    REQUIRE(node.total_exclusive == ns{100});
+    REQUIRE(node.exclusive_min == ns{10});
+    REQUIRE(node.exclusive_max == ns{40});
+
+    // Mean 25, sample variance 500/3. The integer form this replaced advanced
+    // the mean by a truncating `delta / call_count` and drifted low here.
+    REQUIRE_THAT(node.total_exclusive_mean, Catch::Matchers::WithinRel(25.0, 1e-12));
+    REQUIRE_THAT(node.total_exclusive_M2, Catch::Matchers::WithinRel(500.0, 1e-12));
+}
+
+TEST_CASE("AggNode::record_exclusive - a multi-second spread does not overflow", "[profiler][consumer]") {
+    // The nightly sanitizer leg's numbers: zones get slow enough under
+    // address+undefined that one sample sits ~108 s from the mean. Squared
+    // that is ~5.8e21 against an int64 ceiling of 9.2e18, which UBSan reported
+    // as signed integer overflow at the Welford update.
+    constexpr int64_t kBig   = 108'037'677'238; // ns, ~108 s
+    constexpr int64_t kSmall = 1'000;           // ns
+
+    AggNode node("slow_zone");
+    node.record_exclusive(ns{kBig});
+    node.record_exclusive(ns{kSmall});
+
+    REQUIRE(node.call_count == 2);
+    REQUIRE(node.exclusive_min == ns{kSmall});
+    REQUIRE(node.exclusive_max == ns{kBig});
+
+    double const mean = 0.5 * (static_cast<double>(kBig) + static_cast<double>(kSmall));
+    REQUIRE_THAT(node.total_exclusive_mean, Catch::Matchers::WithinRel(mean, 1e-12));
+
+    // M2 for two samples is (a-b)^2 / 2, and must stay positive and finite:
+    // the overflowing form produced a wrapped, meaningless value here.
+    double const diff = static_cast<double>(kBig) - static_cast<double>(kSmall);
+    REQUIRE_THAT(node.total_exclusive_M2, Catch::Matchers::WithinRel(0.5 * diff * diff, 1e-12));
+    REQUIRE(node.total_exclusive_M2 > 0.0);
+    REQUIRE(std::isfinite(node.total_exclusive_M2));
 }

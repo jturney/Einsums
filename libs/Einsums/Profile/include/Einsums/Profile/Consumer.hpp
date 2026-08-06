@@ -48,9 +48,17 @@ struct AggNode {
     uint64_t call_count = 0;
     ns       total_exclusive{0};
 
-    // Welford's running variance (values in nanoseconds)
-    int64_t total_exclusive_mean{0};
-    int64_t total_exclusive_M2{0};
+    /// Welford's running mean and sum of squared deviations, in nanoseconds.
+    ///
+    /// Floating point, not integer, for two reasons. The sum of squares
+    /// overflows a signed 64-bit integer once a zone's spread reaches a few
+    /// seconds: a sample 108 s from the mean squares to ~5.8e21 against an
+    /// int64 ceiling of 9.2e18, which is undefined behaviour and was reported
+    /// as such by UBSan on the slow sanitizer runs where zones get that long.
+    /// And an integer mean advanced by ``delta / call_count`` truncates every
+    /// update, so it drifts low even when nothing overflows.
+    double total_exclusive_mean{0.0};
+    double total_exclusive_M2{0.0};
 
     // min/max for exclusive time
     ns exclusive_min{std::numeric_limits<int64_t>::max()};
@@ -87,6 +95,16 @@ struct AggNode {
 
     AggNode() = default;
     explicit AggNode(std::string n) : name(std::move(n)) {}
+
+    /// Fold one measured exclusive duration into this node's statistics:
+    /// call count, total, running mean and variance, min/max, and the
+    /// per-call log2 histogram.
+    ///
+    /// Split out of the consumer's pop handler so the arithmetic can be
+    /// exercised directly, with durations no test would want to spend real
+    /// time producing. Exported for that reason: AggNode is otherwise a plain
+    /// aggregate whose members are all inline.
+    EINSUMS_EXPORT void record_exclusive(ns exclusive);
 };
 
 // ---------------------- Timeline event for Gantt chart ----------------------

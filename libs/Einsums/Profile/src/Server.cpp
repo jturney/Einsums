@@ -340,7 +340,7 @@ void Server::write_node_json(std::string &out, AggNode const &n) { // NOLINT
 
     // Stddev
     if (n.call_count > 1) {
-        double const stddev_ns = std::sqrt(static_cast<double>(n.total_exclusive_M2) / static_cast<double>(n.call_count - 1));
+        double const stddev_ns = std::sqrt(n.total_exclusive_M2 / static_cast<double>(n.call_count - 1));
         out += ",\"stddev_ms\":" + std::to_string(stddev_ns / 1e6);
     } else {
         out += ",\"stddev_ms\":0.0";
