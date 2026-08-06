@@ -974,8 +974,14 @@ endif()
 # ##################################################################################################
 # Debug library postfix
 # ##################################################################################################
+# Keeps a Debug and a Release build from overwriting each other in one install
+# prefix. Narrow, but real on MSVC, where /MDd and /MD cannot be mixed at all,
+# so anyone who wants both needs them kept apart.
+#
+# It is NOT what protects a debug stage module from a release library: that
+# happens at load time in one process, and the build-mode terms in
+# config_fingerprint() are what catch it.
 set(CMAKE_DEBUG_POSTFIX "d")
-set(EINSUMS_DEBUG_POSTFIX "d")
 
 # ##################################################################################################
 # apiary — annotation contract + binding/docs codegen (external/apiary submodule) Must precede libs/

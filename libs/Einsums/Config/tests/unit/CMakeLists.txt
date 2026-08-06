@@ -35,6 +35,29 @@ foreach(test ${ConfigTests})
   einsums_add_unit_test("Modules.Config" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS})
 endforeach()
 
+# The build mode is an ABI axis, not an optimization setting: on MSVC /MDd and /MD are different C
+# runtimes, so a debug stage module against a release library corrupts rather than misbehaves. The
+# only way to check the fingerprint actually notices is to compile one source twice under opposite
+# NDEBUG settings and require two different answers.
+foreach(_mode ndebug;debug)
+  if(_mode STREQUAL "ndebug")
+    set(_flag -DNDEBUG)
+  else()
+    set(_flag -UNDEBUG)
+  endif()
+  add_library(einsums_build_mode_probe_${_mode} OBJECT BuildModeProbe.cpp)
+  target_compile_definitions(
+    einsums_build_mode_probe_${_mode} PRIVATE BUILD_MODE_PROBE_NAME=einsums_probe_${_mode}
+  )
+  target_compile_options(einsums_build_mode_probe_${_mode} PRIVATE ${_flag})
+  target_link_libraries(einsums_build_mode_probe_${_mode} PRIVATE Einsums)
+  set_target_properties(einsums_build_mode_probe_${_mode} PROPERTIES FOLDER "Tests/Unit")
+endforeach()
+target_sources(
+  ABI_test PRIVATE $<TARGET_OBJECTS:einsums_build_mode_probe_ndebug>
+                   $<TARGET_OBJECTS:einsums_build_mode_probe_debug>
+)
+
 # Two copies of one library in one process: the loader-behaviour reproduction the sealed-worlds
 # symbol isolation depends on. Self-contained, links no Einsums except in the test driver.
 add_subdirectory(two_worlds)

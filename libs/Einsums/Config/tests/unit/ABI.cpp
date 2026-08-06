@@ -23,6 +23,28 @@ TEST_CASE("world is one record, and the same one every time", "[abi]") {
     REQUIRE(a.struct_size == sizeof(sealed::WorldInfo));
 }
 
+// BuildModeProbe.cpp, compiled twice with opposite NDEBUG settings.
+extern "C" std::uint64_t einsums_probe_ndebug();
+extern "C" std::uint64_t einsums_probe_debug();
+
+TEST_CASE("the config fingerprint separates debug from release", "[abi]") {
+    // The case that made this necessary: on MSVC a debug stage module and a
+    // release library are linked against different C runtimes, with different
+    // heaps and different standard-library layouts, so mixing them corrupts
+    // rather than misbehaves. Before this term existed the two compared equal
+    // and the handshake waved them through.
+    //
+    // Two compilations of ONE source, differing only in NDEBUG. Anything else
+    // asserted about a single fingerprint value would restate the header rather
+    // than test it.
+    REQUIRE(einsums_probe_ndebug() != einsums_probe_debug());
+
+    // ...and the library's own value is one of the two, not a third thing,
+    // which is what says the probe measures the same function the world does.
+    std::uint64_t const mine = sealed::config_fingerprint();
+    REQUIRE((mine == einsums_probe_ndebug() || mine == einsums_probe_debug()));
+}
+
 TEST_CASE("the caller's fingerprints match the library's", "[abi]") {
     // This is the whole point of the fingerprints. This test compiles against
     // the same headers the library was built from, so the two must agree; a

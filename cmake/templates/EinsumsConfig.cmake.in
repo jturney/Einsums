@@ -30,7 +30,6 @@ set(EINSUMS_VERSION_MINOR @EINSUMS_VERSION_MINOR@)
 set(EINSUMS_VERSION_PATCH @EINSUMS_VERSION_PATCH@)
 
 # Get the build type
-set(EINSUMS_DEBUG_POSTFIX "@EINSUMS_DEBUG_POSTFIX@")
 set(EINSUMS_BUILD_TYPE "@EINSUMS_BUILD_TYPE@")
 
 # We explicitly set the default to 98 to force CMake to emit a -std=c++XX flag.

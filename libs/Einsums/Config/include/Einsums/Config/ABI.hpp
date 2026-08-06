@@ -162,6 +162,36 @@ constexpr std::uint64_t fnv1a_value(std::uint64_t v, std::uint64_t h) noexcept {
     h = detail::fnv1a_value(sizeof(void *), h);
     h = detail::fnv1a_value(sizeof(long), h);
 
+    // Debug against release, which is a genuine ABI axis rather than an
+    // optimization setting.
+    //
+    // On MSVC this is the fatal one: /MDd and /MD are different C runtimes with
+    // different heaps and different standard-library layouts, so a debug stage
+    // module against a release library does not misbehave, it corrupts. The
+    // library filename postfix never protected against this, because the damage
+    // happens at load time in one process rather than at install time in one
+    // prefix. libstdc++ and libc++ have milder but real equivalents: their
+    // hardened modes change container layouts and iterator invariants.
+    //
+    // Deliberately folded from the macros themselves rather than from
+    // CMAKE_BUILD_TYPE. What matters is what the translation unit was actually
+    // compiled with, which is the thing a stage module can get wrong.
+#if defined(NDEBUG)
+    h = detail::fnv1a("NDEBUG", h);
+#endif
+#if defined(_ITERATOR_DEBUG_LEVEL)
+    h = detail::fnv1a_value(_ITERATOR_DEBUG_LEVEL, h);
+#endif
+#if defined(_GLIBCXX_DEBUG)
+    h = detail::fnv1a("GLIBCXX_DEBUG", h);
+#endif
+#if defined(_GLIBCXX_ASSERTIONS)
+    h = detail::fnv1a("GLIBCXX_ASSERTIONS", h);
+#endif
+#if defined(_LIBCPP_HARDENING_MODE)
+    h = detail::fnv1a_value(_LIBCPP_HARDENING_MODE, h);
+#endif
+
     // Build toggles. Anything that changes a member, a base, or a code path
     // reachable across the boundary belongs here.
 #if defined(EINSUMS_HAVE_PROFILER)
