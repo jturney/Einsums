@@ -48,6 +48,18 @@
 #     ./devtools/docker/run-ci-leg.sh stop                 # amd64 container
 #     ./devtools/docker/run-ci-leg.sh stop arm64           # arm64 container
 #
+# IF `start` HANGS: the `docker pull` below consults Docker Desktop's
+# credential helper, and `docker-credential-desktop get` can block indefinitely
+# even for a public image that is already cached locally. It looks like a slow
+# network and is not. Run with a config that has no credential store:
+#
+#     mkdir -p /tmp/dockercfg && echo '{}' > /tmp/dockercfg/config.json
+#     DOCKER_CONFIG=/tmp/dockercfg ./devtools/docker/run-ci-leg.sh start arm64
+#
+# Nothing here needs authentication, so dropping the helper costs nothing.
+# Prefer this over editing ~/.docker/config.json, which is shared with every
+# other Docker use on the machine.
+#
 # Each leg gets its own:
 #   - conda env  : einsums-env-${LEG}    (persisted in named volume)
 #   - build dir  : /work/build-${LEG}    (persisted via the cached source mount)
@@ -400,13 +412,18 @@ export CCACHE_DIR='${CCACHE_DIR}'
 export CCACHE_MAXSIZE=5G
 mkdir -p '${CCACHE_DIR}'
 
-# 2a. valgrind's aarch64 emulation gets OpenBLAS's tuned kernels wrong: sdot
-#     comes back as -3.4e38 and memcheck calls the result uninitialised, so
-#     LinearAlgebra.dot and GPU.Runtime fail against a library that is fine
-#     natively. Asking OpenBLAS for the baseline ARMv8 kernel avoids the
-#     instructions valgrind mishandles. x86_64 needs none of this, which is
-#     also why amd64 is the faithful target and arm64 is for triage.
-if [[ '${LEG}' == 'valgrind' && \$(uname -m) == 'aarch64' ]]; then
+# 2a. OpenBLAS picks a tuned aarch64 kernel whose sdot is wrong in this
+#     container, so LinearAlgebra.dot, TensorAlgebra.Dot and GPU.Runtime fail
+#     against a library that is perfectly fine. Asking for the baseline ARMv8
+#     kernel avoids it. x86_64 needs none of this, which is also why amd64 is
+#     the faithful target and arm64 is for triage.
+#
+#     This was first seen under valgrind and blamed on its aarch64 emulation,
+#     so the guard used to be valgrind-only. It is not: a plain
+#     gcc-openblas-arm64 run fails the same three tests, and setting this makes
+#     all three pass. Under valgrind the same wrongness additionally reads as
+#     an uninitialised value, which is what made it look emulation-specific.
+if [[ \$(uname -m) == 'aarch64' ]]; then
     export OPENBLAS_CORETYPE=ARMV8
 fi
 
