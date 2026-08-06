@@ -70,13 +70,12 @@ include(CheckLanguage)
 # Explicitly set certain policies
 einsums_set_cmake_policy(CMP0144 NEW)
 
-# CMP0155 governs whether C++20 sources are scanned for module dependencies.
-# Einsums has no modules, so the scan is pure build-time cost - but pinning the
-# policy OLD to avoid it is itself deprecated ("The OLD behavior for policy
-# CMP0155 will be removed from a future version of CMake"), which is a warning
-# on every configure today and a hard error eventually. NEW plus an explicit
-# opt-out asks for the same thing in the supported way: the policy stops
-# warning, and CMAKE_CXX_SCAN_FOR_MODULES turns the scanner off outright.
+# CMP0155 governs whether C++20 sources are scanned for module dependencies. Einsums has no modules,
+# so the scan is pure build-time cost - but pinning the policy OLD to avoid it is itself deprecated
+# ("The OLD behavior for policy CMP0155 will be removed from a future version of CMake"), which is a
+# warning on every configure today and a hard error eventually. NEW plus an explicit opt-out asks
+# for the same thing in the supported way: the policy stops warning, and CMAKE_CXX_SCAN_FOR_MODULES
+# turns the scanner off outright.
 einsums_set_cmake_policy(CMP0155 NEW)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
@@ -221,8 +220,12 @@ if(EINSUMS_WITH_PRECOMPILED_HEADERS)
 
   # PCH target for library modules (OBJECT library)
   add_library(einsums_precompiled_headers OBJECT libs/src/dummy.cpp)
-  target_link_libraries(einsums_precompiled_headers PRIVATE einsums_base_libraries einsums_private_flags)
-  target_precompile_headers(einsums_precompiled_headers PRIVATE
+  target_link_libraries(
+    einsums_precompiled_headers PRIVATE einsums_base_libraries einsums_private_flags
+  )
+  target_precompile_headers(
+    einsums_precompiled_headers
+    PRIVATE
     # Standard library headers used across most modules
     <algorithm>
     <complex>
@@ -243,8 +246,12 @@ if(EINSUMS_WITH_PRECOMPILED_HEADERS)
 
   # PCH target for test/example executables
   add_executable(einsums_exe_precompiled_headers libs/src/dummy_main.cpp)
-  target_link_libraries(einsums_exe_precompiled_headers PRIVATE einsums_base_libraries einsums_private_flags)
-  target_precompile_headers(einsums_exe_precompiled_headers PRIVATE
+  target_link_libraries(
+    einsums_exe_precompiled_headers PRIVATE einsums_base_libraries einsums_private_flags
+  )
+  target_precompile_headers(
+    einsums_exe_precompiled_headers
+    PRIVATE
     <algorithm>
     <complex>
     <cstddef>
@@ -362,10 +369,19 @@ if(EINSUMS_WITH_CUDA AND EINSUMS_WITH_HIP)
 endif()
 
 # MPS (Metal Performance Shaders) — auto-enabled on Apple when no CUDA/HIP
-if(APPLE AND NOT EINSUMS_WITH_CUDA AND NOT EINSUMS_WITH_HIP)
-  einsums_option(EINSUMS_WITH_MPS BOOL "Enable Metal Performance Shaders GPU backend (default: ON on macOS)" ON CATEGORY "Build Targets")
+if(APPLE
+   AND NOT EINSUMS_WITH_CUDA
+   AND NOT EINSUMS_WITH_HIP
+)
+  einsums_option(
+    EINSUMS_WITH_MPS BOOL "Enable Metal Performance Shaders GPU backend (default: ON on macOS)" ON
+    CATEGORY "Build Targets"
+  )
 else()
-  einsums_option(EINSUMS_WITH_MPS BOOL "Enable Metal Performance Shaders GPU backend" OFF ADVANCED CATEGORY "Build Targets")
+  einsums_option(
+    EINSUMS_WITH_MPS BOOL "Enable Metal Performance Shaders GPU backend" OFF ADVANCED
+    CATEGORY "Build Targets"
+  )
 endif()
 
 if(EINSUMS_WITH_MPS)
@@ -388,13 +404,19 @@ else()
 endif()
 
 # WIP: MPI distributed computing (optional).
-einsums_option(EINSUMS_WITH_MPI BOOL "Enable MPI distributed computing (default: OFF) WIP" OFF CATEGORY "Build Targets")
+einsums_option(
+  EINSUMS_WITH_MPI BOOL "Enable MPI distributed computing (default: OFF) WIP" OFF
+  CATEGORY "Build Targets"
+)
 if(EINSUMS_WITH_MPI)
   einsums_add_config_define(EINSUMS_HAVE_MPI)
   find_package(MPI REQUIRED COMPONENTS CXX)
 endif()
 
-einsums_option(EINSUMS_USE_LIBRETT BOOL "Whether to build Einsums with LibreTT for GPU tensor contractions." OFF CATEGORY "Build Targets")
+einsums_option(
+  EINSUMS_USE_LIBRETT BOOL "Whether to build Einsums with LibreTT for GPU tensor contractions." OFF
+  CATEGORY "Build Targets"
+)
 
 if(EINSUMS_USE_LIBRETT)
   einsums_add_config_define(EINSUMS_USE_LIBRETT)
@@ -485,15 +507,13 @@ einsums_option(
 
 # Tuning and other things.
 #
-# Note: a previous EINSUMS_ROW_MAJOR_DEFAULT CMake option lived here.
-# It was wired to a `row_major_default` constant + `--row-major` CLI
-# flag in f7b072e8 (Sept 2025), then accidentally deleted from
-# Config/CompilerSpecific.hpp in 4bfe4491 (Dec 2025) during an
-# unrelated command-line-options refactor. The option + emitted
-# define became orphaned (nothing read the macro) and tensors have
-# been column-major-only since. Removed for clarity — if a per-build
-# layout default is ever re-added, the TensorImpl stride initializer
-# (~line 1770 of TensorImpl.hpp) is the place to wire it.
+# Note: a previous EINSUMS_ROW_MAJOR_DEFAULT CMake option lived here. It was wired to a
+# `row_major_default` constant + `--row-major` CLI flag in f7b072e8 (Sept 2025), then accidentally
+# deleted from Config/CompilerSpecific.hpp in 4bfe4491 (Dec 2025) during an unrelated
+# command-line-options refactor. The option + emitted define became orphaned (nothing read the
+# macro) and tensors have been column-major-only since. Removed for clarity — if a per-build layout
+# default is ever re-added, the TensorImpl stride initializer (~line 1770 of TensorImpl.hpp) is the
+# place to wire it.
 
 # ##################################################################################################
 # Special diagnostic flags, do not enable by default, only if needed
@@ -619,13 +639,11 @@ if(EINSUMS_WITH_COMPILER_WARNINGS)
     einsums_add_compile_flag(-wd4828)
 
   else() # Trial and error approach for any other compiler ...
-    # NOTE: a typo in cmake/Einsums_AddCompileFlag.cmake (`${_conf}` vs.
-    # `${_config}`) silently disabled this entire block of warning flags
-    # for years. Fixing the typo uncorked thousands of accumulated
-    # warnings. The flags below are commented out as a single block until
-    # someone has time to do a focused warning-cleanup pass — re-enable
-    # them in chunks (one flag at a time, fix the cascade, repeat).
-    # einsums_add_compile_flag_if_available(-Wall)
+    # NOTE: a typo in cmake/Einsums_AddCompileFlag.cmake (`${_conf}` vs. `${_config}`) silently
+    # disabled this entire block of warning flags for years. Fixing the typo uncorked thousands of
+    # accumulated warnings. The flags below are commented out as a single block until someone has
+    # time to do a focused warning-cleanup pass — re-enable them in chunks (one flag at a time, fix
+    # the cascade, repeat). einsums_add_compile_flag_if_available(-Wall)
     # einsums_add_compile_flag_if_available(-Wextra)
     # einsums_add_compile_flag_if_available(-Wpedantic)
     einsums_add_compile_flag_if_available(-Wno-strict-aliasing)
@@ -643,8 +661,7 @@ if(EINSUMS_WITH_COMPILER_WARNINGS)
     # Self initialization is dangerous
     einsums_add_compile_flag_if_available(-Winit-self)
 
-    # For portability
-    # einsums_add_compile_flag_if_available(-Wdouble-promotion)
+    # For portability einsums_add_compile_flag_if_available(-Wdouble-promotion)
 
     # Warn about casting that violates qualifiers or alignment
     # einsums_add_compile_flag_if_available(-Wcast-qual)
@@ -654,20 +671,17 @@ if(EINSUMS_WITH_COMPILER_WARNINGS)
     endif()
 
     einsums_add_compile_flag_if_available(-Werror=parentheses)
-    # TODO: re-enable once member-init-list ordering is cleaned up across
-    #       TensorImpl/Tensor headers.
+    # TODO: re-enable once member-init-list ordering is cleaned up across TensorImpl/Tensor headers.
     # einsums_add_compile_flag_if_available(-Werror=reorder)
     einsums_add_compile_flag_if_available(-Werror=return-type)
     einsums_add_compile_flag_if_available(-Werror=sequence-point)
     einsums_add_compile_flag_if_available(-Werror=uninitialized)
     einsums_add_compile_flag_if_available(-Werror=format)
-    # TODO: re-enable once single-brace std::array initializers are double-braced
-    #       across the Tensor/Profile/TypeSupport headers. -Wmissing-braces is
-    #       pedantic about std::array's aggregate wrapping (clang does not warn);
-    #       single-brace init is valid C++ brace elision.
-    # einsums_add_compile_flag_if_available(-Werror=missing-braces)
-    # TODO: re-enable once int/size_t comparisons are cleaned up across
-    #       Tensor/LinearAlgebra/CommandLine headers.
+    # TODO: re-enable once single-brace std::array initializers are double-braced across the
+    # Tensor/Profile/TypeSupport headers. -Wmissing-braces is pedantic about std::array's aggregate
+    # wrapping (clang does not warn); single-brace init is valid C++ brace elision.
+    # einsums_add_compile_flag_if_available(-Werror=missing-braces) TODO: re-enable once int/size_t
+    # comparisons are cleaned up across Tensor/LinearAlgebra/CommandLine headers.
     # einsums_add_compile_flag_if_available(-Werror=sign-compare)
   endif()
 endif()
@@ -790,9 +804,7 @@ endif()
 
 if(EINSUMS_BUILD_PYTHON OR EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
   if(EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
-    find_package(
-      Python "${EINSUMS_BUILD_PYTHON}" EXACT COMPONENTS Interpreter Development REQUIRED
-    )
+    find_package(Python "${EINSUMS_BUILD_PYTHON}" EXACT COMPONENTS Interpreter Development REQUIRED)
   else()
     find_package(Python 3.10 COMPONENTS Interpreter Development REQUIRED)
   endif()
@@ -802,17 +814,21 @@ if(EINSUMS_BUILD_PYTHON OR EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
   find_package(pybind11)
 
   einsums_option(
-    EINSUMS_INSTALL_PYMODDIR STRING
-    "Location within CMAKE_INSTALL_PREFIX to which the Python module is installed. 'naive' places in CMAKE_INSTALL_LIBDIR. 'prefix' queries the Python interpreter (still w/i PREFIX). Anything else is used directly (untested) (default: naive)." "naive"
+    EINSUMS_INSTALL_PYMODDIR
+    STRING
+    "Location within CMAKE_INSTALL_PREFIX to which the Python module is installed. 'naive' places in CMAKE_INSTALL_LIBDIR. 'prefix' queries the Python interpreter (still w/i PREFIX). Anything else is used directly (untested) (default: naive)."
+    "naive"
     CATEGORY "Build Targets"
   )
 
   if(${EINSUMS_INSTALL_PYMODDIR} STREQUAL "naive")
     set(EINSUMS_INSTALL_PYMODDIR ${CMAKE_INSTALL_LIBDIR})
   elseif(${EINSUMS_INSTALL_PYMODDIR} STREQUAL "prefix")
-    # Note that this block is *Linux-style* install to `CMAKE_INSTALL_PREFIX` not *Python-style* install to `Python_EXECUTABLE`'s site-packages.
+    # Note that this block is *Linux-style* install to `CMAKE_INSTALL_PREFIX` not *Python-style*
+    # install to `Python_EXECUTABLE`'s site-packages.
     execute_process(
-      COMMAND ${Python_EXECUTABLE} -c
+      COMMAND
+        ${Python_EXECUTABLE} -c
         "import os, sys, sysconfig as s; spdir = s.get_path('platlib'); print(spdir.replace(os.path.commonpath([sys.prefix, spdir]), '').lstrip(os.path.sep));"
       OUTPUT_VARIABLE EINSUMS_INSTALL_PYMODDIR
       OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -821,7 +837,10 @@ if(EINSUMS_BUILD_PYTHON OR EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
     # use as-is
   endif()
   message(STATUS "Showing option EINSUMS_INSTALL_PYMODDIR: ${EINSUMS_INSTALL_PYMODDIR}")
-  message(STATUS "Test EinsumsPy: PYTHONPATH=${CMAKE_INSTALL_PREFIX}/${EINSUMS_INSTALL_PYMODDIR} pytest ${CMAKE_INSTALL_PREFIX}")
+  message(
+    STATUS
+      "Test EinsumsPy: PYTHONPATH=${CMAKE_INSTALL_PREFIX}/${EINSUMS_INSTALL_PYMODDIR} pytest ${CMAKE_INSTALL_PREFIX}"
+  )
 endif()
 
 if(EINSUMS_WITH_SANITIZERS AND NOT MSVC)
@@ -830,15 +849,14 @@ if(EINSUMS_WITH_SANITIZERS AND NOT MSVC)
   target_link_options(einsums_public_flags INTERFACE -fsanitize=${EINSUMS_WITH_SANITIZERS})
   einsums_add_config_define(EINSUMS_HAVE_SANITIZERS)
 
-  # When EINSUMS_BUILD_PYTHON is on under a sanitizer build, the Python tests
-  # run as `python -m pytest` and dlopen the instrumented _core extension. The
-  # sanitizer runtime then loads too late for its interceptors to install
-  # ("AddressSanitizer loaded too late"), aborting every Python test. Preloading
-  # the runtime fixes it (LD_PRELOAD on Linux, DYLD_INSERT_LIBRARIES on macOS).
-  # This must be delivered on each test's child environment via ctest's
-  # ENVIRONMENT property (einsums_add_python_unit_test) — an exported variable is
-  # stripped from ctest's own (hardened) environment before it reaches the child.
-  # Discover the runtime path once; the compiler knows where its own copy lives.
+  # When EINSUMS_BUILD_PYTHON is on under a sanitizer build, the Python tests run as `python -m
+  # pytest` and dlopen the instrumented _core extension. The sanitizer runtime then loads too late
+  # for its interceptors to install ("AddressSanitizer loaded too late"), aborting every Python
+  # test. Preloading the runtime fixes it (LD_PRELOAD on Linux, DYLD_INSERT_LIBRARIES on macOS).
+  # This must be delivered on each test's child environment via ctest's ENVIRONMENT property
+  # (einsums_add_python_unit_test) — an exported variable is stripped from ctest's own (hardened)
+  # environment before it reaches the child. Discover the runtime path once; the compiler knows
+  # where its own copy lives.
   if(EINSUMS_WITH_SANITIZERS MATCHES "thread")
     if(APPLE)
       set(_einsums_san_rt_query libclang_rt.tsan_osx_dynamic.dylib)
@@ -855,19 +873,28 @@ if(EINSUMS_WITH_SANITIZERS AND NOT MSVC)
   if(_einsums_san_rt_query)
     execute_process(
       COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=${_einsums_san_rt_query}
-      OUTPUT_VARIABLE _einsums_san_rt_path OUTPUT_STRIP_TRAILING_WHITESPACE)
+      OUTPUT_VARIABLE _einsums_san_rt_path OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
     if(EXISTS "${_einsums_san_rt_path}")
       if(APPLE)
-        set(EINSUMS_PYTEST_SANITIZER_PRELOAD "DYLD_INSERT_LIBRARIES=${_einsums_san_rt_path}" CACHE INTERNAL
-            "Env entry preloading the sanitizer runtime into Python test subprocesses")
+        set(EINSUMS_PYTEST_SANITIZER_PRELOAD
+            "DYLD_INSERT_LIBRARIES=${_einsums_san_rt_path}"
+            CACHE INTERNAL
+                  "Env entry preloading the sanitizer runtime into Python test subprocesses"
+        )
       else()
-        set(EINSUMS_PYTEST_SANITIZER_PRELOAD "LD_PRELOAD=${_einsums_san_rt_path}" CACHE INTERNAL
-            "Env entry preloading the sanitizer runtime into Python test subprocesses")
+        set(EINSUMS_PYTEST_SANITIZER_PRELOAD
+            "LD_PRELOAD=${_einsums_san_rt_path}"
+            CACHE INTERNAL
+                  "Env entry preloading the sanitizer runtime into Python test subprocesses"
+        )
       endif()
       einsums_info("Python tests will preload the sanitizer runtime: ${_einsums_san_rt_path}")
     else()
-      einsums_warn("Could not locate sanitizer runtime '${_einsums_san_rt_query}'; "
-                   "Python tests may abort under ctest with 'sanitizer loaded too late'.")
+      einsums_warn(
+        "Could not locate sanitizer runtime '${_einsums_san_rt_query}'; "
+        "Python tests may abort under ctest with 'sanitizer loaded too late'."
+      )
     endif()
   endif()
 endif()
@@ -935,23 +962,21 @@ set(CMAKE_DEBUG_POSTFIX "d")
 set(EINSUMS_DEBUG_POSTFIX "d")
 
 # ##################################################################################################
-# apiary — annotation contract + binding/docs codegen (external/apiary submodule)
-# Must precede libs/ so that the apiary target and PyEinsums-related targets
-# exist by the time individual modules' einsums_add_module(...) hooks attach.
+# apiary — annotation contract + binding/docs codegen (external/apiary submodule) Must precede libs/
+# so that the apiary target and PyEinsums-related targets exist by the time individual modules'
+# einsums_add_module(...) hooks attach.
 # ##################################################################################################
-# The submodule provides two independent pieces (see external/apiary/CMakeLists.txt):
-#   * apiary::annotations — header-only APIARY_* macros. Included transitively
-#     from Logging.hpp, so EVERY translation unit needs them; the header must be
-#     vendored and INSTALLED unconditionally or a downstream find_package(Einsums)
-#     of a pure-C++ (EINSUMS_BUILD_PYTHON=OFF) install fails to compile.
-#   * apiary             — the libtooling codegen executable. It drives the
-#     per-module pybind11 bindings (EINSUMS_BUILD_PYTHON) and the C++ API
-#     reference (EINSUMS_WITH_DOCUMENTATION). It pulls in the Clang/LLVM dev
-#     stack, so it is built only when one of those consumers is enabled.
+# The submodule provides two independent pieces (see external/apiary/CMakeLists.txt): *
+# apiary::annotations — header-only APIARY_* macros. Included transitively from Logging.hpp, so
+# EVERY translation unit needs them; the header must be vendored and INSTALLED unconditionally or a
+# downstream find_package(Einsums) of a pure-C++ (EINSUMS_BUILD_PYTHON=OFF) install fails to
+# compile. * apiary             — the libtooling codegen executable. It drives the per-module
+# pybind11 bindings (EINSUMS_BUILD_PYTHON) and the C++ API reference (EINSUMS_WITH_DOCUMENTATION).
+# It pulls in the Clang/LLVM dev stack, so it is built only when one of those consumers is enabled.
 #
-# add_subdirectory is therefore UNCONDITIONAL; only the executable is gated, via
-# APIARY_BUILD_TOOL. Our 3.25 floor means CMP0077 is NEW, so this normal variable
-# drives the submodule's option() directly.
+# add_subdirectory is therefore UNCONDITIONAL; only the executable is gated, via APIARY_BUILD_TOOL.
+# Our 3.25 floor means CMP0077 is NEW, so this normal variable drives the submodule's option()
+# directly.
 if(EINSUMS_BUILD_PYTHON OR EINSUMS_WITH_DOCUMENTATION)
   set(APIARY_BUILD_TOOL ON)
 else()
@@ -959,19 +984,17 @@ else()
 endif()
 add_subdirectory(external/apiary)
 
-# Probe the build compiler for the system/stdlib include paths libtooling needs
-# (resource-dir, conda isystem, C++ stdlib dirs). Provided by the apiary
-# submodule's ApiaryHelpers; results land in APIARY_SYSTEM_FLAGS / APIARY_* and
-# are consumed by einsums_finalize_pybind(). Only meaningful when the codegen
-# executable was actually built.
+# Probe the build compiler for the system/stdlib include paths libtooling needs (resource-dir, conda
+# isystem, C++ stdlib dirs). Provided by the apiary submodule's ApiaryHelpers; results land in
+# APIARY_SYSTEM_FLAGS / APIARY_* and are consumed by einsums_finalize_pybind(). Only meaningful when
+# the codegen executable was actually built.
 if(TARGET apiary)
   apiary_detect_toolchain(CXX_STANDARD ${EINSUMS_WITH_CXX_STANDARD})
 endif()
-# libs/Einsums/Python is now in the regular _Einsums_modules list in
-# libs/Einsums/CMakeLists.txt — it's a header-only module that must be
-# installed unconditionally (its Annotations.hpp is transitively included
-# from Logging.hpp and other public headers), and the apiary /
-# pybind11 sanity checks inside it remain gated on EINSUMS_BUILD_PYTHON.
+# libs/Einsums/Python is now in the regular _Einsums_modules list in libs/Einsums/CMakeLists.txt —
+# it's a header-only module that must be installed unconditionally (its Annotations.hpp is
+# transitively included from Logging.hpp and other public headers), and the apiary / pybind11 sanity
+# checks inside it remain gated on EINSUMS_BUILD_PYTHON.
 
 # ##################################################################################################
 # Add libraries
@@ -979,20 +1002,16 @@ endif()
 add_subdirectory(libs)
 
 # ##################################################################################################
-# Finalize the apiary aggregator (single ``import einsums``).
-# Must run AFTER add_subdirectory(libs) so every annotated module has
-# already appended to the global PYBIND properties.
+# Finalize the apiary aggregator (single ``import einsums``). Must run AFTER add_subdirectory(libs)
+# so every annotated module has already appended to the global PYBIND properties.
 # ##################################################################################################
 if(EINSUMS_BUILD_PYTHON)
   include(Einsums_FinalizePybind)
   einsums_finalize_pybind()
 endif()
-# Top-level einsums/ Python package was removed in favor of the apiary
-# codegen output. The codegen-driven extension is registered via
-# einsums_finalize_pybind() above.
-# if(EINSUMS_BUILD_PYTHON)
-#   add_subdirectory(einsums)
-# endif()
+# Top-level einsums/ Python package was removed in favor of the apiary codegen output. The
+# codegen-driven extension is registered via einsums_finalize_pybind() above.
+# if(EINSUMS_BUILD_PYTHON) add_subdirectory(einsums) endif()
 
 # ##################################################################################################
 # Documentation toolchain (Sphinx; C++ API via the in-tree libclang tool)
@@ -1006,11 +1025,13 @@ endif()
 # ##################################################################################################
 # Simple timing tools
 # ##################################################################################################
-einsums_option(EINSUMS_WITH_PROFILING_DEVTOOLS BOOL "Enable profile programs in devtools/profiling" OFF CATEGORY "Advanced" ADVANCED)
-if (EINSUMS_WITH_PROFILING_DEVTOOLS)
+einsums_option(
+  EINSUMS_WITH_PROFILING_DEVTOOLS BOOL "Enable profile programs in devtools/profiling" OFF
+  CATEGORY "Advanced" ADVANCED
+)
+if(EINSUMS_WITH_PROFILING_DEVTOOLS)
   add_subdirectory(devtools/profiling)
-endif ()
-
+endif()
 
 # ##################################################################################################
 # installation instructions
