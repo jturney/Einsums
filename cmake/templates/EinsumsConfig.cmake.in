@@ -21,29 +21,44 @@ list(APPEND CMAKE_PREFIX_PATH "${_einsums_root_dir}/lib")
 include("${CMAKE_CURRENT_LIST_DIR}/EinsumsInternalTargets.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/EinsumsTargets.cmake")
 
-# Shared-graph capture requires exactly one libEinsums per world. The capture
-# context is thread-local state INSIDE the library, so a consumer that absorbed
-# its own static copy gets its own context: nodes it emits land in a graph
-# nobody executes, and the ones it thinks it captured are silently missing.
+# Whether this installation can host stages and extension modules.
 #
-# That is unrecoverable at runtime and invisible in the result, so refuse it
-# here, where the message can still name a cause. The load-time handshake in
-# <Einsums/Config/ABI.hpp> catches the same mistake from the other direction,
-# for a module built before this check existed.
+# Shared-graph capture requires exactly one libEinsums per world: the capture
+# context is thread-local state INSIDE the library, so a module that absorbed
+# its own static copy gets a second, private context, and nodes it emits land in
+# a graph nobody executes.
+#
+# That is a constraint on STAGE MODULES, not on every consumer. An ordinary C++
+# program linking a static libEinsums has exactly one copy and is fine, and the
+# project itself builds static under EINSUMS_WITH_COVERAGE. So report the fact,
+# and only refuse when the caller says it needs what a static build cannot give:
+#
+#     find_package(Einsums REQUIRED COMPONENTS stages)
+#
 if(TARGET Einsums::Einsums)
   get_target_property(_einsums_lib_type Einsums::Einsums TYPE)
   if(_einsums_lib_type STREQUAL "STATIC_LIBRARY")
-    message(
-      FATAL_ERROR
-        "This Einsums installation provides only a STATIC libEinsums, which cannot be used to "
-        "build extension modules or stages.\n"
-        "Shared-graph capture keeps its capture context in thread-local state inside the library, "
-        "so a static copy gives the consumer a second, private context and the captured graph "
-        "silently loses whatever the consumer emitted.\n"
-        "Rebuild and install Einsums with BUILD_SHARED_LIBS=ON."
-    )
+    set(Einsums_IS_SHARED FALSE)
+  else()
+    set(Einsums_IS_SHARED TRUE)
   endif()
   unset(_einsums_lib_type)
+
+  if(NOT Einsums_IS_SHARED)
+    if("stages" IN_LIST Einsums_FIND_COMPONENTS)
+      message(
+        FATAL_ERROR
+          "This Einsums installation provides only a STATIC libEinsums, so it cannot host stages "
+          "or extension modules.\n"
+          "Shared-graph capture keeps its capture context in thread-local state inside the "
+          "library, so a module with its own absorbed copy gets a second, private context and the "
+          "captured graph silently loses whatever that module emitted.\n"
+          "Rebuild and install Einsums with BUILD_SHARED_LIBS=ON (and without "
+          "EINSUMS_WITH_COVERAGE, which forces a static build)."
+      )
+    endif()
+    message(STATUS "Einsums: static installation; stages and extension modules are unavailable")
+  endif()
 endif()
 
 einsums_set_cmake_policy(CMP0144 NEW)

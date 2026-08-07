@@ -55,6 +55,16 @@ set(_version_name "EINSUMS_${ABI_VERSION}")
 # linker's own bookkeeping.
 set(_allowed_bare "${_version_name}" "_init" "_fini" "_edata" "_end" "__bss_start")
 
+# Runtime-owned symbols the compiler emits, which are not ours to isolate and must NOT be:
+# `.gomp_critical_user_<name>.var` is the lock backing a named `#pragma omp critical(name)`, and
+# OpenMP is process-global by design - the same limitation the sealed-worlds notes state outright.
+#
+# Only clang emits these into the dynamic table; gcc keeps them local, which is why a gcc leg passed
+# this check while a clang leg did not. The leading dot is the tell: no C or C++ identifier may
+# start with one, so anything spelled this way came from the toolchain rather than from a
+# translation unit we own.
+set(_allowed_prefixes ".gomp_critical_user_")
+
 string(REPLACE "\n" ";" _lines "${_syms}")
 
 set(_unversioned "")
@@ -87,6 +97,18 @@ foreach(_line IN LISTS _lines)
 
   string(REGEX REPLACE "@@?.*$" "" _bare "${_name}")
   if(_bare IN_LIST _allowed_bare)
+    continue()
+  endif()
+
+  set(_exempt FALSE)
+  foreach(_prefix IN LISTS _allowed_prefixes)
+    string(LENGTH "${_prefix}" _plen)
+    string(SUBSTRING "${_bare}" 0 ${_plen} _head)
+    if(_head STREQUAL "${_prefix}")
+      set(_exempt TRUE)
+    endif()
+  endforeach()
+  if(_exempt)
     continue()
   endif()
 
