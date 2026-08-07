@@ -50,6 +50,7 @@ class Stage:
         "qualname",
         "eager",
         "promotable",
+        "contracted",
         "backends",
         "_selected",
         "_validated",
@@ -57,15 +58,18 @@ class Stage:
         "_python_fn",
     )
 
-    def __init__(self, fn, *, eager: bool, promotable: bool):
+    def __init__(self, fn, *, eager: bool, promotable: bool, contract: bool):
         self.name = fn.__name__
         self.qualname = f"{fn.__module__}.{getattr(fn, '__qualname__', fn.__name__)}"
         self.eager = eager
         self.promotable = promotable
+        self.contracted = contract and promotable
         self.backends = {PYTHON: fn}
         self._python_fn = fn
         self._selected: str | None = None
-        self._validated = promotable is False  # nothing to validate when never promoted
+        # Nothing to validate when the stage never goes to C++, or when it is
+        # on the promotion path but has not stated its contract yet.
+        self._validated = not self.contracted
         self._logged = False
 
     # -- contract -------------------------------------------------------
@@ -133,7 +137,8 @@ class Stage:
         return (
             f"<Stage {self.name} backends={sorted(self.backends)} "
             f"selected={self.selected}{' eager' if self.eager else ''}"
-            f"{'' if self.promotable else ' python-only'}>"
+            f"{'' if self.promotable else ' python-only'}"
+            f"{'' if self.contracted or not self.promotable else ' uncontracted'}>"
         )
 
 
@@ -198,7 +203,7 @@ def get_stage(name: str) -> Stage:
     return _registry.get(name)
 
 
-def stage(fn=None, *, eager: bool = False, promotable: bool = True, loop=None):
+def stage(fn=None, *, eager: bool = False, promotable: bool = True, contract: bool = True, loop=None):
     """Register a free function as a stage.
 
     Usable bare or with arguments::
@@ -218,11 +223,22 @@ def stage(fn=None, *, eager: bool = False, promotable: bool = True, loop=None):
     hatch: such stages are marked in the timing report so a reader can see
     which ones are off the promotion path on purpose.
 
+    ``contract=False`` is the third state, and it is not the same as
+    ``promotable=False``. It says the stage is on the promotion path but has
+    not stated its contract yet, which is where a real method sits partway
+    through being cut into shape. The debt is not silent: every report prints
+    ``NO CONTRACT`` against the stage and counts the outstanding ones in its
+    footer, so it nags until it is paid. A permanently-Python stage says
+    ``promotable=False`` instead and prints ``python-only``, which is a
+    finished state rather than a debt.
+
     Args:
         eager: Force a graph split. The session executes the pending segment,
             runs this stage eagerly, and opens the next segment.
         promotable: False declares a permanently-Python stage and skips
             contract validation.
+        contract: False declares a stage that intends to reach C++ but has not
+            stated its contract yet. Skips validation and is reported as debt.
         loop: Reserved for iterative stages, which map onto
             ``Pipeline::add_loop``. Not yet implemented.
     """
@@ -230,7 +246,7 @@ def stage(fn=None, *, eager: bool = False, promotable: bool = True, loop=None):
         raise NotImplementedError("loop stages arrive with the iterative-stage work in M6")
 
     def decorate(f):
-        st = Stage(f, eager=eager, promotable=promotable)
+        st = Stage(f, eager=eager, promotable=promotable, contract=contract)
         st.validate()
         _registry.add(st)
 

@@ -394,3 +394,50 @@ def test_a_bad_env_var_says_it_came_from_the_env(monkeypatch):
 
     with pytest.raises(StageError, match="EINSUMS_STAGE_BACKEND"):
         stages.select(env_probe="python")
+
+
+# ----------------------------------------------------------------------
+# contract=False: on the promotion path, contract not stated yet
+# ----------------------------------------------------------------------
+def test_contract_false_skips_validation_but_stays_promotable():
+    @stage(contract=False)
+    def not_yet_cut(mp2) -> None: ...
+
+    st = stages.get_stage("not_yet_cut")
+    assert st.promotable is True, "contract=False is a debt, not a retirement"
+    assert st.contracted is False
+
+
+def test_contract_false_is_reported_as_debt_not_as_python_only():
+    """The two states must not read the same: one is owed work, one is finished."""
+
+    @stage(eager=True, contract=False)
+    def owes_a_contract(mp2) -> None: ...
+
+    @stage(eager=True, promotable=False)
+    def never_promoted(mp2) -> None: ...
+
+    s = stages.session("debt")
+    with s.capture():
+        owes_a_contract(None)
+        never_promoted(None)
+    s.run()
+
+    text = s.report()
+    assert "NO CONTRACT" in text
+    assert "python-only" in text
+    assert "have not stated a contract yet: owes_a_contract" in text
+    assert "never_promoted" not in text.split("have not stated a contract yet")[1]
+
+
+def test_an_all_eager_session_does_not_blame_the_profiler():
+    """Every row's execute time is wall time, so per-node timing was never asked for."""
+
+    @stage(eager=True, contract=False)
+    def only_eager(x) -> None: ...
+
+    s = stages.session("all_eager")
+    with s.capture():
+        only_eager(None)
+    s.run()
+    assert "profiler" not in s.report()

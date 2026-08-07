@@ -812,17 +812,32 @@ class DLPNOMP2(DLPNOBase):
 
     # -- psi4 DLPNOMP2::compute_energy -------------------------------------
 
-    def compute_energy(self, optimize=True):
-        """Run the whole DLPNO-MP2 pipeline and return the total energy."""
-        self.setup_orbitals()
-        self.compute_doi()
-        self.prep_sparsity()
-        self.compute_metric()
-        self.compute_qia()
-        self.precompute_fits()
-        self.pno_transform()
-        self.compute_pno_overlaps()
-        self.lmp2_iterations(optimize=optimize)
+    def compute_energy(self, optimize=True, session=None):
+        """Run the whole DLPNO-MP2 pipeline and return the total energy.
+
+        Args:
+            optimize: Apply the ComputeGraph optimization passes.
+            session: An :class:`einsums.stages.Session` to run the phases in.
+                The phases then dispatch through the stage registry, which is
+                what makes ``session.report()`` able to say what each cost and
+                what a C++ backend would be replacing. Default None keeps the
+                plain call sequence, so nothing about the numbers depends on
+                whether anyone is measuring.
+        """
+        if session is not None:
+            from .stages import run_phases
+
+            run_phases(self, session, lmp2_iterations={"optimize": optimize})
+        else:
+            self.setup_orbitals()
+            self.compute_doi()
+            self.prep_sparsity()
+            self.compute_metric()
+            self.compute_qia()
+            self.precompute_fits()
+            self.pno_transform()
+            self.compute_pno_overlaps()
+            self.lmp2_iterations(optimize=optimize)
 
         # Three additive pieces, as psi4 reports them: the converged LMP2
         # energy in the truncated PNO bases, the energy lost to that truncation,

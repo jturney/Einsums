@@ -37,7 +37,28 @@ parser.add_argument("--no-diis", action="store_true")
 parser.add_argument("--no-optimize", action="store_true")
 parser.add_argument("-k", "--filter", default="",
                     help="only run fixtures whose name contains this substring")
+parser.add_argument("--stages", action="store_true",
+                    help="run the phases through einsums.stages and print the per-stage "
+                         "timing table. The energies must not move: that they do not is "
+                         "what makes the table trustworthy")
 args = parser.parse_args()
+
+if args.stages:
+    from einsums import stages
+else:
+    stages = None
+
+
+def run(mp2, label):
+    """Run one calculation, optionally inside a stage session, and return it."""
+    if stages is None:
+        mp2.compute_energy(optimize=not args.no_optimize)
+        return None
+    session = stages.session(label)
+    with session.capture():
+        mp2.compute_energy(optimize=not args.no_optimize, session=session)
+    session.run()
+    return session
 
 paths = args.fixtures or sorted(glob.glob(os.path.join(DEFAULT_DIR, "*.npz")))
 paths = [p for p in paths if args.filter in os.path.basename(p)]
@@ -61,7 +82,7 @@ for path in paths:
 
     exact = DLPNOMP2(reference, Thresholds.untruncated(n_buckets=args.buckets),
                      verbose=False, use_diis=not args.no_diis)
-    exact.compute_energy(optimize=not args.no_optimize)
+    run(exact, f"{name}:untruncated")
     err_exact = abs(exact.e_lmp2 - energies["psi4_df_mp2"])
     if err_exact >= UNTRUNCATED_TOL:
         failures.append(f"{name}: untruncated off by {err_exact:.3e}")
@@ -69,7 +90,7 @@ for path in paths:
     trunc = DLPNOMP2(reference, Thresholds.preset("NORMAL", t_cut_pno=t_cut_pno,
                                                   n_buckets=args.buckets),
                      verbose=False, use_diis=not args.no_diis)
-    trunc.compute_energy(optimize=not args.no_optimize)
+    session = run(trunc, f"{name}:truncated")
     err_trunc = abs(trunc.e_corr - energies["psi4_dlpno_mp2"])
     tol_trunc = max(1e-9, 0.01 * abs(trunc.de_pno_total))
     if err_trunc >= tol_trunc:
@@ -78,6 +99,10 @@ for path in paths:
     elapsed = time.perf_counter() - started
     mark = " " if err_exact < UNTRUNCATED_TOL and err_trunc < tol_trunc else "X"
     print(f"{mark}{name:<31} {err_exact:>13.3e} {err_trunc:>13.3e} {elapsed:>7.1f}s")
+    if session is not None:
+        print()
+        print(session.report())
+        print()
 
 print("-" * 70)
 if failures:

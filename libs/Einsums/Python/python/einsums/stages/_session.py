@@ -40,13 +40,17 @@ def active_session():
 class StageTiming:
     """One row of the timing table."""
 
-    __slots__ = ("name", "backend", "eager", "promotable", "capture_ms", "execute_ms", "split", "_ids")
+    __slots__ = (
+        "name", "backend", "eager", "promotable", "contracted",
+        "capture_ms", "execute_ms", "split", "_ids",
+    )
 
-    def __init__(self, name, backend, *, eager, promotable):
+    def __init__(self, name, backend, *, eager, promotable, contracted):
         self.name = name
         self.backend = backend
         self.eager = eager
         self.promotable = promotable
+        self.contracted = contracted
         self.capture_ms = 0.0
         self.execute_ms = 0.0
         self.split = False
@@ -61,6 +65,8 @@ class StageTiming:
             parts.append("SPLIT")
         if not self.promotable:
             parts.append("python-only")
+        elif not self.contracted:
+            parts.append("NO CONTRACT")
         return ", ".join(parts)
 
 
@@ -151,7 +157,10 @@ class Session:
     # -- dispatch -------------------------------------------------------
     def run_stage(self, st, fn, args, kwargs):
         """Called by the dispatching wrapper for every stage inside a session."""
-        row = StageTiming(st.name, st.selected, eager=st.eager, promotable=st.promotable)
+        row = StageTiming(
+            st.name, st.selected,
+            eager=st.eager, promotable=st.promotable, contracted=st.contracted,
+        )
 
         if st.eager:
             # Materialize everything the eager stage might read, then run it
@@ -237,6 +246,11 @@ class Session:
         """
         if self._had_node_timings or not any(self._executed):
             return None
+        # An all-eager session never asks for a node timing: every row's
+        # execute column is wall time around the stage call, and reporting the
+        # profiler as missing would be answering a question nobody asked.
+        if not any(r._ids and r._ids[1] != r._ids[2] for r in self._timings):
+            return None
         try:
             import einsums.profile as _p
 
@@ -289,6 +303,12 @@ class Session:
         splits = sum(1 for r in rows if r.split)
         if splits:
             out.append(f"\n{splits} eager split(s); each forces a graph boundary no pass can cross.")
+        owed = sorted({r.name for r in rows if r.promotable and not r.contracted})
+        if owed:
+            out.append(
+                f"\n{len(owed)} stage(s) have not stated a contract yet: {', '.join(owed)}. "
+                f"promote cannot generate C++ for them until they do."
+            )
         note = self._timing_note()
         if note:
             out.append(f"\n{note}")
