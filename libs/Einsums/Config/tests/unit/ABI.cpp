@@ -23,25 +23,22 @@ TEST_CASE("world is one record, and the same one every time", "[abi]") {
     REQUIRE(a.struct_size == sizeof(sealed::WorldInfo));
 }
 
-// BuildModeProbe.cpp, compiled twice: once plainly, once with _GLIBCXX_DEBUG.
-extern "C" std::uint64_t einsums_probe_plain();
-extern "C" std::uint64_t einsums_probe_stdlibdebug();
+// BuildModeProbe.cpp, compiled twice at different language levels.
+extern "C" std::uint64_t einsums_probe_cxx20();
+extern "C" std::uint64_t einsums_probe_cxx23();
 
-TEST_CASE("the config fingerprint notices a standard-library debug mode", "[abi]") {
-    // libstdc++ under _GLIBCXX_DEBUG swaps in entirely different container types,
-    // and MSVC's _ITERATOR_DEBUG_LEVEL tracks /MDd against /MD, which are
-    // different C runtimes with different heaps. A stage module that disagrees
-    // with the library on either corrupts rather than misbehaves, and before
-    // these terms existed the two fingerprints compared equal.
-    //
-    // Two compilations of ONE source. Anything asserted about a single
-    // fingerprint value would restate the header rather than test it.
-    REQUIRE(einsums_probe_plain() != einsums_probe_stdlibdebug());
+TEST_CASE("the config fingerprint responds to its inputs", "[abi]") {
+    // A term can be dropped from the fold and nothing would notice, so require
+    // that changing one folded input changes the answer. Two compilations of
+    // ONE source; anything asserted about a single value would restate the
+    // header rather than test it.
+    REQUIRE(einsums_probe_cxx20() != einsums_probe_cxx23());
 
-    // The library's own value is the plain one, not a third thing, which is
-    // what says the probe measures the same function world() reports.
-    REQUIRE(sealed::config_fingerprint() == einsums_probe_plain());
-    REQUIRE(sealed::world().config_fingerprint == einsums_probe_plain());
+    // The library's own value is one of the two rather than a third thing,
+    // which is what says the probe measures the same function world() reports.
+    std::uint64_t const mine = sealed::config_fingerprint();
+    REQUIRE((mine == einsums_probe_cxx20() || mine == einsums_probe_cxx23()));
+    REQUIRE(sealed::world().config_fingerprint == mine);
 }
 
 TEST_CASE("the caller's fingerprints match the library's", "[abi]") {

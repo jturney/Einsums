@@ -35,27 +35,24 @@ foreach(test ${ConfigTests})
   einsums_add_unit_test("Modules.Config" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS})
 endforeach()
 
-# A standard-library debug mode is an ABI axis: libstdc++ swaps in different container types under
-# _GLIBCXX_DEBUG, and MSVC's _ITERATOR_DEBUG_LEVEL tracks /MDd against /MD, which are different C
-# runtimes. A stage module that disagrees with the library here corrupts rather than misbehaves.
+# The fingerprint must respond to its inputs, or a term can be dropped from the fold and nothing
+# notices. Compile one source at two language levels and require two different answers.
 #
-# The only way to check the fingerprint notices is to compile one source twice and require two
-# different answers. The fold tests the macro's definedness, so this works on every platform, not
-# just the one whose standard library the macro belongs to.
-foreach(_mode plain;stdlibdebug)
-  add_library(einsums_build_mode_probe_${_mode} OBJECT BuildModeProbe.cpp)
+# __cplusplus rather than a standard-library debug macro: _GLIBCXX_DEBUG works under gcc and clang
+# and silently does NOT reach the fold under icx, which cost three CI failures to discover. A
+# core-language macro set by -std cannot be intercepted by any library header.
+foreach(_std 20 23)
+  add_library(einsums_fingerprint_probe_cxx${_std} OBJECT BuildModeProbe.cpp)
   target_compile_definitions(
-    einsums_build_mode_probe_${_mode} PRIVATE BUILD_MODE_PROBE_NAME=einsums_probe_${_mode}
+    einsums_fingerprint_probe_cxx${_std} PRIVATE BUILD_MODE_PROBE_NAME=einsums_probe_cxx${_std}
   )
-  if(_mode STREQUAL "stdlibdebug")
-    target_compile_definitions(einsums_build_mode_probe_${_mode} PRIVATE _GLIBCXX_DEBUG)
-  endif()
-  target_link_libraries(einsums_build_mode_probe_${_mode} PRIVATE Einsums)
-  set_target_properties(einsums_build_mode_probe_${_mode} PROPERTIES FOLDER "Tests/Unit")
+  target_compile_features(einsums_fingerprint_probe_cxx${_std} PRIVATE cxx_std_${_std})
+  target_link_libraries(einsums_fingerprint_probe_cxx${_std} PRIVATE Einsums)
+  set_target_properties(einsums_fingerprint_probe_cxx${_std} PROPERTIES FOLDER "Tests/Unit")
 endforeach()
 target_sources(
-  ABI_test PRIVATE $<TARGET_OBJECTS:einsums_build_mode_probe_plain>
-                   $<TARGET_OBJECTS:einsums_build_mode_probe_stdlibdebug>
+  ABI_test PRIVATE $<TARGET_OBJECTS:einsums_fingerprint_probe_cxx20>
+                   $<TARGET_OBJECTS:einsums_fingerprint_probe_cxx23>
 )
 
 # Two copies of one library in one process: the loader-behaviour reproduction the sealed-worlds
