@@ -101,7 +101,12 @@ print('OK')
   # Under a sanitizer build, preload the runtime so the dlopened _core's
   # interceptors install in time (see einsums_add_python_unit_test and the root
   # CMakeLists for EINSUMS_PYTEST_SANITIZER_PRELOAD).
+  # Same reason as the ComputeGraph Python examples: without these a crash here
+  # waits for a debugger that is never coming, and the job dies on the clock
+  # instead of on the fault.
   set(_smoke_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib")
+  set(_smoke_env "${_smoke_env};EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1")
+  set(_smoke_env "${_smoke_env};EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1")
   if(EINSUMS_PYTEST_SANITIZER_PRELOAD)
     set(_smoke_env "${_smoke_env};${EINSUMS_PYTEST_SANITIZER_PRELOAD}")
     # Deliver the same suppression files the unit tests get, so benign

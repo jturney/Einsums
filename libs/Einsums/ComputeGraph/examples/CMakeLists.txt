@@ -108,7 +108,17 @@ if(EINSUMS_BUILD_PYTHON
     )
     # Build the test ENVIRONMENT string. PYTHONPATH always; the sanitizer
     # runtime preload only under a sanitizer build (see comment above).
+    #
+    # EINSUMS_DEBUG_NO_ATTACH_DEBUGGER is not optional here. Without it a
+    # crashing example prints "ready for attaching debugger. Once attached set
+    # i = 1 and continue" and WAITS - forever, on a runner with no debugger and
+    # nobody to attach one. One segfault then burns the job's entire time
+    # budget and reports as a timeout rather than as the crash it is.
+    # einsums_add_python_unit_test sets both of these for exactly this reason;
+    # the Python examples are registered here by hand and never got them.
     set(_example_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib")
+    set(_example_env "${_example_env};EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1")
+    set(_example_env "${_example_env};EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1")
     # These scripts print physics: Greek letters in the progress lines. Windows
     # still defaults stdout to the ANSI code page, which cannot encode them, so
     # ask for UTF-8 mode there (see einsums_add_python_unit_test).
