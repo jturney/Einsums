@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
@@ -138,6 +139,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * Returns a reference to the stage's Graph for use with CaptureGuard.
      * Stages execute in the order they are added.
+     *
+     * The reference stays valid for the life of the pipeline, including across
+     * later add_stage() and add_loop() calls, so a caller may hold several at
+     * once and revisit an earlier stage.
      *
      * @param[in] name Human-readable name for the stage.
      * @return Reference to the stage's Graph.
@@ -388,9 +393,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         std::variant<Graph, LoopNode> content; ///< Either a one-shot Graph or a LoopNode
     };
 
-    std::string        _name;
-    std::vector<Stage> _stages;
-    Workspace         *_workspace{nullptr};
+    std::string _name;
+    /// A deque, not a vector: add_stage() and add_loop() hand out references
+    /// into this container, and a vector reallocating on the next push_back
+    /// would leave every earlier reference pointing at a moved-from Graph.
+    /// A moved-from Graph has a null content mutex, so the symptom is a
+    /// "recursive_mutex lock failed" from whatever touches the stale
+    /// reference, arbitrarily far from the add_stage() that caused it.
+    std::deque<Stage> _stages;
+    Workspace        *_workspace{nullptr};
 
     /// Pipeline-scoped tensors with deferred allocation.
     std::vector<std::unique_ptr<void, void (*)(void *)>> _owned_tensors;

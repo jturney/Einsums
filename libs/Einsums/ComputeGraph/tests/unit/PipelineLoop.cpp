@@ -150,3 +150,38 @@ TEST_CASE("Pipeline - setup + loop + postprocess", "[ComputeGraph][Pipeline]") {
         }
     }
 }
+
+TEST_CASE("Pipeline - stage references survive later add_stage", "[ComputeGraph][Pipeline]") {
+    // add_stage() hands out a reference into the pipeline's stage container.
+    // While that container was a std::vector, the next add_stage() could
+    // reallocate and leave this reference pointing at a moved-from Graph,
+    // whose content mutex is null. The symptom was a "recursive_mutex lock
+    // failed" from whatever touched the stale reference, arbitrarily far from
+    // the add_stage() that caused it.
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_zero_tensor<double>("B", 4, 4);
+
+    cg::Pipeline pipeline("stage_reference_stability");
+
+    auto &first = pipeline.add_stage("first");
+    {
+        cg::CaptureGuard const guard(first);
+        cg::permute("ij <- ij", 0.0, &B, 1.0, A);
+    }
+    REQUIRE(first.num_nodes() == 1);
+
+    // Enough stages to force any vector to reallocate more than once.
+    for (int s = 0; s < 16; ++s) {
+        pipeline.add_stage(fmt::format("filler{}", s));
+    }
+
+    // The reference handed out first must still name a live, usable Graph.
+    REQUIRE(first.num_nodes() == 1);
+    REQUIRE_NOTHROW(first.to_json());
+    REQUIRE_NOTHROW(first.execute());
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            REQUIRE(std::abs(B(ii, jj) - A(ii, jj)) < 1e-12);
+        }
+    }
+}
