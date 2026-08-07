@@ -87,12 +87,33 @@ jobs:
           key: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-${{ github.sha }}
           restore-keys: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-
 
+      # Resource probe. The gate on this leg records that icx 2026.0.0 "blew
+      # past ubuntu-latest's 16GB even at Debug + -j1" - but a hosted Ubuntu
+      # runner ships only ~14GB of FREE DISK against those 16GB of RAM, and
+      # oneAPI plus MKL in a conda env is several GB before a single object
+      # file exists. Runner death from ENOSPC and from OOM look much alike from
+      # the outside, so measure both rather than infer either.
+      #
+      # Cheap enough to leave in: four short commands on a manually-dispatched
+      # leg.
+      - name: Resources - after checkout
+        run: |
+          echo "### disk"; df -h / /home/runner 2>/dev/null || df -h /
+          echo "### memory"; free -h
+
       - name: Set up conda environment
         uses: ./src/.github/actions/setup-conda-env
         with:
           compiler: ${{ matrix.compiler }}
           blas: ${{ matrix.blas }}
           source-dir: src
+
+      - name: Resources - after conda env
+        run: |
+          echo "### disk"; df -h /
+          echo "### conda env size"; du -sh "${CONDA_PREFIX}" 2>/dev/null || true
+          echo "### largest packages"; du -sh "${CONDA_PREFIX}"/pkgs/* 2>/dev/null | sort -rh | head -15 || true
+          echo "### memory"; free -h
 
       - name: Configure CMake
         run: |
@@ -120,6 +141,17 @@ jobs:
           # build. Keep -j1 until a manual run confirms -j2 fits the 16GB runner
           # with bindings on, then bump it.
           cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install -j1
+
+      # `if: always()` so an exhausted disk is still reported when the build is
+      # what died. That is the whole point: the reading we most need is the one
+      # taken on the failing run.
+      - name: Resources - after build
+        if: always()
+        run: |
+          echo "### disk"; df -h /
+          echo "### build tree"; du -sh "${{ github.workspace }}/build" 2>/dev/null || true
+          echo "### ccache"; du -sh "${{ github.workspace }}/build_cache_${{ inputs.build_cache_suffix }}" 2>/dev/null || true
+          echo "### memory"; free -h
 
       - name: ccache statistics
         run: ccache -sv 2>/dev/null || ccache -s
