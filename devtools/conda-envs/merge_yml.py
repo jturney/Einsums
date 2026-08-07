@@ -27,10 +27,16 @@ GCC_VERSION = "15"  # gcc/g++ on Linux            -> gcc_linux-64 / gxx_linux-64
 CLANG_VERSION = "22"  # clang/clang++ (Linux + macOS)
 # 2026.0.0 ICEd in its X86 TLS/PIE address lowering on our thread-local-heavy
 # headers (every TU, even trivial ones) and was markedly more memory-hungry, so
-# this sat on 2025.2.0. Two point releases have shipped since: an ICE in address
-# lowering is exactly what a point release fixes, and testing the newest answers
-# a question worth answering, where re-testing 2026.0.0 only produces a
-# post-mortem.
+# this sat on 2025.2.0.
+#
+# The whole 2026.1.x line is currently UNINSTALLABLE from conda-forge, so the
+# ICE cannot be re-tested on a fixed release yet. Both 2026.1.0 and 2026.1.1
+# pull umf, which pins intel-cmplr-lic-rt ==2026.0.0, while the rest of the
+# toolchain requires ==2026.1.1; the solve fails outright. That is an upstream
+# packaging bug, not ours, and 2025.3.2 is the newest version that resolves
+# (checked against conda-forge in a native linux-64 container, since solving
+# for a foreign platform reports everything as unsatisfiable, 2025.2.0
+# included).
 #
 # 2025.2.0 is the known-good fallback: it built and tested the whole tree with
 # BUILD_PYTHON=ON, 533 of 534, on 2026-08-07 - the first time icx had ever
@@ -38,7 +44,7 @@ CLANG_VERSION = "22"  # clang/clang++ (Linux + macOS)
 # fixed. That run also settled the resource question: a complete build consumed
 # roughly 13GB and left 74GB free, so disk was never a constraint, and peak
 # memory is what the /usr/bin/time -v wrapper on the build step now measures.
-DPCPP_VERSION = "2026.1.1"  # Intel oneAPI icx/icpx on Linux -> dpcpp_linux-64
+DPCPP_VERSION = "2025.3.2"  # Intel oneAPI icx/icpx on Linux -> dpcpp_linux-64
 
 # The compiler implied by ``--compiler default`` on each platform.
 PLATFORM_DEFAULT_COMPILER = {
