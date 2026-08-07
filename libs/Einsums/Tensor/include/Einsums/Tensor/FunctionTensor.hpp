@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Iterator/Enumerate.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
@@ -18,7 +19,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 // forward declaration.
 template <typename T, size_t Rank, size_t BaseRank>
@@ -729,4 +730,4 @@ struct KroneckerDelta {
     size_t _dim;
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

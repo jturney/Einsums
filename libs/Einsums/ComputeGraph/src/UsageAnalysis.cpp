@@ -6,11 +6,12 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/UsageAnalysis.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <algorithm>
 #include <unordered_set>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace {
 
@@ -125,4 +126,4 @@ TensorUsage const *UsageAnalysis::find_owner(TensorId owner) const {
     return it == _table.end() ? nullptr : &it->second;
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

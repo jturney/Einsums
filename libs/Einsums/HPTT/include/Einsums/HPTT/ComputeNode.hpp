@@ -5,11 +5,13 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstddef>
 #include <limits>
 #include <memory>
 
-namespace einsums::hptt {
+EINSUMS_NAMESPACE_BEGIN(hptt)
 
 /**
  * \brief A ComputeNode encodes a loop.
@@ -31,4 +33,4 @@ class ComputeNode {
     std::unique_ptr<ComputeNode> next;                          //!< next ComputeNode, or nullptr if this is the last (macro-kernel call)
 };
 
-} // namespace einsums::hptt
+EINSUMS_NAMESPACE_END(hptt)

@@ -5,6 +5,7 @@
 
 #include <Einsums/ComputeGraph/Executor.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
 
@@ -24,7 +25,7 @@
 #    include <omp.h>
 #endif
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace {
 
@@ -526,4 +527,4 @@ void MPIExecutor::execute(Graph &graph) {
     execute_all_timed(graph);
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

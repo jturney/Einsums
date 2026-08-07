@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Runtime/ShutdownFunction.hpp>
 #include <Einsums/Runtime/StartupFunction.hpp>
 #include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
@@ -27,7 +28,7 @@
 #    endif
 #endif
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {
 // Default params to initialize with
@@ -421,4 +422,4 @@ inline void initialize(int argc, char const *const *argv, InitParams const &para
  */
 EINSUMS_EXPORT int finalize();
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

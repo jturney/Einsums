@@ -5,13 +5,15 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <list>
 #include <mutex>
 
-namespace einsums::design_pats {
+EINSUMS_NAMESPACE_BEGIN(design_pats)
 
 /**
  * @struct Observable
@@ -236,4 +238,4 @@ struct Observable {
     std::list<std::function<void(T const &)>> _observers{};      ///< List of observers
     std::mutex                                _observer_mutex{}; ///< Protects the observer list
 };
-} // namespace einsums::design_pats
+EINSUMS_NAMESPACE_END(design_pats)

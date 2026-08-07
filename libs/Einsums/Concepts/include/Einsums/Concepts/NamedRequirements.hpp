@@ -5,8 +5,10 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <iterator>
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @concept Container
@@ -186,4 +188,4 @@ concept ContainerOrInitializerOf = requires {
     requires std::same_as<typename T::value_type, Holds>;
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

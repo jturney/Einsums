@@ -7,6 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 /// @file Checkpoint.hpp
 /// @brief Save/restore tensor state to .etn files.
 ///
@@ -31,12 +33,12 @@
 #include <vector>
 
 // Forward declarations to avoid pulling in full headers
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 class Graph;
 class Workspace;
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)
 
-namespace einsums::tensor_io::checkpoint {
+EINSUMS_NAMESPACE_BEGIN(tensor_io::checkpoint)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Serial (single-file POSIX I/O)
@@ -66,4 +68,4 @@ EINSUMS_EXPORT void save_distributed(std::string const &path, compute_graph::Gra
 /// Restore distributed Graph tensors.
 EINSUMS_EXPORT void restore_distributed(std::string const &path, compute_graph::Graph &graph);
 
-} // namespace einsums::tensor_io::checkpoint
+EINSUMS_NAMESPACE_END(tensor_io::checkpoint)

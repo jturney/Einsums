@@ -8,13 +8,14 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
 #include <Einsums/TypeSupport/Singleton.hpp>
 
 #include <mutex>
 #include <stdexcept>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 struct EINSUMS_EXPORT BlockManager final : public design_pats::Lockable<std::mutex> {
     EINSUMS_SINGLETON_DEF(BlockManager)
@@ -32,4 +33,4 @@ struct EINSUMS_EXPORT BlockManager final : public design_pats::Lockable<std::mut
     BufferAllocator<uint8_t> _alloc;
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

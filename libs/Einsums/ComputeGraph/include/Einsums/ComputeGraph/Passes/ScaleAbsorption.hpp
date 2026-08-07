@@ -6,11 +6,12 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <utility>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief Scale-elimination pass: removes a Scale by deleting it (dead) or
@@ -119,4 +120,4 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::vector<std::pair<NodeId, TensorId>> _compensated;
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

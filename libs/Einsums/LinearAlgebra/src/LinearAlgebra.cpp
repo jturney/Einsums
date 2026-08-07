@@ -6,11 +6,12 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 
 #include <queue>
 
-namespace einsums::linear_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(linear_algebra::detail)
 BufferVector<uint64_t> choose_all_n(uint64_t n) {
     BufferVector<uint64_t> out(n + 1);
 
@@ -27,4 +28,4 @@ BufferVector<uint64_t> choose_all_n(uint64_t n) {
     }
     return out;
 }
-} // namespace einsums::linear_algebra::detail
+EINSUMS_NAMESPACE_END(linear_algebra::detail)

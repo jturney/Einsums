@@ -10,6 +10,7 @@
 #include <Einsums/BLAS.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/CompilerSpecific.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra/Base.hpp>
@@ -18,7 +19,7 @@
 #include <span>
 #include <stdexcept>
 
-namespace einsums::linear_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(linear_algebra::detail)
 
 template <BlockTensorConcept AType, typename T = RemoveComplexT<typename AType::ValueType>>
 void sum_square(AType const &A, T *scale, T *sumsq) {
@@ -517,4 +518,4 @@ void invert(TensorType *A) {
     }
 }
 
-} // namespace einsums::linear_algebra::detail
+EINSUMS_NAMESPACE_END(linear_algebra::detail)

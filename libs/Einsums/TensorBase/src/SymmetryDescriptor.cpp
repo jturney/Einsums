@@ -3,9 +3,10 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 SymmetryOp SymmetryOp::group_swap(std::initializer_list<int> g1, std::initializer_list<int> g2, int8_t sign, bool conjugate) {
     auto op  = identity();
@@ -58,4 +59,4 @@ SymmetryDescriptor SymmetryDescriptor::ccsd_t2() {
     }};
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

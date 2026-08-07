@@ -7,12 +7,14 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #if defined(EINSUMS_HAVE_PROFILER)
 
 #    include <chrono>
 #    include <cstdint>
 
-namespace einsums::profile {
+EINSUMS_NAMESPACE_BEGIN(profile)
 
 using Clock     = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
@@ -59,6 +61,6 @@ struct Event {
     int64_t mem_bytes{0};
 };
 
-} // namespace einsums::profile
+EINSUMS_NAMESPACE_END(profile)
 
 #endif

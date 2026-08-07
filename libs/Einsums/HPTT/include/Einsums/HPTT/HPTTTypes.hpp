@@ -27,12 +27,13 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/Platform.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
 #include <complex>
 
-namespace einsums::hptt {
+EINSUMS_NAMESPACE_BEGIN(hptt)
 
 /**
  * \brief Determines the duration of the auto-tuning process.
@@ -58,4 +59,4 @@ using FloatComplex = std::complex<float>;
  */
 using DoubleComplex = std::complex<double>;
 
-} // namespace einsums::hptt
+EINSUMS_NAMESPACE_END(hptt)

@@ -6,8 +6,9 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief Distributed-execution cleanup pass: removes redundant communication nodes.
@@ -64,4 +65,4 @@ class EINSUMS_EXPORT CommunicationElimination : public OptimizerPass {
     size_t _num_eliminated{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

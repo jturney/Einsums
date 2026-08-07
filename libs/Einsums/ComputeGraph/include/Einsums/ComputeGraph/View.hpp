@@ -11,6 +11,7 @@
 #include <Einsums/ComputeGraph/Pipeline.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
@@ -26,7 +27,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /// @file View.hpp
 /// @brief Graph-aware non-owning views (zero-copy slices) of tensors.
@@ -822,4 +823,4 @@ inline void write_param(std::string name, std::function<std::int64_t()> source_f
     ctx.record(OpKind::WriteParam, std::move(label), {}, {}, std::move(executor), std::move(desc));
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

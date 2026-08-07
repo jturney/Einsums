@@ -6,14 +6,15 @@
 #pragma once
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 template <TensorConcept TensorType, typename DataType, typename Tuple, std::size_t... __I>
 void set_to(TensorType &tensor, DataType value, Tuple const &tuple, std::index_sequence<__I...>) {
     tensor(std::get<__I>(tuple)...) = static_cast<typename TensorType::ValueType>(value);
 }
 
-} // namespace einsums::detail
+EINSUMS_NAMESPACE_END(detail)

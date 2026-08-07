@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <atomic>
 #include <condition_variable>
 #include <exception>
@@ -17,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums::task_pool {
+EINSUMS_NAMESPACE_BEGIN(task_pool)
 
 // Forward declaration
 class TaskPool;
@@ -422,4 +424,4 @@ auto when_all(TaskHandle<Ts>... handles) -> TaskHandle<std::tuple<Ts...>> {
     }
 }
 
-} // namespace einsums::task_pool
+EINSUMS_NAMESPACE_END(task_pool)

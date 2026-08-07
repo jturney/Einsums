@@ -6,9 +6,10 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamAssignment.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 void StreamAssignment::reset_stats() {
     _num_assigned = 0;
@@ -41,4 +42,4 @@ bool StreamAssignment::run(Graph &graph) {
     return _num_assigned > num_assigned_at_entry;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

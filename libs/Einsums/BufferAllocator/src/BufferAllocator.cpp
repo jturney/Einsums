@@ -4,12 +4,13 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #if defined(EINSUMS_HAVE_MALLOC_MIMALLOC)
 #    include <mimalloc.h>
 #endif
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 void *allocate(size_t n) {
     void *ptr = nullptr;
@@ -47,4 +48,4 @@ void deallocate(void *p) {
 #endif
 }
 
-} // namespace einsums::detail
+EINSUMS_NAMESPACE_END(detail)

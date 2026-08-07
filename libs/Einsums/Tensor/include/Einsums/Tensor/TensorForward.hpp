@@ -9,12 +9,13 @@
 
 #include <Einsums/BufferAllocator.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/DeviceVector.hpp>
 
 #include <cstddef>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @struct TensorPrintOptions
@@ -101,7 +102,7 @@ struct RuntimeTensorView;
 template <typename T>
 using VectorData = BufferVector<T>;
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()
 
 #if !defined(EINSUMS_WINDOWS)
 /**

@@ -6,12 +6,13 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 
 #include <cstddef>
 #include <unordered_map>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /**
  * @brief Manages device (GPU) shadow allocations for tensors.
@@ -77,4 +78,4 @@ class DeviceShadowMap {
     std::unordered_map<TensorId, Shadow> _shadows;
 };
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

@@ -6,10 +6,11 @@
 #pragma once
 
 #include <Einsums/Config/ExportDefinitions.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <string>
 
-namespace einsums::string_util {
+EINSUMS_NAMESPACE_BEGIN(string_util)
 
 /**
  * @brief Converts a memory specification string into a number of bytes.
@@ -31,4 +32,4 @@ namespace einsums::string_util {
  * @throws std::runtime_error If the string is improperly formatted.
  */
 EINSUMS_EXPORT size_t memory_string(std::string const &mem_spec);
-} // namespace einsums::string_util
+EINSUMS_NAMESPACE_END(string_util)

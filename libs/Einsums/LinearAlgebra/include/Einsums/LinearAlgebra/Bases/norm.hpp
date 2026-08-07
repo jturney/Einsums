@@ -7,12 +7,13 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLASVendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/LinearAlgebra/Bases/sum_square.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
 namespace detail {
 
@@ -208,4 +209,4 @@ auto impl_frobenius_norm(einsums::detail::TensorImpl<T> const &A) -> RemoveCompl
 
 } // namespace detail
 } // namespace linear_algebra
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

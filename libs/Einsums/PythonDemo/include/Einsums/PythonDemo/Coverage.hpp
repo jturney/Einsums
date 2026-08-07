@@ -7,13 +7,14 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-namespace einsums::pythondemo {
+EINSUMS_NAMESPACE_BEGIN(pythondemo)
 
 /// Vec3: exercises operator binding and read-write fields.
 class EINSUMS_EXPORT APIARY_EXPOSE APIARY_RENAME("Vec3") Vec3 {
@@ -87,4 +88,4 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_RENAME("Worker") Worker {
     APIARY_EXPOSE APIARY_RELEASE_GIL long crunch(long n);
 };
 
-} // namespace einsums::pythondemo
+EINSUMS_NAMESPACE_END(pythondemo)

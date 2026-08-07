@@ -5,10 +5,11 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorUtilities/CreateTensorLike.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Creates a diagonal matrix from a vector.
@@ -51,4 +52,4 @@ auto diagonal_like(Tensor<T, 1> const &v, Tensor<T, 2> const &like) -> Tensor<T,
     return result;
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

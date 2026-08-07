@@ -6,6 +6,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Print.hpp>
@@ -13,7 +14,7 @@
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(sgemm, SGEMM)(char *, char *, int_t *, int_t *, int_t *, float *, float const *, int_t *, float const *, int_t *,
@@ -202,4 +203,4 @@ void zgemm(char transa, char transb, int_t m, int_t n, int_t k, std::complex<dou
     FC_GLOBAL(zgemm, ZGEMM)(&transa, &transb, &m, &n, &k, &alpha, a, &lda, b, &ldb, &beta, c, &ldc);
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

@@ -6,12 +6,13 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/ConstantFolding.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <unordered_set>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 std::vector<std::string> ConstantFolding::explain() const {
     if (_num_folded == 0) {
@@ -159,4 +160,4 @@ bool ConstantFolding::run(Graph &graph) {
     return _num_folded > num_folded_at_entry;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

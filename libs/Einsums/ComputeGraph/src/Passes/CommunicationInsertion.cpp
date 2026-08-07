@@ -8,11 +8,12 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <ranges>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 void CommunicationInsertion::reset_stats() {
     _num_inserted = 0;
@@ -120,4 +121,4 @@ bool CommunicationInsertion::run(Graph &graph) {
     return true;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

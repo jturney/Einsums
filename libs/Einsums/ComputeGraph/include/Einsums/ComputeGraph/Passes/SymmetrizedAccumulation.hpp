@@ -6,12 +6,13 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief Fold the CCSD permutational-symmetrization idiom
@@ -126,4 +127,4 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     size_t _num_rewritten{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

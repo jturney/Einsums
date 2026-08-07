@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cstdint>
@@ -17,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class Graph;
 
@@ -463,4 +464,4 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     int                                         _verbosity{0};
 };
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

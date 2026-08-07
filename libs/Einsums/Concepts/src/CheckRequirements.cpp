@@ -4,16 +4,17 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/Concepts/NamedRequirements.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <array>
 #include <list>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 static_assert(Container<std::vector<int>>);
 static_assert(Container<std::array<int, 10>>);
 static_assert(Container<std::list<int>>);
 static_assert(!Container<std::initializer_list<int>>); // initializer_list does not have difference_type, so it is not a container.
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

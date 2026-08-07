@@ -5,10 +5,11 @@
 
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Profile.hpp>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 CaptureContext &CaptureContext::current() {
     thread_local CaptureContext instance;
@@ -47,4 +48,4 @@ void CaptureContext::end_capture() {
     register_graph(g);
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

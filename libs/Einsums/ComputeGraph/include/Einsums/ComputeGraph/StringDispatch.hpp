@@ -17,6 +17,7 @@
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
@@ -31,7 +32,7 @@
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph::dispatch {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::dispatch)
 
 /**
  * @brief Execute a tensor contraction described by a string specification.
@@ -989,4 +990,4 @@ void string_permute(ParsedPermuteSpec const &parsed, typename AType::ValueType b
     }
 }
 
-} // namespace einsums::compute_graph::dispatch
+EINSUMS_NAMESPACE_END(compute_graph::dispatch)

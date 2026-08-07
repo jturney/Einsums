@@ -5,7 +5,9 @@
 
 #pragma once
 
-namespace einsums {
+#include <Einsums/Config/Namespace.hpp>
+
+EINSUMS_NAMESPACE_BEGIN()
 
 template <typename T>
 
@@ -16,4 +18,4 @@ concept Scalar = requires(T a) {
     a *a;
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Config/ForceInline.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/ComplexVec.hpp>
 #include <Einsums/SIMD/Operations.hpp>
 #include <Einsums/SIMD/Vec.hpp>
@@ -14,7 +15,7 @@
 #include <complex>
 #include <cstddef>
 
-namespace einsums::simd {
+EINSUMS_NAMESPACE_BEGIN(simd)
 
 // ===========================================================================
 // In-register transpose: transpose_inplace(Vec<T> *rows)
@@ -359,4 +360,4 @@ EINSUMS_FORCEINLINE void complex_transpose_inplace(CVec<double> *rows) {
         rows[i].reg = loadu(&buf[i * N * 2]);
 }
 
-} // namespace einsums::simd
+EINSUMS_NAMESPACE_END(simd)

@@ -9,6 +9,7 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
@@ -27,7 +28,7 @@
 #    include <omp.h>
 #endif
 
-namespace einsums::packed_gemm {
+EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 
 // ---------------------------------------------------------------------------
 // Compile-time helpers
@@ -1826,4 +1827,4 @@ bool try_packed_gemm(einsums::ValueTypeT<CType> C_prefactor, std::tuple<CIndices
     }
 }
 
-} // namespace einsums::packed_gemm
+EINSUMS_NAMESPACE_END(packed_gemm)

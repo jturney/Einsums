@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/PermuteFusion.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <fmt/format.h>
@@ -13,7 +14,7 @@
 #include <algorithm>
 #include <unordered_map>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -229,4 +230,4 @@ std::vector<std::string> PermuteFusion::explain() const {
     return {fmt::format("PermuteFusion: folded {} permute(s) into contractions", num_rewrites())};
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

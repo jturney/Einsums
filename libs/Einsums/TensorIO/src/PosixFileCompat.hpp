@@ -18,6 +18,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstdint>
 #include <string>
 
@@ -38,7 +40,7 @@
 #    include <unistd.h>
 #endif
 
-namespace einsums::tensor_io::detail {
+EINSUMS_NAMESPACE_BEGIN(tensor_io::detail)
 
 /// Open modes mirroring TensorFile's needs.
 enum class OpenMode : std::uint8_t { Read, WriteTruncate, ReadWrite };
@@ -153,4 +155,4 @@ inline int sync_file(int fd) {
 
 #endif
 
-} // namespace einsums::tensor_io::detail
+EINSUMS_NAMESPACE_END(tensor_io::detail)

@@ -9,6 +9,7 @@
 
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
@@ -18,7 +19,7 @@
 #include <tuple>
 #include <type_traits>
 
-namespace einsums::tensor_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra::detail)
 
 // Helper: In a flat (IndexType, Position, IndexType, Position, ...) tuple from find_type_with_position,
 // extract the index type at pair N (element 2*N).
@@ -207,4 +208,4 @@ void einsum_generic_algorithm(std::tuple<CUniqueIndices...> const &C_unique, std
                                                      C_index, A_index, B_index, C_prefactor, C, AB_prefactor, A, B);
     }
 }
-} // namespace einsums::tensor_algebra::detail
+EINSUMS_NAMESPACE_END(tensor_algebra::detail)

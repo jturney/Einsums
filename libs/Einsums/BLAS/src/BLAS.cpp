@@ -5,9 +5,10 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 
-namespace einsums::blas::detail {
+EINSUMS_NAMESPACE_BEGIN(blas::detail)
 void sgemm(char transa, char transb, int_t m, int_t n, int_t k, float alpha, float const *a, int_t lda, float const *b, int_t ldb,
            float beta, float *c, int_t ldc) {
     vendor::sgemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
@@ -925,4 +926,4 @@ auto ztrtri(char uplo, char diag, int_t n, std::complex<double> *a, int_t lda) -
     return vendor::ztrtri(uplo, diag, n, a, lda);
 }
 
-} // namespace einsums::blas::detail
+EINSUMS_NAMESPACE_END(blas::detail)

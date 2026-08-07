@@ -6,13 +6,14 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(dtrsyl, DTRSYL)(char *, char *, int_t *, int_t *, int_t *, double const *, int_t *, double const *, int_t *, double *,
@@ -94,4 +95,4 @@ TRSYL(float, s, S);
 TRSYL_complex(double, z, Z);
 TRSYL_complex(float, c, C);
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

@@ -26,6 +26,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
@@ -37,7 +38,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace APIARY_MODULE("io") tensor_io {
 
 class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
@@ -511,4 +512,4 @@ void TensorFile::read_local(std::string_view name, Tensor<T, Rank> &tensor, int 
 }
 
 } // namespace APIARY_MODULE("io")tensor_io
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

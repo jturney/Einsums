@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Platform.hpp>
 
 // Include vendor headers for type definitions
@@ -20,7 +21,7 @@
 #    include <hipsolver/hipsolver.h>
 #endif
 
-namespace einsums::gpu {
+EINSUMS_NAMESPACE_BEGIN(gpu)
 
 // ===========================================================================
 // Type aliases: resolve to vendor type or mock placeholder.
@@ -75,4 +76,4 @@ EINSUMS_EXPORT void    record_event(event_t event, stream_t stream);
 EINSUMS_EXPORT void    stream_wait_event(stream_t stream, event_t event);
 EINSUMS_EXPORT bool    event_completed(event_t event);
 
-} // namespace einsums::gpu
+EINSUMS_NAMESPACE_END(gpu)

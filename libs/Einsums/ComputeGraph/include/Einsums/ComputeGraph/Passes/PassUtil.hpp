@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <complex>
 #include <cstddef>
@@ -16,7 +17,7 @@
 #include <variant>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief The live ``beta`` of an Axpby node, or null when @p nd is not an Axpby
@@ -177,4 +178,4 @@ namespace einsums::compute_graph::passes {
     return false;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

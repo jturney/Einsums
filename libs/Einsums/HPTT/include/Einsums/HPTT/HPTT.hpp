@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/Transpose.hpp>
 
 #include <complex>
@@ -32,7 +33,7 @@
 #    include <omp.h>
 #endif
 
-namespace einsums::hptt {
+EINSUMS_NAMESPACE_BEGIN(hptt)
 
 // ===========================================================================
 // Templatized create_plan overloads.
@@ -106,4 +107,4 @@ create_plan(std::vector<int> const &perm, int dim, T alpha, T const *A, std::vec
                                 threadIds.empty() ? nullptr : threadIds.data(), useRowMajor);
 }
 
-} // namespace einsums::hptt
+EINSUMS_NAMESPACE_END(hptt)

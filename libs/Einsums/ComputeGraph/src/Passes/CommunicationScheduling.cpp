@@ -7,12 +7,13 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationScheduling.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <memory>
 #include <variant>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 void CommunicationScheduling::reset_stats() {
     _num_scheduled = 0;
@@ -81,4 +82,4 @@ bool CommunicationScheduling::run(Graph &graph) {
     return modified;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

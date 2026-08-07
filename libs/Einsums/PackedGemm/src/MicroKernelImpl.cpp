@@ -17,6 +17,7 @@
 // unit's native operation. The rung also widens the double block shape to
 // MR = 2*VL, NR = 4*VL (16x32 on Apple M4's 512-bit SVL).
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
 
 #define EINSUMS_PACKED_GEMM_KERNEL_NS EINSUMS_SIMD_ARCH_NS
@@ -35,7 +36,7 @@
 #    define EINSUMS_PACKED_GEMM_HAVE_SME_KERNEL 1
 #endif
 
-namespace einsums::packed_gemm {
+EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 namespace EINSUMS_SIMD_ARCH_NS {
 
 #if defined(EINSUMS_PACKED_GEMM_HAVE_SME_KERNEL)
@@ -258,4 +259,4 @@ template MicroKernelShape micro_kernel_block<std::complex<float>>();
 template MicroKernelShape micro_kernel_block<std::complex<double>>();
 
 } // namespace EINSUMS_SIMD_ARCH_NS
-} // namespace einsums::packed_gemm
+EINSUMS_NAMESPACE_END(packed_gemm)

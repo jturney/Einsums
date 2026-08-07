@@ -5,7 +5,9 @@
 
 #pragma once
 
-namespace einsums {
+#include <Einsums/Config/Namespace.hpp>
+
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @struct Case
@@ -108,4 +110,4 @@ struct Switch<SwitchType, Default<Result>> final {
 template <typename... Args>
 using SwitchT = typename Switch<Args...>::type;
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

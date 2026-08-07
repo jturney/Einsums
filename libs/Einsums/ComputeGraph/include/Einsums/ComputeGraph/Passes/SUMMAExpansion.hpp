@@ -6,10 +6,11 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief Distributed-execution pass: rewrites SUMMA-distributed einsums into broadcast+GEMM loops.
@@ -75,4 +76,4 @@ class EINSUMS_EXPORT SUMMAExpansion : public OptimizerPass {
     size_t _num_expanded{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

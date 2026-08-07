@@ -6,8 +6,9 @@
 #pragma once
 
 #include <Einsums/BLASBase/Defines.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
-namespace einsums::blas {
+EINSUMS_NAMESPACE_BEGIN(blas)
 
 /**
  * @typedef int_t
@@ -46,4 +47,4 @@ using euint_t = unsigned int;
 using elong   = long int;
 #endif
 
-} // namespace einsums::blas
+EINSUMS_NAMESPACE_END(blas)

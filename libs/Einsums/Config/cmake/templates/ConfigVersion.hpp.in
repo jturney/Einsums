@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/ExportDefinitions.hpp>
 #include <Einsums/Preprocessor/Cat.hpp>
 
@@ -36,26 +37,13 @@
 /// development branch, ``-rcX`` on a release candidate.
 #define EINSUMS_VERSION_TAG "@EINSUMS_VERSION_TAG@"
 
-/// The ABI generation, as an integer. Counts ABI BREAKS rather than releases,
-/// and is deliberately not derived from the version: this library breaks ABI
-/// between minor versions, so a SONAME tied to the major version would be a
-/// compatibility promise it does not keep. CMake owns the value; see
-/// EINSUMS_ABI_VERSION in the top-level CMakeLists.txt.
-#define EINSUMS_ABI_VERSION @EINSUMS_ABI_VERSION@
-
-/// The ABI generation as a bare identifier, e.g. ``v1``.
-///
-/// This is the token the versioned inline namespace is spelled with, so it must
-/// be usable as an identifier rather than as a string or a number.
-#define EINSUMS_ABI_TAG v@EINSUMS_ABI_VERSION@
-
 // EINSUMS_BUILD_TIMESTAMP was previously set at CMake configure time and
 // baked into this header. That caused the header to change content on every
 // regen, cascading a recompile of every Einsums translation unit.
 // build_date_time() now reads __DATE__ __TIME__ directly from Version.cpp,
 // so the timestamp only updates when that one TU is compiled.
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 // The git identity is reported through functions rather than macros for the
 // same reason the timestamp is. The values change on every commit, so defining
@@ -75,7 +63,7 @@ namespace einsums {
 /// Returns whether the working tree had uncommitted changes at configure time.
 [[nodiscard]] EINSUMS_EXPORT bool git_dirty();
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()
 
 ///////////////////////////////////////////////////////////////////////////////
 // The version check enforces the major and minor version numbers to match for
@@ -84,11 +72,11 @@ namespace einsums {
     EINSUMS_PP_CAT(einsums_check_version_, EINSUMS_PP_CAT(EINSUMS_VERSION_MAJOR, EINSUMS_PP_CAT(_, EINSUMS_VERSION_MINOR)))                \
     /**/
 ///////////////////////////////////////////////////////////////////////////////
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 // Helper data structures allowing to automatically detect version problems
 // between applications and the core libraries.
 EINSUMS_EXPORT extern char const EINSUMS_CHECK_VERSION[];
-} // namespace einsums
+EINSUMS_NAMESPACE_END()
 
 ///////////////////////////////////////////////////////////////////////////////
 #if !defined(EINSUMS_EXPORTS) && !defined(EINSUMS_NO_VERSION_CHECK)

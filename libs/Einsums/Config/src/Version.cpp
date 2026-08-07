@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/Config/ExportDefinitions.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Version.hpp>
 #include <Einsums/Preprocessor/Stringify.hpp>
 
@@ -14,7 +15,7 @@
 // is the one that recompiles when HEAD moves.
 #include "GitInfo.hpp"
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 char const EINSUMS_CHECK_VERSION[] = EINSUMS_PP_STRINGIFY(EINSUMS_CHECK_VERSION);
 
@@ -30,4 +31,4 @@ bool git_dirty() {
     return EINSUMS_GIT_DIRTY_FLAG != 0;
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

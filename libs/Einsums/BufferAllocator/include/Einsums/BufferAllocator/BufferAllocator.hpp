@@ -12,6 +12,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BufferAllocator/ModuleVars.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors.hpp>
 
 #include <complex>
@@ -29,7 +30,7 @@
 #    include <tracy/Tracy.hpp>
 #endif
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {
 
@@ -530,4 +531,4 @@ using BufferBasicString = std::basic_string<CharT, Traits, BufferAllocator<CharT
  */
 using BufferString = BufferBasicString<char>;
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

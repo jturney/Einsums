@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/GEMMBatching.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <fmt/format.h>
@@ -21,7 +22,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -333,4 +334,4 @@ std::vector<std::string> GEMMBatching::explain() const {
                         num_batches(), total_batched(), num_gate_skipped())};
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

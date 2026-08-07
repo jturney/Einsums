@@ -7,12 +7,13 @@
 
 #include <Einsums/BLASVendor/Defines.hpp>
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern float  FC_GLOBAL(sasum, SASUM)(int_t *n, float const *x, int_t *incx);
@@ -59,4 +60,4 @@ double dzsum1(int_t n, std::complex<double> const *x, int_t incx) {
     return FC_GLOBAL(dzsum1, DZSUM1)(&n, x, &incx);
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

@@ -14,6 +14,7 @@
 #include <Einsums/Assert.hpp>
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/Tensor/TiledTensor.hpp>
@@ -24,7 +25,7 @@
 #include <string>
 #include <utility>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace tensor_base {
 
 /**
@@ -1342,4 +1343,4 @@ TENSOR_EXPORT_RANK(BlockTensor, 2)
 TENSOR_EXPORT_RANK(BlockTensor, 3)
 TENSOR_EXPORT_RANK(BlockTensor, 4)
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

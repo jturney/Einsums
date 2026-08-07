@@ -7,6 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 /*
  * Exported definitions for initialization. If the module does not need to be initialized,
  * this header can be safely deleted. Just make sure to remove the reference in CMakeLists.txt,
@@ -19,7 +21,7 @@
  * corresponding code files.
  */
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 // NOLINTBEGIN
 EINSUMS_EXPORT int setup_Einsums_Tensor();
@@ -42,4 +44,4 @@ static int initialize_module_Einsums_Tensor = setup_Einsums_Tensor(); // NOLINT(
 
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

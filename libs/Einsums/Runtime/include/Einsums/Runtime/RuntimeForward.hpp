@@ -7,8 +7,10 @@
 
 #include <Einsums/Config.hpp>
 
-namespace einsums {
+#include <Einsums/Config/Namespace.hpp>
+
+EINSUMS_NAMESPACE_BEGIN()
 
 struct EINSUMS_EXPORT Runtime;
 
-}
+EINSUMS_NAMESPACE_END()

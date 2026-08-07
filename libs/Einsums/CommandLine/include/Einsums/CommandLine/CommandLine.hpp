@@ -7,6 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <fmt/core.h>
 
 #include <algorithm>
@@ -25,7 +27,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums::cl {
+EINSUMS_NAMESPACE_BEGIN(cl)
 
 // -------------------------- Small utilities ------------------------------- //
 
@@ -1243,4 +1245,4 @@ inline ParseResult parse_with_config(std::vector<std::string> const &args, char 
     return parse_internal(args, programName, version, &kv, unknown_args);
 }
 
-} // namespace einsums::cl
+EINSUMS_NAMESPACE_END(cl)

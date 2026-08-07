@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <fmt/format.h>
 
@@ -12,7 +13,7 @@
 #include <set>
 #include <string>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace {
 
@@ -255,4 +256,4 @@ expected<ParsedPermuteSpec, GraphError> parse_permute_spec(std::string_view spec
     return result;
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

@@ -5,6 +5,7 @@
 
 #include <Einsums/Comm/InitModule.hpp>
 #include <Einsums/Comm/Runtime.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
 
@@ -17,7 +18,7 @@
  * load time). MPI_Init must run before any other MPI call, so we use
  * register_pre_startup_function rather than the regular startup one.
  */
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 int setup_Einsums_Comm() { // NOLINT(readability-identifier-naming)
     static bool is_initialized = false;
@@ -41,4 +42,4 @@ void finalize_Einsums_Comm() { // NOLINT(readability-identifier-naming)
     einsums::comm::finalize();
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -12,7 +14,7 @@
 #include <string>
 #include <string_view>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @struct StringLiteral
@@ -106,7 +108,7 @@ constexpr bool operator!=(StringLiteral<N1> const &_first, StringLiteral<N2> con
     return !(_first == _second);
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()
 
 template <size_t N>
 struct fmt::formatter<einsums::StringLiteral<N>> {

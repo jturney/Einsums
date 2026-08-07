@@ -7,12 +7,13 @@
 
 #include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(sgetri, SGETRI)(int_t *, float *, int_t *, int_t *, float *, int_t *, int_t *);
@@ -89,4 +90,4 @@ auto zgetri(int_t n, std::complex<double> *a, int_t lda, int_t const *ipiv) -> i
     return info;
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

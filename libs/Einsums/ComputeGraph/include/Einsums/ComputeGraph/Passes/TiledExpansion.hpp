@@ -7,10 +7,11 @@
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /// When to lower a tiled contraction by densifying rather than per tile.
 enum class Densify : std::uint8_t {
@@ -328,4 +329,4 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     size_t    _num_gathers_reused{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

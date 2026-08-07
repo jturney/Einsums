@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 
 #include <cstdarg>
@@ -19,11 +20,11 @@
 #    undef I
 #endif
 
-namespace einsums::index {
+EINSUMS_NAMESPACE_BEGIN(index)
 /// Base struct for index tags. It might not be technically needed but it will allow
 /// compile-time checks to be performed.
 struct LabelBase {};
-} // namespace einsums::index
+EINSUMS_NAMESPACE_END(index)
 
 /*! \def MAKE_INDEX(x)
     Macro that defines new index tags that can be used with einsums. Also includes code
@@ -173,7 +174,7 @@ MAKE_INDEX(Omega)
 
 #undef MAKE_INDEX
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace index {
 
@@ -201,4 +202,4 @@ struct Indices : std::tuple<Args...> {
     Indices(Args... args) : std::tuple<Args...>(args...){};
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

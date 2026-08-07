@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Platform.hpp>
 
 #include <complex>
@@ -19,7 +20,7 @@
 #    include <hip/hip_complex.h>
 #endif
 
-namespace einsums::gpu {
+EINSUMS_NAMESPACE_BEGIN(gpu)
 
 // ===========================================================================
 // Complex type mapping: std::complex<T> → vendor GPU complex type.
@@ -138,4 +139,4 @@ inline Operation char_to_op(char c) {
     }
 }
 
-} // namespace einsums::gpu
+EINSUMS_NAMESPACE_END(gpu)

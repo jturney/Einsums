@@ -7,7 +7,9 @@
 
 #include <Einsums/Config.hpp>
 
-namespace einsums::comm {
+#include <Einsums/Config/Namespace.hpp>
+
+EINSUMS_NAMESPACE_BEGIN(comm)
 
 /// True when MPI support is compiled in.
 inline constexpr bool has_mpi =
@@ -36,4 +38,4 @@ inline constexpr bool has_rccl =
 /// True when running without MPI (serial mock backend).
 inline constexpr bool is_mock = !has_mpi;
 
-} // namespace einsums::comm
+EINSUMS_NAMESPACE_END(comm)

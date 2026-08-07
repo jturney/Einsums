@@ -7,6 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #if defined(EINSUMS_HAVE_PROFILER)
 
 #    include <Einsums/Profile/CounterBackend.hpp>
@@ -30,7 +32,7 @@
 #    include <unordered_map>
 #    include <vector>
 
-namespace einsums::profile {
+EINSUMS_NAMESPACE_BEGIN(profile)
 
 /// Event ring buffer capacity per thread (64K entries).
 static constexpr size_t kRingBufferCapacity = 65536;
@@ -265,6 +267,6 @@ class EINSUMS_EXPORT Consumer {
     TimePoint                  _program_start{std::chrono::steady_clock::now()};
 };
 
-} // namespace einsums::profile
+EINSUMS_NAMESPACE_END(profile)
 
 #endif

@@ -9,10 +9,11 @@
 /// @brief Structured error type for the Comm module.
 
 #include <Einsums/CXX23/Expected.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <string>
 
-namespace einsums::comm {
+EINSUMS_NAMESPACE_BEGIN(comm)
 
 /**
  * @brief Structured error for MPI/communication operations.
@@ -28,4 +29,4 @@ struct CommError {
     static CommError from_mpi(std::string msg, int code) { return {.message = std::move(msg), .mpi_error_code = code}; }
 };
 
-} // namespace einsums::comm
+EINSUMS_NAMESPACE_END(comm)

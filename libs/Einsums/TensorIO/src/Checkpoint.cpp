@@ -6,6 +6,7 @@
 #include <Einsums/Comm/Runtime.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Workspace.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorIO/Checkpoint.hpp>
@@ -13,7 +14,7 @@
 #include <complex>
 #include <unordered_set>
 
-namespace einsums::tensor_io::checkpoint {
+EINSUMS_NAMESPACE_BEGIN(tensor_io::checkpoint)
 
 namespace {
 
@@ -336,4 +337,4 @@ void restore_distributed(std::string const &path, compute_graph::Graph &graph) {
                      comm::world_size());
 }
 
-} // namespace einsums::tensor_io::checkpoint
+EINSUMS_NAMESPACE_END(tensor_io::checkpoint)

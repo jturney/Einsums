@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Iterator/Enumerate.hpp>
 
 #include <iterator>
@@ -13,7 +14,7 @@
 #include <numeric>
 #include <utility>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @struct ZipIter
@@ -460,7 +461,7 @@ template <typename... Containers>
 Zip(Containers &...) -> Zip<Containers...>;
 #endif
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()
 
 namespace std {
 /**

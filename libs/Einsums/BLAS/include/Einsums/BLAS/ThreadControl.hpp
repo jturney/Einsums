@@ -7,7 +7,9 @@
 
 #include <Einsums/Config.hpp>
 
-namespace einsums::blas {
+#include <Einsums/Config/Namespace.hpp>
+
+EINSUMS_NAMESPACE_BEGIN(blas)
 
 /**
  * @brief Limit the calling thread to @p nthreads BLAS threads, where the vendor allows it.
@@ -71,4 +73,4 @@ EINSUMS_EXPORT bool has_per_thread_control();
  */
 EINSUMS_EXPORT int get_num_threads_this_thread();
 
-} // namespace einsums::blas
+EINSUMS_NAMESPACE_END(blas)

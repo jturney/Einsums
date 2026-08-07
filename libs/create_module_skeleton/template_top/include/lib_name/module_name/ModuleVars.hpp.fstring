@@ -5,13 +5,14 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config.hpp>
 
 #include <Einsums/TypeSupport/Singleton.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
 #include <{lib_name}/{module_name}/InitModule.hpp>
 
-namespace einsums {{
+EINSUMS_NAMESPACE_BEGIN()
 namespace detail {{
 
 /// @todo This class can be freely changed. It is provided as a starting point for your convenience. If not needed, it may be removed.
@@ -26,4 +27,4 @@ private:
 }};
 
 }}
-}}
+EINSUMS_NAMESPACE_END()

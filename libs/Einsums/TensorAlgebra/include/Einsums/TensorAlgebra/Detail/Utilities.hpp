@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TypeSupport/Arguments.hpp>
@@ -13,7 +14,7 @@
 
 #include <tuple>
 
-namespace einsums::tensor_algebra {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra)
 
 namespace detail {
 /**
@@ -777,4 +778,4 @@ struct Reverse<First> {
 template <typename... Args>
 using ReverseT = Reverse<Args...>::type;
 
-} // namespace einsums::tensor_algebra
+EINSUMS_NAMESPACE_END(tensor_algebra)

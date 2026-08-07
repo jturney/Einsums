@@ -15,10 +15,11 @@
  */
 
 #include <Einsums/ComputeGraph/Operations.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cmath>
 
-namespace einsums::compute_graph::blueprints {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::blueprints)
 
 /**
  * @brief Symmetric orthogonalization: X = S^{-1/2}.
@@ -116,4 +117,4 @@ size_t canonical_orthogonalize(MatType *X, MatType const &S, typename MatType::V
     return removed;
 }
 
-} // namespace einsums::compute_graph::blueprints
+EINSUMS_NAMESPACE_END(compute_graph::blueprints)

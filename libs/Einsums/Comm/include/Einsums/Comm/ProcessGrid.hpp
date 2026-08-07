@@ -6,10 +6,11 @@
 #pragma once
 
 #include <Einsums/Comm/Communicator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <utility>
 
-namespace einsums::comm {
+EINSUMS_NAMESPACE_BEGIN(comm)
 
 /**
  * @brief 2D process grid for distributed tensor operations.
@@ -70,4 +71,4 @@ class EINSUMS_EXPORT ProcessGrid {
     void init(int pr, int pc, Communicator const &parent);
 };
 
-} // namespace einsums::comm
+EINSUMS_NAMESPACE_END(comm)

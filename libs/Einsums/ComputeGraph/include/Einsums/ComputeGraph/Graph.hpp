@@ -17,6 +17,7 @@
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/ComputeGraph/TensorSlot.hpp>
 #include <Einsums/ComputeGraph/UsageAnalysis.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Python/Annotations.hpp>
@@ -36,7 +37,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class PassManager; // Forward declaration
 class OptimizerPass;
@@ -2011,4 +2012,4 @@ void unregister_graph(Graph *graph);
  */
 std::string registered_graphs_json();
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

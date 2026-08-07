@@ -15,6 +15,7 @@
 // of plan creation stays inside the chosen rung - execute() is a virtual
 // call on the rung's TransposeImpl.
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
 #include <Einsums/HPTT/Transpose.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
@@ -22,7 +23,7 @@
 #include <cstdio>
 #include <memory>
 
-namespace einsums::hptt {
+EINSUMS_NAMESPACE_BEGIN(hptt)
 
 #define EINSUMS_HPTT_DECLARE_RUNG_FACTORIES(ns)                                                                                            \
     namespace ns {                                                                                                                         \
@@ -143,4 +144,4 @@ template class EINSUMS_EXPORT Transpose<einsums::simd::half_t>;
 template class EINSUMS_EXPORT Transpose<einsums::simd::bfloat16_t>;
 #endif
 
-} // namespace einsums::hptt
+EINSUMS_NAMESPACE_END(hptt)

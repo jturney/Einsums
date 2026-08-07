@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/StringUtil/Trim.hpp>
 
 #include <fmt/format.h>
@@ -15,7 +16,7 @@
 #include <sstream>
 #include <type_traits>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Sentinel value for ``Tensor::Rank`` on tensor types whose rank is
@@ -331,7 +332,7 @@ static struct AllT All; // NOLINT
 
 #undef DEFINE_STRUCT
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()
 
 namespace fmt {
 template <size_t Rank>

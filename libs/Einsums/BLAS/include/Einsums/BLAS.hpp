@@ -9,8 +9,9 @@
 
 #include <Einsums/BLAS/Types.hpp>
 #include <Einsums/Concepts/Complex.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
-namespace einsums::blas {
+EINSUMS_NAMESPACE_BEGIN(blas)
 
 /**
  * @class IsBlasable
@@ -3015,4 +3016,4 @@ inline auto trtri<std::complex<double>>(char uplo, char diag, int_t n, std::comp
     return detail::ztrtri(uplo, diag, n, a, lda);
 }
 
-} // namespace einsums::blas
+EINSUMS_NAMESPACE_END(blas)

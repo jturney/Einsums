@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
@@ -22,7 +23,7 @@
 
 using namespace einsums::index;
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -220,4 +221,4 @@ bool SUMMAExpansion::run(Graph &graph) {
     return _num_expanded > num_expanded_at_entry;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

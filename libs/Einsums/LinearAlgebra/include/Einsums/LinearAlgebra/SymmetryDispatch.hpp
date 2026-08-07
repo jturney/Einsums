@@ -17,12 +17,13 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/Concepts/Complex.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
 #include <cctype>
 
-namespace einsums::linear_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(linear_algebra::detail)
 
 /// True iff ``desc`` describes a rank-2 symmetric matrix: a single
 /// ``swap(0,1)`` generator with sign ``+1`` and no conjugation.
@@ -128,4 +129,4 @@ bool try_symmetric_gemm(char transA, char transB, T alpha, einsums::detail::Tens
     return false;
 }
 
-} // namespace einsums::linear_algebra::detail
+EINSUMS_NAMESPACE_END(linear_algebra::detail)

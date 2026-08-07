@@ -11,6 +11,7 @@
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/CompilerSpecific.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/LinearAlgebra/Bases/direct_division.hpp>
 #include <Einsums/LinearAlgebra/Bases/direct_product.hpp>
@@ -34,7 +35,7 @@
 #include <optional>
 #include <stdexcept>
 
-namespace einsums::linear_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(linear_algebra::detail)
 
 template <typename T>
 void sum_square(einsums::detail::TensorImpl<T> const &a, RemoveComplexT<T> *scale, RemoveComplexT<T> *sumsq) noexcept {
@@ -1673,4 +1674,4 @@ auto qr(AType const &A) -> std::tuple<Tensor<typename AType::ValueType, 2>, Tens
     return qr(A.impl());
 }
 
-} // namespace einsums::linear_algebra::detail
+EINSUMS_NAMESPACE_END(linear_algebra::detail)

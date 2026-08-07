@@ -7,13 +7,14 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 
 #include <complex>
 #include <memory>
 #include <mutex>
 
-namespace einsums::tensor_base {
+EINSUMS_NAMESPACE_BEGIN(tensor_base)
 
 /*==================
  * Location-based.
@@ -75,4 +76,4 @@ class EINSUMS_EXPORT RuntimeTensorNoType {};
 
 class EINSUMS_EXPORT RuntimeTensorViewNoType {};
 
-} // namespace einsums::tensor_base
+EINSUMS_NAMESPACE_END(tensor_base)

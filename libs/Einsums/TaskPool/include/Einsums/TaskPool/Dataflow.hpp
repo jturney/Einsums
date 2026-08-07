@@ -15,11 +15,12 @@
 //       [](int a, double b) { return a + b; },
 //       handle_a, handle_b);
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TaskPool/TaskHandle.hpp>
 
-namespace einsums::task_pool {
+EINSUMS_NAMESPACE_BEGIN(task_pool)
 
 // Forward declaration; defined in TaskPool.hpp
 class TaskPool;
 
-} // namespace einsums::task_pool
+EINSUMS_NAMESPACE_END(task_pool)

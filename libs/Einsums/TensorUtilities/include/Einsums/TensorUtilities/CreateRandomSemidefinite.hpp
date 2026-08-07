@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
@@ -14,7 +15,7 @@
 #include <numbers>
 #include <string>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * Create a random positive or negative semi-definite matrix.
@@ -107,4 +108,4 @@ APIARY_EXPOSE APIARY_INSTANTIATE_AS("create_random_semidefinite", double) APIARY
     return RuntimeTensor<T>(create_random_semidefinite<T>(name, n, n));
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

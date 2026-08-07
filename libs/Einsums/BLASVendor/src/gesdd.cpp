@@ -7,13 +7,14 @@
 
 #include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(dgesdd, DGESDD)(char *, int_t *, int_t *, double *, int_t *, double *, double *, int_t *, double *, int_t *, double *,
@@ -128,4 +129,4 @@ GESDD(float, s, S);
 GESDD_complex(float, c, C);
 GESDD_complex(double, z, Z);
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

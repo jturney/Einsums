@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <hip/hip_common.h>
 #include <hip/hip_complex.h>
 #include <hip/hip_runtime.h>
@@ -14,7 +16,7 @@
 #    include <stdfloat>
 #endif
 
-namespace einsums::gpu {
+EINSUMS_NAMESPACE_BEGIN(gpu)
 template <typename T>
 constexpr hipDataType get_hip_datatype();
 
@@ -154,4 +156,4 @@ constexpr hipDataType get_hip_datatype<std::complex<uint64_t>>() {
     return HIP_C_64U;
 }
 
-} // namespace einsums::gpu
+EINSUMS_NAMESPACE_END(gpu)

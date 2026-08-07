@@ -6,10 +6,11 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief GPU-offload cleanup pass: removes redundant H2D/D2H transfers and inserts budget evictions.
@@ -87,4 +88,4 @@ class EINSUMS_EXPORT TransferElimination : public OptimizerPass {
     size_t _num_eliminated{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

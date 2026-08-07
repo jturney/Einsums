@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile/Consumer.hpp>
 #include <Einsums/Profile/CounterBackend.hpp>
@@ -62,7 +63,7 @@
 #    include <sys/neutrino.h>
 #endif
 
-namespace einsums::profile {
+EINSUMS_NAMESPACE_BEGIN(profile)
 
 #if defined(EINSUMS_HAVE_PROFILER)
 
@@ -895,4 +896,4 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 #    define ProfileMemFree(bytes)
 #endif
 
-} // namespace einsums::profile
+EINSUMS_NAMESPACE_END(profile)

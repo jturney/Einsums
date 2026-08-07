@@ -5,11 +5,13 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstdio>
 #include <ostream>
 #include <type_traits>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @concept IsFilePointer
@@ -51,4 +53,4 @@ concept IsOStream = std::is_base_of_v<std::ostream, std::remove_cvref_t<T>>;
 template <typename T>
 concept FileOrOStream = IsFilePointer<T> || IsOStream<T>;
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

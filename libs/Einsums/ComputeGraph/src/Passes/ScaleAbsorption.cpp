@@ -7,6 +7,7 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
@@ -16,7 +17,7 @@
 #include <variant>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -306,4 +307,4 @@ std::vector<std::string> ScaleAbsorption::explain() const {
     return {fmt::format("ScaleAbsorption: removed {} dead scale(s)", _num_absorbed)};
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

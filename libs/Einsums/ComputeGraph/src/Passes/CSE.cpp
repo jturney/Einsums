@@ -7,6 +7,7 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
@@ -17,7 +18,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -710,4 +711,4 @@ bool CSE::run(Graph &graph) {
     return modified;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 // Marking device code: the sink below must be callable from GPU kernels when a
 // device compiler is active, and stay annotation-free everywhere else.
 #if defined(__CUDACC__) || defined(__HIPCC__)
@@ -13,7 +15,7 @@
 #    define EINSUMS_DETAIL_UNUSED_HD
 #endif
 
-namespace einsums::util {
+EINSUMS_NAMESPACE_BEGIN(util)
 
 /// Sink for silencing unused-variable/parameter warnings.
 ///
@@ -28,7 +30,7 @@ template <typename... T>
 EINSUMS_DETAIL_UNUSED_HD constexpr void unused(T &&...) noexcept {
 }
 
-} // namespace einsums::util
+EINSUMS_NAMESPACE_END(util)
 
 /// Silence unused warnings for one or more variables: ``EINSUMS_UNUSED(a, b)``.
 /// The macro supplies the trailing semicolon (existing call sites omit it).

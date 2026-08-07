@@ -7,11 +7,12 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <string>
 
-namespace einsums::pythondemo {
+EINSUMS_NAMESPACE_BEGIN(pythondemo)
 
 /// A tiny counter: proof-of-life for the einsums-pybind autogen path.
 ///
@@ -51,4 +52,4 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_RENAME("Counter") Counter {
 /// path, not just class methods.
 APIARY_EXPOSE EINSUMS_EXPORT long sum_of_squares(long n);
 
-} // namespace einsums::pythondemo
+EINSUMS_NAMESPACE_END(pythondemo)

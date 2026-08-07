@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Platform.hpp>
 
 #if defined(EINSUMS_HAVE_MPS)
@@ -12,7 +13,7 @@
 #    include <cstddef>
 #    include <string>
 
-namespace einsums::gpu::mps {
+EINSUMS_NAMESPACE_BEGIN(gpu::mps)
 
 // Memory management
 EINSUMS_EXPORT void  *device_malloc(size_t bytes);
@@ -41,6 +42,6 @@ EINSUMS_EXPORT void hgemm(char transa, char transb, int m, int n, int k, float a
 EINSUMS_EXPORT void sgemv(char trans, int m, int n, float alpha, float const *a, int lda, float const *x, int incx, float beta, float *y,
                           int incy);
 
-} // namespace einsums::gpu::mps
+EINSUMS_NAMESPACE_END(gpu::mps)
 
 #endif // EINSUMS_HAVE_MPS

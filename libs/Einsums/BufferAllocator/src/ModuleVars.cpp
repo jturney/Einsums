@@ -4,13 +4,14 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/BufferAllocator/ModuleVars.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/StringUtil/MemoryString.hpp>
 
 #include <omp.h>
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 EINSUMS_SINGLETON_IMPL(Einsums_BufferAllocator_vars)
 
@@ -77,4 +78,4 @@ size_t Einsums_BufferAllocator_vars::get_work_buffer_size() const {
     return _work_buffer;
 }
 
-} // namespace einsums::detail
+EINSUMS_NAMESPACE_END(detail)

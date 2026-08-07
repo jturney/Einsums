@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/HPTT/Files.hpp>
 #include <Einsums/Logging.hpp>
@@ -10,7 +11,7 @@
 #include <cerrno>
 #include <cstring>
 
-namespace einsums::hptt {
+EINSUMS_NAMESPACE_BEGIN(hptt)
 
 constexpr char version[4] = {0, 0, 0, endian_char()};
 
@@ -156,4 +157,4 @@ int verify_file(std::FILE *fp) {
     return 0;
 }
 
-} // namespace einsums::hptt
+EINSUMS_NAMESPACE_END(hptt)

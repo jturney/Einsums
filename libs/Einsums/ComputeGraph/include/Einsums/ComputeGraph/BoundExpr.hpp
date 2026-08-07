@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstdint>
 #include <functional>
 #include <stdexcept>
@@ -12,7 +14,7 @@
 #include <unordered_map>
 #include <variant>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class ParamTable;
 
@@ -141,4 +143,4 @@ inline std::int64_t BoundExpr::resolve(ParamTable const &params) const {
         _storage);
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

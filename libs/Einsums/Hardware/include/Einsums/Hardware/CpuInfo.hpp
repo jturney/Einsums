@@ -7,11 +7,12 @@
 
 #include <Einsums/Config/CompilerSpecific.hpp>
 #include <Einsums/Config/ExportDefinitions.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 #include <cstdint>
 
-namespace einsums::hardware {
+EINSUMS_NAMESPACE_BEGIN(hardware)
 
 /// Data-cache sizes in bytes. Zero-initialised fields mean "not detected"; the
 /// accessors below always return usable values, falling back to conservative
@@ -85,7 +86,7 @@ EINSUMS_EXPORT std::size_t omp_min_parallel_elements();
  */
 EINSUMS_EXPORT std::int64_t omp_min_parallel_flops();
 
-} // namespace einsums::hardware
+EINSUMS_NAMESPACE_END(hardware)
 
 /**
  * @def EINSUMS_OMP_PARALLEL_FOR_SIMD_IF

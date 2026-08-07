@@ -13,6 +13,7 @@
 /// with these types directly; the pass infrastructure handles everything transparently.
 
 #include <Einsums/Comm/Runtime.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <algorithm>
 #include <array>
@@ -20,7 +21,7 @@
 #include <cstdint>
 #include <utility>
 
-namespace einsums::comm {
+EINSUMS_NAMESPACE_BEGIN(comm)
 
 /// How a single dimension of a tensor is distributed across ranks.
 enum class DistStrategy : std::uint8_t {
@@ -133,4 +134,4 @@ template <size_t Rank>
     return map;
 }
 
-} // namespace einsums::comm
+EINSUMS_NAMESPACE_END(comm)

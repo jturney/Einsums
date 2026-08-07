@@ -5,12 +5,13 @@
 
 #include <Einsums/Comm/Communicator.hpp>
 #include <Einsums/Comm/Runtime.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #if defined(EINSUMS_HAVE_MPI)
 #    include <mpi.h>
 #endif
 
-namespace einsums::comm {
+EINSUMS_NAMESPACE_BEGIN(comm)
 
 // ── Impl ────────────────────────────────────────────────────────────────────
 
@@ -103,4 +104,4 @@ void *Communicator::native_handle() const {
     return nullptr;
 }
 
-} // namespace einsums::comm
+EINSUMS_NAMESPACE_END(comm)

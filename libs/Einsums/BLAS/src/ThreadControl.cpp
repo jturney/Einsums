@@ -5,6 +5,7 @@
 
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/BLASVendor/Defines.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #if defined(EINSUMS_HAVE_MKL)
 // Declared rather than pulled from mkl.h so this stays independent of which
@@ -17,7 +18,7 @@ int MKL_Get_Max_Threads(void);
 }
 #endif
 
-namespace einsums::blas {
+EINSUMS_NAMESPACE_BEGIN(blas)
 
 void set_num_threads_this_thread(int nthreads) {
     if (nthreads < 1) {
@@ -46,4 +47,4 @@ int get_num_threads_this_thread() {
 #endif
 }
 
-} // namespace einsums::blas
+EINSUMS_NAMESPACE_END(blas)

@@ -9,13 +9,15 @@
 // Owner thread pushes/pops from the bottom (LIFO).
 // Thief threads steal from the top (FIFO).
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <atomic>
 #include <cstddef>
 #include <memory>
 #include <optional>
 #include <vector>
 
-namespace einsums::task_pool {
+EINSUMS_NAMESPACE_BEGIN(task_pool)
 
 /// @brief Lock-free single-producer, multi-consumer work-stealing deque.
 ///
@@ -145,4 +147,4 @@ class WorkStealingDeque {
     std::atomic<int64_t>                         _bottom;
 };
 
-} // namespace einsums::task_pool
+EINSUMS_NAMESPACE_END(task_pool)

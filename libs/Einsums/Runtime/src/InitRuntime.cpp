@@ -6,6 +6,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Assert.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
@@ -25,7 +26,7 @@
 #include <tuple>
 #include <unordered_map>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 template <typename F, typename... BoundArgs>
 struct bind_back_t {
@@ -349,4 +350,4 @@ void initialize(std::nullptr_t, int argc, char const *const *argv, InitParams co
     initialize(main_f, argc, argv, params);
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

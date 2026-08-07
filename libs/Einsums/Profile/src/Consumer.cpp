@@ -3,11 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile/Consumer.hpp>
 
 #if defined(EINSUMS_HAVE_PROFILER)
 
-namespace einsums::profile {
+EINSUMS_NAMESPACE_BEGIN(profile)
 
 Consumer::Consumer(StringTable &strings) : _strings(strings) {
     _running.store(true, std::memory_order_relaxed);
@@ -316,6 +317,6 @@ void Consumer::process_mem(ThreadState &ts, Event const &evt) {
     }
 }
 
-} // namespace einsums::profile
+EINSUMS_NAMESPACE_END(profile)
 
 #endif

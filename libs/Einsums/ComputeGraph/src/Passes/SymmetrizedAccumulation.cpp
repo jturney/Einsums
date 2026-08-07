@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/SymmetrizedAccumulation.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
@@ -19,7 +20,7 @@
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -397,4 +398,4 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
     return true;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

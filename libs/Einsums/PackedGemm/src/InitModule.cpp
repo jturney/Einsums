@@ -3,11 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/PackedGemm/InitModule.hpp>
 #include <Einsums/Runtime.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 void initialize_Einsums_PackedGemm() {
     EINSUMS_LOG_INFO("PackedGemm: initializing module");
@@ -27,4 +28,4 @@ int setup_Einsums_PackedGemm() {
     return 0;
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

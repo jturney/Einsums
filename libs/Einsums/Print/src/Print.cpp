@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 
 #include <cstdio>
@@ -19,7 +20,7 @@
 #    include <unistd.h>
 #endif
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace print {
 namespace {
 std::mutex lock;
@@ -268,4 +269,4 @@ void fprintln(std::ostream &os, std::string const &str) {
     }
 }
 } // namespace detail
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

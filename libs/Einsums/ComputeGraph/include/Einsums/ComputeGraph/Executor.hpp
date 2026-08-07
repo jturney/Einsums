@@ -27,6 +27,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <memory>
@@ -34,7 +35,7 @@
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class Graph; // Forward declaration
 
@@ -205,4 +206,4 @@ class MPIExecutor : public Executor {
     void                      execute(Graph &graph) override;
 };
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

@@ -5,9 +5,11 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstddef>
 
-namespace einsums::task_pool {
+EINSUMS_NAMESPACE_BEGIN(task_pool)
 
 /// @brief Per-worker thread context.
 ///
@@ -19,4 +21,4 @@ struct WorkerContext {
     int   rank{0};            ///< MPI rank (0 for now; populated when MPI support lands).
 };
 
-} // namespace einsums::task_pool
+EINSUMS_NAMESPACE_END(task_pool)

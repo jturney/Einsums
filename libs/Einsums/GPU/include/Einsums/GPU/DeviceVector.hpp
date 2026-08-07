@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Error.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
@@ -12,7 +13,7 @@
 #include <cstddef>
 #include <type_traits>
 
-namespace einsums::gpu {
+EINSUMS_NAMESPACE_BEGIN(gpu)
 
 // ===========================================================================
 // DeviceAllocator tag: used by GeneralTensor to select DeviceVector storage.
@@ -151,4 +152,4 @@ class DeviceVector {
     size_t _size{0};
 };
 
-} // namespace einsums::gpu
+EINSUMS_NAMESPACE_END(gpu)

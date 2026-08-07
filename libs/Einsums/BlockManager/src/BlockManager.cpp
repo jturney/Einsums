@@ -4,11 +4,12 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/BlockManager/BlockManager.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <memory>
 #include <thread>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 using std::weak_ptr;
 
 EINSUMS_SINGLETON_IMPL(BlockManager);
@@ -50,4 +51,4 @@ std::weak_ptr<uint8_t[]> BlockManager::request_block(size_t bytes) {
     return {_block_list.back()};
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

@@ -18,6 +18,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 // Force the feature-test macro determination to be consistent across TUs:
 // without including <version> here, whether `__cpp_lib_expected` is defined when
 // we reach the check depends on whoever-else-included-what-first, which produces
@@ -36,7 +38,7 @@
 #include <utility>
 #include <variant>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 #if defined(__cpp_lib_expected) && __cpp_lib_expected >= 202211L
 
@@ -269,4 +271,4 @@ class expected<void, E> {
 
 #endif // __cpp_lib_expected
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

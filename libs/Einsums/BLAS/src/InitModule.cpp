@@ -5,6 +5,7 @@
 
 #include <Einsums/BLAS/InitModule.hpp>
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Runtime.hpp>
 
 /*
@@ -13,7 +14,7 @@
  * as well as the initialization header for the module and the dependence on Einsums_Runtime, assuming these
  * aren't being used otherwise.
  */
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 int setup_Einsums_BLAS() {
     // Auto-generated code. Do not touch if you are unsure of what you are doing.
     // Instead, modify the other functions below.
@@ -35,4 +36,4 @@ void initialize_Einsums_BLAS() {
 void finalize_Einsums_BLAS() {
     blas::vendor::finalize();
 }
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

@@ -6,10 +6,11 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief FreeInsertion pass: insert Free nodes to release intermediate tensors after their last consumer.
@@ -92,4 +93,4 @@ class EINSUMS_EXPORT FreeInsertion : public OptimizerPass {
     size_t _num_freed{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

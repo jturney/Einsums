@@ -4,6 +4,8 @@
 //----------------------------------------------------------------------------------------------
 
 #pragma once
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cmath>
 #include <complex>
 #include <limits>
@@ -18,7 +20,7 @@
 // catastrophic cancellation that a naive single-accumulator reduction
 // would hit when summing across many orders of magnitude.
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
 namespace detail {
 
@@ -86,4 +88,4 @@ inline std::complex<T> combine_accum(std::complex<T> big_sum, std::complex<T> me
 
 } // namespace detail
 } // namespace linear_algebra
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

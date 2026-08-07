@@ -7,6 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #if defined(EINSUMS_HAVE_PROFILER)
 
 #    include <cstdint>
@@ -16,7 +18,7 @@
 #    include <string_view>
 #    include <unordered_map>
 
-namespace einsums::profile {
+EINSUMS_NAMESPACE_BEGIN(profile)
 
 /// Thread-safe string interning table.
 /// Strings are assigned monotonically increasing IDs starting from 0.
@@ -63,6 +65,6 @@ class StringTable {
     std::unordered_map<std::string_view, uint32_t> _map;
 };
 
-} // namespace einsums::profile
+EINSUMS_NAMESPACE_END(profile)
 
 #endif

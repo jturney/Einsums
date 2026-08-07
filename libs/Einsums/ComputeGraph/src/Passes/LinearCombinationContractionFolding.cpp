@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
@@ -18,7 +19,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -504,4 +505,4 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
     return true;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

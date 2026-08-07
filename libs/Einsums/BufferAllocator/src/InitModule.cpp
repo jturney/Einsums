@@ -7,11 +7,12 @@
 #include <Einsums/BufferAllocator/ModuleVars.hpp>
 #include <Einsums/CommandLine.hpp>
 #include <Einsums/CommandLine/CommandLine.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/StringUtil/MemoryString.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /*
  * Set up the internal state of the module. If the module does not need to be set up, then this
@@ -64,4 +65,4 @@ void initialize_Einsums_BufferAllocator() {
 void finalize_Einsums_BufferAllocator() {
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

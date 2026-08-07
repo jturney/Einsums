@@ -8,13 +8,14 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BufferAllocator/InitModule.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
 #include <Einsums/TypeSupport/Singleton.hpp>
 
 #include <source_location>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace detail {
 
 /**
@@ -110,4 +111,4 @@ class EINSUMS_EXPORT Einsums_BufferAllocator_vars final : public design_pats::Lo
 };
 
 } // namespace detail
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

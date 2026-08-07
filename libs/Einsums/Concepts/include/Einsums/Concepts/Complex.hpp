@@ -6,11 +6,12 @@
 #pragma once
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <complex>
 #include <type_traits>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @var IsComplexV
@@ -177,4 +178,4 @@ struct AddComplex<std::complex<T>> {
 template <typename T>
 using AddComplexT = typename detail::AddComplex<T>::type;
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

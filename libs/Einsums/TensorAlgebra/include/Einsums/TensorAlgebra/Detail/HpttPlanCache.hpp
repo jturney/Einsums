@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 
@@ -23,7 +24,7 @@
 #    include <omp.h>
 #endif
 
-namespace einsums::tensor_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra::detail)
 
 // Plan cache for hptt::Transpose<T>.
 //
@@ -202,4 +203,4 @@ inline std::shared_ptr<hptt::Transpose<T>> get_or_create_hptt_plan(int const *pe
     return get_or_create_hptt_plan<T>(perm, dim, alpha, A, sizeA, outerSizeA, offsetA, 1, beta, B, outerSizeB, offsetB, 1, row_major);
 }
 
-} // namespace einsums::tensor_algebra::detail
+EINSUMS_NAMESPACE_END(tensor_algebra::detail)

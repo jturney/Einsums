@@ -7,13 +7,14 @@
 
 #include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(dgees, DGEES)(char *, char *, int_t (*)(double *, double *), int_t *, double *, int_t *, int_t *, double *, double *,
@@ -109,4 +110,4 @@ GEES(float, s, S);
 GEES(double, z, Z);
 GEES(float, c, C);
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

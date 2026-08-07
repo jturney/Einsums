@@ -14,6 +14,7 @@
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/CompilerSpecific.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Iterator/Enumerate.hpp>
 #include <Einsums/Logging.hpp>
@@ -51,7 +52,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 // Forward declaration of the Tensor printing function.
 template <RankTensorConcept AType>
     requires(BasicTensorConcept<AType> || !AlgebraTensorConcept<AType>)
@@ -2927,4 +2928,4 @@ TENSOR_ALLOC_EXPORT(GeneralTensor, BufferAllocator)
 
 TENSOR_EXPORT(TensorView)
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

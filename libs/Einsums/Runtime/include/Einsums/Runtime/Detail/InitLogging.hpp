@@ -7,8 +7,9 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 EINSUMS_EXPORT void init_logging(RuntimeConfiguration &config);
-}
+EINSUMS_NAMESPACE_END(detail)

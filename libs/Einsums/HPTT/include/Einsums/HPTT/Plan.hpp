@@ -27,11 +27,12 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/ComputeNode.hpp>
 
 #include <vector>
 
-namespace einsums::hptt {
+EINSUMS_NAMESPACE_BEGIN(hptt)
 
 /**
  * @class Plan
@@ -111,4 +112,4 @@ class Plan {
     std::vector<ComputeNode> _rootNodes;
 };
 
-} // namespace einsums::hptt
+EINSUMS_NAMESPACE_END(hptt)

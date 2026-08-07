@@ -6,8 +6,9 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief Distributed-execution pass: inserts collective communication where partial results need combining.
@@ -74,4 +75,4 @@ class EINSUMS_EXPORT CommunicationInsertion : public OptimizerPass {
     size_t _num_inserted{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

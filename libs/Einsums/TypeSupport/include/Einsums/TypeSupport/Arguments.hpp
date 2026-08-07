@@ -5,10 +5,12 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <initializer_list>
 #include <tuple>
 
-namespace einsums::arguments {
+EINSUMS_NAMESPACE_BEGIN(arguments)
 
 /// \cond NOINTERNAL
 namespace detail {
@@ -116,4 +118,4 @@ auto get_from_tuple(Tuple &&tuple, std::size_t index) noexcept -> ReturnType {
     return returnValue;
 }
 
-} // namespace einsums::arguments
+EINSUMS_NAMESPACE_END(arguments)

@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/TensorSlot.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <functional>
@@ -17,7 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /**
  * @brief Thread-local capture context for recording operations into a graph.
@@ -397,4 +398,4 @@ void Graph::add_loop(std::string label, size_t max_iterations, std::function<boo
     body_fn();
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

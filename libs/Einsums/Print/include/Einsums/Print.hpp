@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Concepts/File.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <fmt/color.h>
 #include <fmt/format.h>
@@ -21,7 +22,7 @@
 #include <iostream>
 #include <string_view>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace print {
 
 /// Callback type for forwarding println output to an external sink (e.g. profiler TCP server).
@@ -433,7 +434,7 @@ void fprintln_warn(std::ostream &os, std::string_view const &format, Ts const...
     fprintln(os, bg(color::yellow) | fg(color::black), message, ts...);
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()
 
 template <std::integral IntType>
 struct fmt::formatter<einsums::print::ordinal<IntType>> {

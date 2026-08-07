@@ -12,6 +12,7 @@
 #include <Einsums/ComputeGraphTypes/Descriptors.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 
 #include <algorithm>
@@ -23,7 +24,7 @@
 #include <variant>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class Graph; // Forward declaration for ConditionalDescriptor/LoopDescriptor
 
@@ -507,4 +508,4 @@ struct Node {
         vd->axes, [](ViewAxis const &ax) { return !ax.lo.is_const() || (ax.kind == ViewAxis::Kind::Range && !ax.hi.is_const()); });
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

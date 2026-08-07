@@ -26,6 +26,7 @@
 */
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <fmt/format.h>
@@ -41,7 +42,7 @@
 #    include <omp.h>
 #endif
 
-namespace einsums::hptt {
+EINSUMS_NAMESPACE_BEGIN(hptt)
 
 /**
  * @class Transpose
@@ -171,4 +172,4 @@ extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<einsums::simd::ha
 extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<einsums::simd::bfloat16_t>;
 #endif
 
-} // namespace einsums::hptt
+EINSUMS_NAMESPACE_END(hptt)

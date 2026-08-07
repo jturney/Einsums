@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/TensorIO/TensorFile.hpp>
 
@@ -12,7 +13,7 @@
 
 #include "PosixFileCompat.hpp"
 
-namespace einsums::tensor_io {
+EINSUMS_NAMESPACE_BEGIN(tensor_io)
 
 TensorFile::TensorFile(std::string path, Mode mode) : _path(std::move(path)), _mode(mode) {
     detail::OpenMode open_mode = detail::OpenMode::ReadWrite;
@@ -198,4 +199,4 @@ void TensorFile::flush() {
     }
 }
 
-} // namespace einsums::tensor_io
+EINSUMS_NAMESPACE_END(tensor_io)

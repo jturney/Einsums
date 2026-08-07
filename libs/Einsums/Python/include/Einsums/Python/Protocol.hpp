@@ -21,11 +21,13 @@
 //
 // This header has no dependencies beyond the standard library.
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /// @brief One slot in a Python-style index expression.
 ///
@@ -108,4 +110,4 @@ struct BufferDescriptor {
     bool                     writable            = true;
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

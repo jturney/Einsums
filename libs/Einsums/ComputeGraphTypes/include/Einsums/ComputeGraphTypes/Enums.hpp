@@ -5,12 +5,13 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cstdint>
 #include <string_view>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace APIARY_MODULE("graph") compute_graph {
 
 /**
@@ -320,4 +321,4 @@ inline std::string_view op_kind_name(OpKind kind) {
 }
 
 } // namespace APIARY_MODULE("graph")compute_graph
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

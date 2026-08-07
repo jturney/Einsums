@@ -5,7 +5,9 @@
 
 #pragma once
 
-namespace einsums::design_pats {
+#include <Einsums/Config/Namespace.hpp>
+
+EINSUMS_NAMESPACE_BEGIN(design_pats)
 
 /**
  * @class Lockable
@@ -73,4 +75,4 @@ class Lockable {
     mutable Mutex lock_{};
 };
 
-} // namespace einsums::design_pats
+EINSUMS_NAMESPACE_END(design_pats)

@@ -5,9 +5,11 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstdint>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /// What kind of post-materialization initialization a deferred tensor wants.
 ///
@@ -27,4 +29,4 @@ enum class PendingInit : std::uint8_t {
     Random,
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

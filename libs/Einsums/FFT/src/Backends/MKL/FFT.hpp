@@ -5,11 +5,12 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
 #define FFT_BACKEND mkl
 
-namespace einsums::fft::backend::mkl {
+EINSUMS_NAMESPACE_BEGIN(fft::backend::mkl)
 
 void scfft(Tensor<float, 1> const &a, Tensor<std::complex<float>, 1> *result);
 void ccfft(Tensor<std::complex<float>, 1> const &a, Tensor<std::complex<float>, 1> *result);
@@ -23,4 +24,4 @@ void zdifft(Tensor<std::complex<double>, 1> const &a, Tensor<double, 1> *result)
 void ccifft(Tensor<std::complex<float>, 1> const &a, Tensor<std::complex<float>, 1> *result);
 void zzifft(Tensor<std::complex<double>, 1> const &a, Tensor<std::complex<double>, 1> *result);
 
-} // namespace einsums::fft::backend::mkl
+EINSUMS_NAMESPACE_END(fft::backend::mkl)

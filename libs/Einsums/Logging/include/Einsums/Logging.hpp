@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging/Defines.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
@@ -15,7 +16,7 @@
 #include <spdlog/spdlog.h>
 #include <string>
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 /**
  * @brief Create the prototype of a logger.
@@ -197,9 +198,9 @@ EINSUMS_EXPORT std::shared_ptr<spdlog::sinks::sink> get_spdlog_sink(std::string 
 
 EINSUMS_EXPORT EINSUMS_DETAIL_DECLARE_SPDLOG(einsums)
 
-} // namespace einsums::detail
+EINSUMS_NAMESPACE_END(detail)
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /// Set the runtime log level on the einsums logger.
 ///
@@ -212,4 +213,4 @@ APIARY_EXPOSE EINSUMS_EXPORT void set_log_level(int level);
 /// Return the current runtime log level on the einsums logger.
 APIARY_EXPOSE EINSUMS_EXPORT int get_log_level();
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

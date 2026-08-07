@@ -6,6 +6,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
@@ -13,7 +14,7 @@
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(ssyev, SSYEV)(char *, char *, int_t *, float *, int_t *, float *, float *, int_t *, int_t *);
@@ -56,4 +57,4 @@ auto dsterf(int_t n, double *d, double *e) -> int_t {
     return info;
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

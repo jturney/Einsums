@@ -6,6 +6,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Assert.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Debugging/AttachDebugger.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
@@ -23,7 +24,7 @@
 #    include <Windows.h>
 #endif
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace detail {
 
 EINSUMS_SINGLETON_IMPL(RuntimeVars)
@@ -428,4 +429,4 @@ void register_shutdown_function(ShutdownFunctionType f) {
     }
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

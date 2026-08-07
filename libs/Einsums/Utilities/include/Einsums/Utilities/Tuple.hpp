@@ -5,11 +5,13 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstddef>
 #include <tuple>
 #include <utility>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace detail {
 
 template <typename T, std::size_t... Is>
@@ -171,4 +173,4 @@ constexpr inline std::array<std::remove_cv_t<NewT>, N> convert_array(std::array<
     return detail::convert_array_impl(arr, std::make_index_sequence<N>());
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

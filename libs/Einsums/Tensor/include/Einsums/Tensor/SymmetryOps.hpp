@@ -15,6 +15,7 @@
 /// generic, composed from the descriptor's generators.
 
 #include <Einsums/Concepts/Complex.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 
@@ -23,7 +24,7 @@
 #include <complex>
 #include <cstddef>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {
 
@@ -175,4 +176,4 @@ template <typename T, size_t Rank, typename Alloc>
     return ok;
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

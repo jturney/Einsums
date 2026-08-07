@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
@@ -22,7 +23,7 @@
 #    include <sys/sysctl.h>
 #endif
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DeviceProfileDB: runtime detection
@@ -730,4 +731,4 @@ expected<DeviceProfileDB, GraphError> DeviceProfileDB::load_json(std::string con
     return db;
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

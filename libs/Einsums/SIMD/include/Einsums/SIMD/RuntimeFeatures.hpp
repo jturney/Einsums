@@ -7,11 +7,13 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstdint>
 #include <optional>
 #include <string_view>
 
-namespace einsums::simd {
+EINSUMS_NAMESPACE_BEGIN(simd)
 
 /**
  * @brief CPU features detected at runtime.
@@ -247,4 +249,4 @@ F select(F baseline, F v2 = nullptr, F v3 = nullptr, F v4 = nullptr, F sme = nul
     return baseline;
 }
 
-} // namespace einsums::simd
+EINSUMS_NAMESPACE_END(simd)

@@ -30,6 +30,8 @@
  * Compute the tensor transposition
  */
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
@@ -64,7 +66,7 @@
 
 #include "TransposeImpl.hpp"
 
-namespace einsums::hptt {
+EINSUMS_NAMESPACE_BEGIN(hptt)
 namespace EINSUMS_SIMD_ARCH_NS {
 
 // std::abs has no overload for __fp16 / __bf16, so promote those to float
@@ -2651,4 +2653,4 @@ EINSUMS_HPTT_INSTANTIATE_FACTORIES(einsums::simd::bfloat16_t)
 #undef EINSUMS_HPTT_INSTANTIATE_FACTORIES
 
 } // namespace EINSUMS_SIMD_ARCH_NS
-} // namespace einsums::hptt
+EINSUMS_NAMESPACE_END(hptt)

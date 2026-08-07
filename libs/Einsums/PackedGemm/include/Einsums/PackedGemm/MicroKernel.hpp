@@ -21,6 +21,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 
 #define EINSUMS_PACKED_GEMM_KERNEL_NS arch_ambient
@@ -29,7 +30,7 @@
 #include <complex>
 #include <cstdint>
 
-namespace einsums::packed_gemm {
+EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 
 /// @brief Register-block shape (MR, NR) the resolved micro-kernel wants.
 ///
@@ -136,4 +137,4 @@ EINSUMS_EXPORT MicroKernelShape micro_kernel_shape<std::complex<float>>();
 template <>
 EINSUMS_EXPORT MicroKernelShape micro_kernel_shape<std::complex<double>>();
 
-} // namespace einsums::packed_gemm
+EINSUMS_NAMESPACE_END(packed_gemm)

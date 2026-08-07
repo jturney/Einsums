@@ -7,6 +7,7 @@
 
 #include <Einsums/Concepts/NamedRequirements.hpp>
 #include <Einsums/Concepts/SubscriptChooser.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
@@ -14,7 +15,7 @@
 #include <Einsums/TensorBase/Common.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
 
-namespace einsums::decomposition {
+EINSUMS_NAMESPACE_BEGIN(decomposition)
 
 template <TensorConcept TTensor, ContainerOf<TensorLike<TTensor, ValueTypeT<TTensor>, 2>> Factors>
 auto tucker_reconstruct(TTensor const &g_tensor, Factors const &factors) -> TTensor {
@@ -264,4 +265,4 @@ auto tucker_ho_oi(TTensor<TType, TRank> const &tensor, Ranks &ranks, int n_iter_
     return std::make_tuple(g_tensor, factors);
 }
 
-} // namespace einsums::decomposition
+EINSUMS_NAMESPACE_END(decomposition)

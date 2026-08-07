@@ -7,10 +7,11 @@
 
 #include <Einsums/BLAS/Types.hpp>
 #include <Einsums/Config/ExportDefinitions.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <complex>
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 /**
  * Internal kernel for performing the direct product. The direct product function is not in BLAS, so we have to write our own.
  *
@@ -1202,4 +1203,4 @@ EINSUMS_EXPORT auto ctrtri(char uplo, char diag, int_t n, std::complex<float> *a
 /// @copydoc strtri
 EINSUMS_EXPORT auto ztrtri(char uplo, char diag, int_t n, std::complex<double> *a, int_t lda) -> int_t;
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

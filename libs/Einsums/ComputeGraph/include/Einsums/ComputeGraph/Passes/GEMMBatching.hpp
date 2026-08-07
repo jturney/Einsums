@@ -7,8 +7,9 @@
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief Collapse groups of independent GEMMs into a single
@@ -151,4 +152,4 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
     size_t    _num_gate_skipped{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -6,10 +6,11 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief Distribution-planning pass: chooses a process-grid layout for each deferred tensor.
@@ -88,4 +89,4 @@ class EINSUMS_EXPORT DistributionPlanning : public OptimizerPass {
     size_t _num_replicated{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/InitModule.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
 #include <Einsums/TypeSupport/Singleton.hpp>
@@ -14,7 +15,7 @@
 #include <H5Ipublic.h>
 #include <atomic>
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 /// @todo This class can be freely changed. It is provided as a starting point for your convenience. If not needed, it may be removed.
 
@@ -37,4 +38,4 @@ class EINSUMS_EXPORT Einsums_Tensor_vars final : public design_pats::Lockable<st
     explicit Einsums_Tensor_vars() = default;
 };
 
-} // namespace einsums::detail
+EINSUMS_NAMESPACE_END(detail)

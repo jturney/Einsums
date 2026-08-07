@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
@@ -15,7 +16,7 @@
 
 #include <unordered_set>
 
-namespace einsums::packed_gemm {
+EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 
 PackingPlan compute_packing_topology(ContractionKey const &key) {
     LabeledSection0();
@@ -301,4 +302,4 @@ void hptt_transpose(int const *perm, int rank, std::complex<double> const *src, 
     p->execute();
 }
 
-} // namespace einsums::packed_gemm
+EINSUMS_NAMESPACE_END(packed_gemm)

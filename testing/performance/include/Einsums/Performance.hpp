@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
@@ -18,7 +19,7 @@
 
 #include <catch2/catch_all.hpp>
 
-namespace einsums::performance {
+EINSUMS_NAMESPACE_BEGIN(performance)
 
 using Clock = std::chrono::steady_clock;
 
@@ -246,4 +247,4 @@ inline void publish_benchmark_result(char const *label, char const *metric, Timi
     publish_benchmark_result(label, metric, 0, stats);
 }
 
-} // namespace einsums::performance
+EINSUMS_NAMESPACE_END(performance)

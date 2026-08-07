@@ -7,8 +7,9 @@
 
 #include <Einsums/Comm/InitModule.hpp>
 #include <Einsums/Comm/Platform.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
-namespace einsums::comm {
+EINSUMS_NAMESPACE_BEGIN(comm)
 
 /// Initialize the communication layer.
 /// With MPI: calls MPI_Init_thread(MPI_THREAD_FUNNELED).
@@ -35,4 +36,4 @@ EINSUMS_EXPORT void finalize();
 /// True if this is rank 0 in the world communicator.
 [[nodiscard]] EINSUMS_EXPORT bool is_root();
 
-} // namespace einsums::comm
+EINSUMS_NAMESPACE_END(comm)

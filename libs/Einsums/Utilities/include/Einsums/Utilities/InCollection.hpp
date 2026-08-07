@@ -6,13 +6,14 @@
 #pragma once
 
 #include <Einsums/Concepts/NamedRequirements.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 #include <initializer_list>
 #include <tuple>
 #include <utility>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {
 template <typename T, typename Haystack, size_t... __I>
@@ -114,4 +115,4 @@ constexpr bool not_in(T &&needle, std::initializer_list<std::decay_t<T>> haystac
     return true;
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

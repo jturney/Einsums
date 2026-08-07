@@ -7,13 +7,14 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TypeSupport/StringLiteral.hpp>
 
 #include <source_location>
 #include <stdexcept>
 #include <string>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {
 
@@ -301,4 +302,4 @@ struct EINSUMS_EXPORT complex_conversion_error : std::logic_error {
     using std::logic_error::logic_error;
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

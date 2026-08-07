@@ -7,6 +7,7 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLASVendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
@@ -24,7 +25,7 @@
 // zero guard: callers (CC denominators e_i+e_j-e_a-e_b, etc.) ensure b != 0;
 // matching numpy, 1/0 yields inf rather than throwing.
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
 namespace detail {
 
@@ -183,4 +184,4 @@ extern template EINSUMS_EXTERN_TEMPLATE_EXPORT void impl_direct_division<std::co
 
 } // namespace detail
 } // namespace linear_algebra
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

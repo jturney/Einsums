@@ -10,6 +10,7 @@
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/Node.hpp> // Target enum
+#include <Einsums/Config/Namespace.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -17,7 +18,7 @@
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /// A single measured GEMM efficiency data point.
 struct GemmEfficiencyPoint {
@@ -357,4 +358,4 @@ class EINSUMS_EXPORT DeviceProfileDB {
     [[nodiscard]] DeviceProfile const *find_best_match(std::string const &brand, DeviceType type) const;
 };
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

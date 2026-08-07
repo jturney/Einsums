@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/Workspace.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
@@ -22,7 +23,7 @@
 #include <variant>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class OptimizerPass;
 
@@ -471,4 +472,4 @@ void run(std::string name, Workspace &workspace, BuildFn &&build) {
     p.run();
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

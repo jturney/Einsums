@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/ContractionPlanning.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Logging.hpp>
 
@@ -18,7 +19,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -822,4 +823,4 @@ std::vector<std::string> ContractionPlanning::explain() const {
     return out;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

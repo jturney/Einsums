@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 
@@ -13,7 +14,7 @@
 #include <stdexcept>
 #include <type_traits>
 
-namespace einsums::compute_graph::detail {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 /**
  * @brief Invoke @p f with a value-initialized tag of the C++ element type named
@@ -69,4 +70,4 @@ decltype(auto) dispatch_by_rank(std::size_t rank, F &&f) {
     EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_by_rank: unsupported rank {}", rank);
 }
 
-} // namespace einsums::compute_graph::detail
+EINSUMS_NAMESPACE_END(compute_graph::detail)

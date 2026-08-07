@@ -7,12 +7,13 @@
 
 #include <Einsums/BLASVendor/Defines.hpp>
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 // Real dot products use Fortran BLAS (no calling convention issues)
 EINSUMS_DISABLE_WARNING_PUSH
@@ -75,4 +76,4 @@ auto zdotc(int_t n, std::complex<double> const *x, int_t incx, std::complex<doub
     return result;
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

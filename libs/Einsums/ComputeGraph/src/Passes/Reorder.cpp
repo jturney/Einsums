@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 #include <queue>
@@ -13,7 +14,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 bool Reorder::run(Graph &graph) {
     auto &nodes = graph.nodes();
@@ -224,4 +225,4 @@ bool Reorder::run(Graph &graph) {
     return changed;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

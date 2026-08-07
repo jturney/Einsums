@@ -25,13 +25,14 @@
 
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/TensorIO/Checkpoint.hpp>
 #include <Einsums/TensorIO/TensorFile.hpp>
 
 #include <string>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace APIARY_MODULE("io") tensor_io {
 
 /**
@@ -236,4 +237,4 @@ inline void checkpoint_etn(std::string file_path, compute_graph::Graph &graph) {
 }
 
 } // namespace APIARY_MODULE("io")tensor_io
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

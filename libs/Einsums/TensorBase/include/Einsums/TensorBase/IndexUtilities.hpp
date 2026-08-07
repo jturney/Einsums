@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Config/CompilerSpecific.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Iterator/Zip.hpp>
@@ -17,7 +18,7 @@
 #include <type_traits>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 template <typename UniqueIndex, int BDim, typename BType>
 inline size_t get_dim_ranges_for_many_b(BType const & /*B*/, std::tuple<> const & /*B_indices*/) {
@@ -918,4 +919,4 @@ void compile_index_table(std::tuple<UniqueIndices...> const &from_inds, std::tup
     compile_index_table(from_inds, to_inds, out, std::make_index_sequence<sizeof...(Indices)>());
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

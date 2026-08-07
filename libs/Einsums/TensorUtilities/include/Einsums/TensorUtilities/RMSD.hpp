@@ -7,9 +7,10 @@
 
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * Computes the root-mean-squared-difference between two tensors of arbitrary dimension
@@ -49,4 +50,4 @@ auto rmsd(AType const &tensor1, BType const &tensor2) -> ValueTypeT<AType> {
 
     return std::sqrt(diff / elements);
 }
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

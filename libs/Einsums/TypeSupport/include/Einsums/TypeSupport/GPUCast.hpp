@@ -5,12 +5,14 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <hip/hip_common.h>
 #include <hip/hip_complex.h>
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @struct HipCast<To, From>
@@ -238,4 +240,4 @@ struct HipCast<hipDoubleComplex, hipDoubleComplex> {
     __host__ __device__ static inline hipDoubleComplex cast(hipDoubleComplex from) { return from; }
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

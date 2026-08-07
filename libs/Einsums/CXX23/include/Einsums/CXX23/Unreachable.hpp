@@ -16,11 +16,13 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #if defined(__cpp_lib_unreachable) && __cpp_lib_unreachable >= 202202L
 #    include <utility>
 #endif
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Marks a code path as unreachable.
@@ -61,4 +63,4 @@ namespace einsums {
 #endif
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

@@ -5,10 +5,12 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstddef>
 #include <variant>
 
-namespace einsums::task_pool::execution {
+EINSUMS_NAMESPACE_BEGIN(task_pool::execution)
 
 /// @brief Sequential execution policy: run on calling thread.
 struct SequentialPolicy {};
@@ -25,4 +27,4 @@ inline constexpr ParallelPolicy   par{};
 /// @brief Type-erased execution policy.
 using Policy = std::variant<SequentialPolicy, ParallelPolicy>;
 
-} // namespace einsums::task_pool::execution
+EINSUMS_NAMESPACE_END(task_pool::execution)

@@ -11,6 +11,7 @@
 #include <Einsums/Concepts/SmartPointer.hpp>
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
 #include <Einsums/HPTT/Transpose.hpp>
@@ -27,7 +28,7 @@
 
 #include <memory>
 
-namespace einsums::tensor_algebra {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra)
 
 namespace detail {
 
@@ -615,4 +616,4 @@ void transpose(CType *C, AType const &A) {
     permute<ConjA>(0.0, einsums::Indices{index::i, index::j}, C, 1.0, einsums::Indices{index::j, index::i}, A);
 }
 
-} // namespace einsums::tensor_algebra
+EINSUMS_NAMESPACE_END(tensor_algebra)

@@ -5,12 +5,13 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorBase/TensorBase.hpp>
 
 #include <cstddef>
 #include <type_traits>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 // Forward declarations
 template <typename T, size_t Rank, typename Alloc>
@@ -1706,4 +1707,4 @@ concept NumOfType = detail::count_of_type<T, std::remove_cvref_t<Args>...>() == 
 template <typename T, typename... Args>
 concept AllOfType = (std::is_same_v<T, std::remove_cvref_t<Args>> && ... && true);
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

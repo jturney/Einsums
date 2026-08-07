@@ -7,13 +7,15 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #if defined(EINSUMS_HAVE_PROFILER)
 
 #    include <array>
 #    include <cstdint>
 #    include <string>
 
-namespace einsums::profile {
+EINSUMS_NAMESPACE_BEGIN(profile)
 
 /// Number of hardware counter slots per event.
 static constexpr int kNumCounterSlots = 4;
@@ -83,6 +85,6 @@ class PerfCounterBackend : public CounterBackend {
 /// Get the global counter backend instance.
 EINSUMS_EXPORT auto get_counter_backend() -> CounterBackend &;
 
-} // namespace einsums::profile
+EINSUMS_NAMESPACE_END(profile)
 
 #endif

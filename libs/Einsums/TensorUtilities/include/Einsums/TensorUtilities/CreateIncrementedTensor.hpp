@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Config/CompilerSpecific.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
@@ -14,7 +15,7 @@
 #include <concepts>
 #include <string>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Create a new tensor with \p name and \p index filled with incremental data.
@@ -88,4 +89,4 @@ auto create_incremented_tensor(std::string const &name, MultiIndex &&...index) -
     return create_incremented_tensor<T>(GlobalConfigMap::get_singleton().get_bool("row-major"), name, std::forward<MultiIndex>(index)...);
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

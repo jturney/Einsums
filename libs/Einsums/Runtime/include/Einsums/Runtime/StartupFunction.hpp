@@ -7,9 +7,11 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <functional>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /// The type of a function which is registered to be executed as a startup
 /// or pre-startup function.
@@ -64,4 +66,4 @@ EINSUMS_EXPORT void register_pre_startup_function(StartupFunctionType f);
 /// @versionadded{1.0.0}
 EINSUMS_EXPORT void register_startup_function(StartupFunctionType f);
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

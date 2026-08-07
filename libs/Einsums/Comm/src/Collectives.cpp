@@ -6,6 +6,7 @@
 #include <Einsums/Comm/Collectives.hpp>
 #include <Einsums/Comm/Communicator.hpp>
 #include <Einsums/Comm/Runtime.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Preprocessor/Unused.hpp>
 #include <Einsums/Profile.hpp>
 
@@ -15,7 +16,7 @@
 #    include <mpi.h>
 #endif
 
-namespace einsums::comm {
+EINSUMS_NAMESPACE_BEGIN(comm)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Request implementation
@@ -364,4 +365,4 @@ INSTANTIATE_COLLECTIVES(std::complex<double>)
 
 #undef INSTANTIATE_COLLECTIVES
 
-} // namespace einsums::comm
+EINSUMS_NAMESPACE_END(comm)

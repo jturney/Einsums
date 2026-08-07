@@ -9,12 +9,13 @@
 
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorBase/TensorBase.hpp>
 
 #include <cstddef>
 #include <type_traits>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {
 
@@ -195,7 +196,7 @@ struct ArithmeticTensor : tensor_base::CoreTensor {
     [[nodiscard]] bool full_view_of_underlying() const noexcept { return false; }
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()
 
 #define OPERATOR(op, name)                                                                                                                 \
     template <typename T, size_t Rank, typename... Args1, typename... Args2>                                                               \

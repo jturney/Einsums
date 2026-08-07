@@ -25,8 +25,9 @@
  */
 
 #include <Einsums/ComputeGraph/Operations.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
-namespace einsums::compute_graph::blueprints {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::blueprints)
 
 using einsums::Indices;
 namespace index = einsums::index;
@@ -224,4 +225,4 @@ void matrix_exponential(MatType *expA, MatType const &A, size_t order = 10) {
     }
 }
 
-} // namespace einsums::compute_graph::blueprints
+EINSUMS_NAMESPACE_END(compute_graph::blueprints)

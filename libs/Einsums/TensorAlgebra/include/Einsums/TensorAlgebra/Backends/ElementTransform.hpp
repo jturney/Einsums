@@ -9,6 +9,7 @@
 
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
@@ -19,7 +20,7 @@
 #include <stdexcept>
 #include <tuple>
 
-namespace einsums::tensor_algebra {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra)
 
 namespace detail {}
 
@@ -101,4 +102,4 @@ auto element(MultiOperator multi_opt, CType *C, MultiTensors &...tensors) {
         target_value = multi_opt(target_value, subscript_tensor(tensors, index)...);
     }
 }
-} // namespace einsums::tensor_algebra
+EINSUMS_NAMESPACE_END(tensor_algebra)

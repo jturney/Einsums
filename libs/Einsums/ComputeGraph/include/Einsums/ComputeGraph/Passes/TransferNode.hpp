@@ -7,6 +7,7 @@
 
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 
 #include <fmt/format.h>
@@ -14,7 +15,7 @@
 #include <cstddef>
 #include <string_view>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief Build a host<->device transfer node for @p handle.
@@ -49,4 +50,4 @@ inline Node make_transfer_node(OpKind kind, TensorHandle const &handle, std::str
     return n;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

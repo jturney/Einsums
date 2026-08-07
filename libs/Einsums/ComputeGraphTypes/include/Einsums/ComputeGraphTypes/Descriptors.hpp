@@ -7,12 +7,13 @@
 
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <complex>
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 // NOTE: this header holds only the descriptors expressible in the
 // ComputeGraphTypes tier -- inert data over Enums.hpp / Ids.hpp and std types,
@@ -169,4 +170,4 @@ struct CommDescriptor {
     bool     use_nccl{false}; ///< True if tensor is GPU-resident and NCCL available
 };
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

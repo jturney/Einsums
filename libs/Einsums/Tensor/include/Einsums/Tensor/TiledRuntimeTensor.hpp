@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Python/Annotations.hpp>
@@ -25,7 +26,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 template <typename T>
 struct TiledRuntimeTensorView;
@@ -609,4 +610,4 @@ extern template struct EINSUMS_EXPORT TiledRuntimeTensorView<std::complex<float>
 extern template struct EINSUMS_EXPORT TiledRuntimeTensorView<std::complex<double>>;
 #endif
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

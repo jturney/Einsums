@@ -7,12 +7,13 @@
 
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /**
  * @brief Serialized representation of a tensor in a compute graph snapshot.
@@ -95,4 +96,4 @@ struct ComputeGraphData {
     std::vector<GraphEdgeData>   edges;
 };
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

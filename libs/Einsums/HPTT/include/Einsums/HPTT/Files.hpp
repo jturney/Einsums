@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Config/ExportDefinitions.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <algorithm>
 #include <array>
@@ -15,7 +16,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
-namespace einsums::hptt {
+EINSUMS_NAMESPACE_BEGIN(hptt)
 
 constexpr char endian_char() {
     if constexpr (std::endian::native == std::endian::big) {
@@ -111,4 +112,4 @@ EINSUMS_EXPORT uint32_t compute_checksum(std::FILE *fp);
 
 EINSUMS_EXPORT int verify_file(std::FILE *fp);
 
-} // namespace einsums::hptt
+EINSUMS_NAMESPACE_END(hptt)

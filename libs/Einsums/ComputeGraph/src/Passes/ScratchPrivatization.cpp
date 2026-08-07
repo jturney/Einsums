@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/ScratchPrivatization.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <fmt/format.h>
@@ -21,7 +22,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -384,4 +385,4 @@ std::vector<std::string> ScratchPrivatization::explain() const {
                         num_copies_created(), num_nodes_rebuilt())};
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

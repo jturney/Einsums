@@ -18,13 +18,15 @@
 // arch_ambient for the exotic-element-type fallback. The macro is consumed
 // (undefined) at the end of this header.
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstdint>
 
 #if !defined(EINSUMS_PACKED_GEMM_KERNEL_NS)
 #    error "Define EINSUMS_PACKED_GEMM_KERNEL_NS before including MicroKernelBody.hpp"
 #endif
 
-namespace einsums::packed_gemm {
+EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 namespace EINSUMS_PACKED_GEMM_KERNEL_NS {
 
 /// @brief Compute one MR*NR tile: C[i*rs_c + j*cs_c] += alpha * Sum_k Ap[i + k*MR] * Bp[k*NR + j].
@@ -115,6 +117,6 @@ void micro_kernel_run(int mr_block, int nr_block, int64_t kc, T alpha, T const *
 }
 
 } // namespace EINSUMS_PACKED_GEMM_KERNEL_NS
-} // namespace einsums::packed_gemm
+EINSUMS_NAMESPACE_END(packed_gemm)
 
 #undef EINSUMS_PACKED_GEMM_KERNEL_NS

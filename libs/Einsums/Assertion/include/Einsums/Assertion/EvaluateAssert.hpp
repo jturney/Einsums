@@ -7,10 +7,12 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <source_location>
 #include <string>
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 /**
  * @brief Handles assertion behavior, selecting between a user-defined handler or the default handler.
@@ -26,4 +28,4 @@ namespace einsums::detail {
  */
 EINSUMS_EXPORT void handle_assert(std::source_location const &loc, char const *expr, std::string const &msg);
 
-} // namespace einsums::detail
+EINSUMS_NAMESPACE_END(detail)

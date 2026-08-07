@@ -15,6 +15,7 @@
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile.hpp>
@@ -46,7 +47,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace detail {
 /// Guard for the returning-form ops (dot/svd/syev/qr/det/...), which build and
@@ -5965,4 +5966,4 @@ void write_async(std::string label, std::string file_path, std::string dataset, 
                      std::forward<FinishFn>(finish_fn), std::move(desc));
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

@@ -7,6 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #if defined(EINSUMS_HAVE_PROFILER)
 
 #    include <Einsums/Profile/Consumer.hpp>
@@ -23,7 +25,7 @@
 #        include <dns_sd.h>
 #    endif
 
-namespace einsums::profile {
+EINSUMS_NAMESPACE_BEGIN(profile)
 
 /// TCP server that streams profiling data as JSON Lines to connected clients.
 /// Binds to localhost by default, accepts up to 4 simultaneous clients.
@@ -110,6 +112,6 @@ class EINSUMS_EXPORT Server {
 #    endif
 };
 
-} // namespace einsums::profile
+EINSUMS_NAMESPACE_END(profile)
 
 #endif

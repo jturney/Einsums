@@ -7,6 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 /*
  * Exported definitions for initialization. If the module does not need to be initialized,
  * this header can be safely deleted. Just make sure to remove the reference in CMakeLists.txt,
@@ -14,7 +16,7 @@
  * symbols from this are being used.
  */
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Registers the initialization and finalization functions with the runtime manager.
@@ -42,4 +44,4 @@ static int initialize_module_Einsums_BLAS = setup_Einsums_BLAS(); // NOLINT(bugp
 
 } // namespace detail
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

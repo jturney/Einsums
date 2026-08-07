@@ -6,6 +6,7 @@
 // Metal Performance Shaders backend for Apple Silicon GPU.
 // This file is compiled as Objective-C++ (.mm) to access the Metal API.
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config.hpp>
 #include <Einsums/GPU/Platform.hpp>
 
@@ -20,7 +21,7 @@
 #include <mutex>
 #include <unordered_map>
 
-namespace einsums::gpu::mps {
+EINSUMS_NAMESPACE_BEGIN(gpu::mps)
 
 // ===========================================================================
 // Global Metal state — initialized lazily on first use.
@@ -384,6 +385,6 @@ id<MTLCommandQueue> create_command_queue() {
     return [g_device newCommandQueue];
 }
 
-} // namespace einsums::gpu::mps
+EINSUMS_NAMESPACE_END(gpu::mps)
 
 #endif // EINSUMS_HAVE_MPS

@@ -36,9 +36,11 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstdint>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /// Function-pointer type for one member's innermost stream loop.
 template <typename T>
@@ -51,4 +53,4 @@ using StreamInnerFn = void (*)(T *cb, T const *sp, T const *w, T alpha, int64_t 
 template <typename T>
 EINSUMS_EXPORT StreamInnerFn<T> stream_inner_entry();
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

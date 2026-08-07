@@ -6,9 +6,10 @@
 #pragma once
 
 #include <Einsums/Config/ForceInline.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
-namespace einsums::simd {
+EINSUMS_NAMESPACE_BEGIN(simd)
 
 // ===========================================================================
 // Broadcast: scalar → Vec<T>
@@ -1976,4 +1977,4 @@ EINSUMS_FORCEINLINE void storea(bfloat16_t *p, Vec<bfloat16_t> v) {
 }
 #endif // __ARM_FEATURE_BF16_VECTOR_ARITHMETIC || __AVX512BF16__
 
-} // namespace einsums::simd
+EINSUMS_NAMESPACE_END(simd)

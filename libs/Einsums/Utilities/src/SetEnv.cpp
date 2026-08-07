@@ -3,11 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Utilities/SetEnv.hpp>
 
 #include <cstdlib>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 void set_env_var(std::string const &name, std::string const &value) {
 #if defined(EINSUMS_WINDOWS)
@@ -25,4 +26,4 @@ void unset_env_var(std::string const &name) {
 #endif
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

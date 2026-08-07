@@ -26,6 +26,8 @@
 /// existing data. Files written through the distributed path are standard
 /// binary, so they can be read back without MPI.
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <algorithm>
 #include <complex>
 #include <cstdint>
@@ -33,7 +35,7 @@
 #include <string>
 #include <string_view>
 
-namespace einsums::tensor_io {
+EINSUMS_NAMESPACE_BEGIN(tensor_io)
 
 /// Magic bytes identifying an .etn file.
 inline constexpr char ETN_MAGIC[8] = {'E', 'I', 'N', 'S', 'U', 'M', 'S', '\0'}; // NOLINT(modernize-avoid-c-arrays)
@@ -193,4 +195,4 @@ inline constexpr DType dtype_for<uint64_t>() {
     return DType::UInt64;
 }
 
-} // namespace einsums::tensor_io
+EINSUMS_NAMESPACE_END(tensor_io)

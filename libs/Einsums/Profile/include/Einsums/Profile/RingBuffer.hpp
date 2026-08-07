@@ -7,13 +7,15 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #if defined(EINSUMS_HAVE_PROFILER)
 
 #    include <atomic>
 #    include <cstddef>
 #    include <new>
 
-namespace einsums::profile {
+EINSUMS_NAMESPACE_BEGIN(profile)
 
 /// Single-Producer, Single-Consumer (SPSC) ring buffer.
 ///
@@ -74,6 +76,6 @@ class RingBuffer {
     T _buffer[Capacity]; // NOLINT(modernize-avoid-c-arrays)
 };
 
-} // namespace einsums::profile
+EINSUMS_NAMESPACE_END(profile)
 
 #endif

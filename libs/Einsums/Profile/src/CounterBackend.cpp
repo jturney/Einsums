@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile/CounterBackend.hpp>
 
 #if defined(EINSUMS_HAVE_PROFILER)
@@ -15,7 +16,7 @@
 #        include <unistd.h>
 #    endif
 
-namespace einsums::profile {
+EINSUMS_NAMESPACE_BEGIN(profile)
 
 #    ifdef __linux__
 
@@ -127,6 +128,6 @@ auto get_counter_backend() -> CounterBackend & {
 
 #    endif
 
-} // namespace einsums::profile
+EINSUMS_NAMESPACE_END(profile)
 
 #endif

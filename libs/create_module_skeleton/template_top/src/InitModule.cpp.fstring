@@ -3,12 +3,13 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/CommandLine.hpp>
 #include <Einsums/Runtime.hpp>
 
 #include <{lib_name}/{module_name}/InitModule.hpp>
 
-namespace einsums {{
+EINSUMS_NAMESPACE_BEGIN()
     
 /*
  * Set up the internal state of the module. If the module does not need to be set up, then this
@@ -70,4 +71,4 @@ void finalize_{lib_name}_{module_name}() {{
     /// @todo Fill in.
 }}
 
-}}
+EINSUMS_NAMESPACE_END()

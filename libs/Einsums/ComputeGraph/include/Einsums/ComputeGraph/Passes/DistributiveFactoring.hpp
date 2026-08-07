@@ -7,13 +7,14 @@
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /// Whether to let the cost model decide that a group is worth factoring.
 enum class APIARY_EXPOSE APIARY_MODULE("graph") Factor : std::uint8_t{
@@ -218,4 +219,4 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     Factor                      _factor{Factor::Auto};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

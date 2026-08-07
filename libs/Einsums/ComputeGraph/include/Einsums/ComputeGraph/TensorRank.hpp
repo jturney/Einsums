@@ -6,12 +6,13 @@
 #pragma once
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 #include <type_traits>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 // True when the tensor type carries its rank as a static compile-time
 // constant (the GeneralTensor / TensorView family). False for runtime-rank
@@ -135,4 +136,4 @@ void for_each_selection_run(std::vector<std::vector<std::size_t>> const &indices
 
 } // namespace detail
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

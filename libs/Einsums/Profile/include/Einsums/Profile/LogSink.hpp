@@ -7,6 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #if defined(EINSUMS_HAVE_PROFILER)
 
 #    include <chrono>
@@ -17,7 +19,7 @@
 #    include <string>
 #    include <vector>
 
-namespace einsums::profile {
+EINSUMS_NAMESPACE_BEGIN(profile)
 
 struct LogEntry {
     int         level;     // spdlog::level::level_enum as int
@@ -152,6 +154,6 @@ class ProfilerSink : public spdlog::sinks::base_sink<std::mutex> {
 
 using ProfilerSinkMt = ProfilerSink;
 
-} // namespace einsums::profile
+EINSUMS_NAMESPACE_END(profile)
 
 #endif

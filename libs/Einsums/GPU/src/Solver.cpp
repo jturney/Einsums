@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Error.hpp>
 #include <Einsums/GPU/Solver.hpp>
 #include <Einsums/GPU/Stream.hpp>
@@ -27,7 +28,7 @@ using int_t = ::einsums::blas::int_t;
 #include <complex>
 #include <vector>
 
-namespace einsums::gpu::solver {
+EINSUMS_NAMESPACE_BEGIN(gpu::solver)
 
 // ===========================================================================
 // syev: Symmetric eigenvalue decomposition
@@ -286,4 +287,4 @@ EINSUMS_EXPORT int gesvd<double>(char jobu, char jobvt, int64_t m, int64_t n, do
 #endif
 }
 
-} // namespace einsums::gpu::solver
+EINSUMS_NAMESPACE_END(gpu::solver)

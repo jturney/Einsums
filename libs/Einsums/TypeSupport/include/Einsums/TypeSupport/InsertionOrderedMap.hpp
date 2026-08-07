@@ -5,11 +5,13 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 template <class K, class V, class Hash = std::hash<K>, class Eq = std::equal_to<K>>
 class InsertionOrderedMap {
@@ -215,4 +217,4 @@ class InsertionOrderedMap {
     }
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

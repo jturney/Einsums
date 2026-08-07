@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/InplaceOptimization.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
@@ -13,7 +14,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -275,4 +276,4 @@ std::vector<std::string> InplaceOptimization::explain() const {
     return {fmt::format("InplaceOptimization: merged {} buffer(s) into dying inputs ({} candidate(s))", num_merged(), num_candidates())};
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

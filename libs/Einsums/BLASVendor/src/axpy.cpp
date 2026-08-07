@@ -6,12 +6,13 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(saxpy, SAXPY)(int_t *, float *, float const *, int_t *, float *, int_t *);
@@ -125,4 +126,4 @@ void zaxpby(int_t const n, std::complex<double> const a, std::complex<double> co
     zaxpy(n, a, x, incx, y, incy);
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

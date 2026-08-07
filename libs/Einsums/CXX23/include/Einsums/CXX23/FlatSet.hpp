@@ -15,13 +15,15 @@
 /// Ideal for small-to-medium sets that are built once and queried many times
 /// (e.g., tensor ID sets in optimization passes).
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <algorithm>
 #include <functional>
 #include <initializer_list>
 #include <iterator>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief A sorted set backed by a contiguous vector.
@@ -147,4 +149,4 @@ class flat_set {
     Compare          comp_;
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

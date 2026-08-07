@@ -7,10 +7,11 @@
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief GPU-offload placement pass: flags graph nodes to execute on a GPU.
@@ -120,4 +121,4 @@ class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
     size_t _num_placed{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

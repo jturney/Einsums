@@ -3,13 +3,14 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #if defined(EINSUMS_HAVE_PROFILER)
-namespace einsums::profile {
+EINSUMS_NAMESPACE_BEGIN(profile)
 
 namespace {
 
@@ -347,5 +348,5 @@ void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /
     }
 }
 
-} // namespace einsums::profile
+EINSUMS_NAMESPACE_END(profile)
 #endif

@@ -7,6 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 /*
  * Header-driven module initialization. The static initializer in detail:: below
  * forces every TU that includes this header to take a reference to
@@ -19,7 +21,7 @@
  * never fires.
  */
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Registers the initialization and finalization functions with the runtime manager.
@@ -41,4 +43,4 @@ static int initialize_module_Einsums_Comm = setup_Einsums_Comm(); // NOLINT(bugp
 
 } // namespace detail
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

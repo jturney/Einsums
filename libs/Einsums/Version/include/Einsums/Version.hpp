@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Version.hpp>
 #include <Einsums/Preprocessor/Stringify.hpp>
 #include <Einsums/Python/Annotations.hpp>
@@ -15,7 +16,7 @@
 #include <string>
 #include <string_view>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /// Returns the major einsums version.
 APIARY_EXPOSE APIARY_MODULE("_version") constexpr std::uint8_t major_version() {
@@ -74,4 +75,4 @@ constexpr std::string_view copyright() {
 
 /// Returns the full version string.
 EINSUMS_EXPORT std::string complete_version();
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

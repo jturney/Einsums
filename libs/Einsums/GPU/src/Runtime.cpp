@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Error.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 
@@ -31,7 +32,7 @@
 #include <atomic>
 #include <cstring>
 
-namespace einsums::gpu {
+EINSUMS_NAMESPACE_BEGIN(gpu)
 
 expected<void *, GpuError> device_malloc(size_t bytes) {
     void *ptr = nullptr;
@@ -204,4 +205,4 @@ std::string device_name() {
 #endif
 }
 
-} // namespace einsums::gpu
+EINSUMS_NAMESPACE_END(gpu)

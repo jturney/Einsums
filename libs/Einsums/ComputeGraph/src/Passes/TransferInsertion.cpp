@@ -7,6 +7,7 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferNode.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Logging.hpp>
 
@@ -14,7 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -183,4 +184,4 @@ bool TransferInsertion::run(Graph &graph) {
     return true;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

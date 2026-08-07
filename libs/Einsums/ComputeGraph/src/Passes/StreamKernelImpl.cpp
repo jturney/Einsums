@@ -12,6 +12,7 @@
 // picks the best rung at runtime.
 
 #include <Einsums/ComputeGraph/Passes/StreamKernel.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 // StreamKernelBody.hpp is a private implementation header living next to this
 // TU in src/Passes (not installed, not fed to the pybind codegen). The quoted
@@ -23,7 +24,7 @@
 
 #include "StreamKernelBody.hpp"
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 namespace EINSUMS_SIMD_ARCH_NS {
 
 template void stream_inner<float>(float *, float const *, float const *, float, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
@@ -36,4 +37,4 @@ template void stream_inner<std::complex<double>>(std::complex<double> *, std::co
                                                  std::complex<double>, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
 
 } // namespace EINSUMS_SIMD_ARCH_NS
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

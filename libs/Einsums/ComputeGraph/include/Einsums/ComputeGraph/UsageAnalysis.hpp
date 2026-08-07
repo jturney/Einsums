@@ -9,13 +9,14 @@
 
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstdint>
 #include <limits>
 #include <unordered_map>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class Graph;
 
@@ -117,4 +118,4 @@ class EINSUMS_EXPORT UsageAnalysis {
     size_t                                    _node_count{0};
 };
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

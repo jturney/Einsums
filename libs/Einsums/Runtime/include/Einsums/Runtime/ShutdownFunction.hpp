@@ -7,9 +7,11 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <functional>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 /// The type of a function which is registered to be executed as a
 /// shutdown or pre-shutdown function.
 /// @versionadded{1.0.0}
@@ -71,4 +73,4 @@ EINSUMS_EXPORT void register_free_pointer(std::function<void()> f);
 
 } // namespace detail
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

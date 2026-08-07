@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
@@ -19,7 +20,7 @@
 #include <mutex>
 #include <string_view>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @struct InvalidRuntimeState
@@ -195,7 +196,7 @@ EINSUMS_EXPORT RuntimeConfiguration &runtime_config();
 /// @versionadded{1.0.0}
 APIARY_EXPOSE EINSUMS_EXPORT bool is_running();
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()
 
 template <>
 struct fmt::formatter<einsums::RuntimeState> : formatter<string_view> {

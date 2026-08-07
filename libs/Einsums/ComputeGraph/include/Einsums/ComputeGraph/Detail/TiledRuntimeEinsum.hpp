@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraph/StringDispatch.hpp> // pulls ComputeGraph/EinsumSpec.hpp (ParsedEinsumSpec) + dispatch::string_einsum
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 
@@ -15,7 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph::detail {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 /// True when any of the three operand types is a tiled tensor.
 template <typename AType, typename BType, typename CType>
@@ -162,4 +163,4 @@ void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, TiledRuntimeTe
     }
 }
 
-} // namespace einsums::compute_graph::detail
+EINSUMS_NAMESPACE_END(compute_graph::detail)

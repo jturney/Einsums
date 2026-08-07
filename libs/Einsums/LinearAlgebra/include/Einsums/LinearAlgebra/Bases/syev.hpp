@@ -6,6 +6,7 @@
 #pragma once
 #include <Einsums/BLAS.hpp>
 #include <Einsums/Concepts/Complex.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
@@ -14,7 +15,7 @@
 
 #include <stdexcept>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
 namespace detail {
 
@@ -940,4 +941,4 @@ void impl_strided_heev(char jobz, einsums::detail::TensorImpl<T> *A, einsums::de
 
 } // namespace detail
 } // namespace linear_algebra
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

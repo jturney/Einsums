@@ -5,11 +5,12 @@
 
 #pragma once
 #include <Einsums/BLAS.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra/Bases/compensated_sum.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
 namespace detail {
 
@@ -496,4 +497,4 @@ impl_true_dot<std::complex<double>, std::complex<double>>(einsums::detail::Tenso
                                                           einsums::detail::TensorImpl<std::complex<double>> const &b);
 } // namespace detail
 } // namespace linear_algebra
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/CXX23/Expected.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
@@ -15,7 +16,7 @@
 #include <cstring>
 #include <string>
 
-namespace einsums::gpu {
+EINSUMS_NAMESPACE_BEGIN(gpu)
 
 /**
  * @brief Structured error for GPU runtime operations.
@@ -77,4 +78,4 @@ APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT void set_mock_device_memory_li
 /// Mock: returns ""
 APIARY_EXPOSE APIARY_MODULE("gpu") [[nodiscard]] EINSUMS_EXPORT std::string device_name();
 
-} // namespace einsums::gpu
+EINSUMS_NAMESPACE_END(gpu)

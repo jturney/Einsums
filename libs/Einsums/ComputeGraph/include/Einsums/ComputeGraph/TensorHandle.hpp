@@ -11,6 +11,7 @@
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/Tensor/PendingInit.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
@@ -24,7 +25,7 @@
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace detail {
 
@@ -593,4 +594,4 @@ TensorHandle make_scalar_handle(T *scalar, TensorId id, std::string name = "scal
     return h;
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Print.hpp>
@@ -31,7 +32,7 @@
 #include <string>
 #include <utility>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {
 
@@ -1636,4 +1637,4 @@ TENSOR_EXPORT(DiskTensor)
 
 TENSOR_EXPORT(DiskView)
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

@@ -5,11 +5,12 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/Detail/SetTo.hpp>
 #include <Einsums/Utilities/Tuple.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {}
 
@@ -46,4 +47,4 @@ auto create_identity_tensor(std::string const &name, MultiIndex... index) -> Ten
     return A;
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

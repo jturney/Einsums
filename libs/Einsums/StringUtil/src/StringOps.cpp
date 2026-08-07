@@ -3,11 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/StringUtil/StringOps.hpp>
 
 #include <string>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 std::string difference(std::string const &st1, std::string const &st2) {
     std::string out = st1;
@@ -26,4 +27,4 @@ std::string reverse(std::string const &str) {
     return std::string{str.rbegin(), str.rend()};
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

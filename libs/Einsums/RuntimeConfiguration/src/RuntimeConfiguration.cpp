@@ -6,6 +6,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/CommandLine.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
@@ -31,7 +32,7 @@
 #    include <mach-o/dyld.h>
 #endif
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace {
 
@@ -301,4 +302,4 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
     }
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

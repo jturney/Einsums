@@ -7,7 +7,9 @@
 
 #include <Einsums/Config.hpp>
 
-namespace einsums {
+#include <Einsums/Config/Namespace.hpp>
+
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Registers the initialization and finalization functions with the runtime manager.
@@ -29,4 +31,4 @@ static int initialize_module_Einsums_PackedGemm = setup_Einsums_PackedGemm();
 
 } // namespace detail
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

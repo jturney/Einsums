@@ -7,11 +7,13 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <hip/hip_complex.h>
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
 
-namespace einsums::gpu_ops {
+EINSUMS_NAMESPACE_BEGIN(gpu_ops)
 
 __device__ inline float conj(float x) {
     return x;
@@ -156,4 +158,4 @@ __device__ inline auto div(T1 x, T2 y) -> std::conditional_t<(sizeof(T1) >= size
     return x / y;
 }
 
-} // namespace einsums::gpu_ops
+EINSUMS_NAMESPACE_END(gpu_ops)

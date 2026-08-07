@@ -9,6 +9,7 @@
 
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 /**
  * @file EinsumSpec.hpp
@@ -40,7 +41,7 @@
 #include <string_view>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /**
  * @brief Result of parsing an einsum specification string.
@@ -446,4 +447,4 @@ struct PermuteFormatString {
     constexpr operator std::string_view() const { return str; }
 };
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

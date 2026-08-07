@@ -6,10 +6,11 @@
 #pragma once
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <type_traits>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Subscripts into a tensor, selecting between the subscript method or the function call syntax.
@@ -103,4 +104,4 @@ inline auto subscript_tensor(TensorType &&tensor, ContainerType const &args) -> 
     return tensor(args);
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

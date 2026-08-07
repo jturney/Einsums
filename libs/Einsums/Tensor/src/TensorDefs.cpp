@@ -5,6 +5,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/DeviceVector.hpp>
 #include <Einsums/Tensor/BlockTensor.hpp>
 #include <Einsums/Tensor/DiskTensor.hpp>
@@ -19,7 +20,7 @@
 #include <memory>
 #include <string>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 TENSOR_DEFINE_RANK(BlockTensor, 2)
 TENSOR_DEFINE_RANK(BlockTensor, 3)
@@ -113,4 +114,4 @@ bool verify_exists(hid_t loc_id, std::string const &path, hid_t lapl_id) {
 }
 } // namespace detail
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

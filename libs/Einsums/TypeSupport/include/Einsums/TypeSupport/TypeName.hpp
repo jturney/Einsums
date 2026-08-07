@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TypeSupport/StringLiteral.hpp>
 
 #include <string_view>
@@ -14,7 +15,7 @@
 #    include <source_location>
 #endif
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {
 template <typename T>
@@ -63,4 +64,4 @@ consteval auto type_name() {
     return to_str_lit(std::make_index_sequence<name.size()>{});
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

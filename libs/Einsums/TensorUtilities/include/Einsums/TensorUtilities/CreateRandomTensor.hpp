@@ -8,6 +8,7 @@
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Concepts/NamedRequirements.hpp>
 #include <Einsums/Config/CompilerSpecific.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
@@ -20,7 +21,7 @@
 #include <random>
 #include <string>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Create a new tensor with \p name and \p index filled with random data.
@@ -314,4 +315,4 @@ auto create_random_tensor(bool row_major, std::string const &name, Indices const
     }
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

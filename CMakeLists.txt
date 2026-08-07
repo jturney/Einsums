@@ -66,6 +66,7 @@ set(EINSUMS_VERSION_FULL
 # effect at all.
 set(EINSUMS_ABI_VERSION 1)
 
+
 set(EINSUMS_LIBRARY_VERSION "${EINSUMS_VERSION}")
 set(EINSUMS_SOVERSION ${EINSUMS_ABI_VERSION})
 set(EINSUMS_LIBRARY_OUTPUT_NAME "Einsums-abi${EINSUMS_ABI_VERSION}")
@@ -104,6 +105,12 @@ include(CMakeDependentOption)
 # include additional macro definitions
 include(Einsums_AddConfigTest)
 include(Einsums_AddDefinitions)
+# Emitted into Config/Defines.hpp, which is macro-only and includes nothing.
+# Config/Namespace.hpp is pulled in by every file in the tree, so it must not
+# drag the Preprocessor module and <string_view> along behind it, which is what
+# reaching for Config/Version.hpp would do.
+einsums_add_config_define(EINSUMS_ABI_VERSION ${EINSUMS_ABI_VERSION})
+einsums_add_config_define(EINSUMS_ABI_TAG v${EINSUMS_ABI_VERSION})
 include(Einsums_CreateSymbolicLink)
 
 einsums_force_out_of_tree_build(

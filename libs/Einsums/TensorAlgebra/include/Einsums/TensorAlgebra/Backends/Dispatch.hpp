@@ -9,6 +9,7 @@
 
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Logging.hpp>
@@ -40,7 +41,7 @@
 #    include <catch2/catch_all.hpp>
 #endif
 
-namespace einsums::tensor_algebra {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra)
 namespace detail {
 
 template <bool OnlyUseGenericAlgorithm, bool DryRun, bool ConjA, bool ConjB, TensorConcept AType, TensorConcept BType, typename CType,
@@ -1769,4 +1770,4 @@ void einsum(CPrefactorType const C_prefactor, std::tuple<CIndices...> const &C_i
     }
 }
 
-} // namespace einsums::tensor_algebra
+EINSUMS_NAMESPACE_END(tensor_algebra)

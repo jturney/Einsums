@@ -7,13 +7,14 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Types.hpp>
 
 #include <complex>
 #include <cstdint>
 
-namespace einsums::gpu::blas {
+EINSUMS_NAMESPACE_BEGIN(gpu::blas)
 
 // ===========================================================================
 // Standard precision GEMM: matches CPU BLAS signatures.
@@ -169,4 +170,4 @@ EINSUMS_EXPORT void bfgemm(char transa, char transb, int64_t m, int64_t n, int64
 EINSUMS_EXPORT void fp8gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, float alpha, fp8_t const *a, int64_t lda,
                             fp8_t const *b, int64_t ldb, float beta, float *c, int64_t ldc);
 
-} // namespace einsums::gpu::blas
+EINSUMS_NAMESPACE_END(gpu::blas)

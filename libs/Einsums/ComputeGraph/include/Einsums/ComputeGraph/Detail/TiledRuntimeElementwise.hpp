@@ -9,6 +9,7 @@
 
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
@@ -19,7 +20,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace einsums::compute_graph::detail {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 /**
  * @brief Apply a dense per-tile operation to every populated tile.
@@ -364,4 +365,4 @@ void tiled_heev(TiledRuntimeTensor<T> *A, TiledRuntimeTensor<RemoveComplexT<T>> 
         "cg::heev (tiled)");
 }
 
-} // namespace einsums::compute_graph::detail
+EINSUMS_NAMESPACE_END(compute_graph::detail)

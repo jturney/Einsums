@@ -34,6 +34,7 @@
 
 #include <Einsums/Comm/Collectives.hpp>
 #include <Einsums/Comm/Runtime.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorIO/Format.hpp>
 
@@ -43,7 +44,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums::tensor_io {
+EINSUMS_NAMESPACE_BEGIN(tensor_io)
 
 class EINSUMS_EXPORT DistributedTensorFile {
   public:
@@ -206,4 +207,4 @@ void DistributedTensorFile::read_local(std::string_view name, Tensor<T, Rank> &t
                              " not found");
 }
 
-} // namespace einsums::tensor_io
+EINSUMS_NAMESPACE_END(tensor_io)

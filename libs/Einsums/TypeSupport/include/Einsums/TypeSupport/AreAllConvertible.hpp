@@ -5,9 +5,11 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <type_traits>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 // From: https://stackoverflow.com/questions/29671643/checking-type-of-parameter-pack-using-enable-if
 namespace detail {
@@ -47,4 +49,4 @@ using are_all_convertible = detail::all_true<std::is_convertible_v<Ts, R>...>;
 template <class R, class... Ts>
 inline constexpr bool are_all_convertible_v = detail::all_true<std::is_convertible_v<Ts, R>...>::value;
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

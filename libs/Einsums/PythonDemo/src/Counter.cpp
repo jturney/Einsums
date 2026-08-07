@@ -3,11 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PythonDemo/Counter.hpp>
 
 #include <utility>
 
-namespace einsums::pythondemo {
+EINSUMS_NAMESPACE_BEGIN(pythondemo)
 
 Counter::Counter() = default;
 
@@ -44,4 +45,4 @@ long sum_of_squares(long n) {
     return total;
 }
 
-} // namespace einsums::pythondemo
+EINSUMS_NAMESPACE_END(pythondemo)

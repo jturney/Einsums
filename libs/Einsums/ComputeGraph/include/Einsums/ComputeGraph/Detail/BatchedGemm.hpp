@@ -7,13 +7,14 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/ComputeGraphTypes/Descriptors.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <complex>
 #include <functional>
 #include <utility>
 #include <vector>
 
-namespace einsums::compute_graph::detail {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 /**
  * @brief Shared executor for @ref OpKind::BatchedGemm nodes.
@@ -107,4 +108,4 @@ inline std::function<void()> make_batched_gemm_executor(BatchedGemmDescriptor d,
     };
 }
 
-} // namespace einsums::compute_graph::detail
+EINSUMS_NAMESPACE_END(compute_graph::detail)

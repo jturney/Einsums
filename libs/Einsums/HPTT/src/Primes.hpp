@@ -29,9 +29,11 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstdint>
 
-namespace einsums::hptt::detail {
+EINSUMS_NAMESPACE_BEGIN(hptt::detail)
 /**
  * @def CHAR_PRIMES
  *
@@ -679,4 +681,4 @@ alignas(8192) static constexpr std::uint32_t const int_primes[] = {
     65239, 65257, 65267, 65269, 65287, 65293, 65309, 65323, 65327, 65353, 65357, 65371, 65381, 65393, 65407, 65413, 65419, 65423, 65437,
     65447, 65449, 65479, 65497, 65519, 65521};
 
-} // namespace einsums::hptt::detail
+EINSUMS_NAMESPACE_END(hptt::detail)

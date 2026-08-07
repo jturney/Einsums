@@ -7,12 +7,13 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/StringUtil/BadLexicalCast.hpp>
 
 #include <algorithm>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @struct from_string_impl
@@ -239,4 +240,4 @@ T from_string(std::string const &v, U &&default_value) {
     }
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

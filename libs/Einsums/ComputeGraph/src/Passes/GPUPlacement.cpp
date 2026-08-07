@@ -7,6 +7,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/GPUPlacement.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Types.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
@@ -16,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 GPUPlacement::GPUPlacement(size_t min_flops, size_t min_bytes) : _min_flops(min_flops), _min_bytes(min_bytes) {
 }
@@ -253,4 +254,4 @@ bool GPUPlacement::run(Graph &graph) {
     return _num_placed > num_placed_at_entry;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

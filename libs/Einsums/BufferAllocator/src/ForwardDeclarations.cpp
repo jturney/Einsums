@@ -4,10 +4,11 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 using namespace einsums;
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 static void check_requirements() {
     constexpr bool requirement = requires(BufferAllocator<int> alloc, size_t n) {
@@ -38,4 +39,4 @@ template struct BufferAllocator<std::complex<double>>;
 
 #endif
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

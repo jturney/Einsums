@@ -9,6 +9,7 @@
 
 #include <Einsums/Assert.hpp>
 #include <Einsums/BLAS/Types.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
 
@@ -32,7 +33,7 @@
 #    define FC_GLOBAL(name, NAME) NAME##_
 #endif
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 inline bool lsame(char ca, char cb) {
     return std::tolower(ca) == std::tolower(cb);
@@ -83,4 +84,4 @@ template <OrderMajor Order, typename T, typename Alloc1, typename Alloc2>
 void transpose(int_t m, int_t n, std::vector<T, Alloc1> const &in, int_t ldin, std::vector<T, Alloc2> &out, int_t ldout) {
     transpose<Order>(m, n, in.data(), ldin, out.data(), ldout);
 }
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

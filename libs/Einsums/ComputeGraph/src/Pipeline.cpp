@@ -5,6 +5,7 @@
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Pipeline.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile/Profile.hpp>
 
 #include <fmt/format.h>
@@ -13,7 +14,7 @@
 #include <unordered_set>
 #include <utility>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 Pipeline::Pipeline(std::string name) : _name(std::move(name)) {
 }
@@ -190,4 +191,4 @@ bool Pipeline::apply(PassManager &pm) {
     return modified;
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

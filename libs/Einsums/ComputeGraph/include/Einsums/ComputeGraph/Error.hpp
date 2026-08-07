@@ -11,11 +11,12 @@
 /// Used with einsums::expected for explicit error handling.
 
 #include <Einsums/CXX23/Expected.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstdint>
 #include <string>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /**
  * @brief Structured error for ComputeGraph operations.
@@ -46,4 +47,4 @@ struct GraphError {
     static GraphError range(std::string msg) { return {.kind = Kind::Range, .message = std::move(msg)}; }
 };
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

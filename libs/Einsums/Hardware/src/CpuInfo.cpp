@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 
 #include <algorithm>
@@ -30,7 +31,7 @@
 #    include <omp.h>
 #endif
 
-namespace einsums::hardware {
+EINSUMS_NAMESPACE_BEGIN(hardware)
 
 namespace {
 
@@ -297,4 +298,4 @@ std::int64_t omp_min_parallel_flops() {
     return threshold;
 }
 
-} // namespace einsums::hardware
+EINSUMS_NAMESPACE_END(hardware)

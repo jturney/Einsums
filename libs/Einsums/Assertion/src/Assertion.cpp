@@ -6,12 +6,13 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Assert.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Debugging/Backtrace.hpp>
 #include <Einsums/Version.hpp>
 
 #include <iostream>
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 namespace {
 auto get_handler() -> assertion_handler_type & {
@@ -46,4 +47,4 @@ void handle_assert(std::source_location const &loc, char const *expr, std::strin
     }
 }
 
-} // namespace einsums::detail
+EINSUMS_NAMESPACE_END(detail)

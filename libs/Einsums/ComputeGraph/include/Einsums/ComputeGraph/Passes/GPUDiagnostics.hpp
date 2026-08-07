@@ -6,11 +6,12 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 #include <iosfwd>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief GPU-offload diagnostic pass: summarizes placement and transfers without mutating the graph.
@@ -82,4 +83,4 @@ class EINSUMS_EXPORT GPUDiagnostics : public OptimizerPass {
     size_t _peak_device_bytes{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

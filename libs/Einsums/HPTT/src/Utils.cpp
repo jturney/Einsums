@@ -29,6 +29,7 @@
  * @author: Paul Springer (springer@aices.rwth-aachen.de)
  */
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/HPTT/Utils.hpp>
 
@@ -39,7 +40,7 @@
 
 #include "Primes.hpp"
 
-namespace einsums::hptt {
+EINSUMS_NAMESPACE_BEGIN(hptt)
 
 template <>
 void get_prime_factors(std::uint8_t n, std::list<std::uint8_t> &primeFactors) {
@@ -412,4 +413,4 @@ void account_for_row_major(size_t const *sizeA, size_t const *outerSizeA, size_t
     }
 }
 
-} // namespace einsums::hptt
+EINSUMS_NAMESPACE_END(hptt)

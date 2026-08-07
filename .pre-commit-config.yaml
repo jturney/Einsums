@@ -18,6 +18,20 @@ repos:
         files: (CMakeLists.txt|.*\.cmake)$
         exclude: (.*cmake-build-.*|.*build/.*|.*\.einsums-studio/.*)
 
+      # A bare `namespace einsums { }` compiles and works; its symbols are just
+      # not ABI-versioned, so a second copy of libEinsums in the process can
+      # interpose on them. Nothing else notices, which is why this is a hook.
+      # pass_filenames is off because the check scans every tracked file: the
+      # sweep that introduced these macros used a *.hpp/*.cpp glob and missed
+      # generated .hpp.in templates, an Objective-C++ .mm backend, and the
+      # .fstring skeletons stamped into every new module.
+      - id: einsums-namespace-macros
+        name: Ensure einsums namespaces are opened with EINSUMS_NAMESPACE_BEGIN
+        entry: devtools/check_namespace_macros.py
+        language: python
+        pass_filenames: false
+        always_run: true
+
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v16.0.6
     hooks:

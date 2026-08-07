@@ -7,9 +7,11 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <string>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Set (or overwrite) an environment variable, portably.
@@ -43,4 +45,4 @@ EINSUMS_EXPORT void set_env_var(std::string const &name, std::string const &valu
  */
 EINSUMS_EXPORT void unset_env_var(std::string const &name);
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

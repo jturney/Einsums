@@ -9,13 +9,14 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra/Base.hpp>
 #include <Einsums/Print.hpp>
 
 #include <cstring>
 
-namespace einsums::linear_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(linear_algebra::detail)
 
 template <TiledTensorConcept AType, typename T = RemoveComplexT<typename AType::ValueType>>
 void sum_square(AType const &A, T *scale, T *sumsq) {
@@ -432,4 +433,4 @@ void scale(typename AType::ValueType alpha, AType *A) {
     }
 }
 
-} // namespace einsums::linear_algebra::detail
+EINSUMS_NAMESPACE_END(linear_algebra::detail)

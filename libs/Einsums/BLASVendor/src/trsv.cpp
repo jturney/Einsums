@@ -6,11 +6,12 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(strsv, STRSV)(char *, char *, char *, int_t *, float const *, int_t *, float *, int_t *);
@@ -44,4 +45,4 @@ void ztrsv(char uplo, char trans, char diag, int_t n, std::complex<double> const
     FC_GLOBAL(ztrsv, ZTRSV)(&uplo, &trans, &diag, &n, a, &lda, x, &incx);
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

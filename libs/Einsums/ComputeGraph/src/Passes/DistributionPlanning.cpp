@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributionPlanning.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
@@ -18,7 +19,7 @@
 #include <variant>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 DistributionPlanning::DistributionPlanning(size_t threshold, bool enable_summa) : _threshold(threshold), _enable_summa(enable_summa) {
 }
@@ -356,4 +357,4 @@ bool DistributionPlanning::run(Graph &graph) {
     return modified;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

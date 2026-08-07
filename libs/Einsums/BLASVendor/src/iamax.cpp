@@ -6,11 +6,12 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern int_t FC_GLOBAL(isamax, ISAMAX)(int_t *, float const *, int_t *);
@@ -43,4 +44,4 @@ auto izamax(int_t n, std::complex<double> const *x, int_t incx) -> int_t {
     return FC_GLOBAL(izamax, IZAMAX)(&n, x, &incx) - 1;
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

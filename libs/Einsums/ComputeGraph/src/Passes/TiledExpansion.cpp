@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/TiledExpansion.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
@@ -25,7 +26,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -1761,4 +1762,4 @@ bool TiledExpansion::run(Graph &graph) {
     return true;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

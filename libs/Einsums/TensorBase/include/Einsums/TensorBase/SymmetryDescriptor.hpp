@@ -7,12 +7,14 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <array>
 #include <cstdint>
 #include <initializer_list>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /// Maximum tensor rank that a single symmetry operation can describe. Tensor
 /// rank doesn't need to match this value, since permutations are stored padded.
@@ -136,4 +138,4 @@ struct EINSUMS_EXPORT SymmetryDescriptor {
     [[nodiscard]] static SymmetryDescriptor ccsd_t2();
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

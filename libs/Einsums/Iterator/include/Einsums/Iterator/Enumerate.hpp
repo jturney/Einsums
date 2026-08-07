@@ -5,10 +5,12 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <iterator>
 #include <tuple>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Provides compile-time for loop over a sequence.
@@ -95,4 +97,4 @@ constexpr auto enumerate(T &&iterable, ptrdiff_t start = 0) {
     return IterableWrapper{std::forward<T>(iterable), start};
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

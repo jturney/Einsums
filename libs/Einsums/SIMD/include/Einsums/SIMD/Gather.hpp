@@ -6,12 +6,13 @@
 #pragma once
 
 #include <Einsums/Config/ForceInline.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/Operations.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
 #include <cstddef>
 
-namespace einsums::simd {
+EINSUMS_NAMESPACE_BEGIN(simd)
 
 // ===========================================================================
 // Gather: load Vec<T>::lanes elements from base[0], base[stride], base[2*stride], ...
@@ -384,4 +385,4 @@ EINSUMS_FORCEINLINE void scatter_fixed(T *base, Vec<T> v) {
     }
 }
 
-} // namespace einsums::simd
+EINSUMS_NAMESPACE_END(simd)

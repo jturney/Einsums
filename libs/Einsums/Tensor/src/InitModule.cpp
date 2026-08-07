@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/CommandLine/CommandLine.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Types.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Runtime.hpp>
@@ -18,7 +19,7 @@
 #include <mutex>
 #include <string>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /*
  * Set up the internal state of the module. If the module does not need to be set up, then this
@@ -401,4 +402,4 @@ void finalize_Einsums_Tensor() {
     }
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

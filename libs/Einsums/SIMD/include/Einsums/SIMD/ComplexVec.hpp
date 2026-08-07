@@ -6,12 +6,13 @@
 #pragma once
 
 #include <Einsums/Config/ForceInline.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/Operations.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
 #include <complex>
 
-namespace einsums::simd {
+EINSUMS_NAMESPACE_BEGIN(simd)
 
 // ===========================================================================
 // CVec<T>: interleaved complex SIMD vector.
@@ -412,4 +413,4 @@ EINSUMS_FORCEINLINE CVec<T> operator*(CVec<T> a, CVec<T> b) {
 }
 #endif
 
-} // namespace einsums::simd
+EINSUMS_NAMESPACE_END(simd)

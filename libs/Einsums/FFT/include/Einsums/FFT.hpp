@@ -7,9 +7,10 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
-namespace einsums::fft {
+EINSUMS_NAMESPACE_BEGIN(fft)
 
 namespace detail {
 
@@ -180,4 +181,4 @@ inline void ifft(Tensor<std::complex<double>, 1> const &a, Tensor<std::complex<d
     detail::zzifft(a, result);
 }
 
-} // namespace einsums::fft
+EINSUMS_NAMESPACE_END(fft)

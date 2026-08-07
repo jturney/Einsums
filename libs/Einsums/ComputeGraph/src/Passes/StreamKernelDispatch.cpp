@@ -15,12 +15,13 @@
 // the matrix unit - so the select ladder leaves that slot at its default.
 
 #include <Einsums/ComputeGraph/Passes/StreamKernel.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
 #include <complex>
 #include <cstdint>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 #define EINSUMS_STREAM_DECLARE_RUNG_ENTRY(ns)                                                                                              \
     namespace ns {                                                                                                                         \
@@ -94,4 +95,4 @@ EINSUMS_STREAM_DEFINE_ENTRY(std::complex<double>)
 #undef EINSUMS_STREAM_DEFINE_ENTRY
 #undef EINSUMS_STREAM_LADDER
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -6,12 +6,13 @@
 #pragma once
 
 #include <Einsums/Config/ForceInline.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/Operations.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
 #include <cstddef>
 
-namespace einsums::simd {
+EINSUMS_NAMESPACE_BEGIN(simd)
 
 // ===========================================================================
 // Prefetch hints
@@ -172,4 +173,4 @@ EINSUMS_FORCEINLINE void stream_store(double *p, Vec<double> v) {
 }
 #endif
 
-} // namespace einsums::simd
+EINSUMS_NAMESPACE_END(simd)

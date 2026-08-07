@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Concepts/Complex.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/TypeSupport/TypeName.hpp>
 
@@ -53,7 +54,7 @@
 #define EINSUMS_TEMPLATE_TEST_CASE(Name, Tags, ...) EINSUMS_TEMPLATE_TEST_CASE2_(INTERNAL_CATCH_UNIQUE_NAME(einsums_tmpl_test_impl_), Name, Tags, __VA_ARGS__)
 // clang-format on
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 template <typename T>
 constexpr double tolerance() {
@@ -176,4 +177,4 @@ WithinRelMatcher<std::remove_cvref_t<TestType>> CheckWithinRel(TestType referenc
     return WithinRelMatcher(reference, tolerance);
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

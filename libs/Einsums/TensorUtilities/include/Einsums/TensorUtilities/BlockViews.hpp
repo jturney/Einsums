@@ -5,11 +5,12 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Tensor/BlockTensor.hpp>
 #include <Einsums/Tensor/TiledTensor.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Create a view of a block tensor where each member has a different view.
@@ -213,4 +214,4 @@ auto apply_view(TensorType const &tensor, ViewSpec &&...spec) {
     return out;
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

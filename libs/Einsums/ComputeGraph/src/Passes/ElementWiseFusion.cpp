@@ -7,12 +7,13 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/ElementWiseFusion.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <utility>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -200,4 +201,4 @@ std::vector<std::string> ElementWiseFusion::explain() const {
     return {fmt::format("ElementWiseFusion: fused {} elementwise pair(s)", num_fused())};
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

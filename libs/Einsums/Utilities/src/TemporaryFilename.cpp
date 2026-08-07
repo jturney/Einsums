@@ -3,11 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Utilities/TemporaryFilename.hpp>
 
 #include <random>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 std::filesystem::path make_temp_path() {
     static thread_local std::mt19937_64     rng(std::random_device{}());
@@ -26,4 +27,4 @@ std::filesystem::path make_temp_path() {
     }
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

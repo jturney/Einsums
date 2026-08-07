@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Logging.hpp>
 
@@ -31,7 +32,7 @@
 #    include <string>
 #endif
 
-namespace einsums::packed_gemm {
+EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 
 // ---------------------------------------------------------------------------
 // Hash helpers
@@ -158,7 +159,7 @@ void PackingPlanCache::insert(ContractionKey const &key, PackingPlan plan) {
     _impl->cache.emplace(key, std::move(plan));
 }
 
-} // namespace einsums::packed_gemm
+EINSUMS_NAMESPACE_END(packed_gemm)
 
 // Must be in namespace std:
 size_t std::hash<einsums::packed_gemm::ContractionKey>::operator()(einsums::packed_gemm::ContractionKey const &key) const noexcept {

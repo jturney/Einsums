@@ -6,6 +6,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLAS/ThreadControl.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Runtime/ShutdownFunction.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
@@ -24,7 +25,7 @@
 #    include <omp.h>
 #endif
 
-namespace einsums::task_pool {
+EINSUMS_NAMESPACE_BEGIN(task_pool)
 
 EINSUMS_SINGLETON_IMPL(TaskPool)
 
@@ -421,4 +422,4 @@ TaskGroup TaskPool::submit_group(std::string name, std::vector<std::function<voi
     return group;
 }
 
-} // namespace einsums::task_pool
+EINSUMS_NAMESPACE_END(task_pool)

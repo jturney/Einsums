@@ -3,11 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Types.hpp>
 
 #include <memory>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 using std::toupper;
 
 EINSUMS_SINGLETON_IMPL(GlobalConfigMap)
@@ -213,4 +214,4 @@ void GlobalConfigMap::unlock(bool notify) {
     }
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

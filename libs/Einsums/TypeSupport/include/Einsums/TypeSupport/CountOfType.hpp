@@ -5,9 +5,11 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <type_traits>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Finds the number of items with the specified type.
@@ -24,4 +26,4 @@ constexpr auto count_of_type(/*Args... args*/) {
     return (std::is_convertible_v<Args, T> + ... + 0);
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

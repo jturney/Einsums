@@ -5,6 +5,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Debugging/AttachDebugger.hpp>
 
 #include <array>
@@ -18,7 +19,7 @@
 #    include <Windows.h>
 #endif
 
-namespace einsums::util {
+EINSUMS_NAMESPACE_BEGIN(util)
 
 namespace {
 
@@ -56,4 +57,4 @@ void attach_debugger() {
 #endif
 }
 
-} // namespace einsums::util
+EINSUMS_NAMESPACE_END(util)

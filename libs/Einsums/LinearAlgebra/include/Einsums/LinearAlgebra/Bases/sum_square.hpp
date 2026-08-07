@@ -5,10 +5,11 @@
 
 #pragma once
 #include <Einsums/BLAS.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
 namespace detail {
 
@@ -100,4 +101,4 @@ void impl_sum_square(einsums::detail::TensorImpl<T> const &in, RemoveComplexT<T>
 
 } // namespace detail
 } // namespace linear_algebra
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

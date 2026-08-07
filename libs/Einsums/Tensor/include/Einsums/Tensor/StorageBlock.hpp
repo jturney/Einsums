@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
 
 #include <cstddef>
@@ -14,7 +15,7 @@
 #include <memory>
 #include <utility>
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 /**
  * @brief Type-erased handle to a tensor's current backing buffer.
@@ -153,4 +154,4 @@ template <typename T, typename Vector>
     return std::make_shared<StorageBlock<T, Vector>>();
 }
 
-} // namespace einsums::detail
+EINSUMS_NAMESPACE_END(detail)

@@ -7,7 +7,9 @@
 
 #include <Einsums/Config.hpp>
 
-namespace einsums::gpu {
+#include <Einsums/Config/Namespace.hpp>
+
+EINSUMS_NAMESPACE_BEGIN(gpu)
 
 // ---------------------------------------------------------------------------
 // Backend detection: exactly one GPU backend (or mock) is active.
@@ -65,4 +67,4 @@ inline constexpr bool has_fp8_gemm =
     false;
 #endif
 
-} // namespace einsums::gpu
+EINSUMS_NAMESPACE_END(gpu)

@@ -11,11 +11,12 @@
 #include <Einsums/Comm/Communicator.hpp>
 #include <Einsums/Comm/Error.hpp>
 #include <Einsums/Comm/Platform.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 #include <span>
 
-namespace einsums::comm {
+EINSUMS_NAMESPACE_BEGIN(comm)
 
 /// Reduction operations for collective communication.
 enum class ReduceOp : std::uint8_t { Sum, Max, Min, Prod };
@@ -144,4 +145,4 @@ template <Communicable T>
 [[nodiscard]] EINSUMS_EXPORT expected<Request, CommError> iallgather(std::span<T const> send, std::span<T> recv,
                                                                      Communicator const &comm = Communicator::world());
 
-} // namespace einsums::comm
+EINSUMS_NAMESPACE_END(comm)

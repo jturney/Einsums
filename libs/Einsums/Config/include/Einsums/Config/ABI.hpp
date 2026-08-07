@@ -36,6 +36,7 @@
 
 #include <Einsums/Config/Defines.hpp>
 #include <Einsums/Config/ExportDefinitions.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Version.hpp>
 
 #include <cstddef>
@@ -43,7 +44,7 @@
 #include <string>
 #include <vector>
 
-namespace einsums::sealed {
+EINSUMS_NAMESPACE_BEGIN(sealed)
 
 /// Everything one copy of libEinsums knows about itself.
 ///
@@ -229,4 +230,4 @@ constexpr std::uint64_t fnv1a_value(std::uint64_t v, std::uint64_t h) noexcept {
 /// initialization order.
 [[nodiscard]] EINSUMS_EXPORT std::uint64_t library_layout_fingerprint() noexcept;
 
-} // namespace einsums::sealed
+EINSUMS_NAMESPACE_END(sealed)

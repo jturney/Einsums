@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/Passes/SymmetryPropagation.hpp>
 #include <Einsums/ComputeGraphTypes/Descriptors.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <memory>
@@ -15,7 +16,7 @@
 #include <unordered_set>
 #include <variant>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -238,4 +239,4 @@ bool SymmetryPropagation::run(Graph &graph) {
     return false;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

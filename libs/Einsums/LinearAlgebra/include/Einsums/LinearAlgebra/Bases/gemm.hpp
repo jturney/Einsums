@@ -6,10 +6,11 @@
 #pragma once
 
 #include <Einsums/BLAS.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
 namespace detail {
 
@@ -281,4 +282,4 @@ impl_gemm<std::complex<double>, std::complex<double>, std::complex<double>, std:
     einsums::detail::TensorImpl<std::complex<double>> *C);
 } // namespace detail
 } // namespace linear_algebra
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

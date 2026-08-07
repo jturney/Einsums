@@ -3,11 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PythonDemo/Coverage.hpp>
 
 #include <utility>
 
-namespace einsums::pythondemo {
+EINSUMS_NAMESPACE_BEGIN(pythondemo)
 
 Vec3::Vec3() = default;
 Vec3::Vec3(double x_, double y_, double z_) : x(x_), y(y_), z(z_) {
@@ -60,4 +61,4 @@ long Worker::crunch(long n) {
     return acc;
 }
 
-} // namespace einsums::pythondemo
+EINSUMS_NAMESPACE_END(pythondemo)

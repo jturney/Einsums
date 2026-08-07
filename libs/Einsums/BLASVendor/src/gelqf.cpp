@@ -7,13 +7,14 @@
 
 #include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(sgelqf, SGELQF)(int_t *, int_t *, float *, int_t *, float *, float *, int_t *, int_t *);
@@ -77,4 +78,4 @@ GELQF(float, s, S);
 GELQF_complex(std::complex<double>, z, Z);
 GELQF_complex(std::complex<float>, c, C);
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

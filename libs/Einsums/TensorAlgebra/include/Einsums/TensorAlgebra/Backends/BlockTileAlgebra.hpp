@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorAlgebra/Backends/Dispatch.hpp>
 #include <Einsums/TensorAlgebra/Backends/TileAlgebra.hpp>
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
@@ -13,7 +14,7 @@
 
 #include <tuple>
 
-namespace einsums::tensor_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra::detail)
 
 template <bool OnlyUseGenericAlgorithm, bool ConjA, bool ConjB, TensorConcept AType, TensorConcept BType, TensorConcept CType,
           typename... CIndices, typename... AIndices, typename... BIndices>
@@ -172,4 +173,4 @@ auto einsum_special_dispatch(typename CType::ValueType const C_prefactor, std::t
     }
 }
 
-} // namespace einsums::tensor_algebra::detail
+EINSUMS_NAMESPACE_END(tensor_algebra::detail)

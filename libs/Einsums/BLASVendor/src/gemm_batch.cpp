@@ -6,6 +6,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
 
 #include <array>
@@ -16,7 +17,7 @@
 #    include <omp.h>
 #endif
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 // Batch GEMM: perform batch_count independent GEMMs.
 // All batches share the same transa, transb, m, n, k, alpha, beta, lda, ldb, ldc.
@@ -219,4 +220,4 @@ void zgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, std::compl
     }
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

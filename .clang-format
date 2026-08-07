@@ -83,3 +83,12 @@ IncludeCategories:
     Priority: 5
   - Regex: '.*'
     Priority: 6
+
+# The namespace macros expand to namespace openers/closers, which clang-format
+# cannot see through. Without this it treats a bare macro call as a continuation
+# of the previous line and indents whatever follows - visible in Logging.hpp,
+# where EINSUMS_DETAIL_DECLARE_SPDLOG carries no trailing semicolon.
+StatementMacros:
+  - EINSUMS_NAMESPACE_BEGIN
+  - EINSUMS_NAMESPACE_END
+  - EINSUMS_DETAIL_DECLARE_SPDLOG

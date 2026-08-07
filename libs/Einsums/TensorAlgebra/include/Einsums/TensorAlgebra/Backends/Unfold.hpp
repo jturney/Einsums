@@ -9,6 +9,7 @@
 
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorAlgebra/Detail/Index.hpp>
@@ -24,7 +25,7 @@
 #    include <catch2/catch_all.hpp>
 #endif
 
-namespace einsums::tensor_algebra {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra)
 namespace detail {
 template <int Remaining, typename Skip, typename Head, typename... Args>
 constexpr auto _get_n_skip() {
@@ -121,4 +122,4 @@ Tensor<T, 2> unfold(CType<T, CRank> const &source) {
     return target;
 }
 
-} // namespace einsums::tensor_algebra
+EINSUMS_NAMESPACE_END(tensor_algebra)

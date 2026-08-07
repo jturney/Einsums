@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/TensorIO/DistributedTensorFile.hpp>
@@ -19,7 +20,7 @@
 #include <cerrno>
 #include <cstring>
 
-namespace einsums::tensor_io {
+EINSUMS_NAMESPACE_BEGIN(tensor_io)
 
 DistributedTensorFile::DistributedTensorFile(std::string path, Mode mode)
     : _path(std::move(path)), _mode(mode), _my_rank(comm::world_rank()), _num_ranks(comm::world_size()) {
@@ -249,4 +250,4 @@ std::vector<std::string> DistributedTensorFile::tensor_names() const {
     return names;
 }
 
-} // namespace einsums::tensor_io
+EINSUMS_NAMESPACE_END(tensor_io)

@@ -6,12 +6,13 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern float  FC_GLOBAL(slange, SLANGE)(char const *, int_t *, int_t *, float const *, int_t *, float *);
@@ -44,4 +45,4 @@ auto zlange(char norm_type, int_t m, int_t n, std::complex<double> const *A, int
     return FC_GLOBAL(zlange, ZLANGE)(&norm_type, &m, &n, A, &lda, work);
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

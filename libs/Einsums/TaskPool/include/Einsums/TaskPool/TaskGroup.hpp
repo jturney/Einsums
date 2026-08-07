@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -12,7 +14,7 @@
 #include <mutex>
 #include <string>
 
-namespace einsums::task_pool {
+EINSUMS_NAMESPACE_BEGIN(task_pool)
 
 /// @brief Handle for a group of submitted tasks with a collective barrier.
 ///
@@ -65,4 +67,4 @@ class TaskGroup {
     std::shared_ptr<std::condition_variable> _cv;
 };
 
-} // namespace einsums::task_pool
+EINSUMS_NAMESPACE_END(task_pool)

@@ -6,12 +6,13 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(cheev, CHEEV)(char *job, char *uplo, int_t *n, std::complex<float> *a, int_t *lda, float *w,
@@ -37,4 +38,4 @@ auto zheev(char job, char uplo, int_t n, std::complex<double> *a, int_t lda, dou
     return info;
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

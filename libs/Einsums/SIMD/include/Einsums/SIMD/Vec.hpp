@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Config/ForceInline.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/Platform.hpp>
 
 #include <cstring>
@@ -22,7 +23,7 @@
 #    include <arm_neon.h>
 #endif
 
-namespace einsums::simd {
+EINSUMS_NAMESPACE_BEGIN(simd)
 
 // ---------------------------------------------------------------------------
 // Half-precision type aliases.
@@ -483,4 +484,4 @@ struct Vec {
 template <typename T>
 inline constexpr int lanes = Vec<T>::lanes;
 
-} // namespace einsums::simd
+EINSUMS_NAMESPACE_END(simd)

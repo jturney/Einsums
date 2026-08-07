@@ -5,10 +5,12 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <memory>
 #include <type_traits>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace details {
 /**
  * @struct IsSmartPointerHelper
@@ -82,4 +84,4 @@ concept SmartPointer = IsSmartPointerV<T>;
 template <typename T>
 concept NotASmartPointer = !IsSmartPointerV<T>;
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

@@ -6,8 +6,9 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief IOPrefetch pass: move DiskRead nodes as early as legally possible in the schedule.
@@ -78,4 +79,4 @@ class EINSUMS_EXPORT IOPrefetch : public OptimizerPass {
     size_t _num_prefetched{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

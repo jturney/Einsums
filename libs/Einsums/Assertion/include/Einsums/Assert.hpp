@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Assertion/EvaluateAssert.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Preprocessor/Stringify.hpp>
 
 #include <fmt/format.h>
@@ -19,7 +20,7 @@
 #    include <cassert>
 #endif
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 /**
  * Thrown when an assertion fails.
@@ -66,7 +67,7 @@ using assertion_handler_type = void (*)(std::source_location const &loc, char co
  */
 EINSUMS_EXPORT void set_assertion_handler(assertion_handler_type handler);
 
-} // namespace einsums::detail
+EINSUMS_NAMESPACE_END(detail)
 
 /// \cond NOINTERNAL
 #define EINSUMS_ASSERT_(expr, ...)                                                                                                         \

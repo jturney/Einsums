@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/Comm/Runtime.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <atomic>
@@ -12,7 +13,7 @@
 #    include <mpi.h>
 #endif
 
-namespace einsums::comm {
+EINSUMS_NAMESPACE_BEGIN(comm)
 
 namespace {
 std::atomic<bool> g_initialized{false};
@@ -74,4 +75,4 @@ bool is_root() {
     return world_rank() == 0;
 }
 
-} // namespace einsums::comm
+EINSUMS_NAMESPACE_END(comm)

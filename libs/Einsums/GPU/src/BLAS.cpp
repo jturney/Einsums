@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/BLAS.hpp>
 #include <Einsums/GPU/Error.hpp>
 #include <Einsums/GPU/Runtime.hpp>
@@ -33,7 +34,7 @@
 // Already covered by the MPS include above.
 #endif
 
-namespace einsums::gpu::blas {
+EINSUMS_NAMESPACE_BEGIN(gpu::blas)
 
 namespace {
 /// Unwrap device_malloc or throw, for internal BLAS use where OOM is fatal.
@@ -649,4 +650,4 @@ void fp8gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, float al
 #endif
 }
 
-} // namespace einsums::gpu::blas
+EINSUMS_NAMESPACE_END(gpu::blas)

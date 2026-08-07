@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
@@ -15,7 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /**
  * @brief Owns tensors that persist across multiple Graphs and Pipelines.
@@ -244,4 +245,4 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
     std::vector<TensorHandle>                            _handles;
 };
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

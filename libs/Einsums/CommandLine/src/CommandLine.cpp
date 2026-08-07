@@ -4,8 +4,9 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/CommandLine/CommandLine.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
-namespace einsums::cl {
+EINSUMS_NAMESPACE_BEGIN(cl)
 
 Registry &Registry::instance() {
     static Registry R;
@@ -42,4 +43,4 @@ std::shared_ptr<ExclusiveCategory> make_yes_no(Flag &yes_flag, Flag &no_flag, bo
     return out;
 }
 
-} // namespace einsums::cl
+EINSUMS_NAMESPACE_END(cl)

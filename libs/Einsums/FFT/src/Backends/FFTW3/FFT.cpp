@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/FFT/Defines.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
@@ -19,7 +20,7 @@
 #    error Unable to find FFTW header.
 #endif
 
-namespace einsums::fft::backend::fftw3 {
+EINSUMS_NAMESPACE_BEGIN(fft::backend::fftw3)
 
 namespace {
 template <typename Plan>
@@ -125,4 +126,4 @@ void zzifft(Tensor<std::complex<double>, 1> const &a, Tensor<std::complex<double
     fftw_destroy_plan(c2c);
 }
 
-} // namespace einsums::fft::backend::fftw3
+EINSUMS_NAMESPACE_END(fft::backend::fftw3)

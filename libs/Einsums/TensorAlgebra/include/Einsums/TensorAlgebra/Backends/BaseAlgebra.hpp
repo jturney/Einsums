@@ -10,6 +10,7 @@
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
@@ -19,7 +20,7 @@
 #include <type_traits>
 #include <vector>
 
-namespace einsums::tensor_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra::detail)
 
 // A and B arrive as raw element pointers rather than tensors so the caller can
 // hand over a private snapshot when an operand aliases C; the strides are
@@ -200,4 +201,4 @@ void einsum_generic_algorithm(std::tuple<CUniqueIndices...> const &C_unique, std
     }
 }
 
-} // namespace einsums::tensor_algebra::detail
+EINSUMS_NAMESPACE_END(tensor_algebra::detail)

@@ -5,9 +5,10 @@
 
 #pragma once
 #include <Einsums/BLAS.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
-namespace einsums::linear_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(linear_algebra::detail)
 
 template <typename T, typename Pivots>
     requires requires(Pivots a, size_t ind) {
@@ -239,4 +240,4 @@ int impl_invert_lu(einsums::detail::TensorImpl<T> &A_lu, Pivots const &pivot, T 
 
     return 0;
 }
-} // namespace einsums::linear_algebra::detail
+EINSUMS_NAMESPACE_END(linear_algebra::detail)

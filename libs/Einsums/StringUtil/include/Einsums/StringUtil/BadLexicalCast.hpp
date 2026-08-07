@@ -7,9 +7,11 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <typeinfo>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @struct bad_lexical_cast
@@ -22,4 +24,4 @@ struct EINSUMS_EXPORT bad_lexical_cast : std::bad_cast {
     using std::bad_cast::bad_cast;
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

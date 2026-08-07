@@ -12,6 +12,7 @@
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Concepts/SmartPointer.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/LinearAlgebra/Base.hpp>
 #include <Einsums/LinearAlgebra/BlockTensor.hpp>
@@ -31,7 +32,7 @@
 #include <tuple>
 #include <type_traits>
 
-namespace einsums::linear_algebra {
+EINSUMS_NAMESPACE_BEGIN(linear_algebra)
 /**
  * @brief Computes the square sum of a tensor.
  *
@@ -2275,4 +2276,4 @@ typename AType::ValueType det(AType const &A) {
 
     return ret;
 }
-} // namespace einsums::linear_algebra
+EINSUMS_NAMESPACE_END(linear_algebra)

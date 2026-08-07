@@ -16,13 +16,14 @@
 // cached per element type. The kernel and its block shape resolve through
 // the same ladder so packing geometry always matches the kernel.
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
 #include <complex>
 #include <cstdint>
 
-namespace einsums::packed_gemm {
+EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 
 #define EINSUMS_PACKED_GEMM_DECLARE_RUNG_ENTRIES(ns)                                                                                       \
     namespace ns {                                                                                                                         \
@@ -116,4 +117,4 @@ EINSUMS_PACKED_GEMM_DEFINE_ENTRY(std::complex<double>)
 #undef EINSUMS_PACKED_GEMM_DEFINE_ENTRY
 #undef EINSUMS_PACKED_GEMM_LADDER
 
-} // namespace einsums::packed_gemm
+EINSUMS_NAMESPACE_END(packed_gemm)

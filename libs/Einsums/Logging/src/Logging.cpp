@@ -5,6 +5,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/StringUtil/FromString.hpp>
 
@@ -22,7 +23,7 @@
 #    include <tracy/Tracy.hpp>
 #endif
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 EINSUMS_DETAIL_DEFINE_SPDLOG(einsums, warn)
 
@@ -76,9 +77,9 @@ std::shared_ptr<spdlog::sinks::sink> get_spdlog_sink(std::string const &env) {
     return std::make_shared<spdlog::sinks::basic_file_sink_mt>(env);
 }
 
-} // namespace einsums::detail
+EINSUMS_NAMESPACE_END(detail)
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 void set_log_level(int level) {
     detail::get_einsums_logger().set_level(static_cast<spdlog::level::level_enum>(level));
@@ -88,4 +89,4 @@ int get_log_level() {
     return static_cast<int>(detail::get_einsums_logger().level());
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

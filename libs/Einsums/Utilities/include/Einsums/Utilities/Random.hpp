@@ -7,12 +7,13 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <numbers>
 #include <random>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {
 
@@ -178,4 +179,4 @@ EINSUMS_EXPORT extern std::default_random_engine random_engine;
  */
 APIARY_EXPOSE EINSUMS_EXPORT void seed_random(std::default_random_engine::result_type seed);
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

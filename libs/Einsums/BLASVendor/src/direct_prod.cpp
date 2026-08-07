@@ -8,6 +8,7 @@
 #include <Einsums/BLASVendor/Defines.hpp>
 #include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/Config/CompilerSpecific.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
@@ -45,7 +46,7 @@ extern int zdirprod_kernel_avx2(size_t n, std::complex<double> alpha, std::compl
 } // extern "C"
 #endif
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 #if defined(__AVX2__) && defined(__FMA3__) && !defined(__ICC) && !defined(__INTEL_COMPILER)
 
@@ -220,4 +221,4 @@ void zdirprod(int_t n, std::complex<double> alpha, std::complex<double> const *x
     }
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

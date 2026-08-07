@@ -12,6 +12,7 @@
 #include <Einsums/ComputeGraph/Optimizer.hpp> // For OptimizerPass and PassManager
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/ComputeGraphTypes/GraphData.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/GPU/BLAS.hpp>
 #include <Einsums/LinearAlgebra.hpp>
@@ -32,7 +33,7 @@
 #include <set>
 #include <unordered_set>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace {
 
@@ -3023,4 +3024,4 @@ std::string registered_graphs_json() {
     return result;
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

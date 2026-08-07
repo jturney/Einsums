@@ -5,8 +5,10 @@
 
 #include "ModuleVars.hpp"
 
-namespace einsums::detail {
+#include <Einsums/Config/Namespace.hpp>
+
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 EINSUMS_SINGLETON_IMPL(Einsums_BlockManager_vars)
 
-}
+EINSUMS_NAMESPACE_END(detail)

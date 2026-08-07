@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #if defined(EINSUMS_HAVE_PROFILER)
 #    include <Einsums/Profile/Profile.hpp>
@@ -35,7 +36,7 @@
 #    include <omp.h>
 #endif
 
-namespace einsums::task_pool {
+EINSUMS_NAMESPACE_BEGIN(task_pool)
 
 /// @brief Work-stealing thread pool with HPX-inspired continuations and dataflow.
 ///
@@ -442,4 +443,4 @@ auto TaskHandle<void>::then(std::string name, F &&next_fn) -> TaskHandle<std::in
     return TaskHandle<R>(std::move(state));
 }
 
-} // namespace einsums::task_pool
+EINSUMS_NAMESPACE_END(task_pool)

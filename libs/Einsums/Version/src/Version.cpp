@@ -6,6 +6,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Config/ConfigStrings.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Version.hpp>
 #include <Einsums/Version.hpp>
 
@@ -15,7 +16,7 @@
 #include <string>
 
 ///////////////////////////////////////////////////////////////////////////////
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 std::string full_version_as_string() {
     return fmt::format("{}.{}.{}", EINSUMS_VERSION_MAJOR, EINSUMS_VERSION_MINOR, EINSUMS_VERSION_PATCH);
@@ -67,4 +68,4 @@ std::string build_date_time() {
     return __DATE__ " " __TIME__;
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

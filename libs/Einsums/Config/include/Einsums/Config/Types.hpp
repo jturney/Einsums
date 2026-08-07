@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Config/ExportDefinitions.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TypeSupport/Observable.hpp>
 #include <Einsums/TypeSupport/Singleton.hpp>
 
@@ -16,7 +17,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace hashes {
 
@@ -561,7 +562,7 @@ struct GlobalConfigMapLockScope {
     GlobalConfigMap &_singleton;
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()
 
 /**
  * @brief Compare a ConfigMap with an object of the same contained mapping type.

@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/Config/ABI.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Version.hpp>
 
 #include <algorithm>
@@ -24,7 +25,7 @@
 #    include <link.h>
 #endif
 
-namespace einsums::sealed {
+EINSUMS_NAMESPACE_BEGIN(sealed)
 
 namespace {
 
@@ -208,4 +209,4 @@ std::vector<std::string> mapped_einsums_libraries() {
     return out;
 }
 
-} // namespace einsums::sealed
+EINSUMS_NAMESPACE_END(sealed)

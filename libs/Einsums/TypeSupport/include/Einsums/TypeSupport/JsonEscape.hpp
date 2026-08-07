@@ -5,10 +5,12 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstdio>
 #include <string>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /// @brief Escape a string for safe embedding in a JSON value.
 ///
@@ -53,4 +55,4 @@ inline auto json_escape(std::string const &s) -> std::string {
     return out;
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

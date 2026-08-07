@@ -14,6 +14,8 @@
 /// Unlike std::map (red-black tree with scattered nodes), all keys and values
 /// live in contiguous memory, making iteration and small-map operations faster.
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <algorithm>
 #include <cassert>
 #include <functional>
@@ -21,7 +23,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief A sorted map backed by contiguous vectors.
@@ -191,4 +193,4 @@ class flat_map {
     }
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

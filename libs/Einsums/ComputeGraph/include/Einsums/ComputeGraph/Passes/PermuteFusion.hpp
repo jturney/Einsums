@@ -6,8 +6,9 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief Permute-into-einsum fusion: absorbs an axis-reordering Permute into the subscript of the Einsum that reads it.
@@ -83,4 +84,4 @@ class EINSUMS_EXPORT PermuteFusion : public OptimizerPass {
     size_t _num_rewrites{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -7,6 +7,7 @@
 
 #include <Einsums/Concepts/NamedRequirements.hpp>
 #include <Einsums/Concepts/SubscriptChooser.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
@@ -14,7 +15,7 @@
 #include <Einsums/TensorBase/Common.hpp>
 #include <Einsums/TensorUtilities/CreateTensorLike.hpp>
 
-namespace einsums::decomposition {
+EINSUMS_NAMESPACE_BEGIN(decomposition)
 
 /**
  * "Weight" a tensor for weighted CANDECOMP/PARAFAC decompositions (returns a copy) by input weights
@@ -373,4 +374,4 @@ auto weighted_parafac(TTensor<TType, TRank> const &tensor, TTensor<TType, 1> con
     return factors;
 }
 
-} // namespace einsums::decomposition
+EINSUMS_NAMESPACE_END(decomposition)

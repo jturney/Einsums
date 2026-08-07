@@ -34,13 +34,14 @@
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /**
  * @brief A rebindable tensor reference.
@@ -110,4 +111,4 @@ struct EinsumIndices {
     std::vector<std::string> link_indices; ///< Contracted (shared A/B, not in C) indices
 };
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

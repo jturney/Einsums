@@ -6,11 +6,12 @@
 #pragma once
 
 #include <Einsums/Concepts/Complex.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Creates a new rank-1 tensor filled with digits from \p start to \p stop in \p step increments.
@@ -64,4 +65,4 @@ auto arange(T stop) -> Tensor<T, 1> {
     return arange(T{0}, stop);
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

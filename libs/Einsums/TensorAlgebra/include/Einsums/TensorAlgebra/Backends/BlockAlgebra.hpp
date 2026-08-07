@@ -8,12 +8,13 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 
 #include <stdexcept>
 #include <tuple>
-namespace einsums::tensor_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra::detail)
 
 template <bool OnlyUseGenericAlgorithm, bool ConjA, bool ConjB, BlockTensorConcept AType, BlockTensorConcept BType,
           BlockTensorConcept CType, typename... CIndices, typename... AIndices, typename... BIndices>
@@ -322,4 +323,4 @@ auto einsum_special_dispatch(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
     *C += temp;
 }
 
-} // namespace einsums::tensor_algebra::detail
+EINSUMS_NAMESPACE_END(tensor_algebra::detail)

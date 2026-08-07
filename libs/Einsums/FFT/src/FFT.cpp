@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/FFT.hpp>
 #include <Einsums/FFT/Defines.hpp>
@@ -15,7 +16,7 @@
 #    include "Backends/MKL/FFT.hpp"
 #endif
 
-namespace einsums::fft {
+EINSUMS_NAMESPACE_BEGIN(fft)
 
 auto fftfreq(int n, double d) -> Tensor<double, 1> {
     double value   = 1.0 / (n * d);
@@ -123,4 +124,4 @@ void zzifft(Tensor<std::complex<double>, 1> const &a, Tensor<std::complex<double
 
 } // namespace detail
 
-} // namespace einsums::fft
+EINSUMS_NAMESPACE_END(fft)

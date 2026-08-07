@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/TypeSupport/Observable.hpp>
 
@@ -22,7 +23,7 @@
 #include <string>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Returns the id of the calling process.
@@ -142,4 +143,4 @@ struct EINSUMS_EXPORT RuntimeConfiguration {
     std::vector<std::string> _unknown_arguments;
 };
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

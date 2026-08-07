@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Concepts/Complex.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
@@ -15,7 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Create a tensor and zero its  data.
@@ -75,4 +76,4 @@ APIARY_EXPOSE APIARY_INSTANTIATE_AS("create_zero_tensor", double) APIARY_INSTANT
     return A;
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

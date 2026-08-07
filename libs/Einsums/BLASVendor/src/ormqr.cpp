@@ -7,13 +7,14 @@
 
 #include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(sormqr, SORMQR)(char *, char *, int_t *, int_t *, int_t *, float const *, int_t *, float const *, float *, int_t *,
@@ -83,4 +84,4 @@ ORMQR(double, d, D);
 UNMQR(std::complex<float>, c, C);
 UNMQR(std::complex<double>, z, Z);
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

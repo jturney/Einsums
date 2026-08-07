@@ -5,11 +5,13 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <algorithm>
 #include <ranges>
 #include <string>
 
-namespace einsums::string_util {
+EINSUMS_NAMESPACE_BEGIN(string_util)
 
 /**
  * Trim whitespace from the start of the string.
@@ -90,4 +92,4 @@ static inline auto trim_copy(std::string s) -> std::string {
     return s;
 }
 
-} // namespace einsums::string_util
+EINSUMS_NAMESPACE_END(string_util)

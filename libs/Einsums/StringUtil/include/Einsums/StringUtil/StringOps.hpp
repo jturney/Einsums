@@ -6,11 +6,12 @@
 #pragma once
 
 #include <Einsums/Config/ExportDefinitions.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <string>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 /**
  * Figures out the characters in the first string that are not in the second.
  *
@@ -53,4 +54,4 @@ void find_char_with_position(std::string const &needles, std::string const &hays
     }
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

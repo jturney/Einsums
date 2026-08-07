@@ -5,12 +5,14 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <type_traits>
 
-namespace einsums::hashes {
+EINSUMS_NAMESPACE_BEGIN(hashes)
 
 /**
  * @struct container_hash
@@ -64,4 +66,4 @@ struct ContainerHash {
     }
 };
 
-} // namespace einsums::hashes
+EINSUMS_NAMESPACE_END(hashes)

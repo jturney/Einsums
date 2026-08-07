@@ -5,13 +5,14 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Types.hpp>
 
 #include <complex>
 #include <cstdint>
 
-namespace einsums::gpu::solver {
+EINSUMS_NAMESPACE_BEGIN(gpu::solver)
 
 // ===========================================================================
 // GPU LAPACK operations.
@@ -53,4 +54,4 @@ EINSUMS_EXPORT int gesvd(char jobu, char jobvt, int64_t m, int64_t n, T *A, int6
                                             std::conditional_t<std::is_same_v<T, std::complex<double>>, double, T>> *S,
                          T *U, int64_t ldu, T *VT, int64_t ldvt);
 
-} // namespace einsums::gpu::solver
+EINSUMS_NAMESPACE_END(gpu::solver)

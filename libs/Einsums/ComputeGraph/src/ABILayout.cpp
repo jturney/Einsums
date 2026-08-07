@@ -4,8 +4,9 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/ABILayout.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
-namespace einsums::sealed {
+EINSUMS_NAMESPACE_BEGIN(sealed)
 
 // Declared in <Einsums/Config/ABI.hpp> and defined here, which is the one place
 // that can see every type it measures. world() calls it lazily rather than
@@ -15,4 +16,4 @@ std::uint64_t library_layout_fingerprint() noexcept {
     return layout_fingerprint();
 }
 
-} // namespace einsums::sealed
+EINSUMS_NAMESPACE_END(sealed)

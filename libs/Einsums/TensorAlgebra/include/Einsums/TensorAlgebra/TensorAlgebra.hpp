@@ -11,6 +11,7 @@
 #include <Einsums/Concepts/NamedRequirements.hpp>
 #include <Einsums/Concepts/SmartPointer.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
 
@@ -23,7 +24,7 @@
 #    include <catch2/catch_all.hpp>
 #endif
 
-namespace einsums::tensor_algebra {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra)
 namespace detail {
 
 // CType has typename to allow for interoperability with scalar types.
@@ -201,7 +202,7 @@ template <bool ConjA = false, bool ConjB = false, TensorConcept AType, TensorCon
     }
 BasicTensorLike<AType, typename AType::ValueType, 2> khatri_rao(std::tuple<AIndices...> const &, AType const &A,
                                                                 std::tuple<BIndices...> const &, BType const &B);
-} // namespace einsums::tensor_algebra
+EINSUMS_NAMESPACE_END(tensor_algebra)
 
 #include <Einsums/TensorAlgebra/Backends/Dispatch.hpp>
 #include <Einsums/TensorAlgebra/Backends/ElementTransform.hpp>

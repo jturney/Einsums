@@ -8,6 +8,7 @@
 // This header is included from EinsumPackedGemm.hpp.
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/Profile/Profile.hpp>
 
@@ -20,7 +21,7 @@
 #include <type_traits>
 #include <vector>
 
-namespace einsums::packed_gemm {
+EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 
 /// @brief Describes one dimension of a tensor as seen during packing.
 struct DimSpec {
@@ -897,4 +898,4 @@ EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, std::complex<float
 EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, std::complex<double> const *src, size_t const *sizes,
                                    std::complex<double> *dst, int num_threads, bool conj = false);
 
-} // namespace einsums::packed_gemm
+EINSUMS_NAMESPACE_END(packed_gemm)

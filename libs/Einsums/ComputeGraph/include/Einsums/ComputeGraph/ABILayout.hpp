@@ -21,13 +21,14 @@
 #include <Einsums/BLAS/Types.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/Config/ABI.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
 #include <cstdint>
 
-namespace einsums::sealed {
+EINSUMS_NAMESPACE_BEGIN(sealed)
 
 /// Fold of the sizes and alignments of every type that crosses a stage
 /// boundary.
@@ -62,4 +63,4 @@ namespace einsums::sealed {
     return h;
 }
 
-} // namespace einsums::sealed
+EINSUMS_NAMESPACE_END(sealed)

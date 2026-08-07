@@ -31,6 +31,7 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <fmt/format.h>
@@ -42,7 +43,7 @@
 
 #include "HPTTTypes.hpp"
 
-namespace einsums::hptt {
+EINSUMS_NAMESPACE_BEGIN(hptt)
 
 /**
  * Find the conjugate of the given type.
@@ -220,4 +221,4 @@ std::uint64_t factorial(std::uint8_t n);
 void account_for_row_major(size_t const *sizeA, size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA,
                            size_t const *offsetB, int const *perm, size_t *tmpSizeA, size_t *tmpOuterSizeA, size_t *tmpouterSizeB,
                            size_t *tmpOffsetA, size_t *tmpOffsetB, int *tmpPerm, int const dim, bool const useRowMajor);
-} // namespace einsums::hptt
+EINSUMS_NAMESPACE_END(hptt)

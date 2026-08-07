@@ -6,9 +6,10 @@
 #pragma once
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Creates a new tensor with the same rank and dimensions of the provided tensor.
@@ -98,4 +99,4 @@ auto create_tensor_like(std::string const name, TensorType<DataType, Rank> const
     return BlockTensor<DataType, Rank>{name, tensor.vector_dims()};
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

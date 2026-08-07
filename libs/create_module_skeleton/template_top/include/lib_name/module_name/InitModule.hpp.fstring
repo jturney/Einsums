@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 /*
  * Exported definitions for initialization. If the module does not need to be initialized,
  * this header can be safely deleted. Just make sure to remove the reference in CMakeLists.txt,
@@ -17,7 +19,7 @@
  * corresponding code files.
  */
 
-namespace einsums {{
+EINSUMS_NAMESPACE_BEGIN()
 
 int setup_{lib_name}_{module_name}();
 
@@ -30,4 +32,4 @@ namespace detail {{
 static int initialize_module_{lib_name}_{module_name} = setup_{lib_name}_{module_name}();
 
 }}
-}}
+EINSUMS_NAMESPACE_END()

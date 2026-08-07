@@ -40,6 +40,7 @@
 #include <Einsums/ComputeGraph/Passes/TiledExpansion.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Types.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/Logging.hpp>
@@ -51,7 +52,7 @@
 #include <sstream>
 #include <utility>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 void OptimizerPass::report(int level, std::string_view message) const {
     if (_verbosity >= level) {
@@ -505,4 +506,4 @@ void PassManager::populate_default() {
     pm.add<passes::MemoryPlanning>();
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

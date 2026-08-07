@@ -17,6 +17,8 @@
  * tensor type, calls @ref as<T> to extract a typed scalar for BLAS dispatch.
  */
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <fmt/format.h>
 
 #include <complex>
@@ -27,7 +29,7 @@
 #include <string>
 #include <variant>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /// Type-erased prefactor scalar. Default-constructs to ``double{0}``.
 using PrefactorScalar = std::variant<float, double, std::complex<float>, std::complex<double>>;
@@ -166,4 +168,4 @@ inline std::string to_string(PrefactorScalar const &v) {
         v);
 }
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

@@ -6,11 +6,12 @@
 #pragma once
 
 #include <Einsums/Config/ExportDefinitions.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <filesystem>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Generate a unique path in the system temporary directory.
@@ -23,4 +24,4 @@ namespace einsums {
  */
 APIARY_EXPOSE EINSUMS_EXPORT std::filesystem::path make_temp_path();
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

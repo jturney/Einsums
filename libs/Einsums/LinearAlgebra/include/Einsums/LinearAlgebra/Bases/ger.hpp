@@ -5,9 +5,10 @@
 
 #pragma once
 #include <Einsums/BLAS.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
-namespace einsums::linear_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(linear_algebra::detail)
 
 template <typename T>
 void impl_ger(T alpha, einsums::detail::TensorImpl<T> const &x, einsums::detail::TensorImpl<T> const &y,
@@ -111,4 +112,4 @@ void impl_gerc(T alpha, einsums::detail::TensorImpl<T> const &x, einsums::detail
     }
 }
 
-} // namespace einsums::linear_algebra::detail
+EINSUMS_NAMESPACE_END(linear_algebra::detail)

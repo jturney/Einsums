@@ -3,10 +3,11 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include "ModuleVars.hpp"
 
-namespace einsums::detail {{
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 EINSUMS_SINGLETON_IMPL({lib_name}_{module_name}_vars)
 
-}}
+EINSUMS_NAMESPACE_END(detail)

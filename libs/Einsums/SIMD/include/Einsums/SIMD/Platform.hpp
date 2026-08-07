@@ -5,10 +5,12 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstddef>
 #include <cstdint>
 
-namespace einsums::simd {
+EINSUMS_NAMESPACE_BEGIN(simd)
 
 // ---------------------------------------------------------------------------
 // Feature detection: constexpr booleans for each ISA extension.
@@ -228,4 +230,4 @@ inline constexpr size_t native_alignment = (native_bytes > 0) ? static_cast<size
 template <typename T>
 inline constexpr int native_lanes = (native_bits > 0) ? (native_bits / (8 * static_cast<int>(sizeof(T)))) : 1;
 
-} // namespace einsums::simd
+EINSUMS_NAMESPACE_END(simd)

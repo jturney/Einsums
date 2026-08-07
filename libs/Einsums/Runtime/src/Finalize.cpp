@@ -6,6 +6,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Assert.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
@@ -16,7 +17,7 @@
 #include <H5public.h>
 #include <cstdlib>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {
 
@@ -74,4 +75,4 @@ int finalize() {
     return EXIT_SUCCESS;
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

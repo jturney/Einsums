@@ -7,6 +7,7 @@
 
 #include <Einsums/BLASVendor/Defines.hpp>
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
 
@@ -17,7 +18,7 @@ XerblaEntry mkl_set_xerbla(XerblaEntry xerbla);
 }
 #endif
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 namespace {
 extern "C" void xerbla(char const *srname, int const *info, int const /*len*/) {
@@ -43,4 +44,4 @@ void initialize() {
 void finalize() {
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

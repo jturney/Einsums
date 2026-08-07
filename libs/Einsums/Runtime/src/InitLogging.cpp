@@ -5,6 +5,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Runtime/Detail/InitLogging.hpp>
 #include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
@@ -22,7 +23,7 @@
 #include <spdlog/spdlog.h>
 #include <string>
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 namespace {
 /*
@@ -144,4 +145,4 @@ void init_logging(RuntimeConfiguration & /*config*/) {
     // EINSUMS_LOG_CRITICAL("test critical");
 }
 
-} // namespace einsums::detail
+EINSUMS_NAMESPACE_END(detail)

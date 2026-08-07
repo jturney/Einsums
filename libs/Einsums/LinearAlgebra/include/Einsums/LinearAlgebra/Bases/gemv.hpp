@@ -5,6 +5,7 @@
 
 #pragma once
 #include <Einsums/BLAS.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
@@ -12,7 +13,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
 namespace detail {
 
@@ -142,4 +143,4 @@ void impl_gemv(char transA, AlphaType alpha, einsums::detail::TensorImpl<AType> 
 
 } // namespace detail
 } // namespace linear_algebra
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

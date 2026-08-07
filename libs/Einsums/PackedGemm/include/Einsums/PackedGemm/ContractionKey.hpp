@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Config/ExportDefinitions.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <complex>
 #include <cstddef>
@@ -14,7 +15,7 @@
 #include <string>
 #include <vector>
 
-namespace einsums::packed_gemm {
+EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 
 struct PackingPlan; // defined in Packing.hpp, which depends on this header
 
@@ -146,7 +147,7 @@ inline bool spec_matches_indices(ContractionSpec const &spec, std::vector<std::s
            spec.b_indices == b_indices && spec.link_indices == link_indices;
 }
 
-} // namespace einsums::packed_gemm
+EINSUMS_NAMESPACE_END(packed_gemm)
 
 // ---------------------------------------------------------------------------
 // std::hash specialisation for ContractionKey

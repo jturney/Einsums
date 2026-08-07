@@ -5,6 +5,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/TensorAlgebra/Detail/HpttPlanCache.hpp>
 #include <Einsums/TensorAlgebra/Permute.hpp>
@@ -16,7 +17,7 @@
 #    undef I
 #endif
 
-namespace einsums::tensor_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra::detail)
 
 // NOLINTNEXTLINE
 std::shared_ptr<hptt::Transpose<float>> permute(int const *perm, int const dim, float const alpha, float const *A, size_t const *sizeA,
@@ -146,4 +147,4 @@ permute(int const *perm, int const dim, std::complex<double> const alpha, std::c
     return plan;
 }
 
-} // namespace einsums::tensor_algebra::detail
+EINSUMS_NAMESPACE_END(tensor_algebra::detail)

@@ -7,12 +7,13 @@
 
 #include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(ssygv, SSYGV)(int_t *, char *, char *, int_t *, float *, int_t *, float *, int_t *, float *, float *, int_t *,
@@ -115,4 +116,4 @@ auto zhegv(int_t itype, char jobz, char uplo, int_t n, std::complex<double> *a, 
     return info;
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

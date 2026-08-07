@@ -25,6 +25,7 @@
   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/HPTT/ComputeNode.hpp>
 #include <Einsums/HPTT/Plan.hpp>
@@ -37,7 +38,7 @@
 
 #include "Einsums/HPTT/Files.hpp"
 
-namespace einsums::hptt {
+EINSUMS_NAMESPACE_BEGIN(hptt)
 
 Plan::Plan(std::vector<int> loopOrder, std::vector<int> numThreadsAtLoop)
     : _rootNodes(), _loopOrder(std::move(loopOrder)), _numThreadsAtLoop(numThreadsAtLoop) {
@@ -333,4 +334,4 @@ Plan::Plan(std::FILE *fp, bool swap_endian) {
         }
     }
 }
-} // namespace einsums::hptt
+EINSUMS_NAMESPACE_END(hptt)

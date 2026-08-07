@@ -14,6 +14,7 @@
 #    error "StreamKernelBody.hpp requires EINSUMS_STREAM_KERNEL_NS to be defined before inclusion"
 #endif
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/ComplexVec.hpp>
 #include <Einsums/SIMD/Operations.hpp>
 #include <Einsums/SIMD/Vec.hpp>
@@ -22,7 +23,7 @@
 #include <cstdint>
 #include <type_traits>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 namespace EINSUMS_STREAM_KERNEL_NS {
 
 /// Innermost stream loop for one member. See StreamKernel.hpp for the stride
@@ -155,4 +156,4 @@ void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n
 }
 
 } // namespace EINSUMS_STREAM_KERNEL_NS
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

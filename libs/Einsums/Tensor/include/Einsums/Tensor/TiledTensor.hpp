@@ -11,6 +11,7 @@
 #include <Einsums/Concepts/NamedRequirements.hpp>
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
@@ -27,7 +28,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace tensor_base {
 
@@ -1488,4 +1489,4 @@ void fprintln(std::ostream &os, TensorType const &A, TensorPrintOptions options 
     }
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

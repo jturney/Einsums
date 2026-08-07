@@ -11,6 +11,7 @@
 #include <Einsums/Concepts/File.hpp>
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/GPU/DeviceVector.hpp>
@@ -33,7 +34,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @class GeneralRuntimeTensor
@@ -2234,4 +2235,4 @@ extern template struct EINSUMS_EXPORT RuntimeTensorView<double>;
 extern template struct EINSUMS_EXPORT RuntimeTensorView<std::complex<float>>;
 extern template struct EINSUMS_EXPORT RuntimeTensorView<std::complex<double>>;
 #endif
-} // namespace einsums
+EINSUMS_NAMESPACE_END()

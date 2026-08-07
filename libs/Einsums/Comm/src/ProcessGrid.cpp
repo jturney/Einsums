@@ -5,10 +5,11 @@
 
 #include <Einsums/Comm/ProcessGrid.hpp>
 #include <Einsums/Comm/Runtime.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <cassert>
 
-namespace einsums::comm {
+EINSUMS_NAMESPACE_BEGIN(comm)
 
 namespace {
 
@@ -62,4 +63,4 @@ ProcessGrid const &ProcessGrid::default_grid() {
     return grid;
 }
 
-} // namespace einsums::comm
+EINSUMS_NAMESPACE_END(comm)

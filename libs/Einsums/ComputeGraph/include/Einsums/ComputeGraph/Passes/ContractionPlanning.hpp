@@ -7,11 +7,12 @@
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <string>
 #include <vector>
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
  * @brief Multi-objective contraction planning pass.
@@ -152,4 +153,4 @@ class EINSUMS_EXPORT ContractionPlanning : public OptimizerPass {
     size_t                   _intermediates_created{0};
 };
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

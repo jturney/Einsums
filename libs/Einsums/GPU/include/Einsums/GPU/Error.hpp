@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/GPU/Platform.hpp>
 
@@ -23,7 +24,7 @@
 #    include <hipsolver/hipsolver.h>
 #endif
 
-namespace einsums::gpu {
+EINSUMS_NAMESPACE_BEGIN(gpu)
 
 // ===========================================================================
 // Unified error checking macros for GPU runtime, BLAS, and solver calls.
@@ -101,4 +102,4 @@ inline void check_hipsolver_error(hipsolverStatus_t err, std::source_location lo
 
 #endif
 
-} // namespace einsums::gpu
+EINSUMS_NAMESPACE_END(gpu)

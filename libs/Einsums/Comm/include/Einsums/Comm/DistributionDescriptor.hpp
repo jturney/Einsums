@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Comm/ProcessGrid.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -13,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-namespace einsums::comm {
+EINSUMS_NAMESPACE_BEGIN(comm)
 
 /// Which axis of the 2D process grid a tensor dimension is distributed along.
 enum class GridAxis : std::uint8_t {
@@ -97,4 +98,4 @@ struct DistributionDescriptor {
     [[nodiscard]] bool is_dim_distributed(size_t dim) const { return dim < dim_to_axis.size() && dim_to_axis[dim] != GridAxis::None; }
 };
 
-} // namespace einsums::comm
+EINSUMS_NAMESPACE_END(comm)

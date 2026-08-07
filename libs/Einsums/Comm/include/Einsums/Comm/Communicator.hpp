@@ -6,10 +6,11 @@
 #pragma once
 
 #include <Einsums/Comm/Platform.hpp>
+#include <Einsums/Config/Namespace.hpp>
 
 #include <memory>
 
-namespace einsums::comm {
+EINSUMS_NAMESPACE_BEGIN(comm)
 
 /**
  * @brief Communicator abstraction wrapping MPI_Comm.
@@ -69,4 +70,4 @@ class EINSUMS_EXPORT Communicator {
     friend class Request; // Needs access for async operations
 };
 
-} // namespace einsums::comm
+EINSUMS_NAMESPACE_END(comm)

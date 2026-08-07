@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamKernel.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
@@ -22,7 +23,7 @@
 #    include <omp.h>
 #endif
 
-namespace einsums::compute_graph::passes {
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
@@ -673,4 +674,4 @@ bool StreamContractionFusion::run(Graph &graph) {
     return true;
 }
 
-} // namespace einsums::compute_graph::passes
+EINSUMS_NAMESPACE_END(compute_graph::passes)

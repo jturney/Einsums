@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile/Server.hpp>
 
 #if defined(EINSUMS_HAVE_PROFILER)
@@ -41,7 +42,7 @@
 #    include <fstream>
 #    include <limits>
 
-namespace einsums::profile {
+EINSUMS_NAMESPACE_BEGIN(profile)
 
 namespace {
 
@@ -979,6 +980,6 @@ void Server::export_session(std::string const &path, std::string const &label,
     }
 }
 
-} // namespace einsums::profile
+EINSUMS_NAMESPACE_END(profile)
 
 #endif

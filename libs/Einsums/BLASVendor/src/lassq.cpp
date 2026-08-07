@@ -6,12 +6,13 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(slassq, SLASSQ)(int_t *n, float const *x, int_t *incx, float *scale, float *sumsq);
@@ -70,4 +71,4 @@ double dznrm2(int_t n, std::complex<double> const *x, int_t incx) {
     return FC_GLOBAL(dznrm2, DZNRM2)(&n, x, &incx);
 }
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

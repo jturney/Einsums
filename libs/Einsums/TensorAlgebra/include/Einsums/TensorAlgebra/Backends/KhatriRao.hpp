@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
@@ -15,7 +16,7 @@
 #include <tuple>
 #include <utility>
 
-namespace einsums::tensor_algebra {
+EINSUMS_NAMESPACE_BEGIN(tensor_algebra)
 template <bool ConjA, bool ConjB, TensorConcept AType, TensorConcept BType, typename... AIndices, typename... BIndices>
     requires requires {
         requires InSamePlace<AType, BType>;
@@ -68,4 +69,4 @@ auto khatri_rao(std::tuple<AIndices...> const &, AType const &A, std::tuple<BInd
 
     return OutType{std::move(result), "KR product", -1, detail::product_dims(A_common_position, A)};
 }
-} // namespace einsums::tensor_algebra
+EINSUMS_NAMESPACE_END(tensor_algebra)

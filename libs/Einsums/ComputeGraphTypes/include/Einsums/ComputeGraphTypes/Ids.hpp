@@ -5,9 +5,11 @@
 
 #pragma once
 
+#include <Einsums/Config/Namespace.hpp>
+
 #include <cstdint>
 
-namespace einsums::compute_graph {
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /**
  * @brief Unique identifier for a node within a computation graph.
@@ -26,4 +28,4 @@ using NodeId = uint64_t;
  */
 using TensorId = uint64_t;
 
-} // namespace einsums::compute_graph
+EINSUMS_NAMESPACE_END(compute_graph)

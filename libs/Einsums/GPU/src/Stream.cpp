@@ -3,10 +3,11 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Error.hpp>
 #include <Einsums/GPU/Stream.hpp>
 
-namespace einsums::gpu {
+EINSUMS_NAMESPACE_BEGIN(gpu)
 
 // ===========================================================================
 // Thread-local stream management
@@ -155,4 +156,4 @@ bool event_completed(event_t event) {
 #endif
 }
 
-} // namespace einsums::gpu
+EINSUMS_NAMESPACE_END(gpu)

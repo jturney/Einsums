@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
@@ -25,7 +26,7 @@
 #    endif
 #endif
 
-namespace einsums::simd {
+EINSUMS_NAMESPACE_BEGIN(simd)
 
 namespace {
 
@@ -330,4 +331,4 @@ InstructionSet selected_arch() {
     return selected;
 }
 
-} // namespace einsums::simd
+EINSUMS_NAMESPACE_END(simd)

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/BLAS.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Logging.hpp>
@@ -14,7 +15,7 @@
 
 #include <type_traits>
 
-namespace einsums::detail {
+EINSUMS_NAMESPACE_BEGIN(detail)
 
 template <typename From, typename To>
 constexpr To convert(From from) noexcept {
@@ -1545,4 +1546,4 @@ void copy_abs(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     }
 }
 
-} // namespace einsums::detail
+EINSUMS_NAMESPACE_END(detail)

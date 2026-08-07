@@ -3,13 +3,14 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/StringUtil/MemoryString.hpp>
 #include <Einsums/StringUtil/Trim.hpp>
 
 #include <string>
 
-namespace einsums::string_util {
+EINSUMS_NAMESPACE_BEGIN(string_util)
 
 namespace {
 
@@ -214,4 +215,4 @@ size_t memory_string(std::string const &mem_spec) {
 
     return (size_t)out;
 }
-} // namespace einsums::string_util
+EINSUMS_NAMESPACE_END(string_util)

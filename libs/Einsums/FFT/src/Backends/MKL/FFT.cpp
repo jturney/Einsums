@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/FFT/Defines.hpp>
 #include <Einsums/Print.hpp>
@@ -14,7 +15,7 @@
 
 #include <mkl_dfti.h>
 
-namespace einsums::fft::backend::mkl {
+EINSUMS_NAMESPACE_BEGIN(fft::backend::mkl)
 
 namespace {
 inline void verify(MKL_LONG status) {
@@ -180,4 +181,4 @@ void zzifft(Tensor<std::complex<double>, 1> const &a, Tensor<std::complex<double
     DftiFreeDescriptor(&handle);
 }
 
-} // namespace einsums::fft::backend::mkl
+EINSUMS_NAMESPACE_END(fft::backend::mkl)

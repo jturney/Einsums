@@ -7,13 +7,14 @@
 
 #include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
 #include "Common.hpp"
 
-namespace einsums::blas::vendor {
+EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
 extern "C" {
 extern void FC_GLOBAL(sorglq, SORGLQ)(int_t *, int_t *, int_t *, float *, int_t *, float const *, float const *, int_t *, int_t *);
@@ -88,4 +89,4 @@ ORGLQ(float, s, S);
 UNGLQ(std::complex<float>, c, C);
 UNGLQ(std::complex<double>, z, Z);
 
-} // namespace einsums::blas::vendor
+EINSUMS_NAMESPACE_END(blas::vendor)

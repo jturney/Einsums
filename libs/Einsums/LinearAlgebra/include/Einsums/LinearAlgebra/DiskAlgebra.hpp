@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra/Base.hpp>
@@ -13,7 +14,7 @@
 #include <Einsums/Tensor/DiskTensor.hpp>
 #include <Einsums/Utilities/Random.hpp>
 
-namespace einsums::linear_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(linear_algebra::detail)
 
 template <DiskTensorConcept CType, typename U>
 void scale(U alpha, CType *C) {
@@ -958,4 +959,4 @@ EINSUMS_EXPORT BufferVector<uint64_t> choose_all_n(uint64_t n);
 //     return 0;
 // }
 
-} // namespace einsums::linear_algebra::detail
+EINSUMS_NAMESPACE_END(linear_algebra::detail)

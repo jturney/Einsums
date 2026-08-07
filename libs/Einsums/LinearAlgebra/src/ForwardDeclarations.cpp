@@ -3,11 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 
 #include <complex>
 
-namespace einsums::linear_algebra::detail {
+EINSUMS_NAMESPACE_BEGIN(linear_algebra::detail)
 template EINSUMS_EXPORT void impl_direct_product<float, float, float>(float alpha, einsums::detail::TensorImpl<float> const &A,
                                                                       einsums::detail::TensorImpl<float> const &B, float beta,
                                                                       einsums::detail::TensorImpl<float> *C);
@@ -77,4 +78,4 @@ impl_gemm<std::complex<double>, std::complex<double>, std::complex<double>, std:
     char transA, char transB, std::complex<double> alpha, einsums::detail::TensorImpl<std::complex<double>> const &A,
     einsums::detail::TensorImpl<std::complex<double>> const &B, std::complex<double> beta,
     einsums::detail::TensorImpl<std::complex<double>> *C);
-} // namespace einsums::linear_algebra::detail
+EINSUMS_NAMESPACE_END(linear_algebra::detail)

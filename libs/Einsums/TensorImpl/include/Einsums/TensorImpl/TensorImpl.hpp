@@ -11,6 +11,7 @@
 #include <Einsums/Concepts/File.hpp>
 #include <Einsums/Concepts/NamedRequirements.hpp>
 #include <Einsums/Config/CompilerSpecific.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
@@ -19,7 +20,7 @@
 
 #include <type_traits>
 
-namespace einsums {
+EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {
 template <typename T>
@@ -2149,6 +2150,6 @@ void println(detail::TensorImpl<T> const &A, TensorPrintOptions options) {
     fprintln(std::cout, A, options);
 }
 
-} // namespace einsums
+EINSUMS_NAMESPACE_END()
 
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
