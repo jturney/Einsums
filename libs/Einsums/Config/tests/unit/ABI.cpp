@@ -23,23 +23,34 @@ TEST_CASE("world is one record, and the same one every time", "[abi]") {
     REQUIRE(a.struct_size == sizeof(sealed::WorldInfo));
 }
 
-// BuildModeProbe.cpp, compiled twice at different language levels.
+#if defined(EINSUMS_HAVE_FINGERPRINT_PROBES)
+// BuildModeProbe.cpp, compiled twice at different language levels. Each variant
+// exports both the fingerprint it computed and the __cplusplus it saw.
 extern "C" std::uint64_t einsums_probe_cxx20();
 extern "C" std::uint64_t einsums_probe_cxx23();
+extern "C" long          einsums_probe_std_cxx20();
+extern "C" long          einsums_probe_std_cxx23();
 
 TEST_CASE("the config fingerprint responds to its inputs", "[abi]") {
-    // A term can be dropped from the fold and nothing would notice, so require
-    // that changing one folded input changes the answer. Two compilations of
-    // ONE source; anything asserted about a single value would restate the
-    // header rather than test it.
+    // Check the DISCRIMINATOR first. If the two translation units compiled at
+    // the same language level, the fingerprints are trivially equal and the
+    // interesting assertion below would report "the fold ignores its input"
+    // when the truth is "the build system never varied the input" - two
+    // different bugs with one symptom. This separates them.
+    INFO("probe standards: " << einsums_probe_std_cxx20() << " and " << einsums_probe_std_cxx23());
+    REQUIRE(einsums_probe_std_cxx20() != einsums_probe_std_cxx23());
+
+    // Now the real property: a folded input changed, so the answer must change.
     REQUIRE(einsums_probe_cxx20() != einsums_probe_cxx23());
 
-    // The library's own value is one of the two rather than a third thing,
-    // which is what says the probe measures the same function world() reports.
+    // ...and the library's own value is one of the two rather than a third
+    // thing, which is what says the probe measures the same function world()
+    // reports.
     std::uint64_t const mine = sealed::config_fingerprint();
     REQUIRE((mine == einsums_probe_cxx20() || mine == einsums_probe_cxx23()));
     REQUIRE(sealed::world().config_fingerprint == mine);
 }
+#endif
 
 TEST_CASE("the caller's fingerprints match the library's", "[abi]") {
     // This is the whole point of the fingerprints. This test compiles against

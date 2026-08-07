@@ -22,10 +22,21 @@
 
 #include <cstdint>
 
-#if !defined(BUILD_MODE_PROBE_NAME)
-#    error "BUILD_MODE_PROBE_NAME must name the exported probe"
+#if !defined(BUILD_MODE_PROBE_NAME) || !defined(BUILD_MODE_PROBE_STD_NAME)
+#    error "BUILD_MODE_PROBE_NAME and BUILD_MODE_PROBE_STD_NAME must name the exported probes"
 #endif
 
+/// The fingerprint as this translation unit computes it.
 extern "C" std::uint64_t BUILD_MODE_PROBE_NAME() {
     return einsums::sealed::config_fingerprint();
+}
+
+/// The language level this translation unit was ACTUALLY compiled at.
+///
+/// Exported separately so the test can tell two very different failures apart.
+/// If the fingerprints match, the question is whether the fold ignored its
+/// input or whether the build system never varied the input in the first
+/// place - and those have the same symptom. This makes the second one say so.
+extern "C" long BUILD_MODE_PROBE_STD_NAME() {
+    return __cplusplus;
 }
