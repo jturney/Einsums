@@ -63,7 +63,21 @@ set(_allowed_bare "${_version_name}" "_init" "_fini" "_edata" "_end" "__bss_star
 # this check while a clang leg did not. The leading dot is the tell: no C or C++ identifier may
 # start with one, so anything spelled this way came from the toolchain rather than from a
 # translation unit we own.
-set(_allowed_prefixes ".gomp_critical_user_")
+set(_allowed_prefixes
+    # The lock backing a named `#pragma omp critical(name)`. OpenMP is
+    # process-global by design, which the sealed-worlds notes state outright.
+    # Only clang emits these into the dynamic table; gcc keeps them local.
+    ".gomp_critical_user_"
+    # AddressSanitizer's ODR indicators: one global per global variable, used to catch ODR
+    # violations. The name embeds OUR mangled symbol (__odr_asan._ZN7einsums13random_engineE), so
+    # these are ours by origin but not ours to spell - the compiler picks the form, and it is not
+    # mangled.
+    #
+    # No separator in the prefix on purpose: gcc spells it `__odr_asan.<name>` and clang spells it
+    # `__odr_asan_gen_<name>`. Matching only the dot form would pass the gcc nightly and fail the
+    # first time a clang sanitizer build ran.
+    "__odr_asan"
+)
 
 string(REPLACE "\n" ";" _lines "${_syms}")
 
