@@ -100,7 +100,10 @@ EINSUMS_NAMESPACE_END(hardware)
  *
  * @versionadded{2.0.0}
  */
-#define EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(cond) EINSUMS_OMP_SIMD_PRAGMA(parallel for if (cond))
+// Routed through the clause-aware macro: EINSUMS_OMP_SIMD_PRAGMA appends
+// ` simd` to the END of what it is given, which puts it after the `if` clause
+// and yields a pragma icx rejects outright.
+#define EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(cond) EINSUMS_OMP_SIMD_CLAUSE_PRAGMA(parallel for, if (cond))
 
 /**
  * @def EINSUMS_OMP_PARALLEL_FOR_IF

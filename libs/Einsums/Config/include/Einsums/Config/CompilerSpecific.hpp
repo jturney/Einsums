@@ -107,14 +107,28 @@
  * @versionadded{1.1.0}
  */
 #define EINSUMS_PRAGMA(stuff) _Pragma(#stuff)
+// The `simd` in a combined construct is part of the DIRECTIVE NAME, not a
+// clause: `parallel for simd if (c)` is valid, `parallel for if (c) simd` is
+// not. So a macro that appends ` simd` to whatever it is handed only works
+// while the argument is bare directive words - which is why
+// EINSUMS_OMP_SIMD_PRAGMA is documented as taking those, and why the clause
+// form below is a separate macro that splices `simd` in at the right place.
+//
+// Getting this wrong is invisible off Intel: the ` simd` is only ever appended
+// under this #if, so gcc and clang emit a valid pragma either way, and only
+// icx sees the malformed one. Clang produces the identical diagnostic when
+// handed the bad form directly.
 #if defined(__INTEL_LLVM_COMPILER) || defined(__INTEL_COMPILER)
 #    define EINSUMS_OMP_PRAGMA(stuff)      EINSUMS_PRAGMA(omp stuff)
 #    define EINSUMS_OMP_SIMD_PRAGMA(stuff) EINSUMS_PRAGMA(omp stuff simd)
 #    define EINSUMS_OMP_SIMD               _Pragma("omp simd")
+/// Combined `<directive> simd` with clauses, keeping `simd` in the directive.
+#    define EINSUMS_OMP_SIMD_CLAUSE_PRAGMA(directive, clauses) EINSUMS_PRAGMA(omp directive simd clauses)
 #else
 #    define EINSUMS_OMP_PRAGMA(stuff)      EINSUMS_PRAGMA(omp stuff)
 #    define EINSUMS_OMP_SIMD_PRAGMA(stuff) EINSUMS_PRAGMA(omp stuff)
 #    define EINSUMS_OMP_SIMD
+#    define EINSUMS_OMP_SIMD_CLAUSE_PRAGMA(directive, clauses) EINSUMS_PRAGMA(omp directive clauses)
 #endif
 /**
  * @def EINSUMS_OMP_PARALLEL_FOR_SIMD
