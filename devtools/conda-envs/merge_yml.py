@@ -25,11 +25,20 @@ DIR_PATH = os.path.dirname(os.path.realpath(__file__))
 # Bump these to move CI + local dev onto newer compilers.
 GCC_VERSION = "15"  # gcc/g++ on Linux            -> gcc_linux-64 / gxx_linux-64
 CLANG_VERSION = "22"  # clang/clang++ (Linux + macOS)
-# Pinned to 2025.2: icx/icpx 2026.0.0 ICEs in its X86 TLS/PIE address lowering
-# on our thread-local-heavy headers (crashes on every TU, even trivial ones),
-# and is markedly more memory-hungry. 2025.2 has neither problem -- it compiles
-# and links the whole tree. Re-test before bumping to a newer icx.
-DPCPP_VERSION = "2025.2.0"  # Intel oneAPI icx/icpx on Linux -> dpcpp_linux-64
+# 2026.0.0 ICEd in its X86 TLS/PIE address lowering on our thread-local-heavy
+# headers (every TU, even trivial ones) and was markedly more memory-hungry, so
+# this sat on 2025.2.0. Two point releases have shipped since: an ICE in address
+# lowering is exactly what a point release fixes, and testing the newest answers
+# a question worth answering, where re-testing 2026.0.0 only produces a
+# post-mortem.
+#
+# 2025.2.0 is the known-good fallback: it built and tested the whole tree with
+# BUILD_PYTHON=ON, 533 of 534, on 2026-08-07 - the first time icx had ever
+# compiled this tree in CI, once a malformed OpenMP combined construct was
+# fixed. That run also settled the resource question: a complete build consumed
+# roughly 13GB and left 74GB free, so disk was never a constraint, and peak
+# memory is what the /usr/bin/time -v wrapper on the build step now measures.
+DPCPP_VERSION = "2026.1.1"  # Intel oneAPI icx/icpx on Linux -> dpcpp_linux-64
 
 # The compiler implied by ``--compiler default`` on each platform.
 PLATFORM_DEFAULT_COMPILER = {

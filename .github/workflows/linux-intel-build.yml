@@ -140,7 +140,21 @@ jobs:
           # BUILD_PYTHON=ON and the ComputeGraph pybind TU is the heaviest in the
           # build. Keep -j1 until a manual run confirms -j2 fits the 16GB runner
           # with bindings on, then bump it.
-          cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install -j1
+          # /usr/bin/time -v reports "Maximum resident set size" across the
+          # process tree, so this captures the heaviest single TU - the figure
+          # the gate's memory claim rests on and the one thing the df/free
+          # probes structurally cannot see, since they sample the gaps between
+          # compiles rather than the peaks during them.
+          #
+          # GNU time prints its report even when the command fails, so a build
+          # that dies still yields the number that explains why.
+          BUILD=(cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install -j1)
+          if [ -x /usr/bin/time ]; then
+            /usr/bin/time -v "${BUILD[@]}"
+          else
+            echo "note: /usr/bin/time absent, building without peak-RSS measurement"
+            "${BUILD[@]}"
+          fi
 
       # `if: always()` so an exhausted disk is still reported when the build is
       # what died. That is the whole point: the reading we most need is the one
