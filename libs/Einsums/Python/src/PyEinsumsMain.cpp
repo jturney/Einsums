@@ -254,5 +254,11 @@ PYBIND11_MODULE(_core, m) {
         "False for a module that bound to a different copy: its registration went\n"
         "into that copy's table, which is what makes this a cross-world check.");
 
+    m.def(
+        "_registered_stage_modules", []() { return einsums::sealed::registered_stage_modules(); },
+        "Every stage module recorded against THIS libEinsums, in load order.\n"
+        "Worth printing when a handshake fails: it names the modules that DID reach\n"
+        "this world, against the one that did not.");
+
     apiary_register_all(m);
 }
