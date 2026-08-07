@@ -25,25 +25,42 @@ DIR_PATH = os.path.dirname(os.path.realpath(__file__))
 # Bump these to move CI + local dev onto newer compilers.
 GCC_VERSION = "15"  # gcc/g++ on Linux            -> gcc_linux-64 / gxx_linux-64
 CLANG_VERSION = "22"  # clang/clang++ (Linux + macOS)
-# 2026.0.0 ICEd in its X86 TLS/PIE address lowering on our thread-local-heavy
-# headers (every TU, even trivial ones) and was markedly more memory-hungry, so
-# this sat on 2025.2.0.
+# The ICE that pinned this was never about the compiler VERSION.
 #
-# The whole 2026.1.x line is currently UNINSTALLABLE from conda-forge, so the
-# ICE cannot be re-tested on a fixed release yet. Both 2026.1.0 and 2026.1.1
-# pull umf, which pins intel-cmplr-lic-rt ==2026.0.0, while the rest of the
-# toolchain requires ==2026.1.1; the solve fails outright. That is an upstream
-# packaging bug, not ours, and 2025.3.2 is the newest version that resolves
-# (checked against conda-forge in a native linux-64 container, since solving
-# for a foreign platform reports everything as unsatisfiable, 2025.2.0
-# included).
+# icx/icpx SIGSEGVs in CodeGenPrepare -> TargetMachine::getTLSModel on TUs that
+# combine OpenMP with thread_local storage. That was recorded here as "2026.0.0
+# ICEs in X86 TLS/PIE address lowering", which reads as a bad release and led to
+# a version pin. It is not: the trigger is -fiopenmp, which routes OpenMP
+# through Intel's late-outlining backend. The same compiler with plain -fopenmp
+# compiles the tree. See the IntelLLVM branch in the top-level CMakeLists, which
+# substitutes the flag.
 #
-# 2025.2.0 is the known-good fallback: it built and tested the whole tree with
-# BUILD_PYTHON=ON, 533 of 534, on 2026-08-07 - the first time icx had ever
-# compiled this tree in CI, once a malformed OpenMP combined construct was
-# fixed. That run also settled the resource question: a complete build consumed
-# roughly 13GB and left 74GB free, so disk was never a constraint, and peak
-# memory is what the /usr/bin/time -v wrapper on the build step now measures.
+# That misattribution was expensive. It sent one investigation after disk space
+# on the runner (never a constraint: a full build leaves 74GB free) and another
+# after emulation artifacts, before anything looked at the compile line. The
+# same backend was also miscompiling the PackedGemm OpenMP kernels into runtime
+# segfaults, so two apparently separate failures had one cause.
+#
+# So this pin is probably no longer needed, and 2026.0.0 should be retested with
+# the flag fix in place before anyone assumes otherwise. It is kept only because
+# nobody has done that yet.
+#
+# 2026.1.x cannot be tested at all: both 2026.1.0 and 2026.1.1 pull umf, which
+# pins intel-cmplr-lic-rt ==2026.0.0 while the rest of the toolchain requires
+# ==2026.1.1, so the solve fails outright. Upstream packaging bug, not ours.
+# 2025.3.2 is the newest that resolves - checked in a native linux-64 container,
+# because solving for a foreign platform reports EVERY version unsatisfiable,
+# including ones known to work.
+#
+# 2025.2.0 is the known-good fallback: whole tree, BUILD_PYTHON=ON, 533 of 534
+# on 2026-08-07, the first time icx ever compiled this tree in CI - which took
+# fixing a malformed OpenMP combined construct (`parallel for if(c) simd`, where
+# the simd belongs to the directive name, not the clause list).
+#
+# On memory, the other half of the original claim: a full build peaks at 4.56GB
+# resident, measured by the /usr/bin/time -v wrapper on the build step. The -j1
+# cap in the workflow cites the same 2026.0.0 memory reputation and is likely
+# also more conservative than it needs to be.
 DPCPP_VERSION = "2025.3.2"  # Intel oneAPI icx/icpx on Linux -> dpcpp_linux-64
 
 # The compiler implied by ``--compiler default`` on each platform.
