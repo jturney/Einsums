@@ -49,6 +49,16 @@ jobs:
               - '**/*.hpp'
               - '**/*.h'
               - '.clang-format'
+              # Objective-C++ (the Metal backend), the generated-header
+              # templates, and the skeletons create_module_skeleton.py stamps
+              # into every new module. All three carry einsums namespace blocks
+              # that the namespace-macro guard checks, and none of them match a
+              # *.cpp/*.hpp glob - which is exactly how the sweep that
+              # introduced those macros missed seven files.
+              - '**/*.mm'
+              - '**/*.hpp.in'
+              - '**/*.fstring'
+              - '.pre-commit-config.yaml'
 
       - name: Set output
         id: result

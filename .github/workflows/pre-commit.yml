@@ -1,6 +1,12 @@
 name: Pre-Commit Checks
 on:
   pull_request:
+  # Without this the workflow only ever fires on pull requests, so a fork whose
+  # development happens as direct pushes to main never runs it at all - which
+  # was the case here: zero runs on the fork, and none anywhere since
+  # 2026-06-06.
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 concurrency:
@@ -18,21 +24,11 @@ jobs:
     needs: [ detect_changes ]
     if: ${{ contains(needs.detect_changes.outputs.filters, 'cmake') || contains(needs.detect_changes.outputs.filters, 'cpp') }}
     runs-on: ubuntu-latest
-    # Scoped to this job (not workflow-level): a workflow-wide permissions block
-    # would restrict the reusable detect-changes.yml call (which requests
-    # read-all) and cause a startup_failure.
-    permissions:
-      contents: write
-      pull-requests: write
+    # Read-only. The write permissions this job used to carry existed solely to
+    # push an auto-format commit back onto the contributor's branch.
 
     steps:
       - uses: actions/checkout@v7
-        with:
-          # For same-repo PRs, check out the PR branch itself so an auto-format
-          # commit can be pushed back. For fork PRs github.head_ref does not
-          # exist in this repo (and the token is read-only anyway), so fall back
-          # to the default checkout (the merge ref); those paths never push.
-          ref: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.head_ref || '' }}
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -48,66 +44,25 @@ jobs:
       - name: Install pre-commit
         run: pip install pre-commit
 
+      # Report, do not repair. This used to rewrite the files and push a bot
+      # commit back to the branch, which:
+      #
+      #   - only worked for same-repo PRs, so fork contributors already got a
+      #     plain failure and a different experience for the same mistake;
+      #   - moved the contributor's branch under them, so their next push
+      #     needed a pull first;
+      #   - could land a commit after review approval, changing what was
+      #     reviewed; and
+      #   - assumed every hook REWRITES files. A checking hook that merely
+      #     reports (cmake-audit, the namespace-macro guard) left nothing
+      #     staged, so `git commit` failed with "nothing to commit" and buried
+      #     the real diagnosis.
+      #
+      # Installing the hooks locally is already the documented workflow; see
+      # docs/sphinx/contributors/style.rst.
       - name: Run pre-commit hooks
-        id: format
         run: |
-          set +e
-          # pre-commit hooks (clang-format, cmake-format, insert-license) rewrite
-          # files in place and exit non-zero when they change anything.
-          pre-commit run --all-files --show-diff-on-failure | tee pre-commit-output.txt
-          status=${PIPESTATUS[0]}
-          set -e
-
-          if [ "$status" -eq 0 ]; then
-            echo "needs_formatting=0" >> "$GITHUB_OUTPUT"
-            exit 0
+          if ! pre-commit run --all-files --show-diff-on-failure; then
+            echo "::error::pre-commit found problems. Run 'pre-commit run --all-files' locally, review the changes, and commit them. Install the hooks once with 'pre-commit install' so this happens before you push."
+            exit 1
           fi
-
-          echo "needs_formatting=1" >> "$GITHUB_OUTPUT"
-
-          FORMATTED_FILES=""
-          grep -q "Fixing .*cmake-format" pre-commit-output.txt && FORMATTED_FILES="${FORMATTED_FILES}CMake files, "
-          grep -q "Fixing .*clang-format" pre-commit-output.txt && FORMATTED_FILES="${FORMATTED_FILES}C++ files, "
-          grep -q "Fixing .*insert-license" pre-commit-output.txt && FORMATTED_FILES="${FORMATTED_FILES}license headers, "
-          FORMATTED_FILES="${FORMATTED_FILES%, }"
-          echo "formatted_files=$FORMATTED_FILES" >> "$GITHUB_OUTPUT"
-
-      - name: Commit changes
-        # Auto-commit only works for same-repo PRs (fork PRs get a read-only token).
-        if: >-
-          steps.format.outputs.needs_formatting == '1'
-          && github.event_name == 'pull_request'
-          && github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m "Apply code formatting and license headers
-
-          Co-authored-by: ${{ github.event.pull_request.user.login }} <${{ github.event.pull_request.user.login }}@users.noreply.github.com>"
-          git push
-
-      - name: Add PR comment
-        if: >-
-          steps.format.outputs.needs_formatting == '1'
-          && github.event_name == 'pull_request'
-          && github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const formattedFiles = '${{ steps.format.outputs.formatted_files }}' || 'files';
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `👋 I have formatted the ${formattedFiles} in this PR using pre-commit hooks. The changes have been committed automatically.`
-            })
-
-      - name: Fail if a fork PR needs formatting
-        # Fork PRs cannot be auto-committed; surface the failure with guidance.
-        if: >-
-          steps.format.outputs.needs_formatting == '1'
-          && github.event.pull_request.head.repo.full_name != github.repository
-        run: |
-          echo "::error::Formatting required. Run 'pre-commit run --all-files' locally and commit the result." >&2
-          exit 1
