@@ -583,6 +583,25 @@ get_property(
 einsums_info("EINSUMS_LINALG_INT_INTERFACE ${EINSUMS_LINALG_INT_INTERFACE}")
 
 find_package(OpenMP REQUIRED MODULE COMPONENTS CXX)
+
+# icx/icpx: CMake's FindOpenMP selects -fiopenmp, which routes OpenMP through Intel's late-outlining
+# pipeline (-fopenmp-late-outline plus -mllvm -paropt=31). That backend crashes (SIGSEGV in
+# CodeGenPrepare -> TargetMachine::getTLSModel) on several of our TUs that combine OpenMP with
+# thread_local storage. -fopenmp uses the classic clang OpenMP codegen path in the same compiler and
+# is unaffected; it still links the Intel runtime, so the resulting parallelism is unchanged.
+#
+# Do NOT "fix" this with -mllvm -paropt=0: it also dodges the crash, but silently turns every
+# parallel region into a single-threaded one.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM" AND OpenMP_CXX_FLAGS MATCHES "-fiopenmp")
+  einsums_info("IntelLLVM detected: using -fopenmp instead of -fiopenmp (late-outline backend ICE)")
+  string(REPLACE "-fiopenmp" "-fopenmp" OpenMP_CXX_FLAGS "${OpenMP_CXX_FLAGS}")
+  separate_arguments(_einsums_omp_flags NATIVE_COMMAND "${OpenMP_CXX_FLAGS}")
+  set_property(TARGET OpenMP::OpenMP_CXX PROPERTY INTERFACE_COMPILE_OPTIONS
+                                                  "$<$<COMPILE_LANGUAGE:CXX>:${_einsums_omp_flags}>"
+  )
+  unset(_einsums_omp_flags)
+endif()
+
 target_link_libraries(einsums_base_libraries INTERFACE OpenMP::OpenMP_CXX)
 # einsums_info("OpenMP Version ${OpenMP_CXX_MAJOR_VERSION}")
 einsums_check_for_omp_tools_h(DEFINITIONS EINSUMS_HAVE_OMP_TOOLS_H)
