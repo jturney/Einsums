@@ -190,17 +190,28 @@ PnoOverlaps compute_pno_overlaps(std::vector<einsums::RuntimeTensor<double>> con
                 factors[d + k] = s;
             }
         }
-        // Column-major: element (r, c) is r + c * M_b, so a whole column shares
-        // one factor.
-        auto      &S   = out.S_cls[ci];
-        auto const M_b = S.dim(0);
-        for (std::size_t c = 0; c < S.dim(1); ++c) {
+        // Column-major and contiguous, so element (r, c) is data[r + c * M_b]
+        // and a whole column shares one factor.
+        //
+        // Through data() rather than operator(). The runtime-rank accessor
+        // recomputes an offset from the stride vector on every element, and
+        // this loop touches 18.8M of them at ethanol/cc-pVTZ; the first version
+        // did exactly that and made the C++ backend 8.6x SLOWER than the Python
+        // one it replaced. The Python it replaced was not doing scalar work at
+        // all - it was one vectorized numpy statement running at memory
+        // bandwidth. See the note on this function.
+        auto      &S                  = out.S_cls[ci];
+        auto const M_b                = S.dim(0);
+        auto const cols               = S.dim(1);
+        double *__restrict const data = S.data();
+        for (std::size_t c = 0; c < cols; ++c) {
             double const f = factors[c];
             if (f == 1.0) {
                 continue;
             }
+            double *const column = data + c * M_b;
             for (std::size_t r = 0; r < M_b; ++r) {
-                S(r, c) *= f;
+                column[r] *= f;
             }
         }
     }
@@ -235,14 +246,15 @@ PnoOverlaps compute_pno_overlaps(std::vector<einsums::RuntimeTensor<double>> con
         if (plan.sign[n] >= 0.0) {
             continue;
         }
-        auto      &T   = out.S_T[plan.cls[n]];
-        auto const s   = static_cast<std::size_t>(plan.src_slot[n]);
-        auto const M_p = T.dim(0);
-        auto const M_b = T.dim(1);
-        for (std::size_t b = 0; b < M_b; ++b) {
-            for (std::size_t p = 0; p < M_p; ++p) {
-                T(p, b, s) = -T(p, b, s);
-            }
+        // One coupling owns slot s entirely, and (p, b, s) is contiguous in
+        // p then b, so the slot is one contiguous M_p * M_b block. Same reason
+        // as the scaling above for going through data().
+        auto      &T                   = out.S_T[plan.cls[n]];
+        auto const slot                = static_cast<std::size_t>(plan.src_slot[n]);
+        auto const block               = T.dim(0) * T.dim(1);
+        double *__restrict const first = T.data() + slot * block;
+        for (std::size_t k = 0; k < block; ++k) {
+            first[k] = -first[k];
         }
     }
 
