@@ -397,10 +397,16 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // the loop with no changes to that pass.
         auto build_l = [contribs = std::move(contribs), ab0, graph_ptr, nonshared_id, l_id, t_id, dtype]() {
             detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-                using RT      = GeneralRuntimeTensor<T, std::allocator<T>>;
-                auto   *L     = static_cast<RT *>(graph_ptr->tensor(l_id).tensor_ptr);
-                auto   *B     = static_cast<RT *>(graph_ptr->tensor(nonshared_id).tensor_ptr);
-                auto   *Tt    = static_cast<RT *>(graph_ptr->tensor(t_id).tensor_ptr);
+                using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
+                // live_tensor_ptr, not tensor_ptr: B is a CAPTURED OPERAND, and
+                // tensor_ptr names the caller's wrapper, which capture allows to
+                // be destroyed before execute() precisely because it adopted the
+                // storage into a stand-in. Reading tensor_ptr here dereferenced
+                // the dead wrapper, so L came out zero and the fold returned zero
+                // while reporting success.
+                auto   *L     = static_cast<RT *>(graph_ptr->live_tensor_ptr(l_id));
+                auto   *B     = static_cast<RT *>(graph_ptr->live_tensor_ptr(nonshared_id));
+                auto   *Tt    = static_cast<RT *>(graph_ptr->live_tensor_ptr(t_id));
                 T const ab0_t = as<T>(ab0);
                 L->zero();
                 for (auto const &c : contribs) {

@@ -272,7 +272,7 @@ bool TiledExpansion::run(Graph &graph) {
             Graph *g   = &graph;
             sc.execute = [g, tid, pf, dt]() {
                 detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
-                    auto *t = static_cast<GeneralRuntimeTensor<T, std::allocator<T>> *>(g->tensor(tid).tensor_ptr);
+                    auto *t = static_cast<GeneralRuntimeTensor<T, std::allocator<T>> *>(g->live_tensor_ptr(tid));
                     *t *= as<T>(pf);
                 });
             };
@@ -318,8 +318,8 @@ bool TiledExpansion::run(Graph &graph) {
         nd.execute = [g, xt, yt, params, dt]() {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 using Dense      = GeneralRuntimeTensor<T, std::allocator<T>>;
-                auto const *xptr = static_cast<Dense const *>(g->tensor(xt).tensor_ptr);
-                auto       *yptr = static_cast<Dense *>(g->tensor(yt).tensor_ptr);
+                auto const *xptr = static_cast<Dense const *>(g->live_tensor_ptr(xt));
+                auto       *yptr = static_cast<Dense *>(g->live_tensor_ptr(yt));
                 auto const  b    = as<T>(params->beta);
                 if (b == T{1}) {
                     linear_algebra::axpy(as<T>(params->alpha), *xptr, yptr);
@@ -347,8 +347,8 @@ bool TiledExpansion::run(Graph &graph) {
         nd.execute = [g, at, ct, pspec, alpha, beta, dt]() {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 using Dense      = GeneralRuntimeTensor<T, std::allocator<T>>;
-                auto const *aptr = static_cast<Dense const *>(g->tensor(at).tensor_ptr);
-                auto       *cptr = static_cast<Dense *>(g->tensor(ct).tensor_ptr);
+                auto const *aptr = static_cast<Dense const *>(g->live_tensor_ptr(at));
+                auto       *cptr = static_cast<Dense *>(g->live_tensor_ptr(ct));
                 dispatch::string_permute(pspec, as<T>(beta), cptr, as<T>(alpha), *aptr);
             });
         };
@@ -411,9 +411,9 @@ bool TiledExpansion::run(Graph &graph) {
         nd.execute = [g, at, bt, ct, alpha, beta, dt]() {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 using Dense      = GeneralRuntimeTensor<T, std::allocator<T>>;
-                auto const *aptr = static_cast<Dense const *>(g->tensor(at).tensor_ptr);
+                auto const *aptr = static_cast<Dense const *>(g->live_tensor_ptr(at));
                 auto const *bptr = static_cast<Dense const *>(g->tensor(bt).tensor_ptr);
-                auto       *cptr = static_cast<Dense *>(g->tensor(ct).tensor_ptr);
+                auto       *cptr = static_cast<Dense *>(g->live_tensor_ptr(ct));
                 linear_algebra::direct_division(as<T>(alpha), *aptr, *bptr, as<T>(beta), cptr);
             });
         };
@@ -472,7 +472,7 @@ bool TiledExpansion::run(Graph &graph) {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 bool const zero = is_zero(pf);
                 for (TensorId const tid : tids) {
-                    auto *t = static_cast<GeneralRuntimeTensor<T, std::allocator<T>> *>(g->tensor(tid).tensor_ptr);
+                    auto *t = static_cast<GeneralRuntimeTensor<T, std::allocator<T>> *>(g->live_tensor_ptr(tid));
                     if (zero) {
                         t->zero();
                     } else {

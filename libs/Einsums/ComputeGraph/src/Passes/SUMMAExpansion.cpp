@@ -185,12 +185,19 @@ bool SUMMAExpansion::run(Graph &graph) {
         auto original_execute = node.execute;
         auto c_pf             = desc->c_prefactor; // PrefactorScalar; unwrapped per-dtype below
 
-        // Capture tensor pointers (type-erased) for broadcast
-        // A_local, B_local, C_local are the tensors after materialization
-        auto *a_ptr = a_handle.tensor_ptr; // void* to Tensor<T,2>
-        auto *b_ptr = b_handle.tensor_ptr;
-        auto *c_ptr = out_handle.tensor_ptr;
-        auto  dtype = out_handle.dtype;
+        // Tensor IDS, resolved at EXECUTE time through Graph::live_tensor_ptr,
+        // rather than pointers baked here. Two reasons, and the second is a
+        // correctness bug rather than a style point. Materialization may
+        // relocate a deferred tensor after this pass runs, so a pointer taken
+        // now can be stale by replay. And `tensor_ptr` names the CALLER's
+        // wrapper, which capture allows to be destroyed before execute()
+        // because it adopted the storage into a stand-in; only
+        // `live_tensor_ptr` returns the object the graph actually keeps alive.
+        auto          *graph_ptr = &graph;
+        TensorId const a_id      = node.inputs[0];
+        TensorId const b_id      = node.inputs[1];
+        TensorId const c_id      = node.outputs[0];
+        auto           dtype     = out_handle.dtype;
 
         // We need type-specific SUMMA. Use dtype to dispatch.
         // For now, support double only.
@@ -203,7 +210,10 @@ bool SUMMAExpansion::run(Graph &graph) {
         auto a_alloc_fn = a_handle.allreduce_sum_fn; // not used, but we need broadcast
         // We'll use comm::broadcast directly with the row/col communicators
 
-        node.execute = [&grid, panels, a_ptr, b_ptr, c_ptr, dtype, c_pf, original_execute]() {
+        node.execute = [&grid, panels, graph_ptr, a_id, b_id, c_id, dtype, c_pf, original_execute]() {
+            void *a_ptr = graph_ptr->live_tensor_ptr(a_id);
+            void *b_ptr = graph_ptr->live_tensor_ptr(b_id);
+            void *c_ptr = graph_ptr->live_tensor_ptr(c_id);
             if (dtype == packed_gemm::ScalarType::Float64) {
                 run_summa_panels<double>(grid, panels, a_ptr, b_ptr, c_ptr, c_pf);
             } else if (dtype == packed_gemm::ScalarType::Float32) {

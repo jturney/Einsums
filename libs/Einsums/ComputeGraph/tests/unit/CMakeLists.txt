@@ -59,6 +59,7 @@ set(ComputeGraphTests
     Pass_LoopInvariantHoisting.cpp
     Pass_Materialization.cpp
     Pass_MemoryPlanning.cpp
+    Pass_ProgramOrderGuard.cpp
     Pass_Reorder.cpp
     Pass_ScaleAbsorption.cpp
     Pass_TiledExpansion.cpp
@@ -156,6 +157,7 @@ set(ComputeGraphTests
     test_pass_linear_combination_contraction_folding_python.py
     test_pass_loop_invariant_hoisting_python.py
     test_pass_memory_planning_python.py
+    test_pass_operand_lifetime_python.py
     test_pass_reorder_python.py
     test_pass_scale_absorption_python.py
     test_pass_symmetry_propagation_python.py

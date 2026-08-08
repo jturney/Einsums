@@ -198,6 +198,34 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     [[nodiscard]] TensorHandle const *find_tensor(TensorId id) const noexcept; ///< @overload
 
     /**
+     * @brief The tensor object a node may legally dereference at EXECUTE time.
+     *
+     * Use this, never ``tensor(id).tensor_ptr``, in any lambda a pass bakes
+     * into ``Node::execute``.
+     *
+     * ``TensorHandle::tensor_ptr`` names the CALLER's wrapper. That is the
+     * handle's identity and it is deliberately not its lifetime: capture adopts
+     * the operand's storage into a stand-in the graph keeps alive
+     * (``TensorHandle::owner``), precisely so the caller's wrapper may be
+     * destroyed before ``execute()``. Every built-in node reaches its operands
+     * through the stand-in via ``TensorSlot::ptr``; a pass that rewrites a node
+     * into an ``OpKind::Custom`` closure over ``tensor_ptr`` opts back out of
+     * that guarantee and reads freed memory, silently, with a zeroed
+     * intermediate as the usual symptom.
+     *
+     * @param[in] id The tensor identifier.
+     * @return The stand-in when capture adopted one, otherwise the registered
+     *         pointer. Null if no tensor with that id exists.
+     */
+    [[nodiscard]] void *live_tensor_ptr(TensorId id) const noexcept {
+        auto const *handle = find_tensor(id);
+        if (handle == nullptr) {
+            return nullptr;
+        }
+        return handle->owner ? handle->owner.get() : handle->tensor_ptr;
+    }
+
+    /**
      * @brief Execute all nodes in topological order.
      *
      * Performs topological sorting (if not already sorted), validates that all

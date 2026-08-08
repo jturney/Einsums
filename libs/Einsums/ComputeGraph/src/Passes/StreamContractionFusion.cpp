@@ -84,7 +84,11 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
                 std::vector<int> const &allowed_axes) {
     using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
 
-    auto const *S      = static_cast<RT const *>(graph->tensor(s_id).tensor_ptr);
+    // live_tensor_ptr throughout, never tensor_ptr: every tensor this kernel
+    // touches is a CAPTURED OPERAND, and tensor_ptr names the caller's wrapper,
+    // which capture allows to be destroyed before execute() because it adopted
+    // the storage into a stand-in. See Graph::live_tensor_ptr.
+    auto const *S      = static_cast<RT const *>(graph->live_tensor_ptr(s_id));
     int const   rank   = static_cast<int>(S->rank());
     size_t      s_size = 1;
     for (int d = 0; d < rank; d++) {
@@ -126,7 +130,7 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
     std::unordered_set<TensorId> prescaled;
     for (auto const &m : members) {
         if (prescaled.insert(m.out_id).second) {
-            auto *C = static_cast<RT *>(graph->tensor(m.out_id).tensor_ptr);
+            auto *C = static_cast<RT *>(graph->live_tensor_ptr(m.out_id));
             if (m.c_pf_is_zero) {
                 C->zero();
             } else if (!m.c_pf_is_one) {
@@ -181,8 +185,8 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
     plans.reserve(members.size());
     for (auto const &m : members) {
         Plan        p;
-        auto const *W = static_cast<RT const *>(graph->tensor(m.w_id).tensor_ptr);
-        auto       *C = static_cast<RT *>(graph->tensor(m.out_id).tensor_ptr);
+        auto const *W = static_cast<RT const *>(graph->live_tensor_ptr(m.w_id));
+        auto       *C = static_cast<RT *>(graph->live_tensor_ptr(m.out_id));
         p.alpha       = as<T>(m.alpha);
         p.w           = W->data();
         p.out         = C->data();
@@ -351,7 +355,7 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
     // and add elementwise - spans match because outputs are dense runtime
     // tensors (allocated by capture) and offsets stay within [0, elems).
     for (size_t u = 0; u < unique_outs.size(); u++) {
-        auto *C  = static_cast<RT *>(graph->tensor(unique_outs[u]).tensor_ptr);
+        auto *C  = static_cast<RT *>(graph->live_tensor_ptr(unique_outs[u]));
         T    *cd = C->data();
         for (int t = 0; t < nthreads; t++) {
             auto const &buf = thread_priv[static_cast<size_t>(t)][u];

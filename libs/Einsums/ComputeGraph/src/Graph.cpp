@@ -2581,7 +2581,21 @@ UsageAnalysis const &Graph::usage() {
 bool Graph::apply(PassManager &pm) {
     // Storage-level aliasing must be resolved before anything reasons about
     // which buffer a node touches; cheap and idempotent after the first call.
-    link_alias_storage();
+    //
+    // Recursively, and that is not a refinement. Fourteen passes opt into
+    // ``recurse_into_subgraphs()`` and rewrite loop bodies, and every one of
+    // them asks ``Graph::resolve_alias`` which buffer a node touches. Linking
+    // the root alone left every body unlinked, so inside a loop that question
+    // answered "this view aliases nothing": Reorder's hazard scan then missed
+    // the view/parent edges entirely and was free to move a writer past a
+    // reader of the same buffer. Silent, and invisible to a straight-line test.
+    // for_each_subgraph visits one level, so this recurses: a loop nested in a
+    // loop needs linking as much as the outer one does.
+    auto link_tree = [](Graph &g, auto &&self) -> void {
+        g.link_alias_storage();
+        g.for_each_subgraph([&self](Graph &sub) { self(sub, self); });
+    };
+    link_tree(*this, link_tree);
     std::scoped_lock const lock(*_content_mutex);
     bool const             modified = pm.run(*this);
     if (modified) {

@@ -79,10 +79,38 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * inside ``run()`` via ``Graph::for_each_subgraph``. Their output
      * lands in the *parent* graph, not the child.
      *
-     * Passes that need parent context to decide correctness (DNE post-loop
-     * liveness, ConstantFolding iteration-variance check, Reorder
-     * boundary respect) must also keep this ``false`` until they grow the
-     * required cross-graph reasoning.
+     * Passes that need parent context to decide correctness must also keep
+     * this ``false`` until they grow the required cross-graph reasoning.
+     * ``DeadNodeElimination`` and ``CSE`` are the current instances, and both
+     * opt out here while walking the tree THEMSELVES inside ``run()``, which
+     * is not the same as not running on bodies.
+     *
+     * Two passes this paragraph used to name have since earned their way in,
+     * and what they had to grow is the useful part:
+     * ``ConstantFolding`` folds only nodes whose tensors are materialized at
+     * pass time, so a body's deferred workspace is skipped rather than
+     * executed against unallocated storage;
+     * ``Reorder`` encodes WAR edges (reader → writer) and not just
+     * ``last_writer``, which is exactly what keeps a loop-carried
+     * read-before-write ahead of the write that would otherwise overtake it.
+     *
+     * Known gap, measured rather than assumed: the program-order guard in
+     * ``PassManager::run`` checks the TOP-LEVEL graph only, so a pass that
+     * returns ``true`` here rewrites bodies with that guard switched off.
+     * Extending the guard over the sub-graph tree was tried on 2026-08-08 and
+     * withdrawn. It reports false positives in bodies, because its
+     * "was there an earlier writer of this buffer in scan order" test is a
+     * proxy for "this read has a producer", and Reorder - which builds real
+     * RAW edges and never inverts a genuine producer/consumer pair - trips the
+     * proxy without changing semantics. Sixteen control-flow fuzz programs
+     * flagged, all four dtypes, and all 798 numerically identical with the
+     * check disabled. Closing the gap needs the guard to reason from real
+     * dependence edges rather than scan position, which is a bigger change
+     * than the guard is.
+     *
+     * One thing recursion does NOT buy you: a rewrite that bakes a lambda over
+     * ``TensorHandle::tensor_ptr`` is wrong at every level, loop or not. Use
+     * ``Graph::live_tensor_ptr``.
      */
     [[nodiscard]] virtual bool recurse_into_subgraphs() const { return false; }
 

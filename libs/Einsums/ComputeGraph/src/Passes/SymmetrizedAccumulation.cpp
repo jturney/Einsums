@@ -370,9 +370,13 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
 
         auto exec = [graph_ptr, r2, tmp, pspec, s2, dtype]() {
             auto build = [&]<typename T>(T /*tag*/) {
-                using RT  = GeneralRuntimeTensor<T, std::allocator<T>>;
-                auto *dst = static_cast<RT *>(graph_ptr->tensor(r2).tensor_ptr);
-                auto *src = static_cast<RT *>(graph_ptr->tensor(tmp).tensor_ptr);
+                using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
+                // live_tensor_ptr, not tensor_ptr: both are captured operands,
+                // and tensor_ptr names the caller's wrapper, which capture
+                // allows to be destroyed before execute() because it adopted
+                // the storage into a stand-in.
+                auto *dst = static_cast<RT *>(graph_ptr->live_tensor_ptr(r2));
+                auto *src = static_cast<RT *>(graph_ptr->live_tensor_ptr(tmp));
                 dispatch::string_permute<RT, RT>(pspec, T{1}, dst, as<T>(s2), *src); // r2 = 1*r2 + s2*P(tmp)
             };
             detail::dispatch_scalar_type(dtype, build);
