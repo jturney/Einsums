@@ -152,6 +152,13 @@ if (@EINSUMS_BUILD_PYTHON@)
   # failure surfaces as "incompatible function arguments" at call time rather
   # than as anything diagnosable at load time.
   set(Einsums_PYBIND11_VERSION "@EINSUMS_PYBIND11_VERSION@")
+  # The language level Einsums itself was compiled at, exported so a stage
+  # module can match it without guessing. Not cosmetic: a module compiled at a
+  # different standard folds a different __cplusplus into config_fingerprint()
+  # and is refused at import by einsums.sealed - and worse, it may fail to
+  # dlopen outright on a template instantiation this library never emitted,
+  # which happens before any handshake gets to explain itself.
+  set(Einsums_CXX_STANDARD "@EINSUMS_WITH_CXX_STANDARD@")
   if(Einsums_PYBIND11_VERSION)
     find_package(pybind11 ${Einsums_PYBIND11_VERSION} EXACT REQUIRED)
   else()

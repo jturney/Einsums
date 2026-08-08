@@ -61,3 +61,87 @@ function(einsums_check_compiler_compatibility)
     endif ()
   endif ()
 endfunction()
+
+#:
+#: .. cmake:command:: einsums_add_stage_module
+#:
+#:    Define a compiled stage module for ``einsums.stages``.
+#:
+#:    ``einsums_add_stage_module(<name> SOURCES <src...> [INCLUDE_DIRS <dir...>]
+#:    [LINK_LIBRARIES <lib...>])``
+#:
+#:    Replaces the four lines every stage module would otherwise repeat, and
+#:    supplies the one that is easy to get wrong. The full CMakeLists becomes:
+#:
+#:    .. code-block:: cmake
+#:
+#:       find_package(Einsums REQUIRED COMPONENTS stages)
+#:       einsums_add_stage_module(mymethod_stages SOURCES bindings.cpp src/Foo.cpp)
+#:
+#:    Three things it does that are worth knowing rather than reproducing by
+#:    hand.
+#:
+#:    **pybind11 is already found.** ``find_package(Einsums)`` locates it at the
+#:    exact version ``einsums._core`` was built with, because pybind11 only
+#:    shares types between modules whose internals blob agrees; disagree and the
+#:    module gets a private type registry and the failure surfaces as
+#:    "incompatible function arguments" at call time. A stage module repeating
+#:    the ``find_package(pybind11 ... EXACT)`` line is harmless but redundant.
+#:
+#:    **The language standard is matched to the library's, not inherited from
+#:    the compiler default.** A mismatch folds a different ``__cplusplus`` into
+#:    the config fingerprint and is refused at import; it can also fail to
+#:    ``dlopen`` outright, on a template instantiation the library never
+#:    emitted, which happens before the handshake can explain anything. Both
+#:    were observed while building the first stage module.
+#:
+#:    **Shared is required.** Shared-graph capture keeps its capture context in
+#:    thread-local state inside libEinsums, so a statically linked stage module
+#:    gets a second, private context and the nodes it emits land in a graph
+#:    nobody executes. ``COMPONENTS stages`` makes ``find_package`` refuse a
+#:    static install; this checks again in case the caller omitted it.
+#:
+function(einsums_add_stage_module name)
+  cmake_parse_arguments(PARSE_ARGV 1 _sm "" "" "SOURCES;INCLUDE_DIRS;LINK_LIBRARIES")
+
+  if(NOT _sm_SOURCES)
+    message(FATAL_ERROR "einsums_add_stage_module(${name}): SOURCES is required")
+  endif()
+  if(_sm_UNPARSED_ARGUMENTS)
+    message(FATAL_ERROR "einsums_add_stage_module(${name}): unexpected arguments: ${_sm_UNPARSED_ARGUMENTS}")
+  endif()
+
+  if(DEFINED Einsums_IS_SHARED AND NOT Einsums_IS_SHARED)
+    message(
+      FATAL_ERROR
+        "einsums_add_stage_module(${name}) needs a SHARED libEinsums. Shared-graph capture keeps "
+        "its capture context in thread-local state inside the library, so a statically linked "
+        "stage module gets its own copy and silently captures into a graph nobody executes. "
+        "Rebuild Einsums with BUILD_SHARED_LIBS=ON, or find it with COMPONENTS stages to catch "
+        "this at find_package time."
+    )
+  endif()
+
+  if(NOT COMMAND pybind11_add_module)
+    message(
+      FATAL_ERROR
+        "einsums_add_stage_module(${name}): pybind11_add_module is not defined. Call "
+        "find_package(Einsums) first - it locates pybind11 at the exact version einsums._core "
+        "was built with."
+    )
+  endif()
+
+  pybind11_add_module(${name} MODULE ${_sm_SOURCES})
+  target_link_libraries(${name} PRIVATE Einsums::Einsums ${_sm_LINK_LIBRARIES})
+
+  if(_sm_INCLUDE_DIRS)
+    target_include_directories(${name} PRIVATE ${_sm_INCLUDE_DIRS})
+  endif()
+
+  if(Einsums_CXX_STANDARD)
+    set_target_properties(
+      ${name} PROPERTIES CXX_STANDARD ${Einsums_CXX_STANDARD} CXX_STANDARD_REQUIRED ON
+                         CXX_EXTENSIONS OFF
+    )
+  endif()
+endfunction()
