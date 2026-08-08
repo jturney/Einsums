@@ -124,19 +124,28 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
     frame.start      = evt.timestamp;
     for (int i = 0; i < kNumCounterSlots; ++i)
         frame.counters[i] = evt.counters[i];
-    ts.stack.push_back(frame);
 
-    // Eagerly create the tree path so annotations can find the node
-    AggNode *cur = &ts.root;
-    for (auto &f : ts.stack) {
-        auto const &name = _strings.get(f.name_id);
-        auto        it   = cur->children.find(name);
-        if (it == cur->children.end()) {
-            cur->children[name] = std::make_unique<AggNode>(name);
-            it                  = cur->children.find(name);
-        }
-        cur = it->second.get();
+    // One step down from the parent, not a walk from the root. The parent's
+    // node was resolved when IT was pushed, so the path above this frame is
+    // already known and re-deriving it was pure repetition.
+    AggNode *parent = ts.stack.empty() ? &ts.root : ts.stack.back().node;
+    auto     it     = parent->children.find(evt.name_id);
+    if (it == parent->children.end()) {
+        // The only place a name is resolved to a string, and it runs once per
+        // distinct call path rather than once per event. file/function are
+        // fixed for a given zone site, so they are recorded here too instead of
+        // being re-read from the string table on every pop.
+        auto node      = std::make_unique<AggNode>(_strings.get(evt.name_id));
+        node->file     = _strings.get(evt.file_id);
+        node->line     = evt.line;
+        node->function = _strings.get(evt.func_id);
+
+        parent->children[evt.name_id] = std::move(node);
+        it                            = parent->children.find(evt.name_id);
     }
+    frame.node = it->second.get();
+
+    ts.stack.push_back(frame);
 }
 
 void AggNode::record_exclusive(ns exclusive) {
@@ -179,29 +188,13 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
     ns const duration  = std::chrono::duration_cast<ns>(evt.timestamp - frame.start);
     ns const exclusive = duration - frame.child_time;
 
-    // Build path from root to this node
-    std::vector<std::string const *> path;
-    path.reserve(ts.stack.size());
-    for (auto &f : ts.stack) {
-        path.push_back(&_strings.get(f.name_id));
+    // The node this frame accumulates into was resolved at push. This used to
+    // rebuild the whole root-to-here path and hash every ancestor's full name,
+    // which is what made a pop cost O(depth) string lookups.
+    AggNode *cur = frame.node;
+    if (cur == nullptr) {
+        return; // push was never processed for this frame
     }
-    path.push_back(&_strings.get(frame.name_id));
-
-    // Walk tree, creating nodes as needed
-    AggNode *cur = &ts.root;
-    for (auto *name_ptr : path) {
-        auto &name = *name_ptr;
-        auto  it   = cur->children.find(name);
-        if (it == cur->children.end()) {
-            cur->children[name] = std::make_unique<AggNode>(name);
-            it                  = cur->children.find(name);
-        }
-        cur = it->second.get();
-    }
-
-    cur->file     = _strings.get(frame.file_id);
-    cur->line     = frame.line;
-    cur->function = _strings.get(frame.func_id);
 
     cur->record_exclusive(exclusive);
 
@@ -247,15 +240,10 @@ void Consumer::process_annotate(ThreadState &ts, Event const &evt) {
     if (ts.stack.empty())
         return;
 
-    // Find the current node in the tree by walking the stack path
-    AggNode *cur = &ts.root;
-    for (auto &f : ts.stack) {
-        auto &name = _strings.get(f.name_id);
-        auto  it   = cur->children.find(name);
-        if (it == cur->children.end())
-            return; // node doesn't exist yet (shouldn't happen if push was processed)
-        cur = it->second.get();
-    }
+    // The innermost frame already knows its node; no walk, no string lookups.
+    AggNode *cur = ts.stack.back().node;
+    if (cur == nullptr)
+        return; // push was never processed for this frame
 
     std::string const &key = _strings.get(evt.key_id);
 
@@ -294,15 +282,10 @@ void Consumer::process_mem(ThreadState &ts, Event const &evt) {
     if (ts.stack.empty())
         return;
 
-    // Find the current node in the tree by walking the stack path
-    AggNode *cur = &ts.root;
-    for (auto &f : ts.stack) {
-        auto &name = _strings.get(f.name_id);
-        auto  it   = cur->children.find(name);
-        if (it == cur->children.end())
-            return;
-        cur = it->second.get();
-    }
+    // The innermost frame already knows its node; no walk, no string lookups.
+    AggNode *cur = ts.stack.back().node;
+    if (cur == nullptr)
+        return; // push was never processed for this frame
 
     if (evt.type == EventType::MemAlloc) {
         cur->mem_alloc_count += 1;

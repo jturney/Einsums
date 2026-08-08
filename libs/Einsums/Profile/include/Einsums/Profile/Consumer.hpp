@@ -93,7 +93,18 @@ struct AggNode {
     static constexpr int kHistogramBuckets = 21;
     uint64_t             histogram[kHistogramBuckets]{}; // NOLINT(modernize-avoid-c-arrays)
 
-    InsertionOrderedMap<std::string, std::unique_ptr<AggNode>> children;
+    /// Children keyed by INTERNED name id, not by name.
+    ///
+    /// The producer already interns each zone's name once per call site and
+    /// ships a ``uint32_t`` (see ``Profiler::push_interned``, whose comment
+    /// explains that interning per entry meant hashing and ``memcmp``-ing the
+    /// same strings - including a long absolute ``__FILE__`` - under a shared
+    /// mutex millions of times). Keying this map by ``std::string`` undid that
+    /// at the consumer: every push and pop resolved the ids back to strings
+    /// through the string table's ``shared_mutex`` and then hashed the full
+    /// name at every level of the path. A 4-byte key hashes in constant time
+    /// and needs no string at all; ``name`` below still carries it for display.
+    InsertionOrderedMap<uint32_t, std::unique_ptr<AggNode>> children;
 
     AggNode() = default;
     explicit AggNode(std::string n) : name(std::move(n)) {}
@@ -127,6 +138,17 @@ struct ThreadState {
         ns        child_time{0};
         TimePoint start;
         uint64_t  counters[kNumCounterSlots]{}; // NOLINT(modernize-avoid-c-arrays)
+
+        /// The aggregation node this frame accumulates into, resolved once when
+        /// the zone was pushed.
+        ///
+        /// Every handler used to rediscover it by walking the tree from the
+        /// root, so a zone at depth d cost d map lookups on push, d again on
+        /// pop, and d more on every annotation - all of it repeating work the
+        /// push had already done. Caching the pointer makes each O(1). It stays
+        /// valid because the node is owned by a ``unique_ptr`` in its parent's
+        /// map and nothing erases nodes; the tree only grows.
+        AggNode *node{nullptr};
     };
 
     std::string             name;
@@ -212,16 +234,15 @@ class EINSUMS_EXPORT Consumer {
         if (ts.stack.empty())
             return merged;
 
-        // Walk from root to current node, collecting annotations at each level
-        AggNode const *cur = &ts.root;
+        // Root to current node, collecting annotations at each level. The
+        // frames already carry their nodes, so this needs no tree lookups and
+        // no string-table traffic at all.
         for (auto const &frame : ts.stack) {
-            auto const &name     = _strings.get(frame.name_id);
-            auto        child_it = cur->children.find(name);
-            if (child_it == cur->children.end())
+            if (frame.node == nullptr) {
                 break;
-            cur = child_it->second.get();
+            }
             // Merge this node's annotations (child overrides parent)
-            for (auto const &[key, val] : cur->annotations) {
+            for (auto const &[key, val] : frame.node->annotations) {
                 merged[key] = val;
             }
         }
