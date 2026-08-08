@@ -27,6 +27,18 @@ if(EINSUMS_BUILD_PYTHON)
   #
   # Skipped outright, not degraded, where the toolchain has no C++23: a test
   # that cannot discriminate should say so.
+  # The shared-graph contract: a C++ stage emitting into the caller's graph.
+  # Built once, at the project's own standard, and separate from the handshake
+  # probe below - that one is compiled at two language levels and has to stay on
+  # a narrow ledge of minimal includes, which ComputeGraph is not.
+  pybind11_add_module(einsums_shared_capture_probe MODULE SharedCaptureProbe.cpp)
+  set_target_properties(
+    einsums_shared_capture_probe
+    PROPERTIES FOLDER "Tests/Unit" LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+  )
+  target_link_libraries(einsums_shared_capture_probe PRIVATE Einsums)
+  add_dependencies(einsums_shared_capture_probe PyEinsums)
+
   if("cxx_std_23" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
     foreach(_std 20 23)
       set(_probe einsums_stage_probe_cxx${_std})
@@ -47,6 +59,7 @@ if(EINSUMS_BUILD_PYTHON)
     einsums_add_python_unit_test(
       "Modules.Python" StageModuleHandshakePython SCRIPT test_stage_module_python.py
     )
+    add_dependencies(einsums_stage_probe_cxx20 einsums_shared_capture_probe)
     # APPEND, not set_tests_properties(PROPERTIES ENVIRONMENT ...). ctest's
     # ENVIRONMENT property clobbers rather than merges, so setting it here
     # discards the PYTHONPATH einsums_add_python_unit_test put there and the

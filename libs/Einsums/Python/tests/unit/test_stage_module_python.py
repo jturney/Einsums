@@ -29,13 +29,24 @@ from einsums.sealed import WorldMismatch
 
 MATCHING = f"einsums_stage_probe_cxx{os.environ.get('EINSUMS_STAGE_PROBE_STD', '20')}"
 SKEWED = f"einsums_stage_probe_cxx{os.environ.get('EINSUMS_STAGE_PROBE_SKEW', '23')}"
+CAPTURE = "einsums_shared_capture_probe"
 
 
-def _import(name):
+def _import(name, optional=False):
+    """Import a probe, skipping only when it genuinely was not built.
+
+    The `optional` narrowing matters. A blanket `except ImportError: skip` hid a
+    real defect here once: the C++23 probe was building fine and failing to
+    dlopen on a missing symbol, and the skip turned "the skew test is broken"
+    into "the skew test did not run", which looks identical in a green suite.
+    A module whose file exists must import or fail loudly.
+    """
     try:
         return importlib.import_module(name)
-    except ImportError:
-        pytest.skip(f"{name} was not built (no C++23 toolchain?)")
+    except ImportError as exc:
+        if optional and "No module named" in str(exc):
+            pytest.skip(f"{name} was not built (no C++23 toolchain?)")
+        raise
 
 
 @pytest.fixture(scope="module")
@@ -45,7 +56,12 @@ def matching():
 
 @pytest.fixture(scope="module")
 def skewed():
-    return _import(SKEWED)
+    return _import(SKEWED, optional=True)
+
+
+@pytest.fixture(scope="module")
+def capture_probe():
+    return _import(CAPTURE)
 
 
 def test_the_two_probes_really_were_compiled_differently(matching, skewed):
@@ -115,3 +131,103 @@ def test_load_stage_module_accepts_the_matching_probe(matching):
 def test_load_stage_module_refuses_the_skewed_probe(skewed):
     with pytest.raises(WorldMismatch):
         stages.load_stage_module(SKEWED, prefix="stage_")
+
+
+# ----------------------------------------------------------------------
+# Shared-graph capture: the definition of decision 2
+# ----------------------------------------------------------------------
+def test_a_cpp_stage_emits_into_pythons_graph(capture_probe):
+    """A C++ stage called under a Python capture joins THAT graph.
+
+    This is the contract the whole framework rests on. If a C++ stage captured
+    into a private graph instead, every stage boundary would be a graph
+    boundary and no optimization pass would ever see a whole method - which is
+    the design that was considered and rejected.
+
+    The node count is asserted as hard as the numbers are, and that is
+    deliberate: three separate graphs produce exactly the same answers, so a
+    correctness check alone cannot tell the two designs apart.
+    """
+    import numpy as np
+
+    import einsums.graph as cg
+
+    n = 4
+    A = einsums.create_random_tensor("A", [n, n])
+    B = einsums.create_random_tensor("B", [n, n])
+    C = einsums.create_zero_tensor("C", [n, n])
+    D = einsums.create_zero_tensor("D", [n, n])
+    E = einsums.create_zero_tensor("E", [n, n])
+
+    a, b = np.array(A), np.array(B)
+
+    g = cg.Graph("shared")
+    with cg.capture(g):
+        einsums.linalg.gemm(1.0, A, B, 0.0, C)          # python
+        capture_probe.stage_shared_capture_einsum(A, B, D)   # C++, same graph
+        einsums.linalg.gemm(1.0, A, B, 0.0, E)          # python again
+
+    assert g.num_nodes() == 3, (
+        f"expected one graph holding all three contributions, got {g.num_nodes()} nodes; "
+        f"a C++ stage that opened its own graph would leave 2 here"
+    )
+
+    # Stronger than the count, and far more legible in a failure: the C++ node
+    # is not merely present, it is sandwiched between the two Python ones in
+    # capture order. Nothing but a genuinely shared graph produces this.
+    import json
+
+    labels = [node["label"] for node in json.loads(g.to_json())["nodes"]]
+    assert labels[0].startswith("gemm") and labels[2].startswith("gemm"), labels
+    assert labels[1].startswith("einsum"), (
+        f"the middle node should be the C++ stage's einsum, got {labels}"
+    )
+
+    # Nothing has run yet: capture defers, so the C++ stage's output is still
+    # zero. Worth asserting, because a stage that executed eagerly instead of
+    # capturing would pass every other check in this test.
+    assert np.max(np.abs(np.array(D))) == 0.0, "the C++ stage ran eagerly instead of capturing"
+
+    g.execute()
+
+    expected = a @ b
+    for name, T in (("C", C), ("D", D), ("E", E)):
+        np.testing.assert_allclose(np.array(T), expected, rtol=1e-12, err_msg=f"{name} is wrong")
+
+
+def test_the_cpp_emitted_node_took_the_fast_path(capture_probe):
+    """A generic-loop fallback gives the right answer, so only the route shows it."""
+    import einsums.graph as cg
+
+    n = 8
+    A = einsums.create_random_tensor("A", [n, n])
+    B = einsums.create_random_tensor("B", [n, n])
+    C = einsums.create_zero_tensor("C", [n, n])
+
+    g = cg.Graph("route")
+    with cg.capture(g):
+        capture_probe.stage_shared_capture_einsum(A, B, C)
+    g.execute()
+
+    route = capture_probe.last_dispatch_route()
+    assert route not in ("none", "generic_loop"), (
+        f"the C++-emitted einsum took route {route!r}; a matrix-multiply spec falling back "
+        f"to the generic loop still computes the right answer, which is why this is checked"
+    )
+
+
+def test_a_cpp_stage_outside_capture_runs_eagerly(capture_probe):
+    """Stage code must be capture-transparent, or it cannot be debugged.
+
+    The same call with no capture open has to compute and return, not silently
+    record into nothing.
+    """
+    import numpy as np
+
+    n = 4
+    A = einsums.create_random_tensor("A", [n, n])
+    B = einsums.create_random_tensor("B", [n, n])
+    C = einsums.create_zero_tensor("C", [n, n])
+
+    capture_probe.stage_shared_capture_einsum(A, B, C)
+    np.testing.assert_allclose(np.array(C), np.array(A) @ np.array(B), rtol=1e-12)

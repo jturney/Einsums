@@ -17,14 +17,26 @@
 // __cplusplus is the discriminator for the same reason BuildModeProbe.cpp uses
 // it: nothing can intercept it, and it is a genuine input to the fold rather
 // than a hook added for the test.
+//
+// Keep this file's includes MINIMAL. Being compiled at a language level the
+// library was not built at is the whole point, and that is a narrow ledge:
+// pulling in <Einsums/ComputeGraph.hpp> here made the C++23 build fail to
+// dlopen entirely, on a missing template instantiation the C++20 library never
+// emitted. A module that cannot load cannot be refused by the handshake, so
+// the skew test silently stopped running. Anything needing the heavier headers
+// belongs in SharedCaptureProbe.cpp, which is built once, at the project's own
+// standard.
 
 #include <Einsums/Python/StageModule.hpp>
 
 #include <pybind11/pybind11.h>
+#include <string>
 
 #if !defined(STAGE_PROBE_NAME)
 #    error "STAGE_PROBE_NAME must name the module"
 #endif
+
+namespace py = pybind11;
 
 #define STAGE_PROBE_STR2(x) #x
 #define STAGE_PROBE_STR(x)  STAGE_PROBE_STR2(x)
