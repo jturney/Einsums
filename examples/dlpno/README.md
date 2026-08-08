@@ -98,6 +98,48 @@ What it does catch is any change in the port itself, end to end, on a machine wi
 A FCIDUMP would not have served: it carries MO-basis `h_pq`, `(pq|rs)` and the nuclear repulsion, while `Reference` is AO-basis throughout and also carries the auxiliary metric, the raw three-index integrals, the atom-to-basis maps the domain construction keys off, and the DFT grid the differential overlap integrals are quadratured on.
 `dlpno/reference_io.py` writes all of it as flat numpy arrays with no pickling; `test_reference_io.py` round-trips it and imports neither psi4 nor einsums.
 
+## Two backends
+
+`compute_pno_overlaps` exists twice: in Python at `dlpno/pno_overlaps.py`, and in C++ under `cpp/`.
+Both implement the same contract, both are selectable at runtime, and neither is being retired.
+This is the first worked instance of the hybrid framework, so the mechanics are worth stating in full.
+
+Build the C++ side the way an external developer would, against an *installed* Einsums rather than a build tree:
+
+```bash
+cmake --install /path/to/Einsums/build --prefix /tmp/einsums-install
+cmake -S examples/dlpno/cpp -B /tmp/build-dlpno-stages -GNinja \
+      -DCMAKE_PREFIX_PATH=/tmp/einsums-install
+cmake --build /tmp/build-dlpno-stages
+```
+
+It is not wired into the top-level build on purpose: a stage module that only ever compiles inside the tree that produced libEinsums proves nothing about the path every external user is on, and that path is the one that breaks first.
+
+Then select a backend per stage:
+
+```bash
+export PYTHONPATH=/path/to/Einsums/build/lib:/tmp/build-dlpno-stages
+python run_fixtures.py --backend compute_pno_overlaps=cpp
+```
+
+Three scripts support this, and the reason each exists is not obvious from its name:
+
+| script | answers |
+| --- | --- |
+| `run_fixtures.py` | is the method still correct against psi4's recorded energies |
+| `dump_energies.py` | did a pure-Python refactor move any digit (full `repr`, diff two runs) |
+| `check_backends.py` | do the two backends of a stage agree, and did the one you selected actually run |
+
+The third question is easy to skip and the reason it matters is that the two backends agree to `0.000e+00`, which is also exactly what a backend that never executed produces.
+`check_backends.py --prove` reports the name of a tensor each side returned: the Python implementation names per-class tensors by the class tuple and the C++ one by the class ordinal, so the output says which code made it.
+
+Exact agreement rather than agreement-to-tolerance is the expected result, not a lucky one.
+Both backends emit the same GEMMs in the same order into the same BLAS; only the operand-list construction differs, and that is index arithmetic with no floating-point content.
+A disagreement at any tolerance would mean something reordered.
+
+`stage_state_report.py` is the fourth and answers a different question: how many `self` fields each phase touches, which is the width of the contract it would need if promoted.
+Run it before choosing what to promote rather than after.
+
 ## What is validated
 
 `run_pno_mp2.py` checks the port against two psi4 references at once.
