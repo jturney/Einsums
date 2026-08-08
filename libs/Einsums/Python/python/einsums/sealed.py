@@ -70,6 +70,14 @@ def registered_stage_modules() -> list[str]:
     return list(_c._registered_stage_modules())
 
 
+def _std_name(cplusplus: int) -> str:
+    """``__cplusplus`` as the flag a reader would type to reproduce it."""
+    return {
+        199711: "c++98", 201103: "c++11", 201402: "c++14",
+        201703: "c++17", 202002: "c++20", 202302: "c++23",
+    }.get(int(cplusplus), str(cplusplus))
+
+
 def _diagnosis() -> str:
     """The paths worth printing whenever a handshake fails."""
     libs = mapped_einsums_libraries()
@@ -141,15 +149,18 @@ def verify_stage_module(module, *, name: str | None = None) -> None:
         ):
             theirs = info.get(key)
             if theirs is not None and theirs != mine.get(key):
+                std = info.get("cplusplus")
+                std_note = f", -std={_std_name(std)}" if std else ""
                 raise WorldMismatch(
                     f"{name} was compiled against headers whose {what} does not match this "
                     f"libEinsums ({key} {theirs:#x} against {mine.get(key):#x}).\n"
                     f"  library: {mine.get('library_path', '<unknown>')} "
                     f"({mine.get('version')}, {mine.get('compiler')})\n"
                     f"  module:  built against {info.get('version', '<unknown>')}, "
-                    f"{info.get('compiler', '<unknown>')}\n"
-                    f"Stale headers, a different BLAS integer width, or a debug/release "
-                    f"mismatch all land here. Rebuild the module against the installed headers."
+                    f"{info.get('compiler', '<unknown>')}{std_note}\n"
+                    f"Stale headers, a different language level, a different BLAS integer "
+                    f"width, or a debug/release mismatch all land here. Rebuild the module "
+                    f"against the installed headers, with the flags the library was built with."
                 )
 
 

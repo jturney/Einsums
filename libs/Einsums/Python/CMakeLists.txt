@@ -21,6 +21,7 @@
 set(PythonHeaders
     Einsums/Python/Annotations.hpp
     Einsums/Python/Protocol.hpp
+    Einsums/Python/StageModule.hpp
 )
 
 set(PythonSources)
