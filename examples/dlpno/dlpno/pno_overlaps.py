@@ -45,12 +45,20 @@ def compute_pno_overlaps(
 ):
     """The arithmetic the plan describes. This is the half that gets promoted.
 
-    Everything here is driven by ``plan``: the operand lists for both
-    batched GEMMs, the scaling, and the permuting gather are all read off
-    its flat arrays. Which is the point - roughly half this phase's time is
-    building the 32,948 tensor views those operand lists are made of, every
-    one a pybind round trip, and a C++ backend builds them natively and
-    never materializes a view.
+    Everything here is driven by ``plan``: the operand lists for both batched
+    GEMMs, the scaling, and the permuting gather are all read off its flat
+    arrays.
+
+    This stage was chosen for promotion because roughly half its time was
+    building 32,948 tensor views to hand ``batched_gemm`` its output operands.
+    That is no longer true of this file and has not been since the destinations
+    became offsets rather than views, which halved the phase in Python before
+    any C++ existed. Measured 2026-08-08, the C++ backend is 1.6-1.7x faster
+    than this one, and what it removes is ordinary per-operation interpreter
+    and pybind cost spread across the loop rather than one identifiable
+    structure. Worth knowing before picking the next stage: the reason a stage
+    looks worth promoting can be taken in Python first, and then the promotion
+    has to be justified again on what is left.
     """
     npao = ten.shape(S_pao)[0]
     n_lmo_pairs = len(n_pno)

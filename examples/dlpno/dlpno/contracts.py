@@ -45,8 +45,8 @@ class CouplingPlan:
     pair-major for the transposed copy.
 
     Structure of arrays, chosen for the C++ side's benefit: a dict of lists of
-    tuples would arrive there as a pointer chase per coupling, and the whole
-    reason this stage is in C++ is to walk 32,948 couplings without one.
+    tuples would arrive there as a pointer chase per coupling, where the flat
+    arrays make the operand loop a linear scan over 32,948 of them.
     """
 
     # -- per shape class -------------------------------------------------

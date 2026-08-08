@@ -137,6 +137,22 @@ Exact agreement rather than agreement-to-tolerance is the expected result, not a
 Both backends emit the same GEMMs in the same order into the same BLAS; only the operand-list construction differs, and that is index arithmetic with no floating-point content.
 A disagreement at any tolerance would mean something reordered.
 
+### What the C++ backend is worth, measured
+
+**1.6-1.7x on the stage**, on mains power, median of 25 interleaved runs per backend after 5 warmups, stable across every fixture and both threshold regimes.
+On water-dimer/cc-pVDZ untruncated (1,800 couplings) that is 12.5 ms against 7.9 ms; on methanol/cc-pVDZ, 9.8 ms against 5.8 ms.
+
+The number matters less than the reason it is not the predicted one.
+This stage was chosen because roughly half its time was 32,948 tensor-view constructions - and `cg::batched_gemm_blocked` then removed those **from the Python**, halving the phase before any C++ existed.
+So the win the stage was picked for was taken in the language it was picked out of, and what the C++ backend removes now is ordinary per-operation interpreter and pybind cost spread across the loop, with no single structure to point at.
+
+There is also a ceiling worth knowing before promoting anything else here.
+The stage's graph replay is the same work in both backends, so it is a floor neither can go below: the C++ backend's 7.9 ms is an upper bound on the irreducible part, and the 4.6 ms difference is the entire host-side saving available.
+A profile of the Python backend puts graph execution at about a third of the phase and tensor allocation at another third, neither of which changing language removes.
+
+Read that as the framework working rather than as a disappointment.
+The measurement is what the timing table exists to produce, the promotion is still a win, and the lesson generalizes: **the reason a stage looks worth promoting can be taken in Python first**, and the promotion then has to be justified again on what is left.
+
 `stage_state_report.py` is the fourth and answers a different question: how many `self` fields each phase touches, which is the width of the contract it would need if promoted.
 Run it before choosing what to promote rather than after.
 
