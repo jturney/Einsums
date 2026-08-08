@@ -37,14 +37,24 @@ parser.add_argument("--no-diis", action="store_true")
 parser.add_argument("--no-optimize", action="store_true")
 parser.add_argument("-k", "--filter", default="",
                     help="only run fixtures whose name contains this substring")
+parser.add_argument("--backend", default="",
+                    help="stage backend spec, e.g. compute_pno_overlaps=cpp. Implies "
+                         "--stages and loads the dlpno_stages module")
 parser.add_argument("--stages", action="store_true",
                     help="run the phases through einsums.stages and print the per-stage "
                          "timing table. The energies must not move: that they do not is "
                          "what makes the table trustworthy")
 args = parser.parse_args()
 
-if args.stages:
+if args.stages or args.backend:
     from einsums import stages
+    if args.backend:
+        # Import the stages module first: load_stage_module matches cpp exports
+        # against stages Python has already declared, so the declarations have
+        # to exist. Importing dlpno.stages is what declares them.
+        import dlpno.stages  # noqa: F401
+        stages.load_stage_module("dlpno_stages")
+        stages.apply_backend_spec(args.backend)
 else:
     stages = None
 
