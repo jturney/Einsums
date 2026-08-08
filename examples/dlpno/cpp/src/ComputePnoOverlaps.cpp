@@ -8,7 +8,7 @@
 
 #include <cmath>
 #include <cstddef>
-#include <dlpno/PnoOverlaps.hpp>
+#include <dlpno/ComputePnoOverlaps.hpp>
 #include <map>
 #include <memory>
 #include <string>

@@ -140,6 +140,22 @@ A disagreement at any tolerance would mean something reordered.
 `stage_state_report.py` is the fourth and answers a different question: how many `self` fields each phase touches, which is the width of the contract it would need if promoted.
 Run it before choosing what to promote rather than after.
 
+### Everything under `cpp/` except the port is generated
+
+`dlpno/contracts.py` and the `@stage` signature in `dlpno/stages.py` are the source of truth, including the prose: the struct documentation in `Contracts.hpp` is carried from the contracts' docstrings and `#:` field comments, and the `@param` lines from the stage docstring's `Args:` section.
+Regenerate with:
+
+```bash
+python -m einsums.stages promote examples/dlpno/dlpno/stages.py \
+       --out examples/dlpno/cpp --license-header devtools/LicenseHeader.txt
+```
+
+`--license-header` is what keeps the repository's own license hook from editing a generated file out from under the hash in its banner.
+
+`src/ComputePnoOverlaps.cpp` is the one file `promote` does not write.
+It is scaffolded once and then belongs to whoever ported it, and `--force` does not reach it; the regenerated files are the ones that carry a `promote-hash:` and are refused if they have been edited by hand.
+Editing the C++ contract structs directly is therefore a mistake the tool will report rather than silently undo - the change belongs in `contracts.py`.
+
 ## What is validated
 
 `run_pno_mp2.py` checks the port against two psi4 references at once.

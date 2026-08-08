@@ -128,13 +128,18 @@ function(einsums_finalize_pybind)
     file(MAKE_DIRECTORY "${_pkg_dir}/interop")
     configure_file("${_pkg_src}/interop/__init__.py" "${_pkg_dir}/interop/__init__.py" COPYONLY)
     configure_file("${_pkg_src}/interop/psi4.py"     "${_pkg_dir}/interop/psi4.py"     COPYONLY)
+    # Globbed rather than listed. The stages package grows a file per milestone,
+    # and a name missing from an explicit list does not fail the build - it ships
+    # a package whose import fails at runtime, in the copy under lib/ only, which
+    # is the hardest place to notice it.
     file(MAKE_DIRECTORY "${_pkg_dir}/stages")
-    configure_file("${_pkg_src}/stages/__init__.py"  "${_pkg_dir}/stages/__init__.py"  COPYONLY)
-    configure_file("${_pkg_src}/stages/_contract.py" "${_pkg_dir}/stages/_contract.py" COPYONLY)
-    configure_file("${_pkg_src}/stages/_registry.py" "${_pkg_dir}/stages/_registry.py" COPYONLY)
-    configure_file("${_pkg_src}/stages/_session.py"  "${_pkg_dir}/stages/_session.py"  COPYONLY)
+    file(GLOB _stages_py CONFIGURE_DEPENDS "${_pkg_src}/stages/*.py")
+    foreach(_f IN LISTS _stages_py)
+        get_filename_component(_name "${_f}" NAME)
+        configure_file("${_f}" "${_pkg_dir}/stages/${_name}" COPYONLY)
+    endforeach()
     file(GLOB _py_helpers     CONFIGURE_DEPENDS "${_pkg_src}/*.py")
-    file(GLOB _py_helper_pkgs CONFIGURE_DEPENDS "${_pkg_src}/*/__init__.py")
+    file(GLOB _py_helper_pkgs CONFIGURE_DEPENDS "${_pkg_src}/*/*.py")
 
     apiary_aggregate_extension(
         NAME PyEinsums

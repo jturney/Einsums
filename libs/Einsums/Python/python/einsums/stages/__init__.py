@@ -31,6 +31,15 @@ Nothing here requires C++ to be useful. Stage decomposition and the timing
 table are how a developer finds out which stages are worth promoting, which is
 the question that has to be answered before any C++ gets written.
 
+Once a stage has stated its contract, ``promote`` writes the C++ side of it::
+
+    python -m einsums.stages promote mymethod/stages.py --out cpp/
+
+It generates the contract aggregates, the pybind casters and bindings, the
+build file, and a port skeleton, all from the Python signatures. What it does
+not generate is the port itself, which is the only file that has to be thought
+about.
+
 The world-identity machinery that :func:`load_stage_module` relies on lives in
 :mod:`einsums.sealed`, because two mapped copies of libEinsums are a fact about
 the process rather than about stages.
@@ -48,6 +57,7 @@ from ._contract import (
     contract,
     index,
     is_contract,
+    parallel_groups,
     validate_signature,
 )
 from ._registry import (
@@ -77,6 +87,7 @@ __all__ = [
     "contract",
     "index",
     "is_contract",
+    "parallel_groups",
     "validate_signature",
     # registry and selection
     "Stage",

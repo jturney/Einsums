@@ -29,6 +29,7 @@ frozen ``@contract`` dataclass   aggregate struct
 """
 
 import dataclasses as _dataclasses
+import functools as _functools
 import typing as _typing
 
 from einsums import _core as _c
@@ -44,6 +45,7 @@ __all__ = [
     "cmp",
     "is_contract",
     "comparison_rules",
+    "parallel_groups",
     "validate_signature",
 ]
 
@@ -157,11 +159,19 @@ class cmp:  # noqa: N801  (a namespace, spelled as the design doc spells it)
 
 
 _CONTRACT_FLAG = "__einsums_contract__"
+_PARALLEL_FLAG = "__einsums_parallel__"
 
 
 def is_contract(tp) -> bool:
     """Whether *tp* is a type declared with :func:`contract`."""
     return getattr(tp, _CONTRACT_FLAG, False) is True
+
+
+def parallel_groups(tp) -> tuple[tuple[str, ...], ...]:
+    """Groups of list fields *tp* declares to be the same length."""
+    if not is_contract(tp):
+        raise ContractError(f"{tp!r} is not a @contract type")
+    return getattr(tp, _PARALLEL_FLAG, ())
 
 
 def comparison_rules(tp) -> dict[str, ComparisonRule]:
@@ -188,30 +198,109 @@ def _mentions_tensor(tp) -> bool:
     return any(_mentions_tensor(a) for a in args)
 
 
-def contract(cls):
+def contract(cls=None, *, parallel=None):
     """Declare a frozen dataclass as a cross-boundary contract type.
 
     Validates every field against the closed type list at class-definition
     time, so a contract that cannot cross the boundary is rejected where it is
     written rather than where it is used.
+
+    ``parallel`` names groups of list fields that are always the same length -
+    a structure of arrays, indexed by one ordinal::
+
+        @contract(parallel=[("pair", "partner", "sign")])
+        @dataclass(frozen=True)
+        class CouplingPlan: ...
+
+    That is an invariant the type cannot express and the C++ side cannot infer,
+    and it is the difference between an exception and a silent out-of-bounds
+    read: every loop over such a group indexes all of its arrays with one
+    ordinal, so a short one is read past its end. Declared here, it is checked
+    when the contract is constructed AND emitted into the generated pybind
+    caster by ``promote``, so both sides enforce the same statement.
+
+    Args:
+        cls: The dataclass, when used bare as ``@contract``.
+        parallel: Groups of field names that must be the same length. A single
+            group may be given as one sequence of names.
     """
-    if not _dataclasses.is_dataclass(cls):
-        raise ContractError(
-            f"@contract requires a dataclass; apply @dataclass(frozen=True) to {cls.__name__} first"
-        )
-    if not cls.__dataclass_params__.frozen:
-        raise ContractError(f"@contract requires frozen=True on {cls.__name__}")
 
-    setattr(cls, _CONTRACT_FLAG, True)
+    def decorate(target):
+        if not _dataclasses.is_dataclass(target):
+            raise ContractError(
+                f"@contract requires a dataclass; apply @dataclass(frozen=True) to {target.__name__} first"
+            )
+        if not target.__dataclass_params__.frozen:
+            raise ContractError(f"@contract requires frozen=True on {target.__name__}")
 
-    hints = _resolve_hints(cls)
-    for f in _dataclasses.fields(cls):
-        check_type(
-            hints.get(f.name, f.type),
-            where=f"{cls.__name__}.{f.name}",
-            output=False,
-        )
-    return cls
+        setattr(target, _CONTRACT_FLAG, True)
+
+        hints = _resolve_hints(target)
+        for f in _dataclasses.fields(target):
+            check_type(
+                hints.get(f.name, f.type),
+                where=f"{target.__name__}.{f.name}",
+                output=False,
+            )
+        _install_parallel(target, hints, parallel)
+        return target
+
+    if cls is None:
+        return decorate
+    if parallel is not None:
+        raise ContractError("@contract takes no positional arguments; use @contract(parallel=[...])")
+    return decorate(cls)
+
+
+def _install_parallel(cls, hints, parallel) -> None:
+    """Record and enforce the declared parallel-array groups."""
+    if parallel is None:
+        return
+    groups = list(parallel)
+    if groups and all(isinstance(g, str) for g in groups):
+        groups = [groups]  # one group, given as a bare sequence of names
+
+    names = {f.name for f in _dataclasses.fields(cls)}
+    normalized = []
+    for group in groups:
+        group = tuple(group)
+        if len(group) < 2:
+            raise ContractError(
+                f"{cls.__name__}: a parallel group needs at least two fields, got {group}"
+            )
+        for n in group:
+            if n not in names:
+                raise ContractError(f"{cls.__name__}: parallel names {n!r}, which is not a field")
+            if _typing.get_origin(_strip_annotated(hints.get(n))[0]) not in (list, _typing.List):
+                raise ContractError(
+                    f"{cls.__name__}.{n}: only list fields can be parallel; "
+                    f"the group states they are always the same length"
+                )
+        normalized.append(group)
+    setattr(cls, _PARALLEL_FLAG, tuple(normalized))
+
+    # Wraps __init__, NOT __post_init__. @dataclass decides whether to emit a
+    # __post_init__ call when it generates __init__, and by the time @contract
+    # runs that decision is already made: a __post_init__ installed afterwards
+    # is simply never called, and the check silently does nothing. Wrapping the
+    # constructor also covers dataclasses.replace, which goes through it.
+    original_init = cls.__init__
+
+    @_functools.wraps(original_init)
+    def __init__(self, *args, **kwargs):  # noqa: N807
+        original_init(self, *args, **kwargs)
+        for group in normalized:
+            head = group[0]
+            n = len(getattr(self, head))
+            for other in group[1:]:
+                m = len(getattr(self, other))
+                if m != n:
+                    raise ContractError(
+                        f"{cls.__name__}: fields {', '.join(group)} are declared parallel, but "
+                        f"{head!r} has {n} entries and {other!r} has {m}."
+                    )
+
+    cls.__init__ = __init__
 
 
 # ----------------------------------------------------------------------

@@ -97,15 +97,28 @@ def compute_pno_overlaps(
 ) -> PnoOverlaps:
     """Overlaps between every coupled pair of PNO bases, scaled by the Fock element.
 
-    The first DLPNO phase to state a contract, and the one M3 promotes. Seven
-    parameters, against the 27 fields of ``self`` the phase touched before it
-    was split - which is what "cut where the interface is narrow" means in
-    practice, and why the split had to come first.
+    The first DLPNO phase to state a contract. Seven parameters, against the 27
+    fields of ``self`` the phase touched before it was split - which is what
+    "cut where the interface is narrow" means in practice, and why the split
+    had to come first.
 
-    Still eager: the body runs two graphs of its own with a numpy scaling
-    between them. A C++ port can express that scaling as a captured op and
-    become one captured region, which would drop a SPLIT from the report as
-    well as time from the clock. If it does not, the report will say so.
+    Runs to completion and returns values; it does not emit into an ambient
+    capture. That is a structural property rather than an unfinished one: the
+    phase runs two graphs with a host-side scaling between them, and the second
+    graph's inputs are the first graph's outputs after that scaling. There is
+    no single graph to emit into until the scaling itself becomes a captured
+    op, at which point the stage stops being ``eager`` and the report loses a
+    SPLIT. So this stage is not what proves the shared-graph contract; a
+    separate, deliberately minimal stage does that.
+
+    Args:
+        X_pno: Per pair, the PNO transform on its own domain.
+        S_pao: PAO overlap matrix, ``(npao, npao)``.
+        lmopair_to_paos: Per pair, the PAO indices its domain covers.
+        n_pno: Per pair, its PNO count; zero means the pair is dead.
+        bucket_of: Per pair, which padding bucket it is stored at.
+        bucket_dims: Per bucket, the padded block dimension.
+        plan: The layout, from ``plan_pno_couplings``.
     """
     return _compute_pno_overlaps(
         X_pno, S_pao, lmopair_to_paos, n_pno, bucket_of, bucket_dims, plan

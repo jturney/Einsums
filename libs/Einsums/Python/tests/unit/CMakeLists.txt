@@ -10,6 +10,7 @@ if(EINSUMS_BUILD_PYTHON)
   einsums_add_python_unit_test("Modules.Python" InteropPsi4Python SCRIPT test_interop_psi4_python.py)
   einsums_add_python_unit_test("Modules.Python" WorldPython SCRIPT test_world_python.py)
   einsums_add_python_unit_test("Modules.Python" StagesPython SCRIPT test_stages_python.py)
+  einsums_add_python_unit_test("Modules.Python" PromotePython SCRIPT test_promote_python.py)
   einsums_add_python_unit_test("Modules.Python" SealedPython SCRIPT test_sealed_python.py)
 
   # EINSUMS_STAGE_MODULE, exercised by a real compiled stage module rather than

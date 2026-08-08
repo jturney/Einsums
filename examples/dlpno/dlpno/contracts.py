@@ -28,7 +28,7 @@ from einsums.stages import TensorD, cmp, contract
 __all__ = ["CouplingPlan", "PnoOverlaps"]
 
 
-@contract
+@contract(parallel=["pair", "partner", "cls", "dest_slot", "src_slot", "sign", "factor"])
 @dataclass(frozen=True)
 class CouplingPlan:
     """Which pairs couple to which partners, and where every block goes.
@@ -43,6 +43,10 @@ class CouplingPlan:
     order serves both. ``dest_slot`` is the pair-major position, ``src_slot``
     the partner-major one, and ``inv_perm`` maps partner-major back to
     pair-major for the transposed copy.
+
+    Structure of arrays, chosen for the C++ side's benefit: a dict of lists of
+    tuples would arrive there as a pointer chase per coupling, and the whole
+    reason this stage is in C++ is to walk 32,948 couplings without one.
     """
 
     # -- per shape class -------------------------------------------------
