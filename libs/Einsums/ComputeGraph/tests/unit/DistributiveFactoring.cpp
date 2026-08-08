@@ -515,12 +515,11 @@ TEST_CASE("DistributiveFactoring - a rewritten operand blocks the second group",
     // let the second read the first's intermediate, which was built from the old
     // value.
     //
-    // In practice the interference gate gets there first: topological_sort floats
-    // independent writes early, so the overwrite lands inside the second group's
-    // span and that group declines outright rather than declining only the reuse.
-    // Either way the answer is right, which is what this pins. The reuse pass has
-    // its own staleness scan for the case where a write falls between the build
-    // and a later span; that is defense in depth and not reachable from here.
+    // topological_sort preserves program order, so the overwrite sits cleanly
+    // between the two groups: the second group is factorable on its own and gets
+    // a FRESH build from the post-overwrite operands, while the staleness scan
+    // keeps it from reusing the first group's intermediate. The numeric checks
+    // below are what pin the property; the structural counts pin the shape.
     auto A  = create_random_tensor<double>("A", 4, 3);
     auto B1 = create_random_tensor<double>("B1", 3, 5);
     auto B2 = create_random_tensor<double>("B2", 3, 5);
@@ -551,10 +550,10 @@ TEST_CASE("DistributiveFactoring - a rewritten operand blocks the second group",
 
     auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
     REQUIRE(modified);
-    REQUIRE(pass.num_groups() == 1); // only the group before the overwrite
+    REQUIRE(pass.num_groups() == 2); // each group factored against its own operand values
 
-    // One build, and the second pair of contractions is left alone rather than
-    // pointed at an intermediate holding the pre-overwrite operands.
+    // Two builds: the second group must NOT be pointed at the first group's
+    // intermediate, which holds the pre-overwrite operands.
     size_t num_scale = 0, num_einsum = 0;
     for (auto const &node : graph.nodes()) {
         if (node.kind == cg::OpKind::Scale)
@@ -562,8 +561,8 @@ TEST_CASE("DistributiveFactoring - a rewritten operand blocks the second group",
         else if (node.kind == cg::OpKind::Einsum)
             num_einsum++;
     }
-    REQUIRE(num_scale == 1);
-    REQUIRE(num_einsum == 3); // one factored, two untouched
+    REQUIRE(num_scale == 2);
+    REQUIRE(num_einsum == 2); // both factored, none reading a stale build
 
     graph.execute();
 

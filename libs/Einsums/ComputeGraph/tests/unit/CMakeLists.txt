@@ -58,6 +58,7 @@ set(ComputeGraphTests
     SymmetrizedAccumulationRewrite.cpp
     Pass_LoopInvariantHoisting.cpp
     Pass_Materialization.cpp
+    AliasOrderBatchedViews.cpp
     Pass_MemoryPlanning.cpp
     Pass_ProgramOrderGuard.cpp
     Pass_Reorder.cpp

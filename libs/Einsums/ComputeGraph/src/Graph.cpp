@@ -748,7 +748,19 @@ void Graph::link_alias_storage() {
     if (spans.size() < 2) {
         return;
     }
-    std::ranges::sort(spans, [](Entry const &a, Entry const &b) { return a.lo < b.lo; });
+    // The backward walk below only visits spans sorted at or before its own,
+    // so a span must sort after every span that can own it: wider spans first
+    // among equal starts, and among IDENTICAL spans the designated owner
+    // (lower id, see below) first.
+    std::ranges::sort(spans, [](Entry const &a, Entry const &b) {
+        if (a.lo != b.lo) {
+            return a.lo < b.lo;
+        }
+        if (a.hi != b.hi) {
+            return a.hi > b.hi;
+        }
+        return a.id < b.id;
+    });
 
     // Running max of hi over the prefix. Only a span starting at or before this
     // one can contain it, so once the best hi in that prefix falls short of our
@@ -761,8 +773,13 @@ void Graph::link_alias_storage() {
         prefix_max_hi[i] = running;
     }
 
-    // Strictly fewer elements keeps a handle from aliasing itself and makes the
-    // relation a partial order, so the chains resolve_alias() walks are acyclic.
+    // Ownership is the strict order (more elements, then lower id): the id
+    // tie-break keeps the relation acyclic when two handles cover the SAME
+    // bytes, which is exactly what a view that spans its whole parent does.
+    // Requiring strictly fewer elements instead left such a view linked to
+    // nothing, so the hazard scan saw two unrelated tensors on one buffer and
+    // emitted no edge between their accesses - DLPNO's singleton shape
+    // classes hit this (`_W_pair` covers `_W` when a class has one pair).
     for (size_t i = 0; i < spans.size(); ++i) {
         auto self = _tensors.find(spans[i].id);
         if (self == _tensors.end() || self->second.aliases != 0) {
@@ -779,7 +796,9 @@ void Graph::link_alias_storage() {
             }
             if (spans[j].id != spans[i].id && spans[j].lo <= spans[i].lo && spans[i].hi <= spans[j].hi) {
                 auto const owner = _tensors.find(spans[j].id);
-                if (owner != _tensors.end() && owner->second.total_elems() > self->second.total_elems()) {
+                if (owner != _tensors.end() &&
+                    (owner->second.total_elems() > self->second.total_elems() ||
+                     (owner->second.total_elems() == self->second.total_elems() && owner->first < self->first))) {
                     self->second.aliases = owner->first;
                     if (!derive_alias_box(owner->second, self->second, self->second.alias_box)) {
                         self->second.alias_box.clear(); // unknown box reads as the whole parent
@@ -1328,8 +1347,14 @@ void Graph::topological_sort() {
         in_degree[consumer]++;
     });
 
-    // Kahn's algorithm
-    std::queue<size_t> ready;
+    // Kahn's algorithm, taking the smallest ready POSITION rather than FIFO.
+    // Hazard edges always point from an earlier to a later position, so
+    // program order is itself a valid topological order and this reproduces
+    // it exactly. A FIFO queue does not: a zero-in-degree node late in
+    // program order pops ahead of an earlier node that waits on any edge, so
+    // an edge the hazard scan missed became a REORDER that broke even serial
+    // replay, instead of staying harmless there.
+    std::priority_queue<size_t, std::vector<size_t>, std::greater<>> ready;
     for (size_t i = 0; i < n; i++) {
         if (in_degree[i] == 0) {
             ready.push(i);
@@ -1340,7 +1365,7 @@ void Graph::topological_sort() {
     sorted.reserve(n);
 
     while (!ready.empty()) {
-        size_t const idx = ready.front();
+        size_t const idx = ready.top();
         ready.pop();
         sorted.push_back(std::move(_nodes[idx]));
 
