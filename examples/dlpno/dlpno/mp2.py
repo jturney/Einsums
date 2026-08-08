@@ -161,11 +161,11 @@ class DLPNOMP2(DLPNOBase):
         # coupling, a (pair, class) run, and the whole class are all column
         # ranges of it. The extra slot at the end is a reserved zero, which the
         # transposed copy's padding reads from.
-        self._S_cls = {}
-        for cls in self._classes:
+        self._S_cls = []
+        for ci, cls in enumerate(self._classes):
             M_b, M_p = self.bucket_dims[cls[0]], self.bucket_dims[cls[1]]
-            self._S_cls[cls] = ten.zeros(f"S (class {cls})",
-                                         [M_b, M_p * (self._cls_slots_pair[cls] + 1)])
+            self._S_cls.append(ten.zeros(f"S (class {cls})",
+                                         [M_b, M_p * (self._cls_slots_pair[ci] + 1)]))
 
         half = {ij: ten.zeros(f"half {ij}", [self.pair_dim(ij), npao]) for ij in self._couplings}
 
@@ -193,13 +193,14 @@ class DLPNOMP2(DLPNOBase):
         # would cost more than everything else in this phase.
         by_shape = {}
         for ij, entries in self._couplings.items():
-            for idx, (p, _, _, _, cls, _) in enumerate(entries):
+            for idx, (p, _, _, _, ci, _) in enumerate(entries):
+                cls = self._classes[ci]
                 M_b, M_p = self.bucket_dims[cls[0]], self.bucket_dims[cls[1]]
                 # The destination is described, not constructed. Column block
                 # `slot` of a (M_b, M_p * N) column-major tensor starts at
                 # element slot * M_p * M_b and inherits the parent's leading
                 # dimension, which is exactly what batched_gemm_blocked wants.
-                by_shape.setdefault(cls, []).append(
+                by_shape.setdefault(ci, []).append(
                     (half[ij], X_pad[p], self._dest_slot[ij, idx] * M_p * M_b))
 
         by_bucket = {}
@@ -216,11 +217,12 @@ class DLPNOMP2(DLPNOBase):
                 cg.batched_gemm(1.0, [X_pad[ij] for ij in members],
                                 [self.S_pao] * len(members), 0.0,
                                 [half[ij] for ij in members], trans_a=True)
-            for cls, members in by_shape.items():
+            for ci, members in by_shape.items():
+                cls = self._classes[ci]
                 M_b, M_p = self.bucket_dims[cls[0]], self.bucket_dims[cls[1]]
                 cg.batched_gemm_blocked(1.0, [h for h, _, _ in members],
                                         [x for _, x, _ in members], 0.0,
-                                        self._S_cls[cls], [o for _, _, o in members],
+                                        self._S_cls[ci], [o for _, _, o in members],
                                         M_b, M_p)
         # No pass pipeline. This graph is emitted in the form the passes would
         # produce - the batches are already fused, and there is nothing to share
@@ -237,15 +239,15 @@ class DLPNOMP2(DLPNOBase):
         # Built in one pass over the couplings rather than one per class - there
         # are 32948 of them against 16 classes, and the obvious nesting is a
         # third of a second of pure Python.
-        factors = {cls: np.ones(self.bucket_dims[cls[1]] * (self._cls_slots_pair[cls] + 1))
-                   for cls in self._classes}
+        factors = [np.ones(self.bucket_dims[cls[1]] * (self._cls_slots_pair[ci] + 1))
+                   for ci, cls in enumerate(self._classes)]
         for ij, entries in self._couplings.items():
-            for idx, (_, _, _, _, cls, factor) in enumerate(entries):
-                M_p = self.bucket_dims[cls[1]]
-                factors[cls][self._dest_slot[ij, idx] * M_p:
-                             (self._dest_slot[ij, idx] + 1) * M_p] = np.sqrt(abs(factor))
-        for cls in self._classes:
-            ten.view(self._S_cls[cls])[...] *= factors[cls][np.newaxis, :]
+            for idx, (_, _, _, _, ci, factor) in enumerate(entries):
+                M_p = self.bucket_dims[self._classes[ci][1]]
+                factors[ci][self._dest_slot[ij, idx] * M_p:
+                            (self._dest_slot[ij, idx] + 1) * M_p] = np.sqrt(abs(factor))
+        for ci in range(len(self._classes)):
+            ten.view(self._S_cls[ci])[...] *= factors[ci][np.newaxis, :]
 
         # The partner-major transposed copy the first half consumes, taken from
         # the pair-major one by a single permuting gather per class rather than
@@ -256,34 +258,34 @@ class DLPNOMP2(DLPNOBase):
         # the sign is left to apply. The sign has to ride on exactly one of the
         # two copies - S appears on both sides of the congruence, so a sign in
         # both would square away - and this is the copy the first half reads.
-        self._S_T = {}
+        self._S_T = []
         # Held past the capture: the graph keeps tensors by slot pointer, so a
         # view built inline in the loop is freed at the end of the expression
         # and the replay reads released memory.
-        src_views = {}
-        for cls in self._classes:
+        src_views = []
+        for ci, cls in enumerate(self._classes):
             M_b, M_p = self.bucket_dims[cls[0]], self.bucket_dims[cls[1]]
-            self._S_T[cls] = ten.zeros(
-                f"S^T (class {cls})", [M_p, M_b, self._cls_slots_partner[cls]])
-            src_views[cls] = self._S_cls[cls].reshape_view(
-                [M_b, M_p, self._cls_slots_pair[cls] + 1])
+            self._S_T.append(ten.zeros(
+                f"S^T (class {cls})", [M_p, M_b, self._cls_slots_partner[ci]]))
+            src_views.append(self._S_cls[ci].reshape_view(
+                [M_b, M_p, self._cls_slots_pair[ci] + 1]))
 
         g2 = cg.Graph("pno overlaps transposed")
         with cg.capture(g2):
-            for cls in self._classes:
+            for ci, cls in enumerate(self._classes):
                 M_b, M_p = self.bucket_dims[cls[0]], self.bucket_dims[cls[1]]
-                la.gather(self._S_T[cls], src_views[cls],
-                          [list(range(M_b)), list(range(M_p)), self._cls_inv_perm[cls]],
+                la.gather(self._S_T[ci], src_views[ci],
+                          [list(range(M_b)), list(range(M_p)), self._cls_inv_perm[ci]],
                           [1, 0, 2])
         g2.set_executor(cg.OpenMPExecutor())
         g2.execute()
 
-        signed = {cls: np.ones(self._cls_slots_partner[cls]) for cls in self._classes}
+        signed = [np.ones(n) for n in self._cls_slots_partner]
         for ij, entries in self._couplings.items():
-            for idx, (_, _, _, sign, cls, _) in enumerate(entries):
-                signed[cls][self._src_slot[ij, idx]] = sign
-        for cls in self._classes:
-            ten.view(self._S_T[cls])[...] *= signed[cls][np.newaxis, np.newaxis, :]
+            for idx, (_, _, _, sign, ci, _) in enumerate(entries):
+                signed[ci][self._src_slot[ij, idx]] = sign
+        for ci in range(len(self._classes)):
+            ten.view(self._S_T[ci])[...] *= signed[ci][np.newaxis, np.newaxis, :]
 
         self._print(
             f"  overlaps: {sum(len(p) for p in partners)} couplings via "
@@ -350,75 +352,93 @@ class DLPNOMP2(DLPNOBase):
                     for s in range(0, len(keys), step)]
 
         # -- phase 2: pair order, padded per group ---------------------------
+        #
+        # Everything per-class is a LIST indexed by class ordinal, not a dict
+        # keyed by the (bucket, bucket) tuple. The tuple is still the identity
+        # of a class and _classes still names them in order; what changed is
+        # that nothing downstream looks a class up by it.
+        #
+        # That is a requirement rather than a preference: a stage signature can
+        # only carry the closed cross-boundary type list, and a dict keyed by a
+        # tuple is not on it and will not be. See the M3 section of the design
+        # notes. It is also faster and plainer C++ - a vector indexed by class
+        # against a map lookup in the inner loop.
         self._classes = sorted(counts)
-        self._cls_pair_groups, self._cls_slots_pair = {}, {}
-        pair_pad, pair_slot = {}, {}
-        for cls in self._classes:
+        self._cls_index = {cls: ci for ci, cls in enumerate(self._classes)}
+        n_cls = len(self._classes)
+
+        self._cls_pair_groups = [None] * n_cls
+        self._cls_slots_pair = [0] * n_cls
+        pair_slot = {}
+        for ci, cls in enumerate(self._classes):
             groups = chunk_by_size(list(counts[cls]), lambda ij: counts[cls][ij])
             slot = 0
             laid = []
             for n_pad, members in groups:
                 for ij in members:
-                    pair_pad[cls, ij] = n_pad
-                    pair_slot[cls, ij] = slot
+                    pair_slot[ci, ij] = slot
                     slot += n_pad
                 laid.append((n_pad, members))
-            self._cls_pair_groups[cls] = laid
-            self._cls_slots_pair[cls] = slot
+            self._cls_pair_groups[ci] = laid
+            self._cls_slots_pair[ci] = slot
 
         # -- the couplings themselves, in that same order --------------------
+        # A coupling entry carries its class ORDINAL, not the class tuple. Every
+        # consumer wants it to index a list; the two consumers that want bucket
+        # dimensions read them back through ``self._classes[ci]``.
         self._couplings = {}
         self._pair_slot = pair_slot
         dest_of = {}  # (pair, index within the pair's entries) -> destination slot
         for ij, by_cls in per_pair.items():
             entries = []
             for b_p in sorted(by_cls):
-                cls = (self.bucket_of[ij], b_p)
+                ci = self._cls_index[self.bucket_of[ij], b_p]
                 for c, (p, k, is_ik, factor) in enumerate(by_cls[b_p]):
-                    dest_of[ij, len(entries)] = (cls, pair_slot[cls, ij] + c)
-                    entries.append((p, k, is_ik, float(np.sign(factor)), cls, factor))
+                    dest_of[ij, len(entries)] = (ci, pair_slot[ci, ij] + c)
+                    entries.append((p, k, is_ik, float(np.sign(factor)), ci, factor))
             self._couplings[ij] = entries
 
         # -- phase 1: partner order, padded per group ------------------------
-        by_partner = {}  # class -> {partner: [(pair, index)]}
+        by_partner = [{} for _ in range(n_cls)]  # per class: {partner: [(pair, index)]}
         for ij, entries in self._couplings.items():
-            for idx, (p, _, _, _, cls, _) in enumerate(entries):
-                by_partner.setdefault(cls, {}).setdefault(p, []).append((ij, idx))
+            for idx, (p, _, _, _, ci, _) in enumerate(entries):
+                by_partner[ci].setdefault(p, []).append((ij, idx))
 
-        self._cls_partner_groups, self._cls_slots_partner = {}, {}
+        self._cls_partner_groups = [None] * n_cls
+        self._cls_slots_partner = [0] * n_cls
         src_of = {}
-        for cls in self._classes:
-            groups = chunk_by_size(list(by_partner[cls]),
-                                   lambda q: len(by_partner[cls][q]))
+        for ci in range(n_cls):
+            groups = chunk_by_size(list(by_partner[ci]),
+                                   lambda q: len(by_partner[ci][q]))
             slot = 0
             laid = []
             for n_pad, members in groups:
                 for q in members:
-                    for c, key in enumerate(by_partner[cls][q]):
+                    for c, key in enumerate(by_partner[ci][q]):
                         src_of[key] = slot + c
                     laid.append((q, slot, n_pad))
                     slot += n_pad
             # Reserved zero slot: every padded destination reads from it, so the
             # gather writes its whole destination and the padding stays zero.
-            self._cls_slots_partner[cls] = slot + 1
-            self._cls_partner_groups[cls] = self._regroup_partners(laid)
+            self._cls_slots_partner[ci] = slot + 1
+            self._cls_partner_groups[ci] = self._regroup_partners(laid)
         self._src_slot = src_of
 
         # -- the map from partner order to pair order ------------------------
         # One pass over the couplings, not one per class: there are 32948 of
         # them and 16 classes, and the obvious nesting is a third of a second of
         # pure Python.
-        self._cls_perm = {cls: [self._cls_slots_partner[cls] - 1] * self._cls_slots_pair[cls]
-                          for cls in self._classes}
+        self._cls_perm = [[self._cls_slots_partner[ci] - 1] * self._cls_slots_pair[ci]
+                          for ci in range(n_cls)]
         # ...and its inverse, for lifting the transposed copy of S out of the
         # pair-major one at setup. Its padding reads the reserved zero slot at
         # the end of the pair-major side.
-        self._cls_inv_perm = {cls: [self._cls_slots_pair[cls]] * self._cls_slots_partner[cls]
-                              for cls in self._classes}
+        self._cls_inv_perm = [[self._cls_slots_pair[ci]] * self._cls_slots_partner[ci]
+                              for ci in range(n_cls)]
         self._dest_slot = {}
-        for key, (cls, dst) in dest_of.items():
-            self._cls_perm[cls][dst] = src_of[key]
-            self._cls_inv_perm[cls][src_of[key]] = dst
+        for key, (ci, dst) in dest_of.items():
+            self._cls_perm[ci][dst] = src_of[key]
+            self._cls_inv_perm[ci][src_of[key]] = dst
             self._dest_slot[key] = dst
 
     @staticmethod
@@ -480,18 +500,18 @@ class DLPNOMP2(DLPNOBase):
         # of S^T, so they come out zero) and never read; W's are written by the
         # repack from V's reserved zero slot. Either way the padded columns a
         # GEMM sees are genuinely zero rather than stale.
-        self._V = {
-            cls: ten.zeros(f"V (class {cls})",
-                           [self.bucket_dims[cls[1]], self.bucket_dims[cls[0]],
-                            self._cls_slots_partner[cls]])
-            for cls in self._classes
-        }
-        self._W = {
-            cls: ten.zeros(f"W (class {cls})",
-                           [self.bucket_dims[cls[1]], self._cls_slots_pair[cls],
-                            self.bucket_dims[cls[0]]])
-            for cls in self._classes
-        }
+        self._V = [
+            ten.zeros(f"V (class {cls})",
+                      [self.bucket_dims[cls[1]], self.bucket_dims[cls[0]],
+                       self._cls_slots_partner[ci]])
+            for ci, cls in enumerate(self._classes)
+        ]
+        self._W = [
+            ten.zeros(f"W (class {cls})",
+                      [self.bucket_dims[cls[1]], self._cls_slots_pair[ci],
+                       self.bucket_dims[cls[0]]])
+            for ci, cls in enumerate(self._classes)
+        ]
 
         # Every operand is a slice reinterpreted as a matrix. Sliced and reshaped
         # once and kept: both are pybind round trips, and a view handed to a
@@ -503,24 +523,24 @@ class DLPNOMP2(DLPNOBase):
         # the axes already abut - but linalg.reshape would have copied the whole
         # 66 MiB intermediate twice per iteration to express them.
         self._V_group, self._ST_group = {}, {}
-        for cls in self._classes:
+        for ci, cls in enumerate(self._classes):
             M_p, M_b = self.bucket_dims[cls[1]], self.bucket_dims[cls[0]]
-            for n_pad, members in self._cls_partner_groups[cls]:
+            for n_pad, members in self._cls_partner_groups[ci]:
                 for q, slot in members:
-                    self._V_group[cls, q] = (
-                        self._V[cls][:, :, slot:slot + n_pad].reshape_view([M_p, M_b * n_pad]))
-                    self._ST_group[cls, q] = (
-                        self._S_T[cls][:, :, slot:slot + n_pad].reshape_view([M_p, M_b * n_pad]))
+                    self._V_group[ci, q] = (
+                        self._V[ci][:, :, slot:slot + n_pad].reshape_view([M_p, M_b * n_pad]))
+                    self._ST_group[ci, q] = (
+                        self._S_T[ci][:, :, slot:slot + n_pad].reshape_view([M_p, M_b * n_pad]))
 
         self._W_pair, self._S_pair = {}, {}
-        for cls in self._classes:
+        for ci, cls in enumerate(self._classes):
             M_p, M_b = self.bucket_dims[cls[1]], self.bucket_dims[cls[0]]
-            for n_pad, members in self._cls_pair_groups[cls]:
+            for n_pad, members in self._cls_pair_groups[ci]:
                 for ij in members:
-                    slot = self._pair_slot[cls, ij]
-                    self._W_pair[cls, ij] = (
-                        self._W[cls][:, slot:slot + n_pad, :].reshape_view([M_p * n_pad, M_b]))
-                    self._S_pair[cls, ij] = self._S_cls[cls][:, slot * M_p:(slot + n_pad) * M_p]
+                    slot = self._pair_slot[ci, ij]
+                    self._W_pair[ci, ij] = (
+                        self._W[ci][:, slot:slot + n_pad, :].reshape_view([M_p * n_pad, M_b]))
+                    self._S_pair[ci, ij] = self._S_cls[ci][:, slot * M_p:(slot + n_pad) * M_p]
 
         self.e_iter = ten.zeros("E(iteration)", [1])
         self._e_part = ten.zeros("E(part)", [1])
@@ -546,11 +566,11 @@ class DLPNOMP2(DLPNOBase):
         """
         g = cg.Graph("lmp2 couplings")
         with cg.capture(g):
-            for cls in self._classes:
-                for _, members in self._cls_partner_groups[cls]:
+            for ci in range(len(self._classes)):
+                for _, members in self._cls_partner_groups[ci]:
                     cg.batched_gemm(1.0, [self._T_view[q] for q, _ in members],
-                                    [self._ST_group[cls, q] for q, _ in members], 0.0,
-                                    [self._V_group[cls, q] for q, _ in members], trans_a=True)
+                                    [self._ST_group[ci, q] for q, _ in members], 0.0,
+                                    [self._V_group[ci, q] for q, _ in members], trans_a=True)
         return g
 
     def _capture_repack(self):
@@ -576,10 +596,10 @@ class DLPNOMP2(DLPNOBase):
         """
         g = cg.Graph("lmp2 repack")
         with cg.capture(g):
-            for cls in self._classes:
+            for ci, cls in enumerate(self._classes):
                 M_p, M_b = self.bucket_dims[cls[1]], self.bucket_dims[cls[0]]
-                la.gather(self._W[cls], self._V[cls],
-                          [list(range(M_p)), list(range(M_b)), self._cls_perm[cls]],
+                la.gather(self._W[ci], self._V[ci],
+                          [list(range(M_p)), list(range(M_b)), self._cls_perm[ci]],
                           [0, 2, 1])
         g.set_executor(cg.OpenMPExecutor())
         return g
@@ -623,10 +643,10 @@ class DLPNOMP2(DLPNOBase):
         with cg.capture(g):
             # beta = 1: the prologue has already put K + D T in R, and earlier
             # classes have already added theirs.
-            for cls in self._classes:
-                for _, members in self._cls_pair_groups[cls]:
-                    cg.batched_gemm(1.0, [self._W_pair[cls, ij] for ij in members],
-                                    [self._S_pair[cls, ij] for ij in members], 1.0,
+            for ci in range(len(self._classes)):
+                for _, members in self._cls_pair_groups[ci]:
+                    cg.batched_gemm(1.0, [self._W_pair[ci, ij] for ij in members],
+                                    [self._S_pair[ci, ij] for ij in members], 1.0,
                                     [self._R_view[ij] for ij in members],
                                     trans_a=True, trans_b=True)
         return g
