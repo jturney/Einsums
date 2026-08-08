@@ -26,6 +26,30 @@ import einsums.graph as cg
 from einsums.testing import ALL_DTYPES, REAL_DTYPES
 
 
+@pytest.fixture(autouse=True)
+def _seed_einsums_rng():
+    """Make every test in this module deterministic.
+
+    Every case here draws with ``create_random_tensor`` and checks the result
+    against numpy at a fixed tolerance, so the pass/fail line depends on the
+    conditioning of an unseeded draw. That fails rarely and unreproducibly, and
+    this module already carried one instance of it: ``test_gesv`` grew a mixed
+    rtol/atol gate and a comment recording that a bare elementwise rtol "failed
+    roughly 1 run in 2000". A second case was seen failing once in a full-suite
+    run and never again.
+
+    One case in 2000 is invisible locally and routine in CI, where a red run
+    that reruns green teaches people to rerun rather than to read. Seeding is
+    the fix for the whole class rather than for whichever case is noticed next.
+
+    ``einsums.seed_random`` pins the C++ engine, which is where these draws come
+    from; a numpy seed would not reach them. These are binding-correctness
+    checks against numpy rather than fuzzing, so fixed inputs cost no
+    meaningful coverage - the randomized search lives in the fuzz suites.
+    """
+    einsums.seed_random(20260807)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # trace, returning scalar
 # ──────────────────────────────────────────────────────────────────────────
