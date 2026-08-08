@@ -441,3 +441,22 @@ def test_an_all_eager_session_does_not_blame_the_profiler():
         only_eager(None)
     s.run()
     assert "profiler" not in s.report()
+
+
+def test_functools_wraps_over_a_stage_says_what_it_did():
+    """wraps copies __annotations__, silently erasing the contract underneath.
+
+    The resulting error is "parameter has no annotation", which is true and
+    gives no hint at the cause. This was hit for real while contracting the
+    DLPNO overlap stage.
+    """
+    import functools
+
+    def unannotated(a, b):
+        return None
+
+    with pytest.raises(ContractError, match="functools.wraps"):
+
+        @stage
+        @functools.wraps(unannotated)
+        def wrapped(a: TensorD, b: TensorD) -> None: ...

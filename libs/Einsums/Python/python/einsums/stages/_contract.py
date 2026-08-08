@@ -345,9 +345,18 @@ def validate_signature(fn) -> None:
                 f"parameter list. Group the variable part into a @contract dataclass."
             )
         if pname not in hints:
+            # functools.wraps copies __annotations__ off the wrapped function,
+            # so a @stage under a @functools.wraps loses every annotation the
+            # author wrote and lands here claiming they were never there. The
+            # error is correct and the cause is not remotely obvious, so say it.
+            wrapped = "" if getattr(fn, "__wrapped__", None) is None else (
+                f" This function is wrapped (functools.wraps sets __wrapped__), and wraps copies "
+                f"__annotations__ from the wrapped function: that silently replaces the "
+                f"annotations you wrote here. Drop the wraps, or annotate the wrapped function."
+            )
             raise ContractError(
                 f"{qual}: parameter '{pname}' has no annotation, so the stage cannot state its "
-                f"contract. Annotate it, or mark the stage promotable=False."
+                f"contract. Annotate it, or mark the stage promotable=False.{wrapped}"
             )
         check_type(hints[pname], where=f"{qual}({pname})", output=False)
 

@@ -230,12 +230,11 @@ if p_it > 1e-9:
 # the real figure is 1.6x, which is not a rounding error: it turned "the port is
 # 30x more efficient per useful flop" into something believable.
 padded_flops = exact_flops = 0
-for ij, entries in mp2._couplings.items():
+for ij, q in zip(mp2.plan.pair, mp2.plan.partner):
     M_b, n_ij = mp2.pair_dim(ij), mp2.n_pno[ij]
-    for (q, _, _, _, _, _) in entries:
-        M_p, n_p = mp2.pair_dim(q), mp2.n_pno[q]
-        padded_flops += M_b * M_p * M_p
-        exact_flops += n_ij * n_p * n_p
+    M_p, n_p = mp2.pair_dim(q), mp2.n_pno[q]
+    padded_flops += M_b * M_p * M_p
+    exact_flops += n_ij * n_p * n_p
 padding_overhead = padded_flops / max(exact_flops, 1)
 if p_it > 1e-9:
     print(f"\n  where the LMP2 gap comes from (estimate)")

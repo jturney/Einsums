@@ -37,13 +37,20 @@ promoted, and ``contract=False`` reports the debt until then.
 
 import functools
 
-from einsums.stages import stage
+from einsums.stages import TensorD, stage
 
+from .contracts import CouplingPlan, PnoOverlaps
 from .mp2 import DLPNOMP2
+from .pno_overlaps import compute_pno_overlaps as _compute_pno_overlaps
 
-__all__ = ["PHASES", "run_phases"]
+__all__ = ["PHASES", "run_phases", "compute_pno_overlaps"]
 
 # In dependency order, which is the order compute_energy called them in.
+#
+# compute_pno_overlaps is absent because it is no longer one phase: it is
+# plan_pno_couplings, which stays Python, followed by the contracted numerics
+# stage declared below. It is the first phase to state a contract, and the one
+# M3 promotes.
 PHASES = [
     "setup_orbitals",
     "compute_doi",
@@ -52,9 +59,15 @@ PHASES = [
     "compute_qia",
     "precompute_fits",
     "pno_transform",
+    "plan_pno_couplings",
     "compute_pno_overlaps",
     "lmp2_iterations",
 ]
+
+# Phases still carrying contract debt: methods reading fields off self.
+# plan_pno_couplings is among them and is not a promotion target either - it is
+# index arithmetic, and nothing measured says it is hot.
+UNCONTRACTED = [n for n in PHASES if n != "compute_pno_overlaps"]
 
 
 def _register(name: str):
@@ -69,7 +82,37 @@ def _register(name: str):
     return run
 
 
-_stages = {name: _register(name) for name in PHASES}
+_stages = {name: _register(name) for name in UNCONTRACTED}
+
+
+@stage(eager=True)
+def compute_pno_overlaps(
+    X_pno: list[TensorD],
+    S_pao: TensorD,
+    lmopair_to_paos: list[list[int]],
+    n_pno: list[int],
+    bucket_of: list[int],
+    bucket_dims: list[int],
+    plan: CouplingPlan,
+) -> PnoOverlaps:
+    """Overlaps between every coupled pair of PNO bases, scaled by the Fock element.
+
+    The first DLPNO phase to state a contract, and the one M3 promotes. Seven
+    parameters, against the 27 fields of ``self`` the phase touched before it
+    was split - which is what "cut where the interface is narrow" means in
+    practice, and why the split had to come first.
+
+    Still eager: the body runs two graphs of its own with a numpy scaling
+    between them. A C++ port can express that scaling as a captured op and
+    become one captured region, which would drop a SPLIT from the report as
+    well as time from the clock. If it does not, the report will say so.
+    """
+    return _compute_pno_overlaps(
+        X_pno, S_pao, lmopair_to_paos, n_pno, bucket_of, bucket_dims, plan
+    )
+
+
+_stages["compute_pno_overlaps"] = compute_pno_overlaps
 globals().update(_stages)
 __all__ += PHASES
 
@@ -84,4 +127,15 @@ def run_phases(mp2, session, **per_phase):
             ``lmp2_iterations={"optimize": False}``.
     """
     for name in PHASES:
+        if name == "compute_pno_overlaps":
+            # The one contracted stage: called with its seven arguments rather
+            # than with the solver object, which is the whole point of having
+            # split it. Its outputs go back onto the instance because
+            # lmp2_iterations still reads them off self.
+            overlaps = _stages[name](
+                mp2.X_pno, mp2.S_pao, mp2.lmopair_to_paos, mp2.n_pno,
+                mp2.bucket_of, mp2.bucket_dims, mp2.plan,
+            )
+            mp2._S_cls, mp2._S_T = overlaps.S_cls, overlaps.S_T
+            continue
         _stages[name](mp2, **per_phase.get(name, {}))
