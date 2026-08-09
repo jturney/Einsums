@@ -32,7 +32,8 @@ parser = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("fixtures", nargs="*",
                     help=f"fixture files; default is every .npz in {DEFAULT_DIR}")
-parser.add_argument("--buckets", type=int, default=4)
+parser.add_argument("--buckets", type=int, default=None,
+                    help="PNO-count buckets to pad pair blocks into; default chooses per thread count")
 parser.add_argument("--no-diis", action="store_true")
 parser.add_argument("--no-optimize", action="store_true")
 parser.add_argument("-k", "--filter", default="",

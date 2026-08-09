@@ -37,7 +37,8 @@ from dlpno.thresholds import Thresholds
 DEFAULT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-parser.add_argument("--buckets", type=int, default=4)
+parser.add_argument("--buckets", type=int, default=None,
+                    help="PNO-count buckets to pad pair blocks into; default chooses per thread count")
 parser.add_argument("-k", "--filter", default="")
 args = parser.parse_args()
 

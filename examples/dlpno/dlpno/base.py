@@ -27,6 +27,7 @@ import einsums
 from einsums import linalg as la
 import einsums.graph as cg
 
+from . import cost
 from . import sparse
 from . import tensors as ten
 from .thresholds import Thresholds
@@ -795,29 +796,52 @@ class DLPNOBase:
         self.Tt_all = self.new_pair_stores("Tt")
 
     def _choose_buckets(self):
-        """Partition pairs into ``n_buckets`` groups by PNO count.
+        """Partition pairs into groups by PNO count, and choose how many groups.
 
         Padding every pair to the global maximum is what makes the coupling
-        GEMMs batchable, but it is paid in cubic flops: on ethanol/cc-pVDZ the
-        PNO counts run 5..48 against an average of 29, so a single store does
-        4.3x the necessary work. Splitting into a few buckets, each padded to
-        its own maximum, keeps the shapes uniform *within* a bucket (which is
-        all the batching needs) while cutting most of that waste.
+        GEMMs batchable, but it is paid in padded volume: on ethanol/cc-pVDZ the
+        PNO counts run 5..48 against an average of 29, so a single store carries
+        2.7x the elements it needs. Splitting into buckets, each padded to its
+        own maximum, keeps the shapes uniform *within* a bucket (which is all the
+        batching needs) while cutting most of that waste.
 
-        Boundaries minimize the padded cubic cost. Each PNO count contributes
-        independently once its bucket's maximum is fixed, so the objective is
-        separable and a segmentation DP finds the exact optimum in O(n^2 B) over
-        the distinct counts. Enumerating the boundary combinations instead is
-        the same answer at C(n-1, B-1) cost, which for 32 distinct counts and 6
-        buckets is 170k combinations: three seconds, dwarfing the PNO transform
-        it is sizing storage for.
+        So more buckets is cheaper per element and dearer per call, because the
+        shape classes are pairs of buckets: B buckets means up to B^2 classes and
+        the iteration issues a batched GEMM per class per width group. Which side
+        wins is not a property of the molecule. It is a property of the machine,
+        and of one number on it - what entering an OpenMP parallel region costs,
+        which is zero on one thread and tens of microseconds on ten. That is why
+        a fixed bucket count cannot be right: measured on ethanol/cc-pVTZ the
+        best count runs 12, 8, 8, 4 at 1, 2, 4 and 10 threads, and holding it at
+        4 costs 1.10-1.16x below ten threads while holding it at 12 costs 1.81x
+        at ten.
+
+        Hence :func:`~dlpno.cost.bucket_penalty`, which turns the measured region
+        cost into the only free parameter here: how many padded elements one
+        extra batched call is worth. The objective is then
+
+            padded_volume + penalty * n_calls
+
+        Volume rather than the cubic flops this used to minimize. Fitting
+        measured iteration time against both, the cubic term's coefficient is
+        negligible and turns negative once threads are on: the padded GEMM flops
+        are simply not what the time is made of, and an objective that minimized
+        them was optimizing a term worth a few percent.
+
+        For a fixed bucket count the call term is constant, so the boundaries
+        still come from an exact segmentation DP - each PNO count contributes
+        independently once its bucket's maximum is fixed - and the count itself
+        is chosen by running that DP for each candidate. O(n^2 B^2) over the
+        distinct counts, microseconds at these sizes.
+
+        ``Thresholds.n_buckets`` overrides the choice when it is not None, which
+        is how the sweeps that calibrated this pin it.
         """
         counts = sorted({n for n in self.n_pno if n})
         if not counts:
             self.bucket_dims, self.bucket_of, self.slot_of = [], [], []
             self.bucket_members = []
             return
-        n_buckets = max(1, min(self.cut.n_buckets, len(counts)))
 
         weight = [0] * len(counts)
         index = {c: i for i, c in enumerate(counts)}
@@ -828,29 +852,54 @@ class DLPNOBase:
         for i, w in enumerate(weight):
             prefix[i + 1] = prefix[i] + w
 
-        # seg(j, i): counts[j:i] in one bucket, padded to counts[i-1].
+        # seg(j, i): counts[j:i] in one bucket, padded to counts[i-1]. The
+        # padded stores are (M, M, members), so a bucket's cost is its members
+        # times the square of the dimension they are padded to.
         def seg(j, i):
-            return (prefix[i] - prefix[j]) * counts[i - 1] ** 3
+            return (prefix[i] - prefix[j]) * counts[i - 1] ** 2
 
-        INF = float("inf")
-        dp = [[INF] * (n_buckets + 1) for _ in range(len(counts) + 1)]
-        back = [[0] * (n_buckets + 1) for _ in range(len(counts) + 1)]
-        dp[0][0] = 0
-        for i in range(1, len(counts) + 1):
-            for b in range(1, n_buckets + 1):
-                for j in range(i):
-                    if dp[j][b - 1] == INF:
-                        continue
-                    cost = dp[j][b - 1] + seg(j, i)
-                    if cost < dp[i][b]:
-                        dp[i][b] = cost
-                        back[i][b] = j
+        def best_boundaries(n_buckets):
+            """Exact DP: the boundaries minimizing padded volume for this count."""
+            INF = float("inf")
+            dp = [[INF] * (n_buckets + 1) for _ in range(len(counts) + 1)]
+            back = [[0] * (n_buckets + 1) for _ in range(len(counts) + 1)]
+            dp[0][0] = 0
+            for i in range(1, len(counts) + 1):
+                for b in range(1, n_buckets + 1):
+                    for j in range(i):
+                        if dp[j][b - 1] == INF:
+                            continue
+                        cost = dp[j][b - 1] + seg(j, i)
+                        if cost < dp[i][b]:
+                            dp[i][b] = cost
+                            back[i][b] = j
+            edges, i = [], len(counts)
+            for b in range(n_buckets, 0, -1):
+                edges.append(counts[i - 1])
+                i = back[i][b]
+            return sorted(edges), dp[len(counts)][n_buckets]
 
-        edges, i = [], len(counts)
-        for b in range(n_buckets, 0, -1):
-            edges.append(counts[i - 1])
-            i = back[i][b]
-        self.bucket_dims = sorted(edges)
+        if self.cut.n_buckets is not None:
+            n_buckets = max(1, min(int(self.cut.n_buckets), len(counts)))
+            self.bucket_dims, _ = best_boundaries(n_buckets)
+        else:
+            penalty = cost.bucket_penalty()
+            groups = max(1, int(self.cut.n_width_groups))
+            best = None
+            for n_buckets in range(1, min(self.cut.max_buckets, len(counts)) + 1):
+                dims, volume = best_boundaries(n_buckets)
+                # Both halves of the Fock coupling, per class per width group.
+                # An upper bound on the classes actually present, which is what
+                # the coupling structure decides; it tracks the real count to
+                # within about a third and is monotone in the bucket count,
+                # which is all the comparison needs.
+                n_calls = 2 * groups * n_buckets ** 2
+                total = volume + penalty * n_calls
+                if best is None or total < best[0]:
+                    best = (total, dims, n_buckets)
+            self.bucket_dims = best[1]
+            self._print(f"  buckets:  {best[2]} chosen at {penalty:.0f} elements per call, "
+                        f"dims {self.bucket_dims}")
 
         self.bucket_of = [-1] * self.n_lmo_pairs
         self.slot_of = [-1] * self.n_lmo_pairs

@@ -41,11 +41,25 @@ class Thresholds:
     s_cut: float = 1e-8
     f_cut: float = 1e-5
 
-    #: How many PNO-count buckets the pair blocks are padded into. Blocks must
-    #: share a shape to batch, but padding everything to the global maximum
-    #: wastes cubic flops; a handful of buckets keeps the batches large while
-    #: cutting most of the waste. 1 reproduces a single padded store.
-    n_buckets: int = 4
+    #: How many PNO-count buckets the pair blocks are padded into, or None to
+    #: choose per machine. Blocks must share a shape to batch, but padding
+    #: everything to the global maximum wastes elements; a handful of buckets
+    #: keeps the batches large while cutting most of the waste. 1 reproduces a
+    #: single padded store.
+    #:
+    #: None is the default because the right count is not a property of the
+    #: molecule. More buckets is cheaper per element and dearer per batched
+    #: call, and what a call costs is what entering an OpenMP region costs on
+    #: this machine at this thread count - zero serial, tens of microseconds on
+    #: ten threads. Measured on ethanol/cc-pVTZ the best count runs 12, 8, 8, 4
+    #: at 1, 2, 4 and 10 threads. See :meth:`DLPNOBase._choose_buckets`.
+    #:
+    #: Set an integer to pin it, which is what the calibration sweeps do.
+    n_buckets: int | None = None
+
+    #: Largest bucket count the automatic chooser will consider. Past this the
+    #: shape classes outnumber the pairs and every batch is a handful of members.
+    max_buckets: int = 16
 
     #: How many groups each PNO bucket's pairs are split into by the total width
     #: of their concatenated couplings. The residual folds all of a pair's

@@ -53,7 +53,8 @@ parser.add_argument(
 )
 parser.add_argument("--basis", default="cc-pvdz")
 parser.add_argument("--t-cut-pno", type=float, default=1e-8)
-parser.add_argument("--buckets", type=int, default=4)
+parser.add_argument("--buckets", type=int, default=None,
+                    help="PNO-count buckets to pad pair blocks into; default chooses per thread count")
 parser.add_argument("--threads", type=int, default=1)
 args = parser.parse_args()
 

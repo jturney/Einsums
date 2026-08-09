@@ -51,7 +51,8 @@ parser.add_argument("--spacing", type=float, default=2.9,
                     help="O-O distance between neighbouring monomers, angstrom")
 parser.add_argument("--basis", default="cc-pvdz")
 parser.add_argument("--t-cut-pno", type=float, default=1e-8)
-parser.add_argument("--buckets", type=int, default=4)
+parser.add_argument("--buckets", type=int, default=None,
+                    help="PNO-count buckets to pad pair blocks into; default chooses per thread count")
 parser.add_argument("--threads", type=int, default=1)
 parser.add_argument("--skip-psi4-dlpno", action="store_true",
                     help="skip psi4's own DLPNO run; the port still needs psi4 for integrals")

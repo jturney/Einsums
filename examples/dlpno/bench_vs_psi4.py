@@ -48,8 +48,9 @@ parser.add_argument("--molecule", default="methanol",
                          "water chain at 2.9 A - the geometry the scaling work targets")
 parser.add_argument("--basis", default="cc-pvdz")
 parser.add_argument("--t-cut-pno", type=float, default=1e-8)
-parser.add_argument("--buckets", type=int, default=4,
-                    help="PNO-count buckets to pad pair blocks into")
+parser.add_argument("--buckets", type=int, default=None,
+                    help="PNO-count buckets to pad pair blocks into; default chooses "
+                         "per thread count from the measured OpenMP region cost")
 parser.add_argument(
     "--threads", type=int, default=1,
     help="thread count for BOTH sides. Importing psi4 clamps process-wide "

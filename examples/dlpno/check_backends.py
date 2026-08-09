@@ -46,7 +46,8 @@ DEFAULT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 parser.add_argument("--stage", default="compute_pno_overlaps", help="stage to compare")
 parser.add_argument("--module", default="dlpno_stages", help="compiled stage module")
-parser.add_argument("--buckets", type=int, default=4)
+parser.add_argument("--buckets", type=int, default=None,
+                    help="PNO-count buckets to pad pair blocks into; default chooses per thread count")
 parser.add_argument("-k", "--filter", default="")
 parser.add_argument("--tol", type=float, default=1e-13,
                     help="disagreement treated as a failure (default: exact)")

@@ -47,8 +47,9 @@ parser.add_argument(
     help="skip the ComputeGraph optimization passes",
 )
 parser.add_argument("--no-diis", action="store_true", help="disable DIIS extrapolation")
-parser.add_argument("--buckets", type=int, default=4,
-                    help="PNO-count buckets to pad pair blocks into (see README)")
+parser.add_argument("--buckets", type=int, default=None,
+                    help="PNO-count buckets to pad pair blocks into; default chooses "
+                         "per thread count (see README)")
 parser.add_argument("--threads", type=int, default=1,
                     help="thread count. Importing psi4 clamps process-wide OpenMP "
                          "to 1, so this must be set for einsums to thread at all")

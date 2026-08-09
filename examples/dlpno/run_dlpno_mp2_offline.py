@@ -29,7 +29,8 @@ from dlpno.thresholds import Thresholds
 parser = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("fixture", help=".npz written by dump_reference.py")
-parser.add_argument("--buckets", type=int, default=4)
+parser.add_argument("--buckets", type=int, default=None,
+                    help="PNO-count buckets to pad pair blocks into; default chooses per thread count")
 parser.add_argument("--no-diis", action="store_true")
 parser.add_argument("--no-optimize", action="store_true")
 parser.add_argument("--quiet", action="store_true")

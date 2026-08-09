@@ -177,7 +177,10 @@ The rationale lives with the code it explains; these are the load-bearing ones a
 
 * **Every per-pair quantity lives in contiguous stores, padded to bucketed shapes** (`base.py`: `new_pair_stores`, `_choose_buckets`).
   psi4 keeps one small matrix per pair; here elementwise work over all pairs is a single graph node and every coupling GEMM has a batchable shape.
-  Padding costs flops, and `--buckets` trades that against batch size: more buckets fit tighter serially, fewer keep the batches large enough to fill threads.
+  Padding costs elements and buckets cost batched calls, and how that trade lands is a property of the machine rather than the molecule: a call is nearly free serially and costs tens of microseconds of OpenMP team launch on ten threads.
+  So the bucket count is chosen rather than fixed, against the region cost `einsums.hardware` measures at startup (`dlpno/cost.py`).
+  On ethanol/cc-pVTZ it picks 9, 7, 6 and 4 buckets at 1, 2, 4 and 10 threads; over the eight geometry and thread-count combinations measured it lands within a geometric mean of 1.03x of the best count available, against 1.22x for the fixed four it replaces.
+  `--buckets` still pins it, which is how those measurements were taken.
 * **The LMP2 residual is a handful of batched GEMMs, not thousands of small ones** (`mp2.py`: `plan_pno_couplings` and the residual emission).
   Both halves of the Fock coupling are grouped - by partner on one side, by pair on the other - with one permuting gather per shape class between them.
 * **The whole iteration is one graph with a loop node** (`mp2.py`: `lmp2_iterations`), convergence test and DIIS (`einsums.graph.diis`) in the loop predicate.
