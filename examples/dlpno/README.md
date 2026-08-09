@@ -5,8 +5,8 @@ DLPNO-MP2 is complete and validated against psi4 two ways; DLPNO-CCSD and (T) ar
 
 DLPNO fits deferred execution unusually well: it is thousands of small dense operations whose shapes and dependency pattern are fixed for a whole calculation and change only in their values, which is exactly the capture-once, replay-many shape.
 Every contraction is captured into a graph once and replayed, so the per-iteration Python cost is a few `execute()` calls however many GEMMs they stand for; the LMP2 iteration itself runs as a single graph with a loop node and DIIS as its predicate.
-Single threaded, the port runs within about 10% of psi4's C++ implementation either way - faster on ethanol/cc-pVTZ, slower on an extended water chain - and its LMP2 iteration is at parity or better.
-Threaded, psi4 is 1.4-3.4x ahead, dominated by the dense `(Q|mn)` build and the host-side setup between graphs, neither of which threads.
+Single threaded, the port matches or beats psi4's C++ implementation - 0.8x its wall time on ethanol/cc-pVTZ, parity on an extended water chain - and its LMP2 iteration is at parity or better.
+Threaded, psi4 is 1.6-2.7x ahead, and the gap is measured rather than mysterious: the dense `(Q|mn)` build (algorithmic, psi4's screened builder is not exposed), graph-capture emission, and the host-side setup between graphs, none of which threads.
 Current numbers are in [Performance against psi4](#performance-against-psi4); `bench_vs_psi4.py` reproduces them on your machine, phase against phase.
 
 ## Layout
@@ -140,27 +140,30 @@ The port runs its hybrid configuration (`--backend compute_pno_overlaps=cpp,tran
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| DF Ints | 0.147 | 0.325 | 0.047 | 0.367 |
-| PNO Transform | 1.497 | **0.571** | 0.284 | 0.233 |
-| PNO Overlaps | 0.235 | 0.191 | 0.054 | 0.085 |
-| LMP2 | 1.285 | 1.228 | 0.446 | 0.569 |
-| **total** | 3.283 | **2.410** | **0.981** | 1.410 |
+| DF Ints | 0.131 | 0.322 | 0.040 | 0.330 |
+| PNO Transform | 1.219 | **0.552** | 0.235 | 0.195 |
+| PNO Overlaps | 0.219 | 0.180 | 0.042 | 0.072 |
+| LMP2 | 1.168 | 1.204 | 0.344 | 0.525 |
+| **total** | 2.849 | **2.353** | **0.810** | 1.273 |
 
 **Water chain n=6, cc-pVDZ** - the extended system with many small pairs.
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| DF Ints | 0.139 | 0.419 | 0.048 | 0.423 |
-| PNO Transform | 0.994 | 1.014 | 0.177 | 0.766 |
-| PNO Overlaps | 0.187 | 0.192 | 0.033 | 0.088 |
-| LMP2 | 0.664 | **0.570** | 0.228 | 0.389 |
-| **total** | **2.064** | 2.263 | **0.533** | 1.786 |
+| DF Ints | 0.139 | 0.447 | 0.043 | 0.405 |
+| PNO Transform | 0.983 | **0.649** | 0.174 | 0.392 |
+| PNO Overlaps | 0.178 | 0.172 | 0.033 | 0.090 |
+| LMP2 | 0.673 | 0.717 | 0.223 | 0.377 |
+| **total** | 2.057 | **2.052** | **0.520** | 1.383 |
 
-Per LMP2 iteration the port is 0.7x psi4 on the chain and 1.0x on ethanol single threaded (the folded loop graph replays with almost no host cost), and about 1.2x threaded.
-What decides the totals is not the iteration: it is the dense `(Q|mn)` build (`from_psi4` uses psi4's dense `ao_eri` where psi4's own builder is screened - C++ on both sides, an algorithmic difference) and, threaded, the host-side setup work between graphs, which is serial Python and does not shrink with cores.
+Per LMP2 iteration the port is 0.7x psi4 on the chain and 1.1x on ethanol single threaded (the folded loop graph replays with almost no host cost), and 1.2-1.5x threaded.
+What decides the totals is not the iteration.
+Single threaded it is the dense `(Q|mn)` build (`from_psi4` uses psi4's dense `ao_eri` where psi4's own builder is screened - C++ on both sides, an algorithmic difference).
+Threaded, that same build is the largest single item in the gap, and the rest is the serial layer psi4 does not have: graph-capture emission, the memo-warming solves in the transform's planning half, the one-time LMP2 graph build, and the numpy bookkeeping phases - work that is constant while the replays shrink with cores.
 
-Two things worth knowing about the backend choice.
-The C++ stages are not uniformly faster: `compute_pno_overlaps=cpp` wins everywhere, while `transform_pnos=cpp` wins on ethanol's fewer-but-larger domains and *loses* to its own Python backend on the chain's many small pairs - selection is per stage and per workload, which is why it is a runtime flag rather than a default.
+Two lessons from taking these numbers, both now guarded.
+A result crossing back from a C++ stage converts each list-valued field to a fresh Python list on every attribute access, so indexing `result.field[u]` inside a per-pair loop is quadratic in the pair count - at chain6's 403 upper pairs that was 320 ms of pure conversion hiding in the transform's finish, and it made the C++ backend look slower than Python at exactly the scale it was promoted for.
+Consumers read each field into a local once (the generated bindings now say so); with that fixed, both C++ stages win on every geometry measured.
 And an unoptimized stage module (empty `CMAKE_BUILD_TYPE`) measures as a severalfold regression with nothing else wrong; `einsums_add_stage_module` now defaults an empty build type to Release, but say what you mean when configuring.
 
 ## Design decisions

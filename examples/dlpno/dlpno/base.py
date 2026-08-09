@@ -985,6 +985,17 @@ class DLPNOBase:
         npairs = self.n_lmo_pairs
         upper = self._pno_upper
 
+        # Read each contract list field ONCE. When the result comes from the
+        # C++ backend, every attribute access converts the underlying
+        # std::vector into a fresh Python list, so indexing result.K_pno[u]
+        # inside the pair loop is quadratic in the pair count: 320 ms of pure
+        # conversion at chain6's 403 upper pairs, against 4 ms this way. The
+        # Python dataclass never punished the pattern, which is how it crept in.
+        K_pno, T_pno = result.K_pno, result.T_pno
+        X_pno, e_pno, n_pno = result.X_pno, result.e_pno, result.n_pno
+        e_initial, e_os_initial = result.e_initial, result.e_os_initial
+        e_trunc, e_os_trunc = result.e_trunc, result.e_os_trunc
+
         self.X_pno = [None] * npairs
         self.e_pno = [None] * npairs
         self.n_pno = [0] * npairs
@@ -996,17 +1007,17 @@ class DLPNOBase:
             ji = self.ij_to_ji[ij]
             # The truncation energies, from the scalar tensors the numerics'
             # graphs wrote (the contract cannot carry computed floats).
-            e_ij_initial = float(ten.view(result.e_initial[u])[0])
-            e_ij_os_initial = float(ten.view(result.e_os_initial[u])[0])
-            e_ij_trunc = float(ten.view(result.e_trunc[u])[0])
-            e_ij_os_trunc = float(ten.view(result.e_os_trunc[u])[0])
+            e_ij_initial = float(ten.view(e_initial[u])[0])
+            e_ij_os_initial = float(ten.view(e_os_initial[u])[0])
+            e_ij_trunc = float(ten.view(e_trunc[u])[0])
+            e_ij_os_trunc = float(ten.view(e_os_trunc[u])[0])
             de = e_ij_initial - e_ij_trunc
             de_os = e_ij_os_initial - e_ij_os_trunc
             de_ss = (e_ij_initial - e_ij_os_initial) - (e_ij_trunc - e_ij_os_trunc)
             for target in ((ij, ji) if i < j else (ij,)):
-                self.X_pno[target] = result.X_pno[u]
-                self.e_pno[target] = result.e_pno[u]
-                self.n_pno[target] = result.n_pno[u]
+                self.X_pno[target] = X_pno[u]
+                self.e_pno[target] = e_pno[u]
+                self.n_pno[target] = n_pno[u]
                 self.de_pno[target] = de
                 self.de_pno_os[target] = de_os
                 self.de_pno_ss[target] = de_ss
@@ -1020,8 +1031,8 @@ class DLPNOBase:
             if n == 0:
                 continue
             i, j = self.ij_to_i_j[ij]
-            K = ten.view(result.K_pno[u])
-            T = ten.view(result.T_pno[u])
+            K = ten.view(K_pno[u])
+            T = ten.view(T_pno[u])
             self.pair_block(self.K_all, ij)[:n, :n] = K
             self.pair_block(self.T_all, ij)[:n, :n] = T
             if i < j:

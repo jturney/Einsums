@@ -532,7 +532,13 @@ void read_field(handle src, char const *contract, char const *field, T &out) {{
                 f'        .def_readonly("{f.name}", &{m.namespace}::{c.name}::{f.name})'
                 for f in c.fields
             )
-            classes.append(f'    py::class_<{m.namespace}::{c.name}>(m, "{c.name}")\n{defs};')
+            classes.append(
+                f"    // Every access to a list-valued field converts the underlying\n"
+                f"    // std::vector into a fresh Python list. A consumer that indexes\n"
+                f"    // result.field[i] inside a loop is therefore quadratic in the list\n"
+                f"    // length; read each field into a local once and index that.\n"
+                f'    py::class_<{m.namespace}::{c.name}>(m, "{c.name}")\n{defs};'
+            )
 
         entries = []
         for st in m.stages:
