@@ -56,6 +56,13 @@ parser.add_argument(
          "OpenMP to 1, so einsums needs this set too; OMP_NUM_THREADS alone "
          "does nothing once psi4 is in the process.",
 )
+parser.add_argument(
+    "--backend", default="",
+    help="stage backend spec for the port, e.g. "
+         "compute_pno_overlaps=cpp,transform_pnos=cpp. Loads the dlpno_stages "
+         "module, which must be on PYTHONPATH; this is how the hybrid "
+         "(C++-stage) configuration is benchmarked.",
+)
 args = parser.parse_args()
 
 if args.molecule.startswith("chain"):
@@ -140,6 +147,17 @@ print("running the einsums port ...", flush=True)
 import psi4  # noqa: E402
 from dlpno import DLPNOMP2, Thresholds  # noqa: E402
 from dlpno.psi4_source import from_psi4  # noqa: E402
+
+if args.backend:
+    # Import the stages module first: load_stage_module matches cpp exports
+    # against stages Python has already declared. The composition methods
+    # dispatch through the registry, so the selection reaches the phases
+    # timed below without any further plumbing here.
+    import dlpno.stages  # noqa: E402,F401
+    from einsums import stages as _estages  # noqa: E402
+
+    _estages.load_stage_module("dlpno_stages")
+    _estages.apply_backend_spec(args.backend)
 
 psi4.core.set_output_file("/tmp/psi4_dlpno_ref_scf.out", False)
 # Importing psi4 sets the process-wide OpenMP thread count to 1, which silently

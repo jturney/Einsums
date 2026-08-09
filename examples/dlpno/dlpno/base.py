@@ -893,15 +893,17 @@ class DLPNOBase:
         accumulated as ``de_pno_total``, psi4's PNO truncation correction.
 
         Three pieces since the M6 split: :meth:`plan_pno_transform` warms the
-        domain memos and flattens the numerics' arguments,
-        :func:`dlpno.pno_xform.transform_pnos` is the promotable numerics, and
-        :meth:`_finish_pno_transform` mirrors the results onto the lower
-        triangle and scatters them into the flat stores. This method is the
-        composition, so the non-stage path is unchanged.
+        domain memos and flattens the numerics' arguments, the ``transform_pnos``
+        stage is the promotable numerics, and :meth:`_finish_pno_transform`
+        mirrors the results onto the lower triangle and scatters them into the
+        flat stores. The numerics goes through the stage registry, so whichever
+        backend has been selected (``einsums.stages.apply_backend_spec``) runs,
+        from every entry point; the Python one at
+        :func:`dlpno.pno_xform.transform_pnos` is the default.
 
         PNOs defined in DOI 10.1063/1.3086717, equations 17 through 24.
         """
-        from .pno_xform import transform_pnos
+        from .stages import transform_pnos
 
         args = self.plan_pno_transform()
         self._finish_pno_transform(transform_pnos(**args))

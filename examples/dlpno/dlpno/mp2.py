@@ -41,7 +41,6 @@ from . import tensors as ten
 from .base import DLPNOBase
 
 from .contracts import CouplingPlan
-from .pno_overlaps import compute_pno_overlaps
 
 __all__ = ["DLPNOMP2"]
 
@@ -98,8 +97,12 @@ class DLPNOMP2(DLPNOBase):
         per-coupling form would have spent more on building the graph than the
         eager version spends computing.
         """
+        # Through the stage registry, so a selected cpp backend runs from
+        # every entry point, not only run_phases.
+        from .stages import compute_pno_overlaps as overlap_stage
+
         plan = self.plan_pno_couplings()
-        overlaps = compute_pno_overlaps(
+        overlaps = overlap_stage(
             self.X_pno, self.S_pao, self.lmopair_to_paos, self.n_pno,
             self.bucket_of, self.bucket_dims, plan,
         )
