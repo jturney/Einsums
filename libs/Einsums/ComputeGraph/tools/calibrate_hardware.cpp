@@ -20,6 +20,7 @@
 /// bandwidth via a STREAM-like copy benchmark.
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/TensorAlgebra.hpp>
@@ -40,7 +41,8 @@ namespace cg = einsums::compute_graph;
 namespace {
 
 struct Config {
-    std::string output     = "hardware_profile.json";
+    std::string output = "hardware_profile.json";
+    std::string calibration; // empty: hardware::default_calibration_path()
     std::string dtype      = "double";
     size_t      min_size   = 16;
     size_t      max_size   = 2048;
@@ -55,6 +57,8 @@ Config parse_args(int argc, char **argv) {
         std::string const arg(argv[i]);
         if (arg == "--output" && i + 1 < argc)
             cfg.output = argv[++i];
+        else if (arg == "--calibration" && i + 1 < argc)
+            cfg.calibration = argv[++i];
         else if (arg == "--dtype" && i + 1 < argc)
             cfg.dtype = argv[++i];
         else if (arg == "--min-size" && i + 1 < argc)
@@ -70,6 +74,7 @@ Config parse_args(int argc, char **argv) {
         else if (arg == "--help" || arg == "-h") {
             println("Usage: calibrate_hardware [options]");
             println("  --output <path>    Output JSON file (default: hardware_profile.json)");
+            println("  --calibration <path>  Hardware calibration file (default: platform cache dir)");
             println("  --dtype <type>     Data type: double or float (default: double)");
             println("  --min-size <N>     Minimum matrix dimension (default: 16)");
             println("  --max-size <N>     Maximum matrix dimension (default: 2048)");
@@ -452,6 +457,20 @@ int einsums_main() {
     // Update cost_model name
     cost_model.cpu.name   = fmt::format("{} (calibrated)", cpu_brand);
     cost_model.cpu.source = "calibrated";
+
+    // The OpenMP region cost, swept across team sizes and written where the
+    // Hardware module reads it. Separate from the profile JSON on purpose:
+    // Hardware sits below the module that owns this JSON parser, and the number
+    // is consumed by things that never load a CostModel (PackedGemm's parallel
+    // gate, the DLPNO bucket chooser through the Python binding).
+    einsums::println("\n--- OpenMP Region Cost ---\n");
+    std::string       calib_error;
+    std::string const calib_path = cfg.calibration.empty() ? einsums::hardware::default_calibration_path() : cfg.calibration;
+    if (einsums::hardware::write_calibration(calib_path, &calib_error)) {
+        einsums::println("  Calibration written to: {}", calib_path);
+    } else {
+        einsums::println("  WARNING: could not write calibration ({}); consumers will measure per process", calib_error);
+    }
 
     // Save
     auto save_result = cost_model.save_json(cfg.output);

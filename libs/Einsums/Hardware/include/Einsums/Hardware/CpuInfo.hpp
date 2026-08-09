@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 EINSUMS_NAMESPACE_BEGIN(hardware)
 
@@ -61,6 +62,19 @@ EINSUMS_EXPORT CpuInfo const &cpu_info();
  * EMPTY region costs around 20 microseconds, and it grows with the thread count,
  * so a loop needs real work in it before parallelizing is anything but a loss.
  *
+ * Read from a calibration file when one exists, and measured here and now when
+ * it does not. Per process the measurement drifts by tens of percent with
+ * whatever else is starting up, which is harmless for a threshold and not
+ * harmless for a chooser ranking discrete options against the rate.
+ *
+ * Nothing in the library writes that file. @ref write_calibration does, and
+ * @c calibrate_hardware calls it, so the value is one somebody chose to record
+ * rather than whichever measurement a process happened to take first. A cached
+ * measurement taken while the machine was busy is indistinguishable from a
+ * slower machine; a file you generated can be regenerated, diffed and deleted.
+ *
+ * @c EINSUMS_OMP_REGION_COST_NS pins a value outright.
+ *
  * Exposed to Python because cost models are not all in C++: the DLPNO example
  * chooses how finely to batch its per-pair work, and that decision turns on
  * exactly this number.
@@ -90,6 +104,33 @@ APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::size_t omp_min_paral
  * put the break-even far too high and exclude shapes that genuinely want threads.
  */
 APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::int64_t omp_min_parallel_flops();
+
+/**
+ * @brief Where @ref omp_region_cost_ns looks for a calibration file.
+ *
+ * @c EINSUMS_HARDWARE_CALIBRATION if set, otherwise a host-keyed default under
+ * the platform cache directory. Empty when there is nowhere to look, which is
+ * not an error: the measurement simply happens per process.
+ */
+APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::string default_calibration_path();
+
+/**
+ * @brief Measure the OpenMP region cost at every team size and record it.
+ *
+ * The write half of the calibration file, owned here because this module owns
+ * the facts in it and sits below the one that owns a JSON parser. Called by the
+ * @c calibrate_hardware tool, which is where a person asks for this; the library
+ * itself never writes, so a value is only ever one somebody chose to record.
+ *
+ * Sweeps team sizes 1..@c omp_get_max_threads() because the cost is a function
+ * of the team, and a later run at four threads must not be handed the ten-thread
+ * number. A few milliseconds per entry.
+ *
+ * @param path Destination, or empty for @ref default_calibration_path.
+ * @param error Set to a human-readable reason when this returns false.
+ * @return Whether the file was written.
+ */
+EINSUMS_EXPORT bool write_calibration(std::string const &path, std::string *error = nullptr);
 
 EINSUMS_NAMESPACE_END(hardware)
 

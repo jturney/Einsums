@@ -7,12 +7,21 @@
 #include <Einsums/Hardware/CpuInfo.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <optional>
+#include <sstream>
 #include <string>
+#include <system_error>
+
+#if !defined(_WIN32)
+#    include <unistd.h>
+#endif
 
 #if defined(__APPLE__)
 #    include <sys/sysctl.h>
@@ -186,6 +195,156 @@ double measure_omp_region_cost_ns() {
 #endif
 }
 
+/// Where a measured constant may be remembered between runs, or "" if nowhere.
+///
+/// ``EINSUMS_CACHE_DIR`` first so a test or a CI job can point this somewhere
+/// disposable, then the platform's own cache location. Never a fatal condition:
+/// a machine with nowhere to write simply measures every time, which is what
+/// happened before there was a cache at all.
+std::filesystem::path cache_directory() {
+    if (char const *env = std::getenv("EINSUMS_CACHE_DIR"); env != nullptr && *env != '\0') {
+        return std::filesystem::path(env);
+    }
+#if defined(_WIN32)
+    if (char const *base = std::getenv("LOCALAPPDATA"); base != nullptr && *base != '\0') {
+        return std::filesystem::path(base) / "einsums";
+    }
+#else
+    if (char const *base = std::getenv("XDG_CACHE_HOME"); base != nullptr && *base != '\0') {
+        return std::filesystem::path(base) / "einsums";
+    }
+    if (char const *home = std::getenv("HOME"); home != nullptr && *home != '\0') {
+        return std::filesystem::path(home) / ".cache" / "einsums";
+    }
+#endif
+    return {};
+}
+
+/// This machine's name, reduced to something safe in a filename.
+std::string host_tag() {
+    char raw[256] = {};
+#if defined(_WIN32)
+    DWORD size = sizeof(raw);
+    if (GetComputerNameA(raw, &size) == 0) {
+        return "unknown";
+    }
+#else
+    if (gethostname(raw, sizeof(raw) - 1) != 0) {
+        return "unknown";
+    }
+#endif
+    std::string tag(raw);
+    if (tag.empty()) {
+        return "unknown";
+    }
+    for (char &c : tag) {
+        if (std::isalnum(static_cast<unsigned char>(c)) == 0) {
+            c = '_';
+        }
+    }
+    return tag;
+}
+
+/// The calibration file this machine's measurements are read from.
+///
+/// ``EINSUMS_HARDWARE_CALIBRATION`` first, mirroring the contract
+/// ``EINSUMS_HARDWARE_PROFILE`` already has for the ComputeGraph cost model:
+/// an explicit file, missing is fine, never load-bearing. Otherwise a default
+/// under the cache directory, keyed by host so a shared home directory cannot
+/// hand one machine's fork/join cost to another.
+std::filesystem::path calibration_file() {
+    if (char const *env = std::getenv("EINSUMS_HARDWARE_CALIBRATION"); env != nullptr && *env != '\0') {
+        return std::filesystem::path(env);
+    }
+    std::filesystem::path const dir = cache_directory();
+    if (dir.empty()) {
+        return {};
+    }
+    return dir / ("hardware-calibration-v1-" + host_tag() + ".txt");
+}
+
+/// One ``omp_region_cost_ns <threads> <value>`` entry, if the file has one.
+///
+/// Deliberately a line-oriented key/value format rather than JSON. This module
+/// sits below the one that owns a JSON parser, and a calibration file a person
+/// is expected to read, diff and delete is better off in a format that needs no
+/// parser at all.
+std::optional<double> read_calibrated_region_cost(std::filesystem::path const &path, int threads) {
+    if (path.empty()) {
+        return std::nullopt;
+    }
+    std::ifstream in(path);
+    if (!in) {
+        return std::nullopt;
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        std::istringstream fields(line);
+        std::string        key;
+        int                entry_threads = 0;
+        double             value         = 0.0;
+        if (!(fields >> key >> entry_threads >> value)) {
+            continue;
+        }
+        if (key != "omp_region_cost_ns" || entry_threads != threads) {
+            continue;
+        }
+        // A negative, infinite or absurd number means a truncated or hand-edited
+        // file. Measuring again is always safe, so never trust one through.
+        if (!(value >= 0.0) || value > 1e9) {
+            return std::nullopt;
+        }
+        return value;
+    }
+    return std::nullopt;
+}
+
+/// The region cost: pinned, else calibrated, else measured here and now.
+///
+/// Measured per process this drifts by tens of percent with whatever else the
+/// machine is doing at startup. That is harmless for a threshold - a few percent
+/// either way does not move "is this loop worth a team" - and not harmless for a
+/// chooser that ranks discrete options against the rate, which is what the DLPNO
+/// example does when it weighs padded elements against batched calls.
+///
+/// So a calibrated value wins when there is one, and it gets there because
+/// somebody ran ``calibrate_hardware``. Nothing in this library writes that file.
+/// That is the whole point: a value the library caches for itself pins the first
+/// measurement it happens to take, and a measurement taken while the machine was
+/// busy is indistinguishable from a slower machine. A file somebody chose to
+/// generate can be regenerated, inspected, diffed and deleted, and its staleness
+/// is a question with an obvious answer rather than a silent one.
+double resolve_omp_region_cost_ns() {
+    // An explicit pin beats everything, so a benchmark can hold the rate fixed
+    // across machines without touching any file.
+    if (char const *env = std::getenv("EINSUMS_OMP_REGION_COST_NS"); env != nullptr && *env != '\0') {
+        errno               = 0;
+        char        *end    = nullptr;
+        double const pinned = std::strtod(env, &end);
+        if (errno == 0 && end != env && pinned >= 0.0) {
+            return pinned;
+        }
+    }
+
+#ifdef _OPENMP
+    int const threads = omp_get_max_threads();
+#else
+    int const threads = 1;
+#endif
+    // A single thread enters no region, so there is nothing to calibrate.
+    if (threads <= 1) {
+        return 0.0;
+    }
+
+    if (auto const calibrated = read_calibrated_region_cost(calibration_file(), threads)) {
+        return *calibrated;
+    }
+    return measure_omp_region_cost_ns();
+}
+
 /// Native SIMD width in doubles, from the compile-time ISA.
 int detect_simd_width_f64() {
 #if defined(__AVX512F__)
@@ -208,10 +367,87 @@ CpuInfo const &cpu_info() {
         i.cache.l1           = cs.l1;
         i.cache.l2           = cs.l2;
         i.cache.l3           = cs.l3;
-        i.omp_region_cost_ns = measure_omp_region_cost_ns();
+        i.omp_region_cost_ns = resolve_omp_region_cost_ns();
         return i;
     }();
     return info;
+}
+
+std::string default_calibration_path() {
+    return calibration_file().string();
+}
+
+bool write_calibration(std::string const &path, std::string *error) {
+    std::filesystem::path const target = path.empty() ? calibration_file() : std::filesystem::path(path);
+    if (target.empty()) {
+        if (error != nullptr) {
+            *error = "no calibration path given and no usable cache directory";
+        }
+        return false;
+    }
+
+#ifdef _OPENMP
+    int const max_threads = omp_get_max_threads();
+#else
+    int const max_threads = 1;
+#endif
+
+    // Every team size the process could later run at, because the cost is a
+    // function of the team and a run at four threads must not be handed the
+    // ten-thread number. Each entry is a few milliseconds.
+    std::string body;
+    body += "# einsums hardware calibration, format 1\n";
+    body += "# host " + host_tag() + "\n";
+    body += "# Regenerate with calibrate_hardware. Delete to fall back to measuring\n";
+    body += "# per process. Read by einsums::hardware::omp_region_cost_ns().\n";
+    for (int t = 1; t <= max_threads; ++t) {
+#ifdef _OPENMP
+        omp_set_num_threads(t);
+#endif
+        double const value = measure_omp_region_cost_ns();
+        body += "omp_region_cost_ns " + std::to_string(t) + " " + std::to_string(value) + "\n";
+    }
+#ifdef _OPENMP
+    omp_set_num_threads(max_threads);
+#endif
+
+    std::error_code ec;
+    if (target.has_parent_path()) {
+        std::filesystem::create_directories(target.parent_path(), ec);
+        if (ec) {
+            if (error != nullptr) {
+                *error = "could not create " + target.parent_path().string() + ": " + ec.message();
+            }
+            return false;
+        }
+    }
+    // Temporary then rename, so a concurrent reader never sees half a file.
+    std::filesystem::path const tmp = target.string() + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        if (!out) {
+            if (error != nullptr) {
+                *error = "could not open " + tmp.string() + " for writing";
+            }
+            return false;
+        }
+        out << body;
+        if (!out) {
+            if (error != nullptr) {
+                *error = "could not write " + tmp.string();
+            }
+            return false;
+        }
+    }
+    std::filesystem::rename(tmp, target, ec);
+    if (ec) {
+        std::filesystem::remove(tmp, ec);
+        if (error != nullptr) {
+            *error = "could not rename into " + target.string();
+        }
+        return false;
+    }
+    return true;
 }
 
 double omp_region_cost_ns() {
