@@ -24,8 +24,11 @@ That is the right direction to be wrong in for this purpose: a phase this
 reports as wide certainly is.
 
 This is the measurement half of the method-promotion work deferred from M4 to
-M6. It is useful as a diagnostic well before it is useful as a generator, which
-is most of the argument for having deferred the generator.
+M6. The generator half is ``python -m einsums.stages extract``, which starts
+from the same analysis (deeper: chains, mutations, properties) and then
+requires a cut spec dispositioning every field before it scaffolds anything.
+This script stays as the one-screen overview across all phases; extract is the
+per-method deep dive.
 """
 
 import argparse

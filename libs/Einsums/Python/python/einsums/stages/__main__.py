@@ -3,21 +3,29 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""``python -m einsums.stages`` - the promote tool.
+"""``python -m einsums.stages`` - the promote and extract tools.
 
 ::
 
     python -m einsums.stages promote mymethod/stages.py --out cpp/
+    python -m einsums.stages extract mymethod/solver.py::Solver.build_t2
 
-Reads the Python stage signatures and contract dataclasses by runtime
-introspection - no libclang, no parsing of C++ - and writes the C++ side of
-every stage in the module that has stated a contract.
+``promote`` reads the Python stage signatures and contract dataclasses by
+runtime introspection - no libclang, no parsing of C++ - and writes the C++
+side of every stage in the module that has stated a contract.
 
 It operates on the module, never on one stage. A contract's binding strategy
 depends on which direction it crosses the boundary, and that is only knowable
 with the whole stage set in hand. A stage name given with ``--stage`` filters
 which port skeletons get written; the generated module always covers
 everything.
+
+``extract`` is upstream of ``promote``: it turns a method into the stage split
+``promote`` operates on. It reports every ``self`` field and helper the method
+touches, then refuses to scaffold anything until a cut spec has dispositioned
+each one - because the hard half of extracting a method is choosing where to
+cut, and a tool that chooses silently emits the 32-field contract this project
+has already rejected once.
 """
 
 import argparse
@@ -25,6 +33,15 @@ import pathlib
 import sys
 
 from ._emit import Emitter, find_formatters
+from ._extract import (
+    ExtractError,
+    analyze,
+    load_spec,
+    narrowing_summary,
+    render_report,
+    render_scaffold,
+    render_template,
+)
 from ._promote import PromoteError, build_model, classify_stages, load_stages_module
 
 __all__ = ["main"]
@@ -99,7 +116,77 @@ def _promote_parser(sub):
         action="store_true",
         help="report what would be written without writing anything",
     )
+    p.set_defaults(run=_run_promote)
     return p
+
+
+def _extract_parser(sub):
+    p = sub.add_parser(
+        "extract",
+        help="analyze a method for promotion and scaffold its extraction",
+        description=(
+            "Report every `self` field and helper the method touches, write a cut-spec "
+            "template, and - once every entry has a disposition - scaffold the extraction: "
+            "contract, stage signature, plan and finish skeletons. A static AST pass; no "
+            "build and no imports are needed."
+        ),
+    )
+    p.add_argument(
+        "target",
+        help="the method, as path/to/file.py::Class.method",
+    )
+    p.add_argument(
+        "--also",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="extra source file providing helper definitions (a base class in "
+        "another file); repeatable",
+    )
+    p.add_argument(
+        "--spec",
+        type=pathlib.Path,
+        help="the cut spec (default: <method>.cut.toml in the current directory). "
+        "Missing: a TODO template is written there. Present: it is validated and "
+        "the scaffold is emitted.",
+    )
+    p.add_argument(
+        "--out",
+        type=pathlib.Path,
+        default=pathlib.Path("."),
+        help="directory the scaffold is written into (default: .)",
+    )
+    p.set_defaults(run=_run_extract)
+    return p
+
+
+def _run_extract(args) -> int:
+    analysis = analyze(args.target, also=args.also)
+    print(render_report(analysis))
+
+    spec_path = args.spec or pathlib.Path(f"{analysis.method}.cut.toml")
+    if not spec_path.exists():
+        spec_path.write_text(render_template(analysis))
+        print(
+            f"\nwrote {spec_path}: fill in every disposition, then rerun the same "
+            f"command to scaffold the extraction."
+        )
+        return 0
+
+    spec = load_spec(spec_path, analysis)
+    scaffold_path = args.out / f"extracted_{spec.stage_name}.py"
+    if scaffold_path.exists():
+        print(
+            f"\nextract: {scaffold_path} already exists and is yours; it is never "
+            f"rewritten. Move it aside to scaffold again.",
+            file=sys.stderr,
+        )
+        return 1
+    args.out.mkdir(parents=True, exist_ok=True)
+    scaffold_path.write_text(render_scaffold(analysis, spec))
+    print(f"\n{narrowing_summary(analysis, spec)}")
+    print(f"wrote {scaffold_path}")
+    return 0
 
 
 def _run_promote(args) -> int:
@@ -163,12 +250,13 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m einsums.stages")
     sub = parser.add_subparsers(dest="command", required=True)
     _promote_parser(sub)
+    _extract_parser(sub)
     args = parser.parse_args(argv)
 
     try:
-        return _run_promote(args)
-    except PromoteError as exc:
-        print(f"promote: {exc}", file=sys.stderr)
+        return args.run(args)
+    except (PromoteError, ExtractError) as exc:
+        print(f"{args.command}: {exc}", file=sys.stderr)
         return 1
 
 
