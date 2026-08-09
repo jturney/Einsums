@@ -995,6 +995,9 @@ endif()
 
 if(EINSUMS_WITH_EXAMPLES)
   einsums_add_pseudo_target(Examples)
+  # The top-level examples build nothing, but the psi4-free tests some of them
+  # ship are worth having ctest run; see examples/CMakeLists.txt.
+  add_subdirectory(examples)
 endif()
 
 # ##################################################################################################
