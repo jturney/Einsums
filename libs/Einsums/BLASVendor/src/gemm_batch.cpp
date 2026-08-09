@@ -9,6 +9,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
 
+#include <algorithm>
 #include <array>
 
 #include "Common.hpp"
@@ -111,12 +112,28 @@ void small_gemm(char transa, char transb, int_t m, int_t n, int_t k, T alpha, T 
 /// here - because it is a better kernel. What it does not survive is being called
 /// concurrently: OpenBLAS serializes inside each call, so the same 4000-element
 /// 9x9 batch costs 0.44 ms on one thread and 1.04 ms on ten, while the kernel below
-/// shares nothing and goes 0.85 -> 0.21. The crossover against the vendor rises with
-/// the thread count (dim 10 at four threads, dim 16 at ten), so the cutoff is set
-/// where it holds for a wide team and left alone for a narrow one.
+/// shares nothing and goes 0.85 -> 0.21.
+///
+/// So the crossover is not a property of the shape alone: it rises with the team,
+/// because a wider team is what makes the vendor's serialization expensive enough
+/// to be worth a worse kernel. Measured here it sits at dim 10 on four threads and
+/// dim 16 on ten, which is the line below. Pinning it at the ten-thread value for
+/// every team - which is what a single constant did - inverts on a narrow one: at
+/// two threads a 12x12 through 16x16 batch ran 0.61-0.82x the speed of the same
+/// batch on one thread, having given up the vendor kernel to buy a second thread
+/// that could not pay for it.
+inline int_t small_gemm_cutoff(int_t threads) {
+    return std::min<int_t>(small_gemm_dim, 6 + threads);
+}
+
 inline bool use_small_gemm(int_t m, int_t n, int_t k) {
 #ifdef _OPENMP
-    return m <= small_gemm_dim && n <= small_gemm_dim && k <= small_gemm_dim && omp_get_max_threads() > 1;
+    int_t const threads = omp_get_max_threads();
+    if (threads <= 1) {
+        return false;
+    }
+    int_t const cutoff = small_gemm_cutoff(threads);
+    return m <= cutoff && n <= cutoff && k <= cutoff;
 #else
     return false;
 #endif
