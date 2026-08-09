@@ -34,6 +34,11 @@ def make_inputs():
 
 @pytest.fixture(scope="module")
 def stage_module():
+    # Idempotent: another test file in the same pytest process may have
+    # loaded the module already, and the registry (rightly) refuses a second
+    # cpp registration for a stage.
+    if "cpp" in stages.get_stage("compute_pno_overlaps").backends:
+        return None
     return stages.load_stage_module("dlpno_stages")
 
 
