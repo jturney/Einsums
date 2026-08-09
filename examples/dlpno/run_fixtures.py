@@ -76,7 +76,7 @@ if not paths:
     parser.error(f"no fixtures matched (looked in {DEFAULT_DIR})")
 
 # Untruncated has to reproduce canonical DF-MP2 exactly; truncated is scaled to
-# the PNO truncation correction, for the reason run_pno_mp2.py explains.
+# the PNO truncation correction, for the reason run_dlpno_mp2.py explains.
 UNTRUNCATED_TOL = 1e-9
 
 print(f"{'fixture':<32} {'untruncated':>13} {'truncated':>13} {'time':>8}")

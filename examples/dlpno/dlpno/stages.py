@@ -25,14 +25,16 @@ status quo, which has the same nine boundaries and no way to see them; it turns
 an invisible property into a line of output. Converting a phase to capture into
 the session's graph is then a visible improvement: one fewer SPLIT.
 
-**No phase states a contract yet.** They are methods, so a contract means
-extracting the ``self`` fields each one touches into a state dataclass. The
-sizes say that is not uniform work: five phases touch fewer than ten fields
-between reads and writes, while ``pno_transform`` touches 32,
-``compute_pno_overlaps`` 27 and ``lmp2_iterations`` 45. Writing nine
-extractions before the timing table exists would be the exact mistake this
-framework is built to prevent, so each phase states its contract when it is
-promoted, and ``contract=False`` reports the debt until then.
+**Most phases do not state a contract.** They are methods, so a contract means
+splitting off the ``self`` fields each one touches, and the field counts say
+that is not uniform work: five phases touch fewer than ten fields while
+``lmp2_iterations`` touches 45. A phase states its contract when it is
+promoted, and ``contract=False`` reports the debt until then. Two have been:
+``compute_pno_overlaps`` (27 fields narrowed to seven parameters) and
+``transform_pnos`` (32 narrowed to fifteen), each split into a plan half that
+stays Python and a contracted numerics stage declared below, with C++ backends
+under ``cpp/``. ``python -m einsums.stages extract`` mechanizes the analysis
+for the next one.
 """
 
 import functools

@@ -17,7 +17,7 @@ sizes printed alongside:
 * psi4 builds the three-index integrals with a screened, linear-scaling
   shell-triplet loop; this port builds the dense ``(Q|mn)`` and slices it.
 * the port pads every pair's block to a bucket size, trading flops for
-  batchability (see bench_batching.py). The padding factor is reported below.
+  batchability. The padding factor is reported below.
 
 The LMP2 iteration is the phase where the two are doing recognizably the same
 work, and it is reported per iteration because the convergence paths differ.

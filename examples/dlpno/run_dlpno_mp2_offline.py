@@ -4,7 +4,7 @@
 #----------------------------------------------------------------------------------------------
 """Run PNO-MP2 from a saved reference, with no psi4 in the process.
 
-``run_pno_mp2.py`` is the real validation: it builds the reference, runs psi4's
+``run_dlpno_mp2.py`` is the real validation: it builds the reference, runs psi4's
 own DF-MP2 and DLPNO-MP2, and checks the port against both. This runs the same
 port against a reference frozen to disk by ``dump_reference.py``, checking it
 against the psi4 energies recorded at dump time.
@@ -13,7 +13,7 @@ That makes it a smoke test rather than a validation - the reference is fixed, so
 it cannot catch anything upstream of ``Reference`` - but it needs nothing except
 numpy and einsums, so it runs anywhere the library builds.
 
-    python examples/dlpno/run_pno_mp2_offline.py examples/dlpno/fixtures/water-ccpvdz.npz
+    python examples/dlpno/run_dlpno_mp2_offline.py examples/dlpno/fixtures/water-ccpvdz.npz
 """
 
 import argparse
@@ -66,7 +66,7 @@ trunc = DLPNOMP2(reference, cut, verbose=not args.quiet, use_diis=not args.no_di
 trunc.compute_energy(optimize=not args.no_optimize)
 if dlpno_mp2 is not None:
     err_dlpno = abs(trunc.e_corr - dlpno_mp2)
-    # Same tolerance rationale as run_pno_mp2.py: scaled to the PNO truncation
+    # Same tolerance rationale as run_dlpno_mp2.py: scaled to the PNO truncation
     # correction, because below that scale the difference is the PAO
     # linear-dependence tie-break rather than a domain disagreement.
     tol = max(1e-9, 0.01 * abs(trunc.de_pno_total))

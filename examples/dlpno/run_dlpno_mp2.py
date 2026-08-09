@@ -2,24 +2,24 @@
 # Copyright (c) The Einsums Developers. All rights reserved.
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
-"""Local MP2 in a PNO basis, validated against psi4.
+"""Run DLPNO-MP2 on one molecule and validate it against psi4, both ways.
 
-The first milestone of the DLPNO port. Screening is off (every LMO pair is
-significant, every domain complete), which makes the check exact rather than
-approximate:
+The main psi4-driven entry point, and the port's real validation. It runs the
+same reference through two solvers and asserts both:
 
-* with PNO truncation also off, local MP2 in the full PAO space *is* canonical
-  DF-MP2, just expressed in a non-canonical basis, so the correlation energy
-  must match psi4's DF-MP2 to machine precision;
-* with truncation on, ``E_lmp2 + de_pno`` must land back on that same number to
-  within the PNO truncation correction's own accuracy.
+* **untruncated**: with every threshold off, local MP2 in the full PAO space
+  *is* canonical DF-MP2, just expressed in a non-canonical basis, so the
+  correlation energy must match psi4's DF-MP2 to machine precision;
+* **truncated** (psi4's NORMAL preset): both codes apply the same three
+  truncations - PNO occupation cutoff, differential-overlap PAO domains and
+  auxiliary domains, dipole pair prescreening - so the energy must match
+  psi4's own DLPNO-MP2, not merely land near it.
 
-Both are asserted. Run with the Einsums build and the psi4 stage on PYTHONPATH,
-using the conda-env python::
+Run with the Einsums build and a psi4 install on PYTHONPATH, using the
+conda-env python::
 
-    PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
-        /Users/jturney/miniconda3/envs/einsums-dev/bin/python \
-        /Users/jturney/Code/Einsums/Einsums/examples/dlpno/run_pno_mp2.py
+    PYTHONPATH=/path/to/Einsums/build/lib:/path/to/psi4/stage/lib \
+        python examples/dlpno/run_dlpno_mp2.py --molecule water-dimer
 """
 
 import argparse
