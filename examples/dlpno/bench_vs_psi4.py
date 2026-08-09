@@ -202,6 +202,11 @@ phase("PNO Transform", lambda: (mp2.precompute_fits(), mp2.pno_transform()))
 phase("PNO Overlaps", mp2.compute_pno_overlaps)
 phase("LMP2", mp2.lmp2_iterations)
 ours["DLPNO-MP2"] = time.perf_counter() - t_total
+# Split the one-time graph build (allocate + capture + optimize) out of the
+# LMP2 row: psi4 has no equivalent setup cost, so a row mixing the two
+# compares different things. Both rows still sum into the total.
+ours["LMP2 build"] = mp2.t_capture
+ours["LMP2"] = mp2.t_iterate
 
 # ---- report ------------------------------------------------------------------
 print(f"\n  problem size")
@@ -220,21 +225,23 @@ print(f"\n  wall time (seconds)")
 print(f"    {'phase':22} {'psi4':>12} {'this port':>12} {'ratio':>10}")
 for label, key in [("Setup Orbitals", "Setup Orbitals"), ("DF Ints", "DF Ints"),
                    ("PNO Transform", "PNO Transform"), ("PNO Overlaps", "PNO Overlaps"),
-                   ("LMP2", "LMP2"), ("total DLPNO-MP2", "DLPNO-MP2")]:
-    p = psi4_phases.get(key)
+                   ("LMP2 iterations", "LMP2"), ("LMP2 graph build", "LMP2 build"),
+                   ("total DLPNO-MP2", "DLPNO-MP2")]:
     o = ours.get(key)
-    if p is None or o is None:
+    if o is None:
+        continue
+    p = psi4_phases.get(key)
+    if p is None:
+        # A cost with no psi4 analogue (the one-time graph build).
+        print(f"    {label:22} {'-':>12} {o:>12.3f} {'-':>10}")
         continue
     ratio = f"{o / p:>9.1f}x" if p > 1e-6 else "        -"
     print(f"    {label:22} {p:>12.3f} {o:>12.3f} {ratio:>10}")
 
 p_it = psi4_phases.get("LMP2", 0.0) / max(psi4_stats.get("iterations", 1), 1)
-# Steady state only: graph capture and optimization are paid once, and at ten
-# iterations they dominate the LMP2 total. psi4 has no equivalent setup cost,
-# so folding ours into a per-iteration figure would compare different things.
+# Steady state only: the graph build is paid once and has its own row above;
+# it amortizes with iteration count, which the per-iteration figure is for.
 o_it = mp2.t_iterate / max(mp2.n_iterations, 1)
-print(f"\n    {'graph capture+optimize':22} {'-':>12} {mp2.t_capture:>12.3f}"
-      "   (one-time, not in the per-iteration figure)")
 if p_it > 1e-9:
     print(f"\n    {'LMP2 per iteration':22} {p_it:>12.4f} {o_it:>12.4f} {o_it / p_it:>9.1f}x")
 

@@ -652,9 +652,12 @@ class DLPNOMP2(DLPNOBase):
         graph the OpenMP executor that repack alone wanted: with the residual's
         batched GEMMs in the same graph, an OpenMP team nests them inside
         OpenBLAS's own threads and the energy moves in the last few digits. So
-        the body runs under the default executor, and repack loses the
-        parallelism it had. That is a real cost and it is the price of the fold;
-        scoping an executor to part of a graph would buy it back.
+        the body runs under the default executor. Repack's parallelism is
+        bought back INSIDE the node instead: ``cg::gather`` runs its outer walk
+        on an OpenMP team when it is not already inside one (its writes are
+        disjoint by construction), which threads the repack under the default
+        executor without nesting anything. Scoping an executor to part of a
+        graph remains the general answer for node-level parallelism here.
         """
         import time as _time
         _t0 = _time.perf_counter()

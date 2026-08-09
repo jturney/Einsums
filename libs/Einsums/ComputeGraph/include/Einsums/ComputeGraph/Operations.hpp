@@ -812,9 +812,13 @@ APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<double>>
         T       *d_data = d->data();
         T const *s_data = s->data();
 
-        // The source is the indexed side; the destination is walked linearly.
-        detail::for_each_selection_run(indices, extents, s_str, d_str,
-                                       [&](size_t s_off, size_t d_off, size_t n) { std::copy_n(s_data + s_off, n, d_data + d_off); });
+        // The source is the indexed side; the destination is walked linearly -
+        // which is what makes the parallel opt-in sound here: every op call
+        // writes a disjoint destination run no matter what the index lists
+        // hold. scatter and scatter_add stay serial; see the walker's contract.
+        detail::for_each_selection_run(
+            indices, extents, s_str, d_str, [&](size_t s_off, size_t d_off, size_t n) { std::copy_n(s_data + s_off, n, d_data + d_off); },
+            /*parallel=*/true);
     };
 
     auto &ctx = CaptureContext::current();

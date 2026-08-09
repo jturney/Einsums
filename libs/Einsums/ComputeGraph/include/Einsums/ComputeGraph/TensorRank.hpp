@@ -9,6 +9,8 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
+#include <cstdint>
+#include <omp.h>
 #include <type_traits>
 #include <vector>
 
@@ -76,9 +78,20 @@ constexpr std::size_t tensor_rank(T const &t) noexcept {
 // @p lin_str those of the side walked linearly; which is source and which is
 // destination is the caller's business, and is what distinguishes gather from
 // scatter.
+//
+// @p parallel opts the outer walk into an OpenMP team, and it is the CALLER's
+// assertion that concurrent @p op calls never touch the same element. gather
+// may assert it unconditionally - its writes walk the linear side, disjoint by
+// construction even when the index lists repeat. scatter and scatter_add may
+// not: their writes go through the index lists, and a repeated index is two
+// ops racing on one element. The team is skipped inside an existing parallel
+// region (an OpenMP-executor graph replay keeps its across-node parallelism
+// and each node stays serial inside) and below a size floor, where the fork
+// costs more than the copy.
 template <typename Fn>
 void for_each_selection_run(std::vector<std::vector<std::size_t>> const &indices, std::vector<std::size_t> const &extents,
-                            std::vector<std::size_t> const &idx_str, std::vector<std::size_t> const &lin_str, Fn &&op) {
+                            std::vector<std::size_t> const &idx_str, std::vector<std::size_t> const &lin_str, Fn &&op,
+                            bool parallel = false) {
     std::size_t const N = indices.size();
     for (std::size_t k = 0; k < N; ++k) {
         if (extents[k] == 0) {
@@ -106,6 +119,39 @@ void for_each_selection_run(std::vector<std::vector<std::size_t>> const &indices
     std::size_t outer = 1;
     for (std::size_t k = 1; k < N; ++k) {
         outer *= extents[k];
+    }
+
+    auto visit = [&](std::size_t count) {
+        // De-linearize with axis 1 fastest, the same tuple order the serial
+        // odometer below produces; for the parallel walk only the SET of
+        // tuples matters, but sharing the mapping keeps the two paths one
+        // shape.
+        std::size_t i_off = 0, l_off = 0, rem = count;
+        for (std::size_t k = 1; k < N; ++k) {
+            std::size_t const ik = rem % extents[k];
+            rem /= extents[k];
+            i_off += off[k][ik];
+            l_off += ik * lin_str[k];
+        }
+        if (run0) {
+            op(i_off + off[0][0], l_off, extents[0]);
+        } else {
+            for (std::size_t i = 0; i < extents[0]; ++i) {
+                op(i_off + off[0][i], l_off + i * lin_str[0], std::size_t{1});
+            }
+        }
+    };
+
+    // The floor keeps tiny selections off the team: below it the fork/join
+    // costs more than the move. 32k elements is ~256 KiB of doubles, well past
+    // that crossover on anything current.
+    constexpr std::size_t parallel_floor = 32768;
+    if (parallel && outer > 1 && outer * extents[0] >= parallel_floor && omp_get_max_threads() > 1 && !omp_in_parallel()) {
+#pragma omp parallel for schedule(static)
+        for (std::int64_t count = 0; count < static_cast<std::int64_t>(outer); ++count) {
+            visit(static_cast<std::size_t>(count));
+        }
+        return;
     }
 
     std::vector<std::size_t> idx(N, 0);

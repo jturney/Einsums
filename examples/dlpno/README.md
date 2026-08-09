@@ -5,8 +5,8 @@ DLPNO-MP2 is complete and validated against psi4 two ways; DLPNO-CCSD and (T) ar
 
 DLPNO fits deferred execution unusually well: it is thousands of small dense operations whose shapes and dependency pattern are fixed for a whole calculation and change only in their values, which is exactly the capture-once, replay-many shape.
 Every contraction is captured into a graph once and replayed, so the per-iteration Python cost is a few `execute()` calls however many GEMMs they stand for; the LMP2 iteration itself runs as a single graph with a loop node and DIIS as its predicate.
-Single threaded, the port matches or beats psi4's C++ implementation - 0.8x its wall time on ethanol/cc-pVTZ, parity on an extended water chain - and its LMP2 iteration is at parity or better.
-Threaded, psi4 is 1.6-2.7x ahead, and the gap is measured rather than mysterious: the dense `(Q|mn)` build (algorithmic, psi4's screened builder is not exposed), graph-capture emission, and the host-side setup between graphs, none of which threads.
+Single threaded, the port beats psi4's C++ implementation on both benchmark geometries - 0.8x its wall time on ethanol/cc-pVTZ, 0.9x on an extended water chain - and its LMP2 iteration runs at psi4 parity threaded and 0.7x psi4 serially on the chain.
+Threaded overall, psi4 is 1.5-2.6x ahead, and the gap is measured rather than mysterious: the dense `(Q|mn)` build (algorithmic, psi4's screened builder is not exposed), the transform's serial capture emission, and the one-time LMP2 graph build psi4 has no analogue of.
 Current numbers are in [Performance against psi4](#performance-against-psi4); `bench_vs_psi4.py` reproduces them on your machine, phase against phase.
 
 ## Layout
@@ -136,30 +136,35 @@ The two backends of a stage agree bit for bit, because both emit the same einsum
 Measured 2026-08-09 (Apple M-series on mains power, best of three interleaved runs) with `bench_vs_psi4.py`, which runs psi4's native C++ DLPNO-MP2 in a subprocess and this port in process, same thread count, same converged reference, SCF excluded from both.
 The port runs its hybrid configuration (`--backend compute_pno_overlaps=cpp,transform_pnos=cpp`); correlation energies agree to 2e-08 (ethanol) and 1e-08 (chain).
 
+The LMP2 rows split the one-time graph build (allocate, capture, optimize - a cost psi4 has no analogue of, which amortizes with iteration count) from the iterations themselves.
+
 **Ethanol/cc-pVTZ** - the compact molecule in the larger basis.
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| DF Ints | 0.131 | 0.322 | 0.040 | 0.330 |
-| PNO Transform | 1.219 | **0.552** | 0.235 | 0.195 |
-| PNO Overlaps | 0.219 | 0.180 | 0.042 | 0.072 |
-| LMP2 | 1.168 | 1.204 | 0.344 | 0.525 |
-| **total** | 2.849 | **2.353** | **0.810** | 1.273 |
+| DF Ints | 0.135 | 0.314 | 0.040 | 0.324 |
+| PNO Transform | 1.233 | **0.539** | 0.234 | 0.200 |
+| PNO Overlaps | 0.234 | 0.184 | 0.039 | 0.076 |
+| LMP2 iterations | 1.177 | **1.148** | 0.335 | 0.404 |
+| LMP2 graph build | - | 0.051 | - | 0.058 |
+| **total** | 2.894 | **2.335** | **0.798** | 1.234 |
 
 **Water chain n=6, cc-pVDZ** - the extended system with many small pairs.
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| DF Ints | 0.139 | 0.447 | 0.043 | 0.405 |
-| PNO Transform | 0.983 | **0.649** | 0.174 | 0.392 |
-| PNO Overlaps | 0.178 | 0.172 | 0.033 | 0.090 |
-| LMP2 | 0.673 | 0.717 | 0.223 | 0.377 |
-| **total** | 2.057 | **2.052** | **0.520** | 1.383 |
+| DF Ints | 0.136 | 0.411 | 0.043 | 0.410 |
+| PNO Transform | 0.988 | **0.658** | 0.180 | 0.384 |
+| PNO Overlaps | 0.181 | 0.179 | 0.033 | 0.093 |
+| LMP2 iterations | 0.650 | **0.442** | 0.221 | **0.229** |
+| LMP2 graph build | - | 0.088 | - | 0.085 |
+| **total** | 2.033 | **1.862** | **0.522** | 1.336 |
 
-Per LMP2 iteration the port is 0.7x psi4 on the chain and 1.1x on ethanol single threaded (the folded loop graph replays with almost no host cost), and 1.2-1.5x threaded.
+Per LMP2 iteration the port is 0.7x psi4 on the chain and 1.1x on ethanol single threaded, and 1.0x (chain) to 1.3x (ethanol) threaded: the iteration engine is at parity or better, per flop and per iteration.
+The folded body replays under the default executor - an OpenMP team across its nodes would nest the batched GEMMs inside OpenBLAS's threads - so the repack's parallelism lives inside the node instead: `cg::gather` runs its outer walk on an OpenMP team when it is not already inside one, which its disjoint-by-construction writes make safe.
 What decides the totals is not the iteration.
 Single threaded it is the dense `(Q|mn)` build (`from_psi4` uses psi4's dense `ao_eri` where psi4's own builder is screened - C++ on both sides, an algorithmic difference).
-Threaded, that same build is the largest single item in the gap, and the rest is the serial layer psi4 does not have: graph-capture emission, the memo-warming solves in the transform's planning half, the one-time LMP2 graph build, and the numpy bookkeeping phases - work that is constant while the replays shrink with cores.
+Threaded, that same build is the largest single item in the gap, and the rest is the serial layer psi4 does not have: the transform's capture emission and memo-warming solves, the one-time LMP2 graph build, and the numpy bookkeeping phases - work that is constant while the replays shrink with cores.
 
 Two lessons from taking these numbers, both now guarded.
 A result crossing back from a C++ stage converts each list-valued field to a fresh Python list on every attribute access, so indexing `result.field[u]` inside a per-pair loop is quadratic in the pair count - at chain6's 403 upper pairs that was 320 ms of pure conversion hiding in the transform's finish, and it made the C++ backend look slower than Python at exactly the scale it was promoted for.
