@@ -7,8 +7,17 @@
 
 # An out-of-tree stage module, built against an INSTALLED Einsums:
 #
-#   cmake -S . -B build -GNinja -DCMAKE_PREFIX_PATH=/path/to/einsums/install
+#   cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release \
+#     "-DCMAKE_PREFIX_PATH=/path/to/einsums/install;$CONDA_PREFIX" \
+#     -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python
 #   cmake --build build
+#
+# The build type matters: a stage module exists to be measured against its
+# Python backend, and an unoptimized one measures as a regression
+# (einsums_add_stage_module defaults an EMPTY build type to Release for that
+# reason, but say what you mean). The conda prefix supplies Einsums's
+# dependency configs, and the explicit interpreter pins the CPython the
+# module imports into.
 #
 # Then put the resulting dlpno_stages module on PYTHONPATH and select it:
 #
@@ -31,6 +40,11 @@ find_package(Einsums REQUIRED COMPONENTS stages)
 # different __cplusplus into the config fingerprint and is refused at import, and may fail to dlopen
 # before the handshake can say so.
 einsums_add_stage_module(
-  dlpno_stages SOURCES bindings.cpp src/ComputePnoOverlaps.cpp src/TransformPnos.cpp
-  INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include
+  dlpno_stages
+  SOURCES
+  bindings.cpp
+  src/ComputePnoOverlaps.cpp
+  src/TransformPnos.cpp
+  INCLUDE_DIRS
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
 )

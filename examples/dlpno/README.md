@@ -5,8 +5,9 @@ DLPNO-MP2 is complete and validated against psi4 two ways; DLPNO-CCSD and (T) ar
 
 DLPNO fits deferred execution unusually well: it is thousands of small dense operations whose shapes and dependency pattern are fixed for a whole calculation and change only in their values, which is exactly the capture-once, replay-many shape.
 Every contraction is captured into a graph once and replayed, so the per-iteration Python cost is a few `execute()` calls however many GEMMs they stand for; the LMP2 iteration itself runs as a single graph with a loop node and DIIS as its predicate.
-Single threaded this Python port runs at parity with psi4's C++ implementation; threaded, psi4 is ahead, because the host-side setup work between graphs does not thread.
-`bench_vs_psi4.py` measures both on your machine, phase against phase.
+Single threaded, the port runs within about 10% of psi4's C++ implementation either way - faster on ethanol/cc-pVTZ, slower on an extended water chain - and its LMP2 iteration is at parity or better.
+Threaded, psi4 is 1.4-3.4x ahead, dominated by the dense `(Q|mn)` build and the host-side setup between graphs, neither of which threads.
+Current numbers are in [Performance against psi4](#performance-against-psi4); `bench_vs_psi4.py` reproduces them on your machine, phase against phase.
 
 ## Layout
 
@@ -114,6 +115,7 @@ Build the C++ side the way an external developer would, against an *installed* E
 ```bash
 cmake --install /path/to/Einsums/build --prefix /tmp/einsums-install
 cmake -S examples/dlpno/cpp -B /tmp/build-dlpno-stages -GNinja \
+      -DCMAKE_BUILD_TYPE=Release \
       "-DCMAKE_PREFIX_PATH=/tmp/einsums-install;$CONDA_PREFIX" \
       -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python
 cmake --build /tmp/build-dlpno-stages
@@ -128,6 +130,38 @@ python examples/dlpno/run_fixtures.py --backend transform_pnos=cpp
 ```
 
 The two backends of a stage agree bit for bit, because both emit the same einsums operations on the same values; `check_backends.py` asserts exactly that, and `check_backends.py --prove` also proves which backend actually ran, since perfect agreement is what a silently-unselected backend produces too.
+
+## Performance against psi4
+
+Measured 2026-08-09 (Apple M-series on mains power, best of three interleaved runs) with `bench_vs_psi4.py`, which runs psi4's native C++ DLPNO-MP2 in a subprocess and this port in process, same thread count, same converged reference, SCF excluded from both.
+The port runs its hybrid configuration (`--backend compute_pno_overlaps=cpp,transform_pnos=cpp`); correlation energies agree to 2e-08 (ethanol) and 1e-08 (chain).
+
+**Ethanol/cc-pVTZ** - the compact molecule in the larger basis.
+
+| phase | psi4, 1 thread | port | psi4, 10 threads | port |
+| --- | --- | --- | --- | --- |
+| DF Ints | 0.147 | 0.325 | 0.047 | 0.367 |
+| PNO Transform | 1.497 | **0.571** | 0.284 | 0.233 |
+| PNO Overlaps | 0.235 | 0.191 | 0.054 | 0.085 |
+| LMP2 | 1.285 | 1.228 | 0.446 | 0.569 |
+| **total** | 3.283 | **2.410** | **0.981** | 1.410 |
+
+**Water chain n=6, cc-pVDZ** - the extended system with many small pairs.
+
+| phase | psi4, 1 thread | port | psi4, 10 threads | port |
+| --- | --- | --- | --- | --- |
+| DF Ints | 0.139 | 0.419 | 0.048 | 0.423 |
+| PNO Transform | 0.994 | 1.014 | 0.177 | 0.766 |
+| PNO Overlaps | 0.187 | 0.192 | 0.033 | 0.088 |
+| LMP2 | 0.664 | **0.570** | 0.228 | 0.389 |
+| **total** | **2.064** | 2.263 | **0.533** | 1.786 |
+
+Per LMP2 iteration the port is 0.7x psi4 on the chain and 1.0x on ethanol single threaded (the folded loop graph replays with almost no host cost), and about 1.2x threaded.
+What decides the totals is not the iteration: it is the dense `(Q|mn)` build (`from_psi4` uses psi4's dense `ao_eri` where psi4's own builder is screened - C++ on both sides, an algorithmic difference) and, threaded, the host-side setup work between graphs, which is serial Python and does not shrink with cores.
+
+Two things worth knowing about the backend choice.
+The C++ stages are not uniformly faster: `compute_pno_overlaps=cpp` wins everywhere, while `transform_pnos=cpp` wins on ethanol's fewer-but-larger domains and *loses* to its own Python backend on the chain's many small pairs - selection is per stage and per workload, which is why it is a runtime flag rather than a default.
+And an unoptimized stage module (empty `CMAKE_BUILD_TYPE`) measures as a severalfold regression with nothing else wrong; `einsums_add_stage_module` now defaults an empty build type to Release, but say what you mean when configuring.
 
 ## Design decisions
 

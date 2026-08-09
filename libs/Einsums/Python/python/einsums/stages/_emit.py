@@ -581,8 +581,17 @@ PYBIND11_MODULE({m.module_name}, m) {{
         return f"""
 # An out-of-tree stage module, built against an INSTALLED Einsums:
 #
-#   cmake -S . -B build -GNinja -DCMAKE_PREFIX_PATH=/path/to/einsums/install
+#   cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release \\
+#     "-DCMAKE_PREFIX_PATH=/path/to/einsums/install;$CONDA_PREFIX" \\
+#     -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python
 #   cmake --build build
+#
+# The build type matters: a stage module exists to be measured against its
+# Python backend, and an unoptimized one measures as a regression
+# (einsums_add_stage_module defaults an EMPTY build type to Release for that
+# reason, but say what you mean). The conda prefix supplies Einsums's
+# dependency configs, and the explicit interpreter pins the CPython the
+# module imports into.
 #
 # Then put the resulting {m.module_name} module on PYTHONPATH and select it:
 #

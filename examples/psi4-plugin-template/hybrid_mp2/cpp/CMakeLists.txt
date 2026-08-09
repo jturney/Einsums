@@ -9,15 +9,18 @@
 # Einsums-world binary of this plugin: it links Einsums and only Einsums,
 # never psi4; its psi4-world sibling is built one directory up.
 #
-#   cmake -S . -B build -GNinja \
+#   cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release \
 #     "-DCMAKE_PREFIX_PATH=/path/to/einsums/install;$CONDA_PREFIX" \
 #     -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python
 #   cmake --build build
 #
-# The conda prefix supplies Einsums's dependency configs (spdlog, fmt, BLAS);
-# the explicit Python3_EXECUTABLE pins the interpreter the module is built
-# for, which must be the one psi4 and einsums run under - a module built for
-# the wrong CPython simply fails to import.
+# The build type matters: an unoptimized stage module measures as a
+# regression against its Python backend (einsums_add_stage_module defaults
+# an empty build type to Release for that reason). The conda prefix supplies
+# Einsums's dependency configs (spdlog, fmt, BLAS); the explicit
+# Python3_EXECUTABLE pins the interpreter the module is built for, which
+# must be the one psi4 and einsums run under - a module built for the wrong
+# CPython simply fails to import.
 #
 # The plugin's pymodule adds this build directory to sys.path on demand, so
 # STAGE_BACKEND cpp works with the module left where it was built.

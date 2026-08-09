@@ -131,6 +131,23 @@ function(einsums_add_stage_module name)
     )
   endif()
 
+  # An empty CMAKE_BUILD_TYPE on a single-config generator compiles at -O0,
+  # and a stage module exists to be measured against its Python backend: an
+  # unoptimized one benchmarks as a several-fold regression with nothing else
+  # wrong. Default to Release rather than let that happen silently; an
+  # explicit CMAKE_BUILD_TYPE, or a multi-config generator, wins.
+  get_property(_sm_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+  if(NOT _sm_multi_config AND NOT CMAKE_BUILD_TYPE)
+    message(
+      STATUS
+        "einsums_add_stage_module(${name}): CMAKE_BUILD_TYPE was empty; defaulting to Release. "
+        "An unoptimized stage module measures as a regression against its Python backend."
+    )
+    set(CMAKE_BUILD_TYPE
+        Release
+        CACHE STRING "Defaulted by einsums_add_stage_module; set explicitly to override" FORCE)
+  endif()
+
   pybind11_add_module(${name} MODULE ${_sm_SOURCES})
   target_link_libraries(${name} PRIVATE Einsums::Einsums ${_sm_LINK_LIBRARIES})
 
