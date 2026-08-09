@@ -14,6 +14,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -451,11 +453,39 @@ bool write_calibration(std::string const &path, std::string *error) {
 }
 
 double omp_region_cost_ns() {
-    return cpu_info().omp_region_cost_ns;
+    // Resolved against the CURRENT team size, not frozen at first use. The cost
+    // is a function of the team, and the team is not fixed for the life of a
+    // process: importing psi4 clamps process-wide OpenMP to one thread and the
+    // caller restores it afterwards, so anything that touched this in between -
+    // any elementwise kernel consulting omp_min_parallel_elements will do it -
+    // used to freeze the serial answer of zero and hand it to every later
+    // caller. The DLPNO bucket chooser then saw no per-call cost on ten threads
+    // and picked the finest bucketing available, which is the worst one there.
+    //
+    // Memoized per team size, so the measurement still happens at most once for
+    // each, and a calibrated file makes it happen none.
+    static std::mutex            memo_mutex;
+    static std::map<int, double> memo;
+
+#ifdef _OPENMP
+    int const threads = omp_get_max_threads();
+#else
+    int const threads     = 1;
+#endif
+
+    std::lock_guard<std::mutex> const guard(memo_mutex);
+    if (auto const it = memo.find(threads); it != memo.end()) {
+        return it->second;
+    }
+    double const value = resolve_omp_region_cost_ns();
+    memo.emplace(threads, value);
+    return value;
 }
 
 std::size_t omp_min_parallel_elements() {
-    static std::size_t const threshold = []() -> std::size_t {
+    // Derived per call for the same reason omp_region_cost_ns is: a threshold
+    // frozen while OpenMP was clamped to one thread is zero forever after.
+    auto const compute = []() -> std::size_t {
         // Elementwise kernels are bandwidth-bound. One element per nanosecond is a
         // conservative rate for cache-resident data, so the break-even element
         // count is numerically the region cost in nanoseconds.
@@ -475,12 +505,12 @@ std::size_t omp_min_parallel_elements() {
             }
         }
         return value;
-    }();
-    return threshold;
+    };
+    return compute();
 }
 
 std::int64_t omp_min_parallel_flops() {
-    static std::int64_t const threshold = []() -> std::int64_t {
+    auto const compute = []() -> std::int64_t {
         // Work is worth a parallel region once it takes longer than entering one,
         // so the break-even scales with the measured region cost. This constant is
         // what that cost is multiplied by, in flops per nanosecond, and it is a
@@ -530,8 +560,8 @@ std::int64_t omp_min_parallel_flops() {
             }
         }
         return value;
-    }();
-    return threshold;
+    };
+    return compute();
 }
 
 EINSUMS_NAMESPACE_END(hardware)
