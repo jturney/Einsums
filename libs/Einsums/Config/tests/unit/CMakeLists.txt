@@ -46,9 +46,20 @@ endforeach()
 #
 # Skipped outright where the toolchain has no C++23, rather than silently degrading: a test that
 # cannot discriminate should say so, not pass.
+#
+# Each probe compiles a COPY of the source under its own name. Mach-O records debug info as a map
+# from source file to object file, and ld collapses consecutive objects that name the same source
+# into one entry - so the second BuildModeProbe.cpp.o loses its entry and dsymutil warns that it
+# cannot find the C++23 probes in the C++20 object. Distinct names keep the two entries apart.
 if("cxx_std_23" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
   foreach(_std 20 23)
-    add_library(einsums_fingerprint_probe_cxx${_std} OBJECT BuildModeProbe.cpp)
+    configure_file(
+      BuildModeProbe.cpp ${CMAKE_CURRENT_BINARY_DIR}/BuildModeProbe_cxx${_std}.cpp COPYONLY
+    )
+    add_library(
+      einsums_fingerprint_probe_cxx${_std} OBJECT
+      ${CMAKE_CURRENT_BINARY_DIR}/BuildModeProbe_cxx${_std}.cpp
+    )
     target_compile_definitions(
       einsums_fingerprint_probe_cxx${_std}
       PRIVATE BUILD_MODE_PROBE_NAME=einsums_probe_cxx${_std}
