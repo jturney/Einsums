@@ -137,6 +137,31 @@ def test_a_missing_calibration_is_survived_and_none_is_written(tmp_path):
     assert not path.exists(), "the library must never create a calibration file"
 
 
+def _provenance_in_subprocess(env):
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "from einsums import hardware as hw; print(hw.region_cost_is_calibrated())"],
+        capture_output=True, text=True, check=True, env={**os.environ, **env})
+    return out.stdout.strip() == "True"
+
+
+def test_provenance_distinguishes_calibrated_from_measured(tmp_path):
+    """A caller ranking options against the rate should be able to say which it got."""
+    path = tmp_path / "calibration.txt"
+    path.write_text(CALIBRATION)
+    key = "EINSUMS_HARDWARE_CALIBRATION"
+    assert _provenance_in_subprocess({key: str(path), "OMP_NUM_THREADS": "2"})
+    # Team size 3 has no entry, so that one is measured rather than calibrated.
+    assert not _provenance_in_subprocess({key: str(path), "OMP_NUM_THREADS": "3"})
+
+
+def test_a_single_thread_counts_as_calibrated(tmp_path):
+    """No region to enter means the cost is exactly zero, not an estimate of it."""
+    assert _provenance_in_subprocess(
+        {"EINSUMS_HARDWARE_CALIBRATION": str(tmp_path / "absent.txt"),
+         "OMP_NUM_THREADS": "1"})
+
+
 def test_the_default_calibration_path_is_reported(tmp_path):
     """So a user can find, inspect or delete it without guessing."""
     assert isinstance(hw.default_calibration_path(), str)

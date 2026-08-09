@@ -898,8 +898,8 @@ class DLPNOBase:
                 if best is None or total < best[0]:
                     best = (total, dims, n_buckets)
             self.bucket_dims = best[1]
-            self._print(f"  buckets:  {best[2]} chosen at {penalty:.0f} elements per call, "
-                        f"dims {self.bucket_dims}")
+            self._print(f"  buckets:  {best[2]} chosen at {penalty:.0f} elements per call "
+                        f"({cost.penalty_source()}), dims {self.bucket_dims}")
 
         self.bucket_of = [-1] * self.n_lmo_pairs
         self.slot_of = [-1] * self.n_lmo_pairs

@@ -319,7 +319,12 @@ std::optional<double> read_calibrated_region_cost(std::filesystem::path const &p
 /// busy is indistinguishable from a slower machine. A file somebody chose to
 /// generate can be regenerated, inspected, diffed and deleted, and its staleness
 /// is a question with an obvious answer rather than a silent one.
-double resolve_omp_region_cost_ns() {
+struct ResolvedRegionCost {
+    double value{0.0};
+    bool   calibrated{false};
+};
+
+ResolvedRegionCost resolve_omp_region_cost_ns() {
     // An explicit pin beats everything, so a benchmark can hold the rate fixed
     // across machines without touching any file.
     if (char const *env = std::getenv("EINSUMS_OMP_REGION_COST_NS"); env != nullptr && *env != '\0') {
@@ -327,7 +332,7 @@ double resolve_omp_region_cost_ns() {
         char        *end    = nullptr;
         double const pinned = std::strtod(env, &end);
         if (errno == 0 && end != env && pinned >= 0.0) {
-            return pinned;
+            return {pinned, true};
         }
     }
 
@@ -336,15 +341,16 @@ double resolve_omp_region_cost_ns() {
 #else
     int const threads = 1;
 #endif
-    // A single thread enters no region, so there is nothing to calibrate.
+    // A single thread enters no region, so there is nothing to calibrate and
+    // nothing that could drift: the answer is exactly zero either way.
     if (threads <= 1) {
-        return 0.0;
+        return {0.0, true};
     }
 
     if (auto const calibrated = read_calibrated_region_cost(calibration_file(), threads)) {
-        return *calibrated;
+        return {*calibrated, true};
     }
-    return measure_omp_region_cost_ns();
+    return {measure_omp_region_cost_ns(), false};
 }
 
 /// Native SIMD width in doubles, from the compile-time ISA.
@@ -369,7 +375,7 @@ CpuInfo const &cpu_info() {
         i.cache.l1           = cs.l1;
         i.cache.l2           = cs.l2;
         i.cache.l3           = cs.l3;
-        i.omp_region_cost_ns = resolve_omp_region_cost_ns();
+        i.omp_region_cost_ns = resolve_omp_region_cost_ns().value;
         return i;
     }();
     return info;
@@ -452,20 +458,22 @@ bool write_calibration(std::string const &path, std::string *error) {
     return true;
 }
 
-double omp_region_cost_ns() {
-    // Resolved against the CURRENT team size, not frozen at first use. The cost
-    // is a function of the team, and the team is not fixed for the life of a
-    // process: importing psi4 clamps process-wide OpenMP to one thread and the
-    // caller restores it afterwards, so anything that touched this in between -
-    // any elementwise kernel consulting omp_min_parallel_elements will do it -
-    // used to freeze the serial answer of zero and hand it to every later
-    // caller. The DLPNO bucket chooser then saw no per-call cost on ten threads
-    // and picked the finest bucketing available, which is the worst one there.
-    //
-    // Memoized per team size, so the measurement still happens at most once for
-    // each, and a calibrated file makes it happen none.
-    static std::mutex            memo_mutex;
-    static std::map<int, double> memo;
+namespace {
+
+/// The resolved cost for a team size, memoized so the measurement happens at
+/// most once per size and a calibration file makes it happen none.
+///
+/// Resolved against the CURRENT team size, not frozen at first use. The cost is
+/// a function of the team, and the team is not fixed for the life of a process:
+/// importing psi4 clamps process-wide OpenMP to one thread and the caller
+/// restores it afterwards, so anything that touched this in between - any
+/// elementwise kernel consulting omp_min_parallel_elements will do it - used to
+/// freeze the serial answer of zero and hand it to every later caller. The DLPNO
+/// bucket chooser then saw no per-call cost on ten threads and picked the finest
+/// bucketing available, which is the worst one there.
+ResolvedRegionCost const &region_cost_for_current_team() {
+    static std::mutex                        memo_mutex;
+    static std::map<int, ResolvedRegionCost> memo;
 
 #ifdef _OPENMP
     int const threads = omp_get_max_threads();
@@ -474,12 +482,21 @@ double omp_region_cost_ns() {
 #endif
 
     std::lock_guard<std::mutex> const guard(memo_mutex);
-    if (auto const it = memo.find(threads); it != memo.end()) {
+    auto const                        it = memo.find(threads);
+    if (it != memo.end()) {
         return it->second;
     }
-    double const value = resolve_omp_region_cost_ns();
-    memo.emplace(threads, value);
-    return value;
+    return memo.emplace(threads, resolve_omp_region_cost_ns()).first->second;
+}
+
+} // namespace
+
+double omp_region_cost_ns() {
+    return region_cost_for_current_team().value;
+}
+
+bool region_cost_is_calibrated() {
+    return region_cost_for_current_team().calibrated;
 }
 
 std::size_t omp_min_parallel_elements() {

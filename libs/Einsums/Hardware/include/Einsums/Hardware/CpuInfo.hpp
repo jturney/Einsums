@@ -115,6 +115,21 @@ APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::int64_t omp_min_para
 APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::string default_calibration_path();
 
 /**
+ * @brief Whether @ref omp_region_cost_ns came from a calibration rather than a
+ *        measurement taken just now.
+ *
+ * The calibrated path is the one worth being on. A measurement taken in-process
+ * is taken under whatever the machine and the OpenMP state happen to be at that
+ * moment, and a caller that ranks discrete options against the rate wants
+ * neither of those in the answer. This is how such a caller can say which it
+ * got, rather than leaving a reader of its numbers to guess.
+ *
+ * True for a single-threaded run, where the cost is exactly zero either way, and
+ * for an explicit @c EINSUMS_OMP_REGION_COST_NS pin.
+ */
+APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT bool region_cost_is_calibrated();
+
+/**
  * @brief Measure the OpenMP region cost at every team size and record it.
  *
  * The write half of the calibration file, owned here because this module owns

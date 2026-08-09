@@ -11,7 +11,7 @@ place a measured constant lives: everything else in the port is arithmetic.
 
 from einsums import hardware as _hardware
 
-__all__ = ["bucket_penalty"]
+__all__ = ["bucket_penalty", "penalty_source"]
 
 #: Padded elements a batched call costs before any team is launched.
 #:
@@ -55,6 +55,17 @@ CALL_FLOOR_ELEMENTS = 45.0
 #: optimum. And this is one machine with OpenBLAS: re-derive under MKL, where
 #: the vendor's own batching may change what a call costs.
 ELEMENTS_PER_REGION_NS = 0.03
+
+
+def penalty_source():
+    """Whether the penalty rests on a calibration or on a fresh measurement.
+
+    Worth reporting rather than assuming: an in-process measurement is taken
+    under whatever the machine is doing at that moment and drifts by tens of
+    percent, so a bucket count derived from one is reproducible only by luck.
+    Run ``calibrate_hardware`` once and it stops being luck.
+    """
+    return "calibrated" if _hardware.region_cost_is_calibrated() else "measured in-process"
 
 
 def bucket_penalty():
