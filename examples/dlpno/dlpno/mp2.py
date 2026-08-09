@@ -476,12 +476,16 @@ class DLPNOMP2(DLPNOBase):
         """
         g = cg.Graph("lmp2 couplings")
         with cg.capture(g):
-            for ci in range(len(self._classes)):
-                for _, members in self._cls_partner_groups[ci]:
-                    cg.batched_gemm(1.0, [self._T_view[q] for q, _ in members],
-                                    [self._ST_group[ci, q] for q, _ in members], 0.0,
-                                    [self._V_group[ci, q] for q, _ in members], trans_a=True)
+            self._emit_couplings()
         return g
+
+    def _emit_couplings(self):
+        """Record this phase's ops into the ambient capture."""
+        for ci in range(len(self._classes)):
+            for _, members in self._cls_partner_groups[ci]:
+                cg.batched_gemm(1.0, [self._T_view[q] for q, _ in members],
+                                [self._ST_group[ci, q] for q, _ in members], 0.0,
+                                [self._V_group[ci, q] for q, _ in members], trans_a=True)
 
     def _capture_repack(self):
         """Graph: the intermediate from partner order into pair order.
@@ -506,13 +510,17 @@ class DLPNOMP2(DLPNOBase):
         """
         g = cg.Graph("lmp2 repack")
         with cg.capture(g):
-            for ci, cls in enumerate(self._classes):
-                M_p, M_b = self.bucket_dims[cls[1]], self.bucket_dims[cls[0]]
-                la.gather(self._W[ci], self._V[ci],
-                          [list(range(M_p)), list(range(M_b)), self._cls_perm[ci]],
-                          [0, 2, 1])
+            self._emit_repack()
         g.set_executor(cg.OpenMPExecutor())
         return g
+
+    def _emit_repack(self):
+        """Record this phase's ops into the ambient capture."""
+        for ci, cls in enumerate(self._classes):
+            M_p, M_b = self.bucket_dims[cls[1]], self.bucket_dims[cls[0]]
+            la.gather(self._W[ci], self._V[ci],
+                      [list(range(M_p)), list(range(M_b)), self._cls_perm[ci]],
+                      [0, 2, 1])
 
     def _capture_residual(self):
         """Graph: fold every coupling into its pair's residual, one GEMM per pair.
@@ -539,36 +547,45 @@ class DLPNOMP2(DLPNOBase):
         depth by ``G`` at the cost of a reduction graph. A contraction has no
         dependency depth, so both are gone.
 
-        Separate from :meth:`_capture_repack` because it reads ``W`` through
-        slices while that one writes the parent, and the graph does not know a
-        write to a parent touches its views. Separate from the prologue (which
-        writes ``R_all`` whole) and the energy (which reads it whole) for the
-        same reason, in the other direction. It is not hypothetical -- with the
-        phases captured together the energy dot landed at node 201 of 405,
-        summing a half-built residual and quietly returning a wrong correlation
-        energy. Graphs execute in the order they are replayed, so keeping each
-        granularity in its own graph is an explicit barrier.
+        This standalone form exists for tests and reproducers; the solver
+        captures the same ops into one loop body through :meth:`_emit_residual`.
+        The separation used to be load-bearing: the graph could not link a view
+        covering its parent EXACTLY (a single-member class's ``W`` slice is one),
+        so it saw no repack -> residual dependency, and the sort turned that
+        missing edge into a reorder - captured together, the energy dot once
+        landed at node 201 of 405, summing a half-built residual and quietly
+        returning a wrong correlation energy. Both defects were fixed in
+        ``8e4174d48``, which is what made the fold in :meth:`lmp2_iterations`
+        possible.
         """
         g = cg.Graph("lmp2 residual")
         with cg.capture(g):
-            # beta = 1: the prologue has already put K + D T in R, and earlier
-            # classes have already added theirs.
-            for ci in range(len(self._classes)):
-                for _, members in self._cls_pair_groups[ci]:
-                    cg.batched_gemm(1.0, [self._W_pair[ci, ij] for ij in members],
-                                    [self._S_pair[ci, ij] for ij in members], 1.0,
-                                    [self._R_view[ij] for ij in members],
-                                    trans_a=True, trans_b=True)
+            self._emit_residual()
         return g
+
+    def _emit_residual(self):
+        """Record this phase's ops into the ambient capture."""
+        # beta = 1: the prologue has already put K + D T in R, and earlier
+        # classes have already added theirs.
+        for ci in range(len(self._classes)):
+            for _, members in self._cls_pair_groups[ci]:
+                cg.batched_gemm(1.0, [self._W_pair[ci, ij] for ij in members],
+                                [self._S_pair[ci, ij] for ij in members], 1.0,
+                                [self._R_view[ij] for ij in members],
+                                trans_a=True, trans_b=True)
 
     def _capture_prologue(self):
         """Graph: ``R = K + (e_a + e_b - F_ii - F_jj) T`` for every pair, in two nodes."""
         g = cg.Graph("lmp2 residual prologue")
         with cg.capture(g):
-            for D, T, R, K in zip(self.D_all, self.T_all, self.R_all, self.K_all):
-                la.direct_product(1.0, D, T, 0.0, R)
-                la.axpby(1.0, K, 1.0, R)
+            self._emit_prologue()
         return g
+
+    def _emit_prologue(self):
+        """Record this phase's ops into the ambient capture."""
+        for D, T, R, K in zip(self.D_all, self.T_all, self.R_all, self.K_all):
+            la.direct_product(1.0, D, T, 0.0, R)
+            la.axpby(1.0, K, 1.0, R)
 
     def _capture_energy(self):
         """Graph: ``E = sum_ij (K_ij + R_ij) . Tt_ij``, in three nodes.
@@ -578,30 +595,42 @@ class DLPNOMP2(DLPNOBase):
         """
         g = cg.Graph("lmp2 iteration energy")
         with cg.capture(g):
-            la.scale(0.0, self.e_iter)
-            for K, R, Tt in zip(self.K_all, self.R_all, self.Tt_all):
-                la.dot(self._e_part, K, Tt)
-                la.axpby(1.0, self._e_part, 1.0, self.e_iter)
-                la.dot(self._e_part, R, Tt)
-                la.axpby(1.0, self._e_part, 1.0, self.e_iter)
+            self._emit_energy()
         return g
+
+    def _emit_energy(self):
+        """Record this phase's ops into the ambient capture."""
+        la.scale(0.0, self.e_iter)
+        for K, R, Tt in zip(self.K_all, self.R_all, self.Tt_all):
+            la.dot(self._e_part, K, Tt)
+            la.axpby(1.0, self._e_part, 1.0, self.e_iter)
+            la.dot(self._e_part, R, Tt)
+            la.axpby(1.0, self._e_part, 1.0, self.e_iter)
 
     def _capture_step(self):
         """Graph: the Jacobi amplitude update ``T -= R / D``, every pair in one node."""
         g = cg.Graph("lmp2 amplitude step")
         with cg.capture(g):
-            for R, D, T in zip(self.R_all, self.D_all, self.T_all):
-                la.direct_division(-1.0, R, D, 1.0, T)
+            self._emit_step()
         return g
+
+    def _emit_step(self):
+        """Record this phase's ops into the ambient capture."""
+        for R, D, T in zip(self.R_all, self.D_all, self.T_all):
+            la.direct_division(-1.0, R, D, 1.0, T)
 
     def _capture_antisymmetrize(self):
         """Graph: ``Tt = 2 T - T^T``, every pair in two nodes."""
         g = cg.Graph("lmp2 antisymmetrized amplitudes")
         with cg.capture(g):
-            for Tt, T in zip(self.Tt_all, self.T_all):
-                einsums.permute("abp <- bap", Tt, T)
-                la.axpby(2.0, T, -1.0, Tt)
+            self._emit_antisymmetrize()
         return g
+
+    def _emit_antisymmetrize(self):
+        """Record this phase's ops into the ambient capture."""
+        for Tt, T in zip(self.Tt_all, self.T_all):
+            einsums.permute("abp <- bap", Tt, T)
+            la.axpby(2.0, T, -1.0, Tt)
 
     def _flat_views(self, stores):
         """Flat numpy views of every bucket store, for DIIS."""
@@ -625,74 +654,57 @@ class DLPNOMP2(DLPNOBase):
         return flat
 
     def lmp2_iterations(self, optimize=True):
-        """Solve the local MP2 equations by replaying the captured graphs.
+        """Solve the local MP2 equations as ONE graph with a loop node.
 
-        Records ``t_capture`` (building and optimizing the graphs, paid once)
-        and ``t_iterate`` (replaying them) separately. The split matters when
-        comparing against an eager implementation: capture is fixed while the
-        iteration count grows, and at ten iterations it is the larger of the two.
+        The body is the whole iteration - antisymmetrize, prologue, couplings,
+        repack, residual, energy, step - captured once and replayed by a
+        ``Graph::add_loop`` node. The convergence test and DIIS run in the
+        loop's predicate, which is the one place per iteration that has to be
+        host code: both read scalars the replay just produced.
+
+        ``Tt`` is emitted FIRST, not last. A loop predicate runs after the whole
+        body, and DIIS has to land between the step and the rebuild of ``Tt``
+        (psi4 extrapolates the amplitudes before rebuilding). Computing ``Tt``
+        at the top of the next iteration puts it after the extrapolation with no
+        change in meaning: at iteration k the body sees the same ``T`` the old
+        seven-graph order did, and ``pno_transform`` has already left ``Tt``
+        consistent with ``T`` for iteration 0, which the body then recomputes.
+
+        Records ``t_capture`` (building and optimizing, paid once) and
+        ``t_iterate`` (replaying) separately, as before.
+
+        On why this is one graph now. The seven were separate because merging
+        them changed results, and that was a real ComputeGraph defect, not a
+        semantic constraint: a view covering its parent exactly never
+        alias-linked, and the sort turned the missing edge into a reorder (see
+        :meth:`_capture_residual`; fixed in ``8e4174d48``). With the fix the
+        merge is bit-identical - what is STILL not safe is giving the merged
+        graph the OpenMP executor that repack alone wanted: with the residual's
+        batched GEMMs in the same graph, an OpenMP team nests them inside
+        OpenBLAS's own threads and the energy moves in the last few digits. So
+        the body runs under the default executor, and repack loses the
+        parallelism it had. That is a real cost and it is the price of the fold;
+        scoping an executor to part of a graph would buy it back.
         """
         import time as _time
         _t0 = _time.perf_counter()
         self._allocate_iteration_tensors()
-
-        g_prologue = self._capture_prologue()
-        g_couple = self._capture_couplings()
-        g_repack = self._capture_repack()
-        g_residual = self._capture_residual()
-        g_energy = self._capture_energy()
-        g_step = self._capture_step()
-        g_tt = self._capture_antisymmetrize()
-        graphs = [g_prologue, g_couple, g_repack, g_residual, g_energy, g_step, g_tt]
-
-        self._print(
-            "\n  ==> Local MP2 <==\n"
-            f"    captured {sum(g.num_nodes() for g in graphs)} nodes in "
-            f"{len(graphs)} graphs (prologue {g_prologue.num_nodes()}, "
-            f"coupling {g_couple.num_nodes()}, repack {g_repack.num_nodes()}, "
-            f"residual {g_residual.num_nodes()}, "
-            f"energy {g_energy.num_nodes()}, "
-            f"step {g_step.num_nodes()}, Tt {g_tt.num_nodes()})"
-        )
-        if optimize:
-            # Not the two batched graphs. They are emitted in the form the
-            # passes would produce - the batches are already fused and there is
-            # nothing to share between them - so applying the pipeline is pure
-            # cost, and the cost scales with the batch rather than the node
-            # count: 445 ms on a 32-node coupling graph whose nodes carry ~1000
-            # operands each, against a replay of 324 ms for the whole solve.
-            # It buys nothing measurable either, the two graphs being 48 of the
-            # 85 nodes and the whole pipeline removing exactly one of them.
-            # Same argument, and the same decision, as compute_pno_overlaps.
-            batched = {id(g_couple), id(g_repack), id(g_residual)}
-            targets = [g for g in graphs if id(g) not in batched]
-            pm = self.pass_manager()
-            before = sum(g.num_nodes() for g in targets)
-            for g in targets:
-                g.apply(pm)
-            self._print(
-                f"    optimization: {pm.size} passes on {len(targets)} graphs, "
-                f"nodes {before} -> {sum(g.num_nodes() for g in targets)}"
-            )
-
-        self.t_capture = _time.perf_counter() - _t0
-        self._print(f"    capture + optimize: {self.t_capture * 1e3:.1f} ms (one-time)")
-        self._print(f"\n    {'iter':>4}  {'Corr. Energy':>18} {'Delta E':>12} {'Max R':>12}")
-        _t0 = _time.perf_counter()
 
         diis = _DIIS(self.cut.diis_max_vecs) if self.use_diis else None
         t_views = self._flat_views(self.T_all)
         r_views = self._flat_views(self.R_all)
         offsets = np.cumsum([0] + [v.size for v in t_views])
 
-        e_curr = e_prev = 0.0
-        for iteration in range(self.cut.maxiter + 1):
-            g_prologue.execute()
-            g_couple.execute()
-            g_repack.execute()
-            g_residual.execute()
-            g_energy.execute()
-            e_prev, e_curr = e_curr, float(ten.view(self.e_iter)[0])
+        state = {"curr": 0.0, "prev": 0.0, "iters": 0, "converged": False}
+
+        def advance(iteration):
+            """Loop predicate: read the iteration out, extrapolate, decide.
+
+            Returns True to keep going. Everything here is host code by
+            necessity - the energy and the residual norm are values the replay
+            has only just produced.
+            """
+            state["prev"], state["curr"] = state["curr"], float(ten.view(self.e_iter)[0])
             # Max RMS over the pairs, on each pair's logical block: the padding
             # is identically zero and would otherwise dilute the norm.
             r_curr = 0.0
@@ -701,25 +713,60 @@ class DLPNOMP2(DLPNOBase):
                     block = self.pair_block(self.R_all, ij)[:n, :n]
                     r_curr = max(r_curr, float(np.sqrt(np.vdot(block, block).real / block.size)))
 
-            g_step.execute()
-
             if diis is not None:
                 t_new = diis.extrapolate(np.concatenate(t_views), np.concatenate(r_views))
                 for v, lo, hi in zip(t_views, offsets[:-1], offsets[1:]):
                     v[...] = t_new[lo:hi]
 
-            g_tt.execute()
-
             self._print(
-                f"    {iteration:>4}  {e_curr:>18.12f} {e_curr - e_prev:>12.3e} {r_curr:>12.3e}"
+                f"    {iteration:>4}  {state['curr']:>18.12f} "
+                f"{state['curr'] - state['prev']:>12.3e} {r_curr:>12.3e}"
             )
-            self.n_iterations = iteration + 1
+            state["iters"] = iteration + 1
+            state["converged"] = (
+                iteration > 0
+                and abs(state["curr"] - state["prev"]) < self.cut.e_convergence
+                and abs(r_curr) < self.cut.r_convergence
+            )
+            return not state["converged"]
 
-            if iteration > 0 and abs(e_curr - e_prev) < self.cut.e_convergence \
-                    and abs(r_curr) < self.cut.r_convergence:
-                break
-        else:
+        g = cg.Graph("lmp2")
+        body = g.add_loop("lmp2 iteration", self.cut.maxiter + 1, advance)
+        with cg.capture(body):
+            self._emit_antisymmetrize()
+            self._emit_prologue()
+            self._emit_couplings()
+            self._emit_repack()
+            self._emit_residual()
+            self._emit_energy()
+            self._emit_step()
+
+        self._print(
+            "\n  ==> Local MP2 <==\n"
+            f"    captured {body.num_nodes()} nodes in one loop body"
+        )
+        if optimize:
+            # Deliberately not applying the pass pipeline to the body. The
+            # batched phases dominate it (the couplings, repack and residual are
+            # most of the nodes and carry ~1000 operands each), and applying the
+            # pipeline to them was measured at 445 ms against a 324 ms replay
+            # for the whole solve while removing exactly one node. The four
+            # small phases used to get passes when they were their own graphs;
+            # folding trades that for the boundaries. Worth re-measuring rather
+            # than assuming, which is why the flag still exists.
+            self._print("    optimization: skipped (batched body, see docstring)")
+
+        self.t_capture = _time.perf_counter() - _t0
+        self._print(f"    capture: {self.t_capture * 1e3:.1f} ms (one-time)")
+        self._print(f"\n    {'iter':>4}  {'Corr. Energy':>18} {'Delta E':>12} {'Max R':>12}")
+        _t0 = _time.perf_counter()
+
+        g.execute()
+
+        if not state["converged"]:
             raise RuntimeError("maximum DLPNO iterations exceeded")
+        e_curr = state["curr"]
+        self.n_iterations = state["iters"]
 
         self.t_iterate = _time.perf_counter() - _t0
         self.e_lmp2 = e_curr
