@@ -2280,7 +2280,38 @@ void Graph::rebuild_profile_strings() {
             number("comm_tensor", static_cast<int64_t>(cdesc->tensor_id));
         }
 
+        // A per-operand annotation is worth having for the handful of operands an
+        // ordinary node carries, and is worth having for none of the operands of
+        // a batched one. The strings are built once, but they are RE-EMITTED on
+        // every replay: a 2048-member batched GEMM is 6144 annotation events per
+        // execution, which measured 2.55x on the node and wrote a 191 KB report
+        // line that nobody can read. Past the threshold the batch is described
+        // rather than enumerated - which is the information anyway, since a
+        // batch's members agree on their shape by construction.
+        constexpr size_t kMaxOperandAnnotations = 16;
+
         auto annotate_tensors = [&](std::vector<TensorId> const &ids, char const *prefix) {
+            if (ids.size() > kMaxOperandAnnotations) {
+                number(fmt::format("{}.count", prefix), static_cast<int64_t>(ids.size()));
+                std::vector<size_t> const *shared  = nullptr;
+                bool                       uniform = true;
+                for (TensorId const tid : ids) {
+                    auto it = _tensors.find(tid);
+                    if (it == _tensors.end() || it->second.dims.empty()) {
+                        continue;
+                    }
+                    if (shared == nullptr) {
+                        shared = &it->second.dims;
+                    } else if (it->second.dims != *shared) {
+                        uniform = false;
+                        break;
+                    }
+                }
+                if (shared != nullptr) {
+                    text(fmt::format("{}.shape", prefix), uniform ? fmt::format("{}", fmt::join(*shared, "x")) : "mixed");
+                }
+                return;
+            }
             for (TensorId const tid : ids) {
                 auto it = _tensors.find(tid);
                 if (it != _tensors.end() && !it->second.dims.empty()) {
