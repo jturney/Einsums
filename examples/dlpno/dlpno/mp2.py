@@ -16,17 +16,18 @@ GEMMs whose shapes and dependency pattern are fixed for the whole calculation
 and change only in their *values* from iteration to iteration, which is exactly
 what a ComputeGraph is for: capture once, replay per iteration.
 
-Three graphs are captured, in the order psi4 runs them:
+The whole iteration - the antisymmetrized amplitudes ``Tt_ij = 2 T_ij -
+T_ij^T``, the residual, the iteration energy, and the Jacobi update ``T_ij -=
+R_ij / D_ij`` - is captured once as a single graph with a loop node and
+replayed to convergence (see :meth:`DLPNOMP2.lmp2_iterations`).
 
-``residual``  R_ij from the current amplitudes, and the iteration energy
-``step``      the Jacobi update T_ij -= R_ij / D_ij
-``amplitude`` the antisymmetrized amplitudes Tt_ij = 2 T_ij - T_ij^T
-
-DIIS sits between ``step`` and ``amplitude`` because psi4 extrapolates the
-amplitudes before rebuilding Tt. It runs on the host: it is a solver detail over
-flattened buffers rather than tensor algebra, and it writes back into the same
-tensors the graphs already reference, so the replay picks the new values up. The
-natural next step is to fold the whole loop into one graph with a loop node.
+DIIS is ``einsums.graph.diis``, installed as the loop's predicate: it
+extrapolates the amplitude stores in place between replays, so the body picks
+the new values up, and it sits between the step and the rebuild of ``Tt``
+because psi4 extrapolates the amplitudes before rebuilding. Its error vector
+is the materialized Jacobi step (the standard coupled-cluster choice), where
+the earlier host-side implementation used the raw residual, so trajectories
+agree with it to convergence tolerance rather than bit for bit.
 """
 
 import numpy as np
@@ -43,39 +44,6 @@ from .contracts import CouplingPlan
 from .pno_overlaps import compute_pno_overlaps
 
 __all__ = ["DLPNOMP2"]
-
-
-class _DIIS:
-    """Pulay extrapolation over flattened amplitude and residual vectors."""
-
-    def __init__(self, max_vecs):
-        self.max_vecs = max_vecs
-        self.amplitudes = []
-        self.errors = []
-
-    def extrapolate(self, t_flat, r_flat):
-        self.amplitudes.append(np.array(t_flat, copy=True))
-        self.errors.append(np.array(r_flat, copy=True))
-        if len(self.amplitudes) > self.max_vecs:
-            # psi4 drops the largest-error vector; dropping the oldest is the
-            # usual alternative and keeps this readable.
-            self.amplitudes.pop(0)
-            self.errors.pop(0)
-
-        n = len(self.amplitudes)
-        if n < 2:
-            return t_flat
-
-        B = np.zeros((n + 1, n + 1))
-        B[:n, :n] = np.array([[e1 @ e2 for e2 in self.errors] for e1 in self.errors])
-        B[n, :n] = B[:n, n] = -1.0
-        rhs = np.zeros(n + 1)
-        rhs[n] = -1.0
-        try:
-            c = np.linalg.solve(B, rhs)[:n]
-        except np.linalg.LinAlgError:
-            return t_flat
-        return sum(ci * ti for ci, ti in zip(c, self.amplitudes))
 
 
 class DLPNOMP2(DLPNOBase):
@@ -381,6 +349,11 @@ class DLPNOMP2(DLPNOBase):
             la.shift(-float(F_lmo[i, i] + F_lmo[j, j]), D)
             self.pair_block(self.D_all, ij)[:n, :n] = ten.view(D)
 
+        # The Jacobi step, materialized per bucket rather than fused into the
+        # amplitude update: it is DIIS's error vector, and cg.diis snapshots
+        # (amplitude, step) pairs between replays (see _emit_step).
+        self.step_all = self.new_pair_stores("step")
+
         # Views handed to a captured op must outlive the graph: the graph holds
         # the tensor by slot pointer, so a view created inline in the capture
         # loop is freed the moment the expression ends and the replay then reads
@@ -608,16 +581,24 @@ class DLPNOMP2(DLPNOBase):
             la.axpby(1.0, self._e_part, 1.0, self.e_iter)
 
     def _capture_step(self):
-        """Graph: the Jacobi amplitude update ``T -= R / D``, every pair in one node."""
+        """Graph: the Jacobi amplitude update ``T -= R / D``, via the step store."""
         g = cg.Graph("lmp2 amplitude step")
         with cg.capture(g):
             self._emit_step()
         return g
 
     def _emit_step(self):
-        """Record this phase's ops into the ambient capture."""
-        for R, D, T in zip(self.R_all, self.D_all, self.T_all):
-            la.direct_division(-1.0, R, D, 1.0, T)
+        """Record this phase's ops into the ambient capture.
+
+        Two nodes per store rather than one fused ``T -= R / D``, because the
+        step is DIIS's error vector and has to exist as its own tensor for
+        ``cg.diis`` to snapshot between replays. The padding stays exactly
+        zero (R's padding is 0 and D's is 1), so padded entries contribute
+        nothing to the DIIS B matrix.
+        """
+        for R, D, S, T in zip(self.R_all, self.D_all, self.step_all, self.T_all):
+            la.direct_division(-1.0, R, D, 0.0, S)
+            la.axpby(1.0, S, 1.0, T)
 
     def _capture_antisymmetrize(self):
         """Graph: ``Tt = 2 T - T^T``, every pair in two nodes."""
@@ -632,35 +613,21 @@ class DLPNOMP2(DLPNOBase):
             einsums.permute("abp <- bap", Tt, T)
             la.axpby(2.0, T, -1.0, Tt)
 
-    def _flat_views(self, stores):
-        """Flat numpy views of every bucket store, for DIIS."""
-        views = [ten.view(s).ravel(order="F") for s in stores]
-        for v in views:
-            assert v.base is not None, "DIIS needs a view, not a copy"
-        return views
-
-    def _flat_view(self, store):
-        """The flat numpy view of a whole pair store, for DIIS.
-
-        One contiguous buffer covers every pair, so DIIS needs no gathering.
-        Einsums tensors are column major, so ``np.asarray`` hands back an
-        F-contiguous array and a plain ``reshape(-1)`` would silently *copy*;
-        DIIS would then extrapolate into a throwaway buffer and the solve would
-        quietly fall back to unaccelerated Jacobi. ``ravel(order="F")`` is a
-        genuine view, which the assertion pins down.
-        """
-        flat = ten.view(store).ravel(order="F")
-        assert flat.base is not None, "DIIS needs a view, not a copy"
-        return flat
-
     def lmp2_iterations(self, optimize=True):
         """Solve the local MP2 equations as ONE graph with a loop node.
 
         The body is the whole iteration - antisymmetrize, prologue, couplings,
         repack, residual, energy, step - captured once and replayed by a
-        ``Graph::add_loop`` node. The convergence test and DIIS run in the
-        loop's predicate, which is the one place per iteration that has to be
-        host code: both read scalars the replay just produced.
+        ``Graph::add_loop`` node. The predicate is ``cg.diis(...).wrap(...)``
+        around the convergence test: the one place per iteration that has to
+        be host code, because both read values the replay just produced. The
+        accelerator extrapolates the (T, step) bucket stores in place with
+        einsums operations; its error vector is the materialized Jacobi step,
+        where the deleted host-side ``_DIIS`` used the raw residual, so the
+        two agree to convergence tolerance rather than bit for bit. Once the
+        convergence test reports done, ``wrap`` skips the extrapolation - the
+        old code extrapolated one final time; that difference is also below
+        convergence tolerance.
 
         ``Tt`` is emitted FIRST, not last. A loop predicate runs after the whole
         body, and DIIS has to land between the step and the rebuild of ``Tt``
@@ -690,19 +657,15 @@ class DLPNOMP2(DLPNOBase):
         _t0 = _time.perf_counter()
         self._allocate_iteration_tensors()
 
-        diis = _DIIS(self.cut.diis_max_vecs) if self.use_diis else None
-        t_views = self._flat_views(self.T_all)
-        r_views = self._flat_views(self.R_all)
-        offsets = np.cumsum([0] + [v.size for v in t_views])
-
         state = {"curr": 0.0, "prev": 0.0, "iters": 0, "converged": False}
 
         def advance(iteration):
-            """Loop predicate: read the iteration out, extrapolate, decide.
+            """Convergence test: read the iteration out and decide.
 
             Returns True to keep going. Everything here is host code by
             necessity - the energy and the residual norm are values the replay
-            has only just produced.
+            has only just produced. ``cg.diis`` wraps this, so the DIIS step
+            runs right after a True return.
             """
             state["prev"], state["curr"] = state["curr"], float(ten.view(self.e_iter)[0])
             # Max RMS over the pairs, on each pair's logical block: the padding
@@ -712,11 +675,6 @@ class DLPNOMP2(DLPNOBase):
                 if n:
                     block = self.pair_block(self.R_all, ij)[:n, :n]
                     r_curr = max(r_curr, float(np.sqrt(np.vdot(block, block).real / block.size)))
-
-            if diis is not None:
-                t_new = diis.extrapolate(np.concatenate(t_views), np.concatenate(r_views))
-                for v, lo, hi in zip(t_views, offsets[:-1], offsets[1:]):
-                    v[...] = t_new[lo:hi]
 
             self._print(
                 f"    {iteration:>4}  {state['curr']:>18.12f} "
@@ -730,8 +688,14 @@ class DLPNOMP2(DLPNOBase):
             )
             return not state["converged"]
 
+        if self.use_diis:
+            acc = cg.diis(list(zip(self.T_all, self.step_all)), k=self.cut.diis_max_vecs)
+            predicate = acc.wrap(advance)
+        else:
+            predicate = advance
+
         g = cg.Graph("lmp2")
-        body = g.add_loop("lmp2 iteration", self.cut.maxiter + 1, advance)
+        body = g.add_loop("lmp2 iteration", self.cut.maxiter + 1, predicate)
         with cg.capture(body):
             self._emit_antisymmetrize()
             self._emit_prologue()

@@ -97,6 +97,7 @@ set(ComputeGraphTests
     test_capture_parity_gaps_python.py
     test_capture_python.py
     test_diis_python.py
+    test_diis_differential_python.py
     test_direct_division_python.py
     test_direct_product_views_python.py
     test_einsum_conj_passes_python.py
