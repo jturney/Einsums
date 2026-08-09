@@ -8,6 +8,7 @@
 #include <Einsums/Config/CompilerSpecific.hpp>
 #include <Einsums/Config/ExportDefinitions.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Python/Annotations.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -59,8 +60,12 @@ EINSUMS_EXPORT CpuInfo const &cpu_info();
  * best of several trials. This is not a small number -- on a 10-thread machine an
  * EMPTY region costs around 20 microseconds, and it grows with the thread count,
  * so a loop needs real work in it before parallelizing is anything but a loss.
+ *
+ * Exposed to Python because cost models are not all in C++: the DLPNO example
+ * chooses how finely to batch its per-pair work, and that decision turns on
+ * exactly this number.
  */
-EINSUMS_EXPORT double omp_region_cost_ns();
+APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT double omp_region_cost_ns();
 
 /**
  * @brief Elements below which an elementwise loop should not be parallelized.
@@ -75,7 +80,7 @@ EINSUMS_EXPORT double omp_region_cost_ns();
  * tile was forking a team to divide 64 numbers, and a graph replay does thousands
  * of those per iteration.
  */
-EINSUMS_EXPORT std::size_t omp_min_parallel_elements();
+APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::size_t omp_min_parallel_elements();
 
 /**
  * @brief Work, in flops, below which parallelizing a contraction is a net loss.
@@ -84,7 +89,7 @@ EINSUMS_EXPORT std::size_t omp_min_parallel_elements();
  * that SMALL contractions actually achieve rather than at peak. Using peak would
  * put the break-even far too high and exclude shapes that genuinely want threads.
  */
-EINSUMS_EXPORT std::int64_t omp_min_parallel_flops();
+APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::int64_t omp_min_parallel_flops();
 
 EINSUMS_NAMESPACE_END(hardware)
 

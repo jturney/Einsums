@@ -32,7 +32,9 @@ function(_einsums_snake_to_camel out_var snake)
   set(${out_var} "${_camel}" PARENT_SCOPE)
 endfunction()
 
-set(HardwareTests)
+set(HardwareTests
+    test_cpu_info_python.py
+)
 
 foreach(test ${HardwareTests})
   get_filename_component(TestName ${test} NAME_WE)

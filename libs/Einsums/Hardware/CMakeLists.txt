@@ -15,6 +15,7 @@ set(HardwareSources CpuInfo.cpp)
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums Hardware
+  PYBIND
   SOURCES ${HardwareSources}
   HEADERS ${HardwareHeaders}
   DEPENDENCIES 
