@@ -48,8 +48,9 @@ __all__ = ["DLPNOMP2"]
 class DLPNOMP2(DLPNOBase):
     """DLPNO-MP2: PNO overlaps, then the local MP2 equations as a ComputeGraph."""
 
-    def __init__(self, reference, thresholds=None, verbose=True, use_diis=True):
-        super().__init__(reference, thresholds, verbose)
+    def __init__(self, reference, thresholds=None, verbose=True, use_diis=True,
+                 integral_source=None):
+        super().__init__(reference, thresholds, verbose, integral_source=integral_source)
         self.use_diis = use_diis
         self.e_lmp2 = 0.0
         self.e_lmp2_os = 0.0

@@ -28,6 +28,7 @@ from einsums import linalg as la
 import einsums.graph as cg
 
 from . import cost
+from . import integrals
 from . import sparse
 from . import tensors as ten
 from .thresholds import Thresholds
@@ -38,10 +39,15 @@ __all__ = ["DLPNOBase"]
 class DLPNOBase:
     """Orbitals, domains, and pair natural orbitals for a DLPNO calculation."""
 
-    def __init__(self, reference, thresholds=None, verbose=True):
+    def __init__(self, reference, thresholds=None, verbose=True, integral_source=None):
         self.ref = reference.validate()
         self.cut = thresholds if thresholds is not None else Thresholds()
         self.verbose = verbose
+        # Where (Q|i u) comes from. The dense source transforms a materialized
+        # (Q|mn) and is exact, which is what makes it the default and the oracle
+        # anything else is checked against; see dlpno.integrals.
+        self.integrals = (integral_source if integral_source is not None
+                          else integrals.DenseSource(self.ref.eri_3index))
 
         # setup_orbitals
         self.C_lmo = self.F_lmo = None
@@ -484,34 +490,36 @@ class DLPNOBase:
 
         psi4 builds these with a screened shell-triplet loop that transforms
         straight into each auxiliary atom's extended LMO/PAO domain, so the
-        result is stored sparsely. Here the full ``(naux, naocc, npao)`` tensor
-        is built in two GEMM-shaped contractions and the domains are taken as
-        slices of it, which gives identical numbers and keeps the consumers
-        unchanged when the sparse builder lands.
+        result is stored sparsely. Which is a statement about a *producer*, not
+        about what this phase means, and that is why the work is not here: this
+        declares what will be read and asks a :class:`~dlpno.integrals.ThreeIndexSource`
+        for it. The default source transforms a dense ``(Q|mn)`` and ignores the
+        declaration, which is exact and is what the psi4-free fixtures replay.
+
+        The declaration is possible at all because :meth:`prep_sparsity` has
+        already run: every domain the calculation will read is known before any
+        integral is built. That ordering is the whole opportunity, and it is why
+        a screened producer can slot in behind this without touching a consumer.
 
         No metric is applied: DLPNO fits per pair domain, not globally.
         """
-        ref = self.ref
-        Qmn = ten.from_numpy("(Q|mn)", ref.eri_3index)
-        npao = ten.shape(self.C_pao)[1]
+        # Distinct domains only. Pairs share them heavily - with screening off
+        # there is exactly one - and a producer wants the set, not the multiset.
+        seen_aux, seen_pao = {}, {}
+        for domain in self.lmopair_to_ribfs:
+            seen_aux.setdefault(id(domain), domain)
+        for domain in self.lmopair_to_paos:
+            seen_pao.setdefault(id(domain), domain)
+        demand = integrals.Demand(aux_domains=list(seen_aux.values()),
+                                  pao_domains=list(seen_pao.values()))
 
-        # Occupied index first. Both orders give the same answer, but the
-        # half-transform carries whichever index has already been contracted,
-        # and there are naocc of those against npao of the other - 13 against
-        # 174 at ethanol/cc-pVTZ, since the PAOs span the whole AO basis. Doing
-        # the PAO index first makes the dominant contraction naux*nbf^2*npao
-        # instead of naux*nbf^2*naocc and leaves a half-transform the size of
-        # the integrals themselves: 4.79 GFLOP and 97.7 MiB against 0.67 GFLOP
-        # and 7.3 MiB. The gap is npao/naocc, so it widens with basis set.
-        half = ten.zeros("(Q|i n)", [ref.naux, ref.naocc, ref.nbf])
-        einsums.einsum("Qin <- Qmn ; mi", half, Qmn, self.C_lmo)
-        self.q_ia = ten.zeros("(Q|i u)", [ref.naux, ref.naocc, npao])
-        einsums.einsum("Qiu <- Qin ; nu", self.q_ia, half, self.C_pao)
+        self.integrals.declare(integrals.Spaces(C_lmo=self.C_lmo, C_pao=self.C_pao), demand)
+        self.integrals.build()
+        self.q_ia = self.integrals.q_ia()
 
-        self._print(
-            f"  DF ints:  (Q|iu) is {ref.naux} x {ref.naocc} x {npao} "
-            f"({ten.view(self.q_ia).nbytes / 2**20:.1f} MiB, dense)"
-        )
+        describe = getattr(self.integrals, "describe", None)
+        self._print(f"  DF ints:  {describe()}" if describe is not None else
+                    f"  DF ints:  (Q|iu) from {type(self.integrals).__name__}")
         return self
 
     def _domain_key(self, ij):
