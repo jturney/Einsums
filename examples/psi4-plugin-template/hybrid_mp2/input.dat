@@ -1,0 +1,39 @@
+# hybrid_mp2 example input: both backends against psi4's own MP2.
+#
+# PYTHONPATH must include the directory ABOVE the plugin package (for
+# `import hybrid_mp2`) and the Einsums build or install `lib` (for
+# `import einsums`). See the README next to the package.
+
+sys.path.insert(0, './..')
+import hybrid_mp2
+
+molecule h2o {
+  O
+  H 1 0.96
+  H 1 0.96 2 104.5
+  symmetry c1
+}
+
+set basis cc-pvdz
+set scf_type pk
+set mp2_type conv
+set freeze_core false
+set e_convergence 10
+set d_convergence 10
+
+# psi4's own conventional MP2 is the reference.
+e_ref = energy('mp2')
+clean()
+
+# The Python backend of the contracted stage.
+set hybrid_mp2 stage_backend python
+e_py = energy('hybrid_mp2')
+compare_values(e_ref, e_py, 8, 'hybrid_mp2 (python stage) vs psi4 MP2')
+clean()
+
+# The C++ backend: the stage module built under cpp/. Comment this block out
+# if you have not built it yet; there is deliberately no silent fallback.
+set hybrid_mp2 stage_backend cpp
+e_cpp = energy('hybrid_mp2')
+compare_values(e_ref, e_cpp, 8, 'hybrid_mp2 (cpp stage) vs psi4 MP2')
+compare_values(e_py, e_cpp, 12, 'cpp stage vs python stage')

@@ -98,3 +98,9 @@ testing/Temporary/
 .lavish/
 
 timer.dat
+
+# psi4 plugin template: the in-package build tree (the README's documented
+# build location) and psi4 run artifacts written next to input.dat
+examples/psi4-plugin-template/hybrid_mp2/build/
+examples/psi4-plugin-template/**/output.dat
+examples/psi4-plugin-template/**/output.log
