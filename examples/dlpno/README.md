@@ -100,9 +100,9 @@ A FCIDUMP would not have served: it carries MO-basis `h_pq`, `(pq|rs)` and the n
 
 ## Two backends
 
-`compute_pno_overlaps` exists twice: in Python at `dlpno/pno_overlaps.py`, and in C++ under `cpp/`.
-Both implement the same contract, both are selectable at runtime, and neither is being retired.
-This is the first worked instance of the hybrid framework, so the mechanics are worth stating in full.
+Two stages exist twice: `compute_pno_overlaps` (Python at `dlpno/pno_overlaps.py`) and `transform_pnos` (Python at `dlpno/pno_xform.py`), each with a C++ backend under `cpp/`.
+Both implement the same contracts, both are selectable at runtime, and neither Python side is being retired.
+These are the first worked instances of the hybrid framework, so the mechanics are worth stating in full.
 
 Build the C++ side the way an external developer would, against an *installed* Einsums rather than a build tree:
 

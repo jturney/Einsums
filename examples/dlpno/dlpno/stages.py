@@ -39,18 +39,19 @@ import functools
 
 from einsums.stages import TensorD, stage
 
-from .contracts import CouplingPlan, PnoOverlaps
+from .contracts import CouplingPlan, PnoOverlaps, PnoTransform
 from .mp2 import DLPNOMP2
 from .pno_overlaps import compute_pno_overlaps as _compute_pno_overlaps
+from .pno_xform import transform_pnos as _transform_pnos
 
-__all__ = ["PHASES", "run_phases", "compute_pno_overlaps"]
+__all__ = ["PHASES", "run_phases", "compute_pno_overlaps", "transform_pnos"]
 
 # In dependency order, which is the order compute_energy called them in.
 #
-# compute_pno_overlaps is absent because it is no longer one phase: it is
-# plan_pno_couplings, which stays Python, followed by the contracted numerics
-# stage declared below. It is the first phase to state a contract, and the one
-# M3 promotes.
+# compute_pno_overlaps and pno_transform are absent as single phases because
+# each is a planning half that stays Python followed by a contracted numerics
+# stage declared below: plan_pno_couplings + compute_pno_overlaps (M3's
+# promotion), and plan_pno_transform + transform_pnos (M6's).
 PHASES = [
     "setup_orbitals",
     "compute_doi",
@@ -58,16 +59,18 @@ PHASES = [
     "compute_metric",
     "compute_qia",
     "precompute_fits",
-    "pno_transform",
+    "plan_pno_transform",
+    "transform_pnos",
     "plan_pno_couplings",
     "compute_pno_overlaps",
     "lmp2_iterations",
 ]
 
 # Phases still carrying contract debt: methods reading fields off self.
-# plan_pno_couplings is among them and is not a promotion target either - it is
-# index arithmetic, and nothing measured says it is hot.
-UNCONTRACTED = [n for n in PHASES if n != "compute_pno_overlaps"]
+# The plan_* phases are among them and are not promotion targets either - they
+# are index arithmetic, and nothing measured says they are hot.
+CONTRACTED = ("compute_pno_overlaps", "transform_pnos")
+UNCONTRACTED = [n for n in PHASES if n not in CONTRACTED]
 
 
 def _register(name: str):
@@ -125,7 +128,63 @@ def compute_pno_overlaps(
     )
 
 
+@stage(eager=True)
+def transform_pnos(
+    q_ia: TensorD,
+    fits: list[TensorD],
+    fit_of: list[int],
+    fit_pos: list[int],
+    dom_X: list[TensorD],
+    dom_e: list[TensorD],
+    dom_F: list[TensorD],
+    dom_of: list[int],
+    ribfs: list[list[int]],
+    paos: list[list[int]],
+    lmo_j: list[int],
+    shift: list[float],
+    pno_scale: list[float],
+    min_pnos: int,
+    t_cut_pno: float,
+) -> PnoTransform:
+    """Build each upper pair's truncated, canonical PNO basis.
+
+    The second DLPNO phase to state a contract, and the widest so far:
+    fifteen parameters against the 32 fields of ``self`` the phase touched
+    before ``plan_pno_transform`` was split away. Everything domain-shaped
+    arrives deduplicated (one tensor per distinct domain plus per-pair
+    ordinals), which is the planner handing over the memo caches' sharing
+    rather than one copy per pair.
+
+    Promoted on the 2026-08-08 re-profile: capture EMISSION is 45-56% of the
+    phase - ~1,630 nodes across three graphs at ~8 us of Python per node -
+    which is the per-node cost a language change removes and nothing else
+    does. See DESIGN-hybrid-framework.md, M6 step 3.
+
+    Args:
+        q_ia: Three-index integrals ``(Q | i a)``, the full tensor.
+        fits: Per distinct domain block, ``J^-1 (Q | i u)``, rank 3.
+        fit_of: Per upper pair, its index into ``fits``.
+        fit_pos: Per upper pair, LMO ``i``'s slot on the fit's middle axis.
+        dom_X: Per distinct PAO domain, the orthocanonicalizer.
+        dom_e: Per distinct PAO domain, the canonical orbital energies.
+        dom_F: Per distinct PAO domain, the canonical-basis Fock matrix.
+        dom_of: Per upper pair, its index into the ``dom_*`` lists.
+        ribfs: Per upper pair, the auxiliary indices of its fit domain.
+        paos: Per upper pair, the PAO indices its domain covers.
+        lmo_j: Per upper pair, LMO ``j`` for the ``(Q | j a)`` gather.
+        shift: Per upper pair, ``F_ii + F_jj``.
+        pno_scale: Per upper pair, the core-pair scaling on ``T_CUT_PNO``.
+        min_pnos: Pairs keep at least this many PNOs, domain size permitting.
+        t_cut_pno: The occupation-number cutoff.
+    """
+    return _transform_pnos(
+        q_ia, fits, fit_of, fit_pos, dom_X, dom_e, dom_F, dom_of,
+        ribfs, paos, lmo_j, shift, pno_scale, min_pnos, t_cut_pno,
+    )
+
+
 _stages["compute_pno_overlaps"] = compute_pno_overlaps
+_stages["transform_pnos"] = transform_pnos
 globals().update(_stages)
 __all__ += PHASES
 
@@ -139,12 +198,20 @@ def run_phases(mp2, session, **per_phase):
         **per_phase: Keyword arguments forwarded to a named phase, as
             ``lmp2_iterations={"optimize": False}``.
     """
+    pno_args = None
     for name in PHASES:
+        # The contracted stages are called with their explicit arguments
+        # rather than with the solver object, which is the whole point of
+        # having split them. Their outputs go back onto the instance because
+        # later phases still read them off self.
+        if name == "plan_pno_transform":
+            pno_args = _stages[name](mp2)
+            continue
+        if name == "transform_pnos":
+            mp2._finish_pno_transform(_stages[name](**pno_args))
+            pno_args = None
+            continue
         if name == "compute_pno_overlaps":
-            # The one contracted stage: called with its seven arguments rather
-            # than with the solver object, which is the whole point of having
-            # split it. Its outputs go back onto the instance because
-            # lmp2_iterations still reads them off self.
             overlaps = _stages[name](
                 mp2.X_pno, mp2.S_pao, mp2.lmopair_to_paos, mp2.n_pno,
                 mp2.bucket_of, mp2.bucket_dims, mp2.plan,

@@ -31,6 +31,6 @@ find_package(Einsums REQUIRED COMPONENTS stages)
 # different __cplusplus into the config fingerprint and is refused at import, and may fail to dlopen
 # before the handshake can say so.
 einsums_add_stage_module(
-  dlpno_stages SOURCES bindings.cpp src/ComputePnoOverlaps.cpp INCLUDE_DIRS
-  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  dlpno_stages SOURCES bindings.cpp src/ComputePnoOverlaps.cpp src/TransformPnos.cpp
+  INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include
 )

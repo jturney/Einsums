@@ -707,36 +707,8 @@ class DLPNOBase:
         return fit[:, pos, :]
 
     def _batched_eigh(self, mats, descending=True, label="eigh"):
-        """Diagonalize many independent matrices in one graph.
-
-        Per-pair ``syev`` is the largest remaining item in the PNO transform
-        once the domain fits are batched, and the calls are mutually
-        independent, so they are captured together and run under the OpenMP
-        executor instead of being issued one at a time.
-
-        Issuing them eagerly gets *worse* with threads, not better: 219 ms
-        serial against 329 ms on ten threads at ethanol/cc-pVTZ, because each
-        small ``syev`` is fighting the BLAS's own internal threading. One graph
-        node per matrix with an OpenMP team over the nodes is the right grain -
-        the parallelism is across matrices, and each matrix stays serial.
-
-        A Python thread pool would be the obvious alternative and is not safe
-        here; see :meth:`precompute_fits` for why.
-        """
-        evecs = [ten.from_numpy(f"{label} vectors", ten.view(A)) for A in mats]
-        evals = [ten.zeros(f"{label} values", [ten.shape(A)[0]]) for A in mats]
-        if evecs:
-            g = cg.Graph(label)
-            with cg.capture(g):
-                for V, w in zip(evecs, evals):
-                    la.syev(V, w, compute_eigenvectors=True)
-            self._run(g)
-        if descending:
-            for V, w in zip(evecs, evals):
-                v, e = ten.view(V), ten.view(w)
-                v[...] = v[:, ::-1].copy()
-                e[...] = e[::-1].copy()
-        return evals, evecs
+        """Module-level :func:`batched_eigh` bound to this class's executor rule."""
+        return batched_eigh(mats, self._run, descending=descending, label=label)
 
     def _canonical_pao_domain(self, ij):
         """``(X_pao, e_pao, F_can)`` for pair ``ij``'s PAO domain, memoized.
@@ -920,191 +892,140 @@ class DLPNOBase:
         and recanonicalize what survives. The energy lost to that truncation is
         accumulated as ``de_pno_total``, psi4's PNO truncation correction.
 
+        Three pieces since the M6 split: :meth:`plan_pno_transform` warms the
+        domain memos and flattens the numerics' arguments,
+        :func:`dlpno.pno_xform.transform_pnos` is the promotable numerics, and
+        :meth:`_finish_pno_transform` mirrors the results onto the lower
+        triangle and scatters them into the flat stores. This method is the
+        composition, so the non-stage path is unchanged.
+
         PNOs defined in DOI 10.1063/1.3086717, equations 17 through 24.
         """
-        npairs = self.n_lmo_pairs
-        F_lmo = ten.view(self.F_lmo)
+        from .pno_xform import transform_pnos
 
-        # Per-pair results are collected at their natural (unpadded) sizes and
-        # only then scattered into the flat stores, so the setup code stays
-        # readable and the padding lives in one place.
-        K_pairs = [None] * npairs
-        T_pairs = [None] * npairs
+        args = self.plan_pno_transform()
+        self._finish_pno_transform(transform_pnos(**args))
+        return self
+
+    def plan_pno_transform(self):
+        """Warm the domain memos and pack the PNO numerics' arguments.
+
+        The planning half of the PNO transform, and the half that stays
+        Python. The memo warm has to come first and stay host-side: both
+        caches end in something that cannot be captured - ``gesv``'s info
+        check on the fits, and ``eigh``'s descending reorder on the PAO
+        domains. What follows flattens per-upper-pair arrays and deduplicates
+        everything domain-shaped exactly as the memos share it, so pairs on
+        one domain hand the numerics one tensor, not one copy each.
+
+        Splitting this out is what makes the numerics' contract narrow enough
+        to state: as one phase this read 32 fields of ``self``; the numerics
+        take fifteen parameters.
+        """
+        F_lmo = ten.view(self.F_lmo)
+        upper = [ij for ij, (i, j) in enumerate(self.ij_to_i_j) if i <= j]
+
+        for ij in upper:
+            self._fit_coefficients(ij, self.ij_to_i_j[ij][0])
+            self._canonical_pao_domain(ij)
+
+        fits, fit_index = [], {}
+        doms, dom_index = [], {}
+        fit_of, fit_pos, dom_of = [], [], []
+        ribfs, paos, lmo_j, shift, pno_scale = [], [], [], [], []
+        for ij in upper:
+            i, j = self.ij_to_i_j[ij]
+
+            fit, pos = self._fit_cache[(self._domain_key(ij), i)]
+            fo = fit_index.setdefault(id(fit), len(fits))
+            if fo == len(fits):
+                fits.append(fit)
+            fit_of.append(fo)
+            fit_pos.append(int(pos))
+
+            key = id(self.lmopair_to_paos[ij])
+            do = dom_index.setdefault(key, len(doms))
+            if do == len(doms):
+                doms.append(self._pao_domain_cache[key])
+            dom_of.append(do)
+
+            ribfs.append([int(p) for p in self.lmopair_to_ribfs[ij]])
+            paos.append([int(p) for p in self.lmopair_to_paos[ij]])
+            lmo_j.append(int(j))
+            shift.append(float(F_lmo[i, i] + F_lmo[j, j]))
+            scale = 1.0
+            if i < self.ref.n_core or j < self.ref.n_core:
+                scale *= self.cut.t_cut_pno_core_scale
+            pno_scale.append(float(scale))
+
+        self._pno_upper = upper
+        return dict(
+            q_ia=self.q_ia,
+            fits=fits, fit_of=fit_of, fit_pos=fit_pos,
+            dom_X=[d[0] for d in doms], dom_e=[d[1] for d in doms],
+            dom_F=[d[2] for d in doms], dom_of=dom_of,
+            ribfs=ribfs, paos=paos, lmo_j=lmo_j,
+            shift=shift, pno_scale=pno_scale,
+            min_pnos=int(self.cut.min_pnos),
+            t_cut_pno=float(self.cut.t_cut_pno),
+        )
+
+    def _finish_pno_transform(self, result):
+        """Mirror the numerics' upper-triangle results onto every pair.
+
+        The lower triangle is ``K_ji = K_ij^T`` and ``T_ji = T_ij^T``: a host
+        transpose at scatter time, where the pre-split method emitted one
+        transpose node per lower pair into stage 3's graph. Everything else -
+        the shared ``X_pno``/``e_pno`` objects, the doubled ``de_pno``
+        accounting for off-diagonal pairs, the store scatter and the
+        antisymmetrized amplitudes - is unchanged.
+        """
+        npairs = self.n_lmo_pairs
+        upper = self._pno_upper
+
         self.X_pno = [None] * npairs
         self.e_pno = [None] * npairs
         self.n_pno = [0] * npairs
         self.de_pno = [0.0] * npairs
         self.de_pno_os = [0.0] * npairs
         self.de_pno_ss = [0.0] * npairs
-
-        # Three stages rather than one loop, so the two eigendecompositions per
-        # pair can be batched, and each stage captured as one graph so its pairs
-        # run as an OpenMP team rather than one at a time on the calling thread.
-        # Each stage is the same arithmetic in the same order as the per-pair
-        # loop it replaces; only the issue order changes.
-        #
-        # Capturing the pair loops, not just the eigendecompositions, is what
-        # makes this phase scale. The gathers get parallelized along the way,
-        # but they were never the cost: the per-pair work is ~1400 small GEMMs
-        # against ~190 gathers, and eagerly issued they all run serially no
-        # matter how many threads the BLAS underneath has been given, because
-        # each individual call is far too small to fill them.
-        upper = [ij for ij, (i, j) in enumerate(self.ij_to_i_j) if i <= j]
-
-        # Warm the two memo caches before capturing anything. Both are keyed by
-        # domain rather than by pair, so this is a handful of calls, and both
-        # end in something that cannot be captured: gesv's info check on the
-        # fits, and eigh's descending reorder on the PAO domains.
-        for ij in upper:
-            self._fit_coefficients(ij, self.ij_to_i_j[ij][0])
-            self._canonical_pao_domain(ij)
-
-        # Stage 1: everything up to the pair density, which depends on nothing
-        # outside its own pair.
-        st = {}
-        g1 = cg.Graph("PNO stage 1")
-        with cg.capture(g1):
-            for ij in upper:
-                i, j = self.ij_to_i_j[ij]
-                K_pao = self._pair_exchange(ij, i, j)
-
-                # Canonicalize the pair's PAO domain, removing linear
-                # dependencies. Shared by every pair on the same domain; see
-                # _canonical_pao_domain.
-                X_pao, e_pao, F_pao_ij = self._canonical_pao_domain(ij)
-                K_pao = ten.triplet(X_pao, K_pao, X_pao, trans_a=True, name="K (can PAO)")
-
-                # One semicanonical MP2 step gives the amplitudes the PNOs come from.
-                shift = float(F_lmo[i, i] + F_lmo[j, j])
-                D_pao = ten.pair_denominator(e_pao, shift)
-                T_pao = ten.zeros("T (can PAO)", ten.shape(K_pao))
-                la.direct_division(1.0, K_pao, D_pao, 0.0, T_pao)
-                Tt_pao = ten.antisymmetrize(T_pao)
-
-                # Pair density; its eigenvectors are the PNOs, eigenvalues the
-                # PNO occupation numbers.
-                D_ij = ten.doublet(Tt_pao, T_pao, trans_b=True, name="D (pair)")
-                la.axpby(1.0, ten.doublet(Tt_pao, T_pao, trans_a=True), 1.0, D_ij)
-
-                st[ij] = dict(
-                    K_pao=K_pao, T_pao=T_pao, Tt_pao=Tt_pao, D_ij=D_ij,
-                    X_pao=X_pao, F_pao_ij=F_pao_ij,
-                    # Pointer-writer dots: the returning form has no value to
-                    # return until the graph runs, and throws under capture.
-                    e_ij_initial=ten.dot_into(ten.scalar("e_ij"), K_pao, Tt_pao),
-                    e_ij_os_initial=ten.dot_into(ten.scalar("e_ij os"), K_pao, T_pao),
-                )
-        self._run(g1)
-
-        occs, vecs = self._batched_eigh([st[ij]["D_ij"] for ij in upper],
-                                        descending=True, label="PNO")
-
-        # Stage 2: the truncation decision, which is data dependent and so
-        # cannot be captured, then the Fock matrix in each surviving subspace,
-        # which can be.
-        for ij, pno_occ, X_pno in zip(upper, occs, vecs):
-            i, j = self.ij_to_i_j[ij]
-            nvir_ij = ten.shape(st[ij]["K_pao"])[0]
-            pno_scale = 1.0
-            if i < self.ref.n_core or j < self.ref.n_core:
-                pno_scale *= self.cut.t_cut_pno_core_scale
-
-            keep = min(self.cut.min_pnos, nvir_ij)
-            occ = ten.view(pno_occ)
-            for a in range(keep, nvir_ij):
-                if abs(occ[a]) >= pno_scale * self.cut.t_cut_pno:
-                    keep += 1
-            st[ij]["keep"] = keep
-            # The survivors are the LEADING columns, because the eigenvectors
-            # came back sorted by descending occupation number, so truncating
-            # is a view rather than a gather: no node, no allocation, and no
-            # copy of a matrix we already have. Taken out here rather than
-            # under the capture below, where slicing would record a view node
-            # of its own and put back the node it just saved.
-            st[ij]["X_pno"] = X_pno[:, :keep]
-
-        g2 = cg.Graph("PNO stage 2")
-        with cg.capture(g2):
-            for ij in upper:
-                # Orthonormal but not canonical yet; rotate so F is diagonal.
-                st[ij]["Fmo"] = ten.triplet(st[ij]["X_pno"], st[ij]["F_pao_ij"],
-                                            st[ij]["X_pno"], trans_a=True,
-                                            name="C^T F C")
-        self._run(g2)
-
-        e_pnos, canons = self._batched_eigh([st[ij]["Fmo"] for ij in upper],
-                                            descending=True, label="PNO canon")
-
-        # Stage 3: rotate into the canonical PNO basis and record the pair.
-        g3 = cg.Graph("PNO stage 3")
-        with cg.capture(g3):
-            for ij, e_pno, pno_canon in zip(upper, e_pnos, canons):
-                i, j = self.ij_to_i_j[ij]
-                ji = self.ij_to_ji[ij]
-                K_pao, T_pao, Tt_pao = st[ij]["K_pao"], st[ij]["T_pao"], st[ij]["Tt_pao"]
-                X_pao = st[ij]["X_pao"]
-
-                X_pno = ten.doublet(st[ij]["X_pno"], pno_canon, name="X (PNO)")
-
-                K_pno = ten.triplet(X_pno, K_pao, X_pno, trans_a=True, name="K (PNO)")
-                T_pno = ten.triplet(X_pno, T_pao, X_pno, trans_a=True, name="T (PNO)")
-                Tt_pno = ten.triplet(X_pno, Tt_pao, X_pno, trans_a=True, name="Tt (PNO)")
-
-                st[ij]["e_ij_trunc"] = ten.dot_into(ten.scalar("e trunc"), K_pno, Tt_pno)
-                st[ij]["e_ij_os_trunc"] = ten.dot_into(ten.scalar("e os trunc"), K_pno, T_pno)
-
-                # PAO domain -> canonical PNO, in one transform.
-                X_pno_global = ten.doublet(X_pao, X_pno, name="X (PAO->PNO)")
-
-                K_pairs[ij] = K_pno
-                T_pairs[ij] = T_pno
-                self.X_pno[ij] = X_pno_global
-                if i < j:
-                    K_pairs[ji] = ten.transpose(K_pno, name="K (PNO)")
-                    T_pairs[ji] = ten.transpose(T_pno, name="T (PNO)")
-                    self.X_pno[ji] = X_pno_global
-        self._run(g3)
-
-        self._print(f"  PNO xform: {g1.num_nodes()} + {g2.num_nodes()} + "
-                    f"{g3.num_nodes()} nodes in three graphs")
-
-        # The truncation energies, once the graphs have produced them.
-        for ij, e_pno, pno_canon in zip(upper, e_pnos, canons):
+        for u, ij in enumerate(upper):
             i, j = self.ij_to_i_j[ij]
             ji = self.ij_to_ji[ij]
-            keep = st[ij]["keep"]
-            e_ij_initial = float(ten.view(st[ij]["e_ij_initial"])[0])
-            e_ij_os_initial = float(ten.view(st[ij]["e_ij_os_initial"])[0])
-            e_ij_trunc = float(ten.view(st[ij]["e_ij_trunc"])[0])
-            e_ij_os_trunc = float(ten.view(st[ij]["e_ij_os_trunc"])[0])
-
+            # The truncation energies, from the scalar tensors the numerics'
+            # graphs wrote (the contract cannot carry computed floats).
+            e_ij_initial = float(ten.view(result.e_initial[u])[0])
+            e_ij_os_initial = float(ten.view(result.e_os_initial[u])[0])
+            e_ij_trunc = float(ten.view(result.e_trunc[u])[0])
+            e_ij_os_trunc = float(ten.view(result.e_os_trunc[u])[0])
             de = e_ij_initial - e_ij_trunc
             de_os = e_ij_os_initial - e_ij_os_trunc
             de_ss = (e_ij_initial - e_ij_os_initial) - (e_ij_trunc - e_ij_os_trunc)
-
-            self.e_pno[ij] = e_pno
-            self.n_pno[ij] = keep
-            self.de_pno[ij] = de
-            self.de_pno_os[ij] = de_os
-            self.de_pno_ss[ij] = de_ss
-
-            if i < j:
-                self.e_pno[ji] = e_pno
-                self.n_pno[ji] = keep
-                self.de_pno[ji] = de
-                self.de_pno_os[ji] = de_os
-                self.de_pno_ss[ji] = de_ss
+            for target in ((ij, ji) if i < j else (ij,)):
+                self.X_pno[target] = result.X_pno[u]
+                self.e_pno[target] = result.e_pno[u]
+                self.n_pno[target] = result.n_pno[u]
+                self.de_pno[target] = de
+                self.de_pno_os[target] = de_os
+                self.de_pno_ss[target] = de_ss
 
         # Scatter the per-pair blocks into the flat stores, then form the
         # antisymmetrized amplitudes for every pair with one rank-3 permute
         # plus one axpby instead of two operations per pair.
         self._allocate_pair_stores()
-        for ij in range(npairs):
+        for u, ij in enumerate(upper):
             n = self.n_pno[ij]
             if n == 0:
                 continue
-            self.pair_block(self.K_all, ij)[:n, :n] = ten.view(K_pairs[ij])
-            self.pair_block(self.T_all, ij)[:n, :n] = ten.view(T_pairs[ij])
+            i, j = self.ij_to_i_j[ij]
+            K = ten.view(result.K_pno[u])
+            T = ten.view(result.T_pno[u])
+            self.pair_block(self.K_all, ij)[:n, :n] = K
+            self.pair_block(self.T_all, ij)[:n, :n] = T
+            if i < j:
+                ji = self.ij_to_ji[ij]
+                self.pair_block(self.K_all, ji)[:n, :n] = K.T
+                self.pair_block(self.T_all, ji)[:n, :n] = T.T
         for Tt, T in zip(self.Tt_all, self.T_all):
             einsums.permute("abp <- bap", Tt, T)
             la.axpby(2.0, T, -1.0, Tt)
@@ -1120,3 +1041,39 @@ class DLPNOBase:
         )
         self._print(f"  PNO truncation energy = {self.de_pno_total:.12f}")
         return self
+
+
+def batched_eigh(mats, run, descending=True, label="eigh"):
+    """Diagonalize many independent matrices in one graph.
+
+    Per-pair ``syev`` is the largest remaining item in the PNO transform
+    once the domain fits are batched, and the calls are mutually
+    independent, so they are captured together and run under the OpenMP
+    executor instead of being issued one at a time.
+
+    Issuing them eagerly gets *worse* with threads, not better: 219 ms
+    serial against 329 ms on ten threads at ethanol/cc-pVTZ, because each
+    small ``syev`` is fighting the BLAS's own internal threading. One graph
+    node per matrix with an OpenMP team over the nodes is the right grain -
+    the parallelism is across matrices, and each matrix stays serial.
+
+    A Python thread pool would be the obvious alternative and is not safe
+    here; see :meth:`DLPNOBase.precompute_fits` for why.
+
+    A module-level function so :mod:`dlpno.pno_xform` can use it without an
+    instance; ``run`` is the graph runner, normally ``DLPNOBase._run``.
+    """
+    evecs = [ten.from_numpy(f"{label} vectors", ten.view(A)) for A in mats]
+    evals = [ten.zeros(f"{label} values", [ten.shape(A)[0]]) for A in mats]
+    if evecs:
+        g = cg.Graph(label)
+        with cg.capture(g):
+            for V, w in zip(evecs, evals):
+                la.syev(V, w, compute_eigenvectors=True)
+        run(g)
+    if descending:
+        for V, w in zip(evecs, evals):
+            v, e = ten.view(V), ten.view(w)
+            v[...] = v[:, ::-1].copy()
+            e[...] = e[::-1].copy()
+    return evals, evecs

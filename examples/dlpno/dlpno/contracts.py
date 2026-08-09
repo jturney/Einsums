@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from einsums.stages import TensorD, cmp, contract
 
-__all__ = ["CouplingPlan", "PnoOverlaps"]
+__all__ = ["CouplingPlan", "PnoOverlaps", "PnoTransform"]
 
 
 @contract(parallel=["pair", "partner", "cls", "dest_slot", "src_slot", "sign", "factor"])
@@ -100,3 +100,40 @@ class PnoOverlaps:
     #: Partner-major, ``(M_p, M_b, slots_partner)`` per class, carrying
     #: ``sqrt|factor|`` from the copy it was lifted from and the sign of its own.
     S_T: list[TensorD] = cmp.close()
+
+
+@contract
+@dataclass(frozen=True)
+class PnoTransform:
+    """Each UPPER pair's truncated, canonical PNO basis and truncation cost.
+
+    Every list is indexed by upper-pair ordinal, the order of the planner's
+    ``i <= j`` sweep. The lower triangle is deliberately absent: ``K_ji`` is
+    ``K_ij^T`` and the shared quantities are shared objects, so the mirror is
+    the caller's host-side scatter, not arithmetic worth crossing a boundary.
+
+    ``close`` on the tensors and truncation energies because the two backends
+    reach them through different orderings of the same GEMMs; ``exact`` on the
+    PNO counts because a truncation decision that moves by one is a real
+    disagreement, not rounding.
+    """
+
+    #: ``(keep, keep)`` exchange block in the canonical PNO basis.
+    K_pno: list[TensorD] = cmp.close()
+    #: ``(keep, keep)`` amplitude block in the canonical PNO basis.
+    T_pno: list[TensorD] = cmp.close()
+    #: ``(npao_dom, keep)``: PAO domain -> canonical PNO, in one transform.
+    X_pno: list[TensorD] = cmp.close()
+    #: ``(keep,)`` canonical PNO orbital energies.
+    e_pno: list[TensorD] = cmp.close()
+    #: Surviving PNO count; the truncation decision itself.
+    n_pno: list[int] = cmp.exact()
+    #: The four graph-written pair-energy dots the truncation correction is
+    #: built from, as the scalar tensors the dot ops wrote. Tensors rather
+    #: than floats because the contract vocabulary forbids computed-float
+    #: outputs - a captured stage returns before its graph executes - so the
+    #: caller reads them after run() and forms ``de = initial - trunc``.
+    e_initial: list[TensorD] = cmp.close()
+    e_os_initial: list[TensorD] = cmp.close()
+    e_trunc: list[TensorD] = cmp.close()
+    e_os_trunc: list[TensorD] = cmp.close()
