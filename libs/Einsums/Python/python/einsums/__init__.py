@@ -241,17 +241,33 @@ _RUNTIME_TENSOR_CLASS_NAMES = ("RuntimeTensorF", "RuntimeTensorD", "RuntimeTenso
 _RUNTIME_TENSOR_VIEW_CLASS_NAMES = ("RuntimeTensorViewF", "RuntimeTensorViewD", "RuntimeTensorViewC", "RuntimeTensorViewZ")
 _runtime_tensor_getitem_patched = False
 
+#: The ``einsums.graph`` module, resolved on first use and remembered.
+_graph_module = None
+
+
+def _capture_module():
+    """Import ``einsums.graph`` once and cache it.
+
+    The import has to be deferred - graph.py imports _core, which imports this
+    module, so doing it at module load is a cycle - but deferring it is not the
+    same as repeating it. ``__getitem__`` below is on the hot path of every
+    graph capture, hit 18342 times building one DLPNO-MP2 iteration body on a
+    six-monomer water chain, and re-entering the import machinery on each call
+    costs more than the capture check it is there to guard.
+    """
+    global _graph_module
+    if _graph_module is None:
+        from . import graph
+        _graph_module = graph
+    return _graph_module
+
 
 def _make_capture_aware_getitem(orig_getitem):
     """Wrap a RuntimeTensor's __getitem__ to dispatch to ``cg.view`` when
     we're inside a graph capture and the key is a pure slice expression."""
 
     def wrapper(self, key):
-        # Defer the import: graph.py imports _core, which imports us, so
-        # we can't import at module-load time without a cycle. By the
-        # time this wrapper is hit, _core has loaded and graph.py is
-        # safely importable.
-        from . import graph as _g
+        _g = _graph_module or _capture_module()
         ctx = _g.CaptureContext.current()
         if not ctx.is_capturing():
             return orig_getitem(self, key)
