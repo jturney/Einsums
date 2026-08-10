@@ -5,7 +5,7 @@ DLPNO-MP2 is complete and validated against psi4 two ways; DLPNO-CCSD and (T) ar
 
 DLPNO fits deferred execution unusually well: it is thousands of small dense operations whose shapes and dependency pattern are fixed for a whole calculation and change only in their values, which is exactly the capture-once, replay-many shape.
 Every contraction is captured into a graph once and replayed, so the per-iteration Python cost is a few `execute()` calls however many GEMMs they stand for; the LMP2 iteration itself runs as a single graph with a loop node and DIIS as its predicate.
-Single threaded, the port beats psi4's C++ implementation on both benchmark geometries - 0.73x its wall time on ethanol/cc-pVTZ, 0.94x on an extended water chain - and its LMP2 iteration runs at 0.53x psi4 serially on the chain and near parity threaded.
+Single threaded, the port beats psi4's C++ implementation on both benchmark geometries - 0.73x its wall time on ethanol/cc-pVTZ, 0.92x on an extended water chain - and its LMP2 iteration runs at 0.54x psi4 serially on the chain and near parity threaded.
 Threaded overall, psi4 is 1.5-2.6x ahead, and the gap is measured rather than mysterious: the dense `(Q|mn)` build (algorithmic, psi4's screened builder is not exposed), the transform's serial capture emission, and the one-time LMP2 graph build psi4 has no analogue of.
 Current numbers are in [Performance against psi4](#performance-against-psi4); `bench_vs_psi4.py` reproduces them on your machine, phase against phase.
 
@@ -135,6 +135,7 @@ The two backends of a stage agree bit for bit, because both emit the same einsum
 
 Measured 2026-08-09 (Apple M-series on mains power, best of three interleaved runs) with `bench_vs_psi4.py`, which runs psi4's native C++ DLPNO-MP2 in a subprocess and this port in process, same thread count, same converged reference, SCF excluded from both.
 The port runs its hybrid configuration (`--backend compute_pno_overlaps=cpp,transform_pnos=cpp`); correlation energies agree to 2e-08 (ethanol) and 1e-08 (chain).
+The three-index integrals come from `DFHelper::get_AO_tensor`, so `DF Ints` is threaded and Schwarz screened rather than the flat, unthreaded `ao_eri` build it used to be.
 The bucket count is the automatic one, which chose 9 and 7 buckets serially and 4 on ten threads.
 
 The LMP2 rows split the one-time graph build (allocate, capture, optimize - a cost psi4 has no analogue of, which amortizes with iteration count) from the iterations themselves.
@@ -143,35 +144,41 @@ The LMP2 rows split the one-time graph build (allocate, capture, optimize - a co
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| DF Ints | 0.131 | 0.344 | 0.042 | 0.355 |
-| PNO Transform | 1.232 | **0.545** | 0.240 | **0.199** |
-| PNO Overlaps | 0.219 | **0.166** | 0.042 | 0.076 |
-| LMP2 iterations | 1.213 | **0.911** | 0.376 | 0.446 |
-| LMP2 graph build | - | 0.056 | - | 0.067 |
-| **total** | 2.910 | **2.135** | **0.855** | 1.290 |
+| DF Ints | 0.132 | 0.275 | 0.040 | 0.150 |
+| PNO Transform | 1.224 | **0.549** | 0.239 | **0.208** |
+| PNO Overlaps | 0.221 | **0.169** | 0.043 | 0.074 |
+| LMP2 iterations | 1.182 | **0.934** | 0.340 | 0.443 |
+| LMP2 graph build | - | 0.057 | - | 0.057 |
+| **total** | 2.870 | **2.084** | **0.810** | 1.083 |
 
 **Water chain n=6, cc-pVDZ** - the extended system with many small pairs.
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| DF Ints | 0.138 | 0.433 | 0.047 | 0.456 |
-| PNO Transform | 0.998 | **0.656** | 0.180 | 0.388 |
-| PNO Overlaps | 0.181 | **0.158** | 0.032 | 0.090 |
-| LMP2 iterations | 0.652 | **0.343** | 0.230 | 0.250 |
-| LMP2 graph build | - | 0.222 | - | 0.092 |
-| **total** | 2.059 | **1.925** | **0.536** | 1.395 |
+| DF Ints | 0.137 | 0.397 | 0.044 | 0.181 |
+| PNO Transform | 0.997 | **0.671** | 0.179 | 0.418 |
+| PNO Overlaps | 0.179 | **0.158** | 0.033 | 0.091 |
+| LMP2 iterations | 0.653 | **0.352** | 0.229 | 0.256 |
+| LMP2 graph build | - | 0.207 | - | 0.090 |
+| **total** | 2.051 | **1.894** | **0.537** | 1.152 |
 
-Per LMP2 iteration the port is 0.53x psi4 on the chain and 0.84x on ethanol single threaded, and 1.09x (chain) to 1.32x (ethanol) threaded: the iteration engine is well ahead per iteration serially and at or near parity threaded.
-The serial iteration improved by about a fifth against the previous measurement on both geometries, which is the bucket chooser: with no OpenMP region to pay for, it pads tighter than the fixed four buckets it replaced.
-Threaded it picks four, the old default, so those rows measure the same configuration as before and moved only with the machine - psi4's own threaded iteration moved by the same 10% between the two measurements.
-
-One cost of that is visible in the chain's serial graph build, 0.088 to 0.222 s: finer buckets mean more shape classes, and the one-time build scales with them.
-The chooser prices per-iteration work and does not price the build, so at eleven iterations it spends more on building than it saves on iterating there - the chain's serial total is the one number in these tables that the chooser makes worse.
-Pricing the build is the obvious fix and needs the iteration count, which is not known when the buckets are chosen; an estimate would do, since the term only has to be roughly right to stop the serial choice running as fine as it currently does.
+Per LMP2 iteration the port is 0.54x psi4 on the chain and 0.88x on ethanol single threaded, and 1.12x (chain) to 1.45x (ethanol) threaded: the iteration engine is well ahead per iteration serially and at or near parity threaded.
+The serial iteration is about a fifth better than before the bucket chooser landed: with no OpenMP region to pay for, it pads tighter than the fixed four buckets it replaced.
+Threaded it picks four, which is what the fixed default was.
 The folded body replays under the default executor - an OpenMP team across its nodes would nest the batched GEMMs inside OpenBLAS's threads - so the repack's parallelism lives inside the node instead: `cg::gather` runs its outer walk on an OpenMP team when it is not already inside one, which its disjoint-by-construction writes make safe.
-What decides the totals is not the iteration.
-Single threaded it is the dense `(Q|mn)` build (`from_psi4` uses psi4's dense `ao_eri` where psi4's own builder is screened - C++ on both sides, an algorithmic difference).
-Threaded, that same build is the largest single item in the gap, and the rest is the serial layer psi4 does not have: the transform's capture emission and memo-warming solves, the one-time LMP2 graph build, and the numpy bookkeeping phases - work that is constant while the replays shrink with cores.
+
+What decides the totals is no longer one thing, which is a change from the last measurement.
+`DF Ints` used to be the largest single item at every thread count and flat across them, because `ao_eri` does not thread; on the raw AO tensor it is 0.150 s threaded against 0.355 s, and the threaded ethanol total came down from 1.29 s with it.
+What is left divides differently by geometry.
+On ethanol the threaded gap of 0.27 s is `DF Ints` (0.11), the LMP2 iterations (0.10) and the one-time graph build (0.06), none of them dominant.
+On the chain it is the PNO transform: 0.418 s against psi4's 0.179, which is 39% of that geometry's threaded gap and the largest single item anywhere in these tables.
+The same phase is a win on ethanol (0.208 against 0.239), so whatever it is belongs to many small pairs rather than to the phase itself, and it is not yet understood.
+
+Two costs are the port's own and worth naming rather than burying.
+The chain's serial graph build is 0.207 s against 0.088 s before the chooser: finer buckets mean more shape classes, and the one-time build scales with them.
+The chooser prices per-iteration work and does not price the build, so at eleven iterations it spends more on building than it saves on iterating there - the chain's serial total is the one number in these tables that the chooser makes worse.
+Pricing the build needs the iteration count, which is not known when the buckets are chosen; an estimate would do, since the term only has to be roughly right to stop the serial choice running as fine as it currently does.
+The rest is the serial layer psi4 does not have: the transform's capture emission and memo-warming solves, the graph build, and the numpy bookkeeping phases - work that is constant while the replays shrink with cores.
 
 Two lessons from taking these numbers, both now guarded.
 A result crossing back from a C++ stage converts each list-valued field to a fresh Python list on every attribute access, so indexing `result.field[u]` inside a per-pair loop is quadratic in the pair count - at chain6's 403 upper pairs that was 320 ms of pure conversion hiding in the transform's finish, and it made the C++ backend look slower than Python at exactly the scale it was promoted for.
