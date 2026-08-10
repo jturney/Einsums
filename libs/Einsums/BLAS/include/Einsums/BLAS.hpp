@@ -222,6 +222,86 @@ inline void gemm_batch<std::complex<double>>(char transa, char transb, int_t m, 
     detail::zgemm_batch(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
 }
 
+/**
+ * @brief Perform a batch of independent GEMMs whose shapes need not agree.
+ *
+ * The batch is described as @p group_count groups, each a uniform batch of its
+ * own: every parameter @ref gemm_batch shares across the whole call is per
+ * group here. The pointer arrays hold the groups' members concatenated in group
+ * order, so their length is the sum of @p group_size.
+ *
+ * This exists so that a set of differently shaped batches costs ONE OpenMP
+ * parallel region instead of one each. At the sizes tensor code produces - a
+ * few hundred GEMMs of a few dozen rows - entering a region is comparable to
+ * the arithmetic, so the shape count, not the arithmetic, is what sets the
+ * time.
+ *
+ * @tparam T Element type (float, double, complex<float>, complex<double>).
+ */
+template <typename T>
+void gemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                        int_t const *k_array, T const *alpha_array, T const **a_array, int_t const *lda_array, T const **b_array,
+                        int_t const *ldb_array, T const *beta_array, T **c_array, int_t const *ldc_array, int_t group_count,
+                        int_t const *group_size);
+
+namespace detail {
+void EINSUMS_EXPORT sgemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                                        int_t const *k_array, float const *alpha_array, float const **a_array, int_t const *lda_array,
+                                        float const **b_array, int_t const *ldb_array, float const *beta_array, float **c_array,
+                                        int_t const *ldc_array, int_t group_count, int_t const *group_size);
+void EINSUMS_EXPORT dgemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                                        int_t const *k_array, double const *alpha_array, double const **a_array, int_t const *lda_array,
+                                        double const **b_array, int_t const *ldb_array, double const *beta_array, double **c_array,
+                                        int_t const *ldc_array, int_t group_count, int_t const *group_size);
+void EINSUMS_EXPORT cgemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                                        int_t const *k_array, std::complex<float> const *alpha_array, std::complex<float> const **a_array,
+                                        int_t const *lda_array, std::complex<float> const **b_array, int_t const *ldb_array,
+                                        std::complex<float> const *beta_array, std::complex<float> **c_array, int_t const *ldc_array,
+                                        int_t group_count, int_t const *group_size);
+void EINSUMS_EXPORT zgemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                                        int_t const *k_array, std::complex<double> const *alpha_array, std::complex<double> const **a_array,
+                                        int_t const *lda_array, std::complex<double> const **b_array, int_t const *ldb_array,
+                                        std::complex<double> const *beta_array, std::complex<double> **c_array, int_t const *ldc_array,
+                                        int_t group_count, int_t const *group_size);
+} // namespace detail
+
+template <>
+inline void gemm_batch_grouped<float>(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                                      int_t const *k_array, float const *alpha_array, float const **a_array, int_t const *lda_array,
+                                      float const **b_array, int_t const *ldb_array, float const *beta_array, float **c_array,
+                                      int_t const *ldc_array, int_t group_count, int_t const *group_size) {
+    detail::sgemm_batch_grouped(transa_array, transb_array, m_array, n_array, k_array, alpha_array, a_array, lda_array, b_array, ldb_array,
+                                beta_array, c_array, ldc_array, group_count, group_size);
+}
+template <>
+inline void gemm_batch_grouped<double>(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                                       int_t const *k_array, double const *alpha_array, double const **a_array, int_t const *lda_array,
+                                       double const **b_array, int_t const *ldb_array, double const *beta_array, double **c_array,
+                                       int_t const *ldc_array, int_t group_count, int_t const *group_size) {
+    detail::dgemm_batch_grouped(transa_array, transb_array, m_array, n_array, k_array, alpha_array, a_array, lda_array, b_array, ldb_array,
+                                beta_array, c_array, ldc_array, group_count, group_size);
+}
+template <>
+inline void gemm_batch_grouped<std::complex<float>>(char const *transa_array, char const *transb_array, int_t const *m_array,
+                                                    int_t const *n_array, int_t const *k_array, std::complex<float> const *alpha_array,
+                                                    std::complex<float> const **a_array, int_t const *lda_array,
+                                                    std::complex<float> const **b_array, int_t const *ldb_array,
+                                                    std::complex<float> const *beta_array, std::complex<float> **c_array,
+                                                    int_t const *ldc_array, int_t group_count, int_t const *group_size) {
+    detail::cgemm_batch_grouped(transa_array, transb_array, m_array, n_array, k_array, alpha_array, a_array, lda_array, b_array, ldb_array,
+                                beta_array, c_array, ldc_array, group_count, group_size);
+}
+template <>
+inline void gemm_batch_grouped<std::complex<double>>(char const *transa_array, char const *transb_array, int_t const *m_array,
+                                                     int_t const *n_array, int_t const *k_array, std::complex<double> const *alpha_array,
+                                                     std::complex<double> const **a_array, int_t const *lda_array,
+                                                     std::complex<double> const **b_array, int_t const *ldb_array,
+                                                     std::complex<double> const *beta_array, std::complex<double> **c_array,
+                                                     int_t const *ldc_array, int_t group_count, int_t const *group_size) {
+    detail::zgemm_batch_grouped(transa_array, transb_array, m_array, n_array, k_array, alpha_array, a_array, lda_array, b_array, ldb_array,
+                                beta_array, c_array, ldc_array, group_count, group_size);
+}
+
 namespace detail {
 void EINSUMS_EXPORT sgemv(char transa, int_t m, int_t n, float alpha, float const *a, int_t lda, float const *x, int_t incx, float beta,
                           float *y, int_t incy);

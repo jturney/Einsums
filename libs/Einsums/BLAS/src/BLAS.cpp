@@ -47,6 +47,37 @@ void zgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, std::compl
     vendor::zgemm_batch(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
 }
 
+void sgemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                         int_t const *k_array, float const *alpha_array, float const **a_array, int_t const *lda_array,
+                         float const **b_array, int_t const *ldb_array, float const *beta_array, float **c_array, int_t const *ldc_array,
+                         int_t group_count, int_t const *group_size) {
+    vendor::sgemm_batch_grouped(transa_array, transb_array, m_array, n_array, k_array, alpha_array, a_array, lda_array, b_array, ldb_array,
+                                beta_array, c_array, ldc_array, group_count, group_size);
+}
+void dgemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                         int_t const *k_array, double const *alpha_array, double const **a_array, int_t const *lda_array,
+                         double const **b_array, int_t const *ldb_array, double const *beta_array, double **c_array, int_t const *ldc_array,
+                         int_t group_count, int_t const *group_size) {
+    vendor::dgemm_batch_grouped(transa_array, transb_array, m_array, n_array, k_array, alpha_array, a_array, lda_array, b_array, ldb_array,
+                                beta_array, c_array, ldc_array, group_count, group_size);
+}
+void cgemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                         int_t const *k_array, std::complex<float> const *alpha_array, std::complex<float> const **a_array,
+                         int_t const *lda_array, std::complex<float> const **b_array, int_t const *ldb_array,
+                         std::complex<float> const *beta_array, std::complex<float> **c_array, int_t const *ldc_array, int_t group_count,
+                         int_t const *group_size) {
+    vendor::cgemm_batch_grouped(transa_array, transb_array, m_array, n_array, k_array, alpha_array, a_array, lda_array, b_array, ldb_array,
+                                beta_array, c_array, ldc_array, group_count, group_size);
+}
+void zgemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                         int_t const *k_array, std::complex<double> const *alpha_array, std::complex<double> const **a_array,
+                         int_t const *lda_array, std::complex<double> const **b_array, int_t const *ldb_array,
+                         std::complex<double> const *beta_array, std::complex<double> **c_array, int_t const *ldc_array, int_t group_count,
+                         int_t const *group_size) {
+    vendor::zgemm_batch_grouped(transa_array, transb_array, m_array, n_array, k_array, alpha_array, a_array, lda_array, b_array, ldb_array,
+                                beta_array, c_array, ldc_array, group_count, group_size);
+}
+
 void sgemv(char transa, int_t m, int_t n, float alpha, float const *a, int_t lda, float const *x, int_t incx, float beta, float *y,
            int_t incy) {
     vendor::sgemv(transa, m, n, alpha, a, lda, x, incx, beta, y, incy);

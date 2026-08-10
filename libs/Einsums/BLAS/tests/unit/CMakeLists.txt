@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-set(BLASTests ThreadControl.cpp)
+set(BLASTests ThreadControl.cpp GemmBatchGrouped.cpp)
 
 foreach(test ${BLASTests})
   get_filename_component(TestName ${test} NAME_WE)

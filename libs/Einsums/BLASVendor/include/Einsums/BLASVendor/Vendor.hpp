@@ -125,6 +125,53 @@ EINSUMS_EXPORT void zgemm_batch(char transa, char transb, int_t m, int_t n, int_
                                 std::complex<double> beta, std::complex<double> **c_array, int_t ldc, int_t batch_count);
 
 /**
+ * Performs a batch of independent general matrix-matrix multiplications whose
+ * shapes need not agree.
+ *
+ * The batch is described as @p group_count groups. Every parameter a plain
+ * batch shares across the whole call is per group here, so each group is a
+ * uniform batch of its own; the pointer arrays are the groups' members
+ * concatenated in group order, so their length is the sum of @p group_size.
+ *
+ * The signature mirrors MKL's grouped @c gemm_batch so that a vendor
+ * implementation can be dropped in behind it unchanged.
+ *
+ * @param[in] transa_array,transb_array Per group, whether to transpose A and B.
+ * @param[in] m_array,n_array,k_array Per group, the GEMM dimensions.
+ * @param[in] alpha_array Per group, the scalar multiplier for A*B.
+ * @param[in] a_array Pointers to every group's A matrices, concatenated.
+ * @param[in] lda_array Per group, the leading dimension of each A.
+ * @param[in] b_array Pointers to every group's B matrices, concatenated.
+ * @param[in] ldb_array Per group, the leading dimension of each B.
+ * @param[in] beta_array Per group, the scalar multiplier for C.
+ * @param[in,out] c_array Pointers to every group's C matrices, concatenated.
+ * @param[in] ldc_array Per group, the leading dimension of each C.
+ * @param[in] group_count Number of groups.
+ * @param[in] group_size Per group, how many GEMMs it holds.
+ */
+EINSUMS_EXPORT void sgemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                                        int_t const *k_array, float const *alpha_array, float const **a_array, int_t const *lda_array,
+                                        float const **b_array, int_t const *ldb_array, float const *beta_array, float **c_array,
+                                        int_t const *ldc_array, int_t group_count, int_t const *group_size);
+/// @copydoc sgemm_batch_grouped
+EINSUMS_EXPORT void dgemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                                        int_t const *k_array, double const *alpha_array, double const **a_array, int_t const *lda_array,
+                                        double const **b_array, int_t const *ldb_array, double const *beta_array, double **c_array,
+                                        int_t const *ldc_array, int_t group_count, int_t const *group_size);
+/// @copydoc sgemm_batch_grouped
+EINSUMS_EXPORT void cgemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                                        int_t const *k_array, std::complex<float> const *alpha_array, std::complex<float> const **a_array,
+                                        int_t const *lda_array, std::complex<float> const **b_array, int_t const *ldb_array,
+                                        std::complex<float> const *beta_array, std::complex<float> **c_array, int_t const *ldc_array,
+                                        int_t group_count, int_t const *group_size);
+/// @copydoc sgemm_batch_grouped
+EINSUMS_EXPORT void zgemm_batch_grouped(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
+                                        int_t const *k_array, std::complex<double> const *alpha_array, std::complex<double> const **a_array,
+                                        int_t const *lda_array, std::complex<double> const **b_array, int_t const *ldb_array,
+                                        std::complex<double> const *beta_array, std::complex<double> **c_array, int_t const *ldc_array,
+                                        int_t group_count, int_t const *group_size);
+
+/**
  * Performs matrix vector multiplication.
  *
  * @param[in] transa Whether to transpose the matrix. Case insensitive. Can be 'n', 'c', or 't'.
