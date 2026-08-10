@@ -24,8 +24,10 @@ from einsums import linalg as la
 
 __all__ = [
     "zeros",
+    "empty",
     "scalar",
     "from_numpy",
+    "from_numpy_reversed",
     "view",
     "shape",
     "transpose",
@@ -51,12 +53,48 @@ def scalar(name="scalar"):
     return zeros(name, [1])
 
 
+def empty(name, shape_):
+    """An UNINITIALIZED dense float64 tensor, for buffers written in full.
+
+    :func:`zeros` allocates and then writes the whole buffer with zeros, which
+    is wasted work when the next statement overwrites every element. At the
+    102 MiB of ethanol/cc-pVTZ's ``(Q|mn)`` that write costs 16 ms against 5 ms
+    to allocate alone, so it is worth not doing where the caller can promise a
+    full overwrite.
+    """
+    return einsums.RuntimeTensorD(name, [int(s) for s in shape_])
+
+
 def from_numpy(name, arr):
-    """Copy a numpy array into a fresh dense float64 tensor."""
+    """Copy a numpy array into a fresh dense float64 tensor.
+
+    Column-major, like every einsums tensor, so a C-contiguous source is
+    transposed on the way in and a Fortran-contiguous one is a straight copy.
+    For a large C-ordered buffer that transpose dominates: at ethanol/cc-pVTZ's
+    ``(Q|mn)`` it is 18 ms against 3 ms. Callers holding a big C-ordered array
+    should reach for :func:`from_numpy_reversed` and read it in the layout it
+    is already in, rather than paying to reorder 102 MiB.
+    """
     arr = np.asarray(arr, dtype=np.float64)
-    T = zeros(name, arr.shape)
+    T = empty(name, arr.shape)
     if arr.size:
         np.asarray(T)[...] = arr
+    return T
+
+
+def from_numpy_reversed(name, arr):
+    """The same bytes as ``arr``, as a tensor whose dimensions run backwards.
+
+    A C-contiguous ``(a, b, c)`` buffer and a column-major ``(c, b, a)`` tensor
+    have identical memory layouts, so this copies without reordering anything:
+    the returned tensor holds element ``(c, b, a)`` where ``arr`` holds
+    ``(a, b, c)``. The caller is buying a memcpy instead of a transpose, and
+    pays for it by writing its contractions with the index order reversed.
+    """
+    arr = np.asarray(arr, dtype=np.float64)
+    T = empty(name, tuple(reversed(arr.shape)))
+    if arr.size:
+        np.asarray(T).T[...] = arr
     return T
 
 

@@ -133,7 +133,14 @@ class DenseSource:
         naocc = ten.shape(C_lmo)[1]
         npao = ten.shape(C_pao)[1]
 
-        Qmn = ten.from_numpy("(Q|mn)", self._eri_3index)
+        # Read the integrals in the layout psi4 handed them over in. A dense
+        # (Q|mn) is the largest single buffer this phase touches - 97.7 MiB at
+        # ethanol/cc-pVTZ - and it arrives C-contiguous, so copying it into a
+        # column-major (Q, m, n) tensor reorders every element for nothing: 18 ms
+        # of transpose against 3 ms of memcpy. Taking it reversed makes the copy
+        # a memcpy and costs only that the two contractions below are written
+        # with their indices reversed as well.
+        Qmn = ten.from_numpy_reversed("(n m Q)", self._eri_3index)
 
         # Occupied index first. Both orders give the same answer, but the
         # half-transform carries whichever index has already been contracted,
@@ -143,10 +150,15 @@ class DenseSource:
         # instead of naux*nbf^2*naocc and leaves a half-transform the size of
         # the integrals themselves: 4.79 GFLOP and 97.7 MiB against 0.67 GFLOP
         # and 7.3 MiB. The gap is npao/naocc, so it widens with basis set.
-        half = ten.zeros("(Q|i n)", [naux, naocc, nbf])
-        einsums.einsum("Qin <- Qmn ; mi", half, Qmn, C_lmo)
-        self._q_ia = ten.zeros("(Q|i u)", [naux, naocc, npao])
-        einsums.einsum("Qiu <- Qin ; nu", self._q_ia, half, C_pao)
+        #
+        # The half-transform stays reversed too. It is small (7.3 MiB), so the
+        # choice is not about its own copy cost: leaving it as (n, i, Q) keeps
+        # the contracted index leading in both operands, which is the batched
+        # GEMM shape, where mixing the orders puts a permute back in.
+        half = ten.empty("(n i Q)", [nbf, naocc, naux])
+        einsums.einsum("niQ <- nmQ ; mi", half, Qmn, C_lmo)
+        self._q_ia = ten.empty("(Q|i u)", [naux, naocc, npao])
+        einsums.einsum("Qiu <- niQ ; nu", self._q_ia, half, C_pao)
 
     def q_ia(self):
         if self._q_ia is None:
