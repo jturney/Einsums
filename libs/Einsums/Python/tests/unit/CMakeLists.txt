@@ -33,15 +33,49 @@ if(EINSUMS_BUILD_PYTHON)
   # Built once, at the project's own standard, and separate from the handshake
   # probe below - that one is compiled at two language levels and has to stay on
   # a narrow ledge of minimal includes, which ComputeGraph is not.
+  # Pin the output directory for every configuration, not just the plain
+  # property. Einsums_SetOutputPaths sets the PER-CONFIG output variables under
+  # MSVC (build/<Config>/lib), and a per-config property beats the plain one, so
+  # a bare LIBRARY_OUTPUT_DIRECTORY is silently ignored there: these probes
+  # landed in build/RelWithDebInfo/lib while PYTHONPATH pointed at build/lib,
+  # and every test that imports one failed with ModuleNotFoundError on Windows
+  # alone. Einsums_FinalizePybind.cmake pins _core the same way and says so.
+  function(einsums_probe_output_dir _target _dir)
+    set_target_properties(${_target} PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${_dir}")
+    if(MSVC)
+      set(_cfgs ${CMAKE_CONFIGURATION_TYPES})
+      if(NOT _cfgs)
+        set(_cfgs "${CMAKE_BUILD_TYPE}")
+      endif()
+      foreach(_cfg IN LISTS _cfgs)
+        string(TOUPPER "${_cfg}" _cfg_upper)
+        set_target_properties(
+          ${_target} PROPERTIES LIBRARY_OUTPUT_DIRECTORY_${_cfg_upper} "${_dir}"
+                                RUNTIME_OUTPUT_DIRECTORY_${_cfg_upper} "${_dir}"
+        )
+      endforeach()
+    endif()
+  endfunction()
+
   pybind11_add_module(einsums_shared_capture_probe MODULE SharedCaptureProbe.cpp)
-  set_target_properties(
-    einsums_shared_capture_probe
-    PROPERTIES FOLDER "Tests/Unit" LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-  )
+  set_target_properties(einsums_shared_capture_probe PROPERTIES FOLDER "Tests/Unit")
+  einsums_probe_output_dir(einsums_shared_capture_probe "${CMAKE_BINARY_DIR}/lib")
   target_link_libraries(einsums_shared_capture_probe PRIVATE Einsums)
   add_dependencies(einsums_shared_capture_probe PyEinsums)
 
-  if("cxx_std_23" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+  # ...and skipped outright against a STATIC libEinsums, for the same reason.
+  # The handshake asks "did this module resolve to the same copy of the library
+  # I did?", which only has an answer when there is a copy to share. A static
+  # libEinsums folds a private copy of the sealed-world state into every
+  # extension module, so each probe registers into its own table and reports its
+  # own identity, and the check refuses a module that is not skewed at all.
+  # EINSUMS_WITH_COVERAGE selects STATIC in libs/CMakeLists.txt, which is why
+  # this was red only on the one leg that measures coverage.
+  #
+  # Ask the target for its type rather than re-deriving that condition here, so
+  # this gate follows any later change to the rule.
+  get_target_property(_einsums_lib_type Einsums TYPE)
+  if("cxx_std_23" IN_LIST CMAKE_CXX_COMPILE_FEATURES AND _einsums_lib_type STREQUAL "SHARED_LIBRARY")
     foreach(_std 20 23)
       set(_probe einsums_stage_probe_cxx${_std})
       pybind11_add_module(${_probe} MODULE StageModuleProbe.cpp)
@@ -52,8 +86,8 @@ if(EINSUMS_BUILD_PYTHON)
                    CXX_STANDARD_REQUIRED ON
                    CXX_EXTENSIONS OFF
                    FOLDER "Tests/Unit"
-                   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
       )
+      einsums_probe_output_dir(${_probe} "${CMAKE_BINARY_DIR}/lib")
       target_link_libraries(${_probe} PRIVATE Einsums)
       add_dependencies(${_probe} PyEinsums)
     endforeach()
