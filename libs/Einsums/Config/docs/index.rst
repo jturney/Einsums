@@ -21,4 +21,8 @@ See the :ref:`API reference <modules_Einsums_Config_api>` for full details.
 
 - :c:macro:`EINSUMS_COMPUTE_CODE` is defined only when Einsums is built with GPU capabilities.
 - :c:macro:`EINSUMS_OMP_PARALLEL_FOR` marks a loop as parallelizable.
+- :c:macro:`EINSUMS_OMP_PARALLEL_FOR_IF` and
+  :c:macro:`EINSUMS_OMP_PARALLEL_FOR_SIMD_IF` do the same only when a condition
+  holds, which is what a loop whose trip count can be small wants.
+  :ref:`modules_Einsums_Hardware` supplies the thresholds to test against.
 - :cpp:class:`~einsums::GlobalConfigMap` - contains the mappings for all of the options passed to Einsums.

@@ -112,7 +112,8 @@ runtimes.
 Conditional OpenMP pragmas
 ==========================
 
-Two macros parallelize a loop only when it is worth it:
+Two macros, defined in :ref:`modules_Einsums_Config`, parallelize a loop only
+when it is worth it:
 
 .. code-block:: cpp
 

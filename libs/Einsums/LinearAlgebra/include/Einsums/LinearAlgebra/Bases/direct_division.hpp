@@ -7,6 +7,7 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLASVendor.hpp>
+#include <Einsums/Config/CompilerSpecific.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Profile.hpp>

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/BLAS.hpp>
+#include <Einsums/Config/CompilerSpecific.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
