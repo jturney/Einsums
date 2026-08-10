@@ -205,6 +205,31 @@ class DLPNOBase:
 
         Accumulated over blocks as two GEMMs each, which is the whole cost:
         ``(points x naocc)^T (points x naocc)`` and the same against the PAOs.
+
+        The blocks are tiny - a six-monomer water chain streams 186 of them
+        averaging 84 points - so the arithmetic is nowhere near the cost.
+        Issued one block at a time this was seven eager dispatches per block
+        against a few hundred microseconds of work, and a dispatch is several
+        microseconds before it reaches a kernel. Capturing the same seven calls
+        into a graph does not help, because capture costs what dispatch costs;
+        the only thing that helps is making fewer, larger calls. So the whole
+        stream runs as SEVEN calls total:
+
+        * the two collocations stay per block, because a block's ``phi`` only
+          covers the basis functions that are non-negligible on it, and that
+          sparsity is worth more than uniformity. They go out as one
+          :func:`~einsums.graph.grouped_batched_gemm` each, which takes members
+          of differing shapes and runs the whole set under a single OpenMP
+          region;
+        * squaring and weighting are elementwise, so they run once over the
+          concatenated stream rather than once per block;
+        * the two contractions back down to ``naocc`` are again per block, as
+          one grouped batch each, writing per-block contributions that
+          :meth:`_reduce_doi_blocks` sums.
+
+        Every block's arithmetic is the GEMM it always was, so this is bit for
+        bit the sequential result, which is the bar: DOI decides which PAOs
+        enter each domain and which pairs survive.
         """
         ref = self.ref
         naocc = ref.naocc
@@ -218,47 +243,94 @@ class DLPNOBase:
 
         C_lmo = ten.view(self.C_lmo)
         C_pao = ten.view(self.C_pao)
-        doi_ij = ten.zeros("DOI (i,j)", [naocc, naocc])
-        doi_iu = ten.zeros("DOI (i,u)", [naocc, npao])
-        nblocks = npoints = 0
 
+        # Host side first: drain the stream, gathering each block's slice of the
+        # coefficients. Nothing numeric happens in this loop, and draining is
+        # safe here for the reason it is not in general - a block is a few tens
+        # of kilobytes and :func:`~dlpno.tensors.from_numpy` copies it, so the
+        # provider's buffer reuse (see grid_block_provider) is respected.
+        phis, c_lmos, c_paos, weights, extents = [], [], [], [], []
+        npoints = 0
         for phi_np, w_np, bf_map in ref.grid_blocks():
-            npts = phi_np.shape[0]
+            npts = int(phi_np.shape[0])
             if npts == 0:
                 continue
-            nblocks += 1
+            # The gather seam again: the block's basis functions are an index
+            # list into the global coefficients. Gathering the whole stream at
+            # once instead was measured and is a wash - the cost is the strided
+            # read, not the call - so this stays the simpler shape.
+            phis.append(ten.from_numpy("phi", phi_np))
+            c_lmos.append(ten.from_numpy("C_lmo blk", C_lmo[bf_map, :]))
+            c_paos.append(ten.from_numpy("C_pao blk", C_pao[bf_map, :]))
+            weights.append(w_np)
+            extents.append((npoints, npoints + npts))
             npoints += npts
 
-            # The gather seam again: the block's basis functions are an index
-            # list into the global coefficients.
-            phi = ten.from_numpy("phi", phi_np)
-            lmo = ten.doublet(phi, ten.from_numpy("C_lmo blk", C_lmo[bf_map, :]))
-            pao = ten.doublet(phi, ten.from_numpy("C_pao blk", C_pao[bf_map, :]))
+        # One tensor per quantity over the whole stream, with a view per block
+        # where the per-block GEMMs write and read. The views carry the parent's
+        # leading dimension, which changes no value the GEMM computes.
+        w_all = ten.from_numpy("w", np.concatenate(weights) if weights else np.zeros(0))
+        lmo = ten.empty("phi_i", [npoints, naocc])
+        pao = ten.empty("phi_u", [npoints, npao])
+        lmo2 = ten.empty("|phi_i|^2", [npoints, naocc])
+        pao2 = ten.empty("|phi_u|^2", [npoints, npao])
+        lmo2_w = ten.empty("w |phi_i|^2", [npoints, naocc])
+        lmo_v = [lmo[a:b, :] for a, b in extents]
+        pao_v = [pao[a:b, :] for a, b in extents]
+        lmo2_v = [lmo2[a:b, :] for a, b in extents]
+        pao2_v = [pao2[a:b, :] for a, b in extents]
+        lmo2_w_v = [lmo2_w[a:b, :] for a, b in extents]
+        part_ij = [ten.empty("DOI (i,j) block", [naocc, naocc]) for _ in extents]
+        part_iu = [ten.empty("DOI (i,u) block", [naocc, npao]) for _ in extents]
+
+        if extents:
+            cg.grouped_batched_gemm(1.0, phis, c_lmos, 0.0, lmo_v)
+            cg.grouped_batched_gemm(1.0, phis, c_paos, 0.0, pao_v)
 
             # Squared orbital values, and a weighted copy of the LMO side. The
             # quadrature weight belongs to exactly one of the two factors.
-            lmo2 = ten.zeros("|phi_i|^2", [npts, naocc])
-            pao2 = ten.zeros("|phi_u|^2", [npts, npao])
             einsums.einsum("pi <- pi ; pi", lmo2, lmo, lmo)
             einsums.einsum("pu <- pu ; pu", pao2, pao, pao)
+            einsums.einsum("pi <- pi ; p", lmo2_w, lmo2, w_all)
 
-            w = ten.from_numpy("w", np.ascontiguousarray(w_np))
-            lmo2_w = ten.zeros("w |phi_i|^2", [npts, naocc])
-            einsums.einsum("pi <- pi ; p", lmo2_w, lmo2, w)
+            cg.grouped_batched_gemm(1.0, lmo2_w_v, lmo2_v, 0.0, part_ij, trans_a=True)
+            cg.grouped_batched_gemm(1.0, lmo2_w_v, pao2_v, 0.0, part_iu, trans_a=True)
 
-            einsums.einsum("ij <- pi ; pj", doi_ij, lmo2_w, lmo2, c_pf=1.0, ab_pf=1.0)
-            einsums.einsum("iu <- pi ; pu", doi_iu, lmo2_w, pao2, c_pf=1.0, ab_pf=1.0)
+        doi_ij, doi_iu = self._reduce_doi_blocks(part_ij, part_iu, naocc, npao)
 
-        # sqrt(abs(...)) without leaving the tensor layer: linalg.abs and the
-        # new element-wise linalg.sqrt. (linalg.pow is a *matrix* power via
+        # sqrt(abs(...)): both are correctly rounded and elementwise, so doing
+        # them on the reduced arrays is the same arithmetic linalg.abs and
+        # linalg.sqrt did on the tensors. (linalg.pow is a *matrix* power via
         # eigendecomposition, not this.)
-        for src in (doi_ij, doi_iu):
-            la.abs(src, src)
-            la.sqrt(src, src)
-        self.doi_ij = np.asarray(ten.view(doi_ij)).copy()
-        self.doi_iu = np.asarray(ten.view(doi_iu)).copy()
-        self._print(f"  DOI:      {nblocks} grid blocks, {npoints} points")
+        self.doi_ij = np.sqrt(np.abs(doi_ij))
+        self.doi_iu = np.sqrt(np.abs(doi_iu))
+        self._print(f"  DOI:      {len(extents)} grid blocks, {npoints} points")
         return self
+
+    @staticmethod
+    def _reduce_doi_blocks(part_ij, part_iu, naocc, npao):
+        """Sum the per-block DOI contributions, in block order.
+
+        Deliberately a plain in-order loop of adds rather than anything
+        cleverer, and deliberately on the host. Only strict left-to-right
+        accumulation reproduces what the sequential loop's ``c_pf=1.0`` einsums
+        did, and reproducing it is what makes the rest of this phase checkable
+        as a pure reordering. Every alternative reassociates: striping the
+        blocks across threads, a contraction against a vector of ones (whose
+        dot kernel carries several SIMD partial sums), and numpy's own ``sum``
+        (pairwise) all give a different answer in the last bits.
+
+        Staying in the tensor layer would mean two ``axpby`` calls per block,
+        and per-call dispatch is the very cost this phase was rewritten to
+        avoid: the adds themselves are under a millisecond for the whole
+        stream, while 372 eager dispatches are several.
+        """
+        doi_ij = np.zeros((naocc, naocc))
+        doi_iu = np.zeros((naocc, npao))
+        for block_ij, block_iu in zip(part_ij, part_iu):
+            doi_ij += ten.view(block_ij)
+            doi_iu += ten.view(block_iu)
+        return doi_ij, doi_iu
 
     # -- psi4 DLPNO::compute_dipole_ints -----------------------------------
 
