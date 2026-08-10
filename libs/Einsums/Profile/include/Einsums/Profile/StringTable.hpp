@@ -48,9 +48,40 @@ class StringTable {
     }
 
     /// Retrieve a string by ID. Thread-safe for reads concurrent with intern().
+    ///
+    /// An id this table never issued yields @ref unknown_string rather than
+    /// undefined behaviour. That is not defensive padding: every id the
+    /// Consumer resolves arrives from an event it popped off a ring buffer, so
+    /// the table cannot assume the id is one of its own, and it has no way to
+    /// re-derive the string if it is not. Indexing a deque out of range hands
+    /// back a reference to whatever those bytes happen to be, and the caller
+    /// then uses it as a std::string: Consumer::process_annotate hashes it
+    /// straight into a map key, which dereferences a wild pointer and takes the
+    /// process down from the consumer thread.
+    ///
+    /// That is what a static libEinsums produced. Coverage builds fold a
+    /// private copy of the profiler into every extension module, so ids minted
+    /// by one copy reached another copy's table, and the Linux coverage leg
+    /// died in _Hash_bytes under Consumer::process_annotate. Duplicated
+    /// profilers are their own problem, but a telemetry consumer must not be
+    /// able to kill the program over an annotation it cannot name, whatever
+    /// put the id there.
     auto get(uint32_t id) const -> std::string const & {
         std::shared_lock lock(_mutex);
+        if (id >= _strings.size()) {
+            return unknown_string();
+        }
         return _strings[id];
+    }
+
+    /// What @ref get returns for an id this table never issued.
+    ///
+    /// Named rather than empty so an unresolvable id is visible in a report
+    /// instead of silently reading as a blank name, and so a test can assert
+    /// on it without hardcoding the spelling.
+    static auto unknown_string() -> std::string const & {
+        static std::string const value{"<unknown>"};
+        return value;
     }
 
     /// Number of interned strings.
