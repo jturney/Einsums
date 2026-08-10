@@ -14,6 +14,7 @@
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/LinearAlgebra/Base.hpp>
 #include <Einsums/Print.hpp>
+#include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 
 #include <cstring>
 
@@ -25,6 +26,30 @@ void sum_square(AType const &A, T *scale, T *sumsq) {
     for (auto const &[key, tile] : A.tiles()) {
         sum_square(tile, scale, sumsq);
     }
+}
+
+/// ``dot`` over a runtime-rank tiled tensor.
+///
+/// The compile-time-rank overload below walks the whole grid with a
+/// ``std::array<size_t, Rank>``, which a runtime rank cannot supply. This walks
+/// the FILLED tiles instead, which is the better shape anyway: a tile absent
+/// from either operand contributes nothing, so a sparse grid costs its
+/// occupancy rather than its extent.
+template <typename T>
+[[nodiscard]] T dot(TiledRuntimeTensor<T> const &A, TiledRuntimeTensor<T> const &B) {
+    if (A.dims() != B.dims()) {
+        EINSUMS_THROW_EXCEPTION(dimension_error, "dot: tiled tensors have different dimensions");
+    }
+
+    T out{0};
+    for (auto const &[position, tile] : A.tiles()) {
+        auto const found = B.tiles().find(position);
+        if (found == B.tiles().end()) {
+            continue;
+        }
+        out += dot(tile, found->second);
+    }
+    return out;
 }
 
 template <TiledTensorConcept AType, TiledTensorConcept BType>
@@ -46,10 +71,6 @@ auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueTy
     }
     T out = 0;
 
-// Gated for the reason BlockTensor's reductions are: this loop runs over
-// TILES, and a threaded tiled dot measured a flat ~60 us whatever the grid
-// holds against 1.7 us serial for a 2x2 grid of 8x8 tiles. See
-// BenchmarkBlockTileReduction.
 #pragma omp parallel for reduction(+ : out) if (A.size() >= hardware::omp_min_parallel_elements())
     for (size_t index = 0; index < A.grid_size(); index++) {
         std::array<size_t, Rank> index_arr;
@@ -88,10 +109,6 @@ auto true_dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::Va
     }
     T out = 0;
 
-// Gated for the reason BlockTensor's reductions are: this loop runs over
-// TILES, and a threaded tiled dot measured a flat ~60 us whatever the grid
-// holds against 1.7 us serial for a 2x2 grid of 8x8 tiles. See
-// BenchmarkBlockTileReduction.
 #pragma omp parallel for reduction(+ : out) if (A.size() >= hardware::omp_min_parallel_elements())
     for (size_t index = 0; index < A.grid_size(); index++) {
         std::array<size_t, Rank> index_arr;

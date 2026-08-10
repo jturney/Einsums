@@ -2464,6 +2464,15 @@ APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float,               
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+// Tiled operands. A tiled dot reduces over the grid, which is the shape a
+// per-iteration amplitude container has, and it was reachable from C++ only -
+// so the loop that reduces over it could not be measured from Python at all,
+// which is how it went unnoticed that it opened a parallel region per call
+// whatever the grid held. See BenchmarkBlockTileReduction.
+APIARY_INSTANTIATE_AS("dot", einsums::TiledRuntimeTensor<float>,                einsums::TiledRuntimeTensor<float>)
+APIARY_INSTANTIATE_AS("dot", einsums::TiledRuntimeTensor<double>,               einsums::TiledRuntimeTensor<double>)
+APIARY_INSTANTIATE_AS("dot", einsums::TiledRuntimeTensor<std::complex<float>>,  einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("dot", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
 // View operands: match the 3-arg dot(result, A, B) form, which already accepts
 // non-contiguous views. Without these the scalar-returning dot(A, B) rejected a
 // view argument (no matching overload) even though its template handles any
