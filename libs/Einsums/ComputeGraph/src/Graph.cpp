@@ -1270,20 +1270,25 @@ void Graph::rebuild_deps(EffectiveIoCache &cache) {
         _deps.predecessors[consumer].push_back(producer);
     });
 
+    rebuild_levels();
+}
+
+void Graph::rebuild_levels() {
     // Level partition for level-scheduling executors. Edges always point
-    // from earlier to later positions (the scan above links prior
+    // from earlier to later positions (the hazard scan links prior
     // writers/readers to the current node), so one forward pass suffices.
+    size_t const        n = _deps.predecessors.size();
     std::vector<size_t> level(n, 0);
     size_t              max_level = 0;
-    for (size_t i2 = 0; i2 < n; i2++) {
-        for (size_t const pred : _deps.predecessors[i2]) {
-            level[i2] = std::max(level[i2], level[pred] + 1);
+    for (size_t i = 0; i < n; i++) {
+        for (size_t const pred : _deps.predecessors[i]) {
+            level[i] = std::max(level[i], level[pred] + 1);
         }
-        max_level = std::max(max_level, level[i2]);
+        max_level = std::max(max_level, level[i]);
     }
     _deps.levels.assign(max_level + 1, {});
-    for (size_t i2 = 0; i2 < n; i2++) {
-        _deps.levels[level[i2]].push_back(i2);
+    for (size_t i = 0; i < n; i++) {
+        _deps.levels[level[i]].push_back(i);
     }
 }
 
@@ -1342,9 +1347,21 @@ void Graph::topological_sort() {
     // their sorted positions.
     EffectiveIoCache eff_cache;
 
+    // The position-keyed dependency lists come out of THIS scan rather than a
+    // second one. They are the same edges, and the scan is what this function
+    // costs: it walks every node's effective I/O and intersects view boxes
+    // pairwise, which on a DLPNO-MP2 iteration body (nodes carrying ~1000
+    // operands each) is 28 ms of a 83 ms graph build - paid twice. They are
+    // only valid if the sort leaves the nodes where they are, which is why the
+    // Kahn loop below reports whether anything moved.
+    _deps.successors.assign(n, {});
+    _deps.predecessors.assign(n, {});
+
     for_each_hazard_edge(eff_cache, [&](size_t producer, size_t consumer) {
         adj[producer].push_back(consumer);
         in_degree[consumer]++;
+        _deps.successors[producer].push_back(consumer);
+        _deps.predecessors[consumer].push_back(producer);
     });
 
     // Kahn's algorithm, taking the smallest ready POSITION rather than FIFO.
@@ -1364,9 +1381,13 @@ void Graph::topological_sort() {
     std::vector<Node> sorted;
     sorted.reserve(n);
 
+    bool reordered = false;
     while (!ready.empty()) {
         size_t const idx = ready.top();
         ready.pop();
+        if (idx != sorted.size()) {
+            reordered = true;
+        }
         sorted.push_back(std::move(_nodes[idx]));
 
         for (size_t const succ : adj[idx]) {
@@ -1382,8 +1403,21 @@ void Graph::topological_sort() {
 
     _nodes = std::move(sorted);
 
-    // Rebuild dependency info on the sorted node order (positions changed).
-    rebuild_deps(eff_cache);
+    if (reordered) {
+        // Positions moved, so the lists built during the scan are keyed to the
+        // wrong slots and there is nothing to do but scan again.
+        rebuild_deps(eff_cache);
+    } else {
+        // Every node stayed put, so the lists are already right and only the
+        // level partition is missing. This is the normal outcome rather than a
+        // lucky one: every hazard edge points from an earlier position to a
+        // later one, so program order is itself a topological order, and the
+        // priority queue above takes the smallest ready position, which
+        // reproduces it. The `reordered` flag is what keeps that an observation
+        // instead of an assumption - if the invariant ever breaks, this falls
+        // back to the full rebuild rather than to stale lists.
+        rebuild_levels();
+    }
 
     _sorted     = true;
     _deps_valid = true;

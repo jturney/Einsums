@@ -1926,6 +1926,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Rebuild the position-keyed _deps lists for the current node order.
     void rebuild_deps(EffectiveIoCache &cache);
 
+    /// Partition the current _deps.successors/predecessors into levels.
+    /// Split out of rebuild_deps so topological_sort can reach it without
+    /// repeating the hazard scan when the sort leaves the node order alone.
+    void rebuild_levels();
+
     /// Walk the node list once and invoke @p emit(producer_pos, consumer_pos)
     /// for every RAW/WAW/WAR hazard edge, keyed by owner TensorId (alias-resolved)
     /// and subtree-aware (effective I/O). The single source of truth for the
