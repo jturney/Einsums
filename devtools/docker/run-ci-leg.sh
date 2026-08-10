@@ -18,6 +18,7 @@
 #
 #     # Build + test a CI leg:
 #     ./devtools/docker/run-ci-leg.sh gcc-openblas         # Linux/default/openblas RelWithDebInfo
+#     ./devtools/docker/run-ci-leg.sh gcc-openblas-coverage # ...as CI actually runs it: +COVERAGE (static libEinsums), +Python
 #     ./devtools/docker/run-ci-leg.sh gcc-mkl              # Linux/default/mkl RelWithDebInfo
 #     ./devtools/docker/run-ci-leg.sh clang-openblas       # Linux/clang/openblas RelWithDebInfo
 #     ./devtools/docker/run-ci-leg.sh no-profiler          # EINSUMS_WITH_PROFILER=OFF (BUILD_PYTHON=ON)
@@ -127,6 +128,23 @@ leg_settings() {
             BLAS=openblas
             BUILD_TYPE=RelWithDebInfo
             EXTRA=("-DEINSUMS_BUILD_PYTHON=ON")
+            ;;
+        gcc-openblas-coverage)
+            # The REAL shape of CI's Linux/default/openblas leg, which carries
+            # -DEINSUMS_WITH_COVERAGE=ON from an `include:` entry in
+            # linux-build-and-test.yml that is easy to miss when reading the
+            # matrix. Neither gcc-openblas nor gcc-openblas-py reproduced it, so
+            # "run the CI leg locally" quietly tested a different build than the
+            # one that was failing.
+            #
+            # Coverage is not just extra flags: libs/CMakeLists.txt selects a
+            # STATIC libEinsums when it is on, which folds a private copy of the
+            # library's state into every Python extension module. That is a
+            # different program, and it is the one CI runs.
+            COMPILER=default
+            BLAS=openblas
+            BUILD_TYPE=RelWithDebInfo
+            EXTRA=("-DEINSUMS_BUILD_PYTHON=ON" "-DEINSUMS_WITH_COVERAGE=ON")
             ;;
         gcc-mkl)
             COMPILER=default
@@ -452,7 +470,13 @@ cmake -S '${SRC_DIR}' -B '${BUILD_DIR}' -G Ninja \\
 #    instrumented Debug TUs, namely Transpose.cpp and the ComputeGraph pybind
 #    one, can peak past Docker Desktop's default 8GB allowance when two compile
 #    in parallel.
-if [[ '${LEG}' == 'asan' || '${LEG}' == 'tsan' || '${LEG}' == 'tsan-nopy' ]]; then
+#
+#    The coverage leg belongs in the same category: --coverage inflates the
+#    ComputeGraph pybind TU the same way the sanitizers do, and at -j2 it was
+#    OOM-killed outright -- cc1plus terminated by signal -- even against a
+#    20GB allowance. Note this whole block is inside a double-quoted heredoc,
+#    so a comment here must not contain a double quote.
+if [[ '${LEG}' == 'asan' || '${LEG}' == 'tsan' || '${LEG}' == 'tsan-nopy' || '${LEG}' == 'gcc-openblas-coverage' ]]; then
     cmake --build '${BUILD_DIR}' -j1
 else
     cmake --build '${BUILD_DIR}' -j2
