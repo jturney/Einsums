@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-set(TensorUtilitiesTests Identity BlockViews)
+set(TensorUtilitiesTests Identity BlockViews CreateZeroTensor)
 
 foreach(test ${TensorUtilitiesTests})
   set(sources ${test}.cpp)
