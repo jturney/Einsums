@@ -409,24 +409,45 @@ class DLPNOMP2(DLPNOBase):
         # (M_p, n, M_b) and the GEMM wants (M_p * n, M_b). Both merges are free -
         # the axes already abut - but linalg.reshape would have copied the whole
         # 66 MiB intermediate twice per iteration to express them.
+        # Each class is flattened ONCE and every member is then a plain slice of
+        # the flat form, the way ``_S_pair`` already reads ``_S_cls``. Slicing
+        # first and reshaping the slice describes the same memory - both merges
+        # are of adjacent axes, so the offset and strides come out identical -
+        # but it costs a reshape_view per member instead of per class. On a
+        # six-monomer chain that is 12390 round trips against 380, and this
+        # whole function is the one-time graph build the bucket chooser is
+        # trading against.
+        #
+        # The flat views are held on the instance for the reason the per-member
+        # ones are: the graph keeps tensors by slot pointer, so a view that dies
+        # at the end of the expression that made it leaves the replay reading
+        # freed memory.
+        self._V_flat = [V.reshape_view([self.bucket_dims[cls[1]],
+                                        self.bucket_dims[cls[0]] * self._cls_slots_partner[ci]])
+                        for ci, (cls, V) in enumerate(zip(self._classes, self._V))]
+        self._ST_flat = [S.reshape_view([self.bucket_dims[cls[1]],
+                                         self.bucket_dims[cls[0]] * self._cls_slots_partner[ci]])
+                         for ci, (cls, S) in enumerate(zip(self._classes, self._S_T))]
+        self._W_flat = [W.reshape_view([self.bucket_dims[cls[1]] * self._cls_slots_pair[ci],
+                                        self.bucket_dims[cls[0]]])
+                        for ci, (cls, W) in enumerate(zip(self._classes, self._W))]
+
         self._V_group, self._ST_group = {}, {}
         for ci, cls in enumerate(self._classes):
-            M_p, M_b = self.bucket_dims[cls[1]], self.bucket_dims[cls[0]]
+            M_b = self.bucket_dims[cls[0]]
             for n_pad, members in self._cls_partner_groups[ci]:
                 for q, slot in members:
-                    self._V_group[ci, q] = (
-                        self._V[ci][:, :, slot:slot + n_pad].reshape_view([M_p, M_b * n_pad]))
-                    self._ST_group[ci, q] = (
-                        self._S_T[ci][:, :, slot:slot + n_pad].reshape_view([M_p, M_b * n_pad]))
+                    lo, hi = slot * M_b, (slot + n_pad) * M_b
+                    self._V_group[ci, q] = self._V_flat[ci][:, lo:hi]
+                    self._ST_group[ci, q] = self._ST_flat[ci][:, lo:hi]
 
         self._W_pair, self._S_pair = {}, {}
         for ci, cls in enumerate(self._classes):
-            M_p, M_b = self.bucket_dims[cls[1]], self.bucket_dims[cls[0]]
+            M_p = self.bucket_dims[cls[1]]
             for n_pad, members in self._cls_pair_groups[ci]:
                 for ij in members:
                     slot = self._pair_slot[ci, ij]
-                    self._W_pair[ci, ij] = (
-                        self._W[ci][:, slot:slot + n_pad, :].reshape_view([M_p * n_pad, M_b]))
+                    self._W_pair[ci, ij] = self._W_flat[ci][slot * M_p:(slot + n_pad) * M_p, :]
                     self._S_pair[ci, ij] = self._S_cls[ci][:, slot * M_p:(slot + n_pad) * M_p]
 
         self.e_iter = ten.zeros("E(iteration)", [1])
