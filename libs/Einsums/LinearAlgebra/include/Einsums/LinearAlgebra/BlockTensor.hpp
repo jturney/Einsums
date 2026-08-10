@@ -13,6 +13,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/LinearAlgebra/Base.hpp>
 #include <Einsums/Print.hpp>
 
@@ -303,6 +304,29 @@ void scale_column(size_t column, typename AType::ValueType alpha, AType *A) {
     scale(alpha, &temp);
 }
 
+/// Elements a block-structured reduction will actually touch.
+///
+/// The loop below runs over BLOCKS, so the block count is what decides whether
+/// it is worth a team - and it is not: measured with
+/// BenchmarkBlockTileReduction, a threaded block dot costs a flat ~60 us
+/// whatever the structure holds, against 0.5 us serial for two 8x8 blocks and
+/// 9.9 us for thirty-two 32x32. It only reaches break-even around half a
+/// million elements. The flat floor is the giveaway: that is fork cost, not
+/// work, and each block's own dot is a BLAS call that would rather have the
+/// threads itself.
+///
+/// So the region is gated on the total element count, the same currency
+/// @ref einsums::hardware::omp_min_parallel_elements is quoted in.
+template <typename AType>
+size_t block_reduction_elements(AType const &A) {
+    size_t elements = 0;
+    for (int i = 0; i < A.num_blocks(); i++) {
+        size_t const dim = A.block_dim(i);
+        elements += dim * dim;
+    }
+    return elements;
+}
+
 template <BlockTensorConcept AType, BlockTensorConcept BType>
     requires SameRank<AType, BType>
 auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
@@ -318,7 +342,7 @@ auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueTy
 
     T out{0};
 
-#pragma omp parallel for reduction(+ : out)
+#pragma omp parallel for reduction(+ : out) if (block_reduction_elements(A) >= hardware::omp_min_parallel_elements())
     for (int i = 0; i < A.num_blocks(); i++) {
         if (A.block_dim(i) == 0) {
             continue;
@@ -344,7 +368,7 @@ auto true_dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::Va
 
     T out{0};
 
-#pragma omp parallel for reduction(+ : out)
+#pragma omp parallel for reduction(+ : out) if (block_reduction_elements(A) >= hardware::omp_min_parallel_elements())
     for (int i = 0; i < A.num_blocks(); i++) {
         if (A.block_dim(i) == 0) {
             continue;
@@ -371,7 +395,7 @@ auto dot(AType const &A, BType const &B, CType const &C)
 
     T out{0};
 
-#pragma omp parallel for reduction(+ : out)
+#pragma omp parallel for reduction(+ : out) if (block_reduction_elements(A) >= hardware::omp_min_parallel_elements())
     for (int i = 0; i < A.num_blocks(); i++) {
         if (A.block_dim(i) == 0) {
             continue;

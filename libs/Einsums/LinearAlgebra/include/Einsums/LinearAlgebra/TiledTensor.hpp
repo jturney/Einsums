@@ -11,6 +11,7 @@
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/LinearAlgebra/Base.hpp>
 #include <Einsums/Print.hpp>
 
@@ -45,7 +46,11 @@ auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueTy
     }
     T out = 0;
 
-#pragma omp parallel for reduction(+ : out)
+// Gated for the reason BlockTensor's reductions are: this loop runs over
+// TILES, and a threaded tiled dot measured a flat ~60 us whatever the grid
+// holds against 1.7 us serial for a 2x2 grid of 8x8 tiles. See
+// BenchmarkBlockTileReduction.
+#pragma omp parallel for reduction(+ : out) if (A.size() >= hardware::omp_min_parallel_elements())
     for (size_t index = 0; index < A.grid_size(); index++) {
         std::array<size_t, Rank> index_arr;
         size_t                   temp_index = index;
@@ -83,7 +88,11 @@ auto true_dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::Va
     }
     T out = 0;
 
-#pragma omp parallel for reduction(+ : out)
+// Gated for the reason BlockTensor's reductions are: this loop runs over
+// TILES, and a threaded tiled dot measured a flat ~60 us whatever the grid
+// holds against 1.7 us serial for a 2x2 grid of 8x8 tiles. See
+// BenchmarkBlockTileReduction.
+#pragma omp parallel for reduction(+ : out) if (A.size() >= hardware::omp_min_parallel_elements())
     for (size_t index = 0; index < A.grid_size(); index++) {
         std::array<size_t, Rank> index_arr;
         size_t                   temp_index = index;

@@ -5,6 +5,7 @@
 
 set(LinearAlgebraPerfTests
     BenchmarkBLAS.cpp
+    BenchmarkBlockTileReduction.cpp
     BenchmarkBandwidth.cpp
     BenchmarkLAPACK.cpp
     BenchmarkPeakFlops.cpp
