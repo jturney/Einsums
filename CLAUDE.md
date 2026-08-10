@@ -29,8 +29,8 @@ cmake --build build
 cmake --build build --target Einsum1_test
 
 # Run all tests / a single test / a Catch2 case directly
-ctest --test-dir build
-ctest --test-dir build -R "Einsum1"
+ctest --test-dir build -j4
+ctest --test-dir build -j4 -R "Einsum1"
 ./build/libs/Einsums/TensorAlgebra/tests/unit/Einsum1_test "[test-case-name]" --einsums:debug:no-attach-debugger
 ```
 
