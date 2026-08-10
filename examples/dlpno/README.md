@@ -19,6 +19,8 @@ dlpno/                the package; see its __init__ docstring for the module map
   thresholds.py       psi4's truncation thresholds and presets
   reference.py        the psi4-free input contract: plain numpy buffers
   reference_io.py     that contract as an .npz fixture on disk
+  integrals.py        where (Q|i u) comes from: the declared demand and the dense source
+  cost.py             the machine model the bucket chooser optimizes against
   psi4_source.py      the ONE module that imports psi4; fills a Reference
   tensors.py          einsums.linalg helpers shaped like psi4's Matrix utilities
   stages.py           phases registered with einsums.stages (per-phase timing)
@@ -135,7 +137,8 @@ The two backends of a stage agree bit for bit, because both emit the same einsum
 
 Measured 2026-08-10 (Apple M-series, 4 performance and 6 efficiency cores, on mains power, load under 2, best of three interleaved runs) with `bench_vs_psi4.py`, which runs psi4's native C++ DLPNO-MP2 in a subprocess and this port in process, same thread count, same converged reference, SCF excluded from both.
 The port runs its hybrid configuration (`--backend compute_pno_overlaps=cpp,transform_pnos=cpp`); correlation energies agree to 2e-08 (ethanol) and 1e-08 (chain).
-The three-index integrals come from `DFHelper::get_AO_tensor`, so `DF Ints` is threaded rather than the flat, unthreaded `ao_eri` build it used to be.
+The three-index integrals come from `LocalQiaBuilder` (`--integrals screened`, the default), which builds only the blocks the solver declares it will read, so `DF Ints` is now the same class of quantity psi4's own `compute_qia` produces rather than a full AO build followed by a dense transform.
+That makes both sides domain-restricted at `T_CUT_CLMO`/`T_CUT_CPAO` of 1e-4, which is what a like-for-like row requires; `--integrals dfhelper` selects the exact source instead, and costs what the previous table's `DF Ints` row cost.
 The bucket count is the automatic one, which chose 15, 12, 9 and 7 on ethanol and 12, 8, 7 and 6 on the chain at 1, 2, 4 and 10 threads.
 
 Every phase either side times appears below, including the ones the other side has no analogue for.
@@ -148,50 +151,63 @@ The LMP2 rows split the one-time graph build (allocate, capture, optimize - a co
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
 | Setup Orbitals | 0.003 | 0.003 | 0.004 | **0.002** |
-| Sparsity | **0.012** | 0.088 | **0.013** | 0.050 |
-| DF Ints | **0.131** | 0.239 | **0.042** | 0.116 |
-| PNO Transform | 1.224 | **0.542** | 0.243 | **0.189** |
-| PNO Overlaps | 0.220 | **0.158** | **0.043** | 0.052 |
-| LMP2 iterations | 1.171 | **0.840** | 0.347 | **0.284** |
-| LMP2 graph build | - | 0.042 | - | 0.033 |
-| Overlap + Dipole Ints | 0.096 | - | 0.138 | - |
-| other | -0.001 | 0.012 | -0.002 | 0.007 |
-| **total** | 2.862 | **1.930** | 0.841 | **0.743** |
+| Sparsity | **0.013** | 0.095 | **0.013** | 0.053 |
+| DF Ints | 0.134 | **0.125** | **0.042** | 0.054 |
+| PNO Transform | 1.233 | **0.552** | 0.255 | **0.183** |
+| PNO Overlaps | 0.222 | **0.160** | **0.042** | 0.052 |
+| LMP2 iterations | 1.199 | **0.850** | 0.334 | **0.285** |
+| LMP2 graph build | - | 0.043 | - | 0.034 |
+| Overlap + Dipole Ints | 0.096 | - | 0.135 | - |
+| other | 0.001 | 0.013 | 0.000 | 0.007 |
+| **total** | 2.900 | **1.842** | 0.828 | **0.679** |
 
 **Water chain n=6, cc-pVDZ** - the extended system with many small pairs.
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| Setup Orbitals | 0.004 | **0.002** | 0.005 | **0.002** |
-| Sparsity | **0.013** | 0.061 | **0.012** | 0.051 |
-| DF Ints | **0.139** | 0.373 | **0.045** | 0.164 |
-| PNO Transform | 0.990 | **0.650** | **0.188** | 0.256 |
-| PNO Overlaps | 0.190 | **0.152** | **0.033** | 0.075 |
-| LMP2 iterations | 0.863 | **0.336** | 0.248 | **0.162** |
-| LMP2 graph build | - | 0.123 | - | 0.076 |
-| Overlap + Dipole Ints | 0.064 | - | 0.029 | - |
-| other | 0.000 | 0.050 | -0.000 | 0.030 |
-| **total** | 2.270 | **1.752** | **0.568** | 0.816 |
+| Setup Orbitals | 0.004 | **0.002** | 0.004 | **0.002** |
+| Sparsity | **0.013** | 0.081 | **0.012** | 0.062 |
+| DF Ints | 0.139 | **0.138** | **0.046** | 0.071 |
+| PNO Transform | 0.996 | **0.647** | **0.189** | 0.275 |
+| PNO Overlaps | 0.190 | **0.155** | **0.034** | 0.076 |
+| LMP2 iterations | 0.865 | **0.345** | 0.252 | **0.161** |
+| LMP2 graph build | - | 0.126 | - | 0.075 |
+| Overlap + Dipole Ints | 0.063 | - | 0.029 | - |
+| other | 0.000 | 0.050 | 0.002 | 0.031 |
+| **total** | 2.278 | **1.548** | **0.571** | 0.764 |
 
-The port wins ethanol at both thread counts and the chain serially, and is 1.44x psi4 on the chain at ten threads.
-One caveat on the ethanol threaded win: psi4's own `Dipole Ints` measures 0.128 s at ten threads against 0.064 s at one, so part of that margin is psi4 getting slower rather than the port getting faster.
-The chain is where the work is, and its remaining 0.248 s divides as `DF Ints` 0.119, the graph build 0.076, the transform 0.068, `Sparsity` 0.039, the overlaps 0.042 and `other` 0.030, against a 0.086 s credit from the iterations and 0.029 s psi4 spends on integrals the port takes from its reference.
+The port wins ethanol at both thread counts and the chain serially, and is 1.34x psi4 on the chain at ten threads.
+One caveat on the ethanol threaded win: psi4's own `Dipole Ints` measures 0.125 s at ten threads against 0.064 s at one, so part of that margin is psi4 getting slower rather than the port getting faster.
+The chain is where the work is, and its remaining 0.193 s divides as the transform 0.086, the graph build 0.075, `Sparsity` 0.050, the overlaps 0.042, `other` 0.029 and `DF Ints` 0.025, against a 0.091 s credit from the iterations and 0.029 s psi4 spends on integrals the port takes from its reference.
+`DF Ints` used to head that list at 0.119 and is now last; what replaced it there is the PNO transform.
 
-Per LMP2 iteration the port is 0.39x psi4 on the chain and 0.80x on ethanol single threaded, and 0.65x (chain) to 0.91x (ethanol) threaded: the iteration engine is ahead everywhere measured, by the largest margin where the pairs are smallest and most numerous.
+Per LMP2 iteration the port is 0.39x psi4 on the chain and 0.79x on ethanol single threaded, and 0.65x (chain) to 0.97x (ethanol) threaded: the iteration engine is ahead everywhere measured, by the largest margin where the pairs are smallest and most numerous.
 It was 1.03x and 1.42x threaded before the couplings and the residual both became grouped batched GEMMs, which put every shape class under one OpenMP region and took the chain from 754 batched calls per iteration to 13.
 The serial iteration is about a fifth better than before the bucket chooser landed: with no OpenMP region to pay for, it pads tighter than the fixed four buckets it replaced.
 The folded body replays under the default executor - an OpenMP team across its nodes would nest the batched GEMMs inside OpenBLAS's threads - so the repack's parallelism lives inside the node instead: `cg::gather` runs its outer walk on an OpenMP team when it is not already inside one, which its disjoint-by-construction writes make safe.
 
-`DF Ints` is the largest remaining item on the chain, and it is worth being precise about what it is made of, because the obvious reading is wrong.
+`DF Ints` was the largest item on the chain at 0.164 s, and closing it is the clearest case in this port of measuring the right thing before optimizing.
 The phase looks like a transform, and the port's transform is written densely: two einsums over the full AO and PAO spaces, of which the second is 4.79 GFLOP at ethanol/cc-pVTZ against the first's 0.67.
-Restricting that second contraction to the domains the solver will actually read is the natural optimization, and it is not worth doing.
-Profiled at ten threads the two einsums together are 18 ms of the chain's 164 and 13 ms of ethanol's 117; what the rest is, is `DFHelper::initialize` building the dense AO integrals (94 ms on the chain, 65 on ethanol) plus two full copies of that buffer on its way into an einsums tensor, 80 MiB on the chain and 98 on ethanol.
+Restricting that second contraction to the domains the solver will actually read is the natural optimization, and it would have been worth almost nothing.
+Profiled at ten threads the two einsums together were 18 ms of the chain's 164 and 13 ms of ethanol's 117; what the rest was, was `DFHelper::initialize` building the dense AO integrals (94 ms on the chain, 65 on ethanol) plus two full copies of that buffer on its way into an einsums tensor, 80 MiB on the chain and 98 on ethanol.
 Flops were the wrong currency: at ten threads a GEMM of that size is a few milliseconds and the memory traffic around it is not.
-So this phase does not get cheaper by transforming less.
-It gets cheaper by *building* less, which is what psi4 does: a screened shell-triplet loop straight into each auxiliary atom's domain, so the dense `(Q|mn)` is never formed.
-Reaching psi4 here needs a producer that can answer for scattered domains; `DFHelper::get_AO_tensor` slices `[start, stop)` slabs and cannot express them, so it needs a second psi4 patch alongside the one that added `get_AO_tensor`.
-`dlpno/integrals.py` already has the seam for it: `compute_qia` declares every domain the run will read before any integral is built, and a screened source can answer that declaration without a consumer changing.
-One cheaper lever exists and is deliberately not taken: a Schwarz cutoff of 1e-12 takes the chain's AO build from 106 ms to 76 ms and perturbs `(Q|mn)` by 1.6e-12, but `DFHelperSource` reports `screening_threshold == 0.0` and the untruncated fixtures rest on that being literally true.
+So the phase did not get cheaper by transforming less.
+It got cheaper by *building* less, which is what psi4 does: a screened shell-triplet loop straight into each auxiliary atom's domain, so the dense `(Q|mn)` is never formed.
+
+That needed a producer that can answer for scattered domains, which no psi4 entry point offered - `DFHelper::get_AO_tensor` slices `[start, stop)` slabs and cannot express them - so it is a second psi4 patch alongside the one that added `get_AO_tensor`: `LocalQiaBuilder` in `lib3index`, a standalone builder that takes per-atom LMO and PAO lists and returns one small block per auxiliary atom.
+The seam it plugs into was already there: `compute_qia` declares every domain the run will read before any integral is built, so `ScreenedQiaSource` answers that declaration without a consumer changing.
+What the declaration needed was the *pairing* it used to throw away - not which domains exist, but which orbitals are read against which atom - which `_aux_atom_demand` recovers from the pair list as an exact union, so every element any consumer reads is built by construction rather than by trusting psi4's own extended-map derivation.
+Chain6 `DF Ints` went 0.164 to 0.071 at ten threads and 0.373 to 0.138 serially; ethanol 0.116 to 0.054 and 0.239 to 0.125.
+
+Two things about that row are worth stating plainly rather than leaving to be inferred.
+Of the 0.071 s remaining on the chain, 0.043 is the three-index work and 0.021 is parsing the RIFIT auxiliary basis-set file, which psi4 also pays but outside the timers this table reads; the actual integral build is at parity with psi4's own.
+And the row got 0.010 s cheaper for a reason that is bookkeeping rather than speed: `grid_block_provider` used to build the DFT grid while assembling the reference, and that grid is a differential-overlap input, so its cost now lands in `Sparsity` where it is used - which is part of why `Sparsity` reads higher here than in the previous table.
+A further 0.005 s is real: the auxiliary metric now comes from `FittingMetric` rather than `MintsHelper::ao_eri`, which is the same integrals threaded and symmetry-aware, and is the routine psi4 uses for that block.
+
+The screened source is the first one that is not exact, and the distinction it draws is the one psi4 draws.
+Its shell-pair tolerance is controlled screening - the error vanishes with the tolerance - but its coefficient tolerances restrict which basis functions enter each atom's transform, and that stays an approximation at exact arithmetic, mitigated by the Boughton-Pulay refit inside the builder.
+So `screening_threshold` reports the largest of the three and means domain-restricted, not Schwarz-screened, and `--integrals dfhelper` remains available and remains exact.
+At psi4's own NORMAL thresholds the whole approximation is worth 1.9e-14 Eh of the chain's correlation energy, against a PNO truncation correction eight orders of magnitude larger; with all three tolerances switched off the source reproduces the dense oracle on every declared block to 3e-15 on all six fixture geometries, which is the gate that guards the indexing.
 
 The transform's chain share used to be 0.24 s, the largest single item in these tables, and the cause was in the planning half rather than the numerics: it issued one domain-sized eigendecomposition at a time, which threads made slower rather than faster, and batching them across the independent domains took that phase from 0.42 s to 0.28.
 `Sparsity` had the same disease in its dipole prescreen and got the same fix, which is worth 0.05 s on ethanol at ten threads and nothing at all on the chain, whose `Sparsity` time is the differential-overlap integration rather than the prescreen.
@@ -234,6 +250,10 @@ The rationale lives with the code it explains; these are the load-bearing ones a
   Both halves of the Fock coupling are grouped - by partner on one side, by pair on the other - with one permuting gather per shape class between them.
 * **The whole iteration is one graph with a loop node** (`mp2.py`: `lmp2_iterations`), convergence test and DIIS (`einsums.graph.diis`) in the loop predicate.
 * **Setup phases are separate graphs replayed under the OpenMP executor** (`base.py`: `_run`), because the parallelism worth having is across independent per-pair chains - and never a Python thread pool, which silently corrupts results under the OpenMP-built OpenBLAS.
+* **The three-index integrals are a request, not an array** (`integrals.py`: `Demand` and `ThreeIndexSource`).
+  `compute_qia` declares every block the run will read - before any integral exists, which `prep_sparsity` running first is what makes possible - and a source satisfies that however it likes.
+  The dense source satisfies it by ignoring it, which is what makes it exact and the oracle; the screened one takes the per-atom pairing and builds nothing else.
+  Asking for `(Q|mn)` and slicing it is the one shape of request that can be neither screened nor threaded, so the seam belongs after the first transform rather than before it.
 * **psi4 stays behind a buffer-level seam** (`reference.py`, `psi4_source.py`): everything crosses as plain numpy arrays, so neither library is built against the other.
 
 ## Tools
@@ -246,6 +266,7 @@ The rationale lives with the code it explains; these are the load-bearing ones a
 | `dump_reference.py` | freeze a new fixture (needs psi4) |
 | `dump_energies.py` | did a refactor move any digit (full `repr`, diff two runs) |
 | `check_backends.py` | do a stage's two backends agree, and did the selected one run |
+| `check_integral_sources.py` | what each three-index source costs and gives up; `--sweep` is the exactness gate |
 | `bench_vs_psi4.py` | wall-clock against psi4's C++ DLPNO-MP2, phase against phase |
 | `sweep_chain.py` | the locality claim: kept-pair fraction must fall as a chain grows |
 | `sweep_separation.py` | pair prescreening through the separations where it decides |

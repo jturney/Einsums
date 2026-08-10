@@ -37,6 +37,12 @@ class Thresholds:
     t_cut_clmo: float = 1e-4
     t_cut_cpao: float = 1e-4
 
+    #: Shell-pair screening on the AO integrals a three-index producer builds,
+    #: psi4's ``DLPNO_AO_INTS_TOL``. Unlike everything else here this one is a
+    #: screening rather than an approximation: the error goes to zero with it,
+    #: and only a producer that builds its own integrals reads it at all.
+    ao_ints_tol: float = 1e-10
+
     # linear algebra cutoffs
     s_cut: float = 1e-8
     f_cut: float = 1e-5
@@ -112,5 +118,10 @@ class Thresholds:
             t_cut_do_pre=-1.0,
             t_cut_mkn=-1.0,
             t_cut_pre=-1.0,
+            t_cut_clmo=-1.0,
+            t_cut_cpao=-1.0,
+            # Zero rather than negative, unlike the two above: this one gates a
+            # product against tol^2, so zero already admits everything.
+            ao_ints_tol=0.0,
             **overrides,
         )

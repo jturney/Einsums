@@ -54,12 +54,28 @@ class Demand:
     it by ignoring it. That is deliberate: if honouring the domains exactly were
     part of the contract, every producer would have to implement domain
     screening and there would be exactly one producer.
+
+    The demand is carried at two granularities, because two useful kinds of
+    producer want different things. The distinct-domain lists say which sets of
+    auxiliary functions and PAOs exist at all, which is what a producer sizing
+    buffers or planning batches asks. The per-auxiliary-atom lists say which
+    LMOs and PAOs will be read against each atom's auxiliary functions, which
+    is the *pairing* the first pair of lists throws away - and a producer that
+    builds AO integrals only where they will be transformed cannot do without
+    it, since the atom is what localizes the integral loop.
     """
 
     #: Auxiliary function indices, one list per distinct domain.
     aux_domains: list = field(default_factory=list)
     #: PAO indices, one list per distinct domain.
     pao_domains: list = field(default_factory=list)
+
+    #: Per auxiliary ATOM: the LMO indices that will be read against that
+    #: atom's auxiliary functions.
+    aux_atom_to_lmos: list = field(default_factory=list)
+    #: Per auxiliary ATOM: the PAO indices that will be read against that
+    #: atom's auxiliary functions.
+    aux_atom_to_paos: list = field(default_factory=list)
 
     def is_empty(self):
         return not self.aux_domains and not self.pao_domains

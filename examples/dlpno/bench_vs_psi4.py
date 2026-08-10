@@ -58,6 +58,14 @@ parser.add_argument(
          "does nothing once psi4 is in the process.",
 )
 parser.add_argument(
+    "--integrals", default="screened", choices=["screened", "dfhelper", "dense"],
+    help="where (Q|i u) comes from. 'screened' builds only the blocks the solver "
+         "declares it will read, which is what psi4's own DLPNO does and so is "
+         "what makes the DF Ints row a like-for-like comparison; 'dfhelper' is "
+         "the exact psi4-backed source and 'dense' the unthreaded reference. "
+         "Orthogonal to --backend, which selects stage implementations.",
+)
+parser.add_argument(
     "--backend", default="",
     help="stage backend spec for the port, e.g. "
          "compute_pno_overlaps=cpp,transform_pnos=cpp. Loads the dlpno_stages "
@@ -139,7 +147,7 @@ def run_psi4(workdir):
 
 with tempfile.TemporaryDirectory() as workdir:
     print(f"\n{args.molecule}/{args.basis}, T_CUT_PNO = {args.t_cut_pno:.0e}, "
-          f"{THREADS} thread(s) both sides")
+          f"{THREADS} thread(s) both sides, (Q|iu) from {args.integrals!r}")
     print("running psi4 (subprocess) ...", flush=True)
     psi4_times, psi4_phases, psi4_stats = run_psi4(workdir)
 
@@ -187,9 +195,13 @@ def phase(name, fn):
 # generating its own integrals - so the difference the header calls out as
 # being in the port's disfavour was not actually being counted. At
 # ethanol/cc-pVTZ that is 0.243 s against a 1.16 s total.
+cut = Thresholds.preset("NORMAL", t_cut_pno=args.t_cut_pno, n_buckets=args.buckets)
 t_total = time.perf_counter()
-reference = phase("DF Ints", lambda: from_psi4(wfn))
-mp2 = DLPNOMP2(reference, Thresholds.preset("NORMAL", t_cut_pno=args.t_cut_pno, n_buckets=args.buckets), verbose=False)
+# The thresholds go in here, not just into the solver: a producer that screens
+# has to be configured before it is declared to, and handing it the same object
+# the solver gets is what keeps the two from drifting apart.
+reference = phase("DF Ints", lambda: from_psi4(wfn, integrals=args.integrals, thresholds=cut))
+mp2 = DLPNOMP2(reference, cut, verbose=False)
 
 phase("Setup Orbitals", mp2.setup_orbitals)
 phase("Sparsity", mp2.prep_sparsity)

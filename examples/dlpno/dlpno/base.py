@@ -621,8 +621,11 @@ class DLPNOBase:
             seen_aux.setdefault(id(domain), domain)
         for domain in self.lmopair_to_paos:
             seen_pao.setdefault(id(domain), domain)
+        atom_lmos, atom_paos = self._aux_atom_demand(seen_aux, seen_pao)
         demand = integrals.Demand(aux_domains=list(seen_aux.values()),
-                                  pao_domains=list(seen_pao.values()))
+                                  pao_domains=list(seen_pao.values()),
+                                  aux_atom_to_lmos=atom_lmos,
+                                  aux_atom_to_paos=atom_paos)
 
         self.integrals.declare(integrals.Spaces(C_lmo=self.C_lmo, C_pao=self.C_pao), demand)
         self.integrals.build()
@@ -632,6 +635,55 @@ class DLPNOBase:
         self._print(f"  DF ints:  {describe()}" if describe is not None else
                     f"  DF ints:  (Q|iu) from {type(self.integrals).__name__}")
         return self
+
+    def _aux_atom_demand(self, seen_aux, seen_pao):
+        """Which LMOs and PAOs are read against each auxiliary ATOM's functions.
+
+        The pairing the two flat domain lists throw away, and the thing a
+        producer that builds AO integrals per atom cannot work without. It is
+        recoverable here and nowhere downstream, because it is a property of the
+        pair list rather than of any one read.
+
+        Correct BY CONSTRUCTION rather than by appeal to how psi4 derives its
+        own extended maps. Every read of ``q_ia`` anywhere downstream is
+        ``submatrix(q_ia, [ribfs_ij, lmos, paos_ij])`` for some surviving pair
+        ``ij``, with ``lmos`` a subset of ``{i, j}``: :meth:`_fit_operands`
+        gathers the ``i`` of each pair over the domain, and both exchange builds
+        gather a single ``j``. So if, for every auxiliary atom ``A``,
+
+            lmos[A] contains i and j for every pair ij whose ribfs touch A
+            paos[A] contains lmopair_to_paos[ij] for those same pairs
+
+        then every element any consumer will ever read has been built, and the
+        rest of the tensor can stay zero. Taking those unions exactly is what
+        this does.
+
+        Grouped by interned domain rather than per pair: pairs share domain
+        objects heavily, and the PAO union is the expensive half.
+        """
+        atom_of_ribf = {}
+        for atom, ribfs in enumerate(self.ref.atom_to_ribf):
+            for q in ribfs:
+                atom_of_ribf[q] = atom
+        natom = len(self.ref.atom_to_ribf)
+
+        # One atom set per distinct auxiliary domain, one frozenset per distinct
+        # PAO domain, so the per-pair loop below only unions small things.
+        aux_atoms = {key: {atom_of_ribf[q] for q in dom} for key, dom in seen_aux.items()}
+        pao_sets = {key: frozenset(dom) for key, dom in seen_pao.items()}
+
+        lmos = [set() for _ in range(natom)]
+        pao_keys = [set() for _ in range(natom)]
+        for ij, (i, j) in enumerate(self.ij_to_i_j):
+            pao_key = id(self.lmopair_to_paos[ij])
+            for atom in aux_atoms[id(self.lmopair_to_ribfs[ij])]:
+                lmos[atom].add(i)
+                lmos[atom].add(j)
+                pao_keys[atom].add(pao_key)
+
+        paos = [sorted(frozenset().union(*(pao_sets[k] for k in keys))) if keys else []
+                for keys in pao_keys]
+        return [sorted(s) for s in lmos], paos
 
     def _domain_key(self, ij):
         """What a fit is shared across: the pair's two domains."""
