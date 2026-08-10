@@ -135,7 +135,8 @@ The two backends of a stage agree bit for bit, because both emit the same einsum
 
 ## Performance against psi4
 
-Measured 2026-08-10 (Apple M-series, 4 performance and 6 efficiency cores, on mains power, load under 2, best of three interleaved runs) with `bench_vs_psi4.py`, which runs psi4's native C++ DLPNO-MP2 in a subprocess and this port in process, same thread count, same converged reference, SCF excluded from both.
+Measured 2026-08-10 (Apple M-series, 4 performance and 6 efficiency cores, on mains power, best of three per row over runs interleaved across the four configurations) with `bench_vs_psi4.py`, which runs psi4's native C++ DLPNO-MP2 in a subprocess and this port in process, same thread count, same converged reference, SCF excluded from both.
+psi4's column is the drift control rather than the machine being assumed quiet: it reproduced an earlier session's to within 3% while a Spotlight reindex held one core, which is the tolerance to read every number below at.
 The port runs its hybrid configuration (`--backend compute_pno_overlaps=cpp,transform_pnos=cpp`); correlation energies agree to 2e-08 (ethanol) and 1e-08 (chain).
 The three-index integrals come from `LocalQiaBuilder` (`--integrals screened`, the default), which builds only the blocks the solver declares it will read, so `DF Ints` is now the same class of quantity psi4's own `compute_qia` produces rather than a full AO build followed by a dense transform.
 That makes both sides domain-restricted at `T_CUT_CLMO`/`T_CUT_CPAO` of 1e-4, which is what a like-for-like row requires; `--integrals dfhelper` selects the exact source instead, and costs what the previous table's `DF Ints` row cost.
@@ -150,38 +151,39 @@ The LMP2 rows split the one-time graph build (allocate, capture, optimize - a co
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| Setup Orbitals | 0.003 | 0.003 | 0.004 | **0.002** |
-| Sparsity | **0.013** | 0.095 | **0.013** | 0.053 |
-| DF Ints | 0.134 | **0.125** | **0.042** | 0.054 |
-| PNO Transform | 1.233 | **0.552** | 0.255 | **0.183** |
-| PNO Overlaps | 0.222 | **0.160** | **0.042** | 0.052 |
-| LMP2 iterations | 1.199 | **0.850** | 0.334 | **0.285** |
-| LMP2 graph build | - | 0.043 | - | 0.034 |
-| Overlap + Dipole Ints | 0.096 | - | 0.135 | - |
-| other | 0.001 | 0.013 | 0.000 | 0.007 |
-| **total** | 2.900 | **1.842** | 0.828 | **0.679** |
+| Setup Orbitals | 0.003 | 0.003 | 0.003 | 0.003 |
+| Sparsity | **0.012** | 0.092 | **0.013** | 0.054 |
+| DF Ints | 0.131 | **0.125** | **0.041** | 0.055 |
+| PNO Transform | 1.220 | **0.545** | 0.255 | **0.185** |
+| PNO Overlaps | 0.220 | **0.159** | **0.044** | 0.053 |
+| LMP2 iterations | 1.138 | **0.841** | 0.345 | **0.283** |
+| LMP2 graph build | - | 0.043 | - | 0.036 |
+| Overlap + Dipole Ints | 0.096 | - | 0.136 | - |
+| other | 0.000 | 0.012 | 0.001 | 0.007 |
+| **total** | 2.822 | **1.825** | 0.845 | **0.679** |
 
 **Water chain n=6, cc-pVDZ** - the extended system with many small pairs.
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| Setup Orbitals | 0.004 | **0.002** | 0.004 | **0.002** |
+| Setup Orbitals | 0.004 | **0.002** | 0.005 | **0.002** |
 | Sparsity | **0.013** | 0.081 | **0.012** | 0.062 |
-| DF Ints | 0.139 | **0.138** | **0.046** | 0.071 |
-| PNO Transform | 0.996 | **0.647** | **0.189** | 0.275 |
-| PNO Overlaps | 0.190 | **0.155** | **0.034** | 0.076 |
-| LMP2 iterations | 0.865 | **0.345** | 0.252 | **0.161** |
-| LMP2 graph build | - | 0.126 | - | 0.075 |
-| Overlap + Dipole Ints | 0.063 | - | 0.029 | - |
-| other | 0.000 | 0.050 | 0.002 | 0.031 |
-| **total** | 2.278 | **1.548** | **0.571** | 0.764 |
+| DF Ints | 0.138 | 0.138 | **0.047** | 0.071 |
+| PNO Transform | 0.994 | **0.634** | **0.195** | 0.255 |
+| PNO Overlaps | 0.189 | **0.154** | **0.033** | 0.076 |
+| LMP2 iterations | 0.865 | **0.337** | 0.247 | **0.161** |
+| LMP2 graph build | - | 0.125 | - | 0.077 |
+| Overlap + Dipole Ints | 0.062 | - | 0.029 | - |
+| other | 0.000 | 0.049 | 0.001 | 0.030 |
+| **total** | 2.268 | **1.532** | **0.569** | 0.740 |
 
-The port wins ethanol at both thread counts and the chain serially, and is 1.34x psi4 on the chain at ten threads.
-One caveat on the ethanol threaded win: psi4's own `Dipole Ints` measures 0.125 s at ten threads against 0.064 s at one, so part of that margin is psi4 getting slower rather than the port getting faster.
-The chain is where the work is, and its remaining 0.193 s divides as the transform 0.086, the graph build 0.075, `Sparsity` 0.050, the overlaps 0.042, `other` 0.029 and `DF Ints` 0.025, against a 0.091 s credit from the iterations and 0.029 s psi4 spends on integrals the port takes from its reference.
-`DF Ints` used to head that list at 0.119 and is now last; what replaced it there is the PNO transform.
+The port wins ethanol at both thread counts and the chain serially, and is 1.30x psi4 on the chain at ten threads.
+One caveat on the ethanol threaded win: psi4's own `Dipole Ints` measures 0.126 s at ten threads against 0.064 s at one, so part of that margin is psi4 getting slower rather than the port getting faster.
+The chain is where the work is, and its remaining 0.171 s divides as the graph build 0.077, the transform 0.060, `Sparsity` 0.050, the overlaps 0.043, `other` 0.029 and `DF Ints` 0.024, against a 0.086 s credit from the iterations and 0.029 s psi4 spends on integrals the port takes from its reference.
+`DF Ints` used to head that list at 0.119 and is now last.
+The graph build and the transform have swapped places between sessions, so read them as jointly the largest item rather than ranked: the difference between them is within the 3% the whole benchmark moves run to run.
 
-Per LMP2 iteration the port is 0.39x psi4 on the chain and 0.79x on ethanol single threaded, and 0.65x (chain) to 0.97x (ethanol) threaded: the iteration engine is ahead everywhere measured, by the largest margin where the pairs are smallest and most numerous.
+Per LMP2 iteration the port is 0.39x psi4 on the chain and 0.82x on ethanol single threaded, and 0.68x (chain) to 0.91x (ethanol) threaded: the iteration engine is ahead everywhere measured, by the largest margin where the pairs are smallest and most numerous.
 It was 1.03x and 1.42x threaded before the couplings and the residual both became grouped batched GEMMs, which put every shape class under one OpenMP region and took the chain from 754 batched calls per iteration to 13.
 The serial iteration is about a fifth better than before the bucket chooser landed: with no OpenMP region to pay for, it pads tighter than the fixed four buckets it replaced.
 The folded body replays under the default executor - an OpenMP team across its nodes would nest the batched GEMMs inside OpenBLAS's threads - so the repack's parallelism lives inside the node instead: `cg::gather` runs its outer walk on an OpenMP team when it is not already inside one, which its disjoint-by-construction writes make safe.
@@ -197,7 +199,7 @@ It got cheaper by *building* less, which is what psi4 does: a screened shell-tri
 That needed a producer that can answer for scattered domains, which no psi4 entry point offered - `DFHelper::get_AO_tensor` slices `[start, stop)` slabs and cannot express them - so it is a second psi4 patch alongside the one that added `get_AO_tensor`: `LocalQiaBuilder` in `lib3index`, a standalone builder that takes per-atom LMO and PAO lists and returns one small block per auxiliary atom.
 The seam it plugs into was already there: `compute_qia` declares every domain the run will read before any integral is built, so `ScreenedQiaSource` answers that declaration without a consumer changing.
 What the declaration needed was the *pairing* it used to throw away - not which domains exist, but which orbitals are read against which atom - which `_aux_atom_demand` recovers from the pair list as an exact union, so every element any consumer reads is built by construction rather than by trusting psi4's own extended-map derivation.
-Chain6 `DF Ints` went 0.164 to 0.071 at ten threads and 0.373 to 0.138 serially; ethanol 0.116 to 0.054 and 0.239 to 0.125.
+Chain6 `DF Ints` went 0.164 to 0.071 at ten threads and 0.373 to 0.138 serially; ethanol 0.116 to 0.055 and 0.239 to 0.125.
 
 Two things about that row are worth stating plainly rather than leaving to be inferred.
 Of the 0.071 s remaining on the chain, 0.043 is the three-index work and 0.021 is parsing the RIFIT auxiliary basis-set file, which psi4 also pays but outside the timers this table reads; the actual integral build is at parity with psi4's own.
