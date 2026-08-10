@@ -115,25 +115,35 @@ jobs:
 
       - name: Build and Install
         run: |
-          # -j2 caps ninja parallelism: GitHub Linux runners have 16GB RAM and
+          # -j1 caps ninja parallelism: GitHub Linux runners have 16GB RAM and
           # sanitizer-instrumented compiles are even heavier than -O2 (TSan/ASan
           # add ~2-3x peak per TU). Ninja's default (nproc+2 = 6) puts us over
-          # the line and the runner OOM-kills the build. -j2 keeps two workers
-          # in flight, well under budget.
+          # the line and the runner OOM-kills the build.
+          #
+          # -j2 was the previous cap, on the reasoning that two workers stayed
+          # well under budget. That reasoning was never measured, and the ASan
+          # nightly then had the runner vanish mid-build on two consecutive
+          # nights, on a commit that had built clean the night before. One
+          # worker is the conservative answer while the /usr/bin/time -v figure
+          # below establishes what a single edge actually costs. The leg already
+          # takes about two hours; a slower build that reports beats a faster
+          # one that dies.
           #
           # /usr/bin/time -v reports "Maximum resident set size" across the
           # process tree, so this captures the heaviest single edge - compile or
-          # link. The claim that -j2 fits 16GB has never been measured on this
-          # leg, and it is the claim the leg's whole resource budget rests on:
+          # link. How much a sanitizer edge costs has never been measured on
+          # this leg, and it is the number the whole resource budget rests on:
           # the ASan runs of 2026-08-09 and 2026-08-10 both had the runner
           # vanish mid-build (SIGTERM / "lost communication"), on the same
           # commit that built clean on 08-08. Disk is already ruled out - the
           # intel leg's probes measured a complete build at ~13GB with 74GB
           # free - which leaves memory, and nothing here can currently see it.
+          # Once there is a figure, the cap above can be set from evidence
+          # rather than from caution.
           #
           # GNU time prints its report even when the command fails, so a build
           # that dies still yields the number that explains why.
-          BUILD=(cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install -j2)
+          BUILD=(cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install -j1)
           if [ -x /usr/bin/time ]; then
             /usr/bin/time -v "${BUILD[@]}"
           else
