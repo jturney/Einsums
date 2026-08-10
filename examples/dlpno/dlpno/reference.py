@@ -32,7 +32,10 @@ class Reference:
     C_occ: np.ndarray
     #: Localized *active* occupied orbitals, ``(nbf, naocc)``.
     C_lmo: np.ndarray
-    #: Raw three-index integrals ``(Q|mn)``, ``(naux, nbf, nbf)``. No metric applied.
+    #: Raw three-index integrals ``(Q|mn)``, ``(naux, nbf, nbf)``. No metric
+    #: applied. May be None when :attr:`integral_source` supplies them instead,
+    #: which is how a live psi4 run avoids materializing 102 MB it never reads:
+    #: nothing downstream wants ``(Q|mn)``, only the half-transform of it.
     eri_3index: np.ndarray
     #: Auxiliary metric ``(P|Q)``, ``(naux, naux)``.
     metric: np.ndarray
@@ -50,6 +53,12 @@ class Reference:
     #: coefficients that :meth:`DLPNOBase.setup_orbitals` builds. ``None``
     #: disables screening, which is the untruncated reference calculation.
     grid_blocks: object = None
+    #: Where the three-index integrals come from, when not :attr:`eri_3index`.
+    #: A :class:`~dlpno.integrals.ThreeIndexSource`, and the second non-buffer
+    #: entry in the contract for the same reason as :attr:`grid_blocks`: a live
+    #: source cannot be frozen into a fixture, so ``reference_io`` requires the
+    #: array instead and the two paths stay honestly separate.
+    integral_source: object = None
     #: Number of core orbitals to scale PNO thresholds for (0 when core is frozen).
     n_core: int = 0
     #: SCF total energy, carried through so the driver can report a total.
@@ -69,14 +78,19 @@ class Reference:
 
     def validate(self):
         nbf, naux = self.nbf, self.naux
+        if self.eri_3index is None and self.integral_source is None:
+            raise ValueError(
+                "Reference: needs either eri_3index or integral_source; with neither "
+                "there is nothing to build (Q|i u) from")
         checks = {
             "S": (nbf, nbf),
             "F": (nbf, nbf),
             "C_occ": (nbf, self.C_occ.shape[1]),
             "C_lmo": (nbf, self.naocc),
-            "eri_3index": (naux, nbf, nbf),
             "metric": (naux, naux),
         }
+        if self.eri_3index is not None:
+            checks["eri_3index"] = (naux, nbf, nbf)
         for name, want in checks.items():
             got = np.asarray(getattr(self, name)).shape
             if got != want:

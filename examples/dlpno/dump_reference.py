@@ -79,7 +79,9 @@ psi4.set_options({"dlpno_algorithm": "mp2", "t_cut_pno": args.t_cut_pno})
 psi4.energy("dlpno-mp2")
 dlpno_mp2 = psi4.variable("MP2 CORRELATION ENERGY")
 
-reference = from_psi4(wfn, localization=args.localization,
+# Dense on purpose: a fixture is buffers, and save_reference cannot freeze a
+# live integral source.
+reference = from_psi4(wfn, integrals="dense", localization=args.localization,
                       freeze_core=args.freeze_core)
 
 os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

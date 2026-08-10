@@ -146,12 +146,27 @@ def grid_block_provider(basis, spherical_points=50, radial_points=25,
     return blocks
 
 
-def from_psi4(wfn, aux=None, localization="BOYS", freeze_core=False):
+def from_psi4(wfn, aux=None, localization="BOYS", freeze_core=False,
+              integrals="dfhelper", schwarz_cutoff=0.0, nthreads=None):
     """Assemble a :class:`Reference` from a converged psi4 wavefunction.
 
     ``aux`` defaults to the RIFIT auxiliary basis for the primary basis, which
     is what psi4's DLPNO uses for the correlation integrals.
+
+    ``integrals`` chooses where ``(Q|i u)`` will come from:
+
+    ``"dfhelper"``
+        Attach a :class:`DFHelperSource` and do not build ``(Q|mn)`` at all.
+        The default, because it is exact and threads: nothing downstream reads
+        the dense tensor, so materializing 102 MB of it at ethanol/cc-pVTZ was
+        only ever a way of getting at its half-transform.
+    ``"dense"``
+        Build the dense ``(Q|mn)`` with ``MintsHelper::ao_eri``. Slower and
+        unthreaded, and required for :func:`dlpno.reference_io.save_reference`,
+        which freezes buffers and cannot freeze a live source.
     """
+    if integrals not in ("dfhelper", "dense"):
+        raise ValueError(f"from_psi4: integrals must be 'dfhelper' or 'dense', got {integrals!r}")
     primary = wfn.basisset()
     mol = wfn.molecule()
     if aux is None:
@@ -171,7 +186,10 @@ def from_psi4(wfn, aux=None, localization="BOYS", freeze_core=False):
         F=np.asarray(wfn.Fa()),
         C_occ=C_occ,
         C_lmo=localize(primary, C_act_occ, localization),
-        eri_3index=raw_three_index(primary, aux),
+        eri_3index=raw_three_index(primary, aux) if integrals == "dense" else None,
+        integral_source=(None if integrals == "dense" else
+                         DFHelperSource(primary, aux, schwarz_cutoff=schwarz_cutoff,
+                                        nthreads=nthreads)),
         metric=aux_metric(aux),
         atom_to_bf=_atom_maps(primary),
         atom_to_ribf=_atom_maps(aux),
@@ -244,8 +262,12 @@ class DFHelperSource:
         # offer; see the module docstring on raw_three_index.
         helper = psi4.core.DFHelper(self._primary, self._aux)
         helper.set_memory(self._memory)
-        if self._nthreads is not None:
-            helper.set_nthreads(int(self._nthreads))
+        # DFHelper defaults to ONE thread whatever psi4 has been told, so not
+        # setting this silently gives up the threading that is the whole reason
+        # to be here: the AO build measured 0.272 s at ten threads that way,
+        # against 0.067 s with the team it should have had.
+        threads = self._nthreads if self._nthreads is not None else psi4.core.get_num_threads()
+        helper.set_nthreads(int(threads))
         # Always set it, including to zero. Skipping the call leaves psi4's own
         # default cutoff in force, which would make screening_threshold report
         # exactness this source was not actually delivering.

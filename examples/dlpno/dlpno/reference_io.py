@@ -51,6 +51,21 @@ def _unflatten_ragged(flat, counts):
     return out
 
 
+def _require_dense_integrals(ref):
+    """A fixture is buffers, and a live integral source is not one.
+
+    ``from_psi4(integrals="dfhelper")`` leaves ``eri_3index`` unset because
+    nothing in a running calculation reads it. Freezing that reference would
+    produce a fixture that cannot be replayed, so say so here rather than at
+    load time.
+    """
+    if ref.eri_3index is None:
+        raise ValueError(
+            "save_reference: this Reference carries a live integral source rather than "
+            "eri_3index, and a source cannot be frozen. Rebuild it with "
+            "from_psi4(..., integrals='dense').")
+
+
 def save_reference(ref, path, energies=None, metadata=None):
     """Write @p ref to ``path`` as a compressed ``.npz``.
 
@@ -65,6 +80,7 @@ def save_reference(ref, path, energies=None, metadata=None):
     :param metadata: optional dict of short strings (molecule, basis, ...)
         describing where the fixture came from.
     """
+    _require_dense_integrals(ref)
     ref.validate()
 
     arrays = {

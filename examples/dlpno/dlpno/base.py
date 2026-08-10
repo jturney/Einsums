@@ -46,8 +46,14 @@ class DLPNOBase:
         # Where (Q|i u) comes from. The dense source transforms a materialized
         # (Q|mn) and is exact, which is what makes it the default and the oracle
         # anything else is checked against; see dlpno.integrals.
-        self.integrals = (integral_source if integral_source is not None
-                          else integrals.DenseSource(self.ref.eri_3index))
+        # Explicit argument, then whatever the reference carries, then the dense
+        # transform of a materialized (Q|mn). Only the last needs the array.
+        if integral_source is not None:
+            self.integrals = integral_source
+        elif getattr(self.ref, "integral_source", None) is not None:
+            self.integrals = self.ref.integral_source
+        else:
+            self.integrals = integrals.DenseSource(self.ref.eri_3index)
 
         # setup_orbitals
         self.C_lmo = self.F_lmo = None
