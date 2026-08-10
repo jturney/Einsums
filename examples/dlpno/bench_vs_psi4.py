@@ -222,22 +222,81 @@ print(f"    {'padded PNO dimension':22} {'-':>12} {mp2.npno_max:>12}"
 print(f"    {'LMP2 iterations':22} {psi4_stats.get('iterations', '?'):>12} "
       f"{mp2.n_iterations:>12}")
 
+# (row label, key in `ours`, psi4 timer name or None when psi4 has no analogue).
+#
+# Every phase timed above must reach this table. It did not always: `Sparsity`
+# was timed and never printed, so 16% of an ethanol run was invisible in the
+# very table used to decide what to optimize next. The residual row and the
+# check below exist so that cannot recur silently - a newly timed phase either
+# appears here by name or falls out into `other (untabulated)`.
+ROWS = [
+    ("Setup Orbitals", "Setup Orbitals", "Setup Orbitals"),
+    ("Sparsity", "Sparsity", "Sparsity"),
+    ("DF Ints", "DF Ints", "DF Ints"),
+    ("PNO Transform", "PNO Transform", "PNO Transform"),
+    ("PNO Overlaps", "PNO Overlaps", "PNO Overlaps"),
+    ("LMP2 iterations", "LMP2", "LMP2"),
+    ("LMP2 graph build", "LMP2 build", None),
+]
+# Any phase timed but not named above still gets a row, in the order it was
+# timed, so adding a phase() call cannot drop work out of the table.
+ROWS += [(key, key, key) for key in ours
+         if key != "DLPNO-MP2" and key not in {r[1] for r in ROWS}]
+
 print(f"\n  wall time (seconds)")
 print(f"    {'phase':22} {'psi4':>12} {'this port':>12} {'ratio':>10}")
-for label, key in [("Setup Orbitals", "Setup Orbitals"), ("DF Ints", "DF Ints"),
-                   ("PNO Transform", "PNO Transform"), ("PNO Overlaps", "PNO Overlaps"),
-                   ("LMP2 iterations", "LMP2"), ("LMP2 graph build", "LMP2 build"),
-                   ("total DLPNO-MP2", "DLPNO-MP2")]:
-    o = ours.get(key)
+
+
+def print_row(label, p, o):
     if o is None:
-        continue
-    p = psi4_phases.get(key)
+        print(f"    {label:22} {p:>12.3f} {'-':>12} {'-':>10}")
+        return
     if p is None:
         # A cost with no psi4 analogue (the one-time graph build).
         print(f"    {label:22} {'-':>12} {o:>12.3f} {'-':>10}")
-        continue
+        return
     ratio = f"{o / p:>9.1f}x" if p > 1e-6 else "        -"
     print(f"    {label:22} {p:>12.3f} {o:>12.3f} {ratio:>10}")
+
+
+port_accounted = psi4_accounted = 0.0
+for label, key, psi4_key in ROWS:
+    o = ours.get(key)
+    if o is None:
+        continue
+    port_accounted += o
+    p = psi4_phases.get(psi4_key) if psi4_key else None
+    if p is not None:
+        psi4_accounted += p
+    print_row(label, p, o)
+
+# psi4 phases inside DLPNO-MP2 that this port folds into a phase of its own
+# (the port takes S and the dipole integrals from the reference rather than
+# timing them separately). Printed so psi4's column adds up too.
+for psi4_key in ("Overlap Ints", "Dipole Ints"):
+    p = psi4_phases.get(psi4_key)
+    if p is not None:
+        psi4_accounted += p
+        print_row(psi4_key, p, None)
+
+port_total = ours["DLPNO-MP2"]
+psi4_total = psi4_phases.get("DLPNO-MP2", psi4_times["dlpno"])
+port_residual = port_total - port_accounted
+psi4_residual = psi4_total - psi4_accounted
+print_row("other (untabulated)", psi4_residual, port_residual)
+print_row("total DLPNO-MP2", psi4_total, port_total)
+
+# The whole point of the rows above is to be a complete account of the total.
+# Warn loudly (and fail the run at the end) if they are not, rather than let
+# the table quietly under-report a phase again.
+table_incomplete = abs(port_residual) > 0.05 * port_total
+if table_incomplete:
+    print(f"\n    WARNING: the port rows above account for only "
+          f"{port_accounted:.3f} s of a {port_total:.3f} s total "
+          f"({port_residual:.3f} s untabulated, over the 5% bound).\n"
+          "    Some timed work is missing a row, or work between phases is "
+          "untimed. Fix the\n    table before using it to choose what to "
+          "optimize.")
 
 p_it = psi4_phases.get("LMP2", 0.0) / max(psi4_stats.get("iterations", 1), 1)
 # Steady state only: the graph build is paid once and has its own row above;
@@ -291,3 +350,6 @@ else:
           "two sides\n  are solving the same problem. The port's remaining handicaps "
           "are the dense\n  (Q|mn) build and the block padding; both are quantified "
           "above.")
+
+if table_incomplete:
+    sys.exit(1)
