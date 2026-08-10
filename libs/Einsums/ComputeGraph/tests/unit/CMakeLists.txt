@@ -79,6 +79,7 @@ set(ComputeGraphTests
     ParametricLoop.cpp
     RuntimeTensorView.cpp
     StridedBatchedGemm.cpp
+    GroupedBatchedGemm.cpp
     StringEinsum.cpp
     TensorLifetime.cpp
     TiledRuntimeEig.cpp

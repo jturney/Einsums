@@ -8,6 +8,7 @@
 #include <Einsums/BLAS.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Detail/BatchedGemm.hpp>
+#include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeElementwise.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
@@ -3660,6 +3661,542 @@ APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::co
     ctx.record(OpKind::BatchedGemm,
                fmt::format("gemm_batch x{} into blocks ({}x{}x{}, trans={}{})", d.batch_count, d.m, d.k, d.n, d.trans_a, d.trans_b),
                std::move(inputs), std::move(outputs), std::move(executor), d);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// grouped_batched_gemm: independent GEMMs of DIFFERING shape as ONE node
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace detail {
+
+/// What makes two members of a grouped batch belong to the same uniform group.
+struct GemmShapeKey {
+    int m, n, k, lda, ldb, ldc;
+
+    auto operator<=>(GemmShapeKey const &) const = default;
+};
+
+} // namespace detail
+
+/// @brief Emit one `blas::gemm_batch_grouped` over independent GEMMs whose
+/// shapes need NOT agree: ``C_i = alpha * op(A_i) op(B_i) + beta * C_i``.
+///
+/// The same signature as @ref batched_gemm, minus its central restriction.
+/// Members are sorted into shape groups here, at capture, and the whole set
+/// then runs under ONE OpenMP region instead of one per shape.
+///
+/// That is the entire point, and it is not a small one. Entering a region costs
+/// tens of microseconds on a wide team, which is comparable to a GEMM of the
+/// size local-correlation methods produce. Measured on a DLPNO-MP2 iteration
+/// whose batched GEMMs want 16 ms of arithmetic, issuing them as 754 uniform
+/// calls took 45 ms and issuing them as one grouped call took 16.7. The same
+/// batch also stopped caring how finely it was split: the effective rate held
+/// flat at ~230 GFLOPS across 120, 448 and 754 shape classes, where the looped
+/// form fell 146 to 80.
+///
+/// Grouping is by (m, n, k, lda, ldb, ldc); the prefactors and transpose flags
+/// are shared by the whole call, as they are for @ref batched_gemm. Groups are
+/// numbered in order of first appearance and members keep their relative order
+/// inside a group, but members of DIFFERENT shapes are reordered against each
+/// other. That is within contract for the same reason the uniform form gives no
+/// ordering between members: they must be independent.
+///
+/// Outside capture this executes immediately, so the same call works eagerly.
+///
+/// @param alpha   Prefactor on op(A_i) op(B_i), shared by the whole call.
+/// @param a_list  Left operands, all rank 2. Shapes may differ between members.
+/// @param b_list  Right operands, same length as @p a_list.
+/// @param beta    Prefactor on C_i. Non-zero means every C_i is read as well as
+///                written, which the node records as a dependency.
+/// @param c_list  Destinations, same length as @p a_list. Must be distinct
+///                tensors: the call gives no ordering between members, so two
+///                members sharing a destination race.
+/// @param trans_a Transpose each A_i.
+/// @param trans_b Transpose each B_i.
+template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicTensorConcept CType>
+    requires(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+             std::is_same_v<typename AType::ValueType, typename CType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("graph")
+// The same 8 owning/view combinations per dtype that batched_gemm carries, and
+// for the same reason: scratch destinations are owning tensors while operands
+// are slices of a larger store.
+//
+// float
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+//
+// double
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+//
+// std::complex<float>
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>)
+//
+// std::complex<double>
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void grouped_batched_gemm(double alpha, std::vector<AType const *> a_list, std::vector<BType const *> b_list, double beta,
+                              std::vector<CType *> c_list, bool trans_a = false, bool trans_b = false) {
+    using T = typename AType::ValueType;
+
+    size_t const count = a_list.size();
+    if (count == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_batched_gemm: batch is empty");
+    }
+    if (b_list.size() != count || c_list.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_batched_gemm: A, B and C lists must be the same length; got {}, {}, {}",
+                                count, b_list.size(), c_list.size());
+    }
+
+    // Per member: check it is a well-formed GEMM on its own terms, then read
+    // its shape key. Unlike the uniform form there is nothing to compare
+    // against across members, so every consistency check is internal to one.
+    std::vector<detail::GemmShapeKey> keys(count);
+    for (size_t i = 0; i < count; ++i) {
+        if (a_list[i] == nullptr || b_list[i] == nullptr || c_list[i] == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_batched_gemm: member {} has a null operand", i);
+        }
+        // tensor_rank, not rank(): statically-ranked tensors carry Rank as a
+        // constant and have no rank() member.
+        if (detail::tensor_rank(*a_list[i]) != 2 || detail::tensor_rank(*b_list[i]) != 2 || detail::tensor_rank(*c_list[i]) != 2) {
+            EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_batched_gemm: member {} is not rank 2 (got {}, {}, {})", i,
+                                    detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]), detail::tensor_rank(*c_list[i]));
+        }
+
+        auto const m = static_cast<int>(c_list[i]->dim(0));
+        auto const n = static_cast<int>(c_list[i]->dim(1));
+        auto const k = static_cast<int>(trans_a ? a_list[i]->dim(0) : a_list[i]->dim(1));
+
+        auto const require = [&](bool ok, char const *what) {
+            if (!ok) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_batched_gemm: member {} disagrees with itself on {}", i, what);
+            }
+        };
+        require(static_cast<int>(trans_a ? a_list[i]->dim(1) : a_list[i]->dim(0)) == m, "m between A and C");
+        require(static_cast<int>(trans_b ? b_list[i]->dim(1) : b_list[i]->dim(0)) == k, "the link dimension between A and B");
+        require(static_cast<int>(trans_b ? b_list[i]->dim(0) : b_list[i]->dim(1)) == n, "n between B and C");
+
+        keys[i] = {.m   = m,
+                   .n   = n,
+                   .k   = k,
+                   .lda = static_cast<int>(a_list[i]->impl().get_lda()),
+                   .ldb = static_cast<int>(b_list[i]->impl().get_lda()),
+                   .ldc = static_cast<int>(c_list[i]->impl().get_lda())};
+    }
+
+    // Group by shape, first appearance first. Members of one shape keep their
+    // relative order, which is what makes a single-shape call identical to
+    // batched_gemm rather than merely equivalent to it.
+    std::map<detail::GemmShapeKey, size_t> index_of;
+    std::vector<detail::GemmShapeKey>      order;
+    std::vector<std::vector<size_t>>       members;
+    for (size_t i = 0; i < count; ++i) {
+        auto const [it, inserted] = index_of.try_emplace(keys[i], order.size());
+        if (inserted) {
+            order.push_back(keys[i]);
+            members.emplace_back();
+        }
+        members[it->second].push_back(i);
+    }
+
+    GroupedBatchedGemmDescriptor d;
+    d.total = static_cast<int>(count);
+    if constexpr (std::is_same_v<T, float>) {
+        d.scalar = BlasScalar::Float;
+    } else if constexpr (std::is_same_v<T, double>) {
+        d.scalar = BlasScalar::Double;
+    } else if constexpr (std::is_same_v<T, std::complex<float>>) {
+        d.scalar = BlasScalar::ComplexFloat;
+    } else {
+        d.scalar = BlasScalar::ComplexDouble;
+    }
+    d.groups.reserve(order.size());
+    d.labels.reserve(order.size());
+
+    int first = 0;
+    for (size_t g = 0; g < order.size(); ++g) {
+        auto const &key = order[g];
+        d.groups.push_back(GemmGroup{.m       = key.m,
+                                     .n       = key.n,
+                                     .k       = key.k,
+                                     .lda     = key.lda,
+                                     .ldb     = key.ldb,
+                                     .ldc     = key.ldc,
+                                     .trans_a = static_cast<char>(trans_a ? 'T' : 'N'),
+                                     .trans_b = static_cast<char>(trans_b ? 'T' : 'N'),
+                                     .alpha   = std::complex<double>{alpha, 0.0},
+                                     .beta    = std::complex<double>{beta, 0.0},
+                                     .count   = static_cast<int>(members[g].size()),
+                                     .first   = first});
+        d.labels.push_back(
+            fmt::format("gemm {}x{}x{} trans={}{} x{}", key.m, key.k, key.n, trans_a ? 'T' : 'N', trans_b ? 'T' : 'N', members[g].size()));
+        first += static_cast<int>(members[g].size());
+    }
+
+    // The flattened member order the descriptor's offsets index.
+    std::vector<size_t> flat;
+    flat.reserve(count);
+    for (auto const &m : members) {
+        flat.insert(flat.end(), m.begin(), m.end());
+    }
+
+    // Two members sharing a destination race, because the call gives no
+    // ordering between them. @ref batched_gemm carries the same contract and
+    // leaves it to the caller, but this entry point exists to MERGE calls that
+    // used to be separate, and merging two that accumulate into one C is
+    // exactly the mistake it makes newly reachable. Cheap to catch here, and
+    // silently wrong if it is not.
+    {
+        std::vector<CType const *> seen(c_list.begin(), c_list.end());
+        std::sort(seen.begin(), seen.end());
+        auto const dup = std::adjacent_find(seen.begin(), seen.end());
+        if (dup != seen.end()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::grouped_batched_gemm: two members share a destination tensor. The batch gives no ordering "
+                                    "between members, so they would race; split them into separate calls");
+        }
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("grouped_batched_gemm eager");
+        std::vector<void const *> a_vs(count), b_vs(count);
+        std::vector<void *>       c_vs(count);
+        for (size_t i = 0; i < count; ++i) {
+            a_vs[i] = static_cast<void const *>(a_list[flat[i]]->data());
+            b_vs[i] = static_cast<void const *>(b_list[flat[i]]->data());
+            c_vs[i] = static_cast<void *>(c_list[flat[i]]->data());
+        }
+        detail::run_grouped_batched_gemm<T>(d, a_vs, b_vs, c_vs);
+        return;
+    }
+
+    LabeledSection("grouped_batched_gemm capture");
+    detail::BatchedGemmExtractors       a_exs, b_exs;
+    detail::BatchedGemmOutputExtractors c_exs;
+    a_exs.reserve(count);
+    b_exs.reserve(count);
+    c_exs.reserve(count);
+    // Node I/O keeps the batched form's convention, inputs interleaved
+    // A_0, B_0, A_1, B_1, ... and outputs C_0, C_1, ..., in the FLATTENED
+    // order, so a group's offset indexes the extractors and the node lists
+    // alike.
+    std::vector<TensorId> inputs;
+    std::vector<TensorId> outputs;
+    inputs.reserve(2 * count);
+    outputs.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        size_t const s      = flat[i];
+        auto [a_id, a_slot] = ctx.get_slot(*a_list[s]);
+        auto [b_id, b_slot] = ctx.get_slot(*b_list[s]);
+        auto [c_id, c_slot] = ctx.get_slot(*c_list[s]);
+        inputs.push_back(a_id);
+        inputs.push_back(b_id);
+        outputs.push_back(c_id);
+        // Read through the slot, not the captured pointer: rebind() and the
+        // MemoryPlanning arena can both move a tensor's storage.
+        a_exs.emplace_back([a_slot]() -> std::pair<void const *, int> {
+            auto const *t = static_cast<AType const *>(a_slot->ptr);
+            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
+        });
+        b_exs.emplace_back([b_slot]() -> std::pair<void const *, int> {
+            auto const *t = static_cast<BType const *>(b_slot->ptr);
+            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
+        });
+        c_exs.emplace_back([c_slot]() -> std::pair<void *, int> {
+            auto *t = static_cast<CType *>(c_slot->ptr);
+            return {static_cast<void *>(t->data()), static_cast<int>(t->impl().get_lda())};
+        });
+    }
+    // beta != 0 means every destination is read before it is written, so the
+    // RAW edge from whoever produced each C must survive (bug-1009).
+    if (beta != 0.0) {
+        inputs.insert(inputs.end(), outputs.begin(), outputs.end());
+    }
+
+    auto executor = detail::make_grouped_batched_gemm_executor(d, std::move(a_exs), std::move(b_exs), std::move(c_exs));
+    ctx.record(
+        OpKind::GroupedBatchedGemm,
+        fmt::format("gemm_batch_grouped x{} in {} shapes (trans={}{})", d.total, d.groups.size(), trans_a ? 'T' : 'N', trans_b ? 'T' : 'N'),
+        std::move(inputs), std::move(outputs), std::move(executor), std::move(d));
+}
+
+/// @ref grouped_batched_gemm where the destinations are blocks of existing
+/// tensors, described by a base and an offset rather than enumerated as views.
+///
+/// The blocked form of @ref batched_gemm exists because materializing one view
+/// per destination is tens of thousands of pybind round trips in a local
+/// correlation method. The grouped form exists because one OpenMP region per
+/// shape class costs more than the arithmetic. A caller whose destinations are
+/// blocks AND whose shapes differ between classes needs both, and the DLPNO
+/// overlap build is exactly that caller: one destination tensor per shape
+/// class, every coupling a column range of its class's tensor.
+///
+/// So @p c_bases is parallel to the members, not to the groups. Repeating a
+/// base pointer across a class's members is a pointer copy; it is constructing
+/// the views that is expensive, and none are constructed. Each block's shape is
+/// derived from its own A and B rather than passed, and its leading dimension
+/// from its base, which is what makes a column range expressible this way.
+///
+/// The node declares each DISTINCT base as an output, so a later read of a
+/// whole base is ordered against this write. The list form declares the views,
+/// and the graph does not know a view write touches its parent.
+///
+/// @param c_bases  Per member, the tensor its block lives in.
+/// @param c_offsets Per member, the block's first element as an offset into its
+///                  base, in elements.
+template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
+    requires(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+             std::is_same_v<typename AType::ValueType, typename CType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("graph")
+    // clang-format on
+    void grouped_batched_gemm_blocked(double alpha, std::vector<AType const *> a_list, std::vector<BType const *> b_list, double beta,
+                                      std::vector<CType *> const &c_bases, std::vector<size_t> const &c_offsets, bool trans_a = false,
+                                      bool trans_b = false) {
+    using T = typename AType::ValueType;
+
+    size_t const count = a_list.size();
+    if (count == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_batched_gemm_blocked: batch is empty");
+    }
+    if (b_list.size() != count || c_bases.size() != count || c_offsets.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "cg::grouped_batched_gemm_blocked: A, B, the base list and the offset list must be the same length; got "
+                                "{}, {}, {}, {}",
+                                count, b_list.size(), c_bases.size(), c_offsets.size());
+    }
+
+    std::vector<detail::GemmShapeKey> keys(count);
+    for (size_t i = 0; i < count; ++i) {
+        if (a_list[i] == nullptr || b_list[i] == nullptr || c_bases[i] == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_batched_gemm_blocked: member {} has a null operand", i);
+        }
+        if (detail::tensor_rank(*a_list[i]) != 2 || detail::tensor_rank(*b_list[i]) != 2 || detail::tensor_rank(*c_bases[i]) != 2) {
+            EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_batched_gemm_blocked: member {} is not rank 2 (got {}, {}, {})", i,
+                                    detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]), detail::tensor_rank(*c_bases[i]));
+        }
+
+        auto const m = static_cast<size_t>(trans_a ? a_list[i]->dim(1) : a_list[i]->dim(0));
+        auto const n = static_cast<size_t>(trans_b ? b_list[i]->dim(0) : b_list[i]->dim(1));
+        auto const k = static_cast<size_t>(trans_a ? a_list[i]->dim(0) : a_list[i]->dim(1));
+        if (static_cast<size_t>(trans_b ? b_list[i]->dim(1) : b_list[i]->dim(0)) != k) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::grouped_batched_gemm_blocked: member {} disagrees with itself on the link dimension between A "
+                                    "and B",
+                                    i);
+        }
+
+        size_t const ldc  = c_bases[i]->impl().get_lda();
+        size_t const span = c_bases[i]->size();
+        // The executor only ever sees a raw pointer, where an offset past the
+        // end is silent corruption rather than a diagnosable error.
+        if (m > ldc) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::grouped_batched_gemm_blocked: block {} has {} rows but its base's leading dimension is {}; a "
+                                    "block taller than the parent's column stride would overlap the next column",
+                                    i, m, ldc);
+        }
+        size_t const last = c_offsets[i] + (n - 1) * ldc + m;
+        if (last > span) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range,
+                                    "cg::grouped_batched_gemm_blocked: block {} at offset {} spans {} elements of a {}-element base", i,
+                                    c_offsets[i], last - c_offsets[i], span);
+        }
+
+        keys[i] = {.m   = static_cast<int>(m),
+                   .n   = static_cast<int>(n),
+                   .k   = static_cast<int>(k),
+                   .lda = static_cast<int>(a_list[i]->impl().get_lda()),
+                   .ldb = static_cast<int>(b_list[i]->impl().get_lda()),
+                   .ldc = static_cast<int>(ldc)};
+    }
+
+    // Two blocks of one base that overlap race, the same hazard the list form
+    // rejects by comparing destination tensors. Checked exactly for the
+    // column-aligned case - an offset that is a whole number of columns, which
+    // is what a column range of a column-major tensor is - and skipped
+    // otherwise rather than approximated, because an interval test over a
+    // strided block over-reports and would reject legitimate interleaving.
+    {
+        std::map<CType const *, std::vector<std::pair<size_t, size_t>>> columns;
+        bool                                                            aligned = true;
+        for (size_t i = 0; i < count && aligned; ++i) {
+            size_t const ldc = static_cast<size_t>(keys[i].ldc);
+            if (ldc == 0 || c_offsets[i] % ldc != 0) {
+                aligned = false;
+                break;
+            }
+            size_t const first = c_offsets[i] / ldc;
+            columns[c_bases[i]].emplace_back(first, first + static_cast<size_t>(keys[i].n));
+        }
+        if (aligned) {
+            for (auto &[base, spans] : columns) {
+                std::sort(spans.begin(), spans.end());
+                for (size_t i = 1; i < spans.size(); ++i) {
+                    if (spans[i].first < spans[i - 1].second) {
+                        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                                "cg::grouped_batched_gemm_blocked: two blocks of one base overlap (columns [{}, {}) and "
+                                                "[{}, {})). The batch gives no ordering between members, so they would race",
+                                                spans[i - 1].first, spans[i - 1].second, spans[i].first, spans[i].second);
+                    }
+                }
+            }
+        }
+    }
+
+    std::map<detail::GemmShapeKey, size_t> index_of;
+    std::vector<detail::GemmShapeKey>      order;
+    std::vector<std::vector<size_t>>       members;
+    for (size_t i = 0; i < count; ++i) {
+        auto const [it, inserted] = index_of.try_emplace(keys[i], order.size());
+        if (inserted) {
+            order.push_back(keys[i]);
+            members.emplace_back();
+        }
+        members[it->second].push_back(i);
+    }
+
+    GroupedBatchedGemmDescriptor d;
+    d.total = static_cast<int>(count);
+    if constexpr (std::is_same_v<T, float>) {
+        d.scalar = BlasScalar::Float;
+    } else if constexpr (std::is_same_v<T, double>) {
+        d.scalar = BlasScalar::Double;
+    } else if constexpr (std::is_same_v<T, std::complex<float>>) {
+        d.scalar = BlasScalar::ComplexFloat;
+    } else {
+        d.scalar = BlasScalar::ComplexDouble;
+    }
+    d.groups.reserve(order.size());
+    d.labels.reserve(order.size());
+
+    int first = 0;
+    for (size_t g = 0; g < order.size(); ++g) {
+        auto const &key = order[g];
+        d.groups.push_back(GemmGroup{.m       = key.m,
+                                     .n       = key.n,
+                                     .k       = key.k,
+                                     .lda     = key.lda,
+                                     .ldb     = key.ldb,
+                                     .ldc     = key.ldc,
+                                     .trans_a = static_cast<char>(trans_a ? 'T' : 'N'),
+                                     .trans_b = static_cast<char>(trans_b ? 'T' : 'N'),
+                                     .alpha   = std::complex<double>{alpha, 0.0},
+                                     .beta    = std::complex<double>{beta, 0.0},
+                                     .count   = static_cast<int>(members[g].size()),
+                                     .first   = first});
+        d.labels.push_back(fmt::format("gemm {}x{}x{} trans={}{} x{} into blocks", key.m, key.k, key.n, trans_a ? 'T' : 'N',
+                                       trans_b ? 'T' : 'N', members[g].size()));
+        first += static_cast<int>(members[g].size());
+    }
+
+    std::vector<size_t> flat;
+    flat.reserve(count);
+    for (auto const &m : members) {
+        flat.insert(flat.end(), m.begin(), m.end());
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("grouped_batched_gemm_blocked eager");
+        std::vector<void const *> a_vs(count), b_vs(count);
+        std::vector<void *>       c_vs(count);
+        for (size_t i = 0; i < count; ++i) {
+            size_t const s = flat[i];
+            a_vs[i]        = static_cast<void const *>(a_list[s]->data());
+            b_vs[i]        = static_cast<void const *>(b_list[s]->data());
+            c_vs[i]        = static_cast<void *>(c_bases[s]->data() + c_offsets[s]);
+        }
+        detail::run_grouped_batched_gemm<T>(d, a_vs, b_vs, c_vs);
+        return;
+    }
+
+    LabeledSection("grouped_batched_gemm_blocked capture");
+    detail::BatchedGemmExtractors       a_exs, b_exs;
+    detail::BatchedGemmOutputExtractors c_exs;
+    a_exs.reserve(count);
+    b_exs.reserve(count);
+    c_exs.reserve(count);
+    std::vector<TensorId> inputs;
+    inputs.reserve(2 * count);
+
+    // One slot per DISTINCT base, against one per member in the list form.
+    std::map<CType *, std::pair<TensorId, TensorSlot *>> base_slots;
+    std::vector<TensorId>                                outputs;
+    for (size_t i = 0; i < count; ++i) {
+        size_t const s = flat[i];
+        if (!base_slots.contains(c_bases[s])) {
+            auto const entry = ctx.get_slot(*c_bases[s]);
+            base_slots.emplace(c_bases[s], entry);
+            outputs.push_back(entry.first);
+        }
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        size_t const s      = flat[i];
+        auto [a_id, a_slot] = ctx.get_slot(*a_list[s]);
+        auto [b_id, b_slot] = ctx.get_slot(*b_list[s]);
+        inputs.push_back(a_id);
+        inputs.push_back(b_id);
+        a_exs.emplace_back([a_slot]() -> std::pair<void const *, int> {
+            auto const *t = static_cast<AType const *>(a_slot->ptr);
+            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
+        });
+        b_exs.emplace_back([b_slot]() -> std::pair<void const *, int> {
+            auto const *t = static_cast<BType const *>(b_slot->ptr);
+            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
+        });
+        // Read the base through its slot and offset at execute time: rebind()
+        // and the MemoryPlanning arena can both move the storage after capture.
+        auto const  *c_slot = base_slots.at(c_bases[s]).second;
+        size_t const off    = c_offsets[s];
+        c_exs.emplace_back([c_slot, off]() -> std::pair<void *, int> {
+            auto *t = static_cast<CType *>(c_slot->ptr);
+            return {static_cast<void *>(t->data() + off), static_cast<int>(t->impl().get_lda())};
+        });
+    }
+
+    // beta != 0 means every destination is read before it is written, so the
+    // RAW edge from whoever produced each base must survive (bug-1009).
+    if (beta != 0.0) {
+        inputs.insert(inputs.end(), outputs.begin(), outputs.end());
+    }
+
+    auto executor = detail::make_grouped_batched_gemm_executor(d, std::move(a_exs), std::move(b_exs), std::move(c_exs));
+    ctx.record(OpKind::GroupedBatchedGemm,
+               fmt::format("gemm_batch_grouped x{} in {} shapes into blocks of {} (trans={}{})", d.total, d.groups.size(), outputs.size(),
+                           trans_a ? 'T' : 'N', trans_b ? 'T' : 'N'),
+               std::move(inputs), std::move(outputs), std::move(executor), std::move(d));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

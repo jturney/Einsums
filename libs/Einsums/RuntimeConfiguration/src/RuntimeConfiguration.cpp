@@ -266,6 +266,14 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
         static cl::Flag const passVerbose("einsums:pass:verbose", {}, "Log node count and timing before/after each optimization pass",
                                           passCategory, cl::Location(global_bools["pass-verbose"]), cl::Default(false),
                                           cl::ImplicitValue(true));
+        // Deliberately CHANGES how a grouped batched GEMM runs, because a
+        // per-group breakdown of one parallel loop is not obtainable any other
+        // way. See Detail/GroupedBatchedGemm.hpp.
+        static cl::Flag const graphProfileGroups(
+            "einsums:graph:profile-groups", {},
+            "Break a grouped batched GEMM into one profiler zone per shape class. This runs the SLOWER unfused form, so read it for "
+            "where the arithmetic is, not for what the node costs",
+            passCategory, cl::Location(global_bools["graph-profile-groups"]), cl::Default(false), cl::ImplicitValue(true));
 
         // GPUPlacement has always read this key, but nothing registered it, so
         // passing the documented flag was an unknown-argument error.

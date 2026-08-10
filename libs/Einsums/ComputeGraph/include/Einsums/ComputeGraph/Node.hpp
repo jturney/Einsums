@@ -353,8 +353,8 @@ inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, 
  */
 using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
                             AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor,
-                            BatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, TiledEinsumDescriptor,
-                            TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor>;
+                            BatchedGemmDescriptor, GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor,
+                            TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.

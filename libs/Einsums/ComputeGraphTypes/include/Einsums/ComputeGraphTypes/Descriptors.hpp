@@ -116,6 +116,60 @@ struct BatchedGemmDescriptor {
 };
 
 /**
+ * @brief One shape class inside a @ref GroupedBatchedGemmDescriptor.
+ *
+ * Everything @ref BatchedGemmDescriptor holds once for a whole call is held
+ * here per group, because that is exactly the difference between the two
+ * nodes: a grouped call is several uniform batches issued under one OpenMP
+ * region.
+ */
+struct GemmGroup {
+    int                  m{0};            ///< Rows of each C in this group (and of op(A)).
+    int                  n{0};            ///< Cols of each C in this group (and of op(B)).
+    int                  k{0};            ///< Link dimension.
+    int                  lda{0};          ///< Leading dim of each A in this group.
+    int                  ldb{0};          ///< Leading dim of each B.
+    int                  ldc{0};          ///< Leading dim of each C.
+    char                 trans_a{'N'};    ///< BLAS transpose flag for A ('N', 'T' or 'C').
+    char                 trans_b{'N'};    ///< BLAS transpose flag for B.
+    std::complex<double> alpha{1.0, 0.0}; ///< A*B prefactor (full complex; imag used for complex tensors).
+    std::complex<double> beta{0.0, 0.0};  ///< C prefactor.
+    int                  count{0};        ///< How many GEMMs this group holds.
+
+    /// Where this group's members start in the node's flattened operand lists.
+    int first{0};
+};
+
+/**
+ * @brief Metadata for GroupedBatchedGemm nodes.
+ *
+ * A GroupedBatchedGemm is a @ref BatchedGemmDescriptor that stopped insisting
+ * every member agree on shape. It exists because entering an OpenMP region
+ * costs tens of microseconds on a wide team, and a dependency level holding
+ * many differently shaped batches used to pay that once per shape: measured on
+ * a DLPNO-MP2 iteration, 754 batched calls whose arithmetic wanted 16 ms spent
+ * 45. Collapsing them into one call made the time track the arithmetic again.
+ *
+ * The parent @ref Node stores the full 2N inputs (A_0, B_0, A_1, B_1, ...) and
+ * the outputs in group order, so @ref GemmGroup::first indexes both.
+ *
+ * On observability. One node in place of many is one timing row in place of
+ * many, and the per-shape rows are what made the investigations that produced
+ * this node possible in the first place. So @ref labels names every group, and
+ * the executor can be asked to time them individually; see
+ * `einsums:graph:profile-groups`.
+ */
+struct GroupedBatchedGemmDescriptor {
+    std::vector<GemmGroup> groups;   ///< One entry per shape class, in operand order.
+    int                    total{0}; ///< Sum of every group's count.
+    BlasScalar             scalar{BlasScalar::Double};
+
+    /// Human-readable name per group, parallel to @ref groups. Shape-derived
+    /// when the capture API grouped the batch itself.
+    std::vector<std::string> labels;
+};
+
+/**
  * @brief Metadata for memory allocation/deallocation nodes.
  *
  * Marks the lifetime boundaries of a tensor in the graph. Used by

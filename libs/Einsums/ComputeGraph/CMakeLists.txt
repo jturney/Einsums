@@ -14,6 +14,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Error.hpp
     Einsums/ComputeGraph/ABILayout.hpp
     Einsums/ComputeGraph/Graph.hpp
+    Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/CostModel.hpp
     Einsums/ComputeGraph/Node.hpp
     Einsums/ComputeGraph/Operations.hpp
@@ -69,6 +70,7 @@ set(ComputeGraphSources
     Executor.cpp
     ABILayout.cpp
     Graph.cpp
+    GroupedBatchedGemm.cpp
     UsageAnalysis.cpp
     CostModel.cpp
     Node.cpp
