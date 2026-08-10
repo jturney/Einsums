@@ -292,24 +292,57 @@ class DLPNOBase:
         # Per-LMO transition dipoles into its own orthocanonical PAO domain.
         # A looser DOI cutoff than the real domains: this is a prescreen, and
         # it must not be more aggressive than what it is screening for.
-        lmo_dr, lmo_e = [], []
+        # Every domain below is known before any of the work runs: compute_doi
+        # produced doi_iu already, and nothing here feeds back into it. So the
+        # whole per-LMO sequence batches, which is worth doing for the reason
+        # :meth:`_warm_pao_domains` gives - one domain-sized eigendecomposition
+        # at a time gets SLOWER as threads are added, because each syev is small
+        # enough to lose to the BLAS's own internal threading.
+        live, dom_paos, S_doms, F_doms = [], [], [], []
         for i in range(naocc):
             paos = [u for u in range(self.doi_iu.shape[1])
                     if abs(self.doi_iu[i, u]) > self.cut.t_cut_do_pre]
             paos = sparse.contract_lists(paos, ref.atom_to_bf)
             if not paos:
-                lmo_dr.append(np.zeros((0, 3)))
-                lmo_e.append(np.zeros(0))
                 continue
-            S_dom = sparse.submatrix_rows_and_cols(self.S_pao, paos, paos)
-            F_dom = sparse.submatrix_rows_and_cols(self.F_pao, paos, paos)
-            X_i, e_i = ten.orthocanonicalizer(S_dom, F_dom, self.cut.s_cut)
-            dr = np.stack(
-                [ten.view(ten.doublet(
-                    ten.from_numpy("d", np.ascontiguousarray(dip_iu[x][[i], :][:, paos])), X_i))[0]
-                 for x in range(3)], axis=1)          # npao_i x 3
-            lmo_dr.append(dr)
-            lmo_e.append(np.asarray(ten.view(e_i)).copy())
+            live.append(i)
+            dom_paos.append(paos)
+            S_doms.append(sparse.submatrix_rows_and_cols(self.S_pao, paos, paos))
+            F_doms.append(sparse.submatrix_rows_and_cols(self.F_pao, paos, paos))
+
+        canon = batched_orthocanonicalizer(S_doms, F_doms, self.cut.s_cut, self._run)
+
+        # The transition dipoles, rotated into each domain's orthocanonical
+        # basis. One GEMM per (LMO, Cartesian component), which is the same
+        # 1 x npao_dom by npao_dom x nkeep call the sequential loop made - the
+        # three components deliberately stay separate rather than stacking into
+        # one operand, because a different GEMM shape is a different kernel and
+        # a different summation order. Keeping the calls identical makes this
+        # change a pure reordering, which the prescreen is strict enough to
+        # want: it decides which pairs exist, so bit equality is checkable and
+        # a near-miss is not.
+        jobs = []
+        for slot, i in enumerate(live):
+            X_i = canon[slot][0]
+            nkeep = ten.shape(X_i)[1]
+            for x in range(3):
+                d = ten.from_numpy("d", np.ascontiguousarray(
+                    dip_iu[x][[i], :][:, dom_paos[slot]]))
+                jobs.append((d, X_i, ten.zeros("dipole (orthocanonical)", [1, nkeep])))
+
+        if jobs:
+            g = cg.Graph("dipole prescreen projections")
+            with cg.capture(g):
+                for d, X_i, out in jobs:
+                    la.gemm(1.0, d, X_i, 0.0, out)
+            self._run(g)
+
+        lmo_dr = [np.zeros((0, 3)) for _ in range(naocc)]
+        lmo_e = [np.zeros(0) for _ in range(naocc)]
+        for slot, i in enumerate(live):
+            lmo_dr[i] = np.stack(
+                [ten.view(jobs[3 * slot + x][2])[0] for x in range(3)], axis=1)
+            lmo_e[i] = np.asarray(ten.view(canon[slot][1])).copy()
 
         e_pair = np.zeros((naocc, naocc))
         e_bound = np.zeros((naocc, naocc))
@@ -664,14 +697,20 @@ class DLPNOBase:
             ribfs = self.lmopair_to_ribfs[ij]
             paos = self.lmopair_to_paos[ij]
             nq, nu, nk = len(ribfs), len(paos), len(lmos)
+            # Uninitialized, not zeroed. Every one of these four is written in
+            # full by the node that consumes it - the two gathers cover their
+            # whole destination, and the reshapes copy element for element - so
+            # zeroing them first is a second pass over memory that nothing
+            # reads. It is not a rounding error at this scale: 756 allocations
+            # on a six-monomer chain, 22 ms of the phase's 68.
             jobs.append((
                 key, lmos,
                 [list(ribfs), [int(i) for i in lmos], list(paos)],
                 [list(ribfs), list(ribfs)],
-                ten.zeros("(P|Q) domain", [nq, nq]),
-                ten.zeros("(Q|i u) domain", [nq, nk, nu]),
-                ten.zeros("(Q|i u) domain flat", [nq, nk * nu]),
-                ten.zeros("J^-1 (Q|i u)", [nq, nk, nu]),
+                ten.empty("(P|Q) domain", [nq, nq]),
+                ten.empty("(Q|i u) domain", [nq, nk, nu]),
+                ten.empty("(Q|i u) domain flat", [nq, nk * nu]),
+                ten.empty("J^-1 (Q|i u)", [nq, nk, nu]),
             ))
 
         g = cg.Graph("domain fits")
@@ -764,47 +803,10 @@ class DLPNOBase:
             S_doms.append(sparse.submatrix_rows_and_cols(self.S_pao, paos, paos))
             F_doms.append(sparse.submatrix_rows_and_cols(self.F_pao, paos, paos))
 
-        # Round one: the domain overlaps. Descending, because orthocanonicalizer
-        # keeps the leading eigenvalues above s_cut.
-        s_vals, s_vecs = self._batched_eigh(S_doms, descending=True, label="overlap")
+        canon = batched_orthocanonicalizer(S_doms, F_doms, self.cut.s_cut, self._run)
 
-        # The orthogonalizers, which are host-side slicing and scaling rather
-        # than linear algebra, then the Fock matrices they induce.
-        orthos, fmos = [], []
-        for sv, U, F_dom in zip(s_vals, s_vecs, F_doms):
-            keep = int(np.count_nonzero(ten.view(sv) > self.cut.s_cut))
-            if keep == 0:
-                # A domain with nothing above s_cut contributes no orbitals. It
-                # has no Fock matrix to decompose either, so it sits out round
-                # two rather than entering it as an empty matrix.
-                orthos.append(None)
-                fmos.append(None)
-                continue
-            X = ten.scale_columns(
-                ten.from_numpy("orthogonalizer", ten.view(U)[:, :keep]),
-                ten.view(sv)[:keep] ** -0.5,
-                name="orthogonalizer",
-            )
-            orthos.append(X)
-            fmos.append(ten.triplet(X, F_dom, X, trans_a=True, name="C^T F C"))
-
-        # Round two: the Fock matrices in each orthogonal basis.
-        live = [i for i, f in enumerate(fmos) if f is not None]
-        e_vals, e_vecs = self._batched_eigh([fmos[i] for i in live],
-                                            descending=True, label="orthocanonical")
-
-        results = {}
-        for slot, i in enumerate(live):
-            X_pao = ten.doublet(orthos[i], e_vecs[slot], name="orthocanonical")
-            results[i] = (X_pao, e_vals[slot])
-        for i, key in enumerate(keys):
-            if i in results:
-                X_pao, e_pao = results[i]
-            else:
-                nrow = ten.shape(S_doms[i])[0]
-                X_pao = ten.zeros("orthocanonical", [nrow, 0])
-                e_pao = ten.zeros("orthocanonical energies", [0])
-            F_can = ten.triplet(X_pao, F_doms[i], X_pao, trans_a=True, name="F (can PAO)")
+        for key, (X_pao, e_pao), F_dom in zip(keys, canon, F_doms):
+            F_can = ten.triplet(X_pao, F_dom, X_pao, trans_a=True, name="F (can PAO)")
             self._pao_domain_cache[key] = (X_pao, e_pao, F_can)
 
     def _canonical_pao_domain(self, ij):
@@ -1266,3 +1268,63 @@ def batched_eigh(mats, run, descending=True, label="eigh"):
             v[...] = v[:, ::-1].copy()
             e[...] = e[::-1].copy()
     return evals, evecs
+
+
+def batched_orthocanonicalizer(S_doms, F_doms, s_cut, run):
+    """:func:`~dlpno.tensors.orthocanonicalizer` over many domains, in two graphs.
+
+    Numerically this is the sequential routine, reordered. The same matrices go
+    through the same ``syev`` in the same order within each domain, so the
+    result is what calling ``orthocanonicalizer`` once per domain would give;
+    only the issue order across domains changes.
+
+    Reordering is the entire point. Each domain costs two eigendecompositions,
+    and issued one at a time they are small enough that the BLAS's own internal
+    threading loses more than it gains - the sequential loop gets SLOWER as
+    threads are added. Batching them puts the parallelism across domains, where
+    it belongs, with each decomposition serial underneath.
+
+    Two rounds rather than one because the second decomposition needs the
+    orthogonalizer the first produces. ``run`` is the graph runner, normally
+    :meth:`DLPNOBase._run`.
+
+    Returns ``[(X, e), ...]``, one per input domain. A domain with nothing above
+    ``s_cut`` yields a zero-column ``X`` and an empty ``e``, matching
+    ``orthocanonicalizer``'s own early return, and sits out the second round
+    rather than entering it as an empty matrix.
+    """
+    s_vals, s_vecs = batched_eigh(S_doms, run, descending=True, label="overlap")
+
+    # The orthogonalizers, which are host-side slicing and scaling rather than
+    # linear algebra, then the Fock matrices they induce.
+    orthos, fmos = [], []
+    for sv, U, F_dom in zip(s_vals, s_vecs, F_doms):
+        keep = int(np.count_nonzero(ten.view(sv) > s_cut))
+        if keep == 0:
+            orthos.append(None)
+            fmos.append(None)
+            continue
+        X = ten.scale_columns(
+            ten.from_numpy("orthogonalizer", ten.view(U)[:, :keep]),
+            ten.view(sv)[:keep] ** -0.5,
+            name="orthogonalizer",
+        )
+        orthos.append(X)
+        fmos.append(ten.triplet(X, F_dom, X, trans_a=True, name="C^T F C"))
+
+    # Round two: the Fock matrices in each orthogonal basis.
+    live = [i for i, f in enumerate(fmos) if f is not None]
+    e_vals, e_vecs = batched_eigh([fmos[i] for i in live], run,
+                                  descending=True, label="orthocanonical")
+
+    slot_of = {i: slot for slot, i in enumerate(live)}
+    out = []
+    for i, S_dom in enumerate(S_doms):
+        slot = slot_of.get(i)
+        if slot is None:
+            out.append((ten.zeros("orthocanonical", [ten.shape(S_dom)[0], 0]),
+                        ten.zeros("orthocanonical energies", [0])))
+        else:
+            out.append((ten.doublet(orthos[i], e_vecs[slot], name="orthocanonical"),
+                        e_vals[slot]))
+    return out
