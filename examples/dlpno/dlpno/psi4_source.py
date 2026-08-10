@@ -16,6 +16,7 @@ for each LMO pair rather than fitting once globally).
 import numpy as np
 import psi4
 
+from . import integrals
 from . import tensors as ten
 from .reference import Reference
 
@@ -187,105 +188,98 @@ def from_psi4(wfn, aux=None, localization="BOYS", freeze_core=False):
 class DFHelperSource:
     """A :class:`~dlpno.integrals.ThreeIndexSource` driving psi4's ``DFHelper``.
 
-    Opt-in, never the default, and the measurements are why. This exists because
-    ``DFHelper`` is the psi4 interface that has the two things ``ao_eri`` lacks -
-    it threads and it screens - and because writing it down is the only way to
-    say precisely what psi4 would have to add for the approach to be worth
-    taking. On ethanol/cc-pVTZ, build plus half-transform:
+    Exact, and faster than the dense path at every thread count. It builds the
+    raw ``(Q|mn)`` through ``DFHelper::get_AO_tensor`` - threaded and Schwarz
+    screened, where ``MintsHelper::ao_eri`` is neither - and then runs the same
+    two contractions :class:`~dlpno.integrals.DenseSource` does, by handing the
+    integrals to it. The transform is shared rather than reimplemented, so the
+    two sources agree by construction rather than by testing.
 
-        threads     1        10
-        DFHelper    0.302 s  0.148 s
-        ao_eri      0.266 s  0.269 s
+    Measured on ethanol/cc-pVTZ, building the AO integrals:
 
-    So it is 1.8x at ten threads and a small regression at one. That is the good
-    news, and it is the smaller half of the story.
+        threads          1        10
+        ao_eri           0.246 s  0.236 s
+        get_AO_tensor    0.188 s  0.067 s
+                         1.31x    3.51x
 
-    ``DFHelper`` returns ``J^-1/2``-fitted B tensors. DLPNO fits per pair domain,
-    not globally, so what this port needs is the RAW ``(Q|i u)`` and there is no
-    unfitted mode on the Python surface - ``hold_met`` governs core storage, not
-    whether the metric is applied. The only route back is multiplying by
-    ``J^1/2``, which costs 15 ms and, more to the point, round-trips every number
-    through a metric whose condition number is 6.4e6 at this basis. Measured, the
-    round trip lands at 2.2e-13 relative, against a validation that requires
-    reproducing canonical DF-MP2 to 1e-13, and the conditioning worsens with
-    basis size. That is why :attr:`screening_threshold` never reports zero here
-    however tight the Schwarz cutoff is set: this source is not exact, and the
-    untruncated fixtures are right to refuse it.
+    ``ao_eri`` does not thread at all, which is what the middle row is really
+    saying, and it is why this phase used to be flat from one core to ten.
 
-    The demand is also ignored, and not by choice. ``get_tensor``'s three index
-    sequences are ``[start, stop)`` slabs; an arbitrary index list is rejected
-    outright, so a pair's scattered auxiliary and PAO domains cannot be
-    expressed and the full tensor is built regardless.
+    Exactness survives because no fitting metric is involved. ``DFHelper``'s
+    transformations return ``J^-1/2`` fitted B tensors, which are the wrong
+    quantity here - DLPNO fits per pair domain rather than globally - and
+    recovering the raw integrals from them means multiplying by ``J^1/2``,
+    round-tripping every element through a metric conditioned at 6.4e6. Going
+    to the AO integrals directly sidesteps that entirely: with screening off
+    this reproduces ``ao_eri`` bit for bit.
 
-    What psi4 would have to add for this to become the default is therefore
-    specific: raw, unfitted three-index integrals, and index-list slicing. With
-    those two, this class stops being a demonstration.
+    ``get_AO_tensor`` is not in released psi4. It was added for this, and its
+    absence is reported as a clear error rather than a missing attribute.
     """
 
-    #: Floor on :attr:`screening_threshold`, from the ``J^1/2 . J^-1/2`` round
-    #: trip. Measured at 2.2e-13 relative on ethanol/cc-pVTZ; reported an order
-    #: of magnitude above that so a caller comparing against its own tolerance
-    #: is not misled by a number quoted at its best case.
-    METRIC_ROUNDTRIP_FLOOR = 1e-12
-
-    def __init__(self, primary, aux, metric=None, schwarz_cutoff=0.0, nthreads=None,
-                 memory_doubles=int(4e9 / 8)):
+    def __init__(self, primary, aux, schwarz_cutoff=0.0, nthreads=None,
+                 memory_doubles=int(6e9 / 8)):
         self._primary = primary
         self._aux = aux
-        self._metric = metric if metric is not None else aux_metric(aux)
         self._schwarz = float(schwarz_cutoff)
         self._nthreads = nthreads
         self._memory = memory_doubles
-        self._spaces = None
-        self._q_ia = None
+        self._inner = None
 
     @property
     def screening_threshold(self) -> float:
-        return max(self._schwarz, self.METRIC_ROUNDTRIP_FLOOR)
+        """The Schwarz cutoff, and nothing else.
+
+        Zero means exact, and means it literally: the integrals match
+        ``ao_eri`` to the last bit, so an untruncated calculation is entitled
+        to use this source.
+        """
+        return self._schwarz
 
     def declare(self, spaces, demand) -> None:
-        # demand is unused: see the class docstring on slab-only slicing.
-        self._spaces = spaces
-
-    def build(self) -> None:
-        if self._spaces is None:
-            raise RuntimeError("declare() before build()")
-        C_lmo = np.ascontiguousarray(ten.view(self._spaces.C_lmo), dtype=np.float64)
-        C_pao = np.ascontiguousarray(ten.view(self._spaces.C_pao), dtype=np.float64)
-
+        # The demand is not consulted. DFHelper's AO integrals are screened but
+        # not domain-restricted, and get_tensor's slicing takes [start, stop)
+        # slabs rather than index lists, so a pair's scattered domains cannot be
+        # expressed. Building per domain is the next thing psi4 would have to
+        # offer; see the module docstring on raw_three_index.
         helper = psi4.core.DFHelper(self._primary, self._aux)
         helper.set_memory(self._memory)
         if self._nthreads is not None:
             helper.set_nthreads(int(self._nthreads))
-        if self._schwarz > 0.0:
-            helper.set_schwarz_cutoff(self._schwarz)
-        helper.set_method("STORE")
+        # Always set it, including to zero. Skipping the call leaves psi4's own
+        # default cutoff in force, which would make screening_threshold report
+        # exactness this source was not actually delivering.
+        helper.set_schwarz_cutoff(self._schwarz)
+        # DIRECT rather than STORE: STORE contracts the fitting metric into the
+        # AO integrals as it builds them, and raw is the whole point.
+        helper.set_method("DIRECT")
+        helper.set_AO_core(True)
         helper.initialize()
-        helper.add_space("lmo", psi4.core.Matrix.from_array(C_lmo))
-        helper.add_space("pao", psi4.core.Matrix.from_array(C_pao))
-        helper.add_transformation("Qiu", "lmo", "pao", "Qpq")
-        helper.transform()
 
-        naux = self._aux.nbf()
-        fitted = np.asarray(helper.get_tensor("Qiu")).reshape(naux, C_lmo.shape[1], C_pao.shape[1])
+        if not hasattr(helper, "get_AO_tensor"):
+            raise RuntimeError(
+                "this psi4 has no DFHelper.get_AO_tensor, which DFHelperSource needs for raw "
+                "three-index integrals; use dlpno.integrals.DenseSource instead")
 
-        # Undo the fitting. Symmetric square root rather than a solve against
-        # J^1/2: the metric is symmetric positive definite and already
-        # eigendecomposed here, and the negative eigenvalues a near-singular
-        # metric can produce numerically are clamped rather than allowed to
-        # become NaNs under the square root.
-        w, v = np.linalg.eigh(self._metric)
-        j_half = (v * np.sqrt(np.clip(w, 0.0, None))) @ v.T
-        raw = np.einsum("PQ,Qiu->Piu", j_half, fitted, optimize=True)
+        naux, nbf = self._aux.nbf(), self._primary.nbf()
+        qmn = np.asarray(helper.get_AO_tensor()).reshape(naux, nbf, nbf)
+        # Same transform as the dense source, because it IS the dense source:
+        # only where (Q|mn) came from differs.
+        self._inner = integrals.DenseSource(qmn)
+        self._inner.declare(spaces, demand)
 
-        self._q_ia = ten.from_numpy("(Q|i u)", np.ascontiguousarray(raw))
+    def build(self) -> None:
+        if self._inner is None:
+            raise RuntimeError("declare() before build()")
+        self._inner.build()
 
     def q_ia(self):
-        if self._q_ia is None:
+        if self._inner is None:
             raise RuntimeError("build() before q_ia()")
-        return self._q_ia
+        return self._inner.q_ia()
 
     def describe(self):
-        shape = ten.shape(self._q_ia)
+        shape = ten.shape(self._inner.q_ia())
+        exact = "exact" if self._schwarz == 0.0 else f"schwarz {self._schwarz:.0e}"
         return (f"(Q|iu) is {shape[0]} x {shape[1]} x {shape[2]} "
-                f"(DFHelper, unfitted; threshold {self.screening_threshold:.0e})")
+                f"(DFHelper raw AO, {exact})")

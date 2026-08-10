@@ -90,9 +90,8 @@ print(f"  (dense (Q|mn) build, charged to DF Ints rather than compute_qia: {t_bu
 
 q_dense, e_dense, t_dense = run(integrals.DenseSource(reference.eri_3index), "DenseSource (exact)")
 q_dfh, e_dfh, t_dfh = run(
-    DFHelperSource(primary, aux, metric=reference.metric,
-                   schwarz_cutoff=args.schwarz, nthreads=args.threads),
-    "DFHelperSource (unfitted)")
+    DFHelperSource(primary, aux, schwarz_cutoff=args.schwarz, nthreads=args.threads),
+    "DFHelperSource (raw AO)")
 
 scale = np.abs(q_dense).max()
 print(f"\n  integrals:  max abs deviation {np.abs(q_dfh - q_dense).max():.3e}"
