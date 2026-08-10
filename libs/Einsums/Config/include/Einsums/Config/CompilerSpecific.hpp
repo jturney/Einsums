@@ -148,6 +148,15 @@
  */
 #define EINSUMS_OMP_PARALLEL_FOR EINSUMS_OMP_PRAGMA(parallel for)
 
+// Routed through the clause-aware macro: EINSUMS_OMP_SIMD_PRAGMA appends
+// ` simd` to the END of what it is given, which puts it after the `if` clause
+// and yields a pragma icx rejects outright.
+//
+// Kept above the doc block, not between it and the #define: libclang attaches
+// only the comment immediately preceding a declaration, so an ordinary comment
+// in that gap displaces the /** */ block and the macro is extracted with no
+// documentation at all - it then never reaches the generated reference, and
+// every :c:macro: cross-reference to it fails the nitpick build.
 /**
  * @def EINSUMS_OMP_PARALLEL_FOR_SIMD_IF
  *
@@ -160,9 +169,6 @@
  *
  * @versionadded{2.0.0}
  */
-// Routed through the clause-aware macro: EINSUMS_OMP_SIMD_PRAGMA appends
-// ` simd` to the END of what it is given, which puts it after the `if` clause
-// and yields a pragma icx rejects outright.
 #define EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(cond) EINSUMS_OMP_SIMD_CLAUSE_PRAGMA(parallel for, if (cond))
 
 /**
