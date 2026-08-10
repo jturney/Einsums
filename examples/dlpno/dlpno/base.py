@@ -725,6 +725,88 @@ class DLPNOBase:
         """Module-level :func:`batched_eigh` bound to this class's executor rule."""
         return batched_eigh(mats, self._run, descending=descending, label=label)
 
+    def _warm_pao_domains(self, pairs):
+        """Fill the PAO domain memo for every distinct domain, in two batches.
+
+        :meth:`_canonical_pao_domain` computes one domain at a time, and each
+        costs two eigendecompositions: one of the domain overlap and, after the
+        orthogonalizer is built from it, one of the Fock matrix in that basis.
+        Done pair by pair those are issued one at a time from the calling
+        thread, which is the phase's whole cost on an extended system. At a
+        six-monomer water chain the planning half spent 152 ms in 138 ``syev``
+        calls of about 1.1 ms each, against 69 distinct domains - and it got
+        SLOWER with threads, because a domain-sized eigendecomposition is small
+        enough that threading one loses more than it gains.
+
+        The domains are independent, so the right grain is a team across them
+        with each decomposition serial underneath, which is exactly what
+        :func:`batched_eigh` gives. The dependency between the two
+        decompositions is what makes it two rounds rather than one: the second
+        needs the orthogonalizer the first produces.
+
+        Numerically this is the sequential path, reordered. The same matrices
+        are decomposed by the same routine, so the memo it leaves is the memo
+        :meth:`_canonical_pao_domain` would have left, and that method still
+        works unchanged for anything this did not cover.
+        """
+        keys, domains = [], []
+        for ij in pairs:
+            key = id(self.lmopair_to_paos[ij])
+            if key in self._pao_domain_cache or key in keys:
+                continue
+            keys.append(key)
+            domains.append(self.lmopair_to_paos[ij])
+        if not keys:
+            return
+
+        S_doms, F_doms = [], []
+        for paos in domains:
+            S_doms.append(sparse.submatrix_rows_and_cols(self.S_pao, paos, paos))
+            F_doms.append(sparse.submatrix_rows_and_cols(self.F_pao, paos, paos))
+
+        # Round one: the domain overlaps. Descending, because orthocanonicalizer
+        # keeps the leading eigenvalues above s_cut.
+        s_vals, s_vecs = self._batched_eigh(S_doms, descending=True, label="overlap")
+
+        # The orthogonalizers, which are host-side slicing and scaling rather
+        # than linear algebra, then the Fock matrices they induce.
+        orthos, fmos = [], []
+        for sv, U, F_dom in zip(s_vals, s_vecs, F_doms):
+            keep = int(np.count_nonzero(ten.view(sv) > self.cut.s_cut))
+            if keep == 0:
+                # A domain with nothing above s_cut contributes no orbitals. It
+                # has no Fock matrix to decompose either, so it sits out round
+                # two rather than entering it as an empty matrix.
+                orthos.append(None)
+                fmos.append(None)
+                continue
+            X = ten.scale_columns(
+                ten.from_numpy("orthogonalizer", ten.view(U)[:, :keep]),
+                ten.view(sv)[:keep] ** -0.5,
+                name="orthogonalizer",
+            )
+            orthos.append(X)
+            fmos.append(ten.triplet(X, F_dom, X, trans_a=True, name="C^T F C"))
+
+        # Round two: the Fock matrices in each orthogonal basis.
+        live = [i for i, f in enumerate(fmos) if f is not None]
+        e_vals, e_vecs = self._batched_eigh([fmos[i] for i in live],
+                                            descending=True, label="orthocanonical")
+
+        results = {}
+        for slot, i in enumerate(live):
+            X_pao = ten.doublet(orthos[i], e_vecs[slot], name="orthocanonical")
+            results[i] = (X_pao, e_vals[slot])
+        for i, key in enumerate(keys):
+            if i in results:
+                X_pao, e_pao = results[i]
+            else:
+                nrow = ten.shape(S_doms[i])[0]
+                X_pao = ten.zeros("orthocanonical", [nrow, 0])
+                e_pao = ten.zeros("orthocanonical energies", [0])
+            F_can = ten.triplet(X_pao, F_doms[i], X_pao, trans_a=True, name="F (can PAO)")
+            self._pao_domain_cache[key] = (X_pao, e_pao, F_can)
+
     def _canonical_pao_domain(self, ij):
         """``(X_pao, e_pao, F_can)`` for pair ``ij``'s PAO domain, memoized.
 
@@ -990,6 +1072,7 @@ class DLPNOBase:
         F_lmo = ten.view(self.F_lmo)
         upper = [ij for ij, (i, j) in enumerate(self.ij_to_i_j) if i <= j]
 
+        self._warm_pao_domains(upper)
         for ij in upper:
             self._fit_coefficients(ij, self.ij_to_i_j[ij][0])
             self._canonical_pao_domain(ij)
