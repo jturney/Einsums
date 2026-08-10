@@ -457,12 +457,25 @@ class DLPNOMP2(DLPNOBase):
         return g
 
     def _emit_couplings(self):
-        """Record this phase's ops into the ambient capture."""
+        """Record this phase's ops into the ambient capture.
+
+        One node for the whole phase, not one per (shape class, width group).
+        Every one of these GEMMs writes its own slot of its class's ``V``, so
+        they are all independent and the only thing that ever separated them
+        was that ``batched_gemm`` takes a single m/n/k. ``grouped_batched_gemm``
+        does not, and the difference is not bookkeeping: each separate call
+        entered its own OpenMP region, which costs tens of microseconds on ten
+        threads against GEMMs of roughly the same size. At twelve buckets this
+        phase alone was 280 of the iteration's 754 region launches.
+        """
+        a, b, c = [], [], []
         for ci in range(len(self._classes)):
             for _, members in self._cls_partner_groups[ci]:
-                cg.batched_gemm(1.0, [self._T_view[q] for q, _ in members],
-                                [self._ST_group[ci, q] for q, _ in members], 0.0,
-                                [self._V_group[ci, q] for q, _ in members], trans_a=True)
+                for q, _ in members:
+                    a.append(self._T_view[q])
+                    b.append(self._ST_group[ci, q])
+                    c.append(self._V_group[ci, q])
+        cg.grouped_batched_gemm(1.0, a, b, 0.0, c, trans_a=True)
 
     def _capture_repack(self):
         """Graph: the intermediate from partner order into pair order.
@@ -541,15 +554,35 @@ class DLPNOMP2(DLPNOBase):
         return g
 
     def _emit_residual(self):
-        """Record this phase's ops into the ambient capture."""
-        # beta = 1: the prologue has already put K + D T in R, and earlier
-        # classes have already added theirs.
-        for ci in range(len(self._classes)):
-            for _, members in self._cls_pair_groups[ci]:
-                cg.batched_gemm(1.0, [self._W_pair[ci, ij] for ij in members],
-                                [self._S_pair[ci, ij] for ij in members], 1.0,
-                                [self._R_view[ij] for ij in members],
-                                trans_a=True, trans_b=True)
+        """Record this phase's ops into the ambient capture.
+
+        One node per PARTNER bucket, which is as few as the accumulation
+        allows. beta = 1 here - the prologue has already put K + D T in R, and
+        earlier nodes have already added theirs - so two GEMMs landing on the
+        same pair's residual have to be ordered, and a batch orders nothing.
+
+        A shape class is ``(bucket of ij, bucket of the partner)``, so the
+        classes sharing a partner bucket differ in the pair's bucket and
+        therefore touch disjoint pairs. Every class with a given partner bucket
+        can go in one call; classes with different ones cannot, because a pair
+        couples to partners in several buckets and its residual would be
+        written twice at once. That is B calls rather than the B^2 shape
+        classes, and it is not a heuristic: merging any two of these nodes
+        would race, which ``grouped_batched_gemm`` rejects rather than allows.
+        """
+        by_partner = {}
+        for ci, cls in enumerate(self._classes):
+            by_partner.setdefault(cls[1], []).append(ci)
+
+        for b_p in sorted(by_partner):
+            a, b, c = [], [], []
+            for ci in by_partner[b_p]:
+                for _, members in self._cls_pair_groups[ci]:
+                    for ij in members:
+                        a.append(self._W_pair[ci, ij])
+                        b.append(self._S_pair[ci, ij])
+                        c.append(self._R_view[ij])
+            cg.grouped_batched_gemm(1.0, a, b, 1.0, c, trans_a=True, trans_b=True)
 
     def _capture_prologue(self):
         """Graph: ``R = K + (e_a + e_b - F_ii - F_jj) T`` for every pair, in two nodes."""

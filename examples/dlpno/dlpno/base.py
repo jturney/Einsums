@@ -901,16 +901,21 @@ class DLPNOBase:
         own maximum, keeps the shapes uniform *within* a bucket (which is all the
         batching needs) while cutting most of that waste.
 
-        So more buckets is cheaper per element and dearer per call, because the
-        shape classes are pairs of buckets: B buckets means up to B^2 classes and
-        the iteration issues a batched GEMM per class per width group. Which side
-        wins is not a property of the molecule. It is a property of the machine,
-        and of one number on it - what entering an OpenMP parallel region costs,
-        which is zero on one thread and tens of microseconds on ten. That is why
-        a fixed bucket count cannot be right: measured on ethanol/cc-pVTZ the
-        best count runs 12, 8, 8, 4 at 1, 2, 4 and 10 threads, and holding it at
-        4 costs 1.10-1.16x below ten threads while holding it at 12 costs 1.81x
-        at ten.
+        More buckets is therefore cheaper per element, and it used to be much
+        dearer per call: shape classes are pairs of buckets, so B buckets meant
+        up to B^2 classes and the iteration issued a batched GEMM per class per
+        width group, each entering its own OpenMP region at tens of microseconds
+        on ten threads. Which side won was a property of the machine rather than
+        of the molecule, and a fixed count could not be right - measured on
+        ethanol/cc-pVTZ the best count ran 12, 8, 8, 4 at 1, 2, 4 and 10 threads.
+
+        That tension is now mostly gone. Both halves emit
+        ``grouped_batched_gemm``, which covers every shape under one region, so
+        the iteration issues ``1 + B`` calls rather than ``2 * groups * B^2``:
+        754 became 13 at twelve buckets on ethanol. The objective below still
+        carries a call term, because the calls are not free and the residual's
+        accumulation keeps one per partner bucket, but it no longer fights the
+        volume term hard enough to pull the choice down to 4.
 
         Hence :func:`~dlpno.cost.bucket_penalty`, which turns the measured region
         cost into the only free parameter here: how many padded elements one
@@ -980,22 +985,47 @@ class DLPNOBase:
             self.bucket_dims, _ = best_boundaries(n_buckets)
         else:
             penalty = cost.bucket_penalty()
-            groups = max(1, int(self.cut.n_width_groups))
+            class_cost = cost.class_penalty()
             best = None
             for n_buckets in range(1, min(self.cut.max_buckets, len(counts)) + 1):
                 dims, volume = best_boundaries(n_buckets)
-                # Both halves of the Fock coupling, per class per width group.
-                # An upper bound on the classes actually present, which is what
-                # the coupling structure decides; it tracks the real count to
-                # within about a third and is monotone in the bucket count,
-                # which is all the comparison needs.
-                n_calls = 2 * groups * n_buckets ** 2
-                total = volume + penalty * n_calls
+                # One call for the whole first half, plus one per partner
+                # bucket for the second.
+                #
+                # This used to be ``2 * groups * n_buckets ** 2``, one call per
+                # shape class per width group per half, and that was right when
+                # a batched GEMM could only cover one shape. It no longer is:
+                # both halves emit ``grouped_batched_gemm``, which covers every
+                # shape under one OpenMP region. The couplings all write
+                # disjoint slots and collapse to a single call; the residual
+                # accumulates, so it collapses only as far as disjoint pairs
+                # allow, which is one call per partner bucket.
+                # See DLPNOMP2._emit_couplings and _emit_residual.
+                #
+                # The consequence is that the call term barely bends the
+                # objective any more, so this chooses close to the volume
+                # minimum - which is the whole point of having removed the
+                # calls. ``groups`` no longer enters: width groups subdivide a
+                # class, and subdividing a grouped call costs nothing.
+                n_calls = 1 + n_buckets
+                # The one-time graph build, which grows with the shape classes
+                # and used to be hidden behind the call term. See
+                # cost.CLASS_FLOOR_ELEMENTS: with the calls collapsed, this is
+                # the only thing left pulling against finer buckets, and without
+                # it the objective just saturates at max_buckets.
+                #
+                # B**2 is an upper bound on the classes actually present, which
+                # the coupling structure decides; it runs 60-95% of it here and
+                # is monotone in the bucket count, which is all the comparison
+                # needs. Same approximation the call term used to make.
+                n_classes = n_buckets ** 2
+                total = volume + penalty * n_calls + class_cost * n_classes
                 if best is None or total < best[0]:
                     best = (total, dims, n_buckets)
             self.bucket_dims = best[1]
-            self._print(f"  buckets:  {best[2]} chosen at {penalty:.0f} elements per call "
-                        f"({cost.penalty_source()}), dims {self.bucket_dims}")
+            self._print(f"  buckets:  {best[2]} chosen at {penalty:.0f} elements per call and "
+                        f"{class_cost:.0f} per shape class ({cost.penalty_source()}), "
+                        f"dims {self.bucket_dims}")
 
         self.bucket_of = [-1] * self.n_lmo_pairs
         self.slot_of = [-1] * self.n_lmo_pairs

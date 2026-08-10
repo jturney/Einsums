@@ -143,24 +143,56 @@ PnoOverlaps compute_pno_overlaps(std::vector<einsums::RuntimeTensor<double>> con
             cg::scatter(&X_pad[ij], X_pno[ij], {as_sizes(lmopair_to_paos[ij]), iota(static_cast<std::size_t>(n_pno[ij]))});
         }
 
-        for (auto const &[bucket, members] : by_bucket) {
+        // Both GEMMs go out as ONE node each rather than one per bucket and one
+        // per shape class. Two things follow, and the second is the larger.
+        //
+        // The obvious one: a batched call enters an OpenMP region, which costs
+        // tens of microseconds on ten threads, and the shape classes go as the
+        // square of the bucket count. Grouping pays that once.
+        //
+        // The one that is easy to miss: OpenMPExecutor runs a dependency level
+        // holding exactly ONE node on the calling thread with no team open, and
+        // any larger level under `omp parallel for`. blas::gemm_batch threads
+        // with an unguarded pragma, so unwrapped it gets the whole machine and
+        // nested it gets one thread. A level of many shape-class nodes
+        // therefore ran every batch SERIALLY and relied on node-level
+        // parallelism to make up for it, which is why this phase was slower at
+        // two buckets than at one: at one bucket the level held a single node
+        // and accidentally took the good path. One node per level restores it
+        // for every bucket count.
+        {
             std::vector<einsums::RuntimeTensor<double> const *> a, b;
             std::vector<einsums::RuntimeTensor<double> *>       c;
-            a.reserve(members.size());
-            b.reserve(members.size());
-            c.reserve(members.size());
-            for (auto const ij : members) {
-                a.push_back(&X_pad[ij]);
-                b.push_back(&S_pao);
-                c.push_back(&half.at(ij));
+            a.reserve(plan.coupled_pairs.size());
+            b.reserve(plan.coupled_pairs.size());
+            c.reserve(plan.coupled_pairs.size());
+            for (auto const &[bucket, members] : by_bucket) {
+                for (auto const ij : members) {
+                    a.push_back(&X_pad[ij]);
+                    b.push_back(&S_pao);
+                    c.push_back(&half.at(ij));
+                }
             }
-            cg::batched_gemm(1.0, a, b, 0.0, c, /*trans_a=*/true);
+            cg::grouped_batched_gemm(1.0, a, b, 0.0, c, /*trans_a=*/true);
         }
 
-        for (auto const &[ci, sb] : by_shape) {
-            auto const M_b = static_cast<std::size_t>(bucket_dims[plan.classes[ci].first]);
-            auto const M_p = static_cast<std::size_t>(bucket_dims[plan.classes[ci].second]);
-            cg::batched_gemm_blocked(1.0, sb.a, sb.b, 0.0, &out.S_cls[ci], sb.offsets, M_b, M_p);
+        {
+            std::vector<einsums::RuntimeTensor<double> const *> a, b;
+            std::vector<einsums::RuntimeTensor<double> *>       bases;
+            std::vector<std::size_t>                            offsets;
+            a.reserve(plan.pair.size());
+            b.reserve(plan.pair.size());
+            bases.reserve(plan.pair.size());
+            offsets.reserve(plan.pair.size());
+            for (auto const &[ci, sb] : by_shape) {
+                for (std::size_t i = 0; i < sb.a.size(); ++i) {
+                    a.push_back(sb.a[i]);
+                    b.push_back(sb.b[i]);
+                    bases.push_back(&out.S_cls[ci]);
+                    offsets.push_back(sb.offsets[i]);
+                }
+            }
+            cg::grouped_batched_gemm_blocked(1.0, a, b, 0.0, bases, offsets);
         }
         // Guard released here: the graph is complete.
     }
