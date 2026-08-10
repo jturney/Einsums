@@ -116,9 +116,19 @@ def test_build_before_declare_is_an_error():
 def test_the_seam_changes_no_number(path):
     """The refactor's whole claim, on every fixture.
 
-    ``compute_qia`` used to transform inline; it now asks a source. Same two
-    contractions, same order, so the tensor must be bit-identical - not close,
-    identical.
+    ``compute_qia`` used to transform inline; it now asks a source. The two
+    contractions here are the two the source runs, in the source's layout, so
+    the tensor must be bit-identical - not close, identical.
+
+    The layout has to be mirrored, not merely the arithmetic. The source reads
+    the AO integrals reversed and carries a reversed half-transform, and a
+    contraction written over a different layout blocks differently inside BLAS,
+    which reassociates the sums. The result then agrees to roughly 1e-16 but not
+    to the bit, and whether the last bits happen to match is decided by the BLAS
+    vendor: writing this the old way passes under MKL and Accelerate and fails
+    under OpenBLAS. Bit-exactness is only a property of running the same
+    operations in the same order, so this must track
+    :meth:`dlpno.integrals.DenseSource.build`.
     """
     reference, _ = load_reference(path)
     mp2 = DLPNOMP2(reference, Thresholds.untruncated(), verbose=False)
@@ -127,12 +137,12 @@ def test_the_seam_changes_no_number(path):
 
     import einsums
     from dlpno import tensors as ten
-    Qmn = ten.from_numpy("(Q|mn)", reference.eri_3index)
+    Qmn = ten.from_numpy_reversed("(n m Q)", reference.eri_3index)
     naocc, npao = ten.shape(mp2.C_lmo)[1], ten.shape(mp2.C_pao)[1]
-    half = ten.zeros("(Q|i n)", [reference.naux, naocc, reference.nbf])
-    einsums.einsum("Qin <- Qmn ; mi", half, Qmn, mp2.C_lmo)
-    expected = ten.zeros("(Q|i u)", [reference.naux, naocc, npao])
-    einsums.einsum("Qiu <- Qin ; nu", expected, half, mp2.C_pao)
+    half = ten.empty("(n i Q)", [reference.nbf, naocc, reference.naux])
+    einsums.einsum("niQ <- nmQ ; mi", half, Qmn, mp2.C_lmo)
+    expected = ten.empty("(Q|i u)", [reference.naux, naocc, npao])
+    einsums.einsum("Qiu <- niQ ; nu", expected, half, mp2.C_pao)
 
     assert np.array_equal(np.asarray(mp2.q_ia, copy=False),
                           np.asarray(expected, copy=False))
