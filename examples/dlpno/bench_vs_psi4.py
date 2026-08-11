@@ -2,31 +2,43 @@
 # Copyright (c) The Einsums Developers. All rights reserved.
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
-"""Wall-clock comparison against psi4's native C++ DLPNO-MP2.
+"""Wall-clock comparison against psi4's native C++ DLPNO-MP2 and DLPNO-CCSD.
 
-Both sides now apply the same three truncations - differential-overlap PAO
-domains, Mulliken auxiliary domains and dipole pair prescreening - so this is a
+Both sides apply the same three truncations - differential-overlap PAO domains,
+Mulliken auxiliary domains and dipole pair prescreening - so this is a
 like-for-like comparison, and the printed correlation energies agree to roughly
-1e-13. Check that agreement before reading the timings: if the energies differ
-at the truncation level (1e-5), the two are not solving the same problem and
-the comparison means nothing.
+1e-13 for MP2 and to convergence tolerance for CCSD. Check that agreement before
+reading the timings: if the energies differ at the truncation level (1e-5), the
+two are not solving the same problem and the comparison means nothing.
 
 Two differences remain, both in the port's disfavour and both visible in the
 sizes printed alongside:
 
 * psi4 builds the three-index integrals with a screened, linear-scaling
-  shell-triplet loop; this port builds the dense ``(Q|mn)`` and slices it.
+  shell-triplet loop; this port builds the dense ``(Q|mn)`` and slices it. For
+  ``--method ccsd`` that handicap is unavoidable rather than a default: only the
+  dense source serves the ``(Q|i j)`` and ``(Q|u v)`` the CC integral layer
+  declares.
 * the port pads every pair's block to a bucket size, trading flops for
-  batchability. The padding factor is reported below.
+  batchability. The padding factor is reported below for MP2.
 
-The LMP2 iteration is the phase where the two are doing recognizably the same
-work, and it is reported per iteration because the convergence paths differ.
+The iteration is the phase where the two are doing recognizably the same work,
+and it is reported per iteration because the convergence paths differ.
+
+**Rows are exclusive on the port's side and made exclusive on psi4's.** A phase
+that contains another billed phase is charged only for its own part, so the rows
+sum to the total rather than over-counting it. psi4's CC timers nest the other
+way - ``Refined Pair Prescreening`` contains ``PNO-LMP2 Iterations``, which is
+why psi4's own rows sum to more than its total - so the table subtracts to
+recover psi4's exclusive time before comparing.
 
 psi4 runs in a subprocess so its timer file is flushed and its threads do not
 overlap with the einsums run.
 
     PYTHONPATH=/path/to/Einsums/build/lib:/path/to/psi4/stage/lib \
         python examples/dlpno/bench_vs_psi4.py --molecule methanol
+    PYTHONPATH=... python examples/dlpno/bench_vs_psi4.py \
+        --method ccsd --molecule chain6 --threads 10
 """
 
 import argparse
@@ -43,11 +55,22 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dlpno.molecules import MOLECULES, water_chain
 
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+parser.add_argument(
+    "--method", default="mp2", choices=["mp2", "ccsd"],
+    help="which DLPNO method to compare. 'ccsd' runs the whole prescreening "
+         "cascade and the T1-dressed CC iteration on both sides and prices "
+         "them phase against phase; only the dense integral source serves it, "
+         "because the CC layers declare (Q|i j) and (Q|u v).")
 parser.add_argument("--molecule", default="methanol",
                     help=f"one of {sorted(MOLECULES)}, or 'chain<N>' for an N-monomer "
                          "water chain at 2.9 A - the geometry the scaling work targets")
 parser.add_argument("--basis", default="cc-pvdz")
-parser.add_argument("--t-cut-pno", type=float, default=1e-8)
+parser.add_argument(
+    "--t-cut-pno", type=float, default=None,
+    help="PNO occupation cutoff for BOTH sides. Defaults to 1e-8 for mp2, the "
+         "value the MP2 comparisons were calibrated at; for ccsd it defaults to "
+         "leaving the preset alone, because the CC branch's NORMAL is 3.33e-7 "
+         "and pinning it to the MP2 number would benchmark a different method.")
 parser.add_argument("--buckets", type=int, default=None,
                     help="PNO-count buckets to pad pair blocks into; default chooses "
                          "per thread count from the measured OpenMP region cost")
@@ -66,6 +89,18 @@ parser.add_argument(
          "Orthogonal to --backend, which selects stage implementations.",
 )
 parser.add_argument(
+    "--memory", default="24 GB",
+    help="memory ceiling for psi4. Its DLPNO memory estimate scales with the "
+         "thread count, so the default 500 MB aborts a threaded cc-pVTZ run "
+         "that a serial one completes.")
+parser.add_argument(
+    "--buffer-size", default=None,
+    help="einsums buffer pool size. Every view handed to a captured operation "
+         "is allocated out of this pool and lives as long as the graph, so the "
+         "coupled-cluster capture - which emits one operation per plan record - "
+         "outgrows the 4 MB default well before the benchmark geometries. "
+         "Defaults to 2GB for ccsd and to leaving it alone for mp2.")
+parser.add_argument(
     "--backend", default="",
     help="stage backend spec for the port, e.g. "
          "compute_pno_overlaps=cpp,transform_pnos=cpp. Loads the dlpno_stages "
@@ -81,6 +116,22 @@ elif args.molecule in MOLECULES:
 else:
     parser.error(f"unknown molecule {args.molecule!r}; "
                  f"use one of {sorted(MOLECULES)} or chain<N>")
+# Before the first compute call, which is what einsums::initialize reads.
+import einsums.rc  # noqa: E402
+
+BUFFER_SIZE = args.buffer_size or ("2GB" if args.method == "ccsd" else None)
+if BUFFER_SIZE is not None:
+    einsums.rc.buffer_size = BUFFER_SIZE
+
+T_CUT_PNO = args.t_cut_pno
+if T_CUT_PNO is None and args.method == "mp2":
+    T_CUT_PNO = 1e-8
+if args.method == "ccsd":
+    # Only the dense source serves (Q|i j) and (Q|u v); see decision 5 of the
+    # design. That is a real handicap in this table rather than a detail - it is
+    # a row psi4 wins on, and a screened (Q|u v) source is a psi4-side patch.
+    args.integrals = "dense"
+
 OPTIONS = {
     "basis": args.basis, "scf_type": "df", "freeze_core": "false",
     "e_convergence": 1e-10, "d_convergence": 1e-10,
@@ -90,23 +141,31 @@ OPTIONS = {
     # It also costs psi4 an iteration or two, so leaving it unmatched would
     # flatter psi4 in exactly the phase being compared.
     "r_convergence": 1e-8,
-    "t_cut_pno": args.t_cut_pno,
 }
+if T_CUT_PNO is not None:
+    OPTIONS["t_cut_pno"] = T_CUT_PNO
+if args.method == "ccsd":
+    OPTIONS["pno_convergence"] = "NORMAL"
 THREADS = args.threads
 
 PSI4_CHILD = r'''
 import json, sys, time
 import psi4
 geom, options, outfile = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3]
+method, memory = sys.argv[5], sys.argv[6]
 psi4.core.set_output_file(outfile, False)
+psi4.set_memory(memory)
 psi4.set_options(options)
 psi4.set_num_threads(int(sys.argv[4]))
 psi4.geometry(geom)
 t0 = time.perf_counter(); psi4.energy("scf"); t_scf = time.perf_counter() - t0
-psi4.set_options({"dlpno_algorithm": "mp2"})
-t0 = time.perf_counter(); e = psi4.energy("dlpno-mp2"); t_dlpno = time.perf_counter() - t0
+psi4.set_options({"dlpno_algorithm": method})
+t0 = time.perf_counter()
+e = psi4.energy("dlpno-" + method)
+t_dlpno = time.perf_counter() - t0
+psivar = "MP2 CORRELATION ENERGY" if method == "mp2" else "CCSD CORRELATION ENERGY"
 print(json.dumps({"scf": t_scf, "dlpno": t_dlpno,
-                  "corr": psi4.variable("MP2 CORRELATION ENERGY")}))
+                  "corr": psi4.variable(psivar)}))
 '''
 
 
@@ -117,7 +176,8 @@ def run_psi4(workdir):
         fh.write(PSI4_CHILD)
     out = os.path.join(workdir, "psi4.out")
     proc = subprocess.run(
-        [sys.executable, script, json.dumps(GEOM), json.dumps(OPTIONS), out, str(THREADS)],
+        [sys.executable, script, json.dumps(GEOM), json.dumps(OPTIONS), out,
+         str(THREADS), args.method, args.memory],
         cwd=workdir, capture_output=True, text=True, check=True,
     )
     result = json.loads(proc.stdout.strip().splitlines()[-1])
@@ -136,6 +196,7 @@ def run_psi4(workdir):
     if m:
         stats["avg_pno"] = int(m.group(1))
     stats["iterations"] = len(re.findall(r"@LMP2 iter", text))
+    stats["cc_iterations"] = len(re.findall(r"@LCCSD iter", text))
     m = re.search(r"Screened (\d+) of (\d+) LMO pairs", text)
     if m:
         stats["pairs"] = int(m.group(2)) - int(m.group(1))
@@ -146,8 +207,10 @@ def run_psi4(workdir):
 
 
 with tempfile.TemporaryDirectory() as workdir:
-    print(f"\n{args.molecule}/{args.basis}, T_CUT_PNO = {args.t_cut_pno:.0e}, "
-          f"{THREADS} thread(s) both sides, (Q|iu) from {args.integrals!r}")
+    pno = f"{T_CUT_PNO:.0e}" if T_CUT_PNO is not None else "preset NORMAL"
+    print(f"\nDLPNO-{args.method.upper()}, {args.molecule}/{args.basis}, "
+          f"T_CUT_PNO = {pno}, {THREADS} thread(s) both sides, "
+          f"(Q|iu) from {args.integrals!r}")
     print("running psi4 (subprocess) ...", flush=True)
     psi4_times, psi4_phases, psi4_stats = run_psi4(workdir)
 
@@ -155,6 +218,7 @@ with tempfile.TemporaryDirectory() as workdir:
 print("running the einsums port ...", flush=True)
 import psi4  # noqa: E402
 from dlpno import DLPNOMP2, Thresholds  # noqa: E402
+from dlpno.ccsd import DLPNOCCSD  # noqa: E402
 from dlpno.psi4_source import from_psi4  # noqa: E402
 
 if args.backend:
@@ -195,44 +259,137 @@ def phase(name, fn):
 # generating its own integrals - so the difference the header calls out as
 # being in the port's disfavour was not actually being counted. At
 # ethanol/cc-pVTZ that is 0.243 s against a 1.16 s total.
-cut = Thresholds.preset("NORMAL", t_cut_pno=args.t_cut_pno, n_buckets=args.buckets)
+#: Depth of billed calls currently on the stack, and the time each has already
+#: charged to a nested row. Rows are EXCLUSIVE - a phase that contains another
+#: billed phase is charged only for the part that is its own - so the rows sum
+#: to the total instead of over-counting it. psi4's own timers nest the other
+#: way, which is why its CC rows sum to more than its total; where a psi4 row
+#: contains another, the table below subtracts to get psi4's exclusive time.
+_billing_stack = []
+
+
+def bill(obj, name, method_name):
+    """Charge every call of ``obj.method_name`` to the row ``name``.
+
+    Wrapping rather than calling the steps one at a time from here, because the
+    coupled-cluster cascade runs eleven of them in an order ``prescreen_pairs``
+    already defines. Spelling that order out a second time in the benchmark is
+    how a benchmark and the thing it measures drift apart; and several of the
+    steps run more than once, which a linear script would have to know about.
+    """
+    original = getattr(obj, method_name)
+
+    def timed(*a, **kw):
+        t0 = time.perf_counter()
+        _billing_stack.append(0.0)
+        try:
+            return original(*a, **kw)
+        finally:
+            elapsed = time.perf_counter() - t0
+            nested = _billing_stack.pop()
+            ours[name] = ours.get(name, 0.0) + elapsed - nested
+            if _billing_stack:
+                _billing_stack[-1] += elapsed
+
+    setattr(obj, method_name, timed)
+
+
+preset_kwargs = {"n_buckets": args.buckets}
+if T_CUT_PNO is not None:
+    preset_kwargs["t_cut_pno"] = T_CUT_PNO
+cut = Thresholds.preset("NORMAL", method="cc" if args.method == "ccsd" else "mp2",
+                        **preset_kwargs)
+
 t_total = time.perf_counter()
 # The thresholds go in here, not just into the solver: a producer that screens
 # has to be configured before it is declared to, and handing it the same object
 # the solver gets is what keeps the two from drifting apart.
 reference = phase("DF Ints", lambda: from_psi4(wfn, integrals=args.integrals, thresholds=cut))
-mp2 = DLPNOMP2(reference, cut, verbose=False)
 
-phase("Setup Orbitals", mp2.setup_orbitals)
-phase("Sparsity", mp2.prep_sparsity)
-t0 = time.perf_counter()
-mp2.compute_metric()
-mp2.compute_qia()
-ours["DF Ints"] += time.perf_counter() - t0
-# precompute_fits belongs to this phase, not to DF Ints: psi4 solves the
-# domain fitting equations inside its own pno_transform.
-phase("PNO Transform", lambda: (mp2.precompute_fits(), mp2.pno_transform()))
-phase("PNO Overlaps", mp2.compute_pno_overlaps)
-phase("LMP2", mp2.lmp2_iterations)
-ours["DLPNO-MP2"] = time.perf_counter() - t_total
-# Split the one-time graph build (allocate + capture + optimize) out of the
-# LMP2 row: psi4 has no equivalent setup cost, so a row mixing the two
-# compares different things. Both rows still sum into the total.
-ours["LMP2 build"] = mp2.t_capture
-ours["LMP2"] = mp2.t_iterate
+if args.method == "mp2":
+    calc = mp2 = DLPNOMP2(reference, cut, verbose=False)
+    phase("Setup Orbitals", mp2.setup_orbitals)
+    phase("Sparsity", mp2.prep_sparsity)
+    t0 = time.perf_counter()
+    mp2.compute_metric()
+    mp2.compute_qia()
+    ours["DF Ints"] += time.perf_counter() - t0
+    # precompute_fits belongs to this phase, not to DF Ints: psi4 solves the
+    # domain fitting equations inside its own pno_transform.
+    phase("PNO Transform", lambda: (mp2.precompute_fits(), mp2.pno_transform()))
+    phase("PNO Overlaps", mp2.compute_pno_overlaps)
+    phase("LMP2", mp2.lmp2_iterations)
+    ours["DLPNO-MP2"] = time.perf_counter() - t_total
+    # Split the one-time graph build (allocate + capture + optimize) out of the
+    # LMP2 row: psi4 has no equivalent setup cost, so a row mixing the two
+    # compares different things. Both rows still sum into the total.
+    ours["LMP2 build"] = mp2.t_capture
+    ours["LMP2"] = mp2.t_iterate
+else:
+    calc = mp2 = DLPNOCCSD(reference, cut, verbose=False)
+    # The row names are psi4's timer names, so the two columns line up without
+    # a translation table. Every step of compute_energy is charged to one.
+    for row, name in (
+            ("Setup Orbitals", "setup_orbitals"),
+            ("Setup Orbitals", "compute_doi"),
+            ("Sparsity", "prep_sparsity"),
+            ("DF Ints", "compute_metric"),
+            ("DF Ints", "compute_qia"),
+            ("DF Ints", "compute_qij"),
+            ("DF Ints", "compute_qab"),
+            ("Initial Pair Prescreening", "semicanonical_pair_energies"),
+            ("PNO Transform", "precompute_fits"),
+            ("PNO Transform", "pno_transform"),
+            ("PNO-LMP2 Iterations", "pno_lmp2_iterations"),
+            ("Compute PNOs (CCSD)", "recompute_pnos"),
+            ("PNO Integrals", "compute_pno_integrals"),
+            ("PNO Overlaps", "compute_pno_overlaps"),
+            ("LCCSD", "lccsd_iterations"),
+    ):
+        bill(mp2, row, name)
+    mp2.compute_energy()
+    ours["DLPNO-CCSD"] = time.perf_counter() - t_total
+    # Split the one-time plan and capture out of the LCCSD row, as the MP2 path
+    # does: psi4 has no equivalent, so a row mixing the two compares different
+    # things. Both still sum into the total.
+    ours["LCCSD build"] = mp2.lccsd.t_plan + mp2.lccsd.t_capture
+    ours["LCCSD"] -= ours["LCCSD build"]
 
 # ---- report ------------------------------------------------------------------
 print(f"\n  problem size")
 print(f"    {'':22} {'psi4':>12} {'this port':>12}")
-print(f"    {'LMO pairs':22} {psi4_stats.get('pairs', '?'):>12} {mp2.n_lmo_pairs:>12}"
-      f"   (of {mp2.ref.naocc**2} possible; both sides prescreen)")
-print(f"    {'avg PNOs per pair':22} {psi4_stats.get('avg_pno', '?'):>12} "
+# For ccsd psi4 prints both of these partway through its cascade - the pair
+# count before the crude pass eliminates any, the PNO count at MP2-level
+# cutoffs - while the port's are the post-rebuild values the CC iteration
+# actually runs on. Comparing them would read as a disagreement where there is
+# none, so psi4's column is a dash and the note says which point each is from.
+_staged = args.method == "ccsd"
+print(f"    {'LMO pairs':22} {'-' if _staged else psi4_stats.get('pairs', '?'):>12} "
+      f"{mp2.n_lmo_pairs:>12}"
+      + (f"   (of {mp2.ref.naocc**2} possible, after crude elimination)"
+         if _staged else
+         f"   (of {mp2.ref.naocc**2} possible; both sides prescreen)"))
+print(f"    {'avg PNOs per pair':22} "
+      f"{'-' if _staged else psi4_stats.get('avg_pno', '?'):>12} "
       f"{sum(mp2.n_pno) / mp2.n_lmo_pairs:>12.1f}"
-      "   (both sides use screened PAO domains)")
+      + ("   (rebuilt at CC cutoffs)" if _staged else
+         "   (both sides use screened PAO domains)"))
 print(f"    {'padded PNO dimension':22} {'-':>12} {mp2.npno_max:>12}"
       "   (port pads every block to this)")
-print(f"    {'LMP2 iterations':22} {psi4_stats.get('iterations', '?'):>12} "
-      f"{mp2.n_iterations:>12}")
+if args.method == "mp2":
+    print(f"    {'LMP2 iterations':22} {psi4_stats.get('iterations', '?'):>12} "
+          f"{mp2.n_iterations:>12}")
+else:
+    print(f"    {'strong / weak pairs':22} {'-':>12} "
+          f"{f'{len(mp2.ij_to_i_j_strong)} / {len(mp2.ij_to_i_j_weak)}':>12}")
+    # psi4's LMP2-inside-CC iterations are not labelled the way its standalone
+    # ones are, so its column is a dash rather than a wrong zero.
+    print(f"    {'LMP2 iterations':22} {psi4_stats.get('iterations') or '-':>12} "
+          f"{mp2.lmp2.n_iterations:>12}")
+    print(f"    {'LCCSD iterations':22} {psi4_stats.get('cc_iterations', '?'):>12} "
+          f"{mp2.lccsd.n_iterations:>12}")
+    print(f"    {'captured CC nodes':22} {'-':>12} {mp2.lccsd.num_nodes():>12}"
+          "   (replayed once per iteration)")
 
 # (row label, key in `ours`, psi4 timer name or None when psi4 has no analogue).
 #
@@ -241,19 +398,44 @@ print(f"    {'LMP2 iterations':22} {psi4_stats.get('iterations', '?'):>12} "
 # very table used to decide what to optimize next. The residual row and the
 # check below exist so that cannot recur silently - a newly timed phase either
 # appears here by name or falls out into `other (untabulated)`.
-ROWS = [
-    ("Setup Orbitals", "Setup Orbitals", "Setup Orbitals"),
-    ("Sparsity", "Sparsity", "Sparsity"),
-    ("DF Ints", "DF Ints", "DF Ints"),
-    ("PNO Transform", "PNO Transform", "PNO Transform"),
-    ("PNO Overlaps", "PNO Overlaps", "PNO Overlaps"),
-    ("LMP2 iterations", "LMP2", "LMP2"),
-    ("LMP2 graph build", "LMP2 build", None),
-]
+if args.method == "mp2":
+    ROWS = [
+        ("Setup Orbitals", "Setup Orbitals", "Setup Orbitals"),
+        ("Sparsity", "Sparsity", "Sparsity"),
+        ("DF Ints", "DF Ints", "DF Ints"),
+        ("PNO Transform", "PNO Transform", "PNO Transform"),
+        ("PNO Overlaps", "PNO Overlaps", "PNO Overlaps"),
+        ("LMP2 iterations", "LMP2", "LMP2"),
+        ("LMP2 graph build", "LMP2 build", None),
+    ]
+else:
+    # psi4's "Refined Pair Prescreening" CONTAINS its "PNO-LMP2 Iterations", so
+    # its rows sum to more than its total. The port's are exclusive, so psi4's
+    # PNO-transform time is the difference between the two - which is what makes
+    # the columns comparable row by row and both of them add up.
+    refined = psi4_phases.get("Refined Pair Prescreening")
+    if refined is not None:
+        psi4_phases["PNO Transform"] = (
+            refined - psi4_phases.get("PNO-LMP2 Iterations", 0.0))
+    ROWS = [
+        ("Setup Orbitals", "Setup Orbitals", "Setup Orbitals"),
+        ("Sparsity", "Sparsity", "Sparsity"),
+        ("DF Ints", "DF Ints", "DF Ints"),
+        ("Initial Prescreening", "Initial Pair Prescreening",
+         "Initial Pair Prescreening"),
+        ("PNO Transform", "PNO Transform", "PNO Transform"),
+        ("PNO-LMP2 iterations", "PNO-LMP2 Iterations", "PNO-LMP2 Iterations"),
+        ("Compute PNOs (CCSD)", "Compute PNOs (CCSD)", "Compute PNOs (CCSD)"),
+        ("PNO Integrals", "PNO Integrals", "PNO Integrals"),
+        ("PNO Overlaps", "PNO Overlaps", "PNO Overlaps"),
+        ("LCCSD iterations", "LCCSD", "LCCSD"),
+        ("LCCSD graph build", "LCCSD build", None),
+    ]
 # Any phase timed but not named above still gets a row, in the order it was
 # timed, so adding a phase() call cannot drop work out of the table.
+TOTAL = "DLPNO-MP2" if args.method == "mp2" else "DLPNO-CCSD"
 ROWS += [(key, key, key) for key in ours
-         if key != "DLPNO-MP2" and key not in {r[1] for r in ROWS}]
+         if key != TOTAL and key not in {r[1] for r in ROWS}]
 
 print(f"\n  wall time (seconds)")
 print(f"    {'phase':22} {'psi4':>12} {'this port':>12} {'ratio':>10}")
@@ -291,12 +473,12 @@ for psi4_key in ("Overlap Ints", "Dipole Ints"):
         psi4_accounted += p
         print_row(psi4_key, p, None)
 
-port_total = ours["DLPNO-MP2"]
-psi4_total = psi4_phases.get("DLPNO-MP2", psi4_times["dlpno"])
+port_total = ours[TOTAL]
+psi4_total = psi4_phases.get(TOTAL, psi4_times["dlpno"])
 port_residual = port_total - port_accounted
 psi4_residual = psi4_total - psi4_accounted
 print_row("other (untabulated)", psi4_residual, port_residual)
-print_row("total DLPNO-MP2", psi4_total, port_total)
+print_row("total " + TOTAL, psi4_total, port_total)
 
 # The whole point of the rows above is to be a complete account of the total.
 # Warn loudly (and fail the run at the end) if they are not, rather than let
@@ -309,6 +491,39 @@ if table_incomplete:
           "    Some timed work is missing a row, or work between phases is "
           "untimed. Fix the\n    table before using it to choose what to "
           "optimize.")
+
+if args.method == "ccsd":
+    p_it = (psi4_phases.get("LCCSD", 0.0)
+            / max(psi4_stats.get("cc_iterations", 0) or 1, 1))
+    o_it = mp2.lccsd.t_iterate / max(mp2.lccsd.n_iterations, 1)
+    if p_it > 1e-9:
+        print(f"\n    {'LCCSD per iteration':22} {p_it:>12.4f} {o_it:>12.4f} "
+              f"{o_it / p_it:>9.1f}x")
+    nodes = mp2.lccsd.num_nodes()
+    print(f"\n  where the LCCSD time goes")
+    print(f"    {nodes} captured nodes, {o_it * 1e6 / max(nodes, 1):.2f} us per "
+          f"node per iteration")
+    print(f"    graph build {ours['LCCSD build']:.3f} s, paid once "
+          f"({100 * ours['LCCSD build'] / port_total:.1f}% of the run; it "
+          f"amortizes with iteration count)")
+    print(f"    the correctness cut emits one operation per plan record. The "
+          f"campaign's first\n    lever is grouping records by shape class into "
+          f"batched calls, which is what took\n    LMP2 from 754 dispatches an "
+          f"iteration to 13.")
+    e_ours = mp2.e_corr
+    want = psi4_times["corr"]
+    print(f"\n  correlation energy   psi4 {want:.10f}   port {e_ours:.10f}   "
+          f"diff {abs(e_ours - want):.2e}")
+    print(f"  (SCF, excluded above: psi4 {psi4_times['scf']:.3f} s, "
+          f"port reference {t_scf_ours:.3f} s)")
+    if abs(e_ours - want) > max(1e-8, 1e-6 * abs(want)):
+        print("\n  WARNING: the correlation energies disagree, so the two sides "
+              "are NOT solving\n  the same problem and these timings are not "
+              "comparable.")
+    else:
+        print("\n  The energies agree, so the two sides are solving the same "
+              "problem.")
+    sys.exit(1 if table_incomplete else 0)
 
 p_it = psi4_phases.get("LMP2", 0.0) / max(psi4_stats.get("iterations", 1), 1)
 # Steady state only: the graph build is paid once and has its own row above;

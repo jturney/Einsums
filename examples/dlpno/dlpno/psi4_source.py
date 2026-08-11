@@ -301,11 +301,14 @@ class DFHelperSource:
         return self._schwarz
 
     def declare(self, spaces, demand) -> None:
-        # The demand is not consulted. DFHelper's AO integrals are screened but
-        # not domain-restricted, and get_tensor's slicing takes [start, stop)
-        # slabs rather than index lists, so a pair's scattered domains cannot be
-        # expressed. Building per domain is the next thing psi4 would have to
-        # offer; see the module docstring on raw_three_index.
+        # Only the kinds are consulted: this source serves (Q|i u) alone, and
+        # the coupled-cluster classes have to say so here rather than fail
+        # later. The domains are not consulted at all - DFHelper's AO integrals
+        # are screened but not domain-restricted, and get_tensor's slicing takes
+        # [start, stop) slabs rather than index lists, so a pair's scattered
+        # domains cannot be expressed. Building per domain is the next thing
+        # psi4 would have to offer; see the module docstring on raw_three_index.
+        integrals.check_kinds(self, demand)
         helper = psi4.core.DFHelper(self._primary, self._aux)
         helper.set_memory(self._memory)
         # DFHelper defaults to ONE thread whatever psi4 has been told, so not
@@ -425,6 +428,7 @@ class ScreenedQiaSource:
         return max(self._ao_ints_tol, self._t_cut_clmo, self._t_cut_cpao, 0.0)
 
     def declare(self, spaces, demand) -> None:
+        integrals.check_kinds(self, demand)
         if not hasattr(psi4.core, "LocalQiaBuilder"):
             raise RuntimeError(
                 "this psi4 has no LocalQiaBuilder, which ScreenedQiaSource needs to build "

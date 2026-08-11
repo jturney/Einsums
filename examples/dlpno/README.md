@@ -82,7 +82,9 @@ Those still need `run_dlpno_mp2.py`.
 ```
 dlpno/                the package; see its __init__ docstring for the module map
   base.py             orbitals, PAOs, screening, domains, DF integrals, PNO transform
-  mp2.py              the local MP2 solver: one loop graph, DIIS predicate
+  mp2.py              DLPNO-MP2: the phase sequence and the energy accounting
+  lmp2_solver.py      the local MP2 iteration: one loop graph, DIIS predicate
+  layout.py           how per-pair blocks are bucketed into contiguous stores
   sparse.py           SparseMap bookkeeping, mirroring psi4's sparse.cc
   thresholds.py       psi4's truncation thresholds and presets
   reference.py        the psi4-free input contract: plain numpy buffers

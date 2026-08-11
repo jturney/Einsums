@@ -147,6 +147,8 @@ def transform_pnos(
     pno_scale: list[float],
     min_pnos: int,
     t_cut_pno: float,
+    t_cut_trace: float,
+    t_cut_energy: float,
 ) -> PnoTransform:
     """Build each upper pair's truncated, canonical PNO basis.
 
@@ -178,10 +180,15 @@ def transform_pnos(
         pno_scale: Per upper pair, the core-pair scaling on ``T_CUT_PNO``.
         min_pnos: Pairs keep at least this many PNOs, domain size permitting.
         t_cut_pno: The occupation-number cutoff.
+        t_cut_trace: Minimum fraction of ``trace(D_ij)`` the kept PNOs recover.
+            Zero switches the criterion off, which is the MP2 branch.
+        t_cut_energy: Minimum fraction of the pair energy the kept PNOs
+            recover. Zero switches it off, likewise.
     """
     return _transform_pnos(
         q_ia, fits, fit_of, fit_pos, dom_X, dom_e, dom_F, dom_of,
         ribfs, paos, lmo_j, shift, pno_scale, min_pnos, t_cut_pno,
+        t_cut_trace, t_cut_energy,
     )
 
 
@@ -214,10 +221,7 @@ def run_phases(mp2, session, **per_phase):
             pno_args = None
             continue
         if name == "compute_pno_overlaps":
-            overlaps = _stages[name](
-                mp2.X_pno, mp2.S_pao, mp2.lmopair_to_paos, mp2.n_pno,
-                mp2.bucket_of, mp2.bucket_dims, mp2.plan,
-            )
-            mp2._S_cls, mp2._S_T = overlaps.S_cls, overlaps.S_T
+            solver = mp2.lmp2_solver()
+            solver.take_overlaps(_stages[name](*solver.overlap_args()))
             continue
         _stages[name](mp2, **per_phase.get(name, {}))

@@ -124,7 +124,7 @@ PnoTransform transform_pnos(einsums::RuntimeTensor<double> const &q_ia, std::vec
                             std::vector<einsums::RuntimeTensor<double>> const &dom_F, std::vector<std::int64_t> const &dom_of,
                             std::vector<std::vector<std::int64_t>> const &ribfs, std::vector<std::vector<std::int64_t>> const &paos,
                             std::vector<std::int64_t> const &lmo_j, std::vector<double> const &shift, std::vector<double> const &pno_scale,
-                            std::int64_t min_pnos, double t_cut_pno) {
+                            std::int64_t min_pnos, double t_cut_pno, double t_cut_trace, double t_cut_energy) {
     auto const n_upper = fit_of.size();
 
     // The canonical dimension of each pair's domain: shape(K_pao)[0] on the
@@ -210,19 +210,83 @@ PnoTransform transform_pnos(einsums::RuntimeTensor<double> const &q_ia, std::vec
 
     // ── Stage 2: the truncation decision (data dependent, host code), then
     //    the Fock matrix in each surviving subspace ──────────────────────────
-    std::vector<std::size_t> keep(n_upper, 0);
-    for (std::size_t u = 0; u < n_upper; ++u) {
-        auto const    nvir  = ncan_of(u);
-        auto const    start = std::min<std::size_t>(static_cast<std::size_t>(min_pnos), nvir);
-        double const  cut   = pno_scale[u] * t_cut_pno;
-        std::size_t   k     = start;
-        double const *occ   = occs[u].data();
-        for (std::size_t a = start; a < nvir; ++a) {
-            if (std::abs(occ[a]) >= cut) {
-                ++k;
+    //
+    // Three OR'd criteria plus the floor, not applied in sequence: a PNO
+    // survives if it passes ANY of them, so the count is the LARGEST of the
+    // four cut points. The trace and energy criteria are running quantities
+    // and so are not monotone in `a`, which is why this cannot be the
+    // threshold scan it used to be while the occupation cutoff was alone.
+    // Zero switches either extra criterion off, which is the MP2 branch.
+    //
+    // The energy criterion needs the pair integrals in the UNTRUNCATED PNO
+    // basis, a pair of triple products the occupation criterion does not want,
+    // so they are built only when it is live.
+    std::vector<einsums::RuntimeTensor<double>> K_init, Tt_init, K_proj, Tt_proj;
+    if (t_cut_energy > 0.0) {
+        K_init.reserve(n_upper);
+        Tt_init.reserve(n_upper);
+        K_proj.reserve(n_upper);
+        Tt_proj.reserve(n_upper);
+        for (std::size_t u = 0; u < n_upper; ++u) {
+            auto const n = ncan_of(u);
+            K_proj.emplace_back(einsums::create_zero_tensor<double>("doublet", n, n));
+            Tt_proj.emplace_back(einsums::create_zero_tensor<double>("doublet", n, n));
+            K_init.emplace_back(einsums::create_zero_tensor<double>("K (untrunc PNO)", n, n));
+            Tt_init.emplace_back(einsums::create_zero_tensor<double>("Tt (untrunc PNO)", n, n));
+        }
+        cg::Graph g_init("PNO initial projection");
+        {
+            cg::CaptureGuard const guard(g_init);
+            for (std::size_t u = 0; u < n_upper; ++u) {
+                cg::gemm(1.0, pno_vecs[u], K_can[u], 0.0, &K_proj[u], Transpose::T, Transpose::N);
+                cg::gemm(1.0, K_proj[u], pno_vecs[u], 0.0, &K_init[u]);
+                cg::gemm(1.0, pno_vecs[u], Tt_pao[u], 0.0, &Tt_proj[u], Transpose::T, Transpose::N);
+                cg::gemm(1.0, Tt_proj[u], pno_vecs[u], 0.0, &Tt_init[u]);
             }
         }
-        keep[u] = k;
+        run_setup_graph(g_init);
+    }
+
+    std::vector<std::size_t> keep(n_upper, 0);
+    for (std::size_t u = 0; u < n_upper; ++u) {
+        auto const    nvir = static_cast<std::size_t>(ncan_of(u));
+        double const  cut  = pno_scale[u] * t_cut_pno;
+        double const *occ  = occs[u].data();
+
+        double occ_total = 0.0;
+        for (std::size_t a = 0; a < nvir; ++a) {
+            occ_total += occ[a];
+        }
+        double const energy_floor = t_cut_energy * std::abs(e_init[u].data()[0]);
+
+        double                   occ_sum = 0.0;
+        double                   e_pno   = 0.0;
+        std::vector<std::size_t> kept;
+        kept.reserve(nvir);
+        for (std::size_t a = 0; a < nvir; ++a) {
+            bool const pass = std::abs(occ[a]) >= cut || (occ_total != 0.0 && occ_sum / occ_total < t_cut_trace) ||
+                              std::abs(e_pno) < energy_floor || a < static_cast<std::size_t>(min_pnos);
+            if (!pass) {
+                continue;
+            }
+            if (t_cut_energy > 0.0) {
+                // The energy the PNOs kept SO FAR recover, before `a` joins
+                // them. psi4's recompute_pnos has this the other way round;
+                // the two are not interchangeable.
+                double const *K   = K_init[u].data();
+                double const *Tt  = Tt_init[u].data();
+                double        acc = 0.0;
+                for (auto r : kept) {
+                    for (auto c : kept) {
+                        acc += K[r * nvir + c] * Tt[r * nvir + c];
+                    }
+                }
+                e_pno = acc;
+            }
+            occ_sum += occ[a];
+            kept.push_back(a);
+        }
+        keep[u] = std::min(nvir, std::max<std::size_t>(1, kept.size()));
     }
 
     // The survivors are the LEADING columns (descending occupation), so the

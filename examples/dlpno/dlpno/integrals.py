@@ -24,7 +24,37 @@ import einsums
 
 from . import tensors as ten
 
-__all__ = ["Spaces", "Demand", "ThreeIndexSource", "DenseSource"]
+__all__ = ["KINDS", "Spaces", "Demand", "ThreeIndexSource", "DenseSource",
+           "check_kinds"]
+
+#: The three-index integral classes a DLPNO calculation can ask for, named for
+#: the accessor that serves each. MP2 reads only ``q_ia``; coupled cluster adds
+#: ``q_ij`` for the one-external integrals and ``q_ab`` for the two- and
+#: three-external ones. psi4 builds them in ``compute_qia``, ``compute_qij`` and
+#: ``compute_qab``.
+KINDS = ("q_ia", "q_ij", "q_ab")
+
+
+def check_kinds(source, demand):
+    """Raise unless *source* implements every kind *demand* asks for.
+
+    Called by a source at the top of its ``declare``, which is the earliest
+    point at which the question can be answered and long before the answer
+    would otherwise be needed. A source that cannot build ``(Q|a b)`` should say
+    so while the calculation is still setting up, naming itself and the kind,
+    rather than raise an ``AttributeError`` three phases later from inside a
+    contraction.
+    """
+    unknown = [k for k in demand.kinds if k not in KINDS]
+    if unknown:
+        raise ValueError(f"unknown integral kind(s) {unknown}; expected {list(KINDS)}")
+    missing = [k for k in demand.kinds if getattr(source, k, None) is None]
+    if missing:
+        raise NotImplementedError(
+            f"{type(source).__name__} cannot build {', '.join(missing)}. "
+            f"It serves {', '.join(k for k in KINDS if getattr(source, k, None))}. "
+            "Use the dense source, or teach this one the missing kind."
+        )
 
 
 @dataclass(frozen=True)
@@ -77,6 +107,16 @@ class Demand:
     #: atom's auxiliary functions.
     aux_atom_to_paos: list = field(default_factory=list)
 
+    #: Which of :data:`KINDS` the calculation will read. MP2 declares ``q_ia``
+    #: alone; coupled cluster declares all three.
+    #:
+    #: Part of the demand rather than implied by which accessor gets called,
+    #: because the point of declaring is to be asked everything at once. A
+    #: source sizing buffers needs to know it will be asked for ``(Q|a b)``
+    #: before it builds ``(Q|i a)``, and a source that cannot build one at all
+    #: should refuse now (:func:`check_kinds`) rather than at the call.
+    kinds: tuple = ("q_ia",)
+
     def is_empty(self):
         return not self.aux_domains and not self.pao_domains
 
@@ -117,6 +157,23 @@ class ThreeIndexSource(Protocol):
         one.
         """
 
+    def q_ij(self):
+        """``(Q | i j)`` over the full LMO space, ``(naux, naocc, naocc)``.
+
+        psi4's ``compute_qij``. Read by the coupled-cluster one-external
+        integrals; MP2 never asks for it. Optional: a source that does not
+        define it declines the ``q_ij`` kind, and :func:`check_kinds` says so.
+        """
+
+    def q_ab(self):
+        """``(Q | u v)`` over the full PAO space, ``(naux, npao, npao)``.
+
+        psi4's ``compute_qab``. Read by the coupled-cluster two- and
+        three-external integrals, and by far the largest of the three: the PAOs
+        span the whole AO basis, so this is ``naux * nbf^2`` where ``q_ia`` is
+        ``naux * naocc * nbf``. Optional, like :meth:`q_ij`.
+        """
+
 
 class DenseSource:
     """Build the whole ``(naux, naocc, npao)`` tensor from a dense ``(Q|mn)``.
@@ -131,15 +188,20 @@ class DenseSource:
     def __init__(self, eri_3index):
         self._eri_3index = eri_3index
         self._spaces = None
-        self._q_ia = None
+        self._kinds = ("q_ia",)
+        self._blocks = {}
 
     @property
     def screening_threshold(self) -> float:
         return 0.0
 
     def declare(self, spaces: Spaces, demand: Demand) -> None:
-        # The demand is not consulted. See the class docstring.
+        # Only the KINDS are consulted, and only so that a run wanting q_ia
+        # alone does not pay for the two the coupled-cluster layers want. The
+        # domains are ignored, which is the whole point. See the class docstring.
+        check_kinds(self, demand)
         self._spaces = spaces
+        self._kinds = tuple(demand.kinds)
 
     def build(self) -> None:
         if self._spaces is None:
@@ -154,8 +216,8 @@ class DenseSource:
         # ethanol/cc-pVTZ - and it arrives C-contiguous, so copying it into a
         # column-major (Q, m, n) tensor reorders every element for nothing: 18 ms
         # of transpose against 3 ms of memcpy. Taking it reversed makes the copy
-        # a memcpy and costs only that the two contractions below are written
-        # with their indices reversed as well.
+        # a memcpy and costs only that the contractions below are written with
+        # their indices reversed as well.
         Qmn = ten.from_numpy_reversed("(n m Q)", self._eri_3index)
 
         # Occupied index first. Both orders give the same answer, but the
@@ -171,18 +233,65 @@ class DenseSource:
         # choice is not about its own copy cost: leaving it as (n, i, Q) keeps
         # the contracted index leading in both operands, which is the batched
         # GEMM shape, where mixing the orders puts a permute back in.
-        half = ten.empty("(n i Q)", [nbf, naocc, naux])
-        einsums.einsum("niQ <- nmQ ; mi", half, Qmn, C_lmo)
-        self._q_ia = ten.empty("(Q|i u)", [naux, naocc, npao])
-        einsums.einsum("Qiu <- niQ ; nu", self._q_ia, half, C_pao)
+        #
+        # Both LMO-first kinds share this one half-transform, which is most of
+        # what either costs.
+        if {"q_ia", "q_ij"} & set(self._kinds):
+            half = ten.empty("(n i Q)", [nbf, naocc, naux])
+            einsums.einsum("niQ <- nmQ ; mi", half, Qmn, C_lmo)
+            if "q_ia" in self._kinds:
+                q_ia = ten.empty("(Q|i u)", [naux, naocc, npao])
+                einsums.einsum("Qiu <- niQ ; nu", q_ia, half, C_pao)
+                self._blocks["q_ia"] = q_ia
+            if "q_ij" in self._kinds:
+                q_ij = ten.empty("(Q|i j)", [naux, naocc, naocc])
+                einsums.einsum("Qij <- niQ ; nj", q_ij, half, C_lmo)
+                self._blocks["q_ij"] = q_ij
+            del half
+
+        # (Q|u v) has no cheap index to lead with: both are PAOs, so its half
+        # transform is nbf * npao * naux, the size of the AO integrals
+        # themselves, and the result is that size again. It is the reason the
+        # coupled-cluster layers are the ones that declare it - a dense
+        # (Q|uv) is what makes this source the oracle rather than the
+        # production path, exactly as it already is for (Q|iu).
+        if "q_ab" in self._kinds:
+            half_pao = ten.empty("(n u Q)", [nbf, npao, naux])
+            einsums.einsum("nuQ <- nmQ ; mu", half_pao, Qmn, C_pao)
+            q_ab = ten.empty("(Q|u v)", [naux, npao, npao])
+            einsums.einsum("Quv <- nuQ ; nv", q_ab, half_pao, C_pao)
+            self._blocks["q_ab"] = q_ab
+            del half_pao
+
+    def _block(self, kind):
+        hit = self._blocks.get(kind)
+        if hit is None:
+            if self._spaces is None:
+                raise RuntimeError(f"build() before {kind}()")
+            raise RuntimeError(
+                f"{kind}() was not declared; the demand asked for "
+                f"{', '.join(self._kinds)}"
+            )
+        return hit
 
     def q_ia(self):
-        if self._q_ia is None:
-            raise RuntimeError("build() before q_ia()")
-        return self._q_ia
+        return self._block("q_ia")
+
+    def q_ij(self):
+        return self._block("q_ij")
+
+    def q_ab(self):
+        return self._block("q_ab")
 
     def describe(self):
         """One line for the solver's own report."""
-        shape = ten.shape(self._q_ia)
-        return (f"(Q|iu) is {shape[0]} x {shape[1]} x {shape[2]} "
-                f"({ten.view(self._q_ia).nbytes / 2**20:.1f} MiB, dense)")
+        parts = []
+        for kind in KINDS:
+            block = self._blocks.get(kind)
+            if block is None:
+                continue
+            shape = ten.shape(block)
+            label = {"q_ia": "(Q|iu)", "q_ij": "(Q|ij)", "q_ab": "(Q|uv)"}[kind]
+            parts.append(f"{label} {shape[0]}x{shape[1]}x{shape[2]} "
+                         f"({ten.view(block).nbytes / 2**20:.1f} MiB)")
+        return ", ".join(parts) + " (dense)"

@@ -27,10 +27,10 @@ import einsums
 from einsums import linalg as la
 import einsums.graph as cg
 
-from . import cost
 from . import integrals
 from . import sparse
 from . import tensors as ten
+from .layout import PairLayout
 from .thresholds import Thresholds
 
 __all__ = ["DLPNOBase"]
@@ -72,6 +72,7 @@ class DLPNOBase:
         self.lmopair_to_paos = []
         self.lmopair_to_ribfs = []
         self.lmopair_to_lmos = []
+        self.lmopair_to_lmos_dense = None
         self.dipole_pair_e = None
         self.dipole_pair_e_bound = None
         #: Correlation energy of the pairs dropped by prescreening, added back
@@ -80,9 +81,11 @@ class DLPNOBase:
         #: One canonical object per distinct domain; see _intern.
         self._interned = {}
 
-        # compute_metric / compute_qia
+        # compute_metric / compute_qia / compute_qij / compute_qab
         self.metric = None
         self.q_ia = None
+        self.q_ij = None
+        self.q_ab = None
 
         # Per-domain results shared across pairs (see _fit_coefficients and
         # _canonical_pao_domain). Screening multiplies the number of distinct
@@ -97,6 +100,7 @@ class DLPNOBase:
         # pno_transform. The per-pair amplitude/integral blocks live in flat
         # rank-3 stores with the PAIR INDEX TRAILING; see _allocate_pair_stores.
         self.npno_max = 0
+        self.layout = None
         self.K_all = None
         self.T_all = None
         self.Tt_all = None
@@ -438,9 +442,83 @@ class DLPNOBase:
                 e_bound[i, j] = e_bound[j, i] = scale * np.sum(num_linear / denom)
         return e_pair, e_bound
 
+    # -- the two LMO domain constructions ----------------------------------
+    #
+    # Both take their threshold as an argument rather than reading ``self.cut``,
+    # because a coupled-cluster triples calculation builds each of them THREE
+    # times at three different thresholds: once for the pairs
+    # (``t_cut_mkn`` / ``t_cut_do``), once for the triples prescreening pass
+    # (``*_triples_pre``) and once for the production triples pass
+    # (``*_triples``). psi4 duplicates the loops in ``triples_sparsity``; here
+    # they are the same code called with different numbers, which is the only
+    # way the two passes cannot drift apart.
+
+    def mulliken_aux_domains(self, t_cut_mkn):
+        """Per LMO, the auxiliary functions of the atoms it has population on.
+
+        psi4's fitting-domain construction: build the Mulliken population
+        matrix of one LMO, split each off-diagonal element between its two
+        centres in proportion to their diagonal populations, and keep every
+        atom above the threshold, all-or-nothing over that atom's auxiliary
+        functions.
+
+        With no grid available - the untruncated reference calculation - every
+        LMO gets the full auxiliary basis, matching the pair path.
+        """
+        ref = self.ref
+        naocc, naux = ref.naocc, ref.naux
+        if self.doi_ij is None:
+            return [self._intern(range(naux))] * naocc
+
+        C_lmo = ten.view(self.C_lmo)
+        S = np.asarray(ref.S)
+        natom = len(ref.atom_to_bf)
+        bf_to_atom = np.empty(ref.nbf, dtype=int)
+        for a, bfs in enumerate(ref.atom_to_bf):
+            bf_to_atom[list(bfs)] = a
+
+        out = []
+        for i in range(naocc):
+            c = C_lmo[:, i]
+            P = c[:, None] * S * c[None, :]
+            d = np.diag(P)
+            denom = d[:, None] + d[None, :]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                share_u = np.where(denom != 0.0, P * (d[:, None] / denom), 0.0)
+                share_v = np.where(denom != 0.0, P * (d[None, :] / denom), 0.0)
+            pop = np.zeros(natom)
+            np.add.at(pop, bf_to_atom, share_u.sum(axis=1))
+            np.add.at(pop, bf_to_atom, share_v.sum(axis=0))
+
+            ribfs = []
+            for a in range(natom):
+                if abs(pop[a]) > t_cut_mkn:
+                    ribfs.extend(ref.atom_to_ribf[a])
+            out.append(self._intern(sorted(ribfs)))
+        return out
+
+    def doi_pao_domains(self, t_cut_do):
+        """Per LMO, the PAOs it has differential overlap with, whole atoms.
+
+        With no grid available every LMO gets every PAO, which is the
+        untruncated calculation.
+        """
+        ref = self.ref
+        naocc = ref.naocc
+        npao = ten.shape(self.C_pao)[1]
+        if self.doi_ij is None:
+            return [self._intern(range(npao))] * naocc
+
+        out = []
+        for i in range(naocc):
+            paos = [u for u in range(npao) if abs(self.doi_iu[i, u]) > t_cut_do]
+            # Any PAO on an atom pulls in all of that atom's PAOs.
+            out.append(self._intern(sparse.contract_lists(paos, ref.atom_to_bf)))
+        return out
+
     # -- psi4 DLPNO::prep_sparsity -----------------------------------------
 
-    def prep_sparsity(self):
+    def prep_sparsity(self, initial=True, final=False):
         """Significant LMO pairs and their PAO/auxiliary domains.
 
         This is where "domain-based local" stops being a name. Three independent
@@ -464,6 +542,35 @@ class DLPNOBase:
         With no grid available, or with the thresholds switched off, every pair
         and every domain is complete and this reduces to the untruncated
         calculation that validates against canonical DF-MP2.
+
+        **The two flags are psi4's, and a coupled-cluster calculation uses all
+        three of their meaningful combinations.** MP2 calls this once, at the
+        defaults, and gets everything. CC calls it three times, and what it
+        wants each time is different:
+
+        ``prep_sparsity(True, False)``
+            The crude pass, at deliberately loosened thresholds. Everything is
+            built, including the dipole screen that decides the pair list.
+
+        ``prep_sparsity(False, False)``
+            The refined pass, at full thresholds. Both domain families are
+            rebuilt tighter, but the pair list is NOT: crude prescreening has
+            already eliminated pairs from it, and rerunning the dipole screen
+            would put them back.
+
+        ``prep_sparsity(False, True)``
+            The final pass, after the strong/weak split. Only the PAO domains
+            and everything derived from the pair list are rebuilt. The auxiliary
+            domains are deliberately left alone, because the three-index
+            integrals already built are indexed against them and rebuilding one
+            without the other would silently mismatch.
+
+        Returns ``self``.
+
+        Args:
+            initial: Run the dipole prescreen and (re)build the pair list.
+            final: Skip the auxiliary domains, keeping them consistent with the
+                integrals already built against them.
         """
         ref = self.ref
         naocc = ref.naocc
@@ -478,95 +585,62 @@ class DLPNOBase:
             self.compute_doi()
         screening = self.doi_ij is not None
 
+        # A rerun invalidates both domain memos. They are keyed by ``id()`` of
+        # an interned domain list, and re-interning at a different threshold
+        # yields different objects, so a stale entry cannot be *reached* - but
+        # a domain that comes out identical WOULD be reached, and then the
+        # entry's correctness rests on the fit and the PAO decomposition not
+        # depending on anything that changed. That happens to hold, and it is
+        # not a thing to depend on silently.
+        if self.i_j_to_ij is not None:
+            self._fit_cache.clear()
+            self._pao_domain_cache.clear()
+
         # -- LMO -> auxiliary domain, by Mulliken population ----------------
-        # Population bookkeeping rather than tensor algebra: the products are
-        # elementwise and the result is an index list, not an operand.
-        if screening:
-            C_lmo = ten.view(self.C_lmo)
-            S = np.asarray(ref.S)
-            natom = len(ref.atom_to_bf)
-            bf_to_atom = np.empty(ref.nbf, dtype=int)
-            for a, bfs in enumerate(ref.atom_to_bf):
-                bf_to_atom[list(bfs)] = a
-
-            self.lmo_to_ribfs = []
-            for i in range(naocc):
-                c = C_lmo[:, i]
-                P = c[:, None] * S * c[None, :]
-                d = np.diag(P)
-                denom = d[:, None] + d[None, :]
-                # psi4 splits each off-diagonal population between the two
-                # centres in proportion to their diagonal populations.
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    share_u = np.where(denom != 0.0, P * (d[:, None] / denom), 0.0)
-                    share_v = np.where(denom != 0.0, P * (d[None, :] / denom), 0.0)
-                pop = np.zeros(natom)
-                np.add.at(pop, bf_to_atom, share_u.sum(axis=1))
-                np.add.at(pop, bf_to_atom, share_v.sum(axis=0))
-
-                ribfs = []
-                for a in range(natom):
-                    if abs(pop[a]) > self.cut.t_cut_mkn:
-                        ribfs.extend(ref.atom_to_ribf[a])
-                self.lmo_to_ribfs.append(self._intern(sorted(ribfs)))
-        else:
-            self.lmo_to_ribfs = [self._intern(range(naux))] * naocc
+        # Skipped in the final pass: see the flag discussion above.
+        if not final:
+            self.lmo_to_ribfs = self.mulliken_aux_domains(self.cut.t_cut_mkn)
 
         # -- LMO -> PAO domain, by differential overlap ---------------------
-        if screening:
-            self.lmo_to_paos = []
-            for i in range(naocc):
-                paos = [u for u in range(npao) if abs(self.doi_iu[i, u]) > self.cut.t_cut_do]
-                # Any PAO on an atom pulls in all of that atom's PAOs.
-                self.lmo_to_paos.append(
-                    self._intern(sparse.contract_lists(paos, ref.atom_to_bf)))
-        else:
-            self.lmo_to_paos = [self._intern(range(npao))] * naocc
+        self.lmo_to_paos = self.doi_pao_domains(self.cut.t_cut_do)
 
         # -- which (i, j) pairs survive -------------------------------------
-        self.de_dipole = 0.0
-        # Only worth building when a pair can actually be rejected. Under
-        # `untruncated()` the thresholds are negative, so every pair survives
-        # and the estimate would be an expensive unused quantity: one
-        # orthocanonicalization of the *full* PAO space per LMO.
-        prescreen = screening and (self.cut.t_cut_pre >= 0.0 or self.cut.t_cut_do_ij >= 0.0)
-        if prescreen:
-            self.dipole_pair_e, self.dipole_pair_e_bound = self._dipole_pair_energies()
-        else:
-            self.dipole_pair_e = self.dipole_pair_e_bound = np.zeros((naocc, naocc))
+        # Only in the initial pass. Later passes inherit the pair list, which by
+        # then carries the crude prescreening's eliminations as well as the
+        # dipole screen's.
+        if initial:
+            self.de_dipole = 0.0
+            # The estimate is only worth building when a pair can actually be
+            # rejected. Under `untruncated()` the thresholds are negative, so
+            # every pair survives and it would be an expensive unused quantity:
+            # one orthocanonicalization of the *full* PAO space per LMO.
+            prescreen = screening and (self.cut.t_cut_pre >= 0.0 or self.cut.t_cut_do_ij >= 0.0)
+            if prescreen:
+                self.dipole_pair_e, self.dipole_pair_e_bound = self._dipole_pair_energies()
+            else:
+                self.dipole_pair_e = self.dipole_pair_e_bound = np.zeros((naocc, naocc))
 
-        self.i_j_to_ij = np.full((naocc, naocc), -1, dtype=int)
-        self.ij_to_i_j = []
-        for i in range(naocc):
-            for j in range(naocc):
-                keep = (i == j) or not prescreen or (
-                    self.doi_ij[i, j] > self.cut.t_cut_do_ij
-                    or abs(self.dipole_pair_e_bound[i, j]) > self.cut.t_cut_pre
-                )
-                if keep:
-                    self.i_j_to_ij[i, j] = len(self.ij_to_i_j)
-                    self.ij_to_i_j.append((i, j))
-                else:
-                    self.de_dipole += self.dipole_pair_e[i, j]
-        self.ij_to_ji = [int(self.i_j_to_ij[j, i]) for (i, j) in self.ij_to_i_j]
+            self.i_j_to_ij = np.full((naocc, naocc), -1, dtype=int)
+            self.ij_to_i_j = []
+            for i in range(naocc):
+                for j in range(naocc):
+                    keep = (i == j) or not prescreen or (
+                        self.doi_ij[i, j] > self.cut.t_cut_do_ij
+                        or abs(self.dipole_pair_e_bound[i, j]) > self.cut.t_cut_pre
+                    )
+                    if keep:
+                        self.i_j_to_ij[i, j] = len(self.ij_to_i_j)
+                        self.ij_to_i_j.append((i, j))
+                    else:
+                        self.de_dipole += self.dipole_pair_e[i, j]
+            self.ij_to_ji = [int(self.i_j_to_ij[j, i]) for (i, j) in self.ij_to_i_j]
+        elif self.i_j_to_ij is None:
+            raise RuntimeError(
+                "prep_sparsity(initial=False) needs a pair list from an earlier "
+                "prep_sparsity(initial=True)"
+            )
 
-        # -- pair domains are the union of the two LMO domains --------------
-        self.lmopair_to_paos = [
-            self._intern(sparse.merge_lists(self.lmo_to_paos[i], self.lmo_to_paos[j]))
-            for (i, j) in self.ij_to_i_j
-        ]
-        self.lmopair_to_ribfs = [
-            self._intern(sparse.merge_lists(self.lmo_to_ribfs[i], self.lmo_to_ribfs[j]))
-            for (i, j) in self.ij_to_i_j
-        ]
-
-        # LMOs m for which both (i,m) and (j,m) survived. The residual's
-        # coupling sum runs over these, not over all naocc.
-        self.lmopair_to_lmos = [
-            [m for m in range(naocc)
-             if self.i_j_to_ij[i, m] != -1 and self.i_j_to_ij[j, m] != -1]
-            for (i, j) in self.ij_to_i_j
-        ]
+        self._build_pair_domains()
 
         n_pairs = self.n_lmo_pairs
         if screening:
@@ -585,6 +659,46 @@ class DLPNOBase:
                 f"  domains:  {n_pairs} LMO pairs "
                 f"({naocc}^2, no screening), {npao} PAOs and {naux} aux per pair"
             )
+        return self
+
+    def _build_pair_domains(self):
+        """Every per-pair domain, from the LMO domains and the pair list.
+
+        Split out of :meth:`prep_sparsity` because it has to run whenever
+        EITHER of its two inputs changes, and in a coupled-cluster calculation
+        the pair list changes without the LMO domains doing so: crude
+        prescreening deletes pairs, which invalidates ``lmopair_to_lmos`` for
+        every pair that coupled through one of them.
+        """
+        naocc = self.ref.naocc
+
+        # A pair's domain is the union of the two LMOs' domains. Interned, so
+        # that pairs landing on equal domains share one object and the
+        # per-domain caches keyed on ``id()`` stay effective.
+        self.lmopair_to_paos = [
+            self._intern(sparse.merge_lists(self.lmo_to_paos[i], self.lmo_to_paos[j]))
+            for (i, j) in self.ij_to_i_j
+        ]
+        self.lmopair_to_ribfs = [
+            self._intern(sparse.merge_lists(self.lmo_to_ribfs[i], self.lmo_to_ribfs[j]))
+            for (i, j) in self.ij_to_i_j
+        ]
+
+        # LMOs m for which both (i,m) and (j,m) survived. The residual's
+        # coupling sum runs over these, not over all naocc, and so does every
+        # one-external index in the CC residual.
+        self.lmopair_to_lmos = [
+            [m for m in range(naocc)
+             if self.i_j_to_ij[i, m] != -1 and self.i_j_to_ij[j, m] != -1]
+            for (i, j) in self.ij_to_i_j
+        ]
+        # psi4's ``lmopair_to_lmos_dense_``: the position of a global LMO index
+        # within a pair's list, or -1. The CC residual looks this up in inner
+        # loops, where scanning the list would be quadratic in the pair count.
+        self.lmopair_to_lmos_dense = np.full((self.n_lmo_pairs, naocc), -1, dtype=int)
+        for ij, lmos in enumerate(self.lmopair_to_lmos):
+            for slot, m in enumerate(lmos):
+                self.lmopair_to_lmos_dense[ij, m] = slot
         return self
 
     # -- psi4 DLPNO::pno_transform -----------------------------------------
@@ -614,6 +728,33 @@ class DLPNOBase:
 
         No metric is applied: DLPNO fits per pair domain, not globally.
         """
+        return self._build_integrals(("q_ia",))
+
+    def compute_qij(self):
+        """Three-index integrals ``(Q | i j)``, psi4's ``compute_qij``.
+
+        The LMO/LMO class, read only by the coupled-cluster one-external
+        integrals. Declared as its own phase rather than folded into
+        :meth:`compute_qia` because the two do not run at the same points: a CC
+        calculation builds ``(Q|i u)`` twice, once at crude domains and again at
+        refined ones, and ``(Q|i j)`` once, after the pair list has settled.
+        """
+        return self._build_integrals(("q_ij",))
+
+    def compute_qab(self):
+        """Three-index integrals ``(Q | u v)``, psi4's ``compute_qab``.
+
+        The PAO/PAO class, and the largest of the three by a wide margin: the
+        PAOs span the whole AO basis, so this is ``naux * nbf^2`` where
+        ``(Q|i u)`` is ``naux * naocc * nbf``. psi4 stores it sparsely, as the
+        PAO pairs belonging to each auxiliary atom; the port's dense source
+        materializes all of it, which is what makes it exact and what makes a
+        screened producer the eventual production path (design decision 5).
+        """
+        return self._build_integrals(("q_ab",))
+
+    def _build_integrals(self, kinds):
+        """Declare *kinds* against the current domains and ask the source for them."""
         # Distinct domains only. Pairs share them heavily - with screening off
         # there is exactly one - and a producer wants the set, not the multiset.
         seen_aux, seen_pao = {}, {}
@@ -625,15 +766,17 @@ class DLPNOBase:
         demand = integrals.Demand(aux_domains=list(seen_aux.values()),
                                   pao_domains=list(seen_pao.values()),
                                   aux_atom_to_lmos=atom_lmos,
-                                  aux_atom_to_paos=atom_paos)
+                                  aux_atom_to_paos=atom_paos,
+                                  kinds=tuple(kinds))
 
         self.integrals.declare(integrals.Spaces(C_lmo=self.C_lmo, C_pao=self.C_pao), demand)
         self.integrals.build()
-        self.q_ia = self.integrals.q_ia()
+        for kind in kinds:
+            setattr(self, kind, getattr(self.integrals, kind)())
 
         describe = getattr(self.integrals, "describe", None)
         self._print(f"  DF ints:  {describe()}" if describe is not None else
-                    f"  DF ints:  (Q|iu) from {type(self.integrals).__name__}")
+                    f"  DF ints:  {', '.join(kinds)} from {type(self.integrals).__name__}")
         return self
 
     def _aux_atom_demand(self, seen_aux, seen_pao):
@@ -1002,14 +1145,12 @@ class DLPNOBase:
           graph nodes to exactly one, because it is just an operation on the
           whole store.
 
-        Blocks are padded to ``npno_max`` and the padding is inert: the integrals
-        and amplitudes are zero there, the overlaps are zero there, and the
-        energy denominators are one, so padded components stay zero for the life
-        of the calculation and contribute nothing to any dot product. Bucketing
-        pairs by PNO count would avoid the wasted flops; padding is the simpler
-        thing that keeps every pair in one batchable store, and the waste is
-        small while the PNO counts are tight (18.1 average against a 19 maximum
-        for water/cc-pVDZ).
+        Blocks are padded to their bucket's dimension and the padding is inert:
+        the integrals and amplitudes are zero there, the overlaps are zero
+        there, and the energy denominators are one, so padded components stay
+        zero for the life of the calculation and contribute nothing to any dot
+        product. How the buckets are chosen, and why the layout is a value
+        rather than fields on this object, is :class:`~dlpno.layout.PairLayout`.
         """
         self.npno_max = max(self.n_pno) if self.n_pno else 0
         self._choose_buckets()
@@ -1018,170 +1159,52 @@ class DLPNOBase:
         self.Tt_all = self.new_pair_stores("Tt")
 
     def _choose_buckets(self):
-        """Partition pairs into groups by PNO count, and choose how many groups.
+        """Build this calculation's :class:`~dlpno.layout.PairLayout`.
 
-        Padding every pair to the global maximum is what makes the coupling
-        GEMMs batchable, but it is paid in padded volume: on ethanol/cc-pVDZ the
-        PNO counts run 5..48 against an average of 29, so a single store carries
-        2.7x the elements it needs. Splitting into buckets, each padded to its
-        own maximum, keeps the shapes uniform *within* a bucket (which is all the
-        batching needs) while cutting most of that waste.
-
-        More buckets is therefore cheaper per element, and it used to be much
-        dearer per call: shape classes are pairs of buckets, so B buckets meant
-        up to B^2 classes and the iteration issued a batched GEMM per class per
-        width group, each entering its own OpenMP region at tens of microseconds
-        on ten threads. Which side won was a property of the machine rather than
-        of the molecule, and a fixed count could not be right - measured on
-        ethanol/cc-pVTZ the best count ran 12, 8, 8, 4 at 1, 2, 4 and 10 threads.
-
-        That tension is now mostly gone. Both halves emit
-        ``grouped_batched_gemm``, which covers every shape under one region, so
-        the iteration issues ``1 + B`` calls rather than ``2 * groups * B^2``:
-        754 became 13 at twelve buckets on ethanol. The objective below still
-        carries a call term, because the calls are not free and the residual's
-        accumulation keeps one per partner bucket, but it no longer fights the
-        volume term hard enough to pull the choice down to 4.
-
-        Hence :func:`~dlpno.cost.bucket_penalty`, which turns the measured region
-        cost into the only free parameter here: how many padded elements one
-        extra batched call is worth. The objective is then
-
-            padded_volume + penalty * n_calls
-
-        Volume rather than the cubic flops this used to minimize. Fitting
-        measured iteration time against both, the cubic term's coefficient is
-        negligible and turns negative once threads are on: the padded GEMM flops
-        are simply not what the time is made of, and an objective that minimized
-        them was optimizing a term worth a few percent.
-
-        For a fixed bucket count the call term is constant, so the boundaries
-        still come from an exact segmentation DP - each PNO count contributes
-        independently once its bucket's maximum is fixed - and the count itself
-        is chosen by running that DP for each candidate. O(n^2 B^2) over the
-        distinct counts, microseconds at these sizes.
-
-        ``Thresholds.n_buckets`` overrides the choice when it is not None, which
-        is how the sweeps that calibrated this pin it.
+        The bucket boundaries and the objective that picks them live in
+        ``layout.py``, because a DLPNO-CCSD calculation needs two of them alive
+        at once - the MP2-level PNOs the prescreening LMP2 runs in, and the
+        tighter CC-level ones ``recompute_pnos`` produces - so the layout is a
+        value rather than a set of fields on the calculation.
         """
-        counts = sorted({n for n in self.n_pno if n})
-        if not counts:
-            self.bucket_dims, self.bucket_of, self.slot_of = [], [], []
-            self.bucket_members = []
-            return
+        self.layout = PairLayout.choose(self.n_pno, self.cut, report=self._print)
 
-        weight = [0] * len(counts)
-        index = {c: i for i, c in enumerate(counts)}
-        for n in self.n_pno:
-            if n:
-                weight[index[n]] += 1
-        prefix = [0] * (len(counts) + 1)
-        for i, w in enumerate(weight):
-            prefix[i + 1] = prefix[i] + w
+    # The layout's fields and accessors, forwarded. Reading ``self.bucket_of``
+    # rather than ``self.layout.bucket_of`` is what every existing consumer and
+    # every promoted C++ stage signature does, and there is no reason to churn
+    # them for a factoring whose point is that a SECOND layout can now exist.
 
-        # seg(j, i): counts[j:i] in one bucket, padded to counts[i-1]. The
-        # padded stores are (M, M, members), so a bucket's cost is its members
-        # times the square of the dimension they are padded to.
-        def seg(j, i):
-            return (prefix[i] - prefix[j]) * counts[i - 1] ** 2
+    @property
+    def bucket_dims(self):
+        return self.layout.bucket_dims
 
-        def best_boundaries(n_buckets):
-            """Exact DP: the boundaries minimizing padded volume for this count."""
-            INF = float("inf")
-            dp = [[INF] * (n_buckets + 1) for _ in range(len(counts) + 1)]
-            back = [[0] * (n_buckets + 1) for _ in range(len(counts) + 1)]
-            dp[0][0] = 0
-            for i in range(1, len(counts) + 1):
-                for b in range(1, n_buckets + 1):
-                    for j in range(i):
-                        if dp[j][b - 1] == INF:
-                            continue
-                        cost = dp[j][b - 1] + seg(j, i)
-                        if cost < dp[i][b]:
-                            dp[i][b] = cost
-                            back[i][b] = j
-            edges, i = [], len(counts)
-            for b in range(n_buckets, 0, -1):
-                edges.append(counts[i - 1])
-                i = back[i][b]
-            return sorted(edges), dp[len(counts)][n_buckets]
+    @property
+    def bucket_of(self):
+        return self.layout.bucket_of
 
-        if self.cut.n_buckets is not None:
-            n_buckets = max(1, min(int(self.cut.n_buckets), len(counts)))
-            self.bucket_dims, _ = best_boundaries(n_buckets)
-        else:
-            penalty = cost.bucket_penalty()
-            class_cost = cost.class_penalty()
-            best = None
-            for n_buckets in range(1, min(self.cut.max_buckets, len(counts)) + 1):
-                dims, volume = best_boundaries(n_buckets)
-                # One call for the whole first half, plus one per partner
-                # bucket for the second.
-                #
-                # This used to be ``2 * groups * n_buckets ** 2``, one call per
-                # shape class per width group per half, and that was right when
-                # a batched GEMM could only cover one shape. It no longer is:
-                # both halves emit ``grouped_batched_gemm``, which covers every
-                # shape under one OpenMP region. The couplings all write
-                # disjoint slots and collapse to a single call; the residual
-                # accumulates, so it collapses only as far as disjoint pairs
-                # allow, which is one call per partner bucket.
-                # See DLPNOMP2._emit_couplings and _emit_residual.
-                #
-                # The consequence is that the call term barely bends the
-                # objective any more, so this chooses close to the volume
-                # minimum - which is the whole point of having removed the
-                # calls. ``groups`` no longer enters: width groups subdivide a
-                # class, and subdividing a grouped call costs nothing.
-                n_calls = 1 + n_buckets
-                # The one-time graph build, which grows with the shape classes
-                # and used to be hidden behind the call term. See
-                # cost.CLASS_FLOOR_ELEMENTS: with the calls collapsed, this is
-                # the only thing left pulling against finer buckets, and without
-                # it the objective just saturates at max_buckets.
-                #
-                # B**2 is an upper bound on the classes actually present, which
-                # the coupling structure decides; it runs 60-95% of it here and
-                # is monotone in the bucket count, which is all the comparison
-                # needs. Same approximation the call term used to make.
-                n_classes = n_buckets ** 2
-                total = volume + penalty * n_calls + class_cost * n_classes
-                if best is None or total < best[0]:
-                    best = (total, dims, n_buckets)
-            self.bucket_dims = best[1]
-            self._print(f"  buckets:  {best[2]} chosen at {penalty:.0f} elements per call and "
-                        f"{class_cost:.0f} per shape class ({cost.penalty_source()}), "
-                        f"dims {self.bucket_dims}")
+    @property
+    def slot_of(self):
+        return self.layout.slot_of
 
-        self.bucket_of = [-1] * self.n_lmo_pairs
-        self.slot_of = [-1] * self.n_lmo_pairs
-        self.bucket_members = [[] for _ in self.bucket_dims]
-        for ij, n in enumerate(self.n_pno):
-            if n == 0:
-                continue
-            b = next(i for i, e in enumerate(self.bucket_dims) if e >= n)
-            self.bucket_of[ij] = b
-            self.slot_of[ij] = len(self.bucket_members[b])
-            self.bucket_members[b].append(ij)
+    @property
+    def bucket_members(self):
+        return self.layout.bucket_members
 
     def new_pair_stores(self, name):
         """One ``(M_b, M_b, n_b)`` tensor per bucket."""
-        return [
-            ten.zeros(f"{name} (bucket {b}, dim {M})", [M, M, len(members)])
-            for b, (M, members) in enumerate(zip(self.bucket_dims, self.bucket_members))
-        ]
+        return self.layout.new_stores(name)
 
     def pair_dim(self, ij):
         """The padded block dimension pair ``ij`` is stored at."""
-        return self.bucket_dims[self.bucket_of[ij]]
+        return self.layout.dim(ij)
 
     def pair_block(self, stores, ij):
         """The padded numpy view of pair ``ij``'s block within its bucket."""
-        return ten.view(stores[self.bucket_of[ij]])[:, :, self.slot_of[ij]]
+        return self.layout.block(stores, ij)
 
     def pair_view(self, stores, ij):
         """The einsums (capture-safe) view of pair ``ij``'s block."""
-        return stores[self.bucket_of[ij]][:, :, self.slot_of[ij]]
+        return self.layout.view(stores, ij)
 
     def pno_transform(self):
         """Build each pair's truncated, canonical PNO basis.
@@ -1210,6 +1233,27 @@ class DLPNOBase:
         self._finish_pno_transform(transform_pnos(**args))
         return self
 
+    def pno_criteria(self):
+        """The truncation criteria this method's PNO transform applies.
+
+        MP2 has only the occupation cutoff. psi4's ``DLPNO::pno_transform``
+        carries neither the trace nor the energy criterion and does not scale
+        the pair density for diagonal pairs, while ``DLPNOCCSD`` does all three
+        - so the difference between the branches is a returned value here
+        rather than a second copy of the transform.
+
+        ``diag_factor`` multiplies the occupation cutoff for a diagonal pair. It
+        folds together psi4's two separate diagonal adjustments, which is exact
+        rather than approximate: comparing ``|occ/2| >= s * tol`` is the same
+        test as ``|occ| >= 2 * s * tol``, and the halved eigenvalues are read
+        nowhere else - the trace criterion is a ratio and so is invariant, and
+        the energy criterion does not involve them at all. Doing it this way
+        avoids a second eigendecomposition input and keeps the MP2 path's
+        arithmetic untouched.
+        """
+        return dict(t_cut_pno=float(self.cut.t_cut_pno),
+                    t_cut_trace=0.0, t_cut_energy=0.0, diag_factor=1.0)
+
     def plan_pno_transform(self):
         """Warm the domain memos and pack the PNO numerics' arguments.
 
@@ -1226,6 +1270,7 @@ class DLPNOBase:
         take fifteen parameters.
         """
         F_lmo = ten.view(self.F_lmo)
+        crit = self.pno_criteria()
         upper = [ij for ij, (i, j) in enumerate(self.ij_to_i_j) if i <= j]
 
         self._warm_pao_domains(upper)
@@ -1258,6 +1303,8 @@ class DLPNOBase:
             lmo_j.append(int(j))
             shift.append(float(F_lmo[i, i] + F_lmo[j, j]))
             scale = 1.0
+            if i == j:
+                scale *= crit["diag_factor"]
             if i < self.ref.n_core or j < self.ref.n_core:
                 scale *= self.cut.t_cut_pno_core_scale
             pno_scale.append(float(scale))
@@ -1271,7 +1318,9 @@ class DLPNOBase:
             ribfs=ribfs, paos=paos, lmo_j=lmo_j,
             shift=shift, pno_scale=pno_scale,
             min_pnos=int(self.cut.min_pnos),
-            t_cut_pno=float(self.cut.t_cut_pno),
+            t_cut_pno=crit["t_cut_pno"],
+            t_cut_trace=crit["t_cut_trace"],
+            t_cut_energy=crit["t_cut_energy"],
         )
 
     def _finish_pno_transform(self, result):

@@ -95,7 +95,11 @@ def test_a_substituted_source_is_the_one_that_gets_used():
     class Doubled(integrals.DenseSource):
         def build(self):
             super().build()
-            np.asarray(self._q_ia, copy=False)[...] *= 2.0
+            # Through the accessor, not the storage. The dense source keeps its
+            # blocks in a dict now that it serves three integral classes, and a
+            # test that names the field would break every time that changes
+            # while proving nothing extra.
+            np.asarray(self.q_ia(), copy=False)[...] *= 2.0
 
     reference, _ = load_reference(SMALLEST)
     plain = _solver(); plain.compute_qia()

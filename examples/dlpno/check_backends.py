@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from einsums import stages
 
 import dlpno.stages  # noqa: F401  (declares the stages so the loader can match)
+from dlpno.ccsd import DLPNOCCSD
 from dlpno.mp2 import DLPNOMP2
 from dlpno.reference_io import load_reference
 from dlpno.thresholds import Thresholds
@@ -45,6 +46,13 @@ DEFAULT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures
 
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 parser.add_argument("--stage", default="compute_pno_overlaps", help="stage to compare")
+parser.add_argument(
+    "--method", default="mp2", choices=["mp2", "cc"],
+    help="which calculation to compare through. 'cc' runs the DLPNO-CCSD "
+         "prescreening cascade, which is the only path where the PNO "
+         "transform's trace and energy criteria are live at all: the MP2 "
+         "branch passes zero for both, so an mp2 comparison cannot exercise "
+         "them and a backend could disagree there undetected")
 parser.add_argument("--module", default="dlpno_stages", help="compiled stage module")
 parser.add_argument("--buckets", type=int, default=None,
                     help="PNO-count buckets to pad pair blocks into; default chooses per thread count")
@@ -63,6 +71,14 @@ def run(path, backend, label):
     stages.select(**{args.stage: backend})
     ref, extras = load_reference(path)
     t_cut_pno = float(extras["metadata"].get("t_cut_pno", 1e-8))
+    if args.method == "cc":
+        # No session: the CC cascade is not registered as stages yet, and the
+        # phases dispatch through the registry anyway, so the selected backend
+        # runs either way.
+        cc = DLPNOCCSD(ref, Thresholds.preset("NORMAL", method="cc",
+                                              n_buckets=args.buckets), verbose=False)
+        cc.compute_energy()
+        return cc
     thresholds = (Thresholds.untruncated(n_buckets=args.buckets) if label == "untrunc"
                   else Thresholds.preset("NORMAL", t_cut_pno=t_cut_pno, n_buckets=args.buckets))
     mp2 = DLPNOMP2(ref, thresholds, verbose=False)
@@ -78,21 +94,36 @@ paths = [p for p in sorted(glob.glob(os.path.join(DEFAULT_DIR, "*.npz")))
 if not paths:
     parser.error(f"no fixtures matched (looked in {DEFAULT_DIR})")
 
-print(f"comparing backends of {args.stage!r}\n")
+print(f"comparing backends of {args.stage!r} through {args.method}\n")
+# The CC cascade has no untruncated mode worth running here: with every
+# threshold off there is nothing to prescreen and the PNO criteria this is
+# checking are switched off again.
+LABELS = ("trunc",) if args.method == "cc" else ("untrunc", "trunc")
+FIELDS = {"mp2": ("e_lmp2", "e_corr", "de_pno_total"),
+          "cc": ("e_lmp2", "e_corr", "de_pno_total", "de_weak", "de_lmp2_eliminated")}[args.method]
 worst, failures = 0.0, []
 for path in paths:
     name = os.path.basename(path)
-    for label in ("untrunc", "trunc"):
+    for label in LABELS:
         py, cpp = run(path, "python", label), run(path, "cpp", label)
-        fields = ("e_lmp2", "e_corr", "de_pno_total")
-        delta = max(abs(getattr(py, f) - getattr(cpp, f)) for f in fields)
+        delta = max(abs(getattr(py, f) - getattr(cpp, f)) for f in FIELDS)
         worst = max(worst, delta)
-        ok = delta <= args.tol and py.n_iterations == cpp.n_iterations
+        ok = delta <= args.tol
+        if args.method == "cc":
+            # A PNO count that moves is a truncation decision that disagreed,
+            # which no energy tolerance would catch reliably: the criteria are
+            # data dependent, so one extra PNO can be worth less than the
+            # tolerance and still means the two backends decided differently.
+            counts = "same" if py.n_pno == cpp.n_pno else "DIFFER"
+            ok = ok and py.n_pno == cpp.n_pno
+            extra = f"  PNO counts {counts}"
+        else:
+            ok = ok and py.n_iterations == cpp.n_iterations
+            extra = f"  iters {py.n_iterations}/{cpp.n_iterations}"
         if not ok:
-            failures.append(f"{name} {label}: max|dE| = {delta:.3e}")
-        print(f"{'OK ' if ok else 'XX '}{name:<32} {label:<8} max|dE| = {delta:.3e}  "
-              f"iters {py.n_iterations}/{cpp.n_iterations}")
-        if args.prove:
+            failures.append(f"{name} {label}: max|dE| = {delta:.3e}{extra}")
+        print(f"{'OK ' if ok else 'XX '}{name:<32} {label:<8} max|dE| = {delta:.3e}{extra}")
+        if args.prove and args.method == "mp2":
             print(f"     python produced {py._S_cls[0].name!r}, cpp produced {cpp._S_cls[0].name!r}")
 
 print(f"\nworst disagreement: {worst:.3e}")
