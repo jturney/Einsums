@@ -80,9 +80,26 @@ struct ViewHolder {
 /// whose address is stable across re-emplaces, so the executor can refresh
 /// the slice's data pointer / dims / strides each iteration without
 /// invalidating slots that downstream ops captured by reference.
+///
+/// Everything the executor reads lives here rather than in its closure, so
+/// the closure is a single pointer: small enough for std::function's inline
+/// buffer, which keeps the recording path (a DLPNO capture builds 18k of
+/// these) off the heap for the lambda and off a second copy of the axes.
+/// The two scratch vectors are the executor's working space, allocated once
+/// at capture and re-filled each replay; before they existed every replay of
+/// every view node paid two fresh vector allocations.
 template <typename T>
 struct RuntimeViewHolder {
     std::optional<RuntimeTensorView<T>> view;
+
+    std::vector<ViewAxis>       axes;          ///< The slice recipe, moved in at capture.
+    std::vector<size_t>         perm;          ///< Axis permutation (empty == identity).
+    std::shared_ptr<ParamTable> params;        ///< Keeps the graph's table alive for resolve().
+    TensorSlot                 *parent_slot{}; ///< Where the parent's current address lives.
+    TensorSlot                 *slot{};        ///< Where this view publishes its address.
+
+    std::vector<size_t> scratch_dims;    ///< Reused per replay.
+    std::vector<size_t> scratch_strides; ///< Reused per replay.
 };
 
 } // namespace detail
@@ -313,8 +330,8 @@ TensorView<typename std::remove_cvref_t<ParentT>::ValueType, Rank> &permute_view
 /// iteration by re-emplacing a heap-stored RuntimeTensorView with new
 /// pointer / dims / strides.
 template <RuntimeRankTensorConcept ParentT>
-RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtime(ParentT &parent, std::vector<ViewAxis> const &axis_vec,
-                                                                                  std::vector<size_t> const &perm = {}) {
+RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtime(ParentT &parent, std::vector<ViewAxis> axis_vec,
+                                                                                  std::vector<size_t> perm = {}) {
     using T      = typename std::remove_cvref_t<ParentT>::ValueType;
     using Holder = detail::RuntimeViewHolder<T>;
 
@@ -348,14 +365,21 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     if (n_drop > 0 && !perm.empty())
         EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime: Drop axes cannot be combined with a permutation");
     size_t const result_rank = rank - n_drop;
-    auto const   parent_axis = [&perm](size_t i) -> size_t { return perm.empty() ? i : perm[i]; };
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime called outside of capture");
     }
 
-    auto *holder = new Holder;
+    // The recipe moves into the holder and is read from there for the rest of
+    // this function: the parameters are moved-from beyond this point.
+    auto *holder         = new Holder;
+    holder->axes         = std::move(axis_vec);
+    holder->perm         = std::move(perm);
+    auto const &axes_ref = holder->axes;
+    auto const &perm_ref = holder->perm;
+
+    auto const parent_axis = [&perm_ref](size_t i) -> size_t { return perm_ref.empty() ? i : perm_ref[i]; };
 
     // Placeholder: build a "full parent" view (permuted and/or with dropped
     // axes removed) so the holder's address is valid before the first
@@ -368,7 +392,7 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     // placeholder would mis-size them. Param-bounded ranges aren't known until
     // execute and fall back to the parent dim.
     auto const placeholder_dim = [&](size_t i, size_t p) -> size_t {
-        auto const &ax = axis_vec[i];
+        auto const &ax = axes_ref[i];
         if (ax.kind == ViewAxis::Kind::Range && ax.lo.is_const() && ax.hi.is_const())
             return static_cast<size_t>(ax.hi.const_value() - ax.lo.const_value());
         return parent.dim(p);
@@ -378,12 +402,13 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     // a view a data pointer distinct from its parent's, so get_slot doesn't
     // collide them, required for chained views (a slice of a slice) to
     // resolve the correct parent at execute.
-    std::ptrdiff_t      ph_offset = 0;
-    std::vector<size_t> parent_dims, parent_strides;
+    std::ptrdiff_t ph_offset      = 0;
+    auto          &parent_dims    = holder->scratch_dims;
+    auto          &parent_strides = holder->scratch_strides;
     parent_dims.reserve(result_rank);
     parent_strides.reserve(result_rank);
     for (size_t i = 0; i < rank; ++i) {
-        auto const  &ax = axis_vec[i];
+        auto const  &ax = axes_ref[i];
         size_t const p  = parent_axis(i);
         if (ax.kind != ViewAxis::Kind::Full && ax.lo.is_const())
             ph_offset += ax.lo.const_value() * static_cast<std::ptrdiff_t>(parent.stride(p));
@@ -418,44 +443,57 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     handle.aliases                  = parent_id;
 
     TensorId const slice_id = graph->register_tensor(std::move(handle));
-    auto          *slot     = ctx.create_slot_for(slice_ref, slice_id);
 
     ViewDescriptor desc;
     desc.parent_id   = parent_id;
-    desc.axes        = axis_vec;
+    desc.axes        = axes_ref;
     desc.result_rank = result_rank;
-    desc.permutation = perm;
+    desc.permutation = perm_ref;
 
-    auto params_ptr = ctx.params_ptr();
-    auto label      = fmt::format("view_rt {} <- {}", handle.name, parent.name());
+    holder->params      = ctx.params_ptr();
+    holder->parent_slot = parent_slot;
+    holder->slot        = ctx.create_slot_for(slice_ref, slice_id);
 
-    auto executor = [holder, axis_vec, perm, parent_slot, params_ptr, slot, rank]() {
-        if (!params_ptr)
+    auto label = fmt::format("view_rt {} <- {}", handle.name, parent.name());
+
+    // The closure is one pointer on purpose: it fits std::function's inline
+    // buffer, so recording a view does not heap-allocate for the executor,
+    // and the axes are not copied a second time into it. Everything the
+    // replay reads lives in the holder, whose lifetime the graph owns.
+    auto executor = [holder]() {
+        auto const &axes = holder->axes;
+        auto const &perm = holder->perm;
+        if (!holder->params)
             EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime executor: no ParamTable bound to graph");
 
         using ParentType = std::remove_cvref_t<ParentT>;
-        auto *parent_ptr = static_cast<ParentType *>(parent_slot->ptr);
+        auto *parent_ptr = static_cast<ParentType *>(holder->parent_slot->ptr);
         if (parent_ptr == nullptr)
             EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime executor: parent slot is null");
         if (parent_ptr->data() == nullptr)
             EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime executor: parent has no backing data (deferred?)");
 
-        std::vector<size_t> slice_dims, slice_strides; // result rank == #non-drop axes
-        std::ptrdiff_t      ptr_offset = 0;
+        // result rank == #non-drop axes. Scratch is reused across replays;
+        // its capacity survives the clear.
+        auto &slice_dims    = holder->scratch_dims;
+        auto &slice_strides = holder->scratch_strides;
+        slice_dims.clear();
+        slice_strides.clear();
+        std::ptrdiff_t ptr_offset = 0;
 
-        for (size_t i = 0; i < rank; ++i) {
-            // Result reads parent axis p (perm[i], or i for identity); axis_vec[i]
+        for (size_t i = 0; i < axes.size(); ++i) {
+            // Result reads parent axis p (perm[i], or i for identity); axes[i]
             // slices/drops that axis. Drop contributes only an offset (no result axis).
             size_t const p  = perm.empty() ? i : perm[i];
-            auto const  &ax = axis_vec[i];
+            auto const  &ax = axes[i];
             switch (ax.kind) {
             case ViewAxis::Kind::Full:
                 slice_dims.push_back(parent_ptr->dim(p));
                 slice_strides.push_back(parent_ptr->stride(p));
                 break;
             case ViewAxis::Kind::Range: {
-                std::int64_t const lo = ax.lo.resolve(*params_ptr);
-                std::int64_t const hi = ax.hi.resolve(*params_ptr);
+                std::int64_t const lo = ax.lo.resolve(*holder->params);
+                std::int64_t const hi = ax.hi.resolve(*holder->params);
                 if (lo < 0 || hi < lo || hi > static_cast<std::int64_t>(parent_ptr->dim(p)))
                     EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::view_runtime: range out of parent dim");
                 ptr_offset += lo * static_cast<std::ptrdiff_t>(parent_ptr->stride(p));
@@ -464,7 +502,7 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
                 break;
             }
             case ViewAxis::Kind::Drop: {
-                std::int64_t const idx = ax.lo.resolve(*params_ptr);
+                std::int64_t const idx = ax.lo.resolve(*holder->params);
                 if (idx < 0 || idx >= static_cast<std::int64_t>(parent_ptr->dim(p)))
                     EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::view_runtime: drop index out of parent dim");
                 ptr_offset += idx * static_cast<std::ptrdiff_t>(parent_ptr->stride(p));
@@ -475,7 +513,7 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
 
         T *slice_data = parent_ptr->data() + ptr_offset;
         holder->view.emplace(::einsums::detail::TensorImpl<T>(slice_data, slice_dims, slice_strides));
-        slot->ptr = &holder->view.value();
+        holder->slot->ptr = &holder->view.value();
     };
 
     ctx.record(OpKind::View, std::move(label), {parent_id}, {slice_id}, std::move(executor), std::move(desc));
@@ -532,7 +570,7 @@ APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<std::complex<double>>)
             axes.push_back(ViewAxis::range(lo, hi));
         }
     }
-    return view_runtime(parent, axes);
+    return view_runtime(parent, std::move(axes));
 }
 
 /// @brief Python-friendly indexed view supporting rank-reducing integer indices.
@@ -583,7 +621,44 @@ APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<std::complex<do
                                     kind);
         }
     }
-    return view_runtime(parent, axes);
+    return view_runtime(parent, std::move(axes));
+}
+
+/// @brief Batched @ref view_indexed_python: record N views of one parent in one call.
+///
+/// Same per-axis ``(kind, a, b)`` triples as ``view_indexed`` - ``0`` full,
+/// ``1`` range ``[a, b)``, ``2`` drop at ``a`` - one inner list per view, and
+/// the views come back in the order they were asked for.
+///
+/// This exists for callers that build many views of the same parent in a
+/// loop, which is the shape of every batched capture: slicing per-pair blocks
+/// out of a pair store issues thousands of these, and the per-call Python and
+/// pybind overhead - argument normalization, overload resolution, the
+/// crossing itself - was about a third of what each view cost. One crossing
+/// for N views leaves only the recording. The recorded graph is identical to
+/// N ``view_indexed`` calls; nothing downstream can tell the difference.
+template <RuntimeRankTensorConcept ParentT>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("graph")
+APIARY_RVP(reference)
+APIARY_INSTANTIATE_AS("views", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+APIARY_INSTANTIATE_AS("views", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+APIARY_INSTANTIATE_AS("views", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("views", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("views", einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("views", einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("views", einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("views", einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    std::vector<RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> *> views_python(
+        ParentT &parent, std::vector<std::vector<std::tuple<int, std::int64_t, std::int64_t>>> const &specs) {
+    std::vector<RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> *> out;
+    out.reserve(specs.size());
+    for (auto const &spec : specs) {
+        out.push_back(&view_indexed_python(parent, spec));
+    }
+    return out;
 }
 
 /// @brief Python-friendly transpose / axis-permutation view.
@@ -621,7 +696,7 @@ APIARY_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<std::complex<do
                                 parent.rank());
     }
     std::vector<ViewAxis> axes(parent.rank(), ViewAxis::full());
-    return view_runtime(parent, axes, perm);
+    return view_runtime(parent, std::move(axes), perm);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

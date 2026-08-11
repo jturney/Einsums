@@ -36,6 +36,7 @@ set(ComputeGraphTests
     GPUPasses.cpp
     GraphCapture.cpp
     GraphFeatures.cpp
+    GraphRegistry.cpp
     CostModel.cpp
     LoopOptimizationCorrectness.cpp
     MemoryNodes.cpp
@@ -92,6 +93,7 @@ set(ComputeGraphTests
     Workspace.cpp
     test_auto_view_python.py
     test_axpy_axpby_views_python.py
+    test_batched_views_python.py
     test_blas_python.py
     test_gather_python.py
     test_block_copy_python.py

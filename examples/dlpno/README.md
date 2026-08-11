@@ -151,39 +151,38 @@ The LMP2 rows split the one-time graph build (allocate, capture, optimize - a co
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| Setup Orbitals | 0.003 | 0.003 | 0.003 | 0.003 |
-| Sparsity | **0.012** | 0.092 | **0.013** | 0.054 |
-| DF Ints | 0.131 | **0.125** | **0.041** | 0.055 |
-| PNO Transform | 1.220 | **0.545** | 0.255 | **0.185** |
-| PNO Overlaps | 0.220 | **0.159** | **0.044** | 0.053 |
-| LMP2 iterations | 1.138 | **0.841** | 0.345 | **0.283** |
-| LMP2 graph build | - | 0.043 | - | 0.036 |
-| Overlap + Dipole Ints | 0.096 | - | 0.136 | - |
-| other | 0.000 | 0.012 | 0.001 | 0.007 |
-| **total** | 2.822 | **1.825** | 0.845 | **0.679** |
+| Setup Orbitals | 0.003 | 0.003 | 0.004 | **0.002** |
+| Sparsity | **0.013** | 0.091 | **0.013** | 0.052 |
+| DF Ints | 0.134 | **0.125** | **0.041** | 0.054 |
+| PNO Transform | 1.230 | **0.539** | 0.247 | **0.179** |
+| PNO Overlaps | 0.221 | **0.157** | **0.040** | 0.052 |
+| LMP2 iterations | 1.165 | **0.839** | 0.343 | **0.279** |
+| LMP2 graph build | - | 0.042 | - | 0.034 |
+| Overlap + Dipole Ints | 0.096 | - | 0.134 | - |
+| other | 0.001 | 0.007 | 0.000 | 0.004 |
+| **total** | 2.873 | **1.806** | 0.830 | **0.657** |
 
 **Water chain n=6, cc-pVDZ** - the extended system with many small pairs.
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
 | Setup Orbitals | 0.004 | **0.002** | 0.005 | **0.002** |
-| Sparsity | **0.013** | 0.081 | **0.012** | 0.062 |
-| DF Ints | 0.138 | 0.138 | **0.047** | 0.071 |
-| PNO Transform | 0.994 | **0.634** | **0.195** | 0.255 |
-| PNO Overlaps | 0.189 | **0.154** | **0.033** | 0.076 |
-| LMP2 iterations | 0.865 | **0.337** | 0.247 | **0.161** |
-| LMP2 graph build | - | 0.125 | - | 0.077 |
-| Overlap + Dipole Ints | 0.062 | - | 0.029 | - |
-| other | 0.000 | 0.049 | 0.001 | 0.030 |
-| **total** | 2.268 | **1.532** | **0.569** | 0.740 |
+| Sparsity | **0.013** | 0.080 | **0.012** | 0.061 |
+| DF Ints | 0.138 | 0.137 | **0.046** | 0.069 |
+| PNO Transform | 0.991 | **0.632** | **0.193** | 0.238 |
+| PNO Overlaps | 0.191 | **0.147** | **0.032** | 0.072 |
+| LMP2 iterations | 0.859 | **0.336** | 0.245 | **0.160** |
+| LMP2 graph build | - | 0.123 | - | 0.076 |
+| Overlap + Dipole Ints | 0.063 | - | 0.029 | - |
+| other | 0.000 | 0.020 | 0.000 | 0.013 |
+| **total** | 2.267 | **1.478** | **0.566** | 0.695 |
 
-The port wins ethanol at both thread counts and the chain serially, and is 1.30x psi4 on the chain at ten threads.
-One caveat on the ethanol threaded win: psi4's own `Dipole Ints` measures 0.126 s at ten threads against 0.064 s at one, so part of that margin is psi4 getting slower rather than the port getting faster.
-The chain is where the work is, and its remaining 0.171 s divides as the graph build 0.077, the transform 0.060, `Sparsity` 0.050, the overlaps 0.043, `other` 0.029 and `DF Ints` 0.024, against a 0.086 s credit from the iterations and 0.029 s psi4 spends on integrals the port takes from its reference.
-`DF Ints` used to head that list at 0.119 and is now last.
-The graph build and the transform have swapped places between sessions, so read them as jointly the largest item rather than ranked: the difference between them is within the 3% the whole benchmark moves run to run.
+The port wins ethanol at both thread counts and the chain serially, and is 1.23x psi4 on the chain at ten threads.
+One caveat on the ethanol threaded win: psi4's own `Dipole Ints` measures 0.124 s at ten threads against 0.064 s at one, so part of that margin is psi4 getting slower rather than the port getting faster.
+The chain is where the work is, and its remaining 0.129 s divides as the graph build 0.076, `Sparsity` 0.049, the transform 0.045, the overlaps 0.040, `DF Ints` 0.023 and `other` 0.013, against a 0.085 s credit from the iterations and 0.029 s psi4 spends on integrals the port takes from its reference.
+That gap was 0.171 s until the graph-teardown finding below, and 0.248 before the screened integral source; `DF Ints`, which once led it at 0.119, is now next to last.
 
-Per LMP2 iteration the port is 0.39x psi4 on the chain and 0.82x on ethanol single threaded, and 0.68x (chain) to 0.91x (ethanol) threaded: the iteration engine is ahead everywhere measured, by the largest margin where the pairs are smallest and most numerous.
+Per LMP2 iteration the port is 0.40x psi4 on the chain and 0.80x on ethanol single threaded, and 0.68x (chain) to 0.91x (ethanol) threaded: the iteration engine is ahead everywhere measured, by the largest margin where the pairs are smallest and most numerous.
 It was 1.03x and 1.42x threaded before the couplings and the residual both became grouped batched GEMMs, which put every shape class under one OpenMP region and took the chain from 754 batched calls per iteration to 13.
 The serial iteration is about a fifth better than before the bucket chooser landed: with no OpenMP region to pay for, it pads tighter than the fixed four buckets it replaced.
 The folded body replays under the default executor - an OpenMP team across its nodes would nest the batched GEMMs inside OpenBLAS's threads - so the repack's parallelism lives inside the node instead: `cg::gather` runs its outer walk on an OpenMP team when it is not already inside one, which its disjoint-by-construction writes make safe.
@@ -229,7 +228,15 @@ What the build is actually made of is view construction, not emission: building 
 Flattening each shape class once and slicing the flat form, rather than slicing and reshaping per member, took 12390 of those round trips down to 380 and the build from 0.125 s to 0.103.
 The other third of the build was `end_capture`, which is the graph's hazard scan - alias resolution, effective I/O, pairwise view-box intersection - and it ran twice, once to build the Kahn adjacency and once to key the dependency lists to the sorted node order.
 Since every hazard edge points forward, the sort is the identity and the second scan rederived what the first already had; running it once took `end_capture` from 28 ms to 17 (`Graph::topological_sort`).
-Cutting the per-view cost itself is the next lever and is not a Python-side one: of the 2.8 us a capture-mode slice costs, 1.9 is inside `cg::view_indexed` recording the node, and it is roughly ten heap allocations rather than any single hot spot.
+The per-view cost was cut next, in einsums core rather than here: the recording path's executor closure shrank to a single pointer (it fits `std::function`'s inline buffer, so recording no longer heap-allocates for the lambda or copies the axis list twice), which took `cg::view_indexed` from 2.7 us to 1.9, and the executor's per-replay scratch vectors are allocated once and reused.
+A correction that matters for anyone reading the older analysis: the build's 18k views are EAGER slices - `_allocate_iteration_tensors` runs before the capture and hands long-lived views in - so a batched capture-mode API does not touch them.
+`cg.views` (N views of one parent in one crossing) exists now and is the right tool for capture loops, but the port records only ~800 capture-mode views per run, all in the transform, so it deliberately does not use it.
+
+The largest single finding of that round was not in the build at all but in graph TEARDOWN, and it was invisible precisely because it ran inside whichever phase happened to drop a graph.
+Every executed graph is registered for the profiler, and on destruction it serialized its complete structure to JSON into a global post-mortem cache - unconditionally, whether anything would ever read it, and the cache grew without bound.
+Measured by leaking every graph so destruction fell outside the timers, that was 0.080 s of the chain's ten-thread run: 0.041 in the transform, 0.029 in LMP2.
+The serialization is now gated on someone actually collecting (`--einsums:profiler-save` configured, or a viewer attached), and the cache replaces by graph name instead of appending.
+A viewer that attaches mid-run still sees every live graph; what it loses is the post-mortem record of graphs that died before it connected.
 The rest is the serial layer psi4 does not have: the transform's capture emission and memo-warming solves, the graph build, and the numpy bookkeeping phases - work that is constant while the replays shrink with cores.
 
 Two lessons from taking these numbers, both now guarded.

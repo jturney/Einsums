@@ -86,7 +86,14 @@ def _program(draw):
 def _np_step(arrs, s):
     k = s[0]
     if k == "gemm":
-        _, al, a, b, be, c = s; arrs[c] = al * (arrs[a] @ arrs[b]) + be * arrs[c]
+        # beta == 0 means C is NOT read, by the BLAS contract ("when beta is
+        # zero, C need not be set on input"), and the graph's gemm honors it.
+        # The naive formula reads C anyway, and in the overflow regime the
+        # difference is observable: 0.0 * inf is nan where BLAS leaves the
+        # alpha*A@B term untouched. Found by this fuzzer (seed 100, a 1x1
+        # squared five times); the graph was right and this oracle was wrong.
+        _, al, a, b, be, c = s
+        arrs[c] = al * (arrs[a] @ arrs[b]) + (be * arrs[c] if be != 0.0 else 0.0)
     elif k == "scale":
         _, al, a = s; arrs[a] = al * arrs[a]
     elif k == "axpy":

@@ -3087,19 +3087,61 @@ void register_graph(Graph *graph) {
 }
 
 namespace {
-/// Cache of graph JSON for graphs that have been destroyed.
-/// This allows export_session() to include graph data even after the Graph objects go out of scope.
-std::vector<std::string> g_cached_graph_jsons;
+/// Cache of graph JSON for graphs that have been destroyed, keyed by graph
+/// name with the same replace-on-collision rule as the live registry. This
+/// allows export_session() to include graph data even after the Graph objects
+/// go out of scope. Keying by name is what bounds it: a run that builds and
+/// destroys a same-named graph repeatedly re-caches one entry instead of
+/// appending forever.
+std::vector<std::pair<std::string, std::string>> g_cached_graph_jsons;
+
+/// Whether anything can ever read a dead graph's JSON: the shutdown exporter
+/// (--einsums:profiler-save) or an attached viewer client. Serializing a graph
+/// is O(nodes) string building and runs in the destructor, inside whatever
+/// phase happens to drop the graph - measured at 41 ms of a 345 ms DLPNO
+/// transform phase before it was gated - so it must not happen on the default
+/// path, where the profiler server listens but nobody is collecting. A viewer
+/// that attaches later still sees every live graph; what it loses is only the
+/// post-mortem record of graphs that died before it connected.
+bool graph_json_cache_wanted() {
+#if defined(EINSUMS_HAVE_PROFILER)
+    auto &prof = profile::Profiler::instance();
+    if (!prof.enabled())
+        return false;
+    // Read the config each time rather than latching it: a graph dies once,
+    // so this is not a hot path, and the tests flip the key at runtime.
+    bool save_configured = false;
+    try {
+        save_configured = !GlobalConfigMap::get_singleton().get_string("profiler-save", "").empty();
+    } catch (...) { // NOLINT
+    }
+    if (save_configured)
+        return true;
+    auto const *srv = prof.server();
+    return srv != nullptr && srv->has_client();
+#else
+    return false;
+#endif
+}
 } // namespace
 
 void unregister_graph(Graph *graph) {
     std::scoped_lock const lock(g_registry_mutex);
 
-    // Cache the graph's JSON before removing it, so it survives destruction.
     auto it = std::ranges::find(g_registered_graphs, graph);
-    if (it != g_registered_graphs.end()) {
-        g_cached_graph_jsons.push_back(graph->to_json());
-        g_registered_graphs.erase(it);
+    if (it == g_registered_graphs.end())
+        return;
+    g_registered_graphs.erase(it);
+
+    if (!graph_json_cache_wanted())
+        return;
+
+    // Cache the graph's JSON before it is gone, so it survives destruction.
+    auto cached = std::ranges::find_if(g_cached_graph_jsons, [&](auto const &entry) { return entry.first == graph->name(); });
+    if (cached != g_cached_graph_jsons.end()) {
+        cached->second = graph->to_json();
+    } else {
+        g_cached_graph_jsons.emplace_back(graph->name(), graph->to_json());
     }
 }
 
@@ -3116,12 +3158,15 @@ std::string registered_graphs_json() {
         result += g->to_json();
     }
 
-    // Include cached JSON from destroyed graphs.
-    for (auto const &cached : g_cached_graph_jsons) {
+    // Include cached JSON from destroyed graphs, skipping any name a live
+    // graph has since reclaimed - the live one is the current truth.
+    for (auto const &[name, json] : g_cached_graph_jsons) {
+        if (std::ranges::any_of(g_registered_graphs, [&](Graph const *g) { return g->name() == name; }))
+            continue;
         if (!first)
             result += ",";
         first = false;
-        result += cached;
+        result += json;
     }
 
     result += "]}";

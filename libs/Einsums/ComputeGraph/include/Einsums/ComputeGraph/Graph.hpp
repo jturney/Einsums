@@ -2043,6 +2043,6 @@ void unregister_graph(Graph *graph);
  * Returns a JSON object with key "graphs" containing an array of graph JSON objects.
  * Used by the profiler server's "get_compute_graphs" handler.
  */
-std::string registered_graphs_json();
+EINSUMS_EXPORT std::string registered_graphs_json();
 
 EINSUMS_NAMESPACE_END(compute_graph)
