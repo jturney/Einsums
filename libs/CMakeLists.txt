@@ -60,8 +60,31 @@ if(EINSUMS_WITH_EXPERIMENTAL)
 endif()
 
 include(Einsums_CodeCoverage)
+
+# Coverage used to force STATIC here. It no longer does, and that is a
+# correctness fix rather than a tidy-up.
+#
+# A static libEinsums is not the same program: every Python extension module
+# links its own copy of the library's state. With one module that is merely
+# wasteful, but the test suite builds several (_core plus the stage probes), and
+# then there are several profilers, several string tables, several sealed-world
+# identities and several stage-module registries in one process. The
+# sealed-world handshake exists to detect exactly that and correctly refused the
+# probes; the profiler had no such defence and resolved an id against the wrong
+# table, which killed the consumer thread outright on the Linux coverage leg.
+#
+# Nothing about measuring coverage requires it. The Linux path is object-file
+# based - lcov captures .gcda next to the objects - and never cared. Only the
+# macOS llvm-cov path did, because it exported from the test binaries alone, so
+# a shared library's coverage mapping would not have been in anything it was
+# handed. That is a property of the export command, which now passes the library
+# as an object too, not a property of coverage.
+#
+# BUILD_SHARED_LIBS=OFF still selects STATIC. That is someone asking for a
+# static build on purpose, and the multi-module tests gate themselves on the
+# library's actual type.
 set(einsums_libs_public_static SHARED)
-if(EINSUMS_WITH_COVERAGE OR NOT BUILD_SHARED_LIBS)
+if(NOT BUILD_SHARED_LIBS)
   set(einsums_libs_public_static STATIC)
 endif()
 

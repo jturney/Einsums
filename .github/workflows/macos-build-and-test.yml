@@ -103,15 +103,35 @@ jobs:
         working-directory: "${{github.workspace}}/build"
         run: |
           export PROFILES=$(find . -name "*.profraw")
-          export BINARIES="$(find . -name "*_test")"
           echo "PROFILES=$PROFILES"
-          echo "BINARIES=$BINARIES"
           # --failure-mode=warn: a stray/truncated default.profraw (an instrumented
           # binary that ran without LLVM_PROFILE_FILE set) is occasionally malformed
           # ("symbol name is empty") and would otherwise fail the whole merge. Warn
           # and skip the bad file instead of erroring; valid coverage is kept.
           llvm-profdata merge --failure-mode=warn $PROFILES -o default.profdata
-          llvm-cov export -format=lcov -ignore-filename-regex="_deps|einsums-env" -instr-profile=default.profdata $BINARIES > coverage.info
+
+          # Every object goes through -object. llvm-cov takes ONE binary
+          # positionally and silently ignores any further positional arguments,
+          # so the previous `... -instr-profile=X $BINARIES` exported whichever
+          # test binary `find` happened to list first and dropped all the rest.
+          #
+          # libEinsums is in the list because it is a shared library. Coverage
+          # used to force a static one (see libs/CMakeLists.txt, where that is
+          # now fixed), which copied the library's code into every test binary so
+          # it came along for free. Its coverage mapping now lives in the dylib
+          # alone, and omitting it would report the test sources and almost
+          # nothing else: measured locally on one test, 15 source files without
+          # it against 331 with it.
+          #
+          # -type f skips the version symlinks sitting beside the real dylib,
+          # which llvm-cov would otherwise load again under another name.
+          OBJECTS=()
+          for _obj in $(find . -type f -name "*_test") \
+                      $(find ./lib -type f -name "libEinsums-abi*.dylib"); do
+            OBJECTS+=(-object "${_obj}")
+          done
+          echo "objects:"; printf '  %s\n' "${OBJECTS[@]}"
+          llvm-cov export -format=lcov -ignore-filename-regex="_deps|einsums-env" -instr-profile=default.profdata "${OBJECTS[@]}" > coverage.info
 
       - name: Upload C++ coverage to Codecov
         uses: codecov/codecov-action@v7

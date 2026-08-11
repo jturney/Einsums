@@ -69,8 +69,13 @@ if(EINSUMS_BUILD_PYTHON)
   # libEinsums folds a private copy of the sealed-world state into every
   # extension module, so each probe registers into its own table and reports its
   # own identity, and the check refuses a module that is not skewed at all.
-  # EINSUMS_WITH_COVERAGE selects STATIC in libs/CMakeLists.txt, which is why
-  # this was red only on the one leg that measures coverage.
+  #
+  # Coverage builds used to land here, which is how this was found. They no
+  # longer do: libs/CMakeLists.txt stopped selecting STATIC for coverage, so the
+  # coverage legs run this test again like everyone else. What is left is
+  # BUILD_SHARED_LIBS=OFF, someone asking for a static build deliberately, where
+  # skipping is the honest answer rather than reporting a mismatch that says
+  # nothing about the module under test.
   #
   # Ask the target for its type rather than re-deriving that condition here, so
   # this gate follows any later change to the rule.
