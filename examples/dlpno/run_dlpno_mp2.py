@@ -53,6 +53,13 @@ parser.add_argument("--buckets", type=int, default=None,
 parser.add_argument("--threads", type=int, default=1,
                     help="thread count. Importing psi4 clamps process-wide OpenMP "
                          "to 1, so this must be set for einsums to thread at all")
+parser.add_argument("--integrals", default="dense", choices=["dense", "dfhelper"],
+                    help="where (Q|i u) comes from. 'dense' works on any psi4; "
+                         "'dfhelper' is the same integrals threaded, but needs the "
+                         "DFHelper.get_AO_tensor patch. Both are exact, which the "
+                         "untruncated assertion below requires; the domain-restricted "
+                         "'screened' source is a benchmark configuration, not a "
+                         "validation one, and lives in bench_vs_psi4.py")
 args = parser.parse_args()
 
 psi4.core.set_output_file(f"/tmp/psi4_dlpno_{args.molecule}.out", False)
@@ -89,7 +96,7 @@ print(f"\npsi4 DF-MP2    correlation energy = {df_mp2:.12f}")
 print(f"psi4 DLPNO-MP2 correlation energy = {dlpno_mp2:.12f}  "
       f"(T_CUT_PNO = {args.t_cut_pno:.1e})")
 
-reference = from_psi4(wfn, localization=args.localization)
+reference = from_psi4(wfn, localization=args.localization, integrals=args.integrals)
 
 # ---- untruncated: local MP2 in the full PAO space *is* canonical DF-MP2 -----
 print("\n=== PNO-MP2, no truncation (must equal canonical DF-MP2) ===")
