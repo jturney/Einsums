@@ -7,6 +7,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile/Profile.hpp>
+#include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
 
 #include <atomic>
@@ -82,6 +83,24 @@ void OpenMPExecutor::execute(Graph &graph) {
         return;
 
 #ifdef _OPENMP
+        // Everything in a level is launched together, so a conflict inside one is
+        // a data race rather than a slow schedule - and one that leaves every
+        // serial replay correct, so nothing else will report it. On by default
+        // where asserts are, and available in a release build behind
+        // ``--einsums:graph:verify-levels`` for chasing a result that moves
+        // between runs.
+        // Only the DEFAULT is conditional, so the call below compiles in every
+        // configuration; a debug-only block would be built by nobody who runs the
+        // usual RelWithDebInfo tree and would rot unnoticed.
+#    if defined(EINSUMS_DEBUG)
+    constexpr bool verify_by_default = true;
+#    else
+    constexpr bool verify_by_default = false;
+#    endif
+    if (GlobalConfigMap::get_singleton().get_bool("graph-verify-levels", verify_by_default)) {
+        graph.verify_level_independence();
+    }
+
     // Level partition comes precomputed with the dependency lists (it used
     // to be re-derived here on every execute).
     auto const &levels = deps.levels;

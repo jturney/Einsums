@@ -450,6 +450,38 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void topological_sort();
 
     /**
+     * @brief Throw if any execution level holds two nodes that touch overlapping storage.
+     *
+     * The invariant a level-scheduling executor runs on: everything in one
+     * level is launched together, so nothing in one level may conflict. A
+     * violation is not a slow schedule, it is a data race that changes the
+     * answer from run to run while every serial replay stays correct.
+     *
+     * **Deliberately does not share the hazard scan's alias resolution.** This
+     * exists because a scan whose owner lookup silently truncated put two
+     * accesses to one buffer under different owners, found no conflict, and
+     * let the executor run them together; a checker that resolved owners the
+     * same way would have agreed with it. So storage is grouped here by
+     * recomputed byte-span overlap, and element-level disjointness is derived
+     * fresh from each handle's pointer and strides rather than read off the
+     * `aliases` link.
+     *
+     * Conservative where it cannot prove disjointness, so it can report a
+     * conflict that is not one; it never misses a real one. That is the right
+     * direction for a debug check, and the reason it is not on in release
+     * builds.
+     *
+     * Scope: it checks LEVELS, so it covers the level schedulers exactly.
+     * Two nodes the dataflow executor may still overlap can sit in different
+     * levels, so a clean run here is not a proof for that executor.
+     *
+     * @throws std::runtime_error naming both nodes and the storage they share.
+     *
+     * @versionadded{2.0.0}
+     */
+    void verify_level_independence() const;
+
+    /**
      * @brief Check that all registered tensors still have their capture-time dimensions.
      * @return True if all shapes match. (Currently a placeholder, always returns true.)
      */

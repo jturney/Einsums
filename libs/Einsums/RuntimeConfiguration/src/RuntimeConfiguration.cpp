@@ -274,6 +274,14 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
             "Break a grouped batched GEMM into one profiler zone per shape class. This runs the SLOWER unfused form, so read it for "
             "where the arithmetic is, not for what the node costs",
             passCategory, cl::Location(global_bools["graph-profile-groups"]), cl::Default(false), cl::ImplicitValue(true));
+        // On by default in debug builds; this flag is how a RELEASE build turns
+        // it on, which is what a nondeterministic result wants. See
+        // Graph::verify_level_independence.
+        static cl::Flag const graphVerifyLevels(
+            "einsums:graph:verify-levels", {},
+            "Before each level-scheduled replay, check that no execution level holds two nodes touching overlapping storage. Costs a "
+            "second pass over every operand and can report a conflict it cannot disprove",
+            passCategory, cl::Location(global_bools["graph-verify-levels"]), cl::Default(false), cl::ImplicitValue(true));
 
         // GPUPlacement has always read this key, but nothing registered it, so
         // passing the documented flag was an unknown-argument error.

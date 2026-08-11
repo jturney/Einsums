@@ -133,3 +133,75 @@ TEST_CASE("chains on disjoint slices of one buffer stay parallel", "[compute-gra
     REQUIRE(widest_level(false, 8, false) == 8);
     REQUIRE(widest_level(false, 8, true) == 8);
 }
+
+namespace {
+
+/// Two views that PARTIALLY overlap - neither contains the other - over a
+/// parent no node touches, so the parent is never registered.
+///
+/// @return the widest level; 1 if the accesses are ordered.
+size_t widest_level_partial_overlap(size_t chains) {
+    constexpr size_t rows = 32, cols = 32, stride = 8;
+
+    RuntimeTensor<double> scratch("scratch", std::vector<size_t>{rows, cols + chains * stride});
+
+    std::vector<RuntimeTensor<double>>     sources, outputs;
+    std::vector<RuntimeTensorView<double>> views;
+    for (size_t i = 0; i < chains; ++i) {
+        RuntimeTensor<double> s("source", std::vector<size_t>{rows, cols});
+        s.zero();
+        sources.push_back(std::move(s));
+        RuntimeTensor<double> o("out", std::vector<size_t>{rows, cols});
+        o.zero();
+        outputs.push_back(std::move(o));
+    }
+    // Column windows that slide by less than their width, so consecutive views
+    // share columns and neither is a sub-box of the other.
+    for (size_t i = 0; i < chains; ++i) {
+        views.push_back(scratch(AllT{}, Range{i * stride, i * stride + cols}));
+    }
+
+    cg::Graph graph("partial overlap");
+    {
+        cg::CaptureGuard const guard(graph);
+        for (size_t i = 0; i < chains; ++i) {
+            cg::axpby(1.0, sources[i], 0.0, &views[i]);
+            cg::axpby(1.0, views[i], 0.0, &outputs[i]);
+        }
+    }
+    graph.topological_sort();
+    size_t widest = 0;
+    for (auto const &level : graph.dependencies().levels) {
+        widest = std::max(widest, level.size());
+    }
+    return widest;
+}
+
+} // namespace
+
+TEST_CASE("partially overlapping views are ordered", "[compute-graph][alias][!shouldfail]") {
+    /// KNOWN GAP, found while testing the fix above and not fixed with it.
+    ///
+    /// `link_alias_storage` relates handles by CONTAINMENT: it makes the
+    /// smaller an alias of the larger. Two views that overlap without either
+    /// containing the other cannot be expressed in that model, so neither gets
+    /// linked, the hazard scan sees two unrelated tensors on one buffer, and
+    /// the executor runs their accesses together. Measured through the Python
+    /// bindings at 40 chains: 39 of 40 chains read back a value some other
+    /// chain had written.
+    ///
+    /// It only opens when the common parent is absent from the graph. With the
+    /// parent touched by any node, both views are contained in it, both link
+    /// to it, and the accesses order correctly - which is why nothing in the
+    /// tree has hit it.
+    ///
+    /// `Graph::verify_level_independence` DOES catch it (it groups by
+    /// recomputed span overlap rather than by containment), so a debug build
+    /// reports it as an exception rather than as a wrong number. Fixing it
+    /// properly means teaching the hazard scan to group by overlap instead of
+    /// resolving to a single owner, which is a change to the model rather than
+    /// a patch, so it is tagged rather than papered over.
+    ///
+    /// When that lands, this goes green and the tag comes off.
+    REQUIRE(widest_level_partial_overlap(8) == 1);
+}

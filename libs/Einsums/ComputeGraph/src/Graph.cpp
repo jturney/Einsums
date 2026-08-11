@@ -1301,6 +1301,157 @@ void Graph::rebuild_deps(EffectiveIoCache &cache) {
     rebuild_levels();
 }
 
+void Graph::verify_level_independence() const {
+    // Byte span per registered tensor. A tensor with no span that can be
+    // reasoned about (deferred allocation, tiled layout) is skipped entirely
+    // rather than guessed at; the hazard scan skips it too, so a conflict
+    // through one is out of scope for both.
+    struct Span {
+        char const *lo;
+        char const *hi;
+    };
+    std::unordered_map<TensorId, Span> span;
+    for (auto const &[id, h] : _tensors) {
+        char const *lo = nullptr;
+        char const *hi = nullptr;
+        if (handle_byte_span(h, lo, hi)) {
+            span.emplace(id, Span{.lo = lo, .hi = hi});
+        }
+    }
+    if (span.size() < 2) {
+        return;
+    }
+
+    // Group tensors whose byte ranges overlap, by merging sorted intervals.
+    // This is the independence that matters: it never consults `aliases`, so a
+    // defect in the alias links cannot hide a conflict from this check.
+    std::vector<std::pair<TensorId, Span>> ordered(span.begin(), span.end());
+    std::ranges::sort(ordered, [](auto const &a, auto const &b) {
+        return a.second.lo != b.second.lo ? a.second.lo < b.second.lo : a.second.hi > b.second.hi;
+    });
+    std::unordered_map<TensorId, size_t> group_of;
+    std::vector<char const *>            group_end;
+    for (auto const &[id, s] : ordered) {
+        if (!group_end.empty() && s.lo < group_end.back()) {
+            group_of[id]     = group_end.size() - 1;
+            group_end.back() = std::max(group_end.back(), s.hi);
+        } else {
+            group_of[id] = group_end.size();
+            group_end.push_back(s.hi);
+        }
+    }
+
+    // Per group, the widest member, which is the only candidate for an axis
+    // space every other member's region can be expressed in. A group with no
+    // single container keeps a null root and every access in it is treated as
+    // whole-group, which is conservative.
+    std::vector<TensorId> root(group_end.size(), 0);
+    for (auto const &[id, s] : ordered) {
+        size_t const g = group_of[id];
+        if (root[g] == 0) {
+            root[g] = id; // sorted: first member of a group starts earliest and spans furthest
+        } else {
+            auto const &r = span.at(root[g]);
+            if (s.lo < r.lo || s.hi > r.hi) {
+                root[g] = 0; // no single container; fall back to conservative
+                // Keep the group; a zero root simply disables the box test.
+            }
+        }
+    }
+
+    struct Access {
+        size_t   pos;
+        TensorId tid;
+        bool     is_write;
+    };
+    using Box = std::vector<std::pair<std::int64_t, std::int64_t>>;
+
+    auto const may_overlap = [](Box const *a, Box const *b) {
+        if (a == nullptr || b == nullptr || a->size() != b->size()) {
+            return true;
+        }
+        for (size_t d = 0; d < a->size(); ++d) {
+            if (std::max((*a)[d].first, (*b)[d].first) >= std::min((*a)[d].second, (*b)[d].second)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // A region's box in its group root's axis space, derived from the two
+    // handles alone. Memoized: a tensor read by many nodes derives once.
+    std::unordered_map<TensorId, Box> box_cache;
+    std::unordered_set<TensorId>      box_absent;
+    auto const                        box_for = [&](TensorId tid, size_t g) -> Box const                        *{
+        if (root[g] == 0 || box_absent.contains(tid)) {
+            return nullptr;
+        }
+        if (auto it = box_cache.find(tid); it != box_cache.end()) {
+            return &it->second;
+        }
+        auto const self  = _tensors.find(tid);
+        auto const owner = _tensors.find(root[g]);
+        if (self == _tensors.end() || owner == _tensors.end()) {
+            box_absent.insert(tid);
+            return nullptr;
+        }
+        Box derived;
+        if (tid == root[g]) {
+            derived.reserve(owner->second.dims.size());
+            for (size_t const d : owner->second.dims) {
+                derived.emplace_back(0, static_cast<std::int64_t>(d));
+            }
+        } else if (!derive_alias_box(owner->second, self->second, derived)) {
+            box_absent.insert(tid);
+            return nullptr;
+        }
+        return &box_cache.emplace(tid, std::move(derived)).first->second;
+    };
+
+    EffectiveIoCache cache;
+    for (size_t level_index = 0; level_index < _deps.levels.size(); ++level_index) {
+        auto const &level = _deps.levels[level_index];
+        if (level.size() < 2) {
+            continue;
+        }
+        // Only nodes sharing a storage group can conflict, so the pairwise
+        // test runs per group rather than over the level.
+        std::unordered_map<size_t, std::vector<Access>> touched;
+        for (size_t const pos : level) {
+            auto [eff_in, eff_out] = const_cast<Graph *>(this)->effective_io_cached(_nodes[pos], cache);
+            for (auto const tid : eff_in) {
+                if (auto it = group_of.find(tid); it != group_of.end()) {
+                    touched[it->second].push_back({.pos = pos, .tid = tid, .is_write = false});
+                }
+            }
+            for (auto const tid : eff_out) {
+                if (auto it = group_of.find(tid); it != group_of.end()) {
+                    touched[it->second].push_back({.pos = pos, .tid = tid, .is_write = true});
+                }
+            }
+        }
+
+        for (auto const &[g, accesses] : touched) {
+            for (size_t a = 0; a < accesses.size(); ++a) {
+                for (size_t b = a + 1; b < accesses.size(); ++b) {
+                    if (accesses[a].pos == accesses[b].pos || (!accesses[a].is_write && !accesses[b].is_write)) {
+                        continue;
+                    }
+                    if (!may_overlap(box_for(accesses[a].tid, g), box_for(accesses[b].tid, g))) {
+                        continue;
+                    }
+                    EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                            "Graph '{}': nodes {} ({}) and {} ({}) share execution level {} but both touch overlapping "
+                                            "storage (tensors {} and {}, at least one written). A level-scheduling executor launches them "
+                                            "together, so this is a data race; the hazard scan should have ordered them.",
+                                            _name, accesses[a].pos, _nodes[accesses[a].pos].label, accesses[b].pos,
+                                            _nodes[accesses[b].pos].label, level_index, accesses[a].tid, accesses[b].tid);
+                }
+            }
+        }
+    }
+}
+
 void Graph::rebuild_levels() {
     // Level partition for level-scheduling executors. Edges always point
     // from earlier to later positions (the hazard scan links prior
