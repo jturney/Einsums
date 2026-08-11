@@ -1050,6 +1050,10 @@ endif()
 # ##################################################################################################
 # Add libraries
 # ##################################################################################################
+# Extension-module registry. Included before the subdirectories that create
+# them so the registration function exists by the time they run.
+include(Einsums_PythonExtensionRegistry)
+
 add_subdirectory(libs)
 
 # ##################################################################################################
@@ -1060,6 +1064,9 @@ if(EINSUMS_BUILD_PYTHON)
   include(Einsums_FinalizePybind)
   einsums_finalize_pybind()
 endif()
+
+# Every extension module has been created by now, so the count is final.
+einsums_assert_python_extensions_can_share_a_library()
 # Top-level einsums/ Python package was removed in favor of the apiary codegen output. The
 # codegen-driven extension is registered via einsums_finalize_pybind() above.
 # if(EINSUMS_BUILD_PYTHON) add_subdirectory(einsums) endif()

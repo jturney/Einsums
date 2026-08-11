@@ -57,11 +57,27 @@ if(EINSUMS_BUILD_PYTHON)
     endif()
   endfunction()
 
-  pybind11_add_module(einsums_shared_capture_probe MODULE SharedCaptureProbe.cpp)
-  set_target_properties(einsums_shared_capture_probe PROPERTIES FOLDER "Tests/Unit")
-  einsums_probe_output_dir(einsums_shared_capture_probe "${CMAKE_BINARY_DIR}/lib")
-  target_link_libraries(einsums_shared_capture_probe PRIVATE Einsums)
-  add_dependencies(einsums_shared_capture_probe PyEinsums)
+  # Both probe families need a SHARED libEinsums, so ask once, up front.
+  #
+  # This one emits into the CALLER'S graph, which means the C++ side has to be
+  # looking at the same graph registry _core is. Against a static libEinsums it
+  # would be looking at its own copy, so the contract it exists to demonstrate
+  # cannot hold. It is also a second extension module, which is the shape
+  # Einsums_PythonExtensionRegistry refuses outright.
+  get_target_property(_einsums_lib_type Einsums TYPE)
+  set(_einsums_lib_is_shared FALSE)
+  if(_einsums_lib_type STREQUAL "SHARED_LIBRARY")
+    set(_einsums_lib_is_shared TRUE)
+  endif()
+
+  if(_einsums_lib_is_shared)
+    pybind11_add_module(einsums_shared_capture_probe MODULE SharedCaptureProbe.cpp)
+    einsums_register_python_extension(einsums_shared_capture_probe)
+    set_target_properties(einsums_shared_capture_probe PROPERTIES FOLDER "Tests/Unit")
+    einsums_probe_output_dir(einsums_shared_capture_probe "${CMAKE_BINARY_DIR}/lib")
+    target_link_libraries(einsums_shared_capture_probe PRIVATE Einsums)
+    add_dependencies(einsums_shared_capture_probe PyEinsums)
+  endif()
 
   # ...and skipped outright against a STATIC libEinsums, for the same reason.
   # The handshake asks "did this module resolve to the same copy of the library
@@ -77,13 +93,13 @@ if(EINSUMS_BUILD_PYTHON)
   # skipping is the honest answer rather than reporting a mismatch that says
   # nothing about the module under test.
   #
-  # Ask the target for its type rather than re-deriving that condition here, so
+  # The library type was asked for above, once, rather than re-derived here, so
   # this gate follows any later change to the rule.
-  get_target_property(_einsums_lib_type Einsums TYPE)
-  if("cxx_std_23" IN_LIST CMAKE_CXX_COMPILE_FEATURES AND _einsums_lib_type STREQUAL "SHARED_LIBRARY")
+  if("cxx_std_23" IN_LIST CMAKE_CXX_COMPILE_FEATURES AND _einsums_lib_is_shared)
     foreach(_std 20 23)
       set(_probe einsums_stage_probe_cxx${_std})
       pybind11_add_module(${_probe} MODULE StageModuleProbe.cpp)
+      einsums_register_python_extension(${_probe})
       target_compile_definitions(${_probe} PRIVATE STAGE_PROBE_NAME=${_probe})
       set_target_properties(
         ${_probe}

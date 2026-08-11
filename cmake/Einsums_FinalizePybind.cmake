@@ -166,6 +166,8 @@ function(einsums_finalize_pybind)
         DOCS_OUTDIR "${_gen_dir}/docs"
     )
 
+    einsums_register_python_extension(PyEinsums)
+
     # _core extension lands as lib/einsums/_core.* alongside the shell files.
     set_target_properties(PyEinsums PROPERTIES
         OUTPUT_NAME _core
