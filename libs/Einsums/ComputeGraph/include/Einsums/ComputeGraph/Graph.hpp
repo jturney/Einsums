@@ -656,15 +656,41 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * (DeadNodeElimination), must resolve through this, or a write through a
      * view looks unrelated to a read of its parent.
      */
+    /// The owning tensor of @p id, following alias links to their root.
+    ///
+    /// **The bound is a cycle detector, not a depth budget, and overrunning it
+    /// throws rather than returning.** That distinction is the whole of a bug
+    /// this cost a day of: the previous version gave up after a fixed 32 hops
+    /// and returned whatever mid-chain id it had reached, which is not a
+    /// conservative failure but a silent wrong answer. Two accesses to one
+    /// buffer resolve to different owners, the hazard scan finds no conflict
+    /// between them, and a threading executor runs them concurrently.
+    /// DLPNO-(T0) hit it with one scratch buffer shared by 40 triplets: the
+    /// schedule's widest level came out at exactly (triplets - 32), and the
+    /// energy came out somewhere different every run.
+    ///
+    /// Every writer of ``aliases`` imposes a strict order - a view names its
+    /// parent, and ``link_alias_storage`` links only to a strictly larger (or
+    /// equal-size, lower-id) container - so a cycle is not constructible today
+    /// and this throw is unreachable. It is here because the failure it
+    /// replaces was invisible, and a chain longer than the tensor count means
+    /// one of those writers has stopped being ordered.
+    ///
+    /// Chains stay short in practice: ``link_alias_storage`` path-compresses
+    /// to the root, so only genuinely nested views (a view of a view of a
+    /// view) walk more than one hop.
     [[nodiscard]] TensorId resolve_alias(TensorId id) const {
-        for (int hops = 0; hops < 32; ++hops) {
+        for (size_t hops = 0; hops <= _tensors.size(); ++hops) {
             auto it = _tensors.find(id);
             if (it == _tensors.end() || it->second.aliases == 0) {
                 return id;
             }
             id = it->second.aliases;
         }
-        return id;
+        EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                "Graph '{}': alias chain from tensor {} exceeds the tensor count ({}), which means a "
+                                "cycle in the alias links; the hazard scan cannot order accesses to it",
+                                _name, id, _tensors.size());
     }
 
     /// Access dependency info (populated by topological_sort()).

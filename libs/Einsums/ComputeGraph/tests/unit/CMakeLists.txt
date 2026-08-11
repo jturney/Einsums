@@ -60,6 +60,7 @@ set(ComputeGraphTests
     Pass_LoopInvariantHoisting.cpp
     Pass_Materialization.cpp
     AliasOrderBatchedViews.cpp
+    AliasOrderSharedScratch.cpp
     Pass_MemoryPlanning.cpp
     Pass_ProgramOrderGuard.cpp
     Pass_Reorder.cpp

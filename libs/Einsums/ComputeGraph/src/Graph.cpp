@@ -799,8 +799,36 @@ void Graph::link_alias_storage() {
                 if (owner != _tensors.end() &&
                     (owner->second.total_elems() > self->second.total_elems() ||
                      (owner->second.total_elems() == self->second.total_elems() && owner->first < self->first))) {
-                    self->second.aliases = owner->first;
-                    if (!derive_alias_box(owner->second, self->second, self->second.alias_box)) {
+                    // Link to the owner's ROOT, not to the owner. Containment
+                    // is transitive, so both are correct answers to "who owns
+                    // this", but only one of them keeps the chain short - and
+                    // resolve_alias walks the chain on every hazard-scan
+                    // lookup and gives up after a bounded number of hops.
+                    //
+                    // Without this, N handles covering the SAME bytes (the
+                    // tie-break below the containment test links each to the
+                    // one before it) form a chain of depth N, and past the hop
+                    // limit resolve_alias returns a different mid-chain id for
+                    // each of them. The hazard scan then keys their accesses
+                    // under different owners and emits no edge between any of
+                    // them, which under a threading executor is a silent data
+                    // race - DLPNO-(T0) hit exactly this with one scratch
+                    // buffer shared by 40 triplets, and the schedule's widest
+                    // level came out at exactly (triplets - hop limit).
+                    //
+                    // Owners sort before their aliases and the outer loop runs
+                    // in sorted order, so the owner's own link is already final
+                    // here and one resolve gives the true root.
+                    TensorId const root_id = resolve_alias(owner->first);
+                    auto const     root    = _tensors.find(root_id);
+                    if (root == _tensors.end()) {
+                        break;
+                    }
+                    self->second.aliases = root_id;
+                    // The box has to live in the axis space of whatever
+                    // ``aliases`` names, which is now the root rather than the
+                    // immediate container.
+                    if (!derive_alias_box(root->second, self->second, self->second.alias_box)) {
                         self->second.alias_box.clear(); // unknown box reads as the whole parent
                     }
                     break;
