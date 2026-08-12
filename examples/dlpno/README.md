@@ -276,9 +276,45 @@ Two more things worth reading out of the rows rather than the total.
 `LCCSD(T) iterations` is still the worst cell measured anywhere in this port, 3.8x serially and **24.6x at ten threads**, and at this geometry most of that is work count rather than engine speed: the port takes **18 passes where psi4 takes 6**. Both `t_use_diis` and `t_skip_converged` address exactly that and are measured in the design notes; neither is on in this table.
 `PNO Integrals` is at parity serially (1.1x) and 4.8x threaded, which is the promotion signature exactly: a per-pair chain psi4 threads over pairs and the port drives from Python.
 
-**Ethanol/cc-pVTZ is measured separately and is not in this table yet.**
-Its cells run about forty-five minutes each and the design document's rule is that no number reaches this file without `bench_vs_psi4.py` provenance, so the row goes in when the run finishes rather than as an estimate.
-What is already known from psi4's own timers is that the triples dominate there far more than here: 81% of psi4's ethanol run against 44% of the chain, which is the basis-set scaling showing up where it should.
+**Ethanol/cc-pVTZ.** 316 triplets, 51.9 TNOs each, and the configuration the chain cannot substitute for.
+
+| phase | psi4, 1 thread | port | psi4, 10 threads | port |
+| --- | --- | --- | --- | --- |
+| Setup Orbitals | **0.005** | 0.034 | **0.004** | 0.026 |
+| Sparsity | **0.016** | 0.073 | **0.016** | 0.044 |
+| DF Ints | 0.432 | **0.472** | **0.106** | 0.496 |
+| Initial Prescreening | 0.838 | **0.219** | 0.169 | **0.138** |
+| PNO Transform | 1.340 | **0.759** | **0.251** | 0.355 |
+| PNO-LMP2 iterations | **2.474** | 2.514 | **0.683** | 0.875 |
+| Compute PNOs (CCSD) | 0.712 | **0.132** | 0.140 | **0.087** |
+| PNO Integrals | 10.594 | **10.295** | **2.125** | 7.423 |
+| PNO Overlaps | 0.508 | **0.161** | 0.097 | **0.069** |
+| LCCSD iterations | 22.468 | **20.883** | **4.939** | 21.057 |
+| LCCSD graph build | - | 1.461 | - | 1.507 |
+| Triples Sparsity | **0.005** | 0.018 | **0.006** | 0.020 |
+| TNO transform | 9.854 | **2.400** | 2.121 | **0.726** |
+| LCCSD(T0) | 78.586 | **62.234** | **18.352** | 27.591 |
+| LCCSD(T) iterations | **84.364** | 232.803 | **30.052** | 156.644 |
+| Overlap + Dipole Ints | 0.096 | - | 0.134 | - |
+| other | 0.305 | **0.161** | **0.111** | 0.147 |
+| **total** | **212.597** | 334.620 | **59.306** | 217.208 |
+
+Correlation energies agree to 2.2e-08 and 1.6e-08.
+
+**At one thread the port is 1.6x psi4, and ONE row is the whole of it.**
+Strike `LCCSD(T) iterations` and the port is at 102 s against psi4's 128 - a win.
+It beats psi4 outright on seven rows, including the two that matter most for the coupled-cluster method itself: `LCCSD iterations` at **0.9x** and `LCCSD(T0)` at **0.8x**, the phases this port was written to be good at.
+`PNO Integrals`, psi4's second-largest phase, is at parity.
+So the CCSD layer and the semicanonical triples are already faster than psi4's C++ at production basis, and the deficit is confined to the iterative (T).
+
+**And that row is pass count, not speed.**
+The port takes **15 passes where psi4 takes 6**, and per pass it is 15.5 s against psi4's 14.1 - about **1.10x, which is parity**.
+2.5x the passes times 1.10x the cost is the 2.8x on the row.
+Both `t_use_diis` and `t_skip_converged` attack exactly that and are measured in the design notes at roughly 6 sweep-equivalents; neither is on in this table, which is the port as it runs out of the box.
+
+**At ten threads the port is 3.7x, and unlike the chain it does gain: 334.6 to 217.2, a factor of 1.54.**
+The difference from chain n=6, where the same phases were flat or worse, is block size. The iterative (T) still replays on the serial executor at both geometries, but at 51.9 TNOs its GEMMs are large enough that einsums threads them internally (232.8 to 156.6, a 1.49x the chain does not get at 22 TNOs), which is the same reason the chain's row got 34% WORSE with cores while this one improves.
+`PNO Integrals` is the clearest remaining target: parity at one thread and 3.5x at ten, which is the promotion signature exactly - a per-pair chain psi4 threads over pairs and the port drives from Python.
 
 ### How the gap closed, in brief
 
