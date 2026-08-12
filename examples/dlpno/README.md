@@ -233,43 +233,48 @@ psi4's rows nest, so where one contains another its column is made exclusive by 
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| Setup Orbitals | **0.006** | 0.055 | **0.005** | 0.037 |
-| Sparsity | **0.017** | 0.041 | **0.018** | 0.039 |
-| DF Ints | **0.307** | 0.532 | **0.094** | 0.474 |
-| Initial Prescreening | 0.543 | **0.348** | **0.095** | 0.275 |
-| PNO Transform | 0.329 | **0.282** | **0.064** | 0.158 |
-| PNO-LMP2 iterations | **0.433** | 0.561 | **0.176** | 0.270 |
-| Compute PNOs (CCSD) | 0.175 | **0.081** | **0.034** | 0.076 |
-| PNO Integrals | **2.248** | 2.311 | **0.434** | 1.890 |
-| PNO Overlaps | **0.114** | 0.113 | **0.021** | 0.070 |
-| LCCSD iterations | **5.486** | 8.599 | **1.429** | 10.066 |
-| LCCSD graph build | - | 2.107 | - | 2.101 |
-| Triples Sparsity | **0.007** | 0.018 | **0.006** | 0.017 |
-| TNO transform | 1.025 | **0.541** | **0.181** | 0.276 |
-| LCCSD(T0) | **4.997** | 6.184 | **0.912** | 4.308 |
-| LCCSD(T) iterations | **2.621** | 10.205 | **0.526** | 12.692 |
-| Overlap + Dipole Ints | 0.063 | - | 0.028 | - |
-| other | 0.274 | **0.173** | **0.101** | 0.166 |
-| **total** | **18.645** | 32.151 | **4.124** | 32.915 |
+| Setup Orbitals | **0.006** | 0.056 | **0.006** | 0.039 |
+| Sparsity | **0.017** | 0.040 | **0.016** | 0.041 |
+| DF Ints | **0.308** | 0.535 | **0.095** | 0.489 |
+| Initial Prescreening | 0.544 | **0.347** | **0.103** | 0.302 |
+| PNO Transform | 0.328 | **0.290** | **0.066** | 0.162 |
+| PNO-LMP2 iterations | **0.439** | 0.578 | **0.173** | 0.276 |
+| Compute PNOs (CCSD) | 0.175 | **0.085** | **0.036** | 0.076 |
+| PNO Integrals | **2.273** | 2.391 | **0.426** | 2.046 |
+| PNO Overlaps | 0.117 | **0.114** | **0.021** | 0.069 |
+| LCCSD iterations | **5.483** | 9.227 | **1.445** | 9.872 |
+| LCCSD graph build | - | 2.187 | - | 2.119 |
+| Triples Sparsity | **0.007** | 0.017 | **0.006** | 0.017 |
+| TNO transform | 1.009 | **0.545** | **0.189** | 0.280 |
+| LCCSD(T0) | **4.916** | 6.333 | **0.945** | 4.266 |
+| LCCSD(T) iterations | **2.563** | 9.850 | **0.535** | 13.182 |
+| Overlap + Dipole Ints | 0.066 | - | 0.028 | - |
+| other | 0.271 | **0.174** | **0.100** | 0.168 |
+| **total** | **18.522** | 32.768 | **4.190** | 33.403 |
 
-Correlation energies agree to 2.3e-08 (1 thread) and 8.5e-09 (10 threads), so the two sides are solving the same problem.
+Correlation energies agree to 2.3e-08 (1 thread) and 1.6e-08 (10 threads), so the two sides are solving the same problem.
+Both levers of the iterative (T) are OFF here, which is their default: the table is the port as it runs out of the box.
 
-**The port is 1.7x psi4 serially and 8.0x at ten threads, and the difference between those two numbers is the whole story: the port is flat.**
-Its total moves 32.151 to 32.915 across a tenfold increase in cores while psi4's goes 18.645 to 4.124, a 4.5x speedup.
+**The port is 1.8x psi4 serially and 8.0x at ten threads, and the difference between those two numbers is the whole story: the port is flat.**
+Its total moves 32.768 to 33.403 across a tenfold increase in cores while psi4's goes 18.522 to 4.190, a 4.4x speedup.
 
 That is not uniform across the port, and the split follows the executor exactly.
-The setup phases replay under an OpenMP executor over their independent per-pair chains (`base.py::_run`) and do gain: `PNO Transform` 0.282 to 0.158, `TNO transform` 0.541 to 0.276.
-So does `LCCSD(T0)`, which replays its per-chunk graphs the same way, 6.184 to 4.308.
+The setup phases replay under an OpenMP executor over their independent per-pair chains (`base.py::_run`) and do gain: `PNO Transform` 0.290 to 0.162, `TNO transform` 0.545 to 0.280.
+So does `LCCSD(T0)`, which replays its per-chunk graphs the same way, 6.333 to 4.266.
 The two ITERATION paths do not: `lccsd.py` and the per-iteration graphs of `lccsd_t.py` call `execute()` on the default serial executor, one node at a time, while psi4 parallelizes at the outer loop over pairs and triplets with serial BLAS inside.
 
-**And they do not merely fail to gain, they get worse: `LCCSD iterations` 8.599 to 10.066 and `LCCSD(T) iterations` 10.205 to 12.692, 17% and 24% slower on ten cores than on one.**
-A serial replay should be indifferent to the thread count, so something in it is paying for cores it does not use - which is the same signature as the Eq. 84c defect the M4 work found and fixed, where one badly shaped operand cost the iteration a factor of two at ten threads and nothing at one.
-It is recorded here as measured and unexplained rather than folded into the batching story, because it is a different problem from "does not thread" and may well be cheaper to fix.
+**And `LCCSD(T) iterations` does not merely fail to gain, it gets worse: 9.850 to 13.182, 34% slower on ten cores than on one**, on a replay that uses one thread either way.
+A serial replay should be indifferent to the thread count, so something in it is paying for cores it does not use - the same signature as the Eq. 84c defect found earlier, where one badly shaped operand cost the coupled-cluster iteration a factor of two at ten threads and nothing at one.
+Recorded as measured and unexplained rather than folded into the batching story, because it is a different problem from "does not thread".
 
-Three things worth reading out of the rows rather than the total.
-`LCCSD(T) iterations` is the worst cell measured anywhere in this port, 3.9x serially and **24.1x at ten threads**, and most of it is not engine speed: the port takes **18 passes where psi4 takes 6**, at 1.2x per pass serially. That is the Jacobi update M6 chose so that a replay is identical twice, and its price is now measured rather than guessed.
-`PNO Integrals` is at parity serially (1.0x) and 4.4x threaded, which is the promotion signature exactly: a per-pair chain psi4 threads over pairs and the port drives from Python.
-And the port still wins four rows outright serially, `Initial Prescreening`, `Compute PNOs (CCSD)`, `TNO transform` and `other`, none of which it wins threaded.
+**This geometry is not sufficient on its own, and that is the most useful thing in the table.**
+A defect worth a factor of TWELVE on the iterative (T) at ethanol/cc-pVTZ - three `n_tno^3` scratch blocks allocated per coupling instead of per triplet, all captured and so live for the whole iteration - is invisible here: this row measured 10.205 s before that fix and 9.850 s after, which is inside the run-to-run spread.
+The reason is size. At chain n=6 a triplet carries about 22 TNOs, so ninety of those blocks is roughly 7.6 MB and stays in cache; at ethanol/cc-pVTZ it is 52 to 85 TNOs and the same ninety blocks are 100 to 440 MB per triplet.
+So a benchmark restricted to the small geometry will report a phase as healthy while it is quadratically sick, and any conclusion drawn from this table about where the time goes needs the larger basis to confirm it.
+
+Two more things worth reading out of the rows rather than the total.
+`LCCSD(T) iterations` is still the worst cell measured anywhere in this port, 3.8x serially and **24.6x at ten threads**, and at this geometry most of that is work count rather than engine speed: the port takes **18 passes where psi4 takes 6**. Both `t_use_diis` and `t_skip_converged` address exactly that and are measured in the design notes; neither is on in this table.
+`PNO Integrals` is at parity serially (1.1x) and 4.8x threaded, which is the promotion signature exactly: a per-pair chain psi4 threads over pairs and the port drives from Python.
 
 **Ethanol/cc-pVTZ is measured separately and is not in this table yet.**
 Its cells run about forty-five minutes each and the design document's rule is that no number reaches this file without `bench_vs_psi4.py` provenance, so the row goes in when the run finishes rather than as an estimate.
