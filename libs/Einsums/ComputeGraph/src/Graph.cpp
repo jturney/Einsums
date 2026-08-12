@@ -839,6 +839,83 @@ void Graph::link_alias_storage() {
             }
         }
     }
+
+    // Second pass: PARTIAL overlap, which containment cannot express.
+    //
+    // Two handles that overlap without either containing the other - sliding
+    // windows over a buffer no node names, so the common parent is never
+    // registered - both come out of the loop above unlinked. The hazard scan
+    // then sees two unrelated tensors sharing bytes and orders nothing between
+    // their accesses, which under a threading executor is a silent data race.
+    //
+    // The fix is to give each run of mutually overlapping spans ONE root, so
+    // the scan keys their accesses together. It cannot be exact: `aliases`
+    // names a container, and a run like this has none, so the members' regions
+    // are no longer expressible in the root's axis space. They lose their boxes
+    // and conflict conservatively - which is the honest answer for a relation
+    // this model does not describe, and still far better than no edge at all.
+    //
+    // A run whose members ALREADY share one root is left completely alone. That
+    // is the common case and the important one: a registered parent and its
+    // slices form a single run, they already resolve to the parent, and
+    // relinking anything there would strip the slices of the boxes that keep
+    // provably disjoint ones running in parallel.
+    {
+        size_t run_begin = 0;
+        while (run_begin < spans.size()) {
+            size_t      run_end = run_begin;
+            char const *reach   = spans[run_begin].hi;
+            while (run_end + 1 < spans.size() && spans[run_end + 1].lo < reach) {
+                ++run_end;
+                reach = std::max(reach, spans[run_end].hi);
+            }
+
+            // The canonical root is the widest span's, not the lowest id's: in
+            // a run that mixes a real container with a partial overlapper, the
+            // container is the one whose axis space the other members' boxes
+            // are already written in, so choosing it keeps those boxes valid.
+            // The id breaks ties so the choice does not depend on map order.
+            TensorId canonical  = 0;
+            size_t   widest     = 0;
+            TensorId first_root = 0;
+            bool     mixed      = false;
+            for (size_t k = run_begin; k <= run_end; ++k) {
+                TensorId const root = resolve_alias(spans[k].id);
+                if (first_root == 0) {
+                    first_root = root;
+                } else if (root != first_root) {
+                    mixed = true;
+                }
+                auto const it = _tensors.find(root);
+                if (it == _tensors.end()) {
+                    continue;
+                }
+                size_t const extent = it->second.total_elems();
+                if (canonical == 0 || extent > widest || (extent == widest && root < canonical)) {
+                    canonical = root;
+                    widest    = extent;
+                }
+            }
+            if (mixed && canonical != 0) {
+                for (size_t k = run_begin; k <= run_end; ++k) {
+                    TensorId const root = resolve_alias(spans[k].id);
+                    if (root == canonical) {
+                        continue;
+                    }
+                    auto it = _tensors.find(root);
+                    if (it == _tensors.end()) {
+                        continue;
+                    }
+                    // Only ever a root, and only ever onto a DIFFERENT root of
+                    // the same run, so the relation stays acyclic and every
+                    // member of the run resolves to `canonical` from here.
+                    it->second.aliases = canonical;
+                    it->second.alias_box.clear();
+                }
+            }
+            run_begin = run_end + 1;
+        }
+    }
 }
 
 TensorId Graph::register_tensor(TensorHandle handle) {

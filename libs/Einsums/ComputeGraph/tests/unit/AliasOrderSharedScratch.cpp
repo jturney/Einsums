@@ -179,29 +179,77 @@ size_t widest_level_partial_overlap(size_t chains) {
 
 } // namespace
 
-TEST_CASE("partially overlapping views are ordered", "[compute-graph][alias][!shouldfail]") {
-    /// KNOWN GAP, found while testing the fix above and not fixed with it.
+TEST_CASE("partially overlapping views are ordered", "[compute-graph][alias]") {
+    /// `link_alias_storage` relates handles by CONTAINMENT, which cannot
+    /// express two views that overlap with neither containing the other -
+    /// sliding windows over a buffer no node names, so the common parent is
+    /// never registered. Both came out unlinked, the hazard scan saw two
+    /// unrelated tensors on one buffer, and the executor ran their accesses
+    /// together: 39 of 40 chains read back another chain's value in a
+    /// bindings-level reproduction.
     ///
-    /// `link_alias_storage` relates handles by CONTAINMENT: it makes the
-    /// smaller an alias of the larger. Two views that overlap without either
-    /// containing the other cannot be expressed in that model, so neither gets
-    /// linked, the hazard scan sees two unrelated tensors on one buffer, and
-    /// the executor runs their accesses together. Measured through the Python
-    /// bindings at 40 chains: 39 of 40 chains read back a value some other
-    /// chain had written.
-    ///
-    /// It only opens when the common parent is absent from the graph. With the
-    /// parent touched by any node, both views are contained in it, both link
-    /// to it, and the accesses order correctly - which is why nothing in the
-    /// tree has hit it.
-    ///
-    /// `Graph::verify_level_independence` DOES catch it (it groups by
-    /// recomputed span overlap rather than by containment), so a debug build
-    /// reports it as an exception rather than as a wrong number. Fixing it
-    /// properly means teaching the hazard scan to group by overlap instead of
-    /// resolving to a single owner, which is a change to the model rather than
-    /// a patch, so it is tagged rather than papered over.
-    ///
-    /// When that lands, this goes green and the tag comes off.
+    /// A run of mutually overlapping spans now gets one root. That is
+    /// deliberately inexact - the members' regions have no axis space in
+    /// common, so they lose their boxes and conflict conservatively - but
+    /// conservative is the right direction, and it is what the model can say
+    /// truthfully about a relation that is not containment.
+    REQUIRE(widest_level_partial_overlap(2) == 1);
     REQUIRE(widest_level_partial_overlap(8) == 1);
+    REQUIRE(widest_level_partial_overlap(40) == 1);
+}
+
+namespace {
+
+/// A parent written whole by a node, then disjoint slices of it read.
+///
+/// @return the widest level below the parent's own; `chains` if the slices
+///         stayed independent of each other.
+size_t widest_level_below_parent(size_t chains) {
+    constexpr size_t rows = 16;
+
+    RuntimeTensor<double> parent("parent", std::vector<size_t>{rows, rows * chains});
+    RuntimeTensor<double> seed("seed", std::vector<size_t>{rows, rows * chains});
+    seed.zero();
+
+    std::vector<RuntimeTensor<double>>     outputs;
+    std::vector<RuntimeTensorView<double>> views;
+    outputs.reserve(chains);
+    views.reserve(chains);
+    for (size_t i = 0; i < chains; ++i) {
+        RuntimeTensor<double> o("out", std::vector<size_t>{rows, rows});
+        o.zero();
+        outputs.push_back(std::move(o));
+    }
+    for (size_t i = 0; i < chains; ++i) {
+        views.push_back(parent(AllT{}, Range{i * rows, (i + 1) * rows}));
+    }
+
+    cg::Graph graph("parent then slices");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpby(1.0, seed, 0.0, &parent); // the whole buffer, by a node
+        for (size_t i = 0; i < chains; ++i) {
+            cg::axpby(1.0, views[i], 0.0, &outputs[i]);
+        }
+    }
+    graph.topological_sort();
+    size_t widest = 0;
+    for (auto const &level : graph.dependencies().levels) {
+        widest = std::max(widest, level.size());
+    }
+    return widest;
+}
+
+} // namespace
+
+TEST_CASE("a registered parent leaves its disjoint slices parallel", "[compute-graph][alias]") {
+    // The regression this fix could plausibly cause, and the case that matters
+    // most in practice: DLPNO's bucketed stores ARE a registered parent with
+    // one disjoint slice per pair. The parent and its slices form a single run
+    // of overlapping spans, so a merge pass that relinked every run would
+    // strip the slices of the boxes that prove them disjoint and serialize the
+    // whole store. A run whose members already share one root is left alone
+    // for exactly this reason.
+    REQUIRE(widest_level_below_parent(8) == 8);
+    REQUIRE(widest_level_below_parent(40) == 40);
 }
