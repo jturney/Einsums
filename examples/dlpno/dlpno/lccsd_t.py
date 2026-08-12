@@ -229,18 +229,40 @@ class LCCSDT:
             la.axpby(1.0, self.t0.W[ijk], 0.0, R)
             einsums.einsum("abc <- abc ; abc", R, self.t0.T[ijk], D, c_pf=1.0)
 
-            for partner, weight, spec in r["couplings"]:
-                S = overlaps.get((ijk, partner))
-                if S is None:
-                    continue
+            live = [(p, w, s) for p, w, s in r["couplings"]
+                    if overlaps.get((ijk, p)) is not None]
+            if not live:
+                continue
+
+            # One scratch set per TRIPLET, not per coupling. Every coupling
+            # writes these in full before reading them and then accumulates into
+            # the same R, so they were already serialized by that dependency and
+            # sharing costs no parallelism that existed. Per coupling it cost
+            # three n_tno^3-scale blocks apiece - about ninety per triplet at
+            # benchmark scale - every one of them captured and so alive for the
+            # whole iteration.
+            #
+            # Sized to this triplet's widest partner and sliced per coupling,
+            # taking a contiguous prefix and reshaping it rather than a strided
+            # view, so each rotation still sees a dense block. Same idiom as
+            # lccsd.py::_shared, and the same reason: the merged-axis reshapes
+            # the rotations rely on are only valid on contiguous storage.
+            widest = max(cc.n_tno[p] for p, _w, _s in live)
+            b1 = ten.empty(f"S t (1) [{ijk}]", [nt * widest * widest])
+            b2 = ten.empty(f"S t (2) [{ijk}]", [nt * nt * widest])
+            b3 = ten.empty(f"S t (3) [{ijk}]", [nt * nt * nt])
+            self._keep += [b1, b2, b3]
+
+            for partner, weight, spec in live:
+                S = overlaps[(ijk, partner)]
                 np_ = cc.n_tno[partner]
                 # The partner's block, permuted into this triplet's index
                 # order and rotated one index at a time. The first einsum does
                 # both: its right-hand side names the partner's axes in the
                 # permuted order.
-                t1 = ten.zeros("S t (1)", [nt, np_, np_])
-                t2 = ten.zeros("S t (2)", [nt, nt, np_])
-                t3 = ten.zeros("S t (3)", [nt, nt, nt])
+                t1 = b1[:nt * np_ * np_].reshape_view([nt, np_, np_])
+                t2 = b2[:nt * nt * np_].reshape_view([nt, nt, np_])
+                t3 = b3.reshape_view([nt, nt, nt])
                 self._keep += [t1, t2, t3]
                 einsums.einsum(f"xbc <- {spec} ; xa", t1, self.t0.T[partner], S)
                 einsums.einsum("xyc <- xbc ; yb", t2, t1, S)
