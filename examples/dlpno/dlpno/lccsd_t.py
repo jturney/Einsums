@@ -100,7 +100,7 @@ class LCCSDT:
     already resident.
     """
 
-    def __init__(self, cc, t0, verbose=True, use_diis=False):
+    def __init__(self, cc, t0, verbose=True, use_diis=False, use_executor=True):
         self.cc = cc
         self.t0 = t0
         self.verbose = verbose
@@ -116,6 +116,8 @@ class LCCSDT:
         #: the energies within convergence tolerance.
         self.use_diis = use_diis
         self._diis = None
+        #: Replay the residual and step under an OpenMP executor over triplets.
+        self.use_executor = use_executor
         self.F_lmo_np = np.asarray(ten.view(cc.F_lmo))
         self.e_ijk = np.array(t0.e_ijk, dtype=float)
         self.e_t = 0.0
@@ -355,33 +357,59 @@ class LCCSDT:
         self.n_nodes += g_energy.num_nodes()
 
         skipping = bool(cc.cut.t_skip_converged) and float(cc.cut.t_cut_iter) > 0.0
+        self._active = {r["ijk"]: True for r in self._plan}
+
+        # Both phases are ONE graph each, with per-triplet work gated behind a
+        # conditional when skipping is on. The obvious alternative - a graph
+        # per triplet, driven from a Python loop - also skips, and was what
+        # this did first, but it forfeits the thing that matters more: a Python
+        # loop cannot be threaded (the OpenMP-built OpenBLAS returns silently
+        # wrong numbers from caller-created threads), so the phase could skip
+        # or thread but not both. One graph keeps the executor's view of every
+        # triplet and lets it spread them over cores.
+        #
+        # Residual and step stay SEPARATE graphs, and that separation is what
+        # makes the threading legal rather than merely convenient. Inside the
+        # residual every triplet reads its neighbours' amplitudes and writes
+        # only its own R, so the triplets are independent; a step in the same
+        # graph would write T while another triplet's residual was reading it.
+        # Jacobi is what buys the parallelism, and only across a phase
+        # boundary.
+        def _gate(ijk):
+            return lambda: self._active[ijk]
+
+        g_residual = cg.Graph("lccsd(t): Eq. 111 residual")
+        g_step = cg.Graph("lccsd(t): Eq. 112 step")
         if skipping:
-            # One residual graph and one step graph PER TRIPLET, because a
-            # captured graph replays whole and skipping needs the work to be
-            # separable. The cost is two execute() calls per triplet per pass
-            # instead of two per pass; against an n^4 pass that is noise, and
-            # it buys the lever without any new graph machinery.
-            self._g_res, self._g_step = {}, {}
             for r in self._plan:
-                gr = cg.Graph(f"lccsd(t): residual [{r['ijk']}]")
-                with cg.capture(gr):
+                branch, _ = g_residual.add_conditional(f"residual [{r['ijk']}]",
+                                                       _gate(r["ijk"]))
+                with cg.capture(branch):
                     self._emit_residual(overlaps, [r])
-                gs = cg.Graph(f"lccsd(t): step [{r['ijk']}]")
-                with cg.capture(gs):
+                branch, _ = g_step.add_conditional(f"step [{r['ijk']}]",
+                                                   _gate(r["ijk"]))
+                with cg.capture(branch):
                     self._emit_update([r])
-                self.n_nodes += gr.num_nodes() + gs.num_nodes()
-                self._g_res[r["ijk"]] = gr
-                self._g_step[r["ijk"]] = gs
-            g_residual = g_step = None
         else:
-            self._g_res = self._g_step = None
-            g_residual = cg.Graph("lccsd(t): Eq. 111 residual")
             with cg.capture(g_residual):
                 self._emit_residual(overlaps)
-            g_step = cg.Graph("lccsd(t): Eq. 112 step")
             with cg.capture(g_step):
                 self._emit_update()
-            self.n_nodes += g_residual.num_nodes() + g_step.num_nodes()
+        self.n_nodes += g_residual.num_nodes() + g_step.num_nodes()
+
+        # Spread the triplets over cores. This is the one solver phase in the
+        # port that can take an executor today, and the reason is the scratch:
+        # every triplet owns its rotation buffers, so nothing is shared for the
+        # hazard scan to serialize. The coupled-cluster residual cannot, and
+        # `lccsd.py::iterate` says why - its rank-3 scratch is one buffer
+        # shared by every pair, so an executor there would order the chains it
+        # was meant to overlap.
+        #
+        # Legality is Jacobi's, per the phase split above: within the residual
+        # a triplet reads its neighbours' amplitudes and writes only its own R.
+        if self.use_executor:
+            g_residual.set_executor(cg.OpenMPExecutor())
+            g_step.set_executor(cg.OpenMPExecutor())
 
         self._print(f"\n  ==> Local CCSD(T) <==\n")
         self._print(f"    plan:     {len(self._plan)} triplets, "
@@ -421,13 +449,16 @@ class LCCSDT:
                           if abs(self.e_ijk[r["ijk"]] - e_ijk_old[r["ijk"]])
                           >= abs(e_ijk_old[r["ijk"]] * cc.cut.t_cut_iter)]
                 self.n_skipped += len(self._plan) - len(active)
-                for r in active:
-                    self._g_res[r["ijk"]].execute()
+                # The gates the conditionals read. Set before the replay, so
+                # one graph execution does exactly the active triplets.
+                live = {r["ijk"] for r in active}
+                for ijk in self._active:
+                    self._active[ijk] = ijk in live
+                g_residual.execute()
                 # Skipped triplets contribute nothing to the norm, exactly as
                 # psi4's zero-initialized R_iajbkc_rms does.
                 rms = max((ten.rms(self.R[r["ijk"]]) for r in active), default=0.0)
-                for r in active:
-                    self._g_step[r["ijk"]].execute()
+                g_step.execute()
                 if self._diis is not None:
                     # A skipped triplet took no step, and DIIS has to be told
                     # so. Its R still holds the step from whichever pass last
@@ -437,10 +468,9 @@ class LCCSDT:
                     # lever. Zero is the true step for a triplet that did not
                     # move, and an n^3 fill against the n^4 pass it replaces is
                     # not a cost worth avoiding.
-                    live = {r["ijk"] for r in active}
-                    for r in self._plan:
-                        if r["ijk"] not in live:
-                            ten.view(self.R[r["ijk"]])[...] = 0.0
+                    for ijk, on in self._active.items():
+                        if not on:
+                            ten.view(self.R[ijk])[...] = 0.0
             else:
                 active = self._plan
                 g_residual.execute()
