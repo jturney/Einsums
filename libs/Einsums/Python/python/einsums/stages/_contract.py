@@ -30,6 +30,7 @@ frozen ``@contract`` dataclass   aggregate struct
 
 import dataclasses as _dataclasses
 import functools as _functools
+import math as _math
 import typing as _typing
 
 from einsums import _core as _c
@@ -46,6 +47,7 @@ __all__ = [
     "is_contract",
     "comparison_rules",
     "parallel_groups",
+    "check_default",
     "validate_signature",
 ]
 
@@ -402,6 +404,48 @@ def check_type(tp, *, where: str, output: bool) -> None:
     )
 
 
+def check_default(value, tp, *, where: str) -> None:
+    """Raise :class:`ContractError` unless *value* can be a C++ default argument.
+
+    A default is part of the contract: the python backend applies it when the
+    caller omits the argument, so the generated binding has to apply the same
+    one or the two backends disagree about which calls are even legal. That
+    confines defaults to the scalar types, where the value has a C++ spelling
+    the generator can emit without guessing; a tensor, list or contract default
+    has none, and the mutable ones are a Python bug pattern besides.
+    """
+    base, meta = _strip_annotated(tp)
+    is_index = any(isinstance(m, _IndexMarker) for m in meta)
+
+    if base not in _SCALAR_TYPES and not is_index:
+        raise ContractError(
+            f"{where}: only int, float, bool and str parameters can carry a default across "
+            f"the boundary; a {_name(base)} default has no C++ spelling. Drop the default, "
+            f"or move the optional part into a @contract the caller always builds."
+        )
+    if base is bool:
+        if not isinstance(value, bool):
+            raise ContractError(f"{where}: default {value!r} is not a bool")
+    elif is_index or base is int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ContractError(f"{where}: default {value!r} is not an int")
+        if is_index and value < 0:
+            raise ContractError(
+                f"{where}: default {value!r} is negative, and an index crosses as std::size_t"
+            )
+    elif base is float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ContractError(f"{where}: default {value!r} is not a float")
+        if not _math.isfinite(value):
+            raise ContractError(
+                f"{where}: default {value!r} has no portable C++ literal. Use a finite "
+                f"sentinel and test for it instead."
+            )
+    elif base is str:
+        if not isinstance(value, str):
+            raise ContractError(f"{where}: default {value!r} is not a str")
+
+
 class DeferredHints(Exception):
     """A signature referenced a name that is not defined yet."""
 
@@ -427,12 +471,25 @@ def validate_signature(fn) -> None:
     sig = inspect.signature(fn)
     qual = getattr(fn, "__qualname__", fn.__name__)
 
+    defaulted = None
     for pname, param in sig.parameters.items():
         if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
             raise ContractError(
                 f"{qual}: *{pname} cannot cross the stage boundary; a contract needs a fixed "
                 f"parameter list. Group the variable part into a @contract dataclass."
             )
+        if param.default is param.empty:
+            # Python allows a required parameter after a defaulted one behind
+            # the keyword-only marker; C++ has no such marker, so on that side
+            # defaults can only be trailing.
+            if defaulted is not None:
+                raise ContractError(
+                    f"{qual}({pname}): a required parameter cannot follow the defaulted "
+                    f"'{defaulted}' across the boundary; C++ defaults are trailing only. "
+                    f"Reorder the signature."
+                )
+        else:
+            defaulted = pname
         if pname not in hints:
             # functools.wraps copies __annotations__ off the wrapped function,
             # so a @stage under a @functools.wraps loses every annotation the
@@ -448,6 +505,8 @@ def validate_signature(fn) -> None:
                 f"contract. Annotate it, or mark the stage promotable=False.{wrapped}"
             )
         check_type(hints[pname], where=f"{qual}({pname})", output=False)
+        if param.default is not param.empty:
+            check_default(param.default, hints[pname], where=f"{qual}({pname})")
 
     if "return" not in hints:
         raise ContractError(

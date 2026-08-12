@@ -37,7 +37,7 @@ import re as _re
 import shutil as _shutil
 import subprocess as _subprocess
 
-from ._promote import PromoteError, contract_includes
+from ._promote import PromoteError, contract_includes, cpp_string_literal
 
 __all__ = ["Written", "Emitter", "Formatters", "find_formatters", "generate", "is_sealed"]
 
@@ -379,7 +379,7 @@ namespace {m.namespace} {{
                 doc.extend(f"       {' ' * width} {line}" for line in rest)
 
         nodiscard = "" if st.return_cpp == "void" else "[[nodiscard]] "
-        params = ", ".join(p.decl for p in st.params)
+        params = ", ".join(p.decl_with_default for p in st.params)
         return f"""
 /// @file
 /// The C++ backend of the `{st.name}` stage.
@@ -542,8 +542,12 @@ void read_field(handle src, char const *contract, char const *field, T &out) {{
 
         entries = []
         for st in m.stages:
-            args = "".join(f', py::arg("{p.name}")' for p in st.params)
-            doc = f', "{st.summary}"' if st.summary else ""
+            args = "".join(
+                f', py::arg("{p.name}")'
+                + ("" if p.cpp_default is None else f" = {p.cpp_default}")
+                for p in st.params
+            )
+            doc = f", {cpp_string_literal(st.summary)}" if st.summary else ""
             entries.append(
                 f'    m.def("{st.entry_point}", &{m.namespace}::{st.name}{args}{doc});'
             )

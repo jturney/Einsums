@@ -325,13 +325,16 @@ def test_dlpno_lmp2_iterations_analyzes(capsys):
     """The remaining wide DLPNO method analyzes, and it is still wide.
 
     The design records lmp2_iterations touching ~45 fields, which is its
-    argument that the phase is cut at the wrong boundary for promotion. The
-    exact count moves as mp2.py evolves; what this pins is that the analysis
-    runs on the real code and keeps reporting the width honestly.
+    argument that the phase is cut at the wrong boundary for promotion; the
+    LMP2 fold has since moved most of the loop into lmp2_solver helpers and
+    the surface keeps shrinking. The exact count moves as mp2.py evolves, so
+    pinning one is pinning the refactor rather than the tool; what this pins
+    is that the analysis runs on the real code, still reports a double-digit
+    surface, and resolves everything it sees.
     """
     analysis = _extract.analyze(
         f"{DLPNO / 'dlpno' / 'mp2.py'}::DLPNOMP2.lmp2_iterations",
         also=[DLPNO / "dlpno" / "base.py"],
     )
-    assert len(analysis.fields) > 30
+    assert len(analysis.fields) > 10
     assert not analysis.unresolved

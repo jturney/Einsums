@@ -14,6 +14,10 @@ dependencies:
   - ninja
   - lcov
   - pre-commit
+  # cmake-format is invoked directly by `python -m einsums.stages promote`, not
+  # only by the pre-commit hook (which keeps its own copy in a cached venv the
+  # PATH never sees). Without it the promote golden tests skip silently.
+  - cmake-format
   # pkg-config is used by cmake/FindFFTW.cmake (pkg_check_modules fftw3) to
   # locate the FFT backend reliably; without it FFTW discovery falls back to
   # a bare find_library search.

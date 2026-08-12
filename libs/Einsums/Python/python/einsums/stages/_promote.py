@@ -59,6 +59,8 @@ __all__ = [
     "build_model",
     "classify_stages",
     "contract_includes",
+    "cpp_default",
+    "cpp_string_literal",
     "load_stages_module",
     "translate",
 ]
@@ -153,12 +155,67 @@ def translate(tp, *, where: str) -> Translated:
         )
 
     if is_contract(base):
-        return Translated(base.__name__, frozenset(), (base,), False)
+        # The tuple must name every contract reachable through the fields, not
+        # only this one: build_model classifies each named contract by the
+        # direction of the crossing, and a nested contract crosses with its
+        # container. One left out still gets its struct (dependency ordering
+        # walks the fields separately) but no caster or py::class_, which
+        # compiles against pybind's fallback and then fails at every call.
+        # Recursion terminates because @contract resolves its field hints at
+        # decoration time, so no contract can name one that is not fully
+        # defined yet, and a cycle would need exactly that.
+        nested: list = []
+        hints = _resolve_hints(base)
+        for f in _dataclasses.fields(base):
+            for c in translate(hints[f.name], where=f"{base.__name__}.{f.name}").contracts:
+                if c not in nested:
+                    nested.append(c)
+        return Translated(base.__name__, frozenset(), (base, *nested), False)
 
     raise PromoteError(
         f"{where}: {getattr(base, '__name__', base)!r} has no C++ spelling. "
         f"@stage should have refused this at decoration time; if it did not, that is a bug "
         f"in the contract validator rather than in this signature."
+    )
+
+
+def cpp_string_literal(text: str) -> str:
+    """Spell *text* as a C++ string literal.
+
+    Everything the generator interpolates into a C++ string constant goes
+    through here, because prose is the one input the author never thinks of as
+    code: a docstring containing a quote otherwise lands in the output as an
+    unterminated literal.
+    """
+    out = text.replace("\\", "\\\\").replace('"', '\\"')
+    out = out.replace("\n", "\\n").replace("\t", "\\t").replace("\r", "\\r")
+    return f'"{out}"'
+
+
+def cpp_default(value, tp, *, where: str) -> str:
+    """The C++ spelling of a parameter default.
+
+    Emitted into both the declaration and the binding's ``py::arg``, so an
+    argument the caller omits means the same thing under either backend.
+    ``check_default`` confined the value to the scalar types at decoration
+    time; like :func:`translate`, this raises rather than guessing if something
+    else arrives anyway.
+    """
+    base, meta = _strip_annotated(tp)
+    if base is bool:
+        return "true" if value else "false"
+    if any(isinstance(m, _IndexMarker) for m in meta) or base is int:
+        return str(value)
+    if base is float:
+        # repr of a finite float is a valid C++ double literal, including the
+        # exponent form ('1e-06'), and float() first makes an int default like
+        # `shift: float = 0` come out as the double it crosses as.
+        return repr(float(value))
+    if base is str:
+        return cpp_string_literal(value)
+    raise PromoteError(
+        f"{where}: default {value!r} has no C++ spelling. check_default should have refused "
+        f"this at decoration time; if it did not, that is a bug in the contract validator."
     )
 
 
@@ -306,10 +363,21 @@ class ParamModel:
     cpp: str
     by_value: bool
     doc: list[str]
+    #: C++ spelling of the Python default; None when the parameter has none.
+    cpp_default: str | None = None
 
     @property
     def decl(self) -> str:
         return f"{self.cpp} {self.name}" if self.by_value else f"{self.cpp} const &{self.name}"
+
+    @property
+    def decl_with_default(self) -> str:
+        """The declaration form. The definition must keep using :attr:`decl`:
+        C++ refuses a default argument repeated after a declaration already
+        carried it, so the default lives in the header and nowhere else."""
+        if self.cpp_default is None:
+            return self.decl
+        return f"{self.decl} = {self.cpp_default}"
 
 
 @_dataclasses.dataclass(frozen=True)
@@ -433,11 +501,16 @@ def build_model(
 
         includes: frozenset = frozenset()
         params = []
-        for pname in sig.parameters:
+        for pname, param in sig.parameters.items():
             translated = translate(hints[pname], where=f"{st.name}({pname})")
             includes |= translated.includes
+            default = None
+            if param.default is not param.empty:
+                default = cpp_default(param.default, hints[pname], where=f"{st.name}({pname})")
             params.append(
-                ParamModel(pname, translated.cpp, translated.by_value, param_docs.get(pname, []))
+                ParamModel(
+                    pname, translated.cpp, translated.by_value, param_docs.get(pname, []), default
+                )
             )
             for c in translated.contracts:
                 argument_contracts.setdefault(c, None)
@@ -465,6 +538,17 @@ def build_model(
                 includes=includes,
                 python_source=_python_source(fn),
             )
+        )
+
+    both = [c.__name__ for c in ordered if c in argument_contracts and c in return_contracts]
+    if both:
+        raise PromoteError(
+            f"{', '.join(both)}: used as an argument and as a return value (nested uses "
+            f"count). One type cannot cross both ways: a caster converts into C++ and cannot "
+            f"hand an object back, a py::class_ cannot accept the Python dataclass, and "
+            f"generating both for one type does not compile because the caster shadows the "
+            f"class_ on the return path. Split it into an argument contract and a result "
+            f"contract, even when their fields coincide."
         )
 
     contracts = tuple(
