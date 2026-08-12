@@ -117,6 +117,8 @@ class LCCSDT0:
         self.e_ijk = np.zeros(cc.n_lmo_triplets)
 
         self._plan = None
+        self._retain = False
+        self.W = self.V = self.T = None
         self._metric_cache = {}
         self.t_plan = 0.0
         self.n_nodes = 0
@@ -192,7 +194,7 @@ class LCCSDT0:
         budget has to hold either way.
         """
         nq, nl, nu, nt = r["nq"], r["nl"], r["nu"], r["nt"]
-        return 8 * (7 * nt ** 3                    # K_xvvv x3, W, V, D, scratch
+        return 8 * (8 * nt ** 3                    # K_xvvv x3, W, V, D, scratch, bracket
                     + nq * nu * nu + nq * nt * nu  # (Q|u v) and its half transform
                     + nq * nt * nt                 # (Q | a b)
                     + 3 * nt * nt * max(nl, 1)     # the t_xl stacks
@@ -232,12 +234,30 @@ class LCCSDT0:
 
     # -- the run -------------------------------------------------------------
 
-    def run(self):
-        """Compute every triplet's energy and return their sum."""
+    def run(self, retain=False):
+        """Compute every triplet's energy and return their sum.
+
+        Args:
+            retain: keep ``W``, ``V`` and the semicanonical amplitudes per
+                triplet, in :attr:`W`, :attr:`V` and :attr:`T`. The iterative
+                (T) of :mod:`dlpno.lccsd_t` reads all three and reads them
+                across triplets, so it needs every one of them resident at
+                once - which is psi4's ``save_memory`` argument and the reason
+                psi4 grew a disk path here. Costs three ``n_tno^3`` blocks per
+                triplet on top of what the phase already holds, so the chunk
+                budget covers it (see :meth:`_triplet_bytes`) and a molecule
+                that cannot afford it fails with its measured requirement
+                rather than thrashing.
+        """
         cc = self.cc
         if self._plan is None:
             self.plan()
         self.e_ijk = np.zeros(cc.n_lmo_triplets)
+        self._retain = retain
+        if retain:
+            self.W = [None] * cc.n_lmo_triplets
+            self.V = [None] * cc.n_lmo_triplets
+            self.T = [None] * cc.n_lmo_triplets
         if not self._plan:
             return 0.0
 
@@ -282,6 +302,16 @@ class LCCSDT0:
         energies = ten.view(state["e_chunk"])
         for slot, r in enumerate(chunk):
             self.e_ijk[r["ijk"]] = float(energies[slot])
+
+        if self._retain:
+            # ``scratch`` holds the amplitudes by this point; see
+            # :meth:`_emit_triples` for the buffer's two lives. Kept by
+            # reference rather than copied - the chunk's state dies here and
+            # these are the only three of its tensors anyone reads again.
+            for r, per in zip(chunk, state["per"]):
+                self.W[r["ijk"]] = per["W"]
+                self.V[r["ijk"]] = per["V"]
+                self.T[r["ijk"]] = per["scratch"]
 
     # -- overlaps ------------------------------------------------------------
 
@@ -414,6 +444,12 @@ class LCCSDT0:
                               for t in per["t_x"]]
 
             per["W"] = ten.zeros("W (triplet)", [nt, nt, nt])
+            #: Where Eq. 53's bracket is accumulated. Normally ``W`` itself,
+            #: which is dead by then; a separate buffer when the caller has
+            #: asked to keep ``W`` for the iterative (T), because that is the
+            #: one reader for which "dead by then" is false.
+            per["bracket"] = (ten.zeros("Eq. 53 bracket", [nt, nt, nt])
+                              if self._retain else per["W"])
             per["V"] = ten.zeros("V (triplet)", [nt, nt, nt])
             per["D"] = ten.zeros("denominator", [nt, nt, nt])
             #: Scratch: holds each permutation's contribution while ``W`` is
@@ -619,11 +655,14 @@ class LCCSDT0:
             la.shift(-r["shift"], D)
             la.direct_division(-1.0, W, D, 0.0, scratch)
 
-            # The bracket overwrites W, which the amplitudes have just finished
-            # reading. The prefactor rides on the six coefficients rather than
-            # scaling the result, which saves a pass over n_tno^3.
+            # The bracket normally overwrites W, which the amplitudes have
+            # just finished reading; under ``retain`` it gets its own buffer,
+            # because then W has a reader left. The prefactor rides on the six
+            # coefficients rather than scaling the result, which saves a pass
+            # over n_tno^3.
+            bracket = per["bracket"]
             for term, (coefficient, order) in enumerate(_ENERGY_TERMS):
-                einsums.permute(f"abc <- {order}", W, V,
+                einsums.permute(f"abc <- {order}", bracket, V,
                                 c_pf=0.0 if term == 0 else 1.0,
                                 a_pf=coefficient * r["prefactor"])
-            la.dot(per["e"], W, scratch)
+            la.dot(per["e"], bracket, scratch)

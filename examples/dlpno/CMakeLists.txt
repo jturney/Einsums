@@ -28,3 +28,4 @@ einsums_add_python_unit_test("Examples.DLPNO" CCSubstrate SCRIPT test_cc_substra
 einsums_add_python_unit_test("Examples.DLPNO" CCIntegrals SCRIPT test_cc_integrals.py)
 einsums_add_python_unit_test("Examples.DLPNO" LCCSD SCRIPT test_lccsd.py)
 einsums_add_python_unit_test("Examples.DLPNO" LCCSDT0 SCRIPT test_lccsd_t0.py)
+einsums_add_python_unit_test("Examples.DLPNO" LCCSDT SCRIPT test_lccsd_t.py)

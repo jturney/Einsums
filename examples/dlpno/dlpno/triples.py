@@ -29,10 +29,14 @@ code, because both are easy to mistake for defects.
 the occupied orbitals.** Its energy denominator carries only the DIAGONAL of the
 occupied Fock matrix, ``F_ii + F_jj + F_kk``, so in the localized basis this
 port works in it drops the off-diagonal ``F_il`` coupling between triplets. On
-water/cc-pVDZ that is worth 1.5e-4 Eh against the canonical value. Milestone M6
-puts the coupling back by iterating; until then, the untruncated gate against a
-canonical DF-CCSD(T) oracle only holds with canonical occupied orbitals, and
-``test_lccsd_t0.py`` runs it both ways for exactly that reason.
+water/cc-pVDZ that is worth 1.5e-4 Eh against the canonical value, which is why
+the (T0) gate has to be run in two occupied bases and
+``test_lccsd_t0.py`` does.
+
+:mod:`dlpno.lccsd_t` puts the coupling back by iterating, and that restores the
+invariance: untruncated in the localized basis the iterative (T) reproduces
+canonical DF-CCSD(T) to 1e-12 with no canonicalized rerun. ``t0_approximation``
+selects between the two, as psi4's option of that name does.
 
 **Triplets with i == j == k are skipped, and that is exact.** All six
 permutations of the ``P_ijk^abc`` operator map such a triplet onto itself, so
@@ -52,6 +56,7 @@ from . import tensors as ten
 from .base import batched_eigh, batched_orthocanonicalizer
 from .cc_overlaps import build_overlaps
 from .ccsd import DLPNOCCSD
+from .lccsd_t import LCCSDT
 from .lccsd_t0 import LCCSDT0
 
 __all__ = ["DLPNOCCSDT"]
@@ -88,9 +93,12 @@ class DLPNOCCSDT(DLPNOCCSD):
         self.X_tno = []
         self.e_tno = []
         self.n_tno = []
-        #: Per triplet, the multiplier on ``t_cut_tno``. All ones until the
-        #: iterative (T) of M6 splits triplets into strong and weak.
+        #: Per triplet, the multiplier on ``t_cut_tno``. All ones until
+        #: :meth:`sort_triplets` splits triplets into strong and weak for the
+        #: iterative (T).
         self.tno_scale = []
+        #: Per triplet, whether :meth:`sort_triplets` called it strong.
+        self.is_strong_triplet = []
 
         #: Per triplet, its (T0) energy. What the screening pass tests and what
         #: the energy is the sum of.
@@ -98,6 +106,12 @@ class DLPNOCCSDT(DLPNOCCSD):
 
         self.e_t0 = 0.0
         self.e_t0_pre = 0.0
+        #: The iterative pass, in its own looser TNO space.
+        self.e_t0_crude = 0.0
+        self.e_t_raw = 0.0
+        self.de_t = 0.0
+        self.lccsd_t = None
+        self.lccsd_t0 = None
         #: Energy of the triplets screening dropped, psi4's
         #: ``de_lccsd_t_screened_``.
         self.de_lccsd_t_screened = 0.0
@@ -238,6 +252,49 @@ class DLPNOCCSDT(DLPNOCCSD):
             else:
                 dropped += float(self.e_ijk[ijk])
         return keep, dropped
+
+    # -- psi4 DLPNOCCSD_T::sort_triplets ------------------------------------
+
+    def sort_triplets(self, e_total):
+        """Split triplets into strong and weak by their share of the energy.
+
+        Walk the triplets in descending order of ``|e_ijk|`` and call them
+        strong until the running total passes 90% of ``e_total``; the rest are
+        weak. The split does not remove anything - it sets ``tno_scale``, a
+        MULTIPLIER on ``t_cut_tno``, so a weak triplet gets a looser TNO space
+        and costs less rather than being dropped.
+
+        The direction is worth stating because the naming invites the opposite
+        reading: both scales are above one (10 and 100 at psi4's defaults), so
+        both classes get a LOOSER cutoff than ``t_cut_tno`` alone, and weak
+        looser still. The iterative (T) is expensive enough that psi4 pays for
+        it in a deliberately smaller space than the (T0) it corrects.
+        """
+        n_trip = self.n_lmo_triplets
+        order = sorted(range(n_trip), key=lambda ijk: -abs(self.e_ijk[ijk]))
+
+        strong = float(self.cut.t_cut_tno_strong_scale)
+        weak = float(self.cut.t_cut_tno_weak_scale)
+        self.is_strong_triplet = [False] * n_trip
+        self.tno_scale = [weak] * n_trip
+
+        running, n_strong = 0.0, 0
+        for ijk in order:
+            self.is_strong_triplet[ijk] = True
+            self.tno_scale[ijk] = strong
+            running += self.e_ijk[ijk]
+            n_strong += 1
+            # psi4 breaks AFTER promoting, so the triplet that crosses the
+            # line is strong. Reproduced rather than tidied: the counts are
+            # compared against psi4's.
+            if e_total != 0.0 and running / e_total > 0.9:
+                break
+
+        self._print(
+            f"  triplets: {n_strong} strong, {n_trip - n_strong} weak "
+            f"({100.0 * n_strong / max(n_trip, 1):.1f}% strong); "
+            f"t_cut_tno scaled by {strong:g} and {weak:g}")
+        return self
 
     # -- psi4 DLPNOCCSD_T::tno_transform ------------------------------------
 
@@ -470,14 +527,18 @@ class DLPNOCCSDT(DLPNOCCSD):
 
     # -- psi4 DLPNOCCSD_T::compute_lccsd_t0 ---------------------------------
 
-    def compute_lccsd_t0(self):
+    def compute_lccsd_t0(self, retain=False):
         """The semicanonical triples correction; see :mod:`dlpno.lccsd_t0`.
 
-        Sets :attr:`e_ijk` per triplet and returns the total.
+        Sets :attr:`e_ijk` per triplet and returns the total. ``retain`` keeps
+        ``W``, ``V`` and the amplitudes for the iterative pass, and is psi4's
+        ``save_memory`` argument; the solver itself is kept on
+        :attr:`lccsd_t0` so :meth:`lccsd_t_iterations` can read them.
         """
         t0 = time.perf_counter()
         solver = LCCSDT0(self, verbose=self.verbose)
-        energy = solver.run()
+        energy = solver.run(retain=retain)
+        self.lccsd_t0 = solver if retain else None
         self.e_ijk = solver.e_ijk
         # Kept for the same reason as ``ccsd_stats``: the solver is dropped
         # here and every driver reports what the phase cost.
@@ -556,22 +617,41 @@ class DLPNOCCSDT(DLPNOCCSD):
         self.e_t0 = self.compute_lccsd_t0()
 
         self.e_lccsd_t = self.e_lccsd + self.e_t0 + self.de_lccsd_t_screened
+
+        if not self.cut.t0_approximation:
+            # psi4's third step. The iterative pass runs in a DIFFERENT TNO
+            # space from the (T0) above - looser, and looser still for the
+            # weak triplets - so its own semicanonical energy is recomputed
+            # there and only the DIFFERENCE is carried over. Comparing the two
+            # (T0) values is what makes that legitimate: they bracket the same
+            # quantity in two spaces, and the correction transfers where the
+            # absolute number would not.
+            self._print("\n  ==> Iterative (T) <==\n")
+            self.sort_triplets(self.e_t0)
+            self.tno_transform(self.cut.t_cut_tno)
+            self.e_t0_crude = self.compute_lccsd_t0(retain=True)
+            self.lccsd_t = LCCSDT(self, self.lccsd_t0, verbose=self.verbose)
+            self.e_t_raw = self.lccsd_t.iterate()
+            self.de_t = self.e_t_raw - self.e_t0_crude
+            self.e_ijk = self.lccsd_t.e_ijk
+            self.e_lccsd_t += self.de_t
+            self._print(
+                f"\n    (T0) at the looser cutoff: {self.e_t0_crude:16.12f}\n"
+                f"    (T)  at the looser cutoff: {self.e_t_raw:16.12f}\n"
+                f"    net iterative contribution:{self.de_t:16.12f}")
+
         self.e_corr = (self.e_lccsd_t + self.de_weak + self.de_lmp2_eliminated
                        + self.de_dipole + self.de_pno_total)
+        label = "(T0)" if self.cut.t0_approximation else "(T)"
         self._print(
-            "\n  Total DLPNO-CCSD(T0) Correlation Energy: "
+            f"\n  Total DLPNO-CCSD{label} Correlation Energy: "
             f"{self.e_corr:16.12f}\n"
             f"    CCSD Correlation Energy:          {self.e_lccsd:16.12f}\n"
-            f"    (T0) Contribution:                {self.e_t0:16.12f}\n"
+            f"    (T) Contribution:                 {self.e_lccsd_t - self.e_lccsd - self.de_lccsd_t_screened:16.12f}\n"
             f"    Screened Triplets Contribution:   {self.de_lccsd_t_screened:16.12f}\n"
             f"    Weak Pair Contribution:           {self.de_weak:16.12f}\n"
             f"    Eliminated Pair Correction:       {self.de_lmp2_eliminated:16.12f}\n"
             f"    Dipole Pair Correction:           {self.de_dipole:16.12f}\n"
             f"    PNO Truncation Correction:        {self.de_pno_total:16.12f}"
         )
-        if not self.cut.t0_approximation:
-            self._print(
-                "\n    NOTE: this is the (T0) energy. The iterative (T), which "
-                "restores the\n          off-diagonal occupied Fock coupling "
-                "(T0) drops, is milestone M6.")
         return self.ref.e_scf + self.e_corr

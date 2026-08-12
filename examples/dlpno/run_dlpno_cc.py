@@ -47,9 +47,10 @@ from dlpno.thresholds import Thresholds
 from dlpno.triples import DLPNOCCSDT
 
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-parser.add_argument("--method", default="ccsd", choices=["ccsd", "ccsd(t)"],
-                    help="'ccsd(t)' runs the semicanonical triples on both "
-                         "sides, with psi4 in T0_APPROXIMATION")
+parser.add_argument("--method", default="ccsd",
+                    choices=["ccsd", "ccsd(t0)", "ccsd(t)"],
+                    help="'ccsd(t0)' compares the semicanonical triples, "
+                         "'ccsd(t)' the full iterative ones")
 parser.add_argument("--molecule", default="water")
 parser.add_argument("--basis", default="cc-pvdz")
 parser.add_argument("--preset", default="NORMAL",
@@ -100,7 +101,7 @@ else:
     # that is a 1.5e-4 difference, which is the whole (T0) approximation error
     # and would read as a port defect.
     psi4.set_options({"dlpno_algorithm": "ccsd(t)"})
-    psi4.energy("dlpno-ccsd(t0)")
+    psi4.energy(f"dlpno-{args.method}")
 
 psi4_terms = {
     "mp2": psi4.variable("MP2 CORRELATION ENERGY"),
@@ -109,7 +110,7 @@ psi4_terms = {
     "dipole": psi4.variable("DLPNO DIPOLE ENERGY"),
     "pno_trunc": psi4.variable("DLPNO PNO TRUNCATION ERROR"),
 }
-if args.method == "ccsd(t)":
+if args.method != "ccsd":
     psi4_terms.update({
         "ccsd(t)": psi4.variable("CCSD(T) CORRELATION ENERGY"),
         # These two are the whole triples story: the correction psi4 adds to
@@ -184,7 +185,8 @@ if args.method == "ccsd":
     cc.compute_energy()
 else:
     from dataclasses import replace as _replace
-    cc = DLPNOCCSDT(reference, _replace(cut, t0_approximation=True))
+    cc = DLPNOCCSDT(reference,
+                    _replace(cut, t0_approximation=args.method == "ccsd(t0)"))
     cc.compute_energy(method="ccsd(t)")
 
 ours = {
@@ -204,16 +206,19 @@ our_counts = {
     "strong": len(cc.ij_to_i_j_strong),
     "weak": len(cc.ij_to_i_j_weak),
 }
-if args.method == "ccsd(t)":
+if args.method != "ccsd":
     ours.update({
         "ccsd(t)": cc.e_corr,
-        "t_correction": cc.e_t0 + cc.de_lccsd_t_screened,
+        # psi4 publishes the semicanonical number even on a full (T) run, so
+        # both are compared: the first says the iteration landed, the second
+        # that the pass it starts from did.
+        "t_correction": cc.e_lccsd_t - cc.e_lccsd,
         "t0_semicanonical": cc.e_t0 + cc.de_lccsd_t_screened,
         "screened_triplets": cc.de_lccsd_t_screened,
     })
     our_counts["triplet"] = cc.n_lmo_triplets
 
-label = "DLPNO-CCSD" if args.method == "ccsd" else "DLPNO-CCSD(T0)"
+label = {"ccsd": "DLPNO-CCSD", "ccsd(t0)": "DLPNO-CCSD(T0)"}.get(args.method, "DLPNO-CCSD(T)")
 print(f"\n=== {label}, {args.molecule}/{args.basis}, {args.preset} ===\n")
 print(f"  {'term':<28} {'psi4':>18} {'port':>18} {'difference':>12}")
 failures = []
@@ -277,7 +282,7 @@ print(f"  CCSD converged in {stats['iterations']} iterations, "
       f"{stats['t_iterate']:.3f} s "
       f"(plan {stats['t_plan'] * 1e3:.0f} ms, capture "
       f"{stats['t_capture'] * 1e3:.0f} ms).")
-if args.method == "ccsd(t)":
+if args.method != "ccsd":
     print(f"  (T0) over {cc.n_lmo_triplets} triplets "
           f"({min(cc.n_tno)}-{max(cc.n_tno)} TNOs) in {cc.t_t0:.3f} s "
           f"(sparsity {cc.t_sparsity:.3f} s, TNO transform {cc.t_tno:.3f} s).")

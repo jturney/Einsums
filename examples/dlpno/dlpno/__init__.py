@@ -9,8 +9,7 @@ einsums and the solvers captured as ComputeGraphs: every contraction is
 recorded once and replayed, so the per-iteration Python cost is a few
 ``execute()`` calls however many GEMMs they stand for. DLPNO-MP2 and DLPNO-CCSD
 are complete and validated against psi4 two ways (see ``run_dlpno_mp2.py`` and
-``run_dlpno_cc.py``); the triples are at (T0), and the iterative (T) is not
-started.
+``run_dlpno_cc.py``); the triples are complete through the iterative (T).
 
 The core follows psi4's module split, so the two can be read side by side:
 
@@ -28,6 +27,7 @@ this package                 psi4
 ``lccsd.py``                 ``DLPNOCCSD::lccsd_iterations``
 ``triples.py``               ``dlpno/triples.cc`` (the triplet cascade)
 ``lccsd_t0.py``              ``DLPNOCCSD_T::compute_lccsd_t0``
+``lccsd_t.py``               ``DLPNOCCSD_T::lccsd_t_iterations``
 ``canonical_ccsd.py``        no counterpart: the numpy DF-CCSD oracle
 ``canonical_triples.py``     no counterpart: the numpy (T) oracle
 ``layout.py``                no counterpart: psi4 keeps one matrix per pair
@@ -69,7 +69,7 @@ exists to test.
 import importlib
 
 __all__ = ["DLPNOBase", "DLPNOCCSD", "DLPNOCCSDT", "DLPNOMP2", "LCCSDSolver",
-           "LCCSDT0", "LMP2Problem", "LMP2Solver", "PairLayout", "Reference",
+           "LCCSDT", "LCCSDT0", "LMP2Problem", "LMP2Solver", "PairLayout", "Reference",
            "Thresholds"]
 
 _LAZY = {
@@ -78,6 +78,7 @@ _LAZY = {
     "DLPNOCCSDT": "triples",
     "DLPNOMP2": "mp2",
     "LCCSDSolver": "lccsd",
+    "LCCSDT": "lccsd_t",
     "LCCSDT0": "lccsd_t0",
     "LMP2Problem": "lmp2_solver",
     "LMP2Solver": "lmp2_solver",

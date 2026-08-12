@@ -65,10 +65,18 @@ def _untruncated(reference):
     (T0) inherits whatever error the CCSD amplitudes carry, so a gate on the
     correction is a gate on the convergence unless the amplitudes are converged
     past it.
+
+    ``t0_approximation`` because every test in this file is about the
+    SEMICANONICAL correction. Left off, ``compute_energy`` goes on to the
+    iterative (T), which rebuilds the TNO spaces at the strong/weak scales and
+    overwrites the per-triplet energies - so the comparisons here would be
+    against a different quantity in a different space. ``test_lccsd_t.py``
+    covers that path.
     """
     cut = Thresholds.untruncated()
     return replace(cut, r_convergence=cut.r_convergence * 0.1,
-                   e_convergence=cut.e_convergence * 0.1, maxiter=100)
+                   e_convergence=cut.e_convergence * 0.1, maxiter=100,
+                   t0_approximation=True)
 
 
 def _canonical_occupied(reference):
@@ -219,7 +227,7 @@ def test_a_triplet_too_large_for_the_budget_reports_itself():
 def truncated_dimer():
     """The water dimer at psi4's CC ``NORMAL``, where the truncations bite."""
     reference, _ = load_reference(DIMER)
-    cc = DLPNOCCSDT(reference, Thresholds.preset("NORMAL", method="cc"),
+    cc = DLPNOCCSDT(reference, replace(Thresholds.preset("NORMAL", method="cc"), t0_approximation=True),
                     verbose=False)
     cc.compute_energy()
     return cc
@@ -273,7 +281,7 @@ def test_the_energy_screen_books_what_it_drops():
     triplets, and the total must still land close to the unscreened one.
     """
     reference, _ = load_reference(DIMER)
-    base = Thresholds.preset("NORMAL", method="cc")
+    base = replace(Thresholds.preset("NORMAL", method="cc"), t0_approximation=True)
 
     unscreened = DLPNOCCSDT(reference, base, verbose=False)
     unscreened.compute_energy()
@@ -302,7 +310,7 @@ def test_the_plan_classifies_every_triplet():
     from dlpno.lccsd_t0 import LCCSDT0
 
     reference, _ = load_reference(WATER)
-    cc = DLPNOCCSDT(reference, Thresholds.preset("NORMAL", method="cc"),
+    cc = DLPNOCCSDT(reference, replace(Thresholds.preset("NORMAL", method="cc"), t0_approximation=True),
                     verbose=False)
     cc.compute_energy()
 
