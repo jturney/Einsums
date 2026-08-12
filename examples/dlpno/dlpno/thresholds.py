@@ -99,8 +99,23 @@ class Thresholds:
     t_cut_mkn_triples_pre: float = 0.1
     #: Fock cutoff inside the iterative (T) coupling, psi4's ``F_CUT_T``.
     f_cut_t: float = 1e-3
-    #: Convergence on the iterative (T) energy, psi4's ``T_CUT_ITER``.
-    t_cut_iter: float = 1e-5
+    #: When a triplet's energy contribution has settled to this relative
+    #: change, :attr:`t_skip_converged` stops updating it. psi4's
+    #: ``T_CUT_ITER``, but ONE DECADE TIGHTER than psi4's 1e-5, and the
+    #: deviation is deliberate.
+    #:
+    #: The threshold sets how far short of converged each triplet is left, so
+    #: it lands directly on the total. At psi4's 1e-5 that is 1e-9 to 9e-9 on
+    #: these fixtures, which pushes two of the six past the 1e-8 the psi4
+    #: comparisons are gated at; at 1e-6 every fixture passes and four of the
+    #: six agree with psi4 BETTER than they do with no skipping at all. It
+    #: costs about one extra sweep, 7.4 against 6.0.
+    #:
+    #: psi4 can afford the looser value because it pairs the skip with a
+    #: Gauss-Seidel update, so a triplet keeps improving through its
+    #: neighbours between its own updates. This port's Jacobi pass does not,
+    #: which is why the same threshold does not buy the same accuracy.
+    t_cut_iter: float = 1e-6
     #: Triplets keep at least this many TNOs, psi4's ``MIN_TNOS``.
     min_tnos: int = 9
     #: How many weak pairs a triplet may contain and still be formed, psi4's
@@ -110,20 +125,21 @@ class Thresholds:
     t0_approximation: bool = False
 
     #: Stop updating a triplet once its energy contribution settles, psi4's
-    #: per-triplet ``T_CUT_ITER`` screen (the threshold itself is
-    #: :attr:`t_cut_iter`, already carried at psi4's value).
+    #: per-triplet ``T_CUT_ITER`` screen. The threshold itself is
+    #: :attr:`t_cut_iter`, which this port deliberately keeps one decade
+    #: tighter than psi4 does.
     #:
-    #: Off by default although psi4 has it on, because it is not free: it
-    #: leaves each triplet converged only to ``t_cut_iter`` relative, and
-    #: measured on the fixtures that is worth about 1e-8 on the total - which
-    #: is the tolerance the recorded psi4 comparisons are gated at. Two of the
-    #: six fixtures cross it. So this is a deliberate accuracy-for-work trade
-    #: rather than a defect being fixed, and it gets its own gate.
+    #: On by default, at a :attr:`t_cut_iter` one decade tighter than psi4's.
+    #: It is not free - it leaves each triplet converged only to
+    #: ``t_cut_iter`` relative - so the threshold rather than the flag is what
+    #: makes it safe: at psi4's 1e-5 two of the six fixtures cross the 1e-8
+    #: the psi4 comparisons are gated at, and at 1e-6 all six pass and four
+    #: agree BETTER than with no skipping. See :attr:`t_cut_iter`.
     #:
     #: Costs no reproducibility here, unlike in psi4: the skip is a
     #: deterministic function of the previous pass's energies, where psi4 pairs
     #: it with a Gauss-Seidel update whose result depends on thread scheduling.
-    t_skip_converged: bool = False
+    t_skip_converged: bool = True
 
     #: Extrapolate the iterative (T) amplitudes with DIIS.
     #:
@@ -134,10 +150,17 @@ class Thresholds:
     #: ethanol/cc-pVTZ, which is nearly the whole of that phase's remaining
     #: gap once the rotation scratch was fixed.
     #:
-    #: Off by default while that trade is being measured. It moves where the
-    #: iteration STOPS rather than what it converges to, so switching it on
-    #: shifts the recorded energies within convergence tolerance.
-    t_use_diis: bool = False
+    #: On by default, as it is for the coupled-cluster solver. It is nearly
+    #: free: 18 passes to 10, and agreement to 1e-11 against the
+    #: un-extrapolated result, giving up no reproducibility. It moves where
+    #: the iteration STOPS rather than what it converges to.
+    #:
+    #: It does NOT compose naively with :attr:`t_skip_converged`. A skipped
+    #: triplet took no step, and DIIS extrapolating over the stale one it
+    #: still holds took the dimer to 29 passes and methanol to 48, both worse
+    #: than taking neither lever. ``lccsd_t.py`` zeroes the step for skipped
+    #: triplets, which is what a triplet that did not move actually took.
+    t_use_diis: bool = True
 
     #: How much memory a phase that builds per-pair or per-triplet blocks may
     #: hold at once, in bytes.
@@ -340,6 +363,13 @@ class Thresholds:
             t_cut_mkn_triples_pre=-1.0,
             f_cut_t=0.0,
             min_tnos=0,
+            # Skipping settled triplets is an APPROXIMATION, not a screening:
+            # it leaves each triplet converged only to t_cut_iter relative, so
+            # it belongs in this list with every other truncation. Left on, the
+            # untruncated gate against canonical DF-CCSD(T) misses by 7.4e-10
+            # against its 1e-10 tolerance - correctly, since the calculation is
+            # then not the exact one that gate exists to check.
+            t_skip_converged=False,
             # A triplet's weak-pair count cannot exceed three, and with
             # t_cut_pairs negative there are none anyway.
             triples_max_weak_pairs=3,
