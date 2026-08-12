@@ -157,3 +157,41 @@ def test_the_strong_weak_triplet_split_fires():
     # are the larger ones; the whole point of the split is that both exist.
     assert min(cc.n_tno) < max(cc.n_tno)
     assert cc.de_t != 0.0, "the iterative pass contributed nothing"
+
+
+def test_the_iterative_pass_refuses_a_budget_it_cannot_meet():
+    """Design decision 10: in core, with a MEASURED failure.
+
+    The iterative (T) is the first phase in the port whose stores are not
+    bounded by a chunk: it keeps W, V and the amplitudes for every triplet at
+    once, because Eq. 111 reads its neighbours'. Bounding only the chunk is how
+    this came to page instead of refusing - an ethanol/cc-pVTZ run sat at 12%
+    CPU with 28 GB of swap in use, which looks exactly like a slow benchmark
+    and is not one.
+
+    psi4 spills to disk at that point. There is no disk path here, so what is
+    asserted is that the refusal happens, names the requirement, and says what
+    to change - because "in core only" is a defensible scope decision only if
+    the point where it stops working arrives as a number.
+    """
+    reference, _ = load_reference(DIMER)
+    cut = replace(Thresholds.preset("NORMAL", method="cc"),
+                  triples_memory=20 * 2 ** 20)
+    cc = DLPNOCCSDT(reference, cut, verbose=False)
+    with pytest.raises(MemoryError, match="iterative \\(T\\) needs"):
+        cc.compute_energy()
+
+
+def test_stopping_at_t0_needs_no_per_triplet_storage():
+    """The escape the refusal names has to actually work.
+
+    (T0) retains nothing per triplet, so the same budget that refuses the
+    iterative pass must let the semicanonical one through. A refusal message
+    offering an option that also fails would be worse than no message.
+    """
+    reference, _ = load_reference(DIMER)
+    cut = replace(Thresholds.preset("NORMAL", method="cc"),
+                  triples_memory=20 * 2 ** 20, t0_approximation=True)
+    cc = DLPNOCCSDT(reference, cut, verbose=False)
+    cc.compute_energy()
+    assert cc.e_t0 != 0.0

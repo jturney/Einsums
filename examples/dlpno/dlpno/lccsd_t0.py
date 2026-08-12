@@ -183,8 +183,19 @@ class LCCSDT0:
     # -- memory --------------------------------------------------------------
 
     @staticmethod
+    def _retained_bytes(r):
+        """Bytes one triplet keeps BEYOND its chunk under ``retain``.
+
+        ``W``, ``V`` and the amplitudes. Everything else in the chunk's
+        working set dies with the chunk; these three are what the iterative
+        (T) reads, from every triplet, so they accumulate across chunks and
+        are alive together at the end.
+        """
+        return 8 * 3 * r["nt"] ** 3
+
+    @staticmethod
     def _triplet_bytes(r):
-        """Bytes of storage one triplet needs alive at once.
+        """Bytes of transient storage one triplet needs while its chunk runs.
 
         The dominant term is the seven ``n_tno^3`` tensors - the three
         ``(x a | b d)`` integrals, ``W``, ``V``, the denominator and one scratch
@@ -211,19 +222,35 @@ class LCCSDT0:
         large to process even alone reports its own requirement, its domain
         sizes and what to change, because there is no disk path to fall back to.
         """
-        budget = int(self.cc.cut.t0_chunk_memory)
+        budget = int(self.cc.cut.triples_memory)
+        # Everything retained is alive at the END, together with whatever
+        # chunk is running then, so the retained total comes off the budget
+        # before any chunk is sized against it. Bounding only the chunk is
+        # what let this phase page instead of refusing.
+        retained = sum(self._retained_bytes(r) for r in self._plan) if self._retain else 0
+        room = budget - retained
+        if room <= 0:
+            raise MemoryError(
+                f"the iterative (T) would keep {retained / 2**30:.2f} GiB of W, V "
+                f"and amplitudes over {len(self._plan)} triplets, against a budget "
+                f"of {budget / 2**30:.2f} GiB. Raise Thresholds.triples_memory, "
+                "loosen t_cut_tno, or set t0_approximation to stop at (T0), which "
+                "retains nothing.")
+
         chunks, current, total = [], [], 0
         for r in self._plan:
             need = self._triplet_bytes(r)
-            if need > budget:
+            if need > room:
                 raise MemoryError(
                     f"triplet {r['ijk']} = {r['labels']} needs "
                     f"{need / 2**20:.0f} MiB on its own ({r['nt']} TNOs, "
                     f"{r['nq']} auxiliary functions, {r['nu']} PAOs, "
-                    f"{r['nl']} neighbours) against a budget of "
-                    f"{budget / 2**20:.0f} MiB. Raise "
-                    "Thresholds.t0_chunk_memory or loosen t_cut_tno.")
-            if current and total + need > budget:
+                    f"{r['nl']} neighbours) against the "
+                    f"{room / 2**20:.0f} MiB left of a "
+                    f"{budget / 2**20:.0f} MiB budget after the "
+                    f"{retained / 2**20:.0f} MiB of retained stores. Raise "
+                    "Thresholds.triples_memory or loosen t_cut_tno.")
+            if current and total + need > room:
                 chunks.append(current)
                 current, total = [], 0
             current.append(r)

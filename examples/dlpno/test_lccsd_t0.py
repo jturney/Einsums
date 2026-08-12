@@ -197,7 +197,7 @@ def test_the_chunking_does_not_change_the_answer():
 
     # Small enough to force one triplet per chunk at this size, so every
     # triplet is both first and last in its chunk.
-    split = DLPNOCCSDT(reference, replace(cut, t0_chunk_memory=6 * 2 ** 20),
+    split = DLPNOCCSDT(reference, replace(cut, triples_memory=6 * 2 ** 20),
                        verbose=False)
     split.compute_energy()
 
@@ -214,9 +214,9 @@ def test_a_triplet_too_large_for_the_budget_reports_itself():
     silent thrash or a MemoryError from the allocator with no context.
     """
     reference, _ = load_reference(WATER)
-    cut = replace(_untruncated(reference), t0_chunk_memory=1024)
+    cut = replace(_untruncated(reference), triples_memory=1024)
     cc = DLPNOCCSDT(reference, cut, verbose=False)
-    with pytest.raises(MemoryError, match="TNOs.*against a budget"):
+    with pytest.raises(MemoryError, match="TNOs.*budget"):
         cc.compute_energy()
 
 

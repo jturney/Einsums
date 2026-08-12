@@ -1,12 +1,14 @@
-# DLPNO-MP2 on the einsums ComputeGraph
+# DLPNO-MP2, CCSD and (T) on the einsums ComputeGraph
 
 A port of psi4's DLPNO module (`psi4/src/psi4/dlpno`) with the tensor algebra expressed in einsums and the solvers captured as ComputeGraphs.
-DLPNO-MP2 is complete and validated against psi4 two ways; DLPNO-CCSD and (T) are not started.
+All three methods are complete and validated against psi4 two ways: DLPNO-MP2, DLPNO-CCSD, and the triples in both their semicanonical (T0) and iterative (T) forms.
 
 DLPNO fits deferred execution unusually well: it is thousands of small dense operations whose shapes and dependency pattern are fixed for a whole calculation and change only in their values, which is exactly the capture-once, replay-many shape.
 Every contraction is captured into a graph once and replayed, so the per-iteration Python cost is a few `execute()` calls however many GEMMs they stand for; the LMP2 iteration itself runs as a single graph with a loop node and DIIS as its predicate.
 
-Against psi4's native C++ implementation, the port is faster on three of the four benchmark configurations: 0.65x psi4's wall time on a six-monomer water chain and 0.63x on ethanol/cc-pVTZ single threaded, and 0.79x on ethanol at ten threads.
+The coupled-cluster layers are validated but not yet tuned: the performance work below is the MP2 campaign's, and the CCSD and (T) phases are at their correctness cut.
+
+Against psi4's native C++ implementation, the MP2 port is faster on three of the four benchmark configurations: 0.65x psi4's wall time on a six-monomer water chain and 0.63x on ethanol/cc-pVTZ single threaded, and 0.79x on ethanol at ten threads.
 The one configuration psi4 wins is the chain at ten threads, at 1.23x, and the gap is measured rather than mysterious: it is serial setup work (graph construction, capture emission) that stays constant while the replays shrink with cores.
 Current numbers and their provenance are in [Performance against psi4](#performance-against-psi4); `bench_vs_psi4.py` reproduces them on your machine, phase against phase.
 
@@ -47,14 +49,22 @@ None of the psi4-driven scripts are wired into CTest or pytest, since they need 
 A converged reference can be frozen to an `.npz` fixture on a machine that has psi4, then replayed anywhere the library builds:
 
 ```bash
-# once, with psi4 importable
-python examples/dlpno/dump_reference.py --molecule water --basis cc-pvdz \
+# once, with psi4 importable. --with-cc also records psi4's DLPNO-CCSD and
+# DLPNO-CCSD(T) energies and the classification counts, at the CC branch's own
+# NORMAL preset; without it the fixture carries the MP2 references only.
+python examples/dlpno/dump_reference.py --molecule water --basis cc-pvdz --with-cc \
     --out examples/dlpno/fixtures/water-ccpvdz.npz
 
 # thereafter, einsums only
 PYTHONPATH=/path/to/Einsums/build/lib \
     python examples/dlpno/run_dlpno_mp2_offline.py examples/dlpno/fixtures/water-ccpvdz.npz
+
+# every fixture, against every recorded reference
+PYTHONPATH=/path/to/Einsums/build/lib python examples/dlpno/run_fixtures.py
+PYTHONPATH=/path/to/Einsums/build/lib python examples/dlpno/run_fixtures.py --method 'ccsd(t)'
 ```
+
+All six fixtures carry CC and (T) references, so the coupled-cluster path is checkable with no psi4 present - including the frozen-core one, which is the only fixture exercising `n_core > 0` through the triples.
 
 The fixture records psi4's own DF-MP2 and DLPNO-MP2 correlation energies, so a replay checks itself against them without psi4 present.
 `run_fixtures.py` replays every fixture at both threshold settings - the whole psi4-free suite in one command, about a second - and exits non-zero on any disagreement:
@@ -114,6 +124,18 @@ This is the check that pins the port down: the PAO construction, the local densi
 
 **Truncated, against psi4's own DLPNO-MP2.**
 Both sides apply the same three truncations - PNO occupation cutoff, differential-overlap PAO and auxiliary domains, dipole pair prescreening - so this is an exact comparison, and it agrees to ~1e-12 on the fixture set, with the far dimer dropping exactly the pairs psi4 drops.
+
+**Coupled cluster, against two independent oracles and then against psi4.**
+The CC layers are pinned harder than the MP2 ones, because a coupled-cluster energy is a fixed point rather than a closed form and two codes reach it along different DIIS trajectories.
+So the sharp check is not a converged energy at all: `canonical_ccsd.py` and `canonical_triples.py` are numpy implementations sharing no code with the port, and each is itself pinned by a SECOND implementation before anything is judged against it - spin-adapted against spin-orbital, agreeing to 1e-15 and 3e-18 respectively.
+Against those, the port's CCSD residuals agree to 7.7e-12 relative at arbitrary probe amplitudes an order of magnitude past the physical ones, and its (T0) to 1.6e-16 evaluated at the port's own converged amplitudes.
+Untruncated, local CCSD is canonical DF-CCSD to 7.8e-12 and the iterative (T) is canonical DF-CCSD(T) to 1e-12.
+Truncated against psi4 at NORMAL, on water, both water dimers and methanol: every energy term and every classification count matches, CCSD at 2.3e-12 to 2.1e-9, (T0) at 1.5e-11 to 1.1e-10, and the full (T) at 1.1e-9 to 6.5e-9.
+
+**One property worth knowing before reading a (T) number.**
+(T0) is NOT invariant to a rotation of the occupied orbitals, where CCSD and the iterative (T) are: its denominator carries only the diagonal of the occupied Fock matrix, so in the localized basis this port works in it drops the coupling between triplets.
+On water/cc-pVDZ that is 1.5e-4 Eh, five percent of the correction.
+It is the approximation rather than an error, and it is why the (T0) gate is run in two occupied bases while the (T) gate needs only one.
 
 **The screened integral source, against the dense oracle.**
 `check_integral_sources.py --sweep` runs the domain-restricted source with every tolerance switched off, where it must reproduce the dense transform on every block it declares; it does, to 3e-15 across all six fixture geometries.

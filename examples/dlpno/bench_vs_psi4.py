@@ -56,11 +56,13 @@ from dlpno.molecules import MOLECULES, water_chain
 
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 parser.add_argument(
-    "--method", default="mp2", choices=["mp2", "ccsd"],
+    "--method", default="mp2", choices=["mp2", "ccsd", "ccsd(t)"],
     help="which DLPNO method to compare. 'ccsd' runs the whole prescreening "
          "cascade and the T1-dressed CC iteration on both sides and prices "
-         "them phase against phase; only the dense integral source serves it, "
-         "because the CC layers declare (Q|i j) and (Q|u v).")
+         "them phase against phase; 'ccsd(t)' adds the triples, which psi4's "
+         "own budget makes the majority of the run at benchmark scale. Only "
+         "the dense integral source serves either, because the CC layers "
+         "declare (Q|i j) and (Q|u v).")
 parser.add_argument("--molecule", default="methanol",
                     help=f"one of {sorted(MOLECULES)}, or 'chain<N>' for an N-monomer "
                          "water chain at 2.9 A - the geometry the scaling work targets")
@@ -119,14 +121,14 @@ else:
 # Before the first compute call, which is what einsums::initialize reads.
 import einsums.rc  # noqa: E402
 
-BUFFER_SIZE = args.buffer_size or ("2GB" if args.method == "ccsd" else None)
+BUFFER_SIZE = args.buffer_size or (None if args.method == "mp2" else "2GB")
 if BUFFER_SIZE is not None:
     einsums.rc.buffer_size = BUFFER_SIZE
 
 T_CUT_PNO = args.t_cut_pno
 if T_CUT_PNO is None and args.method == "mp2":
     T_CUT_PNO = 1e-8
-if args.method == "ccsd":
+if args.method != "mp2":
     # Only the dense source serves (Q|i j) and (Q|u v); see decision 5 of the
     # design. That is a real handicap in this table rather than a detail - it is
     # a row psi4 wins on, and a screened (Q|u v) source is a psi4-side patch.
@@ -163,7 +165,8 @@ psi4.set_options({"dlpno_algorithm": method})
 t0 = time.perf_counter()
 e = psi4.energy("dlpno-" + method)
 t_dlpno = time.perf_counter() - t0
-psivar = "MP2 CORRELATION ENERGY" if method == "mp2" else "CCSD CORRELATION ENERGY"
+psivar = {"mp2": "MP2 CORRELATION ENERGY",
+          "ccsd": "CCSD CORRELATION ENERGY"}.get(method, "CCSD(T) CORRELATION ENERGY")
 print(json.dumps({"scf": t_scf, "dlpno": t_dlpno,
                   "corr": psi4.variable(psivar)}))
 '''
@@ -197,6 +200,13 @@ def run_psi4(workdir):
         stats["avg_pno"] = int(m.group(1))
     stats["iterations"] = len(re.findall(r"@LMP2 iter", text))
     stats["cc_iterations"] = len(re.findall(r"@LCCSD iter", text))
+    stats["t_iterations"] = len(re.findall(r"@LCCSD\(T\) iter", text))
+    m = re.search(r"Number of \(Unique\) Local MO triplets:\s*(\d+)", text)
+    if m:
+        stats["triplets"] = int(m.group(1))
+    tno = re.findall(r"Natural Orbitals per Local MO triplet:\s*\n\s*Avg:\s+(\d+)", text)
+    if tno:
+        stats["avg_tno"] = int(tno[-1])
     m = re.search(r"Screened (\d+) of (\d+) LMO pairs", text)
     if m:
         stats["pairs"] = int(m.group(2)) - int(m.group(1))
@@ -219,6 +229,7 @@ print("running the einsums port ...", flush=True)
 import psi4  # noqa: E402
 from dlpno import DLPNOMP2, Thresholds  # noqa: E402
 from dlpno.ccsd import DLPNOCCSD  # noqa: E402
+from dlpno.triples import DLPNOCCSDT  # noqa: E402
 from dlpno.psi4_source import from_psi4  # noqa: E402
 
 if args.backend:
@@ -297,7 +308,7 @@ def bill(obj, name, method_name):
 preset_kwargs = {"n_buckets": args.buckets}
 if T_CUT_PNO is not None:
     preset_kwargs["t_cut_pno"] = T_CUT_PNO
-cut = Thresholds.preset("NORMAL", method="cc" if args.method == "ccsd" else "mp2",
+cut = Thresholds.preset("NORMAL", method="mp2" if args.method == "mp2" else "cc",
                         **preset_kwargs)
 
 t_total = time.perf_counter()
@@ -326,7 +337,8 @@ if args.method == "mp2":
     ours["LMP2 build"] = mp2.t_capture
     ours["LMP2"] = mp2.t_iterate
 else:
-    calc = mp2 = DLPNOCCSD(reference, cut, verbose=False)
+    triples = args.method == "ccsd(t)"
+    calc = mp2 = (DLPNOCCSDT if triples else DLPNOCCSD)(reference, cut, verbose=False)
     # The row names are psi4's timer names, so the two columns line up without
     # a translation table. Every step of compute_energy is charged to one.
     for row, name in (
@@ -345,15 +357,34 @@ else:
             ("PNO Integrals", "compute_pno_integrals"),
             ("PNO Overlaps", "compute_pno_overlaps"),
             ("LCCSD", "lccsd_iterations"),
-    ):
+    ) + ((
+            # psi4's own timer names again. Triples Sparsity and TNO transform
+            # each run three times and LCCSD(T0) twice; bill() accumulates, so
+            # each row is the whole of that phase across the cascade, which is
+            # what psi4's timer reports too.
+            ("Triples Sparsity", "triples_sparsity"),
+            ("TNO transform", "tno_transform"),
+            ("LCCSD(T0)", "compute_lccsd_t0"),
+            ("Sort Triplets", "sort_triplets"),
+            ("LCCSD(T) Iterations", "lccsd_t_iterations"),
+    ) if triples else ()):
         bill(mp2, row, name)
-    mp2.compute_energy()
+    mp2.compute_energy(method="ccsd(t)") if triples else mp2.compute_energy()
     ours["DLPNO-CCSD"] = time.perf_counter() - t_total
     # Split the one-time plan and capture out of the LCCSD row, as the MP2 path
     # does: psi4 has no equivalent, so a row mixing the two compares different
     # things. Both still sum into the total.
-    ours["LCCSD build"] = mp2.lccsd.t_plan + mp2.lccsd.t_capture
+    # The triples path drops the CCSD solver once it has the amplitudes, so
+    # its statistics come from the snapshot _release_ccsd keeps.
+    stats_cc = (mp2.ccsd_stats if triples else
+                dict(t_plan=mp2.lccsd.t_plan, t_capture=mp2.lccsd.t_capture,
+                     iterations=mp2.lccsd.n_iterations,
+                     nodes=mp2.lccsd.num_nodes(),
+                     lmp2_iterations=mp2.lmp2.n_iterations))
+    ours["LCCSD build"] = stats_cc["t_plan"] + stats_cc["t_capture"]
     ours["LCCSD"] -= ours["LCCSD build"]
+    if triples:
+        ours["DLPNO-CCSD(T)"] = ours.pop("DLPNO-CCSD")
 
 # ---- report ------------------------------------------------------------------
 print(f"\n  problem size")
@@ -363,7 +394,7 @@ print(f"    {'':22} {'psi4':>12} {'this port':>12}")
 # cutoffs - while the port's are the post-rebuild values the CC iteration
 # actually runs on. Comparing them would read as a disagreement where there is
 # none, so psi4's column is a dash and the note says which point each is from.
-_staged = args.method == "ccsd"
+_staged = args.method != "mp2"
 print(f"    {'LMO pairs':22} {'-' if _staged else psi4_stats.get('pairs', '?'):>12} "
       f"{mp2.n_lmo_pairs:>12}"
       + (f"   (of {mp2.ref.naocc**2} possible, after crude elimination)"
@@ -385,11 +416,21 @@ else:
     # psi4's LMP2-inside-CC iterations are not labelled the way its standalone
     # ones are, so its column is a dash rather than a wrong zero.
     print(f"    {'LMP2 iterations':22} {psi4_stats.get('iterations') or '-':>12} "
-          f"{mp2.lmp2.n_iterations:>12}")
+          f"{stats_cc['lmp2_iterations']:>12}")
     print(f"    {'LCCSD iterations':22} {psi4_stats.get('cc_iterations', '?'):>12} "
-          f"{mp2.lccsd.n_iterations:>12}")
-    print(f"    {'captured CC nodes':22} {'-':>12} {mp2.lccsd.num_nodes():>12}"
+          f"{stats_cc['iterations']:>12}")
+    print(f"    {'captured CC nodes':22} {'-':>12} {stats_cc['nodes']:>12}"
           "   (replayed once per iteration)")
+    if triples:
+        print(f"    {'LMO triplets':22} {psi4_stats.get('triplets', '?'):>12} "
+              f"{mp2.n_lmo_triplets:>12}"
+              f"   ({sum(mp2.is_strong_triplet)} strong, at the (T) cutoffs)")
+        print(f"    {'avg TNOs per triplet':22} "
+              f"{psi4_stats.get('avg_tno', '?'):>12} "
+              f"{sum(mp2.n_tno) / max(mp2.n_lmo_triplets, 1):>12.1f}")
+        print(f"    {'(T) iterations':22} "
+              f"{psi4_stats.get('t_iterations', '?'):>12} "
+              f"{mp2.lccsd_t.n_iterations:>12}")
 
 # (row label, key in `ours`, psi4 timer name or None when psi4 has no analogue).
 #
@@ -431,9 +472,19 @@ else:
         ("LCCSD iterations", "LCCSD", "LCCSD"),
         ("LCCSD graph build", "LCCSD build", None),
     ]
+    if args.method == "ccsd(t)":
+        ROWS += [
+            ("Triples Sparsity", "Triples Sparsity", "Triples Sparsity"),
+            ("TNO transform", "TNO transform", "TNO transform"),
+            ("LCCSD(T0)", "LCCSD(T0)", "LCCSD(T0)"),
+            ("Sort Triplets", "Sort Triplets", "Sort Triplets"),
+            ("LCCSD(T) iterations", "LCCSD(T) Iterations",
+             "LCCSD(T) Iterations"),
+        ]
 # Any phase timed but not named above still gets a row, in the order it was
 # timed, so adding a phase() call cannot drop work out of the table.
-TOTAL = "DLPNO-MP2" if args.method == "mp2" else "DLPNO-CCSD"
+TOTAL = {"mp2": "DLPNO-MP2", "ccsd": "DLPNO-CCSD"}.get(
+    args.method, "DLPNO-CCSD(T)")
 ROWS += [(key, key, key) for key in ours
          if key != TOTAL and key not in {r[1] for r in ROWS}]
 
@@ -492,14 +543,14 @@ if table_incomplete:
           "untimed. Fix the\n    table before using it to choose what to "
           "optimize.")
 
-if args.method == "ccsd":
+if args.method != "mp2":
     p_it = (psi4_phases.get("LCCSD", 0.0)
             / max(psi4_stats.get("cc_iterations", 0) or 1, 1))
-    o_it = mp2.lccsd.t_iterate / max(mp2.lccsd.n_iterations, 1)
+    o_it = stats_cc["t_iterate"] / max(stats_cc["iterations"], 1)
     if p_it > 1e-9:
         print(f"\n    {'LCCSD per iteration':22} {p_it:>12.4f} {o_it:>12.4f} "
               f"{o_it / p_it:>9.1f}x")
-    nodes = mp2.lccsd.num_nodes()
+    nodes = stats_cc["nodes"]
     print(f"\n  where the LCCSD time goes")
     print(f"    {nodes} captured nodes, {o_it * 1e6 / max(nodes, 1):.2f} us per "
           f"node per iteration")
@@ -510,6 +561,23 @@ if args.method == "ccsd":
           f"campaign's first\n    lever is grouping records by shape class into "
           f"batched calls, which is what took\n    LMP2 from 754 dispatches an "
           f"iteration to 13.")
+    if triples:
+        # The (T) row deserves its own per-iteration figure, because the two
+        # sides do not take the same NUMBER of iterations and the row total
+        # therefore compares two different amounts of work. psi4 updates its
+        # amplitudes in place, so a term sees this pass's neighbours; the port
+        # is Jacobi and sees last pass's. Same fixed point, different rate.
+        p_t = (psi4_phases.get("LCCSD(T) Iterations", 0.0)
+               / max(psi4_stats.get("t_iterations", 0) or 1, 1))
+        o_t = mp2.lccsd_t.t_iterate / max(mp2.lccsd_t.n_iterations, 1)
+        if p_t > 1e-9:
+            print(f"\n    {'(T) per iteration':22} {p_t:>12.4f} {o_t:>12.4f} "
+                  f"{o_t / p_t:>9.1f}x")
+            print(f"    {'(T) iteration count':22} "
+                  f"{psi4_stats.get('t_iterations', '?'):>12} "
+                  f"{mp2.lccsd_t.n_iterations:>12}"
+                  "   (in-place vs Jacobi)")
+
     e_ours = mp2.e_corr
     want = psi4_times["corr"]
     print(f"\n  correlation energy   psi4 {want:.10f}   port {e_ours:.10f}   "

@@ -109,14 +109,16 @@ class Thresholds:
     #: Stop at the semicanonical (T0) energy, psi4's ``T0_APPROXIMATION``.
     t0_approximation: bool = False
 
-    #: How much memory one chunk of the (T0) phase may hold, in bytes. No psi4
-    #: analogue: psi4 processes one triplet per thread and pages the iterative
-    #: (T)'s intermediates to disk, where the port captures a whole chunk of
-    #: triplets into one graph so their independent chains can thread. That
-    #: trades memory for parallelism, and this is the dial. A triplet too large
-    #: to process even alone reports its own requirement rather than paging,
-    #: which is design decision 10: in core, with a measured failure.
-    t0_chunk_memory: int = 2 * 2 ** 30
+    #: How much memory the triples phases may hold, in bytes.
+    #:
+    #: Covers BOTH the transient working set of a chunk of triplets and the
+    #: stores the iterative (T) keeps for every triplet at once, because the
+    #: two are alive together and bounding only the first is how this phase
+    #: came to page instead of refusing. No psi4 analogue as a dial: psi4
+    #: spills W, V and the amplitudes to disk when they do not fit, which
+    #: design decision 10 puts out of scope here - so the port reports its
+    #: measured requirement and refuses instead.
+    triples_memory: int = 2 * 2 ** 30
 
     # -- linear algebra cutoffs --------------------------------------------
 

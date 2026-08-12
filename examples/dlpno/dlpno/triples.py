@@ -547,6 +547,92 @@ class DLPNOCCSDT(DLPNOCCSD):
         self.t_t0 += time.perf_counter() - t0
         return energy
 
+    # -- psi4 DLPNOCCSD_T::estimate_memory ----------------------------------
+
+    def estimate_memory(self):
+        """Report what the iterative (T) will hold, and refuse if it will not fit.
+
+        psi4 prints the same breakdown and then spills: over 90% of available
+        memory it moves W and V to disk, then the amplitudes, then throws.
+        Design decision 10 puts the disk path out of scope here, so this
+        reports and refuses - but it must REPORT, because "in core only" is
+        only a defensible scope decision if the point where it stops working
+        arrives as a number rather than as an afternoon of paging. That is not
+        hypothetical: it is how this method came to exist.
+
+        Counts the ``n_tno^3`` stores only, per store rather than as one total
+        so a run that does not fit says which store to attack. The
+        ``n_tno^2``-scale things - the pair and triplet overlaps, the
+        contracted integrals - are an order smaller and deliberately left out;
+        the budget is not a precise allocation forecast, it is the line past
+        which this phase must refuse rather than page.
+        """
+        cube = 8 * sum(n ** 3 for n in self.n_tno)
+        # The rotation scratch is sized to the WIDEST partner a triplet
+        # couples to, which is not known until the couplings are planned. The
+        # global maximum is an upper bound, and an upper bound is the only
+        # safe direction for a check whose whole purpose is to refuse early.
+        widest = max(self.n_tno, default=0)
+        scratch = 8 * sum(n * widest ** 2 + n * n * widest + n ** 3
+                          for n in self.n_tno)
+        stores = {
+            "W_{ijk}^{abc}": cube,
+            "V_{ijk}^{abc}": cube,
+            "T_{ijk}^{abc}": cube,
+            "R_{ijk}^{abc} (Jacobi)": cube,
+            "denominators": cube,
+            "Eq. 53 bracket": cube,
+            "rotation scratch (bound)": scratch,
+        }
+        total = sum(stores.values())
+        budget = int(self.cut.triples_memory)
+
+        self._print("\n  ==> DLPNO-(T) memory <==\n")
+        for name, size in stores.items():
+            self._print(f"    {name:<24} {size / 2**30:8.3f} GiB")
+        self._print(f"    {'total required':<24} {total / 2**30:8.3f} GiB")
+        self._print(f"    {'budget':<24} {budget / 2**30:8.3f} GiB")
+
+        if total > budget:
+            raise MemoryError(
+                f"the iterative (T) needs {total / 2**30:.2f} GiB over "
+                f"{self.n_lmo_triplets} triplets ({min(self.n_tno)}-"
+                f"{max(self.n_tno)} TNOs) against a budget of "
+                f"{budget / 2**30:.2f} GiB. There is no disk path (design "
+                "decision 10), so the options are: raise "
+                "Thresholds.triples_memory if the machine has the memory, "
+                "loosen t_cut_tno or t_cut_tno_weak_scale to shrink the TNO "
+                "spaces, or set t0_approximation to stop at (T0), which holds "
+                "nothing per triplet and is what the semicanonical passes "
+                "already do.")
+        return total
+
+    # -- psi4 DLPNOCCSD_T::lccsd_t_iterations -------------------------------
+
+    def lccsd_t_iterations(self):
+        """Iterate Eq. 111/112; return the NET contribution over (T0).
+
+        See :mod:`dlpno.lccsd_t`. The net rather than the absolute energy
+        because the iterative pass runs in a DIFFERENT TNO space from the
+        production (T0) - looser, and looser still for the weak triplets - so
+        its own semicanonical energy is recomputed there and only the
+        difference is carried across. Comparing the two (T0) values is what
+        makes that legitimate: they bracket the same quantity in two spaces,
+        and the correction transfers where the absolute number would not.
+
+        A method rather than an inline block so it can be billed as one phase,
+        matching psi4's timer of the same name.
+        """
+        self.lccsd_t = LCCSDT(self, self.lccsd_t0, verbose=self.verbose)
+        self.e_t_raw = self.lccsd_t.iterate()
+        self.de_t = self.e_t_raw - self.e_t0_crude
+        self.e_ijk = self.lccsd_t.e_ijk
+        self._print(
+            f"\n    (T0) at the looser cutoff: {self.e_t0_crude:16.12f}\n"
+            f"    (T)  at the looser cutoff: {self.e_t_raw:16.12f}\n"
+            f"    net iterative contribution:{self.de_t:16.12f}")
+        return self.de_t
+
     # -- psi4 DLPNOCCSD_T::compute_energy -----------------------------------
 
     def _release_ccsd(self):
@@ -565,7 +651,8 @@ class DLPNOCCSDT(DLPNOCCSD):
         self.ccsd_stats = dict(
             iterations=self.lccsd.n_iterations, nodes=self.lccsd.num_nodes(),
             t_plan=self.lccsd.t_plan, t_capture=self.lccsd.t_capture,
-            t_iterate=self.lccsd.t_iterate)
+            t_iterate=self.lccsd.t_iterate,
+            lmp2_iterations=self.lmp2.n_iterations if self.lmp2 else 0)
 
         self.T_ia = []
         for i in range(self.ref.naocc):
@@ -619,26 +706,12 @@ class DLPNOCCSDT(DLPNOCCSD):
         self.e_lccsd_t = self.e_lccsd + self.e_t0 + self.de_lccsd_t_screened
 
         if not self.cut.t0_approximation:
-            # psi4's third step. The iterative pass runs in a DIFFERENT TNO
-            # space from the (T0) above - looser, and looser still for the
-            # weak triplets - so its own semicanonical energy is recomputed
-            # there and only the DIFFERENCE is carried over. Comparing the two
-            # (T0) values is what makes that legitimate: they bracket the same
-            # quantity in two spaces, and the correction transfers where the
-            # absolute number would not.
             self._print("\n  ==> Iterative (T) <==\n")
             self.sort_triplets(self.e_t0)
             self.tno_transform(self.cut.t_cut_tno)
+            self.estimate_memory()
             self.e_t0_crude = self.compute_lccsd_t0(retain=True)
-            self.lccsd_t = LCCSDT(self, self.lccsd_t0, verbose=self.verbose)
-            self.e_t_raw = self.lccsd_t.iterate()
-            self.de_t = self.e_t_raw - self.e_t0_crude
-            self.e_ijk = self.lccsd_t.e_ijk
-            self.e_lccsd_t += self.de_t
-            self._print(
-                f"\n    (T0) at the looser cutoff: {self.e_t0_crude:16.12f}\n"
-                f"    (T)  at the looser cutoff: {self.e_t_raw:16.12f}\n"
-                f"    net iterative contribution:{self.de_t:16.12f}")
+            self.e_lccsd_t += self.lccsd_t_iterations()
 
         self.e_corr = (self.e_lccsd_t + self.de_weak + self.de_lmp2_eliminated
                        + self.de_dipole + self.de_pno_total)
