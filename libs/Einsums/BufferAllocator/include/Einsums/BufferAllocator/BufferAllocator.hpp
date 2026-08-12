@@ -190,10 +190,18 @@ struct BufferAllocator {
         pointer out;
 
         if (!reserve(n)) {
+            // available_size() and max_size() are both in ELEMENTS, so reporting
+            // them against a "bytes" label under-stated the ceiling by a factor
+            // of type_size - eightfold for the size_t vectors that fail here
+            // most often, which reads as a 512kB limit when the default is 4MB.
+            // Multiply back, and say which type ran out: one allocator instance
+            // per T shares one global budget, so the element counts alone do not
+            // identify the caller.
             EINSUMS_THROW_EXCEPTION(std::runtime_error,
-                                    "Could not allocate enough memory for buffers. Requested {} elements or {} bytes, but only {} bytes "
-                                    "available out of {} bytes maximum.",
-                                    n, n * type_size, available_size(), max_size());
+                                    "Could not allocate enough memory for buffers. Requested {} elements of {} bytes ({} bytes), but "
+                                    "only {} bytes are available out of {} bytes maximum. Raise --einsums:buffer-size if this "
+                                    "allocation is legitimate workspace.",
+                                    n, type_size, n * type_size, available_size() * type_size, max_size() * type_size);
         }
 
         out = static_cast<pointer>(detail::allocate(n * type_size));
