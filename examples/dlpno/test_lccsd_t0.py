@@ -45,6 +45,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_ccsd_defect import Bridge
 from dlpno.canonical_ccsd import CanonicalCCSD
 from dlpno.canonical_triples import t0_energy
+from dlpno.cc_integrals import _pair_bytes, _pair_transient_bytes
+from dlpno.ccsd import DLPNOCCSD
 from dlpno.reference_io import load_reference
 from dlpno.thresholds import Thresholds
 from dlpno.triples import DLPNOCCSDT
@@ -197,7 +199,7 @@ def test_the_chunking_does_not_change_the_answer():
 
     # Small enough to force one triplet per chunk at this size, so every
     # triplet is both first and last in its chunk.
-    split = DLPNOCCSDT(reference, replace(cut, triples_memory=6 * 2 ** 20),
+    split = DLPNOCCSDT(reference, replace(cut, in_core_memory=6 * 2 ** 20),
                        verbose=False)
     split.compute_energy()
 
@@ -206,17 +208,46 @@ def test_the_chunking_does_not_change_the_answer():
         "the per-triplet energies moved when the chunk size changed")
 
 
+def _largest_pair_bytes(reference, cut):
+    """What ``compute_pno_integrals`` needs for its single widest pair.
+
+    The two tests below have to clear this before they can reach a triples
+    budget check at all: ``in_core_memory`` is one dial for every phase that
+    chunks, so the earliest phase that cannot proceed is the one that refuses,
+    and that phase is the pair integrals. Deriving the figure rather than
+    writing a number down keeps the tests pointed at the triples when the
+    fixtures or the domain sizes move.
+    """
+    cc = DLPNOCCSD(reference, cut, verbose=False)
+    cc.compute_energy(method="mp2")
+    upper = [ij for ij, (i, j) in enumerate(cc.ij_to_i_j)
+             if i <= j and cc.n_pno[ij]]
+    return max(_pair_bytes(cc, ij) + _pair_transient_bytes(cc, ij)
+               for ij in upper)
+
+
 def test_a_triplet_too_large_for_the_budget_reports_itself():
     """Design decision 10: in core, with a measured failure.
 
     There is no disk path, so the useful behaviour when a triplet does not fit
     is a message naming the triplet, what it needs and what to change - not a
-    silent thrash or a MemoryError from the allocator with no context.
+    silent thrash or a MemoryError from the allocator with no context. This is
+    ``lccsd_t0._chunks``, the only budget check this file can reach:
+    ``_untruncated`` sets ``t0_approximation``, so ``estimate_memory`` and the
+    iterative (T) never run here. ``test_lccsd_t.py`` covers that one.
+
+    cc-pVTZ rather than cc-pVDZ, and the budget derived rather than written
+    down, because ``in_core_memory`` became one dial for every phase that
+    chunks when ``compute_pno_integrals`` started using it. The budget now has
+    to clear the widest PAIR before it can say anything about a triplet, and at
+    cc-pVDZ no such budget falls short of a triplet as well - the pair check
+    trips first, which is correct behaviour and useless for this test.
     """
-    reference, _ = load_reference(WATER)
-    cut = replace(_untruncated(reference), triples_memory=1024)
-    cc = DLPNOCCSDT(reference, cut, verbose=False)
-    with pytest.raises(MemoryError, match="TNOs.*budget"):
+    reference, _ = load_reference(os.path.join(FIXTURES, "water-ccpvtz.npz"))
+    cut = _untruncated(reference)
+    budget = int(1.05 * _largest_pair_bytes(reference, cut))
+    cc = DLPNOCCSDT(reference, replace(cut, in_core_memory=budget), verbose=False)
+    with pytest.raises(MemoryError, match=r"on its own.*TNOs.*budget"):
         cc.compute_energy()
 
 

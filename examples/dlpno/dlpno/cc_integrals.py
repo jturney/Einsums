@@ -136,16 +136,118 @@ def compute_pno_integrals(cc):
 
     Only ``i <= j`` is looped; the ``ji`` blocks that are not transposes are
     built alongside their partner, exactly as psi4 does.
+
+    The pairs go through in chunks that fit the memory budget rather than all
+    at once. Nothing here reads another pair's raw blocks, so the split changes
+    no arithmetic and no summation order - it only releases the gathers sooner.
+    See :func:`_chunks` for why that matters.
     """
     out = PnoIntegrals(cc.n_lmo_pairs)
     upper = [ij for ij, (i, j) in enumerate(cc.ij_to_i_j)
              if i <= j and cc.n_pno[ij]]
 
-    raw = _raw_blocks(cc, upper)
-    _fit(cc, upper, raw)
-    _contract(cc, upper, raw, out)
-    _non_projected(cc, upper, raw, out)
+    chunks = _chunks(cc, upper)
+    if len(chunks) > 1:
+        # Worth a line, because the chunk count is the difference between this
+        # phase's peak and its budget, and a benchmark whose peak depends on an
+        # unreported number is not reproducible.
+        cc._print(f"  CC ints:  {len(upper)} pairs in {len(chunks)} chunks "
+                  f"against a {cc.cut.in_core_memory / 2**30:.2f} GiB budget")
+    for chunk in chunks:
+        raw = _raw_blocks(cc, chunk)
+        _fit(cc, chunk, raw)
+        _contract(cc, chunk, raw, out)
+        _non_projected(cc, chunk, raw, out)
+        raw.clear()
     return out
+
+
+def _pair_bytes(cc, ij):
+    """What one pair holds for as long as its chunk is in flight."""
+    ribfs, paos, lmos, _extended = _domains(cc, ij)
+    nq, nu, nk, na = len(ribfs), len(paos), len(lmos), cc.n_pno[ij]
+    kept = (nq                      # (Q|i j)
+            + 2 * nq * nk           # (Q|i m), (Q|j m)
+            + 2 * nq * na           # (Q|i a), (Q|j a)
+            + nq * nk * na          # (Q|m a)
+            + nq * na * na          # (Q|a b)
+            + 2 * nq * (nk + na)    # the four full-inverse copies from _fit
+            + nq * nq)              # _fit's domain metric, which it builds for
+                                    # every pair in the chunk before solving any
+    gathered = (nq                  # (Q|i j) raw
+                + 2 * nq * nk       # (Q|i m), (Q|j m) raw
+                + 2 * nq * nu       # (Q|i u), (Q|j u) raw
+                + nq * nk * nu      # (Q|m u) raw
+                + nq * nu * nu      # (Q|u v) raw, the largest block by far
+                + nq * na * nu)     # the (Q|a v) half transform
+    return 8 * (kept + gathered)
+
+
+def _pair_transient_bytes(cc, ij):
+    """What building ONE pair needs on top, and does not keep.
+
+    ``_fit`` stacks every block into one right-hand side and copies the metric;
+    ``_non_projected`` gathers over the EXTENDED PAO domain, which is the wider
+    of the two and so usually the one that sets this. Both are alive for one
+    pair at a time, so a chunk pays the largest of them once rather than the
+    sum over its members.
+    """
+    ribfs, paos, lmos, extended = _domains(cc, ij)
+    nq, nu, nk, na = len(ribfs), len(paos), len(lmos), cc.n_pno[ij]
+    ne = len(extended)
+    fit = (nq * (1 + 2 * nk + 2 * na + nk * na + na * na)  # the stacked rhs
+           + 2 * nq * nq)                    # the metric copy and its root,
+                                             # both per pair and both dropped
+    ext = (nq * nu * ne         # (Q|u v_ext) raw
+           + nq * na * ne       # (Q|a v_ext)
+           + nq * nk * ne       # (Q|m u_ext) raw
+           + 2 * nk * na * ne)  # the two contracted results
+    return 8 * max(fit, ext)
+
+
+def _chunks(cc, upper):
+    """Split the pairs into runs whose working set fits the memory budget.
+
+    The blocks a pair is BUILT from are an order larger than the blocks it
+    produces: ``(Q | u v)`` over the pair's own domains is ``nq * nu^2``
+    against the ``nq * na^2`` it becomes, and the PAO domain is several times
+    the PNO count. Building every pair before fitting any of them therefore
+    peaks at something no store reflects - 10.9 GiB at ethanol/cc-pVTZ against
+    the 0.6 GiB of integrals the phase returns, which is most of what stood
+    between that configuration and a completed run.
+
+    In-core with a measured failure, per design decision 10: a pair too large
+    to build alone reports its own requirement and its domain sizes, because
+    there is no disk path to fall back to.
+    """
+    budget = int(cc.cut.in_core_memory)
+    chunks, current, total, head = [], [], 0, 0
+    for ij in upper:
+        need = _pair_bytes(cc, ij)
+        mine = _pair_transient_bytes(cc, ij)
+        if need + mine > budget:
+            ribfs, paos, lmos, extended = _domains(cc, ij)
+            i, j = cc.ij_to_i_j[ij]
+            raise MemoryError(
+                f"pair {ij} = ({i}, {j}) needs "
+                f"{(need + mine) / 2**20:.0f} MiB on its own ({cc.n_pno[ij]} "
+                f"PNOs, {len(ribfs)} auxiliary functions, {len(paos)} PAOs "
+                f"widened to {len(extended)}, {len(lmos)} neighbours) against "
+                f"a budget of {budget / 2**20:.0f} MiB. The largest single "
+                f"block is the (Q|u v) gather at "
+                f"{8 * len(ribfs) * len(paos) ** 2 / 2**20:.0f} MiB. There is "
+                "no disk path (design decision 10), so the options are: raise "
+                "Thresholds.in_core_memory if the machine has the memory, or "
+                "tighten t_cut_do to shrink the PAO domains.")
+        if current and total + need + max(head, mine) > budget:
+            chunks.append(current)
+            current, total, head = [], 0, 0
+        current.append(ij)
+        total += need
+        head = max(head, mine)
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def _domains(cc, ij):
@@ -248,15 +350,19 @@ def _raw_blocks(cc, upper):
             # 2 * naux operations per pair - around 100,000 at ethanol/cc-pVTZ
             # against 254 this way - and each one builds a view, which exhausts
             # einsums' small-buffer pool long before it finishes.
-            half = ten.zeros("(Q|a v) half", [nq, na, nu])
-            einsums.einsum("Qav <- Quv ; ua", half, s["uv_blk"], X)
+            s["half"] = ten.zeros("(Q|a v) half", [nq, na, nu])
+            einsums.einsum("Qav <- Quv ; ua", s["half"], s["uv_blk"], X)
             einsums.einsum("Qab <- Qav ; vb", r["q_vv"].reshape_view([nq, na, na]),
-                           half, X)
-            r["_half_vv"] = half
+                           s["half"], X)
     _run_setup_graph(g2)
 
-    for ij in jobs:
-        raw[ij]["_scratch"] = scratch[ij]
+    # And now the gathers are dead. They are the largest thing this phase ever
+    # holds - ``uv_blk`` alone is ``nq * nu^2`` per pair, an order above any
+    # block it produces - and they exist only to feed the two graphs above, so
+    # the scratch is dropped here rather than travelling with ``raw``. It used
+    # to, which cost 10 GiB of resident memory at ethanol/cc-pVTZ against the
+    # 0.6 GiB of integrals the phase actually returns; nothing ever read it.
+    scratch.clear()
     return raw
 
 

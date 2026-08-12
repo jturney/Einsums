@@ -176,7 +176,7 @@ def test_the_iterative_pass_refuses_a_budget_it_cannot_meet():
     """
     reference, _ = load_reference(DIMER)
     cut = replace(Thresholds.preset("NORMAL", method="cc"),
-                  triples_memory=20 * 2 ** 20)
+                  in_core_memory=20 * 2 ** 20)
     cc = DLPNOCCSDT(reference, cut, verbose=False)
     with pytest.raises(MemoryError, match="iterative \\(T\\) needs"):
         cc.compute_energy()
@@ -191,7 +191,7 @@ def test_stopping_at_t0_needs_no_per_triplet_storage():
     """
     reference, _ = load_reference(DIMER)
     cut = replace(Thresholds.preset("NORMAL", method="cc"),
-                  triples_memory=20 * 2 ** 20, t0_approximation=True)
+                  in_core_memory=20 * 2 ** 20, t0_approximation=True)
     cc = DLPNOCCSDT(reference, cut, verbose=False)
     cc.compute_energy()
     assert cc.e_t0 != 0.0

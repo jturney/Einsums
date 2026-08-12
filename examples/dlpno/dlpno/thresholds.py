@@ -109,16 +109,29 @@ class Thresholds:
     #: Stop at the semicanonical (T0) energy, psi4's ``T0_APPROXIMATION``.
     t0_approximation: bool = False
 
-    #: How much memory the triples phases may hold, in bytes.
+    #: How much memory a phase that builds per-pair or per-triplet blocks may
+    #: hold at once, in bytes.
     #:
-    #: Covers BOTH the transient working set of a chunk of triplets and the
-    #: stores the iterative (T) keeps for every triplet at once, because the
-    #: two are alive together and bounding only the first is how this phase
-    #: came to page instead of refusing. No psi4 analogue as a dial: psi4
-    #: spills W, V and the amplitudes to disk when they do not fit, which
-    #: design decision 10 puts out of scope here - so the port reports its
-    #: measured requirement and refuses instead.
-    triples_memory: int = 2 * 2 ** 30
+    #: Covers the transient working set of a chunk, and the stores the
+    #: iterative (T) keeps for every triplet at once, because the two are alive
+    #: together and bounding only the first is how the triples came to page
+    #: instead of refusing. ``compute_pno_integrals`` chunks against it for the
+    #: same reason: the blocks a pair is BUILT from are an order larger than
+    #: the blocks it produces, so the phase peaked at 10.9 GiB while reporting
+    #: 0.6 GiB of stores.
+    #:
+    #: No psi4 analogue as a dial, and the difference is the point: psi4 spills
+    #: W, V and the amplitudes to disk when they do not fit, which design
+    #: decision 10 puts out of scope here - so the port reports its measured
+    #: requirement and refuses instead. That also means this must NOT be set
+    #: from psi4's ``--memory`` grant, which psi4 can honour only because it
+    #: spills; a grant larger than the machine has authorises an allocation
+    #: that pages rather than one that refuses.
+    #:
+    #: Named for what it bounds rather than for who asked first: it was
+    #: ``t0_chunk_memory``, then ``triples_memory``, and each name went stale
+    #: the moment another phase needed the same bound.
+    in_core_memory: int = 2 * 2 ** 30
 
     # -- linear algebra cutoffs --------------------------------------------
 

@@ -91,17 +91,28 @@ parser.add_argument(
          "Orthogonal to --backend, which selects stage implementations.",
 )
 parser.add_argument(
+    "--in-core-memory", default=None,
+    help="in-core budget for the port's chunked phases, e.g. '8 GB'. Defaults "
+         "to what the machine actually has free, NOT to --memory: psi4 can "
+         "honour a grant larger than the machine because it spills to disk, "
+         "and the port has no disk path (design decision 10), so handing it "
+         "psi4's number authorises an allocation that pages instead of one "
+         "that refuses. The port refuses rather than paging when it does not "
+         "fit, so a run that reports its requirement here is a result, not a "
+         "failure.")
+parser.add_argument(
     "--memory", default="24 GB",
     help="memory ceiling for psi4. Its DLPNO memory estimate scales with the "
          "thread count, so the default 500 MB aborts a threaded cc-pVTZ run "
          "that a serial one completes.")
 parser.add_argument(
     "--buffer-size", default=None,
-    help="einsums buffer pool size. Every view handed to a captured operation "
-         "is allocated out of this pool and lives as long as the graph, so the "
-         "coupled-cluster capture - which emits one operation per plan record - "
-         "outgrows the 4 MB default well before the benchmark geometries. "
-         "Defaults to 2GB for ccsd and to leaving it alone for mp2.")
+    help="einsums buffer ceiling (--einsums:buffer-size). Left alone by "
+         "default. The coupled-cluster runs used to force this to 2GB, because "
+         "every view's dims and strides were charged against a ceiling meant "
+         "for contraction workspace and a captured iteration holds hundreds of "
+         "thousands of views; shape metadata now uses ShapeVector, so the stock "
+         "default is enough and this is only an escape hatch.")
 parser.add_argument(
     "--backend", default="",
     help="stage backend spec for the port, e.g. "
@@ -121,9 +132,8 @@ else:
 # Before the first compute call, which is what einsums::initialize reads.
 import einsums.rc  # noqa: E402
 
-BUFFER_SIZE = args.buffer_size or (None if args.method == "mp2" else "2GB")
-if BUFFER_SIZE is not None:
-    einsums.rc.buffer_size = BUFFER_SIZE
+if args.buffer_size is not None:
+    einsums.rc.buffer_size = args.buffer_size
 
 T_CUT_PNO = args.t_cut_pno
 if T_CUT_PNO is None and args.method == "mp2":
@@ -308,6 +318,59 @@ def bill(obj, name, method_name):
 preset_kwargs = {"n_buckets": args.buckets}
 if T_CUT_PNO is not None:
     preset_kwargs["t_cut_pno"] = T_CUT_PNO
+
+
+def _bytes(text):
+    """'24 GB' -> bytes, matching how psi4 reads the same string."""
+    number, _, unit = text.strip().partition(" ")
+    scale = {"": 1, "B": 1, "KB": 2 ** 10, "MB": 2 ** 20, "GB": 2 ** 30,
+             "TB": 2 ** 40}[unit.strip().upper()]
+    return int(float(number) * scale)
+
+
+def _available_bytes(margin=0.5):
+    """What the machine will actually hand back, from ``memory_pressure``.
+
+    Deliberately not ``--memory``. That grant is psi4's, and psi4 honours one
+    larger than the machine has by spilling to disk; the port has no disk path,
+    so the same number would authorise an allocation that pages rather than one
+    that refuses - which is the failure this budget exists to turn into an
+    error message.
+
+    The margin is half rather than something closer to one because this budget
+    is a PEAK dial and not only a refusal threshold: the chunked phases pack
+    their work up to it, so a chunk grows until it fills whatever it is given.
+    Measured on ethanol/cc-pVTZ, a 4 GiB budget peaks the process at 7.8 GB and
+    a 16 GiB budget at 17.6 GB, for the same answer in the same time. Half of
+    free memory leaves room for everything already resident and for the fact
+    that a phase is billed against this number while the previous phase's
+    stores are still alive.
+    """
+    try:
+        total = int(subprocess.run(["sysctl", "-n", "hw.memsize"],
+                                   capture_output=True, text=True).stdout)
+        out = subprocess.run(["memory_pressure"],
+                             capture_output=True, text=True).stdout
+        free = re.search(r"free percentage:\s*(\d+)%", out).group(1)
+        return int(total * int(free) / 100 * margin)
+    except (ValueError, AttributeError, OSError):
+        # Not macOS, or the tools moved. sysconf is POSIX and reports the same
+        # quantity; falling back beats crashing a benchmark over a budget the
+        # user can always state explicitly with --in-core-memory.
+        return int(os.sysconf("SC_AVPHYS_PAGES")
+                   * os.sysconf("SC_PAGE_SIZE") * margin)
+
+
+if args.method != "mp2":
+    if args.in_core_memory:
+        IN_CORE = _bytes(args.in_core_memory)
+    else:
+        IN_CORE = _available_bytes()
+        print(f"in-core budget {IN_CORE / 2**30:.1f} GiB, from free memory "
+              f"(psi4 is separately granted {args.memory}, which it can exceed "
+              f"by spilling and the port cannot)")
+    preset_kwargs["in_core_memory"] = IN_CORE
+
 cut = Thresholds.preset("NORMAL", method="mp2" if args.method == "mp2" else "cc",
                         **preset_kwargs)
 

@@ -222,7 +222,7 @@ class LCCSDT0:
         large to process even alone reports its own requirement, its domain
         sizes and what to change, because there is no disk path to fall back to.
         """
-        budget = int(self.cc.cut.triples_memory)
+        budget = int(self.cc.cut.in_core_memory)
         # Everything retained is alive at the END, together with whatever
         # chunk is running then, so the retained total comes off the budget
         # before any chunk is sized against it. Bounding only the chunk is
@@ -233,7 +233,7 @@ class LCCSDT0:
             raise MemoryError(
                 f"the iterative (T) would keep {retained / 2**30:.2f} GiB of W, V "
                 f"and amplitudes over {len(self._plan)} triplets, against a budget "
-                f"of {budget / 2**30:.2f} GiB. Raise Thresholds.triples_memory, "
+                f"of {budget / 2**30:.2f} GiB. Raise Thresholds.in_core_memory, "
                 "loosen t_cut_tno, or set t0_approximation to stop at (T0), which "
                 "retains nothing.")
 
@@ -249,7 +249,7 @@ class LCCSDT0:
                     f"{room / 2**20:.0f} MiB left of a "
                     f"{budget / 2**20:.0f} MiB budget after the "
                     f"{retained / 2**20:.0f} MiB of retained stores. Raise "
-                    "Thresholds.triples_memory or loosen t_cut_tno.")
+                    "Thresholds.in_core_memory or loosen t_cut_tno.")
             if current and total + need > room:
                 chunks.append(current)
                 current, total = [], 0

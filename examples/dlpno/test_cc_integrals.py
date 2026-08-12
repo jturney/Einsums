@@ -23,12 +23,14 @@ no norm or symmetry check would catch.
 
 import os
 import sys
+from dataclasses import replace
 
 import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from dlpno.cc_integrals import _chunks
 from dlpno.ccsd import DLPNOCCSD
 from dlpno.reference_io import load_reference
 from dlpno.thresholds import Thresholds
@@ -222,3 +224,78 @@ def test_the_lower_triangle_accessor_finds_the_stored_block(exact):
         assert B.Qma[ij] is None
         assert B.qma(cc.ij_to_ji, ij) is not None
         assert B.qab(cc.ij_to_ji, ij) is not None
+
+
+# => the memory budget <= #
+
+
+def _every_block(B):
+    """Every stored block, flattened, in a fixed order.
+
+    Named families rather than ``vars(B)`` so a family added later fails this
+    helper loudly instead of quietly going unchecked.
+    """
+    out = []
+    for name in ("K_mibj", "J_ijmb", "L_mibj", "L_iajb", "K_ivvv",
+                 "i_Qk", "i_Qa", "Qma", "Qab"):
+        for block in getattr(B, name):
+            out.append(None if block is None else np.asarray(block).copy())
+    for name in ("J_ikac", "K_iakc"):
+        for per_pair in getattr(B, name):
+            for block in (per_pair or []):
+                out.append(None if block is None else np.asarray(block).copy())
+    return out
+
+
+def test_the_blocks_do_not_depend_on_which_pairs_share_a_chunk():
+    """The chunk boundary is a memory decision and must not be a numerical one.
+
+    ``compute_pno_integrals`` builds the pairs in runs that fit
+    ``Thresholds.in_core_memory``, because the gathers a pair is built from are
+    an order larger than the blocks it produces. Nothing reads another pair's
+    raw blocks, so a different split must give the same integrals - and
+    bit-identically, since no operand and no summation order changes.
+
+    The failure this catches is a chunk-scoped buffer surviving into the next
+    chunk, which produces plausible integrals rather than obviously wrong ones.
+    """
+    reference, _ = load_reference(WATER)
+    cut = Thresholds.untruncated()
+
+    whole = DLPNOCCSD(reference, cut, verbose=False)
+    whole.compute_energy(method="mp2")
+
+    # Small enough to force one pair per chunk at this size, so every pair is
+    # both first and last in its chunk. Asserted rather than assumed: a budget
+    # that happened to fit every pair would make this test compare a run
+    # against itself and pass for the wrong reason.
+    split = DLPNOCCSD(reference, replace(cut, in_core_memory=3 * 2 ** 20),
+                      verbose=False)
+    split.compute_energy(method="mp2")
+    live = [ij for ij, (i, j) in enumerate(split.ij_to_i_j)
+            if i <= j and split.n_pno[ij]]
+    assert len(_chunks(whole, live)) == 1
+    assert len(_chunks(split, live)) > 1
+
+    a = _every_block(whole.integral_blocks)
+    b = _every_block(split.integral_blocks)
+    assert len(a) == len(b)
+    moved = [k for k, (x, y) in enumerate(zip(a, b))
+             if (x is None) != (y is None)
+             or (x is not None and not np.array_equal(x, y))]
+    assert not moved, f"{len(moved)} blocks moved when the chunk size changed"
+
+
+def test_a_pair_too_large_for_the_budget_reports_itself():
+    """Design decision 10: in core, with a measured failure.
+
+    There is no disk path, so the useful behaviour when one pair does not fit
+    is a message naming the pair, its domain sizes, its largest single block
+    and what to change - not a thrash, and not a bare allocator MemoryError
+    several phases from the cause.
+    """
+    reference, _ = load_reference(WATER)
+    cut = replace(Thresholds.untruncated(), in_core_memory=1024)
+    cc = DLPNOCCSD(reference, cut, verbose=False)
+    with pytest.raises(MemoryError, match=r"PAOs widened to .*against a budget"):
+        cc.compute_energy(method="mp2")

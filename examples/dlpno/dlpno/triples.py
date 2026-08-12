@@ -585,7 +585,7 @@ class DLPNOCCSDT(DLPNOCCSD):
             "rotation scratch (bound)": scratch,
         }
         total = sum(stores.values())
-        budget = int(self.cut.triples_memory)
+        budget = int(self.cut.in_core_memory)
 
         self._print("\n  ==> DLPNO-(T) memory <==\n")
         for name, size in stores.items():
@@ -600,7 +600,7 @@ class DLPNOCCSDT(DLPNOCCSD):
                 f"{max(self.n_tno)} TNOs) against a budget of "
                 f"{budget / 2**30:.2f} GiB. There is no disk path (design "
                 "decision 10), so the options are: raise "
-                "Thresholds.triples_memory if the machine has the memory, "
+                "Thresholds.in_core_memory if the machine has the memory, "
                 "loosen t_cut_tno or t_cut_tno_weak_scale to shrink the TNO "
                 "spaces, or set t0_approximation to stop at (T0), which holds "
                 "nothing per triplet and is what the semicanonical passes "

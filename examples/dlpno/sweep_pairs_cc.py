@@ -254,11 +254,16 @@ def sweep(distances, basis, preset, threads, memory):
                 f"equations: see the module docstring.")
         print(f"  {r:7.2f}  " + "  ".join(cells)
               + f"  {cc.e_corr:16.12f}  {delta:9.2e}", flush=True)
-        # A captured solver holds its graphs, and a graph holds workspace out of
-        # einsums' fixed small-buffer pool for as long as it is alive. Building
-        # the next point's graphs while the previous point's are still bound
-        # exhausts that pool, so the release is explicit rather than left to
-        # whenever the name is rebound.
+        # A captured solver holds its graphs, its stores and every operand they
+        # reference until it is dropped, which at sweep scale is gigabytes. The
+        # release is explicit rather than left to whenever the name is rebound,
+        # so a point's memory goes back before the next point's is taken.
+        #
+        # This used to be load-bearing for a second reason that no longer
+        # applies: shape metadata was charged against the buffer ceiling, so a
+        # live graph's views exhausted it outright. That is fixed in the library
+        # (ShapeVector), and this is now ordinary hygiene rather than a
+        # workaround.
         del cc
         gc.collect()
 
