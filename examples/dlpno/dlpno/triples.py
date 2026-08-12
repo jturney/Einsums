@@ -623,7 +623,8 @@ class DLPNOCCSDT(DLPNOCCSD):
         A method rather than an inline block so it can be billed as one phase,
         matching psi4's timer of the same name.
         """
-        self.lccsd_t = LCCSDT(self, self.lccsd_t0, verbose=self.verbose)
+        self.lccsd_t = LCCSDT(self, self.lccsd_t0, verbose=self.verbose,
+                              use_diis=self.cut.t_use_diis)
         self.e_t_raw = self.lccsd_t.iterate()
         self.de_t = self.e_t_raw - self.e_t0_crude
         self.e_ijk = self.lccsd_t.e_ijk

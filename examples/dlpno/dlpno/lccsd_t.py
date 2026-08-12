@@ -100,10 +100,22 @@ class LCCSDT:
     already resident.
     """
 
-    def __init__(self, cc, t0, verbose=True):
+    def __init__(self, cc, t0, verbose=True, use_diis=False):
         self.cc = cc
         self.t0 = t0
         self.verbose = verbose
+        #: Extrapolate the amplitudes with :func:`einsums.graph.diis`.
+        #:
+        #: Off by default, unlike the coupled-cluster solver, because this is
+        #: the lever M8 step 3 exists to measure rather than a settled choice:
+        #: the port takes 18 Jacobi passes where psi4 takes 6 Gauss-Seidel ones,
+        #: and at ethanol/cc-pVTZ that pass count is nearly the whole remaining
+        #: gap on this phase. Leaving it off keeps every recorded gate
+        #: bit-identical while the comparison is taken; DIIS moves where the
+        #: iteration STOPS, not where it converges to, so turning it on shifts
+        #: the energies within convergence tolerance.
+        self.use_diis = use_diis
+        self._diis = None
         self.F_lmo_np = np.asarray(ten.view(cc.F_lmo))
         self.e_ijk = np.array(t0.e_ijk, dtype=float)
         self.e_t = 0.0
@@ -214,8 +226,12 @@ class LCCSDT:
 
     # -- emission ------------------------------------------------------------
 
-    def _emit_residual(self, overlaps):
-        """Eq. 111, for every triplet.
+    def _emit_residual(self, overlaps, records=None):
+        """Eq. 111, for every triplet, or for the subset ``records`` names.
+
+        The subset exists so the residual can be captured one triplet per
+        graph, which is what lets a pass SKIP a triplet: a captured graph
+        replays whole, so selective work needs selective graphs.
 
         ``R = W + T D`` and then one term per coupling. The coupled term is a
         rotation of the partner's amplitudes onto this triplet's TNOs, one
@@ -223,7 +239,7 @@ class LCCSDT:
         the three so the block is never permuted on its own.
         """
         cc = self.cc
-        for r in self._plan:
+        for r in (records if records is not None else self._plan):
             ijk, nt = r["ijk"], r["nt"]
             R, D = self.R[ijk], self.D[ijk]
             la.axpby(1.0, self.t0.W[ijk], 0.0, R)
@@ -269,12 +285,24 @@ class LCCSDT:
                 einsums.einsum("xyz <- xyc ; zc", t3, t2, S)
                 la.axpby(weight, t3, 1.0, R)
 
-    def _emit_update(self):
-        """Eq. 112: the Jacobi step, applied after every residual is known."""
-        for r in self._plan:
+    def _emit_update(self, records=None):
+        """Eq. 112: the Jacobi step, applied after every residual is known.
+
+        Written as two operations - ``R <- -R/D``, then ``T += R`` - rather
+        than the one fused ``T <- T - R/D`` this used to be, because
+        :func:`einsums.graph.diis` extrapolates over (amplitude, STEP) pairs
+        and cannot see a step that was never materialized.
+
+        It costs nothing. The division is in place, and ``R`` has already been
+        read for the convergence norm by the time this graph replays, so no
+        tensor is added and no value is needed after it is overwritten. The
+        arithmetic is unchanged and elementwise, so the energies do not move.
+        """
+        for r in (records if records is not None else self._plan):
             ijk = r["ijk"]
-            la.direct_division(-1.0, self.R[ijk], self.D[ijk], 1.0,
-                               self.t0.T[ijk])
+            la.direct_division(-1.0, self.R[ijk], self.D[ijk], 0.0,
+                               self.R[ijk])
+            la.axpby(1.0, self.R[ijk], 1.0, self.t0.T[ijk])
 
     def _emit_energy(self):
         """Eq. 53 again, at the current amplitudes.
@@ -317,32 +345,114 @@ class LCCSDT:
             self._e_view[r["ijk"]] = e_all[slot:slot + 1]
             self._keep.append(self._e_view[r["ijk"]])
 
-        graphs = []
-        for name, emit in (("Eq. 111 residual", lambda: self._emit_residual(overlaps)),
-                           ("Eq. 112 step", self._emit_update),
-                           ("Eq. 53 energy", self._emit_energy)):
-            g = cg.Graph(f"lccsd(t): {name}")
-            with cg.capture(g):
-                emit()
-            self.n_nodes += g.num_nodes()
-            graphs.append(g)
-        g_residual, g_step, g_energy = graphs
+        # The energy is captured whole either way. psi4 skips only the residual
+        # and the amplitude update - `compute_t_iteration_energy` runs over
+        # every triplet each pass - and it is right to: the energy is an n^3
+        # contraction against the n^4 rotations the skip is there to avoid.
+        g_energy = cg.Graph("lccsd(t): Eq. 53 energy")
+        with cg.capture(g_energy):
+            self._emit_energy()
+        self.n_nodes += g_energy.num_nodes()
+
+        skipping = bool(cc.cut.t_skip_converged) and float(cc.cut.t_cut_iter) > 0.0
+        if skipping:
+            # One residual graph and one step graph PER TRIPLET, because a
+            # captured graph replays whole and skipping needs the work to be
+            # separable. The cost is two execute() calls per triplet per pass
+            # instead of two per pass; against an n^4 pass that is noise, and
+            # it buys the lever without any new graph machinery.
+            self._g_res, self._g_step = {}, {}
+            for r in self._plan:
+                gr = cg.Graph(f"lccsd(t): residual [{r['ijk']}]")
+                with cg.capture(gr):
+                    self._emit_residual(overlaps, [r])
+                gs = cg.Graph(f"lccsd(t): step [{r['ijk']}]")
+                with cg.capture(gs):
+                    self._emit_update([r])
+                self.n_nodes += gr.num_nodes() + gs.num_nodes()
+                self._g_res[r["ijk"]] = gr
+                self._g_step[r["ijk"]] = gs
+            g_residual = g_step = None
+        else:
+            self._g_res = self._g_step = None
+            g_residual = cg.Graph("lccsd(t): Eq. 111 residual")
+            with cg.capture(g_residual):
+                self._emit_residual(overlaps)
+            g_step = cg.Graph("lccsd(t): Eq. 112 step")
+            with cg.capture(g_step):
+                self._emit_update()
+            self.n_nodes += g_residual.num_nodes() + g_step.num_nodes()
 
         self._print(f"\n  ==> Local CCSD(T) <==\n")
         self._print(f"    plan:     {len(self._plan)} triplets, "
                     f"{sum(len(r['couplings']) for r in self._plan)} couplings, "
-                    f"{self.n_nodes} captured nodes")
+                    f"{self.n_nodes} captured nodes"
+                    + (f", skipping at t_cut_iter {cc.cut.t_cut_iter:.1e}"
+                       if skipping else ""))
         self._print(f"\n    {'iter':>4}  {'(T) Energy':>18} {'Delta E':>12} {'Max R':>10}")
+
+        if self.use_diis:
+            # One (amplitude, step) pair per triplet. The coupled-cluster
+            # solver hands DIIS a handful of bucketed stores instead; there is
+            # no padded triplet store to do that with here, so this is several
+            # hundred small pairs and the extrapolation's own cost is part of
+            # what the measurement has to justify.
+            self._diis = cg.diis(
+                [(self.t0.T[r["ijk"]], self.R[r["ijk"]]) for r in self._plan],
+                k=cc.cut.diis_max_vecs)
 
         t0 = time.perf_counter()
         e_prev = float(np.sum(self.e_ijk))
+        e_ijk_old = np.zeros_like(self.e_ijk)
+        self.n_skipped = 0
         for iteration in range(cc.cut.maxiter + 1):
-            g_residual.execute()
-            rms = max((ten.rms(self.R[r["ijk"]]) for r in self._plan), default=0.0)
-            g_step.execute()
+            # psi4's T_CUT_ITER screen, evaluated where psi4 evaluates it: on
+            # how much a triplet's energy moved over the PREVIOUS pass. A
+            # triplet whose contribution has stopped changing is not updated
+            # again; its neighbours go on reading the amplitude it settled at.
+            #
+            # Unlike psi4 this costs no reproducibility. psi4 pairs the skip
+            # with an in-place Gauss-Seidel update, so which iterate a term
+            # sees depends on thread scheduling; here the skip is a
+            # deterministic function of the previous pass's energies, so the
+            # same input still gives the same replay twice.
+            if skipping:
+                active = [r for r in self._plan
+                          if abs(self.e_ijk[r["ijk"]] - e_ijk_old[r["ijk"]])
+                          >= abs(e_ijk_old[r["ijk"]] * cc.cut.t_cut_iter)]
+                self.n_skipped += len(self._plan) - len(active)
+                for r in active:
+                    self._g_res[r["ijk"]].execute()
+                # Skipped triplets contribute nothing to the norm, exactly as
+                # psi4's zero-initialized R_iajbkc_rms does.
+                rms = max((ten.rms(self.R[r["ijk"]]) for r in active), default=0.0)
+                for r in active:
+                    self._g_step[r["ijk"]].execute()
+                if self._diis is not None:
+                    # A skipped triplet took no step, and DIIS has to be told
+                    # so. Its R still holds the step from whichever pass last
+                    # updated it, and extrapolating over that stale vector is
+                    # not a small error: left in, the dimer goes from 11 passes
+                    # to 29 and methanol to 48, both worse than taking neither
+                    # lever. Zero is the true step for a triplet that did not
+                    # move, and an n^3 fill against the n^4 pass it replaces is
+                    # not a cost worth avoiding.
+                    live = {r["ijk"] for r in active}
+                    for r in self._plan:
+                        if r["ijk"] not in live:
+                            ten.view(self.R[r["ijk"]])[...] = 0.0
+            else:
+                active = self._plan
+                g_residual.execute()
+                rms = max((ten.rms(self.R[r["ijk"]]) for r in self._plan),
+                          default=0.0)
+                g_step.execute()
+            if self._diis is not None:
+                self._diis.step()
             g_energy.execute()
 
             energies = ten.view(e_all)
+            e_ijk_old = self.e_ijk.copy()
             for slot, r in enumerate(self._plan):
                 self.e_ijk[r["ijk"]] = float(energies[slot])
             e_curr = float(np.sum(self.e_ijk))

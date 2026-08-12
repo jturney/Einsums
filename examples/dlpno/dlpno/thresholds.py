@@ -109,6 +109,36 @@ class Thresholds:
     #: Stop at the semicanonical (T0) energy, psi4's ``T0_APPROXIMATION``.
     t0_approximation: bool = False
 
+    #: Stop updating a triplet once its energy contribution settles, psi4's
+    #: per-triplet ``T_CUT_ITER`` screen (the threshold itself is
+    #: :attr:`t_cut_iter`, already carried at psi4's value).
+    #:
+    #: Off by default although psi4 has it on, because it is not free: it
+    #: leaves each triplet converged only to ``t_cut_iter`` relative, and
+    #: measured on the fixtures that is worth about 1e-8 on the total - which
+    #: is the tolerance the recorded psi4 comparisons are gated at. Two of the
+    #: six fixtures cross it. So this is a deliberate accuracy-for-work trade
+    #: rather than a defect being fixed, and it gets its own gate.
+    #:
+    #: Costs no reproducibility here, unlike in psi4: the skip is a
+    #: deterministic function of the previous pass's energies, where psi4 pairs
+    #: it with a Gauss-Seidel update whose result depends on thread scheduling.
+    t_skip_converged: bool = False
+
+    #: Extrapolate the iterative (T) amplitudes with DIIS.
+    #:
+    #: No psi4 analogue: psi4 converges its (T) by Gauss-Seidel, updating each
+    #: triplet in place so later triplets in a pass already see this pass's
+    #: neighbours. The port updates from the previous iterate so that a replay
+    #: is the same twice, and pays for it in passes - 18 against psi4's 6 at
+    #: ethanol/cc-pVTZ, which is nearly the whole of that phase's remaining
+    #: gap once the rotation scratch was fixed.
+    #:
+    #: Off by default while that trade is being measured. It moves where the
+    #: iteration STOPS rather than what it converges to, so switching it on
+    #: shifts the recorded energies within convergence tolerance.
+    t_use_diis: bool = False
+
     #: How much memory a phase that builds per-pair or per-triplet blocks may
     #: hold at once, in bytes.
     #:
