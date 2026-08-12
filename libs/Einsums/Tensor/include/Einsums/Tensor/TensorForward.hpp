@@ -102,6 +102,35 @@ struct RuntimeTensorView;
 template <typename T>
 using VectorData = BufferVector<T>;
 
+/**
+ * @typedef ShapeVector
+ *
+ * @brief Storage for a tensor's dimensions, strides and index coordinates.
+ *
+ * Deliberately NOT @c BufferVector, and the distinction is the point.
+ * @c BufferAllocator enforces a global ceiling (@c --einsums:buffer-size,
+ * default 4MB) whose purpose is to bound transient contraction WORKSPACE, so
+ * that out-of-core algorithms can size their chunks against a declared budget
+ * and a runaway temporary throws a named error instead of exhausting the
+ * machine. LAPACK's @c work and @c iwork arrays are the model consumer, and
+ * they still use @c BufferVector.
+ *
+ * Shape metadata is a different population. Every tensor and every VIEW holds
+ * dims and strides, so the total scales with how many tensors are ALIVE rather
+ * than with how large they are - and a deferred-execution graph manufactures
+ * views by the hundred thousand and keeps them for the life of the graph.
+ * Charging those against the workspace ceiling let metadata crowd out the
+ * workspace the ceiling exists to bound: a captured DLPNO-CCSD iteration
+ * (212,000 nodes at ethanol/cc-pVTZ) exhausted the 4MB default outright, and
+ * every coupled-cluster entry point had to raise it by two or three orders of
+ * magnitude to run at all. The failures read as leaks and were not; the
+ * accounting was balanced, the population was simply the wrong one.
+ *
+ * @versionadded{1.1.1}
+ */
+template <typename T>
+using ShapeVector = std::vector<T>;
+
 EINSUMS_NAMESPACE_END()
 
 #if !defined(EINSUMS_WINDOWS)

@@ -181,12 +181,12 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
     }
 
     // Calculate reversed indices.
-    BufferVector<int>    perms(A.rank());
-    BufferVector<size_t> size(A.rank());
-    BufferVector<size_t> outerSizeA(A.rank());
-    BufferVector<size_t> offsetA(A.rank());
-    BufferVector<size_t> outerSizeC(A.rank());
-    BufferVector<size_t> offsetC(A.rank());
+    BufferVector<int>   perms(A.rank());
+    ShapeVector<size_t> size(A.rank());
+    ShapeVector<size_t> outerSizeA(A.rank());
+    ShapeVector<size_t> offsetA(A.rank());
+    ShapeVector<size_t> outerSizeC(A.rank());
+    ShapeVector<size_t> offsetC(A.rank());
 
     if (A.is_row_major() && C->is_row_major()) {
         size_t innerStrideA = A.stride(-1);

@@ -146,7 +146,7 @@ BiggestTypeT<T, TOther> impl_dot(einsums::detail::TensorImpl<T> const &in, einsu
 
         size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
             out_incx;
-        BufferVector<size_t> hard_dims, in_strides, out_strides;
+        ShapeVector<size_t> hard_dims, in_strides, out_strides;
 
         in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
         out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
@@ -285,7 +285,7 @@ BiggestTypeT<T, TOther> impl_true_dot(einsums::detail::TensorImpl<T> const &in, 
 
         size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
             out_incx;
-        BufferVector<size_t> hard_dims, in_strides, out_strides;
+        ShapeVector<size_t> hard_dims, in_strides, out_strides;
 
         in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
         out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
@@ -417,7 +417,7 @@ BiggestTypeT<A, B, C> impl_dot(einsums::detail::TensorImpl<A> const &a, einsums:
 
         size_t easy_size, a_easy_size, b_easy_size, c_easy_size, a_hard_size, b_hard_size, c_hard_size, easy_rank, a_easy_rank, b_easy_rank,
             c_easy_rank, a_incx, b_incx, c_incx;
-        BufferVector<size_t> hard_dims, a_strides, b_strides, c_strides;
+        ShapeVector<size_t> hard_dims, a_strides, b_strides, c_strides;
 
         a.query_vectorable_params(&a_easy_size, &a_hard_size, &a_easy_rank, &a_incx);
         b.query_vectorable_params(&b_easy_size, &b_hard_size, &b_easy_rank, &b_incx);

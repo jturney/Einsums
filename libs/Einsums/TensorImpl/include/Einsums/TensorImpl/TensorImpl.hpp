@@ -292,12 +292,12 @@ struct TensorImpl final {
     /**
      * @brief Get the dimensions of the tensor.
      */
-    [[nodiscard]] constexpr BufferVector<size_t> const &dims() const noexcept { return _dims; }
+    [[nodiscard]] constexpr ShapeVector<size_t> const &dims() const noexcept { return _dims; }
 
     /**
      * @brief Get the strides of the tensor.
      */
-    [[nodiscard]] constexpr BufferVector<size_t> const &strides() const noexcept { return _strides; }
+    [[nodiscard]] constexpr ShapeVector<size_t> const &strides() const noexcept { return _strides; }
 
     /**
      * @brief Get the size of the tensor.
@@ -337,7 +337,7 @@ struct TensorImpl final {
             return nullptr;
         }
 
-        return _ptr + indices_to_sentinel_negative_check(_strides, _dims, BufferVector<size_t>{static_cast<size_t>(index)...});
+        return _ptr + einsums::indices_to_sentinel_negative_check(_strides, _dims, ShapeVector<size_t>{static_cast<size_t>(index)...});
     }
 
     /**
@@ -360,7 +360,7 @@ struct TensorImpl final {
             return nullptr;
         }
 
-        return _ptr + indices_to_sentinel_negative_check(_strides, _dims, BufferVector<size_t>{static_cast<size_t>(index)...});
+        return _ptr + einsums::indices_to_sentinel_negative_check(_strides, _dims, ShapeVector<size_t>{static_cast<size_t>(index)...});
     }
 
     /**
@@ -384,7 +384,7 @@ struct TensorImpl final {
             return nullptr;
         }
 
-        return _ptr + indices_to_sentinel(_strides, BufferVector<size_t>{static_cast<size_t>(index)...});
+        return _ptr + einsums::indices_to_sentinel(_strides, ShapeVector<size_t>{static_cast<size_t>(index)...});
     }
 
     /**
@@ -408,7 +408,7 @@ struct TensorImpl final {
             return nullptr;
         }
 
-        return _ptr + indices_to_sentinel(_strides, BufferVector<size_t>{static_cast<size_t>(index)...});
+        return _ptr + einsums::indices_to_sentinel(_strides, ShapeVector<size_t>{static_cast<size_t>(index)...});
     }
 
     /**
@@ -431,7 +431,7 @@ struct TensorImpl final {
             return nullptr;
         }
 
-        return _ptr + indices_to_sentinel_negative_check(_strides, _dims, index);
+        return _ptr + einsums::indices_to_sentinel_negative_check(_strides, _dims, index);
     }
 
     /**
@@ -454,7 +454,7 @@ struct TensorImpl final {
             return nullptr;
         }
 
-        return _ptr + indices_to_sentinel_negative_check(_strides, _dims, index);
+        return _ptr + einsums::indices_to_sentinel_negative_check(_strides, _dims, index);
     }
 
     /**
@@ -478,7 +478,7 @@ struct TensorImpl final {
             return nullptr;
         }
 
-        return _ptr + indices_to_sentinel(_strides, index);
+        return _ptr + einsums::indices_to_sentinel(_strides, index);
     }
 
     /**
@@ -502,7 +502,7 @@ struct TensorImpl final {
             return nullptr;
         }
 
-        return _ptr + indices_to_sentinel(_strides, index);
+        return _ptr + einsums::indices_to_sentinel(_strides, index);
     }
 
     /**
@@ -524,7 +524,7 @@ struct TensorImpl final {
             return nullptr;
         }
 
-        return _ptr + indices_to_sentinel_negative_check(_strides, _dims, index);
+        return _ptr + einsums::indices_to_sentinel_negative_check(_strides, _dims, index);
     }
 
     /**
@@ -546,7 +546,7 @@ struct TensorImpl final {
             return nullptr;
         }
 
-        return _ptr + indices_to_sentinel_negative_check(_strides, _dims, index);
+        return _ptr + einsums::indices_to_sentinel_negative_check(_strides, _dims, index);
     }
 
     /**
@@ -560,7 +560,7 @@ struct TensorImpl final {
     template <std::integral IntType>
     [[nodiscard]] constexpr pointer data_no_check(std::initializer_list<IntType> const &index) {
 
-        return _ptr + indices_to_sentinel(_strides, index);
+        return _ptr + einsums::indices_to_sentinel(_strides, index);
     }
 
     /**
@@ -574,7 +574,7 @@ struct TensorImpl final {
     template <std::integral IntType>
     [[nodiscard]] constexpr const_pointer data_no_check(std::initializer_list<IntType> const &index) const {
 
-        return _ptr + indices_to_sentinel(_strides, index);
+        return _ptr + einsums::indices_to_sentinel(_strides, index);
     }
 
     /**
@@ -1080,7 +1080,7 @@ struct TensorImpl final {
 
         adjust_ranges<0>(index_tuple);
 
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
 
         new_dims.reserve(_rank);
         new_strides.reserve(_rank);
@@ -1113,7 +1113,7 @@ struct TensorImpl final {
 
         adjust_ranges<0>(index_tuple);
 
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
 
         new_dims.reserve(_rank);
         new_strides.reserve(_rank);
@@ -1140,7 +1140,7 @@ struct TensorImpl final {
         BufferVector<Range> index_list{index.begin(), index.end()};
         adjust_ranges(index_list);
 
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
 
         new_dims.reserve(_rank);
         new_strides.reserve(_rank);
@@ -1167,7 +1167,7 @@ struct TensorImpl final {
         BufferVector<Range> index_list{index.begin(), index.end()};
         adjust_ranges(index_list);
 
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
 
         new_dims.reserve(_rank);
         new_strides.reserve(_rank);
@@ -1192,7 +1192,7 @@ struct TensorImpl final {
         BufferVector<Range> index_list{index.begin(), index.end()};
         adjust_ranges(index_list);
 
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
 
         new_dims.reserve(_rank);
         new_strides.reserve(_rank);
@@ -1218,7 +1218,7 @@ struct TensorImpl final {
         BufferVector<Range> index_list{index.begin(), index.end()};
         adjust_ranges(index_list);
 
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
 
         new_dims.reserve(_rank);
         new_strides.reserve(_rank);
@@ -1249,7 +1249,7 @@ struct TensorImpl final {
     [[nodiscard]] constexpr TensorImpl<T> subscript_no_check(MultiIndex &&...index) {
         auto index_tuple = std::make_tuple(std::forward<MultiIndex>(index)...);
 
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
 
         new_dims.reserve(_rank);
         new_strides.reserve(_rank);
@@ -1280,7 +1280,7 @@ struct TensorImpl final {
     [[nodiscard]] constexpr TensorImpl<T> const subscript_no_check(MultiIndex &&...index) const {
         auto index_tuple = std::make_tuple(std::forward<MultiIndex>(index)...);
 
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
 
         new_dims.reserve(_rank);
         new_strides.reserve(_rank);
@@ -1304,7 +1304,7 @@ struct TensorImpl final {
     template <Container MultiIndex>
         requires(std::is_base_of_v<Range, typename MultiIndex::value_type>)
     [[nodiscard]] constexpr TensorImpl<T> subscript_no_check(MultiIndex const &index) {
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
 
         new_dims.reserve(_rank);
         new_strides.reserve(_rank);
@@ -1328,7 +1328,7 @@ struct TensorImpl final {
     template <Container MultiIndex>
         requires(std::is_base_of_v<Range, typename MultiIndex::value_type>)
     [[nodiscard]] constexpr TensorImpl<T> const subscript_no_check(MultiIndex const &index) const {
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
 
         new_dims.reserve(_rank);
         new_strides.reserve(_rank);
@@ -1350,7 +1350,7 @@ struct TensorImpl final {
      * @param index The slice parameters for the view.
      */
     [[nodiscard]] constexpr TensorImpl<T> subscript_no_check(std::initializer_list<Range> const &index) {
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
 
         new_dims.reserve(_rank);
         new_strides.reserve(_rank);
@@ -1372,7 +1372,7 @@ struct TensorImpl final {
      * @param index The slice parameters for the view.
      */
     [[nodiscard]] constexpr TensorImpl<T> const subscript_no_check(std::initializer_list<Range> const &index) const {
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
 
         new_dims.reserve(_rank);
         new_strides.reserve(_rank);
@@ -1387,13 +1387,13 @@ struct TensorImpl final {
     }
 
     [[nodiscard]] constexpr TensorImpl<T> transpose_view() {
-        return TensorImpl<T>(_ptr, BufferVector<size_t>(_dims.rbegin(), _dims.rend()),
-                             BufferVector<size_t>(_strides.rbegin(), _strides.rend()));
+        return TensorImpl<T>(_ptr, ShapeVector<size_t>(_dims.rbegin(), _dims.rend()),
+                             ShapeVector<size_t>(_strides.rbegin(), _strides.rend()));
     }
 
     [[nodiscard]] constexpr TensorImpl<T> const transpose_view() const {
-        return TensorImpl<T>(_ptr, BufferVector<size_t>(_dims.rbegin(), _dims.rend()),
-                             BufferVector<size_t>(_strides.rbegin(), _strides.rend()));
+        return TensorImpl<T>(_ptr, ShapeVector<size_t>(_dims.rbegin(), _dims.rend()),
+                             ShapeVector<size_t>(_strides.rbegin(), _strides.rend()));
     }
 
     /**
@@ -1415,13 +1415,13 @@ struct TensorImpl final {
      * comparison against it would. New axes of extent one get whatever stride
      * the walk is holding; nothing addresses through them.
      */
-    [[nodiscard]] BufferVector<size_t> reshape_strides(std::vector<size_t> const &new_dims) const {
+    [[nodiscard]] ShapeVector<size_t> reshape_strides(std::vector<size_t> const &new_dims) const {
         size_t const new_size = std::accumulate(new_dims.begin(), new_dims.end(), size_t{1}, std::multiplies<>());
         if (new_size != _size) {
             return {};
         }
 
-        BufferVector<size_t> out(new_dims.size(), size_t{0});
+        ShapeVector<size_t> out(new_dims.size(), size_t{0});
         if (_size == 0) {
             // Nothing is addressable, so any consistent strides will do and the
             // matching below has no work to do anyway.
@@ -1527,7 +1527,7 @@ struct TensorImpl final {
         if (strides.empty() && !new_dims.empty()) {
             throw_reshape_failure(new_dims);
         }
-        return TensorImpl<T>(_ptr, BufferVector<size_t>(new_dims.begin(), new_dims.end()), std::move(strides));
+        return TensorImpl<T>(_ptr, ShapeVector<size_t>(new_dims.begin(), new_dims.end()), std::move(strides));
     }
 
     [[nodiscard]] TensorImpl<T> const reshape_view(std::vector<size_t> const &new_dims) const {
@@ -1535,7 +1535,7 @@ struct TensorImpl final {
         if (strides.empty() && !new_dims.empty()) {
             throw_reshape_failure(new_dims);
         }
-        return TensorImpl<T>(_ptr, BufferVector<size_t>(new_dims.begin(), new_dims.end()), std::move(strides));
+        return TensorImpl<T>(_ptr, ShapeVector<size_t>(new_dims.begin(), new_dims.end()), std::move(strides));
     }
 
     /**
@@ -1547,7 +1547,7 @@ struct TensorImpl final {
      * ``[0, rank)``. This is unchecked here; callers validate.
      */
     [[nodiscard]] constexpr TensorImpl<T> permute_view(std::vector<size_t> const &perm) {
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
         new_dims.reserve(perm.size());
         new_strides.reserve(perm.size());
         for (size_t const ax : perm) {
@@ -1558,7 +1558,7 @@ struct TensorImpl final {
     }
 
     [[nodiscard]] constexpr TensorImpl<T> const permute_view(std::vector<size_t> const &perm) const {
-        BufferVector<size_t> new_dims, new_strides;
+        ShapeVector<size_t> new_dims, new_strides;
         new_dims.reserve(perm.size());
         new_strides.reserve(perm.size());
         for (size_t const ax : perm) {
@@ -1641,7 +1641,7 @@ struct TensorImpl final {
 
             auto index_array = std::to_array<ptrdiff_t>({static_cast<ptrdiff_t>(index)...});
 
-            BufferVector<size_t> new_strides(_strides), new_dims(_dims);
+            ShapeVector<size_t> new_strides(_strides), new_dims(_dims);
 
             // Calculate the tied stride.
             for (size_t i = 0; i < index_array.size(); i++) {
@@ -1699,7 +1699,7 @@ struct TensorImpl final {
             }
 
             // Remove all the zero indices.
-            BufferVector<size_t> temp_strides, temp_dims;
+            ShapeVector<size_t> temp_strides, temp_dims;
             temp_strides.reserve(_rank);
             temp_dims.reserve(_rank);
 
@@ -1731,7 +1731,7 @@ struct TensorImpl final {
 
             auto index_array = std::to_array<ptrdiff_t>({static_cast<ptrdiff_t>(index)...});
 
-            BufferVector<size_t> new_strides(_strides), new_dims(_dims);
+            ShapeVector<size_t> new_strides(_strides), new_dims(_dims);
 
             // Calculate the tied stride.
             for (size_t i = 0; i < index_array.size(); i++) {
@@ -1790,7 +1790,7 @@ struct TensorImpl final {
             }
 
             // Remove all the zero strides.
-            BufferVector<size_t> temp_strides, temp_dims;
+            ShapeVector<size_t> temp_strides, temp_dims;
             temp_strides.reserve(_rank);
             temp_dims.reserve(_rank);
 
@@ -1902,7 +1902,7 @@ struct TensorImpl final {
     template <bool IgnoreRemoveRange, size_t __I, typename... MultiIndex>
         requires((std::is_integral_v<MultiIndex> || std::is_base_of_v<Range, MultiIndex> || std::is_base_of_v<AllT, MultiIndex>) && ... &&
                  true)
-    constexpr size_t compute_view(BufferVector<size_t> &out_dims, BufferVector<size_t> &out_strides,
+    constexpr size_t compute_view(ShapeVector<size_t> &out_dims, ShapeVector<size_t> &out_strides,
                                   std::tuple<MultiIndex...> const &indices) const {
         if constexpr (__I >= sizeof...(MultiIndex)) {
             return 0;
@@ -1962,7 +1962,7 @@ struct TensorImpl final {
 
     template <bool IgnoreRemoveRange, ContainerOrInitializer MultiIndex>
         requires(std::is_base_of_v<Range, typename MultiIndex::value_type>)
-    constexpr size_t compute_view(BufferVector<size_t> &out_dims, BufferVector<size_t> &out_strides, MultiIndex const &indices) const {
+    constexpr size_t compute_view(ShapeVector<size_t> &out_dims, ShapeVector<size_t> &out_strides, MultiIndex const &indices) const {
         size_t out = 0;
         for (auto const &[range, stride] : Zip(indices, _strides)) {
             if constexpr (IgnoreRemoveRange) {
@@ -1981,10 +1981,10 @@ struct TensorImpl final {
         return out;
     }
 
-    pointer              _ptr{nullptr};
-    size_t               _rank, _size;
-    BufferVector<size_t> _dims, _strides;
-    bool                 _row_major;
+    pointer             _ptr{nullptr};
+    size_t              _rank, _size;
+    ShapeVector<size_t> _dims, _strides;
+    bool                _row_major;
     std::mutex mutable _mutex;
 };
 
@@ -2055,12 +2055,12 @@ void fprintln(Output &fp, detail::TensorImpl<T> const &A, TensorPrintOptions opt
                 fprintln(fp, "{}", oss.str());
                 fprintln(fp);
             } else if (Rank > 1) {
-                BufferVector<size_t> index_strides(Rank - 1);
-                size_t elements = dims_to_strides(BufferVector<size_t>(A.dims().begin(), std::prev(A.dims().end())), index_strides, true);
+                ShapeVector<size_t> index_strides(Rank - 1);
+                size_t elements = dims_to_strides(ShapeVector<size_t>(A.dims().begin(), std::prev(A.dims().end())), index_strides, true);
 
-                auto                 final_dim = A.dim(Rank - 1);
-                auto                 ndigits   = detail::ndigits(final_dim);
-                BufferVector<size_t> target_combination(Rank);
+                auto                final_dim = A.dim(Rank - 1);
+                auto                ndigits   = detail::ndigits(final_dim);
+                ShapeVector<size_t> target_combination(Rank);
 
                 for (size_t item = 0; item < elements; item++) {
                     sentinel_to_indices(item, index_strides, target_combination);

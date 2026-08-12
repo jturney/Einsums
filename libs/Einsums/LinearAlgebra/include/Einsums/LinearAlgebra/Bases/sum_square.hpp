@@ -69,8 +69,8 @@ void impl_sum_square(einsums::detail::TensorImpl<T> const &in, RemoveComplexT<T>
     } else {
         EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over lassq.");
 
-        size_t               easy_size, hard_size, easy_rank, in_incx;
-        BufferVector<size_t> hard_dims, in_strides;
+        size_t              easy_size, hard_size, easy_rank, in_incx;
+        ShapeVector<size_t> hard_dims, in_strides;
 
         in.query_vectorable_params(&easy_size, &hard_size, &easy_rank, &in_incx);
 

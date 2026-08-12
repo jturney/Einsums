@@ -1011,7 +1011,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     /**
      * @brief Get the dimensions of the tensor.
      */
-    [[nodiscard]] virtual BufferVector<size_t> dims() const noexcept { return _impl.dims(); }
+    [[nodiscard]] virtual ShapeVector<size_t> dims() const noexcept { return _impl.dims(); }
 
     /**
      * @brief Return the vector containing the data stored by the tensor.
@@ -1069,7 +1069,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     /**
      * @brief Return the strides of the tensor.
      */
-    [[nodiscard]] virtual BufferVector<size_t> strides() const noexcept { return _impl.strides(); }
+    [[nodiscard]] virtual ShapeVector<size_t> strides() const noexcept { return _impl.strides(); }
 
     /**
      * @brief Create a rank-1 view of the tensor.
@@ -1962,7 +1962,7 @@ struct APIARY_EXPOSE
     /**
      * @brief Gets the dimensions of the tensor.
      */
-    [[nodiscard]] virtual auto dims() const noexcept -> BufferVector<size_t> { return _impl.dims(); }
+    [[nodiscard]] virtual auto dims() const noexcept -> ShapeVector<size_t> { return _impl.dims(); }
 
     /**
      * @brief Gets the stride of the tensor along the given axis.
@@ -1974,7 +1974,7 @@ struct APIARY_EXPOSE
     /**
      * @brief Gets the strides of the tensor.
      */
-    [[nodiscard]] virtual auto strides() const noexcept -> BufferVector<size_t> { return _impl.strides(); }
+    [[nodiscard]] virtual auto strides() const noexcept -> ShapeVector<size_t> { return _impl.strides(); }
 
     /**
      * @brief Gets the rank-1 veiw of the tensor.

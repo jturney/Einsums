@@ -25,9 +25,9 @@ TEMPLATE_TEST_CASE("Scalars", "[tensor]", float, double, std::complex<float>, st
 
     SECTION("Subscripting") {
         REQUIRE_THAT(std::real(tensor.subscript()), Catch::Matchers::WithinAbs(std::real(value), 1e-6));
-        REQUIRE_THAT(std::real(tensor.subscript(BufferVector<size_t>{})), Catch::Matchers::WithinAbs(std::real(value), 1e-6));
+        REQUIRE_THAT(std::real(tensor.subscript(ShapeVector<size_t>{})), Catch::Matchers::WithinAbs(std::real(value), 1e-6));
         REQUIRE_THAT(std::real(tensor.subscript_no_check()), Catch::Matchers::WithinAbs(std::real(value), 1e-6));
-        REQUIRE_THAT(std::real(tensor.subscript_no_check(BufferVector<size_t>{})), Catch::Matchers::WithinAbs(std::real(value), 1e-6));
+        REQUIRE_THAT(std::real(tensor.subscript_no_check(ShapeVector<size_t>{})), Catch::Matchers::WithinAbs(std::real(value), 1e-6));
     }
 
     if constexpr (!std::is_const_v<TestType>) {

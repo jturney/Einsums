@@ -108,7 +108,7 @@ void impl_real(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
             out_incx;
-        BufferVector<size_t> hard_dims, in_strides, out_strides;
+        ShapeVector<size_t> hard_dims, in_strides, out_strides;
 
         in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
         out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
@@ -227,7 +227,7 @@ void impl_imag(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
             out_incx;
-        BufferVector<size_t> hard_dims, in_strides, out_strides;
+        ShapeVector<size_t> hard_dims, in_strides, out_strides;
 
         in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
         out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
@@ -336,7 +336,7 @@ void impl_abs(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
             out_incx;
-        BufferVector<size_t> hard_dims, in_strides, out_strides;
+        ShapeVector<size_t> hard_dims, in_strides, out_strides;
 
         in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
         out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
@@ -424,8 +424,8 @@ void impl_conj(TensorImpl<T> &x) {
         } else {
             EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over lacgv.");
 
-            size_t               easy_size, easy_rank, incx, hard_size;
-            BufferVector<size_t> hard_dims, x_strides;
+            size_t              easy_size, easy_rank, incx, hard_size;
+            ShapeVector<size_t> hard_dims, x_strides;
 
             x.query_vectorable_params(&easy_size, &hard_size, &easy_rank, &incx);
 
@@ -544,7 +544,7 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
             out_incx;
-        BufferVector<size_t> hard_dims, in_strides, out_strides;
+        ShapeVector<size_t> hard_dims, in_strides, out_strides;
 
         in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
         out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
@@ -649,8 +649,8 @@ void impl_scal(U alpha, TensorImpl<T> &out) {
     } else {
         EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over scal.");
 
-        size_t               easy_size, hard_size, easy_rank, out_incx;
-        BufferVector<size_t> hard_dims, out_strides;
+        size_t              easy_size, hard_size, easy_rank, out_incx;
+        ShapeVector<size_t> hard_dims, out_strides;
 
         out.query_vectorable_params(&easy_size, &hard_size, &easy_rank, &out_incx);
 
@@ -731,8 +731,8 @@ void impl_div_scalar(U alpha, TensorImpl<T> &out) {
     } else {
         EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over scal.");
 
-        size_t               easy_size, hard_size, easy_rank, out_incx;
-        BufferVector<size_t> hard_dims, out_strides;
+        size_t              easy_size, hard_size, easy_rank, out_incx;
+        ShapeVector<size_t> hard_dims, out_strides;
 
         out.query_vectorable_params(&easy_size, &hard_size, &easy_rank, &out_incx);
 
@@ -842,7 +842,7 @@ void impl_mult(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
             out_incx;
-        BufferVector<size_t> hard_dims, in_strides, out_strides;
+        ShapeVector<size_t> hard_dims, in_strides, out_strides;
 
         in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
         out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
@@ -965,7 +965,7 @@ void impl_div(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
             out_incx;
-        BufferVector<size_t> hard_dims, in_strides, out_strides;
+        ShapeVector<size_t> hard_dims, in_strides, out_strides;
 
         in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
         out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
@@ -1092,7 +1092,7 @@ void impl_copy(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
         size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
             out_incx;
-        BufferVector<size_t> hard_dims, in_strides, out_strides;
+        ShapeVector<size_t> hard_dims, in_strides, out_strides;
 
         in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
         out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
@@ -1184,8 +1184,8 @@ void impl_scalar_add(U alpha, TensorImpl<T> &out) {
         } else {
             EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over scal.");
 
-            size_t               easy_size, hard_size, easy_rank, out_incx;
-            BufferVector<size_t> hard_dims, out_strides;
+            size_t              easy_size, hard_size, easy_rank, out_incx;
+            ShapeVector<size_t> hard_dims, out_strides;
 
             out.query_vectorable_params(&easy_size, &hard_size, &easy_rank, &out_incx);
 
@@ -1265,8 +1265,8 @@ void impl_scalar_copy(U alpha, TensorImpl<T> &out) {
         } else {
             EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over scal.");
 
-            size_t               easy_size, hard_size, easy_rank, out_incx;
-            BufferVector<size_t> hard_dims, out_strides;
+            size_t              easy_size, hard_size, easy_rank, out_incx;
+            ShapeVector<size_t> hard_dims, out_strides;
 
             out.query_vectorable_params(&easy_size, &hard_size, &easy_rank, &out_incx);
 

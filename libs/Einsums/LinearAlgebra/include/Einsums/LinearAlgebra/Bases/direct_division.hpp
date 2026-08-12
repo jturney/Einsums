@@ -109,7 +109,7 @@ void impl_direct_division(CType alpha, einsums::detail::TensorImpl<AType> const 
 
         size_t easy_size, A_easy_size, B_easy_size, C_easy_size, A_hard_size, B_hard_size, C_hard_size, easy_rank, A_easy_rank, B_easy_rank,
             C_easy_rank, inca, incb, incc;
-        BufferVector<size_t> hard_dims, A_strides, B_strides, C_strides;
+        ShapeVector<size_t> hard_dims, A_strides, B_strides, C_strides;
 
         A.query_vectorable_params(&A_easy_size, &A_hard_size, &A_easy_rank, &inca);
         B.query_vectorable_params(&B_easy_size, &B_hard_size, &B_easy_rank, &incb);
