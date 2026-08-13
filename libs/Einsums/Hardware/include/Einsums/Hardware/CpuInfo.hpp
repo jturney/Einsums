@@ -146,4 +146,38 @@ APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT bool region_cost_is_calib
  */
 EINSUMS_EXPORT bool write_calibration(std::string const &path, std::string *error = nullptr);
 
+/**
+ * @brief The OpenMP runtime's current ceiling on a parallel region's team size.
+ *
+ * A thin wrapper over ``omp_get_max_threads()``, reading the same process-wide
+ * runtime every OpenMP-threaded BLAS and every @c #pragma @c omp @c parallel
+ * region in the process reads. It is not ``OMP_NUM_THREADS``: the environment
+ * records what was requested at startup, this reports what is in effect now.
+ *
+ * Returns 1 in a build without OpenMP, which is also the conservative answer
+ * for anything gating on thread count.
+ *
+ * @return The team size a parallel region would get right now.
+ *
+ * @versionadded{2.0.0}
+ */
+APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT int get_max_threads();
+
+/**
+ * @brief Set the OpenMP runtime's ceiling on a parallel region's team size.
+ *
+ * A thin wrapper over ``omp_set_num_threads()``. This is process-wide, the
+ * same ICV every OpenMP-threaded BLAS and every @c #pragma @c omp @c parallel
+ * region in the process reads, not a per-thread setting - see
+ * @ref einsums::blas::set_num_threads_this_thread for the narrower per-thread
+ * BLAS knob.
+ *
+ * A no-op in a build without OpenMP.
+ *
+ * @param[in] nthreads Thread count ceiling to request.
+ *
+ * @versionadded{2.0.0}
+ */
+APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT void set_num_threads(int nthreads);
+
 EINSUMS_NAMESPACE_END(hardware)

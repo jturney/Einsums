@@ -581,4 +581,20 @@ std::int64_t omp_min_parallel_flops() {
     return compute();
 }
 
+int get_max_threads() {
+#ifdef _OPENMP
+    return omp_get_max_threads();
+#else
+    return 1;
+#endif
+}
+
+void set_num_threads(int nthreads) {
+#ifdef _OPENMP
+    omp_set_num_threads(nthreads);
+#else
+    (void)nthreads;
+#endif
+}
+
 EINSUMS_NAMESPACE_END(hardware)

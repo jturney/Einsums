@@ -34,6 +34,7 @@ endfunction()
 
 set(HardwareTests
     test_cpu_info_python.py
+    test_thread_control_python.py
 )
 
 foreach(test ${HardwareTests})
