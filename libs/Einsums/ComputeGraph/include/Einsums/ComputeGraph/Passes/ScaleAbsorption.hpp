@@ -87,6 +87,16 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   the same node, would need α² and is left un-folded.
  * - A scaled value that is never overwritten stays observable to the caller
  *   after execute, so its Scale is always kept.
+ * - A scale whose buffer is also accessed through a VIEW while the scaled value
+ *   is live is kept. A slice consumer's prefactor scales only its own span,
+ *   where the scale covers the whole buffer, so the scale's effect on the
+ *   regions no slice touches (padding, unused slots) is observable and nothing
+ *   can stand in for it. This holds for the dead-scale route too: a later
+ *   whole-tensor overwrite does not make the scale dead when a view write in
+ *   between read the scaled bytes.
+ * - Only ops with live shared params can take the factor at all, so the grouped
+ *   ops (GroupedBatchedGemm, GroupedDot, GroupedAxpby) and every kind this pass
+ *   does not enumerate veto rather than fold.
  * - Reads from inside a control-flow node's sub-graphs count (via
  *   @ref Graph::effective_io) but cannot be folded into, so a loop body reading
  *   the scaled tensor keeps the Scale.

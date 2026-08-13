@@ -45,6 +45,13 @@ enum class FoldSite : std::uint8_t {
 /// EinsumParams / AxpbyParams, so a descriptor-only edit would desync it. That
 /// is why permute and BatchedGemm are not folded into - they bake their
 /// prefactors into the executor closure.
+///
+/// Every other kind - including the grouped ops (GroupedBatchedGemm,
+/// GroupedDot, GroupedAxpby), whose per-entry prefactors live in a baked
+/// executor closure the same way - falls through to None, which vetoes the
+/// whole scale. That default is the pass's safety property: an op kind this
+/// function has never heard of is a non-taker, so adding a node kind to the IR
+/// cannot silently make an existing fold unsound.
 FoldSite fold_site(Node const &node, TensorId tensor) {
     if (node.outputs.empty()) {
         return FoldSite::None;
@@ -152,6 +159,46 @@ bool ScaleAbsorption::run(Graph &graph) {
 
     auto const touches = [](std::vector<TensorId> const &v, TensorId t) { return std::ranges::find(v, t) != v.end(); };
 
+    // Alias-aware family test, and the reason this pass needs one.
+    //
+    // Node I/O lists carry TensorIds, and a view of a tensor is a DIFFERENT id
+    // whose handle aliases the parent. A raw id comparison therefore does not
+    // see an accumulation into a SLICE of the scaled store at all: DLPNO's
+    // residual clears a whole pair store with `scale(0, R)`, accumulates into
+    // per-pair slice views of it, and finally folds `Rn` into `R` whole. The
+    // raw scan saw only that last whole-store axpby, called it the sole
+    // observer, and folded the zeroing factor into its beta - deleting every
+    // slice accumulation in between. The program-order validator caught it
+    // (it resolves aliases), but the fold was wrong, not merely unverifiable.
+    //
+    // A partial access cannot take the factor: a slice consumer's prefactor
+    // scales only its own span, while the scale zeroes (or scales) the WHOLE
+    // buffer, padding and untouched slots included. So any access to the
+    // scaled tensor's buffer through an id that is not the scaled tensor
+    // itself - a view of it, its parent, a sibling view - disqualifies the
+    // scale outright, for the dead-scale path as much as for the fold.
+    bool has_aliases = false;
+    for (auto const &entry : graph.tensors_map()) {
+        if (entry.second.aliases != 0) {
+            has_aliases = true;
+            break;
+        }
+    }
+    // Owner-resolve every registered id once. Per-access resolution would walk
+    // the alias chain inside a quadratic window scan; a graph with 13k tensors
+    // is not unusual and the chains are path-compressed anyway.
+    std::unordered_map<TensorId, TensorId> owner;
+    if (has_aliases) {
+        owner.reserve(graph.tensors_map().size());
+        for (auto const &entry : graph.tensors_map()) {
+            owner.emplace(entry.first, graph.resolve_alias(entry.first));
+        }
+    }
+    auto const owner_of = [&owner](TensorId t) {
+        auto const it = owner.find(t);
+        return it == owner.end() ? t : it->second;
+    };
+
     // What each control-flow node's SUB-GRAPHS touch.
     //
     // A Loop/Conditional node's own inputs/outputs say nothing about what its
@@ -173,6 +220,25 @@ bool ScaleAbsorption::run(Graph &graph) {
     auto const node_writes = [&](size_t idx, TensorId t) {
         auto const it = subgraph_io.find(idx);
         return touches(it != subgraph_io.end() ? it->second.second : nodes[idx].outputs, t);
+    };
+    // True when node @p idx touches @p scaled's buffer through any id other
+    // than @p scaled itself: a view, the parent, or a sibling slice. Control
+    // flow is covered because it reads the same effective I/O the scan does.
+    auto const touches_alias_of = [&](size_t idx, TensorId scaled, TensorId scaled_owner) {
+        if (!has_aliases) {
+            return false;
+        }
+        auto const  it   = subgraph_io.find(idx);
+        auto const &ins  = it != subgraph_io.end() ? it->second.first : nodes[idx].inputs;
+        auto const &outs = it != subgraph_io.end() ? it->second.second : nodes[idx].outputs;
+        for (auto const *list : {&ins, &outs}) {
+            for (TensorId const tid : *list) {
+                if (tid != scaled && owner_of(tid) == scaled_owner) {
+                    return true;
+                }
+            }
+        }
+        return false;
     };
 
     for (size_t sc = 0; sc + 1 < nodes.size(); sc++) {
@@ -197,11 +263,21 @@ bool ScaleAbsorption::run(Graph &graph) {
         // then dead — i.e. overwritten before anything else (including the
         // caller after execute) could read it. Accumulator writes read too, so
         // count them as reads.
+        TensorId const      scaled_owner = owner_of(scaled_tensor);
         std::vector<size_t> readers;
-        long                writer = -1;
+        long                writer  = -1;
+        long                aliased = -1;
         for (size_t tgt = sc + 1; tgt < nodes.size(); tgt++) {
             if (remove[tgt]) {
                 continue;
+            }
+            // Checked before the exact-id tests: a node may both close the live
+            // range with a whole-tensor write AND observe part of the scaled
+            // value through a view, and that node must not be mistaken for the
+            // sole observer.
+            if (touches_alias_of(tgt, scaled_tensor, scaled_owner)) {
+                aliased = static_cast<long>(tgt);
+                break;
             }
             bool const writes = node_writes(tgt, scaled_tensor);
             // An accumulating node reads its destination whether or not it says
@@ -215,6 +291,19 @@ bool ScaleAbsorption::run(Graph &graph) {
                 writer = static_cast<long>(tgt);
                 break; // the scaled value's live range ends here
             }
+        }
+
+        if (aliased >= 0) {
+            // A view of the scaled buffer (or its parent) is touched while the
+            // scaled value is live. Neither elimination route is available: the
+            // scale's effect on the parts that view does NOT cover is
+            // observable, so no prefactor on that consumer can stand in for it,
+            // and a later whole-tensor overwrite does not make the scale dead
+            // either because the view's own write reads the scaled bytes.
+            note_skip(
+                "the scaled buffer is also accessed through a view, whose prefactor covers only its own span",
+                fmt::format("scale node {} on tensor {}, aliased access by node {}", scale_node.id, scaled_tensor, nodes[aliased].id));
+            continue;
         }
 
         if (writer < 0) {

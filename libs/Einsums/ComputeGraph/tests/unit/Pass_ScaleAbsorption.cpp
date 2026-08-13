@@ -595,6 +595,240 @@ TEST_CASE("ScaleAbsorption - top-level compensation survives subgraph recursion"
     CHECK(pass->compensated_reads().size() == 1);
 }
 
+// ── view-mediated observers ──────────────────────────────────────────────────
+//
+// A store cleared whole and then accumulated into through per-slice views is
+// DLPNO's residual container, and it is the shape that broke this pass. Node
+// I/O lists carry TensorIds; a view of a tensor is a DIFFERENT id whose handle
+// aliases the parent, so the raw id scan did not see the slice accumulations at
+// all. On the merged DLPNO iteration it saw only the whole-store accumulate at
+// the end, called it the sole observer, folded the zeroing factor into its beta
+// and deleted the scale -- discarding every slice accumulation in between.
+//
+// The views are recorded BEFORE the scale in these tests on purpose. A View
+// node reads its parent, so a view built inside the scale's window is an
+// ordinary reader the raw scan already saw; the shape that hid was the one
+// where the views (like DLPNO's, built once for the whole iteration) precede
+// the scale and only their ids appear afterwards.
+
+TEST_CASE("ScaleAbsorption - a slice view accumulating into the scaled store keeps the scale", "[ComputeGraph][Passes]") {
+    constexpr size_t N = 6;
+    constexpr size_t M = 3;
+
+    auto T  = create_random_tensor<double>("T", N, N);
+    auto Tn = create_random_tensor<double>("Tn", N, N);
+    auto X  = create_random_tensor<double>("X", M, M);
+
+    // The loop of eager ops the replay has to reproduce. The zeroing matters
+    // most OUTSIDE the slice: nothing else ever writes those elements, so a
+    // dropped scale leaves T's incoming garbage there.
+    auto T_ref = Tensor<double, 2>(T);
+    linear_algebra::scale(0.0, &T_ref);
+    {
+        auto slice_ref = T_ref(Range{0, M}, Range{0, M});
+        linear_algebra::axpby(1.0, X, 1.0, &slice_ref);
+    }
+    linear_algebra::axpby(1.0, Tn, 1.0, &T_ref);
+
+    cg::Graph graph("sa_view_accumulator");
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &slice = cg::view<double, 2>(T, cg::ViewAxis::range(0, M), cg::ViewAxis::range(0, M));
+        cg::scale(0.0, &T);             // clears the whole store
+        cg::axpby(1.0, X, 1.0, &slice); // accumulates into part of it
+        cg::axpby(1.0, Tn, 1.0, &T);    // the whole-store accumulate that closes the range
+    }
+    size_t const nodes_before = graph.num_nodes();
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::ScaleAbsorption>();
+    pm.add(pass);
+    REQUIRE_NOTHROW(graph.apply(pm));
+
+    CHECK(pass->num_absorbed() == 0);
+    CHECK(graph.num_nodes() == nodes_before);
+    bool found_scale = false;
+    for (auto const &node : graph.nodes()) {
+        found_scale = found_scale || node.kind == cg::OpKind::Scale;
+    }
+    CHECK(found_scale);
+
+    graph.execute();
+    for (size_t ii = 0; ii < N; ii++) {
+        for (size_t jj = 0; jj < N; jj++) {
+            REQUIRE(T(ii, jj) == T_ref(ii, jj));
+        }
+    }
+}
+
+TEST_CASE("ScaleAbsorption - a slice view READING the scaled store keeps the scale", "[ComputeGraph][Passes]") {
+    // The dead-scale route, through the same blind spot. The only reader of the
+    // scaled T is an einsum operand that is a slice VIEW of it, so the raw scan
+    // found no reader at all, saw the later pure overwrite of T, and called the
+    // scale dead -- leaving the einsum reading the UNSCALED slice.
+    constexpr size_t N = 6;
+    constexpr size_t M = 3;
+
+    auto T = create_random_tensor<double>("T", N, N);
+    auto E = create_random_tensor<double>("E", M, M);
+    auto D = create_zero_tensor<double>("D", M, M);
+    auto A = create_random_tensor<double>("A", N, N);
+    auto B = create_random_tensor<double>("B", N, N);
+
+    auto T_scaled = Tensor<double, 2>(T);
+    linear_algebra::scale(3.0, &T_scaled);
+    auto D_ref = create_zero_tensor<double>("Dref", M, M);
+    {
+        auto slice_ref = T_scaled(Range{0, M}, Range{0, M});
+        tensor_algebra::einsum(0.0, Indices{i, j}, &D_ref, 1.0, Indices{i, k}, E, Indices{k, j}, slice_ref);
+    }
+
+    cg::Graph graph("sa_view_reader");
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &slice = cg::view<double, 2>(T, cg::ViewAxis::range(0, M), cg::ViewAxis::range(0, M));
+        cg::scale(3.0, &T);
+        cg::einsum("ik;kj->ij", 0.0, &D, 1.0, E, slice); // reads a slice of the scaled T
+        cg::einsum("ik;kj->ij", 0.0, &T, 1.0, A, B);     // closes T's live range
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::ScaleAbsorption>();
+    pm.add(pass);
+    REQUIRE_NOTHROW(graph.apply(pm));
+    CHECK(pass->num_absorbed() == 0);
+
+    graph.execute();
+    for (size_t ii = 0; ii < M; ii++) {
+        for (size_t jj = 0; jj < M; jj++) {
+            REQUIRE(std::abs(D(ii, jj) - D_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("ScaleAbsorption - a grouped axpby over slice views keeps the scale", "[ComputeGraph][Passes]") {
+    // DLPNO's actual shape: the per-pair accumulations are ONE GroupedAxpby node
+    // whose destinations are slice views of the cleared store.
+    constexpr size_t N = 6;
+    constexpr size_t M = 3;
+
+    auto T  = create_random_tensor<double>("T", N, N);
+    auto Tn = create_random_tensor<double>("Tn", N, N);
+    auto X0 = create_random_tensor<double>("X0", M, M);
+    auto X1 = create_random_tensor<double>("X1", M, M);
+
+    auto T_ref = Tensor<double, 2>(T);
+    linear_algebra::scale(0.0, &T_ref);
+    {
+        auto s0 = T_ref(Range{0, M}, Range{0, M});
+        auto s1 = T_ref(Range{M, N}, Range{M, N});
+        linear_algebra::axpby(1.0, X0, 1.0, &s0);
+        linear_algebra::axpby(2.0, X1, 1.0, &s1);
+    }
+    linear_algebra::axpby(1.0, Tn, 1.0, &T_ref);
+
+    cg::Graph graph("sa_grouped_view_accumulator");
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &s0 = cg::view<double, 2>(T, cg::ViewAxis::range(0, M), cg::ViewAxis::range(0, M));
+        auto                  &s1 = cg::view<double, 2>(T, cg::ViewAxis::range(M, N), cg::ViewAxis::range(M, N));
+        cg::scale(0.0, &T);
+        cg::grouped_axpby<Tensor<double, 2>, TensorView<double, 2>>({1.0, 2.0}, {&X0, &X1}, {1.0, 1.0}, {&s0, &s1});
+        cg::axpby(1.0, Tn, 1.0, &T);
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::ScaleAbsorption>();
+    pm.add(pass);
+    REQUIRE_NOTHROW(graph.apply(pm));
+    CHECK(pass->num_absorbed() == 0);
+
+    graph.execute();
+    for (size_t ii = 0; ii < N; ii++) {
+        for (size_t jj = 0; jj < N; jj++) {
+            REQUIRE(T(ii, jj) == T_ref(ii, jj));
+        }
+    }
+}
+
+TEST_CASE("ScaleAbsorption - a grouped axpby on the scaled tensor itself vetoes the fold", "[ComputeGraph][Passes]") {
+    // No view here: the grouped node accumulates into the scaled tensor WHOLE,
+    // so the window scan sees it by its own id. Its per-entry prefactors live in
+    // a baked executor closure, which is exactly what the all-or-nothing rule
+    // calls a non-taker, and fold_site's default arm has to say so for every op
+    // kind it does not enumerate rather than crash or fold silently.
+    auto X = create_random_tensor<double>("X", 4, 5);
+    auto Y = create_random_tensor<double>("Y", 4, 5);
+    auto Z = create_random_tensor<double>("Z", 4, 5);
+
+    auto Y_ref = Tensor<double, 2>(Y);
+    linear_algebra::scale(3.0, &Y_ref);
+    linear_algebra::axpby(2.0, X, 1.0, &Y_ref);
+    auto Z_ref = Tensor<double, 2>(Z);
+    linear_algebra::axpby(1.0, Y_ref, 0.0, &Z_ref);
+
+    cg::Graph graph("sa_grouped_whole_tensor");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(3.0, &Y);
+        cg::grouped_axpby<Tensor<double, 2>, Tensor<double, 2>>({2.0}, {&X}, {1.0}, {&Y});
+        cg::axpby(1.0, Y, 0.0, &Z); // reads the accumulated Y, then Y is overwritten
+        cg::axpby(1.0, X, 0.0, &Y); // closes Y's live range
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::ScaleAbsorption>();
+    pm.add(pass);
+    REQUIRE_NOTHROW(graph.apply(pm));
+    CHECK(pass->num_absorbed() == 0);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(Z(ii, jj) - Z_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("ScaleAbsorption - the documented operand fold still fires beside unrelated views", "[ComputeGraph][Passes]") {
+    // The header's own C++ example, in a graph that also contains a view of a
+    // DIFFERENT tensor. The alias veto is per-buffer: a graph merely CONTAINING
+    // views must not stop folding scales of tensors those views do not touch.
+    auto A = create_random_tensor<double>("A", 4, 5);
+    auto B = create_random_tensor<double>("B", 5, 5);
+    auto C = create_zero_tensor<double>("C", 4, 5);
+    auto x = create_random_tensor<double>("x", 4);
+    auto y = create_random_tensor<double>("y", 5);
+    auto U = create_random_tensor<double>("U", 4, 5);
+    auto V = create_random_tensor<double>("V", 4, 2);
+
+    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &C_ref, 3.0, Indices{i, k}, A, Indices{k, j}, B);
+
+    cg::Graph graph("sa_fold_beside_unrelated_views");
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &u_slice = cg::view<double, 2>(U, cg::ViewAxis::full(), cg::ViewAxis::range(0, 2));
+        cg::axpby(1.0, V, 0.0, &u_slice); // a live view of an unrelated tensor
+        cg::scale(3.0, &A);
+        cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B); // C = 3*(A.B), A's sole reader
+        cg::einsum("ik <- i ; k", 0.0, &A, 1.0, x, y);   // A overwritten
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::ScaleAbsorption>();
+    pm.add(pass);
+    REQUIRE_NOTHROW(graph.apply(pm));
+    CHECK(pass->num_absorbed() == 1);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE(std::abs(C(ii, jj) - C_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
+
 // `Y *= s` followed by `Y += a*X` is the accumulator fold: the scale is not
 // dead (the axpy reads Y), so it folds into beta rather than being deleted
 // outright. This shape could not match at all while cg::axpy recorded a
