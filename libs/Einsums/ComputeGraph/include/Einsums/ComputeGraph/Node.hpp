@@ -122,6 +122,38 @@ struct AxpbyDescriptor {
 };
 
 /**
+ * @brief Metadata for @ref OpKind::GroupedDot nodes.
+ *
+ * A grouped dot is a run of independent `result_i = sum(A_i * B_i)` reductions
+ * issued as one node. Unlike @ref GroupedBatchedGemmDescriptor there is nothing
+ * to group ON: the entries are not sorted, merged or reshaped, so the only thing
+ * a pass or a report needs from the node beyond its operand lists is how many
+ * entries it holds.
+ *
+ * The parent @ref Node carries the inputs interleaved A_0, B_0, A_1, B_1, ...
+ * and the outputs in entry order, so entry `i` indexes both.
+ */
+struct GroupedDotDescriptor {
+    int total{0}; ///< How many dot products the node holds.
+};
+
+/**
+ * @brief Metadata for @ref OpKind::GroupedAxpby nodes.
+ *
+ * The prefactors are PER ENTRY, which is the whole difference from
+ * @ref AxpbyDescriptor: a grouped call exists to merge accumulations that
+ * disagree on their coefficients. Snapshots only, and there is deliberately no
+ * shared-params handle: ScaleAbsorption and friends fold a scale into a single
+ * axpby by rewriting one live scalar, and doing that to one entry of a run would
+ * need the pass to know which entry, which no pass does yet.
+ */
+struct GroupedAxpbyDescriptor {
+    int                          total{0}; ///< How many axpby operations the node holds.
+    std::vector<PrefactorScalar> alphas;   ///< Per-entry alpha, in entry order.
+    std::vector<PrefactorScalar> betas;    ///< Per-entry beta, in entry order.
+};
+
+/**
  * @brief Metadata for a TILED einsum node.
  *
  * A tiled contraction records as ``OpKind::Custom`` and executes per tile through
@@ -351,10 +383,11 @@ inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, 
  * for use by optimization passes. Nodes with no special metadata use
  * std::monostate.
  */
-using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
-                            AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor,
-                            BatchedGemmDescriptor, GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor,
-                            TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor>;
+using OpData =
+    std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
+                 AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor, BatchedGemmDescriptor,
+                 GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, GroupedDotDescriptor,
+                 GroupedAxpbyDescriptor, TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.

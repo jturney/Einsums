@@ -4200,6 +4200,316 @@ APIARY_MODULE("graph")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// grouped_dot / grouped_axpby: a run of scalar-sized operations as ONE node
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace detail {
+
+/// Per-entry dims of a runtime- or statically-ranked tensor, for the shape
+/// agreement checks the grouped forms make once at capture.
+template <typename TensorType>
+std::vector<size_t> tensor_dims(TensorType const &t) {
+    size_t const        r = tensor_rank(t);
+    std::vector<size_t> dims(r);
+    for (size_t d = 0; d < r; d++) {
+        dims[d] = t.dim(d);
+    }
+    return dims;
+}
+
+} // namespace detail
+
+/// @brief One node holding many independent dot products:
+/// ``results[i]->data()[0] = sum(A_i * B_i)`` for every entry.
+///
+/// The entries run SEQUENTIALLY inside the node, in the order they were passed,
+/// each through the same `linear_algebra::dot` a single @ref dot_python call
+/// makes. That is the point of the operation and not an implementation detail:
+/// this exists for workloads whose gate is bit-identity, so the result has to be
+/// the same bits as the loop of single calls it replaces, entry by entry. A
+/// parallel-within-node form would reduce in a different order on nothing but
+/// its own schedule, and it would have nothing to gain - a dot into a scalar has
+/// no arithmetic to spread. What is saved is the per-node dispatch, which at the
+/// block sizes local-correlation methods produce is the whole cost: a DLPNO-CCSD
+/// iteration reached ~1,700 of these, one node each.
+///
+/// Because the entries are sequential, repeating a destination is well defined
+/// and means what the loop means - the last entry writing it wins. Unlike
+/// @ref grouped_batched_gemm there is therefore nothing to reject.
+///
+/// Outside capture this executes immediately, so the same call works eagerly.
+///
+/// @param results One length-1-or-larger destination per entry; only element 0
+///                is written, matching the single form.
+/// @param a_list,b_list The operands, same length as @p results. Each entry's A
+///                and B must agree on rank and shape, as `dot` requires; the
+///                entries need not agree with each other.
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
+    requires requires {
+        requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>;
+        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
+    }
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+// The same 8 owning/view combinations per dtype that the single `dot` carries,
+// and for the same reason: a destination scalar is an owning tensor while the
+// operands are slices of a larger store.
+//
+// float
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+//
+// double
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+//
+// std::complex<float>
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>)
+//
+// std::complex<double>
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void grouped_dot(std::vector<ResultType *> results, std::vector<AType const *> a_list, std::vector<BType const *> b_list) {
+    size_t const count = results.size();
+    if (count == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_dot: the run is empty");
+    }
+    if (a_list.size() != count || b_list.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_dot: the result, A and B lists must be the same length; got {}, {}, {}",
+                                count, a_list.size(), b_list.size());
+    }
+
+    // Every check is internal to one entry: there is nothing to compare across
+    // entries, which is exactly what the grouped form buys.
+    for (size_t i = 0; i < count; i++) {
+        if (results[i] == nullptr || a_list[i] == nullptr || b_list[i] == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_dot: entry {} has a null operand", i);
+        }
+        if (results[i]->size() < 1) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_dot: entry {}'s result tensor must have at least one element", i);
+        }
+        if (detail::tensor_rank(*a_list[i]) != detail::tensor_rank(*b_list[i])) {
+            EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_dot: entry {}'s operands disagree on rank ({} and {})", i,
+                                    detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]));
+        }
+        if (detail::tensor_dims(*a_list[i]) != detail::tensor_dims(*b_list[i])) {
+            EINSUMS_THROW_EXCEPTION(dimension_error, "cg::grouped_dot: entry {}'s operands disagree on shape", i);
+        }
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("grouped_dot eager");
+        for (size_t i = 0; i < count; i++) {
+            results[i]->data()[0] = linear_algebra::dot(*a_list[i], *b_list[i]);
+        }
+        return;
+    }
+
+    LabeledSection("grouped_dot capture");
+    // Inputs interleaved A_0, B_0, A_1, B_1, ... and outputs in entry order, so
+    // entry i indexes both. The same convention the batched nodes use.
+    std::vector<TensorId>     inputs, outputs;
+    std::vector<TensorSlot *> r_slots, a_slots, b_slots;
+    inputs.reserve(2 * count);
+    outputs.reserve(count);
+    r_slots.reserve(count);
+    a_slots.reserve(count);
+    b_slots.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        auto [a_id, a_slot] = ctx.get_slot(*a_list[i]);
+        auto [b_id, b_slot] = ctx.get_slot(*b_list[i]);
+        auto [r_id, r_slot] = ctx.get_slot(*results[i]);
+        inputs.push_back(a_id);
+        inputs.push_back(b_id);
+        outputs.push_back(r_id);
+        // Read through the slot, not the captured pointer: rebind() and the
+        // MemoryPlanning arena can both move a tensor's storage.
+        a_slots.push_back(a_slot);
+        b_slots.push_back(b_slot);
+        r_slots.push_back(r_slot);
+    }
+
+    auto executor = [r_slots = std::move(r_slots), a_slots = std::move(a_slots), b_slots = std::move(b_slots)]() {
+        LabeledSection("grouped_dot execute");
+        for (size_t i = 0; i < r_slots.size(); i++) {
+            static_cast<ResultType *>(r_slots[i]->ptr)->data()[0] =
+                linear_algebra::dot(*static_cast<AType const *>(a_slots[i]->ptr), *static_cast<BType const *>(b_slots[i]->ptr));
+        }
+    };
+
+    GroupedDotDescriptor d;
+    d.total = static_cast<int>(count);
+    ctx.record(OpKind::GroupedDot, fmt::format("dot x{}", count), std::move(inputs), std::move(outputs), std::move(executor), std::move(d));
+}
+
+/// @brief One node holding many independent AXPBYs:
+/// ``Y_i = alphas[i] * X_i + betas[i] * Y_i`` for every entry.
+///
+/// The grouped counterpart of @ref axpby, and the accumulating half of the
+/// pattern @ref grouped_dot reduces into: a local-correlation residual computes
+/// a scalar per pair or per neighbour and then adds it, scaled, into one element
+/// of a shared matrix, and both halves used to cost a node apiece.
+///
+/// Entries run SEQUENTIALLY inside the node, in the order they were passed. That
+/// is load-bearing twice over. It makes each entry the same bits the single call
+/// would have written, and it makes REPEATED DESTINATIONS legal: a family whose
+/// entries all accumulate into one element - a sum over a pair's neighbours, say
+/// - keeps its term order, because the entries are applied in the order the
+/// caller wrote them and no two run at once. So unlike
+/// @ref grouped_batched_gemm, which rejects a shared destination because its
+/// members may run concurrently, this operation accepts one and defines it.
+///
+/// The prefactors are per entry, which is the difference from @ref axpby that
+/// makes merging worthwhile: the accumulations a residual wants to merge
+/// disagree on their coefficients.
+///
+/// Outside capture this executes immediately, so the same call works eagerly.
+///
+/// @param alphas Per-entry prefactor on X_i.
+/// @param x_list Sources, same length as @p alphas.
+/// @param betas  Per-entry prefactor on Y_i. A non-zero entry means that Y_i is
+///               read as well as written, which the node records as a dependency.
+/// @param y_list Destinations, same length as @p alphas. May repeat.
+template <CoreBasicTensorConcept XType, CoreBasicTensorConcept YType>
+    requires SameUnderlying<XType, YType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+// The same 4 owning/view combinations per dtype that the single `axpby` carries.
+//
+// float
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<double>,                          einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<double>,                          einsums::RuntimeTensorView<double>)
+// complex<float>
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<std::complex<float>>,                                        einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<std::complex<float>>,                                        einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void grouped_axpby(std::vector<double> alphas, std::vector<XType const *> x_list, std::vector<double> betas,
+                       std::vector<YType *> y_list) {
+    using T = typename XType::ValueType;
+
+    size_t const count = alphas.size();
+    if (count == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_axpby: the run is empty");
+    }
+    if (x_list.size() != count || betas.size() != count || y_list.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "cg::grouped_axpby: the alpha, X, beta and Y lists must be the same length; got {}, {}, {}, {}", count,
+                                x_list.size(), betas.size(), y_list.size());
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        if (x_list[i] == nullptr || y_list[i] == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_axpby: entry {} has a null operand", i);
+        }
+        if (detail::tensor_rank(*x_list[i]) != detail::tensor_rank(*y_list[i])) {
+            EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_axpby: entry {}'s operands disagree on rank ({} and {})", i,
+                                    detail::tensor_rank(*x_list[i]), detail::tensor_rank(*y_list[i]));
+        }
+        if (detail::tensor_dims(*x_list[i]) != detail::tensor_dims(*y_list[i])) {
+            EINSUMS_THROW_EXCEPTION(dimension_error, "cg::grouped_axpby: entry {}'s operands disagree on shape", i);
+        }
+    }
+
+    std::vector<T> a_typed(count), b_typed(count);
+    for (size_t i = 0; i < count; i++) {
+        a_typed[i] = static_cast<T>(alphas[i]);
+        b_typed[i] = static_cast<T>(betas[i]);
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("grouped_axpby eager");
+        for (size_t i = 0; i < count; i++) {
+            linear_algebra::axpby(a_typed[i], *x_list[i], b_typed[i], y_list[i]);
+        }
+        return;
+    }
+
+    LabeledSection("grouped_axpby capture");
+    std::vector<TensorId>     inputs, outputs;
+    std::vector<TensorSlot *> x_slots, y_slots;
+    inputs.reserve(2 * count);
+    outputs.reserve(count);
+    x_slots.reserve(count);
+    y_slots.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        auto [x_id, x_slot] = ctx.get_slot(*x_list[i]);
+        auto [y_id, y_slot] = ctx.get_slot(*y_list[i]);
+        inputs.push_back(x_id);
+        // beta != 0 means this entry reads its destination before writing it, so
+        // the RAW edge from whoever produced Y must survive (bug-1009).
+        if (b_typed[i] != T{0}) {
+            inputs.push_back(y_id);
+        }
+        outputs.push_back(y_id);
+        x_slots.push_back(x_slot);
+        y_slots.push_back(y_slot);
+    }
+
+    auto executor = [a_typed, b_typed, x_slots = std::move(x_slots), y_slots = std::move(y_slots)]() {
+        LabeledSection("grouped_axpby execute");
+        for (size_t i = 0; i < x_slots.size(); i++) {
+            linear_algebra::axpby(a_typed[i], *static_cast<XType const *>(x_slots[i]->ptr), b_typed[i],
+                                  static_cast<YType *>(y_slots[i]->ptr));
+        }
+    };
+
+    GroupedAxpbyDescriptor d;
+    d.total = static_cast<int>(count);
+    d.alphas.reserve(count);
+    d.betas.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        d.alphas.emplace_back(a_typed[i]);
+        d.betas.emplace_back(b_typed[i]);
+    }
+    ctx.record(OpKind::GroupedAxpby, fmt::format("axpby x{}", count), std::move(inputs), std::move(outputs), std::move(executor),
+               std::move(d));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // norm
 // ─────────────────────────────────────────────────────────────────────────────
 

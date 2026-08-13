@@ -41,8 +41,10 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     Gemv,               ///< General matrix-vector multiply (BLAS Level 2)
     Ger,                ///< Rank-1 update (BLAS Level 2)
     Dot,                ///< Dot product (returns scalar)
+    GroupedDot,         ///< Many independent dot products, one per entry, in one node
     Scale,              ///< Scalar multiplication of entire tensor
     Axpby,              ///< Y = alpha * X + beta * Y
+    GroupedAxpby,       ///< Many independent `Y = alpha*X + beta*Y`, one per entry, in one node
     DirectProduct,      ///< Element-wise (Hadamard) product
     DirectDivision,     ///< Element-wise (Hadamard) quotient
 
@@ -187,10 +189,14 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "Ger";
     case OpKind::Dot:
         return "Dot";
+    case OpKind::GroupedDot:
+        return "GroupedDot";
     case OpKind::Scale:
         return "Scale";
     case OpKind::Axpby:
         return "Axpby";
+    case OpKind::GroupedAxpby:
+        return "GroupedAxpby";
     case OpKind::DirectProduct:
         return "DirectProduct";
     case OpKind::DirectDivision:

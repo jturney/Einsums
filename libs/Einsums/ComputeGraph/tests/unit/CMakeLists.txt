@@ -82,6 +82,7 @@ set(ComputeGraphTests
     RuntimeTensorView.cpp
     StridedBatchedGemm.cpp
     GroupedBatchedGemm.cpp
+    GroupedScalarOps.cpp
     StringEinsum.cpp
     TensorLifetime.cpp
     TiledRuntimeEig.cpp
@@ -133,6 +134,7 @@ set(ComputeGraphTests
     test_gemv_views_python.py
     test_ger_views_python.py
     test_graph_python.py
+    test_grouped_scalar_ops_python.py
     test_hyp_conjugation_python.py
     test_hyp_controlflow_diff_python.py
     test_hyp_dotc_python.py
