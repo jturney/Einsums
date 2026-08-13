@@ -98,9 +98,26 @@ destroyed, a descriptive ``std::runtime_error`` is thrown instead of a segfault:
    Ensure all tensors outlive the graph, or use graph.create_tensor()
    for intermediates.
 
-The validation uses a name-hash canary: at registration time, the tensor's name
-hash is recorded. Before execution, the hash is re-computed and compared. If
-the memory has been reused or corrupted, the hashes won't match.
+The validation uses a weak liveness token plus a name-hash canary: at registration
+time the handle takes a ``std::weak_ptr`` to a token the tensor owns, and records
+the tensor's name hash.
+An expired token is definitive - the tensor is gone, and reporting it needs no
+read of freed memory.
+Otherwise the hash is re-computed and compared, which catches memory that was
+reused or corrupted.
+
+Validation runs while the graph has not executed yet, and a modifying optimizer
+pass puts it back in that state (``Graph::mark_sorted`` clears the executed flag).
+The first replay after such a pass therefore re-validates every handle.
+
+Graph-owned views are their own liveness class.
+The slice a ``cg::view`` / ``cg::view_runtime`` / ``cg::tile_view`` node
+publishes lives in a graph-owned holder that the node's executor re-emplaces on
+every replay, so a token taken from the view instance alive at capture expires
+the moment the graph first runs.
+Those handles watch the holder instead, which the graph owns and destroys with
+itself; liveness of the data behind the view is the parent's business, and the
+parent carries its own handle and its own check.
 
 .. note::
 

@@ -21,6 +21,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -74,6 +75,9 @@ namespace detail {
 template <typename T, size_t Rank>
 struct ViewHolder {
     std::optional<TensorView<T, Rank>> view;
+
+    /// @see bind_holder_liveness.
+    std::shared_ptr<void> life{std::make_shared<char>()};
 };
 
 /// Runtime-rank counterpart to ViewHolder. Holds an ``std::optional<RuntimeTensorView<T>>``
@@ -100,7 +104,33 @@ struct RuntimeViewHolder {
 
     std::vector<size_t> scratch_dims;    ///< Reused per replay.
     std::vector<size_t> scratch_strides; ///< Reused per replay.
+
+    /// @see bind_holder_liveness.
+    std::shared_ptr<void> life{std::make_shared<char>()};
 };
+
+/// Point a view handle's liveness check at its HOLDER rather than at the view
+/// instance the holder happened to contain at capture.
+///
+/// ``make_handle`` captures a weak liveness token from the object it is handed,
+/// which for a View node is the placeholder inside the holder. Every replay
+/// re-emplaces that optional, destroying the instance whose token the handle
+/// registered, so from the first replay onwards the token reads as expired.
+/// Nothing noticed while ``execute()`` validated only before the first run, but
+/// a modifying pass calls ``Graph::mark_sorted()``, which clears the executed
+/// flag: the next ``execute()`` re-validates and reported a perfectly live,
+/// graph-owned view as destroyed.
+///
+/// The holder is what the handle actually names. The graph owns it, it outlives
+/// every replay, and it is destroyed exactly when the graph is, so its own token
+/// is the stable one. The reference stays WEAK deliberately: a handle that
+/// somehow outlived its graph then still reports "destroyed" instead of reading
+/// freed memory. Liveness of the data behind the view is the PARENT's business,
+/// and the parent carries its own handle and its own check.
+template <typename Holder>
+void bind_holder_liveness(TensorHandle &handle, Holder const *holder) {
+    handle.validator = [life = std::weak_ptr<void>(holder->life)]() -> bool { return !life.expired(); };
+}
 
 } // namespace detail
 
@@ -183,6 +213,7 @@ TensorView<T, Rank> &record_typed_view(ParentT &parent, std::vector<ViewAxis> co
     handle.is_intermediate         = true;
     handle.name                    = fmt::format("view({})", parent.name());
     handle.aliases                 = parent_id;
+    bind_holder_liveness(handle, holder);
 
     TensorId const slice_id = graph->register_tensor(std::move(handle));
     auto          *slot     = ctx.create_slot_for(slice_ref, slice_id);
@@ -441,6 +472,7 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     handle.is_intermediate          = true;
     handle.name                     = fmt::format("view_rt({})", parent.name());
     handle.aliases                  = parent_id;
+    detail::bind_holder_liveness(handle, holder);
 
     TensorId const slice_id = graph->register_tensor(std::move(handle));
 
@@ -791,6 +823,7 @@ APIARY_INSTANTIATE_AS("tile_view", einsums::TiledRuntimeTensor<std::complex<doub
     handle.is_intermediate          = true;
     handle.name                     = fmt::format("tile_view({})", parent.name());
     handle.aliases                  = parent_id;
+    detail::bind_holder_liveness(handle, holder);
 
     TensorId const slice_id = graph->register_tensor(std::move(handle));
     auto          *slot     = ctx.create_slot_for(slice_ref, slice_id);

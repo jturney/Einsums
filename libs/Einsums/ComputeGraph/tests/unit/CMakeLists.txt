@@ -70,6 +70,7 @@ set(ComputeGraphTests
     Pass_SymmetryPropagation.cpp
     PassManager.cpp
     PermuteFusion.cpp
+    PostReplayValidation.cpp
     PipelineLoop.cpp
     OperandOwnership.cpp
     Rebind.cpp
