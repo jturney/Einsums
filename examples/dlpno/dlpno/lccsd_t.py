@@ -76,9 +76,28 @@ from . import tensors as ten
 from .base import DLPNOBase
 from .cc_overlaps import build_overlaps
 
-__all__ = ["LCCSDT", "permuter_spec", "chain_of", "rotation_stages"]
+__all__ = ["LCCSDT", "permuter_spec", "chain_of", "rotation_stages",
+          "prefer_wide_replay"]
 
 _run_setup_graph = DLPNOBase._run
+
+
+def _omp_max_threads():
+    """The OpenMP runtime's current ceiling on a parallel region's team size.
+
+    Delegates to :func:`einsums.hardware.get_max_threads`, which reads the
+    same process-wide OpenMP runtime every Einsums C++ site consults -
+    :class:`~einsums.graph.OpenMPExecutor` among them. It is deliberately
+    not ``os.environ.get("OMP_NUM_THREADS")``: importing psi4 resets the
+    runtime's thread count to 1 regardless of what the environment says,
+    and ``psi4.set_num_threads`` (see ``bench_vs_psi4.py``) is how both
+    libraries' threading is restored afterwards, so only a runtime call
+    sees the number actually in effect when this solver runs. Kept as a
+    module-level function rather than called inline so tests can
+    monkeypatch the thread count the gate observes.
+    """
+    return int(einsums.hardware.get_max_threads())
+
 
 #: ``perm_idx`` from psi4's ``triples_permuter`` to the einsums permute
 #: right-hand side that realizes it: ``Xperm[a, b, c] = X[<spec>]``.
@@ -204,6 +223,53 @@ def rotation_stages(family, src, Sv, Sw, b1, b2, slow, fast, nt, npr):
             (merged, Sw, slow) if family == "f1" else (Sw, merged, fast))
 
 
+#: Cutoff on the plan's mean TNO count above which the ungated wide replay
+#: loses to the per-block gated one once more than one thread is in play.
+#:
+#: Calibrated from exactly two measured geometries and nothing finer than
+#: that: water chain n=6, about 22 TNOs per triplet, where the wide graph
+#: wins at both 1 and 10 threads; and ethanol/cc-pVTZ, about 52 TNOs, where
+#: the wide graph wins serially (109 s -> 90.5 s) but loses to the gated
+#: graph at 10 threads on that row (33.5 s -> 41.4 s). 32 is the midpoint of
+#: the two, not a measured knee, and it is pending re-calibration once a
+#: benchmark run brackets the actual crossover.
+_WIDE_MAX_TNO = 32.0
+
+
+def prefer_wide_replay(mean_tno, max_tno, threads, cutoff=None):
+    """Whether the ungated wide-batch residual should replay over the gated one.
+
+    The two graphs are bit-identical whenever the wide one is eligible at all
+    (every triplet's gate open), so this is purely a choice about what a pass
+    COSTS, made once per solve rather than per pass.
+
+    Unconditionally wide at one thread: the wide graph's fewer dispatches are
+    a clear win on both geometries measured so far, and there is no
+    executor-level parallelism across triplets for the gated graph to win on
+    instead - the two replays cost the same shape of work either way.
+
+    Above one thread, wide only when the triplet blocks are small enough that
+    the grouped batch's own internal threading still beats the executor
+    spreading whole triplets across cores; the plan's mean TNO count is the
+    proxy for that, compared against ``cutoff``.
+
+    ``max_tno`` is accepted alongside the mean for a future re-calibration
+    that wants the more conservative bound instead of, or in addition to, the
+    mean; the rule below reads only the mean today.
+
+    ``cutoff`` overrides :data:`_WIDE_MAX_TNO`. Passing something at or above
+    the widest plan this solver will ever see forces wide whenever more than
+    one thread is in play; passing something below the narrowest forces
+    gated. Neither override reaches the one-thread branch, since both graphs
+    give the same answer there and the substitution is only worth measuring
+    where the thread count makes it move.
+    """
+    del max_tno
+    if threads <= 1:
+        return True
+    return mean_tno <= (_WIDE_MAX_TNO if cutoff is None else cutoff)
+
+
 class LCCSDT:
     """Iterate Eq. 111/112 to convergence over a prepared triplet list.
 
@@ -214,7 +280,7 @@ class LCCSDT:
     """
 
     def __init__(self, cc, t0, verbose=True, use_diis=False, use_executor=True,
-                 block=1):
+                 block=1, wide_max_tno=None):
         self.cc = cc
         self.t0 = t0
         self.verbose = verbose
@@ -272,6 +338,22 @@ class LCCSDT:
         self._diis = None
         #: Replay the residual and step under an OpenMP executor over triplets.
         self.use_executor = use_executor
+        #: Override for :func:`prefer_wide_replay`'s cutoff on the plan's
+        #: mean TNO count.
+        #:
+        #: ``None``, by default, meaning "use :data:`_WIDE_MAX_TNO`". That
+        #: default rule is provisional - it is calibrated from exactly two
+        #: measured geometries - and this is the escape hatch for measuring a
+        #: third without editing the constant: pass a specific cutoff, or
+        #: force the choice outright for a benchmark that wants one side held
+        #: fixed while the other is varied. Passing something at or above the
+        #: widest plan this solver will ever see forces the wide replay
+        #: whenever more than one thread is in play; passing something below
+        #: the narrowest forces the gated one. Neither reaches the one-thread
+        #: case, where the wide replay is unconditional because the two
+        #: graphs are bit-identical and there is no executor parallelism
+        #: across triplets for the gated graph to win on instead.
+        self.wide_max_tno = wide_max_tno
         self.F_lmo_np = np.asarray(ten.view(cc.F_lmo))
         self.e_ijk = np.array(t0.e_ijk, dtype=float)
         self.e_t = 0.0
@@ -650,6 +732,21 @@ class LCCSDT:
         self._active = {r["ijk"]: True for r in self._plan}
         blocks = self._make_blocks(skipping)
 
+        # Whether a pass with every gate open should actually replay the wide
+        # graph, decided once for the whole solve rather than per pass: see
+        # :func:`prefer_wide_replay`. Threads below the executor rather than
+        # from the runtime alone, because the wide graph's advantage over the
+        # gated one at many threads is specifically the gated graph's
+        # executor-level parallelism ACROSS triplets, and that does not exist
+        # when `use_executor` is off - nothing here threads either way, so
+        # there is nothing for the gated graph to win on and wide stays the
+        # cheaper replay regardless of the runtime's thread ceiling.
+        mean_tno = sum(r["nt"] for r in self._plan) / len(self._plan)
+        max_tno = max(r["nt"] for r in self._plan)
+        threads = _omp_max_threads() if self.use_executor else 1
+        self._prefer_wide = prefer_wide_replay(mean_tno, max_tno, threads,
+                                               self.wide_max_tno)
+
         # The transposed copies the odd specs read, one graph, always replayed.
         g_prime = None
         if self.Tprime:
@@ -823,7 +920,8 @@ class LCCSDT:
                     self._active[ijk] = ijk in live
                 if g_prime is not None:
                     g_prime.execute()
-                if g_every is not None and len(live) == len(self._plan):
+                if (g_every is not None and self._prefer_wide
+                        and len(live) == len(self._plan)):
                     self.n_wide_passes += 1
                     g_every.execute()
                 else:

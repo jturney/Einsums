@@ -36,7 +36,8 @@ import einsums
 import einsums.graph as cg
 from dlpno import tensors as ten
 from dlpno.lccsd_t import (_ACCUMULATE_FLAGS, _DIRECTION, _ROTATE_FLAGS,
-                           LCCSDT, chain_of, permuter_spec, rotation_stages)
+                           _WIDE_MAX_TNO, LCCSDT, chain_of, permuter_spec,
+                           prefer_wide_replay, rotation_stages)
 from dlpno.reference_io import load_reference
 from dlpno.thresholds import Thresholds
 from dlpno.triples import DLPNOCCSDT
@@ -280,6 +281,88 @@ def test_the_block_width_moves_the_energy_only_within_convergence(monkeypatch):
     # One batch over every triplet is the widest the phase gets, and the pass
     # count stays within one of the per-triplet gate's.
     assert abs(passes[0] - passes[1]) <= 1
+
+
+# => the wide/gated replay gate <= #
+
+
+def test_prefer_wide_replay_is_unconditional_at_one_thread():
+    """At one thread the two graphs are bit-identical, so wide always wins.
+
+    Checked at a size that would fail the size test on its own, so the
+    assertion is really about the one-thread branch short-circuiting rather
+    than about the size happening to pass too.
+    """
+    assert prefer_wide_replay(mean_tno=500.0, max_tno=500.0, threads=1)
+    assert prefer_wide_replay(mean_tno=0.0, max_tno=0.0, threads=1)
+
+
+def test_prefer_wide_replay_gates_on_plan_size_above_one_thread():
+    """Small triplet blocks stay wide; large ones fall back to the gated graph.
+
+    22 and 52 TNOs are not arbitrary: they are the two measured geometries
+    :data:`_WIDE_MAX_TNO` is calibrated from, water chain n=6 (wide wins at
+    10 threads) and ethanol/cc-pVTZ (wide loses at 10 threads), so this pins
+    the provisional rule against the exact numbers that motivated it rather
+    than against round ones that happen to sit on either side of the cutoff.
+    """
+    assert prefer_wide_replay(mean_tno=22.0, max_tno=22.0, threads=10)
+    assert not prefer_wide_replay(mean_tno=52.0, max_tno=52.0, threads=10)
+    # The cutoff itself, at both ends.
+    assert prefer_wide_replay(mean_tno=_WIDE_MAX_TNO, max_tno=_WIDE_MAX_TNO,
+                              threads=10)
+    assert not prefer_wide_replay(mean_tno=_WIDE_MAX_TNO + 0.5,
+                                  max_tno=_WIDE_MAX_TNO + 0.5, threads=10)
+
+
+def test_prefer_wide_replay_cutoff_override_is_honored():
+    """``cutoff`` overrides :data:`_WIDE_MAX_TNO`, in both directions.
+
+    This is the mechanism :attr:`~dlpno.lccsd_t.LCCSDT.wide_max_tno` hands to
+    a caller: forcing the wide replay always, or never, above one thread, for
+    a benchmark that wants one side of the choice held fixed while the other
+    is measured.
+    """
+    # A size that would default to gated, forced back to wide.
+    assert prefer_wide_replay(mean_tno=52.0, max_tno=52.0, threads=10,
+                              cutoff=float("inf"))
+    # A size that would default to wide, forced to gated.
+    assert not prefer_wide_replay(mean_tno=22.0, max_tno=22.0, threads=10,
+                                  cutoff=-1.0)
+
+
+def test_the_wide_and_gated_replays_agree_bit_for_bit(monkeypatch):
+    """Forcing each side of the gate at many threads must not move the energy.
+
+    :func:`prefer_wide_replay` only decides which of two bit-identical graphs
+    replays a pass with every gate open; ``wide_max_tno`` is the override that
+    lets a test force either side without depending on the machine's actual
+    thread count, which is fixed here at 10 via ``_omp_max_threads`` so the
+    result does not depend on how many cores happen to be available under the
+    single-thread limit this suite otherwise runs at.
+    """
+    import dlpno.lccsd_t as lccsd_t
+    import dlpno.triples as triples
+
+    monkeypatch.setattr(lccsd_t, "_omp_max_threads", lambda: 10)
+
+    reference, _ = load_reference(WATER)
+    cut = replace(Thresholds.preset("NORMAL", method="cc"),
+                  t0_approximation=False)
+    energies, wide_passes = [], []
+    for wide_max_tno in (float("inf"), -1.0):
+        monkeypatch.setattr(
+            triples, "LCCSDT",
+            lambda *a, _w=wide_max_tno, **k: LCCSDT(*a, wide_max_tno=_w, **k))
+        cc = DLPNOCCSDT(reference, cut, verbose=False)
+        cc.compute_energy(method="ccsd(t)")
+        energies.append(cc.e_t_raw)
+        wide_passes.append(cc.lccsd_t.n_wide_passes)
+    assert energies[0] == energies[1]
+    # Confirms the two runs actually took the two different paths, or the
+    # equality above would not be testing what it claims to.
+    assert wide_passes[0] > 0
+    assert wide_passes[1] == 0
 
 
 # => the truncated path <= #
