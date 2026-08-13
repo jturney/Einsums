@@ -471,6 +471,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * direction for a debug check, and the reason it is not on in release
      * builds.
      *
+     * One exception to "everything an output names is written": a `View` node
+     * writes its slice handle's dims, strides and data pointer, not the
+     * parent's elements, so it is modeled as a READER of the region it
+     * describes plus a writer of that handle. Two views of one buffer are
+     * therefore independent however their slices overlap, while a node that
+     * uses the slice, or a second node binding the same handle, still
+     * conflicts with the bind.
+     *
      * Scope: it checks LEVELS, so it covers the level schedulers exactly.
      * Two nodes the dataflow executor may still overlap can sit in different
      * levels, so a clean run here is not a proof for that executor.
@@ -727,6 +735,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /// Access dependency info (populated by topological_sort()).
     [[nodiscard]] DependencyInfo const &dependencies() const { return _deps; }
+
+    /**
+     * @brief How many hazard edges the schedule holds, and how wide its levels are.
+     *
+     * The two structural numbers a change to the dependence machinery moves:
+     * an access that cannot be described precisely widens to its whole buffer
+     * and picks up edges against every other access to it, and those edges are
+     * what cost a level scheduler its width. Both are deterministic, so they
+     * are what a test about ordering should assert - and what a measurement of
+     * ordering should report - rather than a wall clock or an energy.
+     *
+     * Both build the schedule if it is stale, exactly as ``execute()`` would,
+     * and so may reorder nodes into a topological order.
+     *
+     * @return @ref schedule_edge_count the number of dependency edges;
+     *         @ref schedule_level_sizes the size of each level in order.
+     *
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] size_t schedule_edge_count();
+
+    /// @copydoc schedule_edge_count
+    APIARY_EXPOSE [[nodiscard]] std::vector<size_t> schedule_level_sizes();
 
     /**
      * @brief Mark the graph as topologically sorted.

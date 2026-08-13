@@ -644,24 +644,89 @@ bool handle_byte_span(TensorHandle const &h, char const *&lo, char const *&hi) {
     return true;
 }
 
-/// Recover @p child's region in @p parent's axis space from the pointer offset
-/// and the two stride sets. Returns false whenever the layout is not provably a
-/// sub-box, which leaves the box empty and the access conservatively
-/// whole-tensor. Being wrong here would UNDER-serialize, so every ambiguity
-/// declines rather than guesses.
-bool derive_alias_box(TensorHandle const &parent, TensorHandle const &child, std::vector<std::pair<std::int64_t, std::int64_t>> &box) {
+/// How well a handle's strides describe a lattice, which is what decides
+/// whether an offset may be decoded into per-axis indices at all.
+enum class LayoutFit {
+    None,   ///< Overlapping or degenerate; nothing may be decoded from an offset.
+    Nested, ///< Injective: each traversed axis starts at or past the end of the one below it.
+    Packed  ///< Nested with no gaps, so every offset under the total is an index.
+};
+
+/// Classify @p h's layout and hand back its traversed axes, largest stride
+/// first, which is the order both derivations peel an offset in.
+///
+/// Nesting is the property that makes an offset decode to ONE index: sort the
+/// axes holding more than one element by stride, and require each one to start
+/// at or past the end of everything below it. Without it a layout can be
+/// non-injective - dims (4, 4) with strides (1, 2) reaches offset 4 as both
+/// (0, 2) and (2, 1) - and two boxes that do not intersect in the axis space
+/// can still name the same memory, which is the one way a box can be too
+/// narrow. Packing additionally forbids gaps, which is what makes every offset
+/// in a range decodable and so is what the span derivation below needs.
+///
+/// Axes holding one element are left out of @p order: their only index is 0,
+/// and a dense layout is free to give them any stride at all.
+///
+/// @param[in]  h     Handle to classify.
+/// @param[out] order Its traversed axes, largest stride first.
+/// @param[out] total Number of elements, meaningful for a Packed layout.
+LayoutFit layout_axis_order(TensorHandle const &h, std::vector<size_t> &order, size_t &total) {
+    size_t const rank = h.dims.size();
+    if (rank == 0 || h.strides.size() != rank || h.is_tiled) {
+        return LayoutFit::None;
+    }
+    order.clear();
+    total = 1;
+    for (size_t d = 0; d < rank; ++d) {
+        if (h.dims[d] == 0) {
+            return LayoutFit::None;
+        }
+        total *= h.dims[d];
+        if (h.dims[d] > 1) {
+            order.push_back(d);
+        }
+    }
+    std::ranges::sort(order, [&](size_t a, size_t b) { return h.strides[a] < h.strides[b]; });
+    size_t reach  = 1; // one past the last offset the axes so far can reach
+    bool   packed = true;
+    for (size_t const d : order) {
+        if (h.strides[d] < reach) {
+            return LayoutFit::None;
+        }
+        packed = packed && h.strides[d] == reach;
+        reach  = h.strides[d] * h.dims[d];
+    }
+    std::ranges::reverse(order); // the digit peel runs most significant first
+    return packed ? LayoutFit::Packed : LayoutFit::Nested;
+}
+
+/// Recover @p child's region in @p parent's axis space by matching each child
+/// axis to the parent axis that carries the same stride. Exact when it answers,
+/// and it answers for every view whose axes are parent axes: a sub-block, a
+/// dropped axis (which is a single-index interval in the parent), a transposed
+/// view, and any mix of the three.
+///
+/// Returns false whenever the layout is not provably a sub-box, which leaves the
+/// caller to try the looser derivation below or, failing that, to treat the
+/// access as whole-tensor. Being wrong here would UNDER-serialize, so every
+/// ambiguity declines rather than guesses.
+bool derive_matched_alias_box(TensorHandle const &parent, TensorHandle const &child,
+                              std::vector<std::pair<std::int64_t, std::int64_t>> &box) {
     size_t const rank = parent.dims.size();
     if (rank == 0 || parent.element_size == 0 || child.element_size != parent.element_size) {
         return false;
     }
-    // Equal strides on two traversed axes make the offset decomposition and the
-    // axis matching below ambiguous.
-    for (size_t a = 0; a < rank; ++a) {
-        for (size_t b = a + 1; b < rank; ++b) {
-            if (parent.strides[a] == parent.strides[b] && parent.dims[a] > 1 && parent.dims[b] > 1) {
-                return false;
-            }
-        }
+    if (parent.strides.size() != rank || child.strides.size() != child.dims.size() || parent.is_tiled || child.is_tiled) {
+        return false;
+    }
+    // A layout that is not nested cannot be decoded: the offset would name more
+    // than one index, and the axis matching would be ambiguous with it. Equal
+    // strides on two traversed axes are the common way in and are rejected
+    // here, along with the overlapping strides that are the subtle way in.
+    std::vector<size_t> order;
+    size_t              total = 0;
+    if (layout_axis_order(parent, order, total) == LayoutFit::None) {
+        return false;
     }
 
     auto const *p = static_cast<char const *>(parent.data_ptr);
@@ -675,16 +740,12 @@ bool derive_alias_box(TensorHandle const &parent, TensorHandle const &child, std
     }
     off /= parent.element_size;
 
-    // Peel the offset apart largest stride first; unique for a canonical layout.
-    std::vector<size_t> order(rank);
-    std::iota(order.begin(), order.end(), size_t{0});
-    std::ranges::sort(order, [&](size_t a, size_t b) { return parent.strides[a] > parent.strides[b]; });
-
+    // Peel the offset apart largest stride first, which is unique for a nested
+    // layout. An offset that is not on the lattice cannot survive it: it leaves
+    // a non-zero remainder, or a digit past its axis's extent that the range
+    // check at the end rejects.
     std::vector<std::int64_t> start(rank, 0);
     for (size_t const d : order) {
-        if (parent.strides[d] == 0) {
-            continue;
-        }
         start[d] = static_cast<std::int64_t>(off / parent.strides[d]);
         off %= parent.strides[d];
     }
@@ -719,6 +780,124 @@ bool derive_alias_box(TensorHandle const &parent, TensorHandle const &child, std
             return false;
         }
         box.emplace_back(start[d], hi);
+    }
+    return true;
+}
+
+/// Recover @p child's region in @p parent's axis space from the contiguous
+/// OFFSET RANGE it spans, for the children the axis matching above cannot
+/// describe: a reshaped window carries axes that are products of parent axes
+/// rather than parent axes, so there is no correspondence to recover.
+///
+/// The shape comes from the DLPNO port, whose rank-3 dressed factors are
+/// reshaped windows of a flat scratch pool. It buys that port no schedule
+/// today, and the reason is worth recording: its hand-outs are PREFIXES of
+/// their buffer, so two of them overlap however precisely they are described,
+/// and the parallelism there comes from the pool being several buffers rather
+/// than from any box. What the bound buys is that a pool carved into DISJOINT
+/// windows is separable at all, which the axis match cannot do at any width.
+///
+/// **Soundness.** Strides are unsigned, so every element the child addresses
+/// lies at an offset in `[base, base + sum (dim - 1) * stride]`, whatever its
+/// axis order and however its own axes overlap each other. A packed parent
+/// decodes each offset in that range to exactly one index, so the smallest box
+/// containing the decoded ends contains every element the child can touch. That
+/// box is looser than the matched one - a range of offsets is not a box, so
+/// once the two ends differ in some axis every lower axis has to open to its
+/// full extent - and loose is the safe direction: a box that is too WIDE costs
+/// hazard edges, only a box that is too NARROW loses one.
+bool derive_span_alias_box(TensorHandle const &parent, TensorHandle const &child, std::vector<std::pair<std::int64_t, std::int64_t>> &box) {
+    if (child.is_tiled || parent.element_size == 0 || child.element_size != parent.element_size) {
+        return false;
+    }
+    if (child.strides.size() != child.dims.size() || parent.data_ptr == nullptr || child.data_ptr == nullptr) {
+        return false;
+    }
+
+    // Packed, not merely nested: a gapped parent has offsets between its
+    // elements, and the bound below walks a RANGE of offsets rather than the
+    // lattice points the matched derivation sticks to.
+    std::vector<size_t> order;
+    size_t              total = 0;
+    if (layout_axis_order(parent, order, total) != LayoutFit::Packed) {
+        return false;
+    }
+
+    auto const *p = static_cast<char const *>(parent.data_ptr);
+    auto const *c = static_cast<char const *>(child.data_ptr);
+    if (c < p) {
+        return false;
+    }
+    size_t base = static_cast<size_t>(c - p);
+    if (base % parent.element_size != 0) {
+        return false;
+    }
+    base /= parent.element_size;
+
+    size_t reach = 0; // offset of the last element the child can address
+    for (size_t e = 0; e < child.dims.size(); ++e) {
+        if (child.dims[e] == 0) {
+            return false; // an empty access has no region to bound
+        }
+        reach += (child.dims[e] - 1) * child.strides[e];
+    }
+    if (base >= total || reach > total - 1 - base) {
+        return false; // not contained in the parent, so not describable in its axes
+    }
+
+    box.clear();
+    box.reserve(parent.dims.size());
+    for (size_t const d : parent.dims) {
+        box.emplace_back(0, static_cast<std::int64_t>(d));
+    }
+    // Peel both ends most significant first. While the digits agree the box is
+    // that single index; the first axis where they differ takes the span
+    // between them and every axis below it keeps the full extent it started
+    // with, because the offsets between the two ends run through all of them.
+    size_t lo = base;
+    size_t hi = base + reach;
+    for (size_t const d : order) {
+        size_t const stride = parent.strides[d];
+        size_t const lo_d   = lo / stride;
+        size_t const hi_d   = hi / stride;
+        lo %= stride;
+        hi %= stride;
+        if (hi_d >= parent.dims[d]) {
+            return false; // cannot happen for a contained child of a packed parent
+        }
+        box[d] = {static_cast<std::int64_t>(lo_d), static_cast<std::int64_t>(hi_d) + 1};
+        if (lo_d != hi_d) {
+            break;
+        }
+    }
+    return true;
+}
+
+/// @p child's region in @p parent's axis space: the exact per-axis match where
+/// the layouts allow it, the looser offset-span bound where they do not, and no
+/// box at all (a conservatively whole-tensor access) where neither is provable.
+///
+/// A box covering the whole parent is reported as NO box, which is the same
+/// statement - both overlap every access and cover every access - in the form
+/// the hazard scan reasons about better. A whole-tensor write there retires
+/// every writer before it, because it dominates them; a full-cover BOX is not
+/// recognized as dominating anything, so the writer list grows without bound
+/// and each later access emits an edge against all of it. The two spellings
+/// schedule identically and the quadratic one is worth avoiding: adding the
+/// span bound above WITHOUT this normalization put 103,000 extra edges on the
+/// DLPNO merged iteration, every one of them from a reshaped view that covers
+/// its whole parent.
+bool derive_alias_box(TensorHandle const &parent, TensorHandle const &child, std::vector<std::pair<std::int64_t, std::int64_t>> &box) {
+    if (!derive_matched_alias_box(parent, child, box) && !derive_span_alias_box(parent, child, box)) {
+        return false;
+    }
+    bool whole = box.size() == parent.dims.size();
+    for (size_t d = 0; whole && d < box.size(); ++d) {
+        whole = box[d].first == 0 && box[d].second == static_cast<std::int64_t>(parent.dims[d]);
+    }
+    if (whole) {
+        box.clear();
+        return false;
     }
     return true;
 }
@@ -1332,9 +1511,17 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
             // Ordered readers are consumed; anything not fully covered must
             // stay visible to future writers of its uncovered part.
             std::erase_if(rl, [&](Access const &r) { return covered_by(r.box, box); });
-            if (box == nullptr) {
-                wl.clear(); // a whole-tensor write dominates all prior writers
-            }
+            // A COVERED prior writer is consumed by the same argument, and for
+            // the same reason it has to be covered rather than merely
+            // overlapped. Anything later that reaches the covered writer
+            // reaches this one too, so it takes an edge from this one, which
+            // already carries an edge from the covered writer: the order
+            // survives as a path. What that saves is quadratic - a buffer
+            // written n times in a row used to keep all n writers and emit an
+            // edge from every one of them to every later access - and it used
+            // to be spelled as a whole-tensor special case, which stopped
+            // applying the moment the write carried a box.
+            std::erase_if(wl, [&](Access const &w) { return covered_by(w.box, box); });
             wl.push_back({.pos = i, .box = box});
         }
 
@@ -1494,18 +1681,78 @@ void Graph::verify_level_independence() const {
         // Only nodes sharing a storage group can conflict, so the pairwise
         // test runs per group rather than over the level.
         std::unordered_map<size_t, std::vector<Access>> touched;
+        // A View node's effect is the handle it binds, so its hazards are
+        // against the OTHER nodes that name that handle rather than against
+        // the storage: bound = who binds a handle, named = who else names it.
+        std::unordered_map<TensorId, std::vector<size_t>> bound;
+        std::unordered_map<TensorId, std::vector<size_t>> named;
         for (size_t const pos : level) {
-            auto [eff_in, eff_out] = const_cast<Graph *>(this)->effective_io_cached(_nodes[pos], cache);
+            auto const &node       = _nodes[pos];
+            auto [eff_in, eff_out] = const_cast<Graph *>(this)->effective_io_cached(node, cache);
+            // A View node writes its slice handle's dims, strides and data
+            // pointer, and no element of the parent: the executor re-emplaces
+            // the handle from the parent's own pointer and strides. So it is
+            // NOT a writer of the storage it spans, and two of them are
+            // independent however their slices overlap - which is what every
+            // graph that records more than one view of one buffer depends on.
+            //
+            // What it does read is the parent's pointer and extents, so it
+            // stays a READER of the region it describes: a node that moves the
+            // parent's data or its allocation out from under it on the same
+            // level is still a conflict. The read is attributed to the SLICE
+            // rather than to the parent it names as an input, because the
+            // parent's whole extent would conflict with every disjoint slice
+            // written on the level.
+            if (node.kind == OpKind::View && node.outputs.size() == 1) {
+                TensorId const slice = node.outputs[0];
+                if (auto it = group_of.find(slice); it != group_of.end()) {
+                    touched[it->second].push_back({.pos = pos, .tid = slice, .is_write = false});
+                }
+                bound[slice].push_back(pos);
+                for (auto const tid : eff_in) {
+                    named[tid].push_back(pos); // a view of a view reads the parent handle
+                }
+                continue;
+            }
             for (auto const tid : eff_in) {
+                named[tid].push_back(pos);
                 if (auto it = group_of.find(tid); it != group_of.end()) {
                     touched[it->second].push_back({.pos = pos, .tid = tid, .is_write = false});
                 }
             }
             for (auto const tid : eff_out) {
+                named[tid].push_back(pos);
                 if (auto it = group_of.find(tid); it != group_of.end()) {
                     touched[it->second].push_back({.pos = pos, .tid = tid, .is_write = true});
                 }
             }
+        }
+
+        // The hazard a metadata write still carries. Everything that reads or
+        // writes a slice reads the handle the View node binds, so it may not
+        // run alongside it; and two View nodes binding the SAME handle are a
+        // write-write on that handle.
+        for (auto const &[tid, binders] : bound) {
+            size_t const self  = binders.front();
+            size_t       other = self;
+            if (binders.size() > 1) {
+                other = binders[1];
+            } else if (auto const it = named.find(tid); it != named.end()) {
+                for (size_t const pos : it->second) {
+                    if (pos != self) {
+                        other = pos;
+                        break;
+                    }
+                }
+            }
+            if (other == self) {
+                continue;
+            }
+            EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                    "Graph '{}': nodes {} ({}) and {} ({}) share execution level {} but one binds tensor {}'s view "
+                                    "metadata while the other uses it. A level-scheduling executor launches them together, so this is "
+                                    "a data race on the handle; the hazard scan should have ordered them.",
+                                    _name, self, _nodes[self].label, other, _nodes[other].label, level_index, tid);
         }
 
         for (auto const &[g, accesses] : touched) {
@@ -1546,6 +1793,25 @@ void Graph::rebuild_levels() {
     for (size_t i = 0; i < n; i++) {
         _deps.levels[level[i]].push_back(i);
     }
+}
+
+size_t Graph::schedule_edge_count() {
+    topological_sort();
+    size_t edges = 0;
+    for (auto const &succ : _deps.successors) {
+        edges += succ.size();
+    }
+    return edges;
+}
+
+std::vector<size_t> Graph::schedule_level_sizes() {
+    topological_sort();
+    std::vector<size_t> sizes;
+    sizes.reserve(_deps.levels.size());
+    for (auto const &level : _deps.levels) {
+        sizes.push_back(level.size());
+    }
+    return sizes;
 }
 
 void Graph::topological_sort() {

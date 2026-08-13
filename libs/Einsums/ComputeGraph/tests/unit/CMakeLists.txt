@@ -59,6 +59,7 @@ set(ComputeGraphTests
     SymmetrizedAccumulationRewrite.cpp
     Pass_LoopInvariantHoisting.cpp
     Pass_Materialization.cpp
+    AliasBoxDerivation.cpp
     AliasOrderBatchedViews.cpp
     AliasOrderSharedScratch.cpp
     Pass_MemoryPlanning.cpp
@@ -90,6 +91,7 @@ set(ComputeGraphTests
     TiledRuntimeElementwise.cpp
     TensorRankConcept.cpp
     UsageAnalysis.cpp
+    VerifyLevelIndependence.cpp
     TiledRuntimeTensorLifetime.cpp
     View.cpp
     Workspace.cpp
