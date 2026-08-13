@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from einsums.stages import TensorD, cmp, contract
 
-__all__ = ["CouplingPlan", "PnoOverlaps", "PnoTransform"]
+__all__ = ["CouplingPlan", "PnoOverlaps", "PnoTransform", "PnoIntegralBlocks"]
 
 
 @contract(parallel=["pair", "partner", "cls", "dest_slot", "src_slot", "sign", "factor"])
@@ -137,3 +137,70 @@ class PnoTransform:
     e_os_initial: list[TensorD] = cmp.close()
     e_trunc: list[TensorD] = cmp.close()
     e_os_trunc: list[TensorD] = cmp.close()
+
+
+@contract(parallel=[
+    ["K_mibj", "J_ijmb", "K_ivvv", "K_mjai", "K_jvvv",
+     "i_Qk", "i_Qa", "j_Qk", "j_Qa", "Qma", "Qab"],
+])
+@dataclass(frozen=True)
+class PnoIntegralBlocks:
+    """One chunk of pairs' worth of PNO-basis integral blocks.
+
+    Every list is indexed by the pair's position in the chunk the planner
+    handed the stage, which is why they are all declared parallel: eleven of
+    them are read with one ordinal in the caller's scatter loop, and a short one
+    would be a silent out-of-bounds read.
+
+    **A block a pair does not have is a zero-extent tensor, not a missing
+    entry.** psi4 and the port both skip the density-fitted families on weak
+    pairs and store the pair-symmetric blocks once for ``i <= j``, so a good
+    third of the entries here are legitimately absent. The alternative - short
+    lists plus a running counter per family - was tried first and is the shape
+    of an off-by-one that produces plausible integrals for the WRONG pair. A
+    zero-extent placeholder keeps every family indexable by the same ordinal
+    and costs a tensor header. The caller turns them back into the ``None`` its
+    consumers expect, using the same strong and diagonal flags the stage got.
+
+    ``close`` on everything tensor-valued because that is the contract's
+    promise; in practice both backends emit the same operations on the same
+    values and agree bit for bit, which is what ``check_backends.py`` asserts.
+    """
+
+    # -- contracted, every pair in the chunk -----------------------------
+    #: ``(m i | b j)``, ``(nlmo_ij, npno_ij)``.
+    K_mibj: list[TensorD] = cmp.close()
+    #: ``(i j | m b)``, ``(nlmo_ij, npno_ij)``. Shared with ``ji`` by the caller.
+    J_ijmb: list[TensorD] = cmp.close()
+    #: ``(i e | a f)`` as rank 3 ``(e, a, f)``. Never psi4's flattened form; see
+    #: :class:`dlpno.cc_integrals.PnoIntegrals`.
+    K_ivvv: list[TensorD] = cmp.close()
+    #: The ``ji`` partners of the two families that are not transposes of
+    #: themselves: ``(m j | a i)`` and ``(j e | a f)``. Zero-extent on the
+    #: diagonal, where the pair is its own partner.
+    K_mjai: list[TensorD] = cmp.close()
+    K_jvvv: list[TensorD] = cmp.close()
+
+    # -- density-fitted factors, strong pairs only -----------------------
+    #: ``B^Q_{i m}`` and ``B^Q_{i a}``, psi4's ``i_Qk_ij`` and ``i_Qa_ij``.
+    i_Qk: list[TensorD] = cmp.close()
+    i_Qa: list[TensorD] = cmp.close()
+    #: Their ``ji`` partners, ``B^Q_{j m}`` and ``B^Q_{j a}``.
+    j_Qk: list[TensorD] = cmp.close()
+    j_Qa: list[TensorD] = cmp.close()
+    #: ``B^Q_{m a}`` and ``B^Q_{a b}``, rank 3 per auxiliary function, which is
+    #: the axis every consumer loops over.
+    Qma: list[TensorD] = cmp.close()
+    Qab: list[TensorD] = cmp.close()
+
+    # -- 2-external non-projected, per pair per neighbour ----------------
+    #: ``(i k | a_ij c_kj)`` and ``(i a_ij | k c_kj)``, flattened over
+    #: (pair, neighbour slot) in the planner's order: the pair's slab starts at
+    #: the prefix sum of the neighbour-slot counts, so slot ``s`` of pair ``p``
+    #: is at ``offset(p) + s``. A pair with no neighbour blocks - anything weak -
+    #: contributes no slots at all, and a dead slot a zero-extent tensor.
+    J_ikac: list[TensorD] = cmp.close()
+    K_iakc: list[TensorD] = cmp.close()
+    #: The same two families for the ``ji`` pair, over its own neighbour list.
+    J_jkac: list[TensorD] = cmp.close()
+    K_jakc: list[TensorD] = cmp.close()

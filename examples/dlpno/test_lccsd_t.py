@@ -32,7 +32,11 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from dlpno.lccsd_t import permuter_spec
+import einsums
+import einsums.graph as cg
+from dlpno import tensors as ten
+from dlpno.lccsd_t import (_ACCUMULATE_FLAGS, _DIRECTION, _ROTATE_FLAGS,
+                           LCCSDT, chain_of, permuter_spec, rotation_stages)
 from dlpno.reference_io import load_reference
 from dlpno.thresholds import Thresholds
 from dlpno.triples import DLPNOCCSDT
@@ -134,6 +138,148 @@ def test_the_permuter_spec_is_a_genuine_permutation():
         # Reading the block in the requested ordering means axis n of the
         # result is axis order[n] of the original.
         assert np.array_equal(got, block.transpose(order))
+
+
+# => the batched rotation chain <= #
+
+
+def _unbatched(A, S, spec, weight):
+    """The coupling as ``dlpno`` wrote it before it was batched.
+
+    Permute the partner's block into the requesting triplet's index order, then
+    rotate one index at a time. This is the definition the batched chain has to
+    reproduce, and writing it out here is what makes the comparison a test of
+    :data:`~dlpno.lccsd_t._CHAIN` rather than of itself.
+    """
+    t1 = np.einsum(f"xa,{spec}->xbc", S, A)
+    t2 = np.einsum("xbc,yb->xyc", t1, S)
+    return weight * np.einsum("xyc,zc->xyz", t2, S)
+
+
+def _batched(A, S, spec, weight, nt, npr):
+    """The same coupling through :func:`~dlpno.lccsd_t.rotation_stages`."""
+    odd, family = chain_of(spec)
+    block = ten.from_numpy("T", A)
+    source = block
+    if odd:
+        # A'[a1, a2, a3] = A[a1, a3, a2]: the one transposed copy that turns
+        # every odd spec into a cyclic read.
+        source = ten.zeros("T'", [npr, npr, npr])
+        einsums.permute("abc <- acb", source, block)
+    S_v = ten.from_numpy("S", S).reshape_view([nt, npr])
+    S_w = ten.from_numpy("w S", weight * S).reshape_view([nt, npr])
+    b1 = ten.empty("b1", [nt * npr * npr])
+    b2 = ten.empty("b2", [nt * nt * npr])
+    R = ten.zeros("R", [nt, nt, nt])
+    stages = rotation_stages(family, source, S_v, S_w, b1, b2,
+                             R.reshape_view([nt * nt, nt]),
+                             R.reshape_view([nt, nt * nt]), nt, npr)
+    rotate = _ROTATE_FLAGS[_DIRECTION[family]]
+    for stage, (trans_a, trans_b) in enumerate((rotate, rotate,
+                                                _ACCUMULATE_FLAGS[family])):
+        a, b, c = stages[stage]
+        cg.grouped_batched_gemm(1.0, [a], [b], 1.0 if stage == 2 else 0.0, [c],
+                                trans_a=trans_a, trans_b=trans_b)
+    return ten.view(R)
+
+
+#: Every string ``permuter_spec`` can return, in a fixed order, so the seed
+#: below is a function of the case and not of the interpreter's hash salt.
+SPECS = ["abc", "acb", "bac", "bca", "cab", "cba"]
+
+
+@pytest.mark.parametrize("spec", SPECS)
+@pytest.mark.parametrize("nt,npr", [(5, 4), (4, 6), (3, 3)])
+def test_the_batched_chain_reproduces_the_permuted_rotation(spec, nt, npr):
+    """Three plain GEMMs against the permute-then-rotate chain, spec by spec.
+
+    This is the whole of what batching the phase cost, and it is the one part of
+    it that cannot be checked by looking at it. The rotation of a block by the
+    same overlap in all three indices commutes with a permutation of those
+    indices, so the permutation can be absorbed either into which layout the
+    last GEMM writes (the three cyclic specs) or into one transposed copy of the
+    source (the three odd ones). Get the layout wrong and the result is a
+    transposed block, which is a perfectly plausible-looking energy.
+
+    All six specs, both source parities, and rectangular shapes both ways
+    round, because the merged-axis views are where a square block would hide a
+    swapped pair of dimensions.
+    """
+    rng = np.random.default_rng(97 * nt + 13 * npr + SPECS.index(spec))
+    A = rng.standard_normal((npr, npr, npr))
+    S = rng.standard_normal((nt, npr))
+    weight = float(rng.standard_normal())
+    got = _batched(A, S, spec, weight, nt, npr)
+    want = _unbatched(A, S, spec, weight)
+    assert np.allclose(got, want, rtol=0, atol=1e-12 * np.abs(want).max())
+
+
+def test_every_spec_the_permuter_can_return_has_a_chain():
+    """No spec falls off :data:`~dlpno.lccsd_t._CHAIN`.
+
+    ``permuter_spec`` returns one of six strings and the emitter looks every one
+    of them up. Five appear in the fixtures; ``cba`` does not, which is exactly
+    why its entry needs a test rather than a run.
+    """
+    for order in ((0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)):
+        spec = permuter_spec(*(10 * (p + 1) for p in order))
+        odd, family = chain_of(spec)
+        assert isinstance(odd, bool)
+        assert family in _ACCUMULATE_FLAGS
+
+
+# => the block width <= #
+
+
+def test_the_block_partition_covers_every_triplet_once():
+    """A block is a skip gate, so the blocks have to be a partition.
+
+    A triplet in two blocks would have its residual accumulated twice into one
+    ``R``; a triplet in none would never be updated. Neither shows up as
+    anything but a wrong energy.
+    """
+    solver = LCCSDT.__new__(LCCSDT)
+    solver.block = 4
+    solver._plan = [dict(ijk=n, entries=[0] * (n % 7)) for n in range(23)]
+    blocks = solver._make_blocks(True)
+    assert [len(b) for b in blocks] == [4, 4, 4, 4, 4, 3]
+    assert sorted(r["ijk"] for b in blocks for r in b) == list(range(23))
+    # Sorted by coupling count, so a block's calls track its members' couplings
+    # rather than its widest member's.
+    assert [len(r["entries"]) for r in blocks[0]] == [6, 6, 6, 5]
+    # Skipping off is one block over everything, which is the widest batch.
+    assert len(solver._make_blocks(False)) == 1
+
+
+def test_the_block_width_moves_the_energy_only_within_convergence(monkeypatch):
+    """Gating in blocks recomputes settled triplets, and that is not an error.
+
+    A settled triplet sharing a block with a moving one is recomputed rather
+    than frozen, so the trajectory differs from the per-triplet gate's. What it
+    must not do is move the converged answer by more than the iteration's own
+    energy tolerance, and comparing the two widths is the only way to see that
+    separately from the psi4 comparison.
+
+    A block of one is also the width at which the gate is per triplet, so this
+    is what pins that the two ends of the lever solve the same equation.
+    """
+    import dlpno.triples as triples
+
+    reference, _ = load_reference(WATER)
+    cut = replace(Thresholds.preset("NORMAL", method="cc"),
+                  t0_approximation=False)
+    energies, passes = [], []
+    for block in (1, 1 << 20):
+        monkeypatch.setattr(triples, "LCCSDT",
+                            lambda *a, _b=block, **k: LCCSDT(*a, block=_b, **k))
+        cc = DLPNOCCSDT(reference, cut, verbose=False)
+        cc.compute_energy(method="ccsd(t)")
+        energies.append(cc.e_t_raw)
+        passes.append(cc.lccsd_t.n_iterations)
+    assert energies[0] == pytest.approx(energies[1], abs=1e-8)
+    # One batch over every triplet is the widest the phase gets, and the pass
+    # count stays within one of the per-triplet gate's.
+    assert abs(passes[0] - passes[1]) <= 1
 
 
 # => the truncated path <= #

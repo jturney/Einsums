@@ -37,8 +37,9 @@ import einsums.graph as cg
 from . import sparse
 from . import tensors as ten
 from .base import DLPNOBase
+from .contracts import PnoIntegralBlocks
 
-__all__ = ["PnoIntegrals", "compute_pno_integrals"]
+__all__ = ["PnoIntegrals", "compute_pno_integrals", "pno_integral_blocks"]
 
 _run_setup_graph = DLPNOBase._run
 
@@ -141,7 +142,17 @@ def compute_pno_integrals(cc):
     at once. Nothing here reads another pair's raw blocks, so the split changes
     no arithmetic and no summation order - it only releases the gathers sooner.
     See :func:`_chunks` for why that matters.
+
+    Three pieces since the promotion: :func:`_plan_chunk` is the index
+    bookkeeping and stays Python, :func:`pno_integral_blocks` is the contracted
+    numerics that has a C++ backend, and :func:`_scatter` puts the blocks where
+    the consumers look for them. The numerics goes through the stage registry,
+    so whichever backend has been selected runs from every entry point.
     """
+    # Imported here rather than at module scope because ``stages`` imports the
+    # solvers, which import this module.
+    from .stages import compute_pno_integrals as integral_stage
+
     out = PnoIntegrals(cc.n_lmo_pairs)
     upper = [ij for ij, (i, j) in enumerate(cc.ij_to_i_j)
              if i <= j and cc.n_pno[ij]]
@@ -154,12 +165,192 @@ def compute_pno_integrals(cc):
         cc._print(f"  CC ints:  {len(upper)} pairs in {len(chunks)} chunks "
                   f"against a {cc.cut.in_core_memory / 2**30:.2f} GiB budget")
     for chunk in chunks:
-        raw = _raw_blocks(cc, chunk)
-        _fit(cc, chunk, raw)
-        _contract(cc, chunk, raw, out)
-        _non_projected(cc, chunk, raw, out)
-        raw.clear()
+        plan = _plan_chunk(cc, chunk)
+        _scatter(cc, chunk, plan, integral_stage(**plan), out)
     return out
+
+
+def _plan_chunk(cc, chunk):
+    """One chunk's stage arguments: every domain list, flattened.
+
+    Pure index bookkeeping against the sparsity, which is what makes it the
+    seam. Nothing here depends on the value of an integral, and the only
+    floating-point objects that cross are the whole three-index tensors and the
+    pairs' PNO transforms, which are read, never written.
+
+    The neighbour bookkeeping is the part worth reading twice. Each of the two
+    non-projected families carries a virtual index belonging to a NEIGHBOUR pair
+    ``kj``, so the numerics needs that neighbour's PNO transform and the
+    position of its PAO domain inside this pair's extended domain. Both are
+    described here as an index per neighbour slot into two deduplicated lists,
+    rather than as a nested structure per pair: a slot is ``-1`` when the
+    neighbour pair does not exist or carries no PNOs, which is the same test
+    psi4 makes, and the numerics skips it on both sides of the boundary.
+    """
+    args = dict(
+        q_ij=cc.q_ij, q_ia=cc.q_ia, q_ab=cc.q_ab, metric=cc.metric,
+        X_pno=[], i_lmo=[], j_lmo=[], n_pno=[], strong=[],
+        ribfs=[], paos=[], lmos=[], extended=[],
+        rot_X=[], rot_paos=[], nb_ij=[], nb_ji=[],
+    )
+    rot_of = {}
+
+    def slots(lmos, partner):
+        """Per neighbour ``k``, where to find pair ``(k, partner)``'s basis."""
+        out = []
+        for k in lmos:
+            kj = int(cc.i_j_to_ij[k, partner])
+            if kj == -1 or not cc.n_pno[kj]:
+                out.append(-1)
+                continue
+            if kj not in rot_of:
+                rot_of[kj] = len(args["rot_X"])
+                args["rot_X"].append(cc.X_pno[kj])
+                args["rot_paos"].append([int(u) for u in cc.lmopair_to_paos[kj]])
+            out.append(rot_of[kj])
+        return out
+
+    for ij in chunk:
+        i, j = cc.ij_to_i_j[ij]
+        ribfs, paos, lmos, extended = _domains(cc, ij)
+        is_strong = cc.i_j_to_ij_strong[i, j] != -1
+        args["X_pno"].append(cc.X_pno[ij])
+        args["i_lmo"].append(int(i))
+        args["j_lmo"].append(int(j))
+        args["n_pno"].append(int(cc.n_pno[ij]))
+        args["strong"].append(bool(is_strong))
+        args["ribfs"].append([int(q) for q in ribfs])
+        args["paos"].append([int(u) for u in paos])
+        args["lmos"].append([int(m) for m in lmos])
+        args["extended"].append([int(u) for u in extended])
+        # Only a strong pair reads a neighbour block, so only a strong pair
+        # contributes slots - and with them the neighbour transforms that cross
+        # the boundary. The weak pairs are the majority.
+        args["nb_ij"].append(slots(lmos, j) if is_strong else [])
+        args["nb_ji"].append(slots(lmos, i) if is_strong and i != j else [])
+    return args
+
+
+def pno_integral_blocks(q_ij, q_ia, q_ab, metric, X_pno, i_lmo, j_lmo, n_pno,
+                        strong, ribfs, paos, lmos, extended, rot_X, rot_paos,
+                        nb_ij, nb_ji):
+    """Every block one chunk of pairs needs, in the chunk's order.
+
+    The contracted numerics behind :func:`compute_pno_integrals`, and the half
+    with a C++ backend. Everything indexed by pair is indexed by the pair's
+    position in the chunk; nothing here knows a pair ordinal, which is what lets
+    the same code serve any chunking.
+
+    See :class:`dlpno.contracts.PnoIntegralBlocks` for the output layout and
+    :func:`_plan_chunk` for where the arguments come from.
+    """
+    raw = _raw_blocks(q_ij, q_ia, q_ab, X_pno, i_lmo, j_lmo, n_pno, ribfs,
+                      paos, lmos)
+    _fit(metric, ribfs, raw)
+    blocks = _contract(raw, i_lmo, j_lmo, strong)
+    _non_projected(q_ia, q_ab, X_pno, raw, i_lmo, j_lmo, strong, ribfs, paos,
+                   lmos, extended, rot_X, rot_paos, nb_ij, nb_ji, blocks)
+    return PnoIntegralBlocks(**blocks)
+
+
+def _absent():
+    """The placeholder for a block a pair legitimately does not have.
+
+    Zero extent rather than ``None``, because the contract's lists are parallel
+    and a C++ ``std::vector<RuntimeTensor<double>>`` has no third state. The
+    caller turns it back into the ``None`` its consumers expect.
+    """
+    return ten.zeros("absent", [0, 0])
+
+
+def _scatter(cc, chunk, plan, blocks, out):
+    """File one chunk's blocks under their pair ordinals.
+
+    Host-side bookkeeping and two host-side combinations, which is everything
+    the numerics deliberately left out: the ``L`` families are elementwise
+    sums of blocks that already exist, and the ``ji`` mirroring is a question
+    about pair ordinals, which the numerics does not know.
+
+    Every contract field is read into a local ONCE. On the C++ backend each
+    attribute access converts a ``std::vector`` into a fresh Python list, so
+    indexing ``blocks.K_mibj[p]`` inside the loop would be quadratic in the
+    chunk length - the same trap ``_finish_pno_transform`` records.
+    """
+    K_mibj, K_mjai = blocks.K_mibj, blocks.K_mjai
+    J_ijmb = blocks.J_ijmb
+    K_ivvv, K_jvvv = blocks.K_ivvv, blocks.K_jvvv
+    i_Qk, i_Qa, j_Qk, j_Qa = blocks.i_Qk, blocks.i_Qa, blocks.j_Qk, blocks.j_Qa
+    Qma, Qab = blocks.Qma, blocks.Qab
+    J_ikac, K_iakc = blocks.J_ikac, blocks.K_iakc
+    J_jkac, K_jakc = blocks.J_jkac, blocks.K_jakc
+    strong, nb_ij, nb_ji = plan["strong"], plan["nb_ij"], plan["nb_ji"]
+
+    # Where each pair's neighbour slabs start in the flat lists: the same
+    # prefix sum the numerics walks, so slot s of pair p is at offset(p) + s.
+    base_ij, base_ji, at_ij, at_ji = [], [], 0, 0
+    for p in range(len(chunk)):
+        base_ij.append(at_ij)
+        base_ji.append(at_ji)
+        at_ij += len(nb_ij[p])
+        at_ji += len(nb_ji[p])
+
+    def neighbours(flat, base, slots):
+        """One pair's per-neighbour list, with a ``None`` for every dead slot."""
+        return [None if s < 0 else flat[base + k] for k, s in enumerate(slots)]
+
+    for p, ij in enumerate(chunk):
+        i, j = cc.ij_to_i_j[ij]
+        ji = cc.ij_to_ji[ij]
+        out.K_mibj[ij] = K_mibj[p]
+        out.J_ijmb[ij] = J_ijmb[p]
+        out.K_ivvv[ij] = K_ivvv[p]
+        if i != j:
+            out.K_mibj[ji] = K_mjai[p]
+            out.K_ivvv[ji] = K_jvvv[p]
+            # Symmetric in the pair, so ji SHARES the object rather than
+            # holding a copy, exactly as psi4 does.
+            out.J_ijmb[ji] = out.J_ijmb[ij]
+
+        # L_mibj and L_iajb, both pure host-side combinations of blocks that
+        # already exist.
+        #
+        # psi4 computes L_mibj_[ji] as 3 K_ji - 2 K_ij, because it subtracts the
+        # already-overwritten L_mibj_[ij] instead of K_mibj_[ij]. That is a bug,
+        # and a harmless one there because nothing ever reads L_mibj_ - it is
+        # resized, written and cleared. Written correctly here.
+        K_ij = ten.view(out.K_mibj[ij])
+        if i == j:
+            out.L_mibj[ij] = ten.from_numpy("L (m i|b j)", K_ij)
+        else:
+            K_ji = ten.view(out.K_mibj[ji])
+            out.L_mibj[ij] = ten.from_numpy("L (m i|b j)", 2.0 * K_ij - K_ji)
+            out.L_mibj[ji] = ten.from_numpy("L (m j|a i)", 2.0 * K_ji - K_ij)
+
+        # L_iajb = 2 (i a|j b) - (i b|j a), from the exchange operator the PNO
+        # transform already left in the amplitude stores.
+        n = cc.n_pno[ij]
+        K = cc.pair_block(cc.K_all, ij)[:n, :n]
+        out.L_iajb[ij] = ten.from_numpy("L (i a|j b)", 2.0 * K - K.T)
+        if i != j:
+            out.L_iajb[ji] = ten.from_numpy("L (j a|i b)",
+                                            ten.view(out.L_iajb[ij]).T)
+
+        # The density-fitted factors and the non-projected families, strong
+        # pairs only: nothing else reads them.
+        if not strong[p]:
+            continue
+        out.i_Qk[ij] = i_Qk[p]
+        out.i_Qa[ij] = i_Qa[p]
+        out.Qma[ij] = Qma[p]
+        out.Qab[ij] = Qab[p]
+        if i != j:
+            out.i_Qk[ji] = j_Qk[p]
+            out.i_Qa[ji] = j_Qa[p]
+        out.J_ikac[ij] = neighbours(J_ikac, base_ij[p], nb_ij[p])
+        out.K_iakc[ij] = neighbours(K_iakc, base_ij[p], nb_ij[p])
+        if i != j:
+            out.J_ikac[ji] = neighbours(J_jkac, base_ji[p], nb_ji[p])
+            out.K_iakc[ji] = neighbours(K_jakc, base_ji[p], nb_ji[p])
 
 
 def _pair_bytes(cc, ij):
@@ -267,21 +458,18 @@ def _domains(cc, ij):
     return ribfs, paos, lmos, sorted(extended)
 
 
-def _raw_blocks(cc, upper):
+def _raw_blocks(q_ij, q_ia, q_ab, X_pno, i_lmo, j_lmo, n_pno, ribfs, paos, lmos):
     """The seven three-index blocks, gathered and half-transformed per pair.
 
     All seven are slices of the same three full tensors, so they are captured
     into one graph and replayed as an OpenMP team over the pairs.
     """
-    raw = {}
-    jobs = []
-    for ij in upper:
-        i, j = cc.ij_to_i_j[ij]
-        ribfs, paos, lmos, extended = _domains(cc, ij)
-        nq, nu, nk, na = len(ribfs), len(paos), len(lmos), cc.n_pno[ij]
-        raw[ij] = dict(
-            ribfs=ribfs, paos=paos, lmos=lmos, extended=extended,
-            nq=nq, nu=nu, nk=nk, na=na, i=i, j=j,
+    raw = []
+    for p in range(len(i_lmo)):
+        nq, nu, nk = len(ribfs[p]), len(paos[p]), len(lmos[p])
+        na = n_pno[p]
+        raw.append(dict(
+            nq=nq, nu=nu, nk=nk, na=na,
             q_pair=ten.zeros("(Q|i j)", [nq, 1]),
             q_io=ten.zeros("(Q|i m)", [nq, nk]),
             q_jo=ten.zeros("(Q|j m)", [nq, nk]),
@@ -289,38 +477,35 @@ def _raw_blocks(cc, upper):
             q_jv=ten.zeros("(Q|j a)", [nq, na]),
             q_ov=ten.zeros("(Q|m a)", [nq, nk * na]),
             q_vv=ten.zeros("(Q|a b)", [nq, na * na]),
-        )
-        jobs.append(ij)
+        ))
 
     # The gathers, into rank-3 blocks whose views the contractions read. A
     # single-LMO selection leaves a length-1 axis, which costs nothing in column
     # major and saves the host copy that dropping it in numpy would be.
-    scratch = {}
+    scratch = []
     g = cg.Graph("CC integrals: gather")
     with cg.capture(g):
-        for ij in jobs:
-            r = raw[ij]
-            ribfs, paos, lmos = r["ribfs"], r["paos"], r["lmos"]
+        for p, r in enumerate(raw):
             nq, nu, nk, na = r["nq"], r["nu"], r["nk"], r["na"]
-            qs = [int(q) for q in ribfs]
-            us = [int(u) for u in paos]
-            ms = [int(m) for m in lmos]
+            qs, us, ms = ribfs[p], paos[p], lmos[p]
+            i, j = i_lmo[p], j_lmo[p]
 
-            s = scratch[ij] = {}
+            s = {}
+            scratch.append(s)
             s["ij_blk"] = ten.zeros("(Q|i j) raw", [nq, 1, 1])
-            la.gather(s["ij_blk"], cc.q_ij, [qs, [r["i"]], [r["j"]]])
+            la.gather(s["ij_blk"], q_ij, [qs, [i], [j]])
             s["io_blk"] = ten.zeros("(Q|i m) raw", [nq, 1, nk])
-            la.gather(s["io_blk"], cc.q_ij, [qs, [r["i"]], ms])
+            la.gather(s["io_blk"], q_ij, [qs, [i], ms])
             s["jo_blk"] = ten.zeros("(Q|j m) raw", [nq, 1, nk])
-            la.gather(s["jo_blk"], cc.q_ij, [qs, [r["j"]], ms])
+            la.gather(s["jo_blk"], q_ij, [qs, [j], ms])
             s["iu_blk"] = ten.zeros("(Q|i u) raw", [nq, 1, nu])
-            la.gather(s["iu_blk"], cc.q_ia, [qs, [r["i"]], us])
+            la.gather(s["iu_blk"], q_ia, [qs, [i], us])
             s["ju_blk"] = ten.zeros("(Q|j u) raw", [nq, 1, nu])
-            la.gather(s["ju_blk"], cc.q_ia, [qs, [r["j"]], us])
+            la.gather(s["ju_blk"], q_ia, [qs, [j], us])
             s["mu_blk"] = ten.zeros("(Q|m u) raw", [nq, nk, nu])
-            la.gather(s["mu_blk"], cc.q_ia, [qs, ms, us])
+            la.gather(s["mu_blk"], q_ia, [qs, ms, us])
             s["uv_blk"] = ten.zeros("(Q|u v) raw", [nq, nu, nu])
-            la.gather(s["uv_blk"], cc.q_ab, [qs, us, us])
+            la.gather(s["uv_blk"], q_ab, [qs, us, us])
     _run_setup_graph(g)
 
     # The PAO -> PNO half transforms. Separate graph because they consume the
@@ -328,10 +513,10 @@ def _raw_blocks(cc, upper):
     # not capturable in the same pass.
     g2 = cg.Graph("CC integrals: PAO to PNO")
     with cg.capture(g2):
-        for ij in jobs:
-            r, s = raw[ij], scratch[ij]
+        for p, r in enumerate(raw):
+            s = scratch[p]
             nq, nu, nk, na = r["nq"], r["nu"], r["nk"], r["na"]
-            X = cc.X_pno[ij]
+            X = X_pno[p]
             # (Q|i j) and (Q|i m) need no transform, only a reshape of the
             # length-1 axis away, which a view already is.
             la.axpby(1.0, s["ij_blk"].reshape_view([nq, 1]), 0.0, r["q_pair"])
@@ -366,7 +551,7 @@ def _raw_blocks(cc, upper):
     return raw
 
 
-def _fit(cc, upper, raw):
+def _fit(metric, ribfs, raw):
     """Apply the metric, at the two different powers psi4 uses.
 
     The full-inverse copies come first and are kept: they are the fitted side of
@@ -378,19 +563,14 @@ def _fit(cc, upper, raw):
     is what ``einsums.linalg.pow`` does; the ``1e-14`` psi4 passes is its
     eigenvalue floor and matters only for a near-singular auxiliary basis.
     """
-    metrics = {}
-    for ij in upper:
-        r = raw[ij]
-        ribfs = r["ribfs"]
-        A = sparse.submatrix_rows_and_cols(cc.metric, ribfs, ribfs,
-                                           name="(P|Q) domain")
-        metrics[ij] = A
+    metrics = [sparse.submatrix_rows_and_cols(metric, qs, qs,
+                                              name="(P|Q) domain")
+               for qs in ribfs]
 
     # The full-inverse copies, one solve per pair against a fresh copy of the
     # metric (gesv overwrites its left-hand side).
-    for ij in upper:
-        r = raw[ij]
-        A = metrics[ij]
+    for p, r in enumerate(raw):
+        A = metrics[p]
         rhs = ten.zeros("full-inverse rhs",
                         [r["nq"], 2 * r["nk"] + 2 * r["na"]])
         view = ten.view(rhs)
@@ -409,9 +589,8 @@ def _fit(cc, upper, raw):
 
     # Then the symmetric fit. One solve per pair over every primary block at
     # once: they share the metric, and gesv factorizes once for all columns.
-    for ij in upper:
-        r = raw[ij]
-        A_half = la.pow(metrics[ij], 0.5)
+    for p, r in enumerate(raw):
+        A_half = la.pow(metrics[p], 0.5)
         nk, na = r["nk"], r["na"]
         widths = [("q_pair", 1), ("q_io", nk), ("q_jo", nk), ("q_iv", na),
                   ("q_jv", na), ("q_ov", nk * na), ("q_vv", na * na)]
@@ -430,22 +609,35 @@ def _fit(cc, upper, raw):
             at += w
 
 
-def _contract(cc, upper, raw, out):
-    """The contracted integrals, ``B^T B`` over the pair's auxiliary domain."""
+def _contract(raw, i_lmo, j_lmo, strong):
+    """The contracted integrals, ``B^T B`` over the pair's auxiliary domain.
+
+    Returns the contract's fields as lists in the chunk's order, with a
+    zero-extent placeholder wherever a pair does not have the block: on the
+    diagonal for the ``ji`` partners, and on a weak pair for the density-fitted
+    factors. See :class:`dlpno.contracts.PnoIntegralBlocks`.
+    """
+    blocks = {name: [] for name in
+              ("K_mibj", "J_ijmb", "K_ivvv", "K_mjai", "K_jvvv",
+               "i_Qk", "i_Qa", "j_Qk", "j_Qa", "Qma", "Qab")}
+    K_mibj, K_mjai = blocks["K_mibj"], blocks["K_mjai"]
+    J_ijmb = blocks["J_ijmb"]
+    K_ivvv, K_jvvv = blocks["K_ivvv"], blocks["K_jvvv"]
+
     g = cg.Graph("CC integrals: contract")
     with cg.capture(g):
-        for ij in upper:
-            r = raw[ij]
-            i, j = r["i"], r["j"]
-            ji = cc.ij_to_ji[ij]
+        for p, r in enumerate(raw):
+            i, j = i_lmo[p], j_lmo[p]
             nk, na = r["nk"], r["na"]
 
             # (m i | b j) and its ji partner (m j | a i).
-            out.K_mibj[ij] = ten.zeros("K (m i|b j)", [nk, na])
-            la.gemm(1.0, r["q_io"], r["q_jv"], 0.0, out.K_mibj[ij], trans_a=True)
+            K_mibj.append(ten.zeros("K (m i|b j)", [nk, na]))
+            la.gemm(1.0, r["q_io"], r["q_jv"], 0.0, K_mibj[p], trans_a=True)
             if i != j:
-                out.K_mibj[ji] = ten.zeros("K (m j|a i)", [nk, na])
-                la.gemm(1.0, r["q_jo"], r["q_iv"], 0.0, out.K_mibj[ji], trans_a=True)
+                K_mjai.append(ten.zeros("K (m j|a i)", [nk, na]))
+                la.gemm(1.0, r["q_jo"], r["q_iv"], 0.0, K_mjai[p], trans_a=True)
+            else:
+                K_mjai.append(_absent())
 
             # (i j | m b). Symmetric in the pair, so ji SHARES the object
             # rather than holding a copy, exactly as psi4 does.
@@ -463,66 +655,41 @@ def _contract(cc, upper, raw, out):
             # same offset k + nk*a.
             J = ten.zeros("J (i j|m b)", [nk * na, 1])
             la.gemm(1.0, r["q_ov"], r["q_pair"], 0.0, J, trans_a=True)
-            out.J_ijmb[ij] = J.reshape_view([nk, na])
-            if i != j:
-                out.J_ijmb[ji] = out.J_ijmb[ij]
+            J_ijmb.append(J.reshape_view([nk, na]))
 
             # (i e | a f), as (e, a, f).
-            out.K_ivvv[ij] = ten.zeros("K (i e|a f)", [na, na, na])
+            K_ivvv.append(ten.zeros("K (i e|a f)", [na, na, na]))
             la.gemm(1.0, r["q_iv"], r["q_vv"], 0.0,
-                    out.K_ivvv[ij].reshape_view([na, na * na]), trans_a=True)
+                    K_ivvv[p].reshape_view([na, na * na]), trans_a=True)
             if i != j:
-                out.K_ivvv[ji] = ten.zeros("K (j e|a f)", [na, na, na])
+                K_jvvv.append(ten.zeros("K (j e|a f)", [na, na, na]))
                 la.gemm(1.0, r["q_jv"], r["q_vv"], 0.0,
-                        out.K_ivvv[ji].reshape_view([na, na * na]), trans_a=True)
+                        K_jvvv[p].reshape_view([na, na * na]), trans_a=True)
+            else:
+                K_jvvv.append(_absent())
     _run_setup_graph(g)
 
-    # L_mibj and L_iajb, both pure host-side combinations of blocks that
-    # already exist.
-    #
-    # psi4 computes L_mibj_[ji] as 3 K_ji - 2 K_ij, because it subtracts the
-    # already-overwritten L_mibj_[ij] instead of K_mibj_[ij]. That is a bug, and
-    # a harmless one there because nothing ever reads L_mibj_ - it is resized,
-    # written and cleared. Written correctly here.
-    for ij in upper:
-        i, j = raw[ij]["i"], raw[ij]["j"]
-        ji = cc.ij_to_ji[ij]
-        K_ij = ten.view(out.K_mibj[ij])
-        if i == j:
-            out.L_mibj[ij] = ten.from_numpy("L (m i|b j)", K_ij)
-        else:
-            K_ji = ten.view(out.K_mibj[ji])
-            out.L_mibj[ij] = ten.from_numpy("L (m i|b j)", 2.0 * K_ij - K_ji)
-            out.L_mibj[ji] = ten.from_numpy("L (m j|a i)", 2.0 * K_ji - K_ij)
-
-        # L_iajb = 2 (i a|j b) - (i b|j a), from the exchange operator the PNO
-        # transform already left in the amplitude stores.
-        n = cc.n_pno[ij]
-        K = cc.pair_block(cc.K_all, ij)[:n, :n]
-        out.L_iajb[ij] = ten.from_numpy("L (i a|j b)", 2.0 * K - K.T)
-        if i != j:
-            out.L_iajb[ji] = ten.from_numpy("L (j a|i b)",
-                                            ten.view(out.L_iajb[ij]).T)
-
     # The density-fitted factors, strong pairs only: nothing else reads them.
-    for ij in upper:
-        r = raw[ij]
-        i, j = r["i"], r["j"]
-        ji = cc.ij_to_ji[ij]
+    # They are the raw blocks themselves, not copies of them, which is what
+    # keeps this phase's footprint the size of its output.
+    for p, r in enumerate(raw):
+        i, j = i_lmo[p], j_lmo[p]
         nq, nk, na = r["nq"], r["nk"], r["na"]
-        if cc.i_j_to_ij_strong[i, j] == -1:
-            continue
-        out.i_Qk[ij] = r["q_io"]
-        out.i_Qa[ij] = r["q_iv"]
-        if i != j:
-            out.i_Qk[ji] = r["q_jo"]
-            out.i_Qa[ji] = r["q_jv"]
+        off_diagonal = strong[p] and i != j
+        blocks["i_Qk"].append(r["q_io"] if strong[p] else _absent())
+        blocks["i_Qa"].append(r["q_iv"] if strong[p] else _absent())
+        blocks["j_Qk"].append(r["q_jo"] if off_diagonal else _absent())
+        blocks["j_Qa"].append(r["q_jv"] if off_diagonal else _absent())
         # Per auxiliary function, which is the axis every consumer loops over.
-        out.Qma[ij] = r["q_ov"].reshape_view([nq, nk, na])
-        out.Qab[ij] = r["q_vv"].reshape_view([nq, na, na])
+        blocks["Qma"].append(r["q_ov"].reshape_view([nq, nk, na])
+                             if strong[p] else _absent())
+        blocks["Qab"].append(r["q_vv"].reshape_view([nq, na, na])
+                             if strong[p] else _absent())
+    return blocks
 
 
-def _non_projected(cc, upper, raw, out):
+def _non_projected(q_ia, q_ab, X_pno, raw, i_lmo, j_lmo, strong, ribfs, paos,
+                   lmos, extended, rot_X, rot_paos, nb_ij, nb_ji, blocks):
     """``(i k | a_ij c_kj)`` and ``(i a_ij | k c_kj)``, per pair per neighbour.
 
     The two families whose second virtual index belongs to a NEIGHBOUR pair, so
@@ -533,29 +700,32 @@ def _non_projected(cc, upper, raw, out):
     fully-inverse-fitted factor against an unfitted one, which reconstructs the
     integral exactly once; using the symmetric factors on both sides would
     apply the metric one and a half times.
+
+    One pair at a time, deliberately. The extended-domain gathers are the widest
+    thing this phase touches, and ``_pair_transient_bytes`` charges the chunk for
+    the largest of them ONCE rather than for the sum over its members; hoisting
+    them into a graph over every pair would spend the whole budget on scratch.
     """
-    for ij in upper:
-        r = raw[ij]
-        i, j = r["i"], r["j"]
-        ji = cc.ij_to_ji[ij]
-        if cc.i_j_to_ij_strong[i, j] == -1:
+    for name in ("J_ikac", "K_iakc", "J_jkac", "K_jakc"):
+        blocks[name] = []
+    for p, r in enumerate(raw):
+        if not strong[p]:
             continue
-        ribfs, paos, lmos, extended = (r["ribfs"], r["paos"], r["lmos"],
-                                       r["extended"])
-        nq, nk, na, ne = r["nq"], r["nk"], r["na"], len(extended)
-        qs = [int(q) for q in ribfs]
-        es = [int(u) for u in extended]
+        i, j = i_lmo[p], j_lmo[p]
+        nq, nk, na = r["nq"], r["nk"], r["na"]
+        es = extended[p]
+        ne = len(es)
 
         # (Q | a_ij v_ext): half in the pair's PNOs, half in the extended PAOs.
-        uv_ext = ten.zeros("(Q|u v_ext) raw", [nq, len(paos), ne])
-        la.gather(uv_ext, cc.q_ab, [qs, [int(u) for u in paos], es])
+        uv_ext = ten.zeros("(Q|u v_ext) raw", [nq, r["nu"], ne])
+        la.gather(uv_ext, q_ab, [ribfs[p], paos[p], es])
         q_av = ten.zeros("(Q|a v_ext)", [nq, na, ne])
         mu_ext = ten.zeros("(Q|m u_ext) raw", [nq, nk, ne])
         g = cg.Graph("CC integrals: extended half transform")
         with cg.capture(g):
-            einsums.einsum("Qae <- Que ; ua", q_av, uv_ext, cc.X_pno[ij])
+            einsums.einsum("Qae <- Que ; ua", q_av, uv_ext, X_pno[p])
             # (Q | m u_ext), raw and unfitted: the K_iakc side.
-            la.gather(mu_ext, cc.q_ia, [qs, [int(m) for m in lmos], es])
+            la.gather(mu_ext, q_ia, [ribfs[p], lmos[p], es])
         _run_setup_graph(g)
 
         # J: (P|Q)^-1 (Q|i m) contracted with (Q | a v_ext).
@@ -570,10 +740,10 @@ def _non_projected(cc, upper, raw, out):
         # K_iovv came from a (nq, na, ne) block flattened in place, so the PNO
         # index runs fastest; K_oviv was built as (nk*ne, na) and reinterpreted,
         # so the extended PAO index does. See _slice_neighbours.
-        out.J_ikac[ij] = _slice_neighbours(cc, ij, lmos, extended, K_iovv,
-                                           na, ne, True, "(i k|a c)")
-        out.K_iakc[ij] = _slice_neighbours(cc, ij, lmos, extended, K_oviv,
-                                           na, ne, False, "(i a|k c)")
+        blocks["J_ikac"] += _slice_neighbours(nb_ij[p], rot_X, rot_paos, es,
+                                              K_iovv, na, ne, True, "(i k|a c)")
+        blocks["K_iakc"] += _slice_neighbours(nb_ij[p], rot_X, rot_paos, es,
+                                              K_oviv, na, ne, False, "(i a|k c)")
         if i != j:
             K_jovv = ten.zeros("(j m|a v_ext)", [nk, na * ne])
             la.gemm(1.0, r["q_jo_inv"], q_av.reshape_view([nq, na * ne]), 0.0,
@@ -581,14 +751,17 @@ def _non_projected(cc, upper, raw, out):
             K_ovjv = ten.zeros("(m u_ext|j a)", [nk, ne * na])
             la.gemm(1.0, mu_ext.reshape_view([nq, nk * ne]), r["q_jv_inv"], 0.0,
                     K_ovjv.reshape_view([nk * ne, na]), trans_a=True)
-            out.J_ikac[ji] = _slice_neighbours(cc, ji, lmos, extended, K_jovv,
-                                               na, ne, True, "(j k|a c)")
-            out.K_iakc[ji] = _slice_neighbours(cc, ji, lmos, extended, K_ovjv,
-                                               na, ne, False, "(j a|k c)")
+            blocks["J_jkac"] += _slice_neighbours(nb_ji[p], rot_X, rot_paos, es,
+                                                  K_jovv, na, ne, True,
+                                                  "(j k|a c)")
+            blocks["K_jakc"] += _slice_neighbours(nb_ji[p], rot_X, rot_paos, es,
+                                                  K_ovjv, na, ne, False,
+                                                  "(j a|k c)")
 
 
-def _slice_neighbours(cc, ij, lmos, extended, block, na, ne, pno_fastest, name):
-    """Cut one neighbour's slab out and rotate it into that neighbour's PNOs.
+def _slice_neighbours(slots, rot_X, rot_paos, extended, block, na, ne,
+                      pno_fastest, name):
+    """Cut each neighbour's slab out and rotate it into that neighbour's PNOs.
 
     ``block`` is ``(nlmo, na * ne)``: one row per neighbour, holding a
     ``(PNO, extended PAO)`` slab flattened into the second axis. The
@@ -606,21 +779,23 @@ def _slice_neighbours(cc, ij, lmos, extended, block, na, ne, pno_fastest, name):
     an argument rather than inferring it from the caller.
 
     Args:
+        slots: Per neighbour, the index into ``rot_X``/``rot_paos`` of the
+            neighbour pair's basis, or ``-1`` when it has none. A dead slot
+            yields a zero-extent placeholder, which the caller reads back as
+            ``None``.
         pno_fastest: True when the PNO index varies fastest in ``block``'s
             second axis (``W = a + na*e``), False when the extended PAO index
             does (``W = e + ne*a``).
     """
-    _, j = cc.ij_to_i_j[ij]
     view = ten.view(block)
     where = {u: pos for pos, u in enumerate(extended)}
     per_neighbour = []
-    for k_ij, k in enumerate(lmos):
-        kj = int(cc.i_j_to_ij[k, j])
-        if kj == -1 or not cc.n_pno[kj]:
-            per_neighbour.append(None)
+    for k_ij, slot in enumerate(slots):
+        if slot < 0:
+            per_neighbour.append(_absent())
             continue
-        keep = [where[u] for u in cc.lmopair_to_paos[kj]]
-        X_kj = np.asarray(cc.X_pno[kj])
+        keep = [where[u] for u in rot_paos[slot]]
+        X_kj = np.asarray(rot_X[slot])
         if pno_fastest:
             # W = a + na*e, so C-order (ne, na) reads it correctly.
             slab = view[k_ij].reshape(ne, na)[keep, :]          # (u_kj, a_ij)

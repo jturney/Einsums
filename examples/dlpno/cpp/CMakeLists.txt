@@ -43,6 +43,7 @@ einsums_add_stage_module(
   dlpno_stages
   SOURCES
   bindings.cpp
+  src/ComputePnoIntegrals.cpp
   src/ComputePnoOverlaps.cpp
   src/TransformPnos.cpp
   INCLUDE_DIRS

@@ -42,7 +42,17 @@ capture costs instead is memory, because every triplet's intermediates have to
 be alive at once. Seven tensors of ``n_tno^3`` per triplet is more than a large
 molecule has, so the triplets are processed in CHUNKS sized against a memory
 budget: within a chunk the chains are independent and thread, and between chunks
-nothing is retained but the energies.
+the only things retained are the energies and the pair-side overlap halves.
+
+Those halves are the one deliberate exception, and they are an exception because
+they do not depend on the chunk. ``S(pair, ijk)`` factors into a pair half and a
+triplet half, the pair half is the same matrix for every chunk whose triplets
+read that pair, and rebuilding it per chunk is work the chunking creates rather
+than work the phase needs. So it is cached, in an
+:class:`~dlpno.cc_overlaps.OverlapHalfCache` the driver owns for the calculation,
+and the cache is charged to the memory budget alongside the retained stores
+because it is alive while every chunk runs. Everything else here still dies with
+its chunk.
 
 **Nothing is shared between triplets.** The two buffers carrying an auxiliary
 index alongside the raw PAO domain - the gathered ``(Q|u v)`` block and its half
@@ -81,7 +91,7 @@ import einsums.graph as cg
 from . import sparse
 from . import tensors as ten
 from .base import DLPNOBase
-from .cc_overlaps import build_overlaps
+from .cc_overlaps import OverlapHalfCache, build_overlaps
 
 __all__ = ["LCCSDT0"]
 
@@ -110,11 +120,24 @@ class LCCSDT0:
     the TNO bases and the converged CCSD amplitudes are all fixed.
     """
 
-    def __init__(self, cc, verbose=True):
+    def __init__(self, cc, verbose=True, halves=None):
         self.cc = cc
         self.verbose = verbose
         self.F_lmo_np = np.asarray(ten.view(cc.F_lmo))
         self.e_ijk = np.zeros(cc.n_lmo_triplets)
+        #: The pair-side overlap halves, shared across this phase's chunks.
+        #:
+        #: :meth:`_overlaps` runs once per chunk and the pairs it reads overlap
+        #: heavily between chunks, so without this every chunk rescatters the
+        #: same transforms onto the PAO axis and reforms the same left factors.
+        #: The driver may hand one in to share it across the prescreening, the
+        #: production and the crude passes as well, since the pair bases are
+        #: fixed once the CCSD solve is done; one made here lasts for this
+        #: phase, which is the conservative choice and still removes the
+        #: per-chunk rebuild. Held on the instance rather than per call because
+        #: the halves have to outlive the chunk that first built them.
+        self.halves = (OverlapHalfCache(cc.n_lmo_pairs) if halves is None
+                       else halves)
 
         self._plan = None
         self._retain = False
@@ -122,6 +145,11 @@ class LCCSDT0:
         self._metric_cache = {}
         self.t_plan = 0.0
         self.n_nodes = 0
+        #: Nodes captured into the batched-GEMM graphs, which is one per graph
+        #: per chunk when the emitters are doing their job. Counted separately
+        #: because it is the only signal that says so: a revert to one dispatch
+        #: per plan record reproduces every energy in this port to the last bit.
+        self.n_batched_nodes = 0
         self.n_chunks = 0
 
     def _print(self, *args):
@@ -138,8 +166,16 @@ class LCCSDT0:
         each LMO's pair with every neighbour, the diagonal pairs the singles
         live on, the four domain sizes and the energy prefactor - plus a shape
         class, on the key the pair-level planner uses extended by the neighbour
-        count, so a batched emitter can group records without re-deriving one
-        index map.
+        count.
+
+        It also carries ``bridges``, the DEDUPLICATED list of pairs whose
+        amplitudes this triplet bridges into its TNO basis, and ``bridge_of``,
+        the map from a pair to its slot in that list. Both halves of the
+        congruence transform read them: the left half ``S^T t`` depends on the
+        pair alone, so one per distinct pair is all the arithmetic there is,
+        while the right half is per destination. Every permutation's pair is
+        also some LMO's pair with some neighbour, so the deduplication removes
+        the six permutations outright and whatever a repeated LMO adds on top.
         """
         t0 = time.perf_counter()
         cc = self.cc
@@ -154,16 +190,30 @@ class LCCSDT0:
             perms = [(positions, scatter,
                       int(cc.i_j_to_ij[labels[positions[2]], labels[positions[1]]]))
                      for positions, scatter in _PERMUTATIONS]
+            neighbours = [[int(cc.i_j_to_ij[x, l]) for l in lmos]
+                          for x in labels]
+            bridges, bridge_of = [], {}
+            for pair in ([pair for _, _, pair in perms]
+                         + [pair for per_x in neighbours for pair in per_x]):
+                # A dead pair is bridged by nobody: the terms reading it want
+                # the zero their destination was allocated with, which is what
+                # psi4's null matrix multiplies out to.
+                if pair == -1 or not cc.n_pno[pair] or pair in bridge_of:
+                    continue
+                bridge_of[pair] = len(bridges)
+                bridges.append(pair)
             equal = (i == j) + (j == k) + (i == k)
             records.append(dict(
                 ijk=ijk, labels=labels, lmos=lmos, perms=perms,
-                neighbours=[[int(cc.i_j_to_ij[x, l]) for l in lmos]
-                            for x in labels],
+                neighbours=neighbours,
+                bridges=bridges, bridge_of=bridge_of,
                 diag=[cc.diag(x) for x in labels],
                 nq=len(cc.lmotriplet_to_ribfs[ijk]),
                 nl=len(lmos),
                 nu=len(cc.lmotriplet_to_paos[ijk]),
                 nt=cc.n_tno[ijk],
+                bridge_elements=cc.n_tno[ijk] * sum(int(cc.n_pno[p])
+                                                    for p in bridges),
                 shift=float(sum(self.F_lmo_np[x, x] for x in labels)),
                 # One half when exactly two of i, j, k coincide. The
                 # i == j == k case never reaches here: triples_sparsity does
@@ -203,6 +253,11 @@ class LCCSDT0:
         the gathered ``(Q | u v)`` block overtakes them. Both are counted,
         because which one dominates depends on the basis set and the chunk
         budget has to hold either way.
+
+        ``bridge_elements`` is the one term the plan has to supply rather than
+        derive from the four domain sizes: the half-transformed ``S^T t`` blocks
+        are sized by the PNO counts of the pairs this triplet bridges, one per
+        DISTINCT pair, and that set is what :meth:`plan` deduplicated.
         """
         nq, nl, nu, nt = r["nq"], r["nl"], r["nu"], r["nt"]
         return 8 * (8 * nt ** 3                    # K_xvvv x3, W, V, D, scratch, bracket
@@ -210,10 +265,34 @@ class LCCSDT0:
                     + nq * nt * nt                 # (Q | a b)
                     + 3 * nt * nt * max(nl, 1)     # the t_xl stacks
                     + 6 * nt * nt                  # the six t_kj
+                    + r["bridge_elements"]         # the half-transformed S^T t
                     + 2 * nq * (3 * nt + 3 * nl)   # the two fitted right-hand sides
                     + 3 * nq * (nl + nu)           # the gathered three-index blocks
                     + 6 * nl * nt + 3 * nt * nt    # (x l | y c) and (x a | y b)
                     + 2 * nq * nq)                 # the metric and its square root
+
+    def _overlap_halves_bytes(self):
+        """Bytes the cached pair-side overlap halves will hold for this phase.
+
+        Not per triplet, and not per chunk: the whole point of
+        :class:`~dlpno.cc_overlaps.OverlapHalfCache` is that a pair's halves
+        outlive the chunk that built them, so they are alive alongside every
+        chunk and belong on the same side of the budget as the retained stores.
+
+        Two doubles-sized matrices per pair, each ``npao`` by the pair's PNO
+        count, over the DISTINCT pairs this phase's triplets read - which is a
+        strict bound rather than an estimate, since :meth:`_overlaps` asks for
+        nothing else and the cache stores nothing else. Whatever a cache handed
+        in already holds is added, because entries from an earlier pass occupy
+        memory until something replaces them.
+        """
+        cc = self.cc
+        npao = ten.shape(cc.S_pao)[0]
+        pairs = {self._upper(pair) for r in self._plan
+                 for pair in self._pairs_read(r)}
+        pending = sum(int(cc.n_pno[pair]) for pair in pairs
+                      if not self.halves.holds(pair))
+        return self.halves.nbytes() + 8 * 2 * npao * pending
 
     def _chunks(self):
         """Split the triplets into runs that fit the memory budget.
@@ -228,11 +307,15 @@ class LCCSDT0:
         # before any chunk is sized against it. Bounding only the chunk is
         # what let this phase page instead of refusing.
         retained = sum(self._retained_bytes(r) for r in self._plan) if self._retain else 0
-        room = budget - retained
+        # The cached overlap halves are alive alongside every chunk for the same
+        # reason, so they come off the budget the same way.
+        halves = self._overlap_halves_bytes()
+        room = budget - retained - halves
         if room <= 0:
             raise MemoryError(
                 f"the iterative (T) would keep {retained / 2**30:.2f} GiB of W, V "
-                f"and amplitudes over {len(self._plan)} triplets, against a budget "
+                f"and amplitudes over {len(self._plan)} triplets, plus "
+                f"{halves / 2**30:.2f} GiB of pair overlap halves, against a budget "
                 f"of {budget / 2**30:.2f} GiB. Raise Thresholds.in_core_memory, "
                 "loosen t_cut_tno, or set t0_approximation to stop at (T0), which "
                 "retains nothing.")
@@ -248,7 +331,8 @@ class LCCSDT0:
                     f"{r['nl']} neighbours) against the "
                     f"{room / 2**20:.0f} MiB left of a "
                     f"{budget / 2**20:.0f} MiB budget after the "
-                    f"{retained / 2**20:.0f} MiB of retained stores. Raise "
+                    f"{retained / 2**20:.0f} MiB of retained stores and the "
+                    f"{halves / 2**20:.0f} MiB of pair overlap halves. Raise "
                     "Thresholds.in_core_memory or loosen t_cut_tno.")
             if current and total + need > room:
                 chunks.append(current)
@@ -299,31 +383,54 @@ class LCCSDT0:
         triplets, classes = self.class_report()
         self._print(
             f"    (T0):     {triplets} triplets in {len(chunks)} chunk(s), "
-            f"{classes} shape classes, {self.n_nodes} captured nodes, "
+            f"{classes} shape classes, {self.n_nodes} captured nodes "
+            f"({self.n_batched_nodes} batched GEMM), "
             f"{elapsed:.3f} s ({self.t_plan * 1e3:.0f} ms planning)")
+        # Printed rather than assumed. The rebuild this removes was invisible to
+        # every signal the port has - the energies were already right and the
+        # replays already bit-identical - which is the shape of finding the
+        # design document records going unseen twice for want of a report.
+        reuse = self.halves.report()
+        if reuse:
+            self._print(f"              {reuse}")
         self._print(f"    (T0) energy = {total:.12f}")
         return total
 
     def _run_chunk(self, chunk):
-        """One chunk: allocate, emit four graphs, replay, read the energies.
+        """One chunk: allocate, emit seven graphs, replay, read the energies.
 
-        Four graphs rather than one for the reason ``lccsd.py`` gives: a
+        Several graphs rather than one for the reason ``lccsd.py`` gives: a
         boundary is a point where a slice-versus-whole aliasing question cannot
         arise, and there are a lot of slices here. The metric decomposition
         also has to happen between two of them, since it is not a captured
         operation.
+
+        **Four of the seven hold exactly one node, and that is deliberate.**
+        Those four are the batched GEMMs, and the OpenMP executor threads a
+        batched GEMM only when its execution LEVEL holds a single node: two
+        nodes on one level and each runs inside a ``parallel for``, where the
+        batch's own region nests and collapses to one thread. A graph holding
+        one node puts that node alone on level 0 by construction, which is a
+        cheaper guarantee than reasoning about what else landed on a level. The
+        cost is a graph boundary, and a boundary between two batches that were
+        going to be separate calls anyway costs nothing but the replay.
         """
         state = self._allocate(chunk)
         overlaps = self._overlaps(chunk)
 
-        for name, emit in (("gather and fit", self._emit_setup),
-                           ("integrals", self._emit_integrals),
-                           ("amplitudes", self._emit_amplitudes),
-                           ("Eq. 109-110, 53", self._emit_triples)):
+        for name, batched, emit in (("gather", False, self._emit_gather),
+                                    ("(Q|x a)", True, self._emit_rotate),
+                                    ("fit", False, self._emit_fit),
+                                    ("integrals", True, self._emit_integrals),
+                                    ("S^T t", True, self._emit_projections),
+                                    ("amplitudes", True, self._emit_amplitudes),
+                                    ("Eq. 109-110, 53", False, self._emit_triples)):
             g = cg.Graph(f"lccsd(t0): {name}")
             with cg.capture(g):
                 emit(chunk, state, overlaps)
             self.n_nodes += g.num_nodes()
+            if batched:
+                self.n_batched_nodes += g.num_nodes()
             _run_setup_graph(g)
 
         energies = ten.view(state["e_chunk"])
@@ -368,6 +475,12 @@ class LCCSDT0:
         "extended" domain and indexes into it; scattering each transform onto
         the full PAO axis makes the restriction implicit and gives the
         identical matrix.
+
+        The concatenation is also what makes :attr:`halves` safe: pairs occupy
+        the entity indices below ``n_lmo_pairs`` and the chunk's triplets sit
+        above them, and only the pair range is eligible for the cache. A pair is
+        read by triplets in many chunks and its halves are the same matrices
+        every time; a triplet appears in one chunk and nowhere else.
         """
         cc = self.cc
         npairs = cc.n_lmo_pairs
@@ -381,7 +494,8 @@ class LCCSDT0:
             for pair in self._pairs_read(r):
                 requests.add((self._upper(pair), entity))
         keys = sorted(requests)
-        blocks = build_overlaps(X_all, cc.S_pao, paos_all, n_all, keys)
+        blocks = build_overlaps(X_all, cc.S_pao, paos_all, n_all, keys,
+                                cache=self.halves)
         return {(pair, entity - npairs): block
                 for (pair, entity), block in zip(keys, blocks)}
 
@@ -436,7 +550,7 @@ class LCCSDT0:
                                  for b in per["raw_v"]]
 
             # One right-hand side per metric power, laid out so every block a
-            # consumer wants is a contiguous column slice. See _emit_setup for
+            # consumer wants is a contiguous column slice. See _emit_fit for
             # why there are two.
             per["rhs_half"] = ten.zeros("J^-1/2 rhs", [nq, 3 * nt + 3 * nl])
             per["rhs_full"] = ten.zeros("J^-1 rhs", [nq, 3 * nt])
@@ -449,18 +563,48 @@ class LCCSDT0:
                                for x in range(3)]
             per["metric"] = self._metric_copies(r["ijk"])
 
-            # (x a | b d) for x in i, j, k, as rank 3 and named rather than
-            # flattened; see the module docstring.
-            per["K_xvvv"] = [ten.zeros("K (x a|b d)", [nt, nt, nt]) for _ in range(3)]
-            per["K_xvvv_flat"] = [self._keep(state, K.reshape_view([nt, nt * nt]))
-                                  for K in per["K_xvvv"]]
+            # (x a | b d) for x in i, j, k. Allocated FLAT, with the rank-3
+            # naming as the view, because that is the orientation the batched
+            # GEMM writes and one grouped call needs its whole destination list
+            # to be of one kind; see :meth:`_emit_integrals` for the merge order
+            # and the module docstring for why the rank-3 name exists at all.
+            per["K_xvvv_flat"] = [ten.zeros("K (x a|b d)", [nt, nt * nt])
+                                  for _ in range(3)]
+            per["K_xvvv"] = [self._keep(state, K.reshape_view([nt, nt, nt]))
+                             for K in per["K_xvvv_flat"]]
             # (y l | z c), one per permutation, and (x a | y b), one per pair of
             # the triplet's own LMOs.
             per["K_ooov"] = [ten.zeros("K (y l|z c)", [max(nl, 1), nt])
                              for _ in range(6)]
             per["K_ovov"] = [ten.zeros("K (x a|y b)", [nt, nt]) for _ in range(3)]
 
-            per["t_kj"] = [ten.zeros("t_kj (TNO)", [nt, nt]) for _ in range(6)]
+            # One block per DISTINCT pair this triplet bridges, holding the left
+            # half ``S^T t`` of the congruence transform. The plan deduplicated
+            # that set; see :meth:`_emit_projections`.
+            per["bridge"] = [ten.zeros("S^T t", [nt, int(cc.n_pno[pair])])
+                             for pair in r["bridges"]]
+            # The amplitudes those read, as views made HERE rather than in the
+            # emitter. Building a view inside a capture records a node for it,
+            # so a per-request ``logical_view`` costs a third of the phase's
+            # node count all by itself - which is the same reason every other
+            # view in this method is made before the graph exists. Logical
+            # rather than padded: ``S`` is sized to the pair's PNO count, so a
+            # bucket's padding would not fit the product.
+            per["T_pair"] = [self._keep(state,
+                                        cc.layout.logical_view(cc.T_all, pair))
+                             for pair in r["bridges"]]
+            per["t1_diag"] = [self._keep(state, cc.T_ia[lmo][:, 0:1])
+                              if pair != -1 and cc.n_pno[pair] else None
+                              for lmo, pair in zip(r["labels"], r["diag"])]
+
+            # The six t_kj as column slices of one store, so the batch that
+            # writes them has a destination list of one kind. Slices of a
+            # column-major matrix, so each is the contiguous block an owning
+            # tensor would have been.
+            per["t_kj_store"] = ten.zeros("t_kj (TNO) store", [nt, 6 * nt])
+            per["t_kj"] = [self._keep(state,
+                                      per["t_kj_store"][:, idx * nt:(idx + 1) * nt])
+                           for idx in range(6)]
             per["t_xl"] = [ten.zeros("t_xl (TNO)", [nt, nt, max(nl, 1)])
                            for _ in range(3)]
             per["t_xl_slot"] = [
@@ -511,23 +655,16 @@ class LCCSDT0:
 
     # -- emission ------------------------------------------------------------
 
-    def _emit_setup(self, chunk, state, overlaps):
-        """Gather the three-index blocks, rotate them to TNOs, apply the metric.
+    def _emit_gather(self, chunk, state, overlaps):
+        """Gather the three-index blocks, and rotate ``(Q|u v)`` to TNOs.
 
-        **Two metric powers, and the same trap :mod:`dlpno.cc_integrals`
-        documents.** Most blocks are fitted symmetrically, ``J^-1/2 (Q|pq)``, so
-        a product of two of them reconstructs an integral. The three-external
-        family is the exception: ``(i a | b d)`` contracts a fitted ``(Q|i a)``
-        against a completely UNFITTED ``(Q|b d)``, so its left factor carries
-        the full inverse instead. Applying one power throughout would apply the
-        metric one and a half times.
-
-        ``(Q | a b)`` is therefore never fitted at all, which is why the
-        two-step rotation writes it and nothing solves against it afterwards.
+        ``(Q | a b)`` is finished here and never fitted at all - see
+        :meth:`_emit_fit` for why - which is why the two-step rotation writes it
+        in this graph and nothing solves against it in the next.
         """
         cc = self.cc
         for r, per in zip(chunk, state["per"]):
-            ijk, nq, nl, nu = r["ijk"], r["nq"], r["nl"], r["nu"]
+            ijk, nl = r["ijk"], r["nl"]
             qs = [int(q) for q in cc.lmotriplet_to_ribfs[ijk]]
             ms = [int(m) for m in r["lmos"]]
             us = [int(u) for u in cc.lmotriplet_to_paos[ijk]]
@@ -535,8 +672,6 @@ class LCCSDT0:
 
             for x, lmo in enumerate(r["labels"]):
                 la.gather(per["raw_v"][x], cc.q_ia, [qs, [int(lmo)], us])
-                # (Q | x u) X -> (Q | x a), straight into its column slice.
-                la.gemm(1.0, per["raw_v_flat"][x], X, 0.0, per["q_xv"][x])
                 if nl:
                     la.gather(per["raw_o"][x], cc.q_ij, [qs, [int(lmo)], ms])
                     la.axpby(1.0, per["raw_o_flat"][x], 0.0, per["q_xo"][x])
@@ -550,97 +685,172 @@ class LCCSDT0:
             einsums.einsum("Qav <- Quv ; ua", per["half"], per["uv"], X)
             einsums.einsum("Qab <- Qav ; vb", per["q_vv"], per["half"], X)
 
-            # The full-inverse copies are taken BEFORE the symmetric fit
-            # overwrites the blocks they come from, which is psi4's order.
+    def _emit_rotate(self, chunk, state, overlaps):
+        """``(Q | x u) X -> (Q | x a)``, one batch for the whole chunk.
+
+        Three GEMMs per triplet, each writing straight into its column slice of
+        the right-hand side the fit will solve against, and every one of them
+        independent of every other - so they are one
+        :func:`~einsums.graph.grouped_batched_gemm` rather than
+        ``3 * len(chunk)`` dispatches. The shapes differ between triplets and
+        need not agree: the grouped form sorts its members into uniform
+        ``(m, n, k, lda, ldb, ldc)`` groups at capture, which is why nothing here
+        pads or reads the plan's shape class.
+        """
+        cc = self.cc
+        a, b, c = [], [], []
+        for r, per in zip(chunk, state["per"]):
+            for x in range(3):
+                a.append(per["raw_v_flat"][x])
+                b.append(cc.X_tno[r["ijk"]])
+                c.append(per["q_xv"][x])
+        cg.grouped_batched_gemm(1.0, a, b, 0.0, c)
+
+    def _emit_fit(self, chunk, state, overlaps):
+        """Apply both metric powers to the right-hand sides.
+
+        **Two metric powers, and the same trap :mod:`dlpno.cc_integrals`
+        documents.** Most blocks are fitted symmetrically, ``J^-1/2 (Q|pq)``, so
+        a product of two of them reconstructs an integral. The three-external
+        family is the exception: ``(i a | b d)`` contracts a fitted ``(Q|i a)``
+        against a completely UNFITTED ``(Q|b d)``, so its left factor carries
+        the full inverse instead. Applying one power throughout would apply the
+        metric one and a half times, and ``(Q | a b)`` is never fitted at all.
+
+        The full-inverse copies are taken BEFORE the symmetric fit overwrites
+        the blocks they come from, which is psi4's order. Both steps stay in one
+        graph, because what enforces that order is the write-after-read edge the
+        hazard scan draws between overlapping slices of ``rhs_half``, not the
+        graph boundary.
+        """
+        for per in state["per"]:
             la.axpby(1.0, per["rhs_virtual"], 0.0, per["rhs_full"])
             A_full, A_half = per["metric"]
             la.gesv(A_full, per["rhs_full"])
             la.gesv(A_half, per["rhs_half"])
 
     def _emit_integrals(self, chunk, state, overlaps):
-        """The three integral families the triples contract.
+        """The three integral families the triples contract, in ONE batch.
 
         ``(x a | b d)`` from the full-inverse factor against the unfitted
         ``(Q|a b)``; ``(y l | z c)`` and ``(x a | y b)`` from two symmetric
         factors each.
 
-        ``K_xvvv`` is written through a merged view of a rank-3 tensor, and the
+        All three are ``alpha op(A)^T op(B)`` with no accumulation, every
+        destination is its own tensor, and nothing here reads what anything else
+        here writes - so all twelve per triplet go out as one grouped batch over
+        the whole chunk. The families differ only in shape, which is precisely
+        what the grouped form absorbs.
+
+        ``K_xvvv`` is written through the MERGED form of a rank-3 tensor, and the
         merge order is not a convention to pick: joining two adjacent axes of a
         column-major tensor leaves the FIRST varying fastest, and ``(Q|a b)``
         was flattened the same way, so ``K[a, b, d]`` comes out meaning
         ``(x a | b d)`` on both sides of the GEMM.
         """
+        a, b, c = [], [], []
         for r, per in zip(chunk, state["per"]):
             for x in range(3):
-                la.gemm(1.0, per["q_xv_inv"][x], per["q_vv_flat"], 0.0,
-                        per["K_xvvv_flat"][x], trans_a=True)
+                a.append(per["q_xv_inv"][x])
+                b.append(per["q_vv_flat"])
+                c.append(per["K_xvvv_flat"][x])
 
             # (y l | z c) per permutation: the occupied factor of the
             # permutation's middle position against the virtual factor of its
             # last.
             if r["nl"]:
                 for idx, (positions, _scatter, _pair) in enumerate(r["perms"]):
-                    la.gemm(1.0, per["q_xo"][positions[1]],
-                            per["q_xv"][positions[2]], 0.0,
-                            per["K_ooov"][idx], trans_a=True)
+                    a.append(per["q_xo"][positions[1]])
+                    b.append(per["q_xv"][positions[2]])
+                    c.append(per["K_ooov"][idx])
 
             # (j b | k c), (i a | k c) and (i a | j b), in the order Eq. 110
             # reads them.
             for slot, (x, y) in enumerate(((1, 2), (0, 2), (0, 1))):
-                la.gemm(1.0, per["q_xv"][x], per["q_xv"][y], 0.0,
-                        per["K_ovov"][slot], trans_a=True)
+                a.append(per["q_xv"][x])
+                b.append(per["q_xv"][y])
+                c.append(per["K_ovov"][slot])
+        cg.grouped_batched_gemm(1.0, a, b, 0.0, c, trans_a=True)
 
-    def _emit_amplitudes(self, chunk, state, overlaps):
-        """Every amplitude the triples read, rotated into the TNO basis.
+    def _emit_projections(self, chunk, state, overlaps):
+        """The left half ``S^T t`` of every congruence transform, in ONE batch.
 
-        Three families, all the same congruence transform ``S^T t S`` against a
-        pair-to-triplet overlap:
+        Every amplitude the triples read lives in some pair's PNO basis and is
+        contracted in a triplet's TNO basis, so all of them arrive through the
+        same congruence transform ``S^T t S`` against a pair-to-triplet overlap.
+        Split in two, because the two halves batch differently: the left half
+        depends on the PAIR alone, so it is computed once per distinct pair
+        (:meth:`plan`'s ``bridges``), while the right half is once per
+        destination.
 
-        * ``t_{k'j'}`` for each of the six permutations, Eq. 109a's doubles;
-        * ``t_{xl}`` for ``x`` in ``i, j, k`` and ``l`` over the triplet's
-          neighbours, Eq. 109b's, stacked over ``l`` so that term becomes one
-          GEMM instead of one per neighbour;
-        * the singles of ``i, j, k``, which live on their diagonal pairs.
+        That sharing is worth having rather than incidental. A triplet reaches
+        the same pair through all six permutations and through each of three
+        LMOs' neighbour lists, so the requests outnumber the distinct pairs by
+        the six permutations plus whatever a repeated LMO adds - and psi4, which
+        rebuilds the overlap inside its permutation loop, does the whole
+        transform once per request.
 
-        psi4 rebuilds the overlap inside its permutation loop, so a pair
-        appearing in two permutations is bridged twice and a neighbour pair is
-        bridged six times; here the bridge is looked up.
+        The singles ride in the same batch, because they are the same operation:
+        a diagonal pair's bridge against a one-column amplitude. A projection
+        written as a COLUMN, not a row - a GEMM with one row is a degenerate case
+        and Eq. 84c cost the CCSD iteration a factor of two at ten threads before
+        it was turned round.
         """
-        cc = self.cc
+        a, b, c = [], [], []
         for r, per in zip(chunk, state["per"]):
             ijk = r["ijk"]
-            for idx, (_positions, _scatter, pair) in enumerate(r["perms"]):
-                self._congruence(state, overlaps, pair, ijk, per["t_kj"][idx])
+            for slot, pair in enumerate(r["bridges"]):
+                a.append(self._S(overlaps, pair, ijk))
+                b.append(per["T_pair"][slot])
+                c.append(per["bridge"][slot])
 
-            for x, lmo in enumerate(r["labels"]):
-                for s, pair in enumerate(r["neighbours"][x]):
-                    self._congruence(state, overlaps, pair, ijk,
-                                     per["t_xl_slot"][x][s])
-
-                # The singles: one GEMM against the diagonal pair's bridge. A
-                # projection written as a column, not a row - a GEMM with one
-                # row is a degenerate case, and Eq. 84c cost the CCSD iteration
-                # a factor of two at ten threads before it was turned round.
+            for x in range(3):
                 S = self._S(overlaps, r["diag"][x], ijk)
-                if S is not None:
-                    la.gemm(1.0, S, cc.T_ia[lmo], 0.0, per["t_x"][x],
-                            trans_a=True)
+                if S is None or per["t1_diag"][x] is None:
+                    continue
+                a.append(S)
+                b.append(per["t1_diag"][x])
+                c.append(per["t_x"][x])
+        if a:
+            cg.grouped_batched_gemm(1.0, a, b, 0.0, c, trans_a=True)
 
-    def _congruence(self, state, overlaps, pair, ijk, dest):
-        """``dest = S(pair, ijk)^T t_pair S(pair, ijk)``.
+    def _emit_amplitudes(self, chunk, state, overlaps):
+        """The right half ``(S^T t) S``, into every destination, in ONE batch.
 
-        A dead pair leaves ``dest`` at the zero it was allocated with, which is
-        what psi4's null matrix multiplies out to and what the terms reading it
-        want.
+        Two families read it:
+
+        * ``t_{k'j'}`` for each of the six permutations, Eq. 109a's doubles,
+          into the six column slices of one store;
+        * ``t_{xl}`` for ``x`` in ``i, j, k`` and ``l`` over the triplet's
+          neighbours, Eq. 109b's, into slot ``l`` of a stack over ``l`` so that
+          term becomes one einsum instead of one per neighbour.
+
+        A dead pair contributes no member and leaves its destination at the zero
+        it was allocated with, which is what psi4's null matrix multiplies out to
+        and what the terms reading it want. Every destination is distinct - the
+        six ``t_kj`` are disjoint column slices and the stack slots are disjoint
+        planes - which is what makes one batch legal, since it orders nothing
+        between its members.
         """
-        cc = self.cc
-        S = self._S(overlaps, pair, ijk)
-        if S is None:
-            return
-        # Logical rather than padded: ``S`` is sized to the pair's PNO count,
-        # so a bucket's padding would not fit the product.
-        T = self._keep(state, cc.layout.logical_view(cc.T_all, pair))
-        la.gemm(1.0, ten.doublet(S, T, trans_a=True, name="S^T t"), S, 0.0, dest)
+        a, b, c = [], [], []
+        for r, per in zip(chunk, state["per"]):
+            ijk, bridge_of = r["ijk"], r["bridge_of"]
+            for idx, (_positions, _scatter, pair) in enumerate(r["perms"]):
+                if pair not in bridge_of:
+                    continue
+                a.append(per["bridge"][bridge_of[pair]])
+                b.append(self._S(overlaps, pair, ijk))
+                c.append(per["t_kj"][idx])
+
+            for x in range(3):
+                for s, pair in enumerate(r["neighbours"][x]):
+                    if pair not in bridge_of:
+                        continue
+                    a.append(per["bridge"][bridge_of[pair]])
+                    b.append(self._S(overlaps, pair, ijk))
+                    c.append(per["t_xl_slot"][x][s])
+        if a:
+            cg.grouped_batched_gemm(1.0, a, b, 0.0, c)
 
     def _emit_triples(self, chunk, state, overlaps):
         """Eq. 109, Eq. 110 and Eq. 53: ``W``, ``V``, the amplitudes, the energy.

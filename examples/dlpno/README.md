@@ -187,7 +187,7 @@ The port runs its hybrid configuration (`--backend compute_pno_overlaps=cpp,tran
 Every phase either side times appears in the tables, including the ones the other side has no analogue for, and the difference between the rows and the total prints as `other`, so a phase cannot silently go missing.
 The LMP2 rows split the one-time graph build (allocate, capture, optimize - a cost psi4 has no analogue of, which amortizes with iteration count) from the iterations themselves.
 
-**Ethanol/cc-pVTZ** - the compact molecule in the larger basis.
+**Water chain n=6, cc-pVDZ** - the extended system in the smaller basis: 326 triplets at 22.3 TNOs average.
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |

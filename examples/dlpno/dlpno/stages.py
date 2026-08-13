@@ -29,24 +29,27 @@ the session's graph is then a visible improvement: one fewer SPLIT.
 splitting off the ``self`` fields each one touches, and the field counts say
 that is not uniform work: five phases touch fewer than ten fields while
 ``lmp2_iterations`` touches 45. A phase states its contract when it is
-promoted, and ``contract=False`` reports the debt until then. Two have been:
-``compute_pno_overlaps`` (27 fields narrowed to seven parameters) and
-``transform_pnos`` (32 narrowed to fifteen), each split into a plan half that
-stays Python and a contracted numerics stage declared below, with C++ backends
-under ``cpp/``. ``python -m einsums.stages extract`` mechanizes the analysis
-for the next one.
+promoted, and ``contract=False`` reports the debt until then. Three have been:
+``compute_pno_overlaps`` (27 fields narrowed to seven parameters),
+``transform_pnos`` (32 narrowed to fifteen) and the coupled-cluster
+``compute_pno_integrals`` (19 narrowed to seventeen), each split into a plan
+half that stays Python and a contracted numerics stage declared below, with C++
+backends under ``cpp/``. ``python -m einsums.stages extract`` mechanizes the
+analysis for the next one.
 """
 
 import functools
 
 from einsums.stages import TensorD, stage
 
-from .contracts import CouplingPlan, PnoOverlaps, PnoTransform
+from .cc_integrals import pno_integral_blocks as _pno_integral_blocks
+from .contracts import CouplingPlan, PnoIntegralBlocks, PnoOverlaps, PnoTransform
 from .mp2 import DLPNOMP2
 from .pno_overlaps import compute_pno_overlaps as _compute_pno_overlaps
 from .pno_xform import transform_pnos as _transform_pnos
 
-__all__ = ["PHASES", "run_phases", "compute_pno_overlaps", "transform_pnos"]
+__all__ = ["PHASES", "run_phases", "compute_pno_overlaps", "transform_pnos",
+           "compute_pno_integrals"]
 
 # In dependency order, which is the order compute_energy called them in.
 #
@@ -71,7 +74,7 @@ PHASES = [
 # Phases still carrying contract debt: methods reading fields off self.
 # The plan_* phases are among them and are not promotion targets either - they
 # are index arithmetic, and nothing measured says they are hot.
-CONTRACTED = ("compute_pno_overlaps", "transform_pnos")
+CONTRACTED = ("compute_pno_overlaps", "transform_pnos", "compute_pno_integrals")
 UNCONTRACTED = [n for n in PHASES if n not in CONTRACTED]
 
 
@@ -192,8 +195,85 @@ def transform_pnos(
     )
 
 
+@stage(eager=True)
+def compute_pno_integrals(
+    q_ij: TensorD,
+    q_ia: TensorD,
+    q_ab: TensorD,
+    metric: TensorD,
+    X_pno: list[TensorD],
+    i_lmo: list[int],
+    j_lmo: list[int],
+    n_pno: list[int],
+    strong: list[bool],
+    ribfs: list[list[int]],
+    paos: list[list[int]],
+    lmos: list[list[int]],
+    extended: list[list[int]],
+    rot_X: list[TensorD],
+    rot_paos: list[list[int]],
+    nb_ij: list[list[int]],
+    nb_ji: list[list[int]],
+) -> PnoIntegralBlocks:
+    """Every PNO-basis integral block one chunk of pairs needs.
+
+    The first COUPLED-CLUSTER phase to state a contract, and the third stage
+    overall: seventeen parameters against the nineteen ``self`` attributes the
+    phase measured before ``_plan_chunk`` was split away, two of which were not
+    state at all (a print helper and a method). Design decision 6 asked for the
+    phase to be kept promotable and ``stage_state_report.py`` is how that was
+    checked; this is the promotion it was kept narrow for.
+
+    Promoted because its measured shape is the promotion signature exactly:
+    parity with psi4 at one thread, several times adrift at ten, on a long
+    per-pair chain of fits, GEMMs and gathers that psi4 threads over pairs.
+    Python cannot drive that loop concurrently - against the OpenMP-built
+    OpenBLAS a caller-created thread pool returns silently wrong numbers (trap
+    7) - so the C++ backend is the only place the per-pair chains can overlap.
+
+    One chunk of pairs at a time, because the blocks a pair is BUILT from are an
+    order larger than the blocks it produces and the whole set does not fit in
+    core. The chunking is the caller's (:func:`dlpno.cc_integrals._chunks`),
+    which is what keeps it a memory decision rather than a numerical one: no
+    pair reads another pair's raw blocks, so any split gives bit-identical
+    integrals.
+
+    Args:
+        q_ij: Three-index integrals ``(Q | i j)``, the full tensor.
+        q_ia: Three-index integrals ``(Q | i u)``, the full tensor.
+        q_ab: Three-index integrals ``(Q | u v)``, the full tensor.
+        metric: The auxiliary-basis metric ``(P | Q)``, the full matrix.
+        X_pno: Per pair in the chunk, its own PAO domain -> PNO transform.
+        i_lmo: Per pair, LMO ``i``.
+        j_lmo: Per pair, LMO ``j``; never less than ``i``.
+        n_pno: Per pair, its PNO count.
+        strong: Per pair, whether it is a strong pair. The density-fitted
+            factors and both non-projected families are built for strong pairs
+            only, exactly as psi4 does, because only their residual reads them.
+        ribfs: Per pair, the auxiliary indices of its fit domain.
+        paos: Per pair, the PAO indices its own domain covers.
+        lmos: Per pair, the LMOs it interacts with.
+        extended: Per pair, its PAO domain widened by every interacting LMO's,
+            which is the basis the non-projected families go through.
+        rot_X: The PNO transform of every neighbour pair this chunk reads,
+            deduplicated: a neighbour is shared by many pairs.
+        rot_paos: Parallel to ``rot_X``, that neighbour pair's PAO domain, from
+            which the numerics recovers its position inside ``extended``.
+        nb_ij: Per pair, per interacting LMO ``k``, the index into ``rot_X`` of
+            pair ``(k, j)``, or ``-1`` when it does not exist or has no PNOs.
+            Empty for a weak pair, which reads no neighbour block at all.
+        nb_ji: The same for pair ``(k, i)``, which the ``ji`` blocks read.
+            Empty on the diagonal, where there are no ``ji`` blocks.
+    """
+    return _pno_integral_blocks(
+        q_ij, q_ia, q_ab, metric, X_pno, i_lmo, j_lmo, n_pno, strong, ribfs,
+        paos, lmos, extended, rot_X, rot_paos, nb_ij, nb_ji,
+    )
+
+
 _stages["compute_pno_overlaps"] = compute_pno_overlaps
 _stages["transform_pnos"] = transform_pnos
+_stages["compute_pno_integrals"] = compute_pno_integrals
 globals().update(_stages)
 __all__ += PHASES
 

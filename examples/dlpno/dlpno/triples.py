@@ -54,7 +54,7 @@ import einsums.graph as cg
 from . import sparse
 from . import tensors as ten
 from .base import batched_eigh, batched_orthocanonicalizer
-from .cc_overlaps import build_overlaps
+from .cc_overlaps import OverlapHalfCache, build_overlaps
 from .ccsd import DLPNOCCSD
 from .lccsd_t import LCCSDT
 from .lccsd_t0 import LCCSDT0
@@ -127,6 +127,10 @@ class DLPNOCCSDT(DLPNOCCSD):
         #: Captured nodes and chunks of the last (T0) pass.
         self.t0_nodes = 0
         self.t0_chunks = 0
+        #: The pair-side overlap halves, shared by every (T0) pass of this
+        #: calculation; see :meth:`compute_lccsd_t0` for why it is created
+        #: there rather than here.
+        self._overlap_halves = None
 
     @property
     def n_lmo_triplets(self):
@@ -534,9 +538,23 @@ class DLPNOCCSDT(DLPNOCCSD):
         ``W``, ``V`` and the amplitudes for the iterative pass, and is psi4's
         ``save_memory`` argument; the solver itself is kept on
         :attr:`lccsd_t0` so :meth:`lccsd_t_iterations` can read them.
+
+        The pair-side overlap halves are shared across the two or three passes
+        this method is called for, because every pair's transform, PAO domain and
+        PNO count are fixed by the time the first one runs: the passes differ in
+        their TNO space, which is the side the cache deliberately excludes. The
+        cache is created on FIRST USE rather than in ``__init__`` for the one
+        thing that would invalidate it, the CCSD PNO rebuild, which replaces
+        ``X_pno`` and runs long before any triples pass. That ordering is checked
+        rather than trusted anyway - each entry carries the objects it was built
+        from - so this is belt and braces on a cache whose lifetime is one
+        calculation.
         """
         t0 = time.perf_counter()
-        solver = LCCSDT0(self, verbose=self.verbose)
+        if self._overlap_halves is None:
+            self._overlap_halves = OverlapHalfCache(self.n_lmo_pairs)
+        solver = LCCSDT0(self, verbose=self.verbose,
+                         halves=self._overlap_halves)
         energy = solver.run(retain=retain)
         self.lccsd_t0 = solver if retain else None
         self.e_ijk = solver.e_ijk
@@ -713,6 +731,12 @@ class DLPNOCCSDT(DLPNOCCSD):
             self.estimate_memory()
             self.e_t0_crude = self.compute_lccsd_t0(retain=True)
             self.e_lccsd_t += self.lccsd_t_iterations()
+
+        # No pass past here reads a pair-side overlap half: the iterative (T)
+        # bridges triplet to triplet. Dropped rather than left to the object's
+        # lifetime, so the store's residency matches the span the budget in
+        # LCCSDT0._chunks charged for it.
+        self._overlap_halves = None
 
         self.e_corr = (self.e_lccsd_t + self.de_weak + self.de_lmp2_eliminated
                        + self.de_dipole + self.de_pno_total)

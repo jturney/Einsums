@@ -331,6 +331,57 @@ def test_the_energy_screen_books_what_it_drops():
     assert total == pytest.approx(unscreened.e_t0, rel=0.05)
 
 
+def test_every_gemm_leaves_the_phase_in_one_of_four_batches_per_chunk():
+    """The batched emitters, asserted structurally rather than by their answer.
+
+    **This is the only signal that says the phase batches at all.** Every GEMM
+    here is grouped rather than fused, so a revert to one dispatch per plan
+    record reproduces every energy in this file to the last bit and passes every
+    other test - which is the shape of defect this port has now been bitten by
+    three times (see the ``m == 1`` GEMM and the retained rotation scratch).
+
+    Two facts are checked, and both are load-bearing:
+
+    * each of the four batched graphs holds exactly ONE node, per chunk. That is
+      what puts the batch alone on its execution level, and the OpenMP executor
+      threads a batched GEMM only when its level holds a single node - two nodes
+      and the batch's own region nests and collapses to one thread;
+    * the surviving node count no longer scales with the neighbour count. Before
+      the flip the phase captured 128 nodes per triplet at this fixture, of which
+      66 were the congruence transforms and their per-request views; the bound
+      below is comfortably under that and comfortably over the 47 the batched
+      form emits.
+
+    The phase is replayed a third time here, standing on the state
+    ``compute_energy`` left, so the energy check is also a free idempotence test
+    of the whole phase: bit-identical, since nothing about a fresh run changes an
+    operand or a summation order.
+    """
+    from dlpno.lccsd_t0 import LCCSDT0
+
+    reference, _ = load_reference(WATER)
+    cc = DLPNOCCSDT(reference, replace(Thresholds.preset("NORMAL", method="cc"),
+                                       t0_approximation=True), verbose=False)
+    cc.compute_energy()
+
+    for budget, want_chunks in ((cc.cut.in_core_memory, 1), (6 * 2 ** 20, None)):
+        cc.cut = replace(cc.cut, in_core_memory=budget)
+        solver = LCCSDT0(cc, verbose=False)
+        total = solver.run()
+
+        if want_chunks is not None:
+            assert solver.n_chunks == want_chunks
+        else:
+            assert solver.n_chunks > 1, "the small budget did not split the phase"
+        assert solver.n_batched_nodes == 4 * solver.n_chunks, (
+            "the four batched graphs no longer hold one node each, so the "
+            "batches are not alone on their execution levels")
+        assert solver.n_nodes <= 60 * cc.n_lmo_triplets + 4 * solver.n_chunks, (
+            f"{solver.n_nodes} nodes over {cc.n_lmo_triplets} triplets: the "
+            "GEMMs are back to one dispatch per plan record")
+        assert total == cc.e_t0, "replaying the phase moved the correction"
+
+
 def test_the_plan_classifies_every_triplet():
     """Every triplet carries a shape class, which is what M8 would group on.
 
