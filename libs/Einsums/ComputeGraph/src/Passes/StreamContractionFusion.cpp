@@ -82,13 +82,27 @@ bool subset_of(std::vector<std::string> const &small, std::vector<std::string> c
 template <typename T>
 void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &members, std::vector<TensorId> const &unique_outs,
                 std::vector<int> const &allowed_axes) {
-    using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
+    using Impl = ::einsums::detail::TensorImpl<T>;
 
-    // live_tensor_ptr throughout, never tensor_ptr: every tensor this kernel
-    // touches is a CAPTURED OPERAND, and tensor_ptr names the caller's wrapper,
-    // which capture allows to be destroyed before execute() because it adopted
-    // the storage into a stand-in. See Graph::live_tensor_ptr.
-    auto const *S      = static_cast<RT const *>(graph->live_tensor_ptr(s_id));
+    // Geometry comes from the handle's LIVE rank-erased impl, never from a cast
+    // of the tensor object itself. Both spellings resolve the object the graph
+    // keeps alive (capture adopts an operand's storage into a stand-in so the
+    // caller's wrapper may die before execute()), but a runtime OPERAND is a
+    // GeneralRuntimeTensor<T> or a RuntimeTensorView<T> and those are unrelated
+    // classes with unrelated vtable layouts. Casting one to the other and
+    // calling a virtual jumped through the wrong slot: a view-operand group
+    // reached rank() and landed in set_name(), which is a segfault at the first
+    // fused node. TensorImpl<T> is the one representation both types agree on,
+    // and impl_fn() re-reads it at call time so a re-emplaced view is seen.
+    auto const impl_of = [graph](TensorId id) -> Impl * {
+        auto const *handle = graph->find_tensor(id);
+        if (handle == nullptr || !handle->impl_fn) {
+            EINSUMS_THROW_EXCEPTION(std::runtime_error, "StreamContractionFusion: fused operand {} has no live tensor impl", id);
+        }
+        return static_cast<Impl *>(handle->impl_fn());
+    };
+
+    auto const *S      = impl_of(s_id);
     int const   rank   = static_cast<int>(S->rank());
     size_t      s_size = 1;
     for (int d = 0; d < rank; d++) {
@@ -109,51 +123,70 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
         s_delta[d] = static_cast<int64_t>(S->stride(axes[d]));
     }
 
-    // Offset span of a runtime tensor: 1 + sum((dim-1) * stride). Equals the
-    // element count for dense layouts and bounds every reachable offset for
-    // strided ones, so span-sized private buffers can never overflow.
-    auto span_of = [](RT const *X) {
-        size_t s = 1;
+    // Element count of an operand, which is also the size of a private
+    // accumulator for it: private buffers are indexed in the output's DENSE
+    // element space (see dense_strides below), not by its real offsets, so a
+    // strided view output costs its elements and not its offset span - a single
+    // column view of a large matrix would otherwise privatize the whole matrix.
+    auto elems_of = [](Impl const *X) {
+        size_t n = 1;
         for (size_t d = 0; d < X->rank(); d++) {
-            if (X->dim(static_cast<int>(d)) == 0) {
-                return size_t{0};
-            }
-            s += (X->dim(static_cast<int>(d)) - 1) * X->stride(static_cast<int>(d));
+            n *= X->dim(static_cast<int>(d));
         }
-        return s;
+        return n;
+    };
+
+    // Column-major packing of an output's own axis order: stride 1 on axis 0,
+    // each later axis the product of the dims before it. Used for the private
+    // accumulators, so every member writing one output agrees on the mapping
+    // whatever order its index list names the axes in.
+    auto dense_strides = [](Impl const *X) {
+        std::vector<int64_t> ds(X->rank(), 1);
+        for (size_t d = 1; d < X->rank(); d++) {
+            ds[d] = ds[d - 1] * static_cast<int64_t>(X->dim(static_cast<int>(d - 1)));
+        }
+        return ds;
+    };
+
+    // Walk an output's real element offsets in the same (axis 0 fastest) order
+    // the dense packing uses, calling body(real_offset).
+    auto for_each_element = [](Impl const *X, auto &&body) {
+        size_t const cr = X->rank();
+        size_t       n  = 1;
+        for (size_t d = 0; d < cr; d++) {
+            n *= X->dim(static_cast<int>(d));
+        }
+        std::vector<int64_t> cc(cr, 0);
+        int64_t              off = 0;
+        for (size_t e = 0; e < n; e++) {
+            body(off);
+            for (size_t d = 0; d < cr; d++) {
+                cc[d]++;
+                off += static_cast<int64_t>(X->stride(static_cast<int>(d)));
+                if (cc[d] < static_cast<int64_t>(X->dim(static_cast<int>(d)))) {
+                    break;
+                }
+                off -= cc[d] * static_cast<int64_t>(X->stride(static_cast<int>(d)));
+                cc[d] = 0;
+            }
+        }
     };
 
     // Prescale the outputs (member order): 0 -> zero, 1 -> keep, else scale
-    // (stride-aware odometer, so strided outputs scale only their own
-    // elements). Only the first member touching an output may have
-    // c_pf != 1 (validated by the pass), so this is exact.
+    // (stride-aware odometer, so a strided output touches only its own
+    // elements and never the gaps between them). Only the first member
+    // touching an output may have c_pf != 1 (validated by the pass), so this is
+    // exact.
     std::unordered_set<TensorId> prescaled;
     for (auto const &m : members) {
-        if (prescaled.insert(m.out_id).second) {
-            auto *C = static_cast<RT *>(graph->live_tensor_ptr(m.out_id));
+        if (prescaled.insert(m.out_id).second && !m.c_pf_is_one) {
+            auto   *C  = impl_of(m.out_id);
+            T      *cd = C->data();
+            T const f  = as<T>(m.c_pf);
             if (m.c_pf_is_zero) {
-                C->zero();
-            } else if (!m.c_pf_is_one) {
-                T                   *cd = C->data();
-                T const              f  = as<T>(m.c_pf);
-                int const            cr = static_cast<int>(C->rank());
-                std::vector<int64_t> cc(static_cast<size_t>(cr), 0);
-                bool                 done = (span_of(C) == 0);
-                int64_t              off  = 0;
-                while (!done) {
-                    cd[off] *= f;
-                    int d = cr - 1;
-                    for (; d >= 0; d--) {
-                        cc[static_cast<size_t>(d)]++;
-                        off += static_cast<int64_t>(C->stride(d));
-                        if (cc[static_cast<size_t>(d)] < static_cast<int64_t>(C->dim(d))) {
-                            break;
-                        }
-                        off -= cc[static_cast<size_t>(d)] * static_cast<int64_t>(C->stride(d));
-                        cc[static_cast<size_t>(d)] = 0;
-                    }
-                    done = (d < 0);
-                }
+                for_each_element(C, [cd](int64_t off) { cd[off] = T{0}; });
+            } else {
+                for_each_element(C, [cd, f](int64_t off) { cd[off] *= f; });
             }
         }
     }
@@ -185,25 +218,33 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
     plans.reserve(members.size());
     for (auto const &m : members) {
         Plan        p;
-        auto const *W = static_cast<RT const *>(graph->live_tensor_ptr(m.w_id));
-        auto       *C = static_cast<RT *>(graph->live_tensor_ptr(m.out_id));
+        auto const *W = impl_of(m.w_id);
+        auto       *C = impl_of(m.out_id);
         p.alpha       = as<T>(m.alpha);
         p.w           = W->data();
         p.out         = C->data();
         p.direct      = part_axis >= 0 && std::ranges::find(m.c_indices, m.s_indices[static_cast<size_t>(part_axis)]) != m.c_indices.end();
         p.cdelta.resize(rank, 0);
         p.wdelta.resize(rank, 0);
+        // A direct writer addresses C itself, so its deltas are C's real
+        // strides; a privatized member addresses its dense accumulator instead.
+        std::vector<int64_t> c_strides = dense_strides(C);
+        if (p.direct) {
+            for (size_t d = 0; d < C->rank(); d++) {
+                c_strides[d] = static_cast<int64_t>(C->stride(static_cast<int>(d)));
+            }
+        }
         for (int d = 0; d < rank; d++) {
             auto const &label = m.s_indices[static_cast<size_t>(axes[d])];
             if (auto it = std::ranges::find(m.c_indices, label); it != m.c_indices.end()) {
-                p.cdelta[d] = static_cast<int64_t>(C->stride(static_cast<int>(it - m.c_indices.begin())));
+                p.cdelta[d] = c_strides[static_cast<size_t>(it - m.c_indices.begin())];
             }
             if (auto it = std::ranges::find(m.w_indices, label); it != m.w_indices.end()) {
                 p.wdelta[d] = static_cast<int64_t>(W->stride(static_cast<int>(it - m.w_indices.begin())));
             }
         }
         p.out_slot  = static_cast<size_t>(std::ranges::find(unique_outs, m.out_id) - unique_outs.begin());
-        p.out_elems = span_of(C);
+        p.out_elems = elems_of(C);
         plans.push_back(std::move(p));
     }
 
@@ -347,21 +388,25 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
         }
     }
 
-    // Reduce thread-private accumulators into the real outputs. The private
-    // buffers are dense in each output's OWN storage order because cdelta was
-    // built from the output's strides... they are not: cdelta indexes the
-    // output's real strided layout, so the private buffers use the same
-    // (possibly strided) offsets. Allocate them at the output's dense span
-    // and add elementwise - spans match because outputs are dense runtime
-    // tensors (allocated by capture) and offsets stay within [0, elems).
+    // Reduce thread-private accumulators into the real outputs. A privatized
+    // member's cdelta is the DENSE packing of its output's dims (axis 0
+    // fastest), so buffer index e pairs with the e-th element the output's own
+    // odometer visits: the walk translates dense index to real offset, which
+    // keeps a strided output's gaps untouched (a view output shares them with
+    // the rest of its parent) and keeps the buffers the size of the output the
+    // pass capped, not of its offset span.
     for (size_t u = 0; u < unique_outs.size(); u++) {
-        auto *C  = static_cast<RT *>(graph->live_tensor_ptr(unique_outs[u]));
+        auto *C  = impl_of(unique_outs[u]);
         T    *cd = C->data();
         for (int t = 0; t < nthreads; t++) {
             auto const &buf = thread_priv[static_cast<size_t>(t)][u];
-            for (size_t i = 0; i < buf.size(); i++) {
-                cd[i] += buf[i];
+            if (buf.empty()) {
+                continue;
             }
+            // buf.size() == elems_of(C): every plan on this slot sized its
+            // buffer from the same output.
+            size_t e = 0;
+            for_each_element(C, [&](int64_t off) { cd[off] += buf[e++]; });
         }
     }
 }
@@ -446,6 +491,15 @@ bool StreamContractionFusion::run(Graph &graph) {
             auto const *wh = handle_of(w_id);
             auto const *ch = handle_of(node.outputs[0]);
             if (sh == nullptr || wh == nullptr || ch == nullptr || !sh->is_runtime || !wh->is_runtime || !ch->is_runtime) {
+                continue;
+            }
+            // The kernel reads every operand's geometry through the handle's
+            // live TensorImpl, which is the one representation an owning runtime
+            // tensor and a runtime view share. A handle without one (a tile-wise
+            // sparse tensor) has no such geometry to read.
+            if (!sh->impl_fn || !wh->impl_fn || !ch->impl_fn) {
+                note_skip("operand has no live tensor impl",
+                          fmt::format("streamed tensor '{}' or an operand of node {} is tile-wise sparse", sh->name, ni));
                 continue;
             }
             // The kernel casts all three operands to the streamed tensor's
@@ -572,17 +626,54 @@ bool StreamContractionFusion::run(Graph &graph) {
             }
         }
 
-        // Interference guard: between the first and last member, no other
-        // node may write S, any W, or any output, and none may read an
-        // output (it would observe a partial sum).
+        // Every id below is resolved to the BUFFER it names
+        // (Graph::resolve_alias), never compared raw. A view and its parent are
+        // different TensorIds over the same memory, and in a real capture views
+        // are the common case (a DLPNO-CCSD iteration registers ~5800 of them
+        // against ~1200 whole tensors), so an id-only comparison answers "these
+        // do not interact" about two accesses to one buffer. That is what makes
+        // fusing unsound rather than merely suboptimal: fusion interleaves the
+        // members, and an interleaving is only equivalent to the original order
+        // when no member's write is observable by another member or by any node
+        // it moves across.
+        auto const root_of = [&](TensorId id) { return graph.resolve_alias(id); };
+
+        TensorId const               s_root = root_of(s_id);
+        std::unordered_set<TensorId> out_roots, w_roots;
+        for (auto const &m : members) {
+            out_roots.insert(root_of(m.out_id));
+            w_roots.insert(root_of(m.w_id));
+        }
+
+        // Intra-group aliasing. Writing into the buffer being streamed changes
+        // what later elements of the same stream read; writing into a weight
+        // changes what later members multiply by; and two outputs in one buffer
+        // cannot both be prescaled up front and then accumulated, because the
+        // original order let the second output's prefactor overwrite the first
+        // one's contribution. All three are decided per buffer, so a view of
+        // the streamed tensor counts as the streamed tensor.
+        {
+            std::unordered_set<TensorId> distinct_outs;
+            for (auto const &m : members) {
+                distinct_outs.insert(m.out_id);
+            }
+            bool const outs_share_buffer = distinct_outs.size() != out_roots.size();
+            if (outs_share_buffer || out_roots.contains(s_root) ||
+                std::ranges::any_of(w_roots, [&](TensorId w) { return out_roots.contains(w); })) {
+                note_skip("group operands share storage",
+                          fmt::format("stream over '{}': an output aliases the streamed tensor, a weight, or another output",
+                                      handle_of(s_id) != nullptr ? handle_of(s_id)->name : "?"));
+                continue;
+            }
+        }
+
+        // Interference guard: between the first and last member, no other node
+        // may write the streamed buffer, any weight buffer or any output
+        // buffer, and none may read an output buffer (it would observe a
+        // partial sum, since the fused node moves every member's write to the
+        // first member's position).
         size_t const lo = members.front().node_index;
         size_t const hi = members.back().node_index;
-
-        std::unordered_set<TensorId> outs, ws;
-        for (auto const &m : members) {
-            outs.insert(m.out_id);
-            ws.insert(m.w_id);
-        }
 
         std::vector<bool> is_member(nodes.size(), false);
         for (auto const &m : members) {
@@ -594,7 +685,8 @@ bool StreamContractionFusion::run(Graph &graph) {
                 continue;
             }
             for (auto const &out : nodes[n].outputs) {
-                if (out == s_id || outs.contains(out) || ws.contains(out)) {
+                TensorId const r = root_of(out);
+                if (r == s_root || out_roots.contains(r) || w_roots.contains(r)) {
                     interference = true;
                     break;
                 }
@@ -603,14 +695,15 @@ bool StreamContractionFusion::run(Graph &graph) {
                 break;
             }
             for (auto const &in : nodes[n].inputs) {
-                if (outs.contains(in)) {
+                if (out_roots.contains(root_of(in))) {
                     interference = true;
                     break;
                 }
             }
         }
         if (interference) {
-            report(3, fmt::format("skip stream fusion over tensor {}: an intervening node touches an operand or output",
+            note_skip("an intervening node touches an operand or output",
+                      fmt::format("stream over '{}': a node between the members shares a buffer with one of them",
                                   handle_of(s_id) != nullptr ? handle_of(s_id)->name : "?"));
             continue;
         }

@@ -562,3 +562,237 @@ TEMPLATE_TEST_CASE("StreamContractionFusion - scalar fallback branch (1,0,0)", "
         }
     }
 }
+
+// The remaining cases fuse over RUNTIME VIEW operands, which is the common
+// shape in a real workload (a DLPNO-CCSD iteration capture registers ~5800
+// views against ~1200 whole tensors) and the shape the kernel used to get
+// wrong: every operand was cast to GeneralRuntimeTensor<T>, so a
+// RuntimeTensorView<T> operand was type-confused and the first virtual call
+// jumped through the wrong vtable slot. Data is small integers throughout, so
+// every product and partial sum is exact in the element type whatever order it
+// is accumulated in - that is what lets these cases demand BITWISE equality
+// between the fused graph and the unfused replay.
+
+namespace {
+constexpr int kV = 20;
+
+/// Deterministic small integers, exact in double at any summation order.
+double stream_fill(size_t a, size_t b, size_t c) {
+    return static_cast<double>((a * 7 + b * 13 + c * 3) % 11) - 5.0;
+}
+
+/// Capture "C1 = S*W1, C2 = S*W2" over whatever S / W / C objects it is given.
+template <typename SType, typename WType, typename CType>
+void capture_pair(cg::Graph &graph, SType const &S, WType const &W1, WType const &W2, CType *C1, CType *C2) {
+    cg::CaptureGuard const guard(graph);
+    cg::einsum("i,j <- i,j,k ; j,k", 0.0, C1, 2.0, S, W1);
+    cg::einsum("i,j <- i,j,k ; j,k", 0.0, C2, -1.0, S, W2);
+}
+} // namespace
+
+TEST_CASE("StreamContractionFusion - a strided view as the streamed tensor", "[ComputeGraph][Passes][StreamFusion]") {
+    // S is a middle-axis slice of a larger parent, so it is a RuntimeTensorView
+    // whose outermost stride does not match its extent: the kernel must read
+    // its geometry from the view, not from a whole-tensor reinterpretation of
+    // the same address.
+    RuntimeTensor<double> parent("parent", std::vector<size_t>{kV, 2 * kV, kV});
+    for (size_t a = 0; a < kV; a++) {
+        for (size_t b = 0; b < 2 * kV; b++) {
+            for (size_t c = 0; c < kV; c++) {
+                std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(a), static_cast<ptrdiff_t>(b), static_cast<ptrdiff_t>(c)};
+                parent(idx) = stream_fill(a, b, c);
+            }
+        }
+    }
+    RuntimeTensorView<double> const S = parent(AllT{}, Range{kV / 2, kV / 2 + kV}, AllT{});
+    REQUIRE(S.stride(2) != S.dim(1) * S.stride(1)); // genuinely strided, not a contiguous block
+
+    RuntimeTensor<double> W1("W1", std::vector<size_t>{kV, kV}), W2("W2", std::vector<size_t>{kV, kV});
+    for (size_t b = 0; b < kV; b++) {
+        for (size_t c = 0; c < kV; c++) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(b), static_cast<ptrdiff_t>(c)};
+            W1(idx) = stream_fill(b, c, 1);
+            W2(idx) = stream_fill(c, b, 2);
+        }
+    }
+
+    RuntimeTensor<double> C1("C1", std::vector<size_t>{kV, kV}), C2("C2", std::vector<size_t>{kV, kV});
+    RuntimeTensor<double> R1("R1", std::vector<size_t>{kV, kV}), R2("R2", std::vector<size_t>{kV, kV});
+    C1.zero();
+    C2.zero();
+    R1.zero();
+    R2.zero();
+
+    // Reference: the same capture, replayed with no passes at all.
+    cg::Graph reference("stream_view_reference");
+    capture_pair(reference, S, W1, W2, &R1, &R2);
+    reference.execute();
+
+    cg::Graph graph("stream_view_s");
+    capture_pair(graph, S, W1, W2, &C1, &C2);
+
+    auto [modified, pass] = graph.apply<cg::passes::StreamContractionFusion>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 1);
+    REQUIRE(pass.num_eliminated() == 1);
+
+    graph.execute();
+
+    for (size_t ii = 0; ii < kV; ii++) {
+        for (size_t jj = 0; jj < kV; jj++) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), static_cast<ptrdiff_t>(jj)};
+            REQUIRE(C1(idx) == R1(idx));
+            REQUIRE(C2(idx) == R2(idx));
+        }
+    }
+}
+
+TEST_CASE("StreamContractionFusion - view outputs and view weights", "[ComputeGraph][Passes][StreamFusion]") {
+    // Every operand of both members is a view: each output is a STRIDED slice of
+    // its own parent (so its offset span exceeds its element count, and the
+    // elements it does not name belong to the rest of the parent) and the two
+    // weights are slices of one shared weight store. The fused node must write
+    // only the elements its output views name.
+    //
+    // The outputs come from two parents rather than two slices of one because
+    // the graph merges partially overlapping byte spans into a single buffer
+    // (Graph::link_alias_storage), and two strided row blocks of one parent
+    // interleave in memory - the pass then cannot prove they are element
+    // disjoint and declines the group, which the next case asserts.
+    RuntimeTensor<double> S("S", std::vector<size_t>{kV, kV, kV});
+    for (size_t a = 0; a < kV; a++) {
+        for (size_t b = 0; b < kV; b++) {
+            for (size_t c = 0; c < kV; c++) {
+                std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(a), static_cast<ptrdiff_t>(b), static_cast<ptrdiff_t>(c)};
+                S(idx) = stream_fill(a, b, c);
+            }
+        }
+    }
+
+    RuntimeTensor<double> w_store("w_store", std::vector<size_t>{kV, 2 * kV});
+    for (size_t b = 0; b < kV; b++) {
+        for (size_t c = 0; c < 2 * kV; c++) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(b), static_cast<ptrdiff_t>(c)};
+            w_store(idx) = stream_fill(b, c, 5);
+        }
+    }
+    RuntimeTensorView<double> const W1 = w_store(AllT{}, Range{0, kV});
+    RuntimeTensorView<double> const W2 = w_store(AllT{}, Range{kV, 2 * kV});
+
+    // A row block of a (2*kV, kV) parent: stride(0) == 1 but stride(1) is the
+    // parent's row count, so the view is strided and its offset span is larger
+    // than its element count.
+    auto const fill_parent = [](RuntimeTensor<double> &P) {
+        for (size_t a = 0; a < 2 * kV; a++) {
+            for (size_t b = 0; b < kV; b++) {
+                std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(a), static_cast<ptrdiff_t>(b)};
+                P(idx) = 100.0 + static_cast<double>(a * kV + b); // sentinel: nothing outside the view may change it
+            }
+        }
+    };
+    std::vector<RuntimeTensor<double>> parents;
+    parents.reserve(4);
+    for (int p = 0; p < 4; p++) {
+        parents.emplace_back(fmt::format("parent{}", p), std::vector<size_t>{2 * kV, kV});
+        fill_parent(parents.back());
+    }
+
+    RuntimeTensorView<double> C1 = parents[0](Range{0, kV}, AllT{});
+    RuntimeTensorView<double> C2 = parents[1](Range{0, kV}, AllT{});
+    RuntimeTensorView<double> R1 = parents[2](Range{0, kV}, AllT{});
+    RuntimeTensorView<double> R2 = parents[3](Range{0, kV}, AllT{});
+    REQUIRE(C1.stride(1) != C1.dim(0)); // strided view: span exceeds the element count
+
+    cg::Graph reference("stream_view_outputs_reference");
+    capture_pair(reference, S, W1, W2, &R1, &R2);
+    reference.execute();
+
+    cg::Graph graph("stream_view_outputs");
+    capture_pair(graph, S, W1, W2, &C1, &C2);
+
+    auto [modified, pass] = graph.apply<cg::passes::StreamContractionFusion>();
+    REQUIRE(modified);
+    REQUIRE(pass.num_groups() == 1);
+
+    graph.execute();
+
+    // Whole parents, not just the written slices: the rows the views do not name
+    // must still hold their sentinels.
+    for (size_t a = 0; a < 2 * kV; a++) {
+        for (size_t b = 0; b < kV; b++) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(a), static_cast<ptrdiff_t>(b)};
+            REQUIRE(parents[0](idx) == parents[2](idx));
+            REQUIRE(parents[1](idx) == parents[3](idx));
+        }
+    }
+}
+
+TEST_CASE("StreamContractionFusion - an intervening write to a weight's parent blocks fusion", "[ComputeGraph][Passes][StreamFusion]") {
+    // The interference guard compares BUFFERS, not TensorIds. The node between
+    // the two members rewrites the whole store both weights are views of, so
+    // the second member cannot be brought back before it: it would multiply by
+    // the pre-write weight. The store's own id appears in no member's operand
+    // list, so comparing ids alone answered "no interference" and fused, which
+    // is how a view-heavy graph came out numerically wrong rather than merely
+    // unoptimized (measured on a DLPNO-CCSD iteration: every one of its 55
+    // candidate groups changed the converged correlation energy, the worst by
+    // 1e-3 relative).
+    RuntimeTensor<double> S("S", std::vector<size_t>{kV, kV, kV});
+    S.zero();
+
+    RuntimeTensor<double> w_store("w_store", std::vector<size_t>{kV, 2 * kV});
+    RuntimeTensor<double> w_next("w_next", std::vector<size_t>{kV, 2 * kV});
+    w_store.zero();
+    w_next.zero();
+    RuntimeTensorView<double> const W1 = w_store(AllT{}, Range{0, kV});
+    RuntimeTensorView<double> const W2 = w_store(AllT{}, Range{kV, 2 * kV});
+
+    RuntimeTensor<double> C1("C1", std::vector<size_t>{kV, kV}), C2("C2", std::vector<size_t>{kV, kV});
+    C1.zero();
+    C2.zero();
+
+    cg::Graph graph("stream_store_rewrite");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,j,k ; j,k", 0.0, &C1, 2.0, S, W1);
+        cg::axpby(1.0, w_next, 0.0, &w_store); // whole-store rewrite between the members
+        cg::einsum("i,j <- i,j,k ; j,k", 0.0, &C2, -1.0, S, W2);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::StreamContractionFusion>();
+    REQUIRE_FALSE(modified);
+    REQUIRE(pass.num_groups() == 0);
+}
+
+TEST_CASE("StreamContractionFusion - two outputs in one buffer decline", "[ComputeGraph][Passes][StreamFusion]") {
+    // Both members write views of one registered parent. Fusing prescales both
+    // outputs up front and then interleaves the accumulations, which is only
+    // equivalent to the original order when the two outputs are element
+    // disjoint - and the pass has no proof of that, so it declines.
+    RuntimeTensor<double> S("S", std::vector<size_t>{kV, kV, kV});
+    S.zero();
+    RuntimeTensor<double> W1("W1", std::vector<size_t>{kV, kV}), W2("W2", std::vector<size_t>{kV, kV});
+    W1.zero();
+    W2.zero();
+
+    RuntimeTensor<double> c_parent("c_parent", std::vector<size_t>{kV, 2 * kV});
+    RuntimeTensor<double> c_copy("c_copy", std::vector<size_t>{kV, 2 * kV});
+    c_parent.zero();
+    c_copy.zero();
+    RuntimeTensorView<double> C1 = c_parent(AllT{}, Range{0, kV});
+    RuntimeTensorView<double> C2 = c_parent(AllT{}, Range{kV, 2 * kV});
+
+    cg::Graph graph("stream_shared_out_parent");
+    {
+        cg::CaptureGuard const guard(graph);
+        // Capturing the parent is what links the two slices to one buffer:
+        // Graph::link_alias_storage relates registered tensors only.
+        cg::axpby(1.0, c_parent, 0.0, &c_copy);
+        cg::einsum("i,j <- i,j,k ; j,k", 0.0, &C1, 2.0, S, W1);
+        cg::einsum("i,j <- i,j,k ; j,k", 0.0, &C2, -1.0, S, W2);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::StreamContractionFusion>();
+    REQUIRE_FALSE(modified);
+    REQUIRE(pass.num_groups() == 0);
+}

@@ -70,6 +70,23 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * privatized walk unconditionally - its contiguous per-thread slabs are the
  * measured-fastest layout.
  *
+ * @par Aliasing: every operand is compared as a BUFFER
+ * Fusion interleaves the members and moves every member's write to the first
+ * member's position, so it is only equivalent to the original order when no
+ * member's write is observable by another member or by any node it moves
+ * across. Both questions are decided on @ref Graph::resolve_alias roots rather
+ * than TensorIds, because a view and its parent are different ids over one
+ * buffer - and in a real capture views are the common case (a DLPNO-CCSD
+ * iteration registers ~5800 of them against ~1200 whole tensors). A group
+ * declines when an output shares a buffer with the streamed tensor, with a
+ * weight, or with another output, and when any node between the members shares
+ * a buffer with one of them. The graph merges partially overlapping byte spans
+ * into one buffer, so two interleaved strided slices of one parent count as
+ * shared even though their elements are disjoint; proving such slices apart
+ * would need the per-view interval boxes the hazard scan builds
+ * (Graph::for_each_hazard_edge), which this pass does not read yet. Until it
+ * does, a view-heavy graph is where the pass declines most.
+ *
  * @par Relationship to LinearCombinationContractionFolding
  * LCCF serves the same 2J-K algebra by materializing a linear combination
  * @f$L@f$ of the streamed tensor and contracting once - measured 2.7x over
@@ -108,8 +125,12 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - One operand is the streamed tensor @f$S@f$, the other the small @f$W@f$; every
  *   C index and every W index must be drawn from @f$S@f$'s index pattern (the
  *   GEMV-shaped class - each element of @f$S@f$ read exactly once).
- * - @f$S@f$, @f$W@f$ and C must all be **runtime** tensors of one dtype; a
- *   mixed-dtype member declines (the kernel casts all three to @f$S@f$'s element type).
+ * - @f$S@f$, @f$W@f$ and C must all be **runtime** tensors (owning or view) of one
+ *   dtype, each with a live ``TensorHandle::impl_fn``; a mixed-dtype member declines
+ *   (the kernel casts all three to @f$S@f$'s element type) and so does a tile-wise
+ *   sparse operand, which has no single geometry to read.
+ * - A group declines when its operands share a buffer, or when a node between its
+ *   members touches one (see the aliasing note above).
  * - On a real dtype, `ab_prefactor` and `c_prefactor` must be real-valued; complex
  *   prefactors ride through only on complex dtypes.
  * - Distributed operands decline (they belong to the InputSlicing / SUMMAExpansion
@@ -119,7 +140,8 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - A group needs >= 2 members over the same @f$S@f$, and for a shared output only
  *   the first member touching it may have `c_prefactor != 1` (contributions
  *   interleave in the one stream). An interference guard also rejects the group if
- *   any node between the first and last member touches an operand or reads an output.
+ *   any node between the first and last member writes the buffer of an operand or
+ *   reads the buffer of an output.
  * - Privatized members are held to `max_output_elems` (cache-derived with a cost_model,
  *   a fixed fallback without); an over-cap member is only kept if an owner-computes
  *   partition axis covers it, otherwise it drops out and stays an ordinary einsum.
@@ -128,6 +150,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - Admit conjugated members and repeated-index (diagonal) patterns, currently
  *   declined outright.
  * - Support statically-typed `Tensor<T,Rank>` captures, not only runtime tensors.
+ * - Read the hazard scan's per-view interval boxes so element-disjoint slices of one
+ *   parent stop counting as one buffer, which is what currently declines every
+ *   candidate group in a view-heavy graph.
  * - Coordinate with the communication passes so distributed streams can fuse
  *   instead of declining.
  */
