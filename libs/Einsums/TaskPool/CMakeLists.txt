@@ -11,11 +11,13 @@ set(TaskPoolHeaders
     Einsums/TaskPool/WorkStealingDeque.hpp
     Einsums/TaskPool/WorkerContext.hpp
     Einsums/TaskPool/Dataflow.hpp
+    Einsums/TaskPool/WidthBudget.hpp
 )
 
 set(TaskPoolSources
     TaskPool.cpp
     TaskGroup.cpp
+    WidthBudget.cpp
 )
 
 include(Einsums_AddModule)
@@ -26,6 +28,7 @@ einsums_add_module(
   MODULE_DEPENDENCIES
     Einsums_BLAS
     Einsums_Config
+    Einsums_Hardware
     Einsums_Logging
     Einsums_Profile
     Einsums_Runtime
