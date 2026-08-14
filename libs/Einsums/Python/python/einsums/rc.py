@@ -19,25 +19,18 @@ Usage::
     einsums.gemm(...)   # initialize() fires here using the rc settings
 """
 
-import os as _os
 from enum import Enum
 
-
-def _bool_env(name: str) -> bool | None:
-    """Read a boolean override from the environment.
-
-    Returns ``True`` or ``False`` for recognized truthy or falsy strings,
-    and ``None`` when the variable is unset. This lets pytest harnesses and
-    any other launcher flip the corresponding rc field without monkey-patching
-    this module before ``import einsums``. In particular the test launcher
-    in cmake/Einsums_AddTest.cmake sets EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS
-    and EINSUMS_DEBUG_NO_ATTACH_DEBUGGER so a failing pytest doesn't hang on
-    the runtime's "waiting for debugger" prompt.
-    """
-    v = _os.environ.get(name)
-    if v is None:
-        return None
-    return v.strip().lower() in ("1", "true", "yes", "on")
+# Every option below also has an environment variable, read by the C++ runtime
+# itself rather than by this module: einsums:log:level is EINSUMS_LOG_LEVEL,
+# einsums:debug:no-attach-debugger is EINSUMS_DEBUG_NO_ATTACH_DEBUGGER, and so
+# on. Precedence is default < environment < the fields below, since these are
+# handed to einsums::initialize() as command line arguments.
+#
+# So a launcher that wants to flip a setting without touching this module - the
+# pytest harness in cmake/Einsums_AddTest.cmake, which disables the runtime's
+# "waiting for debugger" prompt so a failing test cannot hang - just exports the
+# variable. Leaving a field as ``None`` here is what lets that through.
 
 # Buffer Allocator:
 #   --einsums:buffer-size <value>                        Total size of buffers allocated for tensor contractions
@@ -68,7 +61,7 @@ def _bool_env(name: str) -> bool | None:
 # Profile:
 #   --einsums:profile:no-report                          Don't generate profile report
 #   --einsums:profile:filename <filename>                Generate profile filename
-#   --einsums:profile:no-append <N>                      Don't append to profile file
+#   --einsums:profile:no-append                          Don't append to profile file
 #   --einsums:profile:detailed                           Print detailed profile report
 #   --einsums:profile:save <filename>                    Save profile session JSON for imgui viewer
 #   --einsums:profile:port <PORT>                        Profile server port
@@ -97,9 +90,9 @@ pass_analyze: bool | None = None
 pass_verbose: bool | None = None
 
 # Debug
-debug_no_install_signal_handlers: bool | None = _bool_env("EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS")
-debug_no_attach_debugger: bool | None = _bool_env("EINSUMS_DEBUG_NO_ATTACH_DEBUGGER")
-debug_no_diagnostics_on_terminate: bool | None = _bool_env("EINSUMS_DEBUG_NO_DIAGNOSTICS_ON_TERMINATE")
+debug_no_install_signal_handlers: bool | None = None
+debug_no_attach_debugger: bool | None = None
+debug_no_diagnostics_on_terminate: bool | None = None
 
 # HPTT
 hptt_selection_method: str | None = None  # "estimate" / "measure" / "patient" / "crazy"

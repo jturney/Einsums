@@ -328,8 +328,8 @@ function(einsums_add_python_unit_test subcategory name)
   # attach-debugger}`` (see einsums_add_unit_test). The Python tests have no
   # such command line — pytest's argv stops at the test file — so a
   # crashing test would hang ctest with "ready for attaching debugger".
-  # Use the env-var hooks added to einsums.rc instead, which the binding's
-  # argv_from_rc translates into the same flags before einsums::initialize.
+  # Set the environment variables the runtime derives from those same option
+  # names instead; einsums::cl reads them directly during parse.
   list(APPEND _pyt_env
     "EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1"
     "EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1"
