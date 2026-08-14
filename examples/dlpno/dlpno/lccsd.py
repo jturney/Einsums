@@ -103,18 +103,25 @@ then does to the last bit is a separate question, and ``use_executor`` below
 answers it.
 
 **The executor, and what one graph means for it.** One graph has one executor,
-so the merge turned fourteen executor decisions into one:
+so the merge turned fourteen executor decisions into one. That one used to be
 :class:`einsums.graph.OpenMPExecutor` over the whole iteration, which spreads the
 independent chains over cores with serial BLAS underneath - psi4's own
-parallelism, which is over the pair list rather than inside a GEMM. The phases
-that accumulate thousands of scalars into one shared occupied matrix through
-``(1, 1)`` element views (Eq. 98, Eq. 94, Eq. 86) used to keep the serial
-executor, and folding them in costs nothing and moves no bit: records writing
-different elements are independent, and records writing the same element are
-ordered by a write-after-write on it, so each element's sum keeps its term
-order. Never drive any of this from Python threads: against the OpenMP-built
-OpenBLAS conda resolves, a caller-created thread returns silently wrong numbers
-(see ``base.py::_run``).
+parallelism, which is over the pair list rather than inside a GEMM. It is now a
+planned width per node under :class:`einsums.graph.DataflowExecutor`, which is
+the same parallelism wherever the planner leaves a node at one and something the
+team could not express wherever it does not: the projections and Eq. 75-77 carry
+contractions fat enough to want threads of their own, and inside a team over
+nodes they could not have any. The phases that accumulate thousands of scalars
+into one shared occupied matrix through ``(1, 1)`` element views (Eq. 98,
+Eq. 94, Eq. 86) used to keep the serial executor, and folding them in costs
+nothing and moves no bit: records writing different elements are independent,
+and records writing the same element are ordered by a write-after-write on it,
+so each element's sum keeps its term order. They are planned along with
+everything else and are simply nodes the planner leaves at width one, which is
+the same serial replay stated as a width rather than as an executor. Never drive
+any of this from Python threads: against the OpenMP-built OpenBLAS conda
+resolves, a caller-created thread returns silently wrong numbers (see
+``base.py::_run``).
 """
 
 import os
@@ -127,6 +134,7 @@ from einsums import linalg as la
 import einsums.graph as cg
 
 from . import tensors as ten
+from .base import plan_widths
 
 __all__ = ["LCCSDSolver"]
 
@@ -153,23 +161,30 @@ class LCCSDSolver:
         clamp_singles: hold ``T1`` at zero by discarding its residual. Not a
             physical model - it is the bisection ``check_ccsd_defect.py`` uses
             to separate the T1-dressing terms from the pure doubles ones.
-        use_executor: replay the iteration graph under an OpenMP executor. Off
-            is the serial replay every phase used to get, and it is how the
-            executor is bisected out of a result that moves.
+        use_executor: replay the iteration graph in parallel - at planned
+            thread widths under the dataflow executor, or under an OpenMP team
+            over nodes if the planner declines to widen anything. Off is the
+            serial replay every phase used to get, and it is how the executor is
+            bisected out of a result that moves.
 
             The two agree BIT FOR BIT at one, two and four threads and differ in
             the last bit of the correlation energy at ten, and the reason is not
-            a race: it reproduces exactly across repeated runs. A node that runs
-            inside an OpenMP team cannot thread its own contraction, and the two
-            phases carrying the rank-3 scratch (Eq. 99-101 and Eq. 75-77) have
-            einsums large enough that einsums threads them when they run on the
-            calling thread, so the team changes their internal summation order.
-            Bisecting the executor a phase at a time moved the bit for exactly
-            those two and for no other, back when a phase was a graph;
-            :meth:`phase_graph` is what that bisection costs now. The serial
-            replay is no more canonical: by itself it moves over the same last
-            bits between one thread and ten, which it did before this pool and
-            this executor existed.
+            a race: it reproduces exactly across repeated runs. Which nodes
+            thread their own contraction is what decides that last bit, since a
+            contraction's internal summation order depends on how many threads
+            it splits over, and the two phases carrying the rank-3 scratch
+            (Eq. 99-101 and Eq. 75-77) hold einsums large enough to be threaded
+            when they are given the room. Under the OpenMP team that was a
+            scheduling accident - a node ALONE on its level ran unwrapped and
+            threaded, a node sharing one did not - and bisecting the executor a
+            phase at a time moved the bit for exactly those two and for no
+            other, back when a phase was a graph; :meth:`phase_graph` is what
+            that bisection costs now. Under planned widths it is a recorded
+            decision instead, taken once for a stated thread count and then
+            frozen, which is what makes a threaded replay reproducible rather
+            than merely repeatable. The serial replay is no more canonical: by
+            itself it moves over the same last bits between one thread and ten,
+            which it did before this pool and this executor existed.
 
             The fold changed neither of those answers. Merging the fourteen
             phases is bit-identical to replaying them in sequence at one thread
@@ -184,6 +199,10 @@ class LCCSDSolver:
         self.use_diis = use_diis
         self.clamp_singles = clamp_singles
         self.use_executor = use_executor
+        #: Whether the planner gave any node of the iteration graph a width
+        #: above one, and so whether it replays under the dataflow executor.
+        #: Written by :meth:`capture`; reported, never read.
+        self._moldable = False
 
         self.B = cc.integral_blocks
         self.naocc = cc.ref.naocc
@@ -2313,16 +2332,22 @@ class LCCSDSolver:
         inside a batched node; ``test_lccsd.py`` runs both, and it also runs the
         merge against the sequence it replaced at fixed amplitudes.
 
-        **One thing the fold could have changed silently, and did not.** A node
-        alone on its level runs unwrapped and may thread its own contraction,
-        where a node sharing a level runs inside the team with serial BLAS - so
-        widening a level changes the internal summation order of whatever was
-        alone on it, which is the effect ``use_executor`` above describes for
-        Eq. 99-101 and Eq. 75-77. The level partition is not reachable from
-        Python to be counted, but that effect is: it is exactly what moves the
-        last bit at ten threads. Merged and sequential replays agree bit for bit
-        at ten threads on water, the water dimer and methanol - same amplitudes,
-        same residuals, same energy - so no node crossed that boundary.
+        **One thing the fold could have changed silently, and did not.** Under
+        the OpenMP team the merge was checked against exactly this: a node alone
+        on its level ran unwrapped and might thread its own contraction, where a
+        node sharing a level ran inside the team with serial BLAS, so widening a
+        level changed the internal summation order of whatever was alone on it -
+        the effect ``use_executor`` above describes for Eq. 99-101 and
+        Eq. 75-77. The level partition was not reachable from Python to be
+        counted, but that effect was: it is exactly what moved the last bit at
+        ten threads. Merged and sequential replays agree bit for bit at ten
+        threads on water, the water dimer and methanol - same amplitudes, same
+        residuals, same energy - so no node crossed that boundary.
+
+        Planned widths retire the question rather than answer it again. A node's
+        thread count is now a property of the node, chosen once for a stated
+        machine and frozen, so it no longer depends on what else landed beside
+        it; the fold cannot move it because the fold cannot move a width.
         """
         t0 = time.perf_counter()
         g = cg.Graph("lccsd: iteration")
@@ -2330,13 +2355,19 @@ class LCCSDSolver:
             for _label, emit, _threadable in self.phases():
                 emit()
         if self.use_executor:
-            # An OpenMP team over the iteration's independent per-pair chains,
-            # with serial BLAS inside each node. That is psi4's own parallelism
-            # - `#pragma omp parallel for` over the pair list - and it is the
-            # only safe way to get it from Python: a thread pool over the same
-            # work returns silently wrong numbers against the OpenMP-built
-            # OpenBLAS. See `base.py::_run`.
-            g.set_executor(cg.OpenMPExecutor())
+            # A thread width per node, and the dataflow executor that honors
+            # them. What this replaces is psi4's own parallelism - a
+            # `#pragma omp parallel for` over the pair list, every node's BLAS
+            # serial underneath - which is what the OpenMP executor gave and
+            # what this graph ran under before. The iteration is not that shape:
+            # the projections and Eq. 75-77 hold contractions fat enough to want
+            # threads of their own, and under a team over nodes they could not
+            # have any. `plan_widths` says what happens if the planner declines.
+            #
+            # Never drive any of this from Python threads: against the
+            # OpenMP-built OpenBLAS conda resolves, a caller-created thread
+            # returns silently wrong numbers. See `base.py::_run`.
+            self._moldable = plan_widths(g)
         #: The graphs replayed in order to evaluate the residual. One, now that
         #: the phases are folded; it stays a list because that is what
         #: :meth:`iterate` and :meth:`evaluate_residuals` walk, and because the
@@ -2446,10 +2477,16 @@ class LCCSDSolver:
         used = sum(1 for r in self._run.values() if len(r))
         self._print(f"    grouped:  {dots} dots and {adds} accumulations in "
                     f"{used} runs")
-        where = ("the iteration graph over an OpenMP team; the step, the "
-                 "antisymmetrization and the energy serial"
-                 if self.use_executor else
-                 "every graph serial (use_executor is off)")
+        if not self.use_executor:
+            where = "every graph serial (use_executor is off)"
+        elif self._moldable:
+            where = (f"the iteration graph at planned widths over "
+                     f"{self._graphs[0].planned_thread_count} threads; the "
+                     f"step, the antisymmetrization and the energy serial")
+        else:
+            where = ("the iteration graph over an OpenMP team (the planner "
+                     "found no width worth having); the step, the "
+                     "antisymmetrization and the energy serial")
         self._print(f"    executor: {where}, "
                     f"{_SCRATCH_POOL} buffers per shared scratch role")
 
@@ -2459,13 +2496,15 @@ class LCCSDSolver:
         The doubles enter at the converged LMP2 values ``recompute_pnos`` left
         in the stores and the singles at zero, which is psi4's starting guess.
 
-        The whole residual is one graph and one executor: an OpenMP team over
-        the iteration's independent chains, which the hazard scan has already
-        partitioned into levels across all fourteen phases rather than within
-        each. :meth:`capture` states what the merge rests on. Nothing here nests
-        an OpenMP team inside OpenBLAS's own threads - each node's BLAS call
-        stays serial underneath the team, which is where the parallelism in this
-        method actually is.
+        The whole residual is one graph and one executor: the dataflow executor
+        over the iteration's independent chains, each node running at the width
+        the planner gave it, over a dependency structure the hazard scan has
+        already derived across all fourteen phases rather than within each.
+        :meth:`capture` states what the merge rests on. Nothing here nests one
+        parallel region inside another - a dataflow worker is its own OpenMP
+        initial thread, so the width it is handed is the width its BLAS call
+        actually forks, and the process-wide width budget is what keeps the sum
+        of them on the machine.
 
         What Python still does per iteration is the four things that cannot be
         graph nodes: the residual norms, the DIIS extrapolation between the step

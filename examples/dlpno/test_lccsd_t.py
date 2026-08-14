@@ -36,8 +36,7 @@ import einsums
 import einsums.graph as cg
 from dlpno import tensors as ten
 from dlpno.lccsd_t import (_ACCUMULATE_FLAGS, _DIRECTION, _ROTATE_FLAGS,
-                           _WIDE_MAX_TNO, LCCSDT, chain_of, permuter_spec,
-                           prefer_wide_replay, rotation_stages)
+                           LCCSDT, chain_of, permuter_spec, rotation_stages)
 from dlpno.reference_io import load_reference
 from dlpno.thresholds import Thresholds
 from dlpno.triples import DLPNOCCSDT
@@ -283,86 +282,121 @@ def test_the_block_width_moves_the_energy_only_within_convergence(monkeypatch):
     assert abs(passes[0] - passes[1]) <= 1
 
 
-# => the wide/gated replay gate <= #
+# => the wide replay and the thread plan <= #
 
 
-def test_prefer_wide_replay_is_unconditional_at_one_thread():
-    """At one thread the two graphs are bit-identical, so wide always wins.
+def test_the_wide_replay_is_taken_whenever_it_is_eligible():
+    """No size cutoff decides between the two captures any more.
 
-    Checked at a size that would fail the size test on its own, so the
-    assertion is really about the one-thread branch short-circuiting rather
-    than about the size happening to pass too.
+    The phase carries two spellings of the same residual - one batch over every
+    triplet, and the same work behind a conditional per block - and it used to
+    choose between them per solve from a cutoff on the plan's mean TNO count,
+    calibrated from two measured geometries. The cutoff existed only because a
+    grouped node was threaded or serial depending on whether it landed alone on
+    an execution level, so a fat plan did better under a team over blocks. A
+    planned thread width is that choice made per node from a cost model, so the
+    wide capture is simply used whenever it is eligible: every pass in which no
+    triplet has settled yet.
+
+    Both paths have to actually be taken here, or the assertion is vacuous: a
+    truncated solve on the dimer skips triplets partway through, so the passes
+    split between the two.
     """
-    assert prefer_wide_replay(mean_tno=500.0, max_tno=500.0, threads=1)
-    assert prefer_wide_replay(mean_tno=0.0, max_tno=0.0, threads=1)
+    reference, _ = load_reference(DIMER)
+    cut = replace(Thresholds.preset("NORMAL", method="cc"),
+                  t0_approximation=False)
+    cc = DLPNOCCSDT(reference, cut, verbose=False)
+    cc.compute_energy(method="ccsd(t)")
+
+    solver = cc.lccsd_t
+    assert solver.n_wide_passes > 0, "the wide capture was never replayed"
+    assert solver.n_skipped > 0, (
+        "nothing settled, so the gated capture was never replayed and this "
+        "test cannot tell the two apart")
+    assert not hasattr(solver, "wide_max_tno"), (
+        "the size cutoff is back; widths are supposed to have subsumed it")
 
 
-def test_prefer_wide_replay_gates_on_plan_size_above_one_thread():
-    """Small triplet blocks stay wide; large ones fall back to the gated graph.
+def test_the_replayed_graphs_carry_a_thread_plan():
+    """Every graph the iteration replays is planned, and for THIS machine.
 
-    22 and 52 TNOs are not arbitrary: they are the two measured geometries
-    :data:`_WIDE_MAX_TNO` is calibrated from, water chain n=6 (wide wins at
-    10 threads) and ethanol/cc-pVTZ (wide loses at 10 threads), so this pins
-    the provisional rule against the exact numbers that motivated it rather
-    than against round ones that happen to sit on either side of the cutoff.
+    Widths are a share of a known number of threads, so a plan is only usable
+    beside the count it was made for - the executor compares the two and falls
+    back to width one when they disagree. Asserting the recorded count is the
+    machine's is therefore the check that the plan will actually be honored,
+    and it is a check that holds at any thread count, including the one this
+    suite runs at.
+
+    Whether the planner finds a width worth having is a cost-model question and
+    a property of the geometry, not something to pin here; what is pinned is
+    that every replayed graph went through it and that a declined graph keeps a
+    parallel executor rather than quietly turning serial.
     """
-    assert prefer_wide_replay(mean_tno=22.0, max_tno=22.0, threads=10)
-    assert not prefer_wide_replay(mean_tno=52.0, max_tno=52.0, threads=10)
-    # The cutoff itself, at both ends.
-    assert prefer_wide_replay(mean_tno=_WIDE_MAX_TNO, max_tno=_WIDE_MAX_TNO,
-                              threads=10)
-    assert not prefer_wide_replay(mean_tno=_WIDE_MAX_TNO + 0.5,
-                                  max_tno=_WIDE_MAX_TNO + 0.5, threads=10)
+    reference, _ = load_reference(WATER)
+    cut = replace(Thresholds.preset("NORMAL", method="cc"),
+                  t0_approximation=False)
+    cc = DLPNOCCSDT(reference, cut, verbose=False)
+    cc.compute_energy(method="ccsd(t)")
+
+    solver = cc.lccsd_t
+    assert set(solver.moldable) >= {"residual", "step"}, (
+        "the residual and the step are supposed to be planned")
+    assert all(isinstance(on, bool) for on in solver.moldable.values())
 
 
-def test_prefer_wide_replay_cutoff_override_is_honored():
-    """``cutoff`` overrides :data:`_WIDE_MAX_TNO`, in both directions.
+def test_two_planned_solves_agree_bit_for_bit():
+    """The determinism the width plan is supposed to buy, end to end.
 
-    This is the mechanism :attr:`~dlpno.lccsd_t.LCCSDT.wide_max_tno` hands to
-    a caller: forcing the wide replay always, or never, above one thread, for
-    a benchmark that wants one side of the choice held fixed while the other
-    is measured.
+    A width fixes a kernel's internal partition - its BLAS blocking, its loop
+    split, which of two GEMM kernels a grouped call picks - so with the widths
+    fixed the arithmetic is fixed, and scheduling order may vary freely across
+    replays without moving a bit. What used to be true instead was that which
+    nodes shared an execution level decided which kernels threaded, so the last
+    bit moved with scheduling accidents.
+
+    Two full solves in one process, then, at the same thread count: same plan,
+    same widths, same energy to the last bit. Bit-identical and not a tolerance,
+    because a tolerance here would pass on exactly the drift this is about.
+
+    One replan is armed by default and fires after the first replay of each
+    graph, which both runs do identically, so this spans that boundary rather
+    than dodging it.
     """
-    # A size that would default to gated, forced back to wide.
-    assert prefer_wide_replay(mean_tno=52.0, max_tno=52.0, threads=10,
-                              cutoff=float("inf"))
-    # A size that would default to wide, forced to gated.
-    assert not prefer_wide_replay(mean_tno=22.0, max_tno=22.0, threads=10,
-                                  cutoff=-1.0)
+    reference, _ = load_reference(WATER)
+    cut = replace(Thresholds.preset("NORMAL", method="cc"),
+                  t0_approximation=False)
+    energies = []
+    for _ in range(2):
+        cc = DLPNOCCSDT(reference, cut, verbose=False)
+        cc.compute_energy(method="ccsd(t)")
+        energies.append(cc.e_t_raw)
+    assert energies[0] == energies[1]
 
 
-def test_the_wide_and_gated_replays_agree_bit_for_bit(monkeypatch):
-    """Forcing each side of the gate at many threads must not move the energy.
+def test_the_serial_replay_is_left_unplanned():
+    """``use_executor=False`` still means what it said: no executor, no plan.
 
-    :func:`prefer_wide_replay` only decides which of two bit-identical graphs
-    replays a pass with every gate open; ``wide_max_tno`` is the override that
-    lets a test force either side without depending on the machine's actual
-    thread count, which is fixed here at 10 via ``_omp_max_threads`` so the
-    result does not depend on how many cores happen to be available under the
-    single-thread limit this suite otherwise runs at.
+    The bisection this knob exists for only works if off is genuinely the
+    serial replay, so planning must not leak into it - a width is honored by
+    the dataflow executor alone, but binding one is exactly what off must not
+    do.
     """
-    import dlpno.lccsd_t as lccsd_t
     import dlpno.triples as triples
-
-    monkeypatch.setattr(lccsd_t, "_omp_max_threads", lambda: 10)
 
     reference, _ = load_reference(WATER)
     cut = replace(Thresholds.preset("NORMAL", method="cc"),
                   t0_approximation=False)
-    energies, wide_passes = [], []
-    for wide_max_tno in (float("inf"), -1.0):
-        monkeypatch.setattr(
-            triples, "LCCSDT",
-            lambda *a, _w=wide_max_tno, **k: LCCSDT(*a, wide_max_tno=_w, **k))
-        cc = DLPNOCCSDT(reference, cut, verbose=False)
+    cc = DLPNOCCSDT(reference, cut, verbose=False)
+    original = triples.LCCSDT
+    try:
+        triples.LCCSDT = (lambda *a, **k:
+                          original(*a, use_executor=False, **k))
         cc.compute_energy(method="ccsd(t)")
-        energies.append(cc.e_t_raw)
-        wide_passes.append(cc.lccsd_t.n_wide_passes)
-    assert energies[0] == energies[1]
-    # Confirms the two runs actually took the two different paths, or the
-    # equality above would not be testing what it claims to.
-    assert wide_passes[0] > 0
-    assert wide_passes[1] == 0
+    finally:
+        triples.LCCSDT = original
+
+    assert cc.lccsd_t.moldable == {}, (
+        "a serial run planned widths for something")
 
 
 # => the truncated path <= #

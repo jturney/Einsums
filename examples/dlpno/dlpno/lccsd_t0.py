@@ -90,12 +90,10 @@ import einsums.graph as cg
 
 from . import sparse
 from . import tensors as ten
-from .base import DLPNOBase
+from .base import plan_widths
 from .cc_overlaps import OverlapHalfCache, build_overlaps
 
 __all__ = ["LCCSDT0"]
-
-_run_setup_graph = DLPNOBase._run
 
 #: psi4's six permutations of ``(i, j, k)``, as permutations of the POSITIONS
 #: ``0, 1, 2``, paired with the permutation of ``(a, b, c)`` each one scatters
@@ -406,14 +404,25 @@ class LCCSDT0:
         operation.
 
         **Four of the seven hold exactly one node, and that is deliberate.**
-        Those four are the batched GEMMs, and the OpenMP executor threads a
-        batched GEMM only when its execution LEVEL holds a single node: two
-        nodes on one level and each runs inside a ``parallel for``, where the
-        batch's own region nests and collapses to one thread. A graph holding
-        one node puts that node alone on level 0 by construction, which is a
-        cheaper guarantee than reasoning about what else landed on a level. The
-        cost is a graph boundary, and a boundary between two batches that were
-        going to be separate calls anyway costs nothing but the replay.
+        Those four are the batched GEMMs, and a batch is only threaded if
+        something gives it the threads. Under the OpenMP executor that was the
+        execution LEVEL: a level holding a single node ran unwrapped and the
+        batch got the team, where two nodes on one level each ran inside a
+        ``parallel for`` and the batch's own region nested and collapsed to one
+        thread. A graph holding one node puts that node alone on level 0 by
+        construction, which was a cheaper guarantee than reasoning about what
+        else landed on a level. The cost is a graph boundary, and a boundary
+        between two batches that were going to be separate calls anyway costs
+        nothing but the replay.
+
+        These seven are planned like everything else, but they are the one place
+        in the port where the planner has the least to work with, and it is
+        worth saying why. A phase graph here is replayed exactly ONCE per chunk,
+        so there are no recorded timings for a second plan to improve on - the
+        cold cost model is the whole of it. When it declines, ``plan_widths``
+        leaves the OpenMP executor in place and the one-node rule above is still
+        what threads the batch, which is why these graphs are still built one
+        node at a time.
         """
         state = self._allocate(chunk)
         overlaps = self._overlaps(chunk)
@@ -431,7 +440,8 @@ class LCCSDT0:
             self.n_nodes += g.num_nodes()
             if batched:
                 self.n_batched_nodes += g.num_nodes()
-            _run_setup_graph(g)
+            plan_widths(g)
+            g.execute()
 
         energies = ten.view(state["e_chunk"])
         for slot, r in enumerate(chunk):

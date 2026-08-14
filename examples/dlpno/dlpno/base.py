@@ -33,7 +33,41 @@ from . import tensors as ten
 from .layout import PairLayout
 from .thresholds import Thresholds
 
-__all__ = ["DLPNOBase"]
+__all__ = ["DLPNOBase", "plan_widths"]
+
+
+def plan_widths(graph):
+    """Give a solver graph's nodes thread widths, and bind the executor that
+    honors them.
+
+    :meth:`~einsums.graph.Graph.plan_threads` chooses a width per node from the
+    cost model, records the thread count it planned against, and arms one
+    re-plan from the first replay's recorded timings; only
+    :class:`~einsums.graph.DataflowExecutor` reads the result, because only its
+    workers are separate OpenMP initial threads and so can each carry a
+    different thread count. That is what replaces the all-or-nothing split the
+    solvers used to live with: under
+    :class:`~einsums.graph.OpenMPExecutor` a node ALONE on its execution level
+    runs unwrapped and may thread its own kernel, while a node sharing a level
+    runs inside the team with serial BLAS, so a purely structural accident
+    decided whether a fat contraction got the machine.
+
+    Planning can decline - a graph of nodes all below the planner's serial-time
+    floor is not worth widening, and widening it would only pay fork costs - and
+    that is the case this falls back for. A declined graph keeps the OpenMP
+    executor it had before, which is not a consolation prize: the solo-level
+    rule is exactly the right answer for the four one-node batched graphs of
+    ``lccsd_t0.py``, and for a graph of many small independent nodes the team
+    over nodes is the parallelism there is. So the graph is either moldable or
+    it is what it already was, and never silently serial.
+
+    Returns whether any node was given a width above one.
+    """
+    if graph.plan_threads():
+        graph.set_executor(cg.DataflowExecutor())
+        return True
+    graph.set_executor(cg.OpenMPExecutor())
+    return False
 
 
 class DLPNOBase:

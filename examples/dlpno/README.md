@@ -303,6 +303,10 @@ The rationale lives with the code it explains; these are the load-bearing ones a
   Both halves of the Fock coupling are grouped - by partner on one side, by pair on the other - with one permuting gather per shape class between them.
 * **The whole iteration is one graph with a loop node** (`mp2.py`: `lmp2_iterations`), convergence test and DIIS (`einsums.graph.diis`) in the loop predicate.
 * **Setup phases are separate graphs replayed under the OpenMP executor** (`base.py`: `_run`), because the parallelism worth having is across independent per-pair chains - and never a Python thread pool, which silently corrupts results under the OpenMP-built OpenBLAS.
+* **Solver graphs are planned per node instead** (`base.py`: `plan_widths`), because their parallelism is not all of one kind.
+  `Graph.plan_threads()` chooses a thread width for every node from a cost model and the previous replay's timings, and `DataflowExecutor` guarantees each node's kernel exactly that many threads while the process-wide width budget keeps their sum on the machine.
+  That replaces an all-or-nothing split: under the OpenMP executor a node alone on its execution level ran unwrapped and could thread its own contraction while a node sharing a level could not, so a structural accident decided whether a fat GEMM got the machine, and the (T) phase carried a calibrated cutoff on the plan's mean TNO count to work around it.
+  A graph whose nodes are all too small to widen is left on the OpenMP executor, which is the right answer for the four one-node batched graphs of `lccsd_t0.py` and for the coupled-cluster residual at small pair sizes.
 * **The three-index integrals are a request, not an array** (`integrals.py`: `Demand` and `ThreeIndexSource`).
   `compute_qia` declares every block the run will read - before any integral exists, which `prep_sparsity` running first is what makes possible - and a source satisfies that however it likes.
   The dense source satisfies it by ignoring it, which is what makes it exact and the oracle; the screened one takes the per-atom pairing and builds nothing else.
