@@ -52,6 +52,8 @@ Python::
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \
         /Users/jturney/Code/Einsums/Einsums/examples/psi4-bridge/cc_integrals_incore.py
 """
+import argparse
+
 import numpy as np
 import psi4
 import einsums
@@ -60,8 +62,21 @@ import einsums._core            # force pybind type registration (bug-916: _core
 import einsums.graph as cg      # the graph.py shell (capture/PassManager); NOT
                                 # `from einsums import graph` (that lacks capture).
 
+_argp = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+_argp.add_argument(
+    "--threads", type=int, default=1,
+    help="thread count, applied with psi4.set_num_threads before any einsums "
+         "work. Importing psi4 sets the process-wide OpenMP count to "
+         "OMP_NUM_THREADS if that is exported and to 1 otherwise, so leaving "
+         "both unset runs einsums silently serial",
+)
+_args = _argp.parse_args()
+
 psi4.core.set_output_file("/tmp/psi4_cc_integrals.out", False)
 psi4.set_options({"basis": "cc-pvdz", "scf_type": "pk"})
+# Before any einsums work: importing psi4 already set the process-wide OpenMP
+# count, to OMP_NUM_THREADS if it was exported and to 1 if it was not.
+psi4.set_num_threads(_args.threads)
 mol = psi4.geometry("O\nH 1 0.96\nH 1 0.96 2 104.5\nsymmetry c1\n")
 e_scf, wfn = psi4.energy("scf", return_wfn=True)
 

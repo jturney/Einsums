@@ -42,6 +42,12 @@ reciprocal callback, so the whole per-pair body is operators plus one dot.
 numpy itself appears only to ingest psi4 data and read scalar orbital energies.
 Checked against psi4's own DF-MP2.
 
+This file stays one node per operator per pair on purpose. df_mp2_graph.py is
+where the same algorithm is captured in chunks and emitted as grouped nodes, the
+dispatch-collapsing technique from examples/dlpno; that form has no operator
+spelling, since a grouped node is by construction many pairs' worth of work
+named at once, and the two goals are simply not expressible in one file.
+
 Pass ``--show-passes`` to apply each optimization pass on its own and report
 which ones modify the graph, plus the node execution order before vs after.
 
@@ -70,6 +76,13 @@ _argp.add_argument(
     help="apply each optimization pass on its own and report which modify the graph, "
          "plus the node execution order before vs after optimization",
 )
+_argp.add_argument(
+    "--threads", type=int, default=1,
+    help="thread count, applied with psi4.set_num_threads before any einsums "
+         "work. Importing psi4 sets the process-wide OpenMP count to "
+         "OMP_NUM_THREADS if that is exported and to 1 otherwise, so leaving "
+         "both unset runs einsums silently serial",
+)
 _args = _argp.parse_args()
 
 
@@ -84,21 +97,22 @@ def _optimize_verbose(graph):
     before = _exec_order(graph)
     ordered = [
         cg.ConstantFolding, cg.ScaleAbsorption, cg.CSE, cg.DeadNodeElimination,
-        cg.ElementWiseFusion, cg.LoopInvariantHoisting, cg.Reorder,
+        cg.ElementWiseFusion, cg.LinearCombinationContractionFolding,
+        cg.StreamContractionFusion, cg.LoopInvariantHoisting, cg.Reorder,
         cg.InplaceOptimization, cg.MemoryPlanning, cg.SymmetryPropagation,
-        cg.ChainParenthesization,
     ]
-    print(f"\n  {'pass':24} modified  nodes")
+    print(f"\n  {'pass':36} modified  nodes")
     for P in ordered:
         pm = cg.PassManager()
         pm.add(P())
         modified = graph.apply(pm)
-        print(f"  {P.__name__:24} {str(modified):8} {graph.num_nodes()}")
+        print(f"  {P.__name__:36} {str(modified):8} {graph.num_nodes()}")
     after = _exec_order(graph)
 
     # Compact one-char-per-node view of the execution order (10 nodes/group).
     abbr = {"Einsum": "E", "Permute": "P", "Axpby": "X", "ElementTransform": "T",
-            "DirectProduct": "D", "Dot": "o"}
+            "DirectProduct": "D", "Dot": "o", "DirectDivision": "V",
+            "Gemm": "M", "View": "v", "Alloc": "a", "Custom": "c"}
     spare = iter("123456789")
     for k in dict.fromkeys(before + after):
         abbr.setdefault(k, next(spare))
@@ -117,6 +131,9 @@ psi4.set_options({
     "basis": "cc-pvdz", "scf_type": "df", "mp2_type": "df",
     "freeze_core": "false", "e_convergence": 1e-10, "d_convergence": 1e-10,
 })
+# Before any einsums work: importing psi4 already set the process-wide OpenMP
+# count, to OMP_NUM_THREADS if it was exported and to 1 if it was not.
+psi4.set_num_threads(_args.threads)
 
 mol = psi4.geometry("O\nH 1 0.96\nH 1 0.96 2 104.5\nsymmetry c1\n")
 

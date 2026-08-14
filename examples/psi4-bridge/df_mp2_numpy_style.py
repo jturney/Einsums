@@ -66,6 +66,13 @@ _parser.add_argument(
     help="write an einsums profile report to FILE at exit "
          "(default: df_mp2_numpy_style_profile.txt in the launch directory)",
 )
+_parser.add_argument(
+    "--threads", type=int, default=1,
+    help="thread count, applied with psi4.set_num_threads before any einsums "
+         "work. Importing psi4 sets the process-wide OpenMP count to "
+         "OMP_NUM_THREADS if that is exported and to 1 otherwise, so leaving "
+         "both unset runs einsums silently serial",
+)
 _args = _parser.parse_args()
 if _args.profile is not None:
     # Resolve to an absolute path now: psi4 chdir's into its scratch directory,
@@ -84,6 +91,9 @@ psi4.set_options({
     "basis": "cc-pvdz", "scf_type": "df", "mp2_type": "df",
     "freeze_core": "false", "e_convergence": 1e-10, "d_convergence": 1e-10,
 })
+# Before any einsums work: importing psi4 already set the process-wide OpenMP
+# count, to OMP_NUM_THREADS if it was exported and to 1 if it was not.
+psi4.set_num_threads(_args.threads)
 
 mol = psi4.geometry("O\nH 1 0.96\nH 1 0.96 2 104.5\nsymmetry c1\n")
 
