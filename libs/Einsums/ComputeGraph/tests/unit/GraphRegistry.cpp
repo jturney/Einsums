@@ -3,6 +3,8 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Config.hpp>
+
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
@@ -70,6 +72,17 @@ TEST_CASE("Graph registry - dead graphs are not serialized when nobody collects"
     REQUIRE(cg::registered_graphs_json().find("registry_uncollected_graph") == std::string::npos);
 }
 
+// The two cases below are about the dead-graph JSON cache, and there IS no such
+// cache without the profiler: graph_json_cache_wanted() is compiled down to a
+// bare `return false`, because the only things that could ever read a dead
+// graph's JSON - the shutdown exporter and an attached viewer - are themselves
+// profiler features. So each case asserts the contract of the build it is in.
+// Configuring profiler-save is what a caller does to ask for the cache, and the
+// point of asserting its absence here is that asking is not enough to resurrect
+// a compiled-out feature.
+
+#if defined(EINSUMS_HAVE_PROFILER)
+
 TEST_CASE("Graph registry - dead graphs survive when profiler-save is configured", "[ComputeGraph][registry]") {
     ProfilerSaveKey const key("registry-test-session.json");
 
@@ -89,3 +102,20 @@ TEST_CASE("Graph registry - dead-graph cache replaces by name instead of growing
     auto const json = cg::registered_graphs_json();
     REQUIRE(count_occurrences(json, "\"registry_replaced_graph\"") == 1);
 }
+
+#else
+
+TEST_CASE("Graph registry - a profiler-less build caches no dead graph at all", "[ComputeGraph][registry]") {
+    ProfilerSaveKey const key("registry-test-session.json");
+
+    run_and_destroy("registry_saved_graph");
+    REQUIRE(cg::registered_graphs_json().find("registry_saved_graph") == std::string::npos);
+
+    for (int rep = 0; rep < 3; ++rep) {
+        run_and_destroy("registry_replaced_graph");
+    }
+    auto const json = cg::registered_graphs_json();
+    REQUIRE(count_occurrences(json, "\"registry_replaced_graph\"") == 0);
+}
+
+#endif
