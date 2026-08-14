@@ -188,6 +188,13 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
         // call site that locks the maps via GlobalConfigMap::lock()).
         std::scoped_lock const lock(global_config);
 
+        // Every option below is readable from the environment under a name
+        // derived from its own: einsums:log:level reads EINSUMS_LOG_LEVEL.
+        // Precedence runs default < config file < environment < command line,
+        // so an inherited variable configures a job without editing its
+        // command line, and the command line still wins when it says so.
+        cl::Registry::instance().set_env_prefix("EINSUMS");
+
         // These options are static but all use Location to initialize the
         // members of the parent class.
         static cl::OptionCategory debugCategory("Debug");
@@ -232,9 +239,10 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
                                                           cl::Location(global_strings["profiler-filename"]),
                                                           cl::Default(std::string("profile.txt")), cl::ValueName("filename"));
 
-        static cl::Opt<bool> const noProfileAppend("einsums:profile:no-append", {}, "Don't append to profile file", profileCategory,
-                                                   cl::Location(global_bools["profiler-append"]), cl::Default(true),
-                                                   cl::ImplicitValue(false), cl::ValueName("N"));
+        // A Flag, not an Opt<bool>: it takes no value, and declaring it as one
+        // put a bogus "<N>" value slot in the help output next to its siblings.
+        static cl::Flag const noProfileAppend("einsums:profile:no-append", {}, "Don't append to profile file", profileCategory,
+                                              cl::Location(global_bools["profiler-append"]), cl::Default(true), cl::ImplicitValue(false));
 
         static cl::Flag const profileDetailed("einsums:profile:detailed", {}, "Print detailed profile report", profileCategory,
                                               cl::Location(global_bools["profiler-detailed"]), cl::Default(false), cl::ImplicitValue(true));

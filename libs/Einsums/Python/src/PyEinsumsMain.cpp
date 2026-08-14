@@ -73,16 +73,6 @@ std::vector<std::string> argv_from_rc(py::module_ const &rc) {
             argv.emplace_back(std::string{"--einsums:"} + flag);
         }
     };
-    // Helper: append a ``--einsums:<flag>=<true|false>`` for cl::Opt<bool>
-    // options that take an explicit value. These are rare; profile:no-append
-    // is one.
-    auto opt_bool_value = [&](char const *attr, char const *flag) {
-        py::object const v = rc.attr(attr);
-        if (!v.is(py::none())) {
-            argv.emplace_back(std::string{"--einsums:"} + flag + "=" + (v.cast<bool>() ? "true" : "false"));
-        }
-    };
-
     // Buffer Allocator
     {
         opt_string("buffer_size", "buffer-size");
@@ -124,7 +114,7 @@ std::vector<std::string> argv_from_rc(py::module_ const &rc) {
     {
         opt_flag("profile_no_report", "profile:no-report");
         opt_string("profile_filename", "profile:filename");
-        opt_bool_value("profile_no_append", "profile:no-append");
+        opt_flag("profile_no_append", "profile:no-append");
         opt_flag("profile_detailed", "profile:detailed");
         opt_string("profile_save", "profile:save");
         opt_int("profile_port", "profile:port");

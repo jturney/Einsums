@@ -4,25 +4,40 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/CommandLine.hpp>
+#include <Einsums/CommandLine/CommandLine.hpp>
+#include <Einsums/Utilities/SetEnv.hpp>
 
-#include "Einsums/CommandLine/CommandLine.hpp"
+#include <string>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
 using namespace einsums::cl;
 
+namespace {
+
+/// Restores the registry, so options declared in a test case cannot leak into
+/// the next one through the process-wide registry.
 struct CLITestFixture {
     CLITestFixture() { Registry::instance().clear_for_tests(); }
     ~CLITestFixture() { Registry::instance().clear_for_tests(); }
 };
 
-static std::vector<std::string> to_args(std::initializer_list<char const *> il) {
-    std::vector<std::string> v;
-    v.reserve(il.size());
-    for (auto *s : il)
-        v.emplace_back(s);
-    return v;
+/// Sets an environment variable for the lifetime of a scope.
+struct ScopedEnv {
+    std::string name;
+
+    ScopedEnv(std::string n, std::string const &value) : name(std::move(n)) { einsums::set_env_var(name, value); }
+    ScopedEnv(ScopedEnv const &)            = delete;
+    ScopedEnv &operator=(ScopedEnv const &) = delete;
+    ~ScopedEnv() { einsums::unset_env_var(name); }
+};
+
+std::vector<std::string> to_args(std::initializer_list<char const *> il) {
+    return {il.begin(), il.end()};
 }
+
+} // namespace
 
 TEST_CASE("Defaults and explicit override", "[opt][defaults]") {
     CLITestFixture _;
@@ -38,6 +53,8 @@ TEST_CASE("Defaults and explicit override", "[opt][defaults]") {
         REQUIRE(pr.ok);
         REQUIRE(Threads.get() == 4);
         REQUIRE(threads_bound == 4);
+        REQUIRE(Threads.value_source == Source::Default);
+        REQUIRE_FALSE(Threads.was_specified());
     }
 
     SECTION("Explicit CLI override -> 8") {
@@ -46,6 +63,17 @@ TEST_CASE("Defaults and explicit override", "[opt][defaults]") {
         REQUIRE(pr.ok);
         REQUIRE(Threads.get() == 8);
         REQUIRE(threads_bound == 8);
+        REQUIRE(Threads.value_source == Source::CommandLine);
+        REQUIRE(Threads.was_specified());
+    }
+
+    SECTION("A setter may also take the source") {
+        Source seen = Source::None;
+        Threads.OnSet([&](int, Source src) { seen = src; });
+        auto args = to_args({"prog", "--t1-threads=8"});
+        auto pr   = parse(args);
+        REQUIRE(pr.ok);
+        REQUIRE(seen == Source::CommandLine);
     }
 }
 
@@ -167,21 +195,32 @@ TEST_CASE("Positional list captures multiple tokens", "[positional][list]") {
     REQUIRE(vals[0] == "a.txt");
     REQUIRE(vals[1] == "b.txt");
     REQUIRE(vals[2] == "c.txt");
+    REQUIRE(Inputs.occurrences == 3);
+
+    SECTION("A second parse starts from an empty list") {
+        auto args2 = to_args({"prog", "d.txt"});
+        auto pr2   = parse(args2);
+        REQUIRE(pr2.ok);
+        REQUIRE(Inputs.values().size() == 1);
+        REQUIRE(Inputs.values()[0] == "d.txt");
+    }
 }
 
-#if 0
 TEST_CASE("Enum option maps strings to enum values", "[enum]") {
     CLITestFixture _;
 
-    static OptionCategory Cat{"T6"};
     enum struct Mode { Fast, Accurate };
-    static OptEnum<Mode> M{"t6-mode", {'m'}, Mode::Fast, {{"fast", Mode::Fast}, {"accurate", Mode::Accurate}}, "mode", Cat};
 
-    SECTION("Default is Fast") {
+    OptionCategory Cat{"T6"};
+    Mode           bound = Mode::Accurate;
+    OptEnum<Mode>  M{"t6-mode", {'m'}, Mode::Fast, {{"fast", Mode::Fast}, {"accurate", Mode::Accurate}}, "mode", Cat, Location(bound)};
+
+    SECTION("Default is Fast, and reaches the bound location") {
         auto args = to_args({"prog"});
         auto pr   = parse(args);
         REQUIRE(pr.ok);
         REQUIRE(M.to_string() == "fast");
+        REQUIRE(bound == Mode::Fast);
     }
 
     SECTION("Set to accurate") {
@@ -189,16 +228,42 @@ TEST_CASE("Enum option maps strings to enum values", "[enum]") {
         auto pr   = parse(args);
         REQUIRE(pr.ok);
         REQUIRE(M.to_string() == "accurate");
+        REQUIRE(M.get() == Mode::Accurate);
+        REQUIRE(bound == Mode::Accurate);
     }
 
-    SECTION("Invalid value errors") {
+    SECTION("Invalid value errors and lists the choices") {
         auto args = to_args({"prog", "--t6-mode", "banana"});
         auto pr   = parse(args);
         REQUIRE_FALSE(pr.ok);
         REQUIRE(pr.exit_code == 1);
     }
+
+    SECTION("A setter fires with the source") {
+        Source seen = Source::None;
+        M.OnSet([&](Mode const &, Source src) { seen = src; });
+        auto args = to_args({"prog", "--t6-mode=accurate"});
+        auto pr   = parse(args);
+        REQUIRE(pr.ok);
+        REQUIRE(seen == Source::CommandLine);
+    }
 }
-#endif
+
+TEST_CASE("Numeric option types beyond int", "[opt][types]") {
+    CLITestFixture _;
+
+    OptionCategory   Cat{"T6b"};
+    Opt<unsigned>    U{"t6b-u", {}, "unsigned", Cat, Default(1U)};
+    Opt<float>       F{"t6b-f", {}, "float", Cat, Default(0.0F)};
+    Opt<std::size_t> Z{"t6b-z", {}, "size_t", Cat};
+
+    auto args = to_args({"prog", "--t6b-u=42", "--t6b-f=1.5", "--t6b-z=4096"});
+    auto pr   = parse(args);
+    REQUIRE(pr.ok);
+    REQUIRE(U.get() == 42U);
+    REQUIRE(F.get() == Catch::Approx(1.5F));
+    REQUIRE(Z.get() == 4096U);
+}
 
 TEST_CASE("Range validation enforces bounds", "[range]") {
     CLITestFixture _;
@@ -221,6 +286,26 @@ TEST_CASE("Range validation enforces bounds", "[range]") {
     }
 }
 
+TEST_CASE("A fractional bound is not truncated to an integer", "[range][float]") {
+    CLITestFixture _;
+
+    OptionCategory Cat{"T7b"};
+    Opt<double>    D{"t7b-frac", {}, "fraction", Cat, Default(0.5), RangeBetween(0.0, 1.0)};
+
+    SECTION("Inside the fractional range") {
+        auto args = to_args({"prog", "--t7b-frac=0.75"});
+        auto pr   = parse(args);
+        REQUIRE(pr.ok);
+        REQUIRE(D.get() == Catch::Approx(0.75));
+    }
+
+    SECTION("Just outside is rejected, not rounded into range") {
+        auto args = to_args({"prog", "--t7b-frac=1.25"});
+        auto pr   = parse(args);
+        REQUIRE_FALSE(pr.ok);
+    }
+}
+
 TEST_CASE("Config precedence: defaults < config < CLI", "[config][precedence]") {
     CLITestFixture _;
 
@@ -238,6 +323,7 @@ TEST_CASE("Config precedence: defaults < config < CLI", "[config][precedence]") 
         REQUIRE(pr.ok);
         REQUIRE(T.get() == 6);
         REQUIRE(threads_cfg == 6);
+        REQUIRE(T.value_source == Source::ConfigFile);
     }
 
     SECTION("CLI overrides config") {
@@ -247,14 +333,235 @@ TEST_CASE("Config precedence: defaults < config < CLI", "[config][precedence]") 
         REQUIRE(pr.ok);
         REQUIRE(T.get() == 9);
         REQUIRE(threads_cfg == 9);
+        REQUIRE(T.value_source == Source::CommandLine);
+    }
+}
+
+TEST_CASE("Environment variable names derive from the option name", "[env][naming]") {
+    REQUIRE(derive_env_name("EINSUMS", "einsums:log:level") == "EINSUMS_LOG_LEVEL");
+    REQUIRE(derive_env_name("EINSUMS", "einsums:profile:wait-for-viewer") == "EINSUMS_PROFILE_WAIT_FOR_VIEWER");
+
+    SECTION("A name that is not already namespaced gains the prefix") {
+        REQUIRE(derive_env_name("EINSUMS", "buffer-size") == "EINSUMS_BUFFER_SIZE");
+    }
+
+    SECTION("An already-prefixed name does not pick the prefix up twice") {
+        REQUIRE(derive_env_name("EINSUMS", "EINSUMS_LOG_LEVEL") == "EINSUMS_LOG_LEVEL");
+    }
+
+    SECTION("A prefix that merely starts the same is not mistaken for it") {
+        REQUIRE(derive_env_name("EIN", "einsums:log:level") == "EIN_EINSUMS_LOG_LEVEL");
+    }
+
+    SECTION("Runs of separators collapse") {
+        REQUIRE(derive_env_name("P", "a--b..c") == "P_A_B_C");
+    }
+
+    SECTION("No prefix means no derived name") {
+        REQUIRE(derive_env_name("", "einsums:log:level").empty());
+    }
+}
+
+TEST_CASE("Environment precedence: defaults < config < env < CLI", "[env][precedence]") {
+    CLITestFixture _;
+    ScopedEnv      env{"T9_THREADS", "9"};
+
+    Registry::instance().set_env_prefix("T9");
+
+    OptionCategory Cat{"T9"};
+    int            bound = 0;
+    Opt<int>       T{"threads", {'t'}, "threads", Cat, Default(2), Location<int>(bound)};
+
+    SECTION("Environment overrides the default") {
+        auto args = to_args({"prog"});
+        auto pr   = parse(args);
+        REQUIRE(pr.ok);
+        REQUIRE(T.get() == 9);
+        REQUIRE(bound == 9);
+        REQUIRE(T.value_source == Source::Environment);
+    }
+
+    SECTION("Environment overrides a config file") {
+        std::map<std::string, std::string, std::less<>> cfg{{"threads", "6"}};
+        auto                                            args = to_args({"prog"});
+        auto                                            pr   = parse_internal(args, "prog", "1.0", &cfg, nullptr);
+        REQUIRE(pr.ok);
+        REQUIRE(T.get() == 9);
+        REQUIRE(T.value_source == Source::Environment);
+    }
+
+    SECTION("The command line overrides the environment") {
+        auto args = to_args({"prog", "--threads=12"});
+        auto pr   = parse(args);
+        REQUIRE(pr.ok);
+        REQUIRE(T.get() == 12);
+        REQUIRE(T.value_source == Source::CommandLine);
+    }
+}
+
+TEST_CASE("Environment variable opt-in and opt-out", "[env][naming]") {
+    CLITestFixture _;
+
+    SECTION("Without a prefix, only an explicit Env() reads the environment") {
+        ScopedEnv derived{"T10_ALPHA", "5"};
+        ScopedEnv explicitly{"T10_PINNED", "7"};
+
+        OptionCategory Cat{"T10"};
+        Opt<int>       A{"alpha", {}, "derived name, no prefix set", Cat, Default(1)};
+        Opt<int>       B{"beta", {}, "pinned name", Cat, Default(1), Env("T10_PINNED")};
+
+        auto args = to_args({"prog"});
+        auto pr   = parse(args);
+        REQUIRE(pr.ok);
+        REQUIRE(A.get() == 1);
+        REQUIRE(B.get() == 7);
+    }
+
+    SECTION("NoEnv exempts an option from a prefix policy") {
+        Registry::instance().set_env_prefix("T10");
+        ScopedEnv derived{"T10_ALPHA", "5"};
+        ScopedEnv exempt{"T10_GAMMA", "5"};
+
+        OptionCategory Cat{"T10"};
+        Opt<int>       A{"alpha", {}, "derived", Cat, Default(1)};
+        Opt<int>       G{"gamma", {}, "exempt", Cat, Default(1), NoEnv};
+
+        auto args = to_args({"prog"});
+        auto pr   = parse(args);
+        REQUIRE(pr.ok);
+        REQUIRE(A.get() == 5);
+        REQUIRE(G.get() == 1);
+    }
+
+    SECTION("An explicit Env() beats the derived name") {
+        Registry::instance().set_env_prefix("T10");
+        ScopedEnv derived{"T10_ALPHA", "5"};
+        ScopedEnv pinned{"LEGACY_ALPHA", "7"};
+
+        OptionCategory Cat{"T10"};
+        Opt<int>       A{"alpha", {}, "pinned", Cat, Default(1), Env("LEGACY_ALPHA")};
+
+        auto args = to_args({"prog"});
+        auto pr   = parse(args);
+        REQUIRE(pr.ok);
+        REQUIRE(A.get() == 7);
+    }
+}
+
+TEST_CASE("An empty environment variable counts as unset", "[env]") {
+    CLITestFixture _;
+    ScopedEnv      env{"T11_ALPHA", ""};
+    Registry::instance().set_env_prefix("T11");
+
+    OptionCategory Cat{"T11"};
+    Opt<int>       A{"alpha", {}, "alpha", Cat, Default(3)};
+
+    auto args = to_args({"prog"});
+    auto pr   = parse(args);
+    REQUIRE(pr.ok);
+    REQUIRE(A.get() == 3);
+    REQUIRE(A.value_source == Source::Default);
+}
+
+TEST_CASE("An unparseable environment variable is an error naming the variable", "[env][errors]") {
+    CLITestFixture _;
+    ScopedEnv      env{"T12_ALPHA", "banana"};
+    Registry::instance().set_env_prefix("T12");
+
+    OptionCategory Cat{"T12"};
+    Opt<int>       A{"alpha", {}, "alpha", Cat, Default(3)};
+
+    auto args = to_args({"prog"});
+    auto pr   = parse(args);
+    REQUIRE_FALSE(pr.ok);
+    REQUIRE(pr.exit_code == 1);
+}
+
+TEST_CASE("A flag reads the environment as presence, not as a raw value", "[env][flag]") {
+    CLITestFixture _;
+    Registry::instance().set_env_prefix("T13");
+
+    // The shape every negated Einsums flag has: a positive binding, a negative
+    // name, and an implicit value of false.
+    SECTION("A truthy variable applies the flag's implicit value") {
+        ScopedEnv env{"T13_NO_ATTACH", "1"};
+
+        OptionCategory Cat{"T13"};
+        bool           attach = true;
+        Flag           NoAttach{"no-attach", {}, "do not attach", Cat, Location(attach), Default(true), ImplicitValue(false)};
+
+        auto args = to_args({"prog"});
+        auto pr   = parse(args);
+        REQUIRE(pr.ok);
+        REQUIRE_FALSE(attach); // "yes, do not attach"
+    }
+
+    SECTION("A falsey variable leaves the default alone") {
+        ScopedEnv env{"T13_NO_ATTACH", "0"};
+
+        OptionCategory Cat{"T13"};
+        bool           attach = false;
+        Flag           NoAttach{"no-attach", {}, "do not attach", Cat, Location(attach), Default(true), ImplicitValue(false)};
+
+        auto args = to_args({"prog"});
+        auto pr   = parse(args);
+        REQUIRE(pr.ok);
+        REQUIRE(attach); // the flag was not requested
+    }
+
+    SECTION("A plain flag still turns on") {
+        ScopedEnv env{"T13_VERBOSE", "yes"};
+
+        OptionCategory Cat{"T13"};
+        Flag           Verbose{"verbose", {}, "verbose", Cat, Default(false)};
+
+        auto args = to_args({"prog"});
+        auto pr   = parse(args);
+        REQUIRE(pr.ok);
+        REQUIRE(Verbose.get());
+    }
+}
+
+TEST_CASE("Mutually exclusive options conflict only at the same precedence", "[env][exclusive]") {
+    CLITestFixture _;
+    Registry::instance().set_env_prefix("T14");
+
+    SECTION("The command line outranks the environment instead of conflicting") {
+        ScopedEnv env{"T14_YES", "1"};
+
+        OptionCategory Cat{"T14"};
+        bool           choice = false;
+        Flag           Yes{"yes", {}, "yes", Cat, Location(choice)};
+        Flag           No{"no", {}, "no", Cat, Location(choice), ImplicitValue(false)};
+        auto           exclusion = make_yes_no(Yes, No);
+
+        auto args = to_args({"prog", "--no"});
+        auto pr   = parse(args);
+        REQUIRE(pr.ok);
+        REQUIRE_FALSE(choice);
+    }
+
+    SECTION("Two environment variables at the same level do conflict") {
+        ScopedEnv yes{"T14_YES", "1"};
+        ScopedEnv no{"T14_NO", "1"};
+
+        OptionCategory Cat{"T14"};
+        bool           choice = false;
+        Flag           Yes{"yes", {}, "yes", Cat, Location(choice)};
+        Flag           No{"no", {}, "no", Cat, Location(choice), ImplicitValue(false)};
+        auto           exclusion = make_yes_no(Yes, No);
+
+        auto args = to_args({"prog"});
+        auto pr   = parse(args);
+        REQUIRE_FALSE(pr.ok);
     }
 }
 
 TEST_CASE("Unknown args collection (including after --)", "[unknown]") {
     CLITestFixture _;
 
-    OptionCategory Cat{"T9"};
-    Flag           K{"t9-known", {'k'}, "known", Cat};
+    OptionCategory Cat{"T15"};
+    Flag           K{"t15-known", {'k'}, "known", Cat};
 
     auto                     args = to_args({"prog", "--nope", "-z", "--", "pos1", "--still", "-x"});
     std::vector<std::string> unknown;
@@ -286,4 +593,75 @@ TEST_CASE("Builtins: --help and --version exit 0", "[builtins]") {
         REQUIRE_FALSE(pr.ok);
         REQUIRE(pr.exit_code == 0);
     }
+    SECTION("--help rejects a value") {
+        auto args = to_args({"prog", "--help=please"});
+        auto pr   = parse(args, "prog", "9.9");
+        REQUIRE_FALSE(pr.ok);
+        REQUIRE(pr.exit_code == 1);
+    }
+}
+
+TEST_CASE("Repeated parses do not accumulate registry entries", "[registry]") {
+    CLITestFixture _;
+
+    OptionCategory Cat{"T16"};
+    Flag           F{"t16-flag", {}, "flag", Cat};
+
+    auto const before = Registry::instance().options.size();
+
+    auto args = to_args({"prog"});
+    REQUIRE(parse(args).ok);
+    auto const after_one = Registry::instance().options.size();
+
+    REQUIRE(parse(args).ok);
+    auto const after_two = Registry::instance().options.size();
+
+    // The built-ins join the registry on the first parse and stay there; what
+    // must not happen is the count growing on every subsequent parse.
+    REQUIRE(after_one >= before);
+    REQUIRE(after_two == after_one);
+}
+
+TEST_CASE("An option removes itself from the registry when destroyed", "[registry]") {
+    CLITestFixture _;
+
+    auto const before = Registry::instance().options.size();
+    {
+        OptionCategory Cat{"T17"};
+        Flag           F{"t17-flag", {}, "flag", Cat};
+        REQUIRE(Registry::instance().options.size() == before + 1);
+    }
+    REQUIRE(Registry::instance().options.size() == before);
+}
+
+TEST_CASE("A long name declared twice is reported", "[registry][errors]") {
+    CLITestFixture _;
+
+    OptionCategory Cat{"T18"};
+    Flag           A{"t18-dup", {}, "first", Cat};
+    Flag           B{"t18-dup", {}, "second", Cat};
+
+    auto args = to_args({"prog"});
+    auto pr   = parse(args);
+    REQUIRE_FALSE(pr.ok);
+    REQUIRE(pr.exit_code == 1);
+}
+
+TEST_CASE("Help text reports defaults and environment variables", "[help]") {
+    CLITestFixture _;
+    Registry::instance().set_env_prefix("T19");
+
+    OptionCategory Cat{"T19"};
+    int            bound = 0;
+    // A bound option still knows its default; before, Location() suppressed it.
+    Opt<int>         Threads{"threads", {'t'}, "How many threads to use", Cat, Default(4), Location<int>(bound), ValueName("N")};
+    Opt<std::string> Quiet{"quiet", {}, "Quiet mode", Cat, Default(std::string{"no"}), NoEnv};
+
+    auto const help = format_help("prog");
+
+    REQUIRE(help.find("--threads <N>") != std::string::npos);
+    REQUIRE(help.find("(default: 4)") != std::string::npos);
+    REQUIRE(help.find("[env: T19_THREADS]") != std::string::npos);
+    REQUIRE(help.find("(default: no)") != std::string::npos);
+    REQUIRE(help.find("[env: T19_QUIET]") == std::string::npos);
 }
