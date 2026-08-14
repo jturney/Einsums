@@ -301,6 +301,12 @@ EINSUMS_EXPORT std::string derive_env_name(std::string_view prefix, std::string_
 
 // -------------------------- Categories ------------------------------------ //
 
+/**
+ * @brief A heading that groups related options in `--help`.
+ *
+ * An option joins a category by naming one in its constructor; options with
+ * no category print before the first heading.
+ */
 struct OptionCategory {
     std::string name;
 
@@ -314,10 +320,16 @@ struct OptionCategory {
 
 // -------------------------- Core enums ------------------------------------ //
 
+/// Whether an option appears in `--help` at all.
 enum struct Visibility : std::uint8_t { Normal, Hidden };
+
+/// How many times an option may, or must, be given.
 enum struct Occurrence : std::uint8_t { Optional, Required, ZeroOrMore, OneOrMore };
+
+/// Whether an option takes a value, and whether it may go without one.
 enum struct ValueExpected : std::uint8_t { ValueDisallowed, ValueOptional, ValueRequired };
 
+/// Constructor tag marking an option positional rather than named.
 struct Positional {};
 
 // -------------------------- Location & Setter ----------------------------- //
@@ -388,6 +400,7 @@ inline ValueNameTag ValueName(std::string n) {
     return {std::move(n)};
 }
 
+/// The environment variable name carried by @ref Env.
 struct EnvTag {
     std::string name;
 };
@@ -428,6 +441,18 @@ struct HelpEntry {
 
 // -------------------------- OptionBase ------------------------------------ //
 
+/**
+ * @brief The behaviour every option shares, whatever its value type.
+ *
+ * Holds the names, help text, and grouping an option is declared with, plus
+ * the state a parse leaves behind: how many times it appeared and which
+ * @ref Source supplied the value now in effect. Derived types add the value
+ * itself and say how a token becomes one.
+ *
+ * Construction registers the option with the process-wide @ref Registry and
+ * destruction removes it again, so an option declared in a scope does not
+ * outlive its entry.
+ */
 struct OptionBase {
     std::string        long_name;   // "--long"
     std::vector<char>  short_names; // {'v'}
@@ -541,6 +566,14 @@ struct OptionBase {
     }
 };
 
+/**
+ * @brief A set of options of which at most one may be given.
+ *
+ * Membership is declared by passing the category to an option's constructor.
+ * Conflicts are judged per precedence level, so two options set from the same
+ * @ref Source contradict one another while one from the environment losing to
+ * one from the command line does not.
+ */
 struct ExclusiveCategory {
     std::vector<OptionBase *> options;
 
@@ -586,6 +619,18 @@ struct ExclusiveCategory {
 
 // -------------------------- Flag ------------------------------------------ //
 
+/**
+ * @brief A boolean option whose meaning is carried by its presence.
+ *
+ * `--verbose` sets the flag and `--verbose=false` clears it explicitly. An
+ * ImplicitValue(false) inverts what presence means, which is how the negated
+ * options in this library are spelled: passing
+ * `--einsums:debug:no-attach-debugger` sets the bound `attach-debugger` to
+ * false.
+ *
+ * A config file or environment variable has no presence to observe, so its
+ * value answers that question instead - see @ref Flag::parse_token.
+ */
 struct Flag : OptionBase {
     bool                                      value = false;
     bool                                     *bound = nullptr;
@@ -989,8 +1034,6 @@ struct List : OptionBase {
  */
 template <typename Enum>
 struct OptEnum : OptionBase {
-    using Choice = std::pair<std::string_view, Enum>;
-
     Enum value{};
     /// The declared default, so help text is unaffected by parsing order.
     Enum                                      default_value{};
@@ -1000,8 +1043,8 @@ struct OptEnum : OptionBase {
     std::function<void(Enum const &, Source)> setter;
 
     template <typename... Args>
-    OptEnum(std::string_view longName, std::initializer_list<char> shorts, Enum defaultValue, std::initializer_list<Choice> choices,
-            std::string_view helpText, Args &&...args)
+    OptEnum(std::string_view longName, std::initializer_list<char> shorts, Enum defaultValue,
+            std::initializer_list<std::pair<std::string_view, Enum>> choices, std::string_view helpText, Args &&...args)
         : OptionBase(longName, shorts, helpText, /*cat*/ nullptr), value(defaultValue), default_value(defaultValue), has_default(true) {
         value_expected = ValueExpected::ValueRequired;
         add_choices(choices);
@@ -1009,8 +1052,8 @@ struct OptEnum : OptionBase {
     }
 
     template <typename... Args>
-    OptEnum(std::string_view longName, std::initializer_list<char> shorts, std::initializer_list<Choice> choices, std::string_view helpText,
-            Args &&...args)
+    OptEnum(std::string_view longName, std::initializer_list<char> shorts, std::initializer_list<std::pair<std::string_view, Enum>> choices,
+            std::string_view helpText, Args &&...args)
         : OptionBase(longName, shorts, helpText, /*cat*/ nullptr) {
         value_expected = ValueExpected::ValueRequired;
         add_choices(choices);
@@ -1067,7 +1110,7 @@ struct OptEnum : OptionBase {
     }
 
   private:
-    void add_choices(std::initializer_list<Choice> choices) {
+    void add_choices(std::initializer_list<std::pair<std::string_view, Enum>> choices) {
         for (auto const &[name, choice] : choices) {
             mapping.emplace(std::string(name), choice);
         }
