@@ -1,9 +1,11 @@
 name: Nightly
 
 # Everything the per-PR CMake workflow runs, plus the expensive legs that are
-# too slow to run per-PR: the full sanitizer set (address/leak/undefined,
-# ~1.5h) and the macOS Debug build (~35 min). Runs against main every night;
-# dispatch manually to aim it at a branch.
+# too slow to run per-PR: the macOS Debug build (~35 min) and the sanitizers.
+# Runs against main every night; dispatch manually to aim it at a branch.
+#
+# The address/leak/undefined sanitizer leg used to run here too and no longer
+# does; the `sanitizers` job below records why and how to get it back.
 #
 # The job list here must stay a superset of cmake.yml's. It did not, and the
 # gap cost real time: Windows was missing, so a Windows-only regression had
@@ -48,11 +50,30 @@ jobs:
     with:
       full_matrix: true
 
-  sanitizers_full:
-    name: Sanitizers (full)
+  # ThreadSanitizer only. The address,leak,undefined leg is DISABLED on the
+  # schedule: the runner is killed mid-build, and it has taken every nightly
+  # red with it since 2026-08-09 (08-08 was the last green run).
+  #
+  # It is not a build error. The job dies with "The runner has received a
+  # shutdown signal" and exit 143 - SIGTERM to the whole process tree - after
+  # about 70 minutes, having reached roughly 150 of 738 edges. TSan, the same
+  # workflow with a different -fsanitize list, finishes in 24. Dropping ninja
+  # from -j2 to -j1 (02f45e0bc) did not help, and the /usr/bin/time -v
+  # instrumentation added to measure peak RSS (35f98103b) cannot report,
+  # because SIGTERM takes GNU time down with the build. So the resource
+  # ceiling this leg is hitting is still unmeasured; that reaching only a
+  # fifth of the edges in three times TSan's total runtime suggests swapping
+  # is the strongest evidence there is, and it is circumstantial.
+  #
+  # Turning it off buys back a signal rather than losing one: a nightly that
+  # is red every morning for a known infrastructure reason is a nightly nobody
+  # reads, and the other legs were being ignored along with it. The leg stays
+  # runnable on demand - dispatch the Sanitizers workflow with full_matrix
+  # true - so whoever picks the memory question back up can still iterate on
+  # it without reinstating a broken schedule.
+  sanitizers:
+    name: Sanitizers
     uses: ./.github/workflows/linux-build-and-test-sanitizer.yml
-    with:
-      full_matrix: true
 
   # Build only. The deploy steps are gated on the upstream repository and on a
   # push or manual dispatch, so a scheduled run publishes nothing - it just

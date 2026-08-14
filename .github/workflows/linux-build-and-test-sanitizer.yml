@@ -1,11 +1,22 @@
 name: Sanitizers
 
 on:
+  # full_matrix is offered on dispatch as well as on call because the
+  # address,leak,undefined leg it selects is no longer run by anything on a
+  # schedule - see the comment on the nightly's `sanitizers` job. Manual
+  # dispatch is the only way left to reach it, and it is the way to iterate on
+  # the runner-shutdown problem that took it off the nightly.
   workflow_dispatch:
+    inputs:
+      full_matrix:
+        description: "Add the address,leak,undefined leg (~1.5h, and currently dies to a runner shutdown mid-build)."
+        type: boolean
+        required: false
+        default: false
   workflow_call:
     inputs:
       full_matrix:
-        description: "Run every sanitizer. Per-PR runs default to thread-only; the nightly passes true to add address,leak,undefined (~1.5h)."
+        description: "Run every sanitizer. Thread-only by default; true adds address,leak,undefined (~1.5h). Nothing passes true on a schedule any more."
         type: boolean
         required: false
         default: false

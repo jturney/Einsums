@@ -13,9 +13,12 @@ concurrency:
   cancel-in-progress: true
 
 # Every leg here also runs in nightly.yml, which is a superset: it adds the
-# full sanitizer set and the macOS Debug build, and skips the path filtering
-# below. Adding a leg to one file without the other leaves that leg unwatched
-# between PRs - which is how Windows came to be missing from the nightly.
+# macOS Debug build and skips the path filtering below. Adding a leg to one
+# file without the other leaves that leg unwatched between PRs - which is how
+# Windows came to be missing from the nightly.
+#
+# The nightly used to add the address,leak,undefined sanitizer leg as well.
+# That leg is disabled; the `sanitizers` job in nightly.yml says why.
 #
 # Stacked-PR economy: the stack merges bottom-up and the TOP PR's CI proves
 # the whole union builds (intermediate PRs are documented expected-red
