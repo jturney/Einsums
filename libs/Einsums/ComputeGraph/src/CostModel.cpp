@@ -13,11 +13,16 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 #ifdef __APPLE__
 #    include <sys/sysctl.h>
@@ -448,15 +453,37 @@ void write_device_profile_json(std::ostream &f, DeviceProfile const &p, std::str
         auto const &pt = p.permute_efficiency[i];
         f << fmt::format("\n{}    {{\"bytes\": {}, \"rank\": {}, \"gbps\": {:.1f}}}", indent, pt.bytes, pt.rank, pt.gbps);
     }
+    f << "\n" << indent << "  ],\n";
+
+    f << indent << fmt::format("  \"max_threads\": {},\n", p.max_threads);
+
+    // One object per (family, size class, width) rather than one per curve with
+    // a nested widths array: the reader scans an array of flat objects, and a
+    // nested array would end its scan at the inner closing bracket.
+    f << indent << "  \"thread_efficiency\": [";
+    bool first_point = true;
+    for (auto const &curve : p.thread_efficiency) {
+        if (!curve.valid()) {
+            continue;
+        }
+        for (size_t i = 0; i < curve.widths.size(); i++) {
+            if (!first_point)
+                f << ",";
+            first_point = false;
+            // Four decimals: a speedup barely above 1 is the interesting case,
+            // and one decimal quantizes it into "no change".
+            f << fmt::format("\n{}    {{\"family\": \"{}\", \"size_class\": \"{}\", \"width\": {}, \"speedup\": {:.4f}}}", indent,
+                             to_string(curve.family), to_string(curve.size_class), curve.widths[i], curve.speedup[i]);
+        }
+    }
     f << "\n" << indent << "  ]\n";
     f << indent << "}";
 }
 
-/// Call @p on_object once per `{...}` object inside the array that follows
-/// @p key. Shared by the three measured-point arrays; each of them used to
-/// carry its own copy of this scan, which is how `caches` came to be written
-/// but never read back.
-void for_each_json_object(std::string const &obj, std::string const &key, auto const &on_object) {
+/// Call @p on_sub once per `{...}` object inside the array that follows @p key,
+/// with the object's own text. The scan stops at the array's first `]`, so the
+/// objects it walks must be flat.
+void for_each_json_object_raw(std::string const &obj, std::string const &key, auto const &on_sub) {
     auto const key_pos = obj.find("\"" + key + "\"");
     if (key_pos == std::string::npos) {
         return;
@@ -477,7 +504,55 @@ void for_each_json_object(std::string const &obj, std::string const &key, auto c
         if (oe == std::string::npos) {
             break;
         }
-        std::string const sub = arr.substr(os, oe - os + 1);
+        on_sub(arr.substr(os, oe - os + 1));
+        search = oe + 1;
+    }
+}
+
+/// The numeric value of @p field in a flat JSON object, or 0 when absent.
+double json_number_field(std::string const &sub, std::string const &field) {
+    auto fp = sub.find("\"" + field + "\"");
+    if (fp == std::string::npos) {
+        return 0;
+    }
+    fp = sub.find(':', fp);
+    if (fp == std::string::npos) {
+        return 0;
+    }
+    try {
+        return std::stod(sub.substr(fp + 1));
+    } catch (...) {
+        return 0;
+    }
+}
+
+/// The string value of @p field in a flat JSON object, or "" when absent.
+std::string json_string_field(std::string const &sub, std::string const &field) {
+    auto pos = sub.find("\"" + field + "\"");
+    if (pos == std::string::npos) {
+        return "";
+    }
+    pos = sub.find(':', pos);
+    if (pos == std::string::npos) {
+        return "";
+    }
+    auto const open = sub.find('\"', pos);
+    if (open == std::string::npos) {
+        return "";
+    }
+    auto const close = sub.find('\"', open + 1);
+    if (close == std::string::npos) {
+        return "";
+    }
+    return sub.substr(open + 1, close - open - 1);
+}
+
+/// Call @p on_object once per `{...}` object inside the array that follows
+/// @p key. Shared by the measured-point arrays; each of them used to carry its
+/// own copy of this scan, which is how `caches` came to be written but never
+/// read back.
+void for_each_json_object(std::string const &obj, std::string const &key, auto const &on_object) {
+    for_each_json_object_raw(obj, key, [&](std::string const &sub) {
         on_object([&sub](std::string const &field) -> double {
             auto fp = sub.find("\"" + field + "\"");
             if (fp == std::string::npos) {
@@ -490,8 +565,7 @@ void for_each_json_object(std::string const &obj, std::string const &key, auto c
                 return 0;
             }
         });
-        search = oe + 1;
-    }
+    });
 }
 
 DeviceProfile parse_device_profile_json(std::string const &obj) {
@@ -589,6 +663,52 @@ DeviceProfile parse_device_profile_json(std::string const &obj) {
             p.caches.push_back(level);
         }
     });
+
+    p.max_threads = static_cast<unsigned>(extract_double("max_threads", 0.0));
+
+    // Flat (family, size class, width, speedup) rows regrouped into curves.
+    // Rows naming a family or size class this build does not know are dropped:
+    // pricing them as something else would be worse than pricing them from the
+    // default model.
+    std::map<std::pair<std::uint8_t, std::uint8_t>, EfficiencyCurve> curves;
+    for_each_json_object_raw(obj, "thread_efficiency", [&](std::string const &sub) {
+        KernelFamily family{};
+        SizeClass    size_class{};
+        if (!kernel_family_from_string(json_string_field(sub, "family"), family) ||
+            !size_class_from_string(json_string_field(sub, "size_class"), size_class)) {
+            return;
+        }
+        auto const width = static_cast<std::uint32_t>(json_number_field(sub, "width"));
+        if (width == 0) {
+            return;
+        }
+        auto &curve      = curves[{static_cast<std::uint8_t>(family), static_cast<std::uint8_t>(size_class)}];
+        curve.family     = family;
+        curve.size_class = size_class;
+        curve.widths.push_back(width);
+        curve.speedup.push_back(json_number_field(sub, "speedup"));
+    });
+
+    for (auto &[key, curve] : curves) {
+        // Rows may arrive in any order; the query interpolates and so needs
+        // ascending rungs.
+        std::vector<size_t> order(curve.widths.size());
+        for (size_t idx = 0; idx < order.size(); idx++) {
+            order[idx] = idx;
+        }
+        std::ranges::sort(order, [&](size_t a, size_t b) { return curve.widths[a] < curve.widths[b]; });
+
+        EfficiencyCurve sorted;
+        sorted.family     = curve.family;
+        sorted.size_class = curve.size_class;
+        for (size_t const idx : order) {
+            sorted.widths.push_back(curve.widths[idx]);
+            sorted.speedup.push_back(curve.speedup[idx]);
+        }
+        if (sorted.valid()) {
+            p.thread_efficiency.push_back(std::move(sorted));
+        }
+    }
 
     return p;
 }
