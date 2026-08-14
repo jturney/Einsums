@@ -73,4 +73,27 @@ EINSUMS_EXPORT bool has_per_thread_control();
  */
 EINSUMS_EXPORT int get_num_threads_this_thread();
 
+/**
+ * @brief Whether the linked BLAS threads through our own OpenMP runtime.
+ *
+ * True means ``omp_set_num_threads`` on a thread governs the BLAS calls that
+ * thread makes, which is what lets a caller give one BLAS call a thread count
+ * of its own without a per-thread vendor setter. It is the second half of the
+ * question @ref has_per_thread_control answers: a vendor for which both are
+ * false - Accelerate, or a reference BLAS - runs on a schedule no caller can
+ * govern, and callers that budget threads have to treat it as fixed.
+ *
+ * Only OpenBLAS answers true, and only when it was built with OpenMP rather
+ * than with its own pthread pool, which is asked of the library itself at
+ * first call rather than assumed: the OpenMP and pthread builds carry the same
+ * name and the same symbols. Whether OpenBLAS is the linked vendor at all is a
+ * build-time question, and one that cannot be answered from the library name
+ * because a conda environment resolves every vendor through the same
+ * ``libblas`` shim; the build asks the resolved libraries for a symbol only
+ * OpenBLAS defines.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT bool threads_with_openmp();
+
 EINSUMS_NAMESPACE_END(blas)
