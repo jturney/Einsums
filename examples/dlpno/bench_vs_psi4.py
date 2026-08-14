@@ -78,9 +78,9 @@ parser.add_argument("--buckets", type=int, default=None,
                          "per thread count from the measured OpenMP region cost")
 parser.add_argument(
     "--threads", type=int, default=1,
-    help="thread count for BOTH sides. Importing psi4 clamps process-wide "
-         "OpenMP to 1, so einsums needs this set too; OMP_NUM_THREADS alone "
-         "does nothing once psi4 is in the process.",
+    help="thread count for BOTH sides. Importing psi4 takes the process-wide "
+         "OpenMP count over, setting it to OMP_NUM_THREADS if that was exported "
+         "and to 1 if not; this overrides whichever it picked.",
 )
 parser.add_argument(
     "--integrals", default="screened", choices=["screened", "dfhelper", "dense"],

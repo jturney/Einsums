@@ -42,7 +42,7 @@ PYTHONPATH=/path/to/Einsums/build/lib:/path/to/psi4/stage/lib \
 This runs the molecule twice and asserts both results: untruncated against psi4's canonical DF-MP2, and truncated (psi4's NORMAL preset) against psi4's own DLPNO-MP2.
 Useful flags: `--basis`, `--localization {BOYS,PIPEK_MEZEY}`, `--t-cut-pno`, `--buckets`, `--threads`, `--integrals {dense,dfhelper}`, `--no-optimize` (skip the graph passes), `--no-diis`.
 
-Note `--threads`: importing psi4 clamps the process-wide OpenMP thread count to 1, so einsums runs serial unless it is set; `OMP_NUM_THREADS` alone will not do it.
+Note `--threads`: importing psi4 takes the process-wide OpenMP thread count over, setting it to `OMP_NUM_THREADS` if that was exported and to 1 if it was not, so einsums runs serial unless one of the two is set.
 None of the psi4-driven scripts are wired into CTest or pytest, since they need a psi4 install.
 
 ### Without psi4

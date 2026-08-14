@@ -57,8 +57,9 @@ parser.add_argument("--preset", default="NORMAL",
                     choices=["LOOSE", "NORMAL", "TIGHT", "VERY_TIGHT"])
 parser.add_argument("--localization", default="BOYS", choices=["BOYS", "PIPEK_MEZEY"])
 parser.add_argument("--threads", type=int, default=1,
-                    help="thread count. Importing psi4 clamps process-wide OpenMP "
-                         "to 1, so this must be set for einsums to thread at all")
+                    help="thread count. Importing psi4 takes the process-wide OpenMP "
+                         "count over, setting it to OMP_NUM_THREADS if that was "
+                         "exported and to 1 if not, so set this to thread at all")
 parser.add_argument("--integrals", default="dense", choices=["dense", "dfhelper"],
                     help="where the three-index integrals come from. Only 'dense' "
                          "serves (Q|i j) and (Q|u v), which the CC layers need")

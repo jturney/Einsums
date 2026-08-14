@@ -88,11 +88,11 @@ def _omp_max_threads():
     Delegates to :func:`einsums.hardware.get_max_threads`, which reads the
     same process-wide OpenMP runtime every Einsums C++ site consults -
     :class:`~einsums.graph.OpenMPExecutor` among them. It is deliberately
-    not ``os.environ.get("OMP_NUM_THREADS")``: importing psi4 resets the
-    runtime's thread count to 1 regardless of what the environment says,
-    and ``psi4.set_num_threads`` (see ``bench_vs_psi4.py``) is how both
-    libraries' threading is restored afterwards, so only a runtime call
-    sees the number actually in effect when this solver runs. Kept as a
+    not ``os.environ.get("OMP_NUM_THREADS")``: importing psi4 takes the
+    process-wide count over, setting it to that variable if it was
+    exported and to 1 if it was not, and ``psi4.set_num_threads`` (see
+    ``bench_vs_psi4.py``) then overrides both, so only a runtime call sees
+    the number actually in effect when this solver runs. Kept as a
     module-level function rather than called inline so tests can
     monkeypatch the thread count the gate observes.
     """
