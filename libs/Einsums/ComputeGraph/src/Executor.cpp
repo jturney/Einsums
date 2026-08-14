@@ -3,16 +3,21 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/Executor.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Logging.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
+#include <Einsums/TaskPool/WidthBudget.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <memory>
@@ -43,6 +48,55 @@ void execute_node(Node &node) {
     }
 }
 
+/// Gives the calling thread @p width threads for as long as it lives, and hands
+/// back exactly what it found.
+///
+/// Restoring the SAVED values rather than the literal 1 is the whole point.
+/// Pool workers pin themselves to one thread at startup and every unplanned
+/// task depends on that pin, so restoring 1 is right for them - but
+/// `help_until` also runs tasks on the thread that called `execute()`, which is
+/// not pinned, and leaving that thread narrowed would follow the caller into
+/// whatever it does after the replay returns.
+///
+/// Only constructed for widths above 1, so an unplanned graph reads no ICV and
+/// writes none.
+class WidthGuard {
+  public:
+    explicit WidthGuard(int width) {
+#ifdef _OPENMP
+        _prev_omp = omp_get_max_threads();
+        omp_set_num_threads(width);
+#endif
+        // A vendor that cannot be read cannot be set either (both are the same
+        // build-time switch), so a zero here means there is no vendor state to
+        // save, and restoring the 0 would ask for a nonsense thread count.
+        _prev_blas = blas::get_num_threads_this_thread();
+        if (_prev_blas > 0) {
+            blas::set_num_threads_this_thread(width);
+        }
+    }
+
+    ~WidthGuard() {
+        if (_prev_blas > 0) {
+            blas::set_num_threads_this_thread(_prev_blas);
+        }
+#ifdef _OPENMP
+        omp_set_num_threads(_prev_omp);
+#endif
+    }
+
+    WidthGuard(WidthGuard const &)            = delete;
+    WidthGuard &operator=(WidthGuard const &) = delete;
+    WidthGuard(WidthGuard &&)                 = delete;
+    WidthGuard &operator=(WidthGuard &&)      = delete;
+
+  private:
+#ifdef _OPENMP
+    int _prev_omp{1};
+#endif
+    int _prev_blas{0};
+};
+
 /// Run every node in list order, collecting timings into one batch.
 ///
 /// The batch matters: recording per node took the graph's RECURSIVE content
@@ -64,7 +118,18 @@ void execute_all_timed(Graph &graph) {
     graph.record_node_timings(std::move(samples));
 }
 
+/// Replays that ran width-1 because the plan was made for another machine.
+std::atomic<std::size_t> g_stale_thread_plan_fallbacks{0};
+
 } // namespace
+
+std::size_t stale_thread_plan_fallbacks() {
+    return g_stale_thread_plan_fallbacks.load(std::memory_order_relaxed);
+}
+
+void reset_stale_thread_plan_fallbacks() {
+    g_stale_thread_plan_fallbacks.store(0, std::memory_order_relaxed);
+}
 
 // ─── SequentialExecutor ─────────────────────────────────────────────────────
 
@@ -205,6 +270,32 @@ struct DataflowExecutor::Scaffold {
     std::mutex          deferred_mutex;
     std::vector<size_t> deferred;
 
+    // ── Width budget ────────────────────────────────────────────────────────
+    //
+    // Off unless some node of this graph carries a width above 1, and then off
+    // again if that plan was made for a different machine. An unplanned graph -
+    // which is every graph until a planning pass runs - takes not one atomic
+    // more than it did before widths existed, which is what keeps the ~0.44 us
+    // per-node submission floor where it is.
+    bool widths_active{false};
+
+    /// Admission order, computed once per run: the longest remaining path from
+    /// a node to a sink, so a node on a long tail is admitted before a node
+    /// that finishes the graph.
+    ///
+    /// A planned graph carries the path in ESTIMATED TIME under its chosen
+    /// widths (@ref Node::admission_priority, written by ThreadPlanning), which
+    /// is the same ordering with real numbers in it - a long tail of tiny nodes
+    /// should not outrank one fat node. A graph nobody planned falls back to
+    /// the structural hop count (@ref fill_structural_priorities), which needs
+    /// no cost model and is the ordering the executor had before widths.
+    std::vector<std::int64_t> priority;
+
+    /// Width charged to the budget per node, 0 for a node that never acquired
+    /// one. Written by the thread that admits the node, before it queues the
+    /// task, and read by the thread that completes it.
+    std::vector<std::atomic<unsigned>> admitted;
+
     /// Scratch for the root-seeding batch, reused across replays.
     std::vector<std::function<void()>> root_batch;
 
@@ -222,9 +313,28 @@ struct DataflowExecutor::Scaffold {
     /// Rebuild zone_ids if this graph's labels are not the ones cached.
     void refresh_zone_ids(Graph const &graph);
 
+    /// Fill @ref priority from the plan the nodes carry, or from the structural
+    /// hop count when they carry none.
+    void fill_priorities();
+
+    /// Fill @ref priority with each node's longest hop count to a sink.
+    void fill_structural_priorities();
+
+    /// The width node @p i must be admitted for, 0 when nothing is gated.
+    [[nodiscard]] unsigned effective_width(Node const &node) const;
+
     /// Submit node @p i. With @p batch non-null the closure is appended there
     /// instead of enqueued, for the caller to hand to the pool in one go.
     void submit(size_t i, std::vector<std::function<void()>> *batch = nullptr);
+
+    /// Second half of submit, for a node whose memory is already charged:
+    /// acquire its width, then queue it. Re-entering submit() here instead
+    /// would charge the bytes a second time.
+    void admit(size_t i, std::vector<std::function<void()>> *batch = nullptr);
+
+    /// Third half: hand the node's task to the pool (or to @p batch).
+    void enqueue_task(size_t i, std::vector<std::function<void()>> *batch);
+
     void complete(size_t i);
     void drain_deferred();
     void run_node(size_t i);
@@ -263,8 +373,12 @@ void DataflowExecutor::Scaffold::reset(Graph &graph, size_t node_count) {
     if (remaining.size() != n) {
         remaining = std::vector<std::atomic<int>>(n);
     }
+    // The width scan rides along with the counter fill rather than walking the
+    // node list a second time.
+    bool any_wide = false;
     for (size_t i = 0; i < n; i++) {
         remaining[i].store(static_cast<int>(deps->predecessors[i].size()), std::memory_order_relaxed);
+        any_wide = any_wide || (*nodes)[i].thread_width > 1;
     }
 
     node_ms.assign(n, PaddedMs{});
@@ -273,6 +387,87 @@ void DataflowExecutor::Scaffold::reset(Graph &graph, size_t node_count) {
     first_exc = nullptr;
     mem_current.store(0, std::memory_order_relaxed);
     deferred.clear();
+
+    widths_active = any_wide;
+    if (any_wide) {
+        auto &width_budget = task_pool::WidthBudget::get_singleton();
+        // Asked before anything is admitted and from the thread that starts the
+        // run, which is the only one that can see the machine (see
+        // WidthBudget::sync_machine_width).
+        width_budget.sync_machine_width();
+
+        // Plan staleness. A width is a share of a known number of threads, so a
+        // plan for a different number is not conservative, it is wrong: it can
+        // hand out more of the machine than exists, or leave most of it idle.
+        // Falling back to width 1 is exactly today's behavior for an unplanned
+        // graph, which is the one plan that is right on every machine.
+        unsigned const planned = graph.planned_thread_count();
+        if (planned != 0 && planned != width_budget.total()) {
+            widths_active = false;
+            g_stale_thread_plan_fallbacks.fetch_add(1, std::memory_order_relaxed);
+            static std::once_flag warned;
+            std::call_once(warned, [&]() {
+                EINSUMS_LOG_WARN("ComputeGraph: graph '{}' carries thread widths planned for {} threads but the machine is rationing {}; "
+                                 "running every node at width 1. Re-plan to use the machine.",
+                                 graph.name(), planned, width_budget.total());
+            });
+        }
+    }
+
+    if (widths_active) {
+        if (admitted.size() != n) {
+            admitted = std::vector<std::atomic<unsigned>>(n);
+        }
+        for (size_t i = 0; i < n; i++) {
+            admitted[i].store(0, std::memory_order_relaxed);
+        }
+        fill_priorities();
+    }
+}
+
+void DataflowExecutor::Scaffold::fill_priorities() {
+    // A planner writes a nonzero priority on every node it plans, so one
+    // nonzero anywhere means these numbers are the plan's and not left over
+    // from a hand-set width. Estimated nanoseconds to a sink, so they order
+    // exactly as the hop counts do but with the node times in them.
+    for (size_t i = 0; i < n; i++) {
+        if ((*nodes)[i].admission_priority != 0) {
+            priority.assign(n, 0);
+            for (size_t k = 0; k < n; k++) {
+                priority[k] = (*nodes)[k].admission_priority;
+            }
+            return;
+        }
+    }
+    fill_structural_priorities();
+}
+
+void DataflowExecutor::Scaffold::fill_structural_priorities() {
+    // Node positions are topological (DependencyInfo's contract), so every
+    // successor of i sits at a position above i and one backward pass gives
+    // each node the longest hop count to a sink.
+    priority.assign(n, 0);
+    for (size_t k = n; k-- > 0;) {
+        std::int64_t longest = 0;
+        for (size_t const succ : deps->successors[k]) {
+            longest = std::max(longest, priority[succ]);
+        }
+        priority[k] = longest + 1;
+    }
+}
+
+unsigned DataflowExecutor::Scaffold::effective_width(Node const &node) const {
+    if (!widths_active) {
+        return 0;
+    }
+    // A control-flow node holds one unit while its body replays, so the machine
+    // is never handed out twice; the body's own nodes acquire their real widths
+    // from the same budget, and the unit this one holds goes back to the budget
+    // for the duration of the nested run (WidthBudget::BlockedScope).
+    if (node.kind == OpKind::Loop || node.kind == OpKind::Conditional) {
+        return 1;
+    }
+    return node.thread_width == 0 ? 1U : node.thread_width;
 }
 
 void DataflowExecutor::Scaffold::refresh_zone_ids(Graph const &graph) {
@@ -288,6 +483,25 @@ void DataflowExecutor::Scaffold::refresh_zone_ids(Graph const &graph) {
 }
 
 void DataflowExecutor::Scaffold::complete(size_t i) {
+    // Width goes back BEFORE the successors are submitted, so a successor can
+    // be admitted into the room this node just left instead of parking behind
+    // it. Nothing about the release depends on the node having run: a node that
+    // threw, or that was drained after a failure, returns its width here too,
+    // which is what keeps a failed run from wedging every later one.
+    if (widths_active) {
+        unsigned const width = admitted[i].exchange(0, std::memory_order_relaxed);
+        if (width > 0) {
+            // Releasing runs the parked tasks it admits, so it inherits their
+            // failure modes; the counter below must be reached whatever they do
+            // with them, for the same reason the successor loop is guarded.
+            try {
+                task_pool::WidthBudget::get_singleton().release(width);
+            } catch (...) {
+                fail(std::current_exception());
+            }
+        }
+    }
+
     // A successor submission that throws (an allocation failure in the pool,
     // say) must not skip the counter: help_until() waits for completed == n and
     // would never return.
@@ -321,8 +535,10 @@ void DataflowExecutor::Scaffold::drain_deferred() {
             }
         }
     }
+    // admit(), not submit(): the bytes were charged above, and going back
+    // through the memory gate would charge them a second time.
     for (size_t const i : runnable) {
-        submit(i);
+        admit(i);
     }
 }
 
@@ -342,7 +558,22 @@ void DataflowExecutor::Scaffold::run_node(size_t i) {
         }
         try {
             auto t0 = std::chrono::steady_clock::now();
-            execute_node(node);
+            // Tells this thread what it holds, so a nested replay started from
+            // inside the kernel can lend the width back while it waits. Costs
+            // nothing for a node that acquired nothing.
+            task_pool::WidthBudget::HoldScope const hold(widths_active ? admitted[i].load(std::memory_order_relaxed) : 0U);
+            // A planned width is honored by giving the executing thread that
+            // many threads for the node and no longer. Widths of 0 (unplanned)
+            // and 1 take the original path untouched: no thread-count is read,
+            // none is written, and the per-node submission cost is unchanged.
+            // A stale plan reaches here with widths_active false and is run as
+            // though every node were unplanned.
+            if (widths_active && node.thread_width > 1) {
+                WidthGuard const width(node.thread_width);
+                execute_node(node);
+            } else {
+                execute_node(node);
+            }
             auto t1 = std::chrono::steady_clock::now();
 
             node_ms[i].ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -358,6 +589,10 @@ void DataflowExecutor::Scaffold::run_node(size_t i) {
     complete(i);
 }
 
+/// The async halves deliberately do NOT honor Node::thread_width. The two run as
+/// separate tasks and so on two arbitrary threads, and the width contract is a
+/// property of one thread over one interval - there is no interval here that
+/// covers the operation, which by construction proceeds outside both tasks.
 void DataflowExecutor::Scaffold::run_async_start(size_t i) {
     Node &node = (*nodes)[i];
     if (!failed.load(std::memory_order_acquire)) {
@@ -426,6 +661,49 @@ void DataflowExecutor::Scaffold::submit(size_t i, std::vector<std::function<void
         mem_current.fetch_add(node.estimated_bytes, std::memory_order_relaxed);
     }
 
+    admit(i, batch);
+}
+
+void DataflowExecutor::Scaffold::admit(size_t i, std::vector<std::function<void()>> *batch) {
+    // The whole width machinery is skipped for a graph nobody planned, down to
+    // the branch that reads the node: no budget lock, no atomic, no priority
+    // lookup on the path every replay takes today.
+    if (!widths_active) {
+        enqueue_task(i, batch);
+        return;
+    }
+
+    // The deferred_mutex is NOT held here (submit released it, drain_deferred
+    // collects under it and calls in after releasing), and the budget invokes
+    // continuations with its own lock released. Neither lock is ever taken
+    // inside the other, in either order.
+    unsigned const granted = task_pool::WidthBudget::get_singleton().acquire(
+        effective_width((*nodes)[i]), {.rank = priority[i], .tiebreak = i}, [this, i](unsigned width) {
+            admitted[i].store(width, std::memory_order_relaxed);
+            try {
+                enqueue_task(i, nullptr);
+            } catch (...) {
+                // The width is already charged and nobody else will ever
+                // complete this node, so failing to queue it would both hang
+                // the run and lose the units to the process for good. Complete
+                // it here instead: the width goes back and the count advances.
+                fail(std::current_exception());
+                complete(i);
+            }
+        });
+
+    if (granted == 0) {
+        // Parked. The continuation owns the node now, and may in fact have run
+        // already, so nothing more may be done with it here.
+        return;
+    }
+    admitted[i].store(granted, std::memory_order_relaxed);
+    enqueue_task(i, batch);
+}
+
+void DataflowExecutor::Scaffold::enqueue_task(size_t i, std::vector<std::function<void()>> *batch) {
+    Node &node = (*nodes)[i];
+
     // Both closures capture exactly a pointer and an index, which fits inside
     // std::function's inline buffer - so submitting a node allocates nothing.
     // The old path went through submit_detached(node.label, lambda), which
@@ -463,6 +741,15 @@ void DataflowExecutor::execute(Graph &graph) {
 
     if (n == 0)
         return;
+
+    // If this run was started from inside an admitted task - a Loop or
+    // Conditional node replaying its body - that task is about to wait for the
+    // whole of this run and is not computing while it does. Its width goes back
+    // to the budget for the duration, and is taken again when this returns.
+    // Without that, a body node planned at the machine's full width could never
+    // be admitted (an ancestor holds a unit of it) and the nested run would
+    // never finish.
+    task_pool::WidthBudget::BlockedScope const lend_width_to_body;
 
     // Counter-based dataflow scheduling. Only the dependency-free roots are
     // submitted from this thread; every other node is submitted by the worker

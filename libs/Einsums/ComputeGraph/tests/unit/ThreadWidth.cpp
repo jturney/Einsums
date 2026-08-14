@@ -1,0 +1,312 @@
+//----------------------------------------------------------------------------------------------
+// Copyright (c) The Einsums Developers. All rights reserved.
+// Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+//----------------------------------------------------------------------------------------------
+
+// The width contract: a node planned at width w runs with exactly w threads
+// available to its kernel, and the thread that ran it is left exactly as it was
+// found. Everything here observes the OpenMP thread ceiling from inside a
+// node's kernel, which is the value every threaded kernel in the tree forks
+// from.
+
+#include <Einsums/BLAS/ThreadControl.hpp>
+#include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/Moldability.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
+#include <Einsums/TaskPool/TaskPool.hpp>
+#include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
+#include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+
+#include <atomic>
+#include <cmath>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include <Einsums/Testing.hpp>
+
+using namespace einsums;
+namespace cg = einsums::compute_graph;
+
+namespace {
+
+/// The thread ceiling this build can actually move. A build without OpenMP has
+/// no ICV to set, so `omp_set_num_threads` is a no-op there and every width
+/// assertion below would be testing the stub rather than the contract.
+bool openmp_ceiling_is_settable() {
+    int const before = hardware::get_max_threads();
+    hardware::set_num_threads(before + 1);
+    bool const moved = hardware::get_max_threads() == before + 1;
+    hardware::set_num_threads(before);
+    return moved;
+}
+
+/// What one node saw while it ran.
+struct Observation {
+    std::atomic<int> max_threads{-1}; ///< OpenMP ceiling inside the kernel
+    std::atomic<int> worker_id{-2};   ///< pool worker index, or -1 on the calling thread
+};
+
+/// A node whose entire effect is to record the thread state its kernel sees.
+cg::Node observing_node(std::string label, std::uint16_t width, Observation *out) {
+    cg::Node node;
+    node.kind         = cg::OpKind::Custom;
+    node.label        = std::move(label);
+    node.thread_width = width;
+    node.execute      = [out]() {
+        out->max_threads.store(hardware::get_max_threads(), std::memory_order_relaxed);
+        out->worker_id.store(task_pool::TaskPool::current_worker_id(), std::memory_order_relaxed);
+    };
+    return node;
+}
+
+/// A width no thread in the process already has, so an observation of it can
+/// only have come from the executor's wrap. On a four-core machine the caller's
+/// own ceiling is 4, which would make a width of 4 unfalsifiable.
+std::uint16_t distinct_width(int baseline) {
+    return baseline == 4 ? std::uint16_t{3} : std::uint16_t{4};
+}
+
+/// What an UNPLANNED node is entitled to see: the pin a pool worker sets at
+/// startup, or the caller's own ceiling when `help_until` runs the node on the
+/// thread that called execute().
+bool is_unplanned_ceiling(int observed, int baseline) {
+    return observed == 1 || observed == baseline;
+}
+
+} // namespace
+
+TEST_CASE("ThreadWidth - a planned width reaches the kernel", "[ComputeGraph][Executor][ThreadWidth]") {
+    if (!openmp_ceiling_is_settable()) {
+        SKIP("build has no OpenMP runtime, so there is no thread ceiling to plan");
+    }
+
+    int const           baseline = hardware::get_max_threads();
+    std::uint16_t const wide     = distinct_width(baseline);
+
+    Observation observed;
+    cg::Graph   graph("width_reaches_kernel");
+    graph.add_node(observing_node("wide", wide, &observed));
+
+    cg::DataflowExecutor df;
+    graph.execute(df);
+
+    REQUIRE(observed.max_threads.load() == static_cast<int>(wide));
+}
+
+TEST_CASE("ThreadWidth - an unplanned node pays nothing", "[ComputeGraph][Executor][ThreadWidth]") {
+    int const baseline = hardware::get_max_threads();
+
+    Observation observed;
+    cg::Graph   graph("unplanned");
+    graph.add_node(observing_node("plain", 0, &observed));
+
+    cg::DataflowExecutor df;
+    graph.execute(df);
+
+    int const seen = observed.max_threads.load();
+    if (observed.worker_id.load() >= 0) {
+        // On a pool worker the answer is the startup pin, exactly as before
+        // widths existed.
+        REQUIRE(seen == 1);
+    } else {
+        // help_until ran it on the calling thread, which no one has narrowed.
+        REQUIRE(seen == baseline);
+    }
+    REQUIRE(is_unplanned_ceiling(seen, baseline));
+}
+
+TEST_CASE("ThreadWidth - a wide node leaves its thread as it found it", "[ComputeGraph][Executor][ThreadWidth]") {
+    if (!openmp_ceiling_is_settable()) {
+        SKIP("build has no OpenMP runtime, so there is no thread ceiling to plan");
+    }
+
+    int const           baseline = hardware::get_max_threads();
+    std::uint16_t const wide     = distinct_width(baseline);
+
+    // Enough of each to land on every worker a wide node could have widened.
+    size_t const             wide_count   = task_pool::TaskPool::get_singleton().num_workers() + 1;
+    size_t const             narrow_count = 4 * wide_count;
+    std::vector<Observation> wide_seen(wide_count);
+    std::vector<Observation> narrow_seen(narrow_count);
+
+    cg::Graph graph("restores_after_wide");
+    for (size_t i = 0; i < wide_count; i++) {
+        graph.add_node(observing_node("wide_" + std::to_string(i), wide, &wide_seen[i]));
+    }
+    for (size_t i = 0; i < narrow_count; i++) {
+        graph.add_node(observing_node("narrow_" + std::to_string(i), 0, &narrow_seen[i]));
+    }
+
+    cg::DataflowExecutor df;
+    graph.execute(df);
+
+    for (auto const &obs : wide_seen) {
+        REQUIRE(obs.max_threads.load() == static_cast<int>(wide));
+    }
+    for (auto const &obs : narrow_seen) {
+        // The nodes are all independent, so a narrow one may well run BEFORE a
+        // wide one; what must never happen is a narrow node inheriting a width
+        // it was not planned with.
+        REQUIRE(obs.max_threads.load() != static_cast<int>(wide));
+        REQUIRE(is_unplanned_ceiling(obs.max_threads.load(), baseline));
+    }
+}
+
+TEST_CASE("ThreadWidth - the calling thread survives a wide replay", "[ComputeGraph][Executor][ThreadWidth]") {
+    if (!openmp_ceiling_is_settable()) {
+        SKIP("build has no OpenMP runtime, so there is no thread ceiling to plan");
+    }
+
+    int const           baseline      = hardware::get_max_threads();
+    int const           blas_baseline = blas::get_num_threads_this_thread();
+    std::uint16_t const wide          = distinct_width(baseline);
+
+    // More wide nodes than workers, so help_until is all but certain to run one
+    // of them on this thread - the case that makes restoring the SAVED value
+    // rather than the worker pin necessary.
+    size_t const             count = 4 * (task_pool::TaskPool::get_singleton().num_workers() + 1);
+    std::vector<Observation> observed(count);
+
+    cg::Graph graph("caller_survives");
+    for (size_t i = 0; i < count; i++) {
+        graph.add_node(observing_node("wide_" + std::to_string(i), wide, &observed[i]));
+    }
+
+    cg::DataflowExecutor df;
+    graph.execute(df);
+
+    for (auto const &obs : observed) {
+        REQUIRE(obs.max_threads.load() == static_cast<int>(wide));
+    }
+    REQUIRE(hardware::get_max_threads() == baseline);
+    if (blas_baseline > 0) {
+        REQUIRE(blas::get_num_threads_this_thread() == blas_baseline);
+    }
+}
+
+TEST_CASE("ThreadWidth - a throwing wide kernel still restores", "[ComputeGraph][Executor][ThreadWidth]") {
+    if (!openmp_ceiling_is_settable()) {
+        SKIP("build has no OpenMP runtime, so there is no thread ceiling to plan");
+    }
+
+    int const           baseline = hardware::get_max_threads();
+    std::uint16_t const wide     = distinct_width(baseline);
+
+    size_t const count = 4 * (task_pool::TaskPool::get_singleton().num_workers() + 1);
+
+    cg::Graph failing("wide_throws");
+    for (size_t i = 0; i < count; i++) {
+        cg::Node node;
+        node.kind         = cg::OpKind::Custom;
+        node.label        = "thrower_" + std::to_string(i);
+        node.thread_width = wide;
+        node.execute      = []() { throw std::runtime_error("kernel failed while wide"); };
+        failing.add_node(std::move(node));
+    }
+
+    cg::DataflowExecutor df;
+    REQUIRE_THROWS(failing.execute(df));
+
+    // The calling thread first, then every worker: a guard that unwound without
+    // restoring would leave a widened thread behind, and the next unplanned
+    // node to land on it would see the width.
+    REQUIRE(hardware::get_max_threads() == baseline);
+
+    std::vector<Observation> observed(count);
+    cg::Graph                after("after_throw");
+    for (size_t i = 0; i < count; i++) {
+        after.add_node(observing_node("narrow_" + std::to_string(i), 0, &observed[i]));
+    }
+    after.execute(df);
+
+    for (auto const &obs : observed) {
+        REQUIRE(is_unplanned_ceiling(obs.max_threads.load(), baseline));
+    }
+}
+
+TEST_CASE("ThreadWidth - the other executors ignore widths", "[ComputeGraph][Executor][ThreadWidth]") {
+    int const           baseline = hardware::get_max_threads();
+    std::uint16_t const wide     = distinct_width(baseline);
+
+    Observation seq_seen;
+    cg::Graph   seq_graph("sequential_widths");
+    seq_graph.add_node(observing_node("wide", wide, &seq_seen));
+
+    cg::SequentialExecutor seq;
+    seq_graph.execute(seq);
+    REQUIRE(seq_seen.max_threads.load() == baseline);
+    REQUIRE(hardware::get_max_threads() == baseline);
+
+    Observation omp_seen;
+    cg::Graph   omp_graph("openmp_widths");
+    omp_graph.add_node(observing_node("wide", wide, &omp_seen));
+
+    cg::OpenMPExecutor omp;
+    omp_graph.execute(omp);
+    REQUIRE(omp_seen.max_threads.load() == baseline);
+    REQUIRE(hardware::get_max_threads() == baseline);
+}
+
+TEST_CASE("ThreadWidth - widths do not change results", "[ComputeGraph][Executor][ThreadWidth]") {
+    auto A = create_random_tensor<double>("A", 12, 9);
+    auto B = create_random_tensor<double>("B", 9, 7);
+    auto C = create_zero_tensor<double>("C", 12, 7);
+    auto D = create_zero_tensor<double>("D", 12, 7);
+
+    cg::Graph reference("width_reference");
+    {
+        cg::CaptureGuard const guard(reference);
+        cg::einsum("ik;kj->ij", &C, A, B);
+        cg::scale(3.0, &C);
+    }
+    cg::SequentialExecutor seq;
+    reference.execute(seq);
+
+    cg::Graph planned("width_planned");
+    {
+        cg::CaptureGuard const guard(planned);
+        cg::einsum("ik;kj->ij", &D, A, B);
+        cg::scale(3.0, &D);
+    }
+    for (auto &node : planned.nodes()) {
+        node.thread_width = distinct_width(hardware::get_max_threads());
+    }
+
+    cg::DataflowExecutor df;
+    planned.execute(df);
+
+    for (size_t r = 0; r < 12; r++) {
+        for (size_t c = 0; c < 7; c++) {
+            REQUIRE(std::abs(C(r, c) - D(r, c)) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("ThreadWidth - moldability follows the kernel and the vendor", "[ComputeGraph][Executor][ThreadWidth]") {
+    auto kind_node = [](cg::OpKind kind) {
+        cg::Node node;
+        node.kind = kind;
+        return node;
+    };
+
+    // Kernels einsums threads itself fork from the ICV the executor sets, so
+    // they are governable whatever BLAS was linked.
+    REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::Permute)));
+    REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::HPTTPermute)));
+    REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::Custom)));
+
+    // A vendor call is governable only where the vendor listens.
+    REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::Gemm)) == cg::blas_route_is_moldable());
+    REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::Einsum)) == cg::blas_route_is_moldable());
+
+    // Containers hold no kernel; their bodies carry the widths.
+    REQUIRE_FALSE(cg::kernel_moldability(kind_node(cg::OpKind::Loop)));
+    REQUIRE_FALSE(cg::kernel_moldability(kind_node(cg::OpKind::Conditional)));
+
+    // The two ways a vendor can be told apart are independent facts, and at
+    // most one of them holds: MKL keeps its own runtime, OpenBLAS reads ours.
+    REQUIRE_FALSE((blas::has_per_thread_control() && blas::threads_with_openmp()));
+}

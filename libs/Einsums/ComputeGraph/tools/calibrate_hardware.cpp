@@ -27,6 +27,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -43,12 +44,15 @@ namespace {
 struct Config {
     std::string output = "hardware_profile.json";
     std::string calibration; // empty: hardware::default_calibration_path()
-    std::string dtype      = "double";
-    size_t      min_size   = 16;
-    size_t      max_size   = 2048;
-    size_t      num_points = 15;
-    size_t      warmup     = 3;
-    size_t      repeats    = 10;
+    std::string dtype          = "double";
+    size_t      min_size       = 16;
+    size_t      max_size       = 2048;
+    size_t      num_points     = 15;
+    size_t      warmup         = 3;
+    size_t      repeats        = 10;
+    bool        thread_sweep   = true;
+    size_t      thread_repeats = 3;
+    size_t      thread_max_mb  = 64;
 };
 
 Config parse_args(int argc, char **argv) {
@@ -71,6 +75,12 @@ Config parse_args(int argc, char **argv) {
             cfg.warmup = std::stoull(argv[++i]);
         else if (arg == "--repeats" && i + 1 < argc)
             cfg.repeats = std::stoull(argv[++i]);
+        else if (arg == "--no-thread-sweep")
+            cfg.thread_sweep = false;
+        else if (arg == "--thread-repeats" && i + 1 < argc)
+            cfg.thread_repeats = std::stoull(argv[++i]);
+        else if (arg == "--thread-max-mb" && i + 1 < argc)
+            cfg.thread_max_mb = std::stoull(argv[++i]);
         else if (arg == "--help" || arg == "-h") {
             println("Usage: calibrate_hardware [options]");
             println("  --output <path>    Output JSON file (default: hardware_profile.json)");
@@ -81,6 +91,9 @@ Config parse_args(int argc, char **argv) {
             println("  --num-points <N>   Number of measurement points (default: 15)");
             println("  --warmup <N>       Warmup iterations (default: 3)");
             println("  --repeats <N>      Measurement iterations (default: 10)");
+            println("  --no-thread-sweep  Skip the per-family efficiency curves");
+            println("  --thread-repeats <N>  Timed runs per curve point (default: 3)");
+            println("  --thread-max-mb <N>   Cap on a curve cell's working set (default: 64)");
             std::exit(0);
         }
     }
@@ -270,7 +283,7 @@ double measure_cache_bandwidth_gbps(size_t bytes) {
     double volatile sink = 0.0;
 
     double const seconds = median_seconds(1, 5, [&] {
-        double acc[kLanes] = {};
+        std::array<double, kLanes> acc{};
         for (size_t p = 0; p < passes; p++) {
             for (size_t idx = 0; idx < n; idx += kLanes) {
                 for (size_t lane = 0; lane < kLanes; lane++) {
@@ -304,7 +317,9 @@ double measure_cache_latency_ns(size_t bytes) {
     for (size_t idx = 0; idx < n; idx++) {
         order[idx] = idx;
     }
-    std::mt19937_64 rng(12345);
+    // Fixed seed on purpose: the shuffle must be identical between calibration
+    // runs or the measured points move for reasons that are not hardware.
+    std::mt19937_64 rng(12345); // NOLINT(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
     for (size_t idx = n - 1; idx > 0; idx--) {
         std::swap(order[idx], order[rng() % (idx + 1)]);
     }
@@ -453,6 +468,35 @@ int einsums_main() {
     double const overhead                    = measure_overhead_us();
     cost_model.cpu.kernel_launch_overhead_us = overhead;
     einsums::println("  DGEMM(1x1x1) overhead: {:.2f} us", overhead);
+
+    // Measure how each kernel family scales with thread count, at each size
+    // class the cache levels just defined. This is the axis a width planner
+    // reads: t(w) = t(1) / s(w).
+    cost_model.cpu.max_threads = static_cast<unsigned>(std::max(1, einsums::hardware::get_max_threads()));
+    if (cfg.thread_sweep) {
+        einsums::println("\n--- Thread Efficiency ---\n");
+        cg::ThreadSweepOptions sweep;
+        sweep.warmup    = 1;
+        sweep.repeats   = cfg.thread_repeats;
+        sweep.max_bytes = cfg.thread_max_mb * 1024 * 1024;
+
+        auto const t_sweep_0             = std::chrono::steady_clock::now();
+        cost_model.cpu.thread_efficiency = cg::measure_thread_efficiency(cost_model.cpu, sweep);
+        auto const t_sweep_1             = std::chrono::steady_clock::now();
+
+        for (auto const &curve : cost_model.cpu.thread_efficiency) {
+            std::string line = fmt::format("  {:>12} / {:<9}:", cg::to_string(curve.family), cg::to_string(curve.size_class));
+            for (size_t idx = 0; idx < curve.widths.size(); idx++) {
+                line += fmt::format("  w{}={:.2f}x", curve.widths[idx], curve.speedup[idx]);
+            }
+            einsums::println("{}", line);
+        }
+        if (cost_model.cpu.thread_efficiency.empty()) {
+            einsums::println("  (single-threaded machine: every curve would be the point s(1) = 1)");
+        }
+        einsums::println("  swept {} cells in {:.1f} s", cost_model.cpu.thread_efficiency.size(),
+                         std::chrono::duration<double>(t_sweep_1 - t_sweep_0).count());
+    }
 
     // Update cost_model name
     cost_model.cpu.name   = fmt::format("{} (calibrated)", cpu_brand);

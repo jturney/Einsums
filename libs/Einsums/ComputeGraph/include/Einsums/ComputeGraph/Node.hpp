@@ -405,10 +405,40 @@ using OpData =
  * @see CaptureContext::record()
  */
 struct Node {
-    NodeId      id{0};                ///< Unique identifier assigned by Graph::add_node()
-    OpKind      kind{OpKind::Custom}; ///< Operation type for pattern matching
-    Target      target{Target::CPU};  ///< Execution target (set by GPUPlacement pass)
-    std::string label;                ///< Human-readable label for profiling and debugging
+    NodeId id{0};                ///< Unique identifier assigned by Graph::add_node()
+    OpKind kind{OpKind::Custom}; ///< Operation type for pattern matching
+    Target target{Target::CPU};  ///< Execution target (set by GPUPlacement pass)
+
+    /// @brief Threads this node's kernel is to execute with; 0 means unplanned
+    ///        and is executed exactly as width 1.
+    ///
+    /// @ref DataflowExecutor guarantees a node with a width above 1 sees exactly
+    /// that many threads in @c omp_get_max_threads() and in the vendor BLAS, for
+    /// the duration of the node and on whichever thread runs it.
+    /// @ref SequentialExecutor and @ref OpenMPExecutor ignore the field, so a
+    /// graph carrying widths behaves exactly as an unplanned one under them.
+    ///
+    /// A width is a tuning artifact of one machine and one process: it is chosen
+    /// against the thread count the plan was made for and is deliberately never
+    /// serialized with the graph. Sits in the padding after @c target rather
+    /// than beside the other scheduling metadata so it costs the node nothing.
+    std::uint16_t thread_width{0};
+
+    /// @brief Admission urgency: the longest remaining path from this node to a
+    ///        sink, in estimated NANOSECONDS under the planned widths.
+    ///
+    /// @ref DataflowExecutor admits ready nodes in decreasing order of this,
+    /// ties broken by node position. 0 means unplanned, and then the executor
+    /// derives a structural hop count instead, which is the same ordering
+    /// without the times.
+    ///
+    /// Nanoseconds rather than a double because the budget's ordering key is an
+    /// integer and an exact comparison is what makes admission order a function
+    /// of the graph rather than of rounding. Written by the ThreadPlanning pass
+    /// alongside @ref thread_width, and never serialized for the same reason.
+    std::int64_t admission_priority{0};
+
+    std::string label; ///< Human-readable label for profiling and debugging
 
     /**
      * @brief Type-erased executor that performs the captured operation.

@@ -798,6 +798,68 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     [[nodiscard]] std::uint64_t analysis_version() const { return _analysis_version; }
 
     /**
+     * @brief Threads the per-node widths on this graph were planned against.
+     *
+     * A width is chosen for one machine at one moment: the planner divides a
+     * known number of threads between the nodes, so the same widths on a
+     * different thread count are not a worse plan, they are a wrong one.
+     * Recording the count the plan assumed lets @ref DataflowExecutor notice
+     * and fall back to running every node at width 1.
+     *
+     * 0 means nothing recorded, which is what a hand-set width or an unplanned
+     * graph looks like; those are honored as they are found. Deliberately not
+     * serialized with the graph, for the same reason the widths are not.
+     */
+    APIARY_EXPOSE APIARY_GETTER("planned_thread_count") [[nodiscard]] unsigned planned_thread_count() const {
+        return _planned_thread_count;
+    }
+
+    /// Record the thread count the current widths were planned for.
+    /// @see planned_thread_count
+    void set_planned_thread_count(unsigned threads) { _planned_thread_count = static_cast<std::uint16_t>(threads); }
+
+    /**
+     * @brief Choose a thread width for every node, for this machine, now.
+     *
+     * Runs the @ref passes::ThreadPlanning heuristic standalone - no pipeline
+     * needed, because widths touch no structure - and records the thread count
+     * the plan assumed so @ref DataflowExecutor can notice a machine change and
+     * fall back to width 1. Loop bodies and conditional branches are planned
+     * too, each against the same thread count; the one process-wide width
+     * budget composes them at run time.
+     *
+     * Only @ref DataflowExecutor acts on the result. Under the other executors
+     * the graph behaves exactly as an unplanned one.
+     *
+     * @par Re-plan policy
+     * A plan needs per-node serial times, and the honest ones are measured.
+     * So:
+     * - A graph that has already replayed is planned from its recorded
+     *   timings, and that plan is final.
+     * - A graph that has never replayed is planned from the cost model, and one
+     *   automatic re-plan is armed. It fires at the end of the next completed
+     *   replay, when the first real timings exist, and then the widths are
+     *   frozen for the life of the graph.
+     *
+     * The consequence is deliberate and is the determinism contract: widths
+     * move at most once, so from the second replay onward - or from the first,
+     * with @p freeze - repeated replays at a fixed thread count are
+     * bit-identical.
+     *
+     * @param freeze Plan now and never re-plan, even from the cold-start model.
+     *               For workflows that want every replay bit-identical to the
+     *               first, at the cost of model-quality widths.
+     * @return True when at least one node was given a width above 1.
+     *
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE bool plan_threads(bool freeze = false);
+
+    /// Whether a one-shot automatic re-plan is waiting for the next completed
+    /// replay. @see plan_threads
+    APIARY_EXPOSE APIARY_GETTER("thread_replan_armed") [[nodiscard]] bool thread_replan_armed() const { return _thread_replan_armed; }
+
+    /**
      * @brief Add a conditional (if-then-else) node to the graph.
      *
      * Returns references to the then-branch and else-branch subgraphs.
@@ -2001,6 +2063,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     bool                            _profile_strings_valid{false};
     std::string                     _exec_zone_name;
     uint32_t                        _exec_zone_id{0};
+
+    /// Threads the node widths were planned for; 0 = never recorded.
+    /// @see planned_thread_count
+    std::uint16_t _planned_thread_count{0};
+
+    /// One-shot: a cold plan is waiting for real timings. @see plan_threads
+    bool _thread_replan_armed{false};
+
+    /// Run the width planner for @p threads threads. Shared by
+    /// @ref plan_threads and the armed re-plan, neither of which may arm.
+    bool run_thread_planner(unsigned threads);
+
+    /// Fire the armed re-plan, if one is armed. Called at the end of a
+    /// completed replay. @see plan_threads
+    void replan_threads_if_armed();
 
     /// Mutation counter for cached analyses. Bumped at every
     /// mutation-declaration point; UsageAnalysis caches against it.

@@ -87,6 +87,9 @@ set(ComputeGraphTests
     GroupedScalarOps.cpp
     StringEinsum.cpp
     TensorLifetime.cpp
+    ThreadCostModel.cpp
+    ThreadPlanning.cpp
+    ThreadWidth.cpp
     TiledRuntimeEig.cpp
     TiledRuntimeEinsum.cpp
     TiledRuntimeElementwise.cpp
@@ -95,6 +98,7 @@ set(ComputeGraphTests
     VerifyLevelIndependence.cpp
     TiledRuntimeTensorLifetime.cpp
     View.cpp
+    WidthBudget.cpp
     Workspace.cpp
     test_auto_view_python.py
     test_axpy_axpby_views_python.py

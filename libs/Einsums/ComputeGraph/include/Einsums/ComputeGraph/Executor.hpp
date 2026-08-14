@@ -30,6 +30,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -38,6 +39,20 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class Graph; // Forward declaration
+
+/**
+ * @brief Replays that ignored their thread plan because the machine changed.
+ *
+ * @ref DataflowExecutor runs every node at width 1 when a graph's
+ * @ref Graph::planned_thread_count no longer matches the thread count the
+ * budget is rationing, and warns once. The count is the machine-readable half
+ * of that warning: a fallback is a silent performance cliff otherwise, and a
+ * test cannot assert on a log line.
+ */
+[[nodiscard]] EINSUMS_EXPORT std::size_t stale_thread_plan_fallbacks();
+
+/// Forget the recorded fallbacks. For tests and diagnostics.
+EINSUMS_EXPORT void reset_stale_thread_plan_fallbacks();
 
 /**
  * @brief Dependency information for a sorted graph.

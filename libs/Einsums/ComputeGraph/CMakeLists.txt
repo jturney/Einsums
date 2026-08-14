@@ -16,6 +16,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Graph.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/CostModel.hpp
+    Einsums/ComputeGraph/Moldability.hpp
     Einsums/ComputeGraph/Node.hpp
     Einsums/ComputeGraph/Operations.hpp
     Einsums/ComputeGraph/Optimizer.hpp
@@ -52,6 +53,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/ScratchPrivatization.hpp
     Einsums/ComputeGraph/Passes/StreamAssignment.hpp
     Einsums/ComputeGraph/Passes/SymmetryPropagation.hpp
+    Einsums/ComputeGraph/Passes/ThreadPlanning.hpp
     Einsums/ComputeGraph/Passes/TransferElimination.hpp
     Einsums/ComputeGraph/Passes/TransferInsertion.hpp
     Einsums/ComputeGraph/Pipeline.hpp
@@ -107,9 +109,11 @@ set(ComputeGraphSources
     Passes/SymmetrizedAccumulation.cpp
     Passes/TiledExpansion.cpp
     Passes/SymmetryPropagation.cpp
+    Passes/ThreadPlanning.cpp
     Passes/TransferElimination.cpp
     Passes/TransferInsertion.cpp
     Pipeline.cpp
+    ThreadSweep.cpp
 )
 
 # StreamKernelImpl.cpp is the arch-generic stream-fusion inner kernel: it is
@@ -131,6 +135,7 @@ einsums_add_module(
   SOURCES ${ComputeGraphSources}
   HEADERS ${ComputeGraphHeaders}
   MODULE_DEPENDENCIES
+    Einsums_BLAS
     Einsums_Comm
     Einsums_ComputeGraphTypes
     Einsums_Concepts

@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp> // For OptimizerPass and PassManager
+#include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/ComputeGraphTypes/GraphData.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -17,6 +18,7 @@
 #include <Einsums/GPU/BLAS.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile/Profile.hpp>
+#include <Einsums/TaskPool/WidthBudget.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
 #include <fmt/format.h>
@@ -537,6 +539,11 @@ void Graph::move_members_from(Graph &&other) noexcept {
     _analysis_version      = other._analysis_version;
     _usage_version         = other._usage_version;
     _usage                 = std::move(other._usage);
+    // The widths themselves ride along inside _nodes, so the count they were
+    // planned for has to travel with them or the staleness check compares
+    // against a zero and lets a foreign plan run.
+    _planned_thread_count = other._planned_thread_count;
+    _thread_replan_armed  = other._thread_replan_armed;
 }
 
 Graph::Graph(Graph &&other) noexcept {
@@ -1793,6 +1800,51 @@ void Graph::rebuild_levels() {
     for (size_t i = 0; i < n; i++) {
         _deps.levels[level[i]].push_back(i);
     }
+}
+
+bool Graph::run_thread_planner(unsigned threads) {
+    passes::ThreadPlanning planner(threads);
+    planner.run(*this);
+    _planned_thread_count = static_cast<std::uint16_t>(threads);
+    return planner.num_widened() > 0;
+}
+
+bool Graph::plan_threads(bool freeze) {
+    auto &budget = task_pool::WidthBudget::get_singleton();
+    // The budget is what admission rations against, so it is also what a plan
+    // has to be made for; asking the hardware directly could disagree with it.
+    budget.sync_machine_width();
+    unsigned const threads = std::max(1U, budget.total());
+
+    // Timings are cleared at the start of every execute() and written during
+    // it, so a non-empty set means this graph has completed at least one
+    // replay and the planner has measurements instead of a model.
+    bool have_timings = false;
+    {
+        std::scoped_lock const lock(*_content_mutex);
+        have_timings = !_timing_samples.empty();
+    }
+
+    bool const widened = run_thread_planner(threads);
+
+    // Cold plans are model plans, and the model is the part of this that is
+    // guessing. One re-plan from the first real timings is worth the one time
+    // the bits move; after it the widths never change again.
+    _thread_replan_armed = !freeze && !have_timings;
+    return widened;
+}
+
+void Graph::replan_threads_if_armed() {
+    if (!_thread_replan_armed) {
+        return;
+    }
+    // Disarmed BEFORE planning, so a planner that throws does not leave the
+    // graph re-planning at the end of every replay from here on.
+    _thread_replan_armed = false;
+
+    auto &budget = task_pool::WidthBudget::get_singleton();
+    budget.sync_machine_width();
+    run_thread_planner(std::max(1U, budget.total()));
 }
 
 size_t Graph::schedule_edge_count() {
@@ -3142,6 +3194,12 @@ void Graph::execute() {
 
     // exec_zone pops here.
     _executed = true;
+
+    // The safe point for the armed re-plan (see plan_threads): the replay has
+    // returned, so nothing is reading a width; every nested body replay it
+    // started has returned with it; and this run's timings are complete and
+    // recorded, which is the whole reason to wait for it.
+    replan_threads_if_armed();
 }
 
 void Graph::execute(Executor &executor) {
@@ -3180,6 +3238,10 @@ void Graph::execute(Executor &executor) {
         executor.execute(*this);
     }
     _executed = true;
+
+    // Same safe point as the argument-less execute(): the replay has returned
+    // and its timings are complete.
+    replan_threads_if_armed();
 }
 
 UsageAnalysis const &Graph::usage() {
