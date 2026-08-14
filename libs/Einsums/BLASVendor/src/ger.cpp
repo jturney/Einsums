@@ -53,8 +53,16 @@ extern void FC_GLOBAL(zgerc, ZGERC)(int_t *, int_t *, std::complex<double> *, st
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "Ninth parameter (lda) in ger call ({}) is less than max(1, n ({})).", lda, n);        \
     }
 
+// The m/n guard is the same one gemm.cpp and gemv.cpp carry: an empty rank-1
+// update writes nothing, and its operands legitimately carry zero increments
+// and a zero lda, which ger_parameter_check would reject and Accelerate would
+// abort on -- even though no element is read or written.
+
 void sger(int_t m, int_t n, float alpha, float const *x, int_t inc_x, float const *y, int_t inc_y, float *a, int_t lda) {
     LabeledSection0();
+
+    if (m <= 0 || n <= 0)
+        return;
 
     ger_parameter_check(m, n, inc_x, inc_y, lda);
     FC_GLOBAL(sger, SGER)(&m, &n, &alpha, x, &inc_x, y, &inc_y, a, &lda);
@@ -62,6 +70,9 @@ void sger(int_t m, int_t n, float alpha, float const *x, int_t inc_x, float cons
 
 void dger(int_t m, int_t n, double alpha, double const *x, int_t inc_x, double const *y, int_t inc_y, double *a, int_t lda) {
     LabeledSection0();
+
+    if (m <= 0 || n <= 0)
+        return;
 
     ger_parameter_check(m, n, inc_x, inc_y, lda);
     FC_GLOBAL(dger, DGER)(&m, &n, &alpha, x, &inc_x, y, &inc_y, a, &lda);
@@ -71,6 +82,9 @@ void cger(int_t m, int_t n, std::complex<float> alpha, std::complex<float> const
           std::complex<float> *a, int_t lda) {
     LabeledSection0();
 
+    if (m <= 0 || n <= 0)
+        return;
+
     ger_parameter_check(m, n, inc_x, inc_y, lda);
     FC_GLOBAL(cgeru, CGERU)(&m, &n, &alpha, x, &inc_x, y, &inc_y, a, &lda);
 }
@@ -78,6 +92,9 @@ void cger(int_t m, int_t n, std::complex<float> alpha, std::complex<float> const
 void zger(int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *x, int_t inc_x, std::complex<double> const *y,
           int_t inc_y, std::complex<double> *a, int_t lda) {
     LabeledSection0();
+
+    if (m <= 0 || n <= 0)
+        return;
 
     ger_parameter_check(m, n, inc_x, inc_y, lda);
 
@@ -88,6 +105,9 @@ void cgerc(int_t m, int_t n, std::complex<float> alpha, std::complex<float> cons
            int_t inc_y, std::complex<float> *a, int_t lda) {
     LabeledSection0();
 
+    if (m <= 0 || n <= 0)
+        return;
+
     ger_parameter_check(m, n, inc_x, inc_y, lda);
     FC_GLOBAL(cgerc, CGERC)(&m, &n, &alpha, x, &inc_x, y, &inc_y, a, &lda);
 }
@@ -95,6 +115,9 @@ void cgerc(int_t m, int_t n, std::complex<float> alpha, std::complex<float> cons
 void zgerc(int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *x, int_t inc_x, std::complex<double> const *y,
            int_t inc_y, std::complex<double> *a, int_t lda) {
     LabeledSection0();
+
+    if (m <= 0 || n <= 0)
+        return;
 
     ger_parameter_check(m, n, inc_x, inc_y, lda);
 

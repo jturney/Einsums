@@ -29,8 +29,24 @@ extern void FC_GLOBAL(slascl, SLASCL)(char *, int_t *, int_t *, float *, float *
 extern void FC_GLOBAL(dlascl, DLASCL)(char *, int_t *, int_t *, double *, double *, int_t *, int_t *, double *, int_t *, int_t *);
 }
 
+// Each routine below quick-returns on an empty vector rather than handing it to
+// the vendor. Reference BLAS returns on n < 1 before validating anything, but
+// Accelerate validates the increment first and ABORTS THE PROCESS on a zero
+// one -- and an empty tensor legitimately carries a zero increment, because
+// `get_incx` reports the smallest stride over the extent > 1 axes and a
+// column-major (0, k) tensor has stride(1) == dim(0) == 0. `axpby` on such a
+// tensor scales before it adds, so a grouped run holding one zero-extent entry
+// was enough to kill the process on macOS/Accelerate while passing everywhere
+// else.
+//
+// Same reasoning as the m/n guards in gemm.cpp and gemv.cpp, and the n guard in
+// copy.cpp.
+
 void sscal(int_t n, float alpha, float *vec, int_t inc) {
     LabeledSection0();
+
+    if (n <= 0)
+        return;
 
     FC_GLOBAL(sscal, SSCAL)(&n, &alpha, vec, &inc);
 }
@@ -38,11 +54,17 @@ void sscal(int_t n, float alpha, float *vec, int_t inc) {
 void dscal(int_t n, double alpha, double *vec, int_t inc) {
     LabeledSection0();
 
+    if (n <= 0)
+        return;
+
     FC_GLOBAL(dscal, DSCAL)(&n, &alpha, vec, &inc);
 }
 
 void cscal(int_t n, std::complex<float> alpha, std::complex<float> *vec, int_t inc) {
     LabeledSection0();
+
+    if (n <= 0)
+        return;
 
     FC_GLOBAL(cscal, CSCAL)(&n, &alpha, vec, &inc);
 }
@@ -50,11 +72,17 @@ void cscal(int_t n, std::complex<float> alpha, std::complex<float> *vec, int_t i
 void zscal(int_t n, std::complex<double> alpha, std::complex<double> *vec, int_t inc) {
     LabeledSection0();
 
+    if (n <= 0)
+        return;
+
     FC_GLOBAL(zscal, ZSCAL)(&n, &alpha, vec, &inc);
 }
 
 void csscal(int_t n, float alpha, std::complex<float> *vec, int_t inc) {
     LabeledSection0();
+
+    if (n <= 0)
+        return;
 
     FC_GLOBAL(csscal, CSSCAL)(&n, &alpha, vec, &inc);
 }
@@ -62,11 +90,17 @@ void csscal(int_t n, float alpha, std::complex<float> *vec, int_t inc) {
 void zdscal(int_t n, double alpha, std::complex<double> *vec, int_t inc) {
     LabeledSection0();
 
+    if (n <= 0)
+        return;
+
     FC_GLOBAL(zdscal, ZDSCAL)(&n, &alpha, vec, &inc);
 }
 
 void srscl(int_t n, float alpha, float *vec, int_t inc) {
     LabeledSection0();
+
+    if (n <= 0)
+        return;
 
     FC_GLOBAL(srscl, SRSCL)(&n, &alpha, vec, &inc);
 }
@@ -74,17 +108,26 @@ void srscl(int_t n, float alpha, float *vec, int_t inc) {
 void drscl(int_t n, double alpha, double *vec, int_t inc) {
     LabeledSection0();
 
+    if (n <= 0)
+        return;
+
     FC_GLOBAL(drscl, DRSCL)(&n, &alpha, vec, &inc);
 }
 
 void csrscl(int_t n, float alpha, std::complex<float> *vec, int_t inc) {
     LabeledSection0();
 
+    if (n <= 0)
+        return;
+
     FC_GLOBAL(csrscl, CSRSCL)(&n, &alpha, vec, &inc);
 }
 
 void zdrscl(int_t n, double alpha, std::complex<double> *vec, int_t inc) {
     LabeledSection0();
+
+    if (n <= 0)
+        return;
 
     FC_GLOBAL(zdrscl, ZDRSCL)(&n, &alpha, vec, &inc);
 }

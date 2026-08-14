@@ -19,14 +19,25 @@ extern void FC_GLOBAL(clacgv, CLACGV)(int_t *n, std::complex<float> *x, int_t *i
 extern void FC_GLOBAL(zlacgv, ZLACGV)(int_t *n, std::complex<double> *x, int_t *incx);
 }
 
+// Same n guard as copy.cpp, scal.cpp and axpy.cpp: Accelerate validates the
+// increment before the length and ABORTS THE PROCESS on a zero one, and an
+// empty tensor legitimately carries a zero increment. Conjugating an empty
+// complex tensor reaches here.
+
 void clacgv(int_t n, std::complex<float> *x, int_t incx) {
     LabeledSection0();
+
+    if (n <= 0)
+        return;
 
     FC_GLOBAL(clacgv, CLACGV)(&n, x, &incx);
 }
 
 void zlacgv(int_t n, std::complex<double> *x, int_t incx) {
     LabeledSection0();
+
+    if (n <= 0)
+        return;
 
     FC_GLOBAL(zlacgv, ZLACGV)(&n, x, &incx);
 }

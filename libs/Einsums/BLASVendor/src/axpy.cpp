@@ -22,8 +22,16 @@ extern void FC_GLOBAL(zaxpy, ZAXPY)(int_t *, std::complex<double> *, std::comple
                                     int_t *);
 }
 
+// The n guards below are the same defence as copy.cpp's and scal.cpp's:
+// Accelerate validates the increments before the length and ABORTS THE PROCESS
+// on a zero one, while an empty tensor legitimately carries a zero increment.
+// `axpby` scales then adds, so the same zero-extent operand reaches both.
+
 void saxpy(int_t n, float alpha_x, float const *x, int_t inc_x, float *y, int_t inc_y) {
     LabeledSection0();
+
+    if (n <= 0)
+        return;
 
     FC_GLOBAL(saxpy, SAXPY)(&n, &alpha_x, x, &inc_x, y, &inc_y);
 }
@@ -31,17 +39,26 @@ void saxpy(int_t n, float alpha_x, float const *x, int_t inc_x, float *y, int_t 
 void daxpy(int_t n, double alpha_x, double const *x, int_t inc_x, double *y, int_t inc_y) {
     LabeledSection0();
 
+    if (n <= 0)
+        return;
+
     FC_GLOBAL(daxpy, DAXPY)(&n, &alpha_x, x, &inc_x, y, &inc_y);
 }
 
 void caxpy(int_t n, std::complex<float> alpha_x, std::complex<float> const *x, int_t inc_x, std::complex<float> *y, int_t inc_y) {
     LabeledSection0();
 
+    if (n <= 0)
+        return;
+
     FC_GLOBAL(caxpy, CAXPY)(&n, &alpha_x, x, &inc_x, y, &inc_y);
 }
 
 void zaxpy(int_t n, std::complex<double> alpha_x, std::complex<double> const *x, int_t inc_x, std::complex<double> *y, int_t inc_y) {
     LabeledSection0();
+
+    if (n <= 0)
+        return;
 
     FC_GLOBAL(zaxpy, ZAXPY)(&n, &alpha_x, x, &inc_x, y, &inc_y);
 }

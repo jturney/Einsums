@@ -32,8 +32,17 @@ extern void cblas_zdotc_sub(int_t n, void const *x, int_t incx, void const *y, i
 }
 EINSUMS_DISABLE_WARNING_POP
 
+// The n guards below are the same defence as copy.cpp's and scal.cpp's:
+// Accelerate validates the increments before the length and ABORTS THE PROCESS
+// on a zero one, while an empty tensor legitimately carries a zero increment.
+// An empty dot is zero, which is what the reference implementations return and
+// what the sum over no elements means.
+
 auto sdot(int_t n, float const *x, int_t incx, float const *y, int_t incy) -> float {
     LabeledSection0();
+
+    if (n <= 0)
+        return 0;
 
     return FC_GLOBAL(sdot, SDOT)(&n, x, &incx, y, &incy);
 }
@@ -41,11 +50,17 @@ auto sdot(int_t n, float const *x, int_t incx, float const *y, int_t incy) -> fl
 auto ddot(int_t n, double const *x, int_t incx, double const *y, int_t incy) -> double {
     LabeledSection0();
 
+    if (n <= 0)
+        return 0;
+
     return FC_GLOBAL(ddot, DDOT)(&n, x, &incx, y, &incy);
 }
 
 auto cdot(int_t n, std::complex<float> const *x, int_t incx, std::complex<float> const *y, int_t incy) -> std::complex<float> {
     LabeledSection0();
+
+    if (n <= 0)
+        return std::complex<float>{};
 
     std::complex<float> result;
     cblas_cdotu_sub(n, x, incx, y, incy, &result);
@@ -55,6 +70,9 @@ auto cdot(int_t n, std::complex<float> const *x, int_t incx, std::complex<float>
 auto zdot(int_t n, std::complex<double> const *x, int_t incx, std::complex<double> const *y, int_t incy) -> std::complex<double> {
     LabeledSection0();
 
+    if (n <= 0)
+        return std::complex<double>{};
+
     std::complex<double> result;
     cblas_zdotu_sub(n, x, incx, y, incy, &result);
     return result;
@@ -63,6 +81,9 @@ auto zdot(int_t n, std::complex<double> const *x, int_t incx, std::complex<doubl
 auto cdotc(int_t n, std::complex<float> const *x, int_t incx, std::complex<float> const *y, int_t incy) -> std::complex<float> {
     LabeledSection0();
 
+    if (n <= 0)
+        return std::complex<float>{};
+
     std::complex<float> result;
     cblas_cdotc_sub(n, x, incx, y, incy, &result);
     return result;
@@ -70,6 +91,9 @@ auto cdotc(int_t n, std::complex<float> const *x, int_t incx, std::complex<float
 
 auto zdotc(int_t n, std::complex<double> const *x, int_t incx, std::complex<double> const *y, int_t incy) -> std::complex<double> {
     LabeledSection0();
+
+    if (n <= 0)
+        return std::complex<double>{};
 
     std::complex<double> result;
     cblas_zdotc_sub(n, x, incx, y, incy, &result);
