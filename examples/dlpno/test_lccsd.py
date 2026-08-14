@@ -264,8 +264,17 @@ def test_the_combine_phase_adds_Rn_and_its_transpose_over_whole_stores():
     first.
     """
     reference, _ = load_reference(DIMER)
-    cc = DLPNOCCSD(reference, Thresholds.preset("NORMAL", method="cc"),
-                   verbose=False)
+    # Several buckets is a PRECONDITION here, not an outcome: the claim is that
+    # the whole-store form adds across bucket boundaries exactly as the pair loop
+    # did, and a single bucket would not exercise a boundary at all. It has to be
+    # pinned rather than left to PairLayout.choose, whose objective carries
+    # cost.bucket_penalty() - a measured OpenMP region cost, so the count it
+    # picks is a property of the machine and its thread count, not the molecule.
+    # Measured on the dimer: 4, 4, 3 and 2 buckets at 1, 2, 4 and 10 threads, and
+    # 1 on a runner whose regions are dearer still, which is how this assertion
+    # first went red in CI while passing everywhere locally.
+    cut = replace(Thresholds.preset("NORMAL", method="cc"), n_buckets=4)
+    cc = DLPNOCCSD(reference, cut, verbose=False)
     cc.compute_energy(method="mp2")
     from dlpno.lccsd import LCCSDSolver
 
