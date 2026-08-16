@@ -7,6 +7,8 @@
 
 #include <Einsums/Assert.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Debugging/CrashHandler.hpp>
+#include <Einsums/Debugging/Options.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
@@ -131,6 +133,16 @@ int run(std::function<int()> const &f, std::vector<std::string> const &argv, Ini
     if (einsums::config::get(option::InstallSignalHandlers)) {
         EINSUMS_LOG_TRACE("Installing signal handlers...");
         set_signal_handlers();
+    }
+
+    // Gated on its own option rather than on install-signal-handlers. This is what
+    // reports a Windows access violation, which the signal handlers above cannot see
+    // (they are a console control handler there), so the callers that turn signal
+    // handling off - the Python test and example harnesses, so the interpreter's
+    // faulthandler stays in charge - still get told when a run dies hard.
+    if (einsums::config::get(option::CrashHandler)) {
+        EINSUMS_LOG_TRACE("Installing crash handler...");
+        util::install_crash_handler(einsums::config::get(option::CrashDumpDir));
     }
 
     // This is the only initialization routine that needs to be explicitly called here.

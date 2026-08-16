@@ -54,6 +54,8 @@ from enum import Enum
 #   --einsums:debug:install-signal-handlers              Install signal handlers that report a fatal signal before aborting (default: true)
 #   --einsums:debug:attach-debugger                      Provide a mechanism to attach a debugger on detected errors (default: true)
 #   --einsums:debug:diagnostics-on-terminate             Print additional diagnostic information on termination (default: true)
+#   --einsums:debug:crash-handler                        Install the crash handler that reports a fatal exception and writes a minidump (default: true)
+#   --einsums:debug:crash-dump-dir <DIR>                 Directory for crash minidumps (default: the working directory)
 
 # GPU:
 #   --einsums:gpu:disable                                Keep every node on the host (GPUPlacement becomes a no-op)
@@ -109,6 +111,9 @@ pass_verbose: bool | None = None
 debug_install_signal_handlers: bool | None = None
 debug_attach_debugger: bool | None = None
 debug_diagnostics_on_terminate: bool | None = None
+debug_crash_handler: bool | None = None
+# Directory for crash minidumps. ``None`` means the working directory.
+debug_crash_dump_dir: str | None = None
 
 # HPTT
 hptt_selection_method: str | None = None  # "estimate" / "measure" / "patient" / "crazy"

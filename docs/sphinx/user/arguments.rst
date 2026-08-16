@@ -318,3 +318,20 @@ Advanced Arguments
     .. versionadded:: 1.0.0
     .. versionchanged:: 2.0.0
         This option's name has been changed, and again later in the 2.0.0 cycle to its positive spelling.
+
+.. option:: --einsums:debug:crash-handler
+
+    Install the crash handler that reports a fatal exception and writes a minidump. On by default;
+    turn it off with ``--einsums:debug:no-crash-handler``.
+
+    Deliberately separate from :option:`--einsums:debug:install-signal-handlers`. On Windows the two
+    are different mechanisms, since signals never see a memory fault there, so a Python process can
+    keep its own faulthandler on the signals and still get a report out of a hard crash.
+
+    .. versionadded:: 2.0.0
+
+.. option:: --einsums:debug:crash-dump-dir <DIR>
+
+    Directory for crash minidumps. Empty, the default, means the working directory.
+
+    .. versionadded:: 2.0.0

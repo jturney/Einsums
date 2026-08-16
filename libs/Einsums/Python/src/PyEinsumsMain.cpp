@@ -95,6 +95,8 @@ std::vector<std::string> argv_from_rc(py::module_ const &rc) {
         opt_flag("debug_install_signal_handlers", "debug:install-signal-handlers");
         opt_flag("debug_attach_debugger", "debug:attach-debugger");
         opt_flag("debug_diagnostics_on_terminate", "debug:diagnostics-on-terminate");
+        opt_flag("debug_crash_handler", "debug:crash-handler");
+        opt_string("debug_crash_dump_dir", "debug:crash-dump-dir");
     }
 
     // HPTT
