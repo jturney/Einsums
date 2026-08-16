@@ -3680,7 +3680,7 @@ namespace {
 std::vector<std::pair<std::string, std::string>> g_cached_graph_jsons;
 
 /// Whether anything can ever read a dead graph's JSON: the shutdown exporter
-/// (--einsums:profiler-save) or an attached viewer client. Serializing a graph
+/// (--einsums:profile:save) or an attached viewer client. Serializing a graph
 /// is O(nodes) string building and runs in the destructor, inside whatever
 /// phase happens to drop the graph - measured at 41 ms of a 345 ms DLPNO
 /// transform phase before it was gated - so it must not happen on the default
@@ -3696,7 +3696,7 @@ bool graph_json_cache_wanted() {
     // so this is not a hot path, and the tests flip the key at runtime.
     bool save_configured = false;
     try {
-        save_configured = !GlobalConfigMap::get_singleton().get_string("profiler-save", "").empty();
+        save_configured = !config::get(option::ProfileSave).empty();
     } catch (...) { // NOLINT
     }
     if (save_configured)

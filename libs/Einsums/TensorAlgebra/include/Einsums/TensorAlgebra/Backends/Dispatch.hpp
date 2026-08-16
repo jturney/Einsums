@@ -11,6 +11,7 @@
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
+#include <Einsums/HPTT/Options.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
@@ -906,15 +907,12 @@ constexpr bool einsum_is_sort_gemm_candidate(std::tuple<CIndices...> const &, st
 /**
  * @brief Returns the HPTT selection method from the runtime config.
  *
- * Reads `"hptt-selection-method"` from GlobalConfigMap on first call, caches the result.
- * Set via command line: `--einsums:hptt:selection-method measure`
+ * Read once on first call and cached; set with
+ * `--einsums:hptt:selection-method measure`.
  */
 inline hptt::SelectionMethod hptt_selection_method() {
     static hptt::SelectionMethod method = [] {
-        auto &config = GlobalConfigMap::get_singleton();
-        config.lock();
-        auto val = config.get_string("hptt-selection-method", "estimate");
-        config.unlock();
+        auto const val = config::get(option::HpttSelectionMethod);
 
         if (val == "measure")
             return hptt::MEASURE;

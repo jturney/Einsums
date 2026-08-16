@@ -7,6 +7,7 @@
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp>
@@ -91,8 +92,7 @@ namespace {
 std::set<std::string> parse_disabled_passes() {
     std::set<std::string> disabled;
     try {
-        auto &gc           = GlobalConfigMap::get_singleton();
-        auto  disabled_str = gc.get_string("pass-disable", "");
+        auto const disabled_str = config::get(option::PassDisable);
         if (!disabled_str.empty()) {
             std::istringstream ss(disabled_str);
             std::string        token;
@@ -110,10 +110,11 @@ std::set<std::string> parse_disabled_passes() {
     return disabled;
 }
 
+/// Per-pass flags are spelled from a pass name at run time, so they have no
+/// descriptor to name; this is the documented dynamic-key escape hatch.
 bool get_pass_flag(std::string const &key, bool default_val) {
     try {
-        auto &gc = GlobalConfigMap::get_singleton();
-        return gc.get_bool(key, default_val);
+        return config::get_dynamic<bool>(key, default_val);
     } catch (...) {
         return default_val;
     }
@@ -219,8 +220,8 @@ bool PassManager::run(Graph &graph) {
     LabeledSection("PassManager::run({})", graph.name());
 
     auto       disabled = parse_disabled_passes();
-    bool const analyze  = get_pass_flag("pass-analyze", false);
-    bool const verbose  = get_pass_flag("pass-verbose", false);
+    bool const analyze  = config::get(option::PassAnalyze);
+    bool const verbose  = config::get(option::PassVerbose);
 
     bool any_modified = false;
     for (auto &pass : _passes) {

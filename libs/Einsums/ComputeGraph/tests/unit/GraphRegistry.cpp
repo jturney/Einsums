@@ -6,6 +6,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/Profile/Options.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -31,10 +32,10 @@ void run_and_destroy(std::string const &name) {
     graph.execute();
 }
 
-/// RAII: set the profiler-save config key for one test, restore on exit.
+/// RAII: point --einsums:profile:save somewhere for one test, restore on exit.
 struct ProfilerSaveKey {
-    explicit ProfilerSaveKey(std::string const &value) { GlobalConfigMap::get_singleton().set_string("profiler-save", value); }
-    ~ProfilerSaveKey() { GlobalConfigMap::get_singleton().set_string("profiler-save", ""); }
+    explicit ProfilerSaveKey(std::string const &value) { config::set(option::ProfileSave, value); }
+    ~ProfilerSaveKey() { config::set(option::ProfileSave, std::string{}); }
 };
 
 size_t count_occurrences(std::string const &haystack, std::string const &needle) {

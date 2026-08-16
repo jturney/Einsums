@@ -14,9 +14,10 @@ set(ProfileHeaders
     Einsums/Profile/CounterBackend.hpp
     Einsums/Profile/Server.hpp
     Einsums/Profile/LogSink.hpp
+    Einsums/Profile/Options.hpp
 )
 
-set(ProfileSources Profile.cpp Consumer.cpp CounterBackend.cpp Server.cpp)
+set(ProfileSources Profile.cpp Consumer.cpp CounterBackend.cpp Options.cpp Server.cpp)
 
 set(ProfileDeps)
 if(TARGET Tracy::TracyClient)
@@ -30,6 +31,6 @@ einsums_add_module(
   SOURCES ${ProfileSources}
   HEADERS ${ProfileHeaders}
   DEPENDENCIES ${ProfileDeps}
-  MODULE_DEPENDENCIES Einsums_Config Einsums_Logging Einsums_Print Einsums_Preprocessor Einsums_TypeSupport
+  MODULE_DEPENDENCIES Einsums_CommandLine Einsums_Config Einsums_Logging Einsums_Print Einsums_Preprocessor Einsums_TypeSupport
   CMAKE_SUBDIRS examples tests
 )

@@ -12,6 +12,7 @@
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
+#include <Einsums/Runtime/Options.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
 
 #include <chrono>
@@ -32,15 +33,13 @@ EINSUMS_SINGLETON_IMPL(RuntimeVars)
 #if defined(EINSUMS_WINDOWS)
 
 void handle_termination(char const *reason) {
-    // Same GlobalConfigMap pattern as the POSIX termination handler below;
-    // the old runtime_config().einsums.* API no longer exists, this branch
-    // just never compiled on non-Windows CI to notice.
+    // A descriptor read cannot throw a lookup error, but a handler running on
+    // the way down should not be the thing that adds one either.
     bool attach      = true;
     bool diagnostics = true;
     try {
-        auto &global_config = GlobalConfigMap::get_singleton();
-        attach              = global_config.get_bool("attach-debugger", true);
-        diagnostics         = global_config.get_bool("diagnostics-on-terminate", true);
+        attach      = config::get(option::AttachDebugger);
+        diagnostics = config::get(option::DiagnosticsOnTerminate);
     } catch (...) {
     }
 
@@ -87,8 +86,7 @@ EINSUMS_EXPORT BOOL WINAPI termination_handler(DWORD ctrl_type) {
     bool attach = true;
 
     try {
-        auto &global_config = GlobalConfigMap::get_singleton();
-        attach              = global_config.get_bool("attach-debugger", true);
+        attach = config::get(option::AttachDebugger);
     } catch (...) {
         attach = true;
     }
@@ -207,10 +205,9 @@ Runtime::~Runtime() {
     profile::Profiler::instance().shutdown();
 
     try {
-        auto &gc = GlobalConfigMap::get_singleton();
-        if (gc.get_bool("profiler-report")) {
-            std::ofstream out(gc.get_string("profiler-filename"), gc.get_bool("profiler-append") ? std::ios::ate : std::ios::trunc);
-            profile::Profiler::instance().print(gc.get_bool("profiler-detailed"), out);
+        if (config::get(option::ProfileReport)) {
+            std::ofstream out(config::get(option::ProfileFilename), config::get(option::ProfileAppend) ? std::ios::ate : std::ios::trunc);
+            profile::Profiler::instance().print(config::get(option::ProfileDetailed), out);
         }
     } catch (...) {
     }
@@ -308,14 +305,13 @@ int Runtime::run(std::function<EinsumsMainFunctionType> const &func) {
     // profiler: there is no Profiler type to ask, and nothing to wait for.
 #if defined(EINSUMS_HAVE_PROFILER)
     {
-        auto &gc          = GlobalConfigMap::get_singleton();
-        bool  wait_viewer = gc.get_bool("profiler-wait-for-viewer", false);
+        bool const wait_viewer = config::get(option::ProfileWaitForViewer);
         if (wait_viewer) {
             auto *server = profile::Profiler::instance().server();
             if (server && server->is_running()) {
                 EINSUMS_LOG_INFO("Waiting for profiler viewer to connect (--einsums:profile:wait-for-viewer)...");
                 std::fprintf(stderr, "\n*** Waiting for profiler viewer to connect on port %d ***\n",
-                             static_cast<int>(gc.get_int("profiler-port", 19216)));
+                             static_cast<int>(config::get(option::ProfilePort)));
                 std::fprintf(stderr, "*** Launch the viewer and connect, then execution will begin ***\n\n");
                 while (!server->has_client()) {
                     server->tick();

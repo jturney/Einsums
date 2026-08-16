@@ -195,108 +195,18 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
         // command line, and the command line still wins when it says so.
         cl::Registry::instance().set_env_prefix("EINSUMS");
 
-        // These options are static but all use Location to initialize the
-        // members of the parent class.
-        static cl::OptionCategory debugCategory("Debug");
-        static cl::Flag const     noInstallSignalHandlers("einsums:debug:no-install-signal-handlers", {}, "Do not install signal handlers",
-                                                          debugCategory, cl::Location(global_bools["install-signal-handlers"]),
-                                                          cl::Default(true), cl::ImplicitValue(false));
+        // The Debug category now lives with the runtime that reads it; see
+        // Einsums/Runtime/Options.hpp.
 
-        static cl::Flag const noAttachDebugger("einsums:debug:no-attach-debugger", {},
-                                               "Do not provide a mechanism to attach a debugger on detected errors", debugCategory,
-                                               cl::Location(global_bools["attach-debugger"]), cl::Default(true), cl::ImplicitValue(false));
+        // The Logging category now lives with the subsystem it configures; see
+        // Einsums/Logging/Options.hpp.
 
-        static cl::Flag const noDiagnosticsOnTerminate(
-            "einsums:debug:no-diagnostics-on-terminate", {}, "Print additional diagnostic information on termination", debugCategory,
-            cl::Location(global_bools["diagnostics-on-terminate"]), cl::Default(true), cl::ImplicitValue(false));
+        // The Profile category now lives with the profiler that reads it; see
+        // Einsums/Profile/Options.hpp.
 
-        static cl::OptionCategory     logCategory("Logging");
-        static cl::Opt<int64_t> const logLevel("einsums:log:level", {}, "Log level", logCategory, cl::Location(global_ints["log-level"]),
-                                               cl::Default(static_cast<int64_t>(
-#if defined(EINSUMS_DEBUG)
-                                                   SPDLOG_LEVEL_DEBUG
-#else
-                                                   SPDLOG_LEVEL_ERROR
-#endif
-                                                   )),
-                                               cl::RangeBetween(0, 4), cl::ValueName("LogLevel"));
-
-        static cl::Opt<std::string> const logDestination("einsums:log:destination", {}, "Log destination", logCategory,
-                                                         cl::Location(global_strings["log-destination"]), cl::Default(std::string("cerr")));
-
-        static cl::Opt<std::string> const logFormat("einsums:log:format", {}, "Log format", logCategory,
-                                                    cl::Location(global_strings["log-format"]),
-                                                    cl::Default(std::string("[%Y-%m-%d %H:%M:%S.%F] [%n] [%^%-8l%$] [%s:%#/%!] %v")));
-
-        static cl::OptionCategory profileCategory("Profile");
-        static cl::Flag const     profileDisable(
-            "einsums:profile:disable", {}, "Do not record profiling zones or annotations (large speedup for small operations)",
-            profileCategory, cl::Location(global_bools["profile-disable"]), cl::Default(false), cl::ImplicitValue(true));
-        static cl::Flag const noProfileReport("einsums:profile:no-report", {}, "Don't generate profile report", profileCategory,
-                                              cl::Location(global_bools["profiler-report"]), cl::Default(true), cl::ImplicitValue(false));
-
-        static cl::Opt<std::string> const profileFilename("einsums:profile:filename", {}, "Generate profile filename", profileCategory,
-                                                          cl::Location(global_strings["profiler-filename"]),
-                                                          cl::Default(std::string("profile.txt")), cl::ValueName("filename"));
-
-        // A Flag, not an Opt<bool>: it takes no value, and declaring it as one
-        // put a bogus "<N>" value slot in the help output next to its siblings.
-        static cl::Flag const noProfileAppend("einsums:profile:no-append", {}, "Don't append to profile file", profileCategory,
-                                              cl::Location(global_bools["profiler-append"]), cl::Default(true), cl::ImplicitValue(false));
-
-        static cl::Flag const profileDetailed("einsums:profile:detailed", {}, "Print detailed profile report", profileCategory,
-                                              cl::Location(global_bools["profiler-detailed"]), cl::Default(false), cl::ImplicitValue(true));
-
-        static cl::Opt<std::string> const profileSave("einsums:profile:save", {}, "Save profile session JSON for imgui viewer",
-                                                      profileCategory, cl::Location(global_strings["profiler-save"]),
-                                                      cl::Default(std::string("")), cl::ValueName("filename"));
-
-        static cl::Opt<int64_t> const profilePort("einsums:profile:port", {}, "Profile server port", profileCategory,
-                                                  cl::Location(global_ints["profiler-port"]), cl::Default(static_cast<int64_t>(19216)),
-                                                  cl::ValueName("PORT"));
-
-        static cl::Flag const waitForViewer("einsums:profile:wait-for-viewer", {}, "Wait for profiler viewer to connect before running",
-                                            profileCategory, cl::Location(global_bools["profiler-wait-for-viewer"]), cl::Default(false),
-                                            cl::ImplicitValue(true));
-
-        static cl::OptionCategory         hpttCategory("HPTT");
-        static cl::Opt<std::string> const hpttSelectionMethod(
-            "einsums:hptt:selection-method", {}, "HPTT plan selection method (estimate, measure, patient, crazy)", hpttCategory,
-            cl::Location(global_strings["hptt-selection-method"]), cl::Default(std::string("estimate")), cl::ValueName("METHOD"));
-
-        static cl::OptionCategory         passCategory("ComputeGraph Passes");
-        static cl::Opt<std::string> const passDisable(
-            "einsums:pass:disable", {}, "Comma-separated list of optimization pass names to skip (e.g. CSE,Reorder)", passCategory,
-            cl::Location(global_strings["pass-disable"]), cl::Default(std::string("")), cl::ValueName("PASSES"));
-        static cl::Flag const passAnalyze("einsums:pass:analyze", {},
-                                          "Run all passes in analysis-only mode (report findings but don't modify the graph)", passCategory,
-                                          cl::Location(global_bools["pass-analyze"]), cl::Default(false), cl::ImplicitValue(true));
-        static cl::Flag const passVerbose("einsums:pass:verbose", {}, "Log node count and timing before/after each optimization pass",
-                                          passCategory, cl::Location(global_bools["pass-verbose"]), cl::Default(false),
-                                          cl::ImplicitValue(true));
-        // Deliberately CHANGES how a grouped batched GEMM runs, because a
-        // per-group breakdown of one parallel loop is not obtainable any other
-        // way. See Detail/GroupedBatchedGemm.hpp.
-        static cl::Flag const graphProfileGroups(
-            "einsums:graph:profile-groups", {},
-            "Break a grouped batched GEMM into one profiler zone per shape class. This runs the SLOWER unfused form, so read it for "
-            "where the arithmetic is, not for what the node costs",
-            passCategory, cl::Location(global_bools["graph-profile-groups"]), cl::Default(false), cl::ImplicitValue(true));
-        // On by default in debug builds; this flag is how a RELEASE build turns
-        // it on, which is what a nondeterministic result wants. See
-        // Graph::verify_level_independence.
-        static cl::Flag const graphVerifyLevels(
-            "einsums:graph:verify-levels", {},
-            "Before each level-scheduled replay, check that no execution level holds two nodes touching overlapping storage. Costs a "
-            "second pass over every operand and can report a conflict it cannot disprove",
-            passCategory, cl::Location(global_bools["graph-verify-levels"]), cl::Default(false), cl::ImplicitValue(true));
-
-        // GPUPlacement has always read this key, but nothing registered it, so
-        // passing the documented flag was an unknown-argument error.
-        static cl::OptionCategory gpuCategory("GPU");
-        static cl::Flag const     gpuDisable("einsums:gpu:disable", {}, "Keep every node on the host (GPUPlacement becomes a no-op)",
-                                             gpuCategory, cl::Location(global_bools["disable-gpu"]), cl::Default(false),
-                                             cl::ImplicitValue(true));
+        // The HPTT, ComputeGraph Passes, and GPU categories now live with the
+        // code that reads them; see Einsums/HPTT/Options.hpp and
+        // Einsums/ComputeGraph/Options.hpp.
     }
 
     {
@@ -314,6 +224,10 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
     if (user_command_line) {
         user_command_line();
     }
+
+    // Debug builds catch two descriptors resolving to one key here, before a
+    // silent read of the wrong slot has a chance to look like a default.
+    cl::verify_registered_options();
 
     try {
         auto pr = cl::parse(original, "Einsums", full_version_as_string(), &_unknown_arguments);

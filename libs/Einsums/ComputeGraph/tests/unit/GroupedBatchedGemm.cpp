@@ -14,6 +14,7 @@
 /// baked its pointers in would pass every other test here and still be wrong.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
@@ -357,9 +358,8 @@ TEST_CASE("grouped_batched_gemm: group profiling computes the same answer", "[Co
     auto batch = mixed_batch<double>(true, true);
     auto ref   = reference<double>(batch, 2.0, -1.0, true, true);
 
-    auto      &gc   = GlobalConfigMap::get_singleton();
-    bool const prev = gc.get_bool("graph-profile-groups", false);
-    gc.set_bool("graph-profile-groups", true);
+    bool const prev = config::get(option::GraphProfileGroups);
+    config::set(option::GraphProfileGroups, true);
 
     auto      l = lists_of(batch);
     cg::Graph graph("grouped_profiled");
@@ -368,7 +368,7 @@ TEST_CASE("grouped_batched_gemm: group profiling computes the same answer", "[Co
         cg::grouped_batched_gemm(2.0, l.a, l.b, -1.0, l.c, true, true);
     }
     graph.execute();
-    gc.set_bool("graph-profile-groups", prev);
+    config::set(option::GraphProfileGroups, prev);
 
     for (size_t i = 0; i < batch.size(); i++) {
         INFO("member " << i);

@@ -11,6 +11,7 @@
 #    include <Einsums/Config.hpp>
 
 #    include <Einsums/Logging.hpp>
+#    include <Einsums/Profile/Options.hpp>
 #    include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #    ifndef _WIN32
@@ -239,8 +240,7 @@ void Server::shutdown() {
     // shorter default for normal runs.
     int drain_iterations = 5; // default: 500ms
     try {
-        auto &gc = GlobalConfigMap::get_singleton();
-        if (gc.get_bool("profiler-wait-for-viewer", false))
+        if (config::get(option::ProfileWaitForViewer))
             drain_iterations = 30; // 3 seconds when viewer was explicitly requested
     } catch (...) {                // NOLINT
     }

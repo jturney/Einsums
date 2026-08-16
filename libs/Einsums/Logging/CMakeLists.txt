@@ -5,9 +5,9 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(LoggingHeaders Einsums/Logging.hpp)
+set(LoggingHeaders Einsums/Logging.hpp Einsums/Logging/Options.hpp)
 
-set(LoggingSources Logging.cpp)
+set(LoggingSources Logging.cpp Options.cpp)
 
 string(TOLOWER "${CMAKE_BUILD_TYPE}" BUILD_TYPE_LOWER)
 
@@ -35,7 +35,7 @@ einsums_add_module(
   SOURCES ${LoggingSources}
   HEADERS ${LoggingHeaders}
   DEPENDENCIES ${LoggingDeps}
-  MODULE_DEPENDENCIES Einsums_Assertion Einsums_Config Einsums_StringUtil
+  MODULE_DEPENDENCIES Einsums_Assertion Einsums_CommandLine Einsums_Config Einsums_StringUtil
   CMAKE_SUBDIRS examples tests
   BASE_LIBNAME Einsums
 )

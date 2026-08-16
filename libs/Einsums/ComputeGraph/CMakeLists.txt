@@ -10,6 +10,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Blueprints/TensorAlgebra.hpp
     Einsums/ComputeGraph/BoundExpr.hpp
     Einsums/ComputeGraph/CaptureContext.hpp
+    Einsums/ComputeGraph/Options.hpp
     Einsums/ComputeGraph/DeviceShadowMap.hpp
     Einsums/ComputeGraph/Error.hpp
     Einsums/ComputeGraph/ABILayout.hpp
@@ -68,6 +69,7 @@ set(ComputeGraphHeaders
 
 set(ComputeGraphSources
     CaptureContext.cpp
+    Options.cpp
     EinsumSpec.cpp
     Executor.cpp
     ABILayout.cpp
@@ -137,6 +139,7 @@ einsums_add_module(
   MODULE_DEPENDENCIES
     Einsums_BLAS
     Einsums_Comm
+    Einsums_CommandLine
     Einsums_ComputeGraphTypes
     Einsums_Concepts
     Einsums_Config

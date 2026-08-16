@@ -13,9 +13,10 @@ set(RuntimeHeaders
     Einsums/Runtime/StartupFunction.hpp
     Einsums/Runtime/ShutdownFunction.hpp
     Einsums/Runtime/Detail/InitLogging.hpp
+    Einsums/Runtime/Options.hpp
 )
 
-set(RuntimeSources Finalize.cpp InitLogging.cpp InitRuntime.cpp Runtime.cpp)
+set(RuntimeSources Finalize.cpp InitLogging.cpp InitRuntime.cpp Options.cpp Runtime.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -26,6 +27,7 @@ einsums_add_module(
   DEPENDENCIES tgt::hdf5 ZLIB::ZLIB
   MODULE_DEPENDENCIES
     Einsums_Assertion
+    Einsums_CommandLine
     Einsums_Config
     Einsums_Debugging
     Einsums_Profile

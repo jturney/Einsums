@@ -14,6 +14,7 @@
 #include <Einsums/Profile/Server.hpp>
 #include <Einsums/Runtime/Detail/InitLogging.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
+#include <Einsums/Runtime/Options.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
 #include <Einsums/Version.hpp>
 
@@ -91,8 +92,7 @@ int run(std::function<int()> const &f, Runtime &rt, InitParams const &params) {
     // This runs before full finalize() to capture profiling data while the runtime is still alive.
 #if defined(EINSUMS_HAVE_PROFILER)
     try {
-        auto &gc        = GlobalConfigMap::get_singleton();
-        auto  save_path = gc.get_string("profiler-save");
+        auto const save_path = einsums::config::get(option::ProfileSave);
         if (!save_path.empty()) {
             profile::Profiler::instance().flush();
             auto *server = profile::Profiler::instance().server();
@@ -118,8 +118,6 @@ int run(std::function<int()> const &f, std::vector<std::string> const &argv, Ini
 
     // Before this line logging does not work.
     init_logging(config);
-
-    auto &global_config = GlobalConfigMap::get_singleton();
 
     // Report build settings.
     EINSUMS_LOG_INFO("Starting Einsums: {}", build_string());
@@ -153,7 +151,7 @@ int run(std::function<int()> const &f, std::vector<std::string> const &argv, Ini
         }
     }
 
-    if (global_config.get_bool("install-signal-handlers")) {
+    if (einsums::config::get(option::InstallSignalHandlers)) {
         EINSUMS_LOG_TRACE("Installing signal handlers...");
         set_signal_handlers();
     }

@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/GPUPlacement.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Types.hpp>
@@ -143,8 +144,7 @@ bool GPUPlacement::run(Graph &graph) {
 
     // Check --einsums:gpu:disable runtime flag.
     try {
-        auto &gc = GlobalConfigMap::get_singleton();
-        if (gc.get_bool("disable-gpu", false)) {
+        if (config::get(option::GpuDisable)) {
             EINSUMS_LOG_INFO("GPUPlacement: disabled via --einsums:gpu:disable");
             return false;
         }

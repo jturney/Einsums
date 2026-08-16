@@ -12,6 +12,7 @@
 #include <Einsums/Profile/Consumer.hpp>
 #include <Einsums/Profile/CounterBackend.hpp>
 #include <Einsums/Profile/Event.hpp>
+#include <Einsums/Profile/Options.hpp>
 #include <Einsums/Profile/RingBuffer.hpp>
 #include <Einsums/Profile/Server.hpp>
 #include <Einsums/Profile/StringTable.hpp>
@@ -240,12 +241,11 @@ struct EINSUMS_EXPORT Profiler {
         // Read server port from config (default 19216)
         uint16_t port = 19216;
         try {
-            auto &gc = GlobalConfigMap::get_singleton();
-            port     = static_cast<uint16_t>(gc.get_int("profiler-port", 19216));
+            port = static_cast<uint16_t>(config::get(option::ProfilePort));
             // --einsums:profile:disable. Recording every zone and annotation is not
             // free: on small operations it dominates, so a run that does not want a
             // profile should be able to say so and pay one relaxed load per zone.
-            _enabled.store(!gc.get_bool("profile-disable", false), std::memory_order_relaxed);
+            _enabled.store(!config::get(option::ProfileDisable), std::memory_order_relaxed);
         } catch (...) { // NOLINT
         }
         _server = std::make_unique<Server>(*_consumer, _strings, "127.0.0.1", port);

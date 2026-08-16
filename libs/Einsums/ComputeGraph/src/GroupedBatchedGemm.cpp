@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
+#include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
 
@@ -16,7 +17,7 @@ bool grouped_gemm_group_profiling() {
     // singleton is only there once the runtime is up, and building a graph
     // without one is legal.
     try {
-        return GlobalConfigMap::get_singleton().get_bool("graph-profile-groups", false);
+        return config::get(option::GraphProfileGroups);
     } catch (...) {
         return false;
     }

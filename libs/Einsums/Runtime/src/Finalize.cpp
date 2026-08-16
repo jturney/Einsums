@@ -52,11 +52,9 @@ int finalize() {
     profile::Profiler::instance().shutdown();
 
     try {
-        auto &global_config = GlobalConfigMap::get_singleton();
-        if (global_config.get_bool("profiler-report")) {
-            std::ofstream out(global_config.get_string("profiler-filename"),
-                              global_config.get_bool("profiler-append") ? std::ios::ate : std::ios::trunc);
-            profile::Profiler::instance().print(global_config.get_bool("profiler-detailed"), out);
+        if (config::get(option::ProfileReport)) {
+            std::ofstream out(config::get(option::ProfileFilename), config::get(option::ProfileAppend) ? std::ios::ate : std::ios::trunc);
+            profile::Profiler::instance().print(config::get(option::ProfileDetailed), out);
         }
     } catch (...) {
         EINSUMS_LOG_INFO("Exception thrown by the profiler during shutdown. Ignoring.");

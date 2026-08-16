@@ -14,9 +14,10 @@ set(HPTTHeaders
     Einsums/HPTT/Transpose.hpp
     Einsums/HPTT/Utils.hpp
     Einsums/HPTT/Files.hpp
+    Einsums/HPTT/Options.hpp
 )
 
-set(HPTTSources HPTT.cpp Plan.cpp TransposeFactory.cpp Utils.cpp Primes.hpp Files.cpp)
+set(HPTTSources HPTT.cpp Options.cpp Plan.cpp TransposeFactory.cpp Utils.cpp Primes.hpp Files.cpp)
 
 # Transpose.cpp is the arch-generic kernel implementation: it is compiled
 # once per SIMD-dispatch rung (each copy in its own namespace) rather than
@@ -32,7 +33,7 @@ einsums_add_module(
   SOURCES ${HPTTSources}
   HEADERS ${HPTTHeaders}
   DEPENDENCIES
-  MODULE_DEPENDENCIES Einsums_Assertion Einsums_BLASBase Einsums_Errors Einsums_Logging Einsums_SIMD
+  MODULE_DEPENDENCIES Einsums_Assertion Einsums_BLASBase Einsums_CommandLine Einsums_Errors Einsums_Logging Einsums_SIMD
   CMAKE_SUBDIRS examples tests
 )
 
