@@ -24,9 +24,8 @@ EINSUMS_NAMESPACE_BEGIN(option)
 /// different mechanisms - signals never see a memory fault there - and a Python
 /// process wants to keep its own faulthandler on the signals while still
 /// getting a report out of a hard crash.
-inline constinit cl::ConfigOption<bool> CrashHandler =
-    cl::config_flag("einsums:debug:crash-handler", "Install the crash handler that reports a fatal exception and writes a minidump",
-                    "Debug", true);
+inline constinit cl::ConfigOption<bool> CrashHandler = cl::config_flag(
+    "einsums:debug:crash-handler", "Install the crash handler that reports a fatal exception and writes a minidump", "Debug", true);
 
 /// Where minidumps go. Empty, the default, means the working directory.
 inline constinit cl::ConfigOption<std::string> CrashDumpDir = cl::config_opt<std::string>(
