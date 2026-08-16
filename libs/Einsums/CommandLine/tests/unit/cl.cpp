@@ -770,3 +770,48 @@ TEST_CASE("Help lists the positive spelling and points at its negation", "[descr
     // The negation itself is hidden, so the table does not list every flag twice.
     REQUIRE(help.find("  --t23:no-guard ") == std::string::npos);
 }
+
+TEST_CASE("A write reaches the slot and whoever asked to hear about it", "[descriptor][observer]") {
+    CLITestFixture _;
+
+    ConfigOption<std::string> name  = config_opt<std::string>("t24:name", "what to call it", "T24", "anonymous");
+    ConfigOption<bool>        guard = config_flag("t24:guard", "on unless told otherwise", "T24", true);
+    register_option(name);
+    register_option(guard);
+
+    int         calls = 0;
+    std::string seen;
+    on_change(name, [&] {
+        ++calls;
+        seen = einsums::config::get(name);
+    });
+
+    einsums::config::set(name, std::string("einsums"));
+    REQUIRE(einsums::config::get(name) == "einsums");
+    REQUIRE(calls == 1);
+    REQUIRE(seen == "einsums");
+
+    einsums::config::set(guard, false);
+    REQUIRE(einsums::config::get(guard) == false);
+    // The observer belongs to the other option and must not have fired.
+    REQUIRE(calls == 1);
+}
+
+TEST_CASE("Dynamic keys reach the same slots, spelled loosely", "[descriptor][dynamic]") {
+    CLITestFixture _;
+
+    ConfigOption<std::string> name = config_opt<std::string>("t25:name", "what to call it", "T25", "anonymous");
+    register_option(name);
+
+    // The derived key for t25:name is t25-name; case and underscores fold.
+    einsums::config::set_dynamic<std::string>("T25_NAME", "einsums");
+    REQUIRE(einsums::config::get(name) == "einsums");
+    REQUIRE(einsums::config::get_dynamic<std::string>("t25-name", "fallback") == "einsums");
+
+    // A key no descriptor claims answers with the caller's default until it is
+    // written, and reads of a slot nobody set still answer with the default.
+    REQUIRE(einsums::config::get_dynamic<std::int64_t>("t25-unclaimed", 7) == 7);
+    einsums::config::set_dynamic<std::int64_t>("t25-unclaimed", 11);
+    REQUIRE(einsums::config::get_dynamic<std::int64_t>("t25-unclaimed", 7) == 11);
+    REQUIRE(einsums::config::get_dynamic<bool>("t25-unclaimed", true) == true);
+}

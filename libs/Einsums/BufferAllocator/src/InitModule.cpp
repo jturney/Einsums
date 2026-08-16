@@ -41,7 +41,8 @@ EINSUMS_EXPORT void add_Einsums_BufferAllocator_arguments() {
     cl::register_option(option::BufferSize);
     cl::register_option(option::WorkBufferSize);
 
-    GlobalConfigMap::get_singleton().attach(detail::Einsums_BufferAllocator_vars::update_max_size);
+    cl::on_change(option::BufferSize, &detail::Einsums_BufferAllocator_vars::update_max_size);
+    cl::on_change(option::WorkBufferSize, &detail::Einsums_BufferAllocator_vars::update_max_size);
 
     auto &singleton = detail::Einsums_BufferAllocator_vars::get_singleton();
     auto  lock      = std::lock_guard(singleton);

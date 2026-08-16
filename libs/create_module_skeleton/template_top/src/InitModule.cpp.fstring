@@ -41,26 +41,20 @@ int setup_{lib_name}_{module_name}() {{
 EINSUMS_EXPORT void add_{lib_name}_{module_name}_arguments() {{
     /** @todo Fill in.
      *
-     * If you are not using one of the following maps, you may remove references to it.
-     * The maps may not need to be locked before use, but it should still be done just in
-     * case.
+     * Declare each option once, as a descriptor in this module's Options.hpp:
+     *
+     *     inline constinit cl::ConfigOption<std::string> Example = cl::config_opt<std::string>(
+     *         "einsums:dummy-string", "Dummy string option.", "{module_name}", "Default value");
+     *
+     * The config key and the environment variable derive from the name, so
+     * there is nothing else to spell. Register it here, and read it anywhere
+     * with config::get(option::Example).
      */
-    auto &global_config = GlobalConfigMap::get_singleton();
-    auto &global_string = global_config.get_string_map()->get_value();
-    auto &global_double = global_config.get_double_map()->get_value();
-    auto &global_int = global_config.get_int_map()->get_value();
-    auto &global_bool = global_config.get_bool_map()->get_value();
 
-    // Here's an example of how to add arguments.
-    // First, we create a category for our options:
-    // static cl::OptionCategory {module_name}Category("Enter category name here");
+    // cl::register_option(option::Example);
 
-    // Then we add the option ;
-    // static cl::Opt<std::string> example_option("einsums:dummy-string", {{'d'}}, "Dummy string option with short version of -d.",
-    //      {module_name}Category, cl::Location(global_string["dummy-string"]), cl::Default("Default value"));
-    
-    // Make sure the options are static so that they don't get destroyed when the function exits.
-    // This template can also be used for double, int64_t, and bool values.
+    // Ask to hear about later changes, if this module derives state from one:
+    // cl::on_change(option::Example, &detail::{lib_name}_{module_name}_vars::refresh);
 }}
 
 void initialize_{lib_name}_{module_name}() {{

@@ -15,10 +15,9 @@ set(ConfigHeaders
     Einsums/Config/ExportDefinitions.hpp
     Einsums/Config/ForceInline.hpp
     Einsums/Config/Namespace.hpp
-    Einsums/Config/Types.hpp
 )
 
-set(ConfigSources ABI.cpp Version.cpp Types.cpp)
+set(ConfigSources ABI.cpp Version.cpp)
 
 # The git identity goes to a private header under `generated/`, never under
 # `include/`: anything below `include/` is on the public include path, is

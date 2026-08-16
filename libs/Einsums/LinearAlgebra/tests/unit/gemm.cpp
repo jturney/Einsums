@@ -4,7 +4,6 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/BufferAllocator/Options.hpp>
-#include <Einsums/Config/Types.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateIncrementedTensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>

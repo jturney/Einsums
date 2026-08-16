@@ -5,7 +5,6 @@
 
 #include <Einsums/CommandLine/CommandLine.hpp>
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Config/Types.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/Tensor/InitModule.hpp>

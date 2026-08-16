@@ -81,27 +81,34 @@ double stdev(std::vector<double> const &values, double mean) {
     return sqrt(variance(values, mean));
 }
 
+namespace option {
+
+/*
+ * One descriptor per option: the name, help, and default in one place, and a
+ * typed read at the call site.
+ */
+inline constinit einsums::cl::ConfigOption<std::int64_t> Start =
+    einsums::cl::config_opt<std::int64_t>("start", "The starting number of orbitals for the calculation.", "Profiling", 20);
+inline constinit einsums::cl::ConfigOption<std::int64_t> Step =
+    einsums::cl::config_opt<std::int64_t>("step", "The step value for the range of orbitals.", "Profiling", 10);
+inline constinit einsums::cl::ConfigOption<std::int64_t> End =
+    einsums::cl::config_opt<std::int64_t>("end", "The ending number of orbitals for the calculation.", "Profiling", -1);
+inline constinit einsums::cl::ConfigOption<std::int64_t> Trials =
+    einsums::cl::config_opt<std::int64_t>("trials", "The number of trials for each step in the calculation.", "Profiling", 20);
+inline constinit einsums::cl::ConfigOption<bool> ColMajor =
+    einsums::cl::config_flag("col-major", "Whether the tensors should be column major or not.", "Profiling", false);
+inline constinit einsums::cl::ConfigOption<bool> Csv =
+    einsums::cl::config_flag("csv", "When present, output in comma-separated values.", "Profiling", false);
+
+} // namespace option
+
 void register_args() {
-    auto &global_config = einsums::GlobalConfigMap::get_singleton();
-    auto &global_ints   = global_config.get_int_map()->get_value();
-    auto &global_bools  = global_config.get_bool_map()->get_value();
-
-    static einsums::cl::OptionCategory profiling("Profiling");
-
-    static einsums::cl::Opt<int64_t> orbitals("start", {'n'}, "The starting number of orbitals for the calculation.", profiling,
-                                              einsums::cl::Default<int64_t>(20), einsums::cl::Location(global_ints["n"]));
-
-    static einsums::cl::Opt<int64_t> step("step", {'s'}, "The step value for the range of orbitals.", profiling,
-                                          einsums::cl::Default<int64_t>(10), einsums::cl::Location(global_ints["s"]));
-
-    static einsums::cl::Opt<int64_t> end("end", {'e'}, "The ending number of orbitals for the calculation.", profiling,
-                                         einsums::cl::Default<int64_t>(-1), einsums::cl::Location(global_ints["e"]));
-
-    static einsums::cl::Opt<int64_t> trials("trials", {'t'}, "The number of trials for each step in the calculation.", profiling,
-                                            einsums::cl::Default<int64_t>(20), einsums::cl::Location(global_ints["t"]));
-
-    static einsums::cl::Flag csv("csv", {'c'}, "When present, output in comma-separated values.", profiling,
-                                 einsums::cl::Location(global_bools["c"]));
+    einsums::cl::register_option(option::Start);
+    einsums::cl::register_option(option::Step);
+    einsums::cl::register_option(option::End);
+    einsums::cl::register_option(option::Trials);
+    einsums::cl::register_option(option::ColMajor);
+    einsums::cl::register_option(option::Csv);
 }
 
 template <class Generator>
@@ -129,13 +136,12 @@ int         main(int argc, char **argv) {
             bool csv;
 
             {
-                auto &global_config = einsums::GlobalConfigMap::get_singleton();
-
-                start  = global_config.get_int("n");
-                end    = global_config.get_int("e");
-                step   = global_config.get_int("s");
-                trials = global_config.get_int("t");
-                csv    = global_config.get_bool("c");
+                start     = static_cast<int>(einsums::config::get(option::Start));
+                end       = static_cast<int>(einsums::config::get(option::End));
+                step      = static_cast<int>(einsums::config::get(option::Step));
+                trials    = static_cast<int>(einsums::config::get(option::Trials));
+                csv       = einsums::config::get(option::Csv);
+                row_major = !einsums::config::get(option::ColMajor);
             }
 
             if (end < start) {

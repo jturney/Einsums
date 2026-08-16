@@ -5,7 +5,6 @@
 
 #include <Einsums/CommandLine/CommandLine.hpp>
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Config/Types.hpp>
 
 #include <fmt/format.h>
 
@@ -156,6 +155,8 @@ std::string const &Registry::get_env_prefix() const noexcept {
 }
 
 void Registry::clear_for_tests() {
+    // A test that declares options of its own needs the registry open again.
+    unfreeze_registry_for_tests();
     options.clear();
     categories.clear();
     exclusions.clear();
@@ -932,8 +933,6 @@ ParseResult parse_internal(std::span<std::string const> args, char const *progra
     Registry::instance().ensure_category(&built.cat);
     Registry::instance().ensure_option(&built.help);
     Registry::instance().ensure_option(&built.version);
-
-    GlobalConfigMapLockScope const config_lock;
 
     std::string const prog = programName != nullptr ? programName : (!args.empty() ? args[0] : std::string{"Einsums"});
 

@@ -70,8 +70,8 @@ inline int current_process_id() {
  *     cl::register_option(option::BufferSize);
  *     cl::register_option(option::WorkBufferSize);
  *
- *     // Attach an observer to look for changes to these options.
- *     GlobalConfigMap::get_singleton().attach(detail::Einsums_BufferAllocator_vars::update_max_size);
+ *     // Ask to hear about later changes to them.
+ *     cl::on_change(option::BufferSize, &detail::Einsums_BufferAllocator_vars::update_max_size);
  * }
  * @endcode
  *

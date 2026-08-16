@@ -7,7 +7,6 @@
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
 #include <Einsums/BufferAllocator/ModuleVars.hpp>
 #include <Einsums/BufferAllocator/Options.hpp>
-#include <Einsums/Config/Types.hpp>
 
 #include <mutex>
 

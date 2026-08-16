@@ -6,6 +6,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Assert.hpp>
+#include <Einsums/CommandLine/Declare.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
@@ -122,33 +123,9 @@ int run(std::function<int()> const &f, std::vector<std::string> const &argv, Ini
     // Report build settings.
     EINSUMS_LOG_INFO("Starting Einsums: {}", build_string());
 
-    {
-        auto &global_config = GlobalConfigMap::get_singleton();
-
-        auto global_strings = global_config.get_string_map();
-        auto global_bools   = global_config.get_bool_map();
-        auto global_doubles = global_config.get_double_map();
-        auto global_ints    = global_config.get_int_map();
-
-        auto lock = std::lock_guard(global_config);
-
-        EINSUMS_LOG_INFO("Runtime options:");
-
-        for (auto pair : global_strings->get_value()) {
-            EINSUMS_LOG_INFO("\"{}\": \"{}\"", pair.first, pair.second);
-        }
-
-        for (auto pair : global_bools->get_value()) {
-            EINSUMS_LOG_INFO("\"{}\": {}", pair.first, pair.second);
-        }
-
-        for (auto pair : global_doubles->get_value()) {
-            EINSUMS_LOG_INFO("\"{}\": {}", pair.first, pair.second);
-        }
-
-        for (auto pair : global_ints->get_value()) {
-            EINSUMS_LOG_INFO("\"{}\": {}", pair.first, pair.second);
-        }
+    EINSUMS_LOG_INFO("Runtime options:");
+    for (auto const &[key, value] : cl::registered_option_values()) {
+        EINSUMS_LOG_INFO("\"{}\": {}", key, value);
     }
 
     if (einsums::config::get(option::InstallSignalHandlers)) {

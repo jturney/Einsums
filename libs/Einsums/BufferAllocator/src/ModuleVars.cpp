@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/BufferAllocator/ModuleVars.hpp>
+#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Print.hpp>
@@ -15,20 +16,17 @@ EINSUMS_NAMESPACE_BEGIN(detail)
 
 EINSUMS_SINGLETON_IMPL(Einsums_BufferAllocator_vars)
 
-void Einsums_BufferAllocator_vars::update_max_size(ConfigMappingType<std::string> const &options) {
-    auto       &singleton = get_singleton();
-    auto        lock      = std::lock_guard(singleton);
-    auto const &value     = options.at("buffer-size");
+void Einsums_BufferAllocator_vars::update_max_size() {
+    auto &singleton = get_singleton();
+    auto  lock      = std::lock_guard(singleton);
 
-    singleton._max_size = string_util::memory_string(value);
+    singleton._max_size = string_util::memory_string(config::get(option::BufferSize));
 
     if (singleton._max_size == 0) {
         singleton._max_size = std::allocator_traits<std::allocator<uint8_t>>::max_size(std::allocator<uint8_t>());
     }
 
-    auto const &work_buffer = options.at("work-buffer-size");
-
-    singleton._work_buffer = string_util::memory_string(work_buffer);
+    singleton._work_buffer = string_util::memory_string(config::get(option::WorkBufferSize));
 
     if (singleton._work_buffer == 0) {
         singleton._work_buffer = singleton._max_size / 8 / omp_get_num_threads();

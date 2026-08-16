@@ -180,14 +180,14 @@ struct Observable {
     /**
      * @brief Public alias for ``notify_observers()``.
      *
-     * Allows wrapper types that aggregate several Observables (e.g.
-     * ``GlobalConfigMap``) to drive notification *after* releasing every
-     * sub-mutex, so an observer's implicit conversion-to-T doesn't
-     * re-acquire a mutex while sibling locks are still held. Without this
-     * decoupling, the unlock-then-notify-each pattern hits a TSan
-     * lock-order inversion as the observer callback's
-     * ``operator T() const`` calls ``get_value()`` and re-locks ``_mutex``
-     * while sibling Observables in the same aggregate are still locked.
+     * Allows a wrapper type that aggregates several Observables to drive
+     * notification *after* releasing every sub-mutex, so an observer's
+     * implicit conversion-to-T doesn't re-acquire a mutex while sibling
+     * locks are still held. Without this decoupling, the
+     * unlock-then-notify-each pattern hits a TSan lock-order inversion as
+     * the observer callback's ``operator T() const`` calls ``get_value()``
+     * and re-locks ``_mutex`` while sibling Observables in the same
+     * aggregate are still locked.
      */
     void notify() { notify_observers(); }
 
@@ -207,9 +207,9 @@ struct Observable {
         // destructor walk, so re-locking this one builds an acquisition order
         // that conflicts with the order `std::lock` used during construction
         // for deadlock avoidance). TSan caught this as a lock-order inversion
-        // in RuntimeConfiguration::pre_initialize, which scoped-locks four
-        // ConfigMaps at once. Making _value_changed atomic removes the need
-        // for the re-acquire entirely.
+        // in the config store that used to scoped-lock four Observable maps
+        // at once. Making _value_changed atomic removes the need for the
+        // re-acquire entirely.
         _value_changed.fetch_add(1, std::memory_order_release);
 
         std::scoped_lock lock(_observer_mutex);

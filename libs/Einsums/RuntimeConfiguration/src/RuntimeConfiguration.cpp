@@ -12,6 +12,7 @@
 #include <Einsums/Print.hpp>
 #include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
+#include <Einsums/TypeSupport/Singleton.hpp>
 #include <Einsums/Version.hpp>
 
 #include <filesystem>
@@ -133,42 +134,12 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
     // default values. This is done in the constructor.
     // There should be a mechanism that allows the user to change the program name.
 
-    /*
-     * Acquire locks for the different maps.
-     */
-    auto &global_config  = GlobalConfigMap::get_singleton();
-    auto &global_strings = global_config.get_string_map()->get_value();
-    auto &global_ints    = global_config.get_int_map()->get_value();
-    auto &global_doubles = global_config.get_double_map()->get_value();
-    auto &global_bools   = global_config.get_bool_map()->get_value();
-    {
-        // See pre_initialize for the rationale: use the GlobalConfigMap's
-        // own fixed-order lock(), not std::scoped_lock over the four
-        // sub-maps (which would dispatch to std::lock with dynamic
-        // ordering and create a TSan lock-order cycle with every other
-        // call site that locks the maps via GlobalConfigMap::lock()).
-        std::scoped_lock const lock(global_config);
-
-        // Every option below is readable from the environment under a name
-        // derived from its own: einsums:log:level reads EINSUMS_LOG_LEVEL.
-        // Precedence runs default < config file < environment < command line,
-        // so an inherited variable configures a job without editing its
-        // command line, and the command line still wins when it says so.
-        cl::Registry::instance().set_env_prefix("EINSUMS");
-
-        // The Debug category now lives with the runtime that reads it; see
-        // Einsums/Runtime/Options.hpp.
-
-        // The Logging category now lives with the subsystem it configures; see
-        // Einsums/Logging/Options.hpp.
-
-        // The Profile category now lives with the profiler that reads it; see
-        // Einsums/Profile/Options.hpp.
-
-        // The HPTT, ComputeGraph Passes, and GPU categories now live with the
-        // code that reads them; see Einsums/HPTT/Options.hpp and
-        // Einsums/ComputeGraph/Options.hpp.
-    }
+    // Every option is readable from the environment under a name derived from
+    // its own: einsums:log:level reads EINSUMS_LOG_LEVEL. Precedence runs
+    // default < config file < environment < command line, so an inherited
+    // variable configures a job without editing its command line, and the
+    // command line still wins when it says so.
+    cl::Registry::instance().set_env_prefix("EINSUMS");
 
     {
         auto &argument_list = ArgumentList::get_singleton();
@@ -199,6 +170,10 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
     } catch (std::exception const &) {
         std::exit(1);
     }
+
+    // Registration belongs to this window and nowhere else. Values stay
+    // writable: a slot is atomic, and writing one was never the problem.
+    cl::freeze_registry();
 }
 
 EINSUMS_NAMESPACE_END()

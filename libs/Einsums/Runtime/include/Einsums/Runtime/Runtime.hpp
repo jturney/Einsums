@@ -15,6 +15,7 @@
 #include <Einsums/Runtime/StartupFunction.hpp>
 #include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
+#include <Einsums/TypeSupport/Singleton.hpp>
 
 #include <list>
 #include <mutex>

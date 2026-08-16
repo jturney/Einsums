@@ -19,13 +19,12 @@ details.
 Interacting with the Allocator
 ------------------------------
 
-To modify the allocator's maximum size, set the string option `"buffer-size"` in the :cpp:class:`GlobalConfigMap` to
-a memory string. A memory string is a number, possibly a decimal, followed by an optional prefix and unit.
+To modify the allocator's maximum size, write a memory string to the ``einsums::option::BufferSize`` option, either
+with ``einsums::config::set`` or on the command line. A memory string is a number, possibly a decimal, followed by an optional prefix and unit.
 The understood prefixes are `k`, `M`, `G`, and `T`, all case insensitive. The units can either be `B`, `W`, or `o`,
 also case insensitive. The `B` and `o` units represent bytes, with the `o` provided for people who use the 
 octet convention. The `W` unit represents words and are the size of `size_t` on the user's system. On 64-bit
-systems, one word is generally eight bytes. The setting may be set in the program using the global option mentioned
-before or may be set on the command line using the `--einsums:buffer-size` option. The total amount of memory
+systems, one word is generally eight bytes. The command-line spelling is `--einsums:buffer-size`. The total amount of memory
 is shared among all processes, not on a per-process basis.
 
 The :cpp:class:`BufferAllocator` is a normal allocator. As such, it can be used in C++ containers and can be interacted

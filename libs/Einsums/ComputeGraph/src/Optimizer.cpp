@@ -42,7 +42,6 @@
 #include <Einsums/ComputeGraph/Passes/TransferElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Config/Types.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>

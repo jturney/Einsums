@@ -44,11 +44,15 @@ class EINSUMS_EXPORT Einsums_BufferAllocator_vars final : public design_pats::Lo
     void release_bytes(size_t bytes);
 
     /**
-     * @brief Update the maximum size of the counter.
+     * @brief Re-derive the byte counts from the buffer-size options.
+     *
+     * Registered with cl::on_change, so it runs whenever either option is
+     * assigned, from any source, holding no registry lock.
      *
      * @versionadded{1.1.0}
+     * @versionchanged{2.0.0} reads the options rather than a map handed to it
      */
-    static void update_max_size(ConfigMappingType<std::string> const &options);
+    static void update_max_size();
 
     /**
      * @brief Get the maximum size of the counter.

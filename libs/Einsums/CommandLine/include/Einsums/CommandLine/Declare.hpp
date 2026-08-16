@@ -1037,6 +1037,46 @@ EINSUMS_EXPORT void register_option(ConfigOption<double> &opt);
 EINSUMS_EXPORT void register_option(ConfigOption<std::string> &opt);
 
 /**
+ * @brief Hear about every change to an option's value.
+ *
+ * A module that derives state from an option - the buffer allocator turning
+ * "4MB" into a byte count - registers here rather than watching a map. The
+ * callback runs after the store, holding no registry lock, so it is free to
+ * read or write any option it likes. Register the option first.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT void on_change(ConfigOption<bool> &opt, std::function<void()> fn);
+EINSUMS_EXPORT void on_change(ConfigOption<std::int64_t> &opt, std::function<void()> fn);
+EINSUMS_EXPORT void on_change(ConfigOption<double> &opt, std::function<void()> fn);
+EINSUMS_EXPORT void on_change(ConfigOption<std::string> &opt, std::function<void()> fn);
+
+/**
+ * @brief Close the registry to new options.
+ *
+ * Registration belongs to the single-threaded initialization window, and this
+ * is what enforces that rather than assuming it: a debug build asserts on a
+ * registration that arrives afterwards. Values stay writable, because a slot
+ * is atomic and a write to one was never the phasing problem.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT void freeze_registry();
+
+/// Reopen the registry. For tests that declare options of their own; @ref
+/// Registry::clear_for_tests calls it.
+EINSUMS_EXPORT void unfreeze_registry_for_tests();
+
+/**
+ * @brief Every option's key and current value, rendered for a log or a dump.
+ *
+ * The replacement for walking the four config maps.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT std::vector<std::pair<std::string, std::string>> registered_option_values();
+
+/**
  * @brief Assert that nothing registered so far contradicts anything else.
  *
  * Two descriptors resolving to one config key, or a key that does not derive

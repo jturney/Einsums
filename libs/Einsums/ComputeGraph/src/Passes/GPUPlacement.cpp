@@ -9,7 +9,6 @@
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/GPUPlacement.hpp>
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Config/Types.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Logging.hpp>
