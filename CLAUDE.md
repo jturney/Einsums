@@ -124,6 +124,8 @@ if (config::get(option::ProfileReport)) { ... }
 - `config::get_dynamic`/`set_dynamic` take runtime strings and are only for genuinely runtime-constructed keys (the optimizer's per-pass flags). A compile-time-known name belongs in a descriptor; the dynamic path restores the silent-typo failure mode descriptors removed.
 - Reads are lock-free atomic slot loads, safe from any thread at any time, and cheap enough for a tensor constructor. Registration/parse is startup-only and the registry freezes afterward.
 - Include `<Einsums/Options/Get.hpp>` to read (light: no parser, no fmt); `Declare.hpp` to declare; `Parse.hpp` only in the parse driver.
+- Register from a namespace-scope initializer in the module's own `Options.hpp` (`register_Einsums_<M>_options()`), NOT from the `register_arguments` hook: that hook fires part-way through `initialize()`, and the Python binding layer enumerates the registry before it.
+- `cl::registered_options()` (in `Parse.hpp`) returns every option as data. `libs/Einsums/Python/python/einsums/rc.py` is GENERATED from the descriptors (apiary parses the `Options.hpp` headers, `libs/Einsums/Python/tools/generate_rc.py` renders `rc.py.in`), and `argv_from_rc` walks that enumeration - so a new option reaches Python with no table to edit. Edit `rc.py.in` for prose only.
 - Adding an option means updating `docs/sphinx/user/arguments.rst` too; the docs build is nitpicky and warnings-are-errors.
 
 ### SIMD Runtime Dispatch

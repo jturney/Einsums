@@ -1,0 +1,75 @@
+#----------------------------------------------------------------------------------------------
+# Copyright (c) The Einsums Developers. All rights reserved.
+# Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+#----------------------------------------------------------------------------------------------
+
+# GENERATED FILE - do not edit. The prose lives in
+# libs/Einsums/Python/python/einsums/rc.py.in and the fields are generated from
+# the option descriptors by libs/Einsums/Python/tools/generate_rc.py. Editing
+# the copy under lib/einsums lasts until the next build; editing a field here
+# would be editing something the descriptor already says.
+
+"""Pre-import configuration for einsums.
+
+Set fields here before the first compute call to influence
+``einsums::initialize()``. Once the runtime is up these fields are read-only
+as far as einsums is concerned, so changing them after init has no effect.
+
+Usage::
+
+    import einsums.rc
+    einsums.rc.threads = 8
+    einsums.rc.log_level = einsums.rc.LogLevel.INFO
+
+    import einsums
+    einsums.gemm(...)   # initialize() fires here using the rc settings
+"""
+
+from enum import Enum
+
+# Every option below also has an environment variable, read by the C++ runtime
+# itself rather than by this module: einsums:log:level is EINSUMS_LOG_LEVEL,
+# einsums:debug:attach-debugger is EINSUMS_DEBUG_ATTACH_DEBUGGER, and so on.
+# Precedence is default < environment < the fields below, since these are
+# handed to einsums::initialize() as command line arguments.
+#
+# So a launcher that wants to flip a setting without touching this module - the
+# pytest harness in cmake/Einsums_AddTest.cmake, which disables the runtime's
+# "waiting for debugger" prompt so a failing test cannot hang - just exports the
+# variable. Leaving a field as ``None`` here is what lets that through.
+#
+# Boolean fields are named for what turning them ON does, matching the flags the
+# runtime declares, and they are three-valued. ``None`` leaves the runtime
+# default in place. ``True`` asks for the setting. ``False`` asks for its
+# negation, which is a real request rather than a no-op: writing
+# ``profile_report = False`` passes ``--einsums:profile:no-report``, because a
+# flag that already defaults to on cannot be turned off by staying silent.
+#
+# A field's name is its option's name with the leading ``einsums:`` dropped and
+# every ``:`` and ``-`` turned into an underscore, which is also the rule the
+# binding layer walks the option registry with. Nothing maps the two by hand.
+
+@HELP@
+
+# Number of OpenMP / task-pool worker threads. ``None`` means einsums picks
+# based on the host's logical core count. einsums has no CLI flag for this;
+# the binding routes a non-``None`` value through the ``OMP_NUM_THREADS``
+# environment variable before ``einsums::initialize`` runs. It is the one
+# setting on this page that is not an option, which is why it is written out
+# here rather than generated below.
+threads: int | None = None
+
+
+class LogLevel(Enum):
+    """Named spellings of ``einsums:log:level``'s integer scale."""
+
+    TRACE = 0
+    DEBUG = 1
+    INFO = 2
+    WARN = 3
+    ERROR = 4
+
+
+@FIELDS@
+
+@MANIFEST@

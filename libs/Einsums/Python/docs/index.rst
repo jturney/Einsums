@@ -236,12 +236,25 @@ call and they are turned into ``--einsums:*`` flags and handed to
 Once the runtime is up the fields are read-only as far as Einsums is concerned.
 Changing them post-init has no effect.
 
-The fields mirror the command-line options one for one, with ``:`` and ``-``
-becoming ``_``: ``threads``, ``buffer_size``, ``work_buffer_size``,
-``pass_disable`` / ``pass_analyze`` / ``pass_verbose``,
-``hptt_selection_method``, ``log_level`` / ``log_destination`` / ``log_format``,
-the ``profile_*`` group, ``scratch_dir``, and the ``debug_no_*`` group. See
-:doc:`/user/arguments` for what each one does.
+There is a field per option and nothing else, because ``rc.py`` is generated
+from the option descriptors: apiary parses each module's ``Options.hpp`` and
+``libs/Einsums/Python/tools/generate_rc.py`` renders the file from what it
+finds, with the prose kept in ``rc.py.in``. A field's name is its option's name
+with the leading ``einsums:`` dropped and every ``:`` and ``-`` turned into an
+underscore, so ``einsums:profile:report`` is ``profile_report``. Each field
+carries the option's help text and default in a comment; :doc:`/user/arguments`
+is the longer reference.
+
+The one field that is not an option is ``threads``: Einsums has no flag for it,
+so the binding routes it through ``OMP_NUM_THREADS`` instead.
+
+Nothing maps a field to a flag by hand. ``argv_from_rc`` walks the option
+registry, asks ``rc`` for the matching attribute, and refuses outright if it
+finds an ``rc`` field the registry does not claim - which is what a stale
+generated file looks like. Boolean fields are three-valued: ``None`` leaves the
+runtime default alone, ``True`` passes the flag, and ``False`` passes its
+generated negation, because a flag that already defaults to on cannot be turned
+off by staying silent.
 
 ``einsums/__init__.py`` also claims the ``--einsums:`` namespace out of
 ``sys.argv`` at import time and forwards those flags to the runtime, so a Python

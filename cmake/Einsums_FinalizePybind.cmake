@@ -119,7 +119,6 @@ function(einsums_finalize_pybind)
     # copy never goes stale).
     file(MAKE_DIRECTORY "${_pkg_dir}")
     configure_file("${_pkg_src}/__init__.py" "${_pkg_dir}/__init__.py" COPYONLY)
-    configure_file("${_pkg_src}/rc.py"       "${_pkg_dir}/rc.py"       COPYONLY)
     configure_file("${_pkg_src}/graph.py"    "${_pkg_dir}/graph.py"    COPYONLY)
     configure_file("${_pkg_src}/profile.py"  "${_pkg_dir}/profile.py"  COPYONLY)
     configure_file("${_pkg_src}/sealed.py"   "${_pkg_dir}/sealed.py"   COPYONLY)
@@ -140,6 +139,73 @@ function(einsums_finalize_pybind)
     endforeach()
     file(GLOB _py_helpers     CONFIGURE_DEPENDS "${_pkg_src}/*.py")
     file(GLOB _py_helper_pkgs CONFIGURE_DEPENDS "${_pkg_src}/*/*.py")
+
+    # --- einsums/rc.py, generated from the option descriptors ---------------
+    #
+    # rc.py's fields, its listing of what --help prints, and the flag spellings
+    # the binding layer emits used to be three hand-kept copies of the
+    # descriptor list, with nothing checking them against it. The binding layer
+    # now walks the option registry; this generates the other two, so an
+    # option's name, type, default, and help text are spelled once, in the
+    # module that owns it, and reach Python from there.
+    #
+    # Two static steps, both of which the pipeline already relies on: apiary
+    # parses the headers, and a script renders the file. Nothing here runs a
+    # compiled Einsums binary, so cross-compilation is unaffected.
+    file(GLOB _option_headers CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/libs/Einsums/*/include/Einsums/*/Options.hpp")
+    # The Options module's own umbrella header declares no descriptors; it
+    # includes the machinery the others use to declare theirs.
+    list(REMOVE_ITEM _option_headers
+        "${CMAKE_SOURCE_DIR}/libs/Einsums/Options/include/Einsums/Options/Options.hpp")
+    if(NOT _option_headers)
+        message(FATAL_ERROR "apiary: no Einsums/<Module>/Options.hpp headers found - rc.py would be empty")
+    endif()
+
+    # apiary confines its capture to the headers named with --source-include;
+    # without that it would document every namespace-scope variable in
+    # everything these headers transitively pull in.
+    set(_option_rel_headers "")
+    set(_rel "")
+    foreach(_h IN LISTS _option_headers)
+        string(REGEX REPLACE "^.*/include/" "" _rel "${_h}")
+        list(APPEND _option_rel_headers "${_rel}")
+    endforeach()
+
+    set(_options_docs_json "")
+    apiary_add_bindings(
+        CPP_DOCS_JSON
+        HEADERS ${_option_headers}
+        SOURCE_INCLUDES ${_option_rel_headers}
+        MODULE einsums
+        # The umbrella carries every module's include dirs through its
+        # PUBLIC link to each of them, which is exactly the set these
+        # headers need.
+        DEPENDS_TARGETS Einsums
+        OUTPUT_DIR "${_gen_dir}"
+        OUTPUT_NAME Einsums_OptionSurface
+        CXX_STANDARD ${EINSUMS_WITH_CXX_STANDARD}
+        EXTRA_FLAGS
+            "-I${CMAKE_BINARY_DIR}"
+            "-I${CMAKE_SOURCE_DIR}/external/apiary/include"
+            ${_apiary_spdlog_flags}
+        EXTRA_DEPENDS ${_all_defines_headers}
+        OUT_CPP_DOCS_JSON _options_docs_json
+    )
+
+    set(_rc_generator "${CMAKE_SOURCE_DIR}/libs/Einsums/Python/tools/generate_rc.py")
+    add_custom_command(
+        OUTPUT "${_pkg_dir}/rc.py"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_pkg_dir}"
+        COMMAND ${Python_EXECUTABLE} "${_rc_generator}"
+                --docs-json "${_options_docs_json}"
+                --template "${_pkg_src}/rc.py.in"
+                --output "${_pkg_dir}/rc.py"
+        DEPENDS "${_rc_generator}" "${_pkg_src}/rc.py.in" "${_options_docs_json}"
+        COMMENT "einsums: generating einsums/rc.py from the option descriptors"
+        VERBATIM
+    )
+    add_custom_target(PyEinsumsRc DEPENDS "${_pkg_dir}/rc.py")
 
     apiary_aggregate_extension(
         NAME PyEinsums
@@ -167,6 +233,11 @@ function(einsums_finalize_pybind)
     )
 
     einsums_register_python_extension(PyEinsums)
+
+    # rc.py is read by _core at startup, so the extension is not usable without
+    # it; hanging it off PyEinsums is what makes `import einsums` in a fresh
+    # build tree find a current one.
+    add_dependencies(PyEinsums PyEinsumsRc)
 
     # _core extension lands as lib/einsums/_core.* alongside the shell files.
     set_target_properties(PyEinsums PROPERTIES
