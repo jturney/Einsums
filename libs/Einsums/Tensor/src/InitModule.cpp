@@ -38,7 +38,6 @@ int setup_Einsums_Tensor() {
     static bool is_initialized = false;
 
     if (!is_initialized) {
-        einsums::register_arguments(einsums::add_Einsums_Tensor_arguments);
         einsums::register_startup_function(einsums::initialize_Einsums_Tensor);
         einsums::register_shutdown_function(einsums::finalize_Einsums_Tensor);
 
@@ -66,10 +65,11 @@ std::filesystem::path hdf5_scratch_path() {
     return path;
 }
 
-EINSUMS_EXPORT void add_Einsums_Tensor_arguments() {
+EINSUMS_EXPORT int register_Einsums_Tensor_options() {
     cl::register_option(option::ScratchDir);
     cl::register_option(option::Hdf5FileName);
     cl::register_option(option::DeleteHdf5Files);
+    return 0;
 }
 
 static void create_complex_types() {

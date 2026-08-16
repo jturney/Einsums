@@ -37,10 +37,15 @@ int init_Einsums_BufferAllocator() {
     return 0;
 }
 
-EINSUMS_EXPORT void add_Einsums_BufferAllocator_arguments() {
+EINSUMS_EXPORT int register_Einsums_BufferAllocator_options() {
     cl::register_option(option::BufferSize);
     cl::register_option(option::WorkBufferSize);
+    return 0;
+}
 
+EINSUMS_EXPORT void add_Einsums_BufferAllocator_arguments() {
+    // Registration itself happens at load time; what is left here is the part
+    // that needs the module's singleton, which does not exist that early.
     cl::on_change(option::BufferSize, &detail::Einsums_BufferAllocator_vars::update_max_size);
     cl::on_change(option::WorkBufferSize, &detail::Einsums_BufferAllocator_vars::update_max_size);
 

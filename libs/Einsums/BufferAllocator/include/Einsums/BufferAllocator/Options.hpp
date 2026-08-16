@@ -31,3 +31,21 @@ inline constinit cl::ConfigOption<std::string> WorkBufferSize = cl::config_opt<s
     "Buffer Allocator", "0");
 
 EINSUMS_NAMESPACE_END(option)
+
+EINSUMS_NAMESPACE_BEGIN()
+
+/**
+ * @brief Give the allocator's options their command-line presence. Idempotent.
+ *
+ * Run from a namespace-scope initializer rather than from the module's
+ * argument hook, because the hook fires part-way through `initialize()` and
+ * anything that enumerates the registry earlier - the Python binding layer
+ * building argv, for one - would not see these options at all.
+ */
+EINSUMS_EXPORT int register_Einsums_BufferAllocator_options();
+
+namespace detail {
+[[maybe_unused]] static int const register_options_Einsums_BufferAllocator = register_Einsums_BufferAllocator_options();
+}
+
+EINSUMS_NAMESPACE_END()

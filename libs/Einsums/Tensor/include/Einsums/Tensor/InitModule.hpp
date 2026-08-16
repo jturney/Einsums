@@ -26,7 +26,6 @@ EINSUMS_NAMESPACE_BEGIN()
 // NOLINTBEGIN
 EINSUMS_EXPORT int setup_Einsums_Tensor();
 
-EINSUMS_EXPORT void add_Einsums_Tensor_arguments();
 EINSUMS_EXPORT void initialize_Einsums_Tensor();
 EINSUMS_EXPORT void finalize_Einsums_Tensor();
 // NOLINTEND

@@ -77,6 +77,16 @@ enum struct Occurrence : std::uint8_t { Optional, Required, ZeroOrMore, OneOrMor
 /// Whether an option takes a value, and whether it may go without one.
 enum struct ValueExpected : std::uint8_t { ValueDisallowed, ValueOptional, ValueRequired };
 
+/// How an option is spelled on the command line.
+enum struct OptionKind : std::uint8_t {
+    Value, ///< Takes a value: `--einsums:log:level 3`.
+    Flag   ///< Presence carries the meaning; a `--no-` twin is generated for it.
+};
+
+/// The value type an option holds. A descriptor fixes it at declaration; the
+/// enumeration API hands it to callers who only see an option as data.
+enum struct OptionType : std::uint8_t { Bool, Int, Double, String };
+
 /// Constructor tag marking an option positional rather than named.
 struct Positional {};
 

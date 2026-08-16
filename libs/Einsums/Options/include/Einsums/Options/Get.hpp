@@ -60,12 +60,6 @@ using storage_t = typename StorageOf<T>::type;
 
 } // namespace detail
 
-/// How an option is spelled on the command line.
-enum struct OptionKind : std::uint8_t {
-    Value, ///< Takes a value: `--einsums:log:level 3`.
-    Flag   ///< Presence carries the meaning; a `--no-` twin is generated for it.
-};
-
 /**
  * @brief An option declared completely, in one place.
  *

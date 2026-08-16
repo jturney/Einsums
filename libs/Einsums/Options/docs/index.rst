@@ -71,10 +71,12 @@ constructor as hot and as early as ``Tensor``'s.
 Registering
 ~~~~~~~~~~~
 
-A descriptor has to be handed to the registry before parsing. Modules with an init hook do it there;
-modules that sit below Runtime in the dependency graph, and so cannot call ``register_arguments`` without
-a cycle, export a ``register_<Module>_options()`` and invoke it from a namespace-scope initializer in
-their own ``Options.hpp``.
+A descriptor has to be handed to the registry before parsing. Every module exports a
+``register_<Module>_options()`` and invokes it from a namespace-scope initializer in its own
+``Options.hpp``, so registration happens when the library loads. Modules below Runtime in the dependency
+graph could not call ``register_arguments`` without a cycle anyway; the ones that could still do not,
+because that hook fires part-way through ``initialize()`` and anything that enumerates the registry
+earlier - the Python binding layer building its argv - would not see those options at all.
 
 Reading an option
 -----------------
@@ -106,6 +108,30 @@ Dynamic keys
 keys that are genuinely constructed at run time, such as the per-pass flags the optimizer builds from a
 pass name. Anything whose name is known at compile time should be a descriptor instead; the dynamic path
 gives back the silent-typo behavior the descriptors were introduced to remove.
+
+Enumerating the options
+~~~~~~~~~~~~~~~~~~~~~~~
+
+``cl::registered_options()`` returns every registered option as data - long name, derived key, flag or
+value, value type, declared default, help text, category, and a flag's generated ``no-`` spelling. It is
+for code that never names an option in source: a binding layer, a generator, a settings dump.
+
+The generated ``no-`` twin of a flag is not listed; it is a second spelling of the option already there,
+named by that option's ``negated_name``. Keys reached only through the dynamic API are not listed either,
+because no descriptor claims them.
+
+This is how the Python surface stays honest. ``einsums.rc``'s fields are generated from the descriptors
+by a static parse of the ``Options.hpp`` headers, and ``PyEinsumsMain.cpp`` builds the argv that starts
+the runtime by walking this enumeration - so a new descriptor reaches Python without anyone editing a
+table, and there is no second spelling of a flag to drift.
+
+.. code-block:: cpp
+
+   #include <Einsums/Options/Parse.hpp>
+
+   for (auto const &opt : cl::registered_options()) {
+       fmt::print("--{} [{}]\n", opt.name, opt.key);
+   }
 
 Quick Start
 -----------

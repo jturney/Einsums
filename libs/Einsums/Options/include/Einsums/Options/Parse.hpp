@@ -10,6 +10,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Options/Source.hpp>
 
+#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <map>
@@ -28,6 +29,60 @@
 EINSUMS_NAMESPACE_BEGIN(cl)
 
 struct OptionBase;
+
+// -------------------------- Enumeration ----------------------------------- //
+
+/**
+ * @brief One registered option, flattened into data.
+ *
+ * What a descriptor declares, minus the C++ type: enough for a caller that
+ * never names the option in source - a binding layer, a documentation
+ * generator - to spell the flag, know what kind of value it takes, and report
+ * what it defaults to.
+ *
+ * @versionadded{2.0.0}
+ */
+struct RegisteredOption {
+    /// The command-line long name, e.g. `einsums:log:level`.
+    std::string name;
+    /// The config key derived from @ref name.
+    std::string key;
+    /// The `--no-` spelling, for a flag; empty for a value option.
+    std::string negated_name;
+    /// The `--help` description and heading.
+    std::string help;
+    std::string category;
+    /// The placeholder shown in help for a value option, e.g. `PORT`.
+    std::string value_name;
+
+    OptionKind kind = OptionKind::Value;
+    OptionType type = OptionType::Bool;
+
+    /// The declared default, in whichever member @ref type selects.
+    bool         default_bool   = false;
+    std::int64_t default_int    = 0;
+    double       default_double = 0.0;
+    std::string  default_string;
+
+    /// True when the default came from a provider run at registration rather
+    /// than from a literal, so the value above is this process's answer and
+    /// not something a generator may print as the declared default.
+    bool computed_default = false;
+};
+
+/**
+ * @brief Every option a descriptor has registered, in registration order.
+ *
+ * The generated `--no-` twin of a flag is not listed: it is a spelling of the
+ * option already named here, not a second option. Keys reached only through
+ * the dynamic API are not listed either, since no descriptor claims them.
+ *
+ * This is the enumeration the Python binding layer builds its argv from, so
+ * that the flag spellings live in exactly one place.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT std::vector<RegisteredOption> registered_options();
 
 // -------------------------- Config reader --------------------------------- //
 

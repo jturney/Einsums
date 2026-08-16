@@ -62,6 +62,12 @@ struct OptionEntry {
     OptionKind  kind    = OptionKind::Value;
     OptionBase *primary = nullptr;
 
+    /// True when the descriptor supplied a provider instead of a literal
+    /// default. The provider has already run by the time anyone can ask, so
+    /// this is the only record that the value is this process's answer rather
+    /// than something that could be written down.
+    bool computed_default = false;
+
     std::atomic<std::uint8_t> assigned{0};
 
     std::atomic<bool>         bool_value{false};
@@ -321,8 +327,9 @@ template <typename T>
 detail::OptionEntry &register_value_option(ConfigOption<T> &opt, void (*store)(detail::OptionEntry &, T)) {
     auto &r = detail::owned();
 
-    auto &cat   = detail::category_named(opt.category);
-    auto &entry = detail::entry_locked(derive_key(opt.name));
+    auto &cat              = detail::category_named(opt.category);
+    auto &entry            = detail::entry_locked(derive_key(opt.name));
+    entry.computed_default = opt.default_provider != nullptr;
 
     auto option = std::make_unique<Opt<T>>(opt.name, std::initializer_list<char>{}, opt.help, cat);
     // A default that could not be written down at compile time is asked for
@@ -427,6 +434,63 @@ void unfreeze_registry_for_tests() {
     auto                  &r = detail::owned();
     std::scoped_lock const lock(r.mutex);
     r.frozen = false;
+}
+
+namespace {
+
+/// Fill in the type-dependent half of a RegisteredOption. The concrete option
+/// type is the only record of what the descriptor's T was, so it is recovered
+/// here rather than stored a second time on the entry.
+void describe_value(RegisteredOption &out, OptionBase const &primary) {
+    if (auto const *o = dynamic_cast<Opt<std::string> const *>(&primary); o != nullptr) {
+        out.type           = OptionType::String;
+        out.default_string = o->default_value;
+        out.value_name     = o->value_name;
+    } else if (auto const *i = dynamic_cast<Opt<std::int64_t> const *>(&primary); i != nullptr) {
+        out.type        = OptionType::Int;
+        out.default_int = i->default_value;
+        out.value_name  = i->value_name;
+    } else if (auto const *d = dynamic_cast<Opt<double> const *>(&primary); d != nullptr) {
+        out.type           = OptionType::Double;
+        out.default_double = d->default_value;
+        out.value_name     = d->value_name;
+    } else if (auto const *b = dynamic_cast<Opt<bool> const *>(&primary); b != nullptr) {
+        out.type         = OptionType::Bool;
+        out.default_bool = b->default_value;
+        out.value_name   = b->value_name;
+    }
+}
+
+} // namespace
+
+std::vector<RegisteredOption> registered_options() {
+    auto                  &r = detail::owned();
+    std::scoped_lock const lock(r.mutex);
+
+    std::vector<RegisteredOption> out;
+    out.reserve(r.entries.size());
+    for (auto const &entry : r.entries) {
+        if (entry.primary == nullptr) {
+            continue; // a key reached only through the dynamic API
+        }
+        RegisteredOption ro;
+        ro.name             = entry.primary->long_name;
+        ro.key              = entry.key;
+        ro.help             = entry.primary->help;
+        ro.category         = entry.primary->category != nullptr ? entry.primary->category->name : std::string{};
+        ro.kind             = entry.kind;
+        ro.computed_default = entry.computed_default;
+
+        if (auto const *flag = dynamic_cast<Flag const *>(entry.primary); flag != nullptr) {
+            ro.type         = OptionType::Bool;
+            ro.default_bool = flag->default_value;
+            ro.negated_name = derive_negated_name(ro.name);
+        } else {
+            describe_value(ro, *entry.primary);
+        }
+        out.push_back(std::move(ro));
+    }
+    return out;
 }
 
 std::vector<std::pair<std::string, std::string>> registered_option_values() {

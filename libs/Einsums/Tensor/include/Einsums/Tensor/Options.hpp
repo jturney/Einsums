@@ -55,4 +55,18 @@ EINSUMS_NAMESPACE_BEGIN()
 /// The full path of the HDF5 scratch file this process uses.
 EINSUMS_EXPORT std::filesystem::path hdf5_scratch_path();
 
+/**
+ * @brief Give the Tensor module's options their command-line presence. Idempotent.
+ *
+ * Run from a namespace-scope initializer rather than from the module's
+ * argument hook, because the hook fires part-way through `initialize()` and
+ * anything that enumerates the registry earlier - the Python binding layer
+ * building argv, for one - would not see these options at all.
+ */
+EINSUMS_EXPORT int register_Einsums_Tensor_options();
+
+namespace detail {
+[[maybe_unused]] static int const register_options_Einsums_Tensor = register_Einsums_Tensor_options();
+}
+
 EINSUMS_NAMESPACE_END()
