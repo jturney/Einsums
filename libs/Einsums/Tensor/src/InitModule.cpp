@@ -10,6 +10,7 @@
 #include <Einsums/Runtime.hpp>
 #include <Einsums/Tensor/InitModule.hpp>
 #include <Einsums/Tensor/ModuleVars.hpp>
+#include <Einsums/Tensor/Options.hpp>
 
 #include <H5Fpublic.h>
 #include <H5Ppublic.h>
@@ -48,40 +49,32 @@ int setup_Einsums_Tensor() {
     return 0;
 }
 
+namespace detail {
+
+std::string default_scratch_dir() {
+    return std::filesystem::temp_directory_path().string();
+}
+
+std::string default_hdf5_file_name() {
+    return fmt::format("einsums.{}.h5", current_process_id());
+}
+
+} // namespace detail
+
+std::filesystem::path hdf5_scratch_path() {
+    auto path = std::filesystem::path(config::get(option::ScratchDir));
+    path /= config::get(option::Hdf5FileName);
+    return path;
+}
+
 EINSUMS_EXPORT void add_Einsums_Tensor_arguments() {
-
-    auto pid = current_process_id();
-
-    auto &global_config = GlobalConfigMap::get_singleton();
-    auto &global_string = global_config.get_string_map()->get_value();
-    auto &global_double = global_config.get_double_map()->get_value();
-    auto &global_int    = global_config.get_int_map()->get_value();
-    auto &global_bool   = global_config.get_bool_map()->get_value();
-
-    auto lock = std::lock_guard(global_config);
-
-    static cl::OptionCategory TensorCategory("Tensor Options");
-
-    static cl::Opt<std::string> scratch_dir("einsums:scratch-dir", {}, "The scratch directory for Einsums tensor files.", TensorCategory,
-                                            cl::Location(global_string["scratch-dir"]),
-                                            cl::Default(std::filesystem::temp_directory_path().string()));
-    static cl::Opt<std::string> file_name(
-        "einsums:hdf5-file-name", {},
-        "The name of the HDF5 file for Einsums. Defaults to einsums.[pid].h5, where [pid] is the PID of the current process.",
-        TensorCategory, cl::Location(global_string["hdf5-file-name"]), cl::Default(fmt::format("einsums.{}.h5", pid)));
-
-    // delete-hdf5-files drives cleanup in finalize_Einsums_Tensor. It must default
-    // to true so the per-process scratch file (einsums.<pid>.h5) is removed on exit;
-    // otherwise these files accumulate indefinitely in the scratch dir and, via PID
-    // reuse, a later process inherits a stale one. Passing --einsums:no-delete-hdf5-files
-    // sets it false to keep the files, matching the flag's name.
-    static cl::Flag delete_files("einsums:no-delete-hdf5-files", {}, "Tells Einsums not to clean up HDF5 files on exit.", TensorCategory,
-                                 cl::Location(global_bool["delete-hdf5-files"]), cl::Default(true), cl::ImplicitValue(false));
+    cl::register_option(option::ScratchDir);
+    cl::register_option(option::Hdf5FileName);
+    cl::register_option(option::DeleteHdf5Files);
 }
 
 static void create_complex_types() {
-    auto &singleton     = einsums::detail::Einsums_Tensor_vars::get_singleton();
-    auto &global_config = GlobalConfigMap::get_singleton();
+    auto &singleton = einsums::detail::Einsums_Tensor_vars::get_singleton();
 
     singleton.double_complex_type = H5Tcreate(H5T_COMPOUND, 2 * sizeof(double));
     singleton.float_complex_type  = H5Tcreate(H5T_COMPOUND, 2 * sizeof(float));
@@ -263,8 +256,7 @@ static void open_complex_types() {
 }
 
 bool open_hdf5_file(std::string const &fname) {
-    auto &singleton     = einsums::detail::Einsums_Tensor_vars::get_singleton();
-    auto &global_config = GlobalConfigMap::get_singleton();
+    auto &singleton = einsums::detail::Einsums_Tensor_vars::get_singleton();
 
     singleton.hdf5_file = H5Fopen(fname.c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
 
@@ -309,8 +301,7 @@ bool open_hdf5_file(std::string const &fname) {
 }
 
 void create_hdf5_file(std::string const &fname) {
-    auto &singleton     = einsums::detail::Einsums_Tensor_vars::get_singleton();
-    auto &global_config = GlobalConfigMap::get_singleton();
+    auto &singleton = einsums::detail::Einsums_Tensor_vars::get_singleton();
 
     singleton.hdf5_file = H5Fcreate(fname.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
 
@@ -349,11 +340,7 @@ void create_hdf5_file(std::string const &fname) {
 }
 
 void initialize_Einsums_Tensor() {
-    auto &singleton     = einsums::detail::Einsums_Tensor_vars::get_singleton();
-    auto &global_config = GlobalConfigMap::get_singleton();
-
-    auto fname = std::filesystem::path(global_config.get_string("scratch-dir"));
-    fname /= global_config.get_string("hdf5-file-name");
+    auto const fname = hdf5_scratch_path();
 
     auto err = H5open();
 
@@ -371,15 +358,12 @@ void initialize_Einsums_Tensor() {
 }
 
 void finalize_Einsums_Tensor() {
-    auto &singleton     = einsums::detail::Einsums_Tensor_vars::get_singleton();
-    auto &global_config = GlobalConfigMap::get_singleton();
-
-    auto fname = std::filesystem::path(global_config.get_string("scratch-dir"));
-    fname /= global_config.get_string("hdf5-file-name");
+    auto      &singleton = einsums::detail::Einsums_Tensor_vars::get_singleton();
+    auto const fname     = hdf5_scratch_path();
 
     H5Fclose(singleton.hdf5_file);
 
-    if (singleton.hdf5_file != H5I_INVALID_HID && global_config.get_bool("delete-hdf5-files", true)) {
+    if (singleton.hdf5_file != H5I_INVALID_HID && config::get(option::DeleteHdf5Files)) {
         H5Fdelete(fname.string().c_str(), H5P_DEFAULT); // .string(): path::c_str() is wchar_t* on Windows
     }
 

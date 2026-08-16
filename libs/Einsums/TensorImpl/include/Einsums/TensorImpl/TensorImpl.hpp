@@ -17,6 +17,7 @@
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
+#include <Einsums/TensorBase/Options.hpp>
 
 #include <type_traits>
 
@@ -182,8 +183,7 @@ struct TensorImpl final {
      */
     template <Container Dims>
     constexpr TensorImpl(pointer ptr, Dims const &dims)
-        : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()),
-          _row_major{GlobalConfigMap::get_singleton().get_bool("row-major")} {
+        : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()), _row_major{config::get(option::RowMajor)} {
         compute_strides();
     }
 
@@ -224,8 +224,7 @@ struct TensorImpl final {
      * @param dims The dimensions of the tensor.
      */
     constexpr TensorImpl(pointer ptr, std::initializer_list<size_t> const &dims)
-        : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()),
-          _row_major{GlobalConfigMap::get_singleton().get_bool("row-major")} {
+        : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()), _row_major{config::get(option::RowMajor)} {
         compute_strides();
     }
 

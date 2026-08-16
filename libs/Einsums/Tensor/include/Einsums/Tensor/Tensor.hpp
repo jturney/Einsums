@@ -25,6 +25,7 @@
 #include <Einsums/Tensor/StorageBlock.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
+#include <Einsums/TensorBase/Options.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 #include <Einsums/TensorBase/TensorBase.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
@@ -233,8 +234,8 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     template <std::integral... Dims>
         requires(sizeof...(Dims) == Rank)
     GeneralTensor(std::string name, Dims... dims)
-        : _name{std::move(name)}, _impl(nullptr, std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...},
-                                        GlobalConfigMap::get_singleton().get_bool("row-major")) {
+        : _name{std::move(name)},
+          _impl(nullptr, std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...}, config::get(option::RowMajor)) {
         static_assert(Rank == sizeof...(dims), "Declared Rank does not match provided dims");
 
         // Resize the data structure
@@ -399,8 +400,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      *
      * @param other The tensor view to copy.
      */
-    GeneralTensor(TensorView<T, rank> const &other)
-        : _name{other.name()}, _impl(nullptr, other.dims(), GlobalConfigMap::get_singleton().get_bool("row-major")) {
+    GeneralTensor(TensorView<T, rank> const &other) : _name{other.name()}, _impl(nullptr, other.dims(), config::get(option::RowMajor)) {
         // Resize the data structure
         _storage->resize_owned(_impl.size());
 
@@ -462,7 +462,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
           // The pointer is never dereferenced; it just prevents TensorImpl::dim() from
           // returning 0, which it does when _ptr == nullptr.
           _impl(reinterpret_cast<T *>(0x1), std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...},
-                GlobalConfigMap::get_singleton().get_bool("row-major")) {
+                config::get(option::RowMajor)) {
         static_assert(Rank == sizeof...(dims), "Declared Rank does not match provided dims");
         // Do not allocate; storage is deferred until materialize().
         for (int i = 0; std::cmp_less(i, Rank); i++) {
@@ -1872,7 +1872,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
      * @param dims The dimensions of the view.
      */
     explicit TensorView(T const *data, Dim<Rank> const &dims)
-        : _impl(const_cast<T *>(data), dims, GlobalConfigMap::get_singleton().get_bool("row-major")), _parent{const_cast<T *>(data)} {
+        : _impl(const_cast<T *>(data), dims, config::get(option::RowMajor)), _parent{const_cast<T *>(data)} {
         _offsets.fill(0);
         _source_dims = dims;
         for (int i = 0; std::cmp_less(i, Rank); i++) {
@@ -1888,7 +1888,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
      * @param dims The dimensions of the view.
      */
     explicit TensorView(T *data, Dim<Rank> const &dims)
-        : _impl(const_cast<T *>(data), dims, GlobalConfigMap::get_singleton().get_bool("row-major")), _parent{const_cast<T *>(data)} {
+        : _impl(const_cast<T *>(data), dims, config::get(option::RowMajor)), _parent{const_cast<T *>(data)} {
         _offsets.fill(0);
         _source_dims = dims;
         for (int i = 0; std::cmp_less(i, Rank); i++) {

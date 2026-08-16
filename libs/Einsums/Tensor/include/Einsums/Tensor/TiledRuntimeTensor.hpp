@@ -15,6 +15,7 @@
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/HashFunctions.hpp>
+#include <Einsums/TensorBase/Options.hpp>
 #include <Einsums/TensorBase/TensorBase.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
 
@@ -154,7 +155,7 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
     }
 
     APIARY_EXPOSE TiledRuntimeTensor(std::string name, std::vector<std::vector<int>> tile_sizes)
-        : TiledRuntimeTensor(std::move(name), std::move(tile_sizes), GlobalConfigMap::get_singleton().get_bool("row-major")) {}
+        : TiledRuntimeTensor(std::move(name), std::move(tile_sizes), config::get(option::RowMajor)) {}
 
     TiledRuntimeTensor(TiledRuntimeTensor const &)            = default;
     TiledRuntimeTensor(TiledRuntimeTensor &&)                 = default;

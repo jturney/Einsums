@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/DiskTensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
@@ -198,7 +199,7 @@ TEMPLATE_TEST_CASE("Disk direct products", "[linear-algebra]", float, double, st
     using namespace einsums;
     using namespace einsums::linear_algebra;
 
-    GlobalConfigMap::get_singleton().set_string("work-buffer-size", "1024");
+    config::set(option::WorkBufferSize, std::string("1024"));
 
     SECTION("Rank 1 tensors") {
         constexpr int size = 2000;

@@ -7,10 +7,10 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(TensorBaseHeaders Einsums/TensorBase/Common.hpp Einsums/TensorBase/IndexUtilities.hpp
                       Einsums/TensorBase/SymmetryDescriptor.hpp Einsums/TensorBase/TensorBase.hpp
-                      Einsums/TensorBase/HashFunctions.hpp
+                      Einsums/TensorBase/HashFunctions.hpp Einsums/TensorBase/Options.hpp
 )
 
-set(TensorBaseSources IndexUtilities.cpp SymmetryDescriptor.cpp)
+set(TensorBaseSources IndexUtilities.cpp Options.cpp SymmetryDescriptor.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -18,6 +18,6 @@ einsums_add_module(
   SOURCES ${TensorBaseSources}
   HEADERS ${TensorBaseHeaders}
   DEPENDENCIES
-  MODULE_DEPENDENCIES Einsums_Errors Einsums_StringUtil Einsums_Iterator
+  MODULE_DEPENDENCIES Einsums_CommandLine Einsums_Errors Einsums_StringUtil Einsums_Iterator
   CMAKE_SUBDIRS examples tests
 )

@@ -7,6 +7,7 @@
 #include <Einsums/Tensor/DiskTensor.hpp>
 #include <Einsums/Tensor/InitModule.hpp>
 #include <Einsums/Tensor/ModuleVars.hpp>
+#include <Einsums/Tensor/Options.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 
 #include <H5Tpublic.h>
@@ -40,10 +41,7 @@ TEST_CASE("File opening and closing") {
         H5Tclose(singleton.float_complex_type);
     }
 
-    auto &global_config = GlobalConfigMap::get_singleton();
-
-    auto fname = std::filesystem::path(global_config.get_string("scratch-dir"));
-    fname /= global_config.get_string("hdf5-file-name");
+    auto const fname = hdf5_scratch_path();
 
     open_hdf5_file(fname.string());
 

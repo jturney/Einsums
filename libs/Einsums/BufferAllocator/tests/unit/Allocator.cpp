@@ -5,18 +5,14 @@
 
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
 #include <Einsums/BufferAllocator/ModuleVars.hpp>
+#include <Einsums/BufferAllocator/Options.hpp>
 
 #include <Einsums/Testing.hpp>
 
 TEMPLATE_TEST_CASE("Allocations", "[memory]", double, void, std::complex<double>) {
     using namespace einsums;
 
-    {
-        auto &config = GlobalConfigMap::get_singleton();
-        auto  lock   = std::lock_guard(config);
-
-        config.get_string_map()->get_value()["buffer-size"] = "32MB"; // Set to a reasonable number of bytes.
-    }
+    config::set(option::BufferSize, std::string("32MB")); // A reasonable number of bytes.
 
     SECTION("Big allocations") {
         BufferAllocator<TestType> alloc;
@@ -42,15 +38,9 @@ TEMPLATE_TEST_CASE("Allocations", "[memory]", double, void, std::complex<double>
     }
 
     SECTION("Small allocations") {
-        auto &config = GlobalConfigMap::get_singleton();
+        auto const hold_str = config::get(option::BufferSize);
 
-        auto hold_str = config.get_string("buffer-size");
-
-        {
-            auto lock = std::lock_guard(config);
-
-            config.get_string_map()->get_value()["buffer-size"] = "1024"; // Set to some small number of bytes.
-        }
+        config::set(option::BufferSize, std::string("1024")); // Some small number of bytes.
 
         BufferAllocator<TestType> alloc;
 
@@ -66,26 +56,16 @@ TEMPLATE_TEST_CASE("Allocations", "[memory]", double, void, std::complex<double>
 
         REQUIRE_THROWS(ptr = alloc.allocate(1025));
 
-        {
-            auto lock = std::lock_guard(config);
-
-            config.get_string_map()->get_value()["buffer-size"] = hold_str; // Set to some small number of bytes.
-        }
+        config::set(option::BufferSize, hold_str);
     }
 }
 
 TEMPLATE_TEST_CASE("Vector", "[memory]", int, double, std::complex<double>) {
     using namespace einsums;
 
-    auto &config = GlobalConfigMap::get_singleton();
+    auto const hold_str = config::get(option::BufferSize);
 
-    auto hold_str = config.get_string("buffer-size");
-
-    {
-        auto lock = std::lock_guard(config);
-
-        config.get_string_map()->get_value()["buffer-size"] = "1024"; // Set to some small number of bytes.
-    }
+    config::set(option::BufferSize, std::string("1024")); // Some small number of bytes.
 
     // First, check for the new value of the buffer size.
     auto &vars = detail::Einsums_BufferAllocator_vars::get_singleton();

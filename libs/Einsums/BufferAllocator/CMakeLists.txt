@@ -6,7 +6,8 @@
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(BufferAllocatorHeaders
-    Einsums/BufferAllocator/InitModule.hpp Einsums/BufferAllocator/ModuleVars.hpp
+    Einsums/BufferAllocator/InitModule.hpp
+    Einsums/BufferAllocator/Options.hpp Einsums/BufferAllocator/ModuleVars.hpp
     Einsums/BufferAllocator/BufferAllocator.hpp
 )
 

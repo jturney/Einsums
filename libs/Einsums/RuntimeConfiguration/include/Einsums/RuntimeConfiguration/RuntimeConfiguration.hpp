@@ -37,6 +37,17 @@ EINSUMS_NAMESPACE_BEGIN()
  *
  * @versionadded{2.0.0}
  */
+/**
+ * @brief The directory Einsums was installed into, derived from the running
+ *        executable's path.
+ *
+ * A fact about the process rather than something a user configures, so it is a
+ * function rather than an option.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT std::string executable_prefix();
+
 inline int current_process_id() {
 #if defined(EINSUMS_WINDOWS)
     return _getpid();
@@ -54,18 +65,13 @@ inline int current_process_id() {
  *
  * @code
  * void add_Einsums_BufferAllocator_arguments() {
- *     // Get the config maps for making the options available to the program.
- *     auto &global_config = GlobalConfigMap::get_singleton();
- *     auto &global_string = global_config.get_string_map()->get_value();
+ *     // The descriptors in Einsums/BufferAllocator/Options.hpp carry the
+ *     // names, help, and defaults; registration is all that is left here.
+ *     cl::register_option(option::BufferSize);
+ *     cl::register_option(option::WorkBufferSize);
  *
- *     // Add the argument.
- *     static cl::OptionCategory   bufferCategory("Buffer Allocator");
- *     static cl::Opt<std::string> bufferSize("einsums:buffer-size", {}, "Total size of buffers allocated for tensor contractions",
- *                                            bufferCategory, cl::Location(global_string["buffer-size"]),
- *                                            cl::Default(std::string("4MB")));
- *
- *     // Attach an observer to look for changes to this argument.
- *     global_config.attach(detail::Einsums_BufferAllocator_vars::update_max_size);
+ *     // Attach an observer to look for changes to these options.
+ *     GlobalConfigMap::get_singleton().attach(detail::Einsums_BufferAllocator_vars::update_max_size);
  * }
  * @endcode
  *

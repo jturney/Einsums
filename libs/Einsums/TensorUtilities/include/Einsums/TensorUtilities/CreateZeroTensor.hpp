@@ -11,6 +11,7 @@
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/Common.hpp>
+#include <Einsums/TensorBase/Options.hpp>
 
 #include <concepts>
 #include <string>
@@ -50,7 +51,7 @@ template <typename T = double, typename... MultiIndex>
 auto create_zero_tensor(std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     EINSUMS_LOG_TRACE("creating zero tensor {}, {}", name, std::forward_as_tuple(index...));
 
-    Tensor<T, sizeof...(MultiIndex)> A(GlobalConfigMap::get_singleton().get_bool("row-major"), name, std::forward<MultiIndex>(index)...);
+    Tensor<T, sizeof...(MultiIndex)> A(config::get(option::RowMajor), name, std::forward<MultiIndex>(index)...);
     return A;
 }
 

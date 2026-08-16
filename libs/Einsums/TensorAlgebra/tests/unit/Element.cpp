@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -14,12 +15,7 @@ TEMPLATE_TEST_CASE("element transform", "[tensor_algebra]", float, double, std::
     using namespace einsums::tensor_algebra;
     using namespace einsums::index;
 
-    {
-        auto &singleton = GlobalConfigMap::get_singleton();
-        singleton.lock();
-        singleton.set_string("buffer-size", "1GB");
-        singleton.unlock();
-    }
+    config::set(option::BufferSize, std::string("1GB"));
 
     SECTION("tensor") {
         Tensor A     = create_random_tensor<TestType>("A", 32, 32, 32, 32);

@@ -180,10 +180,12 @@ detail::OptionEntry *register_value_option(ConfigOption<T> &opt, Map &map) {
     auto const key  = derive_key(opt.name);
     T *const   slot = &map[key];
 
-    auto option           = std::make_unique<Opt<T>>(opt.name, std::initializer_list<char>{}, opt.help, cat);
-    option->bound         = slot;
-    option->value         = T(opt.default_value);
-    option->default_value = T(opt.default_value);
+    auto option   = std::make_unique<Opt<T>>(opt.name, std::initializer_list<char>{}, opt.help, cat);
+    option->bound = slot;
+    // A default that could not be written down at compile time is asked for
+    // here, once, at the moment the option gains a value.
+    option->value         = opt.default_provider != nullptr ? opt.default_provider() : T(opt.default_value);
+    option->default_value = option->value;
     option->has_default   = true;
     if (opt.range.has_value()) {
         option->range = *opt.range;
@@ -325,19 +327,31 @@ std::string dynamic_string(std::string const &key, std::string const &default_va
     return GlobalConfigMap::get_singleton().get_string(key, default_value);
 }
 
+/*
+ * A write has to notify: a module that derived state from an option when it
+ * was parsed (the buffer allocator turning "4MB" into a byte count, say) is
+ * only correct afterwards if it hears about the new value. Going through the
+ * map's lock scope is what fires the observers, and is the phase-1 stand-in
+ * for the registry's own Setter callbacks. A bare set_* skipped it, which is
+ * why writes from tests looked like they did nothing.
+ */
 void set_dynamic_bool(std::string const &key, bool value) {
+    GlobalConfigMapLockScope const scope;
     GlobalConfigMap::get_singleton().set_bool(key, value);
 }
 
 void set_dynamic_int(std::string const &key, std::int64_t value) {
+    GlobalConfigMapLockScope const scope;
     GlobalConfigMap::get_singleton().set_int(key, value);
 }
 
 void set_dynamic_double(std::string const &key, double value) {
+    GlobalConfigMapLockScope const scope;
     GlobalConfigMap::get_singleton().set_double(key, value);
 }
 
 void set_dynamic_string(std::string const &key, std::string const &value) {
+    GlobalConfigMapLockScope const scope;
     GlobalConfigMap::get_singleton().set_string(key, value);
 }
 

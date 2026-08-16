@@ -102,6 +102,11 @@ struct ConfigOption {
     std::optional<Range> range{};
     /// Keep the option out of `--help`.
     bool hidden = false;
+    /// A default that cannot be written down at compile time - a temp
+    /// directory, a name carrying the process id. When set it wins over
+    /// @ref default_value, which stays the fallback for a read that beats
+    /// registration.
+    value_type (*default_provider)() = nullptr;
 
     /// Filled in by registration; read by the accessors. Null until the owning
     /// module registers the option.
@@ -127,6 +132,19 @@ constexpr ConfigOption<T> config_opt(std::string_view name, std::string_view hel
                            .kind          = OptionKind::Value,
                            .value_name    = value_name,
                            .range         = range};
+}
+
+/// Declare a value option whose default is only knowable at run time, such as
+/// the system temporary directory or a name built from the process id.
+template <typename T>
+constexpr ConfigOption<T> config_opt_computed(std::string_view name, std::string_view help, std::string_view category, T (*provider)(),
+                                              std::string_view value_name = {}) {
+    return ConfigOption<T>{.name             = name,
+                           .help             = help,
+                           .category         = category,
+                           .kind             = OptionKind::Value,
+                           .value_name       = value_name,
+                           .default_provider = provider};
 }
 
 /**
@@ -196,6 +214,9 @@ T get(cl::ConfigOption<T> const &opt) {
     } else if constexpr (std::is_same_v<T, double>) {
         return detail::read_double(entry, opt.name, opt.default_value);
     } else if constexpr (std::is_same_v<T, std::string>) {
+        if (entry == nullptr && opt.default_provider != nullptr) {
+            return opt.default_provider();
+        }
         return detail::read_string(entry, opt.name, opt.default_value);
     } else {
         static_assert(cl::detail::always_false<T>, "config::get supports bool, std::int64_t, double, and std::string options.");

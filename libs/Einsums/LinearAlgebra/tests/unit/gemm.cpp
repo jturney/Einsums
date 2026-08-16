@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/Config/Types.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateIncrementedTensor.hpp>
@@ -232,13 +233,7 @@ TEMPLATE_TEST_CASE("Disk gemm", "[linear-algebra]", double, std::complex<double>
     A_disk.write(A);
     B_disk.write(B);
 
-    {
-        auto &singleton = einsums::GlobalConfigMap::get_singleton();
-
-        auto lock = std::lock_guard(singleton);
-
-        singleton.set_string("buffer-size", "4GB");
-    }
+    config::set(option::BufferSize, std::string("4GB"));
 
     SECTION("nn") {
         gemm('n', 'n', TestType{1.0}, A, B, TestType{0.0}, &C);

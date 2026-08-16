@@ -10,6 +10,7 @@
 #include <Einsums/Tensor/TensorForward.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
+#include <Einsums/TensorBase/Options.hpp>
 
 #include <complex>
 #include <concepts>
@@ -86,7 +87,7 @@ auto create_incremented_tensor(RowMajor row_major, std::string const &name, Mult
  */
 template <typename T = double, typename... MultiIndex>
 auto create_incremented_tensor(std::string const &name, MultiIndex &&...index) -> Tensor<T, sizeof...(MultiIndex)> {
-    return create_incremented_tensor<T>(GlobalConfigMap::get_singleton().get_bool("row-major"), name, std::forward<MultiIndex>(index)...);
+    return create_incremented_tensor<T>(config::get(option::RowMajor), name, std::forward<MultiIndex>(index)...);
 }
 
 EINSUMS_NAMESPACE_END()

@@ -6,6 +6,7 @@
 #include <Einsums/BlockManager/BlockManager.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
 #include <Einsums/BufferAllocator/ModuleVars.hpp>
+#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/Config/Types.hpp>
 
 #include <mutex>
@@ -16,12 +17,10 @@ TEST_CASE("Block manager") {
     using namespace einsums;
 
     // Set the max buffer size to 4MB.
-    {
-        auto &singleton = GlobalConfigMap::get_singleton();
-        auto  lock      = std::lock_guard(singleton);
-        singleton.set_string("gpu_buffer_size", "4MB");
-        singleton.set_string("buffer_size", "4MB");
-    }
+    config::set(option::BufferSize, std::string("4MB"));
+    // gpu-buffer-size has no descriptor: nothing registers it and nothing but
+    // this test writes it, so it stays on the dynamic-key API.
+    config::set_dynamic<std::string>("gpu-buffer-size", "4MB");
 
     // Get the manager.
     auto &manager = BlockManager::get_singleton();

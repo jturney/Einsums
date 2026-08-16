@@ -80,13 +80,12 @@ std::string get_executable_filename() {
     return r;
 }
 
-std::string get_executable_prefix() {
-    std::filesystem::path const p(get_executable_filename());
-    std::string                 prefix = p.parent_path().parent_path().string();
-
-    return prefix;
-}
 } // namespace
+
+std::string executable_prefix() {
+    std::filesystem::path const p(get_executable_filename());
+    return p.parent_path().parent_path().string();
+}
 
 void register_arguments(std::function<void()> const &func) {
     auto                  &argument_list = ArgumentList::get_singleton();
@@ -97,52 +96,14 @@ void register_arguments(std::function<void()> const &func) {
 
 void RuntimeConfiguration::pre_initialize() {
     /*
-     * This routine will eventually contain a "master" yaml template that
-     * will include all the default settings for Einsums and its subsystems.
+     * This routine will eventually read a "master" yaml template carrying the
+     * default settings for Einsums and its subsystems.
      *
-     * Once a yaml or some other file settings format is decided on and brought
-     * in that file will be used after initially using this one.
+     * The process id and the install prefix used to be written into the config
+     * maps here. They are facts about the running process, not options anyone
+     * sets, so they are current_process_id() and executable_prefix() instead;
+     * nothing read them through the map.
      */
-    std::vector<std::string> const lines = {
-        // clang-format off
-        "system:",
-        "    pid: " + std::to_string(current_process_id()),
-        "    executable_prefix: " + get_executable_prefix(),
-        "einsums:",
-        "    master_yaml_file: ${system.executable_prefix}",
-        "    "
-        // clang-format on
-    };
-
-    /*
-     * Acquire locks for the different maps.
-     *
-     * Use std::lock_guard on the GlobalConfigMap itself rather than
-     * std::scoped_lock over the four sub-maps. GlobalConfigMap::lock() takes
-     * the sub-maps in a fixed order (str -> int -> double -> bool), which
-     * matches every other call site that holds the four maps simultaneously
-     * (e.g. add_Einsums_Tensor_arguments in Tensor/src/InitModule.cpp).
-     * std::scoped_lock would dispatch to std::lock's deadlock-avoidance
-     * algorithm, which acquires in a *dynamic* order; TSan then sees two
-     * incompatible acquisition orders for the same four mutexes and reports
-     * a (real but harmless under std::lock) lock-order inversion. Going
-     * through the canonical fixed order keeps all call sites consistent.
-     */
-    auto                  &global_config  = GlobalConfigMap::get_singleton();
-    auto                  &global_strings = global_config.get_string_map()->get_value();
-    auto                  &global_ints    = global_config.get_int_map()->get_value();
-    auto                  &global_doubles = global_config.get_double_map()->get_value();
-    auto                  &global_bools   = global_config.get_bool_map()->get_value();
-    std::scoped_lock const lock(global_config);
-
-    // For now set the values to their default values.
-    global_strings["executable-prefix"] = get_executable_prefix();
-    global_ints["pid"]                  = current_process_id();
-
-    // Silence unused-variable warnings for the references we only kept around
-    // for symmetry with the rest of the module.
-    (void)global_doubles;
-    (void)global_bools;
 }
 
 // NOLINTNEXTLINE(modernize-avoid-c-arrays)
