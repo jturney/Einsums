@@ -253,6 +253,9 @@ TEST_CASE("WidthBudget - an all-wide graph runs one node at a time", "[ComputeGr
     // the budget is a serial one. It must be found without a deadlock and
     // without oversubscribing.
     unsigned const p = machine_threads();
+    if (p < 2) {
+        SKIP("the whole machine is width 1 here, which the executor does not ration, so there is no serialization to observe");
+    }
 
     auto &budget = WidthBudget::get_singleton();
     budget.reset_peak();
@@ -422,14 +425,19 @@ TEST_CASE("WidthBudget - a plan for another machine is not used", "[ComputeGraph
     // wrong one. The executor runs every node at width 1 instead, which is the
     // one plan that is right on every machine.
     unsigned const p = machine_threads();
+    if (p < 3) {
+        SKIP("a telltale width has to be neither the machine's nor the width-1 fallback's, which needs three threads");
+    }
 
     auto &budget = WidthBudget::get_singleton();
     budget.reset_peak();
     cg::reset_stale_thread_plan_fallbacks();
 
     // A width no thread in the process already has, so observing it can only
-    // mean the plan was honored.
-    unsigned const   telltale = p == 4 ? 3 : 4;
+    // mean the plan was honored. It has to be a width the budget can actually
+    // grant, so it is read off this machine rather than written down: p itself
+    // is what the threads already have and 1 is what the fallback runs at.
+    unsigned const   telltale = p - 1;
     std::atomic<int> observed{-1};
 
     cg::Graph graph("stale_plan");

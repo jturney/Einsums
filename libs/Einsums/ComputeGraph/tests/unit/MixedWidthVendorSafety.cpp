@@ -230,9 +230,6 @@ void mirror_inputs(std::vector<Chain> const &from, std::vector<Chain> &to) {
 
 TEST_CASE("MixedWidthVendorSafety - mixed widths never corrupt a vendor contraction", "[ComputeGraph][Executor][ThreadWidth]") {
     unsigned const p = machine_threads();
-    if (p < 4) {
-        SKIP("mixed widths need at least four threads to be mixed");
-    }
 
     std::vector<Chain> reference;
     std::vector<Chain> trial;
@@ -267,6 +264,14 @@ TEST_CASE("MixedWidthVendorSafety - mixed widths never corrupt a vendor contract
         INFO(
             fmt::format("width 1: chain {} differs in {} of {} elements, worst |diff| {:.3e}", bad.chain, bad.wrong, bad.total, bad.worst));
         REQUIRE_FALSE(bad.any);
+    }
+
+    // Two widths clamped to a machine of fewer than three threads are the same
+    // width, so there is nothing left to mix. The width-1 leg above still ran,
+    // which is why this returns rather than skipping the case.
+    if (p < 3) {
+        WARN("mixed widths need at least three threads to be mixed; only the width-1 leg ran");
+        return;
     }
 
     // The configuration that used to corrupt. Widths are clamped to the machine
