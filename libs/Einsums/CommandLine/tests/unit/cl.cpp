@@ -665,3 +665,108 @@ TEST_CASE("Help text reports defaults and environment variables", "[help]") {
     REQUIRE(help.find("(default: no)") != std::string::npos);
     REQUIRE(help.find("[env: T19_QUIET]") == std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Descriptors: one declaration carrying the name, help, type, and default.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Derived spellings", "[descriptor]") {
+    REQUIRE(derive_key("einsums:log:level") == "log-level");
+    REQUIRE(derive_key("einsums:buffer-size") == "buffer-size");
+    REQUIRE(derive_key("einsums:graph:profile-groups") == "graph-profile-groups");
+    REQUIRE(derive_key("bare-name") == "bare-name");
+
+    REQUIRE(derive_negated_name("einsums:debug:attach-debugger") == "einsums:debug:no-attach-debugger");
+    REQUIRE(derive_negated_name("bare") == "no-bare");
+}
+
+TEST_CASE("A descriptor read before registration yields its declared default", "[descriptor]") {
+    CLITestFixture _;
+
+    ConfigOption<bool>        flag = config_flag("t20:unregistered-flag", "never registered", "T20", true);
+    ConfigOption<std::string> text = config_opt<std::string>("t20:unregistered-text", "never registered", "T20", "fallback");
+
+    REQUIRE(einsums::config::get(flag) == true);
+    REQUIRE(einsums::config::get(text) == "fallback");
+    REQUIRE_FALSE(einsums::config::try_get(flag).has_value());
+}
+
+TEST_CASE("A registered descriptor reads what the command line supplied", "[descriptor]") {
+    CLITestFixture _;
+
+    ConfigOption<bool>         verbose = config_flag("t21:verbose", "chatty", "T21", false);
+    ConfigOption<bool>         guard   = config_flag("t21:guard", "on unless told otherwise", "T21", true);
+    ConfigOption<std::int64_t> level   = config_opt<std::int64_t>("t21:level", "how loud", "T21", 3, "N", RangeBetween(0, 9));
+    ConfigOption<std::string>  name    = config_opt<std::string>("t21:name", "what to call it", "T21", "anonymous");
+
+    register_option(verbose);
+    register_option(guard);
+    register_option(level);
+    register_option(name);
+
+    SECTION("Nothing on the command line -> the declared defaults") {
+        auto args = to_args({"prog"});
+        REQUIRE(parse(args).ok);
+        REQUIRE(einsums::config::get(verbose) == false);
+        REQUIRE(einsums::config::get(guard) == true);
+        REQUIRE(einsums::config::get(level) == 3);
+        REQUIRE(einsums::config::get(name) == "anonymous");
+    }
+
+    SECTION("The generated negation turns a default-true flag off") {
+        auto args = to_args({"prog", "--t21:no-guard"});
+        REQUIRE(parse(args).ok);
+        REQUIRE(einsums::config::get(guard) == false);
+    }
+
+    SECTION("The positive spelling turns a default-false flag on") {
+        auto args = to_args({"prog", "--t21:verbose"});
+        REQUIRE(parse(args).ok);
+        REQUIRE(einsums::config::get(verbose) == true);
+        REQUIRE(einsums::config::try_get(verbose).value_or(false) == true);
+    }
+
+    SECTION("Values parse and range-check through the descriptor") {
+        auto args = to_args({"prog", "--t21:level", "7", "--t21:name", "einsums"});
+        REQUIRE(parse(args).ok);
+        REQUIRE(einsums::config::get(level) == 7);
+        REQUIRE(einsums::config::get(name) == "einsums");
+
+        auto bad = to_args({"prog", "--t21:level", "42"});
+        REQUIRE_FALSE(parse(bad).ok);
+    }
+
+    SECTION("Naming both halves of a generated pair is a contradiction") {
+        auto args = to_args({"prog", "--t21:guard", "--t21:no-guard"});
+        REQUIRE_FALSE(parse(args).ok);
+    }
+}
+
+TEST_CASE("A descriptor reads the environment under its derived name", "[descriptor][env]") {
+    CLITestFixture _;
+    Registry::instance().set_env_prefix("T22");
+
+    ConfigOption<std::int64_t> level = config_opt<std::int64_t>("t22:level", "how loud", "T22", 1, "N");
+    register_option(level);
+
+    ScopedEnv const env{"T22_LEVEL", "5"};
+
+    auto args = to_args({"prog"});
+    REQUIRE(parse(args).ok);
+    REQUIRE(einsums::config::get(level) == 5);
+}
+
+TEST_CASE("Help lists the positive spelling and points at its negation", "[descriptor][help]") {
+    CLITestFixture _;
+
+    ConfigOption<bool> guard = config_flag("t23:guard", "keep the guard on", "T23", true);
+    register_option(guard);
+
+    auto const help = format_help("prog");
+
+    REQUIRE(help.find("--t23:guard") != std::string::npos);
+    REQUIRE(help.find("(default: true)") != std::string::npos);
+    REQUIRE(help.find("[negate: --t23:no-guard]") != std::string::npos);
+    // The negation itself is hidden, so the table does not list every flag twice.
+    REQUIRE(help.find("  --t23:no-guard ") == std::string::npos);
+}

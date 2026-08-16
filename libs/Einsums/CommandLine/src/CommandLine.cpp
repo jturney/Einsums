@@ -308,11 +308,15 @@ bool Flag::parse_token(std::string_view, std::optional<std::string_view> val, st
 HelpEntry Flag::help_entry() const {
     // Only a flag that is already on says anything worth printing. "off
     // unless you pass it" is what a flag means, so stating it is noise.
-    std::string const shown = default_value ? "true" : "";
+    std::string const shown       = default_value ? "true" : "";
+    auto              annotations = format_annotations(shown);
+    if (!extra_annotation.empty()) {
+        annotations.push_back(extra_annotation);
+    }
     return HelpEntry{.invocation  = detail::long_invocation(long_name),
                      .shorts      = format_shorts(),
                      .description = help,
-                     .annotations = format_annotations(shown)};
+                     .annotations = std::move(annotations)};
 }
 
 bool Flag::get() const {

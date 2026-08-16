@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/CommandLine/Get.hpp>
 #include <Einsums/CommandLine/Source.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
@@ -479,6 +480,10 @@ struct EINSUMS_EXPORT Flag : OptionBase {
     /// The declared default, kept apart from `value` so that help text reports
     /// what the option defaults to rather than what it currently holds.
     bool default_value = false;
+    /// One more `--help` note, appended after the default and env annotations.
+    /// A generated flag pair uses it to point at its `--no-` twin, which is
+    /// hidden so the table does not list every flag twice.
+    std::string extra_annotation;
 
     template <typename... Args>
     Flag(std::string_view longName, std::initializer_list<char> shorts, std::string_view helpText, Args &&...args)
@@ -1009,6 +1014,40 @@ struct EINSUMS_EXPORT Alias : OptionBase {
                       "Unsupported argument to Alias. Accepted: OptionCategory&, Visibility, Occurrence, a preset value string.");
     }
 };
+
+// -------------------------- Descriptor registration ----------------------- //
+
+/**
+ * @brief Give a descriptor its command-line, environment, and config presence.
+ *
+ * Builds the option objects the parser needs from the one declaration in the
+ * descriptor: the long name and help go straight through, the config key and
+ * environment variable derive from the name, and a boolean descriptor also
+ * gets the `--no-` spelling of itself so a default-true flag needs no
+ * hand-written negation. Registering twice is a no-op.
+ *
+ * Call it from the owning module's argument-registration hook; the option
+ * objects it creates live until the process exits.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT void register_option(ConfigOption<bool> &opt);
+EINSUMS_EXPORT void register_option(ConfigOption<std::int64_t> &opt);
+EINSUMS_EXPORT void register_option(ConfigOption<double> &opt);
+EINSUMS_EXPORT void register_option(ConfigOption<std::string> &opt);
+
+/**
+ * @brief Assert that nothing registered so far contradicts anything else.
+ *
+ * Two descriptors resolving to one config key, or a key that does not derive
+ * from the name it was registered under, are the failures the old
+ * string-keyed system swallowed silently. In a release build this does
+ * nothing. Call it once, after every registration hook has run and before the
+ * parse.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT void verify_registered_options();
 
 // -------------------------- Built-ins ------------------------------------- //
 

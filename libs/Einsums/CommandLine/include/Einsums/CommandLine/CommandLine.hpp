@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/CommandLine/Declare.hpp>
+#include <Einsums/CommandLine/Get.hpp>
 #include <Einsums/CommandLine/Parse.hpp>
 #include <Einsums/CommandLine/Source.hpp>
 
@@ -18,6 +19,7 @@
  * Prefer the piece you actually need:
  *
  *   Source.hpp   the vocabulary types; everyone gets these transitively
+ *   Get.hpp      descriptors and typed reads - what a consuming module wants
  *   Declare.hpp  the option types and named-argument tags - registration TUs
  *   Parse.hpp    argv walking, config files, help rendering - the init driver
  */

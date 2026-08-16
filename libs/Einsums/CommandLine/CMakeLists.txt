@@ -5,11 +5,15 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(CommandLineHeaders Einsums/CommandLine/Source.hpp Einsums/CommandLine/Declare.hpp Einsums/CommandLine/Parse.hpp
-                       Einsums/CommandLine/CommandLine.hpp
+set(CommandLineHeaders
+    Einsums/CommandLine/Source.hpp
+    Einsums/CommandLine/Get.hpp
+    Einsums/CommandLine/Declare.hpp
+    Einsums/CommandLine/Parse.hpp
+    Einsums/CommandLine/CommandLine.hpp
 )
 
-set(CommandLineSources CommandLine.cpp)
+set(CommandLineSources CommandLine.cpp Options.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
