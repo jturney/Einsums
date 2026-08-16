@@ -15,6 +15,7 @@
 
 #include <Einsums/Config/ABI.hpp>
 #include <Einsums/Options/Get.hpp>
+#include <Einsums/Options/Parse.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
 #include <Einsums/Utilities/SetEnv.hpp>
@@ -24,7 +25,10 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>
 #include <pybind11/stl.h> // std::vector<std::string> caster for the cli_options argument
+#include <set>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Auto-generated header: declares ``apiary_register_<Module>(py::module_ &)``
@@ -36,103 +40,125 @@ namespace py = pybind11;
 
 namespace {
 
+// The Python attribute name an option's command-line name maps to: drop a
+// leading ``einsums:``, then turn every ``:`` and ``-`` into an underscore.
+// So ``einsums:profile:report`` is ``profile_report`` and ``einsums:row-major``
+// is ``row_major``. It is the only relationship between the two spellings, and
+// einsums/rc.py is generated from the same rule.
+std::string rc_attribute_name(std::string_view long_name) {
+    constexpr std::string_view prefix = "einsums:";
+
+    std::string_view rest = long_name;
+    if (rest.starts_with(prefix)) {
+        rest.remove_prefix(prefix.size());
+    }
+
+    std::string out(rest);
+    for (char &c : out) {
+        if (c == ':' || c == '-') {
+            c = '_';
+        }
+    }
+    return out;
+}
+
+// An integer setting, whether it was written as a plain int or as one of
+// rc.py's enums (``LogLevel.INFO``). An Enum member carries the number in
+// ``.value``; a plain int has no such attribute.
+std::int64_t rc_int_value(py::object const &v) {
+    py::object const n = py::hasattr(v, "value") ? v.attr("value") : v;
+    return n.cast<std::int64_t>();
+}
+
+// Every field in rc.py carries a type annotation and nothing else in the module
+// does, so the annotations are exactly the option surface plus ``threads``. A
+// name the registry does not claim is therefore a field describing an option
+// that no longer exists - the drift this whole path was written to prevent - so
+// it is refused loudly rather than skipped in silence, which is what the
+// hand-written mapping used to do.
+void reject_unknown_rc_fields(py::module_ const &rc, std::set<std::string> const &claimed) {
+    if (!py::hasattr(rc, "__annotations__")) {
+        return;
+    }
+    py::dict const annotations = rc.attr("__annotations__");
+
+    std::string orphans;
+    for (auto const item : annotations) {
+        auto const name = item.first.cast<std::string>();
+        // ``threads`` is not an option: it has no flag and routes through
+        // OMP_NUM_THREADS, see apply_threads_from_rc.
+        if (name == "threads" || name.starts_with("_") || claimed.contains(name)) {
+            continue;
+        }
+        if (!orphans.empty()) {
+            orphans += ", ";
+        }
+        orphans += name;
+    }
+
+    if (!orphans.empty()) {
+        throw std::runtime_error("einsums.rc declares field(s) no registered option claims: " + orphans +
+                                 ". rc.py is generated from the option descriptors; regenerate it "
+                                 "(build the PyEinsums target) or remove the stale field.");
+    }
+}
+
 // Translate the user's einsums.rc settings into the argv vector that
-// einsums::initialize expects. Unknown / None entries are skipped so the
-// C++ runtime falls back to its built-in defaults. The exact CLI flag
-// spellings are runtime-internal to keep this mapping in lockstep with
-// libs/Einsums/Runtime configuration.
+// einsums::initialize expects.
 //
-// Per-category block layout mirrors the runtime's option categories. Each
-// spelling below matches a descriptor in the owning module's Options.hpp:
-// Einsums/Runtime/Options.hpp, Einsums/Profile/Options.hpp, and so on.
+// There is no table here on purpose. The registry already knows every option's
+// name, kind, and value type, so this walks it and asks rc for the matching
+// attribute; a new descriptor reaches Python without anyone editing this file,
+// and a spelling cannot drift because there is only one of it.
 std::vector<std::string> argv_from_rc(py::module_ const &rc) {
     std::vector<std::string> argv;
     argv.emplace_back("einsums-python");
 
-    // Helper: append a string-valued ``--einsums:<flag>=<value>`` if the
-    // attribute is not None. Captures rc + argv by reference.
-    auto opt_string = [&](char const *attr, char const *flag) {
-        py::object const v = rc.attr(attr);
-        if (!v.is(py::none())) {
-            argv.emplace_back(std::string{"--einsums:"} + flag + "=" + v.cast<std::string>());
+    std::set<std::string> claimed;
+
+    for (auto const &opt : einsums::cl::registered_options()) {
+        std::string const attr = rc_attribute_name(opt.name);
+        claimed.insert(attr);
+
+        if (!py::hasattr(rc, attr.c_str())) {
+            continue;
         }
-    };
-    // Helper: append an integer-valued ``--einsums:<flag>=<int>`` if the
-    // attribute is not None.
-    auto opt_int = [&](char const *attr, char const *flag) {
-        py::object const v = rc.attr(attr);
-        if (!v.is(py::none())) {
-            argv.emplace_back(std::string{"--einsums:"} + flag + "=" + std::to_string(v.cast<int>()));
-        }
-    };
-    // Helper: append a presence-only flag. A flag carries its meaning in its
-    // presence, so ``False`` cannot be expressed by leaving it out - that is
-    // what ``None`` means. It asks for the negation instead, spelled by the
-    // runtime's own rule so the two cannot drift apart.
-    auto opt_flag = [&](char const *attr, char const *flag) {
-        py::object const v = rc.attr(attr);
-        if (v.is(py::none())) {
-            return;
-        }
-        std::string const name = std::string{"einsums:"} + flag;
-        argv.emplace_back("--" + (v.cast<bool>() ? name : einsums::cl::derive_negated_name(name)));
-    };
-    // Buffer Allocator
-    {
-        opt_string("buffer_size", "buffer-size");
-        opt_string("work_buffer_size", "work-buffer-size");
-    }
-
-    // ComputeGraph Passes
-    {
-        opt_string("pass_disable", "pass:disable");
-        opt_flag("pass_analyze", "pass:analyze");
-        opt_flag("pass_verbose", "pass:verbose");
-    }
-
-    // Debug
-    {
-        opt_flag("debug_install_signal_handlers", "debug:install-signal-handlers");
-        opt_flag("debug_attach_debugger", "debug:attach-debugger");
-        opt_flag("debug_diagnostics_on_terminate", "debug:diagnostics-on-terminate");
-        opt_flag("debug_crash_handler", "debug:crash-handler");
-        opt_string("debug_crash_dump_dir", "debug:crash-dump-dir");
-    }
-
-    // HPTT
-    { opt_string("hptt_selection_method", "hptt:selection-method"); }
-
-    // Logging
-    {
-        // Log level is a LogLevel enum on the Python side; extract .value
-        // for the integer the runtime parser expects.
-        py::object const loglevel = rc.attr("log_level");
-        if (!loglevel.is(py::none())) {
-            int const lv = loglevel.attr("value").cast<int>();
-            argv.emplace_back("--einsums:log:level=" + std::to_string(lv));
+        py::object const v = rc.attr(attr.c_str());
+        // ``None`` is "leave the runtime default alone", which is what an
+        // absent flag means, so nothing is emitted.
+        if (v.is_none()) {
+            continue;
         }
 
-        opt_string("log_destination", "log:destination");
-        opt_string("log_format", "log:format");
+        // A flag carries its meaning in its presence, so ``False`` cannot be
+        // expressed by leaving it out. It asks for the negation instead,
+        // spelled by the runtime's own rule so the two cannot drift apart.
+        if (opt.kind == einsums::cl::OptionKind::Flag) {
+            argv.emplace_back("--" + (v.cast<bool>() ? opt.name : opt.negated_name));
+            continue;
+        }
+
+        std::string rendered;
+        switch (opt.type) {
+        case einsums::cl::OptionType::String:
+            rendered = v.cast<std::string>();
+            break;
+        case einsums::cl::OptionType::Int:
+            rendered = std::to_string(rc_int_value(v));
+            break;
+        case einsums::cl::OptionType::Double:
+            rendered = std::to_string(v.cast<double>());
+            break;
+        case einsums::cl::OptionType::Bool:
+            rendered = v.cast<bool>() ? "true" : "false";
+            break;
+        }
+        // The ``--name=value`` form keeps a value with spaces in it one argv
+        // element, which the two-token form would not.
+        argv.emplace_back("--" + opt.name + "=" + rendered);
     }
 
-    // Profile
-    {
-        opt_flag("profile_report", "profile:report");
-        opt_string("profile_filename", "profile:filename");
-        opt_flag("profile_append", "profile:append");
-        opt_flag("profile_detailed", "profile:detailed");
-        opt_string("profile_save", "profile:save");
-        opt_int("profile_port", "profile:port");
-        opt_flag("profile_wait_for_viewer", "profile:wait-for-viewer");
-    }
-
-    // Tensor Options
-    {
-        opt_string("scratch_dir", "scratch-dir");
-        opt_string("hdf5_file_name", "hdf5-file-name");
-        opt_flag("delete_hdf5_files", "delete-hdf5-files");
-    }
+    reject_unknown_rc_fields(rc, claimed);
 
     return argv;
 }
@@ -199,6 +225,57 @@ PYBIND11_MODULE(_core, m) {
 
     m.def(
         "_is_initialized", []() { return einsums::is_running(); }, "Returns True if the einsums runtime has been initialized.");
+
+    // The registry as data, so a test can hold einsums/rc.py up against the
+    // descriptors it was generated from. rc.py is generated from the headers
+    // by a static parse and this comes from the running registry, so comparing
+    // the two catches a stale generated file as well as a drifted one.
+    m.def(
+        "_registered_options",
+        []() {
+            py::list out;
+            for (auto const &opt : einsums::cl::registered_options()) {
+                py::dict d;
+                d["name"]             = opt.name;
+                d["key"]              = opt.key;
+                d["attribute"]        = rc_attribute_name(opt.name);
+                d["negated_name"]     = opt.negated_name;
+                d["help"]             = opt.help;
+                d["category"]         = opt.category;
+                d["value_name"]       = opt.value_name;
+                d["kind"]             = opt.kind == einsums::cl::OptionKind::Flag ? "flag" : "value";
+                d["computed_default"] = opt.computed_default;
+                switch (opt.type) {
+                case einsums::cl::OptionType::Bool:
+                    d["type"]    = "bool";
+                    d["default"] = opt.default_bool;
+                    break;
+                case einsums::cl::OptionType::Int:
+                    d["type"]    = "int";
+                    d["default"] = opt.default_int;
+                    break;
+                case einsums::cl::OptionType::Double:
+                    d["type"]    = "float";
+                    d["default"] = opt.default_double;
+                    break;
+                case einsums::cl::OptionType::String:
+                    d["type"]    = "str";
+                    d["default"] = opt.default_string;
+                    break;
+                }
+                out.append(std::move(d));
+            }
+            return out;
+        },
+        "Every option a descriptor registered, as dicts: name, key, the einsums.rc\n"
+        "attribute it maps to, kind, value type, and declared default. The generated\n"
+        "``--no-`` twin of a flag is named by ``negated_name`` rather than listed.");
+
+    m.def(
+        "_argv_from_rc", []() { return argv_from_rc(py::module_::import("einsums.rc")); },
+        "The argv einsums.rc's current settings would start the runtime with.\n"
+        "Exposed so a test can check that every field reaches a real flag; calling it\n"
+        "has no effect on a runtime that is already up.");
 
     // --- sealed worlds ------------------------------------------------------
     //
