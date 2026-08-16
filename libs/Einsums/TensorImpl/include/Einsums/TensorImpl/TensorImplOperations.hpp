@@ -14,6 +14,7 @@
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
+#include <cmath>
 #include <type_traits>
 
 EINSUMS_NAMESPACE_BEGIN(detail)

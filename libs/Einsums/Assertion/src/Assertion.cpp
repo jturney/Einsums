@@ -11,6 +11,7 @@
 #include <Einsums/Version.hpp>
 
 #include <iostream>
+#include <sstream>
 
 EINSUMS_NAMESPACE_BEGIN(detail)
 

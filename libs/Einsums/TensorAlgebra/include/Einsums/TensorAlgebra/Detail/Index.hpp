@@ -12,6 +12,7 @@
 
 #include <cstdarg>
 #include <ostream>
+#include <tuple>
 #include <vector>
 
 // Including complex header defines "I" to be used with complex numbers. If we allow that then

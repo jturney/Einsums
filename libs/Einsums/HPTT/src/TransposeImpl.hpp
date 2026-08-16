@@ -42,8 +42,10 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <list>
 #include <memory>
+#include <ranges>
 #include <vector>
 #ifdef _OPENMP
 #    include <omp.h>

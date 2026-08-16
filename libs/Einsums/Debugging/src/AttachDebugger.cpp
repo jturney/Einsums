@@ -10,6 +10,7 @@
 
 #include <array>
 #include <iostream>
+#include <string>
 
 #if defined(EINSUMS_HAVE_UNISTD_H)
 #    include <unistd.h>

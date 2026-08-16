@@ -16,6 +16,7 @@
 #    include <fftw/fftw3.h>
 #elif defined(EINSUMS_HAVE_FFT_LIBRARY_FFTW3)
 #    include <fftw3.h>
+#    include <stdexcept>
 #else
 #    error Unable to find FFTW header.
 #endif

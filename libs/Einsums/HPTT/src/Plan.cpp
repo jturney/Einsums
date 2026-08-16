@@ -33,6 +33,7 @@
 #include <Einsums/Logging.hpp>
 
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 

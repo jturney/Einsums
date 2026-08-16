@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <complex>
 #include <cstddef>
+#include <utility>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
 

@@ -7,11 +7,14 @@
 
 #include <Einsums/Config/Namespace.hpp>
 
+#include <concepts>
 #include <cstdint>
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)

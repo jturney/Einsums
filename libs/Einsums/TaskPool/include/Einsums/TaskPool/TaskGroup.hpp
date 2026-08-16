@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 
 EINSUMS_NAMESPACE_BEGIN(task_pool)
 

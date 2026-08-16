@@ -10,6 +10,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Options/Source.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <functional>

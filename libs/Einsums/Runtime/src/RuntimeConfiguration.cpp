@@ -15,6 +15,7 @@
 #include <Einsums/TypeSupport/Singleton.hpp>
 #include <Einsums/Version.hpp>
 
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <vector>

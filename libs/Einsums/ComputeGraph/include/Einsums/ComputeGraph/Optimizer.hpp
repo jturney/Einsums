@@ -11,6 +11,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>

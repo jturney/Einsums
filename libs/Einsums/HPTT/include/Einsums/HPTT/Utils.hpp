@@ -37,6 +37,7 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <list>
 #include <vector>

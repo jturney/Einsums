@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <iosfwd>
+#include <ostream>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 

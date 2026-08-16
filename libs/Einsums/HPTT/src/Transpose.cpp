@@ -34,8 +34,10 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <list>
 #include <memory>

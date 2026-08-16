@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <deque>
 #include <forward_list>
+#include <functional>
 #include <list>
 #include <map>
 #include <set>

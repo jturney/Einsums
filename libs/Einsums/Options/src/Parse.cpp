@@ -9,8 +9,11 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
+#include <ranges>
 #include <set>
 #include <sstream>
 

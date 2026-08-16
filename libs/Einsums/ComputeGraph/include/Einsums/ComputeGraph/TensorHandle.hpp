@@ -18,6 +18,7 @@
 #include <Einsums/TensorBase/TensorBase.hpp>
 
 #include <cstddef>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <numeric>

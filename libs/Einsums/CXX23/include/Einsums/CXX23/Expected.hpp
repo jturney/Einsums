@@ -34,6 +34,7 @@
 
 #include <cassert>
 #include <concepts>
+#include <functional>
 #include <type_traits>
 #include <utility>
 #include <variant>

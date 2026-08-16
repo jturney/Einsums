@@ -25,8 +25,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <variant>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)

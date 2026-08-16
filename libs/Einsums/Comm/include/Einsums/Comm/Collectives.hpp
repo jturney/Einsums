@@ -14,6 +14,7 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 
 EINSUMS_NAMESPACE_BEGIN(comm)

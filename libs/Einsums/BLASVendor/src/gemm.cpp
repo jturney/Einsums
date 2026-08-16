@@ -12,6 +12,8 @@
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 
+#include <cctype>
+
 #include "Common.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(blas::vendor)

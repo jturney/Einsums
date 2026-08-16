@@ -17,6 +17,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <ranges>
 #include <set>
 #include <string>
 #include <unordered_map>

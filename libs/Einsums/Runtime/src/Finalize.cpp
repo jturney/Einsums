@@ -16,6 +16,7 @@
 
 #include <H5public.h>
 #include <cstdlib>
+#include <fstream>
 
 EINSUMS_NAMESPACE_BEGIN()
 

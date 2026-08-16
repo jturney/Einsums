@@ -30,6 +30,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/ComputeNode.hpp>
 
+#include <cstdio>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(hptt)

@@ -8,6 +8,7 @@
 #include <Einsums/Config/Version.hpp>
 
 #include <algorithm>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <string_view>

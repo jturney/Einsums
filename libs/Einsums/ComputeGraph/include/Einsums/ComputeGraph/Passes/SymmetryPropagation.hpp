@@ -8,6 +8,8 @@
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <cstddef>
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**

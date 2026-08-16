@@ -8,6 +8,8 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
+#include <cmath>
+
 EINSUMS_NAMESPACE_BEGIN(linear_algebra::detail)
 
 template <typename T, typename Pivots>

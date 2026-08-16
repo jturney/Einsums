@@ -7,6 +7,10 @@
 
 #include <Einsums/Config/Namespace.hpp>
 
+#include <cstddef>
+#include <functional>
+#include <iterator>
+#include <memory>
 #include <unordered_map>
 #include <utility>
 #include <vector>

@@ -9,6 +9,7 @@
 #include <fmt/format.h>
 
 #include <cctype>
+#include <functional>
 #include <optional>
 #include <set>
 #include <string>

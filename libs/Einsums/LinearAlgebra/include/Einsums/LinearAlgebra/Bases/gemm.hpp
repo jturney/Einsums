@@ -10,6 +10,8 @@
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
 
+#include <cctype>
+
 EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
 namespace detail {

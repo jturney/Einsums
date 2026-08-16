@@ -12,11 +12,14 @@
 #if defined(EINSUMS_HAVE_PROFILER)
 
 #    include <chrono>
+#    include <cstdio>
+#    include <ctime>
 #    include <deque>
 #    include <filesystem>
 #    include <mutex>
 #    include <spdlog/sinks/base_sink.h>
 #    include <string>
+#    include <utility>
 #    include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(profile)

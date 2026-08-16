@@ -11,10 +11,12 @@
 
 #include <Einsums/Config/Namespace.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(task_pool)

@@ -7,6 +7,7 @@
 #include <Einsums/Utilities/TemporaryFilename.hpp>
 
 #include <random>
+#include <string>
 
 EINSUMS_NAMESPACE_BEGIN()
 

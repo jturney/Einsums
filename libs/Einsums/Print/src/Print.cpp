@@ -6,6 +6,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Print.hpp>
 
+#include <cctype>
 #include <cstdio>
 #include <iomanip>
 #include <mutex>
@@ -13,6 +14,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 
 #if defined(_WIN32) || defined(_WIN64)
 #    include <io.h>

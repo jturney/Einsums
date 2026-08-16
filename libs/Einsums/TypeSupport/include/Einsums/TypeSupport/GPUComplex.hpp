@@ -12,6 +12,7 @@
 #include <hip/hip_complex.h>
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
+#include <type_traits>
 
 EINSUMS_NAMESPACE_BEGIN(gpu_ops)
 

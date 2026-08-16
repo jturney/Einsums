@@ -9,6 +9,8 @@
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/TypeSupport/JsonEscape.hpp>
 
+#include <iomanip>
+
 #if defined(EINSUMS_HAVE_PROFILER)
 EINSUMS_NAMESPACE_BEGIN(profile)
 

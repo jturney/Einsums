@@ -7,7 +7,9 @@
 
 #include <Einsums/Config/Namespace.hpp>
 
+#include <concepts>
 #include <iterator>
+#include <type_traits>
 EINSUMS_NAMESPACE_BEGIN()
 
 /**

@@ -13,6 +13,7 @@
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
 
+#include <cctype>
 #include <omp.h>
 
 #ifndef FC_SYMBOL

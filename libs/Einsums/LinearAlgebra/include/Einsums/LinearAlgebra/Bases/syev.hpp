@@ -13,6 +13,8 @@
 
 #include <fmt/ranges.h>
 
+#include <cctype>
+#include <cmath>
 #include <stdexcept>
 
 EINSUMS_NAMESPACE_BEGIN()

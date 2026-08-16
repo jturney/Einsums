@@ -29,6 +29,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // Auto-generated header: declares ``apiary_register_<Module>(py::module_ &)``

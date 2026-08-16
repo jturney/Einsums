@@ -33,6 +33,7 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <list>
 #include <memory>
 #include <vector>

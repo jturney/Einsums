@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <utility>
+
 // Taken from https://www.fluentcpp.com/2017/10/27/function-aliases-cpp/
 /**
  * @def ALIAS_TEMPLATE_FUNC

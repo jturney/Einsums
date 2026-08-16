@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #ifdef _OPENMP

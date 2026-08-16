@@ -12,6 +12,7 @@
 
 #include <array>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <sstream>
 #include <type_traits>

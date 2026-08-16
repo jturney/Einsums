@@ -12,9 +12,11 @@
 #include <Einsums/Runtime/ShutdownFunction.hpp>
 #include <Einsums/Runtime/StartupFunction.hpp>
 
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <type_traits>
+#include <utility>
 
 #if defined(EINSUMS_APPLICATION_NAME_DEFAULT) && !defined(EINSUMS_APPLICATION_NAME)
 #    define EINSUMS_APPLICATION_NAME EINSUMS_APPLICATION_NAME_DEFAULT

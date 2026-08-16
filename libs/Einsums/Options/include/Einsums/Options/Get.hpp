@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 /*
  * The reader's half of the option system, and the only part of it a module

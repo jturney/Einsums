@@ -12,6 +12,7 @@
 #include <functional>
 #include <list>
 #include <mutex>
+#include <utility>
 
 EINSUMS_NAMESPACE_BEGIN(design_pats)
 

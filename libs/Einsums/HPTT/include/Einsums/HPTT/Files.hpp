@@ -15,7 +15,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <ranges>
 #include <stdexcept>
+#include <utility>
 EINSUMS_NAMESPACE_BEGIN(hptt)
 
 constexpr char endian_char() {

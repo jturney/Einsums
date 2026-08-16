@@ -6,6 +6,8 @@
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <concepts>
+
 using namespace einsums;
 
 EINSUMS_NAMESPACE_BEGIN()

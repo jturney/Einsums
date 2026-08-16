@@ -10,6 +10,8 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
+#include <cmath>
+
 EINSUMS_NAMESPACE_BEGIN()
 
 /**

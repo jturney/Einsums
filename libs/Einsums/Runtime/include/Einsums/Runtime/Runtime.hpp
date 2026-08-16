@@ -17,6 +17,7 @@
 #include <Einsums/TypeSupport/Lockable.hpp>
 #include <Einsums/TypeSupport/Singleton.hpp>
 
+#include <cstdint>
 #include <list>
 #include <mutex>
 #include <stdexcept>

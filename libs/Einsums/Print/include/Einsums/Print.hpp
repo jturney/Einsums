@@ -17,11 +17,14 @@
 
 #include <algorithm>
 #include <cassert>
+#include <concepts>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 EINSUMS_NAMESPACE_BEGIN()
 namespace print {

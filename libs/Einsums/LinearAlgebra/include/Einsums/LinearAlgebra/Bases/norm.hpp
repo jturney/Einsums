@@ -14,6 +14,8 @@
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
+#include <cmath>
+
 EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
 namespace detail {

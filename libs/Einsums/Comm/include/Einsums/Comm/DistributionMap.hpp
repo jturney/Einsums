@@ -19,6 +19,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <ranges>
 #include <utility>
 
 EINSUMS_NAMESPACE_BEGIN(comm)

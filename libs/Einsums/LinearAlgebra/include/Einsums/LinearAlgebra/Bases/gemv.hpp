@@ -10,6 +10,7 @@
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
 
+#include <cctype>
 #include <cstring>
 #include <stdexcept>
 

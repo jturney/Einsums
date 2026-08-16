@@ -8,6 +8,7 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <ranges>
 #include <string>
 

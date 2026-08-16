@@ -13,6 +13,7 @@
 #include <Einsums/TensorBase/TensorBase.hpp>
 
 #include <cstddef>
+#include <tuple>
 #include <type_traits>
 
 EINSUMS_NAMESPACE_BEGIN()

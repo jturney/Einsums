@@ -8,6 +8,8 @@
 #include <Einsums/StringUtil/MemoryString.hpp>
 #include <Einsums/StringUtil/Trim.hpp>
 
+#include <cctype>
+#include <cstdint>
 #include <string>
 
 EINSUMS_NAMESPACE_BEGIN(string_util)

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <charconv>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -25,6 +26,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <utility>
 #include <vector>

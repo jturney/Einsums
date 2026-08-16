@@ -7,6 +7,7 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <array>
+#include <initializer_list>
 #include <list>
 #include <vector>
 

@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <concepts>
 #include <cstdint>
 #include <cstring>
