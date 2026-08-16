@@ -11,11 +11,8 @@ are spelled. This turns them into the Python settings surface, so the three
 things that used to be hand-copied - the fields, the ``--help`` listing in the
 comments, and the flag spellings - are all one fact again.
 
-Input is apiary's C++ docs JSON for those headers: every documented
-namespace-scope variable, with its type and, when it was initialized by a
-call, that call's callee and folded arguments. A variable counts as an option
-when its initializer names ``cl::config_flag``, ``cl::config_opt``, or
-``cl::config_opt_computed``.
+Reading the descriptors is ``devtools/option_descriptors.py``'s job, shared
+with the argument reference the manual generates from the same list.
 
 Usage::
 
@@ -26,34 +23,16 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import textwrap
 from pathlib import Path
 
-# The factories a descriptor can be declared with, and whether the option they
-# declare is a presence-carrying flag.
-_FACTORIES = {
-    "config_flag": "flag",
-    "config_opt": "value",
-    "config_opt_computed": "value",
-}
+# libs/Einsums/Python/tools -> the repository root, where the shared extractor
+# lives. The generator runs from the build tree with no package installed, so
+# the path is relative to this file rather than to a working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "devtools"))
 
-# C++ value type -> Python type name. The template arguments arrive
-# canonicalized, so ``std::int64_t`` shows up under whichever fundamental type
-# it aliases on this platform.
-_PY_TYPE = {
-    "bool": "bool",
-    "double": "float",
-    "float": "float",
-    "int": "int",
-    "long": "int",
-    "long long": "int",
-    "std::int64_t": "int",
-    "int64_t": "int",
-    "std::string": "str",
-    "std::basic_string<char>": "str",
-}
+import option_descriptors as od  # noqa: E402
 
 # Options whose Python spelling is richer than their C++ one. ``log:level`` is
 # an integer scale in C++ and the ``LogLevel`` enum the template defines here,
@@ -65,116 +44,9 @@ _PY_TYPE_OVERRIDE = {
 
 _LINE_WIDTH = 100
 
-
-def die(message: str) -> None:
-    print(f"generate_rc: {message}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def attribute_name(long_name: str) -> str:
-    """The Python attribute an option's command-line name maps to.
-
-    Drop a leading ``einsums:``, then turn every ``:`` and ``-`` into an
-    underscore. Spelled identically in PyEinsumsMain.cpp's
-    ``rc_attribute_name``; the drift test holds the two together.
-    """
-    rest = long_name[len("einsums:"):] if long_name.startswith("einsums:") else long_name
-    return rest.replace(":", "_").replace("-", "_")
-
-
-def arg_by_name(args: list[dict], name: str) -> dict | None:
-    for a in args:
-        if a.get("name") == name:
-            return a
-    return None
-
-
-def literal(arg: dict | None):
-    """The folded value of a call argument, or ``None`` when it has none."""
-    if arg is None or arg.get("value_kind") is None:
-        return None
-    return arg.get("value")
-
-
-def collect_options(docs: list[dict]) -> list[dict]:
-    """Every descriptor in the given documents, in declaration order."""
-    options: list[dict] = []
-    seen: set[str] = set()
-
-    for doc in docs:
-        for var in doc.get("variables", []):
-            init = var.get("initializer")
-            if not init or init.get("kind") != "call":
-                continue
-            callee = init.get("callee", "")
-            factory = callee.rsplit("::", 1)[-1]
-            if factory not in _FACTORIES:
-                continue
-
-            args = init.get("args", [])
-            name = literal(arg_by_name(args, "name"))
-            if not isinstance(name, str) or not name:
-                die(f"{var.get('qualified_name')} declares an option whose name is not a literal")
-            if name in seen:
-                continue
-            seen.add(name)
-
-            # The value type: the descriptor's own template argument, which is
-            # present whichever factory was used, unlike the factory's.
-            type_args = var.get("type_template_args") or init.get("template_args") or []
-            cxx_type = type_args[0] if type_args else "bool"
-            py_type = _PY_TYPE.get(cxx_type)
-            if py_type is None:
-                die(f"option {name} has value type {cxx_type!r}, which has no Python spelling")
-
-            computed = factory == "config_opt_computed"
-            options.append({
-                "attribute": attribute_name(name),
-                "name": name,
-                "kind": _FACTORIES[factory],
-                "type": py_type,
-                "cxx_type": cxx_type,
-                "help": literal(arg_by_name(args, "help")) or "",
-                "category": literal(arg_by_name(args, "category")) or "",
-                "value_name": literal(arg_by_name(args, "value_name")) or "",
-                # A computed default is produced by a function at registration
-                # and cannot be written down, so there is nothing to print.
-                "default": None if computed else literal(arg_by_name(args, "default_value")),
-                "computed_default": computed,
-                "doc": (var.get("doc_structured") or {}).get("brief", "").strip(),
-            })
-
-    if not options:
-        die("no option descriptors found - check that the Options.hpp headers were parsed")
-    return options
-
-
-def by_category(options: list[dict]) -> list[tuple[str, list[dict]]]:
-    """Options grouped under their ``--help`` heading, headings sorted."""
-    groups: dict[str, list[dict]] = {}
-    for opt in options:
-        groups.setdefault(opt["category"], []).append(opt)
-    return sorted(groups.items())
-
-
-def default_text(opt: dict) -> str:
-    """How an option's default reads in a comment."""
-    if opt["computed_default"]:
-        return "computed at startup"
-    value = opt["default"]
-    if opt["type"] == "bool":
-        return repr(bool(value))
-    if value is None:
-        return "unset"
-    return repr(value)
-
-
-def invocation(opt: dict) -> str:
-    """The option as ``--help`` spells it."""
-    if opt["kind"] == "flag":
-        return f"--{opt['name']}"
-    placeholder = opt["value_name"] or "value"
-    return f"--{opt['name']} <{placeholder}>"
+by_category = od.by_category
+default_text = od.default_text
+invocation = od.invocation
 
 
 def render_help(options: list[dict]) -> str:
@@ -254,21 +126,14 @@ def main() -> int:
     ap.add_argument("--output", type=Path, required=True, help="the rc.py to write")
     args = ap.parse_args()
 
-    docs = []
-    for path in args.docs_json:
-        try:
-            docs.append(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError) as exc:
-            die(f"cannot read {path}: {exc}")
-
-    options = collect_options(docs)
+    options = od.collect_options(od.load_docs(args.docs_json))
 
     text = args.template.read_text(encoding="utf-8")
     for placeholder, rendered in (("@HELP@", render_help(options)),
                                   ("@FIELDS@", render_fields(options)),
                                   ("@MANIFEST@", render_manifest(options))):
         if placeholder not in text:
-            die(f"{args.template} has no {placeholder} placeholder")
+            od.die(f"{args.template} has no {placeholder} placeholder")
         text = text.replace(placeholder, rendered)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
