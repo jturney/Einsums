@@ -31,6 +31,13 @@ from enum import Enum
 # pytest harness in cmake/Einsums_AddTest.cmake, which disables the runtime's
 # "waiting for debugger" prompt so a failing test cannot hang - just exports the
 # variable. Leaving a field as ``None`` here is what lets that through.
+#
+# Flags are declared in the positive and the runtime generates the ``no-``
+# spelling, so ``--einsums:profile:report`` turns off as
+# ``--einsums:profile:no-report``. Several fields below still carry the older
+# negated names (``profile_no_report``, ``debug_no_attach_debugger``); they are
+# unchanged and still work, because the negated spellings all still parse.
+# Setting one to ``True`` requests the negation, which is what the name says.
 
 # Buffer Allocator:
 #   --einsums:buffer-size <value>                        Total size of buffers allocated for tensor contractions
@@ -38,13 +45,18 @@ from enum import Enum
 
 # ComputeGraph Passes:
 #   --einsums:pass:disable <PASSES>                      Comma-separated list of optimization pass names to skip (e.g. CSE,Reorder)
-#   --einsums:pass:analyze                               Run all passes in analysis-only mode (report findings but don't modify the graph)
-#   --einsums:pass:verbose                               Log node count and timing before/after each optimization pass
+#   --einsums:pass:analyze                               Run all passes in analysis-only mode (report findings but do not modify the graph)
+#   --einsums:pass:verbose                               Log node count and timing before and after each optimization pass
+#   --einsums:graph:profile-groups                       Break a grouped batched GEMM into one profiler zone per shape class
+#   --einsums:graph:verify-levels                        Check that no execution level holds two nodes touching overlapping storage
 
 # Debug:
-#   --einsums:debug:no-install-signal-handlers           Do not install signal handlers
-#   --einsums:debug:no-attach-debugger                   Do not provide a mechanism to attach a debugger on detected errors
-#   --einsums:debug:no-diagnostics-on-terminate          Print additional diagnostic information on termination
+#   --einsums:debug:install-signal-handlers              Install signal handlers that report a fatal signal before aborting (default: true)
+#   --einsums:debug:attach-debugger                      Provide a mechanism to attach a debugger on detected errors (default: true)
+#   --einsums:debug:diagnostics-on-terminate             Print additional diagnostic information on termination (default: true)
+
+# GPU:
+#   --einsums:gpu:disable                                Keep every node on the host (GPUPlacement becomes a no-op)
 
 # HPTT:
 #   --einsums:hptt:selection-method <METHOD>             HPTT plan selection method (estimate, measure, patient, crazy)
@@ -59,18 +71,20 @@ from enum import Enum
 #   --einsums:log:format <value>                         Log format
 
 # Profile:
-#   --einsums:profile:no-report                          Don't generate profile report
-#   --einsums:profile:filename <filename>                Generate profile filename
-#   --einsums:profile:no-append                          Don't append to profile file
-#   --einsums:profile:detailed                           Print detailed profile report
-#   --einsums:profile:save <filename>                    Save profile session JSON for imgui viewer
+#   --einsums:profile:disable                            Do not record profiling zones or annotations (large speedup for small operations)
+#   --einsums:profile:report                             Generate a profile report on exit (default: true)
+#   --einsums:profile:filename <filename>                Profile report file name
+#   --einsums:profile:append                             Append to the profile file instead of truncating it (default: true)
+#   --einsums:profile:detailed                           Print a detailed profile report
+#   --einsums:profile:save <filename>                    Save the profile session as JSON for the imgui viewer
 #   --einsums:profile:port <PORT>                        Profile server port
-#   --einsums:profile:wait-for-viewer                    Wait for profiler viewer to connect before running
+#   --einsums:profile:wait-for-viewer                    Wait for the profiler viewer to connect before running
 
 # Tensor Options:
+#   --einsums:row-major                                  Construct tensors in row-major order rather than column-major
 #   --einsums:scratch-dir <value>                        The scratch directory for Einsums tensor files.
 #   --einsums:hdf5-file-name <value>                     The name of the HDF5 file for Einsums. Defaults to einsums.[pid].h5, where [pid] is the PID of the current process.
-#   --einsums:no-delete-hdf5-files                       Tells Einsums not to clean up HDF5 files on exit.
+#   --einsums:delete-hdf5-files                          Clean up the HDF5 scratch file on exit. (default: true)
 
 # Number of OpenMP / task-pool worker threads. ``None`` means einsums picks
 # based on the host's logical core count. einsums has no CLI flag for this;
