@@ -112,7 +112,8 @@ nitpick_ignore_regex = {(r"c(pp)?:identifier", r"size_t"),
     (r"cpp:identifier", r"einsums(::[a-z][a-z0-9_]*)*$"),
     (r"cpp:identifier",
      r"(compute_graph|packed_gemm|task_pool|linear_algebra|tensor_base|"
-     r"string_util|fft|simd|hashes|blas|profile|print|comm|hptt|execution|cg)$"),
+     r"string_util|fft|simd|hashes|blas|profile|print|comm|hptt|execution|cg|"
+     r"cl|config|option)$"),
     # Dependent member types of our template classes (``flat_map::iterator``,
     # ``BufferAllocator::size_type``, ``TiledTensor::map_type``, ...): the
     # standard container/STL-style member aliases plus the project's own
@@ -126,7 +127,8 @@ nitpick_ignore_regex = {(r"c(pp)?:identifier", r"size_t"),
      r"ReverseIterator|ConstReverseIterator|ValueType|StoredType|Vector|"
      r"pointer|const_pointer|reference|const_reference|iterator|const_iterator|"
      r"reverse_iterator|const_reverse_iterator|size_type|difference_type|"
-     r"value_type|key_type|mapped_type|map_type|allocator_type|element_type)$"),
+     r"value_type|key_type|mapped_type|map_type|allocator_type|element_type|"
+     r"storage_type|Continuation)$"),
     # The over-generic leaves (``type``/``value``/``key``/``parameter`` and the
     # tensor-shape aliases) stay QUALIFIER-REQUIRED so bare common words are
     # not silently swallowed.
