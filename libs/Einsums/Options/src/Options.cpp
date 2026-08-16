@@ -537,7 +537,7 @@ void verify_registered_options() {
 
     std::set<std::string> keys;
     for (auto const *option : Registry::instance().options) {
-        if (option->is_positional || option->long_name.starts_with("no-") || option->long_name.contains(":no-")) {
+        if (option->is_positional || option->long_name.starts_with("no-") || option->long_name.find(":no-") != std::string::npos) {
             continue;
         }
         [[maybe_unused]] auto const inserted = keys.insert(derive_key(option->long_name)).second;

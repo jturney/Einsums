@@ -516,10 +516,12 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
     }
 
     // Final widths, and the priorities that order admission under them.
-    width           = best_widths;
-    auto [fcp, far] = recompute();
-    cp              = fcp;
-    area            = far;
+    width = best_widths;
+    // Not `far`: <windows.h> still defines it as an empty legacy segment
+    // keyword, so a binding by that name expands to nothing there.
+    auto [final_cp, final_area] = recompute();
+    cp                          = final_cp;
+    area                        = final_area;
     for (std::size_t i = 0; i < n; i++) {
         nodes[i].thread_width = static_cast<std::uint16_t>(std::min<unsigned>(width[i], p));
         // Nanoseconds, and never 0: 0 is how a node says it was never planned.

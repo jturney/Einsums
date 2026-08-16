@@ -25,20 +25,36 @@ EINSUMS_EXPORT std::string default_scratch_dir();
 /// `einsums.<pid>.h5`, so two processes never share a scratch file.
 EINSUMS_EXPORT std::string default_hdf5_file_name();
 
+/*
+ * The descriptors below store the address of their provider, and a descriptor
+ * is constant-initialized. An exported function's address resolves through the
+ * import table on Windows and so is not known until the loader runs, which
+ * leaves it unusable as a constant initializer in anything that consumes the
+ * library. These forward to the exported definitions from whatever binary
+ * includes this header, where the address is an ordinary link-time constant.
+ */
+inline std::string scratch_dir_provider() {
+    return default_scratch_dir();
+}
+
+inline std::string hdf5_file_name_provider() {
+    return default_hdf5_file_name();
+}
+
 EINSUMS_NAMESPACE_END(detail)
 
 EINSUMS_NAMESPACE_BEGIN(option)
 
 /// Where the scratch file for disk-backed tensors lives.
 inline constinit cl::ConfigOption<std::string> ScratchDir = cl::config_opt_computed<std::string>(
-    "einsums:scratch-dir", "The scratch directory for Einsums tensor files.", "Tensor Options", &detail::default_scratch_dir, "DIR");
+    "einsums:scratch-dir", "The scratch directory for Einsums tensor files.", "Tensor Options", &detail::scratch_dir_provider, "DIR");
 
 /// The scratch file's name. Defaults to einsums.[pid].h5, where [pid] is the
 /// process id, so a second process does not adopt the first one's file.
 inline constinit cl::ConfigOption<std::string> Hdf5FileName = cl::config_opt_computed<std::string>(
     "einsums:hdf5-file-name",
     "The name of the HDF5 file for Einsums. Defaults to einsums.[pid].h5, where [pid] is the PID of the current process.", "Tensor Options",
-    &detail::default_hdf5_file_name, "filename");
+    &detail::hdf5_file_name_provider, "filename");
 
 /// Remove the per-process scratch file on exit.
 ///
