@@ -441,6 +441,7 @@ else:
     # its statistics come from the snapshot _release_ccsd keeps.
     stats_cc = (mp2.ccsd_stats if triples else
                 dict(t_plan=mp2.lccsd.t_plan, t_capture=mp2.lccsd.t_capture,
+                     t_iterate=mp2.lccsd.t_iterate,
                      iterations=mp2.lccsd.n_iterations,
                      nodes=mp2.lccsd.num_nodes(),
                      lmp2_iterations=mp2.lmp2.n_iterations))
