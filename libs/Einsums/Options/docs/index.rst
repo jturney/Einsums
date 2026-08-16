@@ -8,15 +8,104 @@
 Einsums Options
 ===============
 
-A small C++20 command-line parser in the spirit of LLVM's ``cl::`` utilities, simplified and
-dependency-free aside from ``fmt`` for help text.
+Einsums' option system: one declaration per setting, feeding one typed value that the rest of the
+library reads. It is also a general C++20 command-line parser in the spirit of LLVM's ``cl::``
+utilities, simplified and dependency-free aside from ``fmt`` for help text.
 
+- **Descriptors**: ``ConfigOption<T>`` declared with ``config_flag`` / ``config_opt``, read with ``config::get``
 - **Options**: ``Flag``, ``Opt<T>``, ``List<T>``, ``OptEnum<Enum>``, ``Alias``
 - **Named parameter tags**: ``Default(...)``, ``ImplicitValue(...)``, ``ValueName("...")``, ``Env("...")``, ``NoEnv``
 - **Bindings**: ``Location<T>`` (write to external storage), ``Setter<T>`` (callback)
 - **Precedence**: *defaults* < *config file* < *environment* < *command line*
 - **Unknown args**: unrecognized options and everything after ``--`` are collected
 - **Built-ins**: ``--help`` and ``--version`` (always available)
+
+Two layers, and which one you want
+----------------------------------
+
+Nearly all Einsums code wants the **descriptor layer**: a setting is declared once, in the module that
+reads it, and every consumer reads it back by naming that declaration. Start at `Declaring an option`_.
+
+The **parser layer** below it (``Flag``, ``Opt<T>``, ``Location``, ``parse``) is what turns argv, the
+environment, and a config file into those values. Reach for it directly only when writing a program with
+its own command line, or when adding a kind of option the descriptor layer does not cover yet.
+
+Declaring an option
+-------------------
+
+An option is declared in the module whose code reads it, in that module's ``Options.hpp``, under the
+``einsums::option`` namespace:
+
+.. code-block:: cpp
+
+   #include <Einsums/Options/Get.hpp>
+
+   EINSUMS_NAMESPACE_BEGIN(option)
+
+   /// Write the text report at shutdown.
+   inline constinit cl::ConfigOption<bool> ProfileReport =
+       cl::config_flag("einsums:profile:report", "Generate a profile report on exit", "Profile", true);
+
+   /// Where that report goes.
+   inline constinit cl::ConfigOption<std::string> ProfileFilename =
+       cl::config_opt<std::string>("einsums:profile:filename", "Profile report file name",
+                                   "Profile", "profile.txt", "filename");
+
+   EINSUMS_NAMESPACE_END(option)
+
+The long name is the only spelling written down. The config key, the environment variable, the ``--help``
+entry, and a flag's ``no-`` twin are all derived from it, which is what keeps them from drifting apart.
+
+- ``config_flag(name, help, category, default)`` declares a boolean. Registration also generates the
+  ``no-`` spelling, so a flag that defaults to on needs no hand-written negation.
+- ``config_opt<T>(name, help, category, default, value_name, range)`` declares a value option. ``T`` is
+  ``bool``, ``std::int64_t``, ``double``, or ``std::string``.
+- ``config_opt_computed<T>(name, help, category, provider, value_name)`` is for a default that cannot be
+  written down at compile time, such as the system temporary directory or a name carrying the process id.
+  The provider runs when the option is registered.
+
+Descriptors are ``constinit`` aggregates, so a namespace-scope descriptor is constant-initialized and
+there is no static initialization order to reason about. That is what makes it safe to read one from a
+constructor as hot and as early as ``Tensor``'s.
+
+Registering
+~~~~~~~~~~~
+
+A descriptor has to be handed to the registry before parsing. Modules with an init hook do it there;
+modules that sit below Runtime in the dependency graph, and so cannot call ``register_arguments`` without
+a cycle, export a ``register_<Module>_options()`` and invoke it from a namespace-scope initializer in
+their own ``Options.hpp``.
+
+Reading an option
+-----------------
+
+.. code-block:: cpp
+
+   #include <Einsums/Options/Get.hpp>
+
+   if (config::get(option::ProfileReport)) {
+       std::ofstream out(config::get(option::ProfileFilename));
+       // ...
+   }
+
+``config::get`` is the whole reading API. There is no key to spell and no fallback to pass: a typo is a
+compile error, the type comes from the descriptor, and an option read before it is registered yields the
+declared default rather than a zero.
+
+- ``config::try_get(opt)`` returns ``std::optional<T>``, empty when nothing but the default has supplied a
+  value. Use it to tell *unset* from *set to the default*.
+- ``config::set(opt, value)`` writes one, which is mostly what tests want.
+
+``Get.hpp`` is deliberately light: no parser, no help machinery, no ``fmt``. Including it from a header on
+a hot path costs little.
+
+Dynamic keys
+~~~~~~~~~~~~
+
+``config::get_dynamic<T>(key, default)`` and ``config::set_dynamic`` take a runtime string. They exist for
+keys that are genuinely constructed at run time, such as the per-pass flags the optimizer builds from a
+pass name. Anything whose name is known at compile time should be a descriptor instead; the dynamic path
+gives back the silent-typo behavior the descriptors were introduced to remove.
 
 Quick Start
 -----------
@@ -224,21 +313,19 @@ file or environment variable has no presence to observe, so its value answers
 that question instead: a truthy value applies the flag exactly as if it had
 been named on the command line, and a falsey value leaves the default alone.
 
-This is what makes negated flags behave. Given
+This is what makes generated negations behave. A flag declared in the positive
 
 .. code-block:: cpp
 
-   Flag NoAttach{
-     "einsums:debug:no-attach-debugger", {}, "Do not attach a debugger",
-     DebugCat, Location(global_bools["attach-debugger"]),
-     Default(true), ImplicitValue(false)
-   };
+   inline constinit cl::ConfigOption<bool> AttachDebugger =
+       cl::config_flag("einsums:debug:attach-debugger",
+                       "Offer to attach a debugger on a detected error", "Debug", true);
 
-``EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1`` means *yes, do not attach*, which is the
-flag's ``ImplicitValue`` of false, rather than the literal ``true`` it parsed.
-``=0`` means the flag was not requested, leaving ``attach-debugger`` at its
-default. An ``Opt<bool>`` is unaffected by this rule: its variable supplies the
-value directly.
+registers ``einsums:debug:no-attach-debugger`` alongside it. ``EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1``
+means *yes, do not attach*, applying the negation exactly as if it had been named on the command line,
+so ``config::get(option::AttachDebugger)`` reads false. ``=0`` means the negation was not requested,
+leaving the option at its default. Setting ``EINSUMS_DEBUG_ATTACH_DEBUGGER`` works the same way on the
+positive spelling. An ``Opt<bool>`` is unaffected by this rule: its variable supplies the value directly.
 
 Mutual exclusion respects precedence
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -538,9 +625,33 @@ Binding and Callbacks
 Thread-Safety & Reentrancy
 --------------------------
 
-- The design uses a **global registry** and **mutable option state**, so it is **not thread-safe** and **not reentrant** for concurrent parses. Serialize calls to ``parse(...)`` if needed.
+Reading through a descriptor is safe from any thread at any time. That is a property of the design, not
+of a convention callers have to keep:
+
+- **Descriptors are immutable** once declared, so finding an option needs no synchronization at all.
+- **Each option's value lives in its own slot**, atomic for ``bool``, ``std::int64_t``, and ``double``,
+  and an atomic pointer to an immutable snapshot for ``std::string``. ``config::get`` is a slot load:
+  no lock, no hash, no map. ``config::set`` and ``set_dynamic`` are safe against concurrent readers.
+- **No operation locks more than one thing**, so there is no acquisition order to respect and no
+  lock-order inversion to find. The only mutex left guards the overflow map that dynamic writes use for
+  keys no descriptor claims.
+- **Callbacks run outside the lock.** A ``Setter`` fires after the value is stored, with nothing held.
+
+Two things remain the caller's responsibility:
+
+- A read followed by a write is not atomic. Each half is safe; the pair is not.
+- Two options read separately can straddle a concurrent write to both. Code that needs a coherent view
+  of several settings should snapshot them into a struct, which is also what a hot path wants.
+
+Registration and parsing are still a single-threaded startup activity, and now say so: the registry is
+frozen once parsing finishes and rejects a late registration rather than racing. Values may be written
+after the freeze, which is what makes ``config::set`` usable from a test.
+
+For the parser layer specifically:
+
 - Options add themselves to the registry on construction and remove themselves on destruction, so an option with automatic storage duration is safe to declare inside a scope.
 - Each ``parse`` resets the state left by the previous one, so occurrence counts and gathered ``List`` items do not accumulate across repeated parses in one process.
+- Concurrent calls to ``parse(...)`` are not supported; serialize them.
 - Reading the environment during ``parse`` is a plain ``std::getenv``. Mutating the environment concurrently from another thread is undefined behavior on every platform; configure before threads exist.
 
 FAQ

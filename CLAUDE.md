@@ -104,6 +104,28 @@ Returning-form ops (`dot(A,B)`, `syev_eig`, `svd`, ...) throw during capture by 
 Indices are compile-time structs created with `MAKE_INDEX(x)`; index letters drive contraction analysis.
 Repeated letters within one operand mean diagonal access; a letter in only one input and absent from C is summed (trace).
 
+### Options (runtime configuration)
+
+Every runtime setting is a typed descriptor declared ONCE, in the `Options.hpp` of the module that reads it, under namespace `option`.
+There is no string-keyed config map: `GlobalConfigMap`, `ConfigMap`, and `Config/Types.hpp` were deleted, and `Einsums/Config.hpp` is build macros only.
+
+```cpp
+// libs/Einsums/Profile/include/Einsums/Profile/Options.hpp
+inline constinit cl::ConfigOption<bool> ProfileReport =
+    cl::config_flag("einsums:profile:report", "Generate a profile report on exit", "Profile", true);
+
+// any consumer
+if (config::get(option::ProfileReport)) { ... }
+```
+
+- Declare with `cl::config_flag` (bool; the `no-` spelling is GENERATED, never hand-write a negated option) or `cl::config_opt<T>` (`std::int64_t`, `double`, `std::string`); `cl::config_opt_computed<T>` takes a provider function for a default only knowable at run time.
+- Read with `config::get(option::X)` - no key string, no fallback argument. `config::try_get` distinguishes unset from defaulted; `config::set` writes (mostly tests).
+- The config key, env var, `--help` entry, and `no-` twin are all DERIVED from the long name (`einsums:log:level` keys on `log-level`), which is what keeps them from drifting.
+- `config::get_dynamic`/`set_dynamic` take runtime strings and are only for genuinely runtime-constructed keys (the optimizer's per-pass flags). A compile-time-known name belongs in a descriptor; the dynamic path restores the silent-typo failure mode descriptors removed.
+- Reads are lock-free atomic slot loads, safe from any thread at any time, and cheap enough for a tensor constructor. Registration/parse is startup-only and the registry freezes afterward.
+- Include `<Einsums/Options/Get.hpp>` to read (light: no parser, no fmt); `Declare.hpp` to declare; `Parse.hpp` only in the parse driver.
+- Adding an option means updating `docs/sphinx/user/arguments.rst` too; the docs build is nitpicky and warnings-are-errors.
+
 ### SIMD Runtime Dispatch
 
 The SIMD module (`libs/Einsums/SIMD/`) provides compile-time intrinsics wrappers plus a runtime feature ladder (`RuntimeFeatures.hpp`): psABI rungs Baseline/V2/V3/V4, `cpu_features()` (CPUID + XCR0 OS-state gated), `selected_arch()`, and the `EINSUMS_SIMD_ARCH` env override (lower-only, clamps).
