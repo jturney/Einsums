@@ -91,6 +91,8 @@ std::vector<std::string> argv_from_rc(py::module_ const &rc) {
         opt_flag("debug_no_install_signal_handlers", "debug:no-install-signal-handlers");
         opt_flag("debug_no_attach_debugger", "debug:no-attach-debugger");
         opt_flag("debug_no_diagnostics_on_terminate", "debug:no-diagnostics-on-terminate");
+        opt_flag("debug_no_crash_handler", "debug:no-crash-handler");
+        opt_string("debug_crash_dump_dir", "debug:crash-dump-dir");
     }
 
     // HPTT

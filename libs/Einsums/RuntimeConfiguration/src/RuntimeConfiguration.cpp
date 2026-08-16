@@ -210,6 +210,18 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
             "einsums:debug:no-diagnostics-on-terminate", {}, "Print additional diagnostic information on termination", debugCategory,
             cl::Location(global_bools["diagnostics-on-terminate"]), cl::Default(true), cl::ImplicitValue(false));
 
+        // Deliberately separate from install-signal-handlers. On Windows the two are
+        // different mechanisms - signals never see a memory fault there - and a Python
+        // process wants to keep its own faulthandler on the signals while still
+        // getting a report out of a hard crash.
+        static cl::Flag const noCrashHandler(
+            "einsums:debug:no-crash-handler", {}, "Do not install the crash handler that reports a fatal exception and writes a minidump",
+            debugCategory, cl::Location(global_bools["crash-handler"]), cl::Default(true), cl::ImplicitValue(false));
+
+        static cl::Opt<std::string> const crashDumpDir("einsums:debug:crash-dump-dir", {},
+                                                       "Directory for crash minidumps (default: the working directory)", debugCategory,
+                                                       cl::Location(global_strings["crash-dump-dir"]), cl::Default(std::string{}));
+
         static cl::OptionCategory     logCategory("Logging");
         static cl::Opt<int64_t> const logLevel("einsums:log:level", {}, "Log level", logCategory, cl::Location(global_ints["log-level"]),
                                                cl::Default(static_cast<int64_t>(

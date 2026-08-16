@@ -45,6 +45,8 @@ from enum import Enum
 #   --einsums:debug:no-install-signal-handlers           Do not install signal handlers
 #   --einsums:debug:no-attach-debugger                   Do not provide a mechanism to attach a debugger on detected errors
 #   --einsums:debug:no-diagnostics-on-terminate          Print additional diagnostic information on termination
+#   --einsums:debug:no-crash-handler                     Do not install the crash handler that reports a fatal exception and writes a minidump
+#   --einsums:debug:crash-dump-dir <DIR>                 Directory for crash minidumps (default: the working directory)
 
 # HPTT:
 #   --einsums:hptt:selection-method <METHOD>             HPTT plan selection method (estimate, measure, patient, crazy)
@@ -93,6 +95,8 @@ pass_verbose: bool | None = None
 debug_no_install_signal_handlers: bool | None = None
 debug_no_attach_debugger: bool | None = None
 debug_no_diagnostics_on_terminate: bool | None = None
+debug_no_crash_handler: bool | None = None
+debug_crash_dump_dir: str | None = None
 
 # HPTT
 hptt_selection_method: str | None = None  # "estimate" / "measure" / "patient" / "crazy"

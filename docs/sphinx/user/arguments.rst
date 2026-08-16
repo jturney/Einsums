@@ -103,6 +103,29 @@ Advanced Arguments
     .. versionchanged:: 2.0.0
         This option's name has been changed.
 
+.. option:: --einsums:debug:no-crash-handler
+
+    When present, Einsums won't install the handler that reports a fatal exception.
+
+    The handler matters most on Windows, where the signal handlers controlled by
+    :option:`--einsums:debug:no-install-signal-handlers` are a console control handler
+    and never see a memory fault. Without it such a process is killed with no output at
+    all. The handler prints the faulting module and address, prints a backtrace when the
+    library was built with ``EINSUMS_WITH_BACKTRACES``, and writes a minidump. Writing
+    the dump needs no elevated privileges.
+
+    The two options are deliberately independent, so a Python process can leave the
+    interpreter's own ``faulthandler`` in charge of the signals and still be told when a
+    run dies hard.
+
+    .. versionadded:: 2.0.0
+
+.. option:: --einsums:debug:crash-dump-dir
+
+    Where the crash handler writes its minidump. Defaults to the working directory.
+
+    .. versionadded:: 2.0.0
+
 .. option:: --einsums:log:format
 
     A format string used for the logger output.

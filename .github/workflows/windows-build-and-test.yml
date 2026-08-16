@@ -16,6 +16,9 @@ on:
       build_configure_extra_args:
         type: string
         required: false
+      ctest_args:
+        type: string
+        required: false
   # Windows-only failures cannot be reproduced on any other runner, and the
   # full CMake matrix costs an order of magnitude more than this one leg. The
   # dispatch trigger runs it alone, on any branch, while chasing them. The
@@ -32,6 +35,24 @@ on:
         required: false
         default: 2G
       build_configure_extra_args:
+        type: string
+        required: false
+      # Appended to the ctest command line. Hunting an intermittent crash is
+      # what this is for:
+      #
+      #   ctest_args: -R CcsdTiled --repeat until-fail:300
+      #
+      # Pair it with a build that can symbolize the result, which the default
+      # configure deliberately cannot - it builds no debug info at all so
+      # ccache can cache an MSVC-style compile:
+      #
+      #   build_configure_extra_args: -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+      #   build_cache_suffix: crashhunt
+      #
+      # Embedded is /Z7, the one debug format ccache tolerates here (a shared
+      # PDB is what it refuses). The separate cache suffix keeps those fatter
+      # objects out of the nightly's 2G budget.
+      ctest_args:
         type: string
         required: false
 
@@ -154,7 +175,7 @@ jobs:
             -D Python_EXECUTABLE="%CONDA_PREFIX%\python.exe" ^
             -D EINSUMS_WITH_TESTS=ON ^
             -D EINSUMS_WITH_EXAMPLES=ON ^
-            -D EINSUMS_WITH_BACKTRACES=OFF ^
+            -D EINSUMS_WITH_BACKTRACES=ON ^
             -D EINSUMS_SHOW_WARNING=OFF ^
             -D CMAKE_INSTALL_PREFIX="%GITHUB_WORKSPACE%\installed" ^
             ${{ inputs.build_configure_extra_args }}
@@ -198,10 +219,55 @@ jobs:
           for /f "delims=" %%D in ('dir /b /s "RelWithDebInfo\Einsums-abi*.dll" 2^>nul') do llvm-readobj --coff-imports "%%D" 2>nul || dumpbin /dependents "%%D" 2>nul
           exit /b 0
 
+      # Two independent ways to catch a hard crash, because they fail in
+      # different places.
+      #
+      # einsums' own handler (--einsums:debug:crash-handler, on by default) runs
+      # in-process: it prints the faulting module and writes its own dump. That
+      # is the one a user gets, and it needs nothing configured here beyond
+      # telling it where to write.
+      #
+      # WER LocalDumps runs OUT of process, which is what makes it the backstop.
+      # An in-process handler is least reliable exactly when the fault came from
+      # teardown under the loader lock, and it is bypassed outright by fail-fast
+      # paths - heap corruption and stack-cookie failures never consult it. The
+      # registry write is a CI-only affordance: this is a throwaway VM where the
+      # job is already admin. Nothing ships to users this way.
+      #
+      # cmd rather than the job's default bash: Git Bash mangles the "/v" style
+      # switches reg.exe takes into paths, and the key name is full of
+      # backslashes. Never fails the job - a missing dump is a worse run, not a
+      # broken one.
+      - name: Arm crash dump capture
+        shell: cmd
+        run: |
+          mkdir "%GITHUB_WORKSPACE%\dumps" 2>nul
+          set "WERKEY=HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
+          reg add "%WERKEY%" /v DumpFolder /t REG_EXPAND_SZ /d "%GITHUB_WORKSPACE%\dumps" /f
+          reg add "%WERKEY%" /v DumpType /t REG_DWORD /d 2 /f
+          reg add "%WERKEY%" /v DumpCount /t REG_DWORD /d 10 /f
+          exit /b 0
+
       - name: Test (CTest)
         shell: cmd
         working-directory: ${{ github.workspace }}/build
+        env:
+          # Reads as --einsums:debug:crash-dump-dir. Without it each test drops
+          # its dump in its own working directory and the upload below has to
+          # guess where to look.
+          EINSUMS_DEBUG_CRASH_DUMP_DIR: ${{ github.workspace }}\dumps
         run: |
           call conda activate einsums-env
           if errorlevel 1 exit /b %ERRORLEVEL%
-          ctest --output-on-failure -j3
+          ctest --output-on-failure -j3 ${{ inputs.ctest_args }}
+
+      # if: always() - the dumps are worth having precisely when the step above
+      # failed. if-no-files-found: ignore keeps a clean run quiet.
+      - name: Upload crash dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-crash-dumps-${{ matrix.build_type }}
+          path: ${{ github.workspace }}/dumps
+          if-no-files-found: ignore
+          retention-days: 14

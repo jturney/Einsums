@@ -8,6 +8,8 @@
 #include <Einsums/Assert.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Debugging/AttachDebugger.hpp>
+#include <Einsums/Debugging/Backtrace.hpp>
+#include <Einsums/Debugging/CrashHandler.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
@@ -17,11 +19,16 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
+#include <iostream>
+#include <string>
 #include <thread>
 
 #if defined(EINSUMS_WINDOWS)
 #    include <Windows.h>
+#else
+#    include <unistd.h>
 #endif
 
 EINSUMS_NAMESPACE_BEGIN()
@@ -44,13 +51,24 @@ void handle_termination(char const *reason) {
     } catch (...) {
     }
 
-    if (attach) {
-        util::attach_debugger();
+    // Diagnostics first, for the same reason as the POSIX handler below: whatever
+    // attach_debugger() does, it is not guaranteed to come back.
+    if (diagnostics) {
+        std::cerr << "\n=== einsums: terminating ===\n" << (reason ? reason : "Unknown reason") << "\n";
+        try {
+            std::string const trace = util::backtrace();
+            if (!trace.empty()) {
+                std::cerr << "\nbacktrace:\n" << trace << "\n";
+            }
+        } catch (...) { // NOLINT
+            std::cerr << "\nbacktrace: unavailable\n";
+        }
+        std::cerr << "=== end einsums termination ===\n";
+        std::cerr.flush();
     }
 
-    if (diagnostics) {
-        // Add more information here.
-        std::cerr << "{what}: " << (reason ? reason : "Unknown reason") << "\n";
+    if (attach) {
+        util::attach_debugger();
     }
 }
 
@@ -83,21 +101,74 @@ EINSUMS_EXPORT BOOL WINAPI termination_handler(DWORD ctrl_type) {
 }
 
 #else
+namespace {
+
+/// Spelling for the signals @ref set_signal_handlers subscribes to.
+char const *signal_name(int signum) {
+    switch (signum) {
+    case SIGINT:
+        return "SIGINT (interrupted)";
+    case SIGBUS:
+        return "SIGBUS (bus error)";
+    case SIGFPE:
+        return "SIGFPE (floating point exception)";
+    case SIGILL:
+        return "SIGILL (illegal instruction)";
+    case SIGPIPE:
+        return "SIGPIPE (bad pipe)";
+    case SIGSEGV:
+        return "SIGSEGV (segmentation fault)";
+    case SIGSYS:
+        return "SIGSYS (bad syscall)";
+    default:
+        return "unrecognized signal";
+    }
+}
+
+} // namespace
+
 [[noreturn]] EINSUMS_EXPORT void termination_handler(int signum) {
-    bool attach = true;
+    bool attach      = true;
+    bool diagnostics = true;
 
     try {
         auto &global_config = GlobalConfigMap::get_singleton();
         attach              = global_config.get_bool("attach-debugger", true);
+        diagnostics         = global_config.get_bool("diagnostics-on-terminate", true);
     } catch (...) {
         attach = true;
+    }
+
+    // Report before offering the debugger, not after. attach_debugger() spins until
+    // someone attaches, so anything printed behind it is printed only for a developer
+    // who was already sitting at the process - which is the one case that did not need
+    // it. An unattended run wants the report and never reaches the loop.
+    if (diagnostics) {
+        // write(2) rather than the iostreams: this runs in a signal handler, where the
+        // stream objects may be mid-teardown or the lock behind them already held by
+        // the thread we interrupted. The backtrace below allocates and so carries the
+        // opposite risk, which is why it is attempted second and allowed to fail.
+        auto emit = [](char const *text) { [[maybe_unused]] auto ignored = write(STDERR_FILENO, text, std::strlen(text)); };
+        emit("\n=== einsums: fatal signal ===\n");
+        emit(signal_name(signum));
+        emit("\n");
+
+        try {
+            std::string const trace = util::backtrace();
+            if (!trace.empty()) {
+                emit("\nbacktrace:\n");
+                emit(trace.c_str());
+                emit("\n");
+            }
+        } catch (...) { // NOLINT
+            emit("\nbacktrace: unavailable\n");
+        }
+        emit("=== end einsums fatal signal ===\n");
     }
 
     if (signum != SIGINT && attach) {
         util::attach_debugger();
     }
-
-    /// @todo If einsums.diagnostics_on_terminate is true then print out a lot of information.
 
     std::abort();
 }
