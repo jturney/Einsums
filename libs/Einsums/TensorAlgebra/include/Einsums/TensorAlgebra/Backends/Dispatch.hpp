@@ -27,6 +27,10 @@
 #include <Einsums/TensorAlgebra/Permute.hpp> // Required for einsum_do_sort_gemm
 #include <Einsums/TensorBase/Common.hpp>
 
+#ifdef _OPENMP
+#    include <omp.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -923,6 +927,23 @@ inline hptt::SelectionMethod hptt_selection_method() {
     return method;
 }
 
+/// The team size a plan built right now would be shaped for.
+///
+/// A plan's work decomposition is built from the thread count it was created
+/// with, so a plan is only reusable by a caller that wants the same count. The
+/// plan cache @ref compile_permute builds through keys on it for that reason;
+/// the caches below hold that cache's result and so have to check it too, or a
+/// caller reuses a decomposition meant for a different team. Under the moldable
+/// scheduler one thread genuinely does run nodes of differing widths, which is
+/// what makes this reachable.
+inline int permute_plan_team_size() {
+#ifdef _OPENMP
+    return omp_in_parallel() != 0 ? 1 : omp_get_max_threads();
+#else
+    return 1;
+#endif
+}
+
 /**
  * @brief Cached HPTT permute: reuses the plan when tensor dimensions/strides match.
  *
@@ -934,9 +955,12 @@ void cached_permute(std::tuple<DstIndices...> const &dst_indices, DstType *dst, 
                     SrcType const &src) {
     thread_local Dim<SrcRank>                        prev_dims{};
     thread_local Stride<SrcRank>                     prev_strides{};
+    thread_local int                                 prev_threads{0};
     thread_local std::shared_ptr<hptt::Transpose<T>> plan{};
 
-    bool hit = (plan != nullptr);
+    int const team = permute_plan_team_size();
+
+    bool hit = (plan != nullptr) && team == prev_threads;
     if (hit) {
         for (size_t d = 0; d < SrcRank; d++) {
             if (src.dim(d) != prev_dims[d] || src.stride(d) != prev_strides[d]) {
@@ -947,7 +971,8 @@ void cached_permute(std::tuple<DstIndices...> const &dst_indices, DstType *dst, 
     }
 
     if (!hit) {
-        plan = tensor_algebra::compile_permute<ConjA>(T{0}, dst_indices, dst, T{1}, src_indices, src, hptt_selection_method());
+        plan         = tensor_algebra::compile_permute<ConjA>(T{0}, dst_indices, dst, T{1}, src_indices, src, hptt_selection_method());
+        prev_threads = team;
         for (size_t d = 0; d < SrcRank; d++) {
             prev_dims[d]    = src.dim(d);
             prev_strides[d] = src.stride(d);
@@ -967,9 +992,12 @@ void cached_permute(T beta, std::tuple<DstIndices...> const &dst_indices, DstTyp
                     std::tuple<SrcIndices...> const &src_indices, SrcType const &src) {
     thread_local Dim<SrcRank>                        prev_dims{};
     thread_local Stride<SrcRank>                     prev_strides{};
+    thread_local int                                 prev_threads{0};
     thread_local std::shared_ptr<hptt::Transpose<T>> plan{};
 
-    bool hit = (plan != nullptr);
+    int const team = permute_plan_team_size();
+
+    bool hit = (plan != nullptr) && team == prev_threads;
     if (hit) {
         for (size_t d = 0; d < SrcRank; d++) {
             if (src.dim(d) != prev_dims[d] || src.stride(d) != prev_strides[d]) {
@@ -980,7 +1008,8 @@ void cached_permute(T beta, std::tuple<DstIndices...> const &dst_indices, DstTyp
     }
 
     if (!hit) {
-        plan = tensor_algebra::compile_permute<ConjA>(beta, dst_indices, dst, alpha, src_indices, src, hptt_selection_method());
+        plan         = tensor_algebra::compile_permute<ConjA>(beta, dst_indices, dst, alpha, src_indices, src, hptt_selection_method());
+        prev_threads = team;
         for (size_t d = 0; d < SrcRank; d++) {
             prev_dims[d]    = src.dim(d);
             prev_strides[d] = src.stride(d);
