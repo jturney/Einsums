@@ -17,7 +17,7 @@ einsums_add_module(
   DEPENDENCIES
   MODULE_DEPENDENCIES
     Einsums_Config
-    Einsums_CommandLine
+    Einsums_Options
     Einsums_Errors
     Einsums_Logging
     Einsums_TypeSupport

@@ -33,7 +33,7 @@ einsums_add_module(
   SOURCES ${HPTTSources}
   HEADERS ${HPTTHeaders}
   DEPENDENCIES
-  MODULE_DEPENDENCIES Einsums_Assertion Einsums_BLASBase Einsums_CommandLine Einsums_Errors Einsums_Logging Einsums_SIMD
+  MODULE_DEPENDENCIES Einsums_Assertion Einsums_BLASBase Einsums_Options Einsums_Errors Einsums_Logging Einsums_SIMD
   CMAKE_SUBDIRS examples tests
 )
 

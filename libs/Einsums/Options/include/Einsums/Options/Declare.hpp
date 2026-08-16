@@ -7,9 +7,9 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/CommandLine/Get.hpp>
-#include <Einsums/CommandLine/Source.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Options/Get.hpp>
+#include <Einsums/Options/Source.hpp>
 
 #include <fmt/format.h>
 
@@ -815,7 +815,7 @@ struct List : OptionBase {
 /*
  * Opt<T> and List<T> are instantiated over a small closed set across the whole
  * tree. Declaring those instantiations extern keeps their bodies out of every
- * registration TU; the definitions live in CommandLine.cpp. A T outside the set
+ * registration TU; the definitions live in Parse.cpp. A T outside the set
  * still works, it simply instantiates where it is used as before.
  */
 extern template struct EINSUMS_EXTERN_TEMPLATE_EXPORT Opt<std::string>;

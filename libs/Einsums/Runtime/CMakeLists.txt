@@ -27,7 +27,7 @@ einsums_add_module(
   DEPENDENCIES tgt::hdf5 ZLIB::ZLIB
   MODULE_DEPENDENCIES
     Einsums_Assertion
-    Einsums_CommandLine
+    Einsums_Options
     Einsums_Config
     Einsums_Debugging
     Einsums_Profile

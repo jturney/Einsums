@@ -3,9 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/CommandLine/Declare.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Options/Declare.hpp>
 
 EINSUMS_NAMESPACE_BEGIN()
 

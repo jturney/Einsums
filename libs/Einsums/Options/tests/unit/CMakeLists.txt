@@ -12,9 +12,9 @@
 # set(Example1_cpp_FLAGS DEPENDENCIES SomeOtherGreatLibrary) set(Example2_hip_PARAMETERS THREADS 1)
 
 # Name of test file. Include .cpp, .hip, etc. extension.
-set(CommandLineTests cl.cpp)
+set(OptionsTests cl.cpp)
 
-foreach(test ${CommandLineTests})
+foreach(test ${OptionsTests})
   # Extract base name of test Example1.cpp -> Example1, Example.2.hip -> Example
   get_filename_component(TestName ${test} NAME_WE)
   # Extract extension of the test Example1.cpp -> .cpp, Example.2.hip -> .2.hip
@@ -41,6 +41,6 @@ foreach(test ${CommandLineTests})
   )
 
   einsums_add_unit_test(
-    "Modules.Einsums.CommandLine" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS}
+    "Modules.Einsums.Options" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS}
   )
 endforeach()

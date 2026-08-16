@@ -35,7 +35,7 @@ einsums_add_module(
   SOURCES ${LoggingSources}
   HEADERS ${LoggingHeaders}
   DEPENDENCIES ${LoggingDeps}
-  MODULE_DEPENDENCIES Einsums_Assertion Einsums_CommandLine Einsums_Config Einsums_StringUtil
+  MODULE_DEPENDENCIES Einsums_Assertion Einsums_Options Einsums_Config Einsums_StringUtil
   CMAKE_SUBDIRS examples tests
   BASE_LIBNAME Einsums
 )

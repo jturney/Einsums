@@ -5,7 +5,7 @@
 
 // -------------------------- Example ---------------------------- //
 
-#include <Einsums/CommandLine/CommandLine.hpp>
+#include <Einsums/Options/Options.hpp>
 
 using namespace einsums::cl;
 

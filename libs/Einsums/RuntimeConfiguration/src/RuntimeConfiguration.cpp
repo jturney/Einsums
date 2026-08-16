@@ -5,10 +5,10 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/CommandLine.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
+#include <Einsums/Options.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>

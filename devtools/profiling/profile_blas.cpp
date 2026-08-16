@@ -6,7 +6,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLAS.hpp>
-#include <Einsums/CommandLine.hpp>
+#include <Einsums/Options.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Runtime.hpp>
 

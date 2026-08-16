@@ -7,8 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/CommandLine/Get.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Options/Get.hpp>
 
 /*
  * The buffer allocator's options. Both are memory sizes written the way a

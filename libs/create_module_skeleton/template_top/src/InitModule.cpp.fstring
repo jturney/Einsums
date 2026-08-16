@@ -4,7 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/CommandLine.hpp>
+#include <Einsums/Options.hpp>
 #include <Einsums/Runtime.hpp>
 
 #include <{lib_name}/{module_name}/InitModule.hpp>

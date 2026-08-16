@@ -6,10 +6,10 @@
 #include <Einsums/BufferAllocator/InitModule.hpp>
 #include <Einsums/BufferAllocator/ModuleVars.hpp>
 #include <Einsums/BufferAllocator/Options.hpp>
-#include <Einsums/CommandLine.hpp>
-#include <Einsums/CommandLine/CommandLine.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
+#include <Einsums/Options.hpp>
+#include <Einsums/Options/Options.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/StringUtil/MemoryString.hpp>
 

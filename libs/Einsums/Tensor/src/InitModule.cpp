@@ -3,9 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/CommandLine/CommandLine.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
+#include <Einsums/Options/Options.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/Tensor/InitModule.hpp>
 #include <Einsums/Tensor/ModuleVars.hpp>

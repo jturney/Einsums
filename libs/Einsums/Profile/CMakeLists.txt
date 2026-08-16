@@ -31,6 +31,6 @@ einsums_add_module(
   SOURCES ${ProfileSources}
   HEADERS ${ProfileHeaders}
   DEPENDENCIES ${ProfileDeps}
-  MODULE_DEPENDENCIES Einsums_CommandLine Einsums_Config Einsums_Logging Einsums_Print Einsums_Preprocessor Einsums_TypeSupport
+  MODULE_DEPENDENCIES Einsums_Options Einsums_Config Einsums_Logging Einsums_Print Einsums_Preprocessor Einsums_TypeSupport
   CMAKE_SUBDIRS examples tests
 )

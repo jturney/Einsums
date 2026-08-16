@@ -7,8 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/CommandLine/Get.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Options/Get.hpp>
 
 /*
  * The graph optimizer's and executor's options, declared where they are read.

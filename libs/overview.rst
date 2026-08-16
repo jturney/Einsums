@@ -31,7 +31,6 @@ generated API reference for its public headers.
     /libs/Einsums/BufferAllocator/docs/index.rst
     /libs/Einsums/CXX23/docs/index.rst
     /libs/Einsums/Comm/docs/index.rst
-    /libs/Einsums/CommandLine/docs/index.rst
     /libs/Einsums/ComputeGraph/docs/index.rst
     /libs/Einsums/ComputeGraphTypes/docs/index.rst
     /libs/Einsums/Concepts/docs/index.rst
@@ -45,6 +44,7 @@ generated API reference for its public headers.
     /libs/Einsums/Iterator/docs/index.rst
     /libs/Einsums/LinearAlgebra/docs/index.rst
     /libs/Einsums/Logging/docs/index.rst
+    /libs/Einsums/Options/docs/index.rst
     /libs/Einsums/PackedGemm/docs/index.rst
     /libs/Einsums/Preprocessor/docs/index.rst
     /libs/Einsums/Print/docs/index.rst

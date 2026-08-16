@@ -16,7 +16,7 @@ einsums_add_module(
   {pybind_flag}SOURCES ${{{module_name}Sources}}
   HEADERS ${{{module_name}Headers}}
   DEPENDENCIES {export_depends}
-  MODULE_DEPENDENCIES Einsums_Runtime Einsums_Logging Einsums_TypeSupport Einsums_Config Einsums_CommandLine
+  MODULE_DEPENDENCIES Einsums_Runtime Einsums_Logging Einsums_TypeSupport Einsums_Config Einsums_Options
   CMAKE_SUBDIRS examples tests
   BASE_LIBNAME {lib_name}
 )

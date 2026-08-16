@@ -27,4 +27,4 @@ See the :ref:`API reference <modules_Einsums_Config_api>` for full details.
   :ref:`modules_Einsums_Hardware` supplies the thresholds to test against.
 
 This module holds build configuration only. Runtime options live in
-:ref:`modules_Einsums_CommandLine`.
+:ref:`modules_Einsums_Options`.

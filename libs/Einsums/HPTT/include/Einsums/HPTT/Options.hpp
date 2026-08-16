@@ -7,8 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/CommandLine/Get.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Options/Get.hpp>
 
 /*
  * HPTT's plan-selection option, declared where the plans are built.

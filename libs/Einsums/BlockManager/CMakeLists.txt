@@ -19,7 +19,7 @@ einsums_add_module(
   SOURCES ${BlockManagerSources}
   HEADERS ${BlockManagerHeaders}
   DEPENDENCIES 
-  MODULE_DEPENDENCIES Einsums_Runtime Einsums_Logging Einsums_TypeSupport Einsums_Config Einsums_CommandLine Einsums_BufferAllocator ${EinsumsBlockAllocatorGPUDeps}
+  MODULE_DEPENDENCIES Einsums_Runtime Einsums_Logging Einsums_TypeSupport Einsums_Config Einsums_Options Einsums_BufferAllocator ${EinsumsBlockAllocatorGPUDeps}
   CMAKE_SUBDIRS examples tests
   BASE_LIBNAME Einsums
 )

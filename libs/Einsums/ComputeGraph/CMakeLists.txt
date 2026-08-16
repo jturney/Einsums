@@ -139,7 +139,7 @@ einsums_add_module(
   MODULE_DEPENDENCIES
     Einsums_BLAS
     Einsums_Comm
-    Einsums_CommandLine
+    Einsums_Options
     Einsums_ComputeGraphTypes
     Einsums_Concepts
     Einsums_Config

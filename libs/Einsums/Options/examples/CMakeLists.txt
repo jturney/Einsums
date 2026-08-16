@@ -4,12 +4,12 @@
 #----------------------------------------------------------------------------------------------
 
 if(EINSUMS_WITH_EXAMPLES)
-  einsums_add_pseudo_target(Examples.Modules.Einsums.CommandLine)
-  einsums_add_pseudo_dependencies(Examples.Modules Examples.Modules.Einsums.CommandLine)
+  einsums_add_pseudo_target(Examples.Modules.Einsums.Options)
+  einsums_add_pseudo_dependencies(Examples.Modules Examples.Modules.Einsums.Options)
   if(EINSUMS_WITH_TESTS AND EINSUMS_WITH_TESTS_EXAMPLES)
-    einsums_add_pseudo_target(Tests.Examples.Modules.Einsums.CommandLine)
+    einsums_add_pseudo_target(Tests.Examples.Modules.Einsums.Options)
     einsums_add_pseudo_dependencies(
-      Tests.Examples.Modules Tests.Examples.Modules.Einsums.CommandLine
+      Tests.Examples.Modules Tests.Examples.Modules.Einsums.Options
     )
   endif()
 else()
@@ -27,15 +27,15 @@ foreach(example_program ${example_programs})
   einsums_add_executable(
     ${example_program} INTERNAL_FLAGS
     SOURCES ${sources} ${${example_program}_FLAGS}
-    FOLDER "Examples/Modules/Einsums/CommandLine"
+    FOLDER "Examples/Modules/Einsums/Options"
     NOINSTALL
   )
 
-  einsums_add_example_target_dependencies("Modules.Einsums.CommandLine" ${example_program})
+  einsums_add_example_target_dependencies("Modules.Einsums.Options" ${example_program})
 
   if(EINSUMS_WITH_TESTS AND EINSUMS_WITH_TESTS_EXAMPLES)
     einsums_add_example_test(
-      "Modules.Einsums.CommandLine" ${example_program} ${${example_program}_PARAMETERS}
+      "Modules.Einsums.Options" ${example_program} ${${example_program}_PARAMETERS}
     )
   endif()
 endforeach()

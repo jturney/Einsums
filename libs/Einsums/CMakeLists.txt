@@ -15,7 +15,7 @@ set(_Einsums_modules
   BLASVendor
   BlockManager
   BufferAllocator
-  CommandLine
+  Options
   Concepts
   Config
   Hardware

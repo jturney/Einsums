@@ -3,11 +3,11 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/CommandLine.hpp>
-#include <Einsums/CommandLine/CommandLine.hpp>
 #include <Einsums/HPTT/Files.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
 #include <Einsums/LinearAlgebra.hpp>
+#include <Einsums/Options.hpp>
+#include <Einsums/Options/Options.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Tensor.hpp>
 #include <Einsums/TensorAlgebra.hpp>

@@ -2,11 +2,11 @@
     Copyright (c) The Einsums Developers. All rights reserved.
     Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
-.. _modules_Einsums_CommandLine:
+.. _modules_Einsums_Options:
 
-===================
-Einsums CommandLine
-===================
+===============
+Einsums Options
+===============
 
 A small C++20 command-line parser in the spirit of LLVM's ``cl::`` utilities, simplified and
 dependency-free aside from ``fmt`` for help text.
@@ -23,7 +23,7 @@ Quick Start
 
 .. code-block:: cpp
 
-   #include <Einsums/CommandLine.hpp>
+   #include <Einsums/Options.hpp>
 
    using namespace einsums::cl;
 
@@ -561,5 +561,5 @@ Can I bind directly into application config structs?
 How do I find out where a value came from?
   Read ``value_source`` on the option, and ``effective_env_name()`` for the variable it consulted.
 
-See the :ref:`API reference <modules_Einsums_CommandLine_api>` of this module for more
+See the :ref:`API reference <modules_Einsums_Options_api>` of this module for more
 details.

@@ -3,8 +3,8 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/CommandLine.hpp>
-#include <Einsums/CommandLine/CommandLine.hpp>
+#include <Einsums/Options.hpp>
+#include <Einsums/Options/Options.hpp>
 #include <Einsums/Utilities/SetEnv.hpp>
 
 #include <string>

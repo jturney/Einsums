@@ -7,14 +7,15 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/CommandLine/Declare.hpp>
-#include <Einsums/CommandLine/Get.hpp>
-#include <Einsums/CommandLine/Parse.hpp>
-#include <Einsums/CommandLine/Source.hpp>
+#include <Einsums/Options/Declare.hpp>
+#include <Einsums/Options/Get.hpp>
+#include <Einsums/Options/Parse.hpp>
+#include <Einsums/Options/Source.hpp>
 
 /*
  * The whole option system in one include, for callers that want all of it and
  * for source compatibility with the single header this module used to be.
+ * <Einsums/CommandLine.hpp> forwards here for one release.
  *
  * Prefer the piece you actually need:
  *
