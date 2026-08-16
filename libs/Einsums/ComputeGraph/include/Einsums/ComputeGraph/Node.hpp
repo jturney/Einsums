@@ -413,8 +413,13 @@ struct Node {
     ///        and is executed exactly as width 1.
     ///
     /// @ref DataflowExecutor guarantees a node with a width above 1 sees exactly
-    /// that many threads in @c omp_get_max_threads() and in the vendor BLAS, for
-    /// the duration of the node and on whichever thread runs it.
+    /// that many threads in @c omp_get_max_threads(), for the duration of the
+    /// node and on whichever thread runs it. The vendor BLAS sees the width
+    /// only where the vendor supports per-caller widths (MKL); an
+    /// OpenMP-threaded OpenBLAS does not, so vendor calls made under the width
+    /// are clamped back to one thread (see @ref blas::set_moldable_width_scope)
+    /// and the planner never assigns such a node a width to begin with
+    /// (@ref blas_route_is_moldable).
     /// @ref SequentialExecutor and @ref OpenMPExecutor ignore the field, so a
     /// graph carrying widths behaves exactly as an unplanned one under them.
     ///

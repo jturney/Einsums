@@ -8,6 +8,7 @@
 // This header is included from Dispatch.hpp.
 
 #include <Einsums/BLAS.hpp>
+#include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
@@ -284,6 +285,23 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 // BLIS-style packed contraction with BLAS GEMM tiles
 // ---------------------------------------------------------------------------
 
+/// Name of the kernel route the most recent @ref blis_contraction call on this
+/// thread took: "gemm_batch", "flatten_gemm", "single_k_gemm" or "packed",
+/// the first three being the fast paths that hand the whole contraction to the
+/// vendor and the last the engine's own packed loops.
+///
+/// Test introspection ONLY, mirroring @c dispatch::last_dispatch_route one
+/// level down - that one names which BACKEND took the contraction, and this one
+/// which kernel inside PackedGemm did. It exists so a test can assert that a
+/// node-scoped width sends the work to the packed loops rather than to a vendor
+/// GEMM the wrappers would clamp to one thread. Thread-local, and for a batched
+/// contraction it names the last slice this thread ran; not an API for steering
+/// execution.
+inline char const *&last_contraction_route() {
+    thread_local char const *route = "none";
+    return route;
+}
+
 /// @brief Execute a tensor contraction via Pack-A / Pack-B + BLAS GEMM tiles (BLIS-style).
 ///
 /// For multi-K contractions (rank-3+), flattens A and B into contiguous M*K / K*N buffers
@@ -304,6 +322,21 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
     MicroKernelShape const         shape      = micro_kernel_shape<ValueType>();
     int const                      MR         = shape.mr;
     int const                      NR         = shape.nr;
+
+    // Whether to keep the whole contraction rather than hand it to one vendor
+    // GEMM. A caller holding a node-scoped width has its vendor calls clamped to
+    // one thread (@ref einsums::blas::vendor_call_is_fenced), so the deferring
+    // fast paths below would run the node serially while the packed loops, which
+    // fork from the same ICV the width raised, get all of it. The gemm_batch
+    // path is exempt: its vendor entry point is einsums' own OpenMP loop over
+    // serial GEMMs, it forks from the ICV too, and its wrapper carries no fence.
+    //
+    // Read once per call and deliberately not stored anywhere: the plan cache
+    // and the caller's ContractionSite are shared across nodes and across
+    // widths, and a route chosen for one width is not a fact about the
+    // contraction. Every lookup that reaches this function has already happened,
+    // so the caches stay width-neutral.
+    bool const prefer_packed = einsums::blas::vendor_call_is_fenced();
 
     // Cache-aware blocking: tile sizes adapt to sizeof(ValueType) and CPU cache hierarchy.
     auto const blk = compute_blocking(static_cast<int64_t>(sizeof(ValueType)));
@@ -351,6 +384,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
     // Batch GEMM fast path: if single-K, single-M, single-N with compatible
     // strides, precompute pointer arrays and call gemm_batch() for all batches
     // at once. This is much faster than looping over batches individually.
+    //
+    // Kept under a node width, unlike the single-GEMM deferrals below: the
+    // gemm_batch entry point is einsums' own OpenMP loop over the batch, which
+    // forks from the ICV the width raised and runs its inner GEMMs nested-serial,
+    // so it consumes the width instead of losing it to the wrapper fence (which
+    // the batch wrappers deliberately do not carry).
     // -------------------------------------------------------------------------
     if (plan.batch_total > 1 && plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && !plan.synthetic) {
         // NOLINTNEXTLINE(readability-identifier-naming)
@@ -397,6 +436,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
         if (can_batch && !conj_a && !conj_b) {
             LabeledSection("gemm_batch fast path");
+            last_contraction_route() = "gemm_batch";
 
             // Precompute pointer arrays
             int64_t const                  bt = plan.batch_total;
@@ -471,9 +511,16 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // The flatten+GEMM path writes C directly and supports only stride-1
         // column- or row-major outputs; scatter-layout C goes to the tiled or
         // block-GEMM paths below.
-        if (plan.k_dims_in_a.size() > 1 && !scatter_c && !plan.synthetic) {
+        //
+        // Every exit from this block is a vendor GEMM over the flat buffers -
+        // one call when both sides are zero-copy, a serial chain of KC slices
+        // otherwise - so under a fenced width the whole block runs on one
+        // thread. The packed loops below take the contraction instead; they read
+        // the same multi-K plan through pack_A/pack_B.
+        if (plan.k_dims_in_a.size() > 1 && !scatter_c && !plan.synthetic && !prefer_packed) {
             // Multi-K fast path: only for single-M, single-N (can map to flat BLAS GEMM).
             LabeledSection("flatten + GEMM");
+            last_contraction_route() = "flatten_gemm";
             // NOLINTNEXTLINE(readability-identifier-naming)
             using blas_int = einsums::blas::int_t;
 
@@ -749,8 +796,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // When K has a single dimension, the contraction is a standard GEMM with
         // strides.  BLAS can handle this directly via lda/ldb/ldc parameters,
         // avoiding the expensive pack_A/pack_B + tiled micro-GEMM.
+        //
+        // Skipped under a fenced width for the reason given at the top: this is
+        // the whole contraction in one vendor call, which is the one shape of
+        // work a clamped vendor cannot spread.
         // -------------------------------------------------------------------------
-        if (plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && !plan.synthetic) {
+        if (plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && !plan.synthetic && !prefer_packed) {
             // Single-K fast path: only for single-M, single-N (direct BLAS GEMM dispatch).
             // NOLINTNEXTLINE(readability-identifier-naming)
             using blas_int = einsums::blas::int_t;
@@ -886,6 +937,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             }
 
             if (dispatched) {
+                last_contraction_route() = "single_k_gemm";
                 continue; // next batch slice
             }
         }
@@ -893,6 +945,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // -------------------------------------------------------------------------
         // Fallback: BLIS-style tiled packing with BLAS GEMM per tile.
         // -------------------------------------------------------------------------
+        last_contraction_route() = "packed";
         // NOLINTNEXTLINE(readability-identifier-naming)
         using blas_int = einsums::blas::int_t;
 
@@ -1466,7 +1519,16 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             // in_a && in_b → batch dim (handled by packing plan)
         }
         // Skip contractions that BLAS GEMM can handle directly (no batch, single M/N/K).
-        if (m_count == 1 && n_count == 1 && link.size() == 1 && !spec.conj_a && !spec.conj_b && m_count + n_count == target.size()) {
+        //
+        // Not under a fenced width: the direct GEMM this defers to would be
+        // clamped to one thread, and the packed loops are what can still use the
+        // node's width. The decline recorded here stays width-neutral because
+        // the only caller that hands in a site (the ComputeGraph string
+        // dispatch) reaches this function for such a shape ONLY when the fence
+        // is in force - its own rank-2 gemm_direct route takes the shape first
+        // otherwise - so a memo written in one regime is never read in the other.
+        if (m_count == 1 && n_count == 1 && link.size() == 1 && !spec.conj_a && !spec.conj_b && m_count + n_count == target.size() &&
+            !einsums::blas::vendor_call_is_fenced()) {
             ProfileAnnotate("packed_gemm_skip", "defer_to_direct_gemm");
             remember(key, nullptr);
             return false; // Deferred to direct BLAS GEMM, not a rejection.

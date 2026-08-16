@@ -67,6 +67,13 @@ class WidthGuard {
         _prev_omp = omp_get_max_threads();
         omp_set_num_threads(width);
 #endif
+        // The raised ICV is for the kernels einsums threads itself; an
+        // OpenMP-threaded vendor BLAS must not fork from it (concurrent
+        // callers with differing ICVs are outside what OpenBLAS supports, see
+        // blas::set_moldable_width_scope). The flag makes the BLAS wrappers
+        // clamp any vendor call made under this guard back to one thread.
+        _prev_scope = blas::moldable_width_scope();
+        blas::set_moldable_width_scope(true);
         // A vendor that cannot be read cannot be set either (both are the same
         // build-time switch), so a zero here means there is no vendor state to
         // save, and restoring the 0 would ask for a nonsense thread count.
@@ -80,6 +87,7 @@ class WidthGuard {
         if (_prev_blas > 0) {
             blas::set_num_threads_this_thread(_prev_blas);
         }
+        blas::set_moldable_width_scope(_prev_scope);
 #ifdef _OPENMP
         omp_set_num_threads(_prev_omp);
 #endif
@@ -94,7 +102,8 @@ class WidthGuard {
 #ifdef _OPENMP
     int _prev_omp{1};
 #endif
-    int _prev_blas{0};
+    int  _prev_blas{0};
+    bool _prev_scope{false};
 };
 
 /// Run every node in list order, collecting timings into one batch.

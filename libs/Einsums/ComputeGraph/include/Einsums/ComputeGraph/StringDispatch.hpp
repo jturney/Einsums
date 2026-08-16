@@ -14,6 +14,7 @@
  * unsupported patterns.
  */
 
+#include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
@@ -585,7 +586,16 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // (gemv, ger, string_gemm, direct_product) don't conjugate. Conjugated
     // contractions go to PackedGemm (native via spec.conj_a/conj_b) for
     // gemm-shaped cases, else the conj-aware generic loop.
+    //
+    // The two rank-2 GEMM routes are the exception: a matrix times a matrix is
+    // the one shape here that a thread's node width could have spread, and a
+    // vendor GEMM issued under such a width is clamped to one thread by the BLAS
+    // wrappers' fence. When that is in force they stand aside and PackedGemm
+    // takes the shape, whose packed loops fork from the ICV the width raised.
+    // Read per call, never cached: see the same predicate's use in
+    // try_packed_gemm.
     if (!conj_a && !conj_b) {
+        [[maybe_unused]] bool const gemm_is_fenced = einsums::blas::vendor_call_is_fenced();
         if constexpr (HasCompileTimeRank<AType> && HasCompileTimeRank<BType> && HasCompileTimeRank<CType>) {
             constexpr size_t a_rank = std::remove_cvref_t<AType>::Rank;
             constexpr size_t b_rank = std::remove_cvref_t<BType>::Rank;
@@ -647,7 +657,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 
             // ── GEMM: matrix × matrix → matrix ──────────────────────────────
             if constexpr (a_rank == 2 && b_rank == 2 && c_rank == 2) {
-                if (links.size() == 1) {
+                if (links.size() == 1 && !gemm_is_fenced) {
                     ProfileAnnotate("dispatch", "gemm_direct");
                     last_dispatch_route() = "gemm_direct";
                     string_gemm(parsed, links[0], c_pf, C, ab_pf, A, B);
@@ -771,7 +781,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 
             // ── GEMM: matrix × matrix → matrix ───────────────────────────
             if (a_rank == 2 && b_rank == 2 && c_rank == 2) {
-                if (links.size() == 1) {
+                if (links.size() == 1 && !gemm_is_fenced) {
                     ProfileAnnotate("dispatch", "gemm_direct_runtime");
                     last_dispatch_route() = "gemm_direct_runtime";
                     auto av               = upcast(A, std::integral_constant<std::size_t, 2>{});

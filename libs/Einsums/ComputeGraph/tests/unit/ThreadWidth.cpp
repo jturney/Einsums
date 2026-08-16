@@ -300,7 +300,15 @@ TEST_CASE("ThreadWidth - moldability follows the kernel and the vendor", "[Compu
 
     // A vendor call is governable only where the vendor listens.
     REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::Gemm)) == cg::blas_route_is_moldable());
-    REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::Einsum)) == cg::blas_route_is_moldable());
+    REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::Gemv)) == cg::blas_route_is_moldable());
+
+    // A contraction is not a vendor call: PackedGemm's engine keeps the work in
+    // its own tiled loops rather than deferring to a GEMM the wrappers' fence
+    // would clamp, so the width reaches a kernel einsums threads. The two
+    // batched-GEMM kinds are einsums' own loop over the batch and always were.
+    REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::Einsum)));
+    REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::BatchedGemm)));
+    REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::GroupedBatchedGemm)));
 
     // Containers hold no kernel; their bodies carry the widths.
     REQUIRE_FALSE(cg::kernel_moldability(kind_node(cg::OpKind::Loop)));
@@ -309,4 +317,89 @@ TEST_CASE("ThreadWidth - moldability follows the kernel and the vendor", "[Compu
     // The two ways a vendor can be told apart are independent facts, and at
     // most one of them holds: MKL keeps its own runtime, OpenBLAS reads ours.
     REQUIRE_FALSE((blas::has_per_thread_control() && blas::threads_with_openmp()));
+}
+
+TEST_CASE("ThreadWidth - a node width sends a contraction to the packed loops", "[ComputeGraph][Executor][ThreadWidth]") {
+    // The mechanism the (T)-shaped contractions depend on, checked one level
+    // below the executor. A vendor GEMM issued under a node width is clamped to
+    // one thread by the BLAS wrappers' fence, so PackedGemm's engine declines
+    // its own deferring fast paths there and packs the contraction instead.
+    // Outside such a scope nothing changes, which is the half worth pinning:
+    // eager callers and width-1 nodes must keep the route they always had.
+    if (!blas::threads_with_openmp()) {
+        SKIP("the fence only applies to a vendor that reads our OpenMP ICV");
+    }
+    if (hardware::get_max_threads() < 2) {
+        SKIP("a fenced width has to be a width above one");
+    }
+
+    // "abc <- abd ; cd": two M indices, one N, one link. The DLPNO triples
+    // shape, and after dim coalescing a single-M/N/K contraction - which is
+    // exactly what the single-GEMM deferral picks up.
+    constexpr size_t n     = 48;
+    auto             K     = create_random_tensor<double>("K_xvvv", n, n, n);
+    auto             t     = create_random_tensor<double>("t_kj", n, n);
+    auto             eager = create_zero_tensor<double>("eager", n, n, n);
+    auto             wide  = create_zero_tensor<double>("wide", n, n, n);
+
+    cg::einsum("abd;cd->abc", &eager, K, t);
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "packed_gemm");
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
+
+    {
+        // What WidthGuard does around a wide node, minus the executor. The
+        // ceiling this thread already carries is above one, so it is the width
+        // being held; the flag is the half the guard adds.
+        blas::set_moldable_width_scope(true);
+        cg::einsum("abd;cd->abc", &wide, K, t);
+        blas::set_moldable_width_scope(false);
+    }
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "packed_gemm");
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
+
+    // Two kernels, one answer. The sums are reassociated, nothing else.
+    for (size_t e = 0; e < eager.size(); e++) {
+        REQUIRE(std::abs(eager.data()[e] - wide.data()[e]) < 1e-10 * std::max(1.0, std::abs(eager.data()[e])));
+    }
+
+    // Leaving the scope restores the route, so nothing about the eager path is
+    // conditional on a wide call having happened earlier.
+    cg::einsum("abd;cd->abc", &eager, K, t);
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
+}
+
+TEST_CASE("ThreadWidth - a rank-2 GEMM under a width leaves the vendor route", "[ComputeGraph][Executor][ThreadWidth]") {
+    // The other half of the same seam: a matrix times a matrix is taken by the
+    // string dispatch's own gemm_direct route before PackedGemm ever sees it,
+    // so the width has to be honored there instead.
+    if (!blas::threads_with_openmp()) {
+        SKIP("the fence only applies to a vendor that reads our OpenMP ICV");
+    }
+    if (hardware::get_max_threads() < 2) {
+        SKIP("a fenced width has to be a width above one");
+    }
+
+    constexpr size_t n     = 96;
+    auto             A     = create_random_tensor<double>("A", n, n);
+    auto             B     = create_random_tensor<double>("B", n, n);
+    auto             eager = create_zero_tensor<double>("C_eager", n, n);
+    auto             wide  = create_zero_tensor<double>("C_wide", n, n);
+
+    cg::einsum("ik;kj->ij", &eager, A, B);
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct");
+
+    {
+        blas::set_moldable_width_scope(true);
+        cg::einsum("ik;kj->ij", &wide, A, B);
+        blas::set_moldable_width_scope(false);
+    }
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "packed_gemm");
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
+
+    for (size_t e = 0; e < eager.size(); e++) {
+        REQUIRE(std::abs(eager.data()[e] - wide.data()[e]) < 1e-10 * std::max(1.0, std::abs(eager.data()[e])));
+    }
+
+    cg::einsum("ik;kj->ij", &eager, A, B);
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct");
 }

@@ -96,4 +96,67 @@ EINSUMS_EXPORT int get_num_threads_this_thread();
  */
 EINSUMS_EXPORT bool threads_with_openmp();
 
+/**
+ * @brief Mark the calling thread as holding a node-scoped OpenMP width.
+ *
+ * An executor that gives one task a thread team of its own - the moldable
+ * scheduler's `WidthGuard` - raises the calling thread's OpenMP ICV for the
+ * task and restores it after. Kernels einsums threads itself may fork from
+ * that ICV freely. Vendor BLAS calls may NOT: an OpenMP-built OpenBLAS obeys
+ * each caller's ICV but does not support concurrent callers whose ICVs
+ * differ. Its server syncs a process-global thread count to the caller's
+ * value on every call, frees shared pack buffers when that global shrinks,
+ * and sizes its work queue from the global while forking the team from the
+ * caller - so two callers disagreeing about the width corrupt results or
+ * deadlock. This holds for every OpenBLAS release through at least 0.3.34.
+ *
+ * While the flag is set, the BLAS module's vendor wrappers therefore clamp
+ * the ICV to one thread around the vendor call and restore it after, no
+ * matter what any width plan says. The flag is thread-local; the guard that
+ * raises the ICV sets it and clears it with the same lifetime.
+ *
+ * The invariant this buys is not "every caller presents width 1" - the
+ * thread that called execute() helps run tasks and is not pinned, so it
+ * presents its own baseline ICV. It is that AT MOST ONE width above 1 is
+ * ever presented to the vendor: node-scoped widths are clamped here, worker
+ * pins are 1, and a width-1 caller never reaches the vendor's global sync at
+ * all (its num_cpu_avail early-returns). One stable >1 value is the regime
+ * every executor ran in before widths existed and the one the vendor
+ * supports.
+ *
+ * @param[in] active True on entering a node-scoped width, false on leaving.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT void set_moldable_width_scope(bool active);
+
+/**
+ * @brief Whether the calling thread currently holds a node-scoped OpenMP width.
+ *
+ * See @ref set_moldable_width_scope for what the answer obligates a vendor
+ * BLAS call to do.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT bool moldable_width_scope();
+
+/**
+ * @brief Whether a vendor call made from this thread right now would be clamped
+ *        to one thread.
+ *
+ * The exact condition the wrappers' fence applies, asked before the call rather
+ * than during it: a node-scoped width is held, the vendor threads through our
+ * OpenMP runtime, and the width being held is above one. It answers the
+ * question a kernel with two implementations has to answer - hand the work to
+ * the vendor, or run it here - because under this condition the vendor gets one
+ * thread while anything einsums forks from the ICV gets the node's full width.
+ *
+ * Read per call and never stored. The answer is a property of the calling
+ * thread at this instant, so a cache keyed on the contraction rather than on
+ * the caller must not hold it.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT bool vendor_call_is_fenced();
+
 EINSUMS_NAMESPACE_END(blas)

@@ -10,6 +10,10 @@
 
 #include <string_view>
 
+#ifdef _OPENMP
+#    include <omp.h>
+#endif
+
 #if defined(EINSUMS_HAVE_MKL)
 // Declared rather than pulled from mkl.h so this stays independent of which
 // MKL headers the build has, and of the LP64/ILP64 spelling: both take and
@@ -75,6 +79,29 @@ bool threads_with_openmp() {
         return config != nullptr && std::string_view(config).find("USE_OPENMP") != std::string_view::npos;
     }();
     return built_with_openmp;
+#else
+    return false;
+#endif
+}
+
+namespace {
+thread_local bool moldable_width_scope_active = false;
+}
+
+void set_moldable_width_scope(bool active) {
+    moldable_width_scope_active = active;
+}
+
+bool moldable_width_scope() {
+    return moldable_width_scope_active;
+}
+
+bool vendor_call_is_fenced() {
+#ifdef _OPENMP
+    // Mirrors VendorWidthFence in BLAS.cpp term for term. Kept here rather than
+    // shared with it because that fence is on the hot path of 48 wrappers and
+    // constructs its clamp from the same reads.
+    return moldable_width_scope_active && threads_with_openmp() && omp_get_max_threads() > 1;
 #else
     return false;
 #endif

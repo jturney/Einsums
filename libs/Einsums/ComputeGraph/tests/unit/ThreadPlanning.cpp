@@ -219,7 +219,9 @@ TEST_CASE("ThreadPlanning - a BLAS route follows the vendor's moldability", "[Co
         REQUIRE(width_of(graph, 0) > 1);
     } else {
         // Accelerate and reference BLAS: the width would be a number nothing
-        // honors, so the planner does not write one.
+        // honors. An OpenMP-built OpenBLAS would honor it but cannot take
+        // concurrent callers at different widths without corrupting, so it
+        // lands here too. Either way the planner does not write one.
         REQUIRE(width_of(graph, 0) == 1);
     }
 }
@@ -404,4 +406,65 @@ TEST_CASE("ThreadPlanning - a planned replay is deterministic at fixed P", "[Com
     graph.execute(df);
     REQUIRE(bytes_of(fixture.c1) == first_c1);
     REQUIRE(bytes_of(fixture.c2) == first_c2);
+}
+
+TEST_CASE("ThreadPlanning - the triples contractions are widened", "[ComputeGraph][ThreadPlanning]") {
+    // The shape the moldable plan exists for: a rank-3 contraction against a
+    // rank-2 factor, accumulated through a permute, six permutations deep. Both
+    // kinds are einsums-threaded now - the contraction because PackedGemm keeps
+    // it in its own packed loops under a width the wrappers would clamp - so
+    // both must come back above 1 on a machine with threads to divide.
+    unsigned const p = machine_threads();
+    if (p < 4) {
+        SKIP("plan needs at least four threads to have anything to divide");
+    }
+
+    constexpr size_t n = 220;
+
+    cg::Graph  graph("triples_shaped");
+    auto      &scratch    = graph.declare_runtime_tensor<double>("scratch", {n, n, n});
+    auto      &w          = graph.declare_runtime_tensor<double>("W", {n, n, n});
+    auto      &k          = graph.declare_runtime_tensor<double>("K_xvvv", {n, n, n});
+    auto      &t          = graph.declare_runtime_tensor<double>("t_kj", {n, n});
+    auto const scratch_id = graph.find_tensor_id_by_ptr(&scratch);
+    auto const w_id       = graph.find_tensor_id_by_ptr(&w);
+    auto const k_id       = graph.find_tensor_id_by_ptr(&k);
+    auto const t_id       = graph.find_tensor_id_by_ptr(&t);
+
+    for (int perm = 0; perm < 6; perm++) {
+        cg::Node contract;
+        contract.kind    = cg::OpKind::Einsum;
+        contract.label   = fmt::format("abc <- abd ; cd [{}]", perm);
+        contract.inputs  = {k_id, t_id};
+        contract.outputs = {scratch_id};
+        contract.execute = []() {};
+        graph.add_node(std::move(contract));
+
+        cg::Node accumulate;
+        accumulate.kind    = cg::OpKind::Permute;
+        accumulate.label   = fmt::format("W <- scratch [{}]", perm);
+        accumulate.inputs  = {scratch_id};
+        accumulate.outputs = {w_id};
+        accumulate.execute = []() {};
+        graph.add_node(std::move(accumulate));
+    }
+
+    cg::passes::ThreadPlanning planner(p);
+    planner.run(graph);
+
+    std::vector<std::string> widths;
+    unsigned                 wide_contractions = 0;
+    unsigned                 wide_permutes     = 0;
+    for (auto const &node : graph.nodes()) {
+        widths.push_back(fmt::format("{} = {}", node.label, node.thread_width));
+        if (node.kind == cg::OpKind::Einsum && node.thread_width > 1) {
+            wide_contractions++;
+        }
+        if (node.kind == cg::OpKind::Permute && node.thread_width > 1) {
+            wide_permutes++;
+        }
+    }
+    INFO(fmt::format("planned widths on {} threads: {}", p, fmt::join(widths, ", ")));
+    REQUIRE(wide_contractions > 0);
+    REQUIRE(wide_permutes > 0);
 }
