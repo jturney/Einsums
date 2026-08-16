@@ -23,8 +23,8 @@ from enum import Enum
 
 # Every option below also has an environment variable, read by the C++ runtime
 # itself rather than by this module: einsums:log:level is EINSUMS_LOG_LEVEL,
-# einsums:debug:no-attach-debugger is EINSUMS_DEBUG_NO_ATTACH_DEBUGGER, and so
-# on. Precedence is default < environment < the fields below, since these are
+# einsums:debug:attach-debugger is EINSUMS_DEBUG_ATTACH_DEBUGGER, and so on.
+# Precedence is default < environment < the fields below, since these are
 # handed to einsums::initialize() as command line arguments.
 #
 # So a launcher that wants to flip a setting without touching this module - the
@@ -32,12 +32,12 @@ from enum import Enum
 # "waiting for debugger" prompt so a failing test cannot hang - just exports the
 # variable. Leaving a field as ``None`` here is what lets that through.
 #
-# Flags are declared in the positive and the runtime generates the ``no-``
-# spelling, so ``--einsums:profile:report`` turns off as
-# ``--einsums:profile:no-report``. Several fields below still carry the older
-# negated names (``profile_no_report``, ``debug_no_attach_debugger``); they are
-# unchanged and still work, because the negated spellings all still parse.
-# Setting one to ``True`` requests the negation, which is what the name says.
+# Boolean fields are named for what turning them ON does, matching the flags the
+# runtime declares, and they are three-valued. ``None`` leaves the runtime
+# default in place. ``True`` asks for the setting. ``False`` asks for its
+# negation, which is a real request rather than a no-op: writing
+# ``profile_report = False`` passes ``--einsums:profile:no-report``, because a
+# flag that already defaults to on cannot be turned off by staying silent.
 
 # Buffer Allocator:
 #   --einsums:buffer-size <value>                        Total size of buffers allocated for tensor contractions
@@ -104,9 +104,11 @@ pass_analyze: bool | None = None
 pass_verbose: bool | None = None
 
 # Debug
-debug_no_install_signal_handlers: bool | None = None
-debug_no_attach_debugger: bool | None = None
-debug_no_diagnostics_on_terminate: bool | None = None
+# Each defaults to True in the runtime. Set one to ``False`` to turn it off;
+# ``None`` leaves the runtime default alone.
+debug_install_signal_handlers: bool | None = None
+debug_attach_debugger: bool | None = None
+debug_diagnostics_on_terminate: bool | None = None
 
 # HPTT
 hptt_selection_method: str | None = None  # "estimate" / "measure" / "patient" / "crazy"
@@ -129,12 +131,12 @@ log_destination: str | None = None
 log_format: str | None = None
 
 # Profile
-# Don't generate profile report. ``None`` means the einsums default of ``False``.
-profile_no_report: bool | None = None
+# Generate a profile report on exit. ``None`` means the einsums default of ``True``.
+profile_report: bool | None = None
 # Generate profile filename. ``None`` means the einsums default of ``"profile.txt"``.
 profile_filename: str | None = None
-# Don't append to profile file.
-profile_no_append: bool | None = None
+# Append to the profile file instead of truncating it. Defaults to ``True``.
+profile_append: bool | None = None
 # Print detailed profile report.
 profile_detailed: bool | None = None
 # Save profile session JSON for imgui viewer.
@@ -150,5 +152,6 @@ scratch_dir: str | None = None
 # The name of the HDF5 file for Einsums. ``None`` means the einsums default
 # of ``einsums.[pid].h5``, where ``[pid]`` is the PID of the current process.
 hdf5_file_name: str | None = None
-# Tell einsums not to clean up HDF5 files on exit.
-no_delete_hdf5_files: bool | None = None
+# Clean up the HDF5 scratch file on exit. Defaults to ``True``; set ``False`` to
+# keep the file for inspection.
+delete_hdf5_files: bool | None = None

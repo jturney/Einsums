@@ -14,6 +14,7 @@
 // file linted, formatted, and IDE-indexed like ordinary C++ sources.
 
 #include <Einsums/Config/ABI.hpp>
+#include <Einsums/Options/Get.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
 #include <Einsums/Utilities/SetEnv.hpp>
@@ -41,9 +42,9 @@ namespace {
 // spellings are runtime-internal to keep this mapping in lockstep with
 // libs/Einsums/Runtime configuration.
 //
-// Per-category block layout mirrors the runtime's cl::OptionCategory
-// groupings. See libs/Einsums/RuntimeConfiguration/src/RuntimeConfiguration.cpp
-// and the per-module InitModule.cpp files in BufferAllocator, Tensor, and so on.
+// Per-category block layout mirrors the runtime's option categories. Each
+// spelling below matches a descriptor in the owning module's Options.hpp:
+// Einsums/Runtime/Options.hpp, Einsums/Profile/Options.hpp, and so on.
 std::vector<std::string> argv_from_rc(py::module_ const &rc) {
     std::vector<std::string> argv;
     argv.emplace_back("einsums-python");
@@ -64,14 +65,17 @@ std::vector<std::string> argv_from_rc(py::module_ const &rc) {
             argv.emplace_back(std::string{"--einsums:"} + flag + "=" + std::to_string(v.cast<int>()));
         }
     };
-    // Helper: append a presence-only ``--einsums:<flag>`` when the attribute
-    // is set to a truthy value. Mirrors how the runtime's cl::Flag options
-    // ignore any value and just check for the flag's presence.
+    // Helper: append a presence-only flag. A flag carries its meaning in its
+    // presence, so ``False`` cannot be expressed by leaving it out - that is
+    // what ``None`` means. It asks for the negation instead, spelled by the
+    // runtime's own rule so the two cannot drift apart.
     auto opt_flag = [&](char const *attr, char const *flag) {
         py::object const v = rc.attr(attr);
-        if (!v.is(py::none()) && v.cast<bool>()) {
-            argv.emplace_back(std::string{"--einsums:"} + flag);
+        if (v.is(py::none())) {
+            return;
         }
+        std::string const name = std::string{"einsums:"} + flag;
+        argv.emplace_back("--" + (v.cast<bool>() ? name : einsums::cl::derive_negated_name(name)));
     };
     // Buffer Allocator
     {
@@ -88,9 +92,9 @@ std::vector<std::string> argv_from_rc(py::module_ const &rc) {
 
     // Debug
     {
-        opt_flag("debug_no_install_signal_handlers", "debug:no-install-signal-handlers");
-        opt_flag("debug_no_attach_debugger", "debug:no-attach-debugger");
-        opt_flag("debug_no_diagnostics_on_terminate", "debug:no-diagnostics-on-terminate");
+        opt_flag("debug_install_signal_handlers", "debug:install-signal-handlers");
+        opt_flag("debug_attach_debugger", "debug:attach-debugger");
+        opt_flag("debug_diagnostics_on_terminate", "debug:diagnostics-on-terminate");
     }
 
     // HPTT
@@ -112,9 +116,9 @@ std::vector<std::string> argv_from_rc(py::module_ const &rc) {
 
     // Profile
     {
-        opt_flag("profile_no_report", "profile:no-report");
+        opt_flag("profile_report", "profile:report");
         opt_string("profile_filename", "profile:filename");
-        opt_flag("profile_no_append", "profile:no-append");
+        opt_flag("profile_append", "profile:append");
         opt_flag("profile_detailed", "profile:detailed");
         opt_string("profile_save", "profile:save");
         opt_int("profile_port", "profile:port");
@@ -125,7 +129,7 @@ std::vector<std::string> argv_from_rc(py::module_ const &rc) {
     {
         opt_string("scratch_dir", "scratch-dir");
         opt_string("hdf5_file_name", "hdf5-file-name");
-        opt_flag("no_delete_hdf5_files", "no-delete-hdf5-files");
+        opt_flag("delete_hdf5_files", "delete-hdf5-files");
     }
 
     return argv;

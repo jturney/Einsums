@@ -64,7 +64,7 @@ import einsums
 
 # Don't hang on the attach-debugger prompt if a regression ever hard-faults
 # (no-op once the runtime is already up).
-einsums.rc.debug_no_attach_debugger = True
+einsums.rc.debug_attach_debugger = False
 
 import einsums.graph as cg
 from _sanitizer_scaling import fuzz_seeds  # seed-count scaling under sanitizers
