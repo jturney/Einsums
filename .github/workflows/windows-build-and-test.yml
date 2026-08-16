@@ -176,8 +176,13 @@ jobs:
           rem
           rem These rem lines live ABOVE the cmake call, not among its arguments.
           rem Every line of that call ends in ^, so a rem placed inside it is a
-          rem continuation rather than a comment and its words reach cmake as
-          rem arguments ("Ignoring extra path from command line: PDBs").
+          rem continuation rather than a comment, and its words reach cmake as
+          rem arguments - which shows up as cmake warning that it is ignoring an
+          rem extra path from the command line, naming a word from the prose.
+          rem
+          rem That warning text is paraphrased rather than quoted here on
+          rem purpose: spelled out verbatim it matches a grep for the real thing
+          rem and makes this comment look like the failure it is describing.
           cmake -G Ninja ^
             -S "%GITHUB_WORKSPACE%\src" ^
             -B "%GITHUB_WORKSPACE%\build" ^
