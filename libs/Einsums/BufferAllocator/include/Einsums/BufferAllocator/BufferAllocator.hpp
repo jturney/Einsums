@@ -25,7 +25,9 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #if defined(EINSUMS_HAVE_TRACY)
 #    include <tracy/Tracy.hpp>

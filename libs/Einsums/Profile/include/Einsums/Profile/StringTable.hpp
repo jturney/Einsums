@@ -13,6 +13,7 @@
 
 #    include <cstdint>
 #    include <deque>
+#    include <mutex>
 #    include <shared_mutex>
 #    include <string>
 #    include <string_view>

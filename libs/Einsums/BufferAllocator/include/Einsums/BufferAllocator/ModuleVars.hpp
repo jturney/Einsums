@@ -13,6 +13,7 @@
 #include <Einsums/TypeSupport/Lockable.hpp>
 #include <Einsums/TypeSupport/Singleton.hpp>
 
+#include <mutex>
 #include <source_location>
 
 EINSUMS_NAMESPACE_BEGIN()
