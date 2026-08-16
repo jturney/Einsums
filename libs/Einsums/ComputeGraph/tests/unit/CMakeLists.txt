@@ -42,6 +42,8 @@ set(ComputeGraphTests
     MemoryNodes.cpp
     MetadataBoundary.cpp
     MixedOps.cpp
+    MixedWidthDifferential.cpp
+    MixedWidthVendorSafety.cpp
     OperationsCoverage.cpp
     ParallelForGraph.cpp
     Pass_CommunicationPasses.cpp

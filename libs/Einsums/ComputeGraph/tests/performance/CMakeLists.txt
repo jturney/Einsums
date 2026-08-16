@@ -7,6 +7,7 @@ set(ComputeGraphPerfTests
     BenchmarkDispatchRoutes.cpp
     BenchmarkExecutors.cpp
     BenchmarkGraphOverhead.cpp
+    BenchmarkMoldableWidths.cpp
     BenchmarkOuterProduct.cpp
 )
 
