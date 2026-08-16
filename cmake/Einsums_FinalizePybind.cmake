@@ -193,6 +193,13 @@ function(einsums_finalize_pybind)
         OUT_CPP_DOCS_JSON _options_docs_json
     )
 
+    # The same descriptor list feeds the argument reference in the manual, which
+    # is generated in ``docs/``. Publish the JSON and a target producing it:
+    # ``docs/CMakeLists.txt`` is a different directory scope, so it needs the
+    # target for ordering as well as the file for freshness.
+    set_property(GLOBAL PROPERTY EINSUMS_OPTIONS_DOCS_JSON "${_options_docs_json}")
+    add_custom_target(EinsumsOptionSurface DEPENDS "${_options_docs_json}")
+
     set(_rc_generator "${CMAKE_SOURCE_DIR}/libs/Einsums/Python/tools/generate_rc.py")
     add_custom_command(
         OUTPUT "${_pkg_dir}/rc.py"
@@ -201,7 +208,8 @@ function(einsums_finalize_pybind)
                 --docs-json "${_options_docs_json}"
                 --template "${_pkg_src}/rc.py.in"
                 --output "${_pkg_dir}/rc.py"
-        DEPENDS "${_rc_generator}" "${_pkg_src}/rc.py.in" "${_options_docs_json}"
+        DEPENDS "${_rc_generator}" "${CMAKE_SOURCE_DIR}/devtools/option_descriptors.py"
+                "${_pkg_src}/rc.py.in" "${_options_docs_json}"
         COMMENT "einsums: generating einsums/rc.py from the option descriptors"
         VERBATIM
     )

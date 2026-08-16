@@ -230,6 +230,11 @@ file(
   "sphinx/*"
 )
 
+# Generator inputs, not pages: the templates and prose sidecars that the rules
+# further down turn into .rst. Copying them would put files Sphinx has no use
+# for in the build tree beside the page they produce.
+list(FILTER sphinx_source_files EXCLUDE REGEX "\\.(rst\\.in|yaml)$")
+
 foreach(sphinx_source_file ${sphinx_source_files})
   add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${sphinx_source_file}"
@@ -309,6 +314,47 @@ if(EXISTS "${_copied_manifest}")
 endif()
 string(REPLACE ";" "\n" _manifest_text "${_copied_dest_files}")
 file(WRITE "${_copied_manifest}" "${_manifest_text}\n")
+
+# Generated argument reference (user/arguments.rst).
+#
+# The page used to be maintained by hand against a registry it had no link to,
+# and drifted: it documented options no build ever registered and missed most of
+# the ones it did. The mechanical half now comes from the option descriptors -
+# which options exist, what each groups under, how each is invoked - and only the
+# prose is written, in sphinx/user/arguments.yaml. The generator fails the build
+# when either half names an option the other does not, so an option added without
+# documentation stops the docs build instead of shipping an incomplete page.
+#
+# Two static steps, the same shape as the rest of the docs pipeline: apiary parses
+# the headers (done once for the whole tree, in einsums_finalize_pybind) and a
+# script renders the page. Nothing here runs a compiled Einsums binary, so
+# cross-compilation is unaffected.
+get_property(_options_docs_json GLOBAL PROPERTY EINSUMS_OPTIONS_DOCS_JSON)
+if(NOT _options_docs_json)
+  einsums_error("No option descriptor JSON was produced - user/arguments.rst cannot be generated")
+endif()
+
+set(_arguments_dir "${CMAKE_CURRENT_SOURCE_DIR}/sphinx/user")
+set(_arguments_generator "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_arguments_rst.py")
+set(_arguments_rst "${CMAKE_CURRENT_BINARY_DIR}/sphinx/user/arguments.rst")
+add_custom_command(
+  OUTPUT "${_arguments_rst}"
+  # The target for ordering, the file for freshness: the producing rule lives in
+  # another directory scope, so listing the file alone would not sequence it.
+  DEPENDS EinsumsOptionSurface
+          "${_options_docs_json}"
+          "${_arguments_generator}"
+          "${PROJECT_SOURCE_DIR}/devtools/option_descriptors.py"
+          "${_arguments_dir}/arguments.rst.in"
+          "${_arguments_dir}/arguments.yaml"
+  COMMAND
+    ${Python_EXECUTABLE} "${_arguments_generator}" --docs-json "${_options_docs_json}" --template
+    "${_arguments_dir}/arguments.rst.in" --sidecar "${_arguments_dir}/arguments.yaml" --output
+    "${_arguments_rst}"
+  COMMENT "docs: generating the argument reference from the option descriptors"
+  VERBATIM
+)
+list(APPEND sphinx_source_files_build "${_arguments_rst}")
 
 # Generated Python API reference. The PyEinsumsDocs target runs
 # ``apiary --emit-docs-json`` per module and renders the result to

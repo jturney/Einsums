@@ -13,3 +13,8 @@ dependencies:
   - doxygen
   - breathe
   - docutils
+  # docs/tools/generate_arguments_rst.py reads the prose sidecar for the argument
+  # reference, so the docs build needs a YAML parser. Listed rather than relied on
+  # transitively: it arrives with sphinx's dependencies today, which is not a
+  # promise, and the docs build fails without it.
+  - pyyaml

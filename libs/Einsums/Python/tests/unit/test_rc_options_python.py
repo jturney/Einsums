@@ -20,8 +20,10 @@ this arrangement exists to prevent.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -113,6 +115,32 @@ def test_help_listing_names_every_option():
         text = f.read()
     for opt in generated().values():
         assert f"--{opt['name']}" in text, f"{opt['name']} is missing from rc.py's option listing"
+
+
+# -- the argument reference against the registry -----------------------------
+
+
+def sidecar_options():
+    """The options the manual's argument reference documents.
+
+    Read with a regular expression rather than a YAML parser: the keys are all
+    this needs, and whether the test suite runs should not depend on a package
+    only the documentation build requires.
+    """
+    sidecar = Path(__file__).resolve().parents[5] / "docs" / "sphinx" / "user" / "arguments.yaml"
+    if not sidecar.is_file():
+        pytest.skip(f"no argument reference sidecar in this tree ({sidecar})")
+    return set(re.findall(r'(?m)^"([^"]+)":$', sidecar.read_text(encoding="utf-8")))
+
+
+def test_argument_reference_documents_every_option():
+    """``docs/sphinx/user/arguments.rst`` is generated from the descriptors
+    joined with that sidecar, and the generator refuses either half naming an
+    option the other does not. It only gets to refuse when the documentation is
+    being built, which is off by default, so the same invariant is asserted
+    here - where an option added without documentation is noticed the same day.
+    """
+    assert sidecar_options() == {opt["name"] for opt in registry().values()}
 
 
 # -- the rc -> argv translation ----------------------------------------------
