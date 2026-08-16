@@ -5,6 +5,9 @@
 
 #include <Einsums/CommandLine/CommandLine.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Config/Types.hpp>
+
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <cstring>
@@ -22,10 +25,406 @@
 
 EINSUMS_NAMESPACE_BEGIN(cl)
 
+// -------------------------- Diagnostic text ------------------------------- //
+
+/*
+ * Every error string the option types produce is built here rather than in the
+ * headers, so fmt stays out of the declaration and reader headers.
+ */
+
+namespace detail {
+
+std::string invalid_bool_message(std::string_view sv) {
+    return fmt::format("invalid boolean '{}', expected true/false", sv);
+}
+
+std::string invalid_integer_message(std::string_view sv) {
+    return fmt::format("invalid integer '{}'", sv);
+}
+
+std::string invalid_real_message(std::string_view sv) {
+    return fmt::format("invalid real '{}'", sv);
+}
+
+std::string invalid_real_message(std::string_view sv, std::string_view what) {
+    return fmt::format("invalid real '{}': {}", sv, what);
+}
+
+std::string requires_value_message(std::string_view long_name) {
+    return fmt::format("option '--{}' requires a value", long_name);
+}
+
+std::string out_of_range_int_message(std::string_view long_name, long long lo, long long hi) {
+    return fmt::format("value for '--{}' out of range [{}, {}]", long_name, lo, hi);
+}
+
+std::string out_of_range_real_message(std::string_view long_name, double lo, double hi) {
+    return fmt::format("value for '--{}' out of range [{}, {}]", long_name, lo, hi);
+}
+
+std::string invalid_choice_message(std::string_view value, std::string_view long_name, std::string_view choices) {
+    return fmt::format("invalid value '{}' for '--{}' (choices: {})", value, long_name, choices);
+}
+
+std::string long_invocation(std::string_view long_name) {
+    return fmt::format("--{}", long_name);
+}
+
+std::string value_invocation(std::string_view long_name, std::string_view value_name) {
+    return fmt::format("--{} <{}>", long_name, value_name);
+}
+
+std::string list_invocation(std::string_view long_name, bool positional) {
+    return positional ? fmt::format("<{}>...", long_name) : fmt::format("--{} <v1,v2,...>", long_name);
+}
+
+std::string alias_annotation(std::string_view target_name) {
+    return fmt::format("(alias for --{})", target_name);
+}
+
+} // namespace detail
+
+// -------------------------- Value parsing --------------------------------- //
+
+bool parse_value(std::string_view sv, std::string &out, std::string &) {
+    out.assign(sv.begin(), sv.end());
+    return true;
+}
+
+bool parse_value(std::string_view sv, bool &out, std::string &err) {
+    if (sv == "1" || sv == "true" || sv == "on" || sv == "yes") {
+        out = true;
+        return true;
+    }
+    if (sv == "0" || sv == "false" || sv == "off" || sv == "no") {
+        out = false;
+        return true;
+    }
+    err = detail::invalid_bool_message(sv);
+    return false;
+}
+
+// -------------------------- Registry -------------------------------------- //
+
 Registry &Registry::instance() {
     static Registry R;
     return R;
 }
+
+void Registry::add_option(OptionBase *o) {
+    options.push_back(o);
+}
+
+void Registry::add_category(OptionCategory *c) {
+    categories.push_back(c);
+}
+
+void Registry::add_exclusion(ExclusiveCategory *c) {
+    exclusions.push_back(c);
+}
+
+void Registry::ensure_option(OptionBase *o) {
+    if (std::ranges::find(options, o) == options.end()) {
+        options.push_back(o);
+    }
+}
+
+void Registry::ensure_category(OptionCategory *c) {
+    if (std::ranges::find(categories, c) == categories.end()) {
+        categories.push_back(c);
+    }
+}
+
+void Registry::remove_option(OptionBase *o) {
+    std::erase(options, o);
+}
+
+void Registry::remove_category(OptionCategory *c) {
+    std::erase(categories, c);
+}
+
+void Registry::remove_exclusion(ExclusiveCategory *c) {
+    std::erase(exclusions, c);
+}
+
+void Registry::set_env_prefix(std::string prefix) {
+    _env_prefix = std::move(prefix);
+}
+
+std::string const &Registry::get_env_prefix() const noexcept {
+    return _env_prefix;
+}
+
+void Registry::clear_for_tests() {
+    options.clear();
+    categories.clear();
+    exclusions.clear();
+    _env_prefix.clear();
+}
+
+// -------------------------- Categories ------------------------------------ //
+
+OptionCategory::OptionCategory(std::string_view n) : name(n) {
+    Registry::instance().add_category(this);
+}
+
+OptionCategory::~OptionCategory() {
+    Registry::instance().remove_category(this);
+}
+
+// -------------------------- OptionBase ------------------------------------ //
+
+OptionBase::OptionBase(std::string_view longName, std::initializer_list<char> shorts, std::string_view helpText, OptionCategory *cat)
+    : long_name(longName), short_names(shorts), help(helpText), category(cat) {
+    Registry::instance().add_option(this);
+}
+
+OptionBase::OptionBase(std::string_view positional_name, Positional, std::string_view helpText)
+    : long_name(positional_name), help(helpText), is_positional(true) {
+    Registry::instance().add_option(this);
+}
+
+OptionBase::~OptionBase() {
+    Registry::instance().remove_option(this);
+}
+
+bool OptionBase::validate(std::string &error) const {
+    (void)error;
+    return true;
+}
+
+void OptionBase::finalize_default() {
+}
+
+void OptionBase::reset() {
+    value_source = Source::None;
+    occurrences  = 0;
+}
+
+std::string OptionBase::effective_env_name() const {
+    if (!env_name.empty()) {
+        return env_name;
+    }
+    if (env_opt_out || is_positional) {
+        return {};
+    }
+    return derive_env_name(Registry::instance().get_env_prefix(), long_name);
+}
+
+bool OptionBase::record_source(Source src) {
+    value_source = src;
+    if (src == Source::CommandLine) {
+        ++occurrences;
+    }
+    return true;
+}
+
+std::string OptionBase::format_shorts() const {
+    std::string out;
+    for (char const c : short_names) {
+        if (!out.empty()) {
+            out += ", ";
+        }
+        out += fmt::format("-{}", c);
+    }
+    return out;
+}
+
+std::vector<std::string> OptionBase::format_annotations(std::string const &default_text) const {
+    std::vector<std::string> out;
+    if (!default_text.empty()) {
+        out.push_back(fmt::format("(default: {})", default_text));
+    }
+    if (auto const env = effective_env_name(); !env.empty()) {
+        out.push_back(fmt::format("[env: {}]", env));
+    }
+    return out;
+}
+
+// -------------------------- ExclusiveCategory ----------------------------- //
+
+ExclusiveCategory::ExclusiveCategory() {
+    Registry::instance().add_exclusion(this);
+}
+
+ExclusiveCategory::~ExclusiveCategory() {
+    Registry::instance().remove_exclusion(this);
+}
+
+std::vector<OptionBase *> ExclusiveCategory::found_options(Source src) const {
+    std::vector<OptionBase *> out;
+    for (auto *opt : options) {
+        if (opt->value_source == src) {
+            out.push_back(opt);
+        }
+    }
+    return out;
+}
+
+std::optional<Source> ExclusiveCategory::conflicting_source() const {
+    for (auto const src : {Source::ConfigFile, Source::Environment, Source::CommandLine}) {
+        if (found_options(src).size() > 1) {
+            return src;
+        }
+    }
+    return std::nullopt;
+}
+
+// -------------------------- Flag ------------------------------------------ //
+
+void Flag::finalize_default() {
+    // make_yes_no() clears set_on_unseen on both halves of a yes/no pair so
+    // that neither one clobbers the shared binding it already initialized.
+    if (set_on_unseen) {
+        assign(default_value, Source::Default);
+        value_source = Source::Default;
+    }
+}
+
+bool Flag::parse_token(std::string_view, std::optional<std::string_view> val, std::string &error, Source src) {
+    bool const when_present = has_implicit_override ? implicit_on : true;
+
+    bool tmp = value;
+    if (!val.has_value()) {
+        tmp = when_present;
+    } else if (src == Source::CommandLine) {
+        if (!parse_value(*val, tmp, error)) {
+            return false;
+        }
+    } else {
+        bool present{};
+        if (!parse_value(*val, present, error)) {
+            return false;
+        }
+        if (!present) {
+            return true; // "not passed": leave whatever the default was
+        }
+        tmp = when_present;
+    }
+    assign(tmp, src);
+    return record_source(src);
+}
+
+HelpEntry Flag::help_entry() const {
+    // Only a flag that is already on says anything worth printing. "off
+    // unless you pass it" is what a flag means, so stating it is noise.
+    std::string const shown = default_value ? "true" : "";
+    return HelpEntry{.invocation  = detail::long_invocation(long_name),
+                     .shorts      = format_shorts(),
+                     .description = help,
+                     .annotations = format_annotations(shown)};
+}
+
+bool Flag::get() const {
+    return bound ? *bound : value;
+}
+
+void Flag::assign(bool v, Source src) {
+    value = v;
+    if (bound) {
+        *bound = v;
+    }
+    if (setter) {
+        setter(v, src);
+    }
+}
+
+void Flag::apply_arg(OptionCategory &c) {
+    category = &c;
+}
+void Flag::apply_arg(Visibility v) {
+    visibility = v;
+}
+void Flag::apply_arg(Occurrence o) {
+    occurrence = o;
+}
+void Flag::apply_arg(ValueExpected ve) {
+    value_expected = ve;
+}
+void Flag::apply_arg(Location<bool> loc) {
+    bound = loc.ptr;
+}
+void Flag::apply_arg(Setter<bool> const &s) {
+    setter = s.fn;
+}
+void Flag::apply_arg(ValueNameTag const &) {
+}
+void Flag::apply_arg(EnvTag t) {
+    env_name = std::move(t.name);
+}
+void Flag::apply_arg(NoEnvTag) {
+    env_opt_out = true;
+}
+void Flag::apply_arg(DefaultTag<bool> d) {
+    value = d.v;
+}
+void Flag::apply_arg(ImplicitValueTag<bool> d) {
+    implicit_on           = d.v;
+    has_implicit_override = true;
+}
+void Flag::apply_arg(ExclusiveCategory &cat) {
+    cat.options.push_back(this);
+    exclusions = &cat;
+}
+
+// -------------------------- Alias ----------------------------------------- //
+
+bool Alias::parse_token(std::string_view, std::optional<std::string_view> val, std::string &error, Source src) {
+    std::optional<std::string_view> const v = preset_value ? std::optional{std::string_view(*preset_value)} : val;
+    if (!target->parse_token(target->long_name, v, error, src)) {
+        return false;
+    }
+    return record_source(src);
+}
+
+HelpEntry Alias::help_entry() const {
+    return HelpEntry{.invocation  = detail::long_invocation(long_name),
+                     .shorts      = format_shorts(),
+                     .description = help,
+                     .annotations = {detail::alias_annotation(target ? target->long_name : "?")}};
+}
+
+std::string Alias::effective_env_name() const {
+    return {};
+}
+
+void Alias::apply_arg(OptionCategory &c) {
+    category = &c;
+}
+void Alias::apply_arg(Visibility v) {
+    visibility = v;
+}
+void Alias::apply_arg(Occurrence o) {
+    occurrence = o;
+}
+void Alias::apply_arg(std::string v) {
+    preset_value = std::move(v);
+}
+void Alias::apply_arg(std::string_view v) {
+    preset_value = std::string(v);
+}
+void Alias::apply_arg(char const *v) {
+    preset_value = std::string(v);
+}
+
+// -------------------------- Built-ins ------------------------------------- //
+
+Builtins::Builtins() {
+    help.value_expected    = ValueExpected::ValueDisallowed;
+    version.value_expected = ValueExpected::ValueDisallowed;
+}
+
+Builtins &builtins() {
+    static Builtins b;
+    return b;
+}
+
+// -------------------------- Closed-set instantiations --------------------- //
+
+template struct EINSUMS_EXPORT Opt<std::string>;
+template struct EINSUMS_EXPORT Opt<std::int64_t>;
+template struct EINSUMS_EXPORT Opt<double>;
+template struct EINSUMS_EXPORT List<std::string>;
 
 // -------------------------- Environment names ----------------------------- //
 
@@ -433,10 +832,41 @@ std::string format_help(std::string_view prog) {
 
     return out;
 }
+void print_help(std::string_view prog, std::FILE *out) {
+    fmt::print(out, "{}", format_help(prog));
+}
+
+void print_version(std::string_view prog, std::string_view ver, std::FILE *out) {
+    if (!ver.empty()) {
+        fmt::print(out, "{} {}\n", prog, ver);
+    }
+}
 
 // -------------------------- Diagnostics ----------------------------------- //
 
 namespace detail {
+OptionBase *find_long(std::string_view name) {
+    auto const &opts = Registry::instance().options;
+    auto const  it   = std::ranges::find_if(opts, [name](OptionBase const *o) { return !o->is_positional && o->long_name == name; });
+    return it == opts.end() ? nullptr : *it;
+}
+
+OptionBase *find_short(char c) {
+    auto const &opts = Registry::instance().options;
+    auto const  it   = std::ranges::find_if(
+        opts, [c](OptionBase const *o) { return !o->is_positional && std::ranges::find(o->short_names, c) != o->short_names.end(); });
+    return it == opts.end() ? nullptr : *it;
+}
+
+std::vector<OptionBase *> positional_options() {
+    std::vector<OptionBase *> v;
+    for (auto *o : Registry::instance().options) {
+        if (o->is_positional) {
+            v.push_back(o);
+        }
+    }
+    return v;
+}
 
 std::optional<std::string> duplicate_long_name() {
     std::set<std::string, std::less<>> seen;
