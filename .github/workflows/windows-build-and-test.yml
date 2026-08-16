@@ -175,7 +175,21 @@ jobs:
             -D Python_EXECUTABLE="%CONDA_PREFIX%\python.exe" ^
             -D EINSUMS_WITH_TESTS=ON ^
             -D EINSUMS_WITH_EXAMPLES=ON ^
-            -D EINSUMS_WITH_BACKTRACES=ON ^
+            rem OFF on purpose, and not for build time. This leg carries no PDBs
+            rem (see CMAKE_MSVC_DEBUG_INFORMATION_FORMAT above), so cpptrace has
+            rem almost nothing to symbolize here - while linking it adds a static
+            rem library with its own initializers and destructors and flips
+            rem EINSUMS_HAVE_BACKTRACES, which Config/ABI.hpp keys on too. The
+            rem open bug on this leg is a teardown segfault, which is to say a
+            rem static-destruction-order problem, so perturbing static init order
+            rem is the one thing a build hunting it must not do.
+            rem
+            rem The crash handler does not need it: exception code, faulting
+            rem module + offset, and the minidump all come out without cpptrace,
+            rem and the module name is the question worth answering. A hunt that
+            rem does want symbols turns both back on through
+            rem build_configure_extra_args.
+            -D EINSUMS_WITH_BACKTRACES=OFF ^
             -D EINSUMS_SHOW_WARNING=OFF ^
             -D CMAKE_INSTALL_PREFIX="%GITHUB_WORKSPACE%\installed" ^
             ${{ inputs.build_configure_extra_args }}
