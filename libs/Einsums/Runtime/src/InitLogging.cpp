@@ -9,7 +9,7 @@
 #include <Einsums/Logging.hpp>
 #include <Einsums/Logging/Options.hpp>
 #include <Einsums/Runtime/Detail/InitLogging.hpp>
-#include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
+#include <Einsums/Runtime/RuntimeConfiguration.hpp>
 
 #if defined(EINSUMS_HAVE_PROFILER)
 #    include <Einsums/Profile/LogSink.hpp>

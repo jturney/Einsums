@@ -52,7 +52,6 @@ generated API reference for its public headers.
     /libs/Einsums/Python/docs/index.rst
     /libs/Einsums/PythonDemo/docs/index.rst
     /libs/Einsums/Runtime/docs/index.rst
-    /libs/Einsums/RuntimeConfiguration/docs/index.rst
     /libs/Einsums/SIMD/docs/index.rst
     /libs/Einsums/StringUtil/docs/index.rst
     /libs/Einsums/TaskPool/docs/index.rst

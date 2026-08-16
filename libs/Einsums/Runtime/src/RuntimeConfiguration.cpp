@@ -10,7 +10,7 @@
 #include <Einsums/Logging.hpp>
 #include <Einsums/Options.hpp>
 #include <Einsums/Print.hpp>
-#include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
+#include <Einsums/Runtime/RuntimeConfiguration.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
 #include <Einsums/TypeSupport/Singleton.hpp>
 #include <Einsums/Version.hpp>

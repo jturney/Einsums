@@ -36,7 +36,6 @@ set(_Einsums_modules
   Python
   PythonDemo
   Runtime
-  RuntimeConfiguration
   StringUtil
   TaskPool
   Tensor

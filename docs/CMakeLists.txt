@@ -103,12 +103,12 @@ set(EINSUMS_CPP_DOCS_MODULE_LIST
     Einsums/ComputeGraph Einsums/Runtime Einsums/TypeSupport
     Einsums/Utilities Einsums/Errors Einsums/Logging Einsums/Print
     Einsums/Assertion Einsums/BLASBase Einsums/BlockManager
-    Einsums/BufferAllocator Einsums/Comm Einsums/CommandLine
+    Einsums/BufferAllocator Einsums/Comm Einsums/Options
     Einsums/ComputeGraphTypes Einsums/Config Einsums/CXX23
     Einsums/Debugging Einsums/FFT Einsums/GPU Einsums/Hardware Einsums/HPTT
     Einsums/Iterator Einsums/PackedGemm Einsums/Preprocessor
     Einsums/Profile Einsums/Python Einsums/PythonDemo
-    Einsums/RuntimeConfiguration Einsums/SIMD Einsums/TaskPool
+    Einsums/SIMD Einsums/TaskPool
     Einsums/TensorImpl Einsums/TensorIO Einsums/Version)
     # EinsumsExperimental/{Decomposition,Graph} held back: wiring them tripped
     # a Sphinx cpp-domain crash (AssertionError 'parent_symbol' in

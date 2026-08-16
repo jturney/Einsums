@@ -8,7 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
+#include <Einsums/Runtime/RuntimeConfiguration.hpp>
 
 EINSUMS_NAMESPACE_BEGIN(detail)
 EINSUMS_EXPORT void init_logging(RuntimeConfiguration &config);

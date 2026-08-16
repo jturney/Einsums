@@ -6,7 +6,7 @@
 #include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
+#include <Einsums/Runtime/RuntimeConfiguration.hpp>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 

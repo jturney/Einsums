@@ -11,9 +11,9 @@
 #include <Einsums/Print.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
+#include <Einsums/Runtime/RuntimeConfiguration.hpp>
 #include <Einsums/Runtime/ShutdownFunction.hpp>
 #include <Einsums/Runtime/StartupFunction.hpp>
-#include <Einsums/RuntimeConfiguration/RuntimeConfiguration.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
 #include <Einsums/TypeSupport/Singleton.hpp>
 

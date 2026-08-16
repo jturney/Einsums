@@ -14,9 +14,10 @@ set(RuntimeHeaders
     Einsums/Runtime/ShutdownFunction.hpp
     Einsums/Runtime/Detail/InitLogging.hpp
     Einsums/Runtime/Options.hpp
+    Einsums/Runtime/RuntimeConfiguration.hpp
 )
 
-set(RuntimeSources Finalize.cpp InitLogging.cpp InitRuntime.cpp Options.cpp Runtime.cpp)
+set(RuntimeSources Finalize.cpp InitLogging.cpp InitRuntime.cpp Options.cpp Runtime.cpp RuntimeConfiguration.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -31,9 +32,9 @@ einsums_add_module(
     Einsums_Config
     Einsums_Debugging
     Einsums_Profile
-    Einsums_RuntimeConfiguration
     Einsums_Errors
     Einsums_Logging
+    Einsums_TypeSupport
     Einsums_Version
   CMAKE_SUBDIRS examples tests
   # BASE_LIBNAME Einsums
