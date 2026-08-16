@@ -25,15 +25,15 @@ inline constinit cl::ConfigOption<std::int64_t> LogLevel = cl::config_opt<std::i
 #else
                                                                                         SPDLOG_LEVEL_ERROR,
 #endif
-                                                                                        "LogLevel", cl::RangeBetween(0, 4));
+                                                                                        "level", cl::RangeBetween(0, 4));
 
 /// Where log records go: `cerr`, `cout`, or a file name.
 inline constinit cl::ConfigOption<std::string> LogDestination =
-    cl::config_opt<std::string>("einsums:log:destination", "Log destination", "Logging", "cerr");
+    cl::config_opt<std::string>("einsums:log:destination", "Log destination", "Logging", "cerr", "cerr|cout|file");
 
 /// The spdlog pattern each record is rendered with.
-inline constinit cl::ConfigOption<std::string> LogFormat =
-    cl::config_opt<std::string>("einsums:log:format", "Log format", "Logging", "[%Y-%m-%d %H:%M:%S.%F] [%n] [%^%-8l%$] [%s:%#/%!] %v");
+inline constinit cl::ConfigOption<std::string> LogFormat = cl::config_opt<std::string>(
+    "einsums:log:format", "Log format", "Logging", "[%Y-%m-%d %H:%M:%S.%F] [%n] [%^%-8l%$] [%s:%#/%!] %v", "format");
 
 EINSUMS_NAMESPACE_END(option)
 

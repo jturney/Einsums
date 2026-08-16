@@ -31,14 +31,14 @@ EINSUMS_NAMESPACE_BEGIN(option)
 
 /// Where the scratch file for disk-backed tensors lives.
 inline constinit cl::ConfigOption<std::string> ScratchDir = cl::config_opt_computed<std::string>(
-    "einsums:scratch-dir", "The scratch directory for Einsums tensor files.", "Tensor Options", &detail::default_scratch_dir);
+    "einsums:scratch-dir", "The scratch directory for Einsums tensor files.", "Tensor Options", &detail::default_scratch_dir, "DIR");
 
 /// The scratch file's name. Defaults to einsums.[pid].h5, where [pid] is the
 /// process id, so a second process does not adopt the first one's file.
 inline constinit cl::ConfigOption<std::string> Hdf5FileName = cl::config_opt_computed<std::string>(
     "einsums:hdf5-file-name",
     "The name of the HDF5 file for Einsums. Defaults to einsums.[pid].h5, where [pid] is the PID of the current process.", "Tensor Options",
-    &detail::default_hdf5_file_name);
+    &detail::default_hdf5_file_name, "filename");
 
 /// Remove the per-process scratch file on exit.
 ///
