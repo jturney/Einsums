@@ -183,9 +183,16 @@ void gemm_batch_impl(char transa, char transb, int_t m, int_t n, int_t k, T alph
     // static schedule and saves the dynamic one's atomic. The vendor GEMM's
     // cost is less predictable (it packs, and it may itself defer), so that
     // loop keeps the dynamic schedule it has always had.
+    // A batch reached from inside someone else's team does not open one of its
+    // own. Under the runtime's default of one active level such a region is
+    // handed a single thread anyway, so the fork is pure entry cost; were that
+    // default ever raised, it would become a genuine nested team wrapped around
+    // a vendor GEMM, which is the shape an OpenMP-built OpenBLAS miscomputes.
+    // The extractor these members' pointers come from guards on the same
+    // condition (ComputeGraph/Detail/GroupedBatchedGemm.hpp).
     if (use_small_gemm(m, n, k)) {
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
+#    pragma omp parallel for schedule(static) if (!omp_in_parallel())
 #endif
         for (int_t i = 0; i < batch_count; i++) {
             small_gemm<T>(transa, transb, m, n, k, alpha, a_array[i], lda, b_array[i], ldb, beta, c_array[i], ldc);
@@ -194,7 +201,7 @@ void gemm_batch_impl(char transa, char transb, int_t m, int_t n, int_t k, T alph
     }
 
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(dynamic)
+#    pragma omp parallel for schedule(dynamic) if (!omp_in_parallel())
 #endif
     for (int_t i = 0; i < batch_count; i++) {
         vendor_gemm(transa, transb, m, n, k, alpha, a_array[i], lda, b_array[i], ldb, beta, c_array[i], ldc);
@@ -262,8 +269,9 @@ void gemm_batch_grouped_impl(char const *transa_array, char const *transb_array,
     auto const *starts = live_start.data();
     auto const  n_live = static_cast<int_t>(live.size());
 
+    // Same guard, same reason as the uniform batch above.
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(dynamic)
+#    pragma omp parallel for schedule(dynamic) if (!omp_in_parallel())
 #endif
     for (int_t t = 0; t < total; ++t) {
         // The last group whose start is <= t. Groups are non-empty, so this
