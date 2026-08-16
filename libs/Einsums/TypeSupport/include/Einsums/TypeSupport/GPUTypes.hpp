@@ -13,6 +13,7 @@
 #include <hip/hip_runtime_api.h>
 
 #if __has_include(<stdfloat>)
+#    include <complex>
 #    include <stdfloat>
 #endif
 

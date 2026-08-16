@@ -19,6 +19,7 @@
 
 #include <list>
 #include <mutex>
+#include <stdexcept>
 #include <string_view>
 
 EINSUMS_NAMESPACE_BEGIN()

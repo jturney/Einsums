@@ -20,6 +20,7 @@
 #include <cstring>
 #include <functional>
 #include <iostream>
+#include <string>
 #include <string_view>
 
 EINSUMS_NAMESPACE_BEGIN()

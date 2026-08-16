@@ -7,6 +7,7 @@
 
 #include <Einsums/Config/Namespace.hpp>
 
+#include <array>
 #include <cstddef>
 #include <tuple>
 #include <utility>

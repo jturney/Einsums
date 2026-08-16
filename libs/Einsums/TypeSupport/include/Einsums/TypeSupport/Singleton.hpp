@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <memory>
+
 /**
  * @def EINSUMS_SINGLETON_DEF
  *

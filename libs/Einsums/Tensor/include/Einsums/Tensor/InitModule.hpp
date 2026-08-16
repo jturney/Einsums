@@ -9,6 +9,8 @@
 
 #include <Einsums/Config/Namespace.hpp>
 
+#include <string>
+
 /*
  * Exported definitions for initialization. If the module does not need to be initialized,
  * this header can be safely deleted. Just make sure to remove the reference in CMakeLists.txt,

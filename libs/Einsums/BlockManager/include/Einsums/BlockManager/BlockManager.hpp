@@ -12,6 +12,7 @@
 #include <Einsums/TypeSupport/Lockable.hpp>
 #include <Einsums/TypeSupport/Singleton.hpp>
 
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 

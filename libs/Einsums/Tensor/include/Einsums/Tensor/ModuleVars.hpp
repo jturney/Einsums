@@ -14,6 +14,7 @@
 
 #include <H5Ipublic.h>
 #include <atomic>
+#include <mutex>
 
 EINSUMS_NAMESPACE_BEGIN(detail)
 

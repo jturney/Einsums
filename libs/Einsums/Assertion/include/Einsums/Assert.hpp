@@ -18,6 +18,7 @@
 
 #ifdef EINSUMS_COMPUTE_DEVICE_CODE
 #    include <cassert>
+#    include <stdexcept>
 #endif
 
 EINSUMS_NAMESPACE_BEGIN(detail)

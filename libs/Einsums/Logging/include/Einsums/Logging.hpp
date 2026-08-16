@@ -11,6 +11,7 @@
 #include <Einsums/Logging/Defines.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <memory>
 #include <spdlog/sinks/sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>

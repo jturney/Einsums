@@ -7,6 +7,7 @@
 
 #include <Einsums/Config/Namespace.hpp>
 
+#include <complex>
 #include <hip/hip_common.h>
 #include <hip/hip_complex.h>
 #include <hip/hip_runtime.h>

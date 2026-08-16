@@ -10,6 +10,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>

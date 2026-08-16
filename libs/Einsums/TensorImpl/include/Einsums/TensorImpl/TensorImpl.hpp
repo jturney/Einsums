@@ -19,6 +19,7 @@
 #include <Einsums/TensorBase/IndexUtilities.hpp>
 #include <Einsums/TensorBase/Options.hpp>
 
+#include <initializer_list>
 #include <type_traits>
 
 EINSUMS_NAMESPACE_BEGIN()
