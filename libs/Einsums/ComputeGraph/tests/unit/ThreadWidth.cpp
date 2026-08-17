@@ -175,15 +175,33 @@ TEST_CASE("ThreadWidth - the calling thread survives a wide replay", "[ComputeGr
         graph.add_node(observing_node("wide_" + std::to_string(i), wide, &observed[i]));
     }
 
+    // Replayed rather than run once, and the replays are counted: whether the
+    // caller ends up running a node is the scheduler's business, and this case
+    // asserts nothing at all about the caller on a replay where the workers
+    // drained the queue before it could help. One replay that lands a node here
+    // is enough to exercise the restore; without one the case is vacuous and
+    // says so rather than passing.
     cg::DataflowExecutor df;
-    graph.execute(df);
+    bool                 ran_on_caller = false;
+    for (int attempt = 0; attempt < 20; attempt++) {
+        graph.execute(df);
 
-    for (auto const &obs : observed) {
-        REQUIRE(obs.max_threads.load() == static_cast<int>(wide));
+        for (auto const &obs : observed) {
+            REQUIRE(obs.max_threads.load() == static_cast<int>(wide));
+            ran_on_caller = ran_on_caller || obs.worker_id.load() < 0;
+        }
+        REQUIRE(hardware::get_max_threads() == baseline);
+        if (blas_baseline > 0) {
+            // The vendor count is the half a raised OpenMP ICV hides: a vendor
+            // that reports the calling thread's ICV when the thread set no
+            // count of its own answers with the width while the guard is up, so
+            // a guard that read its baseline through that ICV would restore the
+            // width here and pin the caller to it for good.
+            REQUIRE(blas::get_num_threads_this_thread() == blas_baseline);
+        }
     }
-    REQUIRE(hardware::get_max_threads() == baseline);
-    if (blas_baseline > 0) {
-        REQUIRE(blas::get_num_threads_this_thread() == blas_baseline);
+    if (!ran_on_caller) {
+        SKIP("the workers drained every replay, so the calling thread never ran a wide node");
     }
 }
 

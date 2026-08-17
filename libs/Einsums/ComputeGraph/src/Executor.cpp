@@ -59,11 +59,26 @@ void execute_node(Node &node) {
 /// not pinned, and leaving that thread narrowed would follow the caller into
 /// whatever it does after the replay returns.
 ///
-/// Only constructed for widths above 1, so an unplanned graph reads no ICV and
+/// Only constructed for a planned width, so an unplanned graph reads no ICV and
 /// writes none.
 class WidthGuard {
   public:
     explicit WidthGuard(int width) {
+        // Both counts are READ before either is written, and the order is not
+        // cosmetic. A thread that never set a vendor count of its own has one
+        // derived from its OpenMP ICV - MKL_Get_Max_Threads() reports 4 on a
+        // thread that just called omp_set_num_threads(4) - so reading the
+        // vendor after raising the ICV reads back the width instead of the
+        // baseline, and the restore below would then pin the thread to the
+        // node's width for good. Pool workers hid this: they set an explicit
+        // vendor count of 1 at startup, and an explicit count outranks the ICV.
+        // The thread that called execute() sets none, and `help_until` runs
+        // nodes there.
+        //
+        // A vendor that cannot be read cannot be set either (both are the same
+        // build-time switch), so a zero here means there is no vendor state to
+        // save, and restoring the 0 would ask for a nonsense thread count.
+        _prev_blas = blas::get_num_threads_this_thread();
 #ifdef _OPENMP
         _prev_omp = omp_get_max_threads();
         omp_set_num_threads(width);
@@ -75,23 +90,22 @@ class WidthGuard {
         // clamp any vendor call made under this guard back to one thread.
         _prev_scope = blas::moldable_width_scope();
         blas::set_moldable_width_scope(true);
-        // A vendor that cannot be read cannot be set either (both are the same
-        // build-time switch), so a zero here means there is no vendor state to
-        // save, and restoring the 0 would ask for a nonsense thread count.
-        _prev_blas = blas::get_num_threads_this_thread();
         if (_prev_blas > 0) {
             blas::set_num_threads_this_thread(width);
         }
     }
 
     ~WidthGuard() {
-        if (_prev_blas > 0) {
-            blas::set_num_threads_this_thread(_prev_blas);
-        }
         blas::set_moldable_width_scope(_prev_scope);
 #ifdef _OPENMP
         omp_set_num_threads(_prev_omp);
 #endif
+        // Last, and after the ICV is back: on a vendor whose count tracks the
+        // ICV this write is what makes the restored baseline stick rather than
+        // being read back through an ICV that is still the node's width.
+        if (_prev_blas > 0) {
+            blas::set_num_threads_this_thread(_prev_blas);
+        }
     }
 
     WidthGuard(WidthGuard const &)            = delete;
@@ -567,12 +581,24 @@ void DataflowExecutor::Scaffold::run_node(size_t i) {
             // nothing for a node that acquired nothing.
             task_pool::WidthBudget::HoldScope const hold(widths_active ? admitted[i].load(std::memory_order_relaxed) : 0U);
             // A planned width is honored by giving the executing thread that
-            // many threads for the node and no longer. Widths of 0 (unplanned)
-            // and 1 take the original path untouched: no thread-count is read,
-            // none is written, and the per-node submission cost is unchanged.
-            // A stale plan reaches here with widths_active false and is run as
-            // though every node were unplanned.
-            if (widths_active && node.thread_width > 1) {
+            // many threads for the node and no longer. A width of 1 is a width
+            // like any other and gets the guard too: `help_until` runs nodes on
+            // the thread that called execute(), and that thread is not one of
+            // the pool's workers - it never pinned its OpenMP ICV or its vendor
+            // thread count to 1, so a node left unguarded there computes with
+            // the whole machine's worth of vendor threads while the budget has
+            // it charged for one. That is oversubscription against the one
+            // invariant WidthBudget exists to hold, and it is visible in the
+            // answer: whether a given node ran on a worker or on the helper
+            // decides how a threaded vendor GEMM splits its k loop, so the same
+            // planned graph replayed twice does not return the same bits.
+            //
+            // Width 0 - unplanned - still takes the original path untouched: no
+            // thread-count is read, none is written, and the per-node
+            // submission cost is unchanged. A stale plan reaches here with
+            // widths_active false and is run as though every node were
+            // unplanned.
+            if (widths_active && node.thread_width > 0) {
                 WidthGuard const width(node.thread_width);
                 execute_node(node);
             } else {
