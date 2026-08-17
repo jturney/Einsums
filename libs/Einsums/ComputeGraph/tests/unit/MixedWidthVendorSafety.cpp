@@ -36,8 +36,9 @@
 // reference at a tolerance far below the order-1 stale blocks this case exists
 // for, and against each other bit for bit, which is the check that actually
 // catches an intermittent defect in state the vendor shares between callers.
-// The width-1 and OpenMPExecutor replays run the reference's own routes and are
-// still compared exactly.
+// The width-1 and OpenMPExecutor replays run the reference's own routes, so they
+// are held to a last-place bound rather than the reassociation one: same
+// kernels, but on a pool thread the vendor may answer at its own thread count.
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
@@ -53,6 +54,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -206,6 +208,16 @@ void reset(std::vector<Chain> &chains) {
 /// is the stronger check for an intermittent defect anyway.
 constexpr double kWideTolerance = 1e-12;
 
+/// What separates two executors running the SAME kernels, which is a narrower
+/// thing than the above and gets a narrower bound.
+///
+/// The sequential reference runs on the calling thread; the dataflow and OpenMP
+/// trials run on pool workers. A threaded vendor BLAS may answer those with
+/// different internal thread counts, and a dot product summed in two orders
+/// lands about a unit apart in the last place. Zero would be asserting that a
+/// vendor never varies with its caller, which is not something it promises.
+constexpr double kOrderingTolerance = 8.0 * std::numeric_limits<double>::epsilon();
+
 /// Every element of every accumulator, in one flat vector - the bit-for-bit
 /// snapshot the rounds are compared against.
 std::vector<double> snapshot(std::vector<Chain> const &chains) {
@@ -258,9 +270,9 @@ TEST_CASE("MixedWidthVendorSafety - mixed widths never corrupt a vendor contract
     reset(trial);
     trial_graph.execute(dataflow);
     {
-        // Exact: no WidthGuard anywhere, so every kernel is the one the
-        // reference ran, on the same route.
-        auto const bad = compare(reference, trial, 0.0);
+        // No WidthGuard anywhere, so every kernel is the one the reference ran,
+        // on the same route - only the thread it ran on differs.
+        auto const bad = compare(reference, trial, kOrderingTolerance);
         INFO(
             fmt::format("width 1: chain {} differs in {} of {} elements, worst |diff| {:.3e}", bad.chain, bad.wrong, bad.total, bad.worst));
         REQUIRE_FALSE(bad.any);
@@ -335,7 +347,7 @@ TEST_CASE("MixedWidthVendorSafety - mixed widths never corrupt a vendor contract
     reset(trial);
     trial_graph.execute(openmp);
     {
-        auto const bad = compare(reference, trial, 0.0);
+        auto const bad = compare(reference, trial, kOrderingTolerance);
         INFO(fmt::format("openmp executor: chain {} differs in {} of {} elements, worst |diff| {:.3e}", bad.chain, bad.wrong, bad.total,
                          bad.worst));
         REQUIRE_FALSE(bad.any);

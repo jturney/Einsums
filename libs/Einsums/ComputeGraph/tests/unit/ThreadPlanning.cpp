@@ -6,8 +6,9 @@
 // The width PLAN, not the wall clock. Every case here asserts what the planner
 // decided - which nodes were widened, which were vetoed, what the area came to -
 // because a timing assertion on a shared machine tests the machine. The two
-// cases that do replay assert bit-identity rather than speed, which is the one
-// run-time property the plan is supposed to guarantee.
+// cases that do replay assert the answer rather than speed, which is the one
+// run-time property the plan is supposed to guarantee: bit-identity where the
+// widths are the same on both sides, and a last-place bound where they are not.
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/Moldability.hpp>
@@ -21,6 +22,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -76,11 +78,38 @@ unsigned width_of(cg::Graph const &graph, size_t position) {
     return graph.nodes()[position].thread_width;
 }
 
-/// A byte-exact fingerprint of a result buffer.
+/// A byte-exact fingerprint of a result buffer. Two replays of ONE plan on one
+/// machine run the same kernels at the same widths, so their bits match; that
+/// is what the determinism cases assert.
 std::vector<unsigned char> bytes_of(Tensor<double, 2> const &tensor) {
     std::vector<unsigned char> out(tensor.size() * sizeof(double));
     std::memcpy(out.data(), tensor.data(), out.size());
     return out;
+}
+
+/// The values, for a comparison that spans two different widths.
+std::vector<double> values_of(Tensor<double, 2> const &tensor) {
+    return {tensor.data(), tensor.data() + tensor.size()};
+}
+
+/// The worst elementwise difference between two replays, relative to the larger
+/// magnitude.
+///
+/// Widths are not a rounding-neutral choice: VendorWidthFence presents a width
+/// of one to the vendor from inside a moldable scope, so a node that is planned
+/// wide reaches an OpenMP-threaded OpenBLAS single-threaded while the same node
+/// unplanned reaches it at the machine width. Those two accumulate a dot
+/// product in different orders. The difference that leaves is a last-digit one;
+/// the corruption these suites exist to catch is not, which is why a tolerance
+/// still separates them.
+double worst_relative_difference(std::vector<double> const &lhs, std::vector<double> const &rhs) {
+    REQUIRE(lhs.size() == rhs.size());
+    double worst = 0.0;
+    for (size_t i = 0; i < lhs.size(); i++) {
+        double const scale = std::max({std::abs(lhs[i]), std::abs(rhs[i]), 1e-300});
+        worst              = std::max(worst, std::abs(lhs[i] - rhs[i]) / scale);
+    }
+    return worst;
 }
 
 /// Two fat contractions plus enough thin ones to keep the graph honest, with
@@ -384,12 +413,18 @@ TEST_CASE("ThreadPlanning - a plan for another machine is not run", "[ComputeGra
 
     REQUIRE(cg::stale_thread_plan_fallbacks() == 1);
     // Still correct, just narrow: the fallback is today's unplanned behavior.
-    auto const stale = bytes_of(fixture.c1);
+    auto const stale = values_of(fixture.c1);
 
     graph.set_planned_thread_count(p);
     graph.execute(df);
     REQUIRE(cg::stale_thread_plan_fallbacks() == 1);
-    REQUIRE(bytes_of(fixture.c1) == stale);
+    // Not bit-for-bit: this replay honors widths and the rejected one did not,
+    // and the vendor fence makes that a different summation order rather than
+    // the same one. What must hold is that rejecting a plan cost accuracy
+    // nothing.
+    auto const honored = worst_relative_difference(values_of(fixture.c1), stale);
+    INFO("stale-plan replay against the honored one, worst relative difference " << honored);
+    REQUIRE(honored < 1e-12);
 }
 
 TEST_CASE("ThreadPlanning - a planned replay is deterministic at fixed P", "[ComputeGraph][ThreadPlanning]") {

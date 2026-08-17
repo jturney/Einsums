@@ -176,6 +176,19 @@ constexpr double wide_tolerance() {
     return 500.0 * static_cast<double>(std::numeric_limits<T>::epsilon());
 }
 
+/// What separates two replays that ran the same kernels on different threads.
+///
+/// The sequential reference runs on the calling thread and the dataflow trial
+/// runs on pool workers. A threaded vendor BLAS is free to answer those two
+/// with different internal thread counts, and a dot product summed in two
+/// orders lands a unit or so apart in the last place. That is not the failure
+/// this case looks for - an ordering bug moves an element, not its last bit -
+/// so the bound is a handful of epsilon rather than zero.
+template <typename T>
+constexpr double ordering_tolerance() {
+    return 8.0 * static_cast<double>(std::numeric_limits<T>::epsilon());
+}
+
 template <typename T>
 Mismatch compare(World<T> &reference, World<T> &trial, double tol) {
     // The negated form makes a NaN register as bad.
@@ -506,7 +519,7 @@ size_t run_one(std::mt19937 &rng, std::uint32_t seed, unsigned machine) {
     restore(trial, initial);
     trial_graph.execute(dataflow);
     {
-        auto const bad = compare(reference, trial, 0.0);
+        auto const bad = compare(reference, trial, ordering_tolerance<T>());
         if (bad.any) {
             FAIL(fmt::format("seed {}: dataflow at width 1 differs from the sequential reference in {} elements, first at buffer {} "
                              "element {} ({} against {}); this is an ordering or thread-count difference, not a width one. {}",
@@ -529,7 +542,7 @@ size_t run_one(std::mt19937 &rng, std::uint32_t seed, unsigned machine) {
     for (int round = 0; round < kRounds; round++) {
         restore(trial, initial);
         trial_graph.execute(dataflow);
-        auto const bad = compare(reference, trial, wide == 0 ? 0.0 : wide_tolerance<T>());
+        auto const bad = compare(reference, trial, wide == 0 ? ordering_tolerance<T>() : wide_tolerance<T>());
         if (bad.any) {
             FAIL(fmt::format("seed {}, round {}: dataflow at drawn widths differs from the sequential reference in {} elements, first "
                              "at buffer {} element {} ({} against {}). A width changed a result. {}",
