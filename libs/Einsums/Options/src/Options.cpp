@@ -112,9 +112,9 @@ std::string normalize_key(std::string_view key) {
 /**
  * @brief Everything registration allocates, kept alive until the process ends.
  *
- * The parser holds raw pointers into these and an option deregisters itself
- * when it dies, so the owning containers must outlive the parser. Entries live
- * in a deque because descriptors hold pointers to them.
+ * The parser holds raw pointers into these, so nothing here may be freed while
+ * a parse could still run - which is what "until the process ends" buys.
+ * Entries live in a deque because descriptors hold pointers to them.
  */
 struct OwnedRegistrations {
     std::deque<OptionEntry>                         entries;
@@ -127,6 +127,17 @@ struct OwnedRegistrations {
 };
 
 OwnedRegistrations &owned() {
+    // The registry is reached for BEFORE `r` is constructed, and that is the
+    // only reason this shuts down cleanly. Every option, category and exclusion
+    // owned below removes itself from the registry as it dies, so the registry
+    // has to outlive them; function-local statics are destroyed in reverse
+    // order of construction, so the registry has to be CONSTRUCTED first to get
+    // that. Left to itself the first registration builds `r` and only then, one
+    // frame deeper, the registry - putting them in the wrong order, so that at
+    // exit ~OwnedRegistrations walks its owned objects into a registry whose
+    // vectors were already freed. Every einsums process ended on that
+    // use-after-free; only a sanitizer build had any way to notice.
+    Registry::instance();
     static OwnedRegistrations r;
     return r;
 }
