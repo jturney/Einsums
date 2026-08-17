@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 import einsums
+import einsums.profile
 import einsums.rc as rc
 from einsums import _core
 
@@ -40,6 +41,13 @@ _sanitizer_active = any(os.environ.get(v) for v in ("ASAN_OPTIONS", "TSAN_OPTION
 requires_child_preload = pytest.mark.skipif(
     sys.platform == "darwin" and _sanitizer_active,
     reason="macOS strips DYLD_* for signed binaries, so a child cannot inherit the sanitizer runtime",
+)
+
+# The option survives EINSUMS_WITH_PROFILER=OFF and still parses; what does not
+# survive is anything writing a report for it to be read back from.
+requires_profiler = pytest.mark.skipif(
+    not einsums.profile.available(),
+    reason="requires EINSUMS_WITH_PROFILER=ON; this build writes no report",
 )
 
 
@@ -222,6 +230,7 @@ def test_a_field_no_option_claims_is_refused(pristine_rc):
 _CHILD = """
 import sys
 import einsums
+import einsums.profile
 import einsums.rc as rc
 rc.profile_filename = sys.argv[1]
 rc.profile_append = False
@@ -234,6 +243,7 @@ assert einsums._core._is_initialized()
 
 _SETTINGS_CHILD = """
 import einsums
+import einsums.profile
 import einsums.rc as rc
 rc.log_level = rc.LogLevel.INFO
 rc.debug_attach_debugger = False
@@ -267,6 +277,7 @@ def test_settings_reach_the_runtime():
 
 
 @requires_child_preload
+@requires_profiler
 @pytest.mark.parametrize(
     "setting,expect_report",
     [
