@@ -92,22 +92,28 @@ std::vector<double> values_of(Tensor<double, 2> const &tensor) {
     return {tensor.data(), tensor.data() + tensor.size()};
 }
 
-/// The worst elementwise difference between two replays, relative to the larger
-/// magnitude.
+/// The worst elementwise difference between two replays, relative to the
+/// element but never divided by less than one.
 ///
 /// Widths are not a rounding-neutral choice: VendorWidthFence presents a width
 /// of one to the vendor from inside a moldable scope, so a node that is planned
 /// wide reaches an OpenMP-threaded OpenBLAS single-threaded while the same node
 /// unplanned reaches it at the machine width. Those two accumulate a dot
 /// product in different orders. The difference that leaves is a last-digit one;
-/// the corruption these suites exist to catch is not, which is why a tolerance
+/// the corruption these suites exist to catch is not, which is why a bound
 /// still separates them.
-double worst_relative_difference(std::vector<double> const &lhs, std::vector<double> const &rhs) {
+///
+/// The floor of one is the part worth explaining. These buffers are GEMMs of
+/// random data, so among a hundred thousand outputs some land near zero through
+/// cancellation, and dividing a last-bit difference by such an element reports a
+/// large relative error for an answer that is not wrong. Every comparison in
+/// this suite family measures the same way for the same reason - see `compare`
+/// in MixedWidthDifferential and MixedWidthVendorSafety.
+double worst_difference(std::vector<double> const &lhs, std::vector<double> const &rhs) {
     REQUIRE(lhs.size() == rhs.size());
     double worst = 0.0;
     for (size_t i = 0; i < lhs.size(); i++) {
-        double const scale = std::max({std::abs(lhs[i]), std::abs(rhs[i]), 1e-300});
-        worst              = std::max(worst, std::abs(lhs[i] - rhs[i]) / scale);
+        worst = std::max(worst, std::abs(lhs[i] - rhs[i]) / std::max(1.0, std::abs(lhs[i])));
     }
     return worst;
 }
@@ -422,8 +428,8 @@ TEST_CASE("ThreadPlanning - a plan for another machine is not run", "[ComputeGra
     // and the vendor fence makes that a different summation order rather than
     // the same one. What must hold is that rejecting a plan cost accuracy
     // nothing.
-    auto const honored = worst_relative_difference(values_of(fixture.c1), stale);
-    INFO("stale-plan replay against the honored one, worst relative difference " << honored);
+    auto const honored = worst_difference(values_of(fixture.c1), stale);
+    INFO("stale-plan replay against the honored one, worst difference " << honored);
     REQUIRE(honored < 1e-12);
 }
 
