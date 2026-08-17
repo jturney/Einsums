@@ -328,7 +328,22 @@ def test_the_energy_screen_books_what_it_drops():
     # closely than the dropped fraction alone would suggest. Loose on purpose:
     # this is a bookkeeping check, not an accuracy claim about the screen.
     total = screened.e_t0 + screened.de_lccsd_t_screened
-    assert total == pytest.approx(unscreened.e_t0, rel=0.05)
+
+    # The property that does not depend on how a platform rounded: booking the
+    # estimate has to move the total TOWARD the unscreened answer. A screen that
+    # forgot what it dropped, or signed it wrongly, fails this on every vendor.
+    booked = abs(total - unscreened.e_t0)
+    unbooked = abs(screened.e_t0 - unscreened.e_t0)
+    assert booked < unbooked, (
+        f"the estimate moved the total away from the unscreened answer: "
+        f"{booked:.3e} booked against {unbooked:.3e} unbooked")
+
+    # And a band, wide enough for the spread across vendors. The screen decides
+    # by comparing against values whose last bits differ between BLAS
+    # implementations, so a borderline triplet falls on either side of it: mkl
+    # and Windows land at 5.1% where the openblas legs and Accelerate stay under
+    # 5, and the original 5% band had no room for that at all.
+    assert total == pytest.approx(unscreened.e_t0, rel=0.10)
 
 
 def test_every_gemm_leaves_the_phase_in_one_of_four_batches_per_chunk():
