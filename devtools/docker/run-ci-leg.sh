@@ -476,6 +476,13 @@ cmake -S '${SRC_DIR}' -B '${BUILD_DIR}' -G Ninja \\
 #    OOM-killed outright -- cc1plus terminated by signal -- even against a
 #    20GB allowance. Note this whole block is inside a double-quoted heredoc,
 #    so a comment here must not contain a double quote.
+#
+#    The ComputeGraph half of that story is now smaller: its binding is
+#    generated as 8 shard TUs (PYBIND_NUM_TU in its CMakeLists), which took
+#    the worst instrumented shard from 7.5GB to 4.7GB measured with clang.
+#    Two of those still overrun an 8GB allowance in the worst case, so the
+#    cap stays -- but the cliff it was guarding against is gone, and raising
+#    the allowance is now enough to lift it.
 if [[ '${LEG}' == 'asan' || '${LEG}' == 'tsan' || '${LEG}' == 'tsan-nopy' || '${LEG}' == 'gcc-openblas-coverage' ]]; then
     cmake --build '${BUILD_DIR}' -j1
 else

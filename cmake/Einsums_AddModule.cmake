@@ -163,7 +163,7 @@ include(Einsums_CodeCoverage)
 function(einsums_add_module libname modulename)
   # Retrieve arguments
   set(options CONFIG_FILES PYBIND)
-  set(one_value_args BASE_LIBNAME)
+  set(one_value_args BASE_LIBNAME PYBIND_NUM_TU)
   set(multi_value_args
       SOURCES
       HEADERS
@@ -499,6 +499,20 @@ function(einsums_add_module libname modulename)
       set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_HEADER_ROOT_${modulename} "${HEADER_ROOT}")
       set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_BIN_INC_${modulename} "${CMAKE_CURRENT_BINARY_DIR}/include")
       set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_LIBNAME_${modulename} "${libname}")
+
+      # PYBIND_NUM_TU splits this module's generated binding across that many
+      # translation units (apiary --num-tu). Worth it only where the single TU
+      # is big enough to be a memory problem: every shard re-parses the whole
+      # header set, so a small module pays that cost for nothing. The global
+      # EINSUMS_PYBIND_NUM_TU overrides it for builds whose memory budget
+      # differs from a developer machine's.
+      set(_pybind_num_tu "${${modulename}_PYBIND_NUM_TU}")
+      if(EINSUMS_PYBIND_NUM_TU GREATER 0)
+        set(_pybind_num_tu "${EINSUMS_PYBIND_NUM_TU}")
+      endif()
+      if(_pybind_num_tu)
+        set_property(GLOBAL PROPERTY EINSUMS_PYBIND_NUM_TU_${modulename} "${_pybind_num_tu}")
+      endif()
     endif()
   endif()
 

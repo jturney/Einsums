@@ -73,6 +73,16 @@ function(einsums_finalize_pybind)
         get_property(_header_root  GLOBAL PROPERTY EINSUMS_PYBIND_HEADER_ROOT_${_mod})
         get_property(_bin_inc      GLOBAL PROPERTY EINSUMS_PYBIND_BIN_INC_${_mod})
         get_property(_libname      GLOBAL PROPERTY EINSUMS_PYBIND_LIBNAME_${_mod})
+        get_property(_num_tu       GLOBAL PROPERTY EINSUMS_PYBIND_NUM_TU_${_mod})
+
+        # Only the modules that declared PYBIND_NUM_TU split their binding,
+        # so the argument is present only for them. NUM_TU rather than
+        # MAX_DEFS_PER_TU because apiary is built in this same build and so
+        # cannot be run at configure time to plan a content-sized split.
+        set(_num_tu_arg "")
+        if(_num_tu AND _num_tu GREATER 1)
+          set(_num_tu_arg NUM_TU ${_num_tu})
+        endif()
 
         # apiary_add_bindings populates these via OUT_* (PARENT_SCOPE);
         # pre-declare so the static cmake-audit check sees them defined.
@@ -89,6 +99,7 @@ function(einsums_finalize_pybind)
             OUTPUT_DIR "${CMAKE_BINARY_DIR}/generated/pybind"
             OUTPUT_NAME "${_libname}_${_mod}"
             CXX_STANDARD ${EINSUMS_WITH_CXX_STANDARD}
+            ${_num_tu_arg}
             # Module-local include roots not carried by the dependency targets'
             # usage requirements: the module's own source + build include dirs,
             # the build root (Config.hpp), the annotations shim, and apiary's

@@ -555,6 +555,14 @@ einsums_option(
   CATEGORY "Features" ADVANCED
 )
 
+einsums_option(
+  EINSUMS_PYBIND_NUM_TU
+  STRING
+  "Split every module's generated pybind TU across this many translation units, overriding the per-module PYBIND_NUM_TU. 0 (default) leaves each module's own choice alone; 1 forces a single TU. Raise it on a build whose memory allowance is tighter than a developer machine's - the generated ComputeGraph bindings peak near 7.5 GB as one TU and around 4.7 GB split eight ways."
+  0
+  CATEGORY "Build Targets" ADVANCED
+)
+
 if(EINSUMS_WITH_ITTNOTIFY)
   find_package(Amplifier)
 

@@ -254,6 +254,13 @@ A handful of CMake options gate the optional layers:
 
 * ``EINSUMS_BUILD_PYTHON`` builds the libtooling codegen, generates the
   pybind translation units, and emits ``_core.*.so``.
+* ``EINSUMS_PYBIND_NUM_TU`` splits every module's generated binding across
+  that many translation units, overriding the per-module count a module
+  declares with ``PYBIND_NUM_TU``.
+  Only ComputeGraph declares one, because only its binding is large enough
+  for the memory saving to outweigh re-parsing the header set once per shard.
+  Raise it on a build whose memory allowance is tighter than a developer
+  machine's; set it to ``1`` to turn sharding off.
 * ``EINSUMS_WITH_MPI`` replaces ``Comm``'s mock backend with a real
   Open MPI or MPICH integration.
 * ``EINSUMS_WITH_CUDA`` / ``EINSUMS_WITH_HIP`` enable the GPU

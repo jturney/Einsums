@@ -134,6 +134,15 @@ include(Einsums_AddModule)
 einsums_add_module(
   Einsums ComputeGraph
   PYBIND
+  # This module's bindings are by far the largest in the tree - around 1,030
+  # binding statements, an order of magnitude past the next module - and as one
+  # translation unit they peak near 7.5 GB under the sanitizer legs' Debug
+  # flags, which is what forces those legs to -j1 and what OOM-killed the
+  # coverage leg outright. Split eight ways each shard peaks under 4.7 GB.
+  # Going finer buys little: the einsum overload set is a single indivisible
+  # emit unit that costs 4.3 GB on its own, and every extra shard re-parses the
+  # whole header set, a fixed 3.4 s and 0.75 GB apiece.
+  PYBIND_NUM_TU 8
   SOURCES ${ComputeGraphSources}
   HEADERS ${ComputeGraphHeaders}
   MODULE_DEPENDENCIES
