@@ -927,16 +927,29 @@ if(EINSUMS_WITH_SANITIZERS AND NOT MSVC)
     )
     if(EXISTS "${_einsums_san_rt_path}")
       if(APPLE)
+        # Two entries, not one. dyld HONORS DYLD_INSERT_LIBRARIES and then
+        # deletes it from the environment the process can see, so a pytest
+        # run that was correctly preloaded cannot pass the preload down to a
+        # subprocess of its own: the grandchild dlopens the instrumented
+        # extension with no runtime under it and aborts on the first
+        # intercepted call with "interceptors not installed". The second entry
+        # carries the same path under a name dyld does not touch, and the root
+        # conftest.py puts it back before any test spawns anything.
         set(EINSUMS_PYTEST_SANITIZER_PRELOAD
             "DYLD_INSERT_LIBRARIES=${_einsums_san_rt_path}"
+            "EINSUMS_SANITIZER_PRELOAD=${_einsums_san_rt_path}"
             CACHE INTERNAL
-                  "Env entry preloading the sanitizer runtime into Python test subprocesses"
+                  "Env entries preloading the sanitizer runtime into Python test subprocesses"
         )
       else()
+        # LD_PRELOAD survives exec, so a child inherits it without help. The
+        # carrier is set anyway to keep the two platforms' environments the
+        # same shape for anything that reads it.
         set(EINSUMS_PYTEST_SANITIZER_PRELOAD
             "LD_PRELOAD=${_einsums_san_rt_path}"
+            "EINSUMS_SANITIZER_PRELOAD=${_einsums_san_rt_path}"
             CACHE INTERNAL
-                  "Env entry preloading the sanitizer runtime into Python test subprocesses"
+                  "Env entries preloading the sanitizer runtime into Python test subprocesses"
         )
       endif()
       einsums_info("Python tests will preload the sanitizer runtime: ${_einsums_san_rt_path}")
