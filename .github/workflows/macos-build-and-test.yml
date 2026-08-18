@@ -97,7 +97,22 @@ jobs:
 
       - name: Test (CTest) - Unit Tests
         working-directory: "${{ github.workspace }}/build"
+        env:
+          # See the Linux workflow: stacks of every thread when a python test
+          # stops making progress, which ctest's timeout report does not carry.
+          EINSUMS_TEST_STACKDUMP_DIR: "${{ github.workspace }}/stackdumps"
         run: ctest --rerun-failed --output-on-failure -j3
+
+      - name: Upload hung-test stack dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # build_type is what this workflow's matrix varies, and
+          # upload-artifact rejects a duplicate name within a run.
+          name: macos-stackdumps-${{ matrix.build_type }}
+          path: "${{ github.workspace }}/stackdumps"
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Generate coverage information
         working-directory: "${{github.workspace}}/build"

@@ -204,7 +204,20 @@ jobs:
         # fails because halt_on_error=1.
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:report_thread_leaks=0:suppressions=${{ github.workspace }}/src/devtools/sanitizers/tsan.supp
+          # Stacks of every thread when a python test stops making progress, in
+          # the one leg where a deadlock is most likely to be caught in the act.
+          # See the root conftest.py; ctest discards a timed-out test's output.
+          EINSUMS_TEST_STACKDUMP_DIR: "${{ github.workspace }}/stackdumps"
         run: |
           libtsan="$(gcc -print-file-name=libtsan.so)"
           echo "Preloading TSan runtime: ${libtsan}"
           LD_PRELOAD="${libtsan}" ctest --output-on-failure -R '[Pp]ython'
+
+      - name: Upload hung-test stack dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitizer-stackdumps-${{ matrix.sanitizer.slug }}
+          path: "${{ github.workspace }}/stackdumps"
+          if-no-files-found: ignore
+          retention-days: 14

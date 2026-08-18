@@ -149,7 +149,28 @@ jobs:
 
       - name: Test (CTest) - Unit Tests
         working-directory: "${{ github.workspace }}/build"
+        env:
+          # A python test that stops making progress dumps every thread's stack
+          # here (see the root conftest.py). ctest discards the output of a test
+          # it kills on timeout, so a hang is otherwise reported as a stopwatch
+          # reading and nothing else. Empty dumps delete themselves, so this
+          # directory stays absent on a healthy run.
+          EINSUMS_TEST_STACKDUMP_DIR: "${{ github.workspace }}/stackdumps"
         run: ctest --rerun-failed --output-on-failure -j4
+
+      # if: always() - a dump exists precisely when the step above failed.
+      # if-no-files-found: ignore keeps a green run quiet.
+      - name: Upload hung-test stack dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # Every matrix leg of this workflow uploads, and upload-artifact
+          # rejects a duplicate name within a run, so the leg's own coordinates
+          # go in the name rather than the workflow-level cache suffix.
+          name: linux-stackdumps-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}
+          path: "${{ github.workspace }}/stackdumps"
+          if-no-files-found: ignore
+          retention-days: 14
 
       # The run above imports einsums with the GIL auto-re-enabled: CPython does
       # that for any extension that has not declared Py_MOD_GIL_NOT_USED, and
@@ -186,7 +207,8 @@ jobs:
           assert not sys._is_gil_enabled(), 'importing einsums re-enabled the GIL'
           print('GIL still disabled after importing einsums')
           "
-          PYTHON_GIL=0 ctest -L PYTHON --output-on-failure -j4
+          EINSUMS_TEST_STACKDUMP_DIR="${{ github.workspace }}/stackdumps" \
+            PYTHON_GIL=0 ctest -L PYTHON --output-on-failure -j4
 
       - name: Generate coverage information
         if: ${{ matrix.compiler == 'default' && matrix.blas == 'openblas' && matrix.variant == 'default' }}
