@@ -28,7 +28,18 @@
 
 /// The fingerprint as this translation unit computes it.
 extern "C" std::uint64_t BUILD_MODE_PROBE_NAME() {
-    return einsums::sealed::config_fingerprint();
+    // Forced through a constexpr VARIABLE, which the standard requires to be
+    // initialized by constant evaluation right here. Returning the call
+    // directly only works while the optimizer folds it: config_fingerprint()
+    // is constexpr and therefore inline, so an unfolded call leaves a weak
+    // definition in each probe object, the linker keeps exactly one, and both
+    // probes then answer with the same __cplusplus - the two TUs having been
+    // compiled at different levels notwithstanding. That is not hypothetical.
+    // At -O2 clang folds it to an immediate; add -fsanitize=address,undefined
+    // and it does not, and the suite fails claiming the fold ignores its input
+    // when the fold never ran.
+    constexpr std::uint64_t fingerprint = einsums::sealed::config_fingerprint();
+    return fingerprint;
 }
 
 /// The language level this translation unit was ACTUALLY compiled at.
