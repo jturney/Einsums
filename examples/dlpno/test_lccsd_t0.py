@@ -369,8 +369,19 @@ def test_every_gemm_leaves_the_phase_in_one_of_four_batches_per_chunk():
 
     The phase is replayed a third time here, standing on the state
     ``compute_energy`` left, so the energy check is also a free idempotence test
-    of the whole phase: bit-identical, since nothing about a fresh run changes an
+    of the whole phase - and it is bit-identical for the replay that chunks the
+    way ``compute_energy`` did, because nothing about a fresh run changes an
     operand or a summation order.
+
+    A DIFFERENT chunking is not owed that, and asking for it was wrong. A chunk
+    is what fixes the batch extents, the batch extents are what the packed
+    kernel blocks its k loop from, and a re-blocked k loop adds the same terms in
+    another order: splitting this fixture nine ways moves the correction by 4e-19
+    (one ulp) under gcc/openblas, where mkl happens to land on the same bits. So
+    the nine-chunk replay is checked to the precision a reassociated sum of
+    ~1e-3 terms can hold, and the single-chunk one is still checked exactly -
+    which is the assertion that would catch a chunk boundary that actually
+    dropped or double-counted a triplet.
     """
     from dlpno.lccsd_t0 import LCCSDT0
 
@@ -394,7 +405,12 @@ def test_every_gemm_leaves_the_phase_in_one_of_four_batches_per_chunk():
         assert solver.n_nodes <= 60 * cc.n_lmo_triplets + 4 * solver.n_chunks, (
             f"{solver.n_nodes} nodes over {cc.n_lmo_triplets} triplets: the "
             "GEMMs are back to one dispatch per plan record")
-        assert total == cc.e_t0, "replaying the phase moved the correction"
+        if solver.n_chunks == 1:
+            assert total == cc.e_t0, "replaying the phase moved the correction"
+        else:
+            assert total == pytest.approx(cc.e_t0, rel=1e-12), (
+                "chunking the phase moved the correction by more than a "
+                "re-blocked summation can account for")
 
 
 def test_the_plan_classifies_every_triplet():
