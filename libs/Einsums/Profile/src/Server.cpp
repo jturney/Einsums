@@ -225,7 +225,11 @@ Server::Server(Consumer &consumer, StringTable &strings, std::string const &bind
 }
 
 auto Server::has_client() const -> bool {
-    return !_client_fds.empty();
+    // NOT `!_client_fds.empty()`: the vector belongs to the server thread, and
+    // this is called from any thread that destroys a graph. Reading it here
+    // raced a push_back that was reallocating it, which ThreadSanitizer caught
+    // on five suites at once.
+    return _has_client.load(std::memory_order_relaxed);
 }
 
 Server::~Server() {
@@ -283,6 +287,7 @@ void Server::shutdown() {
         close_socket(fd);
     }
     _client_fds.clear();
+    _has_client.store(false, std::memory_order_relaxed);
 
     if (_listen_fd >= 0) {
         close_socket(_listen_fd);
@@ -314,6 +319,7 @@ void Server::accept_clients() {
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &val, sizeof(val));
 #        endif
         _client_fds.push_back(fd);
+        _has_client.store(true, std::memory_order_relaxed);
         EINSUMS_LOG_INFO("Profile server: client connected (fd={})", fd);
 
         // Send initial snapshot
@@ -646,6 +652,7 @@ void Server::send_updates() {
 #    endif
     }
     _client_fds = std::move(alive);
+    _has_client.store(!_client_fds.empty(), std::memory_order_relaxed);
 }
 
 void Server::register_handler(std::string const &method, RequestHandler handler) {
