@@ -225,6 +225,51 @@ else()
   )
 endif()
 
+# ##################################################################################################
+# ccache
+# ##################################################################################################
+# Route compiles through ccache when it is installed. CI has always done this by passing
+# CMAKE_<LANG>_COMPILER_LAUNCHER on the command line; doing it here means a plain local configure
+# gets the same benefit without anyone having to know to ask for it.
+#
+# An explicitly set launcher WINS: CI still passes its own, and a developer who wants sccache,
+# distcc, or nothing at all sets CMAKE_<LANG>_COMPILER_LAUNCHER (or EINSUMS_WITH_CCACHE=OFF) and is
+# left alone.
+#
+# C and CXX only. The CUDA and HIP drivers cache poorly enough to be worth an explicit decision
+# rather than a default.
+einsums_option(
+  EINSUMS_WITH_CCACHE BOOL "Route C and C++ compiles through ccache when it is installed (default: ON)"
+  ON ADVANCED CATEGORY "Build Targets"
+)
+if(EINSUMS_WITH_CCACHE)
+  find_program(EINSUMS_CCACHE_PROGRAM ccache)
+  if(EINSUMS_CCACHE_PROGRAM)
+    foreach(_lang C CXX)
+      if(CMAKE_${_lang}_COMPILER_LAUNCHER)
+        # No semicolon in the text: einsums_info takes it as a list separator.
+        einsums_info(
+          "ccache: ${_lang} already has a compiler launcher, leaving it alone (${CMAKE_${_lang}_COMPILER_LAUNCHER})"
+        )
+      else()
+        set(CMAKE_${_lang}_COMPILER_LAUNCHER "${EINSUMS_CCACHE_PROGRAM}")
+      endif()
+    endforeach()
+    einsums_info("ccache: compiles routed through ${EINSUMS_CCACHE_PROGRAM}")
+
+    # An MSVC-style driver writing to a shared PDB defeats caching outright: ccache refuses a
+    # compile whose output it cannot fully capture, and does so silently. The Windows CI leg sets
+    # this too; a local clang-cl build needs the same. Only forced when the caller left the choice
+    # open, since a deliberate /Zi build is a legitimate thing to want.
+    if(MSVC AND NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
+      set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "Embedded")
+      einsums_info("ccache: debug information format set to Embedded (/Z7), the format ccache can cache")
+    endif()
+  else()
+    einsums_info("ccache: not found, compiles will not be cached")
+  endif()
+endif()
+
 einsums_option(
   EINSUMS_WITH_UNITY_BUILD BOOL "Enable unity build for certain build targets (default: OFF)" OFF
   ADVANCED CATEGORY "Build Targets"
