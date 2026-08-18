@@ -40,8 +40,17 @@
 // EINSUMS_BUILD_TIMESTAMP was previously set at CMake configure time and
 // baked into this header. That caused the header to change content on every
 // regen, cascading a recompile of every Einsums translation unit.
-// build_date_time() now reads __DATE__ __TIME__ directly from Version.cpp,
-// so the timestamp only updates when that one TU is compiled.
+// build_date_time() now reads the compiler's build-date and build-time macros
+// directly from Version.cpp, so the timestamp only updates when that one TU is
+// compiled.
+//
+// Those two macros are named nowhere in this header ON PURPOSE, comments
+// included. ccache scans an included file's raw text for them and cannot tell
+// code from prose, so a header that so much as mentions them disables direct
+// mode for every translation unit that reaches it. This header is reachable
+// from Config.hpp, which is to say from all of them: naming the macros here
+// cost the whole tree its direct-mode hits, and every compile fell back to
+// preprocessing. Measured, not theorized.
 
 EINSUMS_NAMESPACE_BEGIN()
 

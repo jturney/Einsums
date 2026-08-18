@@ -15,7 +15,10 @@
 // than just the objects it actually invalidated.
 //
 // This is the same reasoning that moved the build timestamp out of
-// ConfigVersion.hpp.in and into __DATE__ __TIME__ in one translation unit.
+// ConfigVersion.hpp.in and into the compiler's date and time macros in one
+// translation unit. Those macros are not spelled out here either: ccache
+// disables direct mode for any translation unit whose included text mentions
+// them, comments included.
 // Exactly one translation unit includes this file, Config/src/Version.cpp, and
 // the values reach the rest of the library through the accessors declared in
 // <Einsums/Config/Version.hpp>.
