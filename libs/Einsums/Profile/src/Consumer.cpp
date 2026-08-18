@@ -114,7 +114,24 @@ void Consumer::process_event(uint32_t thread_id, Event const &evt) {
     }
 }
 
+void Consumer::unwind_stale_frames(ThreadState &ts, size_t depth) {
+    if (ts.stack.size() <= depth) {
+        return;
+    }
+    _unmatched_zones.fetch_add(ts.stack.size() - depth, std::memory_order_relaxed);
+    // No time is recorded for these zones and none is charged to their parents.
+    // A duration whose end was never reported can only be invented, and a made
+    // up one would land in the same statistics as measured ones.
+    ts.stack.resize(depth);
+}
+
 void Consumer::process_push(ThreadState &ts, Event const &evt) {
+    // The producer says which level this zone opens at, so anything still open
+    // below that level was left behind by a dropped Pop.
+    if (evt.depth > 0) {
+        unwind_stale_frames(ts, evt.depth - 1);
+    }
+
     ThreadState::StackFrame frame{};
     frame.name_id    = evt.name_id;
     frame.file_id    = evt.file_id;
@@ -179,6 +196,14 @@ void AggNode::record_exclusive(ns exclusive) {
 }
 
 void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id) {
+    // The zone being closed is the one at the level the producer stamped, so
+    // anything open below it was left behind by a Pop that was dropped. This is
+    // the common case of the two: the pops of a burst all land after the burst
+    // has overrun the buffer.
+    if (evt.depth > 0) {
+        unwind_stale_frames(ts, evt.depth);
+    }
+
     if (ts.stack.empty())
         return;
 

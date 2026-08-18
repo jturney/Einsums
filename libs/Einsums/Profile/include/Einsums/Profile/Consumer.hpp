@@ -109,6 +109,42 @@ struct AggNode {
     AggNode() = default;
     explicit AggNode(std::string n) : name(std::move(n)) {}
 
+    /// Frees the subtree with a worklist rather than by recursion.
+    ///
+    /// The compiler-generated destructor recurses once per level through the
+    /// child ``unique_ptr``s, so freeing the tree costs a stack frame per level
+    /// of nesting - and a profiler is exactly the thing that must not turn a
+    /// deeply nested program into a crash at exit. One did: a run that dropped
+    /// events built a chain over 100k nodes long (see @ref Event::depth) and
+    /// died of stack overflow while tearing it down, after the work it was
+    /// measuring had finished and passed.
+    ~AggNode() {
+        std::vector<std::unique_ptr<AggNode>> pending;
+        // Moved out rather than erased: the emptied entries own nothing, so
+        // destroying the map they sit in frees no node and recurses nowhere.
+        auto const detach = [&pending](AggNode &node) {
+            for (auto &child : node.children) {
+                if (child.second) {
+                    pending.push_back(std::move(child.second));
+                }
+            }
+        };
+
+        detach(*this);
+        while (!pending.empty()) {
+            // Detached before it goes out of scope, so the implicit destructor
+            // that runs here always finds its children already gone.
+            std::unique_ptr<AggNode> const node = std::move(pending.back());
+            pending.pop_back();
+            detach(*node);
+        }
+    }
+
+    AggNode(AggNode const &)            = delete;
+    AggNode &operator=(AggNode const &) = delete;
+    AggNode(AggNode &&)                 = delete;
+    AggNode &operator=(AggNode &&)      = delete;
+
     /// Fold one measured exclusive duration into this node's statistics:
     /// call count, total, running mean and variance, min/max, and the
     /// per-call log2 histogram.
@@ -204,6 +240,11 @@ class EINSUMS_EXPORT Consumer {
     /// Increment dropped counter (called by producer when ring buffer is full).
     void increment_dropped() { _dropped.fetch_add(1, std::memory_order_relaxed); }
 
+    /// Zones abandoned because the events that would have closed them were
+    /// dropped. Reported alongside @ref dropped_count so a thinned-out tree is
+    /// visibly thinned rather than quietly wrong.
+    auto unmatched_zone_count() const -> uint64_t { return _unmatched_zones.load(std::memory_order_relaxed); }
+
     /// Notify the consumer that new events are available (called by producer after push).
     void notify() { _wake_cv.notify_one(); }
 
@@ -258,6 +299,16 @@ class EINSUMS_EXPORT Consumer {
     void process_annotate(ThreadState &ts, Event const &evt);
     void process_mem(ThreadState &ts, Event const &evt);
 
+    /// Close frames the producer is no longer inside, without recording them.
+    ///
+    /// A frame is only ever removed by its own Pop, so a Pop that the ring
+    /// buffer dropped strands its frame here for the rest of the run. The depth
+    /// each event carries says where the producer actually is, and every frame
+    /// deeper than that belongs to a zone whose Pop is never coming: dropping
+    /// them keeps this stack the shape of the code being measured instead of
+    /// growing one level per lost event.
+    void unwind_stale_frames(ThreadState &ts, size_t depth);
+
     StringTable &_strings;
 
     // Registered ring buffers (protected by reg_mutex_)
@@ -277,6 +328,9 @@ class EINSUMS_EXPORT Consumer {
 
     // Dropped event counter
     std::atomic<uint64_t> _dropped{0};
+
+    // Zones whose Pop was among the dropped events (see unwind_stale_frames).
+    std::atomic<uint64_t> _unmatched_zones{0};
 
     // Tick callback (e.g., for server). Set on the main thread after the consumer
     // thread is already running, so access is guarded by _tick_mutex.

@@ -179,3 +179,60 @@ TEST_CASE("AggNode::record_exclusive - a multi-second spread does not overflow",
     REQUIRE(node.total_exclusive_M2 > 0.0);
     REQUIRE(std::isfinite(node.total_exclusive_M2));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Reconstruction under dropped events
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Deepest chain of nodes carrying @p name anywhere in the forest.
+///
+/// One is correct: a zone pushed and popped from the same place is one call
+/// path however many times it runs. More means the consumer nested a zone under
+/// itself, which is what a lost Pop used to make it do - one extra level per
+/// dropped event, without bound.
+static size_t deepest_run_of(AggNode const &node, std::string const &name, size_t run = 0) {
+    size_t const here = (node.name == name) ? run + 1 : 0;
+    size_t       best = here;
+    for (auto const &c : node.children) {
+        best = std::max(best, deepest_run_of(*c.second, name, here));
+    }
+    return best;
+}
+
+TEST_CASE("Profiler - a burst that overruns the ring buffer does not deepen the tree", "[profiler][consumer]") {
+    auto &prof = Profiler::instance();
+    if (!prof.enabled()) {
+        SKIP("the profiler is disabled, so no events are recorded at all");
+    }
+
+    // Balanced push/pop pairs, more of them than the ring buffer holds and with
+    // nothing between them to let the consumer catch up. Some of these events
+    // WILL be dropped, and which ones is up to the drain: the point is that a
+    // dropped Push or Pop costs its own zone's timing and changes nothing about
+    // the shape of the tree.
+    auto const     name_id        = prof.string_table().intern("ring_burst_zone");
+    auto const     file_id        = prof.string_table().intern("burst.cpp");
+    auto const     func_id        = prof.string_table().intern("burst");
+    uint64_t const dropped_before = prof.consumer()->dropped_count();
+
+    constexpr int kPairs = 200'000; // ring buffer holds 65'536 events
+    for (int i = 0; i < kPairs; i++) {
+        prof.push_interned(name_id, file_id, func_id, 1);
+        prof.pop();
+    }
+
+    prof.flush();
+
+    auto        lock       = prof.consumer()->lock_shared();
+    auto const &thread_map = prof.consumer()->thread_data();
+
+    size_t deepest = 0;
+    for (auto const &tkv : thread_map) {
+        deepest = std::max(deepest, deepest_run_of(tkv.second.root, "ring_burst_zone"));
+    }
+    REQUIRE(deepest == 1);
+
+    if (prof.consumer()->dropped_count() == dropped_before) {
+        WARN("the burst kept up with the consumer, so this run did not exercise reconstruction under drops");
+    }
+}

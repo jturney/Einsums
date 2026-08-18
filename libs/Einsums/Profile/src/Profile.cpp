@@ -151,6 +151,12 @@ void Profiler::print(bool detailed, std::ostream &os) {
     if (dropped > 0) {
         fprintln(os, fg(fmt::color::red), "  dropped events: {}", dropped);
     }
+    // What those drops cost the report: a zone whose Push or Pop went missing
+    // contributes no time to anything above it, so the totals below it are
+    // short by however much it was running for.
+    if (auto const unmatched = _consumer->unmatched_zone_count(); unmatched > 0) {
+        fprintln(os, fg(fmt::color::red), "  zones left unmeasured by those drops: {}", unmatched);
+    }
     fprintln(os);
 }
 

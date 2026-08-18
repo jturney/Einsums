@@ -122,6 +122,10 @@ struct EINSUMS_EXPORT Profiler {
         evt.file_id   = file_id;
         evt.func_id   = func_id;
         evt.line      = line;
+        // Counted whether or not the event makes it into the buffer: this is
+        // where the thread actually is, and the consumer resynchronizes against
+        // it precisely when the events between have been dropped.
+        evt.depth = ++thread_zone_depth();
 
         // Read hardware counters
         auto                                  &counters = get_counter_backend();
@@ -159,6 +163,15 @@ struct EINSUMS_EXPORT Profiler {
         Event evt{};
         evt.type      = EventType::Pop;
         evt.timestamp = now;
+
+        // A pop with nothing open closes nothing. It used to be sent anyway and
+        // dropped at the far end; keeping the count here means the depth a Pop
+        // carries is always the level of a zone that is really open.
+        auto &depth = thread_zone_depth();
+        if (depth == 0) {
+            return;
+        }
+        evt.depth = depth--;
 
         // Read hardware counters
         auto                                  &counters = get_counter_backend();
@@ -305,6 +318,17 @@ struct EINSUMS_EXPORT Profiler {
             return ptr;
         }();
         return rb;
+    }
+
+    /// How many zones this thread has open, counted by the producer itself.
+    ///
+    /// Stamped into every Push and Pop (see @ref Event::depth) so the consumer
+    /// can tell a nesting level from a lost event. Kept here rather than in the
+    /// consumer's per-thread state because only the producer knows: the ring
+    /// buffer between them is allowed to drop.
+    static auto thread_zone_depth() -> uint32_t & {
+        thread_local uint32_t depth = 0;
+        return depth;
     }
 
 #    ifdef EINSUMS_HAVE_TRACY
