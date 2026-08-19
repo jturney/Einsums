@@ -117,6 +117,37 @@ struct GemmShape {
     [[nodiscard]] double flops() const { return 2.0 * static_cast<double>(m) * static_cast<double>(n) * static_cast<double>(k); }
 };
 
+/// Serial time for a batched or grouped-batched GEMM node.
+///
+/// Sums the arithmetic of every member and charges one launch for the call.
+/// Returns 0 when the node carries no descriptor the model can read, which
+/// leaves it below the fork floor and so at width 1 - the same "do not guess"
+/// behaviour the default branch has.
+double batched_gemm_us(Node const &node, DeviceProfile const &profile) {
+    auto member_us = [&profile](std::size_t m, std::size_t n, std::size_t k, double count) {
+        if (m == 0 || n == 0 || k == 0 || count <= 0.0) {
+            return 0.0;
+        }
+        double const each = profile.estimate_gemm_time_us(m, n, k, 1);
+        return count * std::max(0.0, each - profile.kernel_launch_overhead_us);
+    };
+
+    double work = 0.0;
+    if (auto const *b = std::get_if<BatchedGemmDescriptor>(&node.op_data); b != nullptr) {
+        work = member_us(static_cast<std::size_t>(b->m), static_cast<std::size_t>(b->n), static_cast<std::size_t>(b->k),
+                         static_cast<double>(b->batch_count));
+    } else if (auto const *g = std::get_if<GroupedBatchedGemmDescriptor>(&node.op_data); g != nullptr) {
+        for (auto const &grp : g->groups) {
+            work += member_us(static_cast<std::size_t>(grp.m), static_cast<std::size_t>(grp.n), static_cast<std::size_t>(grp.k),
+                              static_cast<double>(grp.count));
+        }
+    } else {
+        return 0.0;
+    }
+
+    return work > 0.0 ? work + profile.kernel_launch_overhead_us : 0.0;
+}
+
 GemmShape gemm_shape_of(Graph const &graph, Node const &node) {
     if (auto const *ein = std::get_if<EinsumDescriptor>(&node.op_data); ein != nullptr && ein->gemm_hint) {
         auto const &hint = *ein->gemm_hint;
@@ -338,6 +369,25 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
                 c.t1_us = shape.valid() ? profile.estimate_gemm_time_us(shape.m, shape.n, shape.k, 1)
                                         : (bytes > 0 ? profile.estimate_memory_time_us(bytes, 1) : 0.0);
                 break;
+            case OpKind::BatchedGemm:
+            case OpKind::GroupedBatchedGemm:
+                // A batch is arithmetic, not traffic. Without these two cases
+                // both fell to the default below and were priced as the bytes
+                // they move, which is the wrong dimension entirely: the flops
+                // scale with the members' m*n*k while the bytes only scale with
+                // the operands. family_for() above already knows these kinds -
+                // it returns KernelFamily::BatchedGemm for them - so the two
+                // switches disagreed about whether a batched GEMM was a
+                // recognised node, and the planner priced the CC residual's
+                // dominant kernel as a memcpy.
+                //
+                // One batched call pays ONE launch and then does every member's
+                // arithmetic, so the per-member estimate has its launch term
+                // removed and a single one is added back at the end. That is
+                // the whole reason the batch exists.
+                c.t1_us = batched_gemm_us(node, profile);
+                break;
+
             case OpKind::Permute:
             case OpKind::Transpose:
             case OpKind::HPTTPermute: {
