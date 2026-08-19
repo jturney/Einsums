@@ -343,12 +343,30 @@ double measure_cache_latency_ns(size_t bytes) {
 }
 
 /// Measure kernel launch overhead by timing very small GEMMs.
+/// The fixed cost of issuing one GEMM, before any arithmetic.
+///
+/// Measured at 2x2x2 rather than 1x1x1. A 1x1 operand is the one shape whose
+/// two strides collide, and until that was fixed it missed BLAS and ran the
+/// generic path, which opened two OpenMP regions to compute a single
+/// multiply-add: this returned about 60 us on a ten-core machine, roughly 600x
+/// the real figure, and wrote it into every profile as launch overhead. The
+/// cost model adds that term to every GEMM estimate without dividing it by
+/// width, so on a graph of a few thousand nodes it swamped the arithmetic
+/// entirely and the thread planner declined to widen anything.
+///
+/// 2x2x2 is eight flops, which is nothing next to the call itself, so the
+/// measurement is still essentially pure overhead - it just is not measured on
+/// the one shape in the library with a special case behind it. Anything that
+/// makes a degenerate extent interesting again belongs on a size the rest of
+/// the library treats as ordinary.
 double measure_overhead_us() {
-    auto A  = Tensor<double, 2>("A", 1, 1);
-    auto B  = Tensor<double, 2>("B", 1, 1);
-    auto C  = Tensor<double, 2>("C", 1, 1);
-    A(0, 0) = 1.0;
-    B(0, 0) = 1.0;
+    constexpr size_t kDim = 2;
+    auto             A    = Tensor<double, 2>("A", kDim, kDim);
+    auto             B    = Tensor<double, 2>("B", kDim, kDim);
+    auto             C    = Tensor<double, 2>("C", kDim, kDim);
+    A.set_all(1.0);
+    B.set_all(1.0);
+    C.set_all(0.0);
 
     constexpr size_t NUM_ITERS = 1000;
 
@@ -467,7 +485,7 @@ int einsums_main() {
     einsums::println("\n--- Kernel Overhead ---\n");
     double const overhead                    = measure_overhead_us();
     cost_model.cpu.kernel_launch_overhead_us = overhead;
-    einsums::println("  DGEMM(1x1x1) overhead: {:.2f} us", overhead);
+    einsums::println("  DGEMM(2x2x2) call overhead: {:.2f} us", overhead);
 
     // Measure how each kernel family scales with thread count, at each size
     // class the cache levels just defined. This is the axis a width planner
