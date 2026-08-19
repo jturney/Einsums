@@ -367,6 +367,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         std::string label;
         OpKind      kind;
         double      duration_ms{0.0}; ///< Wall-clock time in milliseconds
+        unsigned    width{0};         ///< Width it ran at; 0 if unplaced. @see NodeTimingSample::width
     };
 
     /**
@@ -382,6 +383,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         NodeId id;
         OpKind kind;
         double duration_ms{0.0}; ///< Wall-clock time in milliseconds
+
+        /// Thread width the node ACTUALLY ran at, or 0 when the executor did
+        /// not place it at a chosen width.
+        ///
+        /// A duration is only meaningful beside the width that produced it.
+        /// ThreadPlanning consumes a measurement as the node's SERIAL time, so
+        /// without this a node the previous plan widened reports t(w) as t(1),
+        /// looks cheaper than it is by its own speedup, drops under the fork
+        /// floor and gets narrowed - the planner punishing exactly the nodes
+        /// its last plan widened, and the harder the wider they ran.
+        ///
+        /// Recorded rather than read back off the node because the node's
+        /// thread_width says what was PLANNED, not what happened: a stale plan
+        /// reaches the dataflow executor with widths_active false and every
+        /// node runs unwrapped with its thread_width still set. Inferring from
+        /// the node would then correct a measurement that needed no correcting.
+        unsigned width{0};
     };
 
     /**
@@ -407,9 +425,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * before merging should prefer @ref record_node_timings(), which takes the
      * content mutex once for the batch instead of once per node.
      */
-    void record_node_timing(NodeId id, OpKind kind, double duration_ms) {
+    void record_node_timing(NodeId id, OpKind kind, double duration_ms, unsigned width = 0) {
         std::scoped_lock const lock(*_content_mutex);
-        _timing_samples.push_back({.id = id, .kind = kind, .duration_ms = duration_ms});
+        _timing_samples.push_back({.id = id, .kind = kind, .duration_ms = duration_ms, .width = width});
         _timing_report_valid = false;
     }
 

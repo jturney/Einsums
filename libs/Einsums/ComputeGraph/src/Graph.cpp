@@ -2830,7 +2830,8 @@ std::vector<Graph::NodeTiming> const &Graph::timing_report() const {
         _timing_report.push_back({.id          = sample.id,
                                   .label       = it != labels.end() ? std::string(it->second) : fmt::format("node {}", sample.id),
                                   .kind        = sample.kind,
-                                  .duration_ms = sample.duration_ms});
+                                  .duration_ms = sample.duration_ms,
+                                  .width       = sample.width});
     }
     _timing_report_valid = true;
     return _timing_report;

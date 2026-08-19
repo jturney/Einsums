@@ -834,7 +834,14 @@ void DataflowExecutor::execute(Graph &graph) {
     samples.reserve(n);
     for (size_t i = 0; i < n; i++) {
         if (s.node_ms[i].ms >= 0.0) {
-            samples.push_back({.id = nodes[i].id, .kind = nodes[i].kind, .duration_ms = s.node_ms[i].ms});
+            // The width this node actually ran at, which is what makes the
+            // duration interpretable: a measurement taken at width w is t(w),
+            // not t(1). Zero whenever the plan was not applied - see the
+            // widths_active guard around execute_node above - because then the
+            // node ran unwrapped and its thread_width describes an intention
+            // rather than a fact.
+            unsigned const ran_at = (s.widths_active && nodes[i].thread_width > 0) ? nodes[i].thread_width : 0U;
+            samples.push_back({.id = nodes[i].id, .kind = nodes[i].kind, .duration_ms = s.node_ms[i].ms, .width = ran_at});
         }
     }
     graph.record_node_timings(std::move(samples));

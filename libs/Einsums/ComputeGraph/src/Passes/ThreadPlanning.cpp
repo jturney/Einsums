@@ -333,8 +333,12 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
     // Recorded medians, keyed by node id. A replay writes one sample per node
     // execution, so a node inside a loop body has as many as the loop ran.
     std::unordered_map<NodeId, std::vector<double>> samples;
+    std::unordered_map<NodeId, unsigned>            sample_width;
     for (auto const &timing : graph.timing_report()) {
         samples[timing.id].push_back(timing.duration_ms);
+        // The width that produced this sample. A replay places every sample for
+        // one node at the same width, so the last one wins and they agree.
+        sample_width[timing.id] = timing.width;
     }
 
     std::vector<NodeCost> cost(n);
@@ -348,7 +352,25 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         c.family = family_for(node, bytes, profile, shape.valid() ? shape.flops() : 0.0);
 
         if (auto it = samples.find(node.id); it != samples.end()) {
-            c.t1_us = median_us(it->second);
+            // A measurement is t(w) for the width it ran at, and everything
+            // downstream - the fork floor, the widening search - reads t1_us as
+            // the SERIAL time. Undo the width: t(1) = t(w) * s(w).
+            //
+            // Without this the pass is self-defeating. A node the previous plan
+            // widened reports a duration smaller by its own speedup, so it
+            // looks cheaper than it is, drops under the fork floor and is
+            // narrowed back to 1 - and the better the widening worked, the more
+            // certainly it is undone. Measured on the DLPNO CC residual, the
+            // armed re-plan was slower than no re-plan at all in six paired
+            // trials out of six.
+            //
+            // A width of 0 means the executor did not place this node, so the
+            // duration is already serial and needs nothing.
+            double measured = median_us(it->second);
+            if (auto const w = sample_width[node.id]; w > 1) {
+                measured *= profile.parallel_speedup(c.family, c.bytes, w);
+            }
+            c.t1_us = measured;
             _num_from_timings++;
         } else {
             _num_from_model++;
