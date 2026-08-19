@@ -11,6 +11,7 @@
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cmath>
+#include <complex>
 #include <numbers>
 #include <random>
 
