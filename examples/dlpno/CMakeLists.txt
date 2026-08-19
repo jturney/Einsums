@@ -62,7 +62,13 @@ einsums_option(
      wrong energy nondeterministically on some platforms (default: OFF)" OFF ADVANCED
     CATEGORY "Build Targets"
 )
-if(NOT EINSUMS_WITH_TESTS_DLPNO_TRIPLES)
+#
+# The EINSUMS_BUILD_PYTHON term is not redundant: einsums_add_python_unit_test
+# returns without registering anything when Python is off, and
+# set_tests_properties on a test that was never added is a hard configure error
+# rather than a warning. Without it, -DEINSUMS_BUILD_PYTHON=OFF fails to
+# configure the whole tree on "Can not find test to add properties to".
+if(EINSUMS_BUILD_PYTHON AND NOT EINSUMS_WITH_TESTS_DLPNO_TRIPLES)
   set_tests_properties(
     "Tests.Unit.Examples.DLPNO.LCCSDT0" "Tests.Unit.Examples.DLPNO.LCCSDT" PROPERTIES DISABLED TRUE
   )
