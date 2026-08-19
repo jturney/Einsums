@@ -33,6 +33,23 @@ inline constinit cl::ConfigOption<bool> PassAnalyze =
 inline constinit cl::ConfigOption<bool> PassVerbose = cl::config_flag(
     "einsums:pass:verbose", "Log node count and timing before and after each optimization pass", "ComputeGraph Passes", false);
 
+/// How much the optimization passes narrate about what they did and declined.
+///
+/// 0 silent, 1 a summary line per pass, 2 each modification and each declined
+/// candidate, 3 the per-candidate detail behind a decline. Only a level nobody
+/// set through `PassManager::set_verbosity` takes this value, so a program that
+/// chooses its own level is unaffected.
+///
+/// This is the only way to see a thread plan. `Graph::plan_threads()` builds
+/// its planner directly rather than through a pass manager, so without a level
+/// from here every report the planner makes is unreachable, and whether it
+/// widened anything, or declined and why, cannot be observed from a run.
+inline constinit cl::ConfigOption<std::int64_t> PassVerbosity =
+    cl::config_opt<std::int64_t>("einsums:pass:verbosity",
+                                 "How much the optimization passes report about what they changed and what they declined: 0 silent, 1 a "
+                                 "summary per pass, 2 each modification and decline, 3 the detail behind each decline",
+                                 "ComputeGraph Passes", 0, "LEVEL", cl::Range{0, 3});
+
 /// Break a grouped batched GEMM into one profiler zone per shape class.
 /// Deliberately CHANGES how the GEMM runs, because a per-group breakdown of one
 /// parallel loop is not obtainable any other way. See Detail/GroupedBatchedGemm.hpp.

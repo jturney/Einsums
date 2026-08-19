@@ -13,6 +13,7 @@ int register_Einsums_ComputeGraph_options() {
     cl::register_option(option::PassDisable);
     cl::register_option(option::PassAnalyze);
     cl::register_option(option::PassVerbose);
+    cl::register_option(option::PassVerbosity);
     cl::register_option(option::GraphProfileGroups);
     cl::register_option(option::GraphVerifyLevels);
     cl::register_option(option::HardwareProfile);

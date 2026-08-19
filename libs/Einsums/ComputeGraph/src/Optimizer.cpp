@@ -222,6 +222,15 @@ bool PassManager::run(Graph &graph) {
     bool const analyze  = config::get(option::PassAnalyze);
     bool const verbose  = config::get(option::PassVerbose);
 
+    // A level nobody set programmatically comes from the option, so a report
+    // can be turned on from a command line without editing the program. A
+    // caller that chose its own level keeps it.
+    if (_verbosity == 0) {
+        if (auto const level = static_cast<int>(config::get(option::PassVerbosity)); level > 0) {
+            set_verbosity(level);
+        }
+    }
+
     bool any_modified = false;
     for (auto &pass : _passes) {
         // Check if this pass is disabled

@@ -167,6 +167,24 @@
     Log node count and wall-clock time before and after each optimization pass, even for
     passes that don't modify the graph.
 
+"einsums:pass:verbosity":
+  added: "2.0.0"
+  body: |
+    How much the optimization passes narrate: ``0`` silent, ``1`` a summary line per pass, ``2`` each
+    modification and each declined candidate, ``3`` the per-candidate detail behind a decline.
+
+    A program that calls ``PassManager.set_verbosity`` chooses its own level and this leaves it alone;
+    the option supplies a level only where nothing else did.
+
+    This is the only way to observe a **thread plan**. ``Graph.plan_threads()`` builds its planner
+    directly rather than through a pass manager, so at level ``0`` it reports nothing and whether it
+    widened any node, or declined and at which gate, cannot be seen from the outside. At ``1`` it
+    says how many nodes it widened, to what width, and the makespan it expected; at ``2`` it names
+    every node and its width.
+
+    Distinct from :option:`--einsums:pass:verbose`, which logs node count and timing around each pass
+    and says nothing about what a pass decided.
+
 "einsums:graph:profile-groups":
   added: "2.0.0"
   body: |

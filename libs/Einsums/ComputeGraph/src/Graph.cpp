@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp> // For OptimizerPass and PassManager
+#include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/ComputeGraphTypes/GraphData.hpp>
@@ -1804,6 +1805,12 @@ void Graph::rebuild_levels() {
 
 bool Graph::run_thread_planner(unsigned threads) {
     passes::ThreadPlanning planner(threads);
+    // This path builds its pass directly rather than through a PassManager, so
+    // nothing else would ever give the planner a verbosity and every report it
+    // makes would be unreachable from a normal run. A thread plan is the one
+    // result here that cannot be inferred from the outside: whether it widened
+    // anything, and if not which gate declined, is otherwise invisible.
+    planner.set_verbosity(static_cast<int>(config::get(option::PassVerbosity)));
     planner.run(*this);
     _planned_thread_count = static_cast<std::uint16_t>(threads);
     return planner.num_widened() > 0;
