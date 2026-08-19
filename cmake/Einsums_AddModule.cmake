@@ -476,9 +476,9 @@ function(einsums_add_module libname modulename)
   # so editing a header retriggers regeneration on the next build.
   # ----------------------------------------------------------------------
   if(${modulename}_PYBIND AND EINSUMS_BUILD_PYTHON)
-    if(NOT TARGET apiary)
+    if(NOT TARGET apiary::apiary)
       message(WARNING
-          "Module ${modulename} requested PYBIND but apiary target is missing — skipping autogen."
+          "Module ${modulename} requested PYBIND but the apiary::apiary target is missing — skipping autogen."
       )
     elseif(NOT headers)
       message(STATUS "Module ${modulename}: PYBIND set but no HEADERS to scan — skipping autogen.")

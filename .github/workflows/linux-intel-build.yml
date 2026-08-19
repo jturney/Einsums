@@ -78,7 +78,6 @@ jobs:
         with:
           ref: ${{ inputs.build_ref }}
           path: src
-          submodules: recursive
 
       - name: Cache Build Cache
         uses: actions/cache@v6

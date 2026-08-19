@@ -138,19 +138,19 @@ foreach(_mod IN LISTS EINSUMS_CPP_DOCS_MODULE_LIST)
   list(APPEND _cppdocs_header_deps ${_mod_headers})
 endforeach()
 
-if(TARGET apiary)
+if(TARGET apiary::apiary)
   set(_cppdocs_stamp "${CMAKE_CURRENT_BINARY_DIR}/.cppdocs.stamp")
   add_custom_command(
     OUTPUT "${_cppdocs_stamp}"
-    DEPENDS apiary
-            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_gen_cpp_docs.py"
-            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_render_cpp_rst.py"
-            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_render_cpp_site.py"
+    DEPENDS apiary::apiary
+            "${APIARY_SCRIPTS_DIR}/apiary_gen_cpp_docs.py"
+            "${APIARY_SCRIPTS_DIR}/apiary_render_cpp_rst.py"
+            "${APIARY_SCRIPTS_DIR}/apiary_render_cpp_site.py"
             ${_cppdocs_header_deps}
     COMMAND ${Python_EXECUTABLE}
-            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_gen_cpp_docs.py"
+            "${APIARY_SCRIPTS_DIR}/apiary_gen_cpp_docs.py"
             --source-dir "${PROJECT_SOURCE_DIR}" --build-dir "${CMAKE_BINARY_DIR}"
-            --tool $<TARGET_FILE:apiary> --out-dir "${EINSUMS_CPP_DOCS_DIR}"
+            --tool $<TARGET_FILE:apiary::apiary> --out-dir "${EINSUMS_CPP_DOCS_DIR}"
             --layout entity --backlink-label-template "modules_{lib}_{module}"
             --modules ${EINSUMS_CPP_DOCS_MODULE_LIST}
     COMMAND ${CMAKE_COMMAND} -E touch "${_cppdocs_stamp}"
@@ -174,9 +174,9 @@ if(TARGET apiary)
   add_custom_command(
     OUTPUT "${_cppdocs_copy_stamp}"
     DEPENDS "${_cppdocs_stamp}"
-            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_io.py"
+            "${APIARY_SCRIPTS_DIR}/apiary_io.py"
     COMMAND ${Python_EXECUTABLE}
-            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_io.py"
+            "${APIARY_SCRIPTS_DIR}/apiary_io.py"
             "${EINSUMS_CPP_DOCS_DIR}/rst" "${CMAKE_CURRENT_BINARY_DIR}/sphinx/api/cpp"
     COMMAND ${CMAKE_COMMAND} -E touch "${_cppdocs_copy_stamp}"
     COMMENT "docs: syncing generated C++ API reference into the Sphinx tree"
@@ -384,7 +384,7 @@ if(TARGET PyEinsumsDocs)
     # above: copy_directory resets every mtime, which costs Sphinx a full
     # re-read of these pages whenever the render re-runs.
     COMMAND ${Python_EXECUTABLE}
-            "${PROJECT_SOURCE_DIR}/external/apiary/scripts/apiary_io.py"
+            "${APIARY_SCRIPTS_DIR}/apiary_io.py"
             "${_gen_py_docs_src}" "${_gen_py_docs_dst}"
     COMMAND ${CMAKE_COMMAND} -E touch "${_gen_py_docs_stamp}"
     COMMENT "docs: syncing generated Python API reference into the Sphinx tree"

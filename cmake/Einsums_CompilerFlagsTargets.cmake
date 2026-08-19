@@ -34,9 +34,15 @@ target_compile_features(einsums_public_flags INTERFACE cxx_std_${EINSUMS_WITH_CX
 # runs unconditionally so the install tree always contains them.
 target_include_directories(einsums_public_flags
     INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/libs/Einsums/Python/include>
-              $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/external/apiary/include>
               $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
+
+# That shim is a one-line ``#include <apiary/Annotations.hpp>``, so the macro
+# contract travels as a usage requirement rather than as a hardcoded path.
+# Carried on the PUBLIC flags and exported with them: a downstream
+# find_package(Einsums) compiles the same headers and so needs the same macros,
+# which is why EinsumsConfig.cmake resolves Apiary as a dependency.
+target_link_libraries(einsums_public_flags INTERFACE apiary::annotations)
 
 # Set other flags that should always be set
 

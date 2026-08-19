@@ -17,7 +17,7 @@ name: Nightly
 #   * No detect_changes gating. That workflow skips legs whose paths did not
 #     change, which is the right economy for a PR and the wrong one for a
 #     nightly: the point of running against main every night is to catch what
-#     a path filter would not have predicted - a submodule bump, a toolchain
+#     a path filter would not have predicted - an apiary bump, a toolchain
 #     update on the runner image, a latent bug a fuzzer finally reaches.
 #
 #   * No Linux/intel leg. icpx's per-TU memory exceeds ubuntu-latest's 16GB
@@ -78,7 +78,7 @@ jobs:
   # Build only. The deploy steps are gated on the upstream repository and on a
   # push or manual dispatch, so a scheduled run publishes nothing - it just
   # proves the generator still walks the whole header surface, which a
-  # submodule bump can break without matching any path filter.
+  # dependency bump can break without matching any path filter.
   #
   # The write permission is granted here rather than at the top of the file so
   # every other leg stays read-only. docs.yml declares `contents: write` for

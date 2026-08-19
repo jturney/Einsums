@@ -81,7 +81,6 @@ jobs:
         with:
           ref: ${{ inputs.build_ref }}
           path: src
-          submodules: recursive
 
       # ---- Conda environment setup ----
       # Mirrors .github/actions/setup-conda-env, but the activation and every

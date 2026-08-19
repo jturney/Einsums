@@ -99,6 +99,12 @@ set(EINSUMS_CXX_COMPILER_VERSION
 
 einsums_find_package(fmt 11 REQUIRED)
 einsums_find_package(spdlog 1 REQUIRED)
+# apiary::annotations is a usage requirement of einsums_public_flags, which every
+# Einsums target links: Einsums/Python/Annotations.hpp is a shim over
+# <apiary/Annotations.hpp>, and it is reached transitively from Logging.hpp. So
+# this is needed even by a consumer that never touches Python. Header-only, and
+# satisfied by an Apiary installed without the codegen tool.
+einsums_find_package(Apiary 1 REQUIRED CONFIG)
 einsums_find_package(ZLIB REQUIRED)
 einsums_find_package(TargetHDF5 REQUIRED)
 einsums_find_package(OpenMP MODULE COMPONENTS CXX)

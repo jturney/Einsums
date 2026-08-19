@@ -37,13 +37,15 @@ einsums_add_module(
 )
 
 if(EINSUMS_BUILD_PYTHON)
-    # apiary is built under external/apiary. The root CMakeLists
-    # guards add_subdirectory on the same option, so the target should exist
-    # by the time we reach here. Bail with a clear message if it doesn't.
-    if(NOT TARGET apiary)
+    # Einsums_SetupApiary asks for the codegen executable under the same
+    # option, so the target should exist by the time we reach here. Bail with a
+    # clear message if it doesn't - a header-only Apiary install would get this
+    # far and then fail much later, at codegen time.
+    if(NOT TARGET apiary::apiary)
         message(FATAL_ERROR
-            "EINSUMS_BUILD_PYTHON=ON but the apiary target is not defined. "
-            "Make sure external/apiary is added before libs/."
+            "EINSUMS_BUILD_PYTHON=ON but the apiary::apiary codegen executable is not available. "
+            "Install a full Apiary (conda-forge: `conda install -c conda-forge apiary`) or let "
+            "Einsums_SetupApiary build it from source."
         )
     endif()
 

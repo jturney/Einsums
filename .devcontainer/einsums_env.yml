@@ -28,6 +28,9 @@ dependencies:
  - libblas[build=*openblas]
  - openblas[build=*openmp*]
  # Prebuilts to save einsums the work
+ # apiary: libclang codegen for the Python bindings and the C++ API reference,
+ # plus the APIARY_* annotation macros every translation unit includes
+ - apiary >=1,<2
  - catch2
  - fftw
  - fmt

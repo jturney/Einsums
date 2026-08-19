@@ -883,7 +883,7 @@ set(EINSUMS_WITH_TARGET_ARCHITECTURE
 # ##################################################################################################
 # Find Our dependencies: These are all dependencies needed to build the core library. Dependencies
 # that are only needed by plugins, examples or tests should be found separately in the appropriate
-# subdirectory. add_subdirectory(external)
+# subdirectory.
 
 # ##################################################################################################
 # Find other dependencies.
@@ -1079,35 +1079,17 @@ endif()
 set(CMAKE_DEBUG_POSTFIX "d")
 
 # ##################################################################################################
-# apiary — annotation contract + binding/docs codegen (external/apiary submodule) Must precede libs/
-# so that the apiary target and PyEinsums-related targets exist by the time individual modules'
-# einsums_add_module(...) hooks attach.
+# Apiary — annotation contract + binding/docs codegen. Must precede libs/ so that the apiary targets
+# and PyEinsums-related targets exist by the time individual modules' einsums_add_module(...) hooks
+# attach.
 # ##################################################################################################
-# The submodule provides two independent pieces (see external/apiary/CMakeLists.txt): *
-# apiary::annotations — header-only APIARY_* macros. Included transitively from Logging.hpp, so
-# EVERY translation unit needs them; the header must be vendored and INSTALLED unconditionally or a
-# downstream find_package(Einsums) of a pure-C++ (EINSUMS_BUILD_PYTHON=OFF) install fails to
-# compile. * apiary             — the libtooling codegen executable. It drives the per-module
-# pybind11 bindings (EINSUMS_BUILD_PYTHON) and the C++ API reference (EINSUMS_WITH_DOCUMENTATION).
-# It pulls in the Clang/LLVM dev stack, so it is built only when one of those consumers is enabled.
-#
-# add_subdirectory is therefore UNCONDITIONAL; only the executable is gated, via APIARY_BUILD_TOOL.
-# Our 3.25 floor means CMP0077 is NEW, so this normal variable drives the submodule's option()
-# directly.
-if(EINSUMS_BUILD_PYTHON OR EINSUMS_WITH_DOCUMENTATION)
-  set(APIARY_BUILD_TOOL ON)
-else()
-  set(APIARY_BUILD_TOOL OFF)
-endif()
-add_subdirectory(external/apiary)
+# Taken from the environment when it is installed there (conda-forge ships it), built from the
+# tagged release otherwise. Unconditional either way: apiary::annotations carries the APIARY_*
+# macros, which are reached transitively from Logging.hpp and so are needed by every translation
+# unit, including in a pure-C++ (EINSUMS_BUILD_PYTHON=OFF) build. See cmake/Einsums_SetupApiary.cmake
+# for the split between the header-only contract and the codegen executable.
+include(Einsums_SetupApiary)
 
-# Probe the build compiler for the system/stdlib include paths libtooling needs (resource-dir, conda
-# isystem, C++ stdlib dirs). Provided by the apiary submodule's ApiaryHelpers; results land in
-# APIARY_SYSTEM_FLAGS / APIARY_* and are consumed by einsums_finalize_pybind(). Only meaningful when
-# the codegen executable was actually built.
-if(TARGET apiary)
-  apiary_detect_toolchain(CXX_STANDARD ${EINSUMS_WITH_CXX_STANDARD})
-endif()
 # libs/Einsums/Python is now in the regular _Einsums_modules list in libs/Einsums/CMakeLists.txt —
 # it's a header-only module that must be installed unconditionally (its Annotations.hpp is
 # transitively included from Logging.hpp and other public headers), and the apiary / pybind11 sanity

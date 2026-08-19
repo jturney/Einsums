@@ -109,7 +109,7 @@ function(einsums_finalize_pybind)
                 "-I${_bin_inc}"
                 "-I${CMAKE_BINARY_DIR}"
                 "-I${CMAKE_SOURCE_DIR}/libs/Einsums/Python/include"
-                "-I${CMAKE_SOURCE_DIR}/external/apiary/include"
+                "-I${EINSUMS_APIARY_INCLUDE_DIR}"
                 ${_apiary_spdlog_flags}
             EXTRA_DEPENDS ${_all_defines_headers}
             OUT_BINDING _out OUT_STUB _stub_out OUT_DOCS_JSON _docs_json
@@ -198,7 +198,7 @@ function(einsums_finalize_pybind)
         CXX_STANDARD ${EINSUMS_WITH_CXX_STANDARD}
         EXTRA_FLAGS
             "-I${CMAKE_BINARY_DIR}"
-            "-I${CMAKE_SOURCE_DIR}/external/apiary/include"
+            "-I${EINSUMS_APIARY_INCLUDE_DIR}"
             ${_apiary_spdlog_flags}
         EXTRA_DEPENDS ${_all_defines_headers}
         OUT_CPP_DOCS_JSON _options_docs_json

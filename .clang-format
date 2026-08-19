@@ -14,7 +14,7 @@ AlignConsecutiveAssignments: true
 AlignConsecutiveDeclarations: true
 QualifierAlignment: Right
 AttributeMacros:
-  # Apiary binding annotations (external/apiary/include/apiary/Annotations.hpp).
+  # Apiary binding annotations (<apiary/Annotations.hpp>).
   # These expand to [[clang::annotate(...)]] and sit in attribute position, so
   # clang-format must not mistake them for the declaration's type.
   - APIARY_EXPOSE

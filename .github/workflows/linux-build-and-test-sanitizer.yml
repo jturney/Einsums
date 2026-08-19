@@ -65,7 +65,6 @@ jobs:
         with:
           ref: ${{ inputs.build_ref }}
           path: src
-          submodules: recursive
 
       # The sanitizer must be in the key, or the full matrix's two legs share
       # one entry, overwrite each other, and both miss completely.

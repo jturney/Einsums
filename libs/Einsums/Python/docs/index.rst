@@ -12,8 +12,8 @@ Python
 
 The ``Python`` module exposes Einsums to Python via pybind11. The bindings are
 generated at build time from the C++ headers by `Apiary
-<https://github.com/Einsums/Apiary>`_, a purpose-built libclang tool vendored at
-``external/apiary``, so the Python surface tracks the C++ surface without
+<https://github.com/Einsums/Apiary>`_, a purpose-built libclang tool packaged
+separately, so the Python surface tracks the C++ surface without
 hand-written glue.
 
 This page covers the mechanism and the package layout. For how to *use* the

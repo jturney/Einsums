@@ -34,7 +34,7 @@ The following libraries are also required, but will be fetched if they can not b
 Optional requirements:
 
 * A Fast Fourier Transform library, either FFTW3 or DFT from MKL.
-* Python, for the `einsums` Python package (`-DEINSUMS_BUILD_PYTHON=ON`; the binding generator is vendored, and pybind11 is fetched as needed).
+* Python, for the `einsums` Python package (`-DEINSUMS_BUILD_PYTHON=ON`; the binding generator comes from conda-forge, and pybind11 is fetched as needed).
 * CUDA or HIP for GPU support (work in progress).
 * MPI (Open MPI or MPICH) for distributed execution (work in progress).
 * cpptrace for backtraces.
@@ -44,16 +44,9 @@ Optional requirements:
 
 ### Obtaining the source
 
-Einsums vendors its binding and documentation code generator (apiary) as a git submodule.
-The submodule is required for every build, not only Python builds: its annotation headers are included by every translation unit.
-Clone with submodules, or initialize them after cloning:
-
 ```bash
-git clone --recurse-submodules https://github.com/Einsums/Einsums.git
+git clone https://github.com/Einsums/Einsums.git
 cd Einsums
-
-# If you already cloned without --recurse-submodules:
-git submodule update --init --recursive
 ```
 
 ### Setting up the environment
@@ -72,6 +65,10 @@ conda activate einsums-dev
 
 Activate the environment before the first CMake configure of a fresh build directory.
 Configuring without it can cache the wrong BLAS and fail to find OpenMP.
+
+The environment also carries [Apiary](https://github.com/Einsums/Apiary), the binding and documentation code generator.
+It is needed for every build, not only Python builds: its annotation headers are included by every translation unit.
+CMake builds it from its tagged release when it is not installed, which pulls in the Clang/LLVM development stack as well.
 
 ### Compiling
 

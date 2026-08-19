@@ -23,6 +23,16 @@ dependencies:
   # a bare find_library search.
   - pkg-config
   # Prebuilts to save einsums the work
+  #
+  # apiary is the libclang codegen tool behind the Python bindings and the C++
+  # API reference, plus the header-only APIARY_* annotation contract that every
+  # translation unit reaches through Einsums/Python/Annotations.hpp. Listed for
+  # every build, not just the Python and docs ones, because of that second half.
+  # cmake/Einsums_SetupApiary.cmake builds it from source when it is absent,
+  # which drags in the whole Clang/LLVM dev stack - so the entry is what keeps
+  # a plain build cheap. Bounded on both sides: apiary's emitted C++ and its
+  # CMake helper API are 1.x contracts.
+  - apiary >=1,<2
   - catch2
   - fftw
   - fmt >=12,<13  # clang 22 / macOS libc++ needs fmt 12 (11.0.x fails consteval, 11.1+ fails the malloc allocator)
