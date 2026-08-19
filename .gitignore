@@ -104,3 +104,9 @@ timer.dat
 examples/psi4-plugin-template/hybrid_mp2/build/
 examples/psi4-plugin-template/**/output.dat
 examples/psi4-plugin-template/**/output.log
+
+# Einsums Studio per-project state
+.einsums-studio/
+
+# Local MCP server wiring: machine-specific paths and, for some servers, tokens
+.mcp.json
