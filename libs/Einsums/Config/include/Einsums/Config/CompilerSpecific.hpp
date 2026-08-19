@@ -7,10 +7,6 @@
 
 #include <Einsums/Config/Defines.hpp>
 
-#ifdef __cplusplus
-#    include <complex>
-#endif
-
 /**
  * @def EINSUMS_TRANSACTION_SAFE_DYN
  *
@@ -236,6 +232,10 @@
 #define EINSUMS_OMP_CRITICAL EINSUMS_OMP_PRAGMA(critical)
 
 #if defined(__GNUC__) && defined(__cplusplus)
+
+#    ifdef __cplusplus
+#        include <complex> // IWYU pragma: keep
+#    endif
 
 // gcc does not have reductions for complex values.
 #    pragma omp declare reduction(+ : std::complex<float> : omp_out += omp_in) initializer(omp_priv = omp_orig)

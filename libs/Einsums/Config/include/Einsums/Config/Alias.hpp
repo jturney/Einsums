@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <utility>
+#include <utility> // IWYU pragma: keep
 
 // Taken from https://www.fluentcpp.com/2017/10/27/function-aliases-cpp/
 /**
