@@ -19,6 +19,7 @@
 /// measuring sustained GFLOPS at each point. It also measures memory
 /// bandwidth via a STREAM-like copy benchmark.
 
+#include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Print.hpp>
@@ -28,6 +29,10 @@
 
 #include <algorithm>
 #include <array>
+#ifdef _OPENMP
+#    include <omp.h>
+#endif
+
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -343,6 +348,45 @@ double measure_cache_latency_ns(size_t bytes) {
 }
 
 /// Measure kernel launch overhead by timing very small GEMMs.
+/// Holds the calling thread to one thread for the duration of a measurement.
+///
+/// Every rate this tool records - GEMM GFLOPS, memory and cache bandwidth,
+/// permute throughput, call overhead - is consumed as the WIDTH-1 figure. The
+/// cost model says so in one line: `t(w) = t(1) / s(w)`. Measured at whatever
+/// thread count the calibrating shell happened to have, the table is not t(1)
+/// at all, and the model then divides it by s(w) a second time. On a ten-core
+/// machine that made a serial 2048-cube GEMM look 3.2x faster than it is
+/// (179.0 GFLOPS recorded against 55.9 actual), so every node in a captured
+/// graph looked far cheaper than it was, fell under the thread planner's fork
+/// floor, and the planner declined to widen anything.
+///
+/// Deliberately NOT applied to the thread-efficiency sweep, which sets its own
+/// widths and measures the speedup between them, nor to the OpenMP region-cost
+/// calibration, whose whole subject is what a fork costs at the real width.
+///
+/// For an OpenMP-threaded vendor - conda-forge's openblas, the usual case here
+/// - the ICV governs the vendor too, so the omp call alone would do. The blas
+/// call is what reaches MKL, which runs its own runtime and does not share our
+/// ICVs.
+struct [[maybe_unused]] SerialMeasurementScope {
+#ifdef _OPENMP
+    int const prior{omp_get_max_threads()};
+
+    SerialMeasurementScope() {
+        omp_set_num_threads(1);
+        blas::set_num_threads_this_thread(1);
+    }
+
+    ~SerialMeasurementScope() {
+        omp_set_num_threads(prior);
+        blas::set_num_threads_this_thread(prior);
+    }
+
+    SerialMeasurementScope(SerialMeasurementScope const &)            = delete;
+    SerialMeasurementScope &operator=(SerialMeasurementScope const &) = delete;
+#endif
+};
+
 /// The fixed cost of issuing one GEMM, before any arithmetic.
 ///
 /// Measured at 2x2x2 rather than 1x1x1. A 1x1 operand is the one shape whose
@@ -410,82 +454,90 @@ int einsums_main() {
     // Generate measurement sizes
     auto sizes = log_space(cfg.min_size, cfg.max_size, cfg.num_points);
 
-    // Measure GEMM efficiency
-    einsums::println("\n--- GEMM Benchmark ---\n");
-    cost_model.cpu.gemm_efficiency.clear();
-
+    // Everything from here to the end of the kernel-overhead block is a
+    // width-1 rate by contract, so it is measured at width 1. See
+    // SerialMeasurementScope. The scope closes before max_threads is read and
+    // before the thread sweep, both of which need the real thread count.
     double peak_gflops = 0.0;
-    for (size_t const N : sizes) {
-        double gflops;
+    {
+        SerialMeasurementScope const serial;
+
+        // Measure GEMM efficiency
+        einsums::println("\n--- GEMM Benchmark ---\n");
+        cost_model.cpu.gemm_efficiency.clear();
+
+        for (size_t const N : sizes) {
+            double gflops;
+            if (cfg.dtype == "float") {
+                gflops = measure_sgemm_gflops(N, cfg.warmup, cfg.repeats);
+            } else {
+                gflops = measure_dgemm_gflops(N, cfg.warmup, cfg.repeats);
+            }
+
+            peak_gflops = std::max(peak_gflops, gflops);
+            cost_model.cpu.gemm_efficiency.push_back({.M = N, .N = N, .K = N, .gflops = gflops});
+
+            einsums::println("  {} x {} x {}: {:.1f} GFLOPS", N, N, N, gflops);
+        }
+
         if (cfg.dtype == "float") {
-            gflops = measure_sgemm_gflops(N, cfg.warmup, cfg.repeats);
+            cost_model.cpu.peak_gflops_fp32 = peak_gflops;
         } else {
-            gflops = measure_dgemm_gflops(N, cfg.warmup, cfg.repeats);
+            cost_model.cpu.peak_gflops_fp64 = peak_gflops;
         }
 
-        peak_gflops = std::max(peak_gflops, gflops);
-        cost_model.cpu.gemm_efficiency.push_back({.M = N, .N = N, .K = N, .gflops = gflops});
+        // Measure memory bandwidth
+        einsums::println("\n--- Memory Bandwidth ---\n");
+        double const bw                   = measure_bandwidth_gbps();
+        cost_model.cpu.mem_bandwidth_gbps = bw;
+        einsums::println("  Sustained copy bandwidth: {:.1f} GB/s", bw);
 
-        einsums::println("  {} x {} x {}: {:.1f} GFLOPS", N, N, N, gflops);
-    }
+        // Measure permute (tensor transpose) efficiency. A transpose moves the
+        // same bytes as a copy with one side strided, so what the cost model needs
+        // is how far short of the copy rate it lands, per rank and size.
+        einsums::println("\n--- Permute Benchmark ---\n");
+        cost_model.cpu.permute_efficiency.clear();
 
-    if (cfg.dtype == "float") {
-        cost_model.cpu.peak_gflops_fp32 = peak_gflops;
-    } else {
-        cost_model.cpu.peak_gflops_fp64 = peak_gflops;
-    }
+        auto record_permute = [&](size_t rank, size_t extent, size_t elements, double gbps) {
+            size_t const bytes = elements * sizeof(double);
+            cost_model.cpu.permute_efficiency.push_back({.bytes = bytes, .rank = rank, .gbps = gbps});
+            einsums::println("  rank {} extent {:>5}: {:>8.2f} MB  {:>7.1f} GB/s  ({:.0f}% of copy)", rank, extent,
+                             static_cast<double>(bytes) / (1024.0 * 1024.0), gbps, 100.0 * gbps / bw);
+        };
 
-    // Measure memory bandwidth
-    einsums::println("\n--- Memory Bandwidth ---\n");
-    double const bw                   = measure_bandwidth_gbps();
-    cost_model.cpu.mem_bandwidth_gbps = bw;
-    einsums::println("  Sustained copy bandwidth: {:.1f} GB/s", bw);
-
-    // Measure permute (tensor transpose) efficiency. A transpose moves the
-    // same bytes as a copy with one side strided, so what the cost model needs
-    // is how far short of the copy rate it lands, per rank and size.
-    einsums::println("\n--- Permute Benchmark ---\n");
-    cost_model.cpu.permute_efficiency.clear();
-
-    auto record_permute = [&](size_t rank, size_t extent, size_t elements, double gbps) {
-        size_t const bytes = elements * sizeof(double);
-        cost_model.cpu.permute_efficiency.push_back({.bytes = bytes, .rank = rank, .gbps = gbps});
-        einsums::println("  rank {} extent {:>5}: {:>8.2f} MB  {:>7.1f} GB/s  ({:.0f}% of copy)", rank, extent,
-                         static_cast<double>(bytes) / (1024.0 * 1024.0), gbps, 100.0 * gbps / bw);
-    };
-
-    for (size_t const N : {64UL, 256UL, 1024UL, 4096UL}) {
-        record_permute(2, N, N * N, measure_permute_rank2_gbps(N, cfg.warmup, cfg.repeats));
-    }
-    for (size_t const N : {16UL, 48UL, 128UL, 256UL}) {
-        record_permute(3, N, N * N * N, measure_permute_rank3_gbps(N, cfg.warmup, cfg.repeats));
-    }
-    for (size_t const N : {8UL, 16UL, 32UL, 64UL}) {
-        record_permute(4, N, N * N * N * N, measure_permute_rank4_gbps(N, cfg.warmup, cfg.repeats));
-    }
-
-    // Measure per-cache-level bandwidth and dependent-load latency. Sizes come
-    // from the detector; this fills in the two fields it leaves at zero.
-    einsums::println("\n--- Cache Levels ---\n");
-    for (size_t lvl = 0; lvl < cost_model.cpu.caches.size(); lvl++) {
-        auto &level = cost_model.cpu.caches[lvl];
-        if (level.size_bytes == 0) {
-            continue;
+        for (size_t const N : {64UL, 256UL, 1024UL, 4096UL}) {
+            record_permute(2, N, N * N, measure_permute_rank2_gbps(N, cfg.warmup, cfg.repeats));
         }
-        // Half the level, so the working set stays resident with room for the
-        // walk's own metadata.
-        size_t const working_set = level.size_bytes / 2;
-        level.bandwidth_gbps     = measure_cache_bandwidth_gbps(working_set);
-        level.latency_ns         = measure_cache_latency_ns(working_set);
-        einsums::println("  L{} ({:>6.1f} KB): {:>7.1f} GB/s  {:>6.2f} ns", lvl + 1, static_cast<double>(level.size_bytes) / 1024.0,
-                         level.bandwidth_gbps, level.latency_ns);
-    }
+        for (size_t const N : {16UL, 48UL, 128UL, 256UL}) {
+            record_permute(3, N, N * N * N, measure_permute_rank3_gbps(N, cfg.warmup, cfg.repeats));
+        }
+        for (size_t const N : {8UL, 16UL, 32UL, 64UL}) {
+            record_permute(4, N, N * N * N * N, measure_permute_rank4_gbps(N, cfg.warmup, cfg.repeats));
+        }
 
-    // Measure kernel overhead
-    einsums::println("\n--- Kernel Overhead ---\n");
-    double const overhead                    = measure_overhead_us();
-    cost_model.cpu.kernel_launch_overhead_us = overhead;
-    einsums::println("  DGEMM(2x2x2) call overhead: {:.2f} us", overhead);
+        // Measure per-cache-level bandwidth and dependent-load latency. Sizes come
+        // from the detector; this fills in the two fields it leaves at zero.
+        einsums::println("\n--- Cache Levels ---\n");
+        for (size_t lvl = 0; lvl < cost_model.cpu.caches.size(); lvl++) {
+            auto &level = cost_model.cpu.caches[lvl];
+            if (level.size_bytes == 0) {
+                continue;
+            }
+            // Half the level, so the working set stays resident with room for the
+            // walk's own metadata.
+            size_t const working_set = level.size_bytes / 2;
+            level.bandwidth_gbps     = measure_cache_bandwidth_gbps(working_set);
+            level.latency_ns         = measure_cache_latency_ns(working_set);
+            einsums::println("  L{} ({:>6.1f} KB): {:>7.1f} GB/s  {:>6.2f} ns", lvl + 1, static_cast<double>(level.size_bytes) / 1024.0,
+                             level.bandwidth_gbps, level.latency_ns);
+        }
+
+        // Measure kernel overhead
+        einsums::println("\n--- Kernel Overhead ---\n");
+        double const overhead                    = measure_overhead_us();
+        cost_model.cpu.kernel_launch_overhead_us = overhead;
+        einsums::println("  DGEMM(2x2x2) call overhead: {:.2f} us", overhead);
+    } // end SerialMeasurementScope
 
     // Measure how each kernel family scales with thread count, at each size
     // class the cache levels just defined. This is the axis a width planner
