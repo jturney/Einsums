@@ -57,6 +57,19 @@ inline constinit cl::ConfigOption<bool> GraphVerifyLevels =
 #endif
     );
 
+/// A calibrated hardware profile to build the cost model from.
+///
+/// Read once per `CostModel::detect_default()`, which every cost-model pass
+/// calls while a pass manager is being populated - long after the option
+/// system has parsed. An empty value, or a file that will not load, falls back
+/// to the built-in device table with a warning: the profile shapes
+/// optimization choices, never correctness.
+inline constinit cl::ConfigOption<std::string> HardwareProfile =
+    cl::config_opt<std::string>("einsums:hardware:profile",
+                                "Path to a calibrated hardware profile JSON to build the cost model from, in place of the built-in "
+                                "device table (see the calibrate_hardware tool)",
+                                "Hardware", "", "PATH");
+
 /// Keep every node on the host, making GPUPlacement a no-op.
 inline constinit cl::ConfigOption<bool> GpuDisable =
     cl::config_flag("einsums:gpu:disable", "Keep every node on the host (GPUPlacement becomes a no-op)", "GPU", false);

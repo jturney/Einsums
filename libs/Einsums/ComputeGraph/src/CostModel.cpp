@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
+#include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors.hpp>
 #include <Einsums/GPU/Platform.hpp>
@@ -16,7 +17,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -366,7 +366,7 @@ DeviceProfileDB DeviceProfileDB::load_defaults() {
 
 CostModel CostModel::detect_default() {
     // A calibrated profile (written by the calibrate_hardware tool) takes
-    // precedence over the built-in table: point EINSUMS_HARDWARE_PROFILE at
+    // precedence over the built-in table: point --einsums:hardware:profile at
     // its JSON and every profile consumer (ContractionPlanning's chain DP,
     // GPUPlacement, GEMMBatching's profitability gate) uses the measured
     // efficiency curve and bandwidths instead of generic estimates. A
@@ -383,14 +383,14 @@ CostModel CostModel::detect_default() {
         return model;
     };
 
-    if (char const *env_path = std::getenv("EINSUMS_HARDWARE_PROFILE"); env_path != nullptr && *env_path != '\0') {
-        auto loaded = load_json(env_path);
+    if (auto const profile_path = config::get(option::HardwareProfile); !profile_path.empty()) {
+        auto loaded = load_json(profile_path);
         if (loaded) {
-            EINSUMS_LOG_INFO("CostModel: using calibrated profile from EINSUMS_HARDWARE_PROFILE={}", env_path);
+            EINSUMS_LOG_INFO("CostModel: using calibrated profile from --einsums:hardware:profile={}", profile_path);
             return with_detected_caches(*loaded);
         }
-        EINSUMS_LOG_WARN("CostModel: EINSUMS_HARDWARE_PROFILE={} could not be loaded ({}); falling back to the built-in table", env_path,
-                         loaded.error().message);
+        EINSUMS_LOG_WARN("CostModel: --einsums:hardware:profile={} could not be loaded ({}); falling back to the built-in table",
+                         profile_path, loaded.error().message);
     }
 
     auto db = DeviceProfileDB::load_defaults();

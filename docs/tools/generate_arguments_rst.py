@@ -62,6 +62,7 @@ CATEGORY_ORDER = (
     ("Logging", "Logging"),
     ("Profile", "Profiling"),
     ("ComputeGraph Passes", "ComputeGraph Pass Options"),
+    ("Hardware", "Hardware Profile"),
     ("GPU", "GPU"),
     ("HPTT", "HPTT"),
     ("Tensor Options", "Tensor Storage"),

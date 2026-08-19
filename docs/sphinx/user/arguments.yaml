@@ -191,6 +191,24 @@
   body: |
     Keep every node on the host, making the GPU placement pass a no-op.
 
+"einsums:hardware:profile":
+  added: "2.0.0"
+  body: |
+    Build the cost model from a calibrated hardware profile instead of the built-in device table.
+
+    The passes that must choose between alternatives - ``ContractionPlanning``'s chain ordering,
+    ``GEMMBatching``'s profitability gate, ``GPUPlacement`` - price their candidates against a
+    ``CostModel``. Left unset, that model comes from a table of measured devices matched against this
+    machine's brand string, which is a generic answer for a machine the table names and a guess for one
+    it does not. Point this at the JSON the ``calibrate_hardware`` tool writes and the measured GEMM
+    efficiency curve and bandwidths are used instead.
+
+    A path that will not load is a warning and a fall back to the built-in table, never an error: the
+    profile shapes which optimization is chosen, never whether the answer is right.
+
+    Read once per cost model, while a pass manager is being populated, so it is settled well before
+    any graph executes.
+
 "einsums:hptt:selection-method":
   added: "2.0.0"
   body: |

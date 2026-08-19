@@ -11,7 +11,7 @@ Passes that must choose between alternatives - ``ContractionPlanning`` and
 ``GPUPlacement`` among them - estimate execution time through a ``CostModel``.
 That model is only as good as the machine measurements behind it, and this page
 covers where those measurements come from: the built-in table, the calibration
-tool, and the ``EINSUMS_HARDWARE_PROFILE`` override.
+tool, and the :option:`--einsums:hardware:profile` override.
 
 Profile Structure
 ==================
@@ -96,6 +96,19 @@ and BLAS kernel overhead. Output is a JSON file loadable by:
 
    auto profile = CostModel::load_json("my_hardware.json");
    pm.add<cg::passes::ContractionPlanning>(profile);
+
+Handing the same file to :option:`--einsums:hardware:profile` puts it behind
+``CostModel::detect_default()`` instead, so every cost-model pass in a default
+pass manager prices against it without any code naming the path:
+
+.. code-block:: bash
+
+   ./my_program --einsums:hardware:profile my_hardware.json
+   EINSUMS_HARDWARE_PROFILE=my_hardware.json ./my_program
+
+A file that will not load is a warning and a fall back to the built-in table
+rather than a failure: the profile shapes which optimization is chosen, never
+whether the answer is right.
 
 Shared Profile in create_default()
 ====================================

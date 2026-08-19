@@ -250,8 +250,13 @@ std::string host_tag() {
 /// The calibration file this machine's measurements are read from.
 ///
 /// ``EINSUMS_HARDWARE_CALIBRATION`` first, mirroring the contract
-/// ``EINSUMS_HARDWARE_PROFILE`` already has for the ComputeGraph cost model:
-/// an explicit file, missing is fine, never load-bearing. Otherwise a default
+/// ``--einsums:hardware:profile`` already has for the ComputeGraph cost model:
+/// an explicit file, missing is fine, never load-bearing. That one is a config
+/// descriptor and this one is not, deliberately: a cost model is built while a
+/// pass manager is populated, long after the option system parses, whereas
+/// everything in this file is memoized on first touch and first touch can
+/// precede initialize(). A descriptor read there would freeze the compiled-in
+/// default and no later parse could undo it. Otherwise a default
 /// under the cache directory, keyed by host so a shared home directory cannot
 /// hand one machine's fork/join cost to another.
 std::filesystem::path calibration_file() {

@@ -15,6 +15,7 @@ int register_Einsums_ComputeGraph_options() {
     cl::register_option(option::PassVerbose);
     cl::register_option(option::GraphProfileGroups);
     cl::register_option(option::GraphVerifyLevels);
+    cl::register_option(option::HardwareProfile);
     cl::register_option(option::GpuDisable);
     return 0;
 }

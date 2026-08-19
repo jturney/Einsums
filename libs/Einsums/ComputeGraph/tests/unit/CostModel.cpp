@@ -7,17 +7,18 @@
 /// @brief Tests for CostModel, DeviceProfileDB, and ContractionPlanning.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
-#include <Einsums/Utilities/SetEnv.hpp>
 
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdio>
-#include <cstdlib>
 #include <filesystem>
+#include <string>
 
 #include <Einsums/Testing.hpp>
 
@@ -1062,11 +1063,20 @@ TEST_CASE("gpu::device_name returns string", "[ComputeGraph][GPU]") {
     CHECK(name.size() >= 0); // Always true, but exercises the function
 }
 
-TEST_CASE("CostModel - EINSUMS_HARDWARE_PROFILE overrides the built-in table", "[ComputeGraph][CostModel]") {
-    // Write a minimal calibrated cost_model, point the env var at it, and
+TEST_CASE("CostModel - einsums:hardware:profile overrides the built-in table", "[ComputeGraph][CostModel]") {
+    // Write a minimal calibrated cost_model, point the option at it, and
     // detect_default() must load it instead of the database. A bogus path
     // must fall back to the table instead of failing (the cost_model shapes
     // optimization choices, never correctness).
+    //
+    // The option is process-global and every other case here calls
+    // detect_default(), so whatever it held has to come back even if a check
+    // below fails.
+    struct Restore {
+        std::string previous;
+        ~Restore() { config::set(option::HardwareProfile, previous); }
+    } const restore{config::get(option::HardwareProfile)};
+
     auto cost_model     = cg::CostModel::detect_default();
     cost_model.source   = "calibrated";
     cost_model.cpu.name = "EnvOverrideTest CPU";
@@ -1074,16 +1084,14 @@ TEST_CASE("CostModel - EINSUMS_HARDWARE_PROFILE overrides the built-in table", "
     std::string const path = (std::filesystem::temp_directory_path() / "einsums_hw_env_test.json").string();
     REQUIRE(cost_model.save_json(path));
 
-    einsums::set_env_var("EINSUMS_HARDWARE_PROFILE", path.c_str());
+    config::set(option::HardwareProfile, path);
     auto loaded = cg::CostModel::detect_default();
-    einsums::unset_env_var("EINSUMS_HARDWARE_PROFILE");
 
     CHECK(loaded.source == "calibrated");
     CHECK(loaded.cpu.name == "EnvOverrideTest CPU");
 
-    einsums::set_env_var("EINSUMS_HARDWARE_PROFILE", "/nonexistent/einsums_hw.json");
+    config::set(option::HardwareProfile, std::string{"/nonexistent/einsums_hw.json"});
     auto fallback = cg::CostModel::detect_default();
-    einsums::unset_env_var("EINSUMS_HARDWARE_PROFILE");
 
     CHECK(fallback.source == "database");
     std::remove(path.c_str());
