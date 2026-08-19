@@ -6,7 +6,9 @@
 #pragma once
 
 #include <Einsums/BLAS.hpp>
+#include <Einsums/Config/CompilerSpecific.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
 
@@ -33,16 +35,27 @@ void impl_gemm_noncontiguous(char transA, char transB, CType alpha, einsums::det
 
     constexpr CType zero = einsums::detail::convert<int, CType>(0);
 
+    // A parallel region costs the same whether the loop inside it has one
+    // iteration or a million - about 25 us at ten threads on the machine this
+    // was written on - so a region entered for trivial work is pure loss. The
+    // scaling loops walk m*n elements; the product loops do k times that. Both
+    // are held to the same threshold the rest of the library uses, and the
+    // collapse is over m*n, so a single output element can never be worth a
+    // team no matter how large k is.
+    size_t const outputs     = m * n;
+    bool const   scale_par   = outputs >= ::einsums::hardware::omp_min_parallel_elements();
+    bool const   product_par = outputs > 1 && outputs * k >= ::einsums::hardware::omp_min_parallel_elements();
+
     // Scale the output.
     if (beta == zero) {
-        EINSUMS_OMP_PRAGMA(parallel for collapse(2))
+        EINSUMS_OMP_PRAGMA(parallel for collapse(2) if (scale_par))
         for (size_t ca = 0; ca < m; ca++) {
             for (size_t cb = 0; cb < n; cb++) {
                 C_data[ca * ca_stride + cb * cb_stride] = zero;
             }
         }
     } else {
-        EINSUMS_OMP_PRAGMA(parallel for collapse(2))
+        EINSUMS_OMP_PRAGMA(parallel for collapse(2) if (scale_par))
         for (size_t ca = 0; ca < m; ca++) {
             for (size_t cb = 0; cb < n; cb++) {
                 C_data[ca * ca_stride + cb * cb_stride] *= beta;
@@ -55,54 +68,64 @@ void impl_gemm_noncontiguous(char transA, char transB, CType alpha, einsums::det
     // Each (ca, cb) pair is owned by one thread, so no race on C.
     if constexpr (IsComplexV<CType>) {
         if (tA == 'c' && tB == 'c') {
-            EINSUMS_OMP_PRAGMA(parallel for collapse(2))
+            EINSUMS_OMP_PRAGMA(parallel for collapse(2) if (product_par))
             for (size_t ca = 0; ca < m; ca++) {
                 for (size_t cb = 0; cb < n; cb++) {
+                    CType acc = zero;
                     for (size_t link = 0; link < k; link++) {
-                        C_data[ca * ca_stride + cb * cb_stride] += alpha * std::conj(A_data[a_target_stride * ca + a_link_stride * link]) *
-                                                                   std::conj(B_data[b_target_stride * cb + b_link_stride * link]);
+                        acc += alpha * std::conj(A_data[a_target_stride * ca + a_link_stride * link]) *
+                               std::conj(B_data[b_target_stride * cb + b_link_stride * link]);
                     }
+                    C_data[ca * ca_stride + cb * cb_stride] += acc;
                 }
             }
         } else if (tA == 'c') {
-            EINSUMS_OMP_PRAGMA(parallel for collapse(2))
+            EINSUMS_OMP_PRAGMA(parallel for collapse(2) if (product_par))
             for (size_t ca = 0; ca < m; ca++) {
                 for (size_t cb = 0; cb < n; cb++) {
+                    CType acc = zero;
                     for (size_t link = 0; link < k; link++) {
-                        C_data[ca * ca_stride + cb * cb_stride] += alpha * std::conj(A_data[a_target_stride * ca + a_link_stride * link]) *
-                                                                   B_data[b_target_stride * cb + b_link_stride * link];
+                        acc += alpha * std::conj(A_data[a_target_stride * ca + a_link_stride * link]) *
+                               B_data[b_target_stride * cb + b_link_stride * link];
                     }
+                    C_data[ca * ca_stride + cb * cb_stride] += acc;
                 }
             }
         } else if (tB == 'c') {
-            EINSUMS_OMP_PRAGMA(parallel for collapse(2))
+            EINSUMS_OMP_PRAGMA(parallel for collapse(2) if (product_par))
             for (size_t ca = 0; ca < m; ca++) {
                 for (size_t cb = 0; cb < n; cb++) {
+                    CType acc = zero;
                     for (size_t link = 0; link < k; link++) {
-                        C_data[ca * ca_stride + cb * cb_stride] += alpha * A_data[a_target_stride * ca + a_link_stride * link] *
-                                                                   std::conj(B_data[b_target_stride * cb + b_link_stride * link]);
+                        acc += alpha * A_data[a_target_stride * ca + a_link_stride * link] *
+                               std::conj(B_data[b_target_stride * cb + b_link_stride * link]);
                     }
+                    C_data[ca * ca_stride + cb * cb_stride] += acc;
                 }
             }
         } else {
-            EINSUMS_OMP_PRAGMA(parallel for collapse(2))
+            EINSUMS_OMP_PRAGMA(parallel for collapse(2) if (product_par))
             for (size_t ca = 0; ca < m; ca++) {
                 for (size_t cb = 0; cb < n; cb++) {
+                    CType acc = zero;
                     for (size_t link = 0; link < k; link++) {
-                        C_data[ca * ca_stride + cb * cb_stride] += alpha * A_data[a_target_stride * ca + a_link_stride * link] *
-                                                                   B_data[b_target_stride * cb + b_link_stride * link];
+                        acc += alpha * A_data[a_target_stride * ca + a_link_stride * link] *
+                               B_data[b_target_stride * cb + b_link_stride * link];
                     }
+                    C_data[ca * ca_stride + cb * cb_stride] += acc;
                 }
             }
         }
     } else {
-        EINSUMS_OMP_PRAGMA(parallel for collapse(2))
+        EINSUMS_OMP_PRAGMA(parallel for collapse(2) if (product_par))
         for (size_t ca = 0; ca < m; ca++) {
             for (size_t cb = 0; cb < n; cb++) {
+                CType acc = zero;
                 for (size_t link = 0; link < k; link++) {
-                    C_data[ca * ca_stride + cb * cb_stride] +=
+                    acc +=
                         alpha * A_data[a_target_stride * ca + a_link_stride * link] * B_data[b_target_stride * cb + b_link_stride * link];
                 }
+                C_data[ca * ca_stride + cb * cb_stride] += acc;
             }
         }
     }

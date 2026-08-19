@@ -714,7 +714,17 @@ struct TensorImpl final {
      * @param[out] lda The leading dimension which can be passed into gemm and similar calls.
      */
     [[nodiscard]] bool is_gemmable(size_t *lda = nullptr) const {
-        if (_rank != 2 || (_strides[0] != 1 && _strides[1] != 1) || (_strides[0] == _strides[1])) {
+        // Equal strides normally mean the two axes address the same elements,
+        // which no BLAS call can express. They mean nothing of the sort when an
+        // axis has extent one: that axis is never traversed, so its stride is
+        // arbitrary and collides with the other one for a 1 x n matrix laid out
+        // perfectly well. Rejecting those sent every single-row GEMM down the
+        // generic path, where it paid two OpenMP fork/joins - about 50 us on a
+        // ten-core machine - to do work BLAS does in 0.2 us. Same reasoning as
+        // get_incx() below, which already ignores size-1 axes for the same
+        // reason.
+        bool const strides_collide = _strides[0] == _strides[1] && _dims[0] > 1 && _dims[1] > 1;
+        if (_rank != 2 || (_strides[0] != 1 && _strides[1] != 1) || strides_collide) {
             return false;
         } else {
             if (lda != nullptr) {
