@@ -206,14 +206,14 @@ EINSUMS_FORCEINLINE void transpose_inplace(Vec<double> *rows) {
 
 // 4×4 float transpose (NEON)
 EINSUMS_FORCEINLINE void transpose_inplace(Vec<float> *rows) {
-    float32x4x2_t t0 = vuzpq_f32(rows[0], rows[2]);
-    float32x4x2_t t1 = vuzpq_f32(rows[1], rows[3]);
-    float32x4x2_t t2 = vtrnq_f32(t0.val[0], t1.val[0]);
-    float32x4x2_t t3 = vtrnq_f32(t0.val[1], t1.val[1]);
-    rows[0]          = t2.val[0];
-    rows[1]          = t3.val[0];
-    rows[2]          = t2.val[1];
-    rows[3]          = t3.val[1];
+    float32x4x2_t const t0 = vuzpq_f32(rows[0], rows[2]);
+    float32x4x2_t const t1 = vuzpq_f32(rows[1], rows[3]);
+    float32x4x2_t const t2 = vtrnq_f32(t0.val[0], t1.val[0]);
+    float32x4x2_t const t3 = vtrnq_f32(t0.val[1], t1.val[1]);
+    rows[0]                = t2.val[0];
+    rows[1]                = t3.val[0];
+    rows[2]                = t2.val[1];
+    rows[3]                = t3.val[1];
 }
 
 // 8×8 NEON 16-bit transpose helper.
