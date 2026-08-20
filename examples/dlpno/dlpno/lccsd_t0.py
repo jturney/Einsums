@@ -139,6 +139,15 @@ class LCCSDT0:
 
         self._plan = None
         self._retain = False
+        #: Where every tensor one chunk writes is carved from.
+        #:
+        #: One pool for the whole phase, grown by :meth:`_run_chunk` to the
+        #: chunk it is about to run. A chunk's working set is thousands of
+        #: multi-megabyte tensors, and the system allocator charges the full
+        #: first-touch write for each one (``std::vector`` value-initializes),
+        #: which measured as seconds of this phase. The pool's pages are
+        #: committed once and reused, so a carve is a bitmap claim.
+        self._pool = einsums.MemoryPool(32 * 1024 * 1024, "lccsd(t0)")
         self.W = self.V = self.T = None
         self._metric_cache = {}
         self.t_plan = 0.0
@@ -319,9 +328,12 @@ class LCCSDT0:
                 "retains nothing.")
 
         chunks, current, total = [], [], 0
+        # Chunks are charged at the pool's RESERVE cost - the raw tensor bytes
+        # plus the arena's utilization headroom and rounding - because that is
+        # what _run_chunk's reserve() will actually claim against the budget.
         for r in self._plan:
             need = self._triplet_bytes(r)
-            if need > room:
+            if einsums.pool_reserve_cost(need) > room:
                 raise MemoryError(
                     f"triplet {r['ijk']} = {r['labels']} needs "
                     f"{need / 2**20:.0f} MiB on its own ({r['nt']} TNOs, "
@@ -332,7 +344,7 @@ class LCCSDT0:
                     f"{retained / 2**20:.0f} MiB of retained stores and the "
                     f"{halves / 2**20:.0f} MiB of pair overlap halves. Raise "
                     "Thresholds.in_core_memory or loosen t_cut_tno.")
-            if current and total + need > room:
+            if current and einsums.pool_reserve_cost(total + need) > room:
                 chunks.append(current)
                 current, total = [], 0
             current.append(r)
@@ -395,6 +407,26 @@ class LCCSDT0:
         return total
 
     def _run_chunk(self, chunk):
+        """One chunk: reserve the pool, then run the chunk inside an epoch.
+
+        The epoch is a safety net rather than the footprint control: the
+        chunk's tensors die with :meth:`_run_chunk_body`'s frame and free
+        themselves, and the epoch bulk-frees whatever a leak left behind and
+        THROWS if something still holds a carve. Under ``retain`` something
+        legitimately does - ``W``, ``V`` and the amplitudes outlive their
+        chunk by design - so that pass runs without one.
+        """
+        self._pool.reserve(sum(self._triplet_bytes(r) for r in chunk))
+        if self._retain:
+            self._run_chunk_body(chunk)
+        else:
+            # The body is a call, not a block: its locals have to be gone
+            # before the epoch closes, and locals of the enclosing frame would
+            # still be alive at the end of a ``with``.
+            with self._pool.epoch():
+                self._run_chunk_body(chunk)
+
+    def _run_chunk_body(self, chunk):
         """One chunk: allocate, emit seven graphs, replay, read the energies.
 
         Several graphs rather than one for the reason ``lccsd.py`` gives: a
@@ -539,9 +571,10 @@ class LCCSDT0:
         replay reading freed memory.
         """
         cc = self.cc
+        pool = self._pool
         state = {"keep": [], "per": []}
 
-        # Almost everything here is ``ten.empty``, and the split is a
+        # Almost everything here is ``ten.pool_empty``, and the split is a
         # contract, not a tuning: this loop used to ``ten.zeros`` roughly
         # 17 MB per triplet on one Python thread, which measured as 9 s of
         # the ethanol ten-thread (T0) row - a third of the phase, and more
@@ -555,20 +588,20 @@ class LCCSDT0:
         # amplitude stores below stay ``zeros`` because a DEAD pair
         # deliberately contributes no batch member and the terms read the
         # allocated zeros in its place.
-        state["e_chunk"] = ten.empty("e (triplet)", [len(chunk)])
+        state["e_chunk"] = ten.pool_empty(pool, "e (triplet)", [len(chunk)])
 
         for slot, r in enumerate(chunk):
             nq, nl, nu, nt = r["nq"], r["nl"], r["nu"], r["nt"]
             per = {}
             # Per triplet, not per chunk. Sharing these is a measured data race
             # under the OpenMP executor; see the module docstring.
-            per["uv"] = ten.empty("(Q|u v) raw", [nq, nu, nu])
-            per["half"] = ten.empty("(Q|a v) half", [nq, nt, nu])
-            per["q_vv"] = ten.empty("(Q|a b)", [nq, nt, nt])
+            per["uv"] = ten.pool_empty(pool, "(Q|u v) raw", [nq, nu, nu])
+            per["half"] = ten.pool_empty(pool, "(Q|a v) half", [nq, nt, nu])
+            per["q_vv"] = ten.pool_empty(pool, "(Q|a b)", [nq, nt, nt])
             per["q_vv_flat"] = self._keep(
                 state, per["q_vv"].reshape_view([nq, nt * nt]))
-            per["raw_o"] = [ten.empty("(Q|x m) raw", [nq, 1, nl]) for _ in range(3)]
-            per["raw_v"] = [ten.empty("(Q|x u) raw", [nq, 1, nu]) for _ in range(3)]
+            per["raw_o"] = [ten.pool_empty(pool, "(Q|x m) raw", [nq, 1, nl]) for _ in range(3)]
+            per["raw_v"] = [ten.pool_empty(pool, "(Q|x u) raw", [nq, 1, nu]) for _ in range(3)]
             per["raw_o_flat"] = [self._keep(state, b.reshape_view([nq, nl]))
                                  for b in per["raw_o"]]
             per["raw_v_flat"] = [self._keep(state, b.reshape_view([nq, nu]))
@@ -577,8 +610,8 @@ class LCCSDT0:
             # One right-hand side per metric power, laid out so every block a
             # consumer wants is a contiguous column slice. See _emit_fit for
             # why there are two.
-            per["rhs_half"] = ten.empty("J^-1/2 rhs", [nq, 3 * nt + 3 * nl])
-            per["rhs_full"] = ten.empty("J^-1 rhs", [nq, 3 * nt])
+            per["rhs_half"] = ten.pool_empty(pool, "J^-1/2 rhs", [nq, 3 * nt + 3 * nl])
+            per["rhs_full"] = ten.pool_empty(pool, "J^-1 rhs", [nq, 3 * nt])
             per["rhs_virtual"] = self._keep(state, per["rhs_half"][:, :3 * nt])
             per["q_xv"] = [self._keep(state, per["rhs_half"][:, x * nt:(x + 1) * nt])
                            for x in range(3)]
@@ -593,20 +626,20 @@ class LCCSDT0:
             # GEMM writes and one grouped call needs its whole destination list
             # to be of one kind; see :meth:`_emit_integrals` for the merge order
             # and the module docstring for why the rank-3 name exists at all.
-            per["K_xvvv_flat"] = [ten.empty("K (x a|b d)", [nt, nt * nt])
+            per["K_xvvv_flat"] = [ten.pool_empty(pool, "K (x a|b d)", [nt, nt * nt])
                                   for _ in range(3)]
             per["K_xvvv"] = [self._keep(state, K.reshape_view([nt, nt, nt]))
                              for K in per["K_xvvv_flat"]]
             # (y l | z c), one per permutation, and (x a | y b), one per pair of
             # the triplet's own LMOs.
-            per["K_ooov"] = [ten.empty("K (y l|z c)", [max(nl, 1), nt])
+            per["K_ooov"] = [ten.pool_empty(pool, "K (y l|z c)", [max(nl, 1), nt])
                              for _ in range(6)]
-            per["K_ovov"] = [ten.empty("K (x a|y b)", [nt, nt]) for _ in range(3)]
+            per["K_ovov"] = [ten.pool_empty(pool, "K (x a|y b)", [nt, nt]) for _ in range(3)]
 
             # One block per DISTINCT pair this triplet bridges, holding the left
             # half ``S^T t`` of the congruence transform. The plan deduplicated
             # that set; see :meth:`_emit_projections`.
-            per["bridge"] = [ten.empty("S^T t", [nt, int(cc.n_pno[pair])])
+            per["bridge"] = [ten.pool_empty(pool, "S^T t", [nt, int(cc.n_pno[pair])])
                              for pair in r["bridges"]]
             # The amplitudes those read, as views made HERE rather than in the
             # emitter. Building a view inside a capture records a node for it,
@@ -629,31 +662,31 @@ class LCCSDT0:
             # contributes no batch member and the contractions read its slice
             # as the zero psi4's null matrix multiplies out to - the same
             # contract covers t_xl and t_x below.
-            per["t_kj_store"] = ten.zeros("t_kj (TNO) store", [nt, 6 * nt])
+            per["t_kj_store"] = ten.pool_zeros(pool, "t_kj (TNO) store", [nt, 6 * nt])
             per["t_kj"] = [self._keep(state,
                                       per["t_kj_store"][:, idx * nt:(idx + 1) * nt])
                            for idx in range(6)]
-            per["t_xl"] = [ten.zeros("t_xl (TNO)", [nt, nt, max(nl, 1)])
+            per["t_xl"] = [ten.pool_zeros(pool, "t_xl (TNO)", [nt, nt, max(nl, 1)])
                            for _ in range(3)]
             per["t_xl_slot"] = [
                 [self._keep(state, stack[:, :, s]) for s in range(nl)]
                 for stack in per["t_xl"]]
-            per["t_x"] = [ten.zeros("t_x (TNO)", [nt, 1]) for _ in range(3)]
+            per["t_x"] = [ten.pool_zeros(pool, "t_x (TNO)", [nt, 1]) for _ in range(3)]
             per["t_x_vec"] = [self._keep(state, t.reshape_view([nt]))
                               for t in per["t_x"]]
 
-            per["W"] = ten.empty("W (triplet)", [nt, nt, nt])
+            per["W"] = ten.pool_empty(pool, "W (triplet)", [nt, nt, nt])
             #: Where Eq. 53's bracket is accumulated. Normally ``W`` itself,
             #: which is dead by then; a separate buffer when the caller has
             #: asked to keep ``W`` for the iterative (T), because that is the
             #: one reader for which "dead by then" is false.
-            per["bracket"] = (ten.empty("Eq. 53 bracket", [nt, nt, nt])
+            per["bracket"] = (ten.pool_empty(pool, "Eq. 53 bracket", [nt, nt, nt])
                               if self._retain else per["W"])
-            per["V"] = ten.empty("V (triplet)", [nt, nt, nt])
-            per["D"] = ten.empty("denominator", [nt, nt, nt])
+            per["V"] = ten.pool_empty(pool, "V (triplet)", [nt, nt, nt])
+            per["D"] = ten.pool_empty(pool, "denominator", [nt, nt, nt])
             #: Scratch: holds each permutation's contribution while ``W`` is
             #: assembled, then the amplitudes once ``W`` is complete.
-            per["scratch"] = ten.empty("W (permutation)", [nt, nt, nt])
+            per["scratch"] = ten.pool_empty(pool, "W (permutation)", [nt, nt, nt])
             per["e"] = self._keep(state, state["e_chunk"][slot:slot + 1])
             state["per"].append(per)
         return state
