@@ -1157,29 +1157,35 @@ class LCCSDSolver:
         # Eq. 75: the dressed exchange operator, one batch over the pairs.
         _emit_all(self._bat["r_sym_75"])
 
-        # Eq. 85's F''_bc start. The copy of ``Qab`` below cannot join it - it
-        # writes a slice of the POOLED rank-3 scratch, whose next hand-out has to
-        # wait for this pair's einsums to read it - but F''_bc is that pair's own
-        # buffer, and the double walk that fills it is recorded afterwards.
+        # Eq. 85's F''_bc start; the double walk that fills it is recorded
+        # afterwards.
         self._run["r_sym_fbc"].emit()
 
+        # Eq. 76 with the Eq. 93 dressing B~^Q_{ab} = B^Q_{ab} - t_k^a B^Q_{kb},
+        # every pair in ONE grouped node: acc_ij += sum_q B~^Q t_ij (B~^Q)^T.
+        # This used to be spelled per pair as a copy of ``Qab`` into pooled
+        # scratch, an in-place dressing, a pooled half product and a second
+        # contraction reading both - eight full memory streams of the largest
+        # per-pair blocks in the iteration where one suffices, measured as the
+        # single biggest slice of the iteration's traffic. The grouped op
+        # streams each pair's ``Qab`` exactly once and builds the dressed
+        # factor per auxiliary slice in cache, which is psi4's own shape for
+        # this term ("the T1-dressing ... on the fly, as this intermediate is
+        # only used once"). The accumulation into ``acc`` moves from one
+        # whole-q GEMM reduction to per-slice accumulation in a fixed order:
+        # replays stay bit-identical, but the energies agree with the old
+        # emission to roundoff rather than bitwise.
+        _sw_c, _sw_a, _sw_m, _sw_p, _sw_s = [], [], [], [], []
         for slot, (ij, i, j, ji) in enumerate(self._plan.r_sym):
-            acc = self.r_sym_acc[ij]
-            Qma = self.B.qma(cc.ij_to_ji, ij)
-            Qab = self.B.qab(cc.ij_to_ji, ij)
-            nq, nk, na = ten.shape(Qma)
-
-            # Eq. 76, with the Eq. 93 dressing B~^Q_{ab} = B^Q_{ab} - t_k^a B^Q_{kb}.
-            Qab_t1 = self._shared("Qab_t1", [nq, na, na], slot)
-            la.axpby(1.0, Qab, 0.0, Qab_t1)
-            einsums.einsum("qab <- ka ; qkb", Qab_t1, self.T_n[ij], Qma,
-                           c_pf=1.0, ab_pf=-1.0)
-            W = self._shared("AW", [nq, na, na], slot)
-            einsums.einsum("qad <- qac ; cd", W, Qab_t1, self._T2(ij))
-            einsums.einsum("ab <- qad ; qbd", acc, W, Qab_t1, c_pf=1.0)
+            _sw_c.append(self.r_sym_acc[ij])
+            _sw_a.append(self.B.qab(cc.ij_to_ji, ij))
+            _sw_m.append(self.B.qma(cc.ij_to_ji, ij))
+            _sw_p.append(self.T_n[ij])
+            _sw_s.append(self._T2(ij))
 
             # Eq. 77's accumulator, which the double walk below fills.
             la.scale(0.0, self.r_sym_B[ij])
+        la.grouped_sandwich(_sw_c, _sw_a, _sw_m, _sw_p, _sw_s)
 
         # Eq. 77 (B) and Eq. 85 (F_bc), the shared double walk.
         _emit_all(self._bat["r_sym_kl"])
@@ -2175,16 +2181,13 @@ class LCCSDSolver:
         for slot, (ij, _ji) in enumerate(p.beta):
             nq, nk, na = ten.shape(self.B.qma(cc.ij_to_ji, ij))
             self._shared("bW", [nq, nk, na], slot)
-        for slot, (ij, _i, _j, _ji) in enumerate(p.r_sym):
-            nq, na, _ = ten.shape(self.B.qab(cc.ij_to_ji, ij))
-            self._shared("Qab_t1", [nq, na, na], slot)
-            self._shared("AW", [nq, na, na], slot)
+
 
     def _shared_sizes(self):
         """How large each pooled rank-3 buffer has to be, in elements."""
         cc = self.cc
         p = self._plan
-        need = {"V": 1, "U": 1, "y": 1, "bW": 1, "Qab_t1": 1, "AW": 1}
+        need = {"V": 1, "U": 1, "y": 1, "bW": 1}
         for ij, _i, _j in p.fock_bar:
             nq = ten.shape(self.B.i_Qk[ij])[0]
             nk, na = ten.shape(self.T_n[ij])
@@ -2194,10 +2197,6 @@ class LCCSDSolver:
         for ij, _ji in p.beta:
             nq, nk, na = ten.shape(self.B.qma(cc.ij_to_ji, ij))
             need["bW"] = max(need["bW"], nq * nk * na)
-        for ij, _i, _j, _ji in p.r_sym:
-            nq, na, _ = ten.shape(self.B.qab(cc.ij_to_ji, ij))
-            need["Qab_t1"] = max(need["Qab_t1"], nq * na * na)
-            need["AW"] = max(need["AW"], nq * na * na)
         return need
 
     # -- capture -------------------------------------------------------------
@@ -2315,11 +2314,13 @@ class LCCSDSolver:
         expressed as a boundary rather than trusted to an edge.
 
         The pooled rank-3 scratch needed no attention here, which is worth
-        stating because it looks as though it should have: each of the six roles
+        stating because it looks as though it should have: each of the roles
         is used by exactly ONE phase (``V``, ``U`` and ``y`` by Eq. 99-101,
-        ``bW`` by Eq. 82, ``Qab_t1`` and ``AW`` by Eq. 75-77), so the merge
-        creates no chain through a shared buffer that a phase graph did not
-        already have. The round-robin's serialization is unchanged.
+        ``bW`` by Eq. 82; the ``Qab_t1`` and ``AW`` roles Eq. 75-77 once used
+        are gone, folded into the grouped sandwich's cache-resident slices),
+        so the merge creates no chain through a shared buffer that a phase
+        graph did not already have. The round-robin's serialization is
+        unchanged.
 
         ``--einsums:graph:verify-levels`` is the check for the whole class of
         mistake a fold can make, and it passes on the merged graph on every
