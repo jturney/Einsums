@@ -1098,6 +1098,59 @@ def _patch_numpy_ergonomics(core):
     _numpy_ergonomics_patched = True
 
 
+# ----------------------------------------------------------------------
+# MemoryPool ergonomics
+# ----------------------------------------------------------------------
+# Carving is bound as free functions (``_core.pool_empty``) because the tensor
+# factories live one module above the pool itself, so they cannot be members of
+# the bound class. Attaching them here gives Python the surface the design
+# describes, ``pool.empty(shape)``, with no C++ layering violation.
+#
+# The epoch gets ``with`` support the same way. ``__exit__`` closes only on the
+# success path: ``close()`` raises when a carve made inside the scope is still
+# held, and raising that on top of an exception already unwinding would hide the
+# original failure. On the exception path the C++ destructor takes over, and it
+# demotes rather than throws.
+
+
+def _pool_empty(self, shape, dtype="float64", name=None):
+    """Uninitialized tensor carved from this pool. Mirrors ``einsums.empty``."""
+    return _core.pool_empty(self, name or "pool_empty", _normalize_shape(shape), dtype=_einsums_dtype_str(dtype))
+
+
+def _pool_zeros(self, shape, dtype="float64", name=None):
+    """Zero-filled tensor carved from this pool. Mirrors ``einsums.zeros``."""
+    return _core.pool_zeros(self, name or "pool_zeros", _normalize_shape(shape), dtype=_einsums_dtype_str(dtype))
+
+
+def _epoch_enter(self):
+    return self
+
+
+def _epoch_exit(self, exc_type, exc, tb):
+    if exc_type is None:
+        self.close()
+    return False
+
+
+_memory_pool_patched = False
+
+
+def _patch_memory_pool(core):
+    global _memory_pool_patched
+    if _memory_pool_patched:
+        return
+    pool_cls = getattr(core, "MemoryPool", None)
+    if pool_cls is not None:
+        pool_cls.empty = _pool_empty
+        pool_cls.zeros = _pool_zeros
+    epoch_cls = getattr(core, "MemoryPoolEpoch", None)
+    if epoch_cls is not None:
+        epoch_cls.__enter__ = _epoch_enter
+        epoch_cls.__exit__ = _epoch_exit
+    _memory_pool_patched = True
+
+
 def _bootstrap():
     """Start the runtime and install the Python-side patches.
 
@@ -1112,6 +1165,7 @@ def _bootstrap():
     _patch_runtime_tensor_setitem(_core)
     _patch_tiled_tensor_getitem(_core)
     _patch_numpy_ergonomics(_core)
+    _patch_memory_pool(_core)
 
 
 # ----------------------------------------------------------------------

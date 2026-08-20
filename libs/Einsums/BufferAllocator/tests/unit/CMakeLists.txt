@@ -45,3 +45,21 @@ foreach(test ${BufferAllocatorTests})
   )
 endforeach()
 
+# Python coverage for the Apiary-exposed MemoryPool surface.
+# Registers as Tests.Unit.Modules.Einsums.BufferAllocator.MemoryPoolPython.
+einsums_add_python_unit_test(
+  "Modules.Einsums.BufferAllocator" MemoryPoolPython
+  SCRIPT test_memory_pool_python.py
+)
+
+# Property tests: the stateful pool fuzzer (arbitrary carve / release / epoch /
+# reset interleavings) and the pooled-vs-owned einsum differential.
+einsums_add_python_unit_test(
+  "Modules.Einsums.BufferAllocator" HypMemoryPoolPython
+  SCRIPT test_hyp_memory_pool_python.py
+)
+
+einsums_add_python_unit_test(
+  "Modules.Einsums.BufferAllocator" HypPooledEinsumPython
+  SCRIPT test_hyp_pooled_einsum_python.py
+)
