@@ -643,6 +643,19 @@ template <typename T, typename U>
 void impl_scal(U alpha, TensorImpl<T> &out) {
     LabeledSection0();
 
+    // Scaling by exactly zero ASSIGNS zero rather than multiplying - the same
+    // no-read convention BLAS gives gemm's beta = 0. A zero prefactor is how a
+    // caller says "discard what is here", and a multiply would let a NaN or an
+    // Inf already in the buffer survive the discard (0 * NaN is NaN) and
+    // poison the result. The case that makes this load-bearing rather than
+    // cosmetic is an UNINITIALIZED destination: einsum lowers a zero C
+    // prefactor to this scale on several of its routes, so without the
+    // special case an einsum into a never-written tensor is a latent NaN.
+    if (alpha == U{}) {
+        impl_scalar_copy(alpha, out);
+        return;
+    }
+
     if (out.is_totally_vectorable()) {
         EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using scal.");
 
