@@ -27,7 +27,9 @@ and it is reported per iteration because the convergence paths differ.
 
 **Rows are exclusive on the port's side and made exclusive on psi4's.** A phase
 that contains another billed phase is charged only for its own part, so the rows
-sum to the total rather than over-counting it. psi4's CC timers nest the other
+sum to the total rather than over-counting it. The one-time graph builds are the
+exception: printed, but kept out of the compared total, because psi4 has no
+analogue and a one-time cost mixed into a steady-state comparison misprices both. psi4's CC timers nest the other
 way - ``Refined Pair Prescreening`` contains ``PNO-LMP2 Iterations``, which is
 why psi4's own rows sum to more than its total - so the table subtracts to
 recover psi4's exclusive time before comparing.
@@ -398,7 +400,7 @@ if args.method == "mp2":
     ours["DLPNO-MP2"] = time.perf_counter() - t_total
     # Split the one-time graph build (allocate + capture + optimize) out of the
     # LMP2 row: psi4 has no equivalent setup cost, so a row mixing the two
-    # compares different things. Both rows still sum into the total.
+    # compares different things. The build is excluded from the compared total.
     ours["LMP2 build"] = mp2.t_capture
     ours["LMP2"] = mp2.t_iterate
 else:
@@ -438,7 +440,7 @@ else:
     ours["DLPNO-CCSD"] = time.perf_counter() - t_total
     # Split the one-time plan and capture out of the LCCSD row, as the MP2 path
     # does: psi4 has no equivalent, so a row mixing the two compares different
-    # things. Both still sum into the total.
+    # things. The build is excluded from the compared total.
     # The triples path drops the CCSD solver once it has the amplitudes, so
     # its statistics come from the snapshot _release_ccsd keeps.
     stats_cc = (mp2.ccsd_stats if triples else
@@ -513,7 +515,6 @@ if args.method == "mp2":
         ("PNO Transform", "PNO Transform", "PNO Transform"),
         ("PNO Overlaps", "PNO Overlaps", "PNO Overlaps"),
         ("LMP2 iterations", "LMP2", "LMP2"),
-        ("LMP2 graph build", "LMP2 build", None),
     ]
 else:
     # psi4's "Refined Pair Prescreening" CONTAINS its "PNO-LMP2 Iterations", so
@@ -536,7 +537,6 @@ else:
         ("PNO Integrals", "PNO Integrals", "PNO Integrals"),
         ("PNO Overlaps", "PNO Overlaps", "PNO Overlaps"),
         ("LCCSD iterations", "LCCSD", "LCCSD"),
-        ("LCCSD graph build", "LCCSD build", None),
     ]
     if args.method == "ccsd(t)":
         ROWS += [
@@ -551,8 +551,10 @@ else:
 # timed, so adding a phase() call cannot drop work out of the table.
 TOTAL = {"mp2": "DLPNO-MP2", "ccsd": "DLPNO-CCSD"}.get(
     args.method, "DLPNO-CCSD(T)")
+BUILD_KEYS = ("LMP2 build", "LCCSD build")
 ROWS += [(key, key, key) for key in ours
-         if key != TOTAL and key not in {r[1] for r in ROWS}]
+         if key != TOTAL and key not in BUILD_KEYS
+         and key not in {r[1] for r in ROWS}]
 
 print(f"\n  wall time (seconds)")
 print(f"    {'phase':22} {'psi4':>12} {'this port':>12} {'ratio':>10}")
@@ -590,21 +592,33 @@ for psi4_key in ("Overlap Ints", "Dipole Ints"):
         psi4_accounted += p
         print_row(psi4_key, p, None)
 
+# The one-time graph builds are excluded from the compared total: psi4 has no
+# analogue, so a row mixing a one-time cost into a steady-state comparison
+# misprices both. They are printed under the total instead, and the
+# per-iteration figures below are what they amortize into.
 port_total = ours[TOTAL]
 psi4_total = psi4_phases.get(TOTAL, psi4_times["dlpno"])
-port_residual = port_total - port_accounted
+port_build = sum(ours.get(key, 0.0) for key in BUILD_KEYS)
+port_steady = port_total - port_build
+port_residual = port_steady - port_accounted
 psi4_residual = psi4_total - psi4_accounted
 print_row("other (untabulated)", psi4_residual, port_residual)
-print_row("total " + TOTAL, psi4_total, port_total)
+print_row("total " + TOTAL, psi4_total, port_steady)
+for _key in BUILD_KEYS:
+    if _key in ours:
+        print_row(_key.replace("build", "graph build"), None, ours[_key])
+if port_build > 0.0:
+    print("    (one-time graph builds are excluded from the port's total; "
+          "they amortize\n     with iteration count)")
 
 # The whole point of the rows above is to be a complete account of the total.
 # Warn loudly (and fail the run at the end) if they are not, rather than let
 # the table quietly under-report a phase again.
-table_incomplete = abs(port_residual) > 0.05 * port_total
+table_incomplete = abs(port_residual) > 0.05 * port_steady
 if table_incomplete:
     print(f"\n    WARNING: the port rows above account for only "
-          f"{port_accounted:.3f} s of a {port_total:.3f} s total "
-          f"({port_residual:.3f} s untabulated, over the 5% bound).\n"
+          f"{port_accounted:.3f} s of a {port_steady:.3f} s build-excluded "
+          f"total ({port_residual:.3f} s untabulated, over the 5% bound).\n"
           "    Some timed work is missing a row, or work between phases is "
           "untimed. Fix the\n    table before using it to choose what to "
           "optimize.")
@@ -620,9 +634,8 @@ if args.method != "mp2":
     print(f"\n  where the LCCSD time goes")
     print(f"    {nodes} captured nodes, {o_it * 1e6 / max(nodes, 1):.2f} us per "
           f"node per iteration")
-    print(f"    graph build {ours['LCCSD build']:.3f} s, paid once "
-          f"({100 * ours['LCCSD build'] / port_total:.1f}% of the run; it "
-          f"amortizes with iteration count)")
+    print(f"    graph build {ours['LCCSD build']:.3f} s, paid once and "
+          f"excluded from the compared total above")
     print(f"    the correctness cut emits one operation per plan record. The "
           f"campaign's first\n    lever is grouping records by shape class into "
           f"batched calls, which is what took\n    LMP2 from 754 dispatches an "
