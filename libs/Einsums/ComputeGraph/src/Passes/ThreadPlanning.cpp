@@ -54,6 +54,7 @@ KernelFamily family_for(Node const &node, std::size_t bytes, DeviceProfile const
                                                                               : KernelFamily::GemmLarge;
     case OpKind::BatchedGemm:
     case OpKind::GroupedBatchedGemm:
+    case OpKind::GroupedSandwich:
         return KernelFamily::BatchedGemm;
 
     case OpKind::Permute:
@@ -124,6 +125,23 @@ struct GemmShape {
 /// leaves it below the fork floor and so at width 1 - the same "do not guess"
 /// behaviour the default branch has.
 double batched_gemm_us(Node const &node, DeviceProfile const &profile) {
+    if (auto const *sw = std::get_if<GroupedSandwichDescriptor>(&node.op_data); sw != nullptr) {
+        // Per member: the dress (2 nq nk na^2) plus the two sandwich GEMMs
+        // (4 nq na^3), priced as one batched call the way the descriptor's
+        // sibling kinds are.
+        double work = 0.0;
+        for (int i = 0; i < sw->total; i++) {
+            auto const   nq    = static_cast<double>(sw->nq[static_cast<std::size_t>(i)]);
+            auto const   nk    = static_cast<double>(sw->nk[static_cast<std::size_t>(i)]);
+            auto const   na    = static_cast<double>(sw->na[static_cast<std::size_t>(i)]);
+            double const flops = nq * na * na * (2.0 * nk + 4.0 * na);
+            double const gflops =
+                profile.estimate_gemm_gflops(static_cast<std::size_t>(na), static_cast<std::size_t>(na), static_cast<std::size_t>(na));
+            work += flops / (gflops * 1e3);
+        }
+        return work > 0.0 ? work + profile.kernel_launch_overhead_us : 0.0;
+    }
+
     auto member_us = [&profile](std::size_t m, std::size_t n, std::size_t k, double count) {
         if (m == 0 || n == 0 || k == 0 || count <= 0.0) {
             return 0.0;
@@ -402,6 +420,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
                 break;
             case OpKind::BatchedGemm:
             case OpKind::GroupedBatchedGemm:
+            case OpKind::GroupedSandwich:
                 // A batch is arithmetic, not traffic. Without these two cases
                 // both fell to the default below and were priced as the bytes
                 // they move, which is the wrong dimension entirely: the flops

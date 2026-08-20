@@ -86,6 +86,7 @@ set(ComputeGraphTests
     RuntimeTensorView.cpp
     StridedBatchedGemm.cpp
     GroupedBatchedGemm.cpp
+    GroupedSandwich.cpp
     GroupedScalarOps.cpp
     StringEinsum.cpp
     TensorLifetime.cpp

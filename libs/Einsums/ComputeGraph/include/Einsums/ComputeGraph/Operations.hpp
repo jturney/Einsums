@@ -4510,6 +4510,295 @@ APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<std::complex<d
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// grouped_sandwich: q-tiled dressed sandwich accumulations as ONE node
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace detail {
+
+/// One member of a grouped sandwich: ``C += sum_q B_q S B_q^T`` with the
+/// dressed slice ``B_q = A[q] - P^T M[q]`` built in cache, never in memory.
+///
+/// This is psi4's own shape for the Eq. 76/93 residual term (dlpno/ccsd.cc,
+/// "the T1-dressing ... on the fly, as this intermediate is only used once"),
+/// adapted to a q-fastest layout: slices of ``A`` along the auxiliary axis are
+/// strided here, so a BLOCK of them is transposed into slice-major scratch
+/// sized to stay cache-resident, and the dress plus both sandwich GEMMs run
+/// out of that scratch. ``A`` streams from memory exactly once; the dressed
+/// factor and the half product exist only as one cache-resident slice.
+///
+/// Deterministic by construction: the q blocks and the slices inside them run
+/// in ascending order on one thread, so the accumulation order into ``C`` is a
+/// function of the extents alone. What this DOES change, relative to the pair
+/// of whole-q contractions it replaces, is that ``C`` accumulates per q slice
+/// rather than in one GEMM reduction - the same operand values sum in a
+/// different order, so results agree to accumulation roundoff, not bitwise.
+template <typename T>
+void sandwich_member(T const *A, std::size_t saq, std::size_t saa, std::size_t sab, T const *M, std::size_t smq, std::size_t smk,
+                     std::size_t smb, T const *P, std::size_t ldp, T const *S, std::size_t lds, T *C, std::size_t ldc, std::size_t nq,
+                     std::size_t nk, std::size_t na) {
+    if (nq == 0 || na == 0) {
+        return; // C += nothing: the accumulate form of the zero-extent contract
+    }
+    std::size_t const slice   = na * na;
+    std::size_t const m_slice = nk * na;
+    // Slices per block: enough to amortize the strided gather, small enough
+    // that the staged block plus its M companion stay comfortably inside a
+    // per-core L2 share.
+    std::size_t tq = std::max<std::size_t>(4, (512UL * 1024) / (sizeof(T) * (slice + std::max<std::size_t>(1, m_slice))));
+    tq             = std::min(tq, nq);
+
+    // Plain heap scratch, deliberately not BufferVector: the metered buffer
+    // pool is sized for contraction workspace (4 MiB by default), and a team
+    // of these members would exhaust it. This scratch is bounded at a few
+    // hundred kilobytes per running member by the block sizing above.
+    std::vector<T> bblk(tq * slice);
+    std::vector<T> mblk(std::max<std::size_t>(1, tq * m_slice));
+    std::vector<T> w(slice);
+
+    for (std::size_t q0 = 0; q0 < nq; q0 += tq) {
+        std::size_t const tt = std::min(tq, nq - q0);
+
+        // Stage the A block slice-major. The source walks are contiguous in q
+        // (the fastest axis), so memory is read in order; the scattered writes
+        // land in the cache-resident block.
+        for (std::size_t b = 0; b < na; b++) {
+            for (std::size_t a = 0; a < na; a++) {
+                T const *from = A + q0 * saq + a * saa + b * sab;
+                T       *to   = bblk.data() + a + na * b;
+                for (std::size_t t = 0; t < tt; t++) {
+                    to[t * slice] = from[t * saq];
+                }
+            }
+        }
+        if (nk != 0) {
+            for (std::size_t b = 0; b < na; b++) {
+                for (std::size_t k = 0; k < nk; k++) {
+                    T const *from = M + q0 * smq + k * smk + b * smb;
+                    T       *to   = mblk.data() + k + nk * b;
+                    for (std::size_t t = 0; t < tt; t++) {
+                        to[t * m_slice] = from[t * smq];
+                    }
+                }
+            }
+        }
+
+        for (std::size_t t = 0; t < tt; t++) {
+            T *Bs = bblk.data() + t * slice;
+            // Dress: B_q -= P^T M_q. Skipped when there is nothing to dress
+            // with, which is also what keeps a (1, na) placeholder P legal for
+            // an nk == 0 member.
+            if (nk != 0) {
+                blas::gemm('T', 'N', static_cast<blas::int_t>(na), static_cast<blas::int_t>(na), static_cast<blas::int_t>(nk), T{-1}, P,
+                           static_cast<blas::int_t>(ldp), mblk.data() + t * m_slice, static_cast<blas::int_t>(nk), T{1}, Bs,
+                           static_cast<blas::int_t>(na));
+            }
+            // W = B_q S, then C += W B_q^T.
+            blas::gemm('N', 'N', static_cast<blas::int_t>(na), static_cast<blas::int_t>(na), static_cast<blas::int_t>(na), T{1}, Bs,
+                       static_cast<blas::int_t>(na), S, static_cast<blas::int_t>(lds), T{0}, w.data(), static_cast<blas::int_t>(na));
+            blas::gemm('N', 'T', static_cast<blas::int_t>(na), static_cast<blas::int_t>(na), static_cast<blas::int_t>(na), T{1}, w.data(),
+                       static_cast<blas::int_t>(na), Bs, static_cast<blas::int_t>(na), T{1}, C, static_cast<blas::int_t>(ldc));
+        }
+    }
+}
+
+} // namespace detail
+
+/// @brief Emit one node holding many independent dressed sandwich
+/// accumulations: ``C_i += sum_q B_q S_i B_q^T`` with
+/// ``B_q = A_i[q] - P_i^T M_i[q]``, the whole run under one OpenMP region.
+///
+/// The shape this exists for is the DLPNO-CCSD Eq. 76 residual term with its
+/// Eq. 93 T1-dressing, which the naive emission spells as a copy of ``A_i``,
+/// an in-place dressing, a half product ``W`` the size of ``A_i``, and a
+/// second contraction reading both - EIGHT full streams of the largest
+/// per-pair data in the iteration where one suffices. Here every member
+/// streams ``A_i`` once and keeps everything else in cache; see
+/// @ref detail::sandwich_member for the tiling and for the accumulation-order
+/// note (results match the naive emission to roundoff, not bitwise).
+///
+/// Every member is independent and members are threaded over, each one's
+/// arithmetic serial inside its thread, so replays are deterministic whatever
+/// the schedule.
+///
+/// Operand shapes per member, all column-major: ``A_i`` is ``(nq, na, na)``
+/// with the auxiliary axis fastest, ``M_i`` is ``(nq, nk, na)``, ``P_i`` is
+/// ``(nk, na)``, ``S_i`` is ``(na, na)``, and ``C_i`` is ``(na, na)``,
+/// accumulated into (``beta = 1`` semantics, so the node reads its
+/// destinations). ``P_i``, ``S_i`` and ``C_i`` must be column-contiguous;
+/// ``A_i`` and ``M_i`` may be arbitrary views. Destinations must be distinct.
+///
+/// Outside capture this executes immediately, so the same call works eagerly.
+template <CoreBasicTensorConcept CType, CoreBasicTensorConcept AType, CoreBasicTensorConcept MType, CoreBasicTensorConcept PType,
+          CoreBasicTensorConcept SType>
+    requires(std::is_same_v<typename CType::ValueType, typename AType::ValueType> &&
+             std::is_same_v<typename CType::ValueType, typename MType::ValueType> &&
+             std::is_same_v<typename CType::ValueType, typename PType::ValueType> &&
+             std::is_same_v<typename CType::ValueType, typename SType::ValueType> && std::is_floating_point_v<typename CType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+// The combinations the DLPNO iteration actually emits (owning stores for the
+// factors and accumulators, a view of the packed amplitudes for S), plus the
+// all-owning and all-view forms for tests and for callers that stage
+// differently. Extend with more APIARY_INSTANTIATE_AS lines as needed.
+APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+    // clang-format on
+    void grouped_sandwich(std::vector<CType *> c_list, std::vector<AType const *> a_list, std::vector<MType const *> m_list,
+                          std::vector<PType const *> p_list, std::vector<SType const *> s_list) {
+    using T            = typename CType::ValueType;
+    size_t const count = c_list.size();
+    if (count == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_sandwich: the run is empty");
+    }
+    if (a_list.size() != count || m_list.size() != count || p_list.size() != count || s_list.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "cg::grouped_sandwich: the C, A, M, P and S lists must be the same length; got {}, {}, {}, {}, {}", count,
+                                a_list.size(), m_list.size(), p_list.size(), s_list.size());
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        if (c_list[i] == nullptr || a_list[i] == nullptr || m_list[i] == nullptr || p_list[i] == nullptr || s_list[i] == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_sandwich: entry {} has a null operand", i);
+        }
+        auto const &ai = a_list[i]->impl();
+        auto const &mi = m_list[i]->impl();
+        auto const &pi = p_list[i]->impl();
+        auto const &si = s_list[i]->impl();
+        auto const &ci = c_list[i]->impl();
+        if (ai.rank() != 3 || mi.rank() != 3 || pi.rank() != 2 || si.rank() != 2 || ci.rank() != 2) {
+            EINSUMS_THROW_EXCEPTION(rank_error,
+                                    "cg::grouped_sandwich: entry {} wants ranks (A, M, P, S, C) = (3, 3, 2, 2, 2); got "
+                                    "({}, {}, {}, {}, {})",
+                                    i, ai.rank(), mi.rank(), pi.rank(), si.rank(), ci.rank());
+        }
+        size_t const nq = ai.dim(0), na = ai.dim(1), nk = mi.dim(1);
+        if (ai.dim(2) != na || mi.dim(0) != nq || mi.dim(2) != na || si.dim(0) != na || si.dim(1) != na || ci.dim(0) != na ||
+            ci.dim(1) != na || (nk != 0 && (pi.dim(0) != nk || pi.dim(1) != na))) {
+            EINSUMS_THROW_EXCEPTION(dimension_error,
+                                    "cg::grouped_sandwich: entry {}'s shapes disagree: A ({}, {}, {}), M ({}, {}, {}), P ({}, {}), "
+                                    "S ({}, {}), C ({}, {})",
+                                    i, ai.dim(0), ai.dim(1), ai.dim(2), mi.dim(0), mi.dim(1), mi.dim(2), pi.dim(0), pi.dim(1), si.dim(0),
+                                    si.dim(1), ci.dim(0), ci.dim(1));
+        }
+        if ((nk != 0 && pi.stride(0) != 1) || si.stride(0) != 1 || ci.stride(0) != 1) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::grouped_sandwich: entry {}'s P, S and C must be column-contiguous (stride 0 == 1)", i);
+        }
+    }
+
+    auto run_member = [](CType *c, AType const *a, MType const *m, PType const *p, SType const *s) {
+        auto const  &ai = a->impl();
+        auto const  &mi = m->impl();
+        auto const  &pi = p->impl();
+        auto const  &si = s->impl();
+        auto        &ci = c->impl();
+        size_t const nk = mi.dim(1);
+        detail::sandwich_member(ai.data(), ai.stride(0), ai.stride(1), ai.stride(2), mi.data(), mi.stride(0), mi.stride(1), mi.stride(2),
+                                pi.data(), nk != 0 ? pi.stride(1) : 1, si.data(), si.stride(1), ci.data(), ci.stride(1), ai.dim(0), nk,
+                                ai.dim(1));
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("grouped_sandwich eager");
+        // Members are independent (distinct destinations, each accumulated
+        // serially by one thread), and the whole run is one parallel region -
+        // an OpenMP team, never a caller-created thread pool (trap 7). An
+        // exception may not cross the region boundary (that terminates), so
+        // the first one is carried out by hand.
+        std::exception_ptr first;
+        EINSUMS_OMP_PRAGMA(parallel for schedule(dynamic))
+        for (size_t i = 0; i < count; i++) {
+            try {
+                run_member(c_list[i], a_list[i], m_list[i], p_list[i], s_list[i]);
+            } catch (...) {
+                EINSUMS_OMP_PRAGMA(critical(grouped_sandwich_failure))
+                if (!first) {
+                    first = std::current_exception();
+                }
+            }
+        }
+        if (first) {
+            std::rethrow_exception(first);
+        }
+        return;
+    }
+
+    LabeledSection("grouped_sandwich capture");
+    std::vector<TensorId>     inputs, outputs;
+    std::vector<TensorSlot *> c_slots, a_slots, m_slots, p_slots, s_slots;
+    inputs.reserve(5 * count);
+    outputs.reserve(count);
+    c_slots.reserve(count);
+    a_slots.reserve(count);
+    m_slots.reserve(count);
+    p_slots.reserve(count);
+    s_slots.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        auto [a_id, a_slot] = ctx.get_slot(*a_list[i]);
+        auto [m_id, m_slot] = ctx.get_slot(*m_list[i]);
+        auto [p_id, p_slot] = ctx.get_slot(*p_list[i]);
+        auto [s_id, s_slot] = ctx.get_slot(*s_list[i]);
+        auto [c_id, c_slot] = ctx.get_slot(*c_list[i]);
+        inputs.push_back(a_id);
+        inputs.push_back(m_id);
+        inputs.push_back(p_id);
+        inputs.push_back(s_id);
+        // Accumulation reads the destination, so the RAW edge from whoever
+        // produced C must survive - the same rule grouped_axpby records for a
+        // non-zero beta.
+        inputs.push_back(c_id);
+        outputs.push_back(c_id);
+        a_slots.push_back(a_slot);
+        m_slots.push_back(m_slot);
+        p_slots.push_back(p_slot);
+        s_slots.push_back(s_slot);
+        c_slots.push_back(c_slot);
+    }
+
+    auto executor = [run_member, c_slots = std::move(c_slots), a_slots = std::move(a_slots), m_slots = std::move(m_slots),
+                     p_slots = std::move(p_slots), s_slots = std::move(s_slots)]() {
+        LabeledSection("grouped_sandwich execute");
+        size_t const       n = c_slots.size();
+        std::exception_ptr first;
+        EINSUMS_OMP_PRAGMA(parallel for schedule(dynamic))
+        for (size_t i = 0; i < n; i++) {
+            try {
+                run_member(static_cast<CType *>(c_slots[i]->ptr), static_cast<AType const *>(a_slots[i]->ptr),
+                           static_cast<MType const *>(m_slots[i]->ptr), static_cast<PType const *>(p_slots[i]->ptr),
+                           static_cast<SType const *>(s_slots[i]->ptr));
+            } catch (...) {
+                EINSUMS_OMP_PRAGMA(critical(grouped_sandwich_failure))
+                if (!first) {
+                    first = std::current_exception();
+                }
+            }
+        }
+        if (first) {
+            std::rethrow_exception(first);
+        }
+    };
+
+    GroupedSandwichDescriptor d;
+    d.total = static_cast<int>(count);
+    d.nq.reserve(count);
+    d.nk.reserve(count);
+    d.na.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        d.nq.push_back(static_cast<std::int64_t>(a_list[i]->impl().dim(0)));
+        d.nk.push_back(static_cast<std::int64_t>(m_list[i]->impl().dim(1)));
+        d.na.push_back(static_cast<std::int64_t>(a_list[i]->impl().dim(1)));
+    }
+    ctx.record(OpKind::GroupedSandwich, fmt::format("sandwich x{}", count), std::move(inputs), std::move(outputs), std::move(executor),
+               std::move(d));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // norm
 // ─────────────────────────────────────────────────────────────────────────────
 

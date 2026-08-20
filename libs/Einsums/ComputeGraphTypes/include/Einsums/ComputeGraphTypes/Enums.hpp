@@ -45,6 +45,7 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     Scale,              ///< Scalar multiplication of entire tensor
     Axpby,              ///< Y = alpha * X + beta * Y
     GroupedAxpby,       ///< Many independent `Y = alpha*X + beta*Y`, one per entry, in one node
+    GroupedSandwich,    ///< Many independent q-tiled dressed sandwich accumulations, one per entry
     DirectProduct,      ///< Element-wise (Hadamard) product
     DirectDivision,     ///< Element-wise (Hadamard) quotient
 
@@ -197,6 +198,8 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "Axpby";
     case OpKind::GroupedAxpby:
         return "GroupedAxpby";
+    case OpKind::GroupedSandwich:
+        return "GroupedSandwich";
     case OpKind::DirectProduct:
         return "DirectProduct";
     case OpKind::DirectDivision:

@@ -154,6 +154,27 @@ struct GroupedAxpbyDescriptor {
 };
 
 /**
+ * @brief Metadata for @ref OpKind::GroupedSandwich nodes.
+ *
+ * A grouped sandwich is a run of independent
+ * ``C_i += sum_q B_q S_i B_q^T`` accumulations with the dressed slice
+ * ``B_q = A_i[q] - P_i^T M_i[q]`` built in cache per auxiliary slice, one
+ * entry per (pair) member. The per-member extents are recorded so the cost
+ * model can price the node as the batched arithmetic it is - the same lesson
+ * @ref GroupedBatchedGemmDescriptor carries - without re-deriving them from
+ * the operand lists.
+ *
+ * The parent @ref Node carries the inputs interleaved
+ * A_0, M_0, P_0, S_0, A_1, ... and the outputs in entry order.
+ */
+struct GroupedSandwichDescriptor {
+    int                       total{0}; ///< How many sandwich accumulations the node holds.
+    std::vector<std::int64_t> nq;       ///< Per-entry auxiliary extent.
+    std::vector<std::int64_t> nk;       ///< Per-entry dressing (LMO) extent.
+    std::vector<std::int64_t> na;       ///< Per-entry PNO extent.
+};
+
+/**
  * @brief Metadata for a TILED einsum node.
  *
  * A tiled contraction records as ``OpKind::Custom`` and executes per tile through
@@ -383,11 +404,11 @@ inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, 
  * for use by optimization passes. Nodes with no special metadata use
  * std::monostate.
  */
-using OpData =
-    std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
-                 AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor, BatchedGemmDescriptor,
-                 GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, GroupedDotDescriptor,
-                 GroupedAxpbyDescriptor, TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor>;
+using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
+                            AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor,
+                            BatchedGemmDescriptor, GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor,
+                            GroupedDotDescriptor, GroupedAxpbyDescriptor, GroupedSandwichDescriptor, TiledEinsumDescriptor,
+                            TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.
