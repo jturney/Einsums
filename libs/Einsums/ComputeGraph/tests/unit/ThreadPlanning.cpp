@@ -326,40 +326,52 @@ TEST_CASE("ThreadPlanning - the area never exceeds the makespan estimate", "[Com
     }
 }
 
-TEST_CASE("ThreadPlanning - a cold plan re-plans once, then freezes", "[ComputeGraph][ThreadPlanning]") {
+TEST_CASE("ThreadPlanning - a cold plan runs a measured trial, then freezes", "[ComputeGraph][ThreadPlanning]") {
     FatGraph  fixture;
     cg::Graph graph("cold_then_warm");
     fixture.capture(graph);
 
     graph.plan_threads();
-    // Nothing has replayed, so the plan came from the model and one re-plan is
-    // owed to the first real timings.
+    // Nothing has replayed, so the plan came from the model and the measured
+    // trial is owed to the first real timings.
     REQUIRE(graph.thread_replan_armed());
 
-    cg::DataflowExecutor df;
-    graph.execute(df);
-
-    // Fired at the end of that replay, and disarmed.
-    REQUIRE_FALSE(graph.thread_replan_armed());
-
-    std::vector<unsigned> const widths_after_replan = [&]() {
+    auto widths = [&]() {
         std::vector<unsigned> w;
         for (auto const &node : graph.nodes()) {
             w.push_back(node.thread_width);
         }
         return w;
-    }();
+    };
+
+    cg::DataflowExecutor df;
+
+    // Replay 1 records timings and computes the candidate plan. If the
+    // candidate's widths agree with the cold plan's the trial closes here;
+    // otherwise replay 2 times the candidate and replay 3 the incumbent, so
+    // the trial closes within three more replays either way. Every plan the
+    // trial held is snapshotted, because the final plan must be one the trial
+    // actually timed, not a third thing.
+    std::vector<std::vector<unsigned>> seen;
+    graph.execute(df);
+    seen.push_back(widths());
+    for (int replay = 0; graph.thread_replan_armed() && replay < 3; replay++) {
+        graph.execute(df);
+        seen.push_back(widths());
+    }
+    REQUIRE_FALSE(graph.thread_replan_armed());
+
+    std::vector<unsigned> const final_widths = widths();
+    REQUIRE(std::find(seen.begin(), seen.end(), final_widths) != seen.end());
 
     graph.execute(df);
     auto const first = bytes_of(fixture.c1);
-    REQUIRE_FALSE(graph.thread_replan_armed());
-
     graph.execute(df);
     auto const second = bytes_of(fixture.c1);
 
-    // Widths frozen from here on, and with them the bits.
+    // Widths frozen once the trial closes, and with them the bits.
     for (size_t i = 0; i < graph.nodes().size(); i++) {
-        REQUIRE(graph.nodes()[i].thread_width == widths_after_replan[i]);
+        REQUIRE(graph.nodes()[i].thread_width == final_widths[i]);
     }
     REQUIRE(first == second);
 }

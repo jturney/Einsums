@@ -850,19 +850,32 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * the graph behaves exactly as an unplanned one.
      *
      * @par Re-plan policy
-     * A plan needs per-node serial times, and the honest ones are measured.
-     * So:
+     * A plan needs per-node serial times, and the honest ones are measured -
+     * but a measurement is taken under whatever plan and whatever concurrency
+     * produced it, so a plan computed FROM those timings and the plan they
+     * were measured UNDER are never comparable on paper: the re-plan's own
+     * estimate is polluted by the incumbent's schedule. (Concretely: co-run
+     * contention inflates every sample, the inflated area bound swallows the
+     * critical path, and a timings re-plan can then only ever narrow - it
+     * un-widened measurably profitable plans in every DLPNO trial.) The one
+     * comparator that settles it is the wall clock, so the re-plan is a
+     * measured trial rather than a decree:
      * - A graph that has already replayed is planned from its recorded
      *   timings, and that plan is final.
-     * - A graph that has never replayed is planned from the cost model, and one
-     *   automatic re-plan is armed. It fires at the end of the next completed
-     *   replay, when the first real timings exist, and then the widths are
-     *   frozen for the life of the graph.
+     * - A graph that has never replayed is planned from the cost model.
+     *   Replay 1 warms up and records timings, and a re-plan is computed from
+     *   them; if it chooses the same widths the trial ends there (keeping the
+     *   re-plan's measured admission priorities). Otherwise replay 2 runs the
+     *   re-planned widths, replay 3 runs the cold widths again - both
+     *   steady-state - and the graph keeps whichever replay was faster, the
+     *   incumbent unless the candidate clearly beat it. A trial the workload
+     *   never finishes (fewer than three replays) leaves the cold plan in
+     *   place.
      *
      * The consequence is deliberate and is the determinism contract: widths
-     * move at most once, so from the second replay onward - or from the first,
-     * with @p freeze - repeated replays at a fixed thread count are
-     * bit-identical.
+     * move only inside the trial window, so from the fourth replay onward -
+     * or from the first, with @p freeze - repeated replays at a fixed thread
+     * count are bit-identical.
      *
      * @param freeze Plan now and never re-plan, even from the cold-start model.
      *               For workflows that want every replay bit-identical to the
@@ -873,9 +886,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     APIARY_EXPOSE bool plan_threads(bool freeze = false);
 
-    /// Whether a one-shot automatic re-plan is waiting for the next completed
-    /// replay. @see plan_threads
-    APIARY_EXPOSE APIARY_GETTER("thread_replan_armed") [[nodiscard]] bool thread_replan_armed() const { return _thread_replan_armed; }
+    /// Whether the thread plan is still inside its measured trial window: a
+    /// re-plan is waiting for the next completed replay, or the trial replays
+    /// are still being timed. False once the widths are final. @see plan_threads
+    APIARY_EXPOSE APIARY_GETTER("thread_replan_armed") [[nodiscard]] bool thread_replan_armed() const {
+        return _plan_trial != ThreadPlanTrial::None;
+    }
 
     /**
      * @brief Add a conditional (if-then-else) node to the graph.
@@ -2086,16 +2102,30 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// @see planned_thread_count
     std::uint16_t _planned_thread_count{0};
 
-    /// One-shot: a cold plan is waiting for real timings. @see plan_threads
-    bool _thread_replan_armed{false};
+    /// Where a cold thread plan is in its measured trial. @see plan_threads
+    enum class ThreadPlanTrial : std::uint8_t {
+        None,      ///< No decision pending: the widths on the nodes are final.
+        Armed,     ///< Cold model plan is live; the re-plan fires after the next replay.
+        Candidate, ///< The re-planned widths are live and this replay is timing them.
+        Incumbent, ///< The cold widths are back and this replay is timing them.
+    };
+
+    /// Every planned width and admission priority in the graph tree, in walk
+    /// order: this graph's nodes, then each container body's, recursively.
+    using ThreadPlanSnapshot = std::vector<std::pair<std::uint16_t, std::int64_t>>;
+
+    ThreadPlanTrial    _plan_trial{ThreadPlanTrial::None};
+    ThreadPlanSnapshot _plan_incumbent;         ///< The cold model plan, held during the trial.
+    ThreadPlanSnapshot _plan_candidate;         ///< The timings re-plan, held during the trial.
+    double             _plan_candidate_ms{0.0}; ///< Wall clock of the candidate's replay.
 
     /// Run the width planner for @p threads threads. Shared by
-    /// @ref plan_threads and the armed re-plan, neither of which may arm.
+    /// @ref plan_threads and the trial re-plan, neither of which may arm.
     bool run_thread_planner(unsigned threads);
 
-    /// Fire the armed re-plan, if one is armed. Called at the end of a
-    /// completed replay. @see plan_threads
-    void replan_threads_if_armed();
+    /// Advance the thread-plan trial, if one is open. Called at the end of a
+    /// completed replay with that replay's wall-clock time. @see plan_threads
+    void finish_replay_thread_plan(double replay_ms);
 
     /// Mutation counter for cached analyses. Bumped at every
     /// mutation-declaration point; UsageAnalysis caches against it.

@@ -544,7 +544,10 @@ void Graph::move_members_from(Graph &&other) noexcept {
     // planned for has to travel with them or the staleness check compares
     // against a zero and lets a foreign plan run.
     _planned_thread_count = other._planned_thread_count;
-    _thread_replan_armed  = other._thread_replan_armed;
+    _plan_trial           = other._plan_trial;
+    _plan_incumbent       = std::move(other._plan_incumbent);
+    _plan_candidate       = std::move(other._plan_candidate);
+    _plan_candidate_ms    = other._plan_candidate_ms;
 }
 
 Graph::Graph(Graph &&other) noexcept {
@@ -1835,23 +1838,138 @@ bool Graph::plan_threads(bool freeze) {
     bool const widened = run_thread_planner(threads);
 
     // Cold plans are model plans, and the model is the part of this that is
-    // guessing. One re-plan from the first real timings is worth the one time
-    // the bits move; after it the widths never change again.
-    _thread_replan_armed = !freeze && !have_timings;
+    // guessing. What the first real timings buy is a TRIAL, not a decree: a
+    // re-planned candidate has to beat the cold plan on the wall clock before
+    // it may replace it (see finish_replay_thread_plan for why estimates
+    // cannot referee that contest).
+    _plan_trial = (!freeze && !have_timings) ? ThreadPlanTrial::Armed : ThreadPlanTrial::None;
+    _plan_incumbent.clear();
+    _plan_candidate.clear();
     return widened;
 }
 
-void Graph::replan_threads_if_armed() {
-    if (!_thread_replan_armed) {
+namespace {
+
+using PlanSnapshot = std::vector<std::pair<std::uint16_t, std::int64_t>>;
+
+/// Record every node's planned width and admission priority, container bodies
+/// included, in one deterministic walk order shared with apply_thread_plan.
+void collect_thread_plan(Graph &graph, PlanSnapshot &out) {
+    for (auto &node : graph.nodes()) {
+        out.emplace_back(node.thread_width, node.admission_priority);
+        if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data); loop != nullptr && loop->body) {
+            collect_thread_plan(*loop->body, out);
+        } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data); cond != nullptr) {
+            if (cond->then_branch) {
+                collect_thread_plan(*cond->then_branch, out);
+            }
+            if (cond->else_branch) {
+                collect_thread_plan(*cond->else_branch, out);
+            }
+        }
+    }
+}
+
+void apply_thread_plan(Graph &graph, PlanSnapshot const &plan, size_t &pos) {
+    for (auto &node : graph.nodes()) {
+        if (pos >= plan.size()) {
+            return; // structure changed under the trial; leave the rest alone
+        }
+        node.thread_width       = plan[pos].first;
+        node.admission_priority = plan[pos].second;
+        pos++;
+        if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data); loop != nullptr && loop->body) {
+            apply_thread_plan(*loop->body, plan, pos);
+        } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data); cond != nullptr) {
+            if (cond->then_branch) {
+                apply_thread_plan(*cond->then_branch, plan, pos);
+            }
+            if (cond->else_branch) {
+                apply_thread_plan(*cond->else_branch, plan, pos);
+            }
+        }
+    }
+}
+
+[[nodiscard]] bool same_widths(PlanSnapshot const &a, PlanSnapshot const &b) {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < a.size(); i++) {
+        if (a[i].first != b[i].first) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// How much faster the candidate's replay must be before it replaces the cold
+/// plan. Consecutive replays of one graph differ by a few percent on a machine
+/// doing anything else, and the trial reads exactly one replay of each side,
+/// so a candidate inside this band is indistinguishable from noise - and the
+/// incumbent is the plan a calibrated model chose on purpose.
+constexpr double kThreadPlanTrialMargin = 0.05;
+
+} // namespace
+
+void Graph::finish_replay_thread_plan(double replay_ms) {
+    switch (_plan_trial) {
+    case ThreadPlanTrial::None:
+        return;
+
+    case ThreadPlanTrial::Armed: {
+        // Disarmed BEFORE planning, so a planner that throws does not leave the
+        // graph re-planning at the end of every replay from here on.
+        _plan_trial = ThreadPlanTrial::None;
+
+        _plan_incumbent.clear();
+        collect_thread_plan(*this, _plan_incumbent);
+
+        auto &budget = task_pool::WidthBudget::get_singleton();
+        budget.sync_machine_width();
+        run_thread_planner(std::max(1U, budget.total()));
+
+        _plan_candidate.clear();
+        collect_thread_plan(*this, _plan_candidate);
+        if (same_widths(_plan_candidate, _plan_incumbent)) {
+            // The timings agree with the model about the widths, so there is
+            // nothing to referee; the re-plan's measured admission priorities
+            // are kept and the plan is final.
+            _plan_incumbent.clear();
+            _plan_candidate.clear();
+            return;
+        }
+        // The candidate's widths are live now; the next replay times them.
+        _plan_trial = ThreadPlanTrial::Candidate;
         return;
     }
-    // Disarmed BEFORE planning, so a planner that throws does not leave the
-    // graph re-planning at the end of every replay from here on.
-    _thread_replan_armed = false;
 
-    auto &budget = task_pool::WidthBudget::get_singleton();
-    budget.sync_machine_width();
-    run_thread_planner(std::max(1U, budget.total()));
+    case ThreadPlanTrial::Candidate: {
+        _plan_candidate_ms = replay_ms;
+        size_t pos         = 0;
+        apply_thread_plan(*this, _plan_incumbent, pos);
+        _plan_trial = ThreadPlanTrial::Incumbent;
+        return;
+    }
+
+    case ThreadPlanTrial::Incumbent: {
+        _plan_trial          = ThreadPlanTrial::None;
+        bool const candidate = _plan_candidate_ms < (1.0 - kThreadPlanTrialMargin) * replay_ms;
+        if (candidate) {
+            size_t pos = 0;
+            apply_thread_plan(*this, _plan_candidate, pos);
+        }
+        if (config::get(option::PassVerbosity) >= 1) {
+            fmt::print(stderr, "[ThreadPlanning] trial on '{}': candidate replay {:.1f} ms vs incumbent replay {:.1f} ms; keeping the {}\n",
+                       _name, _plan_candidate_ms, replay_ms, candidate ? "re-planned widths" : "cold plan");
+        }
+        _plan_incumbent.clear();
+        _plan_incumbent.shrink_to_fit();
+        _plan_candidate.clear();
+        _plan_candidate.shrink_to_fit();
+        return;
+    }
+    }
 }
 
 size_t Graph::schedule_edge_count() {
@@ -2961,6 +3079,10 @@ void Graph::execute() {
         return;
     }
 
+    // Wall clock of this replay, for the thread-plan trial: replays are the
+    // only thing the trial's two sides can be compared on.
+    auto const replay_t0 = std::chrono::steady_clock::now();
+
     // Rebuild when the order is unknown OR a pass vouched for the order via
     // mark_sorted() but left the position-keyed _deps stale (_deps_valid
     // false). topological_sort() takes the cheap rebuild_deps path in that
@@ -3203,14 +3325,15 @@ void Graph::execute() {
     // exec_zone pops here.
     _executed = true;
 
-    // The safe point for the armed re-plan (see plan_threads): the replay has
-    // returned, so nothing is reading a width; every nested body replay it
+    // The safe point for the thread-plan trial (see plan_threads): the replay
+    // has returned, so nothing is reading a width; every nested body replay it
     // started has returned with it; and this run's timings are complete and
     // recorded, which is the whole reason to wait for it.
-    replan_threads_if_armed();
+    finish_replay_thread_plan(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replay_t0).count());
 }
 
 void Graph::execute(Executor &executor) {
+    auto const replay_t0 = std::chrono::steady_clock::now();
     // Rebuild when the order is unknown OR a pass vouched for the order via
     // mark_sorted() but left the position-keyed _deps stale (_deps_valid
     // false). Concurrent executors read _deps directly, so stale lists here
@@ -3249,7 +3372,7 @@ void Graph::execute(Executor &executor) {
 
     // Same safe point as the argument-less execute(): the replay has returned
     // and its timings are complete.
-    replan_threads_if_armed();
+    finish_replay_thread_plan(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replay_t0).count());
 }
 
 UsageAnalysis const &Graph::usage() {
