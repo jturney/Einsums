@@ -19,8 +19,17 @@
 EINSUMS_NAMESPACE_BEGIN(option)
 
 /// How much memory the tensor-contraction buffers may hold in total.
+///
+/// The ceiling exists to catch a RUNAWAY temporary with a named error, not to
+/// ration legitimate workspace. 4MB served while one contraction ran at a
+/// time, but the moldable executors run a team's worth of kernels at once and
+/// each may hold transient TTGT scratch of a few hundred kilobytes: ten
+/// concurrent contractions sat within a hair of the old ceiling, and which
+/// side they landed on depended on how the scheduler packed them. 64MB keeps
+/// the runaway protection - a leaked population still hits it - with room for
+/// a wide machine's worth of honest workspace.
 inline constinit cl::ConfigOption<std::string> BufferSize = cl::config_opt<std::string>(
-    "einsums:buffer-size", "Total size of buffers allocated for tensor contractions", "Buffer Allocator", "4MB", "size");
+    "einsums:buffer-size", "Total size of buffers allocated for tensor contractions", "Buffer Allocator", "64MB", "size");
 
 /// The largest single work buffer. Zero lets the allocator decide.
 inline constinit cl::ConfigOption<std::string> WorkBufferSize = cl::config_opt<std::string>(

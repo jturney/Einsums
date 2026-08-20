@@ -109,7 +109,7 @@ using VectorData = BufferVector<T>;
  *
  * Deliberately NOT @c BufferVector, and the distinction is the point.
  * @c BufferAllocator enforces a global ceiling (@c --einsums:buffer-size,
- * default 4MB) whose purpose is to bound transient contraction WORKSPACE, so
+ * default 64MB) whose purpose is to bound transient contraction WORKSPACE, so
  * that out-of-core algorithms can size their chunks against a declared budget
  * and a runaway temporary throws a named error instead of exhausting the
  * machine. LAPACK's @c work and @c iwork arrays are the model consumer, and
@@ -121,7 +121,7 @@ using VectorData = BufferVector<T>;
  * views by the hundred thousand and keeps them for the life of the graph.
  * Charging those against the workspace ceiling let metadata crowd out the
  * workspace the ceiling exists to bound: a captured DLPNO-CCSD iteration
- * (212,000 nodes at ethanol/cc-pVTZ) exhausted the 4MB default outright, and
+ * (212,000 nodes at ethanol/cc-pVTZ) exhausted the then-4MB default outright, and
  * every coupled-cluster entry point had to raise it by two or three orders of
  * magnitude to run at all. The failures read as leaks and were not; the
  * accounting was balanced, the population was simply the wrong one.

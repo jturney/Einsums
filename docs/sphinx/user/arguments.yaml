@@ -31,7 +31,10 @@
     The amount of memory Einsums is allowed to use. It takes a string containing a number and units.
     The units are either bytes or words. See :cpp:func:`einsums::string_util::memory_string` for more information.
 
-    Defaults to ``4MB``.
+    Defaults to ``64MB``.
+    The ceiling exists to catch a runaway temporary with a named error, not to ration legitimate
+    workspace; the default is sized so a wide machine's worth of concurrent contractions fits
+    under it with room to spare.
 
 "einsums:work-buffer-size":
   added: "1.0.0"
