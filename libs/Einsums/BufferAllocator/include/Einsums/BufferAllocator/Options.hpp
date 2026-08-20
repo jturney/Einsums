@@ -16,7 +16,27 @@
  * string_util::memory_string rather than integers.
  */
 
+EINSUMS_NAMESPACE_BEGIN(detail)
+
+/// Default for einsums:max-memory: 80% of the machine's physical RAM,
+/// rendered as a memory string. Defined in BufferAllocator.cpp, where the
+/// platform probes live.
+EINSUMS_EXPORT std::string max_memory_provider();
+
+EINSUMS_NAMESPACE_END(detail)
+
 EINSUMS_NAMESPACE_BEGIN(option)
+
+/// Ceiling on the memory einsums PLANS against: chunked algorithms size their
+/// working sets to it, and MemoryPool refuses a reservation that would push
+/// the process's total pooled bytes past it - at the reserve site, on the
+/// owning thread, before the OS is asked for anything. It is a planning
+/// ceiling, not an allocator meter: ordinary tensor allocations are not
+/// checked against it (that is what makes it safe - nothing can throw inside
+/// a kernel). Set to 0 to disable the check.
+inline constinit cl::ConfigOption<std::string> MaxMemory = cl::config_opt_computed<std::string>(
+    "einsums:max-memory", "Ceiling on the memory einsums plans against: chunked algorithms and memory pools budget to it. 0 disables.",
+    "Buffer Allocator", &detail::max_memory_provider, "size");
 
 /// How much memory the tensor-contraction buffers may hold in total.
 ///

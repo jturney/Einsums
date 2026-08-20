@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/BufferAllocator/MemoryPool.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/MemoryPlanning.hpp>
@@ -144,8 +145,12 @@ void accumulate(Graph &graph, MemStats &acc) {
 /// in the rewritten Materialize/Free executors, so it lives exactly as long
 /// as the graph's nodes and is reused verbatim by every replay.
 struct ArenaBlock {
-    explicit ArenaBlock(size_t bytes) : size(bytes), data(static_cast<std::byte *>(::operator new[](bytes, std::align_val_t{64}))) {}
-    ~ArenaBlock() { ::operator delete[](data, std::align_val_t{64}); }
+    explicit ArenaBlock(size_t bytes) : size(bytes), data(static_cast<std::byte *>(memory::aligned_alloc(bytes))) {
+        if (data == nullptr && bytes != 0) {
+            throw std::bad_alloc{};
+        }
+    }
+    ~ArenaBlock() { memory::aligned_free(data); }
     ArenaBlock(ArenaBlock const &)            = delete;
     ArenaBlock &operator=(ArenaBlock const &) = delete;
 

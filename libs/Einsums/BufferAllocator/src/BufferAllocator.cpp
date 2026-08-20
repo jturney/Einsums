@@ -4,48 +4,67 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
+#include <Einsums/BufferAllocator/MemoryPool.hpp>
+#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
-#if defined(EINSUMS_HAVE_MALLOC_MIMALLOC)
-#    include <mimalloc.h>
+#include <mimalloc.h>
+
+EINSUMS_NAMESPACE_BEGIN(memory)
+
+void *aligned_alloc(size_t bytes) {
+    return mi_malloc_aligned(bytes, 64);
+}
+
+void aligned_free(void *ptr) {
+    mi_free(ptr);
+}
+
+EINSUMS_NAMESPACE_END(memory)
+
+#if defined(__APPLE__)
+#    include <sys/sysctl.h>
+#    include <sys/types.h>
+#elif defined(EINSUMS_WINDOWS)
+#    include <windows.h>
+#else
+#    include <unistd.h>
 #endif
 
 EINSUMS_NAMESPACE_BEGIN(detail)
 
-void *allocate(size_t n) {
-    void *ptr = nullptr;
-
-#if defined(EINSUMS_HAVE_MALLOC_MIMALLOC)
-    ptr = mi_malloc_aligned(n, 64);
+std::string max_memory_provider() {
+    size_t physical = 0;
+#if defined(__APPLE__)
+    size_t len = sizeof(physical);
+    if (sysctlbyname("hw.memsize", &physical, &len, nullptr, 0) != 0) {
+        physical = 0;
+    }
 #elif defined(EINSUMS_WINDOWS)
-    // The MSVC CRT has neither aligned_alloc nor posix_memalign; memory from
-    // _aligned_malloc must be released with _aligned_free (see deallocate).
-    ptr = _aligned_malloc(n, 64);
-#elif defined(_ISOC11_SOURCE) || (__STDC_VERSION__ >= 201112L)
-    // std::aligned_alloc(alignment, size) requires `size` to be a multiple of
-    // `alignment` per the C/C++ standard; passing e.g. (64, 16) is UB and
-    // ASan rightly catches it ("invalid alignment requested in aligned_alloc").
-    // Round the request up to the next multiple of 64 so any caller can pass
-    // an arbitrary byte count.
-    size_t const rounded = (n + 63) & ~size_t{63};
-    ptr                  = std::aligned_alloc(64, rounded);
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (GlobalMemoryStatusEx(&status)) {
+        physical = static_cast<size_t>(status.ullTotalPhys);
+    }
 #else
-    // returns zero on success, or an error value. On Linux (and other systems), p is not modified on failure.
-    if (posix_memalign(&ptr, 64, n) != 0) {
-        ptr = nullptr;
+    long const pages = sysconf(_SC_PHYS_PAGES);
+    long const page  = sysconf(_SC_PAGE_SIZE);
+    if (pages > 0 && page > 0) {
+        physical = static_cast<size_t>(pages) * static_cast<size_t>(page);
     }
 #endif
-    return ptr;
+    if (physical == 0) {
+        return "8GB"; // probe failed; a conservative ceiling beats an absent one
+    }
+    return std::to_string((physical / 100) * 80 / (1024 * 1024)) + "MB";
+}
+
+void *allocate(size_t n) {
+    return memory::aligned_alloc(n);
 }
 
 void deallocate(void *p) {
-#if defined(EINSUMS_HAVE_MALLOC_MIMALLOC)
-    mi_free(p);
-#elif defined(EINSUMS_WINDOWS)
-    _aligned_free(p);
-#else
-    free(static_cast<void *>(p));
-#endif
+    memory::aligned_free(p);
 }
 
 EINSUMS_NAMESPACE_END(detail)

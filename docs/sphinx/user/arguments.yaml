@@ -25,6 +25,20 @@
 # before. Version history is exempt from that check, since it describes names
 # that deliberately no longer exist.
 
+"einsums:max-memory":
+  added: "2.1.0"
+  body: |
+    Ceiling on the memory Einsums plans against. It takes a string containing a number and
+    units; see :cpp:func:`einsums::string_util::memory_string`. Set to ``0`` to disable.
+
+    Defaults to 80% of the machine's physical RAM.
+
+    This is a planning ceiling, not an allocator meter: chunked algorithms size their working
+    sets to it, and :cpp:class:`einsums::MemoryPool` refuses a reservation that would push the
+    process's total pooled bytes past it - at the reserve site, on the pool's owning thread,
+    before the OS is asked for anything. Ordinary tensor allocations are not checked against
+    it, which is what keeps the check from ever throwing inside a kernel.
+
 "einsums:buffer-size":
   added: "1.0.0"
   body: |

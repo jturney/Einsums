@@ -40,6 +40,7 @@ int init_Einsums_BufferAllocator() {
 EINSUMS_EXPORT int register_Einsums_BufferAllocator_options() {
     cl::register_option(option::BufferSize);
     cl::register_option(option::WorkBufferSize);
+    cl::register_option(option::MaxMemory);
     return 0;
 }
 
