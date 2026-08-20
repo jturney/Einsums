@@ -278,6 +278,49 @@ globals().update(_stages)
 __all__ += PHASES
 
 
+def _autoload_compiled_backends():
+    """Load ``dlpno_stages`` and select its ``cpp`` backends, if it is importable.
+
+    The main build compiles the stage module into ``build/lib`` next to the
+    ``einsums`` package, so on any PYTHONPATH that can import einsums the
+    compiled backends are there too - and measured at 10 threads they are the
+    difference between parity with psi4 and a 4x deficit on the integral
+    phase.
+    Making their selection depend on a per-driver flag meant every entry point
+    that forgot the flag silently benchmarked the Python numerics, which is
+    exactly what happened.
+    Presence of the module is the intent; importability is the test.
+
+    Precedence, weakest first: this autoload, then ``EINSUMS_STAGE_BACKEND``,
+    then an explicit ``--backend`` spec.
+    The env var wins by suppressing the autoload entirely rather than by being
+    re-applied over it, because the registry applies an env spec only once; so
+    ``EINSUMS_STAGE_BACKEND=python`` is also the off switch.
+
+    A module that fails the sealed-world handshake is a hard error here, same
+    as on the explicit path: a stale ``dlpno_stages`` must be rebuilt or
+    deleted, never silently swapped for the Python backend - a build glitch
+    must not change which code computed a published number.
+    """
+    import importlib.util
+    import os
+
+    if os.environ.get("EINSUMS_STAGE_BACKEND") is not None:
+        return
+    if importlib.util.find_spec("dlpno_stages") is None:
+        return
+
+    from einsums import stages as _est
+
+    module = _est.load_stage_module("dlpno_stages")
+    for attr in dir(module):
+        if attr.startswith("stage_") and callable(getattr(module, attr)):
+            _est.select(**{attr[len("stage_"):]: "cpp"})
+
+
+_autoload_compiled_backends()
+
+
 def run_phases(mp2, session, **per_phase):
     """Run every phase of *mp2* as a stage inside *session*.
 

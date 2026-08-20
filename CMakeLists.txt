@@ -1060,10 +1060,11 @@ if(EINSUMS_WITH_TESTS)
 endif()
 
 if(EINSUMS_WITH_EXAMPLES)
+  # Only the pseudo-target here: the modules under libs/ attach their example
+  # directories to it, so it has to exist before them. The top-level examples/
+  # directory itself is added AFTER libs/, because the dlpno example builds its
+  # compiled stage module against the Einsums target.
   einsums_add_pseudo_target(Examples)
-  # The top-level examples build nothing, but the psi4-free tests some of them
-  # ship are worth having ctest run; see examples/CMakeLists.txt.
-  add_subdirectory(examples)
 endif()
 
 # ##################################################################################################
@@ -1115,6 +1116,13 @@ endif()
 
 # Every extension module has been created by now, so the count is final.
 einsums_assert_python_extensions_can_share_a_library()
+
+if(EINSUMS_WITH_EXAMPLES)
+  # The top-level examples build almost nothing, but the psi4-free tests some
+  # of them ship are worth having ctest run, and the dlpno example's compiled
+  # stage module needs the Einsums target; see examples/CMakeLists.txt.
+  add_subdirectory(examples)
+endif()
 # Top-level einsums/ Python package was removed in favor of the apiary codegen output. The
 # codegen-driven extension is registered via einsums_finalize_pybind() above.
 # if(EINSUMS_BUILD_PYTHON) add_subdirectory(einsums) endif()

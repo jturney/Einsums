@@ -41,8 +41,9 @@ parser.add_argument("--no-optimize", action="store_true")
 parser.add_argument("-k", "--filter", default="",
                     help="only run fixtures whose name contains this substring")
 parser.add_argument("--backend", default="",
-                    help="stage backend spec, e.g. compute_pno_overlaps=cpp. Implies "
-                         "--stages and loads the dlpno_stages module")
+                    help="stage backend spec override, e.g. compute_pno_overlaps=python. "
+                         "Implies --stages. The compiled backends are selected "
+                         "automatically when dlpno_stages is importable")
 parser.add_argument("--method", default="mp2", choices=["mp2", "ccsd", "ccsd(t)"],
                     help="which recorded energies to check. 'ccsd' and 'ccsd(t)' need "
                          "fixtures written by dump_reference.py --with-cc, and skip any "
@@ -56,11 +57,10 @@ args = parser.parse_args()
 if args.stages or args.backend:
     from einsums import stages
     if args.backend:
-        # Import the stages module first: load_stage_module matches cpp exports
-        # against stages Python has already declared, so the declarations have
-        # to exist. Importing dlpno.stages is what declares them.
+        # Importing dlpno.stages declares the stages AND auto-loads the
+        # compiled backends when dlpno_stages is importable; the flag then
+        # only overrides that default.
         import dlpno.stages  # noqa: F401
-        stages.load_stage_module("dlpno_stages")
         stages.apply_backend_spec(args.backend)
 else:
     stages = None

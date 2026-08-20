@@ -73,3 +73,47 @@ if(EINSUMS_BUILD_PYTHON AND NOT EINSUMS_WITH_TESTS_DLPNO_TRIPLES)
     "Tests.Unit.Examples.DLPNO.LCCSDT0" "Tests.Unit.Examples.DLPNO.LCCSDT" PROPERTIES DISABLED TRUE
   )
 endif()
+
+# ── The compiled stage backend, built automatically ───────────────────────────
+#
+# cpp/ is an out-of-tree stage module BY DESIGN: it consumes the exported
+# Einsums package exactly as a user promotion would, which is what keeps the
+# export honest. Building it here changes none of that - it is an external
+# project configured against this build tree's own export, the same command a
+# user would type by hand. The module lands in ${CMAKE_BINARY_DIR}/lib next to
+# the einsums package, so every workflow that puts build/lib on PYTHONPATH can
+# import it with no further step - and dlpno.stages selects the compiled
+# backends automatically whenever the module is importable (see its
+# _autoload_compiled_backends; EINSUMS_STAGE_BACKEND overrides).
+#
+# Not under cross-compilation: the module must import into the build host's
+# Python, which a cross-compiled binary cannot.
+if(EINSUMS_BUILD_PYTHON AND NOT CMAKE_CROSSCOMPILING)
+  include(ExternalProject)
+
+  # CMAKE_ARGS entries are split on semicolons, so a list-valued prefix path
+  # has to travel under a different separator.
+  string(REPLACE ";" "|" _dlpno_stages_prefix_path "${CMAKE_BINARY_DIR};${CMAKE_PREFIX_PATH}")
+
+  externalproject_add(
+    dlpno_stages_module
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/cpp
+    PREFIX ${CMAKE_CURRENT_BINARY_DIR}/stages
+    DEPENDS Einsums
+    LIST_SEPARATOR |
+    CMAKE_ARGS
+      -G${CMAKE_GENERATOR}
+      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+      -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+      "-DCMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}"
+      "-DCMAKE_SHARED_LINKER_FLAGS=${CMAKE_SHARED_LINKER_FLAGS}"
+      "-DCMAKE_PREFIX_PATH=${_dlpno_stages_prefix_path}"
+      -DPython3_EXECUTABLE=${Python_EXECUTABLE}
+      -DPython_EXECUTABLE=${Python_EXECUTABLE}
+    # ExternalProject tracks no source-file dependencies of its own; the inner
+    # ninja is the one that knows, and an up-to-date inner build is a no-op.
+    BUILD_ALWAYS TRUE
+    INSTALL_COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    <BINARY_DIR>/dlpno_stages${PYTHON_MODULE_EXTENSION} ${CMAKE_BINARY_DIR}/lib/
+  )
+endif()

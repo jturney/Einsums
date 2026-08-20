@@ -17,7 +17,7 @@ Current numbers and their provenance are in [Performance against psi4](#performa
 
 * An in-tree Einsums build with the Python bindings (`-DEINSUMS_BUILD_PYTHON=ON`), on `PYTHONPATH` as `build/lib`.
 * psi4, for everything that builds a reference live; the frozen-fixture path below needs no psi4 at all.
-* Optionally, the C++ stage backends, built separately (see [The two backends](#the-two-backends)).
+* The C++ stage backends, built and selected automatically with the main build (see [The two backends](#the-two-backends)).
 
 Two of the three integral sources depend on psi4-side entry points that are patches carried in this project's psi4 tree, not yet in released psi4:
 
@@ -148,7 +148,7 @@ The runner's assertion tolerance is scaled to the truncation correction for this
 
 ## The two backends
 
-Two stages exist twice: `compute_pno_overlaps` and `transform_pnos`, each a Python numerics module in the package and a C++ backend under `cpp/`.
+Three stages exist twice: `compute_pno_overlaps`, `transform_pnos` and `compute_pno_integrals`, each a Python numerics module in the package and a C++ backend under `cpp/`.
 Both implement the same contracts, both are selectable at runtime, and neither Python side is retired; the C++ side is regenerated from the Python contracts by the hybrid framework's promote tool:
 
 ```bash
@@ -158,7 +158,17 @@ python -m einsums.stages promote examples/dlpno/dlpno/stages.py \
 
 The port sources under `cpp/src/` are hand-written, and the build file and differential tests are scaffolded once and then yours; the regenerated files (headers, bindings) carry a `promote-hash:` and are refused if edited by hand - a contract change belongs in `contracts.py`.
 
-Build the C++ side the way an external developer would, against an *installed* Einsums:
+The main build compiles the C++ side automatically when `EINSUMS_BUILD_PYTHON` is on, and it still builds it the way an external developer would: an external project configured against the build tree's own exported `EinsumsConfig`, never against in-tree targets, so the external consumer path is exercised on every build rather than proven nothing about.
+The module lands in `build/lib` next to the `einsums` package, and `dlpno.stages` selects the compiled backends automatically whenever `dlpno_stages` is importable - so on the standard `PYTHONPATH=build/lib` the hybrid configuration is what runs, with nothing to remember.
+
+Selection precedence, weakest first: the autoload, then `EINSUMS_STAGE_BACKEND`, then an explicit `--backend` spec.
+`EINSUMS_STAGE_BACKEND=python` is the off switch, and per-stage overrides read the other way now that cpp is the default:
+
+```bash
+python examples/dlpno/run_fixtures.py --backend transform_pnos=python
+```
+
+The by-hand path still works, against an *installed* Einsums, for a module built outside this tree:
 
 ```bash
 cmake --install /path/to/Einsums/build --prefix /tmp/einsums-install
@@ -167,14 +177,6 @@ cmake -S examples/dlpno/cpp -B /tmp/build-dlpno-stages -GNinja \
       "-DCMAKE_PREFIX_PATH=/tmp/einsums-install;$CONDA_PREFIX" \
       -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python
 cmake --build /tmp/build-dlpno-stages
-```
-
-It is deliberately not part of the top-level build: a stage module that only compiles inside the tree that produced libEinsums proves nothing about the path external users are on.
-Then select a backend per stage:
-
-```bash
-export PYTHONPATH=/path/to/Einsums/build/lib:/tmp/build-dlpno-stages
-python examples/dlpno/run_fixtures.py --backend transform_pnos=cpp
 ```
 
 The two backends of a stage agree bit for bit, because both emit the same einsums operations on the same values; `check_backends.py` asserts exactly that, and `check_backends.py --prove` also proves which backend actually ran, since perfect agreement is what a silently-unselected backend produces too.

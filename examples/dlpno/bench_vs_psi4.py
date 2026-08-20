@@ -115,10 +115,12 @@ parser.add_argument(
          "default is enough and this is only an escape hatch.")
 parser.add_argument(
     "--backend", default="",
-    help="stage backend spec for the port, e.g. "
-         "compute_pno_overlaps=cpp,transform_pnos=cpp. Loads the dlpno_stages "
-         "module, which must be on PYTHONPATH; this is how the hybrid "
-         "(C++-stage) configuration is benchmarked.",
+    help="stage backend spec OVERRIDE, e.g. compute_pno_integrals=python. "
+         "The compiled backends are selected automatically whenever the "
+         "dlpno_stages module is importable (the main build puts it in "
+         "build/lib), so the hybrid configuration is the default and this "
+         "flag exists to benchmark away from it. EINSUMS_STAGE_BACKEND "
+         "does the same from the environment.",
 )
 args = parser.parse_args()
 
@@ -243,14 +245,14 @@ from dlpno.triples import DLPNOCCSDT  # noqa: E402
 from dlpno.psi4_source import from_psi4  # noqa: E402
 
 if args.backend:
-    # Import the stages module first: load_stage_module matches cpp exports
-    # against stages Python has already declared. The composition methods
-    # dispatch through the registry, so the selection reaches the phases
-    # timed below without any further plumbing here.
+    # Importing dlpno.stages declares the stages AND auto-loads the compiled
+    # backends when dlpno_stages is importable, so all the flag has left to do
+    # is override that default. The composition methods dispatch through the
+    # registry, so the selection reaches the phases timed below without any
+    # further plumbing here.
     import dlpno.stages  # noqa: E402,F401
     from einsums import stages as _estages  # noqa: E402
 
-    _estages.load_stage_module("dlpno_stages")
     _estages.apply_backend_spec(args.backend)
 
 psi4.core.set_output_file("/tmp/psi4_dlpno_ref_scf.out", False)
