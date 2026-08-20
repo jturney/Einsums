@@ -270,6 +270,13 @@ bool ThreadPlanning::run(Graph &graph) {
     _critical_path_after_us = top.cp_us;
     _area_after_us          = top.area_us;
 
+    // Which bound is binding is the whole diagnosis: a plan whose area already
+    // matches its critical path has nothing widening can buy, and only these
+    // two numbers say whether that is the graph's fault or the model's.
+    report(1, fmt::format("critical path {:.1f} -> {:.1f} us, area {:.1f} -> {:.1f} us, serial sum {:.1f} us "
+                          "({} node(s) measured, {} from the model)",
+                          top.cp_before_us, top.cp_us, top.area_before_us, top.area_us, top.serial_us, _num_from_timings, _num_from_model));
+
     if (_num_widened == 0) {
         report(1, fmt::format("no node earned a width above 1 on {} thread(s)", p));
     } else {
@@ -351,7 +358,9 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         c.bytes  = bytes;
         c.family = family_for(node, bytes, profile, shape.valid() ? shape.flops() : 0.0);
 
-        if (auto it = samples.find(node.id); it != samples.end()) {
+        auto const sit      = samples.find(node.id);
+        bool const measured = sit != samples.end();
+        if (auto it = sit; measured) {
             // A measurement is t(w) for the width it ran at, and everything
             // downstream - the fork floor, the widening search - reads t1_us as
             // the SERIAL time. Undo the width: t(1) = t(w) * s(w).
@@ -436,6 +445,12 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
 
         result.serial_us += c.t1_us;
 
+        // The census a "where does the time go" question is answered from:
+        // every node's serial estimate, where it came from, and the curve that
+        // will price its widening. Level 3 because it is one line per node.
+        report(3, fmt::format("node '{}' [{}] t1 {:.1f} us {} ({}, {} bytes)", node.label, op_kind_name(node.kind), c.t1_us,
+                              measured ? "measured" : "model", to_string(c.family), c.bytes));
+
         if (policy_forbids_width(node)) {
             c.frozen = true;
             note_skip("policy forbids a width above 1", fmt::format("node '{}'", node.label));
@@ -502,8 +517,10 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         return std::pair<double, double>{critical, area_sum / static_cast<double>(p)};
     };
 
-    auto [cp, area]  = recompute();
-    result.before_us = std::max(cp, area);
+    auto [cp, area]       = recompute();
+    result.before_us      = std::max(cp, area);
+    result.cp_before_us   = cp;
+    result.area_before_us = area;
 
     // The widths at the last STRICT improvement, which is what the plan ends up
     // being. Kept separately from the widths the search is currently holding,

@@ -159,11 +159,13 @@ class EINSUMS_EXPORT ThreadPlanning : public OptimizerPass {
     /// One graph's plan. Recursion returns the body's serial cost so the
     /// container node can be priced by what it will actually run.
     struct SubPlan {
-        double serial_us{0.0};   ///< sum of t_i(1) over the body, one traversal
-        double before_us{0.0};   ///< max(CP, area) with every width at 1
-        double makespan_us{0.0}; ///< max(CP, area) under the body's final widths
-        double cp_us{0.0};       ///< longest path under the final widths
-        double area_us{0.0};     ///< sum(w_i * t_i(w_i)) / P under the final widths
+        double serial_us{0.0};      ///< sum of t_i(1) over the body, one traversal
+        double before_us{0.0};      ///< max(CP, area) with every width at 1
+        double cp_before_us{0.0};   ///< longest path with every width at 1
+        double area_before_us{0.0}; ///< sum(t_i(1)) / P with every width at 1
+        double makespan_us{0.0};    ///< max(CP, area) under the body's final widths
+        double cp_us{0.0};          ///< longest path under the final widths
+        double area_us{0.0};        ///< sum(w_i * t_i(w_i)) / P under the final widths
     };
 
     SubPlan plan_graph(Graph &graph, unsigned p);
