@@ -540,7 +540,22 @@ class LCCSDT0:
         """
         cc = self.cc
         state = {"keep": [], "per": []}
-        state["e_chunk"] = ten.zeros("e (triplet)", [len(chunk)])
+
+        # Almost everything here is ``ten.empty``, and the split is a
+        # contract, not a tuning: this loop used to ``ten.zeros`` roughly
+        # 17 MB per triplet on one Python thread, which measured as 9 s of
+        # the ethanol ten-thread (T0) row - a third of the phase, and more
+        # than the port's entire deficit against psi4 on it. A tensor may be
+        # ``empty`` when every element is written before it is read: the
+        # gathers, the beta = 0 GEMM batches, ``axpby(beta=0)``, ``outer_sum``
+        # and HPTT's beta = 0 all overwrite without reading, and an einsum or
+        # permute with a zero C prefactor is safe on garbage because
+        # ``scale(0)`` ASSIGNS rather than multiplies (see impl_scal, which
+        # exists so that 0 * NaN cannot survive a discard). The three
+        # amplitude stores below stay ``zeros`` because a DEAD pair
+        # deliberately contributes no batch member and the terms read the
+        # allocated zeros in its place.
+        state["e_chunk"] = ten.empty("e (triplet)", [len(chunk)])
 
         for slot, r in enumerate(chunk):
             nq, nl, nu, nt = r["nq"], r["nl"], r["nu"], r["nt"]
@@ -549,11 +564,11 @@ class LCCSDT0:
             # under the OpenMP executor; see the module docstring.
             per["uv"] = ten.empty("(Q|u v) raw", [nq, nu, nu])
             per["half"] = ten.empty("(Q|a v) half", [nq, nt, nu])
-            per["q_vv"] = ten.zeros("(Q|a b)", [nq, nt, nt])
+            per["q_vv"] = ten.empty("(Q|a b)", [nq, nt, nt])
             per["q_vv_flat"] = self._keep(
                 state, per["q_vv"].reshape_view([nq, nt * nt]))
-            per["raw_o"] = [ten.zeros("(Q|x m) raw", [nq, 1, nl]) for _ in range(3)]
-            per["raw_v"] = [ten.zeros("(Q|x u) raw", [nq, 1, nu]) for _ in range(3)]
+            per["raw_o"] = [ten.empty("(Q|x m) raw", [nq, 1, nl]) for _ in range(3)]
+            per["raw_v"] = [ten.empty("(Q|x u) raw", [nq, 1, nu]) for _ in range(3)]
             per["raw_o_flat"] = [self._keep(state, b.reshape_view([nq, nl]))
                                  for b in per["raw_o"]]
             per["raw_v_flat"] = [self._keep(state, b.reshape_view([nq, nu]))
@@ -562,8 +577,8 @@ class LCCSDT0:
             # One right-hand side per metric power, laid out so every block a
             # consumer wants is a contiguous column slice. See _emit_fit for
             # why there are two.
-            per["rhs_half"] = ten.zeros("J^-1/2 rhs", [nq, 3 * nt + 3 * nl])
-            per["rhs_full"] = ten.zeros("J^-1 rhs", [nq, 3 * nt])
+            per["rhs_half"] = ten.empty("J^-1/2 rhs", [nq, 3 * nt + 3 * nl])
+            per["rhs_full"] = ten.empty("J^-1 rhs", [nq, 3 * nt])
             per["rhs_virtual"] = self._keep(state, per["rhs_half"][:, :3 * nt])
             per["q_xv"] = [self._keep(state, per["rhs_half"][:, x * nt:(x + 1) * nt])
                            for x in range(3)]
@@ -578,20 +593,20 @@ class LCCSDT0:
             # GEMM writes and one grouped call needs its whole destination list
             # to be of one kind; see :meth:`_emit_integrals` for the merge order
             # and the module docstring for why the rank-3 name exists at all.
-            per["K_xvvv_flat"] = [ten.zeros("K (x a|b d)", [nt, nt * nt])
+            per["K_xvvv_flat"] = [ten.empty("K (x a|b d)", [nt, nt * nt])
                                   for _ in range(3)]
             per["K_xvvv"] = [self._keep(state, K.reshape_view([nt, nt, nt]))
                              for K in per["K_xvvv_flat"]]
             # (y l | z c), one per permutation, and (x a | y b), one per pair of
             # the triplet's own LMOs.
-            per["K_ooov"] = [ten.zeros("K (y l|z c)", [max(nl, 1), nt])
+            per["K_ooov"] = [ten.empty("K (y l|z c)", [max(nl, 1), nt])
                              for _ in range(6)]
-            per["K_ovov"] = [ten.zeros("K (x a|y b)", [nt, nt]) for _ in range(3)]
+            per["K_ovov"] = [ten.empty("K (x a|y b)", [nt, nt]) for _ in range(3)]
 
             # One block per DISTINCT pair this triplet bridges, holding the left
             # half ``S^T t`` of the congruence transform. The plan deduplicated
             # that set; see :meth:`_emit_projections`.
-            per["bridge"] = [ten.zeros("S^T t", [nt, int(cc.n_pno[pair])])
+            per["bridge"] = [ten.empty("S^T t", [nt, int(cc.n_pno[pair])])
                              for pair in r["bridges"]]
             # The amplitudes those read, as views made HERE rather than in the
             # emitter. Building a view inside a capture records a node for it,
@@ -610,7 +625,10 @@ class LCCSDT0:
             # The six t_kj as column slices of one store, so the batch that
             # writes them has a destination list of one kind. Slices of a
             # column-major matrix, so each is the contiguous block an owning
-            # tensor would have been.
+            # tensor would have been. ZEROS, load-bearing: a dead pair
+            # contributes no batch member and the contractions read its slice
+            # as the zero psi4's null matrix multiplies out to - the same
+            # contract covers t_xl and t_x below.
             per["t_kj_store"] = ten.zeros("t_kj (TNO) store", [nt, 6 * nt])
             per["t_kj"] = [self._keep(state,
                                       per["t_kj_store"][:, idx * nt:(idx + 1) * nt])
@@ -624,18 +642,18 @@ class LCCSDT0:
             per["t_x_vec"] = [self._keep(state, t.reshape_view([nt]))
                               for t in per["t_x"]]
 
-            per["W"] = ten.zeros("W (triplet)", [nt, nt, nt])
+            per["W"] = ten.empty("W (triplet)", [nt, nt, nt])
             #: Where Eq. 53's bracket is accumulated. Normally ``W`` itself,
             #: which is dead by then; a separate buffer when the caller has
             #: asked to keep ``W`` for the iterative (T), because that is the
             #: one reader for which "dead by then" is false.
-            per["bracket"] = (ten.zeros("Eq. 53 bracket", [nt, nt, nt])
+            per["bracket"] = (ten.empty("Eq. 53 bracket", [nt, nt, nt])
                               if self._retain else per["W"])
-            per["V"] = ten.zeros("V (triplet)", [nt, nt, nt])
-            per["D"] = ten.zeros("denominator", [nt, nt, nt])
+            per["V"] = ten.empty("V (triplet)", [nt, nt, nt])
+            per["D"] = ten.empty("denominator", [nt, nt, nt])
             #: Scratch: holds each permutation's contribution while ``W`` is
             #: assembled, then the amplitudes once ``W`` is complete.
-            per["scratch"] = ten.zeros("W (permutation)", [nt, nt, nt])
+            per["scratch"] = ten.empty("W (permutation)", [nt, nt, nt])
             per["e"] = self._keep(state, state["e_chunk"][slot:slot + 1])
             state["per"].append(per)
         return state
