@@ -6,6 +6,7 @@
 set(TensorTests
     ArithmeticTensor.cpp
     BlockTensor.cpp
+    PooledTensor.cpp
     RuntimeTensors.cpp
     TensorView.cpp
     FunctionTensor.cpp

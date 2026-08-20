@@ -64,6 +64,12 @@ struct StorageBlock final : StorageBase {
     Vector owned{};           ///< Self-allocated storage. Empty when external or unallocated.
     T     *external{nullptr}; ///< Caller-provided storage; never freed here.
 
+    /// Optional keepalive for @ref external. Null for a raw attach, where the
+    /// caller promises the buffer outlives the tensor; set for pooled storage,
+    /// where holding this token IS the promise, and dropping it is what returns
+    /// the carve to its pool. Never dereferenced here: the block only holds it.
+    std::shared_ptr<void const> external_owner{};
+
     StorageBlock()                                = default;
     StorageBlock(StorageBlock const &)            = delete;
     StorageBlock &operator=(StorageBlock const &) = delete;
@@ -95,6 +101,7 @@ struct StorageBlock final : StorageBase {
         ProfileMemFree(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
         owned    = src;
         external = nullptr;
+        external_owner.reset();
         ProfileMemAlloc(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
         refresh();
     }
@@ -104,17 +111,29 @@ struct StorageBlock final : StorageBase {
         ProfileMemFree(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
         owned    = std::move(src);
         external = nullptr;
+        external_owner.reset();
         refresh();
     }
 
+    /// Stop pointing at external storage, without touching the owned buffer.
+    /// Dropping the keepalive here is what returns a pooled carve to its pool.
+    void detach_external() {
+        external = nullptr;
+        external_owner.reset();
+    }
+
     /// Attach caller-owned storage, dropping any self-allocated buffer.
-    void attach_external(T *ptr) {
+    void attach_external(T *ptr) { attach_external(ptr, nullptr); }
+
+    /// Attach caller-owned storage along with a keepalive token for it.
+    void attach_external(T *ptr, std::shared_ptr<void const> owner) {
         if (!owned.empty()) {
             ProfileMemFree(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
             owned.clear();
             owned.shrink_to_fit();
         }
-        external = ptr;
+        external       = ptr;
+        external_owner = std::move(owner);
         refresh();
     }
 
@@ -126,6 +145,9 @@ struct StorageBlock final : StorageBase {
             owned.shrink_to_fit();
         }
         external = nullptr;
+        // Dropping the keepalive last: for pooled storage this is the free, so
+        // the pointer must already be unpublished when it runs.
+        external_owner.reset();
         refresh();
     }
 

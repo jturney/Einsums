@@ -495,7 +495,18 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * at planned offsets in one shared block. Idempotent for the same
      * pointer; switching storage requires an intervening release().
      */
-    void materialize_into(T *ptr) {
+    void materialize_into(T *ptr) { materialize_into(ptr, nullptr); }
+
+    /**
+     * @brief Materialize into caller-provided storage that carries its own keepalive.
+     *
+     * Same contract as the raw overload except for lifetime: holding @p owner
+     * is what keeps @p ptr alive, so the "must outlive every use" promise is
+     * kept by construction rather than by the caller. A MemoryPool carve
+     * arrives this way, and dropping the token - through release(), resize(),
+     * or the tensor's death, on any thread - returns the bytes to the pool.
+     */
+    void materialize_into(T *ptr, std::shared_ptr<void const> owner) {
         if (_storage->external == ptr) {
             return;
         }
@@ -503,7 +514,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         // An owned buffer gives way to the external one (the MemoryPlanning
         // arena attaches to eager intermediates that were allocated at
         // create_tensor time); holding both would waste the owned copy.
-        _storage->attach_external(ptr);
+        _storage->attach_external(ptr, std::move(owner));
         _impl.set_data(ptr);
     }
 
@@ -752,6 +763,10 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         // Build new impl to compute the required size, but don't commit yet.
         detail::TensorImpl<T> new_impl(nullptr, dims, _impl.is_row_major());
 
+        // A resize always lands in owned storage: any external attachment is
+        // dropped (the attached buffer was sized for the old shape), and with
+        // it any keepalive, which for a pooled carve is the free.
+        _storage->detach_external();
         // Resize data first; if this throws, _impl and the block remain consistent.
         _storage->resize_owned(new_impl.size());
 

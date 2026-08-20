@@ -25,6 +25,7 @@ endfunction()
 
 set(ComputeGraphTests
     Blueprints.cpp
+    PooledOperands.cpp
     ControlFlow.cpp
     DependencyOrder.cpp
     DistributedIntegration.cpp

@@ -13,6 +13,7 @@ set(TensorHeaders
     Einsums/Tensor/ArithmeticTensor.hpp
     Einsums/Tensor/FunctionTensor.hpp
     Einsums/Tensor/PendingInit.hpp
+    Einsums/Tensor/PooledTensor.hpp
     Einsums/Tensor/RuntimeTensor.hpp
     Einsums/Tensor/SymmetryOps.hpp
     Einsums/Tensor/TiledTensor.hpp

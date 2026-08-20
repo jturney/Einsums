@@ -1226,6 +1226,19 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     void materialize_into(T *ptr)
         requires(!IsDeviceTensor)
     {
+        materialize_into(ptr, nullptr);
+    }
+
+    /// Materialize into caller-provided storage that carries its own keepalive.
+    ///
+    /// Same contract as the raw overload except for lifetime: holding @p owner
+    /// is what keeps @p ptr alive, so the "must outlive every use" promise is
+    /// kept by construction rather than by the caller. A MemoryPool carve
+    /// arrives this way, and dropping the token - through release(), resize(),
+    /// or the tensor's death, on any thread - returns the bytes to the pool.
+    void materialize_into(T *ptr, std::shared_ptr<void const> owner)
+        requires(!IsDeviceTensor)
+    {
         if (_storage->external == ptr) {
             return;
         }
@@ -1233,7 +1246,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         assert(!_aliased && "materialize_into(): aliased tensors do not own storage to replace");
         // An owned buffer gives way to the external one; holding both would
         // waste the owned copy.
-        _storage->attach_external(ptr);
+        _storage->attach_external(ptr, std::move(owner));
         _impl.set_data(ptr);
     }
 
@@ -1305,8 +1318,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         detail::TensorImpl<T> new_impl(nullptr, dims, _impl.stored_row_major());
         // Resize data first; if this throws, _impl and the block remain consistent.
         // A resize always lands in owned storage: any arena attachment is
-        // dropped (the planned slot was sized for the old shape).
-        _storage->external = nullptr;
+        // dropped (the planned slot was sized for the old shape), and with it
+        // any keepalive, which for a pooled carve is the free.
+        _storage->detach_external();
         _storage->resize_owned(new_impl.size());
         // Data resize succeeded, so now commit.
         _impl = std::move(new_impl);
