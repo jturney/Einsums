@@ -64,7 +64,13 @@ parser.add_argument("--prove", action="store_true",
                          "disagreement is also what a backend that never ran produces")
 args = parser.parse_args()
 
-stages.load_stage_module(args.module)
+# Importing dlpno.stages already auto-loaded the default module when it was
+# importable; loading it again would refuse on the duplicate cpp registration.
+# An explicitly named module still loads, and a default module the autoload
+# could not find (or that EINSUMS_STAGE_BACKEND suppressed) is loaded here,
+# because this script exists to compare the backends and needs both present.
+if args.module != "dlpno_stages" or "cpp" not in stages.get_stage(args.stage).backends:
+    stages.load_stage_module(args.module)
 
 
 def run(path, backend, label):
