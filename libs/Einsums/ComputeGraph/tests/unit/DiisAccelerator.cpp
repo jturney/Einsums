@@ -351,3 +351,65 @@ TEST_CASE("DiisAccelerator - the optimizer keeps the node and its place", "[Comp
         CHECK(t_opt.data()[i] == t_plain.data()[i]);
     }
 }
+
+#ifdef _OPENMP
+TEST_CASE("DiisAccelerator - the step does not depend on the thread count", "[ComputeGraph][DIIS]") {
+    // A threaded vendor `dot` sums per-thread partials, so its last bits move
+    // with the thread count; the accelerator pins the vendor to one thread for
+    // the duration of a step so its coefficients are a function of the inputs
+    // alone. The components here are past the width at which the vendor starts
+    // threading a dot, which is the only size where this can be observed.
+    int const available = omp_get_max_threads();
+    if (available < 2) {
+        SUCCEED("one thread available, nothing to compare against");
+        return;
+    }
+
+    constexpr size_t n = 40000, pairs = 3, steps = 6;
+
+    auto run = [&](int width) {
+        int const prior = omp_get_max_threads();
+        omp_set_num_threads(width);
+
+        std::vector<RuntimeTensor<double>> ts, ss;
+        for (size_t p = 0; p < pairs; p++) {
+            ts.emplace_back("t", std::vector<size_t>{n});
+            ss.emplace_back("s", std::vector<size_t>{n});
+            for (size_t i = 0; i < n; i++) {
+                ts.back().data()[i] = 0.001 * static_cast<double>((i + 7 * p) % 101) - 0.05;
+                ss.back().data()[i] = 1e-4 * static_cast<double>((i * 13 + p) % 97) - 5e-3;
+            }
+        }
+
+        auto acc = std::make_shared<cg::DiisAccelerator<double>>(4);
+        for (size_t p = 0; p < pairs; p++) {
+            cg::diis_add_pair(acc.get(), &ts[p], &ss[p]);
+        }
+
+        for (size_t it = 0; it < steps; it++) {
+            for (size_t p = 0; p < pairs; p++) {
+                for (size_t i = 0; i < n; i++) {
+                    ss[p].data()[i] *= 0.5 + 0.4 * static_cast<double>((i + p) % 17) / 17.0;
+                    ts[p].data()[i] += ss[p].data()[i];
+                }
+            }
+            acc->step();
+        }
+
+        std::vector<double> out;
+        out.reserve(pairs * n);
+        for (size_t p = 0; p < pairs; p++) {
+            out.insert(out.end(), ts[p].data(), ts[p].data() + n);
+        }
+        omp_set_num_threads(prior);
+        return out;
+    };
+
+    auto const serial = run(1);
+    auto const wide   = run(available);
+    REQUIRE(serial.size() == wide.size());
+    for (size_t i = 0; i < serial.size(); i++) {
+        REQUIRE(serial[i] == wide[i]);
+    }
+}
+#endif
