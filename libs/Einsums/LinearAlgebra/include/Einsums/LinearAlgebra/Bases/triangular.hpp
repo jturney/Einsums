@@ -75,6 +75,72 @@ int impl_lu_decomp(einsums::detail::TensorImpl<T> &A, Pivots &pivot) {
     return ret;
 }
 
+/**
+ * @brief Solve @f$AX = B@f$ from an LU factorization something else already computed.
+ *
+ * @p A_lu is READ, never written, so one factorization serves any number of right-hand sides. @p pivot follows the LAPACK
+ * convention - one-based, @p pivot[k] naming the row that was swapped with row @p k - which is what both ::impl_lu_decomp and
+ * LAPACK's @c getrf produce, and the multipliers below it are read in that permuted order. That is why every interchange is
+ * applied to @p X before any elimination is: the factorization swapped whole rows, so the stored @c L is already permuted.
+ *
+ * @p X is a rank-1 tensor for a single right-hand side or a rank-2 tensor whose columns are the right-hand sides.
+ */
+template <typename T, typename Pivots>
+    requires requires(Pivots a, size_t ind) {
+        typename Pivots::value_type;
+        typename Pivots::size_type;
+
+        { a.size() } -> std::same_as<typename Pivots::size_type>;
+        a[ind];
+    }
+void impl_lu_solve(einsums::detail::TensorImpl<T> const &A_lu, einsums::detail::TensorImpl<T> &X, Pivots const &pivot) {
+    size_t const m = A_lu.dim(0), n = A_lu.dim(1), min_dim = std::min(m, n), nrhs = (X.rank() == 1) ? 1 : X.dim(1);
+    bool const   vector = X.rank() == 1;
+
+    auto x = [&X, vector](size_t i, size_t j) -> T & {
+        if (vector) {
+            return X.subscript_no_check(i);
+        }
+        return X.subscript_no_check(i, j);
+    };
+
+    // Every interchange first, then the unit-diagonal forward substitution.
+    for (size_t k = 0; k + 1 < min_dim; k++) {
+        if (static_cast<size_t>(pivot[k]) != k + 1) {
+            for (size_t j = 0; j < nrhs; j++) {
+                std::swap(x(k, j), x(static_cast<size_t>(pivot[k]) - 1, j));
+            }
+        }
+    }
+
+    for (size_t k = 0; k + 1 < min_dim; k++) {
+        for (size_t i = k + 1; i < m; i++) {
+            T const scale = A_lu.subscript_no_check(i, k);
+            for (size_t j = 0; j < nrhs; j++) {
+                x(i, j) -= x(k, j) * scale;
+            }
+        }
+    }
+
+    // Back substitution against U.
+    for (ptrdiff_t k = (ptrdiff_t)n - 1; k >= 0; k--) {
+        T const row_scale = A_lu.subscript_no_check((size_t)k, (size_t)k);
+
+        for (ptrdiff_t i = k - 1; i >= 0; i--) {
+            T const scale = A_lu.subscript_no_check((size_t)i, (size_t)k);
+
+            for (size_t j = 0; j < nrhs; j++) {
+                // Written this way rather than as a division of the subtrahend to keep an over- or underflow out of the intermediate.
+                x((size_t)i, j) = (row_scale * x((size_t)i, j) - scale * x((size_t)k, j)) / row_scale;
+            }
+        }
+
+        for (size_t j = 0; j < nrhs; j++) {
+            x((size_t)k, j) /= row_scale;
+        }
+    }
+}
+
 template <typename T, typename Pivots>
     requires requires(Pivots a, size_t ind) {
         typename Pivots::value_type;
@@ -85,8 +151,6 @@ template <typename T, typename Pivots>
         a[ind];
     }
 int impl_solve(einsums::detail::TensorImpl<T> &A, einsums::detail::TensorImpl<T> &X, Pivots &pivot) {
-    size_t const m = A.dim(0), n = A.dim(1), min_dim = std::min(m, n), nrhs = (X.rank() == 1) ? 1 : X.dim(1);
-
     // LU decomposition.
     int info = impl_lu_decomp(A, pivot);
 
@@ -94,71 +158,7 @@ int impl_solve(einsums::detail::TensorImpl<T> &A, einsums::detail::TensorImpl<T>
         return info;
     }
 
-    // Solve the system.
-
-    if (X.rank() == 1) {
-        // First, apply P^-1 and L^-1.
-        for (size_t k = 0; k < min_dim - 1; k++) {
-            // We know where the max row was. Swap.
-            if (pivot[k] != k + 1) {
-                std::swap(X.subscript_no_check(k), X.subscript_no_check(pivot[k] - 1));
-            }
-
-            // We know the scale factors for the rows. Apply them
-            for (size_t i = k + 1; i < m; i++) {
-                T scale = A.subscript_no_check(i, k);
-                X.subscript_no_check(i) -= X.subscript(k) * scale;
-            }
-        }
-
-        // Finally, apply U^-1.
-        for (size_t k = n - 1; k > 0; k--) {
-            T row_scale = A.subscript_no_check(k, k);
-            for (ptrdiff_t i = (ptrdiff_t)k - 1; i >= 0; i--) {
-                T scale = A.subscript_no_check(i, k);
-
-                X.subscript_no_check(i) = (row_scale * X.subscript_no_check(i) - scale * X.subscript_no_check(k)) / row_scale;
-            }
-
-            X.subscript_no_check(k) /= row_scale;
-        }
-    } else {
-
-        // First, apply P^-1 and L^-1.
-        for (size_t k = 0; k < min_dim - 1; k++) {
-            // We know where the max row was. Swap.
-            if (pivot[k] != k + 1) {
-                for (size_t j = 0; j < nrhs; j++) {
-                    std::swap(X.subscript_no_check(k, j), X.subscript_no_check(pivot[k] - 1, j));
-                }
-            }
-        }
-        for (size_t k = 0; k < min_dim - 1; k++) {
-            // We know the scale factors for the rows. Apply them
-            for (size_t i = k + 1; i < m; i++) {
-                T scale = A.subscript_no_check(i, k);
-                for (size_t j = 0; j < nrhs; j++) {
-                    X.subscript_no_check(i, j) -= X.subscript(k, j) * scale;
-                }
-            }
-        }
-
-        // Finally, apply U^-1.
-        for (ptrdiff_t k = (ptrdiff_t)n - 1; k >= 0; k--) {
-            T row_scale = A.subscript_no_check(k, k);
-            for (ptrdiff_t i = (ptrdiff_t)k - 1; i >= 0; i--) {
-                T scale = A.subscript_no_check(i, k);
-
-                for (size_t j = 0; j < nrhs; j++) {
-                    X.subscript_no_check(i, j) = (row_scale * X.subscript_no_check(i, j) - scale * X.subscript_no_check(k, j)) / row_scale;
-                }
-            }
-
-            for (size_t j = 0; j < nrhs; j++) {
-                X.subscript_no_check(k, j) /= row_scale;
-            }
-        }
-    }
+    impl_lu_solve(A, X, pivot);
 
     return info;
 }

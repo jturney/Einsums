@@ -1225,6 +1225,44 @@ template <BasicTensorConcept TensorType, typename Pivots>
 }
 
 /**
+ * @brief Solves a system of linear equations against a factorization ::getrf already computed.
+ *
+ * The routine solves @f$AX = B@f$ where @f$A@f$ has already been replaced by its LU factorization. The factorization is READ,
+ * so one ::getrf serves any number of right-hand sides; this is what distinguishes the pair from ::gesv, which destroys its
+ * coefficient matrix on every solve.
+ *
+ * @tparam AType The type of the factored matrix.
+ * @tparam BType The type of the right-hand side. Can be a matrix or a vector.
+ * @tparam Pivots The pivot container type.
+ * @param[in] A The LU factorization of the coefficient matrix, as ::getrf left it.
+ * @param[in] pivot The pivot array ::getrf filled. It must hold at least as many entries as the order of @p A.
+ * @param[inout] B The right-hand sides. On exit it holds the solutions.
+ *
+ * @return 0 on success. If negative, one of the parameters in the underlying LAPACK call was invalid, and the absolute value
+ * gives which one.
+ *
+ * @throws rank_error If the factored matrix is not rank-2 or the right-hand side is neither rank-1 nor rank-2.
+ * @throws tensor_compat_error If the factored matrix is not square, or its order differs from the number of rows of the
+ * right-hand side.
+ * @throws std::length_error If the pivot array is shorter than the order of @p A.
+ *
+ * @versionadded{2.1.0}
+ */
+template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, typename Pivots>
+    requires requires(Pivots a, size_t ind) {
+        requires SameUnderlying<AType, BType>;
+
+        { a.size() } -> std::same_as<typename Pivots::size_type>;
+        { a.data() } -> std::same_as<typename Pivots::value_type *>;
+        a[ind];
+        requires std::same_as<blas::int_t, typename Pivots::value_type>;
+    }
+[[nodiscard]] auto getrs(AType const &A, Pivots const &pivot, BType *B) -> int {
+    LabeledSection0();
+    return detail::getrs(A.impl(), pivot, &B->impl());
+}
+
+/**
  * @brief Computes the inverse of a matrix using the LU factorization computed by getrf.
  *
  * The routine computes the inverse \f$inv(A)\f$ of a general matrix \f$A\f$. Before calling this routine, call getrf to factorize

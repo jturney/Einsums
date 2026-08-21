@@ -1185,6 +1185,93 @@ template <MatrixConcept TensorType, typename Pivots>
 }
 
 /**
+ * @brief Solve @f$AX = B@f$ against a factorization ::getrf already produced.
+ *
+ * The factorization is read and not written, so one call to ::getrf serves any number of right-hand sides. That is the whole
+ * difference from ::gesv, which consumes its coefficient matrix.
+ *
+ * @param[in] A The LU factorization of the coefficient matrix, as ::getrf left it.
+ * @param[in] pivot The pivot array ::getrf filled, holding at least @f$n@f$ entries.
+ * @param[inout] B The right-hand sides, rank 1 or rank 2. On exit it holds the solutions.
+ *
+ * @return 0 on success. Negative values name an invalid argument to the underlying LAPACK call.
+ */
+template <typename T, typename Pivots>
+    requires requires(Pivots a, size_t ind) {
+        typename Pivots::value_type;
+        typename Pivots::size_type;
+
+        { a.size() } -> std::same_as<typename Pivots::size_type>;
+        { a.data() } -> std::same_as<typename Pivots::value_type *>;
+        a[ind];
+        requires std::same_as<blas::int_t, typename Pivots::value_type>;
+    }
+[[nodiscard]] auto getrs(einsums::detail::TensorImpl<T> const &A, Pivots const &pivot, einsums::detail::TensorImpl<T> *B) -> int {
+    LabeledSection0();
+
+    if (A.rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "The factored matrix needs to be rank-2!");
+    }
+    if (B->rank() != 1 && B->rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "The right-hand side needs to be rank 1 or 2!");
+    }
+
+    if (A.dim(0) != A.dim(1) || A.dim(0) != B->dim(0)) {
+        EINSUMS_THROW_EXCEPTION(tensor_compat_error,
+                                "The factored matrix needs to be square and the number of rows of the right-hand side needs to match! A "
+                                "dims: ({}, {}), B dim: {}.",
+                                A.dim(0), A.dim(1), B->dim(0));
+    }
+
+    size_t const n    = A.dim(0);
+    size_t const nrhs = (B->rank() == 1) ? 1 : B->dim(1);
+
+    // An empty order or an empty right-hand-side list is a quick return, the same one LAPACK takes.
+    if (n == 0 || nrhs == 0) {
+        return 0;
+    }
+
+    if (pivot.size() < n) {
+        EINSUMS_THROW_EXCEPTION(std::length_error, "getrs: the pivot array holds {} entries against an order-{} factorization!",
+                                pivot.size(), n);
+    }
+
+    if (A.is_column_major() && A.is_gemmable() && B->is_column_major() && (B->rank() == 1 || B->is_gemmable())) {
+        size_t const ldb  = (B->rank() == 1) ? n : B->get_ldb();
+        int const    info = (int)blas::getrs<T>('N', n, nrhs, A.data(), A.get_lda(), pivot.data(), B->data(), ldb);
+
+        if (info < 0) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "getrs: argument {} has an invalid value! n: {}, nrhs: {}, lda: {}, ldb: {}.",
+                                    print::ordinal(-info), n, nrhs, A.get_lda(), ldb);
+        }
+
+        return info;
+    }
+
+    impl_lu_solve(A, *B, pivot);
+
+    return 0;
+}
+
+/**
+ * @brief Solve @f$AX = B@f$ against a factorization ::getrf already produced.
+ *
+ * @copydetails getrs(einsums::detail::TensorImpl<T> const &, Pivots const &, einsums::detail::TensorImpl<T> *)
+ */
+template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, typename Pivots>
+    requires requires(Pivots a, size_t ind) {
+        requires SameUnderlying<AType, BType>;
+
+        { a.size() } -> std::same_as<typename Pivots::size_type>;
+        { a.data() } -> std::same_as<typename Pivots::value_type *>;
+        a[ind];
+        requires std::same_as<blas::int_t, typename Pivots::value_type>;
+    }
+[[nodiscard]] auto getrs(AType const &A, Pivots const &pivot, BType *B) -> int {
+    return getrs(A.impl(), pivot, &B->impl());
+}
+
+/**
  * @brief Computes the inverse of a matrix using the LU factorization computed by getrf.
  *
  * The routine computes the inverse \f$inv(A)\f$ of a general matrix \f$A\f$. Before calling this routine, call getrf to factorize
