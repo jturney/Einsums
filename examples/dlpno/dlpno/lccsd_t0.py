@@ -80,6 +80,7 @@ buffer is correctly SERIALIZED, and serializing the chains is the one thing a
 captured wide-and-shallow phase exists to avoid.
 """
 
+import math
 import time
 
 import numpy as np
@@ -88,7 +89,6 @@ import einsums
 from einsums import linalg as la
 import einsums.graph as cg
 
-from . import sparse
 from . import tensors as ten
 from .base import plan_widths
 from .cc_overlaps import OverlapHalfCache, build_overlaps
@@ -108,6 +108,17 @@ _PERMUTATIONS = [((0, 1, 2), "abc"), ((0, 2, 1), "acb"), ((1, 0, 2), "bac"),
 #: actually does to the virtual indices is done once, here.
 _ENERGY_TERMS = [(8.0, "abc"), (-4.0, "cba"), (-4.0, "acb"),
                  (-4.0, "bac"), (2.0, "cab"), (2.0, "bca")]
+
+
+def _root_or_zero(x):
+    """``std::pow(x, 0.5)``, with a non-finite root discarded, as ``pow`` has it.
+
+    The metric is positive definite in exact arithmetic and very nearly singular
+    in practice, so an eigenvalue can come back a small negative number whose
+    root is a NaN. ``linalg.pow`` writes zero there; matching it exactly is what
+    keeps the captured square root on the same bits as the eager one.
+    """
+    return math.sqrt(x) if x > 0.0 else 0.0
 
 
 class LCCSDT0:
@@ -149,7 +160,6 @@ class LCCSDT0:
         #: committed once and reused, so a carve is a bitmap claim.
         self._pool = einsums.MemoryPool(32 * 1024 * 1024, "lccsd(t0)")
         self.W = self.V = self.T = None
-        self._metric_cache = {}
         self.t_plan = 0.0
         self.n_nodes = 0
         #: Nodes captured into the batched-GEMM graphs, which is one per graph
@@ -265,6 +275,13 @@ class LCCSDT0:
         derive from the four domain sizes: the half-transformed ``S^T t`` blocks
         are sized by the PNO counts of the pairs this triplet bridges, one per
         DISTINCT pair, and that set is what :meth:`plan` deduplicated.
+
+        The metric term is charged per TRIPLET and spent per DOMAIN, so it is an
+        over-estimate whenever two triplets share an auxiliary domain - which is
+        most of them. Four ``nq`` by ``nq`` blocks and an eigenvalue vector: the
+        metric, its square root, the eigenvectors and their scaled copy. Bounding
+        it this way keeps the budget a function of one triplet, which is what
+        :meth:`_chunks` needs to refuse a triplet that cannot fit alone.
         """
         nq, nl, nu, nt = r["nq"], r["nl"], r["nu"], r["nt"]
         return 8 * (8 * nt ** 3                    # K_xvvv x3, W, V, D, scratch, bracket
@@ -276,7 +293,7 @@ class LCCSDT0:
                     + 2 * nq * (3 * nt + 3 * nl)   # the two fitted right-hand sides
                     + 3 * nq * (nl + nu)           # the gathered three-index blocks
                     + 6 * nl * nt + 3 * nt * nt    # (x l | y c) and (x a | y b)
-                    + 2 * nq * nq)                 # the metric and its square root
+                    + 4 * nq * nq + nq)            # the metric artifacts, per domain
 
     def _overlap_halves_bytes(self):
         """Bytes the cached pair-side overlap halves will hold for this phase.
@@ -431,9 +448,7 @@ class LCCSDT0:
 
         Several graphs rather than one for the reason ``lccsd.py`` gives: a
         boundary is a point where a slice-versus-whole aliasing question cannot
-        arise, and there are a lot of slices here. The metric decomposition
-        also has to happen between two of them, since it is not a captured
-        operation.
+        arise, and there are a lot of slices here.
 
         **Four of the seven hold exactly one node, and that is deliberate.**
         Those four are the batched GEMMs, and a batch is only threaded if
@@ -558,12 +573,12 @@ class LCCSDT0:
     # -- allocation ----------------------------------------------------------
 
     def _allocate(self, chunk):
-        """Every tensor one chunk writes, plus the metric factorizations.
+        """Every tensor one chunk writes, plus the metric artifacts.
 
-        The metric decomposition is here rather than in an emitter because
-        ``pow(0.5)`` is an eigendecomposition and not a captured operation:
-        calling it inside a capture would record the gather that feeds it and
-        then read an unwritten tensor.
+        The metric blocks are carved here and WRITTEN by the fit graph: the
+        gather, the eigendecomposition, the square root and both factorizations
+        are all captured operations now, so ``pool_empty`` is right for every
+        one of them and nothing here touches a floating-point value.
 
         Views are collected into ``keep`` for the reason ``lccsd.py`` gives: a
         view handed to a captured operation is held by the graph as a slot
@@ -572,7 +587,7 @@ class LCCSDT0:
         """
         cc = self.cc
         pool = self._pool
-        state = {"keep": [], "per": []}
+        state = {"keep": [], "per": [], "metric": {}}
 
         # Almost everything here is ``ten.pool_empty``, and the split is a
         # contract, not a tuning: this loop used to ``ten.zeros`` roughly
@@ -619,7 +634,7 @@ class LCCSDT0:
                 :, 3 * nt + x * nl:3 * nt + (x + 1) * nl]) for x in range(3)]
             per["q_xv_inv"] = [self._keep(state, per["rhs_full"][:, x * nt:(x + 1) * nt])
                                for x in range(3)]
-            per["metric"] = self._metric_copies(r["ijk"])
+            per["metric"] = self._metric_artifacts(state, r["ijk"])
 
             # (x a | b d) for x in i, j, k. Allocated FLAT, with the rank-3
             # naming as the view, because that is the orientation the batched
@@ -696,23 +711,43 @@ class LCCSDT0:
         state["keep"].append(view)
         return view
 
-    def _metric_copies(self, ijk):
-        """Fresh copies of one triplet domain's metric and its square root.
+    def _metric_artifacts(self, state, ijk):
+        """One triplet domain's two metric factorizations, shared by DOMAIN.
 
-        Fresh because ``gesv`` overwrites its left-hand side, and memoized by
-        DOMAIN because the eigendecomposition behind ``pow(0.5)`` is the
-        expensive half and triplets sharing an auxiliary domain share it.
+        The eigendecomposition behind ``J^1/2`` is the expensive half and every
+        triplet over one auxiliary domain wants the same one, so the artifacts
+        are memoized on the domain - keyed by identity, which is what
+        ``lmotriplet_to_ribfs`` shares between triplets that share a domain. The
+        memo is per CHUNK rather than per phase, because these are pool carves
+        and the pool's carves die with the chunk that made them; a domain read
+        by two chunks is decomposed once in each. That costs a repeat only where
+        chunking already repeats everything else, and it keeps the phase's
+        footprint a function of one chunk.
+
+        Nothing is computed here. These are pool carves that :meth:`_emit_fit`
+        fills, and the factorizations are what the per-triplet solves read:
+        ``getrs`` leaves its left-hand side alone, so one ``getrf`` serves every
+        triplet over the domain and no triplet needs a copy of its own. That is
+        the whole reason the pair replaced ``gesv``, which consumes the matrix
+        it solves against and so charged two fresh copies per triplet.
         """
-        cc = self.cc
-        domain = cc.lmotriplet_to_ribfs[ijk]
-        hit = self._metric_cache.get(id(domain))
+        domain = self.cc.lmotriplet_to_ribfs[ijk]
+        hit = state["metric"].get(id(domain))
         if hit is None:
-            A = sparse.submatrix_rows_and_cols(cc.metric, domain, domain,
-                                               name="(P|Q) domain")
-            hit = (ten.view(A).copy(), ten.view(la.pow(A, 0.5)).copy())
-            self._metric_cache[id(domain)] = hit
-        return (ten.from_numpy("(P|Q) copy", hit[0]),
-                ten.from_numpy("(P|Q)^1/2 copy", hit[1]))
+            nq = len(domain)
+            pool = self._pool
+            hit = {
+                "qs": [int(q) for q in domain],
+                "full": ten.pool_empty(pool, "(P|Q) domain", [nq, nq]),
+                "half": ten.pool_empty(pool, "(P|Q)^1/2", [nq, nq]),
+                "evecs": ten.pool_empty(pool, "(P|Q) eigenvectors", [nq, nq]),
+                "scaled": ten.pool_empty(pool, "(P|Q) scaled evecs", [nq, nq]),
+                "evals": ten.pool_empty(pool, "(P|Q) eigenvalues", [nq]),
+                "piv_full": la.LuPivots(),
+                "piv_half": la.LuPivots(),
+            }
+            state["metric"][id(domain)] = hit
+        return hit
 
     # -- emission ------------------------------------------------------------
 
@@ -783,12 +818,56 @@ class LCCSDT0:
         graph, because what enforces that order is the write-after-read edge the
         hazard scan draws between overlapping slices of ``rhs_half``, not the
         graph boundary.
+
+        The metric decompositions are emitted FIRST, into this same graph, so
+        every factorization node precedes the solves that read it. That is an
+        ordering the hazard scan derives rather than one this order asserts -
+        ``getrf`` writes the factorization tensor and ``getrs`` reads it - but
+        emitting them in any other order would put a solve ahead of its
+        factorization in the node list for no reason.
         """
+        for metric in state["metric"].values():
+            self._emit_metric(metric)
+
         for per in state["per"]:
             la.axpby(1.0, per["rhs_virtual"], 0.0, per["rhs_full"])
-            A_full, A_half = per["metric"]
-            la.gesv(A_full, per["rhs_full"])
-            la.gesv(A_half, per["rhs_half"])
+            metric = per["metric"]
+            la.getrs(metric["full"], metric["piv_full"], per["rhs_full"])
+            la.getrs(metric["half"], metric["piv_half"], per["rhs_half"])
+
+    def _emit_metric(self, metric):
+        """``J`` and ``J^1/2`` for one auxiliary domain, both left factorized.
+
+        Everything the metric powers need, as captured nodes: the domain block
+        gathered out of the full metric, the eigendecomposition of a copy of it,
+        the square root of the eigenvalues, the sandwich that rebuilds
+        ``J^1/2``, and a ``getrf`` on each of the two.
+
+        This reproduces ``linalg.pow(J, 0.5)`` term for term rather than
+        approximating it: the same ``syev``, the same clamp of a non-finite root
+        to zero, the same column scaling and the same transposed sandwich - which
+        is why the square root comes out on the bits the eager call produced. The
+        clamp is spelled as a guard on the eigenvalue rather than on its root
+        because ``pow`` takes ``std::pow(e, 0.5)`` and discards whatever is not
+        finite, and a negative eigenvalue is the only finite input that gets
+        there.
+
+        ``syev`` overwrites its input with the eigenvectors, so it is handed a
+        COPY: ``J`` itself is wanted intact, both for the sandwich's sibling and
+        for its own factorization. The hazard scan is what keeps that copy ahead
+        of the ``getrf`` that overwrites ``J``, on the write-after-read edge
+        between them.
+        """
+        la.gather(metric["full"], self.cc.metric, [metric["qs"], metric["qs"]])
+        la.axpby(1.0, metric["full"], 0.0, metric["evecs"])
+        la.syev(metric["evecs"], metric["evals"], compute_eigenvectors=True)
+        la.element_transform(metric["evals"], _root_or_zero)
+        einsums.einsum("Pq <- Pq ; q", metric["scaled"], metric["evecs"],
+                       metric["evals"])
+        la.gemm(1.0, metric["scaled"], metric["evecs"], 0.0, metric["half"],
+                trans_b=True)
+        la.getrf(metric["full"], metric["piv_full"])
+        la.getrf(metric["half"], metric["piv_half"])
 
     def _emit_integrals(self, chunk, state, overlaps):
         """The three integral families the triples contract, in ONE batch.
