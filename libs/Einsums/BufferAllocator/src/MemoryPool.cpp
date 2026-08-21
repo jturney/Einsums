@@ -411,7 +411,12 @@ bool MemoryPoolEpoch::is_open() const noexcept {
 // ── MemoryPool ──────────────────────────────────────────────────────────────
 
 size_t pool_reserve_cost(size_t bytes) {
-    return detail::arena_size_for(bytes);
+    // The MARGINAL planning cost: headroom plus rounding, without the 32 MiB
+    // arena minimum. The minimum is a fixed address-space floor the first
+    // reservation pays once, not a per-chunk resident cost - charging it per
+    // chunk made every budget under 32 MiB unsatisfiable, and small budgets
+    // are how the chunking tests exercise multi-chunk paths.
+    return detail::round_up(detail::with_headroom(bytes), 4u << 20);
 }
 
 size_t pooled_reserved_bytes() {
