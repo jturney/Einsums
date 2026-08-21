@@ -12,6 +12,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/CaptureContext.hpp
     Einsums/ComputeGraph/Options.hpp
     Einsums/ComputeGraph/DeviceShadowMap.hpp
+    Einsums/ComputeGraph/Diis.hpp
     Einsums/ComputeGraph/Error.hpp
     Einsums/ComputeGraph/ABILayout.hpp
     Einsums/ComputeGraph/Graph.hpp

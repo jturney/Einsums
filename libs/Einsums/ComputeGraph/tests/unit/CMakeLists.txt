@@ -28,6 +28,7 @@ set(ComputeGraphTests
     PooledOperands.cpp
     ControlFlow.cpp
     DependencyOrder.cpp
+    DiisAccelerator.cpp
     DistributedIntegration.cpp
     DistributiveFactoring.cpp
     AxpbyDescriptor.cpp
@@ -117,6 +118,7 @@ set(ComputeGraphTests
     test_capture_python.py
     test_diis_python.py
     test_diis_differential_python.py
+    test_diis_cpp_differential_python.py
     test_direct_division_python.py
     test_direct_product_views_python.py
     test_einsum_conj_passes_python.py

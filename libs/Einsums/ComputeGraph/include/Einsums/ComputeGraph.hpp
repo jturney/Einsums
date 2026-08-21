@@ -81,6 +81,7 @@
 
 #include <Einsums/ComputeGraph/Blueprints.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/Diis.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Executor.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>

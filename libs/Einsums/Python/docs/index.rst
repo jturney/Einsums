@@ -137,6 +137,14 @@ exist on the Python side.
     It keeps a short history of (amplitude, step) snapshots and replaces the
     amplitudes with the least-squares extrapolant between replays, taking the
     update step itself as the error vector.
+    ``DIISAccelerator`` is a shell over the C++ ``DiisAccelerator<T>``: a step is
+    one call across the boundary whatever the pair count, where the earlier
+    implementation made hundreds. ``cg.diis`` returns it for pairs of dense
+    runtime tensors sharing one dtype, and falls back to the Python
+    ``cg._PyDiis`` - the same algorithm, driven operand by operand - for tiled
+    amplitudes or mixed dtypes. ``cg.diis_step(accelerator)`` is the captured
+    form: one graph node, reading every amplitude and step tensor and writing
+    every amplitude, so the hazard scan orders it inside a loop body.
 
 These optimization passes are bound as Python classes: ``ConstantFolding``,
 ``ScaleAbsorption``, ``CSE``, ``DeadNodeElimination``, ``ElementWiseFusion``,

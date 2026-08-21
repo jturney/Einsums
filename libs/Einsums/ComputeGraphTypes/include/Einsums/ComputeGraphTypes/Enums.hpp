@@ -115,6 +115,9 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     TileScatter,     ///< Copy a dense buffer back into a tiled tensor's tiles
     TileElementwise, ///< Apply one elementwise operation to a whole list of tiles
 
+    // Iterative-solver acceleration
+    DiisStep, ///< Pulay DIIS extrapolation over an accelerator's (amplitude, step) pairs
+
     // User-defined
     Custom, ///< User-registered custom operation
 };
@@ -288,6 +291,8 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "Scatter";
     case OpKind::Barrier:
         return "Barrier";
+    case OpKind::DiisStep:
+        return "DiisStep";
     case OpKind::Custom:
         return "Custom";
     case OpKind::TileGather:

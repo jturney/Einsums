@@ -209,10 +209,10 @@ def test_wrap_runs_condition_first_and_skips_step_on_convergence():
     predicate = acc.wrap(lambda it: calls.append(it) is None and it < 1)
 
     assert predicate(0) is True
-    assert len(acc._T) == 1  # continued -> a history push happened
+    assert acc.history_size == 1  # continued -> a history push happened
     before = np.asarray(t).copy()
     assert predicate(1) is False
-    assert len(acc._T) == 1  # converged -> no push, no extrapolation
+    assert acc.history_size == 1  # converged -> no push, no extrapolation
     assert np.array_equal(np.asarray(t), before)
     assert calls == [0, 1]
 
@@ -229,7 +229,7 @@ def test_singular_history_drops_oldest_and_recovers():
         acc.step()
         assert np.all(np.isfinite(np.asarray(t)))
     # The retry loop must not let the history exceed its cap or go negative.
-    assert 1 <= len(acc._T) <= 4
+    assert 1 <= acc.history_size <= 4
 
 
 def test_diis_inside_a_captured_loop_solves_the_system():

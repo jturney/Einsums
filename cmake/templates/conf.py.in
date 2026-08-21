@@ -156,11 +156,12 @@ nitpick_ignore_regex = {(r"c(pp)?:identifier", r"size_t"),
     # documented, plus the bare ``einsums`` namespace when a signature renders it
     # as a cpp:class target.
     (r"cpp:(identifier|class|type)", r"(\w+::)*(PassManager|EffectiveIoCache|ChainParenthesization|einsums)$"),
-    # Python API reference: the allocator-templated C++ runtime-tensor types leak
-    # into the generated pybind signatures as py:class cross-references, but Python
-    # exposes only the per-dtype instantiations (RuntimeTensorF, RuntimeTensorViewD,
-    # ...), so these base names are never importable classes and cannot resolve.
-    (r"py:class", r"(\w+\.)*(GeneralRuntimeTensor|RuntimeTensorView|TiledRuntimeTensor|TiledRuntimeTensorView)$")
+    # Python API reference: C++ class TEMPLATES leak into the generated pybind
+    # signatures as py:class cross-references under their bare template name, but
+    # Python exposes only the per-dtype instantiations (RuntimeTensorF,
+    # RuntimeTensorViewD, DiisAcceleratorZ, ...), so these base names are never
+    # importable classes and cannot resolve.
+    (r"py:class", r"(\w+\.)*(GeneralRuntimeTensor|RuntimeTensorView|TiledRuntimeTensor|TiledRuntimeTensorView|DiisAccelerator)$")
     }
 
 numfig = True

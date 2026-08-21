@@ -85,8 +85,14 @@ def current_graph():
     return _capture_graph_stack[-1] if _capture_graph_stack else None
 
 
-class DIISAccelerator:
-    """Pulay DIIS extrapolation for fixed-point iterations captured as graph loops.
+class _PyDiis:
+    """Pure-Python Pulay DIIS, the reference the C++ accelerator is checked against.
+
+    This was the shipping implementation; :class:`DIISAccelerator` replaced it
+    with one C++ entry call per step. It stays because it is the oracle the
+    differential tests compare against, and because it is what runs for operand
+    types the C++ accelerator does not cover - tiled amplitudes, and pairs whose
+    components disagree on dtype.
 
     Accelerates the ``t <- t + step`` update a loop body performs by keeping a
     short history of (amplitude, step) snapshots and replacing the amplitudes
@@ -94,11 +100,6 @@ class DIISAccelerator:
     the update step itself, the standard coupled-cluster choice; iterations
     whose update the body computes anyway get DIIS for the cost of a K-sized
     host-side solve.
-
-    Construct via :func:`diis` and install with :meth:`wrap`::
-
-        acc = cg.diis([(t1, rd1), (t2, rd2)], k=8)
-        body = g.add_loop("iter", 100, acc.wrap(converged))
 
     Every ``(amplitude, step)`` tensor must be readable between replays: the
     user-visible amplitudes qualify, and the step tensors must be EAGER
@@ -136,6 +137,11 @@ class DIISAccelerator:
         self._ids = []
         self._next_id = 0
         self._dot_cache = {}
+
+    @property
+    def history_size(self):
+        """Snapshots currently held, which ramps to ``k`` and can drop on a singular B."""
+        return len(self._T)
 
     def wrap(self, condition=None):
         """Return a loop predicate: evaluate ``condition``, then take a DIIS step.
@@ -235,6 +241,114 @@ class DIISAccelerator:
             return
 
 
+# Which C++ accelerator class backs which element type, and which operand
+# classes the C++ path accepts. Anything else - tiled amplitudes, a pair whose
+# amplitude and step disagree on dtype - routes to ``_PyDiis``, which is
+# type-agnostic because it only ever calls einsums operations on the operands.
+_DIIS_CLASS_FOR_DTYPE = {
+    "float32": "DiisAcceleratorF",
+    "float64": "DiisAcceleratorD",
+    "complex64": "DiisAcceleratorC",
+    "complex128": "DiisAcceleratorZ",
+}
+
+_DIIS_DTYPE_FOR_OPERAND = {
+    "RuntimeTensorF": "float32", "RuntimeTensorViewF": "float32",
+    "RuntimeTensorD": "float64", "RuntimeTensorViewD": "float64",
+    "RuntimeTensorC": "complex64", "RuntimeTensorViewC": "complex64",
+    "RuntimeTensorZ": "complex128", "RuntimeTensorViewZ": "complex128",
+}
+
+
+def _diis_cpp_dtype(pairs):
+    """The single element type the C++ accelerator would carry, or ``None``.
+
+    ``None`` means the pair list is outside what the C++ instantiations cover
+    and the caller should fall back to :class:`_PyDiis`.
+    """
+    dtypes = set()
+    for entry in pairs:
+        for operand in entry:
+            dtype = _DIIS_DTYPE_FOR_OPERAND.get(type(operand).__name__)
+            if dtype is None:
+                return None
+            dtypes.add(dtype)
+    return dtypes.pop() if len(dtypes) == 1 else None
+
+
+class DIISAccelerator:
+    """Pulay DIIS extrapolation for fixed-point iterations captured as graph loops.
+
+    Accelerates the ``t <- t + step`` update a loop body performs by keeping a
+    short history of (amplitude, step) snapshots and replacing the amplitudes
+    with the least-squares extrapolant between replays. The error vector is the
+    update step itself, the standard coupled-cluster choice; iterations whose
+    update the body computes anyway get DIIS for the cost of a K-sized host-side
+    solve.
+
+    Construct via :func:`diis` and install with :meth:`wrap`::
+
+        acc = cg.diis([(t1, rd1), (t2, rd2)], k=8)
+        body = g.add_loop("iter", 100, acc.wrap(converged))
+
+    The step itself is one call into ``DiisAccelerator<T>``: the snapshot
+    copies, the new row of B, the normalized bordered solve and the
+    extrapolation all happen in C++, where they cost no per-operand pybind
+    dispatch. What crosses the boundary per step is this one call, whatever the
+    pair count - and a DLPNO-(T) iteration hands the accelerator several hundred
+    pairs. The algorithm is unchanged from :class:`_PyDiis` op for op, which is
+    what the differential tests pin.
+
+    Every ``(amplitude, step)`` tensor must be readable between replays: the
+    user-visible amplitudes qualify, and the step tensors must be EAGER
+    (process-owned), not graph-owned intermediates, which are invisible outside
+    the graph. The accelerator binds to the storage the operands hold when it is
+    constructed, so an operand must not be rebound or resized afterwards; this
+    object keeps a reference to every one of them, so they stay alive.
+    """
+
+    def __init__(self, pairs, k=8):
+        if k < 2:
+            raise ValueError(f"DIIS needs a history of at least 2, got k={k}")
+        self._pairs = list(pairs)
+        if not self._pairs:
+            raise ValueError("DIIS needs at least one (amplitude, step) pair")
+        dtype = _diis_cpp_dtype(self._pairs)
+        if dtype is None:
+            raise TypeError("the C++ DIIS accelerator needs dense runtime tensors of one dtype")
+        core = _core()
+        self._acc = getattr(core, _DIIS_CLASS_FOR_DTYPE[dtype])(k)
+        for amplitude, step in self._pairs:
+            core.diis_add_pair(self._acc, amplitude, step)
+
+    @property
+    def history_size(self):
+        """Snapshots currently held, which ramps to ``k`` and can drop on a singular B."""
+        return self._acc.history_size
+
+    def wrap(self, condition=None):
+        """Return a loop predicate: evaluate ``condition``, then take a DIIS step.
+
+        The returned callable has the ``add_loop`` condition signature
+        (iteration index -> bool). ``condition=None`` always continues, i.e.
+        the loop runs to its max_iterations. The DIIS step is skipped once
+        the condition reports convergence - the loop is over, extrapolating
+        would only perturb the converged amplitudes.
+        """
+
+        def predicate(it):
+            keep_going = condition(it) if condition is not None else True
+            if keep_going:
+                self.step()
+            return keep_going
+
+        return predicate
+
+    def step(self):
+        """Push the current (amplitudes, steps) and extrapolate in place."""
+        self._acc.step()
+
+
 def diis(pairs, k=8):
     """DIIS-accelerate a graph loop's fixed-point iteration.
 
@@ -247,7 +361,18 @@ def diis(pairs, k=8):
         body = g.add_loop("ccsd_iter", 100, acc.wrap(converged))
         with cg.capture(body):
             ...  # residuals; rd = r/D; t += rd
+
+    Pairs of dense runtime tensors of one dtype get the C++ accelerator.
+    Anything else - tiled amplitudes, mixed dtypes - gets :class:`_PyDiis`,
+    which computes the same thing through per-operand Python calls.
     """
+    pairs = list(pairs)
+    if k < 2:
+        raise ValueError(f"DIIS needs a history of at least 2, got k={k}")
+    if not pairs:
+        raise ValueError("DIIS needs at least one (amplitude, step) pair")
+    if _diis_cpp_dtype(pairs) is None:
+        return _PyDiis(pairs, k)
     return DIISAccelerator(pairs, k)
 
 

@@ -11,6 +11,7 @@
 #include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeElementwise.hpp>
+#include <Einsums/ComputeGraph/Diis.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/LuPivots.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -6112,6 +6113,128 @@ APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<std::complex<double
     ctx.record(OpKind::Getrs, "getrs", {a_id, b_id}, {b_id}, std::move(executor));
 
     return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// diis_add_pair / diis_step: Pulay extrapolation as ONE node
+//
+// The accelerator's history is not tensor dataflow - it is a private list of
+// snapshots the object owns - so like the LU pivots it rides outside the graph,
+// in a DiisAccelerator whose shared_ptr the executor bakes in at capture time.
+// The object therefore survives however long the graph does, and every replay
+// steps the same history.
+//
+// What orders the node is the PAIR TENSORS. diis_step records every amplitude
+// and every step tensor as an input and every amplitude as an output, which is
+// exactly what the step does to them, so the hazard scan puts it after the body
+// that computed the step and before whatever reads the extrapolated
+// amplitudes. The operands must be the ones the accelerator was given: an
+// accelerator holding tensors no captured op touches has nothing tying its node
+// to the iteration and is a bug in the caller.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Register one ``(amplitude, step)`` pair with a DIIS accelerator.
+///
+/// ``amplitude`` is the tensor the iteration updates and ``step`` is the update
+/// the body computed, which DIIS also uses as the error vector. Both are bound
+/// by storage, so they must outlive the accelerator, and every pair has to be
+/// added before the first step - the snapshots are shaped for the pair list.
+///
+/// This is bookkeeping, not an operation: it records nothing into an active
+/// capture and works the same inside and outside one.
+template <RuntimeRankTensorConcept AmpType, RuntimeRankTensorConcept StepType>
+    requires SameUnderlying<AmpType, StepType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("graph")
+// The 4 owning/view combinations per dtype: a DLPNO amplitude store is an
+// owning tensor, a padded block of one is a view, and the pair may mix them.
+//
+// float
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::RuntimeTensorView<double>,                           einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::RuntimeTensorView<double>,                           einsums::RuntimeTensorView<double>)
+// complex<float>
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::RuntimeTensorView<std::complex<float>>,                                        einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::RuntimeTensorView<std::complex<float>>,                                        einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("diis_add_pair", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void diis_add_pair(DiisAccelerator<typename AmpType::ValueType> *accelerator, AmpType *amplitude, StepType *step) {
+    using T = typename AmpType::ValueType;
+    if (accelerator == nullptr || amplitude == nullptr || step == nullptr) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::diis_add_pair: null accelerator or operand");
+    }
+
+    // The registrars run at capture time, where the operand's static type is
+    // needed to reach get_slot; that type is only available here.
+    accelerator->add_pair(
+        RuntimeTensorView<T>(*amplitude), RuntimeTensorView<T>(*step),
+        [amplitude]() { return CaptureContext::current().get_slot(*amplitude).first; },
+        [step]() { return CaptureContext::current().get_slot(*step).first; });
+}
+
+/// Take one DIIS step over an accelerator's registered pairs.
+///
+/// Outside capture this extrapolates immediately, which is how a host-side
+/// convergence loop uses it. Inside capture it records one node whose executor
+/// holds the accelerator, so a replay of the graph steps the same history; the
+/// node reads every amplitude and step tensor and writes every amplitude, which
+/// is what orders it against the body around it.
+template <typename T>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("graph")
+APIARY_INSTANTIATE_AS("diis_step", float)
+APIARY_INSTANTIATE_AS("diis_step", double)
+APIARY_INSTANTIATE_AS("diis_step", std::complex<float>)
+APIARY_INSTANTIATE_AS("diis_step", std::complex<double>)
+    // clang-format on
+    void diis_step(std::shared_ptr<DiisAccelerator<T>> const &accelerator) {
+    if (!accelerator) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::diis_step: null accelerator");
+    }
+    if (accelerator->num_pairs() == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::diis_step: the accelerator has no (amplitude, step) pairs");
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("diis_step eager");
+        accelerator->step();
+        return;
+    }
+
+    LabeledSection("diis_step capture");
+    std::vector<TensorId> inputs, outputs;
+    inputs.reserve(2 * accelerator->num_pairs());
+    outputs.reserve(accelerator->num_pairs());
+    for (auto const &registrar : accelerator->amplitude_ids()) {
+        TensorId const id = registrar();
+        inputs.push_back(id);
+        outputs.push_back(id);
+    }
+    for (auto const &registrar : accelerator->step_ids()) {
+        inputs.push_back(registrar());
+    }
+
+    auto executor = [accelerator]() {
+        LabeledSection("diis_step execute");
+        accelerator->step();
+    };
+    ctx.record(OpKind::DiisStep, fmt::format("diis x{}", accelerator->num_pairs()), std::move(inputs), std::move(outputs),
+               std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
